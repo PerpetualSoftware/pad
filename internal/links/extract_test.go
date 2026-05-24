@@ -140,6 +140,35 @@ func TestExtractWikiLinks_CodeBlocksExcluded(t *testing.T) {
 		}
 	})
 
+	t.Run("inline code closer matches opener length", func(t *testing.T) {
+		// CommonMark §6.1: a span opened with N backticks closes
+		// only on a run of EXACTLY N backticks. Stray single
+		// backticks inside a ``...`` span are code text, not
+		// closers. Without matching-run semantics, the extractor
+		// would close on the first single backtick and leak the
+		// inner [[X]]. Codex round-7 finding #2.
+		content := "Before [[A-1]] ``code with ` inside and [[INSIDE-1]]`` after [[B-1]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"A-1", "B-1"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
+	t.Run("single-backtick span unaffected by adjacent multi-backtick run", func(t *testing.T) {
+		// `code` is a normal one-backtick span that closes on the
+		// next single backtick. A double-backtick run is NOT a
+		// valid closer for a single-backtick opener.
+		content := "Try `code [[INSIDE-1]] ``not-closer` then [[REAL-1]]"
+		got := ExtractWikiLinks(content)
+		refs := refStrings(got)
+		want := []string{"REAL-1"}
+		if !equalStringSlices(refs, want) {
+			t.Errorf("got refs %v, want %v", refs, want)
+		}
+	})
+
 	t.Run("multi-backtick inline code excludes ref", func(t *testing.T) {
 		// CommonMark inline-code spans support multi-backtick
 		// delimiters (`code` and ``code`` are both spans). Our

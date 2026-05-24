@@ -289,16 +289,21 @@ func findFenceCloser(content string, start, tickCount int, fenceChar byte) int {
 }
 
 // inlineCodeRanges returns half-open `[start, end)` byte ranges that
-// cover every inline-code span (single-backtick) in `content`, skipping
-// over the fenced regions caller has already identified.
+// cover every inline-code span in `content`, skipping over the fenced
+// regions caller has already identified.
 //
-// Inline code spans are delimited by matching backtick runs of the
-// same length: `code` and “co`de“ are both valid. We don't fully
-// implement that variant (matching run lengths) because for our
-// purpose — exclude `[[...]]` inside any `...` region — counting
-// every backtick-delimited stretch as code is conservative and
-// correct (false positives there mean we DON'T index a wiki-link
-// inside oddly-quoted code, which is exactly what we want).
+// CommonMark §6.1: an inline-code span is opened by a run of N
+// consecutive backticks and CLOSED by the next run of EXACTLY N
+// consecutive backticks on the same line. Backtick runs of any
+// length other than N are part of the code text — they don't close
+// the span. This matters for our purpose: a body like
+// “ “has ` inside [[X-1]]“ “ is a single span whose code text
+// includes a stray single backtick AND the wiki-link, and the link
+// must NOT be indexed because the renderer shows it as code.
+//
+// Without matching run lengths (Codex round-7 finding #2), the
+// parser would treat the stray single backtick as a closer, end
+// the range early, and false-positive on `[[X-1]]`.
 //
 // Span doesn't cross newlines: an unclosed backtick at end-of-line
 // is treated as literal text, not the start of a multi-line span.
@@ -331,37 +336,46 @@ func inlineCodeRanges(content string, fenced [][2]int) [][2]int {
 			fi++
 			continue
 		}
-		// Find the closing backtick on the same line. The opener
-		// itself might be a run of backticks (rare), but for our
-		// permissive treatment we close on the next backtick we
-		// see — see function comment.
+		// Count the opener's backtick run.
 		j := openStart + 1
 		for j < n && content[j] == '`' {
 			j++
 		}
-		// Scan for the closer.
+		openLen := j - openStart
+		// Scan for a closing backtick RUN of EXACTLY `openLen`
+		// backticks on the same line. Runs of any other length
+		// are code text, not closers.
 		closerStart := -1
-		for k := j; k < n; k++ {
+		closerEnd := -1
+		k := j
+		for k < n {
 			if content[k] == '\n' {
 				break
 			}
-			if content[k] == '`' {
-				closerStart = k
+			if content[k] != '`' {
+				k++
+				continue
+			}
+			runStart := k
+			for k < n && content[k] == '`' {
+				k++
+			}
+			runLen := k - runStart
+			if runLen == openLen {
+				closerStart = runStart
+				closerEnd = k
 				break
 			}
+			// Wrong-length run; consumed by the loop, keep scanning.
 		}
 		if closerStart < 0 {
-			// Unclosed backtick — treat as literal, skip past it.
+			// Unclosed (or only mismatched runs to EOL) — treat
+			// opener as literal text and resume one byte past it.
 			i = openStart + 1
 			continue
 		}
-		// Advance closer past the run.
-		k := closerStart
-		for k < n && content[k] == '`' {
-			k++
-		}
-		ranges = append(ranges, [2]int{openStart, k})
-		i = k
+		ranges = append(ranges, [2]int{openStart, closerEnd})
+		i = closerEnd
 	}
 	return ranges
 }
