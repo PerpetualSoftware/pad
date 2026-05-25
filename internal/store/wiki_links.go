@@ -920,44 +920,53 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 	// section above the panel, "Parent: …" header above the panel)
 	// and so carry no novel information.
 	//
+	// "Child link" type set: childLinkTypes = {"parent", "implements"}
+	// (see items.go). The Child Items panel and GetChildItems both
+	// inflate this set, so the suppression must too — an 'implements'
+	// child appears in the children list above and would otherwise
+	// duplicate in "Mentioned in". childLinkTypeSQL() formats the
+	// IN-list and stays in lockstep with the canonical definition.
+	//
 	// Pad has TWO parent/child storage mechanisms — the suppression
 	// must consult both so it can't be bypassed by either write path:
 	//
-	//  1. item_links with link_type='parent' (source=child,
-	//     target=parent — see migration 023). This is the DOMINANT
-	//     mechanism — the HTTP/CLI path uses Store.SetParentLink
-	//     which only writes here.
+	//  1. item_links with link_type ∈ childLinkTypes (source=child,
+	//     target=parent — see migration 023 for the 'parent' rename).
+	//     This is the DOMINANT mechanism — the HTTP/CLI path uses
+	//     Store.SetParentLink which writes 'parent' here; 'implements'
+	//     links are created via the generic item-links endpoint.
 	//
 	//  2. items.parent_id column. Empty in production (0/3923 rows
 	//     on a live workspace) but ItemCreate/ItemUpdate still
 	//     support it as a direct store-API surface, so a test or
 	//     future code path could bypass item_links and exercise it.
-	//     Codex review of the initial TASK-1607 followup (this PR)
-	//     flagged the risk.
+	//     Codex review of the initial TASK-1607 followup flagged
+	//     the risk.
 	//
 	// Children-suppression (s is a child of target) =
-	//   item_links row [s -> target, 'parent']  OR  s.parent_id == targetID
+	//   item_links row [s -> target, ∈ childLinkTypes]  OR  s.parent_id == targetID
 	// Parent-suppression (s is the target's parent) =
-	//   item_links row [target -> s, 'parent']  OR  (target's parent_id IS s.id,
-	//   computed via a correlated subquery against items)
+	//   item_links row [target -> s, ∈ childLinkTypes]  OR
+	//   target.parent_id IS s.id (correlated subquery against items)
 	//
 	// The NOT EXISTS subqueries lean on idx_links_source /
 	// idx_links_target for O(1) lookups per candidate row; the
 	// items.parent_id checks are straight column comparisons.
 	// TASK-1607 / IDEA-1601.
+	childTypes := childLinkTypeSQL()
 	relClause := `
 		  AND NOT EXISTS (
 		      SELECT 1 FROM item_links il
 		      WHERE il.source_id = s.id
 		        AND il.target_id = ?
-		        AND il.link_type = 'parent'
+		        AND il.link_type IN (` + childTypes + `)
 		  )
 		  AND (s.parent_id IS NULL OR s.parent_id != ?)
 		  AND NOT EXISTS (
 		      SELECT 1 FROM item_links il
 		      WHERE il.source_id = ?
 		        AND il.target_id = s.id
-		        AND il.link_type = 'parent'
+		        AND il.link_type IN (` + childTypes + `)
 		  )
 		  AND NOT EXISTS (
 		      SELECT 1 FROM items t
@@ -1069,22 +1078,22 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 	// GetBacklinks would yield under identical vis; a drift here
 	// would let suppressed rows consume LIMIT slots and shrink
 	// pages silently. See GetBacklinks for the full rationale
-	// (both item_links and items.parent_id are consulted so the
-	// suppression can't be bypassed by either write path).
-	// TASK-1607 / IDEA-1601.
+	// (childLinkTypes set, both item_links and items.parent_id
+	// consulted). TASK-1607 / IDEA-1601.
+	childTypes := childLinkTypeSQL()
 	relClause := `
 		  AND NOT EXISTS (
 		      SELECT 1 FROM item_links il
 		      WHERE il.source_id = s.id
 		        AND il.target_id = ?
-		        AND il.link_type = 'parent'
+		        AND il.link_type IN (` + childTypes + `)
 		  )
 		  AND (s.parent_id IS NULL OR s.parent_id != ?)
 		  AND NOT EXISTS (
 		      SELECT 1 FROM item_links il
 		      WHERE il.source_id = ?
 		        AND il.target_id = s.id
-		        AND il.link_type = 'parent'
+		        AND il.link_type IN (` + childTypes + `)
 		  )
 		  AND NOT EXISTS (
 		      SELECT 1 FROM items t

@@ -1489,6 +1489,53 @@ func TestWikiLinks_SuppressionUsesItemLinksNotParentIDColumn(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_SuppressionCoversImplementsChildLinkType: the
+// "Child Items" UI surface treats both 'parent' AND 'implements'
+// links as children (see childLinkTypes in items.go), so an
+// 'implements' child of the target is already on screen above the
+// backlinks panel and its wiki-link mention of the target would
+// duplicate. The suppression filter uses childLinkTypeSQL() to
+// stay in lockstep with the canonical inclusion rule.
+func TestWikiLinks_SuppressionCoversImplementsChildLinkType(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Target plan", "")
+	child, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:   "Child via implements",
+		Content: "Implements [[" + refOf(target) + "]] § Section 3.",
+		Fields:  `{"status":"open"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem child: %v", err)
+	}
+	// Wire the child via the 'implements' link type (not 'parent').
+	// childLinkTypes covers both, so the suppression must too.
+	if _, err := s.CreateItemLink(ws.ID, models.ItemLinkCreate{
+		TargetID: target.ID,
+		LinkType: "implements",
+	}, child.ID); err != nil {
+		t.Fatalf("CreateItemLink implements: %v", err)
+	}
+
+	got, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetBacklinks: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 backlinks (implements-child suppressed), got %d: %+v", len(got), got)
+	}
+
+	n, err := s.CountBacklinks(target.ID, ws.ID, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("CountBacklinks: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("CountBacklinks: got %d, want 0", n)
+	}
+}
+
 // TestWikiLinks_SuppressionFallsBackToItemsParentIDColumn: the
 // belt-and-suspenders case raised by Codex review of the followup.
 // `items.parent_id` is empty in real workspaces because the HTTP
