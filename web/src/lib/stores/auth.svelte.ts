@@ -24,6 +24,11 @@ export const authStore = {
 	// Components that conditionally render Remote-MCP onboarding UI should
 	// branch on `authStore.mcpPublicUrl !== ''`.
 	get mcpPublicUrl() { return session?.mcp_public_url ?? ''; },
+	// billingAvailable is true when the server has PAD_BILLING_AVAILABLE=true
+	// AND is in cloud mode. Components gate "Upgrade to Pro" Stripe CTAs on
+	// this value — false means the CTA is hidden entirely, not just disabled.
+	// TASK-800.
+	get billingAvailable() { return session?.billing_available ?? false; },
 	get loading() { return loading; },
 
 	async load() {

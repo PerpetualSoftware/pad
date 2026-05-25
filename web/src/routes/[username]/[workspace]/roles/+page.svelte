@@ -112,7 +112,7 @@
 			await loadData();
 		} catch (err) {
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
 				console.error('Failed to create item:', err);
 			}

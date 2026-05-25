@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse } from '$lib/types';
 
@@ -313,7 +314,7 @@
 			newTokenName = '';
 		} catch (err) {
 			if (isPlanLimitError(err)) {
-				tokenError = planLimitMessage(err) + ' Upgrade to Pro at /console/billing';
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
 				tokenError = err instanceof Error ? err.message : 'Failed to create token';
 			}
@@ -547,6 +548,39 @@
 			</section>
 		{/if}
 
+		<!-- Plan (cloud mode only) — TASK-800 -->
+		{#if authStore.cloudMode}
+			<section class="card">
+				<h2 class="card-title">Plan</h2>
+				<div class="card-body">
+					<div class="plan-row">
+						<div class="plan-info">
+							<span class="plan-name">
+								{authStore.user?.plan === 'pro' ? 'Pro' : 'Free'}
+							</span>
+							<span class="plan-badge" class:pro={authStore.user?.plan === 'pro'} class:free={authStore.user?.plan !== 'pro'}>
+								{authStore.user?.plan === 'pro' ? 'Active' : 'Current'}
+							</span>
+						</div>
+						<p class="plan-desc">
+							{#if authStore.user?.plan === 'pro'}
+								You have full access to all Pad features.
+							{:else}
+								The free plan includes basic workspace management with limited features.
+							{/if}
+						</p>
+					</div>
+					{#if authStore.user?.plan !== 'pro'}
+						<a href="/console/billing" class="primary-btn">
+							{authStore.billingAvailable ? 'Upgrade to Pro' : 'View Plans'}
+						</a>
+					{:else}
+						<a href="/console/billing" class="secondary-btn">Manage Billing</a>
+					{/if}
+				</div>
+			</section>
+		{/if}
+
 		<!-- API Tokens -->
 		<section class="card">
 			<h2 class="card-title">API Tokens</h2>
@@ -686,6 +720,48 @@
 	.success {
 		color: var(--accent-green);
 		font-size: 0.85rem;
+	}
+
+	/* Plan section (TASK-800) */
+	.plan-row {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.plan-info {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+	}
+
+	.plan-name {
+		font-size: 1rem;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+
+	.plan-badge {
+		padding: 2px var(--space-2);
+		border-radius: var(--radius-sm);
+		font-size: 0.75rem;
+		font-weight: 500;
+	}
+
+	.plan-badge.pro {
+		background: color-mix(in srgb, var(--accent-green) 15%, transparent);
+		color: var(--accent-green);
+	}
+
+	.plan-badge.free {
+		background: color-mix(in srgb, var(--accent-gray, #6b7280) 15%, transparent);
+		color: var(--text-secondary);
+	}
+
+	.plan-desc {
+		color: var(--text-secondary);
+		font-size: 0.85rem;
+		line-height: 1.4;
 	}
 
 	.primary-btn {

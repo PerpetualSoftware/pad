@@ -897,7 +897,7 @@
 			goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
@@ -928,7 +928,7 @@
 			toastStore.show(`Created "${title}"`, 'success');
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}

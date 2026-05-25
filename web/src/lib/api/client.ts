@@ -320,6 +320,10 @@ export interface AuthSession {
 	// is unset on the server — UI code should use the empty string as the gate
 	// for "Remote MCP not exposed by this instance, fall back to CLI flow."
 	mcp_public_url: string;
+	// billing_available is true when PAD_BILLING_AVAILABLE=true on the server
+	// AND the deployment is in cloud mode. Use authStore.billingAvailable rather
+	// than reading this field directly. TASK-800.
+	billing_available?: boolean;
 	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string };
 }
 
@@ -1510,6 +1514,37 @@ export const api = {
 		// Cloud-mode only (returns 404 in self-host).
 		getBillingStats: () =>
 			request<AdminBillingStats>('/admin/billing-stats')
+	},
+
+	// ── Billing (user-facing Stripe Checkout / Portal) ────────────────────
+	//
+	// These endpoints are served by the pad-cloud sidecar (not the pad binary)
+	// at the same origin via nginx reverse-proxy. They do NOT use the /api/v1/
+	// prefix. TASK-800.
+
+	billing: {
+		/**
+		 * POST /billing/checkout — create a Stripe Checkout session.
+		 * Returns `{ url: string }` on success; the caller must do
+		 * `window.location.href = url` to start the Stripe-hosted flow.
+		 * Returns HTTP 503 with `{ error: string }` when Stripe is not
+		 * configured (PAD_BILLING_AVAILABLE not yet set on the sidecar).
+		 */
+		createCheckoutSession: (): Promise<{ url: string }> =>
+			fetch('/billing/checkout', {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({})
+			}).then(async (r) => {
+				if (!r.ok) {
+					const body = await r.json().catch(() => ({}));
+					throw new Error(
+						(body as { error?: string }).error || `Checkout request failed (${r.status})`
+					);
+				}
+				return r.json() as Promise<{ url: string }>;
+			})
 	}
 };
 
