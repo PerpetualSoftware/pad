@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api/client';
+	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse } from '$lib/types';
@@ -312,7 +312,11 @@
 			tokens = [...tokens, token];
 			newTokenName = '';
 		} catch (err) {
-			tokenError = err instanceof Error ? err.message : 'Failed to create token';
+			if (isPlanLimitError(err)) {
+				tokenError = planLimitMessage(err) + ' Upgrade to Pro at /console/billing';
+			} else {
+				tokenError = err instanceof Error ? err.message : 'Failed to create token';
+			}
 		} finally {
 			tokenCreating = false;
 		}

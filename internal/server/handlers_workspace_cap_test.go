@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -83,19 +84,32 @@ func TestWorkspaceCap_FreeTierBlocksFourth(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("4th workspace: expected 403, got %d: %s", rr.Code, rr.Body.String())
 	}
-	var resp map[string]interface{}
+	// TASK-788: body now follows the standard {"error":{"code":...,"message":...,"details":{...}}} shape.
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Details struct {
+				Feature string  `json:"feature"`
+				Limit   float64 `json:"limit"`
+			} `json:"details"`
+		} `json:"error"`
+	}
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode 403 response: %v", err)
 	}
-	if got, _ := resp["error"].(string); got != "plan_limit_exceeded" {
-		t.Errorf("4th workspace: error=%q, want plan_limit_exceeded", got)
+	if resp.Error.Code != "plan_limit_exceeded" {
+		t.Errorf("4th workspace: error.code=%q, want plan_limit_exceeded", resp.Error.Code)
 	}
-	if got, _ := resp["feature"].(string); got != "workspaces" {
-		t.Errorf("4th workspace: feature=%q, want workspaces", got)
+	if resp.Error.Message == "" {
+		t.Errorf("4th workspace: error.message should be non-empty")
+	}
+	if resp.Error.Details.Feature != "workspaces" {
+		t.Errorf("4th workspace: error.details.feature=%q, want workspaces", resp.Error.Details.Feature)
 	}
 	// Limit field must report 3 (the new cap), not 5.
-	if got, ok := resp["limit"].(float64); !ok || int(got) != 3 {
-		t.Errorf("4th workspace: limit=%v, want 3", resp["limit"])
+	if int(resp.Error.Details.Limit) != 3 {
+		t.Errorf("4th workspace: error.details.limit=%v, want 3", resp.Error.Details.Limit)
 	}
 }
 
@@ -182,5 +196,122 @@ func TestWorkspaceCap_OverrideUnblocks(t *testing.T) {
 		if rr.Code != http.StatusCreated {
 			t.Fatalf("override workspace %d: expected 201, got %d: %s", i, rr.Code, rr.Body.String())
 		}
+	}
+}
+
+// TestPlanLimitError_ResponseShape verifies that the 403 body emitted by
+// writePlanLimitError follows the standard {"error":{"code":...,"message":...,"details":{...}}}
+// envelope shape (TASK-788). Uses the member-invite endpoint to exercise
+// enforcePlanLimit("members_per_workspace") — a workspace-scoped limit distinct
+// from the workspace-count limit tested by TestWorkspaceCap_FreeTierBlocksFourth.
+func TestPlanLimitError_ResponseShape(t *testing.T) {
+	srv := testServer(t)
+	srv.SetCloudMode("test-cloud-secret")
+
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	// Create a free-tier user who will own the workspace.
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email:    "owner@test.com",
+		Name:     "Owner",
+		Password: "correct-horse-battery-staple",
+		Role:     "member",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser(owner): %v", err)
+	}
+	if err := srv.store.SetUserPlan(owner.ID, "free", ""); err != nil {
+		t.Fatalf("SetUserPlan(free): %v", err)
+	}
+	ownerToken := loginUser(t, srv, "owner@test.com", "correct-horse-battery-staple")
+
+	// Create a workspace for the owner.
+	wsRR := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{
+		"name": "Test Workspace",
+	}, ownerToken)
+	if wsRR.Code != http.StatusCreated {
+		t.Fatalf("create workspace: expected 201, got %d: %s", wsRR.Code, wsRR.Body.String())
+	}
+	var wsResp struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.Unmarshal(wsRR.Body.Bytes(), &wsResp); err != nil || wsResp.Slug == "" {
+		t.Fatalf("parse workspace response: %v — %s", err, wsRR.Body.String())
+	}
+	wsSlug := wsResp.Slug
+
+	// Add existing users until we're at the member cap (3 for free tier).
+	// The owner themselves count as 1, so invite 2 more real users.
+	for i := 2; i <= 3; i++ {
+		member, err := srv.store.CreateUser(models.UserCreate{
+			Email:    fmt.Sprintf("member%d@test.com", i),
+			Name:     fmt.Sprintf("Member %d", i),
+			Password: "pass",
+			Role:     "member",
+		})
+		if err != nil {
+			t.Fatalf("CreateUser(member%d): %v", i, err)
+		}
+		invRR := doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/members/invite",
+			map[string]string{"email": member.Email, "role": "editor"}, ownerToken)
+		if invRR.Code != http.StatusCreated {
+			t.Fatalf("invite member %d: expected 201, got %d: %s", i, invRR.Code, invRR.Body.String())
+		}
+	}
+
+	// One more invite must be blocked — this is the limit-hit we're testing.
+	extra, err := srv.store.CreateUser(models.UserCreate{
+		Email:    "extra@test.com",
+		Name:     "Extra",
+		Password: "pass",
+		Role:     "member",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser(extra): %v", err)
+	}
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+wsSlug+"/members/invite",
+		map[string]string{"email": extra.Email, "role": "editor"}, ownerToken)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("4th member invite: expected 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Verify the standard error envelope shape (TASK-788).
+	var resp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Details struct {
+				Feature    string  `json:"feature"`
+				Limit      float64 `json:"limit"`
+				Current    float64 `json:"current"`
+				Plan       string  `json:"plan"`
+				UpgradeURL string  `json:"upgrade_url"`
+			} `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode 403 response: %v — body: %s", err, rr.Body.String())
+	}
+
+	// error.code must be the stable machine-readable token.
+	if resp.Error.Code != "plan_limit_exceeded" {
+		t.Errorf("error.code: got %q, want plan_limit_exceeded", resp.Error.Code)
+	}
+	// error.message must be a non-empty human sentence suitable for display.
+	if resp.Error.Message == "" {
+		t.Errorf("error.message: should be non-empty human-readable text")
+	}
+	// Details must carry the structured limit info.
+	if resp.Error.Details.Feature != "members_per_workspace" {
+		t.Errorf("details.feature: got %q, want members_per_workspace", resp.Error.Details.Feature)
+	}
+	if int(resp.Error.Details.Limit) != 3 {
+		t.Errorf("details.limit: got %v, want 3", resp.Error.Details.Limit)
+	}
+	if resp.Error.Details.Plan != "free" {
+		t.Errorf("details.plan: got %q, want free", resp.Error.Details.Plan)
+	}
+	if resp.Error.Details.UpgradeURL != "/console/billing" {
+		t.Errorf("details.upgrade_url: got %q, want /console/billing", resp.Error.Details.UpgradeURL)
 	}
 }

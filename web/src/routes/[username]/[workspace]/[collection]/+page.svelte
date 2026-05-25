@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { api, PadApiError } from '$lib/api/client';
+	import { api, PadApiError, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import type { Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
@@ -896,7 +896,11 @@
 			});
 			goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
 		} catch (err: any) {
-			toastStore.show(err?.message || 'Failed to create item', 'error');
+			if (isPlanLimitError(err)) {
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+			} else {
+				toastStore.show(err?.message || 'Failed to create item', 'error');
+			}
 		} finally {
 			creatingNew = false;
 		}
@@ -923,7 +927,11 @@
 			quickCreateTitle = '';
 			toastStore.show(`Created "${title}"`, 'success');
 		} catch (err: any) {
-			toastStore.show(err?.message || 'Failed to create item', 'error');
+			if (isPlanLimitError(err)) {
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+			} else {
+				toastStore.show(err?.message || 'Failed to create item', 'error');
+			}
 		} finally {
 			creatingNew = false;
 		}

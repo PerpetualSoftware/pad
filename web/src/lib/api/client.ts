@@ -70,6 +70,9 @@ class PadApiError extends Error {
 	 * today is `open_children` (IDEA-1494 / BUG-1538), whose details
 	 * carry `{ open_children, hidden_blocker_count, done_field,
 	 * attempted_value }`. Undefined for codes that don't supply it.
+	 *
+	 * For `plan_limit_exceeded` (TASK-788) the shape is:
+	 *   { feature: string, limit: number, current: number, plan: string, upgrade_url: string }
 	 */
 	details?: Record<string, unknown>;
 	constructor(err: ApiError) {
@@ -77,6 +80,30 @@ class PadApiError extends Error {
 		this.code = err.code;
 		this.details = err.details;
 	}
+}
+
+/**
+ * Returns true when `err` is a PadApiError with code "plan_limit_exceeded".
+ * Use this at every write-operation catch block to branch on plan-gating
+ * rather than showing a generic "Failed to …" toast. TASK-788.
+ */
+function isPlanLimitError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'plan_limit_exceeded';
+}
+
+/**
+ * Returns a human-readable upgrade-signal message for a plan limit error.
+ * Falls back to the server-supplied `err.message` if details are unavailable,
+ * so the function is always safe to call. TASK-788.
+ *
+ * Example output:
+ *   "You've reached the 3-member limit on the free plan. Upgrade to Pro →"
+ */
+function planLimitMessage(err: PadApiError): string {
+	// The server already sends a good sentence in err.message (TASK-788).
+	// We use it directly here so there is a single source of truth for the
+	// wording; callers append the upgrade link separately in the UI.
+	return err.message || 'Plan limit reached. Upgrade to Pro to continue.';
 }
 
 /**
@@ -1486,4 +1513,4 @@ export const api = {
 	}
 };
 
-export { PadApiError };
+export { PadApiError, isPlanLimitError, planLimitMessage };

@@ -2,7 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
-	import { api } from '$lib/api/client';
+	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { Workspace, WorkspaceTemplate } from '$lib/types';
 	import { groupTemplatesByCategory } from '$lib/utils/templates';
@@ -112,8 +112,12 @@
 			onWorkspaceCreated?.(ws);
 			close();
 			goto(`/${ws.owner_username}/${ws.slug}`);
-		} catch {
-			toastStore.show('Failed to create workspace', 'error');
+		} catch (err: unknown) {
+			if (isPlanLimitError(err)) {
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+			} else {
+				toastStore.show('Failed to create workspace', 'error');
+			}
 		}
 	}
 

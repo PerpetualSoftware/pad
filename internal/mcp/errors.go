@@ -140,6 +140,15 @@ const (
 	// upstream message so agents have a chance of recognizing
 	// transient vs persistent throttling.
 	ErrRateLimited ErrorCode = "rate_limited"
+
+	// ErrPlanLimitExceeded fires on HTTP 403 responses that carry
+	// error.code="plan_limit_exceeded" — a free-tier plan enforcement
+	// gate (e.g. items_per_workspace, members_per_workspace, workspaces,
+	// api_tokens). Distinct from ErrPermissionDenied (role/RBAC) so
+	// MCP-driven agents can surface an "upgrade to Pro" signal rather
+	// than reporting a permission error. Details carries feature/limit/
+	// current/plan/upgrade_url from the server (TASK-788).
+	ErrPlanLimitExceeded ErrorCode = "plan_limit_exceeded"
 )
 
 // ErrorEnvelope is the wire shape returned to MCP clients on tool
@@ -348,7 +357,8 @@ const structuredErrorMarker = "pad-structured-error/v1: "
 // declarations block at the top of this file should also be added
 // for type safety in test assertions.
 var allowedStructuredErrorCodes = map[string]struct{}{
-	"open_children": {}, // IDEA-1494
+	"open_children":       {}, // IDEA-1494
+	"plan_limit_exceeded": {}, // TASK-788
 }
 
 // extractStructuredCLIError scans stderr for the
@@ -752,6 +762,21 @@ func classifyHTTPStatusKind(
 			Hint:    authHintFor(bodyMessage, route),
 		})
 	case http.StatusForbidden:
+		// TASK-788: when the handler emitted a plan_limit_exceeded structured body,
+		// surface it with the dedicated code + details so MCP-driven agents can
+		// present an upgrade-to-Pro signal instead of a generic permission error.
+		// Whitelisted through allowedStructuredErrorCodes (same pattern as
+		// open_children on 409) so unknown 403 codes still collapse to
+		// ErrPermissionDenied.
+		upstream403 := extractUpstreamErrorEnvelope(bodyText)
+		if _, allowed := allowedStructuredErrorCodes[upstream403.Code]; allowed {
+			return NewErrorResult(ErrorPayload{
+				Code:    ErrorCode(upstream403.Code),
+				Message: upstream403.Message,
+				Hint:    planLimitHintFor(upstream403.Message, route),
+				Details: upstream403.Details,
+			})
+		}
 		return NewErrorResult(ErrorPayload{
 			Code:    ErrPermissionDenied,
 			Message: "Permission denied for this operation.",
@@ -1128,6 +1153,20 @@ func upstreamHintFor(bodyMsg, route string, status int) string {
 // Catch-all — surface enough for an agent to file a bug report.
 func serverHintFor(bodyMsg, route string, status int) string {
 	parts := []string{fmt.Sprintf("Unexpected status %d from backend.", status)}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
+	}
+	if bodyMsg != "" {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	return strings.Join(parts, " ")
+}
+
+// planLimitHintFor generates the actionable hint for ErrPlanLimitExceeded.
+// The upgrade_url is already in the Details blob; the hint surfaces it in
+// prose so agents that only read Hint (not Details) still get the destination.
+func planLimitHintFor(bodyMsg, route string) string {
+	parts := []string{"Upgrade to Pro at /console/billing to remove this limit."}
 	if route != "" {
 		parts = append(parts, fmt.Sprintf("Route: %s.", route))
 	}

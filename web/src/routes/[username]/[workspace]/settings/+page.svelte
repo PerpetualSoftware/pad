@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api/client';
+	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import type { Collection, WorkspaceContext } from '$lib/types';
 	import { parseSchema } from '$lib/types';
@@ -238,7 +238,14 @@
 			members = memberData.members ?? [];
 			invitations = memberData.invitations ?? [];
 		} catch (err: unknown) {
-			inviteResult = { message: err instanceof Error ? err.message : 'Failed to invite', type: 'error' };
+			if (isPlanLimitError(err)) {
+				inviteResult = {
+					message: planLimitMessage(err) + ' Upgrade to Pro at /console/billing',
+					type: 'error'
+				};
+			} else {
+				inviteResult = { message: err instanceof Error ? err.message : 'Failed to invite', type: 'error' };
+			}
 		} finally {
 			inviting = false;
 		}
