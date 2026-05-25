@@ -2,7 +2,7 @@
 	import type { Editor } from '@tiptap/core';
 	import type { Collection, Item } from '$lib/types';
 	import { parseSchema } from '$lib/types';
-	import { api } from '$lib/api/client';
+	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 
 	const AGENT_SLUGS = ['conventions', 'playbooks'];
@@ -172,7 +172,11 @@
 			toastStore.show(`Created "${item.title}"`, 'success');
 			hide();
 		} catch (err: any) {
-			errorMsg = err.message || 'Failed to create item';
+			if (isPlanLimitError(err)) {
+				errorMsg = planLimitMessage(err) + ' Upgrade to Pro at /console/billing';
+			} else {
+				errorMsg = err.message || 'Failed to create item';
+			}
 		} finally {
 			creating = false;
 		}

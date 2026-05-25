@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
-	import { api } from '$lib/api/client';
+	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import { itemUrlId } from '$lib/types';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import type { Item, Collection, RoleBoardLane, AgentRole } from '$lib/types';
@@ -110,7 +111,11 @@
 			closeNewItem();
 			await loadData();
 		} catch (err) {
-			console.error('Failed to create item:', err);
+			if (isPlanLimitError(err)) {
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+			} else {
+				console.error('Failed to create item:', err);
+			}
 		} finally {
 			newItemSaving = false;
 		}

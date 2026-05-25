@@ -3036,6 +3036,14 @@ Run with --help-collections to see available collections and their status values
 
 			item, err := client.CreateItem(ws, collSlug, input)
 			if err != nil {
+				// TASK-788: emit structured marker so MCP stdio classifier
+				// can surface ErrPlanLimitExceeded instead of ErrServerError.
+				if apiErr, ok := err.(*cli.APIError); ok {
+					if apiErr.AsPlanLimit() != nil {
+						cli.WritePlanLimitError(os.Stderr, apiErr)
+						return fmt.Errorf("item creation blocked: plan limit reached")
+					}
+				}
 				return err
 			}
 
@@ -6228,6 +6236,12 @@ Examples:
 
 				item, err := client.CreateItem(ws, "conventions", input)
 				if err != nil {
+					if apiErr, ok := err.(*cli.APIError); ok {
+						if apiErr.AsPlanLimit() != nil {
+							cli.WritePlanLimitError(os.Stderr, apiErr)
+							return fmt.Errorf("convention activation blocked: plan limit reached")
+						}
+					}
 					return err
 				}
 
@@ -6285,6 +6299,12 @@ Examples:
 
 				item, err := client.CreateItem(ws, "playbooks", input)
 				if err != nil {
+					if apiErr, ok := err.(*cli.APIError); ok {
+						if apiErr.AsPlanLimit() != nil {
+							cli.WritePlanLimitError(os.Stderr, apiErr)
+							return fmt.Errorf("playbook activation blocked: plan limit reached")
+						}
+					}
 					return err
 				}
 

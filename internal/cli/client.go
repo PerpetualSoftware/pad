@@ -944,6 +944,54 @@ func WriteOpenChildrenError(w io.Writer, apiErr *APIError, oc *OpenChildrenDetai
 	fmt.Fprintln(w, "Pass --force to override.")
 }
 
+// PlanLimitDetails is the parsed shape of APIError.Details when
+// Code == "plan_limit_exceeded" (TASK-788).
+type PlanLimitDetails struct {
+	Feature    string `json:"feature"`
+	Limit      int    `json:"limit"`
+	Current    int    `json:"current"`
+	Plan       string `json:"plan"`
+	UpgradeURL string `json:"upgrade_url"`
+}
+
+// AsPlanLimit returns the parsed plan-limit details when this APIError
+// carries them, or nil otherwise. Returns nil for any error other than
+// "plan_limit_exceeded" so callers can branch cleanly.
+func (e *APIError) AsPlanLimit() *PlanLimitDetails {
+	if e == nil || e.Code != "plan_limit_exceeded" || len(e.Details) == 0 {
+		return nil
+	}
+	var d PlanLimitDetails
+	if err := json.Unmarshal(e.Details, &d); err != nil {
+		return nil
+	}
+	return &d
+}
+
+// WritePlanLimitError formats a plan-limit rejection to w in the canonical
+// two-track shape (TASK-788):
+//
+//  1. A single `pad-structured-error/v1: {json}\n` marker line — consumed by
+//     the MCP stdio classifier so it lifts the structured payload instead of
+//     falling through to a generic server_error.
+//  2. A human-readable line: the message from the server envelope.
+//
+// This mirrors WriteOpenChildrenError exactly in structure so the two paths
+// are easy to reason about together.
+func WritePlanLimitError(w io.Writer, apiErr *APIError) {
+	envelope := map[string]any{
+		"error": map[string]any{
+			"code":    apiErr.Code,
+			"message": apiErr.Message,
+			"details": apiErr.Details,
+		},
+	}
+	if data, err := json.Marshal(envelope); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+	fmt.Fprintln(w, apiErr.Message)
+}
+
 // --- Attachments ---
 //
 // AttachmentUploadResult mirrors the JSON returned by

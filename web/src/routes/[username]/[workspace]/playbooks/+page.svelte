@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { api } from '$lib/api/client';
+	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
@@ -225,7 +225,13 @@
 			resetForm();
 			toastStore.show(`Playbook created as ${status}`, 'success');
 			await loadPlaybooks(wsSlug);
-		} catch { toastStore.show('Failed to create playbook', 'error'); }
+		} catch (err: unknown) {
+			if (isPlanLimitError(err)) {
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+			} else {
+				toastStore.show('Failed to create playbook', 'error');
+			}
+		}
 	}
 
 	async function toggleStatus(item: Item) {
@@ -277,8 +283,13 @@
 			});
 			toastStore.show('Playbook duplicated as draft', 'success');
 			await loadPlaybooks(wsSlug);
-		} catch { toastStore.show('Failed to duplicate playbook', 'error'); }
-		finally { duplicating = null; }
+		} catch (err: unknown) {
+			if (isPlanLimitError(err)) {
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+			} else {
+				toastStore.show('Failed to duplicate playbook', 'error');
+			}
+		} finally { duplicating = null; }
 	}
 
 	function clearFilters() { searchQuery = ''; filterTrigger = ''; filterScope = ''; }

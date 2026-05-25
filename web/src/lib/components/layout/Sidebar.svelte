@@ -8,7 +8,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { goto } from '$app/navigation';
-	import { api } from '$lib/api/client';
+	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { parseSchema, parseSettings, itemUrlId } from '$lib/types';
 	import type { Collection } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -173,7 +173,11 @@
 			uiStore.onNavigate();
 			goto(`${wsPrefix}/${coll.slug}/${itemUrlId(item)}?new=1`);
 		} catch (err: any) {
-			toastStore.show(err?.message || 'Failed to create item', 'error');
+			if (isPlanLimitError(err)) {
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+			} else {
+				toastStore.show(err?.message || 'Failed to create item', 'error');
+			}
 		}
 	}
 

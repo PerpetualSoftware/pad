@@ -1128,8 +1128,10 @@ func writePlanLimitError(w http.ResponseWriter, result *store.LimitResult) {
 	})
 }
 
-// planLimitMessage returns a human-readable sentence for a plan limit violation.
-// This is what surfaces in the toast / CLI stderr when no code branch catches it.
+// planLimitMessage returns a human-readable statement-of-fact sentence for a
+// plan limit violation. Each surface (web toast, CLI, MCP hint) appends its
+// own upgrade call-to-action so the message itself doesn't repeat it (B1 fix).
+// Uses hyphenated adjective form ("3-member") per B2 fix. TASK-788.
 func planLimitMessage(result *store.LimitResult) string {
 	featureLabel := map[string]string{
 		"items_per_workspace":   "item",
@@ -1142,13 +1144,10 @@ func planLimitMessage(result *store.LimitResult) string {
 	if !ok {
 		label = result.Feature
 	}
-	var limitStr string
-	if result.Limit == 1 {
-		limitStr = "1 " + label
-	} else {
-		limitStr = fmt.Sprintf("%d %ss", result.Limit, label)
-	}
-	return fmt.Sprintf("You've reached the %s limit on the free plan. Upgrade to Pro to add more.", limitStr)
+	// "3-member", "10-item", "1-workspace", "10-API-token", etc.
+	// Hyphenated form reads as a compound adjective modifying "limit".
+	limitStr := fmt.Sprintf("%d-%s", result.Limit, label)
+	return fmt.Sprintf("You've reached the %s limit on the free plan.", limitStr)
 }
 
 // writeError2 is like writeError but also embeds a details object inside the error

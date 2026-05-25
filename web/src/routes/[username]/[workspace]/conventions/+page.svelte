@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { api } from '$lib/api/client';
+	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import type { Collection, Item, ItemConventionMetadata, ItemCreate } from '$lib/types';
 	import { parseFields, parseSchema } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -247,8 +247,12 @@
 			conventions = [...conventions, created];
 			toastStore.show('Convention created', 'success');
 			resetForm();
-		} catch {
-			toastStore.show('Failed to create convention', 'error');
+		} catch (err: unknown) {
+			if (isPlanLimitError(err)) {
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+			} else {
+				toastStore.show('Failed to create convention', 'error');
+			}
 		} finally {
 			creating = false;
 		}

@@ -283,3 +283,134 @@ func TestStructuredErrorCodeParityAcrossTransports(t *testing.T) {
 	// parity contract is "no transport widens the enum beyond the
 	// whitelist," not "both transports produce identical envelopes."
 }
+
+// ─── TASK-788: plan_limit_exceeded — HTTP and stdio pass-through ──────────────
+
+// TestClassifyHTTPStatus_PlanLimitPreservesCodeAndDetails exercises the HTTP
+// MCP path: a 403 with code=plan_limit_exceeded must surface ErrPlanLimitExceeded
+// (not the generic ErrPermissionDenied) and preserve the details blob.
+func TestClassifyHTTPStatus_PlanLimitPreservesCodeAndDetails(t *testing.T) {
+	body := []byte(`{
+		"error": {
+			"code": "plan_limit_exceeded",
+			"message": "You've reached the 3-member limit on the free plan.",
+			"details": {
+				"feature": "members_per_workspace",
+				"limit": 3,
+				"current": 3,
+				"plan": "free",
+				"upgrade_url": "/console/billing"
+			}
+		}
+	}`)
+
+	res := classifyHTTPStatus(context.Background(), "workspace invite", 403, body, nil)
+	env, ok := res.StructuredContent.(ErrorEnvelope)
+	if !ok {
+		t.Fatalf("expected ErrorEnvelope, got %T", res.StructuredContent)
+	}
+	if env.Error.Code != ErrPlanLimitExceeded {
+		t.Fatalf("code: got %q, want %q", env.Error.Code, ErrPlanLimitExceeded)
+	}
+	if env.Error.Message == "" {
+		t.Errorf("message should be preserved from upstream, got empty")
+	}
+	if len(env.Error.Details) == 0 {
+		t.Fatal("details should be preserved as raw JSON, got empty")
+	}
+
+	// Round-trip the details to confirm the shape survives the HTTP-classifier
+	// transit unchanged.
+	var got cli.PlanLimitDetails
+	if err := json.Unmarshal(env.Error.Details, &got); err != nil {
+		t.Fatalf("details should round-trip into PlanLimitDetails: %v", err)
+	}
+	if got.Feature != "members_per_workspace" {
+		t.Errorf("feature: got %q, want members_per_workspace", got.Feature)
+	}
+	if got.Limit != 3 {
+		t.Errorf("limit: got %d, want 3", got.Limit)
+	}
+	if got.Plan != "free" {
+		t.Errorf("plan: got %q, want free", got.Plan)
+	}
+	if got.UpgradeURL != "/console/billing" {
+		t.Errorf("upgrade_url: got %q, want /console/billing", got.UpgradeURL)
+	}
+}
+
+// TestClassifyHTTPStatus_Generic403FallsToPermissionDenied confirms the inverse:
+// a plain 403 without a plan_limit_exceeded code still collapses to
+// ErrPermissionDenied so we don't break the existing permission-check contract.
+func TestClassifyHTTPStatus_Generic403FallsToPermissionDenied(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"no error code", `{"error":{"message":"not a member of this workspace"}}`},
+		{"explicit permission_denied code", `{"error":{"code":"permission_denied","message":"not a member"}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := classifyHTTPStatus(context.Background(), "workspace read", 403, []byte(tc.body), nil)
+			env := res.StructuredContent.(ErrorEnvelope)
+			if env.Error.Code != ErrPermissionDenied {
+				t.Errorf("code: got %q, want %q", env.Error.Code, ErrPermissionDenied)
+			}
+		})
+	}
+}
+
+// TestClassifyExecError_PlanLimitMarkerLiftsStructuredPayload exercises the
+// CLI-stdio MCP path (TASK-788 Finding A): when cli.WritePlanLimitError writes
+// the structured marker to stderr, classifyExecError must surface
+// ErrPlanLimitExceeded with the correct details — NOT a generic server_error.
+func TestClassifyExecError_PlanLimitMarkerLiftsStructuredPayload(t *testing.T) {
+	stderr := `Error: connecting to backend
+pad-structured-error/v1: {"error":{"code":"plan_limit_exceeded","message":"You've reached the 3-member limit on the free plan.","details":{"feature":"members_per_workspace","limit":3,"current":3,"plan":"free","upgrade_url":"/console/billing"}}}
+item creation blocked: plan limit reached
+`
+	res := classifyExecError(context.Background(),
+		[]string{"item", "create"},
+		errors.New("exit status 1"),
+		stderr,
+		nil)
+	env, ok := res.StructuredContent.(ErrorEnvelope)
+	if !ok {
+		t.Fatalf("expected ErrorEnvelope, got %T", res.StructuredContent)
+	}
+	if env.Error.Code != ErrPlanLimitExceeded {
+		t.Fatalf("code: got %q, want %q", env.Error.Code, ErrPlanLimitExceeded)
+	}
+	if env.Error.Message == "" {
+		t.Errorf("message should be non-empty")
+	}
+
+	var got cli.PlanLimitDetails
+	if err := json.Unmarshal(env.Error.Details, &got); err != nil {
+		t.Fatalf("details should round-trip into PlanLimitDetails: %v", err)
+	}
+	if got.Feature != "members_per_workspace" {
+		t.Errorf("feature: got %q, want members_per_workspace", got.Feature)
+	}
+	if got.Limit != 3 {
+		t.Errorf("limit: got %d, want 3", got.Limit)
+	}
+}
+
+// TestClassifyExecError_PlanLimitWithoutMarkerFallsThrough confirms that a plain
+// "plan limit" text in stderr (no structured marker) does NOT produce
+// ErrPlanLimitExceeded — it falls through to the regex classifiers so old CLI
+// binaries don't accidentally get the new code.
+func TestClassifyExecError_PlanLimitWithoutMarkerFallsThrough(t *testing.T) {
+	stderr := "Error: plan limit reached\n"
+	res := classifyExecError(context.Background(),
+		[]string{"item", "create"},
+		errors.New("exit status 1"),
+		stderr,
+		nil)
+	env := res.StructuredContent.(ErrorEnvelope)
+	if env.Error.Code == ErrPlanLimitExceeded {
+		t.Errorf("plain text stderr must not be classified as plan_limit_exceeded")
+	}
+}
