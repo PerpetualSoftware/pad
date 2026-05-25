@@ -862,15 +862,6 @@ type BacklinksVisibility struct {
 	Unrestricted      bool
 	FullCollectionIDs []string
 	GrantedItemIDs    []string
-
-	// TargetParentID, when non-nil and non-empty, suppresses the
-	// target's own parent from the backlinks result set. Set by the
-	// handler from items.ParentID. Rationale: the parent already
-	// appears in the "Parent: …" header on the target's page, so a
-	// child's wiki-link mention of its parent only duplicates UI
-	// already on screen. Symmetric with the always-on children-
-	// suppression in GetBacklinks/CountBacklinks. TASK-1607 / IDEA-1601.
-	TargetParentID *string
 }
 
 // GetBacklinks returns the items in `workspaceID` that contain a
@@ -884,17 +875,18 @@ type BacklinksVisibility struct {
 // "Mentioned in" panel (PLAN-1593 behavior decision). The row stays
 // in the index for completeness; the filter is purely cosmetic.
 //
-// Children-suppression is always-on for the same UI-duplication
-// reason: a source item whose parent_id == targetItemID is a direct
-// child, and children are already listed above the backlinks panel
-// in the Child Items section. The child's body almost always
+// Parent/child-suppression is always-on for the same UI-duplication
+// reason: a source that is a direct child of the target is already
+// listed above the backlinks panel in the Child Items section, and
+// the target's own parent is already shown in the "Parent: …"
+// header. Both relationships are read from item_links (link_type
+// 'parent', source=child, target=parent — see migration 023); the
+// deprecated items.parent_id column is empty in practice because
+// the API path writes parent links via Store.SetParentLink which
+// only touches item_links. The child's body almost always
 // references the parent (`[[Parent Title]]` somewhere in the
 // narrative), which would otherwise dominate the backlinks list
-// for any plan with many children. Parent-suppression is the
-// symmetric case but opt-in via vis.TargetParentID: when the caller
-// passes the target's parent_id, that one source row (the parent's
-// mention of the target) is dropped because the parent appears in
-// the target's "Parent: …" header. TASK-1607 / IDEA-1601.
+// for any item with many children. TASK-1607 / IDEA-1601.
 //
 // Ordering: most-recently-updated source first; within an updated_at
 // tie (e.g. two backlinks land in the same second), break by
@@ -921,23 +913,39 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		return nil, nil
 	}
 
-	// Relational-suppression clause. Always-on children-suppression
-	// (s.parent_id != targetItemID) mirrors the self-link filter
-	// (s.id != targetItemID) two lines down: both hide rows that
+	// Relational-suppression clauses. Both mirror the self-link
+	// filter (s.id != targetItemID) two lines up: hide rows that
 	// already appear elsewhere in the target's page UI (Children
-	// section above the backlinks panel) and so carry no novel
-	// information. NULL-safe form because parent_id is nullable —
-	// orphan items have parent_id IS NULL and would otherwise be
-	// erroneously dropped by `s.parent_id != ?`. Parent-suppression
-	// is opt-in (only when vis.TargetParentID is set) because callers
-	// that don't have the target's parent_id handy can skip it
-	// without changing existing semantics. TASK-1607 / IDEA-1601.
-	relClause := " AND (s.parent_id IS NULL OR s.parent_id != ?)"
-	args := []interface{}{targetItemID, workspaceID, targetItemID, targetItemID}
-	if vis.TargetParentID != nil && *vis.TargetParentID != "" {
-		relClause += " AND s.id != ?"
-		args = append(args, *vis.TargetParentID)
-	}
+	// section above the panel, "Parent: …" header above the panel)
+	// and so carry no novel information.
+	//
+	// Parent/child relationships live in `item_links` with
+	// link_type='parent', where source_id is the child and target_id
+	// is the parent (see migration 023). The deprecated
+	// `items.parent_id` column is unused in production — the API
+	// path goes through Store.SetParentLink which only writes to
+	// item_links — so filtering on items.parent_id is a no-op
+	// against real workspaces (caught by TASK-1607 follow-up after
+	// the initial fix shipped with the wrong column).
+	//
+	// Both suppressions use NOT EXISTS against item_links. The
+	// indexes idx_links_source(source_id) and idx_links_target
+	// (target_id) make each subquery a single index lookup per
+	// candidate source row. TASK-1607 / IDEA-1601.
+	relClause := `
+		  AND NOT EXISTS (
+		      SELECT 1 FROM item_links il
+		      WHERE il.source_id = s.id
+		        AND il.target_id = ?
+		        AND il.link_type = 'parent'
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM item_links il
+		      WHERE il.source_id = ?
+		        AND il.target_id = s.id
+		        AND il.link_type = 'parent'
+		  )`
+	args := []interface{}{targetItemID, workspaceID, targetItemID, targetItemID, targetItemID}
 
 	// Build the visibility predicate. Unrestricted → omit. Otherwise
 	// `collection_id IN (...)` OR `id IN (...)` — either branch alone
@@ -1036,18 +1044,27 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 	if !vis.Unrestricted && len(vis.FullCollectionIDs) == 0 && len(vis.GrantedItemIDs) == 0 {
 		return 0, nil
 	}
-	// Relational-suppression clause — must mirror GetBacklinks
+	// Relational-suppression clauses — must mirror GetBacklinks
 	// exactly. The handler's same-ws/cross-ws pagination math
 	// depends on CountBacklinks returning the same number of rows
 	// GetBacklinks would yield under identical vis; a drift here
 	// would let suppressed rows consume LIMIT slots and shrink
-	// pages silently. TASK-1607 / IDEA-1601.
-	relClause := " AND (s.parent_id IS NULL OR s.parent_id != ?)"
-	args := []interface{}{targetItemID, workspaceID, targetItemID, targetItemID}
-	if vis.TargetParentID != nil && *vis.TargetParentID != "" {
-		relClause += " AND s.id != ?"
-		args = append(args, *vis.TargetParentID)
-	}
+	// pages silently. See GetBacklinks for the full rationale.
+	// TASK-1607 / IDEA-1601.
+	relClause := `
+		  AND NOT EXISTS (
+		      SELECT 1 FROM item_links il
+		      WHERE il.source_id = s.id
+		        AND il.target_id = ?
+		        AND il.link_type = 'parent'
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM item_links il
+		      WHERE il.source_id = ?
+		        AND il.target_id = s.id
+		        AND il.link_type = 'parent'
+		  )`
+	args := []interface{}{targetItemID, workspaceID, targetItemID, targetItemID, targetItemID}
 	visClause := ""
 	if !vis.Unrestricted {
 		collClause := "FALSE"

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -1240,21 +1241,31 @@ func TestWikiLinks_DuplicateSlashTitleNoTheft(t *testing.T) {
 	}
 }
 
-// createChildItem creates a test item with parent_id set in one
-// CreateItem call. The wiki_links tests use this for parent↔child
-// suppression coverage where createTestItem (which doesn't set
-// parent_id) isn't enough. TASK-1607.
+// createChildItem creates a test item and wires it as a child of
+// parentID via SetParentLink — the same path the HTTP handler takes
+// in production (handlers_items.go calls SetParentLink after
+// CreateItem). The wiki_links suppression filter queries
+// item_links with link_type='parent'; using SetParentLink here
+// keeps the tests honest against the real storage layer.
+//
+// IMPORTANT: do NOT pass ParentID to CreateItem and skip
+// SetParentLink. The deprecated items.parent_id column is empty
+// in production workspaces and the suppression filter doesn't
+// consult it — a test that only set ParentID would pass while
+// the production code path stayed broken (this is exactly how
+// TASK-1607's initial fix shipped a regression). TASK-1607.
 func createChildItem(t *testing.T, s *Store, workspaceID, collectionID, parentID, title, content string) *models.Item {
 	t.Helper()
-	pid := parentID
 	item, err := s.CreateItem(workspaceID, collectionID, models.ItemCreate{
-		Title:    title,
-		Content:  content,
-		Fields:   `{"status":"open"}`,
-		ParentID: &pid,
+		Title:   title,
+		Content: content,
+		Fields:  `{"status":"open"}`,
 	})
 	if err != nil {
-		t.Fatalf("createChildItem: %v", err)
+		t.Fatalf("createChildItem (create): %v", err)
+	}
+	if _, err := s.SetParentLink(workspaceID, item.ID, parentID, "test"); err != nil {
+		t.Fatalf("createChildItem (SetParentLink): %v", err)
 	}
 	return item
 }
@@ -1312,8 +1323,9 @@ func TestWikiLinks_ChildMentionOfParentSuppressed(t *testing.T) {
 // case. When the parent's body mentions its child by wiki-link, that
 // mention should NOT appear in the child's "Mentioned in" panel —
 // the parent is already on screen in the "Parent: …" header above
-// the panel. Requires vis.TargetParentID to be set; the handler
-// passes item.ParentID from the resolved target.
+// the panel. Suppression is unconditional — the store layer reads
+// the parent relationship from item_links directly, so the caller
+// doesn't need to pass parent context through the visibility shape.
 func TestWikiLinks_ParentMentionOnChildPageSuppressed(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
@@ -1329,22 +1341,10 @@ func TestWikiLinks_ParentMentionOnChildPageSuppressed(t *testing.T) {
 		t.Fatalf("UpdateItem parent: %v", err)
 	}
 
-	// Without TargetParentID: the parent shows up (no suppression).
-	plain, err := s.GetBacklinks(child.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
-	if err != nil {
-		t.Fatalf("GetBacklinks (plain): %v", err)
-	}
-	if len(plain) != 1 {
-		t.Fatalf("baseline: expected 1 backlink (parent mention), got %d", len(plain))
-	}
-
-	// With TargetParentID set to the parent's ID: the parent's
-	// mention is suppressed.
-	pid := parent.ID
-	vis := BacklinksVisibility{Unrestricted: true, TargetParentID: &pid}
+	vis := BacklinksVisibility{Unrestricted: true}
 	got, err := s.GetBacklinks(child.ID, ws.ID, 50, 0, vis)
 	if err != nil {
-		t.Fatalf("GetBacklinks (suppressed): %v", err)
+		t.Fatalf("GetBacklinks: %v", err)
 	}
 	if len(got) != 0 {
 		t.Errorf("expected 0 backlinks (parent filtered), got %d: %+v", len(got), got)
@@ -1373,11 +1373,12 @@ func TestWikiLinks_SiblingMentionsNotSuppressed(t *testing.T) {
 	siblingB := createChildItem(t, s, ws.ID, col.ID, parent.ID, "Sibling B",
 		"Coordinates with [["+refOf(siblingA)+"]] on the API surface.")
 
-	// siblingA's backlinks should include siblingB. Children-
-	// suppression filters by `s.parent_id != targetItemID` — i.e.
-	// items whose parent IS siblingA. siblingB's parent is the
-	// parent plan, not siblingA, so siblingB is not a child of
-	// siblingA and must not be filtered.
+	// siblingA's backlinks should include siblingB. The
+	// children-suppression filter drops sources whose parent IS
+	// siblingA (none here); the parent-suppression drops the source
+	// that IS siblingA's parent (the parent item itself, but it
+	// doesn't mention siblingA). siblingB is neither a child of
+	// siblingA nor siblingA's parent, so it must survive.
 	got, err := s.GetBacklinks(siblingA.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
 	if err != nil {
 		t.Fatalf("GetBacklinks: %v", err)
@@ -1388,27 +1389,15 @@ func TestWikiLinks_SiblingMentionsNotSuppressed(t *testing.T) {
 	if got[0].SourceItemID != siblingB.ID {
 		t.Errorf("expected sibling B as source, got %s", got[0].SourceItemID)
 	}
-
-	// Symmetric for the parent-suppression direction: if siblingA
-	// passes TargetParentID=parent.ID (as the handler would since
-	// siblingA's parent IS parent), siblingB is still NOT the
-	// parent, so it survives.
-	pid := parent.ID
-	vis := BacklinksVisibility{Unrestricted: true, TargetParentID: &pid}
-	got, err = s.GetBacklinks(siblingA.ID, ws.ID, 50, 0, vis)
-	if err != nil {
-		t.Fatalf("GetBacklinks (with parent vis): %v", err)
-	}
-	if len(got) != 1 {
-		t.Errorf("expected 1 backlink with parent vis set, got %d", len(got))
-	}
 }
 
 // TestWikiLinks_OrphanBacklinksUnaffected: regression guard for the
-// NULL-safe parent_id predicate. Items with parent_id IS NULL
-// (orphan / root-level items) must still surface as backlinks; the
-// naive form `s.parent_id != ?` would silently drop them because
-// SQL three-valued logic treats `NULL != x` as NULL (not TRUE).
+// suppression filter. Items with no parent link (the common case —
+// root-level items, including most items in mature workspaces) must
+// still surface as backlinks. The NOT EXISTS form against
+// item_links is naturally correct on this — no parent row, no
+// match, no suppression — but the test pins the behavior in case
+// a future refactor inverts the predicate.
 func TestWikiLinks_OrphanBacklinksUnaffected(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
@@ -1428,6 +1417,75 @@ func TestWikiLinks_OrphanBacklinksUnaffected(t *testing.T) {
 	}
 	if got[0].SourceItemID != orphan.ID {
 		t.Errorf("expected orphan as source, got %s", got[0].SourceItemID)
+	}
+}
+
+// TestWikiLinks_SuppressionUsesItemLinksNotParentIDColumn: the
+// regression that the initial TASK-1607 fix shipped — the filter
+// looked at items.parent_id, but production sets parent via
+// SetParentLink (item_links table) and leaves the column NULL.
+// Result: 0 of 3923 items in the real DB had parent_id set, so
+// the filter was a no-op. This test pins the fix by setting the
+// parent ONLY via SetParentLink and asserting suppression still
+// works — i.e. items.parent_id stays NULL throughout. If a future
+// change reroutes the filter back through items.parent_id, this
+// test will catch it.
+func TestWikiLinks_SuppressionUsesItemLinksNotParentIDColumn(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent plan", "")
+	// Create child WITHOUT ParentID, then attach via SetParentLink —
+	// exactly what handlers_items.go does in production.
+	child, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:   "Child task",
+		Content: "Implements [[" + refOf(parent) + "]].",
+		Fields:  `{"status":"open"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem child: %v", err)
+	}
+	if _, err := s.SetParentLink(ws.ID, child.ID, parent.ID, "test"); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+
+	// Sanity: child.parent_id column IS NULL (production shape).
+	var parentIDCol sql.NullString
+	if err := s.db.QueryRow(s.q(`SELECT parent_id FROM items WHERE id = ?`), child.ID).Scan(&parentIDCol); err != nil {
+		t.Fatalf("read child parent_id: %v", err)
+	}
+	if parentIDCol.Valid {
+		t.Fatalf("test setup wrong: items.parent_id should be NULL (production shape), got %q", parentIDCol.String)
+	}
+
+	// Sanity: the item_links row exists (the parent relationship
+	// IS recorded — just in the table the suppression must consult).
+	var linkCount int
+	if err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM item_links
+		WHERE source_id = ? AND target_id = ? AND link_type = 'parent'
+	`), child.ID, parent.ID).Scan(&linkCount); err != nil {
+		t.Fatalf("count parent links: %v", err)
+	}
+	if linkCount != 1 {
+		t.Fatalf("test setup wrong: expected 1 parent link, got %d", linkCount)
+	}
+
+	got, err := s.GetBacklinks(parent.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetBacklinks: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 backlinks (child suppressed via item_links), got %d: %+v", len(got), got)
+	}
+
+	n, err := s.CountBacklinks(parent.ID, ws.ID, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("CountBacklinks: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("CountBacklinks: got %d, want 0", n)
 	}
 }
 
