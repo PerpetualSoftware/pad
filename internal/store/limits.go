@@ -24,7 +24,7 @@ type PlanLimits struct {
 // DefaultFreeLimits are the hardcoded fallback limits for the free tier.
 // These are used only if the platform_settings table has no stored defaults.
 var DefaultFreeLimits = PlanLimits{
-	Workspaces:          5,
+	Workspaces:          3,
 	ItemsPerWorkspace:   1000,
 	MembersPerWorkspace: 3,
 	APITokens:           10,
@@ -198,6 +198,8 @@ func (s *Store) userFeatureCount(userID, feature string) (int, error) {
 
 	switch feature {
 	case "workspaces":
+		// Note: this count includes soft-deleted workspaces by design — see IDEA-1611
+		// in docapp for the open question on whether this should change post-MVBP.
 		err = s.db.QueryRow(s.q(`SELECT COUNT(*) FROM workspaces WHERE owner_id = ?`), userID).Scan(&count)
 	case "api_tokens":
 		err = s.db.QueryRow(s.q(`SELECT COUNT(*) FROM api_tokens WHERE user_id = ?`), userID).Scan(&count)
