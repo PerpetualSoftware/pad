@@ -414,3 +414,45 @@ func TestClassifyExecError_PlanLimitWithoutMarkerFallsThrough(t *testing.T) {
 		t.Errorf("plain text stderr must not be classified as plan_limit_exceeded")
 	}
 }
+
+// TestClassifyExecError_PlanLimitWorkspaceCreate exercises the workspace-create
+// CLI-stdio path (TASK-788 codex R2 Finding 2): WritePlanLimitError on the
+// workspace-create command must round-trip through classifyExecError with
+// ErrPlanLimitExceeded and populated details.
+func TestClassifyExecError_PlanLimitWorkspaceCreate(t *testing.T) {
+	// Simulates stderr produced by WritePlanLimitError when workspace creation
+	// hits the workspaces cap for a free-tier user.
+	stderr := `Error: connecting to backend
+pad-structured-error/v1: {"error":{"code":"plan_limit_exceeded","message":"You've reached the 3-workspace limit on the free plan.","details":{"feature":"workspaces","limit":3,"current":3,"plan":"free","upgrade_url":"/console/billing"}}}
+workspace creation blocked: plan limit reached
+`
+	res := classifyExecError(context.Background(),
+		[]string{"workspace", "init"},
+		errors.New("exit status 1"),
+		stderr,
+		nil)
+	env, ok := res.StructuredContent.(ErrorEnvelope)
+	if !ok {
+		t.Fatalf("expected ErrorEnvelope, got %T", res.StructuredContent)
+	}
+	if env.Error.Code != ErrPlanLimitExceeded {
+		t.Fatalf("code: got %q, want %q", env.Error.Code, ErrPlanLimitExceeded)
+	}
+	if env.Error.Message == "" {
+		t.Errorf("message should be non-empty")
+	}
+
+	var got cli.PlanLimitDetails
+	if err := json.Unmarshal(env.Error.Details, &got); err != nil {
+		t.Fatalf("details should round-trip into PlanLimitDetails: %v", err)
+	}
+	if got.Feature != "workspaces" {
+		t.Errorf("feature: got %q, want workspaces", got.Feature)
+	}
+	if got.Limit != 3 {
+		t.Errorf("limit: got %d, want 3", got.Limit)
+	}
+	if got.UpgradeURL != "/console/billing" {
+		t.Errorf("upgrade_url: got %q, want /console/billing", got.UpgradeURL)
+	}
+}
