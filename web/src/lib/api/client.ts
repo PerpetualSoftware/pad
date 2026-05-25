@@ -1529,6 +1529,17 @@ export const api = {
 		 * `window.location.href = url` to start the Stripe-hosted flow.
 		 * Returns HTTP 503 with `{ error: string }` when Stripe is not
 		 * configured (PAD_BILLING_AVAILABLE not yet set on the sidecar).
+		 *
+		 * Cross-service notes (pad-cloud sidecar conventions, not pad's):
+		 *
+		 * CSRF: pad-cloud uses Origin/Referer-based CSRF (`validateOrigin` in
+		 * pad-cloud/stripe.go), NOT header-token CSRF. `credentials: 'same-origin'`
+		 * is what enables this — browsers automatically attach the matching Origin
+		 * header on same-origin POST. No `X-CSRF-Token` forwarding needed.
+		 *
+		 * Error envelope: pad-cloud returns flat `{ error: string }` (its own
+		 * convention) rather than pad's nested `{ error: { code, message } }` from
+		 * TASK-788. Parse accordingly below.
 		 */
 		createCheckoutSession: (): Promise<{ url: string }> =>
 			fetch('/billing/checkout', {
