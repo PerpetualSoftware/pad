@@ -173,7 +173,7 @@
 			hide();
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
-				errorMsg = planLimitMessage(err) + ' Upgrade to Pro at /console/billing';
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
 				errorMsg = err.message || 'Failed to create item';
 			}

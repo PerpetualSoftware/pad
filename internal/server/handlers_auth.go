@@ -125,12 +125,13 @@ func (s *Server) handleCheckUsername(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 	return map[string]interface{}{
-		"authenticated":  false,
-		"setup_required": true,
-		"setup_method":   setupMethod,
-		"auth_method":    authMethodPassword,
-		"cloud_mode":     s.cloudMode,
-		"mcp_public_url": s.mcpPublicURL,
+		"authenticated":     false,
+		"setup_required":    true,
+		"setup_method":      setupMethod,
+		"auth_method":       authMethodPassword,
+		"cloud_mode":        s.cloudMode,
+		"mcp_public_url":    s.mcpPublicURL,
+		"billing_available": s.cloudMode && s.billingAvailable,
 	}
 }
 
@@ -140,12 +141,17 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 	// is unset — the web UI uses presence/absence as the gate that drives the
 	// connect banner mode (Remote MCP vs CLI install). Always emitted, never
 	// omitted, so the frontend can rely on a string value.
+	//
+	// billing_available is true when PAD_BILLING_AVAILABLE=true and the
+	// deployment is in cloud mode. Used by the web UI to show/hide Stripe
+	// Checkout CTAs. TASK-800.
 	payload := map[string]interface{}{
-		"authenticated":  authenticated,
-		"setup_required": false,
-		"auth_method":    authMethodPassword,
-		"cloud_mode":     s.cloudMode,
-		"mcp_public_url": s.mcpPublicURL,
+		"authenticated":     authenticated,
+		"setup_required":    false,
+		"auth_method":       authMethodPassword,
+		"cloud_mode":        s.cloudMode,
+		"mcp_public_url":    s.mcpPublicURL,
+		"billing_available": s.cloudMode && s.billingAvailable,
 	}
 	if authenticated {
 		payload["user"] = sessionUserPayload(user)

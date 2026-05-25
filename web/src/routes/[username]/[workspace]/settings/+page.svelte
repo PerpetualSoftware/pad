@@ -239,10 +239,7 @@
 			invitations = memberData.invitations ?? [];
 		} catch (err: unknown) {
 			if (isPlanLimitError(err)) {
-				inviteResult = {
-					message: planLimitMessage(err) + ' Upgrade to Pro at /console/billing',
-					type: 'error'
-				};
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
 				inviteResult = { message: err instanceof Error ? err.message : 'Failed to invite', type: 'error' };
 			}

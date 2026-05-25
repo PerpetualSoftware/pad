@@ -114,7 +114,7 @@
 			goto(`/${ws.owner_username}/${ws.slug}`);
 		} catch (err: unknown) {
 			if (isPlanLimitError(err)) {
-				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro at /console/billing', 'error');
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
 				toastStore.show('Failed to create workspace', 'error');
 			}

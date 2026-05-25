@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { api } from '$lib/api/client';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount, onDestroy } from 'svelte';
@@ -34,22 +36,23 @@
 	let isPro = $derived(plan === 'pro');
 	let limits = $state<{ free: PlanLimits; pro: PlanLimits } | null>(null);
 
-	// Gate for Stripe-backed upgrade affordances. Stripe isn't wired up on
-	// this deployment yet, so the Free → Pro CTAs would dead-end at a 404
-	// from /billing/checkout. Flip this to `true` (or thread it through a
-	// server flag like `authStore.session?.billing_enabled`) once the
-	// pad-cloud sidecar's Stripe integration is live so the "Upgrade to Pro"
-	// buttons return. The "Confirming your upgrade…" / "Upgrade confirmed"
-	// banners below stay wired — they only fire when ?checkout=success is
-	// present in the URL, which can only happen after a real Stripe redirect.
-	const STRIPE_AVAILABLE = false;
+	// Gate for Stripe-backed upgrade affordances. Driven by the server-side
+	// PAD_BILLING_AVAILABLE flag so the CTA appears only when the pad-cloud
+	// sidecar has Stripe keys loaded — no code change needed at deploy time.
+	// TASK-800.
+	let stripeAvailable = $derived(authStore.billingAvailable);
+
+	// Checkout-in-progress state. True while the POST /billing/checkout
+	// fetch is in flight so the button shows a spinner and prevents
+	// double-submission.
+	let checkoutInProgress = $state(false);
 
 	// Upgrade-confirmation state. After Stripe Checkout redirects back with
 	// ?checkout=success, pad-cloud's webhook handler needs a moment to land
 	// at pad's /admin/plan endpoint before the user's plan flips to "pro".
 	// Poll authStore.load() on a short interval until the plan updates or we
 	// hit the timeout — a proxy for "something is wrong, please refresh".
-	let upgradeStatus = $state<'idle' | 'checking' | 'confirmed' | 'timeout'>('idle');
+	let upgradeStatus = $state<'idle' | 'checking' | 'confirmed' | 'timeout' | 'cancelled'>('idle');
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 	let pollStartedAt = 0;
 	// Guards every post-await state write: an authStore.load() or plan-limits
@@ -182,18 +185,43 @@
 		}
 	}
 
+	// startCheckout POSTs to pad-cloud's /billing/checkout endpoint, parses
+	// the returned {url} and redirects the browser to the Stripe-hosted
+	// checkout page. Uses window.location.href so the Stripe session is
+	// opened in the same tab (matching Stripe's UX recommendation).
+	// Called from the "Upgrade to Pro" buttons. TASK-800.
+	async function startCheckout() {
+		if (checkoutInProgress) return;
+		checkoutInProgress = true;
+		try {
+			const result = await api.billing.createCheckoutSession();
+			// Redirect to Stripe Checkout — leaves the SPA.
+			window.location.href = result.url;
+		} catch (err) {
+			checkoutInProgress = false;
+			const msg = err instanceof Error ? err.message : 'Failed to start checkout. Please try again.';
+			toastStore.show(msg, 'error');
+		}
+	}
+
 	onMount(() => {
 		if (!authStore.cloudMode) {
 			goto('/console', { replaceState: true });
 			return;
 		}
 
-		// Kick off the two independent async tasks in parallel. Neither is
+		// Kick off the three independent async tasks in parallel. None are
 		// awaited here — onMount returns immediately so Svelte can run the
 		// onDestroy cleanup path synchronously if the user navigates away
-		// before either task resolves (the `destroyed` guard handles that).
-		if (page.url.searchParams.get('checkout') === 'success') {
+		// before any task resolves (the `destroyed` guard handles that).
+		const checkoutParam = page.url.searchParams.get('checkout');
+		if (checkoutParam === 'success') {
 			startUpgradeConfirmation();
+		} else if (checkoutParam === 'cancelled') {
+			// User abandoned the Stripe Checkout page. Show a brief notice
+			// and clear the query param so a reload doesn't re-fire it.
+			upgradeStatus = 'cancelled';
+			clearCheckoutQuery();
 		}
 		loadPlanLimits();
 	});
@@ -225,6 +253,10 @@
 		<div class="upgrade-banner warning" role="status" aria-live="polite">
 			<span>Your payment went through but we haven't confirmed your upgrade yet. Try refreshing in a moment; if your plan still shows Free, contact <a href="mailto:support@getpad.dev">support@getpad.dev</a>.</span>
 		</div>
+	{:else if upgradeStatus === 'cancelled'}
+		<div class="upgrade-banner cancelled" role="status" aria-live="polite">
+			<span>No charge — you returned to your workspace without completing checkout.</span>
+		</div>
 	{/if}
 
 	<section class="card">
@@ -250,8 +282,14 @@
 
 			{#if isPro}
 				<a href="/billing/portal" class="secondary-btn">Manage Billing</a>
-			{:else if STRIPE_AVAILABLE}
-				<a href="/billing/checkout" class="primary-btn">Upgrade to Pro</a>
+			{:else if stripeAvailable}
+				<button
+					class="primary-btn"
+					onclick={startCheckout}
+					disabled={checkoutInProgress}
+				>
+					{checkoutInProgress ? 'Redirecting…' : 'Upgrade to Pro'}
+				</button>
 			{/if}
 		</div>
 	</section>
@@ -288,9 +326,15 @@
 				</tbody>
 			</table>
 			{#if !isPro}
-				{#if STRIPE_AVAILABLE}
+				{#if stripeAvailable}
 					<div class="compare-cta">
-						<a href="/billing/checkout" class="primary-btn">Upgrade to Pro</a>
+						<button
+							class="primary-btn"
+							onclick={startCheckout}
+							disabled={checkoutInProgress}
+						>
+							{checkoutInProgress ? 'Redirecting…' : 'Upgrade to Pro'}
+						</button>
 					</div>
 				{:else}
 					<div class="compare-cta coming-soon">
@@ -388,16 +432,23 @@
 		padding: var(--space-2) var(--space-5);
 		background: var(--accent-blue);
 		color: #fff;
+		border: none;
 		border-radius: var(--radius);
 		font-size: 0.9rem;
 		font-weight: 500;
 		text-decoration: none;
+		cursor: pointer;
 		transition: opacity 0.15s;
 	}
 
-	.primary-btn:hover {
+	.primary-btn:hover:not(:disabled) {
 		opacity: 0.9;
 		text-decoration: none;
+	}
+
+	.primary-btn:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 
 	.secondary-btn {
@@ -575,6 +626,12 @@
 		background: color-mix(in srgb, var(--accent-yellow, #eab308) 12%, transparent);
 		border-color: color-mix(in srgb, var(--accent-yellow, #eab308) 35%, transparent);
 		color: var(--text-primary);
+	}
+
+	.upgrade-banner.cancelled {
+		background: color-mix(in srgb, var(--text-muted, #6b7280) 10%, transparent);
+		border-color: color-mix(in srgb, var(--text-muted, #6b7280) 25%, transparent);
+		color: var(--text-secondary);
 	}
 
 	.upgrade-banner a {
