@@ -1489,6 +1489,91 @@ func TestWikiLinks_SuppressionUsesItemLinksNotParentIDColumn(t *testing.T) {
 	}
 }
 
+// TestWikiLinks_SuppressionFallsBackToItemsParentIDColumn: the
+// belt-and-suspenders case raised by Codex review of the followup.
+// `items.parent_id` is empty in real workspaces because the HTTP
+// path uses Store.SetParentLink (item_links only), BUT
+// ItemCreate.ParentID and ItemUpdate.ParentID still write to the
+// column directly without creating an item_links row. A direct
+// store-API caller (test, import, future code path) could
+// therefore bypass item_links and exercise the column path; the
+// suppression filter consults both storage mechanisms so neither
+// write path can leave the duplication visible.
+func TestWikiLinks_SuppressionFallsBackToItemsParentIDColumn(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent plan", "")
+
+	// Direct store-API write path: ParentID set on CreateItem,
+	// NO SetParentLink call. Writes items.parent_id, leaves
+	// item_links empty.
+	parentID := parent.ID
+	child, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:    "Child via column",
+		Content:  "Implements [[" + refOf(parent) + "]].",
+		Fields:   `{"status":"open"}`,
+		ParentID: &parentID,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem child: %v", err)
+	}
+
+	// Sanity: items.parent_id IS set, item_links has zero rows.
+	var col1 sql.NullString
+	if err := s.db.QueryRow(s.q(`SELECT parent_id FROM items WHERE id = ?`), child.ID).Scan(&col1); err != nil {
+		t.Fatalf("read child parent_id: %v", err)
+	}
+	if !col1.Valid || col1.String != parent.ID {
+		t.Fatalf("test setup wrong: items.parent_id = %v, want %s", col1, parent.ID)
+	}
+	var linkCount int
+	if err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM item_links WHERE source_id = ? AND link_type = 'parent'
+	`), child.ID).Scan(&linkCount); err != nil {
+		t.Fatalf("count parent links: %v", err)
+	}
+	if linkCount != 0 {
+		t.Fatalf("test setup wrong: expected 0 parent links, got %d", linkCount)
+	}
+
+	// Children-suppression must still drop the column-only child
+	// from parent's backlinks panel.
+	got, err := s.GetBacklinks(parent.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetBacklinks (parent): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 child-via-column backlinks, got %d: %+v", len(got), got)
+	}
+
+	// Symmetric: when the parent mentions the child, the parent
+	// must also be suppressed on the child's page — even though the
+	// only evidence of the relationship is the child's
+	// items.parent_id column. Filter uses a correlated subquery
+	// against items to cover this leg.
+	body := "Status update for [[" + refOf(child) + "]]."
+	if _, err := s.UpdateItem(parent.ID, models.ItemUpdate{Content: &body}); err != nil {
+		t.Fatalf("UpdateItem parent: %v", err)
+	}
+	got, err = s.GetBacklinks(child.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetBacklinks (child): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 parent-via-column backlinks on child page, got %d: %+v", len(got), got)
+	}
+
+	n, err := s.CountBacklinks(child.ID, ws.ID, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("CountBacklinks: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("CountBacklinks: got %d, want 0", n)
+	}
+}
+
 // TestWikiLinks_PaginationStableAfterSuppression: the suppression
 // applies in SQL, so LIMIT/OFFSET counts the filtered set. Mixing
 // suppressed and unsuppressed sources, pages 1 and 2 together must

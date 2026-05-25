@@ -879,11 +879,12 @@ type BacklinksVisibility struct {
 // reason: a source that is a direct child of the target is already
 // listed above the backlinks panel in the Child Items section, and
 // the target's own parent is already shown in the "Parent: …"
-// header. Both relationships are read from item_links (link_type
-// 'parent', source=child, target=parent — see migration 023); the
-// deprecated items.parent_id column is empty in practice because
-// the API path writes parent links via Store.SetParentLink which
-// only touches item_links. The child's body almost always
+// header. Both relationships are consulted from BOTH storage
+// mechanisms (item_links with link_type='parent' — the dominant
+// path used by Store.SetParentLink — AND the items.parent_id
+// column — empty in production but writable via ItemCreate /
+// ItemUpdate's direct store API) so the suppression can't be
+// bypassed by either write path. The child's body almost always
 // references the parent (`[[Parent Title]]` somewhere in the
 // narrative), which would otherwise dominate the backlinks list
 // for any item with many children. TASK-1607 / IDEA-1601.
@@ -919,19 +920,31 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 	// section above the panel, "Parent: …" header above the panel)
 	// and so carry no novel information.
 	//
-	// Parent/child relationships live in `item_links` with
-	// link_type='parent', where source_id is the child and target_id
-	// is the parent (see migration 023). The deprecated
-	// `items.parent_id` column is unused in production — the API
-	// path goes through Store.SetParentLink which only writes to
-	// item_links — so filtering on items.parent_id is a no-op
-	// against real workspaces (caught by TASK-1607 follow-up after
-	// the initial fix shipped with the wrong column).
+	// Pad has TWO parent/child storage mechanisms — the suppression
+	// must consult both so it can't be bypassed by either write path:
 	//
-	// Both suppressions use NOT EXISTS against item_links. The
-	// indexes idx_links_source(source_id) and idx_links_target
-	// (target_id) make each subquery a single index lookup per
-	// candidate source row. TASK-1607 / IDEA-1601.
+	//  1. item_links with link_type='parent' (source=child,
+	//     target=parent — see migration 023). This is the DOMINANT
+	//     mechanism — the HTTP/CLI path uses Store.SetParentLink
+	//     which only writes here.
+	//
+	//  2. items.parent_id column. Empty in production (0/3923 rows
+	//     on a live workspace) but ItemCreate/ItemUpdate still
+	//     support it as a direct store-API surface, so a test or
+	//     future code path could bypass item_links and exercise it.
+	//     Codex review of the initial TASK-1607 followup (this PR)
+	//     flagged the risk.
+	//
+	// Children-suppression (s is a child of target) =
+	//   item_links row [s -> target, 'parent']  OR  s.parent_id == targetID
+	// Parent-suppression (s is the target's parent) =
+	//   item_links row [target -> s, 'parent']  OR  (target's parent_id IS s.id,
+	//   computed via a correlated subquery against items)
+	//
+	// The NOT EXISTS subqueries lean on idx_links_source /
+	// idx_links_target for O(1) lookups per candidate row; the
+	// items.parent_id checks are straight column comparisons.
+	// TASK-1607 / IDEA-1601.
 	relClause := `
 		  AND NOT EXISTS (
 		      SELECT 1 FROM item_links il
@@ -939,13 +952,19 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		        AND il.target_id = ?
 		        AND il.link_type = 'parent'
 		  )
+		  AND (s.parent_id IS NULL OR s.parent_id != ?)
 		  AND NOT EXISTS (
 		      SELECT 1 FROM item_links il
 		      WHERE il.source_id = ?
 		        AND il.target_id = s.id
 		        AND il.link_type = 'parent'
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM items t
+		      WHERE t.id = ?
+		        AND t.parent_id = s.id
 		  )`
-	args := []interface{}{targetItemID, workspaceID, targetItemID, targetItemID, targetItemID}
+	args := []interface{}{targetItemID, workspaceID, targetItemID, targetItemID, targetItemID, targetItemID, targetItemID}
 
 	// Build the visibility predicate. Unrestricted → omit. Otherwise
 	// `collection_id IN (...)` OR `id IN (...)` — either branch alone
@@ -1049,7 +1068,9 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 	// depends on CountBacklinks returning the same number of rows
 	// GetBacklinks would yield under identical vis; a drift here
 	// would let suppressed rows consume LIMIT slots and shrink
-	// pages silently. See GetBacklinks for the full rationale.
+	// pages silently. See GetBacklinks for the full rationale
+	// (both item_links and items.parent_id are consulted so the
+	// suppression can't be bypassed by either write path).
 	// TASK-1607 / IDEA-1601.
 	relClause := `
 		  AND NOT EXISTS (
@@ -1058,13 +1079,19 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 		        AND il.target_id = ?
 		        AND il.link_type = 'parent'
 		  )
+		  AND (s.parent_id IS NULL OR s.parent_id != ?)
 		  AND NOT EXISTS (
 		      SELECT 1 FROM item_links il
 		      WHERE il.source_id = ?
 		        AND il.target_id = s.id
 		        AND il.link_type = 'parent'
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM items t
+		      WHERE t.id = ?
+		        AND t.parent_id = s.id
 		  )`
-	args := []interface{}{targetItemID, workspaceID, targetItemID, targetItemID, targetItemID}
+	args := []interface{}{targetItemID, workspaceID, targetItemID, targetItemID, targetItemID, targetItemID, targetItemID}
 	visClause := ""
 	if !vis.Unrestricted {
 		collClause := "FALSE"
