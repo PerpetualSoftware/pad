@@ -110,6 +110,44 @@ func TestAuthSessionEmitsMCPPublicURLWhenConfigured(t *testing.T) {
 	}
 }
 
+// billing_available is false by default and only true when BOTH cloudMode AND
+// billingAvailable are set. Tests for both the default (off) and the enabled
+// state so a future refactor can't accidentally always-expose the CTA. TASK-800.
+func TestAuthSessionBillingAvailable(t *testing.T) {
+	// Default: both flags off — billing_available must be false.
+	srv := testServer(t)
+	rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("session check: expected 200, got %d", rr.Code)
+	}
+	var session map[string]interface{}
+	parseJSON(t, rr, &session)
+	if v, ok := session["billing_available"]; !ok {
+		t.Error("billing_available field missing from session payload")
+	} else if v != false {
+		t.Errorf("expected billing_available=false by default, got %v", v)
+	}
+
+	// Cloud mode only (no billingAvailable) — still false.
+	srv2 := testServer(t)
+	srv2.cloudMode = true
+	rr2 := doRequest(srv2, "GET", "/api/v1/auth/session", nil)
+	parseJSON(t, rr2, &session)
+	if session["billing_available"] != false {
+		t.Errorf("expected billing_available=false when cloudMode=true but billingAvailable=false, got %v", session["billing_available"])
+	}
+
+	// Both flags set — billing_available must be true.
+	srv3 := testServer(t)
+	srv3.cloudMode = true
+	srv3.billingAvailable = true
+	rr3 := doRequest(srv3, "GET", "/api/v1/auth/session", nil)
+	parseJSON(t, rr3, &session)
+	if session["billing_available"] != true {
+		t.Errorf("expected billing_available=true when cloudMode+billingAvailable both set, got %v", session["billing_available"])
+	}
+}
+
 func TestAuthBootstrapRequiresLoopback(t *testing.T) {
 	srv := testServer(t)
 

@@ -397,6 +397,15 @@ func serveCmd() *cobra.Command {
 			srv.SetIPChangeEnforce(cfg.IPChangeEnforce)
 			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace)
 
+			// Billing CTA gate (TASK-800). PAD_BILLING_AVAILABLE=true when
+			// the pad-cloud sidecar has Stripe keys configured so the web UI
+			// can show "Upgrade to Pro" buttons. Defaults to false so a fresh
+			// cloud deployment without Stripe doesn't expose dead-end CTAs.
+			if v := os.Getenv("PAD_BILLING_AVAILABLE"); v == "true" || v == "1" {
+				srv.SetBillingAvailable(true)
+				slog.Info("Billing CTAs enabled (PAD_BILLING_AVAILABLE)")
+			}
+
 			// Cloud-tenant mode: enable cloud-specific endpoints and
 			// behavior. Gated on IsCloudServer() (env-var opt-in) rather
 			// than IsCloud() (which is also true when a CLI user has
