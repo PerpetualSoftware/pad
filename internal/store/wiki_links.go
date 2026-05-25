@@ -862,6 +862,15 @@ type BacklinksVisibility struct {
 	Unrestricted      bool
 	FullCollectionIDs []string
 	GrantedItemIDs    []string
+
+	// TargetParentID, when non-nil and non-empty, suppresses the
+	// target's own parent from the backlinks result set. Set by the
+	// handler from items.ParentID. Rationale: the parent already
+	// appears in the "Parent: …" header on the target's page, so a
+	// child's wiki-link mention of its parent only duplicates UI
+	// already on screen. Symmetric with the always-on children-
+	// suppression in GetBacklinks/CountBacklinks. TASK-1607 / IDEA-1601.
+	TargetParentID *string
 }
 
 // GetBacklinks returns the items in `workspaceID` that contain a
@@ -874,6 +883,18 @@ type BacklinksVisibility struct {
 // its own title in its own body shouldn't appear in its own
 // "Mentioned in" panel (PLAN-1593 behavior decision). The row stays
 // in the index for completeness; the filter is purely cosmetic.
+//
+// Children-suppression is always-on for the same UI-duplication
+// reason: a source item whose parent_id == targetItemID is a direct
+// child, and children are already listed above the backlinks panel
+// in the Child Items section. The child's body almost always
+// references the parent (`[[Parent Title]]` somewhere in the
+// narrative), which would otherwise dominate the backlinks list
+// for any plan with many children. Parent-suppression is the
+// symmetric case but opt-in via vis.TargetParentID: when the caller
+// passes the target's parent_id, that one source row (the parent's
+// mention of the target) is dropped because the parent appears in
+// the target's "Parent: …" header. TASK-1607 / IDEA-1601.
 //
 // Ordering: most-recently-updated source first; within an updated_at
 // tie (e.g. two backlinks land in the same second), break by
@@ -900,6 +921,24 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		return nil, nil
 	}
 
+	// Relational-suppression clause. Always-on children-suppression
+	// (s.parent_id != targetItemID) mirrors the self-link filter
+	// (s.id != targetItemID) two lines down: both hide rows that
+	// already appear elsewhere in the target's page UI (Children
+	// section above the backlinks panel) and so carry no novel
+	// information. NULL-safe form because parent_id is nullable —
+	// orphan items have parent_id IS NULL and would otherwise be
+	// erroneously dropped by `s.parent_id != ?`. Parent-suppression
+	// is opt-in (only when vis.TargetParentID is set) because callers
+	// that don't have the target's parent_id handy can skip it
+	// without changing existing semantics. TASK-1607 / IDEA-1601.
+	relClause := " AND (s.parent_id IS NULL OR s.parent_id != ?)"
+	args := []interface{}{targetItemID, workspaceID, targetItemID, targetItemID}
+	if vis.TargetParentID != nil && *vis.TargetParentID != "" {
+		relClause += " AND s.id != ?"
+		args = append(args, *vis.TargetParentID)
+	}
+
 	// Build the visibility predicate. Unrestricted → omit. Otherwise
 	// `collection_id IN (...)` OR `id IN (...)` — either branch alone
 	// is acceptable so a granted-item-only access still resolves; an
@@ -907,7 +946,6 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 	// predicate evaluates to FALSE for that branch without breaking
 	// Postgres's empty-list rejection.
 	visClause := ""
-	args := []interface{}{targetItemID, workspaceID, targetItemID}
 	if !vis.Unrestricted {
 		collClause := "FALSE"
 		if len(vis.FullCollectionIDs) > 0 {
@@ -940,7 +978,7 @@ func (s *Store) GetBacklinks(targetItemID, workspaceID string, limit, offset int
 		WHERE wl.target_item_id = ?
 		  AND s.workspace_id = ?
 		  AND s.deleted_at IS NULL
-		  AND s.id != ?`+visClause+`
+		  AND s.id != ?`+relClause+visClause+`
 		ORDER BY s.updated_at DESC, wl.position ASC
 		LIMIT ? OFFSET ?
 	`), args...)
@@ -998,8 +1036,19 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 	if !vis.Unrestricted && len(vis.FullCollectionIDs) == 0 && len(vis.GrantedItemIDs) == 0 {
 		return 0, nil
 	}
+	// Relational-suppression clause — must mirror GetBacklinks
+	// exactly. The handler's same-ws/cross-ws pagination math
+	// depends on CountBacklinks returning the same number of rows
+	// GetBacklinks would yield under identical vis; a drift here
+	// would let suppressed rows consume LIMIT slots and shrink
+	// pages silently. TASK-1607 / IDEA-1601.
+	relClause := " AND (s.parent_id IS NULL OR s.parent_id != ?)"
+	args := []interface{}{targetItemID, workspaceID, targetItemID, targetItemID}
+	if vis.TargetParentID != nil && *vis.TargetParentID != "" {
+		relClause += " AND s.id != ?"
+		args = append(args, *vis.TargetParentID)
+	}
 	visClause := ""
-	args := []interface{}{targetItemID, workspaceID, targetItemID}
 	if !vis.Unrestricted {
 		collClause := "FALSE"
 		if len(vis.FullCollectionIDs) > 0 {
@@ -1030,7 +1079,7 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 		WHERE wl.target_item_id = ?
 		  AND s.workspace_id = ?
 		  AND s.deleted_at IS NULL
-		  AND s.id != ?`+visClause+`
+		  AND s.id != ?`+relClause+visClause+`
 	`), args...).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("count backlinks: %w", err)
@@ -1081,6 +1130,11 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 // workspace A still leaked cross-ws backlinks from workspace B
 // because the cross-ws path enumerated via the user's full
 // workspace list).
+//
+// No parent↔child suppression here (the GetBacklinks pair adds
+// that for same-ws): item.parent_id is workspace-scoped, so a
+// cross-ws source row can never be the target's parent or child
+// by construction. TASK-1607.
 func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, requesterUserID string, allowedWorkspaceSlugs []string, limit, offset int) ([]models.Backlink, error) {
 	if limit <= 0 || limit > 300 {
 		limit = 50

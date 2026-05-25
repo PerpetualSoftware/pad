@@ -1240,6 +1240,269 @@ func TestWikiLinks_DuplicateSlashTitleNoTheft(t *testing.T) {
 	}
 }
 
+// createChildItem creates a test item with parent_id set in one
+// CreateItem call. The wiki_links tests use this for parent↔child
+// suppression coverage where createTestItem (which doesn't set
+// parent_id) isn't enough. TASK-1607.
+func createChildItem(t *testing.T, s *Store, workspaceID, collectionID, parentID, title, content string) *models.Item {
+	t.Helper()
+	pid := parentID
+	item, err := s.CreateItem(workspaceID, collectionID, models.ItemCreate{
+		Title:    title,
+		Content:  content,
+		Fields:   `{"status":"open"}`,
+		ParentID: &pid,
+	})
+	if err != nil {
+		t.Fatalf("createChildItem: %v", err)
+	}
+	return item
+}
+
+// TestWikiLinks_ChildMentionOfParentSuppressed: the headline TASK-1607
+// case. A direct child of `parent` mentioning `parent` in its body
+// should NOT appear in parent's "Mentioned in" panel — children are
+// already listed in the Child Items section above. Symmetric with
+// the long-standing self-link suppression.
+func TestWikiLinks_ChildMentionOfParentSuppressed(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent plan", "")
+	// Child links to parent. Without TASK-1607, this would surface
+	// as a backlink on parent's page.
+	child := createChildItem(t, s, ws.ID, col.ID, parent.ID, "Child task",
+		"See [["+refOf(parent)+"]] for context.")
+
+	got, err := s.GetBacklinks(parent.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetBacklinks: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 backlinks (child filtered), got %d: %+v", len(got), got)
+	}
+
+	// CountBacklinks must agree — pagination math in
+	// handlers_backlinks.go's same-ws/cross-ws split depends on it.
+	n, err := s.CountBacklinks(parent.ID, ws.ID, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("CountBacklinks: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("CountBacklinks: got %d, want 0", n)
+	}
+
+	// Sanity: the wiki-link row IS in the index (we only suppress
+	// at read time, not at write time — keeps the index complete
+	// for future broken-link reports etc.).
+	var raw int
+	if err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM item_wiki_links
+		WHERE source_item_id = ? AND target_item_id = ?
+	`), child.ID, parent.ID).Scan(&raw); err != nil {
+		t.Fatalf("raw count: %v", err)
+	}
+	if raw != 1 {
+		t.Errorf("raw wiki_links row: got %d, want 1 (index stays complete)", raw)
+	}
+}
+
+// TestWikiLinks_ParentMentionOnChildPageSuppressed: the symmetric
+// case. When the parent's body mentions its child by wiki-link, that
+// mention should NOT appear in the child's "Mentioned in" panel —
+// the parent is already on screen in the "Parent: …" header above
+// the panel. Requires vis.TargetParentID to be set; the handler
+// passes item.ParentID from the resolved target.
+func TestWikiLinks_ParentMentionOnChildPageSuppressed(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent plan", "")
+	child := createChildItem(t, s, ws.ID, col.ID, parent.ID, "Child task", "")
+
+	// Now the parent mentions the child. Without the suppression,
+	// this would dominate the child's backlinks panel.
+	body := "Tracking work in [[" + refOf(child) + "]]."
+	if _, err := s.UpdateItem(parent.ID, models.ItemUpdate{Content: &body}); err != nil {
+		t.Fatalf("UpdateItem parent: %v", err)
+	}
+
+	// Without TargetParentID: the parent shows up (no suppression).
+	plain, err := s.GetBacklinks(child.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetBacklinks (plain): %v", err)
+	}
+	if len(plain) != 1 {
+		t.Fatalf("baseline: expected 1 backlink (parent mention), got %d", len(plain))
+	}
+
+	// With TargetParentID set to the parent's ID: the parent's
+	// mention is suppressed.
+	pid := parent.ID
+	vis := BacklinksVisibility{Unrestricted: true, TargetParentID: &pid}
+	got, err := s.GetBacklinks(child.ID, ws.ID, 50, 0, vis)
+	if err != nil {
+		t.Fatalf("GetBacklinks (suppressed): %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected 0 backlinks (parent filtered), got %d: %+v", len(got), got)
+	}
+
+	n, err := s.CountBacklinks(child.ID, ws.ID, vis)
+	if err != nil {
+		t.Fatalf("CountBacklinks: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("CountBacklinks: got %d, want 0", n)
+	}
+}
+
+// TestWikiLinks_SiblingMentionsNotSuppressed: control case. Sibling
+// items (same parent) that wiki-link each other are genuine
+// cross-references — they aren't implied by any other UI surface, so
+// they must still appear in "Mentioned in".
+func TestWikiLinks_SiblingMentionsNotSuppressed(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent plan", "")
+	siblingA := createChildItem(t, s, ws.ID, col.ID, parent.ID, "Sibling A", "")
+	siblingB := createChildItem(t, s, ws.ID, col.ID, parent.ID, "Sibling B",
+		"Coordinates with [["+refOf(siblingA)+"]] on the API surface.")
+
+	// siblingA's backlinks should include siblingB. Children-
+	// suppression filters by `s.parent_id != targetItemID` — i.e.
+	// items whose parent IS siblingA. siblingB's parent is the
+	// parent plan, not siblingA, so siblingB is not a child of
+	// siblingA and must not be filtered.
+	got, err := s.GetBacklinks(siblingA.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetBacklinks: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 sibling backlink, got %d: %+v", len(got), got)
+	}
+	if got[0].SourceItemID != siblingB.ID {
+		t.Errorf("expected sibling B as source, got %s", got[0].SourceItemID)
+	}
+
+	// Symmetric for the parent-suppression direction: if siblingA
+	// passes TargetParentID=parent.ID (as the handler would since
+	// siblingA's parent IS parent), siblingB is still NOT the
+	// parent, so it survives.
+	pid := parent.ID
+	vis := BacklinksVisibility{Unrestricted: true, TargetParentID: &pid}
+	got, err = s.GetBacklinks(siblingA.ID, ws.ID, 50, 0, vis)
+	if err != nil {
+		t.Fatalf("GetBacklinks (with parent vis): %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("expected 1 backlink with parent vis set, got %d", len(got))
+	}
+}
+
+// TestWikiLinks_OrphanBacklinksUnaffected: regression guard for the
+// NULL-safe parent_id predicate. Items with parent_id IS NULL
+// (orphan / root-level items) must still surface as backlinks; the
+// naive form `s.parent_id != ?` would silently drop them because
+// SQL three-valued logic treats `NULL != x` as NULL (not TRUE).
+func TestWikiLinks_OrphanBacklinksUnaffected(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	target := createTestItem(t, s, ws.ID, col.ID, "Target", "")
+	// Plain createTestItem produces an orphan item (no parent_id).
+	orphan := createTestItem(t, s, ws.ID, col.ID, "Orphan source",
+		"Mentions [["+refOf(target)+"]] from the root.")
+
+	got, err := s.GetBacklinks(target.ID, ws.ID, 50, 0, BacklinksVisibility{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetBacklinks: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected orphan source to surface, got %d backlinks", len(got))
+	}
+	if got[0].SourceItemID != orphan.ID {
+		t.Errorf("expected orphan as source, got %s", got[0].SourceItemID)
+	}
+}
+
+// TestWikiLinks_PaginationStableAfterSuppression: the suppression
+// applies in SQL, so LIMIT/OFFSET counts the filtered set. Mixing
+// suppressed and unsuppressed sources, pages 1 and 2 together must
+// equal the full set without skipping or doubling. Regression guard
+// for the GetBacklinks/CountBacklinks lockstep that the
+// handlers_backlinks.go same-ws/cross-ws math depends on.
+func TestWikiLinks_PaginationStableAfterSuppression(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent plan", "")
+
+	// 3 non-children that mention parent — these should all surface.
+	var realRefs []string
+	for i := 0; i < 3; i++ {
+		src := createTestItem(t, s, ws.ID, col.ID, "Real referrer "+itoa(i),
+			"Mentions [["+refOf(parent)+"]].")
+		realRefs = append(realRefs, src.ID)
+	}
+	// 5 children that also mention parent — these should be hidden.
+	for i := 0; i < 5; i++ {
+		createChildItem(t, s, ws.ID, col.ID, parent.ID,
+			"Child "+itoa(i),
+			"Refs [["+refOf(parent)+"]].")
+	}
+
+	vis := BacklinksVisibility{Unrestricted: true}
+
+	// CountBacklinks must reflect the filtered set, not the raw set.
+	n, err := s.CountBacklinks(parent.ID, ws.ID, vis)
+	if err != nil {
+		t.Fatalf("CountBacklinks: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("CountBacklinks: got %d, want 3 (3 real, 5 children filtered)", n)
+	}
+
+	// Page through with LIMIT=2; combined results must hit all 3
+	// real referrers exactly once, in updated_at DESC order.
+	page1, err := s.GetBacklinks(parent.ID, ws.ID, 2, 0, vis)
+	if err != nil {
+		t.Fatalf("GetBacklinks page 1: %v", err)
+	}
+	page2, err := s.GetBacklinks(parent.ID, ws.ID, 2, 2, vis)
+	if err != nil {
+		t.Fatalf("GetBacklinks page 2: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Errorf("page 1: got %d, want 2", len(page1))
+	}
+	if len(page2) != 1 {
+		t.Errorf("page 2: got %d, want 1", len(page2))
+	}
+
+	combined := make(map[string]bool)
+	for _, bl := range append(page1, page2...) {
+		if combined[bl.SourceItemID] {
+			t.Errorf("duplicate source across pages: %s", bl.SourceItemID)
+		}
+		combined[bl.SourceItemID] = true
+	}
+	if len(combined) != 3 {
+		t.Errorf("combined unique sources: got %d, want 3", len(combined))
+	}
+	for _, want := range realRefs {
+		if !combined[want] {
+			t.Errorf("missing real referrer %s from combined pages", want)
+		}
+	}
+}
+
 // itoa is strconv.Itoa renamed to keep test bodies readable when
 // they're already heavy on ref-formatting.
 func itoa(n int) string {

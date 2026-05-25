@@ -98,6 +98,14 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 		vis.FullCollectionIDs = fullCollIDs
 		vis.GrantedItemIDs = grantedItemIDs
 	}
+	// Pass the target's parent_id (when present) so the store layer
+	// can suppress the parent's own "Mentioned in" entry on the
+	// target's page — the parent is already on screen in the
+	// "Parent: …" header above the panel, so its backlink would
+	// duplicate UI. Children-suppression is unconditional in the
+	// store; only parent-suppression needs the extra context.
+	// TASK-1607 / IDEA-1601.
+	vis.TargetParentID = item.ParentID
 
 	// Union pagination across same-ws + cross-ws tiers.
 	//
