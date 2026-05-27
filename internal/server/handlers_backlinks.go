@@ -168,7 +168,11 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 			// workspace B that the user has independent access to.
 			// Codex round 2 P1.
 			allowedSlugs := TokenAllowedWorkspacesFromContext(r.Context())
-			crossWs, err = s.store.GetCrossWorkspaceBacklinks(workspaceID, targetRef, user.ID, allowedSlugs, remaining, crossOffset)
+			// Pass the bearer-auth signal so the store-layer admin
+			// bypass mirrors BUG-1616's policy: bearer-borne admin
+			// (CLI / PAT / MCP) enumerates only their member /
+			// grant workspaces; cookie admin keeps the global view.
+			crossWs, err = s.store.GetCrossWorkspaceBacklinks(workspaceID, targetRef, user.ID, allowedSlugs, remaining, crossOffset, isBearerAuth(r))
 			if err != nil {
 				writeInternalError(w, err)
 				return

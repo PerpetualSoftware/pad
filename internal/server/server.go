@@ -1773,17 +1773,31 @@ func (s *Server) guestResourceFilterIncludeDeletedItems(r *http.Request, workspa
 //     (fullCollIDs, grantedItemIDs, err)` is established across many
 //     handlers — keeping it stable avoids a sprawling refactor.
 //
+// Admin bypass policy (BUG-1617 — companion to BUG-1616): the
+// short-circuit only fires for cookie session auth. Bearer-borne
+// admins (CLI / PAT / MCP — detected via isBearerAuth) fall through
+// to the store helper which runs the regular member/grants pipeline
+// against the platform-admin's actual workspace_members row. Without
+// this, an admin's MCP token could pass RequireWorkspaceAccess's
+// bearer gate (BUG-1616) on the URL's workspace but still see
+// unrestricted visibility filters in any downstream backlinks /
+// activity / delta-sync query that ran for the same workspace.
+//
 // The includeDeletedItems flag swaps the underlying grant query.
 func (s *Server) guestResourceFilterCore(r *http.Request, workspaceID string, includeDeletedItems bool) (fullCollIDs, grantedItemIDs []string, err error) {
 	user := currentUser(r)
-	if user == nil || user.Role == "admin" {
+	if user == nil {
+		return nil, nil, nil
+	}
+	authIsBearer := isBearerAuth(r)
+	if user.Role == "admin" && !authIsBearer {
 		return nil, nil, nil
 	}
 	// Delegate to the request-independent helper. The store-side
 	// helper duplicates the admin check via GetUser, but for the
-	// request hot path we short-circuit above so the duplicate
-	// lookup never fires.
-	return s.store.ResolveBacklinksVisibility(user.ID, workspaceID, includeDeletedItems)
+	// request hot path we short-circuit above (cookie admin only)
+	// so the duplicate lookup never fires for the common case.
+	return s.store.ResolveBacklinksVisibility(user.ID, workspaceID, includeDeletedItems, authIsBearer)
 }
 
 // isCollectionVisible checks if a collection ID is in the visible set.

@@ -1188,7 +1188,7 @@ func (s *Store) CountBacklinks(targetItemID, workspaceID string, vis BacklinksVi
 // that for same-ws): item.parent_id is workspace-scoped, so a
 // cross-ws source row can never be the target's parent or child
 // by construction. TASK-1607.
-func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, requesterUserID string, allowedWorkspaceSlugs []string, limit, offset int) ([]models.Backlink, error) {
+func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, requesterUserID string, allowedWorkspaceSlugs []string, limit, offset int, authIsBearer bool) ([]models.Backlink, error) {
 	if limit <= 0 || limit > 300 {
 		limit = 50
 	}
@@ -1196,13 +1196,23 @@ func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, request
 		offset = 0
 	}
 
-	// Workspace enumeration depends on the requester's user role.
-	// Admins have implicit access to every non-deleted workspace
-	// (matches RequireWorkspaceAccess line 481), so for them we
-	// list everything; non-admins use GetUserWorkspaces which
-	// unions memberships + grant-only guest workspaces. Codex
-	// round 1 P2 caught the prior membership-only path silently
-	// hiding cross-ws backlinks from admin users.
+	// Workspace enumeration depends on the requester's user role AND
+	// the auth surface. Three paths:
+	//
+	//   - Cookie-session admin (Role=admin && !authIsBearer):
+	//     `ListWorkspaces()` — implicit access to every non-deleted
+	//     workspace (matches the cookie-admin global bypass in
+	//     RequireWorkspaceAccess).
+	//   - Bearer-borne admin (Role=admin && authIsBearer, BUG-1617):
+	//     `GetUserMemberWorkspaces` — STRICT membership only, no
+	//     grants fallback. Mirrors RequireWorkspaceAccess's
+	//     membership-only stance for bearer-admin (BUG-1616). Without
+	//     this, an admin with a stray collection / item grant on
+	//     workspace C would still get cross-ws backlinks from C via
+	//     the grants-aware GetUserWorkspaces, even though direct
+	//     bearer access to C is denied.
+	//   - Non-admin (any auth): `GetUserWorkspaces` — memberships ∪
+	//     grant-only guest workspaces. Same as before.
 	user, err := s.GetUser(requesterUserID)
 	if err != nil {
 		return nil, fmt.Errorf("lookup requester user: %w", err)
@@ -1213,12 +1223,18 @@ func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, request
 		return nil, nil
 	}
 	var workspaces []models.Workspace
-	if user.Role == "admin" {
+	switch {
+	case user.Role == "admin" && !authIsBearer:
 		workspaces, err = s.ListWorkspaces()
 		if err != nil {
 			return nil, fmt.Errorf("admin enumerate workspaces: %w", err)
 		}
-	} else {
+	case user.Role == "admin" && authIsBearer:
+		workspaces, err = s.GetUserMemberWorkspaces(requesterUserID)
+		if err != nil {
+			return nil, fmt.Errorf("bearer admin enumerate member workspaces: %w", err)
+		}
+	default:
 		workspaces, err = s.GetUserWorkspaces(requesterUserID)
 		if err != nil {
 			return nil, fmt.Errorf("enumerate accessible workspaces: %w", err)
@@ -1259,7 +1275,7 @@ func (s *Store) GetCrossWorkspaceBacklinks(targetWorkspaceID, targetRef, request
 		if !allowAll && !wildcard && !allowSet[ws.Slug] {
 			continue
 		}
-		fullCollIDs, grantedItemIDs, err := s.ResolveBacklinksVisibility(requesterUserID, ws.ID, false)
+		fullCollIDs, grantedItemIDs, err := s.ResolveBacklinksVisibility(requesterUserID, ws.ID, false, authIsBearer)
 		if err != nil {
 			return nil, fmt.Errorf("resolve visibility for workspace %s: %w", ws.ID, err)
 		}
