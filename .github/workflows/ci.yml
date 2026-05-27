@@ -49,6 +49,16 @@ jobs:
           version: v2.11.4
           args: --timeout=5m
           only-new-issues: false
+          # Cap the blast radius of a stale-cache event to ~24h. The action's
+          # cache stores the resolved issue list from a prior pass; if any
+          # one pass writes degenerate results (analyzer upgrade, plugin
+          # reset, sub-package version drift), every downstream restore
+          # replays that list verbatim until the cache key rotates. PR #635
+          # hit exactly this — 30+ SA5011/SA4023 false positives against
+          # unchanged code while local (cold-cache) runs reported 0 issues.
+          # Default is 7 days; 1 day still keeps most runs cache-hot while
+          # guaranteeing daily refresh. See BUG-1624.
+          cache-invalidation-interval: "1"
 
       - name: Run govulncheck
         # Fails the build on any known vulnerability in a package we
