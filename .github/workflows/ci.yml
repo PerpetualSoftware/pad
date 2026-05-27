@@ -210,13 +210,42 @@ jobs:
         # which is fine for tests — for e2e we need the real embedded UI.
         run: go build -o pad ./cmd/pad
 
-      - name: Install Playwright browsers
+      # Playwright browser binaries are downloaded from cdn.playwright.dev,
+      # which occasionally hangs (PR #635 hit two consecutive 10-minute
+      # timeouts during a CDN slow patch — see BUG-1625). Cache them per
+      # @playwright/test version so warm-cache runs skip the ~150 MB
+      # Chromium download entirely; only the apt system libraries
+      # (libatk, libnss, libcups, …) need a fresh install, which is
+      # ~10s on a healthy runner. Cache key is the resolved version from
+      # package-lock.json so a Playwright bump auto-invalidates.
+      - name: Get Playwright version
+        id: playwright-version
+        working-directory: web
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-chromium
+
+      - name: Install Playwright browsers (cache miss)
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         working-directory: web
         # --with-deps pulls in the Ubuntu libraries Playwright needs
         # (libatk, libnss, libcups, …). Scoped to chromium to cut download
         # time — the suite's mobile project uses Pixel 7, which defaults to
         # Chromium, so we don't need WebKit.
         run: npx playwright install --with-deps chromium
+
+      - name: Install Playwright system deps (cache hit)
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        working-directory: web
+        # When the browser binary cache hits, we still need the apt-level
+        # system libraries on the fresh runner — `install-deps` does just
+        # that without re-downloading the browser binary itself.
+        run: npx playwright install-deps chromium
 
       - name: Run Playwright
         working-directory: web
