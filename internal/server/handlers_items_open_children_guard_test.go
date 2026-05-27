@@ -1334,9 +1334,14 @@ func readParentRef(t *testing.T, srv *Server, wsSlug, itemRef string) string {
 	var links []models.ItemLink
 	parseJSON(t, rr, &links)
 	for _, l := range links {
-		if l.LinkType == "parent" {
-			// The item is the SOURCE of its parent link; the target
-			// is the parent. Return the parent's ref.
+		// The item is the SOURCE of its outgoing parent link; the
+		// target is the parent. GetItemLinks returns links in BOTH
+		// directions (WHERE source_id = ? OR target_id = ?), so we
+		// must filter on SourceRef — otherwise a child→item parent
+		// link will mask the real item→parent link, and which one
+		// comes first is non-deterministic when created_at timestamps
+		// tie at sub-microsecond resolution under CI load. (BUG-1621)
+		if l.LinkType == "parent" && l.SourceRef == itemRef {
 			return l.TargetRef
 		}
 	}
