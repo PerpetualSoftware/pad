@@ -383,6 +383,32 @@ func isAPITokenAuth(r *http.Request) bool {
 	return v
 }
 
+// isBearerAuth reports whether the request was authenticated via an
+// Authorization: Bearer header rather than a browser session cookie.
+// True for: PATs on /api/v1, PATs on /mcp, OAuth bearers on /mcp, AND
+// CLI session-bearer tokens (padsess_* delivered via Authorization:
+// Bearer, see TokenAuth's session-bearer branch at line 92-132).
+// False for: cookie-borne SessionAuth (the web UI / SPA path).
+//
+// Mirrors the dual signal used by middleware_csrf.go (line 73-80) —
+// either an Authorization: Bearer header on the live request OR a
+// ctxIsAPIToken stash on context counts as "non-browser caller."
+//
+// Used by RequireWorkspaceAccess (BUG-1616) to suppress the
+// platform-admin global bypass: admin identity carries owner-level
+// authority over every workspace ONLY for the cookie-borne web UI
+// surface. Bearer-borne callers (CLI, PAT, MCP) get the strict
+// workspace_members check — a leaked admin token, or an MCP client
+// that picked "all current workspaces" at consent time, must not
+// silently widen access from "workspaces the admin joined" to
+// "every workspace on the server."
+func isBearerAuth(r *http.Request) bool {
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return true
+	}
+	return isAPITokenAuth(r)
+}
+
 // currentUserID returns the authenticated user's ID, or empty string.
 func currentUserID(r *http.Request) string {
 	if u := currentUser(r); u != nil {
@@ -477,8 +503,38 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			return
 		}
 
-		// Admin users get owner access to all workspaces
-		if user.Role == "admin" {
+		// Admin users get owner access to all workspaces — but ONLY for
+		// browser cookie session auth (the web UI / SPA surface). For
+		// every bearer-borne path (PATs on /api/v1, PATs and OAuth
+		// bearers on /mcp, AND padsess_* session bearers from the CLI),
+		// the platform-admin global bypass is suppressed and the admin
+		// falls through to the membership-only check below.
+		//
+		// Rationale (BUG-1616): a token — including a CLI session
+		// bearer — carries the user's identity, not the user's
+		// platform-admin authority. The OAuth consent UI's "All
+		// current workspaces" option, and the CLI's general affordance
+		// of "log in once and address every workspace by slug," are
+		// both meant to mean "every workspace the user is a member of"
+		// — not "every workspace on the entire server, by virtue of
+		// the user holding the platform admin role." A leaked admin
+		// token, an MCP client that picked the wide consent scope, or
+		// even a CLI session running on a compromised machine, would
+		// otherwise reach data the admin never joined.
+		//
+		// The cookie-borne web UI keeps the bypass because the UI
+		// shows the admin's chosen workspace explicitly and the
+		// /console/admin surface is the documented spot to act
+		// cross-workspace; the deliberate UI affordance + same-origin
+		// cookie binding make that a different threat model from the
+		// programmatic surfaces.
+		//
+		// isBearerAuth folds two signals (Authorization: Bearer header
+		// OR ctxIsAPIToken stash) so MCP-dispatcher synthesized
+		// requests and CLI session bearers are both covered — see
+		// the helper's comment for the full table.
+		isBearer := isBearerAuth(r)
+		if user.Role == "admin" && !isBearer {
 			ctx = context.WithValue(ctx, ctxWorkspaceRole, "owner")
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
@@ -490,6 +546,18 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 			return
 		}
 		if member == nil {
+			// Admin-via-bearer (BUG-1616): membership-only. Skip the
+			// guest-grants fallback so a platform admin who happens to
+			// hold a guest grant on some workspace still can't reach
+			// it via a bearer-borne caller (CLI / PAT / MCP) —
+			// strictly the workspaces they're actually a member of.
+			// Falls through to the same not_a_member denial non-admin
+			// non-members hit.
+			if user.Role == "admin" && isBearer {
+				s.recordMCPAuthzDenial(r, "not_a_member")
+				writeError(w, http.StatusForbidden, "forbidden", "You are not a member of this workspace")
+				return
+			}
 			// Not a member — check for guest access via grants
 			hasGrants, grantErr := s.store.UserHasGrantsInWorkspace(ws.ID, user.ID)
 			if grantErr != nil {

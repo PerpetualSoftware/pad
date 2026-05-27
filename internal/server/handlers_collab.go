@@ -579,7 +579,11 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	if fresh.IsDisabled() {
 		return newStatusError(http.StatusForbidden, "forbidden", "User is disabled")
 	}
-	if fresh.Role == "admin" {
+	// Admin platform-role bypass — cookie session auth only (BUG-1616).
+	// Bearer-borne admin (CLI / PAT / MCP) falls through to the
+	// membership-only check below. Mirrors RequireWorkspaceAccess.
+	isBearer := isBearerAuth(r)
+	if fresh.Role == "admin" && !isBearer {
 		return nil
 	}
 
@@ -594,6 +598,13 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	}
 	hasWorkspaceLevelAccess := member != nil
 	if !hasWorkspaceLevelAccess {
+		// Bearer-admin (BUG-1616): membership-only stance. Skip the
+		// guest-grants fallback exactly like RequireWorkspaceAccess.
+		if fresh.Role == "admin" && isBearer {
+			s.recordMCPAuthzDenial(r, "not_a_member")
+			return newStatusError(http.StatusForbidden, "forbidden",
+				"You are not a member of this workspace")
+		}
 		hasGrants, err := s.store.UserHasGrantsInWorkspace(wsID, fresh.ID)
 		if err != nil {
 			return err

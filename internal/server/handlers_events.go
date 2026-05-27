@@ -78,6 +78,28 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Admin-via-bearer membership gate (BUG-1616). resolveWorkspace
+	// above uses a global slug lookup for admin users, so a bearer-
+	// borne admin (CLI / PAT / MCP) would otherwise sail through and
+	// subscribe to any workspace's event stream without ever appearing
+	// in workspace_members. The cookie-borne web UI keeps the bypass
+	// (admin can subscribe from /console/admin); bearer callers fall
+	// through to a strict membership check, exactly matching the
+	// policy enforced by RequireWorkspaceAccess on /api/v1/* and by
+	// authorizeCollabAccess on the WS upgrade.
+	if u := currentUser(r); u != nil && u.Role == "admin" && isBearerAuth(r) {
+		member, err := s.store.GetWorkspaceMember(ws.ID, u.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
+			return
+		}
+		if member == nil {
+			s.recordMCPAuthzDenial(r, "not_a_member")
+			writeError(w, http.StatusForbidden, "forbidden", "You are not a member of this workspace")
+			return
+		}
+	}
+
 	// Verify streaming support
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -374,12 +396,20 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 	// Collection-level visibility first. Mirrors visibleCollectionIDs
 	// but with a freshly-fetched user so a mid-stream admin-to-member
 	// demotion immediately applies the collection filter.
+	//
+	// Admin bypass ("no filtering") fires for cookie session auth only
+	// (BUG-1616). For bearer-borne admin (CLI / PAT / MCP) we compute
+	// the real VisibleCollectionIDs based on their actual member /
+	// grant rows — same policy as RequireWorkspaceAccess. Without
+	// this, a bearer-admin who happens to be a "specific"-access
+	// member would still see every collection's events.
 	var visibleIDs []string
 	var err error
-	if user != nil && user.Role != "admin" {
+	useAdminBypass := user != nil && user.Role == "admin" && !isBearerAuth(r)
+	if user != nil && !useAdminBypass {
 		visibleIDs, err = s.store.VisibleCollectionIDs(workspaceID, user.ID)
 	}
-	// (user == nil || user.Role == "admin") falls through with nil
+	// (user == nil || useAdminBypass) falls through with nil
 	// visibleIDs — nil means "no filtering" in the snapshot below.
 	if err != nil {
 		// Fail closed: if we can't determine visibility, deny all
@@ -513,8 +543,12 @@ func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string
 	if user.IsDisabled() {
 		return false
 	}
-	// Admins can access any workspace.
-	if user.Role == "admin" {
+	// Admins can access any workspace — but only via cookie session
+	// auth (BUG-1616). Bearer-borne admin (CLI / PAT / MCP) falls
+	// through to the membership-only check below; revalidation must
+	// match the entry-time policy or a live stream would survive past
+	// what the entry handler would now reject on reconnect.
+	if user.Role == "admin" && !isBearerAuth(r) {
 		return true
 	}
 	// Direct workspace member?
@@ -530,6 +564,13 @@ func (s *Server) sseSubscriberStillHasAccess(r *http.Request, workspaceID string
 	}
 	if member != nil {
 		return true
+	}
+	// Bearer-admin (BUG-1616): membership-only stance. Skip the
+	// guest-grants fallback so a platform admin who happens to hold
+	// a guest grant somewhere can't keep a bearer-borne SSE stream
+	// open against a workspace they didn't join.
+	if user.Role == "admin" && isBearerAuth(r) {
+		return false
 	}
 	// Not a member — check guest grants.
 	has, err := s.store.UserHasGrantsInWorkspace(workspaceID, user.ID)
