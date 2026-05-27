@@ -39,7 +39,7 @@ func TestWikiLinks_CrossWorkspaceRefIndexedAndQueryable(t *testing.T) {
 	source := createTestItem(t, s, wsB.ID, colB.ID, "Cross source", body)
 
 	// Cross-ws query from A's perspective should find the source.
-	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0)
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0, false)
 	if err != nil {
 		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
 	}
@@ -89,12 +89,12 @@ func TestWikiLinks_CrossWorkspaceNonMemberDoesNotSee(t *testing.T) {
 		"See [["+wsA.Slug+"::"+targetRef+"]].")
 
 	// Owner sees the cross-ws backlink.
-	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, owner.ID, nil, 50, 0)
+	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, owner.ID, nil, 50, 0, false)
 	if len(got) != 1 {
 		t.Errorf("owner should see cross-ws backlink, got %d", len(got))
 	}
 	// Outsider does NOT — they have no access to workspace B.
-	got2, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, outsider.ID, nil, 50, 0)
+	got2, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, outsider.ID, nil, 50, 0, false)
 	if len(got2) != 0 {
 		t.Errorf("outsider should NOT see cross-ws backlink, got %d", len(got2))
 	}
@@ -142,7 +142,7 @@ func TestWikiLinks_CrossWorkspaceGuestSeesGrantedCollectionOnly(t *testing.T) {
 	_ = hiddenSrc
 
 	// Guest sees ONLY the visible-collection source.
-	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, guest.ID, nil, 50, 0)
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, guest.ID, nil, 50, 0, false)
 	if err != nil {
 		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestWikiLinks_CrossWorkspaceGuestItemGrantOnlyVisible(t *testing.T) {
 		t.Fatalf("grant item: %v", err)
 	}
 
-	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, guest.ID, nil, 50, 0)
+	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, guest.ID, nil, 50, 0, false)
 	if len(got) != 1 {
 		t.Fatalf("guest should see exactly 1 cross-ws backlink (the granted item), got %d: %+v", len(got), got)
 	}
@@ -232,7 +232,7 @@ func TestWikiLinks_CrossWorkspaceUnknownSlugBroken(t *testing.T) {
 		t.Fatalf("add user wsB: %v", err)
 	}
 
-	got, _ := s.GetCrossWorkspaceBacklinks(wsB.ID, "TASK-1", user.ID, nil, 50, 0)
+	got, _ := s.GetCrossWorkspaceBacklinks(wsB.ID, "TASK-1", user.ID, nil, 50, 0, false)
 	if len(got) != 0 {
 		t.Errorf("broken cross-ws ref should not surface in cross-ws backlinks, got %d", len(got))
 	}
@@ -261,7 +261,7 @@ func TestWikiLinks_CrossWorkspaceSourceWorkspaceSlugPopulated(t *testing.T) {
 	createTestItem(t, s, wsB.ID, colB.ID, "Cross source",
 		"See [["+wsA.Slug+"::"+targetRef+"]].")
 
-	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0)
+	got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0, false)
 	if len(got) != 1 {
 		t.Fatalf("expected 1 cross-ws row, got %d", len(got))
 	}
@@ -313,7 +313,7 @@ func TestWikiLinks_CrossWorkspaceSameWorkspaceQualifiedNormalized(t *testing.T) 
 	}
 
 	// Cross-ws query must NOT surface it (correctly attributed to same-ws).
-	cross, _ := s.GetCrossWorkspaceBacklinks(ws.ID, tref, user.ID, nil, 50, 0)
+	cross, _ := s.GetCrossWorkspaceBacklinks(ws.ID, tref, user.ID, nil, 50, 0, false)
 	if len(cross) != 0 {
 		t.Errorf("same-ws fully-qualified ref should not appear in cross-ws backlinks, got %d", len(cross))
 	}
@@ -394,17 +394,135 @@ func TestWikiLinks_CrossWorkspaceAdminSeesAllWorkspaces(t *testing.T) {
 	createTestItem(t, s, wsB.ID, colB.ID, "Cross source",
 		"See [["+wsA.Slug+"::"+targetRef+"]].")
 
-	// Admin should see the cross-ws backlink via the global
-	// workspace enumeration path.
-	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, admin.ID, nil, 50, 0)
+	// Admin via cookie session auth (authIsBearer=false): sees the
+	// cross-ws backlink via the global workspace enumeration path.
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, admin.ID, nil, 50, 0, false)
 	if err != nil {
-		t.Fatalf("GetCrossWorkspaceBacklinks (admin): %v", err)
+		t.Fatalf("GetCrossWorkspaceBacklinks (cookie admin): %v", err)
 	}
 	if len(got) != 1 {
-		t.Errorf("admin should see cross-ws backlink (admins bypass membership), got %d", len(got))
+		t.Errorf("cookie admin should see cross-ws backlink (admins bypass membership), got %d", len(got))
 	}
 	if len(got) > 0 && got[0].SourceWorkspaceSlug != wsB.Slug {
-		t.Errorf("admin row missing SourceWorkspaceSlug: got %q", got[0].SourceWorkspaceSlug)
+		t.Errorf("cookie admin row missing SourceWorkspaceSlug: got %q", got[0].SourceWorkspaceSlug)
+	}
+
+	// Admin via bearer auth (authIsBearer=true): bypass suppressed
+	// per BUG-1617. Admin is NOT a member of wsB, so they should NOT
+	// see the cross-ws backlink. Mirrors BUG-1616's policy: bearer-
+	// borne admin identity does not carry cross-workspace authority.
+	gotBearer, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, admin.ID, nil, 50, 0, true)
+	if err != nil {
+		t.Fatalf("GetCrossWorkspaceBacklinks (bearer admin): %v", err)
+	}
+	if len(gotBearer) != 0 {
+		t.Errorf("bearer admin should NOT see cross-ws backlink from non-member workspace (BUG-1617); got %d rows: %+v", len(gotBearer), gotBearer)
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceBearerAdminGrantOnlyWorkspaceFiltered
+// pins Codex's BUG-1617 round-2 finding: GetCrossWorkspaceBacklinks
+// for bearer-admin must NOT include workspaces where the admin only
+// holds a guest grant. Direct bearer access to such a workspace would
+// be denied by RequireWorkspaceAccess (BUG-1616's membership-only
+// stance skips the grants fallback), so cross-ws enumeration must
+// match — otherwise the bearer-admin's grant elsewhere becomes a
+// side-channel into a workspace they can't open directly.
+func TestWikiLinks_CrossWorkspaceBearerAdminGrantOnlyWorkspaceFiltered(t *testing.T) {
+	s := testStore(t)
+
+	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
+	admin, err := s.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "password123",
+		Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+
+	// wsA: admin is a member (owner). Target lives here.
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	if err := s.AddWorkspaceMember(wsA.ID, admin.ID, "owner"); err != nil {
+		t.Fatalf("admin→wsA: %v", err)
+	}
+	// wsB: admin is NOT a member, but holds a collection grant —
+	// the grants-aware GetUserWorkspaces would include this.
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	if err := s.AddWorkspaceMember(wsB.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("owner→wsB: %v", err)
+	}
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	colB := createTestCollection(t, s, wsB.ID, "Notes")
+	if _, err := s.CreateCollectionGrant(wsB.ID, colB.ID, admin.ID, "view", owner.ID); err != nil {
+		t.Fatalf("grant admin on wsB.Notes: %v", err)
+	}
+
+	target := createTestItem(t, s, wsA.ID, colA.ID, "Target", "")
+	targetRef := refOf(target)
+	// Source in wsB referencing the cross-ws target.
+	createTestItem(t, s, wsB.ID, colB.ID, "Cross source",
+		"See [["+wsA.Slug+"::"+targetRef+"]].")
+
+	// Bearer admin: expect ZERO rows from wsB. The collection grant
+	// on wsB doesn't elevate them to a member; cross-ws enumeration
+	// must reflect that.
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, admin.ID, nil, 50, 0, true)
+	if err != nil {
+		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("bearer admin must NOT see cross-ws backlinks via a guest grant in the source workspace (membership-only stance); got %d rows: %+v", len(got), got)
+	}
+
+	// Cookie admin: same setup, sees the row via the global
+	// ListWorkspaces enumeration. Confirms the gate is specifically
+	// bearer-shaped, not a blanket lockdown.
+	gotCookie, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, admin.ID, nil, 50, 0, false)
+	if err != nil {
+		t.Fatalf("GetCrossWorkspaceBacklinks (cookie admin): %v", err)
+	}
+	if len(gotCookie) != 1 {
+		t.Errorf("cookie admin should see cross-ws backlink (preserves global-admin web UI affordance); got %d", len(gotCookie))
+	}
+}
+
+// TestWikiLinks_CrossWorkspaceBearerAdminSeesMemberWorkspaces is the
+// positive control for BUG-1617's bearer-admin path. When the admin
+// IS a member of the source workspace, the cross-ws backlink is
+// visible even via bearer auth — the gate's job is to suppress the
+// PLATFORM admin role, not membership-based access.
+func TestWikiLinks_CrossWorkspaceBearerAdminSeesMemberWorkspaces(t *testing.T) {
+	s := testStore(t)
+
+	admin, err := s.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "password123",
+		Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+
+	wsA := createTestWorkspace(t, s, "Workspace A")
+	wsB := createTestWorkspace(t, s, "Workspace B")
+	// Admin IS a member of both workspaces this time.
+	for _, ws := range []*models.Workspace{wsA, wsB} {
+		if err := s.AddWorkspaceMember(ws.ID, admin.ID, "owner"); err != nil {
+			t.Fatalf("admin→%s: %v", ws.Slug, err)
+		}
+	}
+	colA := createTestCollection(t, s, wsA.ID, "Tasks")
+	colB := createTestCollection(t, s, wsB.ID, "Notes")
+	target := createTestItem(t, s, wsA.ID, colA.ID, "Cross target", "")
+	targetRef := refOf(target)
+	createTestItem(t, s, wsB.ID, colB.ID, "Cross source",
+		"See [["+wsA.Slug+"::"+targetRef+"]].")
+
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, admin.ID, nil, 50, 0, true)
+	if err != nil {
+		t.Fatalf("GetCrossWorkspaceBacklinks (bearer admin, member): %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("bearer admin should still see cross-ws backlinks from workspaces they're a member of; got %d", len(got))
 	}
 }
 
@@ -456,7 +574,7 @@ func TestWikiLinks_CrossWorkspaceRefNumberFallback(t *testing.T) {
 
 	// Query under the NEW ref — the stored row has OLD ref, but
 	// item_number suffix matches so the fallback should hit.
-	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, newRef, user.ID, nil, 50, 0)
+	got, err := s.GetCrossWorkspaceBacklinks(wsA.ID, newRef, user.ID, nil, 50, 0, false)
 	if err != nil {
 		t.Fatalf("GetCrossWorkspaceBacklinks: %v", err)
 	}
@@ -495,14 +613,14 @@ func TestWikiLinks_CrossWorkspaceTokenAllowListFilters(t *testing.T) {
 		"See [["+wsA.Slug+"::"+targetRef+"]].")
 
 	t.Run("nil allowlist (PAT / pre-consent) sees cross-ws", func(t *testing.T) {
-		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0)
+		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, nil, 50, 0, false)
 		if len(got) != 1 {
 			t.Errorf("nil allowlist should allow all, got %d", len(got))
 		}
 	})
 
 	t.Run("wildcard allowlist sees cross-ws", func(t *testing.T) {
-		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, []string{"*"}, 50, 0)
+		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, []string{"*"}, 50, 0, false)
 		if len(got) != 1 {
 			t.Errorf("wildcard should allow all, got %d", len(got))
 		}
@@ -511,7 +629,7 @@ func TestWikiLinks_CrossWorkspaceTokenAllowListFilters(t *testing.T) {
 	t.Run("target-only allowlist hides cross-ws sources", func(t *testing.T) {
 		// Token consented for workspace A only — source workspace
 		// B is filtered out even though the user has access.
-		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, []string{wsA.Slug}, 50, 0)
+		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID, []string{wsA.Slug}, 50, 0, false)
 		if len(got) != 0 {
 			t.Errorf("workspace-A-only token should NOT see source from B, got %d", len(got))
 		}
@@ -520,7 +638,7 @@ func TestWikiLinks_CrossWorkspaceTokenAllowListFilters(t *testing.T) {
 	t.Run("explicit source-workspace allowlist sees cross-ws", func(t *testing.T) {
 		// Token consented for both A and B.
 		got, _ := s.GetCrossWorkspaceBacklinks(wsA.ID, targetRef, user.ID,
-			[]string{wsA.Slug, wsB.Slug}, 50, 0)
+			[]string{wsA.Slug, wsB.Slug}, 50, 0, false)
 		if len(got) != 1 {
 			t.Errorf("A+B allowlist should see cross-ws from B, got %d", len(got))
 		}
@@ -548,7 +666,7 @@ func TestResolveBacklinksVisibility_RoleMatrix(t *testing.T) {
 		if err != nil {
 			t.Fatalf("create admin: %v", err)
 		}
-		full, granted, err := s.ResolveBacklinksVisibility(admin.ID, ws.ID, false)
+		full, granted, err := s.ResolveBacklinksVisibility(admin.ID, ws.ID, false, false)
 		if err != nil {
 			t.Fatalf("ResolveBacklinksVisibility: %v", err)
 		}
@@ -558,7 +676,7 @@ func TestResolveBacklinksVisibility_RoleMatrix(t *testing.T) {
 	})
 
 	t.Run("full-access member returns unrestricted", func(t *testing.T) {
-		full, granted, err := s.ResolveBacklinksVisibility(owner.ID, ws.ID, false)
+		full, granted, err := s.ResolveBacklinksVisibility(owner.ID, ws.ID, false, false)
 		if err != nil {
 			t.Fatalf("ResolveBacklinksVisibility: %v", err)
 		}
@@ -573,7 +691,7 @@ func TestResolveBacklinksVisibility_RoleMatrix(t *testing.T) {
 		if _, err := s.CreateCollectionGrant(ws.ID, col.ID, guest.ID, "view", owner.ID); err != nil {
 			t.Fatalf("grant collection: %v", err)
 		}
-		full, granted, err := s.ResolveBacklinksVisibility(guest.ID, ws.ID, false)
+		full, granted, err := s.ResolveBacklinksVisibility(guest.ID, ws.ID, false, false)
 		if err != nil {
 			t.Fatalf("ResolveBacklinksVisibility: %v", err)
 		}
@@ -587,7 +705,7 @@ func TestResolveBacklinksVisibility_RoleMatrix(t *testing.T) {
 
 	t.Run("non-member non-grant user returns empty lists", func(t *testing.T) {
 		stranger := createTestUser(t, s, "stranger@example.com", "Stranger", "password123")
-		full, granted, err := s.ResolveBacklinksVisibility(stranger.ID, ws.ID, false)
+		full, granted, err := s.ResolveBacklinksVisibility(stranger.ID, ws.ID, false, false)
 		if err != nil {
 			t.Fatalf("ResolveBacklinksVisibility: %v", err)
 		}
@@ -596,6 +714,59 @@ func TestResolveBacklinksVisibility_RoleMatrix(t *testing.T) {
 		// + both lists empty.
 		if len(full) != 0 || len(granted) != 0 {
 			t.Errorf("stranger should have empty visibility, got %v / %v", full, granted)
+		}
+	})
+
+	t.Run("admin via bearer auth on non-member workspace gets empty visibility (BUG-1617)", func(t *testing.T) {
+		// Fresh admin with no relationship to `ws`. Pre-BUG-1617
+		// this returned (nil, nil) — "unrestricted" — even though
+		// the bearer-borne admin had never joined the workspace.
+		// Post-fix: bearer-admin falls through the non-admin path,
+		// hitting the GetWorkspaceMember branch and ending up on
+		// the guest path with no grants → empty lists.
+		admin, err := s.CreateUser(models.UserCreate{
+			Email: "admin-bearer@example.com", Name: "AdminBearer", Password: "password123",
+			Role: "admin",
+		})
+		if err != nil {
+			t.Fatalf("create admin: %v", err)
+		}
+		full, granted, err := s.ResolveBacklinksVisibility(admin.ID, ws.ID, false, true)
+		if err != nil {
+			t.Fatalf("ResolveBacklinksVisibility (bearer admin): %v", err)
+		}
+		// Both lists empty, NOT nil/nil. Mirrors the non-member-
+		// non-grant stranger case above — that's the desired
+		// equivalence: a bearer-borne admin is treated as a regular
+		// user for cross-workspace visibility.
+		if full == nil && granted == nil {
+			t.Errorf("bearer admin must NOT be treated as unrestricted (nil/nil) on a non-member workspace; got (nil, nil)")
+		}
+		if len(full) != 0 || len(granted) != 0 {
+			t.Errorf("bearer admin on non-member workspace should have empty visibility, got %v / %v", full, granted)
+		}
+	})
+
+	t.Run("admin via bearer auth on member workspace uses member access", func(t *testing.T) {
+		// Positive control: when the bearer-admin IS a member, they
+		// get the same visibility shape as any other member of that
+		// role. Owner-equivalent membership → unrestricted (nil/nil).
+		adminMember, err := s.CreateUser(models.UserCreate{
+			Email: "admin-member@example.com", Name: "AdminMember", Password: "password123",
+			Role: "admin",
+		})
+		if err != nil {
+			t.Fatalf("create admin: %v", err)
+		}
+		if err := s.AddWorkspaceMember(ws.ID, adminMember.ID, "owner"); err != nil {
+			t.Fatalf("add admin as member: %v", err)
+		}
+		full, granted, err := s.ResolveBacklinksVisibility(adminMember.ID, ws.ID, false, true)
+		if err != nil {
+			t.Fatalf("ResolveBacklinksVisibility (bearer admin, member): %v", err)
+		}
+		if full != nil || granted != nil {
+			t.Errorf("bearer admin who's a workspace owner should be unrestricted (nil/nil), got %v / %v", full, granted)
 		}
 	})
 }

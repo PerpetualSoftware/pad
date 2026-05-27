@@ -16,7 +16,13 @@ package store
 //
 // Decision tree (matches RequireWorkspaceAccess + guestResourceFilterCore):
 //
-//   - Admin user (`users.role = 'admin'`): unrestricted.
+//   - Admin user (`users.role = 'admin'`) AND NOT bearer-authenticated:
+//     unrestricted.
+//   - Admin user AND bearer-authenticated: falls through to the
+//     non-admin path (BUG-1617). The bearer-borne admin identity is
+//     treated as a regular user for cross-workspace visibility — a
+//     platform admin's MCP / CLI / PAT token must not silently see
+//     into workspaces the admin never joined.
 //   - Workspace member with `collection_access = 'all'` or empty:
 //     unrestricted.
 //   - Workspace member with `collection_access = 'specific'`
@@ -40,11 +46,17 @@ package store
 //     The server delta-sync wrapper at guestResourceFilterIncludeDeletedItems
 //     passes true; cross-ws doesn't need it.
 //
+// `authIsBearer` is the BUG-1616/1617 gate: true when the upstream
+// HTTP request was bearer-authenticated (PAT on /api/v1, PAT or OAuth
+// on /mcp, CLI session-bearer). Callers without a request context
+// (tests, internal jobs) pass false — same as cookie-session admin.
+// Derived via server.isBearerAuth at the HTTP boundary and threaded
+// down.
+//
 // The returned error mirrors the underlying store call (DB error
 // surfaces, "user not found" returns an empty result rather than
 // erroring so the cross-ws traversal can keep going).
-func (s *Store) ResolveBacklinksVisibility(userID, workspaceID string, includeDeletedItems bool) (fullCollIDs, grantedItemIDs []string, err error) {
-	// Admin bypass — same as server.guestResourceFilterCore line 1758.
+func (s *Store) ResolveBacklinksVisibility(userID, workspaceID string, includeDeletedItems, authIsBearer bool) (fullCollIDs, grantedItemIDs []string, err error) {
 	user, err := s.GetUser(userID)
 	if err != nil {
 		return nil, nil, err
@@ -56,7 +68,11 @@ func (s *Store) ResolveBacklinksVisibility(userID, workspaceID string, includeDe
 		// both lists empty.
 		return nil, nil, nil
 	}
-	if user.Role == "admin" {
+	// Admin bypass — cookie session auth only (BUG-1617). Bearer-borne
+	// admin (CLI / PAT / MCP) falls through to the non-admin path so
+	// they're treated identically to a regular user — membership /
+	// grants determine visibility, not the platform admin role.
+	if user.Role == "admin" && !authIsBearer {
 		return nil, nil, nil
 	}
 
@@ -91,11 +107,25 @@ func (s *Store) ResolveBacklinksVisibility(userID, workspaceID string, includeDe
 	// because there's no member row to merge from.) Same as line 1789.
 	if member == nil {
 		// One more sanity check: if there are NO grants either,
-		// this user shouldn't be able to see anything. Returning
-		// empty lists is correct — GetBacklinks short-circuits.
-		// (UserHasGrantsInWorkspace would be redundant here since
-		// GuestVisibleResources already returns empty for non-grant
-		// users.)
+		// this user shouldn't be able to see anything. Return
+		// NON-NIL empty slices so the caller can distinguish "no
+		// visibility" from the admin / full-access-member
+		// "(nil, nil) = unrestricted" sentinel. Without this, a
+		// bearer-borne admin (BUG-1617) on a non-member workspace
+		// would land here with grant queries that returned nil and
+		// be misread as unrestricted. In production this latent
+		// case is gated upstream (GetCrossWorkspaceBacklinks
+		// enumerates via GetUserWorkspaces which already excludes
+		// non-member non-grant workspaces), but the explicit
+		// non-nil shape closes the gap for any caller that bypasses
+		// the upstream filter — including tests that exercise this
+		// helper directly.
+		if grantCollIDs == nil {
+			grantCollIDs = []string{}
+		}
+		if grantedItemIDs == nil {
+			grantedItemIDs = []string{}
+		}
 		return grantCollIDs, grantedItemIDs, nil
 	}
 

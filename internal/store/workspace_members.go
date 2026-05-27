@@ -351,6 +351,60 @@ func (s *Store) ListSystemCollectionIDs(workspaceID string) ([]string, error) {
 	return ids, rows.Err()
 }
 
+// GetUserMemberWorkspaces returns only workspaces where the user has
+// a workspace_members row — NO guest-grant fallback. Mirrors the
+// first half of GetUserWorkspaces but without the UNION with
+// collection_grants / item_grants tables.
+//
+// Use this when the caller needs the strict "is the user a member?"
+// shape — e.g. BUG-1617's bearer-admin cross-workspace enumeration:
+// RequireWorkspaceAccess gives bearer-admin membership-only access
+// (no grants fallback), and the cross-ws backlinks enumeration must
+// match that policy. Without this, a bearer-admin with a stray
+// collection grant on workspace C would still see cross-ws backlinks
+// from C even though direct bearer access to C is denied.
+//
+// The returned slice does NOT include the "last item activity"
+// MAX(items.updated_at) computation — callers wanting that detail
+// should use GetUserWorkspaces. This helper is for membership-set
+// enumeration only, where the UpdatedAt of each row is the raw
+// workspace row timestamp.
+func (s *Store) GetUserMemberWorkspaces(userID string) ([]models.Workspace, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at,
+		       wm.sort_order
+		FROM workspaces w
+		JOIN workspace_members wm ON wm.workspace_id = w.id
+		LEFT JOIN users ou ON ou.id = w.owner_id
+		WHERE wm.user_id = ? AND w.deleted_at IS NULL
+		ORDER BY wm.sort_order ASC, w.name ASC
+	`), userID)
+	if err != nil {
+		return nil, fmt.Errorf("get user member workspaces: %w", err)
+	}
+	defer rows.Close()
+
+	var result []models.Workspace
+	for rows.Next() {
+		var ws models.Workspace
+		var createdAt, updatedAt string
+		var deletedAt *string
+		if err := rows.Scan(
+			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings,
+			&createdAt, &updatedAt, &deletedAt,
+			&ws.SortOrder,
+		); err != nil {
+			return nil, fmt.Errorf("scan workspace: %w", err)
+		}
+		ws.CreatedAt = parseTime(createdAt)
+		ws.UpdatedAt = parseTime(updatedAt)
+		ws.DeletedAt = parseTimePtr(deletedAt)
+		ws.HydrateDerivedFields()
+		result = append(result, ws)
+	}
+	return result, rows.Err()
+}
+
 // GetUserWorkspaces returns all workspaces a user has access to,
 // sorted by the user's custom sort order (then name as tiebreaker).
 func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
