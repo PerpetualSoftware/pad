@@ -85,10 +85,20 @@ type BackfillStatusTransitionsResult struct {
 // historical row is a slightly understated pre-upgrade report window; live
 // data from the write-path hook is always complete.
 //
-// Because the activity feed is debounce-coalesced (mergeActivityMeta collapses
-// same-field runs), historical transitions may undercount rapid hops — this is
-// the limitation the structured table exists to fix going forward, and is
-// documented on TASK-1637.
+// Two best-effort caveats apply to historical (pre-upgrade) rows only — live
+// write-path rows have neither:
+//
+//   - Debounce: the activity feed is debounce-coalesced (mergeActivityMeta
+//     collapses same-field runs), so rapid hops may be undercounted. This is
+//     the very limitation the structured table fixes going forward.
+//   - Collection attribution: backfilled rows are stamped with the item's
+//     CURRENT collection_id. The activity log doesn't record which collection
+//     an item was in at the time of a past status change, and reconstructing
+//     it would require replaying each item's move history. For the common case
+//     (an item never changes collection) this is exact; only a transition that
+//     happened BEFORE a later collection move is mis-attributed to the newer
+//     collection. The live move path (MoveItemWithPreCheck) stamps the
+//     collection at transition time, so going-forward data is always correct.
 //
 // PLAN-1628 / TASK-1637.
 func (s *Store) BackfillStatusTransitions() (*BackfillStatusTransitionsResult, error) {

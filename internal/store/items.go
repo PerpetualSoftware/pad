@@ -1668,6 +1668,25 @@ func (s *Store) UpdateItemWithPreCheck(
 		args = append(args, input.Source)
 	}
 
+	// Capture the pre-update status BEFORE the UPDATE runs, so the
+	// transition log below records an accurate from_status. It must reflect
+	// the locked, in-tx state: when a precheck ran, `existing` was already
+	// replaced with the fresh in-tx snapshot above; otherwise `existing` is
+	// the pre-tx read, which a concurrent update (now serialized behind the
+	// workspace/parent locks we hold) could have superseded — re-read in-tx
+	// in that case. Reading here, before the UPDATE, is essential: a re-read
+	// after the UPDATE would see the new status and the hop would vanish.
+	var statusBefore string
+	if input.Fields != nil {
+		oldFields := existing.Fields
+		if precheck == nil {
+			if fresh, ferr := s.getItemTx(tx, id); ferr == nil && fresh != nil {
+				oldFields = fresh.Fields
+			}
+		}
+		statusBefore = extractStatusValue(oldFields)
+	}
+
 	args = append(args, id)
 	query := fmt.Sprintf("UPDATE items SET %s WHERE id = ?", strings.Join(sets, ", "))
 	_, err = tx.Exec(s.q(query), args...)
@@ -1683,13 +1702,12 @@ func (s *Store) UpdateItemWithPreCheck(
 	// own row. This is the canonical timestamp source for the Reports
 	// completed-throughput and cycle-time series (PLAN-1628 / TASK-1637).
 	if input.Fields != nil {
-		oldStatus := extractStatusValue(existing.Fields)
 		newStatus := extractStatusValue(*input.Fields)
-		if newStatus != "" && newStatus != oldStatus {
+		if newStatus != "" && newStatus != statusBefore {
 			if _, err = tx.Exec(s.q(`
 				INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, from_status, to_status, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?)
-			`), newID(), id, existing.WorkspaceID, existing.CollectionID, oldStatus, newStatus, ts); err != nil {
+			`), newID(), id, existing.WorkspaceID, existing.CollectionID, statusBefore, newStatus, ts); err != nil {
 				return nil, fmt.Errorf("record status transition: %w", err)
 			}
 		}
@@ -2974,6 +2992,17 @@ func (s *Store) MoveItemWithPreCheck(
 		existing = freshExisting
 	}
 
+	// Capture the pre-move status under lock before the UPDATE, mirroring the
+	// UpdateItemWithPreCheck path: `existing` is the fresh in-tx snapshot when
+	// a precheck ran, otherwise re-read so a concurrent write doesn't make
+	// from_status stale.
+	oldFields := existing.Fields
+	if precheck == nil {
+		if fresh, ferr := s.getItemTx(tx, itemID); ferr == nil && fresh != nil {
+			oldFields = fresh.Fields
+		}
+	}
+
 	moveTS := time.Now().UTC().Format(time.RFC3339)
 	_, err = tx.Exec(s.q(`
 		UPDATE items
@@ -2990,7 +3019,7 @@ func (s *Store) MoveItemWithPreCheck(
 	// too so status_transitions stays the canonical source for reports
 	// (PLAN-1628 / TASK-1637). collection_id reflects the TARGET collection
 	// the item now lives in. Same tx, not debounced.
-	oldStatus := extractStatusValue(existing.Fields)
+	oldStatus := extractStatusValue(oldFields)
 	newStatus := extractStatusValue(newFieldsJSON)
 	if newStatus != "" && newStatus != oldStatus {
 		if _, err = tx.Exec(s.q(`
