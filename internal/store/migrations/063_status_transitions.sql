@@ -15,11 +15,18 @@
 -- because the UTF-8 arrow ("→") and the "key: from → to" grammar are awkward
 -- to handle in portable SQL.
 
+-- field_key records WHICH select field the transition tracks. It is almost
+-- always "status", but a collection can designate another select field as its
+-- workflow/done field via CollectionSettings.BoardGroupBy (e.g. hiring
+-- Candidates group by "stage"/"result"). Storing the key per row keeps the
+-- table correct even if a collection's BoardGroupBy changes later. The
+-- from_status/to_status columns hold that field's old/new value.
 CREATE TABLE IF NOT EXISTS status_transitions (
     id            TEXT PRIMARY KEY,
-    item_id       TEXT NOT NULL REFERENCES items(id),
+    item_id       TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     workspace_id  TEXT NOT NULL REFERENCES workspaces(id),
     collection_id TEXT NOT NULL,
+    field_key     TEXT NOT NULL DEFAULT 'status',
     from_status   TEXT NOT NULL DEFAULT '',
     to_status     TEXT NOT NULL,
     created_at    TEXT NOT NULL

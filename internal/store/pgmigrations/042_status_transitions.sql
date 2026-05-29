@@ -13,11 +13,15 @@
 -- Historical rows are backfilled once at startup by
 -- Store.BackfillStatusTransitions (parses activities.metadata.changes).
 
+-- field_key records WHICH select field the transition tracks (usually
+-- "status"; a collection may designate another via BoardGroupBy, e.g. hiring
+-- Candidates → "stage"). from_status/to_status hold that field's old/new value.
 CREATE TABLE IF NOT EXISTS status_transitions (
     id            TEXT PRIMARY KEY,
-    item_id       TEXT NOT NULL REFERENCES items(id),
+    item_id       TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     workspace_id  TEXT NOT NULL REFERENCES workspaces(id),
     collection_id TEXT NOT NULL,
+    field_key     TEXT NOT NULL DEFAULT 'status',
     from_status   TEXT NOT NULL DEFAULT '',
     to_status     TEXT NOT NULL,
     created_at    TEXT NOT NULL
