@@ -27,6 +27,10 @@
 	// actually changes, guarded on this tracker so unrelated re-renders don't
 	// clobber the user's selection.
 	let filterWsSlug = '';
+	// Monotonic request counter. Plain `let` (non-reactive) so it never triggers
+	// rendering — its only job is to let the latest in-flight loadReport commit
+	// its result and discard stale/out-of-order older responses.
+	let reqSeq = 0;
 
 	const WINDOW_OPTIONS: { value: ReportWindow; label: string }[] = [
 		{ value: 'day', label: 'Day' },
@@ -66,6 +70,10 @@
 		if (slug !== filterWsSlug) {
 			filterWsSlug = slug;
 			selectedCollections = [];
+			// Drop the previous workspace's data so A's totals/date-range don't
+			// linger under B's URL while B loads — the `loading` state covers the gap.
+			report = null;
+			collections = [];
 		}
 		const colls = [...selectedCollections];
 		if (slug) {
@@ -82,18 +90,25 @@
 	}
 
 	async function loadReport(slug: string, win: ReportWindow, colls: string[]) {
+		const seq = ++reqSeq;
 		loading = true;
 		error = '';
 		try {
-			report = await api.report.get(slug, {
+			const data = await api.report.get(slug, {
 				window: win,
 				collections: colls.length > 0 ? colls : undefined
 			});
+			// Only the latest in-flight request commits — discard stale responses.
+			if (seq !== reqSeq) return;
+			report = data;
 		} catch (e) {
+			if (seq !== reqSeq) return;
 			error = e instanceof Error ? e.message : 'Failed to load report.';
 			report = null;
 		} finally {
-			loading = false;
+			// Only the latest request clears the loading flag, so an older
+			// response resolving late can't flip it off while the newest is pending.
+			if (seq === reqSeq) loading = false;
 		}
 	}
 
