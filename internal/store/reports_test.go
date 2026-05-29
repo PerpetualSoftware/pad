@@ -1,6 +1,8 @@
 package store
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -354,5 +356,28 @@ func TestPercentile(t *testing.T) {
 	}
 	if got := percentile([]float64{1, 2, 3, 4, 5}, 0.9); got < 4.5 || got > 4.7 {
 		t.Errorf("p90 = %v, want ~4.6", got)
+	}
+}
+
+func TestGetReport_EmptyScopeWellFormedJSON(t *testing.T) {
+	s := testStore(t)
+	wsID, _ := newTransitionTestWorkspace(t, s)
+	// Empty visible set → no collections in scope (early-return path).
+	rep, err := s.GetReport(wsID, ReportOptions{Window: "week", Now: time.Now().UTC(), ScopeToVisible: true, VisibleCollectionIDs: nil})
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	b, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	js := string(b)
+	for _, frag := range []string{
+		`"by_collection":null`, `"aging_buckets":null`, `"buckets":null`,
+		`"completed_by_collection":null`, `"status_distribution":null`, `"collections":null`,
+	} {
+		if strings.Contains(js, frag) {
+			t.Errorf("empty report has %s — should be []", frag)
+		}
 	}
 }

@@ -199,6 +199,12 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 		Buckets:               []ReportBucket{},
 		CompletedByCollection: []ReportCollectionCount{},
 		StatusDistribution:    []ReportStatusCount{},
+		// Initialize nested slices so they marshal as [] (not null) on every
+		// path — including the empty-scope early return below. Matches the TS
+		// contract (ReportCycleTime.by_collection, ReportWIP.aging_buckets /
+		// by_collection are always arrays).
+		CycleTime: ReportCycleTime{ByCollection: []ReportDuration{}},
+		WIP:       ReportWIP{AgingBuckets: []ReportAgingBucket{}, ByCollection: []ReportDuration{}},
 	}
 	collIDs := make([]string, 0, len(colls))
 	slugByID := make(map[string]string, len(colls))
