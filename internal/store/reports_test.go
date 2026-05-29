@@ -490,4 +490,25 @@ func TestReportSnapshotAsOf(t *testing.T) {
 	if len(dist30) != 0 || wip30.OpenCount != 0 {
 		t.Fatalf("as-of-30d (before creation) should be empty, got dist=%+v wip.open=%d", dist30, wip30.OpenCount)
 	}
+
+	// An item that existed at T with NO done-field transition (created with no
+	// status) must count as open — matching the live WIP path — not be dropped.
+	noStatus, err := s.CreateItem(wsID, colID, models.ItemCreate{Title: "no-status"})
+	if err != nil {
+		t.Fatalf("create no-status item: %v", err)
+	}
+	if _, err := s.db.Exec(s.dialect.Rebind(`DELETE FROM status_transitions WHERE item_id = ?`), noStatus.ID); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	backdateItem(t, s, noStatus.ID, 8*24) // existed 8d ago, no transitions ever
+	_, wipNow, err := s.reportSnapshotAsOf(wsID, colls, now.Add(-3*24*time.Hour))
+	if err != nil {
+		t.Fatalf("asof 3d (with no-status item): %v", err)
+	}
+	// As of 3d ago: the original item is "done" (t2 at 5d ago is <= 3d ago →
+	// terminal, not open); the no-status item existed (8d ago) with no
+	// transition → counts as open. So exactly 1 open.
+	if wipNow.OpenCount != 1 {
+		t.Fatalf("expected the no-transition no-status item to count as open (1), got %d", wipNow.OpenCount)
+	}
 }

@@ -527,7 +527,7 @@
 						<section class="card">
 							<div class="card-header">
 								<h2>Work in progress</h2>
-								<span class="card-sub">Open items right now</span>
+								<span class="card-sub">{inPast ? 'Open as of this period' : 'Open items right now'}</span>
 							</div>
 							{#if report.wip.open_count === 0}
 								<div class="card-empty">No open items.</div>

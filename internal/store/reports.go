@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -325,26 +326,25 @@ func (s *Store) reportSnapshotAsOf(workspaceID string, colls []reportCollection,
 		for _, v := range c.allTerminals {
 			terminals[strings.ToLower(v)] = true
 		}
-		// Per-item as-of-t value: the to_status of the latest transition on
-		// this collection's done field at or before t, for items currently in
-		// the collection that existed at t and weren't deleted by t.
+		// Start from items (not transitions) so an item that existed at t but
+		// had no done-field transition yet is still counted — matching the
+		// live path, which treats a missing/empty done value as open. For each
+		// in-scope item that existed at t and wasn't deleted by t, the
+		// correlated subquery resolves its as-of-t value: the to_status of the
+		// latest transition on the done field at or before t (NULL if none →
+		// treated as empty/open). LIMIT 1 ORDER BY created_at,id is valid on
+		// both dialects (no window functions).
 		query := `
-			SELECT st.to_status, i.created_at
-			FROM status_transitions st
-			JOIN items i ON i.id = st.item_id
+			SELECT i.created_at,
+			  (SELECT st.to_status FROM status_transitions st
+			   WHERE st.item_id = i.id AND st.field_key = ? AND st.created_at <= ?
+			   ORDER BY st.created_at DESC, st.id DESC LIMIT 1) AS asof_status
+			FROM items i
 			WHERE i.workspace_id = ? AND i.collection_id = ?
 			  AND i.created_at <= ?
 			  AND (i.deleted_at IS NULL OR i.deleted_at > ?)
-			  AND st.field_key = ? AND st.created_at <= ?
-			  AND NOT EXISTS (
-				SELECT 1 FROM status_transitions st2
-				WHERE st2.item_id = st.item_id AND st2.field_key = st.field_key
-				  AND st2.created_at <= ?
-				  AND (st2.created_at > st.created_at
-				    OR (st2.created_at = st.created_at AND st2.id > st.id))
-			  )
 		`
-		rows, err := s.db.Query(s.q(query), workspaceID, c.id, tStr, tStr, c.doneKey, tStr, tStr)
+		rows, err := s.db.Query(s.q(query), c.doneKey, tStr, workspaceID, c.id, tStr, tStr)
 		if err != nil {
 			return nil, ReportWIP{}, fmt.Errorf("reconstruct snapshot: %w", err)
 		}
@@ -352,16 +352,20 @@ func (s *Store) reportSnapshotAsOf(workspaceID string, colls []reportCollection,
 		func() {
 			defer rows.Close()
 			for rows.Next() {
-				var status, createdAt string
-				if scanErr := rows.Scan(&status, &createdAt); scanErr != nil {
+				var createdAt string
+				var asof sql.NullString
+				if scanErr := rows.Scan(&createdAt, &asof); scanErr != nil {
 					err = fmt.Errorf("scan snapshot row: %w", scanErr)
 					return
 				}
-				status = strings.ToLower(status)
+				status := strings.ToLower(asof.String) // "" when NULL
+				// Status distribution skips items with no done value (matches
+				// the live path).
 				if status != "" {
 					statusCounts[status]++
 				}
-				// WIP: open = not a terminal value; age measured against t.
+				// WIP: open = not a terminal value (a missing/empty value is
+				// open too); age measured against t.
 				if !terminals[status] {
 					if h, ok := durationHours(createdAt, tStr); ok {
 						openAges = append(openAges, h)
