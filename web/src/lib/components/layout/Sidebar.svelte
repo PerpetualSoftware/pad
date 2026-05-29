@@ -41,7 +41,7 @@
 		if (!path.startsWith(prefix)) return null;
 		const rest = path.slice(prefix.length);
 		const slug = rest.split('/')[0];
-		if (slug === 'settings' || slug === 'new' || slug === 'library' || slug === 'activity' || slug === 'starred' || slug === 'roles' || slug === '') return null;
+		if (slug === 'settings' || slug === 'new' || slug === 'library' || slug === 'activity' || slug === 'starred' || slug === 'roles' || slug === 'insights' || slug === '') return null;
 		return slug;
 	});
 
