@@ -2974,13 +2974,31 @@ func (s *Store) MoveItemWithPreCheck(
 		existing = freshExisting
 	}
 
+	moveTS := time.Now().UTC().Format(time.RFC3339)
 	_, err = tx.Exec(s.q(`
 		UPDATE items
 		SET collection_id = ?, fields = ?, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`
 		WHERE id = ? AND deleted_at IS NULL`),
-		targetCollectionID, newFieldsJSON, time.Now().UTC().Format(time.RFC3339), existing.WorkspaceID, itemID)
+		targetCollectionID, newFieldsJSON, moveTS, existing.WorkspaceID, itemID)
 	if err != nil {
 		return nil, fmt.Errorf("move item: %w", err)
+	}
+
+	// A move can carry a status-changing field override (e.g.
+	// `pad item move ... --field status=done`), which rewrites `fields`
+	// outside the UpdateItemWithPreCheck path. Record the transition here
+	// too so status_transitions stays the canonical source for reports
+	// (PLAN-1628 / TASK-1637). collection_id reflects the TARGET collection
+	// the item now lives in. Same tx, not debounced.
+	oldStatus := extractStatusValue(existing.Fields)
+	newStatus := extractStatusValue(newFieldsJSON)
+	if newStatus != "" && newStatus != oldStatus {
+		if _, err = tx.Exec(s.q(`
+			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, from_status, to_status, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`), newID(), itemID, existing.WorkspaceID, targetCollectionID, oldStatus, newStatus, moveTS); err != nil {
+			return nil, fmt.Errorf("record status transition on move: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

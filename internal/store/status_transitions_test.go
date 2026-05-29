@@ -95,6 +95,47 @@ func TestStatusTransition_MultiHopEachRecorded(t *testing.T) {
 	}
 }
 
+func TestStatusTransition_CapturedOnMoveWithStatusOverride(t *testing.T) {
+	s := testStore(t)
+	wsID, srcColID := newTransitionTestWorkspace(t, s)
+	dstCol := createTestCollection(t, s, wsID, "Done Bucket")
+	item := createTestItem(t, s, wsID, srcColID, "Movable", "")
+
+	// `pad item move ... --field status=done` rewrites fields through the
+	// move path, which must also record the transition.
+	if _, err := s.MoveItem(item.ID, dstCol.ID, `{"status":"done"}`); err != nil {
+		t.Fatalf("move item: %v", err)
+	}
+
+	trans := listTransitions(t, s, item.ID)
+	if len(trans) != 1 {
+		t.Fatalf("expected 1 transition from move, got %d", len(trans))
+	}
+	got := trans[0]
+	if got.FromStatus != "open" || got.ToStatus != "done" {
+		t.Fatalf("expected open → done, got %q → %q", got.FromStatus, got.ToStatus)
+	}
+	// collection_id should reflect the target collection the item moved into.
+	if got.CollectionID != dstCol.ID {
+		t.Fatalf("expected transition stamped with target collection %q, got %q", dstCol.ID, got.CollectionID)
+	}
+}
+
+func TestStatusTransition_NoRowOnMoveWithoutStatusChange(t *testing.T) {
+	s := testStore(t)
+	wsID, srcColID := newTransitionTestWorkspace(t, s)
+	dstCol := createTestCollection(t, s, wsID, "Other Bucket")
+	item := createTestItem(t, s, wsID, srcColID, "Plain move", "")
+
+	// Move preserving status — no transition row expected.
+	if _, err := s.MoveItem(item.ID, dstCol.ID, `{"status":"open"}`); err != nil {
+		t.Fatalf("move item: %v", err)
+	}
+	if trans := listTransitions(t, s, item.ID); len(trans) != 0 {
+		t.Fatalf("expected no transitions on status-preserving move, got %d", len(trans))
+	}
+}
+
 func TestStatusTransition_NoRowWhenStatusUnchanged(t *testing.T) {
 	s := testStore(t)
 	wsID, colID := newTransitionTestWorkspace(t, s)
