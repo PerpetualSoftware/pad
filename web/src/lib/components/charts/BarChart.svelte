@@ -92,6 +92,7 @@
 				<div
 					class="tooltip"
 					style:left={`${tooltipLeft}px`}
+					style:max-width={canvasWidth > 0 ? `${canvasWidth}px` : undefined}
 					bind:clientWidth={tooltipWidth}
 				>
 					<div class="tooltip-header">{hovered[x]}</div>
@@ -126,7 +127,8 @@
 		transform: translateX(-50%);
 		pointer-events: none;
 		z-index: 1;
-		min-width: max-content;
+		box-sizing: border-box;
+		width: max-content;
 		padding: 0.4rem 0.55rem;
 		border-radius: 6px;
 		background: var(--surface, #ffffff);
@@ -139,14 +141,13 @@
 	.tooltip-header {
 		font-weight: 600;
 		margin-bottom: 0.25rem;
-		white-space: nowrap;
+		overflow-wrap: anywhere;
 	}
 
 	.tooltip-row {
 		display: flex;
 		align-items: center;
 		gap: 0.4rem;
-		white-space: nowrap;
 	}
 
 	.tooltip-row + .tooltip-row {
@@ -163,10 +164,15 @@
 
 	.tooltip-label {
 		color: var(--text-muted, #6b7280);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 
 	.tooltip-value {
 		margin-left: auto;
+		flex-shrink: 0;
 		font-weight: 600;
 		font-variant-numeric: tabular-nums;
 	}
