@@ -308,9 +308,18 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 // (deleted_at IS NULL OR > t), resolving each one's as-of-t value via a
 // "no later transition <= t" NOT EXISTS — dual-dialect, no window functions.
 //
-// Accuracy: exact for post-launch history (the live write path records every
-// status change); approximate for pre-launch history, since the backfill
-// parsed the debounce-coalesced activity log. Same caveat as the backfill.
+// Accuracy (historical periods are best-effort, matching the rest of the
+// feature's historical posture):
+//   - exact for post-launch history (the live write path records every
+//     status change, including clears); approximate for pre-launch history,
+//     since the backfill parsed the debounce-coalesced activity log.
+//   - collection attribution uses the item's CURRENT collection, not the one
+//     it belonged to at t. An item moved between collections is attributed to
+//     its present collection for past periods too. Reconstructing historical
+//     collection membership would require replaying move history (and
+//     status-preserving moves record no transition), so this is a deliberate
+//     limitation — the same current-collection attribution the backfill and
+//     completed-by-collection use. Items rarely change collection.
 func (s *Store) reportSnapshotAsOf(workspaceID string, colls []reportCollection, t time.Time) ([]ReportStatusCount, ReportWIP, error) {
 	tStr := t.Format(time.RFC3339)
 	dist := []ReportStatusCount{}
