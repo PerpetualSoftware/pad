@@ -319,6 +319,25 @@ func (c *Client) GetDashboard(wsSlug string) (json.RawMessage, error) {
 	return result, c.get("/workspaces/"+wsSlug+"/dashboard", &result)
 }
 
+// GetReport returns the windowed project report JSON (PLAN-1628 / TASK-1630).
+// window is one of day|week|2wk|month (empty = server default "week");
+// collections is an optional comma-separated list of collection slugs.
+func (c *Client) GetReport(wsSlug, window, collections string) (json.RawMessage, error) {
+	q := url.Values{}
+	if window != "" {
+		q.Set("window", window)
+	}
+	if collections != "" {
+		q.Set("collections", collections)
+	}
+	path := "/workspaces/" + wsSlug + "/report"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var result json.RawMessage
+	return result, c.get(path, &result)
+}
+
 // --- Bootstrap ---
 
 // GetAgentBootstrap returns the consolidated bootstrap blob — workspace +

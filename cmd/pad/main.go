@@ -5247,6 +5247,129 @@ func standupCmd() *cobra.Command {
 
 // --- changelog ---
 
+func reportCmd() *cobra.Command {
+	var window string
+	var collections string
+
+	cmd := &cobra.Command{
+		Use:   "report",
+		Short: "Windowed project report — throughput, net flow, completions, status mix",
+		Long: `Show a time-windowed project report: items created vs completed per bucket,
+net flow, completed-by-collection, and a current status-distribution snapshot.
+
+--window day|week|2wk|month (default week; day buckets hourly, others daily).
+--collections restricts to a comma-separated list of collection slugs.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			repJSON, err := client.GetReport(ws, window, collections)
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(repJSON)
+			}
+
+			var rep struct {
+				Window      string   `json:"window"`
+				Granularity string   `json:"granularity"`
+				RangeStart  string   `json:"range_start"`
+				RangeEnd    string   `json:"range_end"`
+				Collections []string `json:"collections"`
+				Buckets     []struct {
+					Bucket    string `json:"bucket"`
+					Created   int    `json:"created"`
+					Completed int    `json:"completed"`
+				} `json:"buckets"`
+				Totals struct {
+					Created   int `json:"created"`
+					Completed int `json:"completed"`
+					NetFlow   int `json:"net_flow"`
+				} `json:"totals"`
+				CompletedByCollection []struct {
+					Collection string `json:"collection"`
+					Count      int    `json:"count"`
+				} `json:"completed_by_collection"`
+				StatusDistribution []struct {
+					Collection string `json:"collection"`
+					Status     string `json:"status"`
+					Count      int    `json:"count"`
+				} `json:"status_distribution"`
+			}
+			if err := json.Unmarshal(repJSON, &rep); err != nil {
+				fmt.Println(string(repJSON))
+				return nil
+			}
+
+			bold := color.New(color.Bold)
+			dim := color.New(color.Faint)
+			green := color.New(color.FgGreen)
+			red := color.New(color.FgRed)
+
+			bold.Printf("📊 Report — %s", rep.Window)
+			if len(rep.Collections) > 0 {
+				dim.Printf("  (%s)", strings.Join(rep.Collections, ", "))
+			}
+			fmt.Println()
+			dim.Printf("   %s → %s\n\n", rep.RangeStart, rep.RangeEnd)
+
+			net := fmt.Sprintf("%+d", rep.Totals.NetFlow)
+			fmt.Printf("   Created: ")
+			green.Printf("%d", rep.Totals.Created)
+			fmt.Printf("   Completed: ")
+			green.Printf("%d", rep.Totals.Completed)
+			fmt.Printf("   Net flow: ")
+			if rep.Totals.NetFlow >= 0 {
+				bold.Print(net)
+			} else {
+				red.Print(net)
+			}
+			fmt.Print("\n\n")
+
+			// Per-bucket throughput (skip all-zero buckets to keep it compact).
+			any := false
+			for _, b := range rep.Buckets {
+				if b.Created == 0 && b.Completed == 0 {
+					continue
+				}
+				if !any {
+					bold.Println("   Throughput (created / completed)")
+					any = true
+				}
+				fmt.Printf("   %-13s ", b.Bucket)
+				green.Printf("+%d", b.Created)
+				fmt.Print(" / ")
+				red.Printf("-%d", b.Completed)
+				fmt.Println()
+			}
+			if !any {
+				dim.Println("   No activity in this window.")
+			}
+
+			if len(rep.CompletedByCollection) > 0 {
+				fmt.Println()
+				bold.Println("   Completed by collection")
+				for _, c := range rep.CompletedByCollection {
+					fmt.Printf("   %-16s %d\n", c.Collection, c.Count)
+				}
+			}
+
+			if len(rep.StatusDistribution) > 0 {
+				fmt.Println()
+				bold.Println("   Status distribution")
+				for _, s := range rep.StatusDistribution {
+					fmt.Printf("   %-16s %-14s %d\n", s.Collection, s.Status, s.Count)
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&window, "window", "week", "Report window: day|week|2wk|month")
+	cmd.Flags().StringVar(&collections, "collections", "", "Comma-separated collection slugs to include (default: all visible)")
+	return cmd
+}
+
 func changelogCmd() *cobra.Command {
 	var days int
 	var since string
