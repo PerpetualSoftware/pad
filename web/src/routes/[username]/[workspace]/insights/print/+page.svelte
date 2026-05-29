@@ -705,12 +705,16 @@
 		/* Suppress the app shell rendered by the root +layout.svelte so the
 		   printed page is just the report. The print/+layout@.svelte reset
 		   already drops the workspace ConnectBanner; these :global() rules hide
-		   the sidebar / topbar / expand tabs / toasts that live in the root
-		   layout. */
+		   the sidebar / desktop topbar / expand tabs / toasts that live in the
+		   root layout. The mobile TopBar (`.topbar-mobile`) is rendered as a
+		   sibling BEFORE `.app-layout`, so it isn't caught by the
+		   `.app-layout > :not(.app-shell)` rule and needs hiding explicitly —
+		   otherwise a Save-as-PDF from a mobile viewport includes the app bar. */
 		:global(.app-layout > :not(.app-shell)),
 		:global(.app-shell > :not(.main-content)),
 		:global(.sidebar-expand-btn),
-		:global(.topbar-expand-btn) {
+		:global(.topbar-expand-btn),
+		:global(.topbar-mobile) {
 			display: none !important;
 		}
 		:global(.app-layout),
