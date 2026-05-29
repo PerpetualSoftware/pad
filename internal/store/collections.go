@@ -655,6 +655,7 @@ var reservedCollectionSlugs = map[string]bool{
 	"roles":    true,
 	"starred":  true,
 	"library":  true,
+	"insights": true, // Insights analytics page route (PLAN-1628 / TASK-1633)
 	"new":      true,
 	// "ref" is reserved for the cross-workspace wiki-link resolver route
 	// (IDEA-1492): GET /{username}/{workspace}/ref/{REF} → 302 to the
