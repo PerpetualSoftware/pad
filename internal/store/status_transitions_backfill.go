@@ -111,7 +111,7 @@ func (s *Store) BackfillStatusTransitions() (*BackfillStatusTransitionsResult, e
 	// to status-bearing rows. Order by created_at so multi-hop histories
 	// insert in chronological order.
 	rows, err := s.db.Query(s.q(`
-		SELECT a.document_id, i.workspace_id, i.collection_id, a.metadata, a.created_at
+		SELECT a.id, a.document_id, i.workspace_id, i.collection_id, a.metadata, a.created_at
 		FROM activities a
 		JOIN items i ON i.id = a.document_id
 		WHERE a.action = 'updated'
@@ -126,12 +126,12 @@ func (s *Store) BackfillStatusTransitions() (*BackfillStatusTransitionsResult, e
 	// Buffer rows before writing — some drivers dislike interleaving
 	// INSERTs with an open SELECT cursor (same caution as BackfillWikiLinks).
 	type activityRow struct {
-		itemID, workspaceID, collectionID, metadata, createdAt string
+		activityID, itemID, workspaceID, collectionID, metadata, createdAt string
 	}
 	var scanned []activityRow
 	for rows.Next() {
 		var ar activityRow
-		if err := rows.Scan(&ar.itemID, &ar.workspaceID, &ar.collectionID, &ar.metadata, &ar.createdAt); err != nil {
+		if err := rows.Scan(&ar.activityID, &ar.itemID, &ar.workspaceID, &ar.collectionID, &ar.metadata, &ar.createdAt); err != nil {
 			return nil, fmt.Errorf("scan status-transition backfill row: %w", err)
 		}
 		scanned = append(scanned, ar)
@@ -140,6 +140,22 @@ func (s *Store) BackfillStatusTransitions() (*BackfillStatusTransitionsResult, e
 		return nil, fmt.Errorf("iterate status-transition backfill rows: %w", err)
 	}
 	rows.Close()
+
+	// Dialect-aware conflict clause makes each backfilled insert idempotent
+	// on its primary key. Combined with the deterministic, activity-derived
+	// id below, this closes the non-atomic gap the empty-table gate leaves:
+	// if two processes ever replay history concurrently (e.g. a future
+	// multi-replica Postgres deployment — single-instance today), the second
+	// insert of a given activity's transition is a no-op rather than a
+	// duplicate row that would overcount reports. The write-path hook uses a
+	// random newID(), so live rows never collide with these.
+	insertSQL := `INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, from_status, to_status, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`
+	if s.dialect.Driver() == DriverPostgres {
+		insertSQL += ` ON CONFLICT (id) DO NOTHING`
+	} else {
+		insertSQL = strings.Replace(insertSQL, "INSERT INTO", "INSERT OR IGNORE INTO", 1)
+	}
 
 	for _, ar := range scanned {
 		result.ActivitiesScanned++
@@ -158,16 +174,24 @@ func (s *Store) BackfillStatusTransitions() (*BackfillStatusTransitionsResult, e
 			continue
 		}
 
-		if _, err := s.db.Exec(s.q(`
-			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, from_status, to_status, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)
-		`), newID(), ar.itemID, ar.workspaceID, ar.collectionID, from, to, ar.createdAt); err != nil {
+		// Deterministic id: one activity row maps to at most one status
+		// transition, so the activity id (prefixed to keep it visibly
+		// backfill-sourced) is a stable, collision-free primary key. Re-runs
+		// hit the conflict clause and no-op.
+		transitionID := "bf_" + ar.activityID
+		res, err := s.db.Exec(s.q(insertSQL),
+			transitionID, ar.itemID, ar.workspaceID, ar.collectionID, from, to, ar.createdAt)
+		if err != nil {
 			slog.Warn("status-transition backfill: insert failed",
 				slog.String("item_id", ar.itemID), slog.String("err", err.Error()))
 			result.Errors++
 			continue
 		}
-		result.Inserted++
+		// Count only rows that actually landed — a conflict (already
+		// backfilled by a concurrent process) reports 0 affected.
+		if n, aerr := res.RowsAffected(); aerr == nil && n > 0 {
+			result.Inserted++
+		}
 	}
 
 	return result, nil

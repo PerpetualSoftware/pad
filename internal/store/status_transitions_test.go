@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -211,6 +212,12 @@ func TestBackfillStatusTransitions(t *testing.T) {
 	trans := listTransitions(t, s, item.ID)
 	if len(trans) != 1 || trans[0].FromStatus != "open" || trans[0].ToStatus != "done" {
 		t.Fatalf("backfilled transition wrong: %+v", trans)
+	}
+	// Backfilled rows carry a deterministic, activity-derived id ("bf_" +
+	// activity id) so a concurrent replay conflicts on the PK instead of
+	// inserting a duplicate. Live write-path rows use a random newID().
+	if !strings.HasPrefix(trans[0].ID, "bf_") {
+		t.Fatalf("backfilled transition should have a stable bf_ id, got %q", trans[0].ID)
 	}
 
 	// Second run must short-circuit (table now non-empty).
