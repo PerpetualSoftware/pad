@@ -359,3 +359,31 @@ func TestBackfillStatusTransitions(t *testing.T) {
 		t.Fatalf("expected second backfill to skip, got %+v", res2)
 	}
 }
+
+func TestStatusTransition_RecordsStatusClear(t *testing.T) {
+	s := testStore(t)
+	wsID, colID := newTransitionTestWorkspace(t, s)
+	item := createTestItem(t, s, wsID, colID, "clearable", "") // status open
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: strPtr(`{"status":"done"}`)}); err != nil {
+		t.Fatalf("to done: %v", err)
+	}
+	// Clear the status (full merged blob with no status key) — must record a
+	// done → "" transition so as-of reconstruction sees it reopen.
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: strPtr(`{}`)}); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	hops := hopTransitions(t, s, item.ID)
+	if len(hops) != 2 {
+		t.Fatalf("expected 2 hops (open→done, done→\"\"), got %d: %+v", len(hops), hops)
+	}
+	// Same-second created_at makes row order nondeterministic — assert the SET.
+	foundClear := false
+	for _, h := range hops {
+		if h.FromStatus == "done" && h.ToStatus == "" {
+			foundClear = true
+		}
+	}
+	if !foundClear {
+		t.Fatalf("expected a done → \"\" clear hop, got %+v", hops)
+	}
+}

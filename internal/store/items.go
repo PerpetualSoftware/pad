@@ -1723,7 +1723,12 @@ func (s *Store) UpdateItemWithPreCheck(
 	// completed-throughput and cycle-time series (PLAN-1628 / TASK-1637).
 	if input.Fields != nil {
 		newStatus := extractFieldValue(*input.Fields, doneKey)
-		if newStatus != "" && newStatus != statusBefore {
+		// Record any change in the done-field value, INCLUDING a clear
+		// (X → ""). input.Fields is the full merged blob (CLI/handler merge
+		// before write), so newStatus == "" genuinely means the field was
+		// cleared, not omitted — recording it keeps the as-of-T reconstruction
+		// accurate (an item cleared back to no-status reads as open).
+		if newStatus != statusBefore {
 			if _, err = tx.Exec(s.q(`
 				INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -3045,7 +3050,9 @@ func (s *Store) MoveItemWithPreCheck(
 	// the item now lives in. Same tx, not debounced.
 	oldStatus := extractFieldValue(oldFields, moveDoneKey)
 	newStatus := extractFieldValue(newFieldsJSON, moveDoneKey)
-	if newStatus != "" && newStatus != oldStatus {
+	// Record any done-field change, including a clear (X → "") — see the
+	// UpdateItemWithPreCheck hook for the rationale.
+	if newStatus != oldStatus {
 		if _, err = tx.Exec(s.q(`
 			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
