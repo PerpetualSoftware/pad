@@ -155,10 +155,18 @@ This is the core of the workflow — request an automated review, address every
 finding, push, re-review, exit when the reviewer returns zero findings (or the
 safety cap trips).
 
-The example below uses Codex CLI (` + "`codex exec -s read-only --full-auto -o <file>`" + `).
+The example below uses Codex CLI (` + "`codex exec -s read-only -o <file> \"<review prompt>\" < /dev/null`" + `).
+Pass the prompt as a positional argument — ` + "`codex exec`" + ` reads it from stdin
+when none is given, so with ` + "`< /dev/null`" + ` an arg-less command reviews nothing.
 **Swap for your review tool of choice** — Gemini, ` + "`claude review`" + `, a GitHub bot,
 whatever you have. The loop shape (synchronous review → address findings →
 push → re-review) is the part worth keeping.
+
+**If you use ` + "`codex exec`" + `: always redirect stdin from ` + "`/dev/null`" + `.** It reads
+extra input from stdin and hangs with zero output when stdin stays open (piped
+or backgrounded) — which looks exactly like a prompt-length wedge but is NOT
+fixed by a leaner prompt; only closing stdin fixes it. (The deprecated
+` + "`--full-auto`" + ` flag has been dropped; ` + "`-s read-only`" + ` is sufficient.)
 
 ` + "```" + `
 iteration = 0
@@ -199,12 +207,15 @@ doesn't keep flagging it.
 
 **Review prompt size matters.** Verbose prompts (focus areas, max-finding
 caps, severity-format directives) can wedge some review CLIs. Keep it lean
-— the shortest possible ask is the most reliable.
+— the shortest possible ask is the most reliable. (With ` + "`codex exec`" + `, rule
+out open stdin FIRST — see above — since that produces the identical
+zero-output symptom and isn't fixed by shortening the prompt.)
 
 **Safety exits:**
 - ` + "`iteration >= 5`" + ` — cap reached. Report remaining findings to the user.
-- Review CLI fails or wedges twice on the lean prompt — the tool itself is
-  broken. Report and ask.
+- Review CLI fails or wedges twice on the lean prompt (for ` + "`codex exec`" + `,
+  after confirming stdin is closed with ` + "`< /dev/null`" + `) — the tool itself
+  is broken. Report and ask.
 
 ### 10. Merge
 

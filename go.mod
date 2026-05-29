@@ -27,7 +27,7 @@ require (
 	github.com/trustelem/zxcvbn v1.0.1
 	go.yaml.in/yaml/v4 v4.0.0-rc.4
 	golang.org/x/crypto v0.51.0
-	golang.org/x/image v0.39.0
+	golang.org/x/image v0.41.0
 	golang.org/x/term v0.43.0
 	golang.org/x/text v0.37.0
 	golang.org/x/time v0.15.0
