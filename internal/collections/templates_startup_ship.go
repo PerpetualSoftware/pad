@@ -155,7 +155,9 @@ This is the core of the workflow — request an automated review, address every
 finding, push, re-review, exit when the reviewer returns zero findings (or the
 safety cap trips).
 
-The example below uses Codex CLI (` + "`codex exec -s read-only -o <file> < /dev/null`" + `).
+The example below uses Codex CLI (` + "`codex exec -s read-only -o <file> \"<review prompt>\" < /dev/null`" + `).
+Pass the prompt as a positional argument — ` + "`codex exec`" + ` reads it from stdin
+when none is given, so with ` + "`< /dev/null`" + ` an arg-less command reviews nothing.
 **Swap for your review tool of choice** — Gemini, ` + "`claude review`" + `, a GitHub bot,
 whatever you have. The loop shape (synchronous review → address findings →
 push → re-review) is the part worth keeping.
