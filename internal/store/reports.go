@@ -51,6 +51,9 @@ type ReportOptions struct {
 	// Now is the reference end of the window; zero means time.Now().UTC().
 	// Injectable so tests are deterministic.
 	Now time.Time
+	// Offset steps the window back by whole window-lengths (0 = current period,
+	// 1 = the period immediately before, …). Negative is clamped to 0.
+	Offset int
 	// ScopeToVisible, when true, restricts the report to VisibleCollectionIDs
 	// (the caller's visible collection set). Aggregate counts for collections
 	// the caller can't see are never computed — preventing a member/guest from
@@ -128,6 +131,7 @@ type ReportWIP struct {
 // Reports UI (TASK-1633), CLI/MCP (TASK-1635), and charts (TASK-1632) consume.
 type ReportData struct {
 	Window                string                  `json:"window"`
+	Offset                int                     `json:"offset"`      // periods back from now (0 = current)
 	Granularity           string                  `json:"granularity"` // "hour" | "day"
 	RangeStart            string                  `json:"range_start"` // RFC3339 UTC
 	RangeEnd              string                  `json:"range_end"`   // RFC3339 UTC
@@ -179,9 +183,18 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 		now = time.Now().UTC()
 	}
 	now = now.UTC()
-	start := now.Add(-lookback)
+
+	// offset steps the window back by whole window-lengths (0 = current,
+	// 1 = the window immediately before, …). Negative is clamped to 0 (no
+	// future). end is the window's right edge; start its left edge.
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	end := now.Add(-time.Duration(offset) * lookback)
+	start := end.Add(-lookback)
 	startStr := start.Format(time.RFC3339)
-	endStr := now.Format(time.RFC3339)
+	endStr := end.Format(time.RFC3339)
 
 	// Resolve the collections in scope (filtered by slug if requested, and by
 	// the caller's visible set when scoping is enabled).
@@ -192,6 +205,7 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 
 	data := &ReportData{
 		Window:                window,
+		Offset:                offset,
 		Granularity:           gran,
 		RangeStart:            startStr,
 		RangeEnd:              endStr,
@@ -216,7 +230,7 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 
 	// No collections in scope → empty (but well-formed) report.
 	if len(collIDs) == 0 {
-		data.Buckets = s.zeroFilledBuckets(start, now, gran, nil, nil)
+		data.Buckets = s.zeroFilledBuckets(start, end, gran, nil, nil)
 		return data, nil
 	}
 
@@ -229,7 +243,7 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 		return nil, err
 	}
 
-	data.Buckets = s.zeroFilledBuckets(start, now, gran, createdByBucket, completedByBucket)
+	data.Buckets = s.zeroFilledBuckets(start, end, gran, createdByBucket, completedByBucket)
 	for _, b := range data.Buckets {
 		data.Totals.Created += b.Created
 		data.Totals.Completed += b.Completed

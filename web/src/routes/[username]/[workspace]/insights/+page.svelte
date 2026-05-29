@@ -21,6 +21,9 @@
 	let selectedWindow = $state<ReportWindow>('week');
 	// Empty set === no filter (show all collections).
 	let selectedCollections = $state<string[]>([]);
+	// Period navigation: periods back from now (0 = current). SESSION-only — not
+	// part of ReportLayout, never persisted via scheduleSave.
+	let offset = $state(0);
 	// The workspace the current filter belongs to. SvelteKit reuses this route
 	// component across workspace param changes, so a filter selected in
 	// workspace A would otherwise persist into B and scope B's /report to an
@@ -96,6 +99,8 @@
 		if (slug !== filterWsSlug) {
 			filterWsSlug = slug;
 			selectedCollections = [];
+			// Reset period navigation to the current period for the new workspace.
+			offset = 0;
 			// Drop the previous workspace's data so A's totals/date-range don't
 			// linger under B's URL while B loads — the `loading` state covers the gap.
 			report = null;
@@ -107,8 +112,9 @@
 			hydrated = false;
 		}
 		const colls = [...selectedCollections];
+		const off = offset;
 		if (slug) {
-			loadReport(slug, win, colls);
+			loadReport(slug, win, colls, off);
 		}
 	});
 
@@ -142,14 +148,15 @@
 		}
 	}
 
-	async function loadReport(slug: string, win: ReportWindow, colls: string[]) {
+	async function loadReport(slug: string, win: ReportWindow, colls: string[], off: number) {
 		const seq = ++reqSeq;
 		loading = true;
 		error = '';
 		try {
 			const data = await api.report.get(slug, {
 				window: win,
-				collections: colls.length > 0 ? colls : undefined
+				collections: colls.length > 0 ? colls : undefined,
+				offset: off
 			});
 			// Only the latest in-flight request commits — discard stale responses.
 			if (seq !== reqSeq) return;
@@ -193,7 +200,19 @@
 
 	function selectWindow(win: ReportWindow) {
 		selectedWindow = win;
+		// Different period length, so the current offset no longer maps — snap to
+		// the present. offset is session-only and not persisted.
+		offset = 0;
 		scheduleSave();
+	}
+
+	// Period navigation (session-only; never persisted).
+	function prevPeriod() {
+		offset += 1;
+	}
+
+	function nextPeriod() {
+		offset = Math.max(0, offset - 1);
 	}
 
 	function toggleCollection(slug: string) {
@@ -276,6 +295,16 @@
 
 	const netFlow = $derived(report?.totals.net_flow ?? 0);
 
+	// True when viewing a past period. WIP + status distribution are point-in-time
+	// snapshots that, for now, only render meaningfully for the current period;
+	// hide them in the past until a follow-up makes them historical.
+	const inPast = $derived(offset > 0);
+
+	// Short relative label for the period nav.
+	const periodLabel = $derived(
+		offset === 0 ? 'Current period' : `${offset} period${offset === 1 ? '' : 's'} ago`
+	);
+
 	// Status distribution grouped by collection.
 	const statusByCollection = $derived.by(() => {
 		const groups: { collection: string; total: number; rows: { status: string; count: number }[] }[] =
@@ -301,10 +330,31 @@
 				<span class="date-range">
 					{fmtDate(report.range_start)} &ndash; {fmtDate(report.range_end)}
 				</span>
+				<span class="period-label" class:past={inPast}>{periodLabel}</span>
 			{/if}
 		</div>
 
 		<div class="header-controls">
+			<div class="period-nav" role="group" aria-label="Period navigation">
+				<button
+					type="button"
+					class="period-btn"
+					aria-label="Previous period"
+					onclick={prevPeriod}
+				>
+					&#9664; Previous
+				</button>
+				<button
+					type="button"
+					class="period-btn"
+					aria-label="Next period"
+					disabled={offset === 0}
+					onclick={nextPeriod}
+				>
+					Next &#9654;
+				</button>
+			</div>
+
 			<div class="window-control" role="group" aria-label="Time window">
 				{#each WINDOW_OPTIONS as opt (opt.value)}
 					<button
@@ -401,6 +451,12 @@
 				</div>
 			</section>
 
+			{#if inPast}
+				<p class="past-note">
+					Work-in-progress and status distribution show the current period only.
+				</p>
+			{/if}
+
 			<!-- Throughput -->
 			{#if !hiddenCards.has('throughput')}
 				<section class="card">
@@ -422,7 +478,7 @@
 				</section>
 			{/if}
 
-			{#if !hiddenCards.has('cycle_time') || !hiddenCards.has('wip')}
+			{#if !hiddenCards.has('cycle_time') || (!hiddenCards.has('wip') && !inPast)}
 				<div class="grid">
 					<!-- Cycle time -->
 					{#if !hiddenCards.has('cycle_time')}
@@ -466,7 +522,7 @@
 					{/if}
 
 					<!-- Work in progress -->
-					{#if !hiddenCards.has('wip')}
+					{#if !hiddenCards.has('wip') && !inPast}
 						<section class="card">
 							<div class="card-header">
 								<h2>Work in progress</h2>
@@ -532,7 +588,7 @@
 			{/if}
 
 			<!-- Status distribution -->
-			{#if !hiddenCards.has('status_distribution')}
+			{#if !hiddenCards.has('status_distribution') && !inPast}
 				<section class="card">
 					<div class="card-header">
 						<h2>Status distribution</h2>
@@ -601,11 +657,61 @@
 		font-size: 0.9em;
 		color: var(--text-muted);
 	}
+	.period-label {
+		font-size: 0.72em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.05em;
+		color: var(--text-muted);
+		background: var(--bg-tertiary);
+		padding: 2px 8px;
+		border-radius: 10px;
+	}
+	.period-label.past {
+		color: var(--accent-amber);
+		background: color-mix(in srgb, var(--accent-amber) 15%, transparent);
+	}
 	.header-controls {
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
 		flex-wrap: wrap;
+	}
+
+	/* ── Period navigation ────────────────────────────────────────────── */
+	.period-nav {
+		display: inline-flex;
+		gap: var(--space-1);
+	}
+	.period-btn {
+		background: var(--bg-secondary);
+		color: var(--text-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-2) var(--space-3);
+		font-size: 0.8em;
+		font-weight: 600;
+		cursor: pointer;
+		white-space: nowrap;
+		transition: background 0.15s, border-color 0.15s, color 0.15s;
+	}
+	.period-btn:hover:not(:disabled) {
+		border-color: var(--text-muted);
+		color: var(--text-primary);
+	}
+	.period-btn:disabled {
+		opacity: 0.45;
+		cursor: not-allowed;
+	}
+
+	/* ── Past-period note ─────────────────────────────────────────────── */
+	.past-note {
+		font-size: 0.82em;
+		color: var(--text-muted);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-3) var(--space-4);
 	}
 
 	/* ── Window segmented control ─────────────────────────────────────── */

@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -31,6 +32,11 @@ func (s *Server) handleGetReport(w http.ResponseWriter, r *http.Request) {
 		Window:               r.URL.Query().Get("window"),
 		ScopeToVisible:       scopeToVisible,
 		VisibleCollectionIDs: visibleIDs,
+	}
+	// offset = periods back (0 = current). Non-numeric/negative → 0 (the store
+	// also clamps).
+	if n, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset"))); err == nil && n > 0 {
+		opts.Offset = n
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("collections")); raw != "" {
 		for _, slug := range strings.Split(raw, ",") {

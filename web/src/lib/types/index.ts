@@ -884,6 +884,8 @@ export interface ReportWIP {
  */
 export interface ReportData {
 	window: ReportWindow;
+	/** periods back from now (0 = current); set via the period-nav controls */
+	offset: number;
 	granularity: 'hour' | 'day';
 	range_start: string; // RFC3339 UTC
 	range_end: string; // RFC3339 UTC

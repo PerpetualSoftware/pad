@@ -381,3 +381,42 @@ func TestGetReport_EmptyScopeWellFormedJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestGetReport_OffsetShiftsWindow(t *testing.T) {
+	s := testStore(t)
+	wsID, colID := newTransitionTestWorkspace(t, s)
+	createTestItem(t, s, wsID, colID, "recent", "") // created ~now
+	old := createTestItem(t, s, wsID, colID, "old", "")
+	backdateItem(t, s, old.ID, 10*24) // created ~10 days ago
+	now := time.Now().UTC()
+
+	// offset 0, week window [now-7d, now]: only the recent item.
+	r0, err := s.GetReport(wsID, ReportOptions{Window: "week", Offset: 0, Now: now})
+	if err != nil {
+		t.Fatalf("offset 0: %v", err)
+	}
+	if r0.Offset != 0 || r0.Totals.Created != 1 {
+		t.Fatalf("offset 0: expected offset=0 created=1 (recent), got offset=%d created=%d", r0.Offset, r0.Totals.Created)
+	}
+
+	// offset 1, week window [now-14d, now-7d]: only the 10-day-old item.
+	r1, err := s.GetReport(wsID, ReportOptions{Window: "week", Offset: 1, Now: now})
+	if err != nil {
+		t.Fatalf("offset 1: %v", err)
+	}
+	if r1.Offset != 1 || r1.Totals.Created != 1 {
+		t.Fatalf("offset 1: expected offset=1 created=1 (old), got offset=%d created=%d", r1.Offset, r1.Totals.Created)
+	}
+	if !(r1.RangeEnd < r0.RangeEnd && r1.RangeStart < r0.RangeStart) {
+		t.Fatalf("offset 1 window should be earlier: r1 [%s,%s] vs r0 [%s,%s]", r1.RangeStart, r1.RangeEnd, r0.RangeStart, r0.RangeEnd)
+	}
+
+	// Negative offset clamps to 0 (no future).
+	rNeg, err := s.GetReport(wsID, ReportOptions{Window: "week", Offset: -3, Now: now})
+	if err != nil {
+		t.Fatalf("neg offset: %v", err)
+	}
+	if rNeg.Offset != 0 || rNeg.RangeEnd != r0.RangeEnd {
+		t.Fatalf("negative offset should clamp to 0, got offset=%d", rNeg.Offset)
+	}
+}
