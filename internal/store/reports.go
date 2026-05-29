@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -264,25 +265,150 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 		return a.Collection < b.Collection
 	})
 
-	dist, err := s.reportStatusDistribution(workspaceID, colls)
-	if err != nil {
-		return nil, err
-	}
-	data.StatusDistribution = dist
-
 	cycle, err := s.reportCycleTime(workspaceID, colls, startStr, endStr, slugByID)
 	if err != nil {
 		return nil, err
 	}
 	data.CycleTime = cycle
 
-	wip, err := s.reportWIP(workspaceID, colls, now)
-	if err != nil {
-		return nil, err
+	// Snapshot metrics (status distribution + WIP). At offset 0 they reflect
+	// "now" from the live items table (ground truth). For a PAST period
+	// (offset > 0) we reconstruct them as-of the window end from the
+	// status-transition history, so they reflect the selected period rather
+	// than the current moment (PLAN-1628 / TASK-1640).
+	if offset > 0 {
+		dist, wip, rerr := s.reportSnapshotAsOf(workspaceID, colls, end)
+		if rerr != nil {
+			return nil, rerr
+		}
+		data.StatusDistribution = dist
+		data.WIP = wip
+	} else {
+		dist, derr := s.reportStatusDistribution(workspaceID, colls)
+		if derr != nil {
+			return nil, derr
+		}
+		data.StatusDistribution = dist
+		wip, werr := s.reportWIP(workspaceID, colls, now)
+		if werr != nil {
+			return nil, werr
+		}
+		data.WIP = wip
 	}
-	data.WIP = wip
 
 	return data, nil
+}
+
+// reportSnapshotAsOf reconstructs the status-distribution and WIP snapshot as
+// they stood at time t, from the status-transition history (PLAN-1628 /
+// TASK-1640). An item's status as-of-t is the to_status of its latest
+// transition on the collection's done field with created_at <= t. Per
+// collection (the done field varies), it scans items currently in that
+// collection that existed at t (created_at <= t) and weren't deleted by then
+// (deleted_at IS NULL OR > t), resolving each one's as-of-t value via a
+// "no later transition <= t" NOT EXISTS — dual-dialect, no window functions.
+//
+// Accuracy (historical periods are best-effort, matching the rest of the
+// feature's historical posture):
+//   - exact for post-launch history (the live write path records every
+//     status change, including clears); approximate for pre-launch history,
+//     since the backfill parsed the debounce-coalesced activity log.
+//   - collection attribution uses the item's CURRENT collection, not the one
+//     it belonged to at t. An item moved between collections is attributed to
+//     its present collection for past periods too. Reconstructing historical
+//     collection membership would require replaying move history (and
+//     status-preserving moves record no transition), so this is a deliberate
+//     limitation — the same current-collection attribution the backfill and
+//     completed-by-collection use. Items rarely change collection.
+//   - same-second resolution: created_at is second-precision and transition
+//     ids are random UUIDs, so "the latest transition <= t" is nondeterministic
+//     when an item changes status 2+ times within ONE second — it may resolve
+//     to either same-second value. Rare (requires sub-second multi-hops on one
+//     item); a monotonic ordering column would fix it (tracked as a follow-up).
+func (s *Store) reportSnapshotAsOf(workspaceID string, colls []reportCollection, t time.Time) ([]ReportStatusCount, ReportWIP, error) {
+	tStr := t.Format(time.RFC3339)
+	dist := []ReportStatusCount{}
+	wip := ReportWIP{AgingBuckets: []ReportAgingBucket{}, ByCollection: []ReportDuration{}}
+
+	var openAges []float64
+	perColl := map[string][]float64{}
+	slugByID := map[string]string{}
+
+	for _, c := range colls {
+		slugByID[c.id] = c.slug
+		terminals := map[string]bool{}
+		for _, v := range c.allTerminals {
+			terminals[strings.ToLower(v)] = true
+		}
+		// Start from items (not transitions) so an item that existed at t but
+		// had no done-field transition yet is still counted — matching the
+		// live path, which treats a missing/empty done value as open. For each
+		// in-scope item that existed at t and wasn't deleted by t, the
+		// correlated subquery resolves its as-of-t value: the to_status of the
+		// latest transition on the done field at or before t (NULL if none →
+		// treated as empty/open). LIMIT 1 ORDER BY created_at,id is valid on
+		// both dialects (no window functions).
+		query := `
+			SELECT i.created_at,
+			  (SELECT st.to_status FROM status_transitions st
+			   WHERE st.item_id = i.id AND st.field_key = ? AND st.created_at <= ?
+			   ORDER BY st.created_at DESC, st.id DESC LIMIT 1) AS asof_status
+			FROM items i
+			WHERE i.workspace_id = ? AND i.collection_id = ?
+			  AND i.created_at <= ?
+			  AND (i.deleted_at IS NULL OR i.deleted_at > ?)
+		`
+		rows, err := s.db.Query(s.q(query), c.doneKey, tStr, workspaceID, c.id, tStr, tStr)
+		if err != nil {
+			return nil, ReportWIP{}, fmt.Errorf("reconstruct snapshot: %w", err)
+		}
+		statusCounts := map[string]int{}
+		func() {
+			defer rows.Close()
+			for rows.Next() {
+				var createdAt string
+				var asof sql.NullString
+				if scanErr := rows.Scan(&createdAt, &asof); scanErr != nil {
+					err = fmt.Errorf("scan snapshot row: %w", scanErr)
+					return
+				}
+				status := strings.ToLower(asof.String) // "" when NULL
+				// Status distribution skips items with no done value (matches
+				// the live path).
+				if status != "" {
+					statusCounts[status]++
+				}
+				// WIP: open = not a terminal value (a missing/empty value is
+				// open too); age measured against t.
+				if !terminals[status] {
+					if h, ok := durationHours(createdAt, tStr); ok {
+						openAges = append(openAges, h)
+						perColl[c.id] = append(perColl[c.id], h)
+					}
+				}
+			}
+			err = rows.Err()
+		}()
+		if err != nil {
+			return nil, ReportWIP{}, err
+		}
+		for status, n := range statusCounts {
+			dist = append(dist, ReportStatusCount{Collection: c.slug, Status: status, Count: n})
+		}
+	}
+
+	sort.Slice(dist, func(i, j int) bool {
+		if dist[i].Collection != dist[j].Collection {
+			return dist[i].Collection < dist[j].Collection
+		}
+		return dist[i].Status < dist[j].Status
+	})
+
+	wip.OpenCount = len(openAges)
+	wip.MedianAgeHours = percentile(openAges, 0.5)
+	wip.ByCollection = durationsByCollection(perColl, slugByID)
+	wip.AgingBuckets = agingBuckets(openAges)
+	return dist, wip, nil
 }
 
 // reportCycleTime computes created→positive-terminal durations for completions
