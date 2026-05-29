@@ -20,6 +20,13 @@
 	let selectedWindow = $state<ReportWindow>('week');
 	// Empty set === no filter (show all collections).
 	let selectedCollections = $state<string[]>([]);
+	// The workspace the current filter belongs to. SvelteKit reuses this route
+	// component across workspace param changes, so a filter selected in
+	// workspace A would otherwise persist into B and scope B's /report to an
+	// empty set (none of A's slugs match). We reset the filter when wsSlug
+	// actually changes, guarded on this tracker so unrelated re-renders don't
+	// clobber the user's selection.
+	let filterWsSlug = '';
 
 	const WINDOW_OPTIONS: { value: ReportWindow; label: string }[] = [
 		{ value: 'day', label: 'Day' },
@@ -52,6 +59,14 @@
 	$effect(() => {
 		const slug = wsSlug;
 		const win = selectedWindow;
+		// On an actual workspace change, drop the previous workspace's filter
+		// (its slugs don't exist in the new workspace) before snapshotting.
+		// `filterWsSlug` is a plain (non-reactive) tracker, so this assignment
+		// doesn't re-trigger the effect and can't loop.
+		if (slug !== filterWsSlug) {
+			filterWsSlug = slug;
+			selectedCollections = [];
+		}
 		const colls = [...selectedCollections];
 		if (slug) {
 			loadReport(slug, win, colls);
