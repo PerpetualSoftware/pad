@@ -10,6 +10,19 @@
 	import type { Collection, ReportData, ReportLayout, ReportWindow } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
+	let username = $derived(page.params.username ?? '');
+
+	// Link to the print-optimized exec report, carrying the active selection
+	// (window / offset / collections) so the printed report matches what the
+	// user is currently viewing.
+	const printHref = $derived.by(() => {
+		const params = new URLSearchParams();
+		params.set('window', selectedWindow);
+		if (offset > 0) params.set('offset', String(offset));
+		if (selectedCollections.length > 0) params.set('collections', selectedCollections.join(','));
+		const qs = params.toString();
+		return `/${username}/${wsSlug}/insights/print${qs ? `?${qs}` : ''}`;
+	});
 
 	// Data
 	let report = $state<ReportData | null>(null);
@@ -368,6 +381,8 @@
 					</button>
 				{/each}
 			</div>
+
+			<a class="print-link" href={printHref}>Print report</a>
 
 			<div class="customize">
 				<button
@@ -743,6 +758,25 @@
 		background: var(--bg-primary, var(--bg));
 		color: var(--text-primary);
 		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+	}
+
+	/* ── Print report link ────────────────────────────────────────────── */
+	.print-link {
+		background: var(--bg-secondary);
+		color: var(--text-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-2) var(--space-3);
+		font-size: 0.8em;
+		font-weight: 600;
+		cursor: pointer;
+		white-space: nowrap;
+		text-decoration: none;
+		transition: background 0.15s, border-color 0.15s, color 0.15s;
+	}
+	.print-link:hover {
+		border-color: var(--text-muted);
+		color: var(--text-primary);
 	}
 
 	/* ── Customize ────────────────────────────────────────────────────── */
