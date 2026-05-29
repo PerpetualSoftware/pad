@@ -343,23 +343,39 @@ func (s *Store) reportCompletedItems(workspaceID string, colls []reportCollectio
 	if posExpr == "" {
 		return []ReportCompletedItem{}, 0, nil
 	}
+
+	// Restrict item-level rows to items whose CURRENT collection is in scope.
+	// posExpr scopes by st.collection_id (the collection at completion time),
+	// but this query returns the item's live title/ref/collection — so an item
+	// completed while in a visible collection and since moved to a hidden one
+	// must NOT leak its current (hidden) details to a restricted caller.
+	curScope := make([]string, 0, len(colls))
+	curArgs := make([]any, 0, len(colls))
+	for _, c := range colls {
+		curScope = append(curScope, "?")
+		curArgs = append(curArgs, c.id)
+	}
+	curExpr := "i.collection_id IN (" + strings.Join(curScope, ",") + ")"
+
 	base := []any{workspaceID, startStr, endStr}
 
 	// Distinct completed-item count (for the overflow figure).
 	var total int
 	cArgs := append(append([]any{}, base...), posArgs...)
+	cArgs = append(cArgs, curArgs...)
 	if err := s.db.QueryRow(s.q(fmt.Sprintf(`
 		SELECT COUNT(DISTINCT st.item_id)
 		FROM status_transitions st
 		JOIN items i ON i.id = st.item_id AND i.deleted_at IS NULL
 		WHERE st.workspace_id = ? AND st.created_at >= ? AND st.created_at <= ?
-		  AND %s
-	`, posExpr)), cArgs...).Scan(&total); err != nil {
+		  AND %s AND %s
+	`, posExpr, curExpr)), cArgs...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count completed items: %w", err)
 	}
 
 	// The list: one row per item (latest in-window completion), newest first.
 	lArgs := append(append([]any{}, base...), posArgs...)
+	lArgs = append(lArgs, curArgs...)
 	lArgs = append(lArgs, completedItemsCap)
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT c.prefix, i.item_number, i.title, c.slug, MAX(st.created_at) AS completed_at
@@ -367,11 +383,11 @@ func (s *Store) reportCompletedItems(workspaceID string, colls []reportCollectio
 		JOIN items i ON i.id = st.item_id AND i.deleted_at IS NULL
 		JOIN collections c ON c.id = i.collection_id
 		WHERE st.workspace_id = ? AND st.created_at >= ? AND st.created_at <= ?
-		  AND %s
+		  AND %s AND %s
 		GROUP BY i.id, c.prefix, i.item_number, i.title, c.slug
 		ORDER BY completed_at DESC
 		LIMIT ?
-	`, posExpr)), lArgs...)
+	`, posExpr, curExpr)), lArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("list completed items: %w", err)
 	}

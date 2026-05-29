@@ -567,3 +567,45 @@ func TestGetReport_CompletedItems(t *testing.T) {
 		t.Fatalf("completed_items should be nil when not requested, got %+v", rep2.CompletedItems)
 	}
 }
+
+func TestGetReport_CompletedItemsRespectsCurrentCollectionVisibility(t *testing.T) {
+	s := testStore(t)
+	u, _ := s.CreateUser(models.UserCreate{Name: "V", Email: "v@example.com"})
+	ws, _ := s.CreateWorkspace(models.WorkspaceCreate{Name: "Vis", Slug: "vis", OwnerID: u.ID})
+	visible := createTestCollection(t, s, ws.ID, "Visible")
+	secret := createTestCollection(t, s, ws.ID, "Secret")
+
+	item := createTestItem(t, s, ws.ID, visible.ID, "Mover", "")
+	// Complete it while in the visible collection (transition stamped visible).
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: strPtr(`{"status":"done"}`)}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	// Move it (status-preserving) into the hidden collection.
+	if _, err := s.MoveItem(item.ID, secret.ID, `{"status":"done"}`); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+
+	now := time.Now().UTC()
+	// Scoped to the visible collection only: the item now lives in the hidden
+	// collection, so it must NOT appear in completed_items (no current title /
+	// hidden-collection-slug leak), even though it completed while visible.
+	scoped, err := s.GetReport(ws.ID, ReportOptions{
+		Window: "week", Now: now, IncludeItems: true,
+		ScopeToVisible: true, VisibleCollectionIDs: []string{visible.ID},
+	})
+	if err != nil {
+		t.Fatalf("scoped: %v", err)
+	}
+	if len(scoped.CompletedItems) != 0 {
+		t.Fatalf("item moved to a hidden collection must not leak into completed_items, got %+v", scoped.CompletedItems)
+	}
+
+	// Unscoped (owner/full): the item appears, attributed to its current collection.
+	full, err := s.GetReport(ws.ID, ReportOptions{Window: "week", Now: now, IncludeItems: true})
+	if err != nil {
+		t.Fatalf("full: %v", err)
+	}
+	if len(full.CompletedItems) != 1 || full.CompletedItems[0].Collection != "secret" {
+		t.Fatalf("unscoped should list the item under its current collection, got %+v", full.CompletedItems)
+	}
+}
