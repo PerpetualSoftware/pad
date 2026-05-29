@@ -131,6 +131,24 @@ For each rewritten convention, propose it to the user. Confirm. Create via ` + "
 
 If the library has nothing close to what the user needs, INVENT a convention.
 
+**Independent code reviewer (software projects).** One library convention is worth
+calling out specially: **"Independent AI code review."** The principle — a reviewer
+model DIFFERENT from your implementer model catches far more than self-review;
+reviewing with the same model that wrote the code is closer to self-review. To
+suggest it well, do two checks:
+1. **Your model = the implementer.** You are the agent running this onboarding, so
+   you know your own model (e.g. Claude). That's the implementer.
+2. **Is a different-model review tool available?** If you have a shell, probe for one
+   (e.g. ` + "`codex --version`" + `, ` + "`gemini --version`" + `); if you're a pure-MCP agent with no
+   shell, just ask the user what review tools they have.
+
+If a review tool is present AND it's a different model than yours, propose activating
+the "Independent AI code review" convention and name the detected tool — e.g. *"I see
+` + "`codex`" + ` installed; since you're implementing with Claude, it'd be a genuine independent
+reviewer for the ship loop."* If the only available reviewer would be the SAME model
+that implements, skip it (or suggest adding a different one). Never block — it's a
+suggestion, and the convention states the principle (not any tool's operational details).
+
 ### B4. Propose roles
 
 If the workspace has multiple agents or humans collaborating on different kinds of work, suggest roles. Three common starter sets:
@@ -183,6 +201,11 @@ For each seeded convention, READ ITS BODY. Ask:
 - Are the commands in the body the real ones for this project? (The library version says "run the test suite"; the seeded version might say "run ` + "`make test`" + `"; the user's project might actually use ` + "`go test -race ./...`" + ` or ` + "`npm test`" + `.)
 
 Rewrite the body via ` + "`pad item update <CONVE-ref> --stdin`" + ` (or MCP). Delete conventions that don't apply via ` + "`pad item delete`" + `.
+
+For software workspaces, also consider proposing the **"Independent AI code review"**
+library convention if a different-model review tool is available — same check as build
+mode's reviewer note (your model is the implementer; probe for/ask about a review tool;
+suggest only when the reviewer model differs from yours).
 
 ### A4. Walk the playbooks
 

@@ -108,6 +108,14 @@ func ConventionLibrary() []LibraryCategory {
 					Surfaces:    []string{"all"},
 					Enforcement: "should",
 				},
+				{
+					Title:       "Independent AI code review",
+					Content:     "Have an independent AI reviewer look at your changes before merge — and use a DIFFERENT model than the one that implemented them. A second, independent model catches issues self-review misses; reviewing with the same model that wrote the code is closer to self-review. Use whatever review tool you have (a review CLI, `claude review`, a GitHub review bot); the loop shape is request review → address every finding → re-review until clean. Pick the reviewer model to differ from your implementer model (e.g. implement with one model, review with another).",
+					Category:    "quality",
+					Trigger:     "on-pr-create",
+					Surfaces:    []string{"all"},
+					Enforcement: "nice-to-have",
+				},
 			},
 		},
 		{
