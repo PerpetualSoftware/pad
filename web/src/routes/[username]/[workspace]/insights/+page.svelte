@@ -295,9 +295,9 @@
 
 	const netFlow = $derived(report?.totals.net_flow ?? 0);
 
-	// True when viewing a past period. WIP + status distribution are point-in-time
-	// snapshots that, for now, only render meaningfully for the current period;
-	// hide them in the past until a follow-up makes them historical.
+	// True when viewing a past period. WIP + status distribution now render in the
+	// past too (backend reconstructs them as-of the selected period's end); this
+	// only drives the period chip + the "reconstructed as of…" note.
 	const inPast = $derived(offset > 0);
 
 	// Short relative label for the period nav.
@@ -453,7 +453,8 @@
 
 			{#if inPast}
 				<p class="past-note">
-					Work-in-progress and status distribution show the current period only.
+					Work-in-progress and status distribution are reconstructed as of this
+					period's end; older periods may be approximate.
 				</p>
 			{/if}
 
@@ -478,7 +479,7 @@
 				</section>
 			{/if}
 
-			{#if !hiddenCards.has('cycle_time') || (!hiddenCards.has('wip') && !inPast)}
+			{#if !hiddenCards.has('cycle_time') || !hiddenCards.has('wip')}
 				<div class="grid">
 					<!-- Cycle time -->
 					{#if !hiddenCards.has('cycle_time')}
@@ -522,7 +523,7 @@
 					{/if}
 
 					<!-- Work in progress -->
-					{#if !hiddenCards.has('wip') && !inPast}
+					{#if !hiddenCards.has('wip')}
 						<section class="card">
 							<div class="card-header">
 								<h2>Work in progress</h2>
@@ -588,7 +589,7 @@
 			{/if}
 
 			<!-- Status distribution -->
-			{#if !hiddenCards.has('status_distribution') && !inPast}
+			{#if !hiddenCards.has('status_distribution')}
 				<section class="card">
 					<div class="card-header">
 						<h2>Status distribution</h2>

@@ -420,3 +420,74 @@ func TestGetReport_OffsetShiftsWindow(t *testing.T) {
 		t.Fatalf("negative offset should clamp to 0, got offset=%d", rNeg.Offset)
 	}
 }
+
+func TestReportSnapshotAsOf(t *testing.T) {
+	s := testStore(t)
+	wsID, colID := newTransitionTestWorkspace(t, s) // tasks; "done" is a default terminal
+	item := createTestItem(t, s, wsID, colID, "historical", "")
+	// Control the transition history precisely.
+	if _, err := s.db.Exec(s.dialect.Rebind(`DELETE FROM status_transitions WHERE item_id = ?`), item.ID); err != nil {
+		t.Fatalf("clear transitions: %v", err)
+	}
+	backdateItem(t, s, item.ID, 20*24) // existed 20d ago
+
+	now := time.Now().UTC()
+	ins := func(id, from, to string, hoursAgo float64) {
+		ts := now.Add(-time.Duration(hoursAgo * float64(time.Hour))).Format(time.RFC3339)
+		if _, err := s.db.Exec(s.q(`INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+			id, item.ID, wsID, colID, "status", from, to, ts); err != nil {
+			t.Fatalf("insert transition: %v", err)
+		}
+	}
+	ins("t1", "", "open", 20*24)    // 20d ago: open
+	ins("t2", "open", "done", 5*24) // 5d ago: done
+
+	colls, err := s.resolveReportCollections(wsID, ReportOptions{})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	statusOf := func(dist []ReportStatusCount, status string) int {
+		for _, d := range dist {
+			if d.Collection == "tasks" && d.Status == status {
+				return d.Count
+			}
+		}
+		return 0
+	}
+
+	// As of 10 days ago: latest transition <= then is t1 → "open" (the t2 done
+	// at 5d ago is AFTER T, so it must NOT be reflected).
+	dist10, wip10, err := s.reportSnapshotAsOf(wsID, colls, now.Add(-10*24*time.Hour))
+	if err != nil {
+		t.Fatalf("asof 10d: %v", err)
+	}
+	if statusOf(dist10, "open") != 1 || statusOf(dist10, "done") != 0 {
+		t.Fatalf("as-of-10d should be open (pre-done), got %+v", dist10)
+	}
+	if wip10.OpenCount != 1 {
+		t.Fatalf("as-of-10d WIP open should be 1, got %d", wip10.OpenCount)
+	}
+
+	// As of 3 days ago: latest <= then is t2 → "done" (terminal → not WIP).
+	dist3, wip3, err := s.reportSnapshotAsOf(wsID, colls, now.Add(-3*24*time.Hour))
+	if err != nil {
+		t.Fatalf("asof 3d: %v", err)
+	}
+	if statusOf(dist3, "done") != 1 || statusOf(dist3, "open") != 0 {
+		t.Fatalf("as-of-3d should be done, got %+v", dist3)
+	}
+	if wip3.OpenCount != 0 {
+		t.Fatalf("as-of-3d WIP open should be 0 (done is terminal), got %d", wip3.OpenCount)
+	}
+
+	// Existed-at-T: as of 30 days ago (before the item's created_at), it must
+	// not appear at all.
+	dist30, wip30, err := s.reportSnapshotAsOf(wsID, colls, now.Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatalf("asof 30d: %v", err)
+	}
+	if len(dist30) != 0 || wip30.OpenCount != 0 {
+		t.Fatalf("as-of-30d (before creation) should be empty, got dist=%+v wip.open=%d", dist30, wip30.OpenCount)
+	}
+}
