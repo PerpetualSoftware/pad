@@ -936,11 +936,15 @@ export const api = {
 		 * Windowed project report. window ∈ {day, week, 2wk, month} (default
 		 * week). collections optionally restricts to the given slugs.
 		 */
-		get: (ws: string, opts?: { window?: ReportWindow; collections?: string[]; offset?: number }) => {
+		get: (
+			ws: string,
+			opts?: { window?: ReportWindow; collections?: string[]; offset?: number; includeItems?: boolean }
+		) => {
 			const params = new URLSearchParams();
 			if (opts?.window) params.set('window', opts.window);
 			if (opts?.collections?.length) params.set('collections', opts.collections.join(','));
 			if (opts?.offset && opts.offset > 0) params.set('offset', String(opts.offset));
+			if (opts?.includeItems) params.set('include_items', 'true');
 			const qs = params.toString();
 			return request<ReportData>(`/workspaces/${ws}/report${qs ? `?${qs}` : ''}`);
 		},
