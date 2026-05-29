@@ -1675,6 +1675,26 @@ func (s *Store) UpdateItemWithPreCheck(
 		return nil, fmt.Errorf("update item: %w", err)
 	}
 
+	// Record a structured status transition when the fields blob was part
+	// of this update AND the `status` value actually changed. Written in
+	// the same tx as the item UPDATE so the transition log can never
+	// diverge from the item's persisted status, and — unlike the activity
+	// feed — NOT debounced, so every hop (open → in-progress → done) is its
+	// own row. This is the canonical timestamp source for the Reports
+	// completed-throughput and cycle-time series (PLAN-1628 / TASK-1637).
+	if input.Fields != nil {
+		oldStatus := extractStatusValue(existing.Fields)
+		newStatus := extractStatusValue(*input.Fields)
+		if newStatus != "" && newStatus != oldStatus {
+			if _, err = tx.Exec(s.q(`
+				INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, from_status, to_status, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?)
+			`), newID(), id, existing.WorkspaceID, existing.CollectionID, oldStatus, newStatus, ts); err != nil {
+				return nil, fmt.Errorf("record status transition: %w", err)
+			}
+		}
+	}
+
 	// Title rename — cascade to title-form backlinks. Fires whether
 	// content changed or not. ORDER MATTERS: cascade runs BEFORE
 	// replaceWikiLinks(self) so the pre-existing wl rows pointing

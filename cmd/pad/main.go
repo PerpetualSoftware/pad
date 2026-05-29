@@ -376,6 +376,23 @@ func serveCmd() *cobra.Command {
 					"items_scanned", bf.ItemsScanned, "errors", bf.Errors)
 			}
 
+			// Backfill: populate status_transitions from the historical
+			// activity log (PLAN-1628 / TASK-1637). Idempotent — gated on an
+			// empty table, so it replays history exactly once on the first
+			// boot after migration 063/042 and short-circuits thereafter (the
+			// write-path hook keeps the table populated). Non-fatal: a failed
+			// run leaves live data intact and only affects the pre-upgrade
+			// report window.
+			if st, err := s.BackfillStatusTransitions(); err != nil {
+				slog.Warn("status-transition backfill failed; non-fatal", "error", err)
+			} else if !st.Skipped && st.Inserted > 0 {
+				slog.Info("Status-transition backfill complete",
+					"activities_scanned", st.ActivitiesScanned,
+					"inserted", st.Inserted,
+					"errors", st.Errors,
+				)
+			}
+
 			// Auto-upgrade hook removed in IDEA-1479. The historical
 			// SeedDefaultCollections backfill was incompatible with templates
 			// that intentionally diverge from Defaults() (e.g. `blank`). Future
