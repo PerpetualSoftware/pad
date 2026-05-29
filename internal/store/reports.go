@@ -439,11 +439,11 @@ func (s *Store) reportCompletedItems(workspaceID string, colls []reportCollectio
 //     status-preserving moves record no transition), so this is a deliberate
 //     limitation — the same current-collection attribution the backfill and
 //     completed-by-collection use. Items rarely change collection.
-//   - same-second resolution: created_at is second-precision and transition
-//     ids are random UUIDs, so "the latest transition <= t" is nondeterministic
-//     when an item changes status 2+ times within ONE second — it may resolve
-//     to either same-second value. Rare (requires sub-second multi-hops on one
-//     item); a monotonic ordering column would fix it (tracked as a follow-up).
+//
+// Same-second multi-hops (an item changing status 2+ times within one second)
+// are resolved deterministically via the monotonic `seq` tiebreak (TASK-1643):
+// "latest transition <= t" orders by created_at, then seq (insertion order),
+// then id — so the chronologically-last same-second hop wins.
 func (s *Store) reportSnapshotAsOf(workspaceID string, colls []reportCollection, t time.Time) ([]ReportStatusCount, ReportWIP, error) {
 	tStr := t.Format(time.RFC3339)
 	dist := []ReportStatusCount{}
@@ -471,7 +471,7 @@ func (s *Store) reportSnapshotAsOf(workspaceID string, colls []reportCollection,
 			SELECT i.created_at,
 			  (SELECT st.to_status FROM status_transitions st
 			   WHERE st.item_id = i.id AND st.field_key = ? AND st.created_at <= ?
-			   ORDER BY st.created_at DESC, st.id DESC LIMIT 1) AS asof_status
+			   ORDER BY st.created_at DESC, st.seq DESC, st.id DESC LIMIT 1) AS asof_status
 			FROM items i
 			WHERE i.workspace_id = ? AND i.collection_id = ?
 			  AND i.created_at <= ?

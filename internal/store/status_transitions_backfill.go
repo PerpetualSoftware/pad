@@ -179,8 +179,8 @@ func (s *Store) BackfillStatusTransitions() (*BackfillStatusTransitionsResult, e
 	// deploy — single-instance today), the second insert is a no-op rather
 	// than a duplicate that would overcount reports. The live write paths use
 	// a random newID(), so live rows never collide with these.
-	insertSQL := `INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	insertSQL := `INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at, seq)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ` + nextTransitionSeqSubquery + `)`
 	if s.dialect.Driver() == DriverPostgres {
 		insertSQL += ` ON CONFLICT (id) DO NOTHING`
 	} else {

@@ -609,3 +609,43 @@ func TestGetReport_CompletedItemsRespectsCurrentCollectionVisibility(t *testing.
 		t.Fatalf("unscoped should list the item under its current collection, got %+v", full.CompletedItems)
 	}
 }
+
+func TestReportSnapshotAsOf_SameSecondSeqTiebreak(t *testing.T) {
+	s := testStore(t)
+	wsID, colID := newTransitionTestWorkspace(t, s)
+	item := createTestItem(t, s, wsID, colID, "flipper", "")
+	if _, err := s.db.Exec(s.dialect.Rebind(`DELETE FROM status_transitions WHERE item_id = ?`), item.ID); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	backdateItem(t, s, item.ID, 10*24)
+
+	// Three hops with the SAME created_at (one second) — only seq disambiguates
+	// which is "latest". Without the seq tiebreak the random-id order could pick
+	// the middle (done) hop and undercount open work.
+	same := time.Now().UTC().Add(-5 * 24 * time.Hour).Format(time.RFC3339)
+	ins := func(id, from, to string, seq int) {
+		if _, err := s.db.Exec(s.q(`INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			id, item.ID, wsID, colID, "status", from, to, same, seq); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+	// IDs and seq deliberately DISAGREE on the answer:
+	//   - highest seq (3, the true latest) is "open"  → correct result: 1 open
+	//   - highest id ("z…") is "done"                 → an id-only tiebreak: 0 open
+	// So asserting 1 open proves seq (not id) is the tiebreak.
+	ins("m-first-open", "", "open", 1)
+	ins("z-mid-done", "open", "done", 2)   // highest id, but NOT the latest
+	ins("a-final-open", "done", "open", 3) // lowest id, highest seq → the latest
+
+	colls, err := s.resolveReportCollections(wsID, ReportOptions{})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	_, wip, err := s.reportSnapshotAsOf(wsID, colls, time.Now().UTC().Add(-3*24*time.Hour))
+	if err != nil {
+		t.Fatalf("asof: %v", err)
+	}
+	if wip.OpenCount != 1 {
+		t.Fatalf("expected seq tiebreak to resolve to the highest-seq (open) hop → 1 open, got %d (id-only tiebreak would give 0)", wip.OpenCount)
+	}
+}

@@ -76,6 +76,14 @@ const maxItemNumberRetries = 10
 // writes can't both read the same MAX(seq) and produce duplicates.
 const nextWorkspaceSeqSubquery = "(SELECT COALESCE(MAX(seq), 0) + 1 FROM items WHERE workspace_id = ?)"
 
+// nextTransitionSeqSubquery assigns a monotonic, insertion-ordered seq to each
+// status_transitions row (global MAX+1 — cross-row dupes across items/workspaces
+// are harmless since the ordering is only used WITHIN a single item's history).
+// It's the precise tiebreak for "latest transition <= T" when created_at
+// (second precision) ties (PLAN-1628 / TASK-1643). The inserts that use it run
+// inside the workspace seq lock, so per-item assignment is serialized.
+const nextTransitionSeqSubquery = "(SELECT COALESCE(MAX(seq), 0) + 1 FROM status_transitions)"
+
 // acquireWorkspaceSeqLock takes a Postgres advisory transaction lock
 // keyed on the workspace ID so concurrent seq-bumping mutations
 // serialize. The lock auto-releases on COMMIT / ROLLBACK. On SQLite
@@ -250,8 +258,8 @@ func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, t
 		doneKey := doneFieldKeyFromSchemaJSON(schemaJSON, settingsJSON)
 		if initial := extractFieldValue(fields, doneKey); initial != "" {
 			if _, err = tx.Exec(s.q(`
-				INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at, seq)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, `+nextTransitionSeqSubquery+`)
 			`), "create_"+id, id, workspaceID, collectionID, doneKey, "", initial, ts); err != nil {
 				return fmt.Errorf("record create-time status transition: %w", err)
 			}
@@ -1730,8 +1738,8 @@ func (s *Store) UpdateItemWithPreCheck(
 		// accurate (an item cleared back to no-status reads as open).
 		if newStatus != statusBefore {
 			if _, err = tx.Exec(s.q(`
-				INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+				INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at, seq)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, `+nextTransitionSeqSubquery+`)
 			`), newID(), id, existing.WorkspaceID, existing.CollectionID, doneKey, statusBefore, newStatus, ts); err != nil {
 				return nil, fmt.Errorf("record status transition: %w", err)
 			}
@@ -3054,8 +3062,8 @@ func (s *Store) MoveItemWithPreCheck(
 	// UpdateItemWithPreCheck hook for the rationale.
 	if newStatus != oldStatus {
 		if _, err = tx.Exec(s.q(`
-			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at, seq)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, `+nextTransitionSeqSubquery+`)
 		`), newID(), itemID, existing.WorkspaceID, targetCollectionID, moveDoneKey, oldStatus, newStatus, moveTS); err != nil {
 			return nil, fmt.Errorf("record status transition on move: %w", err)
 		}
