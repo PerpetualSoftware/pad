@@ -38,6 +38,10 @@ func (s *Server) handleGetReport(w http.ResponseWriter, r *http.Request) {
 	if n, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("offset"))); err == nil && n > 0 {
 		opts.Offset = n
 	}
+	// include_items adds the "what shipped" completed-items list (opt-in).
+	if v := r.URL.Query().Get("include_items"); v == "true" || v == "1" {
+		opts.IncludeItems = true
+	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("collections")); raw != "" {
 		for _, slug := range strings.Split(raw, ",") {
 			if s := strings.TrimSpace(slug); s != "" {

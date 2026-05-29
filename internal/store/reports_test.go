@@ -512,3 +512,58 @@ func TestReportSnapshotAsOf(t *testing.T) {
 		t.Fatalf("expected the no-transition no-status item to count as open (1), got %d", wipNow.OpenCount)
 	}
 }
+
+func TestGetReport_CompletedItems(t *testing.T) {
+	s := testStore(t)
+	wsID, colID := newTransitionTestWorkspace(t, s)
+	a := createTestItem(t, s, wsID, colID, "Ship A", "")
+	b := createTestItem(t, s, wsID, colID, "Ship B", "")
+	createTestItem(t, s, wsID, colID, "Still open", "") // not completed
+	for _, it := range []string{a.ID, b.ID} {
+		if _, err := s.UpdateItem(it, models.ItemUpdate{Fields: strPtr(`{"status":"done"}`)}); err != nil {
+			t.Fatalf("complete %s: %v", it, err)
+		}
+	}
+	// Reopen + re-complete A → it must appear ONCE (deduped by item).
+	if _, err := s.UpdateItem(a.ID, models.ItemUpdate{Fields: strPtr(`{"status":"open"}`)}); err != nil {
+		t.Fatalf("reopen A: %v", err)
+	}
+	if _, err := s.UpdateItem(a.ID, models.ItemUpdate{Fields: strPtr(`{"status":"done"}`)}); err != nil {
+		t.Fatalf("re-complete A: %v", err)
+	}
+
+	now := time.Now().UTC()
+	// Opt-in: completed_items present, deduped to A + B.
+	rep, err := s.GetReport(wsID, ReportOptions{Window: "week", Now: now, IncludeItems: true})
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	if len(rep.CompletedItems) != 2 {
+		t.Fatalf("expected 2 distinct completed items (A deduped), got %d: %+v", len(rep.CompletedItems), rep.CompletedItems)
+	}
+	titles := map[string]bool{}
+	for _, ci := range rep.CompletedItems {
+		titles[ci.Title] = true
+		if ci.Collection != "tasks" {
+			t.Fatalf("expected collection 'tasks', got %q", ci.Collection)
+		}
+		if !strings.HasPrefix(ci.Ref, "TASK-") {
+			t.Fatalf("expected TASK- ref, got %q", ci.Ref)
+		}
+		if ci.CompletedAt == "" {
+			t.Fatalf("expected completed_at on %q", ci.Ref)
+		}
+	}
+	if !titles["Ship A"] || !titles["Ship B"] {
+		t.Fatalf("missing expected titles: %+v", titles)
+	}
+
+	// Not requested: completed_items omitted (nil).
+	rep2, err := s.GetReport(wsID, ReportOptions{Window: "week", Now: now})
+	if err != nil {
+		t.Fatalf("GetReport (no items): %v", err)
+	}
+	if rep2.CompletedItems != nil {
+		t.Fatalf("completed_items should be nil when not requested, got %+v", rep2.CompletedItems)
+	}
+}

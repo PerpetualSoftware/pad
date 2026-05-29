@@ -55,6 +55,10 @@ type ReportOptions struct {
 	// Offset steps the window back by whole window-lengths (0 = current period,
 	// 1 = the period immediately before, …). Negative is clamped to 0.
 	Offset int
+	// IncludeItems, when true, populates CompletedItems (the "what shipped"
+	// list) — opt-in because the interactive dashboard only needs counts; the
+	// print/export report requests it.
+	IncludeItems bool
 	// ScopeToVisible, when true, restricts the report to VisibleCollectionIDs
 	// (the caller's visible collection set). Aggregate counts for collections
 	// the caller can't see are never computed — preventing a member/guest from
@@ -65,6 +69,11 @@ type ReportOptions struct {
 	ScopeToVisible       bool
 	VisibleCollectionIDs []string
 }
+
+// completedItemsCap bounds the "what shipped" list so a pathological window
+// can't produce an unbounded payload; the rest is reported via the overflow
+// count.
+const completedItemsCap = 500
 
 // ReportBucket is one time-series point: items created and completed within
 // the bucket. Bucket is a sortable UTC label ("YYYY-MM-DD", or
@@ -128,6 +137,15 @@ type ReportWIP struct {
 	ByCollection   []ReportDuration    `json:"by_collection"` // MedianHours = median open-item age
 }
 
+// ReportCompletedItem is one item that reached a positive terminal within the
+// window — the "what shipped" list for the exec report (TASK-1641).
+type ReportCompletedItem struct {
+	Ref         string `json:"ref"` // e.g. TASK-5
+	Title       string `json:"title"`
+	Collection  string `json:"collection"`   // slug
+	CompletedAt string `json:"completed_at"` // RFC3339, latest completion in-window
+}
+
 // ReportData is the full report response. This is the stable contract the
 // Reports UI (TASK-1633), CLI/MCP (TASK-1635), and charts (TASK-1632) consume.
 type ReportData struct {
@@ -143,6 +161,12 @@ type ReportData struct {
 	StatusDistribution    []ReportStatusCount     `json:"status_distribution"`
 	CycleTime             ReportCycleTime         `json:"cycle_time"`
 	WIP                   ReportWIP               `json:"wip"`
+	// CompletedItems is the "what shipped" list, populated only when
+	// IncludeItems was requested (nil/omitted otherwise). Deduped by item,
+	// newest completion first, capped at completedItemsCap with the remainder
+	// reported in CompletedItemsOverflowCount.
+	CompletedItems         []ReportCompletedItem `json:"completed_items,omitempty"`
+	CompletedItemsOverflow int                   `json:"completed_items_overflow_count,omitempty"`
 }
 
 // windowSpec maps a window to its lookback duration and bucket granularity.
@@ -296,7 +320,86 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 		data.WIP = wip
 	}
 
+	if opts.IncludeItems {
+		items, overflow, ierr := s.reportCompletedItems(workspaceID, colls, startStr, endStr)
+		if ierr != nil {
+			return nil, ierr
+		}
+		data.CompletedItems = items
+		data.CompletedItemsOverflow = overflow
+	}
+
 	return data, nil
+}
+
+// reportCompletedItems returns the items that reached a positive terminal in
+// the window (the "what shipped" list, TASK-1641): deduped by item (newest
+// completion first), capped at completedItemsCap with the remainder in the
+// returned overflow count. Same positive-terminal source as totals.completed,
+// so the list reconciles with the count (modulo the dedupe + cap). Joins live
+// items (deleted_at IS NULL), consistent with the completed counts.
+func (s *Store) reportCompletedItems(workspaceID string, colls []reportCollection, startStr, endStr string) ([]ReportCompletedItem, int, error) {
+	posExpr, posArgs := s.positiveTerminalExpr(colls)
+	if posExpr == "" {
+		return []ReportCompletedItem{}, 0, nil
+	}
+	base := []any{workspaceID, startStr, endStr}
+
+	// Distinct completed-item count (for the overflow figure).
+	var total int
+	cArgs := append(append([]any{}, base...), posArgs...)
+	if err := s.db.QueryRow(s.q(fmt.Sprintf(`
+		SELECT COUNT(DISTINCT st.item_id)
+		FROM status_transitions st
+		JOIN items i ON i.id = st.item_id AND i.deleted_at IS NULL
+		WHERE st.workspace_id = ? AND st.created_at >= ? AND st.created_at <= ?
+		  AND %s
+	`, posExpr)), cArgs...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count completed items: %w", err)
+	}
+
+	// The list: one row per item (latest in-window completion), newest first.
+	lArgs := append(append([]any{}, base...), posArgs...)
+	lArgs = append(lArgs, completedItemsCap)
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
+		SELECT c.prefix, i.item_number, i.title, c.slug, MAX(st.created_at) AS completed_at
+		FROM status_transitions st
+		JOIN items i ON i.id = st.item_id AND i.deleted_at IS NULL
+		JOIN collections c ON c.id = i.collection_id
+		WHERE st.workspace_id = ? AND st.created_at >= ? AND st.created_at <= ?
+		  AND %s
+		GROUP BY i.id, c.prefix, i.item_number, i.title, c.slug
+		ORDER BY completed_at DESC
+		LIMIT ?
+	`, posExpr)), lArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list completed items: %w", err)
+	}
+	defer rows.Close()
+
+	out := []ReportCompletedItem{}
+	for rows.Next() {
+		var prefix, title, slug, completedAt string
+		var itemNumber int
+		if err := rows.Scan(&prefix, &itemNumber, &title, &slug, &completedAt); err != nil {
+			return nil, 0, fmt.Errorf("scan completed item: %w", err)
+		}
+		out = append(out, ReportCompletedItem{
+			Ref:         fmt.Sprintf("%s-%d", prefix, itemNumber),
+			Title:       title,
+			Collection:  slug,
+			CompletedAt: completedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+
+	overflow := total - len(out)
+	if overflow < 0 {
+		overflow = 0
+	}
+	return out, overflow, nil
 }
 
 // reportSnapshotAsOf reconstructs the status-distribution and WIP snapshot as

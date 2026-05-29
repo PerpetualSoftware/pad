@@ -896,6 +896,17 @@ export interface ReportData {
 	status_distribution: ReportStatusCount[];
 	cycle_time: ReportCycleTime;
 	wip: ReportWIP;
+	/** "What shipped" — present only when requested via include_items. Deduped by item, newest first. */
+	completed_items?: ReportCompletedItem[];
+	completed_items_overflow_count?: number;
+}
+
+/** One item that reached a positive terminal within the window (the "what shipped" list). */
+export interface ReportCompletedItem {
+	ref: string; // e.g. TASK-5
+	title: string;
+	collection: string; // slug
+	completed_at: string; // RFC3339
 }
 
 /**
