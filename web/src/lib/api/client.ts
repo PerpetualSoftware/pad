@@ -20,6 +20,7 @@ import type {
 	Version,
 	DashboardResponse,
 	ReportData,
+	ReportLayout,
 	ReportWindow,
 	SearchResponse,
 	SearchFilters,
@@ -941,7 +942,17 @@ export const api = {
 			if (opts?.collections?.length) params.set('collections', opts.collections.join(','));
 			const qs = params.toString();
 			return request<ReportData>(`/workspaces/${ws}/report${qs ? `?${qs}` : ''}`);
-		}
+		},
+
+		/** The current user's saved Insights layout for the workspace. */
+		getLayout: (ws: string) => request<ReportLayout>(`/workspaces/${ws}/report/layout`),
+
+		/** Persist the current user's Insights layout (per-user, per-workspace). */
+		saveLayout: (ws: string, layout: ReportLayout) =>
+			request<ReportLayout>(`/workspaces/${ws}/report/layout`, {
+				method: 'PUT',
+				body: JSON.stringify(layout)
+			})
 	},
 
 	// ── Incremental Sync ─────────────────────────────────────────────────────

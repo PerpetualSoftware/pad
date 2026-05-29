@@ -896,6 +896,18 @@ export interface ReportData {
 	wip: ReportWIP;
 }
 
+/**
+ * Per-user Insights personalization for one workspace (PLAN-1628 / TASK-1634).
+ * hidden_cards lists toggled-off metric-card IDs:
+ * 'throughput' | 'cycle_time' | 'wip' | 'completed_by_collection' | 'status_distribution'.
+ * default_window/default_collections restore the view on load (empty = surface defaults / all).
+ */
+export interface ReportLayout {
+	hidden_cards: string[];
+	default_window: ReportWindow | '';
+	default_collections: string[];
+}
+
 // ─── Incremental Sync ────────────────────────────────────────────────────────
 
 export interface ChangesResponse {

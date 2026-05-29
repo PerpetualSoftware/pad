@@ -1,12 +1,13 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import BarChart from '$lib/components/charts/BarChart.svelte';
 	import type { ChartDatum } from '$lib/components/charts/theme';
-	import type { Collection, ReportData, ReportWindow } from '$lib/types';
+	import type { Collection, ReportData, ReportLayout, ReportWindow } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 
@@ -32,11 +33,36 @@
 	// its result and discard stale/out-of-order older responses.
 	let reqSeq = 0;
 
+	// ── Per-user layout (TASK-1634) ────────────────────────────────────────────
+	// Hidden metric-card IDs (stable). The Totals summary is always shown.
+	// SvelteSet is reactive on its own (.has()/.add()/.delete()/.clear()), so it
+	// needs no $state wrapper and is mutated in place rather than reassigned.
+	const hiddenCards = new SvelteSet<string>();
+	// Customize panel visibility.
+	let showCustomize = $state(false);
+	// True once THIS workspace's layout has hydrated. Gates the debounced
+	// auto-save so we never (a) save during the initial hydrate or (b) overwrite
+	// workspace B's layout with A's values before B's layout has loaded. Plain
+	// `let` (non-reactive): the save effect must not write reactive state that
+	// would re-trigger itself.
+	let hydrated = false;
+	// Debounce timer for auto-save. Plain `let` so it doesn't create reactivity.
+	let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
 	const WINDOW_OPTIONS: { value: ReportWindow; label: string }[] = [
 		{ value: 'day', label: 'Day' },
 		{ value: 'week', label: 'Week' },
 		{ value: '2wk', label: '2 Weeks' },
 		{ value: 'month', label: 'Month' }
+	];
+
+	// Toggleable cards, in render order. The Totals summary is intentionally absent.
+	const CARD_OPTIONS: { id: string; label: string }[] = [
+		{ id: 'throughput', label: 'Throughput' },
+		{ id: 'cycle_time', label: 'Cycle time' },
+		{ id: 'wip', label: 'Work in progress' },
+		{ id: 'completed_by_collection', label: 'Completed by collection' },
+		{ id: 'status_distribution', label: 'Status distribution' }
 	];
 
 	onMount(() => {
@@ -50,10 +76,11 @@
 		titleStore.setPageTitle({ section: 'Insights', item: null });
 	});
 
-	// Load collections (for the filter) once per workspace.
+	// Load collections (for the filter) and the per-user layout once per workspace.
 	$effect(() => {
 		if (wsSlug) {
 			loadCollections(wsSlug);
+			loadLayout(wsSlug);
 		}
 	});
 
@@ -74,6 +101,11 @@
 			// linger under B's URL while B loads — the `loading` state covers the gap.
 			report = null;
 			collections = [];
+			// Reset layout state for the new workspace and gate auto-save until
+			// THIS workspace's layout hydrates (loadLayout flips `hydrated` true),
+			// so we don't persist A's values onto B.
+			hiddenCards.clear();
+			hydrated = false;
 		}
 		const colls = [...selectedCollections];
 		if (slug) {
@@ -86,6 +118,27 @@
 			collections = await api.collections.list(slug);
 		} catch {
 			// Filter is a progressive enhancement; allow the page to render.
+		}
+	}
+
+	async function loadLayout(slug: string) {
+		try {
+			const layout = await api.report.getLayout(slug);
+			// Ignore a stale response if the workspace changed mid-flight.
+			if (slug !== wsSlug) return;
+			selectedWindow = layout.default_window || 'week';
+			selectedCollections = layout.default_collections ?? [];
+			hiddenCards.clear();
+			for (const id of layout.hidden_cards) hiddenCards.add(id);
+		} catch {
+			// No saved layout (or it failed to load): fall back to defaults.
+		} finally {
+			// Mark this workspace hydrated so the auto-save effect may persist
+			// subsequent user changes. Guard on the slug so a stale layout
+			// response from workspace A can't un-gate saves for workspace B.
+			if (slug === wsSlug) {
+				hydrated = true;
+			}
 		}
 	}
 
@@ -112,6 +165,40 @@
 		}
 	}
 
+	// Debounced per-user layout auto-save. Reads hiddenCards / selectedWindow /
+	// selectedCollections so any change re-runs this effect, then debounces ~500ms
+	// before persisting. Skips entirely until the current workspace has hydrated,
+	// so we neither save during the initial load nor stomp B's layout with A's.
+	$effect(() => {
+		// Read every dependency up front so the effect subscribes to all of them
+		// regardless of the hydrated gate below.
+		const cards = [...hiddenCards];
+		const win = selectedWindow;
+		const colls = [...selectedCollections];
+		const slug = wsSlug;
+		if (!hydrated || !slug) return;
+
+		if (saveTimer) clearTimeout(saveTimer);
+		saveTimer = setTimeout(() => {
+			saveTimer = null;
+			const layout: ReportLayout = {
+				hidden_cards: cards,
+				default_window: win,
+				default_collections: colls
+			};
+			void api.report.saveLayout(slug, layout).catch(() => {
+				// Best-effort persistence; a failed save shouldn't disrupt the page.
+			});
+		}, 500);
+
+		return () => {
+			if (saveTimer) {
+				clearTimeout(saveTimer);
+				saveTimer = null;
+			}
+		};
+	});
+
 	function toggleCollection(slug: string) {
 		if (selectedCollections.includes(slug)) {
 			selectedCollections = selectedCollections.filter((s) => s !== slug);
@@ -122,6 +209,15 @@
 
 	function clearCollectionFilter() {
 		selectedCollections = [];
+	}
+
+	// Toggle a card's visibility. SvelteSet makes the in-place mutation reactive.
+	function toggleCard(id: string) {
+		if (hiddenCards.has(id)) {
+			hiddenCards.delete(id);
+		} else {
+			hiddenCards.add(id);
+		}
 	}
 
 	// ── Formatters ───────────────────────────────────────────────────────────
@@ -208,18 +304,47 @@
 			{/if}
 		</div>
 
-		<div class="window-control" role="group" aria-label="Time window">
-			{#each WINDOW_OPTIONS as opt (opt.value)}
+		<div class="header-controls">
+			<div class="window-control" role="group" aria-label="Time window">
+				{#each WINDOW_OPTIONS as opt (opt.value)}
+					<button
+						type="button"
+						class="window-btn"
+						class:active={selectedWindow === opt.value}
+						aria-pressed={selectedWindow === opt.value}
+						onclick={() => (selectedWindow = opt.value)}
+					>
+						{opt.label}
+					</button>
+				{/each}
+			</div>
+
+			<div class="customize">
 				<button
 					type="button"
-					class="window-btn"
-					class:active={selectedWindow === opt.value}
-					aria-pressed={selectedWindow === opt.value}
-					onclick={() => (selectedWindow = opt.value)}
+					class="customize-btn"
+					class:active={showCustomize}
+					aria-expanded={showCustomize}
+					onclick={() => (showCustomize = !showCustomize)}
 				>
-					{opt.label}
+					Customize
 				</button>
-			{/each}
+				{#if showCustomize}
+					<div class="customize-panel" role="group" aria-label="Visible cards">
+						<p class="customize-title">Visible cards</p>
+						{#each CARD_OPTIONS as card (card.id)}
+							<label class="customize-row">
+								<input
+									type="checkbox"
+									checked={!hiddenCards.has(card.id)}
+									onchange={() => toggleCard(card.id)}
+								/>
+								{card.label}
+							</label>
+						{/each}
+					</div>
+				{/if}
+			</div>
 		</div>
 	</header>
 
@@ -258,7 +383,7 @@
 		<div class="loading-state">Loading&hellip;</div>
 	{:else if report}
 		<div class="content" class:dimmed={loading}>
-			<!-- ── Totals ──────────────────────────────────────────────── -->
+			<!-- Totals (always shown) -->
 			<section class="stat-row">
 				<div class="stat-card">
 					<span class="stat-label">Created</span>
@@ -276,160 +401,172 @@
 				</div>
 			</section>
 
-			<!-- ── Throughput ──────────────────────────────────────────── -->
-			<section class="card">
-				<div class="card-header">
-					<h2>Throughput</h2>
-					<span class="card-sub">Created vs completed per {report.granularity}</span>
-				</div>
-				{#if noActivity}
-					<div class="card-empty">No activity in this window.</div>
-				{:else}
-					<BarChart
-						data={throughputData}
-						x="bucket"
-						series={throughputSeries}
-						height={260}
-						ariaLabel="Items created versus completed per time bucket"
-					/>
-				{/if}
-			</section>
-
-			<div class="grid">
-				<!-- ── Cycle time ──────────────────────────────────────── -->
+			<!-- Throughput -->
+			{#if !hiddenCards.has('throughput')}
 				<section class="card">
 					<div class="card-header">
-						<h2>Cycle time</h2>
-						<span class="card-sub">Creation to completion</span>
+						<h2>Throughput</h2>
+						<span class="card-sub">Created vs completed per {report.granularity}</span>
 					</div>
-					{#if report.cycle_time.sample_size === 0}
-						<div class="card-empty">No completions in this window.</div>
+					{#if noActivity}
+						<div class="card-empty">No activity in this window.</div>
 					{:else}
-						<div class="metric-row">
-							<div class="metric">
-								<span class="metric-label">Median</span>
-								<span class="metric-value">{fmtHours(report.cycle_time.median_hours)}</span>
-							</div>
-							<div class="metric">
-								<span class="metric-label">p90</span>
-								<span class="metric-value">{fmtHours(report.cycle_time.p90_hours)}</span>
-							</div>
-							<div class="metric">
-								<span class="metric-label">Sample</span>
-								<span class="metric-value">{report.cycle_time.sample_size}</span>
-							</div>
-						</div>
-						{#if report.cycle_time.by_collection.length > 0}
-							<ul class="dist-list">
-								{#each report.cycle_time.by_collection as row (row.collection)}
-									<li class="dist-row">
-										<span class="dist-name">{collLabel(row.collection)}</span>
-										<span class="dist-meta">
-											<span class="dist-count">{row.count}</span>
-											<span class="dist-val">{fmtHours(row.median_hours)}</span>
-										</span>
-									</li>
-								{/each}
-							</ul>
-						{/if}
-					{/if}
-				</section>
-
-				<!-- ── Work in progress ────────────────────────────────── -->
-				<section class="card">
-					<div class="card-header">
-						<h2>Work in progress</h2>
-						<span class="card-sub">Open items right now</span>
-					</div>
-					{#if report.wip.open_count === 0}
-						<div class="card-empty">No open items.</div>
-					{:else}
-						<div class="metric-row">
-							<div class="metric">
-								<span class="metric-label">Open</span>
-								<span class="metric-value">{report.wip.open_count}</span>
-							</div>
-							<div class="metric">
-								<span class="metric-label">Median age</span>
-								<span class="metric-value">{fmtHours(report.wip.median_age_hours)}</span>
-							</div>
-						</div>
 						<BarChart
-							data={agingData}
-							x="label"
-							series={[{ key: 'count', label: 'Open items', color: 'var(--chart-3, #f59e0b)' }]}
-							height={180}
-							ariaLabel="Open items by age bucket"
+							data={throughputData}
+							x="bucket"
+							series={throughputSeries}
+							height={260}
+							ariaLabel="Items created versus completed per time bucket"
 						/>
-						{#if report.wip.by_collection.length > 0}
-							<ul class="dist-list">
-								{#each report.wip.by_collection as row (row.collection)}
-									<li class="dist-row">
-										<span class="dist-name">{collLabel(row.collection)}</span>
-										<span class="dist-meta">
-											<span class="dist-count">{row.count}</span>
-											<span class="dist-val">{fmtHours(row.median_hours)}</span>
-										</span>
-									</li>
-								{/each}
-							</ul>
-						{/if}
 					{/if}
 				</section>
-			</div>
+			{/if}
 
-			<!-- ── Completed by collection ─────────────────────────────── -->
-			<section class="card">
-				<div class="card-header">
-					<h2>Completed by collection</h2>
-				</div>
-				{#if completedByCollectionData.length === 0}
-					<div class="card-empty">Nothing completed in this window.</div>
-				{:else}
-					<BarChart
-						data={completedByCollectionData}
-						x="collection"
-						series={[{ key: 'count', label: 'Completed', color: 'var(--chart-4, #10b981)' }]}
-						height={220}
-						ariaLabel="Completed items grouped by collection"
-					/>
-				{/if}
-			</section>
-
-			<!-- ── Status distribution ─────────────────────────────────── -->
-			<section class="card">
-				<div class="card-header">
-					<h2>Status distribution</h2>
-				</div>
-				{#if statusByCollection.length === 0}
-					<div class="card-empty">No items to show.</div>
-				{:else}
-					<div class="status-groups">
-						{#each statusByCollection as group (group.collection)}
-							<div class="status-group">
-								<div class="status-group-head">
-									<span class="status-group-name">{collLabel(group.collection)}</span>
-									<span class="status-group-total">{group.total}</span>
-								</div>
-								<div class="status-bars">
-									{#each group.rows as row (row.status)}
-										<div class="status-bar-row">
-											<span class="status-name">{row.status}</span>
-											<span class="status-track">
-												<span
-													class="status-fill"
-													style:width={`${group.total > 0 ? (row.count / group.total) * 100 : 0}%`}
-												></span>
-											</span>
-											<span class="status-count">{row.count}</span>
-										</div>
-									{/each}
-								</div>
+			{#if !hiddenCards.has('cycle_time') || !hiddenCards.has('wip')}
+				<div class="grid">
+					<!-- Cycle time -->
+					{#if !hiddenCards.has('cycle_time')}
+						<section class="card">
+							<div class="card-header">
+								<h2>Cycle time</h2>
+								<span class="card-sub">Creation to completion</span>
 							</div>
-						{/each}
+							{#if report.cycle_time.sample_size === 0}
+								<div class="card-empty">No completions in this window.</div>
+							{:else}
+								<div class="metric-row">
+									<div class="metric">
+										<span class="metric-label">Median</span>
+										<span class="metric-value">{fmtHours(report.cycle_time.median_hours)}</span>
+									</div>
+									<div class="metric">
+										<span class="metric-label">p90</span>
+										<span class="metric-value">{fmtHours(report.cycle_time.p90_hours)}</span>
+									</div>
+									<div class="metric">
+										<span class="metric-label">Sample</span>
+										<span class="metric-value">{report.cycle_time.sample_size}</span>
+									</div>
+								</div>
+								{#if report.cycle_time.by_collection.length > 0}
+									<ul class="dist-list">
+										{#each report.cycle_time.by_collection as row (row.collection)}
+											<li class="dist-row">
+												<span class="dist-name">{collLabel(row.collection)}</span>
+												<span class="dist-meta">
+													<span class="dist-count">{row.count}</span>
+													<span class="dist-val">{fmtHours(row.median_hours)}</span>
+												</span>
+											</li>
+										{/each}
+									</ul>
+								{/if}
+							{/if}
+						</section>
+					{/if}
+
+					<!-- Work in progress -->
+					{#if !hiddenCards.has('wip')}
+						<section class="card">
+							<div class="card-header">
+								<h2>Work in progress</h2>
+								<span class="card-sub">Open items right now</span>
+							</div>
+							{#if report.wip.open_count === 0}
+								<div class="card-empty">No open items.</div>
+							{:else}
+								<div class="metric-row">
+									<div class="metric">
+										<span class="metric-label">Open</span>
+										<span class="metric-value">{report.wip.open_count}</span>
+									</div>
+									<div class="metric">
+										<span class="metric-label">Median age</span>
+										<span class="metric-value">{fmtHours(report.wip.median_age_hours)}</span>
+									</div>
+								</div>
+								<BarChart
+									data={agingData}
+									x="label"
+									series={[{ key: 'count', label: 'Open items', color: 'var(--chart-3, #f59e0b)' }]}
+									height={180}
+									ariaLabel="Open items by age bucket"
+								/>
+								{#if report.wip.by_collection.length > 0}
+									<ul class="dist-list">
+										{#each report.wip.by_collection as row (row.collection)}
+											<li class="dist-row">
+												<span class="dist-name">{collLabel(row.collection)}</span>
+												<span class="dist-meta">
+													<span class="dist-count">{row.count}</span>
+													<span class="dist-val">{fmtHours(row.median_hours)}</span>
+												</span>
+											</li>
+										{/each}
+									</ul>
+								{/if}
+							{/if}
+						</section>
+					{/if}
+				</div>
+			{/if}
+
+			<!-- Completed by collection -->
+			{#if !hiddenCards.has('completed_by_collection')}
+				<section class="card">
+					<div class="card-header">
+						<h2>Completed by collection</h2>
 					</div>
-				{/if}
-			</section>
+					{#if completedByCollectionData.length === 0}
+						<div class="card-empty">Nothing completed in this window.</div>
+					{:else}
+						<BarChart
+							data={completedByCollectionData}
+							x="collection"
+							series={[{ key: 'count', label: 'Completed', color: 'var(--chart-4, #10b981)' }]}
+							height={220}
+							ariaLabel="Completed items grouped by collection"
+						/>
+					{/if}
+				</section>
+			{/if}
+
+			<!-- Status distribution -->
+			{#if !hiddenCards.has('status_distribution')}
+				<section class="card">
+					<div class="card-header">
+						<h2>Status distribution</h2>
+					</div>
+					{#if statusByCollection.length === 0}
+						<div class="card-empty">No items to show.</div>
+					{:else}
+						<div class="status-groups">
+							{#each statusByCollection as group (group.collection)}
+								<div class="status-group">
+									<div class="status-group-head">
+										<span class="status-group-name">{collLabel(group.collection)}</span>
+										<span class="status-group-total">{group.total}</span>
+									</div>
+									<div class="status-bars">
+										{#each group.rows as row (row.status)}
+											<div class="status-bar-row">
+												<span class="status-name">{row.status}</span>
+												<span class="status-track">
+													<span
+														class="status-fill"
+														style:width={`${group.total > 0 ? (row.count / group.total) * 100 : 0}%`}
+													></span>
+												</span>
+												<span class="status-count">{row.count}</span>
+											</div>
+										{/each}
+									</div>
+								</div>
+							{/each}
+						</div>
+					{/if}
+				</section>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -464,6 +601,12 @@
 		font-size: 0.9em;
 		color: var(--text-muted);
 	}
+	.header-controls {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		flex-wrap: wrap;
+	}
 
 	/* ── Window segmented control ─────────────────────────────────────── */
 	.window-control {
@@ -493,6 +636,66 @@
 		background: var(--bg-primary, var(--bg));
 		color: var(--text-primary);
 		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+	}
+
+	/* ── Customize ────────────────────────────────────────────────────── */
+	.customize {
+		position: relative;
+	}
+	.customize-btn {
+		background: var(--bg-secondary);
+		color: var(--text-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-2) var(--space-3);
+		font-size: 0.8em;
+		font-weight: 600;
+		cursor: pointer;
+		white-space: nowrap;
+		transition: background 0.15s, border-color 0.15s, color 0.15s;
+	}
+	.customize-btn:hover {
+		border-color: var(--text-muted);
+		color: var(--text-primary);
+	}
+	.customize-btn.active {
+		border-color: var(--accent-blue);
+		color: var(--accent-blue);
+	}
+	.customize-panel {
+		position: absolute;
+		right: 0;
+		top: calc(100% + var(--space-2));
+		z-index: 20;
+		min-width: 220px;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		padding: var(--space-3);
+		background: var(--bg-primary, var(--bg));
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+	}
+	.customize-title {
+		font-size: 0.7em;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+		color: var(--text-muted);
+		margin-bottom: var(--space-1);
+	}
+	.customize-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: 0.85em;
+		color: var(--text-secondary);
+		cursor: pointer;
+		padding: var(--space-1) 0;
+	}
+	.customize-row input {
+		cursor: pointer;
 	}
 
 	/* ── Collection filter chips ──────────────────────────────────────── */
