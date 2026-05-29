@@ -40,13 +40,12 @@
 	const hiddenCards = new SvelteSet<string>();
 	// Customize panel visibility.
 	let showCustomize = $state(false);
-	// True once THIS workspace's layout has hydrated. Gates the debounced
-	// auto-save so we never (a) save during the initial hydrate or (b) overwrite
-	// workspace B's layout with A's values before B's layout has loaded. Plain
-	// `let` (non-reactive): the save effect must not write reactive state that
-	// would re-trigger itself.
+	// True once THIS workspace's layout has hydrated. Gates scheduleSave() so we
+	// never (a) save during the initial hydrate or (b) overwrite workspace B's
+	// layout with A's values before B's layout has loaded. Plain `let`
+	// (non-reactive) — it's read by the explicit-action save path, not an effect.
 	let hydrated = false;
-	// Debounce timer for auto-save. Plain `let` so it doesn't create reactivity.
+	// Debounce timer for the save path. Plain `let` so it doesn't create reactivity.
 	let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 	const WINDOW_OPTIONS: { value: ReportWindow; label: string }[] = [
@@ -101,7 +100,7 @@
 			// linger under B's URL while B loads — the `loading` state covers the gap.
 			report = null;
 			collections = [];
-			// Reset layout state for the new workspace and gate auto-save until
+			// Reset layout state for the new workspace and gate the save path until
 			// THIS workspace's layout hydrates (loadLayout flips `hydrated` true),
 			// so we don't persist A's values onto B.
 			hiddenCards.clear();
@@ -133,9 +132,10 @@
 		} catch {
 			// No saved layout (or it failed to load): fall back to defaults.
 		} finally {
-			// Mark this workspace hydrated so the auto-save effect may persist
-			// subsequent user changes. Guard on the slug so a stale layout
-			// response from workspace A can't un-gate saves for workspace B.
+			// Mark this workspace hydrated so scheduleSave() may persist subsequent
+			// user changes. Guard on the slug so a stale layout response from
+			// workspace A can't un-gate saves for workspace B. Hydration itself
+			// never calls scheduleSave, so this assignment triggers no PUT.
 			if (slug === wsSlug) {
 				hydrated = true;
 			}
@@ -165,39 +165,36 @@
 		}
 	}
 
-	// Debounced per-user layout auto-save. Reads hiddenCards / selectedWindow /
-	// selectedCollections so any change re-runs this effect, then debounces ~500ms
-	// before persisting. Skips entirely until the current workspace has hydrated,
-	// so we neither save during the initial load nor stomp B's layout with A's.
-	$effect(() => {
-		// Read every dependency up front so the effect subscribes to all of them
-		// regardless of the hydrated gate below.
-		const cards = [...hiddenCards];
-		const win = selectedWindow;
-		const colls = [...selectedCollections];
+	// Debounced per-user layout save. Called ONLY from explicit user-change
+	// handlers (never a reactive effect), so merely viewing Insights — or
+	// switching workspaces, which re-hydrates — issues no PUT. That matters on
+	// fresh-install / legacy-token sessions where an unsolicited PUT would 401
+	// and bounce the viewer to /login. Reads the live values at fire time.
+	function scheduleSave() {
+		if (!hydrated || !wsSlug) return;
+		// Capture the workspace at schedule time; if the user switches workspaces
+		// during the debounce, drop the pending save so workspace A's edit can't
+		// land on workspace B.
 		const slug = wsSlug;
-		if (!hydrated || !slug) return;
-
 		if (saveTimer) clearTimeout(saveTimer);
 		saveTimer = setTimeout(() => {
 			saveTimer = null;
+			if (slug !== wsSlug) return;
 			const layout: ReportLayout = {
-				hidden_cards: cards,
-				default_window: win,
-				default_collections: colls
+				hidden_cards: [...hiddenCards],
+				default_window: selectedWindow,
+				default_collections: selectedCollections
 			};
 			void api.report.saveLayout(slug, layout).catch(() => {
 				// Best-effort persistence; a failed save shouldn't disrupt the page.
 			});
 		}, 500);
+	}
 
-		return () => {
-			if (saveTimer) {
-				clearTimeout(saveTimer);
-				saveTimer = null;
-			}
-		};
-	});
+	function selectWindow(win: ReportWindow) {
+		selectedWindow = win;
+		scheduleSave();
+	}
 
 	function toggleCollection(slug: string) {
 		if (selectedCollections.includes(slug)) {
@@ -205,10 +202,12 @@
 		} else {
 			selectedCollections = [...selectedCollections, slug];
 		}
+		scheduleSave();
 	}
 
 	function clearCollectionFilter() {
 		selectedCollections = [];
+		scheduleSave();
 	}
 
 	// Toggle a card's visibility. SvelteSet makes the in-place mutation reactive.
@@ -218,6 +217,7 @@
 		} else {
 			hiddenCards.add(id);
 		}
+		scheduleSave();
 	}
 
 	// ── Formatters ───────────────────────────────────────────────────────────
@@ -312,7 +312,7 @@
 						class="window-btn"
 						class:active={selectedWindow === opt.value}
 						aria-pressed={selectedWindow === opt.value}
-						onclick={() => (selectedWindow = opt.value)}
+						onclick={() => selectWindow(opt.value)}
 					>
 						{opt.label}
 					</button>
