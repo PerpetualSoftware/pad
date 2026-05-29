@@ -138,6 +138,40 @@ func TestGetReport_CollectionFilter(t *testing.T) {
 	}
 }
 
+func TestGetReport_ScopeToVisibleExcludesHidden(t *testing.T) {
+	s := testStore(t)
+	wsID, tasksID := newTransitionTestWorkspace(t, s)
+	secret := createTestCollection(t, s, wsID, "Secret")
+	createTestItem(t, s, wsID, tasksID, "visible task", "")
+	createTestItem(t, s, wsID, secret.ID, "hidden", "")
+
+	// Caller can only see the tasks collection.
+	rep, err := s.GetReport(wsID, ReportOptions{
+		Window:               "week",
+		Now:                  time.Now().UTC(),
+		ScopeToVisible:       true,
+		VisibleCollectionIDs: []string{tasksID},
+	})
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	if len(rep.Collections) != 1 || rep.Collections[0] != "tasks" {
+		t.Fatalf("expected only the visible 'tasks' collection, got %+v", rep.Collections)
+	}
+	if rep.Totals.Created != 1 {
+		t.Fatalf("hidden collection's item must not be counted; created=%d", rep.Totals.Created)
+	}
+
+	// Empty visible set → empty report (guest with no full-collection access).
+	empty, err := s.GetReport(wsID, ReportOptions{Window: "week", Now: time.Now().UTC(), ScopeToVisible: true, VisibleCollectionIDs: nil})
+	if err != nil {
+		t.Fatalf("GetReport empty: %v", err)
+	}
+	if len(empty.Collections) != 0 || empty.Totals.Created != 0 {
+		t.Fatalf("empty visible set should yield empty report, got %+v", empty)
+	}
+}
+
 func TestGetReport_NonStatusDoneField(t *testing.T) {
 	s := testStore(t)
 	u, _ := s.CreateUser(models.UserCreate{Name: "H", Email: "h@example.com"})

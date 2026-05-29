@@ -50,6 +50,15 @@ type ReportOptions struct {
 	// Now is the reference end of the window; zero means time.Now().UTC().
 	// Injectable so tests are deterministic.
 	Now time.Time
+	// ScopeToVisible, when true, restricts the report to VisibleCollectionIDs
+	// (the caller's visible collection set). Aggregate counts for collections
+	// the caller can't see are never computed — preventing a member/guest from
+	// inferring hidden collections' throughput or status distribution. The
+	// HTTP handler sets this from visibleCollectionIDs(); internal/CLI callers
+	// that already run as an authorized principal leave it false for the full
+	// workspace report.
+	ScopeToVisible       bool
+	VisibleCollectionIDs []string
 }
 
 // ReportBucket is one time-series point: items created and completed within
@@ -137,8 +146,9 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 	startStr := start.Format(time.RFC3339)
 	endStr := now.Format(time.RFC3339)
 
-	// Resolve the collections in scope (filtered by slug if requested).
-	colls, err := s.resolveReportCollections(workspaceID, opts.Collections)
+	// Resolve the collections in scope (filtered by slug if requested, and by
+	// the caller's visible set when scoping is enabled).
+	colls, err := s.resolveReportCollections(workspaceID, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -209,19 +219,32 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 // resolveReportCollections lists the workspace's collections (optionally
 // filtered to the given slugs) and resolves each one's done field + positive
 // terminal values.
-func (s *Store) resolveReportCollections(workspaceID string, slugs []string) ([]reportCollection, error) {
+func (s *Store) resolveReportCollections(workspaceID string, opts ReportOptions) ([]reportCollection, error) {
 	all, err := s.ListCollections(workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("list collections for report: %w", err)
 	}
 	want := map[string]bool{}
-	for _, sl := range slugs {
+	for _, sl := range opts.Collections {
 		want[strings.ToLower(strings.TrimSpace(sl))] = true
+	}
+	// Visibility scope: when enabled, only collections in the caller's visible
+	// set are eligible (an empty set yields an empty report — correct for a
+	// guest with no full-collection access).
+	var visible map[string]bool
+	if opts.ScopeToVisible {
+		visible = make(map[string]bool, len(opts.VisibleCollectionIDs))
+		for _, id := range opts.VisibleCollectionIDs {
+			visible[id] = true
+		}
 	}
 
 	var out []reportCollection
 	for _, c := range all {
 		if len(want) > 0 && !want[strings.ToLower(c.Slug)] {
+			continue
+		}
+		if visible != nil && !visible[c.ID] {
 			continue
 		}
 		var schema models.CollectionSchema

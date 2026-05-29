@@ -19,8 +19,22 @@ func (s *Server) handleGetReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Scope the report to the caller's visible collections, mirroring the
+	// dashboard. Without this, a member/guest with access to one collection
+	// could infer hidden collections' slugs, throughput, and status
+	// distribution from the aggregate counts. Aggregate reports are a
+	// full-collection-visibility feature; item-level grants are intentionally
+	// not surfaced in workspace-wide counts.
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
 	opts := store.ReportOptions{
-		Window: r.URL.Query().Get("window"),
+		Window:               r.URL.Query().Get("window"),
+		ScopeToVisible:       true,
+		VisibleCollectionIDs: visibleIDs,
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("collections")); raw != "" {
 		for _, slug := range strings.Split(raw, ",") {
