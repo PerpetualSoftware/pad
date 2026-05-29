@@ -320,6 +320,11 @@ func (s *Store) GetReport(workspaceID string, opts ReportOptions) (*ReportData, 
 //     status-preserving moves record no transition), so this is a deliberate
 //     limitation — the same current-collection attribution the backfill and
 //     completed-by-collection use. Items rarely change collection.
+//   - same-second resolution: created_at is second-precision and transition
+//     ids are random UUIDs, so "the latest transition <= t" is nondeterministic
+//     when an item changes status 2+ times within ONE second — it may resolve
+//     to either same-second value. Rare (requires sub-second multi-hops on one
+//     item); a monotonic ordering column would fix it (tracked as a follow-up).
 func (s *Store) reportSnapshotAsOf(workspaceID string, colls []reportCollection, t time.Time) ([]ReportStatusCount, ReportWIP, error) {
 	tStr := t.Format(time.RFC3339)
 	dist := []ReportStatusCount{}
