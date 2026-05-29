@@ -5296,6 +5296,19 @@ net flow, completed-by-collection, and a current status-distribution snapshot.
 					Status     string `json:"status"`
 					Count      int    `json:"count"`
 				} `json:"status_distribution"`
+				CycleTime struct {
+					SampleSize  int     `json:"sample_size"`
+					MedianHours float64 `json:"median_hours"`
+					P90Hours    float64 `json:"p90_hours"`
+				} `json:"cycle_time"`
+				WIP struct {
+					OpenCount      int     `json:"open_count"`
+					MedianAgeHours float64 `json:"median_age_hours"`
+					AgingBuckets   []struct {
+						Label string `json:"label"`
+						Count int    `json:"count"`
+					} `json:"aging_buckets"`
+				} `json:"wip"`
 			}
 			if err := json.Unmarshal(repJSON, &rep); err != nil {
 				fmt.Println(string(repJSON))
@@ -5360,6 +5373,29 @@ net flow, completed-by-collection, and a current status-distribution snapshot.
 				bold.Println("   Status distribution")
 				for _, s := range rep.StatusDistribution {
 					fmt.Printf("   %-16s %-14s %d\n", s.Collection, s.Status, s.Count)
+				}
+			}
+
+			fmtHours := func(h float64) string {
+				if h >= 48 {
+					return fmt.Sprintf("%.1fd", h/24)
+				}
+				return fmt.Sprintf("%.1fh", h)
+			}
+			if rep.CycleTime.SampleSize > 0 {
+				fmt.Println()
+				bold.Println("   Cycle time (created → completed)")
+				fmt.Printf("   median %s   p90 %s   (n=%d)\n",
+					fmtHours(rep.CycleTime.MedianHours), fmtHours(rep.CycleTime.P90Hours), rep.CycleTime.SampleSize)
+			}
+			if rep.WIP.OpenCount > 0 {
+				fmt.Println()
+				bold.Printf("   Work in progress: %d open", rep.WIP.OpenCount)
+				dim.Printf("  (median age %s)\n", fmtHours(rep.WIP.MedianAgeHours))
+				for _, b := range rep.WIP.AgingBuckets {
+					if b.Count > 0 {
+						fmt.Printf("   %-7s %d\n", b.Label, b.Count)
+					}
 				}
 			}
 			return nil
