@@ -138,6 +138,35 @@ func TestGetReport_CollectionFilter(t *testing.T) {
 	}
 }
 
+func TestGetReport_SoftDeletedExcludedFromCompleted(t *testing.T) {
+	s := testStore(t)
+	wsID, colID := newTransitionTestWorkspace(t, s)
+	item := createTestItem(t, s, wsID, colID, "ship then delete", "")
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: strPtr(`{"status":"done"}`)}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	// Soft delete — the status_transitions row survives (only a HARD delete
+	// cascades it). It must drop out of completed counts to stay consistent
+	// with created/status_distribution.
+	if err := s.DeleteItem(item.ID); err != nil {
+		t.Fatalf("soft delete: %v", err)
+	}
+
+	rep, err := s.GetReport(wsID, ReportOptions{Window: "week", Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	if rep.Totals.Completed != 0 {
+		t.Fatalf("soft-deleted item must not count as completed, got %d", rep.Totals.Completed)
+	}
+	if collCount(rep.CompletedByCollection, "tasks") != 0 {
+		t.Fatalf("soft-deleted item must not appear in completed_by_collection, got %+v", rep.CompletedByCollection)
+	}
+	if rep.Totals.Created != 0 {
+		t.Fatalf("soft-deleted item should also be absent from created, got %d", rep.Totals.Created)
+	}
+}
+
 func TestGetReport_ScopeToVisibleExcludesHidden(t *testing.T) {
 	s := testStore(t)
 	wsID, tasksID := newTransitionTestWorkspace(t, s)

@@ -313,15 +313,23 @@ func (s *Store) reportCompletedBuckets(workspaceID string, colls []reportCollect
 	base := []any{workspaceID, startStr, endStr}
 	bucketExpr := s.dialect.DateBucket("st.created_at", gran)
 
+	// Join live items so a completed-then-soft-deleted item is excluded from
+	// the completion counts too — keeping them consistent with the created and
+	// status-distribution queries (which already filter deleted_at IS NULL).
+	// status_transitions rows survive a soft delete (only a HARD delete
+	// cascades them away).
+	const liveJoin = "JOIN items i ON i.id = st.item_id AND i.deleted_at IS NULL"
+
 	// Buckets.
 	bArgs := append(append([]any{}, base...), posArgs...)
 	bQuery := fmt.Sprintf(`
 		SELECT %s AS bucket, COUNT(*)
 		FROM status_transitions st
+		%s
 		WHERE st.workspace_id = ? AND st.created_at >= ? AND st.created_at <= ?
 		  AND %s
 		GROUP BY bucket
-	`, bucketExpr, posExpr)
+	`, bucketExpr, liveJoin, posExpr)
 	byBucket, err = s.scanBucketCounts(bQuery, bArgs)
 	if err != nil {
 		return nil, nil, err
@@ -332,10 +340,11 @@ func (s *Store) reportCompletedBuckets(workspaceID string, colls []reportCollect
 	cQuery := fmt.Sprintf(`
 		SELECT st.collection_id, COUNT(*)
 		FROM status_transitions st
+		%s
 		WHERE st.workspace_id = ? AND st.created_at >= ? AND st.created_at <= ?
 		  AND %s
 		GROUP BY st.collection_id
-	`, posExpr)
+	`, liveJoin, posExpr)
 	rows, err := s.db.Query(s.q(cQuery), cArgs...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("report completed-by-collection: %w", err)
