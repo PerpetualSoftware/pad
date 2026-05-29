@@ -846,6 +846,36 @@ export interface ReportTotals {
 	net_flow: number;
 }
 
+/** Per-collection median duration in hours over a sample. */
+export interface ReportDuration {
+	collection: string;
+	count: number;
+	median_hours: number;
+}
+
+/** Time from item creation to a positive-terminal transition (completions in window). */
+export interface ReportCycleTime {
+	sample_size: number;
+	median_hours: number;
+	p90_hours: number;
+	by_collection: ReportDuration[];
+}
+
+export interface ReportAgingBucket {
+	/** "<1d" | "1-7d" | "7-30d" | ">30d" */
+	label: string;
+	count: number;
+}
+
+/** Point-in-time work-in-progress: open items (non-terminal), their age + distribution. */
+export interface ReportWIP {
+	open_count: number;
+	median_age_hours: number;
+	aging_buckets: ReportAgingBucket[];
+	/** median_hours = median open-item age, per collection */
+	by_collection: ReportDuration[];
+}
+
 /**
  * Windowed project report. "completed" counts a status change into a positive
  * terminal value (terminal options minus negative outcomes like
@@ -862,6 +892,8 @@ export interface ReportData {
 	totals: ReportTotals;
 	completed_by_collection: ReportCollectionCount[];
 	status_distribution: ReportStatusCount[];
+	cycle_time: ReportCycleTime;
+	wip: ReportWIP;
 }
 
 // ─── Incremental Sync ────────────────────────────────────────────────────────

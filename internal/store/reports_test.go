@@ -1,6 +1,8 @@
 package store
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -266,5 +268,116 @@ func TestGetReport_DayWindowBucketsByHour(t *testing.T) {
 	// Hourly labels are "YYYY-MM-DDTHH" (13 chars).
 	if len(rep.Buckets) > 0 && len(rep.Buckets[0].Bucket) != 13 {
 		t.Fatalf("hourly bucket label should be 13 chars, got %q", rep.Buckets[0].Bucket)
+	}
+}
+
+func backdateItem(t *testing.T, s *Store, itemID string, hoursAgo float64) {
+	t.Helper()
+	ts := time.Now().UTC().Add(-time.Duration(hoursAgo * float64(time.Hour))).Format(time.RFC3339)
+	if _, err := s.db.Exec(s.dialect.Rebind(`UPDATE items SET created_at = ? WHERE id = ?`), ts, itemID); err != nil {
+		t.Fatalf("backdate %s: %v", itemID, err)
+	}
+}
+
+func TestGetReport_CycleTime(t *testing.T) {
+	s := testStore(t)
+	wsID, colID := newTransitionTestWorkspace(t, s)
+	item := createTestItem(t, s, wsID, colID, "slow task", "")
+	backdateItem(t, s, item.ID, 48) // created 48h ago
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: strPtr(`{"status":"done"}`)}); err != nil {
+		t.Fatalf("complete: %v", err) // completion transition stamped ~now → cycle ≈ 48h
+	}
+
+	rep, err := s.GetReport(wsID, ReportOptions{Window: "week", Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	if rep.CycleTime.SampleSize != 1 {
+		t.Fatalf("expected 1 cycle-time sample, got %d", rep.CycleTime.SampleSize)
+	}
+	if rep.CycleTime.MedianHours < 47 || rep.CycleTime.MedianHours > 49 {
+		t.Fatalf("expected median ~48h, got %.1f", rep.CycleTime.MedianHours)
+	}
+	if collDurMedian(rep.CycleTime.ByCollection, "tasks") < 47 {
+		t.Fatalf("expected tasks cycle-time median ~48h, got %+v", rep.CycleTime.ByCollection)
+	}
+}
+
+func TestGetReport_WIPAndAging(t *testing.T) {
+	s := testStore(t)
+	wsID, colID := newTransitionTestWorkspace(t, s)
+	a := createTestItem(t, s, wsID, colID, "old open", "")
+	backdateItem(t, s, a.ID, 100)                       // ~4.2d old, still open
+	createTestItem(t, s, wsID, colID, "fresh open", "") // <1d old, open
+	done := createTestItem(t, s, wsID, colID, "shipped", "")
+	if _, err := s.UpdateItem(done.ID, models.ItemUpdate{Fields: strPtr(`{"status":"done"}`)}); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	rep, err := s.GetReport(wsID, ReportOptions{Window: "week", Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	if rep.WIP.OpenCount != 2 {
+		t.Fatalf("expected 2 open items (done excluded), got %d", rep.WIP.OpenCount)
+	}
+	// Aging: one <1d, one 1-7d.
+	band := map[string]int{}
+	for _, b := range rep.WIP.AgingBuckets {
+		band[b.Label] = b.Count
+	}
+	if band["<1d"] != 1 || band["1-7d"] != 1 {
+		t.Fatalf("expected aging <1d=1, 1-7d=1, got %+v", rep.WIP.AgingBuckets)
+	}
+	if len(rep.WIP.AgingBuckets) != 4 {
+		t.Fatalf("expected 4 fixed aging bands, got %d", len(rep.WIP.AgingBuckets))
+	}
+}
+
+func collDurMedian(list []ReportDuration, slug string) float64 {
+	for _, d := range list {
+		if d.Collection == slug {
+			return d.MedianHours
+		}
+	}
+	return -1
+}
+
+func TestPercentile(t *testing.T) {
+	if got := percentile(nil, 0.5); got != 0 {
+		t.Errorf("empty percentile = %v, want 0", got)
+	}
+	if got := percentile([]float64{10}, 0.9); got != 10 {
+		t.Errorf("single percentile = %v, want 10", got)
+	}
+	// median of 1..5 = 3; p90 ≈ 4.6
+	if got := percentile([]float64{1, 2, 3, 4, 5}, 0.5); got != 3 {
+		t.Errorf("median = %v, want 3", got)
+	}
+	if got := percentile([]float64{1, 2, 3, 4, 5}, 0.9); got < 4.5 || got > 4.7 {
+		t.Errorf("p90 = %v, want ~4.6", got)
+	}
+}
+
+func TestGetReport_EmptyScopeWellFormedJSON(t *testing.T) {
+	s := testStore(t)
+	wsID, _ := newTransitionTestWorkspace(t, s)
+	// Empty visible set → no collections in scope (early-return path).
+	rep, err := s.GetReport(wsID, ReportOptions{Window: "week", Now: time.Now().UTC(), ScopeToVisible: true, VisibleCollectionIDs: nil})
+	if err != nil {
+		t.Fatalf("GetReport: %v", err)
+	}
+	b, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	js := string(b)
+	for _, frag := range []string{
+		`"by_collection":null`, `"aging_buckets":null`, `"buckets":null`,
+		`"completed_by_collection":null`, `"status_distribution":null`, `"collections":null`,
+	} {
+		if strings.Contains(js, frag) {
+			t.Errorf("empty report has %s — should be []", frag)
+		}
 	}
 }
