@@ -40,6 +40,15 @@
 			})
 			.join(' ');
 	});
+
+	const summary = $derived.by(() => {
+		const n = values.length;
+		if (n === 0) return ariaLabel;
+		const latest = values[n - 1];
+		const min = Math.min(...values);
+		const max = Math.max(...values);
+		return `latest ${latest} (min ${min}, max ${max})`;
+	});
 </script>
 
 {#if values.length > 0}
@@ -52,6 +61,7 @@
 		role="img"
 		aria-label={ariaLabel}
 	>
+		<title>{summary}</title>
 		<path
 			d={path}
 			fill="none"

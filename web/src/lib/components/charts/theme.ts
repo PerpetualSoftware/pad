@@ -55,4 +55,5 @@ export interface LayerCakeContext {
 	height: Readable<number>;
 	xRange: Readable<number[]>;
 	yRange: Readable<number[]>;
+	padding: Readable<{ top: number; right: number; bottom: number; left: number }>;
 }
