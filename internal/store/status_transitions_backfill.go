@@ -245,6 +245,17 @@ func (s *Store) BackfillStatusTransitions() (*BackfillStatusTransitionsResult, e
 	// item's initial value — used by Pass 2 to seed the create-time row.
 	firstChangeFrom := map[string]string{}
 
+	// Buffer hop inserts rather than writing them here: create-seed rows
+	// (Pass 2) must be inserted BEFORE the hops so they receive a lower seq.
+	// A seed is the item's initial state at created_at — always chronologically
+	// first for its item — so when its created_at ties a hop's (same-second
+	// create-and-change), the hop's higher seq must win the "latest <= t"
+	// ordering. Inserting seeds first guarantees that (TASK-1643 review).
+	type hopInsert struct {
+		id, itemID, wsID, collID, key, from, to, createdAt string
+	}
+	var hops []hopInsert
+
 	for _, ar := range scanned {
 		result.ActivitiesScanned++
 
@@ -270,7 +281,7 @@ func (s *Store) BackfillStatusTransitions() (*BackfillStatusTransitionsResult, e
 		// transition, so the activity id (prefixed to stay visibly
 		// backfill-sourced) is a stable, collision-free primary key. Re-runs
 		// hit the conflict clause and no-op.
-		insert("bf_"+ar.activityID, ar.itemID, ar.workspaceID, ar.collectionID, key, from, to, ar.createdAt)
+		hops = append(hops, hopInsert{"bf_" + ar.activityID, ar.itemID, ar.workspaceID, ar.collectionID, key, from, to, ar.createdAt})
 	}
 
 	// --- Pass 2: create-time "entered initial status" rows ---
@@ -319,6 +330,13 @@ func (s *Store) BackfillStatusTransitions() (*BackfillStatusTransitionsResult, e
 			continue
 		}
 		insert("create_"+ir.id, ir.id, ir.workspaceID, ir.collectionID, key, "", initial, ir.createdAt)
+	}
+
+	// Now the hops — AFTER the seeds, so every hop's seq exceeds its item's
+	// create-seed seq. Buffered in chronological order (the Pass 1 query sorts
+	// by created_at), so multi-hop histories get increasing seq too.
+	for _, h := range hops {
+		insert(h.id, h.itemID, h.wsID, h.collID, h.key, h.from, h.to, h.createdAt)
 	}
 
 	return result, nil

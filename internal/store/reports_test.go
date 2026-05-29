@@ -649,3 +649,51 @@ func TestReportSnapshotAsOf_SameSecondSeqTiebreak(t *testing.T) {
 		t.Fatalf("expected seq tiebreak to resolve to the highest-seq (open) hop → 1 open, got %d (id-only tiebreak would give 0)", wip.OpenCount)
 	}
 }
+
+func TestBackfillStatusTransitions_SeedSeqBelowHop(t *testing.T) {
+	s := testStore(t)
+	wsID, colID := newTransitionTestWorkspace(t, s)
+	item := createTestItem(t, s, wsID, colID, "create-and-change", "")
+	// Clear the live create-seed so only the backfill populates the table.
+	if _, err := s.db.Exec(s.q(`DELETE FROM status_transitions`)); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	// A historical status change → the backfill produces a hop AND a create-seed.
+	if _, err := s.CreateActivity(models.Activity{
+		WorkspaceID: wsID, DocumentID: item.ID, Action: "updated", Actor: "user", Source: "web",
+		Metadata: `{"changes":"status: open → done"}`,
+	}); err != nil {
+		t.Fatalf("activity: %v", err)
+	}
+	if _, err := s.BackfillStatusTransitions(); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+
+	// The create-seed must get a LOWER seq than the hop, so a same-second
+	// create-and-change resolves to the hop (the later state), not the seed.
+	rows, err := s.db.Query(s.q(`SELECT id, seq FROM status_transitions WHERE item_id = ?`), item.ID)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	defer rows.Close()
+	seedSeq, hopSeq := -1, -1
+	for rows.Next() {
+		var id string
+		var seq int
+		if err := rows.Scan(&id, &seq); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		switch {
+		case strings.HasPrefix(id, "create_"):
+			seedSeq = seq
+		case strings.HasPrefix(id, "bf_"):
+			hopSeq = seq
+		}
+	}
+	if seedSeq < 0 || hopSeq < 0 {
+		t.Fatalf("expected both a seed and a hop row, got seedSeq=%d hopSeq=%d", seedSeq, hopSeq)
+	}
+	if !(seedSeq < hopSeq) {
+		t.Fatalf("create-seed seq (%d) must be below the hop seq (%d)", seedSeq, hopSeq)
+	}
+}
