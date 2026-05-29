@@ -19,6 +19,8 @@ import type {
 	CommentCreate,
 	Version,
 	DashboardResponse,
+	ReportData,
+	ReportWindow,
 	SearchResponse,
 	SearchFilters,
 	Activity,
@@ -924,6 +926,22 @@ export const api = {
 	dashboard: {
 		get: (ws: string) =>
 			request<DashboardResponse>(`/workspaces/${ws}/dashboard`)
+	},
+
+	// ── Project Report (PLAN-1628 / TASK-1630) ────────────────────────────────
+
+	report: {
+		/**
+		 * Windowed project report. window ∈ {day, week, 2wk, month} (default
+		 * week). collections optionally restricts to the given slugs.
+		 */
+		get: (ws: string, opts?: { window?: ReportWindow; collections?: string[] }) => {
+			const params = new URLSearchParams();
+			if (opts?.window) params.set('window', opts.window);
+			if (opts?.collections?.length) params.set('collections', opts.collections.join(','));
+			const qs = params.toString();
+			return request<ReportData>(`/workspaces/${ws}/report${qs ? `?${qs}` : ''}`);
+		}
 	},
 
 	// ── Incremental Sync ─────────────────────────────────────────────────────

@@ -815,6 +815,55 @@ export interface DashboardResponse {
 	};
 }
 
+// ─── Project Report (PLAN-1628 / TASK-1630) ──────────────────────────────────
+
+export type ReportWindow = 'day' | 'week' | '2wk' | 'month';
+
+/** One time-series point: items created vs completed within the bucket. */
+export interface ReportBucket {
+	/** Sortable UTC label: "YYYY-MM-DD" (day) or "YYYY-MM-DDTHH" (hour). */
+	bucket: string;
+	created: number;
+	completed: number;
+}
+
+export interface ReportCollectionCount {
+	/** collection slug */
+	collection: string;
+	count: number;
+}
+
+export interface ReportStatusCount {
+	collection: string;
+	status: string;
+	count: number;
+}
+
+export interface ReportTotals {
+	created: number;
+	completed: number;
+	/** created - completed */
+	net_flow: number;
+}
+
+/**
+ * Windowed project report. "completed" counts a status change into a positive
+ * terminal value (terminal options minus negative outcomes like
+ * rejected/cancelled). buckets is chronological and zero-filled, so it renders
+ * directly without client-side gap-filling.
+ */
+export interface ReportData {
+	window: ReportWindow;
+	granularity: 'hour' | 'day';
+	range_start: string; // RFC3339 UTC
+	range_end: string; // RFC3339 UTC
+	collections: string[]; // slugs included
+	buckets: ReportBucket[];
+	totals: ReportTotals;
+	completed_by_collection: ReportCollectionCount[];
+	status_distribution: ReportStatusCount[];
+}
+
 // ─── Incremental Sync ────────────────────────────────────────────────────────
 
 export interface ChangesResponse {

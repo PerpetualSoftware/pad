@@ -103,6 +103,20 @@ type Dialect interface {
 	// SQLite: "column LIKE ?" with arg `%"value"%`
 	// PostgreSQL: "column::jsonb @> ?::jsonb" with arg `["value"]`
 	JSONArrayContains(column, value string) (string, interface{})
+
+	// DateBucket returns a SQL expression that truncates an RFC3339 UTC
+	// timestamp TEXT column to the start of its bucket, as a sortable TEXT
+	// label, for GROUP BY in time-series reports (PLAN-1628). granularity is
+	// "hour" or "day".
+	//
+	// Implemented via fixed-width substring on both engines: every timestamp
+	// in the schema is stored as UTC RFC3339 ("YYYY-MM-DDTHH:MM:SSZ", see
+	// dialect.NowRFC3339), so "day" = chars 1-10 and "hour" = chars 1-13 are
+	// exact and identical across SQLite and Postgres — and avoid SQLite's
+	// fragile parsing of the trailing 'Z'. Coarser granularities (week/month)
+	// need real date math and would diverge here to strftime (SQLite) vs
+	// date_trunc/to_char (Postgres); they're added when a window needs them.
+	DateBucket(column, granularity string) string
 }
 
 // ---------- SQLite dialect ----------
@@ -173,6 +187,10 @@ func (d *sqliteDialect) FTSRank(_, _ string) string {
 
 func (d *sqliteDialect) JSONArrayContains(column, value string) (string, interface{}) {
 	return column + " LIKE ?", "%\"" + value + "\"%"
+}
+
+func (d *sqliteDialect) DateBucket(column, granularity string) string {
+	return dateBucketSubstr(column, granularity)
 }
 
 // ---------- PostgreSQL dialect ----------
@@ -270,6 +288,21 @@ func (d *postgresDialect) FTSRank(table, column string) string {
 
 func (d *postgresDialect) JSONArrayContains(column, value string) (string, interface{}) {
 	return column + "::jsonb @> ?::jsonb", `["` + value + `"]`
+}
+
+func (d *postgresDialect) DateBucket(column, granularity string) string {
+	return dateBucketSubstr(column, granularity)
+}
+
+// dateBucketSubstr truncates a UTC RFC3339 TEXT timestamp to its day ("hour"
+// → chars 1-13 "YYYY-MM-DDTHH"; otherwise → chars 1-10 "YYYY-MM-DD"). The
+// SUBSTR(text, from, count) form is valid and identical on SQLite and
+// Postgres, so both dialects delegate here for these granularities.
+func dateBucketSubstr(column, granularity string) string {
+	if granularity == "hour" {
+		return fmt.Sprintf("SUBSTR(%s, 1, 13)", column)
+	}
+	return fmt.Sprintf("SUBSTR(%s, 1, 10)", column)
 }
 
 // ---------- Helper ----------

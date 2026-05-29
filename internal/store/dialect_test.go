@@ -25,6 +25,23 @@ func TestRebindQuery(t *testing.T) {
 	}
 }
 
+func TestDateBucket(t *testing.T) {
+	// Day/hour bucketing is fixed-width substring on the UTC RFC3339 TEXT, so
+	// both dialects emit the same expression. Verify each granularity.
+	for _, d := range []Dialect{&sqliteDialect{}, &postgresDialect{}} {
+		if got := d.DateBucket("created_at", "day"); got != "SUBSTR(created_at, 1, 10)" {
+			t.Errorf("%T day bucket = %q", d, got)
+		}
+		if got := d.DateBucket("created_at", "hour"); got != "SUBSTR(created_at, 1, 13)" {
+			t.Errorf("%T hour bucket = %q", d, got)
+		}
+		// Unknown granularity falls back to day.
+		if got := d.DateBucket("created_at", "week"); got != "SUBSTR(created_at, 1, 10)" {
+			t.Errorf("%T fallback bucket = %q", d, got)
+		}
+	}
+}
+
 func TestSQLiteDialect(t *testing.T) {
 	d := &sqliteDialect{}
 
