@@ -23,6 +23,28 @@
 	const hasData = $derived(data.length > 0 && series.length > 0);
 	const padding = { top: 12, right: 12, bottom: 28, left: 36 };
 
+	// Per-band hover state, lifted from <Bars> so the parent owns the tooltip.
+	let hover = $state<{ index: number; centerX: number } | null>(null);
+	let canvasWidth = $state(0);
+	let tooltipWidth = $state(0);
+
+	const hovered = $derived(hover ? data[hover.index] : null);
+
+	// Clamp the tooltip's left edge so it never overflows the canvas. The tooltip
+	// is centered over the band, then nudged back inside the [0, canvasWidth] range.
+	const tooltipLeft = $derived.by(() => {
+		if (!hover) return 0;
+		const half = tooltipWidth / 2;
+		const min = half;
+		const max = Math.max(half, canvasWidth - half);
+		return Math.min(Math.max(hover.centerX, min), max);
+	});
+
+	function num(d: ChartDatum, key: string): number {
+		const v = d[key];
+		return typeof v === 'number' ? v : Number(v) || 0;
+	}
+
 	// y accessor returns the largest series value per datum so the linear
 	// y-domain (yDomain={[0, null]}) accommodates the tallest grouped bar.
 	const yAccessor = $derived.by(() => {
@@ -49,7 +71,7 @@
 				</span>
 			{/each}
 		</div>
-		<div class="canvas" style:height={`${height}px`}>
+		<div class="canvas" style:height={`${height}px`} bind:clientWidth={canvasWidth}>
 			<LayerCake
 				{data}
 				{x}
@@ -62,9 +84,26 @@
 				<Svg>
 					<AxisY />
 					<AxisX />
-					<Bars series={resolvedSeries} />
+					<Bars series={resolvedSeries} onHover={(h) => (hover = h)} />
 				</Svg>
 			</LayerCake>
+
+			{#if hover && hovered}
+				<div
+					class="tooltip"
+					style:left={`${tooltipLeft}px`}
+					bind:clientWidth={tooltipWidth}
+				>
+					<div class="tooltip-header">{hovered[x]}</div>
+					{#each resolvedSeries as s (s.key)}
+						<div class="tooltip-row">
+							<span class="tooltip-swatch" style:background-color={s.color}></span>
+							<span class="tooltip-label">{s.label}</span>
+							<span class="tooltip-value">{num(hovered, s.key)}</span>
+						</div>
+					{/each}
+				</div>
+			{/if}
 		</div>
 	{:else}
 		<div class="empty" style:height={`${height}px`}>No data</div>
@@ -78,6 +117,58 @@
 
 	.canvas {
 		width: 100%;
+		position: relative;
+	}
+
+	.tooltip {
+		position: absolute;
+		top: 8px;
+		transform: translateX(-50%);
+		pointer-events: none;
+		z-index: 1;
+		min-width: max-content;
+		padding: 0.4rem 0.55rem;
+		border-radius: 6px;
+		background: var(--surface, #ffffff);
+		border: 1px solid var(--border, #e5e7eb);
+		box-shadow: 0 2px 8px rgb(0 0 0 / 0.12);
+		font-size: 0.75rem;
+		color: var(--text, #111827);
+	}
+
+	.tooltip-header {
+		font-weight: 600;
+		margin-bottom: 0.25rem;
+		white-space: nowrap;
+	}
+
+	.tooltip-row {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+		white-space: nowrap;
+	}
+
+	.tooltip-row + .tooltip-row {
+		margin-top: 0.15rem;
+	}
+
+	.tooltip-swatch {
+		display: inline-block;
+		width: 0.6rem;
+		height: 0.6rem;
+		border-radius: 2px;
+		flex-shrink: 0;
+	}
+
+	.tooltip-label {
+		color: var(--text-muted, #6b7280);
+	}
+
+	.tooltip-value {
+		margin-left: auto;
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
 	}
 
 	.legend {
