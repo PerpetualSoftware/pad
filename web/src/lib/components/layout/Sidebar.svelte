@@ -30,6 +30,7 @@
 	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
 	let isGuest = $derived(workspaceStore.current?.is_guest ?? false);
 	let isDashboardPage = $derived(wsPrefix ? page.url.pathname === wsPrefix : false);
+	let isInsightsPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/insights` : false);
 	let isRolesPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/roles` : false);
 	let isActivityPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/activity` : false);
 	let isStarredPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/starred` : false);
@@ -411,6 +412,15 @@
 				>
 					<span class="nav-icon">📊</span>
 					<span class="nav-label">Dashboard</span>
+				</a>
+				<a
+					href="{wsPrefix}/insights"
+					class="nav-item"
+					class:active={isInsightsPage}
+					onclick={() => uiStore.onNavigate()}
+				>
+					<span class="nav-icon">📈</span>
+					<span class="nav-label">Insights</span>
 				</a>
 				<a
 					href="{wsPrefix}/roles"
