@@ -735,26 +735,113 @@
 			display: none !important;
 		}
 
+		/* Smaller print base so the em-based sizes cascade down to a tidy
+		   report scale (body ~10pt). Tighter gap reads as a compact report
+		   rather than a sprawling web page. */
 		.report {
 			max-width: none;
 			margin: 0;
 			padding: 0;
 			color: #000;
-			gap: 1.25rem;
+			font-size: 10pt;
+			line-height: 1.35;
+			gap: 0.6rem;
 		}
 		.stat-card,
 		.error-state {
 			background: transparent;
 		}
 
-		/* Keep logical units intact across page breaks. */
-		.block,
-		.stat-row,
-		.shipped-group,
+		/* Cap the big screen-scale headings to report proportions. */
+		.report-title h1 {
+			font-size: 16pt;
+		}
+		.report-subtitle {
+			font-size: 8.5pt;
+		}
+		.period {
+			font-size: 9.5pt;
+		}
+		.generated {
+			font-size: 8pt;
+		}
 		.report-header {
-			break-inside: avoid;
+			padding-bottom: 0.4rem;
 		}
 		.block-title {
+			font-size: 12pt;
+			padding-bottom: 0.25rem;
+		}
+		.block-sub {
+			font-size: 8.5pt;
+		}
+		.block {
+			gap: 0.45rem;
+		}
+
+		/* Compact stat row. */
+		.stat-row {
+			gap: 0.5rem;
+		}
+		.stat-card {
+			padding: 0.4rem 0.5rem;
+		}
+		.stat-label {
+			font-size: 8pt;
+		}
+		.stat-value {
+			font-size: 14pt;
+		}
+
+		/* Compact "what shipped" list. */
+		.shipped {
+			gap: 0.6rem;
+		}
+		.shipped-item {
+			font-size: 9pt;
+			padding: 1pt 0;
+		}
+		.shipped-group-name {
+			font-size: 9.5pt;
+		}
+		.shipped-group-count {
+			font-size: 7.5pt;
+		}
+		.metric-value {
+			font-size: 11pt;
+		}
+		.metric-label {
+			font-size: 8pt;
+		}
+		.status-table {
+			font-size: 8.5pt;
+		}
+
+		/* Constrain chart height (overrides the inline height BarChart sets on
+		   .canvas) and tighten the legend for print. */
+		.chart-block :global(.canvas) {
+			height: 150px !important;
+		}
+		.chart-block :global(.legend) {
+			font-size: 8pt;
+			margin-bottom: 0.25rem;
+		}
+
+		/* Keep logical units intact across page breaks; never split a table,
+		   a table row, a stat card, a chart, or a shipped group, and keep
+		   every section heading attached to the content that follows it. */
+		.block,
+		.stat-row,
+		.stat-card,
+		.shipped-group,
+		.report-header,
+		.status-table,
+		.status-table tr,
+		.chart-block :global(.canvas) {
+			break-inside: avoid;
+		}
+		.block-title,
+		.report-title h1 {
 			break-after: avoid;
 		}
 
