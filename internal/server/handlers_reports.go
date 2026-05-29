@@ -19,12 +19,19 @@ func (s *Server) handleGetReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Scope the report to the caller's visible collections, mirroring the
-	// dashboard. Without this, a member/guest with access to one collection
-	// could infer hidden collections' slugs, throughput, and status
-	// distribution from the aggregate counts. Aggregate reports are a
-	// full-collection-visibility feature; item-level grants are intentionally
-	// not surfaced in workspace-wide counts.
+	// Scope the report to the caller's FULL-collection visibility, mirroring
+	// the dashboard's dashCollIDs logic. Aggregate report counts have no
+	// item-level filtering, so a collection is only in scope if the caller can
+	// see all of it — otherwise a member/guest could infer hidden collections'
+	// slugs, throughput, and status distribution.
+	//
+	//   - visibleCollectionIDs == nil → admin / all-access member: no
+	//     restriction (full workspace report).
+	//   - item-level grants present → use the full-access collection set
+	//     (fullCollIDs); item-grant-only collections are NOT counted, since
+	//     that would leak the whole collection's aggregates.
+	//   - otherwise → the caller's full-collection set (specific members,
+	//     guests with only full-collection grants).
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
@@ -32,9 +39,19 @@ func (s *Server) handleGetReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opts := store.ReportOptions{
-		Window:               r.URL.Query().Get("window"),
-		ScopeToVisible:       true,
-		VisibleCollectionIDs: visibleIDs,
+		Window: r.URL.Query().Get("window"),
+	}
+	if visibleIDs != nil {
+		opts.ScopeToVisible = true
+		opts.VisibleCollectionIDs = visibleIDs
+		fullCollIDs, grantedItemIDs, gErr := s.guestResourceFilter(r, workspaceID)
+		if gErr != nil {
+			writeInternalError(w, gErr)
+			return
+		}
+		if len(grantedItemIDs) > 0 {
+			opts.VisibleCollectionIDs = fullCollIDs
+		}
 	}
 	if raw := strings.TrimSpace(r.URL.Query().Get("collections")); raw != "" {
 		for _, slug := range strings.Split(raw, ",") {
