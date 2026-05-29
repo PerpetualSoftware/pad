@@ -1232,6 +1232,9 @@ func (s *Server) setupRouter() {
 					// Project report — windowed throughput/flow/status
 					// stats (PLAN-1628 / TASK-1630).
 					r.Get("/report", s.handleGetReport)
+					// Per-user Insights layout prefs (PLAN-1628 / TASK-1634).
+					r.Get("/report/layout", s.handleGetReportLayout)
+					r.Put("/report/layout", s.handleSaveReportLayout)
 
 					// Agent bootstrap (PLAN-1377 / TASK-1379) — single
 					// round-trip that returns workspace + user +

@@ -1,9 +1,11 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -85,4 +87,80 @@ func (s *Server) reportVisibleCollections(r *http.Request, workspaceID string) (
 		ids = fullCollIDs
 	}
 	return true, ids, nil
+}
+
+// handleGetReportLayout returns the current user's saved Insights layout for
+// the workspace (PLAN-1628 / TASK-1634), or surface defaults when none/no user.
+//
+//	GET /workspaces/{slug}/report/layout
+func (s *Server) handleGetReportLayout(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+	layout := models.ReportLayout{HiddenCards: []string{}, DefaultCollections: []string{}}
+	if user := currentUser(r); user != nil {
+		saved, err := s.store.GetReportLayout(user.ID, workspaceID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if saved != nil {
+			layout = *saved
+			if layout.HiddenCards == nil {
+				layout.HiddenCards = []string{}
+			}
+			if layout.DefaultCollections == nil {
+				layout.DefaultCollections = []string{}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, layout)
+}
+
+// handleSaveReportLayout upserts the current user's Insights layout for the
+// workspace. Per-user; requires an authenticated user.
+//
+//	PUT /workspaces/{slug}/report/layout   (body: models.ReportLayout)
+func (s *Server) handleSaveReportLayout(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+	user := currentUser(r)
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in to save your Insights layout")
+		return
+	}
+
+	var layout models.ReportLayout
+	if err := json.NewDecoder(r.Body).Decode(&layout); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid layout JSON")
+		return
+	}
+
+	// Sanitize before persisting: drop an invalid window, and filter
+	// hidden_cards to the known toggleable set (dedup) so stored config can't
+	// drift from the UI's card vocabulary.
+	if !models.ValidReportWindow(layout.DefaultWindow) {
+		layout.DefaultWindow = ""
+	}
+	clean := []string{}
+	seen := map[string]bool{}
+	for _, c := range layout.HiddenCards {
+		if models.ReportCardIDs[c] && !seen[c] {
+			clean = append(clean, c)
+			seen[c] = true
+		}
+	}
+	layout.HiddenCards = clean
+	if layout.DefaultCollections == nil {
+		layout.DefaultCollections = []string{}
+	}
+
+	if err := s.store.SaveReportLayout(user.ID, workspaceID, layout); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, layout)
 }
