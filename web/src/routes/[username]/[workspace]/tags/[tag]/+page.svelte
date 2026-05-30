@@ -53,21 +53,47 @@
 		return collections.find((c) => c.id === collectionId);
 	}
 
+	// A restricted member can see an item via an item-level grant without being
+	// able to list its collection (collections.list is filtered by visible
+	// collections). Synthesize a minimal collection from the metadata already
+	// embedded on the item so those rows still render — dropping them would
+	// make the header count disagree with the visible list. The empty schema
+	// means ItemCard just omits status/priority for these rows. Per Codex
+	// PR #660 round 3. Sorted last (no real sort_order available).
+	function syntheticCollection(item: Item): Collection {
+		return {
+			id: item.collection_id,
+			workspace_id: item.workspace_id,
+			name: item.collection_name ?? 'Items',
+			slug: item.collection_slug ?? '',
+			icon: item.collection_icon ?? '📁',
+			description: '',
+			schema: '{"fields":[]}',
+			settings: '{}',
+			sort_order: Number.MAX_SAFE_INTEGER,
+			is_default: false,
+			is_system: false,
+			created_at: item.created_at,
+			updated_at: item.updated_at,
+			prefix: item.collection_prefix ?? ''
+		};
+	}
+
 	// Aggregate tagged items the way collections are viewed: grouped by
 	// collection (the shared axis across heterogeneous status enums), each
 	// group ordered by the collection's sort_order.
 	let groupedItems = $derived.by(() => {
-		const map = new Map<string, Item[]>();
+		const map = new Map<string, { collection: Collection; items: Item[] }>();
 		for (const item of fetchedItems) {
 			const key = item.collection_id;
-			if (!map.has(key)) map.set(key, []);
-			map.get(key)!.push(item);
+			let group = map.get(key);
+			if (!group) {
+				group = { collection: getCollection(key) ?? syntheticCollection(item), items: [] };
+				map.set(key, group);
+			}
+			group.items.push(item);
 		}
-		const groups: { collection: Collection; items: Item[] }[] = [];
-		for (const [collId, collItems] of map) {
-			const coll = getCollection(collId);
-			if (coll) groups.push({ collection: coll, items: collItems });
-		}
+		const groups = [...map.values()];
 		groups.sort((a, b) => a.collection.sort_order - b.collection.sort_order);
 		return groups;
 	});
