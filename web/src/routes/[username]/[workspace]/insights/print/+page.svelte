@@ -131,9 +131,20 @@
 		{ key: 'completed', label: 'Completed', color: 'var(--chart-4, #10b981)' }
 	];
 
+	// Compact X-axis label for the throughput buckets. Full ISO dates
+	// ("2026-05-23", ~70px) overlap once several buckets share a narrow chart;
+	// render "M/D" (day) or "M/D Hh" (hour) instead. Falls back to the raw
+	// bucket string for week/month or any unrecognised format.
+	function fmtBucket(b: string): string {
+		const m = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}))?/.exec(b);
+		if (!m) return b;
+		const label = `${Number(m[2])}/${Number(m[3])}`;
+		return m[4] !== undefined ? `${label} ${Number(m[4])}h` : label;
+	}
+
 	const throughputData = $derived<ChartDatum[]>(
 		(report?.buckets ?? []).map((b) => ({
-			bucket: b.bucket,
+			bucket: fmtBucket(b.bucket),
 			created: b.created,
 			completed: b.completed
 		}))
@@ -457,8 +468,13 @@
 	}
 
 	/* ── Report document ─────────────────────────────────────────────────── */
+	/* Constrained to paper-column width (≈ Letter/A4 content area) rather than
+	   the app's 960px so the on-screen preview matches the printed sheet. This
+	   is also what keeps the LayerCake charts from clipping in print: each chart
+	   measures its width on screen, so a paper-width screen means that cached
+	   measurement already fits the print column — no off-page overflow. */
 	.report {
-		max-width: var(--content-max-width);
+		max-width: 720px;
 		margin: 0 auto;
 		padding: var(--space-8) var(--space-6);
 		display: flex;
