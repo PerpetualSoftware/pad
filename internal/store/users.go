@@ -962,6 +962,17 @@ func (s *Store) DeleteAccountAtomic(userID string, ownedWorkspaceSlugs []string)
 		return fmt.Errorf("delete account: delete api tokens: %w", err)
 	}
 
+	// 3b. Detach authored comments. comments.user_id is a FK to users(id)
+	// (TASK-1663 started populating it); the user's comments live on in
+	// soft-deleted owned workspaces and in other workspaces they're a member
+	// of, so null the reference rather than let the FK block deletion. The
+	// comments.author display name is preserved; nulling user_id just makes
+	// those comments admin-only to edit going forward, which is correct once
+	// the author's account is gone.
+	if _, err := tx.Exec(s.q("UPDATE comments SET user_id = NULL WHERE user_id = ?"), userID); err != nil {
+		return fmt.Errorf("delete account: detach comments: %w", err)
+	}
+
 	// 4. Delete the user record
 	if _, err := tx.Exec(s.q("DELETE FROM users WHERE id = ?"), userID); err != nil {
 		return fmt.Errorf("delete account: delete user: %w", err)
