@@ -35,6 +35,9 @@ function cleanUrl(href: string): string | null {
 type AttachmentRenderContext = {
 	resolver: AttachmentResolver;
 	workspaceSlug: string;
+	// Thumbnail variant for inline image embeds. Comments render small
+	// (thumb-sm, 256px) thumbnails; other surfaces default to thumb-md.
+	imageVariant: 'thumb-sm' | 'thumb-md';
 };
 let currentAttachmentCtx: AttachmentRenderContext | null = null;
 
@@ -98,7 +101,8 @@ renderer.image = function (this: Renderer, { href, title, text }: Tokens.Image) 
 			href,
 			text,
 			currentAttachmentCtx.workspaceSlug,
-			currentAttachmentCtx.resolver
+			currentAttachmentCtx.resolver,
+			currentAttachmentCtx.imageVariant
 		);
 	}
 	// Default image rendering. Mirrors marked's stdout behavior so
@@ -288,6 +292,9 @@ function escapeHtml(s: string): string {
  *   When omitted, those references render as plain markdown links pointing
  *   at the literal `pad-attachment:UUID` href — clearly broken in the UI,
  *   which is the right signal for unresolved environments.
+ * @param attachmentImageVariant - Thumbnail variant for inline image
+ *   embeds. Defaults to `thumb-md` (1024px); comments pass `thumb-sm`
+ *   (256px) so pasted screenshots render as compact thumbnails.
  */
 export function renderMarkdown(
 	content: string,
@@ -295,7 +302,8 @@ export function renderMarkdown(
 	workspaceSlug: string,
 	username?: string,
 	visibleCollectionSlugs?: Set<string>,
-	attachmentResolver?: AttachmentResolver
+	attachmentResolver?: AttachmentResolver,
+	attachmentImageVariant: 'thumb-sm' | 'thumb-md' = 'thumb-md'
 ): string {
 	const withLinks = content.replace(/\[\[([^\]]+)\]\]/g, (_match, body: string) => {
 		// Cross-workspace form: [[workspace-slug::REF]] or [[workspace-slug::REF|Display]].
@@ -365,7 +373,11 @@ export function renderMarkdown(
 	// of this synchronous parse. The try/finally ensures we never leak the
 	// context across calls, even when marked throws on malformed input.
 	if (attachmentResolver) {
-		currentAttachmentCtx = { resolver: attachmentResolver, workspaceSlug };
+		currentAttachmentCtx = {
+			resolver: attachmentResolver,
+			workspaceSlug,
+			imageVariant: attachmentImageVariant
+		};
 	}
 	try {
 		return sanitizeMarkdownHtml(marked(withLinks) as string);

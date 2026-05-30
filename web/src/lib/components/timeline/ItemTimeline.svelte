@@ -17,6 +17,7 @@
 	} from '$lib/utils/commentAttachments';
 	import { fetchAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import { attachmentDownloadUrl, type AttachmentMeta } from '$lib/markdown/attachments';
+	import Lightbox, { type LightboxImage } from '$lib/components/common/Lightbox.svelte';
 
 	interface Props {
 		wsSlug: string;
@@ -118,6 +119,41 @@
 		if (files.length === 0) return;
 		e.preventDefault();
 		startComposeUploads(files);
+	}
+
+	// Lightbox state (IDEA-1660). Set when a thumbnail is clicked; cleared
+	// on close. Null = closed, so the host remounts fresh on each open.
+	let lightbox: { images: LightboxImage[]; index: number } | null = $state(null);
+
+	// Delegated click handler for inline attachment thumbnails. Attached via
+	// an action (not a declarative onclick on the static container) so the
+	// Svelte a11y lint doesn't flag a click handler on a non-interactive div;
+	// keyboard users reach the same images through the rendered markdown's
+	// own affordances, and the lightbox itself is fully keyboard-navigable.
+	function thumbnailZoom(node: HTMLElement) {
+		const handler = (e: MouseEvent) => {
+			const target = e.target as HTMLElement | null;
+			const imgEl = target?.closest('img[data-attachment-id]') as HTMLElement | null;
+			if (!imgEl) return;
+			// Gather sibling attachment images in the same comment/reply body
+			// so the lightbox can page through them with ←/→.
+			const scope = imgEl.closest('.comment-body, .reply-body') ?? imgEl.parentElement;
+			const els = scope
+				? Array.from(scope.querySelectorAll<HTMLElement>('img[data-attachment-id]'))
+				: [imgEl];
+			const list: LightboxImage[] = els
+				.map((el) => ({ id: el.getAttribute('data-attachment-id') ?? '', alt: el.getAttribute('alt') ?? '' }))
+				.filter((x) => x.id !== '');
+			if (list.length === 0) return;
+			e.preventDefault();
+			lightbox = { images: list, index: Math.max(0, els.indexOf(imgEl)) };
+		};
+		node.addEventListener('click', handler);
+		return {
+			destroy() {
+				node.removeEventListener('click', handler);
+			}
+		};
 	}
 
 	function handleComposeDragOver(e: DragEvent) {
@@ -363,7 +399,7 @@
 	{/if}
 
 	{#if !loading || entries.length > 0}
-		<div class="entry-list">
+		<div class="entry-list" use:thumbnailZoom>
 			{#each entries as entry (entry.id)}
 				<div class="entry">
 					<div class="entry-rail">
@@ -411,6 +447,15 @@
 		{/if}
 	{/if}
 </section>
+
+{#if lightbox}
+	<Lightbox
+		images={lightbox.images}
+		index={lightbox.index}
+		{wsSlug}
+		onClose={() => (lightbox = null)}
+	/>
+{/if}
 
 <style>
 	.timeline {

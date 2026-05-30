@@ -209,7 +209,7 @@
 	{/if}
 
 	<div class="comment-body prose">
-		{@html renderMarkdown(comment.body, items, wsSlug, username, undefined, attachmentResolver)}
+		{@html renderMarkdown(comment.body, items, wsSlug, username, undefined, attachmentResolver, 'thumb-sm')}
 	</div>
 
 	<div class="comment-footer">
@@ -300,7 +300,7 @@
 					</div>
 
 					<div class="reply-body prose">
-						{@html renderMarkdown(reply.body, items, wsSlug, username, undefined, attachmentResolver)}
+						{@html renderMarkdown(reply.body, items, wsSlug, username, undefined, attachmentResolver, 'thumb-sm')}
 					</div>
 
 						<div class="reactions-row">
@@ -465,6 +465,24 @@
 	.comment-body :global(p:first-child),
 	.reply-body :global(p:first-child) {
 		margin-top: 0;
+	}
+
+	/* Inline attachment images render as compact thumbnails (IDEA-1660).
+	   The `.prose img { max-width: 100% }` base would let a pasted screenshot
+	   fill the comment column; cap it to a small box and signal it's
+	   clickable. Click-to-expand is handled by the timeline's delegated
+	   handler, which opens the full-resolution image in a lightbox. */
+	.comment-body :global(img[data-attachment-id]),
+	.reply-body :global(img[data-attachment-id]) {
+		max-width: 280px;
+		max-height: 180px;
+		width: auto;
+		height: auto;
+		object-fit: contain;
+		border: 1px solid var(--border);
+		background: var(--bg-secondary);
+		cursor: zoom-in;
+		vertical-align: middle;
 	}
 
 	.comment-footer {
