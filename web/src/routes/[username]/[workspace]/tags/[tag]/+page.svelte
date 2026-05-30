@@ -24,12 +24,23 @@
 	let viewMode = $state<ViewMode>('list');
 	$effect(() => {
 		if (!browser) return;
-		const saved = localStorage.getItem(viewStorageKey);
-		viewMode = saved === 'board' ? 'board' : 'list';
+		// localStorage can throw when storage is disabled/blocked (private
+		// mode, embedded contexts); fall back to the default view.
+		try {
+			const saved = localStorage.getItem(viewStorageKey);
+			viewMode = saved === 'board' ? 'board' : 'list';
+		} catch {
+			viewMode = 'list';
+		}
 	});
 	function setViewMode(mode: ViewMode) {
-		viewMode = mode;
-		if (browser) localStorage.setItem(viewStorageKey, mode);
+		viewMode = mode; // in-session preference applies regardless of persistence
+		if (!browser) return;
+		try {
+			localStorage.setItem(viewStorageKey, mode);
+		} catch {
+			// Storage unavailable/full — keep the in-session choice only.
+		}
 	}
 
 	const scrollRestoration = createScrollRestoration({
