@@ -27,16 +27,54 @@
 		 * links, the same graceful degradation renderMarkdown uses elsewhere.
 		 */
 		attachmentResolver?: AttachmentResolver;
+		/** True when the current user is a platform admin (can edit any comment). */
+		isAdmin?: boolean;
 		onDelete: (commentId: string) => void;
 		onReply: (commentId: string, body: string) => void | Promise<void>;
+		/** Edits a comment/reply body. Should throw on failure so the editor keeps the draft. */
+		onEdit: (commentId: string, body: string) => void | Promise<void>;
 		onReaction: (commentId: string, emoji: string) => void;
 		onRemoveReaction: (commentId: string, emoji: string) => void;
 	}
 
-	let { comment, wsSlug, username = '', items, currentUserId = '', canEdit = true, attachmentResolver, onDelete, onReply, onReaction, onRemoveReaction }: Props = $props();
+	let { comment, wsSlug, username = '', items, currentUserId = '', canEdit = true, attachmentResolver, isAdmin = false, onDelete, onReply, onEdit, onReaction, onRemoveReaction }: Props = $props();
 
 	let showReplyForm = $state(false);
 	let submittingReply = $state(false);
+
+	// Inline edit state. editing = the top-level comment; editingReplyId = a
+	// specific reply (only one open at a time).
+	let editing = $state(false);
+	let editingReplyId = $state<string | null>(null);
+
+	// A comment is editable by its author or a platform admin (TASK-1665) —
+	// distinct from canEdit (item edit permission, which gates delete/reply).
+	// A null/empty user_id has no provable author → admin-only, matching the
+	// server's canEditComment.
+	function canEditComment(c: Comment): boolean {
+		return isAdmin || (!!c.user_id && c.user_id === currentUserId);
+	}
+
+	// "edited" when the body has been updated after creation. On create both
+	// timestamps are set to the same value, so any positive delta means an
+	// edit; reactions live in separate tables and don't bump updated_at, so
+	// this is edit-specific. Stored at RFC3339 second precision, so an edit
+	// within the same wall-clock second as creation won't be flagged — an
+	// acceptable edge for v1 (an explicit edited_at column would close it).
+	function isEdited(c: Comment): boolean {
+		if (!c.updated_at || !c.created_at) return false;
+		return new Date(c.updated_at).getTime() > new Date(c.created_at).getTime();
+	}
+
+	async function saveComment(body: string) {
+		await onEdit(comment.id, body); // throws → CommentEditor keeps the draft
+		editing = false;
+	}
+
+	async function saveReply(replyId: string, body: string) {
+		await onEdit(replyId, body);
+		editingReplyId = null;
+	}
 
 	// Posts a reply via the host callback. Throws on failure so CommentEditor
 	// keeps the draft; closes the form on success.
@@ -136,6 +174,17 @@
 		<span class="source-badge">{getSourceLabel(comment.source)}</span>
 		<span class="spacer"></span>
 		<span class="timestamp" title={new Date(comment.created_at).toLocaleString()}>{relativeTime(comment.created_at)}</span>
+		{#if isEdited(comment)}
+			<span class="edited-marker" title={`Edited ${new Date(comment.updated_at).toLocaleString()}`}>· edited</span>
+		{/if}
+		{#if canEditComment(comment) && !editing}
+			<button class="edit-btn" type="button" onclick={() => { editing = true; }} title="Edit comment">
+				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+					<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+				</svg>
+			</button>
+		{/if}
 		{#if canEdit}
 			<button
 				class="delete-btn"
@@ -155,9 +204,23 @@
 		<div class="activity-label">commented on update</div>
 	{/if}
 
-	<div class="comment-body prose">
-		{@html renderMarkdown(comment.body, items, wsSlug, username, undefined, attachmentResolver, 'thumb-sm')}
-	</div>
+	{#if editing}
+		<div class="edit-compose">
+			<CommentEditor
+				{wsSlug}
+				content={comment.body}
+				placeholder="Edit comment…"
+				submitLabel="Save"
+				autofocus
+				onSubmit={saveComment}
+				onCancel={() => { editing = false; }}
+			/>
+		</div>
+	{:else}
+		<div class="comment-body prose">
+			{@html renderMarkdown(comment.body, items, wsSlug, username, undefined, attachmentResolver, 'thumb-sm')}
+		</div>
+	{/if}
 
 	<div class="comment-footer">
 		<!--
@@ -216,6 +279,17 @@
 						{/if}
 						<span class="spacer"></span>
 						<span class="timestamp" title={new Date(reply.created_at).toLocaleString()}>{relativeTime(reply.created_at)}</span>
+						{#if isEdited(reply)}
+							<span class="edited-marker" title={`Edited ${new Date(reply.updated_at).toLocaleString()}`}>· edited</span>
+						{/if}
+						{#if canEditComment(reply) && editingReplyId !== reply.id}
+							<button class="edit-btn" type="button" onclick={() => { editingReplyId = reply.id; }} title="Edit reply">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+									<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+									<path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+								</svg>
+							</button>
+						{/if}
 						{#if canEdit}
 							<button
 								class="delete-btn"
@@ -231,9 +305,23 @@
 						{/if}
 					</div>
 
-					<div class="reply-body prose">
-						{@html renderMarkdown(reply.body, items, wsSlug, username, undefined, attachmentResolver, 'thumb-sm')}
-					</div>
+					{#if editingReplyId === reply.id}
+						<div class="edit-compose">
+							<CommentEditor
+								{wsSlug}
+								content={reply.body}
+								placeholder="Edit reply…"
+								submitLabel="Save"
+								autofocus
+								onSubmit={(body) => saveReply(reply.id, body)}
+								onCancel={() => { editingReplyId = null; }}
+							/>
+						</div>
+					{:else}
+						<div class="reply-body prose">
+							{@html renderMarkdown(reply.body, items, wsSlug, username, undefined, attachmentResolver, 'thumb-sm')}
+						</div>
+					{/if}
 
 						<div class="reactions-row">
 							{#each replyReactionGroups as group (group.emoji)}
@@ -352,14 +440,47 @@
 		transition: opacity 0.15s, color 0.15s;
 	}
 
+	/* Edit button mirrors the delete button (hover-revealed) but uses the
+	   accent-blue affordance instead of the destructive red. */
+	.edit-btn {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		padding: var(--space-1);
+		border: none;
+		background: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+		opacity: 0;
+		transition: opacity 0.15s, color 0.15s;
+	}
+
 	.comment-card:hover .comment-header > .delete-btn,
-	.reply-card:hover .reply-header > .delete-btn {
+	.reply-card:hover .reply-header > .delete-btn,
+	.comment-card:hover .comment-header > .edit-btn,
+	.reply-card:hover .reply-header > .edit-btn {
 		opacity: 1;
 	}
 
 	.delete-btn:hover {
 		color: var(--accent-red);
 		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+	}
+
+	.edit-btn:hover {
+		color: var(--accent-blue);
+		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+	}
+
+	.edited-marker {
+		font-size: 0.7em;
+		color: var(--text-muted);
+		font-style: italic;
+	}
+
+	.edit-compose {
+		margin: var(--space-2) 0;
 	}
 
 	.activity-label {
