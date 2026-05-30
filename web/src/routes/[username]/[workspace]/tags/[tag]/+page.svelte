@@ -3,8 +3,11 @@
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
+	import { browser } from '$app/environment';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import type { Item, Collection } from '$lib/types';
+
+	type ViewMode = 'list' | 'board';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	// Route params arrive URL-decoded, so this is the human-readable tag.
@@ -14,6 +17,31 @@
 	let collections = $state<Collection[]>([]);
 	let loading = $state(true);
 	let loadSeq = 0;
+
+	// View mode persists per workspace (list = grouped sections, board = one
+	// lane per collection). localStorage-backed; guarded for SSR.
+	const viewStorageKey = $derived(`pad-tag-view-${wsSlug}`);
+	let viewMode = $state<ViewMode>('list');
+	$effect(() => {
+		if (!browser) return;
+		// localStorage can throw when storage is disabled/blocked (private
+		// mode, embedded contexts); fall back to the default view.
+		try {
+			const saved = localStorage.getItem(viewStorageKey);
+			viewMode = saved === 'board' ? 'board' : 'list';
+		} catch {
+			viewMode = 'list';
+		}
+	});
+	function setViewMode(mode: ViewMode) {
+		viewMode = mode; // in-session preference applies regardless of persistence
+		if (!browser) return;
+		try {
+			localStorage.setItem(viewStorageKey, mode);
+		} catch {
+			// Storage unavailable/full — keep the in-session choice only.
+		}
+	}
 
 	const scrollRestoration = createScrollRestoration({
 		ready: () => !loading,
@@ -111,6 +139,26 @@
 			<h1>{tag}</h1>
 			<span class="item-count">{fetchedItems.length} item{fetchedItems.length !== 1 ? 's' : ''}</span>
 		</div>
+		{#if fetchedItems.length > 0}
+			<div class="view-toggle" role="group" aria-label="View mode">
+				<button
+					type="button"
+					class="view-btn"
+					class:active={viewMode === 'list'}
+					onclick={() => setViewMode('list')}
+				>
+					List
+				</button>
+				<button
+					type="button"
+					class="view-btn"
+					class:active={viewMode === 'board'}
+					onclick={() => setViewMode('board')}
+				>
+					Board
+				</button>
+			</div>
+		{/if}
 	</div>
 
 	{#if loading}
@@ -126,6 +174,26 @@
 			<div class="empty-icon">🏷</div>
 			<h2>No items tagged “{tag}”</h2>
 			<p>Add this tag to an item from its detail page to group it here.</p>
+		</div>
+	{:else if viewMode === 'board'}
+		<!-- Board: one lane per collection (the shared axis). Read-only — no
+		     drag/status changes, since moving a card between collection lanes
+		     would mean reclassifying the item, not the intent here. -->
+		<div class="tag-board">
+			{#each groupedItems as group (group.collection.id)}
+				<div class="board-lane">
+					<div class="lane-header">
+						<span class="group-icon">{group.collection.icon || '📁'}</span>
+						<span class="group-name">{group.collection.name}</span>
+						<span class="group-count">{group.items.length}</span>
+					</div>
+					<div class="lane-items">
+						{#each group.items as item (item.id)}
+							<ItemCard {item} collection={group.collection} compact={true} showCollection={false} />
+						{/each}
+					</div>
+				</div>
+			{/each}
 		</div>
 	{:else}
 		<div class="tag-list">
@@ -196,6 +264,63 @@
 	.item-count {
 		font-size: 0.85em;
 		color: var(--text-muted);
+	}
+
+	.view-toggle {
+		display: inline-flex;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm, 6px);
+		overflow: hidden;
+	}
+
+	.view-btn {
+		padding: 0.3em 0.85em;
+		font-size: 0.8em;
+		background: var(--bg-primary);
+		color: var(--text-secondary);
+		border: none;
+		cursor: pointer;
+	}
+
+	.view-btn + .view-btn {
+		border-left: 1px solid var(--border);
+	}
+
+	.view-btn.active {
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
+		font-weight: 600;
+	}
+
+	.tag-board {
+		display: flex;
+		gap: var(--space-4);
+		overflow-x: auto;
+		align-items: flex-start;
+		padding-bottom: var(--space-2);
+	}
+
+	.board-lane {
+		display: flex;
+		flex-direction: column;
+		flex: 1 0 0;
+		min-width: 240px;
+		max-width: 320px;
+	}
+
+	.lane-header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2);
+		position: sticky;
+		top: 0;
+	}
+
+	.lane-items {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
 	}
 
 	.loading-state {
