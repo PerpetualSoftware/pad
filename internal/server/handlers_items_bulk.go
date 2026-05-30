@@ -173,7 +173,17 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 		Failed:  []bulkItemFailure{},
 	}
 	affectedIDs := make([]string, 0, len(req.IDs))
-	var maxSeq int64
+	// Group affected items by their resulting collection slug so each
+	// batch SSE event carries a Collection and routes through the SSE
+	// visibility filter correctly (restricted members only get events
+	// for collections they can see; guests with grants still get the
+	// reconcile trigger). For the dominant lane-header case (one lane =
+	// one collection) this is exactly one event.
+	type collBatch struct {
+		count  int
+		maxSeq int64
+	}
+	batches := map[string]*collBatch{}
 
 	for _, ref := range req.IDs {
 		item, err := s.store.ResolveItem(workspaceID, ref)
@@ -220,18 +230,38 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 
 		resp.Updated = append(resp.Updated, bulkItemOutcome{Ref: itemRefOrSlug(*item), ID: item.ID})
 		affectedIDs = append(affectedIDs, item.ID)
-		if updated != nil && updated.Seq > maxSeq {
-			maxSeq = updated.Seq
+
+		// A collection move lands the item in the target collection;
+		// every other op leaves it where it was.
+		collSlug := item.CollectionSlug
+		if req.Op == "move" && req.Collection != "" {
+			collSlug = req.Collection
+		}
+		b := batches[collSlug]
+		if b == nil {
+			b = &collBatch{}
+			batches[collSlug] = b
+		}
+		b.count++
+		if updated != nil && updated.Seq > b.maxSeq {
+			b.maxSeq = updated.Seq
 		}
 	}
 
 	resp.Total = len(resp.Updated) + len(resp.Failed)
 
-	// ONE SSE batch event + ONE webhook for the whole batch (only when
-	// something actually changed). This is the core of the task: a
-	// whole-lane bulk action must not emit N events.
+	// One SSE batch event per affected collection + ONE webhook for the
+	// whole batch (only when something actually changed). The core of
+	// the task: a whole-lane bulk action must not emit N per-item events.
+	// Per-collection (not fully per-item) keeps SSE visibility routing
+	// correct while still collapsing a lane action to a single event.
 	if len(affectedIDs) > 0 {
-		s.publishBulkItemsEvent(workspaceID, req.Op, affectedIDs, actor, actorName, source, maxSeq)
+		for collSlug, b := range batches {
+			s.publishBulkItemsEvent(workspaceID, req.Op, collSlug, b.count, actor, actorName, source, b.maxSeq)
+		}
+		// The webhook is a trusted workspace integration (not
+		// visibility-scoped per subscriber), so it keeps the full id
+		// list for the whole batch.
 		s.dispatchWebhook(workspaceID, "item.bulk_updated", map[string]any{
 			"op":       req.Op,
 			"count":    len(affectedIDs),
@@ -546,19 +576,22 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	return moved, nil
 }
 
-// publishBulkItemsEvent emits the single ItemsBulkUpdated SSE event for
-// a batch mutation. Carries the affected IDs, the verb, the count, and
-// the max seq across the batch (TASK-1668).
-func (s *Server) publishBulkItemsEvent(workspaceID, op string, itemIDs []string, actor, actorName, source string, maxSeq int64) {
+// publishBulkItemsEvent emits one ItemsBulkUpdated SSE event for the
+// slice of a batch mutation that landed in `collection` (TASK-1668).
+// Collection is set so the SSE visibility filter routes it like any
+// collection-scoped event; the payload carries the verb, the
+// per-collection count, and the max seq as the reconcile cursor — but
+// no per-item IDs (see events.Event doc for why).
+func (s *Server) publishBulkItemsEvent(workspaceID, op, collection string, count int, actor, actorName, source string, maxSeq int64) {
 	if s.events == nil {
 		return
 	}
 	s.events.Publish(events.Event{
 		Type:        events.ItemsBulkUpdated,
 		WorkspaceID: workspaceID,
+		Collection:  collection,
 		Op:          op,
-		ItemIDs:     itemIDs,
-		Count:       len(itemIDs),
+		Count:       count,
 		Actor:       actor,
 		ActorName:   actorName,
 		Source:      source,

@@ -3,8 +3,11 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -284,6 +287,63 @@ func TestBulkItems_CollectionMoveRunsOpenChildrenGuard(t *testing.T) {
 	parseJSON(t, rr, &fresh)
 	if fresh.CollectionSlug != "plans" {
 		t.Errorf("plan moved despite guard rejection — now in %q", fresh.CollectionSlug)
+	}
+}
+
+// TestBulkItems_EmitsCollectionScopedBatchEvent asserts the batch SSE
+// event is scoped to its collection (so the SSE visibility filter routes
+// it correctly) and carries NO per-item IDs (no leak on a broadcast bus).
+func TestBulkItems_EmitsCollectionScopedBatchEvent(t *testing.T) {
+	srv := testServerWithEvents(t)
+	ws := createWSWithCollections(t, srv)
+	wsRow, err := srv.store.GetWorkspaceBySlug(ws)
+	if err != nil || wsRow == nil {
+		t.Fatalf("resolve workspace: %v", err)
+	}
+	ch := srv.events.Subscribe(wsRow.ID)
+	defer srv.events.Unsubscribe(ch)
+
+	a := createBulkTestItem(t, srv, ws, "A", `{"status":"open","priority":"low"}`)
+	b := createBulkTestItem(t, srv, ws, "B", `{"status":"open","priority":"low"}`)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{
+		"ids": []string{a.Ref, b.Ref}, "op": "set-priority", "priority": "high",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk: %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var bulk *events.Event
+	deadline := time.After(2 * time.Second)
+loop:
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == events.ItemsBulkUpdated {
+				e := ev
+				bulk = &e
+				break loop
+			}
+		case <-deadline:
+			break loop
+		}
+	}
+	if bulk == nil {
+		t.Fatal("no items_bulk_updated event published")
+	}
+	if bulk.Collection != "tasks" {
+		t.Errorf("expected Collection=tasks, got %q", bulk.Collection)
+	}
+	if bulk.Count != 2 {
+		t.Errorf("expected Count=2, got %d", bulk.Count)
+	}
+	if bulk.Op != "set-priority" {
+		t.Errorf("expected Op=set-priority, got %q", bulk.Op)
+	}
+	// The wire payload must not leak per-item IDs.
+	raw, _ := json.Marshal(bulk)
+	if strings.Contains(string(raw), "item_ids") {
+		t.Errorf("batch SSE event must not carry item_ids: %s", raw)
 	}
 }
 
