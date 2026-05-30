@@ -1138,45 +1138,79 @@
 		}
 	}
 
-	// Monotonic guard so overlapping tag saves can't clobber each other. The
-	// chip input makes rapid edits easy (add a, add b, remove c before the
-	// first PATCH resolves); only the LATEST request may apply its server
-	// result or revert, so a late-resolving older request can't replace the
-	// newer tag set with stale data. Combined with the item.id check it's also
-	// safe across navigation. Per Codex PR #659 round 1.
-	let tagSaveSeq = 0;
+	// Serialized, coalescing tag saver. Tags are a top-level item column
+	// (item.tags), not a schema field, and the chip input makes rapid edits
+	// easy — so instead of firing concurrent PATCHes and guarding the races,
+	// we keep ONE save in flight per item and coalesce to the latest desired
+	// set. This structurally removes the overlap class: no stale completion
+	// can clobber a newer set, and `confirmed` always tracks the last
+	// server-acknowledged tags so a failed save reverts to server truth (not
+	// to an optimistic, unconfirmed value). Scoped by item id so a save still
+	// draining for a previous item can't touch the current one. Per Codex
+	// PR #659 rounds 1/4/5.
+	type TagSaver = {
+		itemId: string;
+		ws: string;
+		pending: string[] | null; // latest desired set not yet sent (coalesced)
+		running: boolean;
+		confirmed: string; // last server-acknowledged tags JSON (revert target)
+	};
+	let tagSaver: TagSaver | null = null;
 
-	// Persist a new tag set. Tags are a top-level item column (item.tags), not
-	// a schema field, so this mirrors updateField but PATCHes `tags` and has
-	// no open-children guard (tags never gate completion). Optimistic so chips
-	// react instantly; reverts on failure.
-	async function updateTags(newTags: string[]) {
+	function updateTags(newTags: string[]) {
 		if (!item) return;
 		const targetItem = item;
 		const targetWs = wsSlug;
-		const prevTags = targetItem.tags;
-		const payload = JSON.stringify(newTags);
-		const seq = ++tagSaveSeq;
-		if (item.id === targetItem.id) item = { ...item, tags: payload };
+		// Optimistic so chips react instantly.
+		item = { ...item, tags: JSON.stringify(newTags) };
+
+		// Reuse the running saver only when it's for THIS item; otherwise start
+		// a fresh one (a saver for a previous item keeps draining on its own).
+		if (tagSaver && tagSaver.running && tagSaver.itemId === targetItem.id) {
+			tagSaver.pending = newTags; // coalesce
+			return;
+		}
+		tagSaver = {
+			itemId: targetItem.id,
+			ws: targetWs,
+			pending: newTags,
+			running: false,
+			confirmed: targetItem.tags // confirmed baseline captured at burst start
+		};
+		void flushTagSaver(tagSaver);
+	}
+
+	async function flushTagSaver(saver: TagSaver) {
+		saver.running = true;
 		saveStatus = 'saving';
 		try {
-			const fresh = await api.items.update(targetWs, targetItem.id, { tags: payload });
-			if (seq !== tagSaveSeq) return; // superseded by a newer save
-			// Also bail if the user navigated to a different item while this
-			// was in flight — otherwise the completion UI (item swap, ✓ Saved,
-			// suggestion refresh) would fire on an unrelated page.
-			if (!item || item.id !== targetItem.id) return;
-			item = fresh;
-			showSaved();
+			while (saver.pending !== null) {
+				const toSave = saver.pending;
+				saver.pending = null;
+				const fresh = await api.items.update(saver.ws, saver.itemId, {
+					tags: JSON.stringify(toSave)
+				});
+				saver.confirmed = fresh.tags;
+				// Reconcile the UI to server truth only when nothing newer is
+				// queued (avoids flicker) and we're still on this item.
+				if (saver.pending === null && item && item.id === saver.itemId) {
+					item = fresh;
+				}
+			}
+			if (item && item.id === saver.itemId) showSaved();
 			// A newly-created tag should appear in autocomplete next time.
-			void loadTagSuggestions(targetWs);
+			void loadTagSuggestions(saver.ws);
 		} catch (e) {
 			console.error('Failed to save tags:', e);
-			if (seq !== tagSaveSeq) return; // a newer save owns the state now
-			if (!item || item.id !== targetItem.id) return; // navigated away
-			item = { ...item, tags: prevTags };
-			saveStatus = 'idle';
-			toastStore.show('Failed to save', 'error');
+			saver.pending = null;
+			if (item && item.id === saver.itemId) {
+				// Revert to the last server-confirmed tags, not the optimistic set.
+				item = { ...item, tags: saver.confirmed };
+				saveStatus = 'idle';
+				toastStore.show('Failed to save', 'error');
+			}
+		} finally {
+			saver.running = false;
 		}
 	}
 
