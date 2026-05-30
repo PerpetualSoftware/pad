@@ -174,10 +174,13 @@
 
 	// Inline attachment images come from sanitized {@html}, so we can't wrap
 	// them in a <button> at render time. Instead make each one a focusable,
-	// announced control imperatively after every entries change (covers
-	// SSE-added comments) so keyboard users can open the lightbox.
+	// announced control imperatively so keyboard users can open the lightbox.
+	// Depends on BOTH `entries` (new comments) AND `attMeta` (an image only
+	// renders as an <img> once its metadata resolves — before that it's a
+	// "missing" placeholder span — so the pass must re-run on resolution).
 	$effect(() => {
 		void entries;
+		void attMeta;
 		const el = entryListEl;
 		if (!el) return;
 		tick().then(() => {
