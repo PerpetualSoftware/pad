@@ -53,13 +53,24 @@ export function attachmentRefsIn(text: string): string[] {
 }
 
 /**
+ * Escape the characters that would break out of a markdown link/image
+ * label (`[label](...)`). Backslash first so we don't double-escape the
+ * escapes we add; `[` / `]` close or reopen the label; newlines would
+ * terminate the construct. Filenames are user-controlled, so an
+ * unescaped `]` in a name would otherwise produce malformed markdown.
+ */
+function escapeMarkdownLabel(s: string): string {
+	return s.replace(/[\\[\]]/g, '\\$&').replace(/[\r\n]+/g, ' ');
+}
+
+/**
  * Markdown snippet for an uploaded attachment. Image MIMEs use image
  * syntax (inline embed); everything else uses link syntax (file chip) —
  * mirrors the editor's nodeForResult image/chip split so a comment and
  * the item body render the same upload identically.
  */
 export function markdownRefFor(result: AttachmentUploadResult): string {
-	const name = result.filename || 'attachment';
+	const name = escapeMarkdownLabel(result.filename || 'attachment');
 	const ref = `pad-attachment:${result.id}`;
 	return result.category === 'image' ? `![${name}](${ref})` : `[${name}](${ref})`;
 }
