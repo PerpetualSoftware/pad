@@ -83,6 +83,21 @@ func TestListWorkspaceTags(t *testing.T) {
 		}
 	})
 
+	t.Run("duplicate tags on one item count the item once", func(t *testing.T) {
+		dupWS := createTestWorkspace(t, s, "Dup WS")
+		coll := createTestCollection(t, s, dupWS.ID, "Ideas")
+		// The write path doesn't enforce per-item tag uniqueness, so a single
+		// item can carry ["ux","ux"]. The count is "items carrying the tag".
+		createTaggedItem(t, s, dupWS.ID, coll.ID, "Dup", `["ux","ux"]`)
+		tags, err := s.ListWorkspaceTags(dupWS.ID, nil, nil)
+		if err != nil {
+			t.Fatalf("ListWorkspaceTags: %v", err)
+		}
+		if len(tags) != 1 || tags[0].Tag != "ux" || tags[0].Count != 1 {
+			t.Errorf("expected ux:1 (item counted once), got %+v", tags)
+		}
+	})
+
 	t.Run("archived items are excluded", func(t *testing.T) {
 		extra := createTaggedItem(t, s, ws.ID, ideas.ID, "Idea Archived", `["archive-only"]`)
 		if err := s.DeleteItem(extra.ID); err != nil {

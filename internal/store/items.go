@@ -846,8 +846,12 @@ func (s *Store) ListWorkspaceTags(workspaceID string, collectionIDs, itemIDs []s
 	}
 
 	fromExpr, valueExpr := s.dialect.JSONArrayElements("i.tags", "je")
+	// COUNT(DISTINCT i.id), not COUNT(*): the contract is "items carrying the
+	// tag". The unnest produces one row per array element, so an item with
+	// duplicate tags (e.g. ["ux","ux"] — the write path doesn't enforce
+	// per-item uniqueness) would otherwise be counted twice.
 	query := `
-		SELECT ` + valueExpr + ` AS tag, COUNT(*) AS cnt
+		SELECT ` + valueExpr + ` AS tag, COUNT(DISTINCT i.id) AS cnt
 		FROM items i, ` + fromExpr + `
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL`
 	args := []interface{}{workspaceID}
