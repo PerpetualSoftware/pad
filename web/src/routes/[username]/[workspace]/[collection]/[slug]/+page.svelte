@@ -17,6 +17,7 @@
 	import { userColor } from '$lib/collab/cursorColor';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
+	import TagInput from '$lib/components/fields/TagInput.svelte';
 	import ItemTimeline from '$lib/components/timeline/ItemTimeline.svelte';
 	import ChildItems from '$lib/components/ChildItems.svelte';
 	import BacklinksPanel from '$lib/components/BacklinksPanel.svelte';
@@ -97,6 +98,18 @@
 	let titleInputEl = $state<HTMLTextAreaElement>();
 
 	let fields = $derived<Record<string, any>>(item ? parseFields(item) : {});
+	// Tags live on item.tags (a JSON-array string), NOT in the schema. Parse
+	// defensively — the column defaults to "[]" but tolerate empty/garbage.
+	let tags = $derived.by<string[]>(() => {
+		if (!item?.tags) return [];
+		try {
+			const parsed = JSON.parse(item.tags);
+			return Array.isArray(parsed) ? parsed : [];
+		} catch {
+			return [];
+		}
+	});
+	let tagSuggestions = $state<string[]>([]);
 	let schema = $derived(collection ? parseSchema(collection) : { fields: [] });
 	let settings = $derived<CollectionSettings>(collection ? parseSettings(collection) : { layout: 'balanced', default_view: 'list' });
 	let layout = $derived(settings.layout);
@@ -1110,6 +1123,49 @@
 			toastStore.show('Failed to save', 'error');
 		}
 	}
+
+	// Persist a new tag set. Tags are a top-level item column (item.tags), not
+	// a schema field, so this mirrors updateField but PATCHes `tags` and has
+	// no open-children guard (tags never gate completion). Optimistic so chips
+	// react instantly; reverts on failure.
+	async function updateTags(newTags: string[]) {
+		if (!item) return;
+		const targetItem = item;
+		const targetWs = wsSlug;
+		const prevTags = targetItem.tags;
+		const payload = JSON.stringify(newTags);
+		if (item.id === targetItem.id) item = { ...item, tags: payload };
+		saveStatus = 'saving';
+		try {
+			const fresh = await api.items.update(targetWs, targetItem.id, { tags: payload });
+			if (item && item.id === targetItem.id) item = fresh;
+			showSaved();
+			// A newly-created tag should appear in autocomplete next time.
+			void loadTagSuggestions(targetWs);
+		} catch (e) {
+			if (item && item.id === targetItem.id) item = { ...item, tags: prevTags };
+			saveStatus = 'idle';
+			console.error('Failed to save tags:', e);
+			toastStore.show('Failed to save', 'error');
+		}
+	}
+
+	// Load the workspace's distinct tags for autocomplete. Pure data-fetch
+	// keyed on the workspace slug (see the $effect below) — kept separate from
+	// the item-load path per the Svelte 5 effect-splitting convention.
+	async function loadTagSuggestions(ws: string) {
+		if (!ws) return;
+		try {
+			const all = await api.tags.list(ws);
+			tagSuggestions = all.map((t) => t.tag);
+		} catch {
+			tagSuggestions = [];
+		}
+	}
+
+	$effect(() => {
+		loadTagSuggestions(wsSlug);
+	});
 
 	// stampSourceUrl writes the pad_source_url + pad_imported_at orphan
 	// keys into the item's `fields` JSON. The keys aren't declared in
@@ -2342,6 +2398,19 @@
 						</div>
 					{/if}
 				{/each}
+
+				<!-- Tags (item.tags — spans collections, not a schema field) -->
+				<div class="field-row">
+					<span class="field-label">Tags</span>
+					<div class="field-value">
+						<TagInput
+							{tags}
+							suggestions={tagSuggestions}
+							onchange={updateTags}
+							readonly={!canEdit}
+						/>
+					</div>
+				</div>
 
 				<!-- Assignment: user + role -->
 				{#if workspaceMembers.length > 0 || agentRoles.length > 0}
