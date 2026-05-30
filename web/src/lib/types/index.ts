@@ -655,6 +655,8 @@ export interface Comment {
 	item_id: string;
 	workspace_id: string;
 	author: string;
+	/** Authenticated author's user id; empty for pre-identity / agent comments. */
+	user_id?: string;
 	body: string;
 	created_by: string;
 	source: string;

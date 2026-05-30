@@ -263,6 +263,7 @@
 	// visible shakiness and rate-limit errors from rapid SSE replay.
 	const relevantEvents = new Set([
 		'comment_created',
+		'comment_updated',
 		'comment_deleted',
 		'reaction_added',
 		'reaction_removed'

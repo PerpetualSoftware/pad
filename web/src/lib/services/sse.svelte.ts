@@ -34,6 +34,7 @@ const ITEM_EVENTS = [
 	'item_restored',
 	'workspace_updated',
 	'comment_created',
+	'comment_updated',
 	'comment_deleted',
 	'reaction_added',
 	'reaction_removed'

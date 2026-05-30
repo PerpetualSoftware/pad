@@ -119,7 +119,7 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 		input.ActivityID = activityID
 	}
 
-	comment, err := s.store.CreateComment(workspaceID, item.ID, input)
+	comment, err := s.store.CreateComment(workspaceID, item.ID, currentUserID(r), input)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -169,6 +169,81 @@ func (s *Server) handleDeleteComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleUpdateComment edits a comment's body. Editing is an authorship
+// operation — distinct from delete, which any item editor may do — so only
+// the comment author (matching user_id) or a platform admin may edit.
+// Comments with no recorded user_id (created before TASK-1663, or
+// agent/system comments) are admin-only. (PLAN-1662.)
+func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	commentID := chi.URLParam(r, "commentID")
+
+	comment, cerr := s.store.GetComment(commentID)
+	if cerr != nil || comment == nil || comment.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "Comment not found")
+		return
+	}
+	if !s.requireCommentVisible(w, r, workspaceID, comment) {
+		return
+	}
+	if !s.canEditComment(r, comment) {
+		writeError(w, http.StatusForbidden, "forbidden", "Only the comment author or an admin can edit this comment")
+		return
+	}
+
+	var input struct {
+		Body string `json:"body"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	body := strings.TrimSpace(input.Body)
+	if body == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "body is required (use delete to remove a comment)")
+		return
+	}
+
+	updated, err := s.store.UpdateComment(commentID, body)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			writeError(w, http.StatusNotFound, "not_found", "Comment not found")
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+
+	actor, source := actorFromRequest(r)
+	var title, collSlug string
+	if item, ierr := s.store.GetItem(updated.ItemID); ierr == nil && item != nil {
+		title = item.Title
+		collSlug = item.CollectionSlug
+	}
+	s.publishCommentEvent(events.CommentUpdated, workspaceID, updated.ItemID, updated.ID, title, collSlug, actor, source)
+	s.dispatchWebhook(workspaceID, "comment.updated", updated)
+
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// canEditComment reports whether the requester may edit the given comment:
+// the authenticated author (matching user_id) or a platform admin. A comment
+// with an empty user_id has no provable author, so only admins can edit it.
+func (s *Server) canEditComment(r *http.Request, comment *models.Comment) bool {
+	u := currentUser(r)
+	if u == nil {
+		return false
+	}
+	if u.Role == "admin" {
+		return true
+	}
+	return comment.UserID != "" && comment.UserID == u.ID
 }
 
 // handleCreateReply creates a reply to an existing comment.
@@ -226,7 +301,7 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 	}
 	input.ParentID = commentID
 
-	comment, err := s.store.CreateComment(workspaceID, parentComment.ItemID, input)
+	comment, err := s.store.CreateComment(workspaceID, parentComment.ItemID, currentUserID(r), input)
 	if err != nil {
 		writeInternalError(w, err)
 		return

@@ -872,6 +872,12 @@ export const api = {
 				body: JSON.stringify(data)
 			}),
 
+		update: (ws: string, commentId: string, data: { body: string }) =>
+			request<Comment>(`/workspaces/${ws}/comments/${commentId}`, {
+				method: 'PATCH',
+				body: JSON.stringify(data)
+			}),
+
 		delete: (ws: string, commentId: string) =>
 			request<void>(`/workspaces/${ws}/comments/${commentId}`, {
 				method: 'DELETE'
