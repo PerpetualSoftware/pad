@@ -26,7 +26,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
-	import { parseFields, parseSchema, parseSettings, formatItemRef, getTerminalOptions } from '$lib/types';
+	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import ContentSkeleton from '$lib/components/common/ContentSkeleton.svelte';
@@ -98,31 +98,10 @@
 	let titleInputEl = $state<HTMLTextAreaElement>();
 
 	let fields = $derived<Record<string, any>>(item ? parseFields(item) : {});
-	// Tags live on item.tags (a JSON-array string), NOT in the schema. Parse
-	// defensively — the column defaults to "[]" but tolerate empty/garbage.
-	let tags = $derived.by<string[]>(() => {
-		if (!item?.tags) return [];
-		try {
-			const parsed = JSON.parse(item.tags);
-			if (!Array.isArray(parsed)) return [];
-			// Dedupe case-insensitively (keep first as typed). The write path
-			// doesn't enforce per-item uniqueness, so an API/imported item can
-			// carry ["ux","ux"]; cleaning here keeps rendering keys unique and
-			// the dedupe gets persisted on the next save.
-			const seen = new Set<string>();
-			const out: string[] = [];
-			for (const t of parsed) {
-				if (typeof t !== 'string') continue;
-				const key = t.toLowerCase();
-				if (seen.has(key)) continue;
-				seen.add(key);
-				out.push(t);
-			}
-			return out;
-		} catch {
-			return [];
-		}
-	});
+	// Tags live on item.tags (a JSON-array string), NOT in the schema.
+	// parseTags is defensive (tolerates empty/garbage) and dedupes
+	// case-insensitively so rendering keys stay unique.
+	let tags = $derived(parseTags(item));
 	let tagSuggestions = $state<string[]>([]);
 	let schema = $derived(collection ? parseSchema(collection) : { fields: [] });
 	let settings = $derived<CollectionSettings>(collection ? parseSettings(collection) : { layout: 'balanced', default_view: 'list' });
@@ -2283,6 +2262,14 @@
 			{/if}
 		</div>
 
+		{#if tags.length > 0}
+			<div class="header-tags">
+				{#each tags as tag, i (i)}
+					<a class="header-tag" href={`/${username}/${wsSlug}/tags/${encodeURIComponent(tag)}`}>{tag}</a>
+				{/each}
+			</div>
+		{/if}
+
 		<!-- Meta info -->
 		<div class="meta-info">
 			<span title={new Date(item.created_at).toLocaleString()}>Created {relativeTime(item.created_at)} by {item.created_by || 'unknown'}</span>
@@ -3076,6 +3063,29 @@
 
 	/* Title */
 	.title-row { margin-bottom: var(--space-2); display: flex; align-items: baseline; gap: var(--space-2); }
+	.header-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1, 0.25rem);
+		margin-bottom: var(--space-2);
+	}
+	.header-tag {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.1em 0.55em;
+		font-size: 0.75em;
+		line-height: 1.5;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		color: var(--text-secondary);
+		text-decoration: none;
+		white-space: nowrap;
+	}
+	.header-tag:hover {
+		color: var(--text-primary);
+		border-color: var(--text-tertiary, var(--text-secondary));
+	}
 	.item-ref {
 		font-family: var(--font-mono);
 		font-size: 0.85em;

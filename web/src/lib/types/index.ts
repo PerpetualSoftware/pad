@@ -1274,6 +1274,32 @@ export function parseFields(item: Item): Record<string, any> {
 	}
 }
 
+/**
+ * Parse an item's `tags` JSON-array string into a clean string[]: tolerant of
+ * empty/garbage (returns []), drops non-strings, and dedupes case-insensitively
+ * keeping the first-typed casing. The write path doesn't enforce per-item tag
+ * uniqueness, so deduping here keeps rendering keys unique and display tidy.
+ */
+export function parseTags(item: Pick<Item, 'tags'> | null | undefined): string[] {
+	if (!item?.tags) return [];
+	try {
+		const parsed = JSON.parse(item.tags);
+		if (!Array.isArray(parsed)) return [];
+		const seen = new Set<string>();
+		const out: string[] = [];
+		for (const t of parsed) {
+			if (typeof t !== 'string') continue;
+			const key = t.toLowerCase();
+			if (seen.has(key)) continue;
+			seen.add(key);
+			out.push(t);
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
 const schemaDefaults = (): CollectionSchema => ({ fields: [] });
 
 export function parseSchema(collection: Collection): CollectionSchema {

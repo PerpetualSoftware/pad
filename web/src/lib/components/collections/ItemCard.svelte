@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { goto } from '$app/navigation';
 	import type { Item, Collection } from '$lib/types';
-	import { parseFields, parseSchema, formatItemRef, itemUrlId } from '$lib/types';
+	import { parseFields, parseSchema, parseTags, formatItemRef, itemUrlId } from '$lib/types';
 	import { starredStore } from '$lib/stores/starred.svelte';
 
 	interface Props {
@@ -27,6 +28,19 @@
 	let priorityField = $derived(schema.fields.find((f) => f.key === 'priority'));
 	let itemUrl = $derived(`/${username}/${wsSlug}/${collection.slug}/${itemUrlId(item)}`);
 	let itemRef = $derived(formatItemRef(item));
+	let tags = $derived(parseTags(item));
+
+	function tagUrl(tag: string): string {
+		return `/${username}/${wsSlug}/tags/${encodeURIComponent(tag)}`;
+	}
+
+	// The card is an <a>; navigate to the tag page programmatically (like the
+	// star/PR/status controls) so the chip doesn't trigger the card link.
+	function openTag(e: MouseEvent, tag: string) {
+		e.preventDefault();
+		e.stopPropagation();
+		goto(tagUrl(tag));
+	}
 	let starred = $derived(starredStore.isStarred(item.id));
 
 	let statusCyclable = $derived(
@@ -172,6 +186,16 @@
 			<span class="meta-assignee">{item.assigned_user_name}</span>
 		{/if}
 	</div>
+
+	{#if tags.length > 0}
+		<div class="card-tags">
+			{#each tags as tag, i (i)}
+				<button type="button" class="card-tag" onclick={(e) => openTag(e, tag)} title="View items tagged “{tag}”">
+					{tag}
+				</button>
+			{/each}
+		</div>
+	{/if}
 
 	{#if progress && progress.total > 0}
 		<div class="card-progress">
@@ -398,6 +422,34 @@
 		color: var(--accent-blue);
 		margin-left: auto;
 		white-space: nowrap;
+	}
+
+	.card-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1, 0.25rem);
+	}
+
+	.card-tag {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.05em 0.45em;
+		font-size: 0.68em;
+		line-height: 1.5;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		color: var(--text-secondary);
+		cursor: pointer;
+		max-width: 12rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.card-tag:hover {
+		color: var(--text-primary);
+		border-color: var(--text-tertiary, var(--text-secondary));
 	}
 
 	.card-progress {
