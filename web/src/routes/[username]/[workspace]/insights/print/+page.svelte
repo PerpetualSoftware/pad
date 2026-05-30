@@ -241,6 +241,7 @@
 	{:else if loading && !report}
 		<div class="state">Loading&hellip;</div>
 	{:else if report}
+
 		<!-- Header -->
 		<header class="report-header">
 			<div class="report-title">
@@ -277,7 +278,86 @@
 			</div>
 		</section>
 
-		<!-- What shipped (centerpiece) -->
+		<!-- Charts up front: a compact grid of half-width panels intermingled
+		     with the cycle-time metrics, so the report reads like a dashboard
+		     rather than a stack of full-bleed graphs. Heights are passed small
+		     and identical for screen + print (no @media height override) so
+		     LayerCake's cached measurement matches the printed box and the SVG
+		     never overflows onto the next panel. -->
+		<section class="charts-grid" aria-label="Charts">
+			<!-- Throughput -->
+			<div class="panel chart-panel">
+				<h2 class="panel-title">Throughput</h2>
+				<p class="panel-sub">Created vs completed per {report.granularity}</p>
+				{#if noActivity}
+					<p class="empty">No activity in this period.</p>
+				{:else}
+					<BarChart
+						data={throughputData}
+						x="bucket"
+						series={throughputSeries}
+						height={150}
+						ariaLabel="Items created versus completed per time bucket"
+					/>
+				{/if}
+			</div>
+
+			<!-- Completed by collection -->
+			<div class="panel chart-panel">
+				<h2 class="panel-title">Completed by collection</h2>
+				{#if completedByCollectionData.length === 0}
+					<p class="empty">Nothing completed in this period.</p>
+				{:else}
+					<BarChart
+						data={completedByCollectionData}
+						x="collection"
+						series={[{ key: 'count', label: 'Completed', color: 'var(--chart-4, #10b981)' }]}
+						height={150}
+						ariaLabel="Completed items grouped by collection"
+					/>
+				{/if}
+			</div>
+
+			<!-- Cycle time (only when there were completions) -->
+			{#if report.cycle_time.sample_size > 0}
+				<div class="panel chart-panel cycle-panel">
+					<h2 class="panel-title">Cycle time</h2>
+					<p class="panel-sub">Creation to completion</p>
+					<div class="cycle-body">
+						<div class="metric-row">
+							<div class="metric">
+								<span class="metric-label">Median</span>
+								<span class="metric-value">{fmtHours(report.cycle_time.median_hours)}</span>
+							</div>
+							<div class="metric">
+								<span class="metric-label">p90</span>
+								<span class="metric-value">{fmtHours(report.cycle_time.p90_hours)}</span>
+							</div>
+							<div class="metric">
+								<span class="metric-label">Sample</span>
+								<span class="metric-value">{report.cycle_time.sample_size}</span>
+							</div>
+						</div>
+						{#if cycleTimeData.length > 0}
+							<div class="cycle-chart">
+								<BarChart
+									data={cycleTimeData}
+									x="collection"
+									series={[
+										{ key: 'median_hours', label: 'Median hours', color: 'var(--chart-3, #f59e0b)' }
+									]}
+									height={130}
+									ariaLabel="Median cycle time in hours grouped by collection"
+								/>
+							</div>
+						{/if}
+					</div>
+				</div>
+			{/if}
+		</section>
+
+		<!-- What shipped (centerpiece) — dense multi-column list so the long
+		     completed set flows down the page instead of leaving big gaps. -->
 		<section class="block">
 			<h2 class="block-title">What shipped</h2>
 			{#if shippedGroups.length === 0}
@@ -308,72 +388,6 @@
 				{/if}
 			{/if}
 		</section>
-
-		<!-- Throughput -->
-		<section class="block chart-block">
-			<h2 class="block-title">Throughput</h2>
-			<p class="block-sub">Created vs completed per {report.granularity}</p>
-			{#if noActivity}
-				<p class="empty">No activity in this period.</p>
-			{:else}
-				<BarChart
-					data={throughputData}
-					x="bucket"
-					series={throughputSeries}
-					height={240}
-					ariaLabel="Items created versus completed per time bucket"
-				/>
-			{/if}
-		</section>
-
-		<!-- Completed by collection -->
-		<section class="block chart-block">
-			<h2 class="block-title">Completed by collection</h2>
-			{#if completedByCollectionData.length === 0}
-				<p class="empty">Nothing completed in this period.</p>
-			{:else}
-				<BarChart
-					data={completedByCollectionData}
-					x="collection"
-					series={[{ key: 'count', label: 'Completed', color: 'var(--chart-4, #10b981)' }]}
-					height={220}
-					ariaLabel="Completed items grouped by collection"
-				/>
-			{/if}
-		</section>
-
-		<!-- Cycle time (only when there were completions) -->
-		{#if report.cycle_time.sample_size > 0}
-			<section class="block chart-block">
-				<h2 class="block-title">Cycle time</h2>
-				<p class="block-sub">Creation to completion</p>
-				<div class="metric-row">
-					<div class="metric">
-						<span class="metric-label">Median</span>
-						<span class="metric-value">{fmtHours(report.cycle_time.median_hours)}</span>
-					</div>
-					<div class="metric">
-						<span class="metric-label">p90</span>
-						<span class="metric-value">{fmtHours(report.cycle_time.p90_hours)}</span>
-					</div>
-					<div class="metric">
-						<span class="metric-label">Sample</span>
-						<span class="metric-value">{report.cycle_time.sample_size}</span>
-					</div>
-				</div>
-				{#if cycleTimeData.length > 0}
-					<BarChart
-						data={cycleTimeData}
-						x="collection"
-						series={[
-							{ key: 'median_hours', label: 'Median hours', color: 'var(--chart-3, #f59e0b)' }
-						]}
-						height={200}
-						ariaLabel="Median cycle time in hours grouped by collection"
-					/>
-				{/if}
-			</section>
-		{/if}
 
 		<!-- Status distribution (compact table) -->
 		{#if statusByCollection.length > 0}
@@ -567,6 +581,51 @@
 		font-size: 0.9em;
 	}
 
+	/* ── Charts grid (dashboard band, up front) ──────────────────────────── */
+	.charts-grid {
+		display: grid;
+		grid-template-columns: repeat(2, 1fr);
+		gap: var(--space-5);
+	}
+	.panel {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--bg-secondary);
+		padding: var(--space-4);
+	}
+	.panel-title {
+		font-size: 1em;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+	.panel-sub {
+		font-size: 0.78em;
+		color: var(--text-muted);
+		margin-top: calc(-1 * var(--space-1));
+	}
+	/* Cycle time spans the full grid width as a band: metrics on the left,
+	   its (short) chart on the right, so it doesn't sit as a lonely half-cell. */
+	.cycle-panel {
+		grid-column: 1 / -1;
+	}
+	.cycle-body {
+		display: grid;
+		grid-template-columns: auto 1fr;
+		align-items: center;
+		gap: var(--space-6);
+	}
+	.cycle-panel .metric-row {
+		gap: var(--space-5);
+		flex-direction: column;
+		flex-wrap: nowrap;
+	}
+	.cycle-chart {
+		min-width: 0;
+	}
+
 	/* ── What shipped ────────────────────────────────────────────────────── */
 	.shipped {
 		display: flex;
@@ -743,9 +802,9 @@
 			margin: 0;
 			padding: 0;
 			color: #000;
-			font-size: 10pt;
-			line-height: 1.35;
-			gap: 0.6rem;
+			font-size: 9.5pt;
+			line-height: 1.3;
+			gap: 0.55rem;
 		}
 		.stat-card,
 		.error-state {
@@ -793,13 +852,24 @@
 			font-size: 14pt;
 		}
 
-		/* Compact "what shipped" list. */
+		/* Compact "what shipped" list, flowed into two columns so a long
+		   completed set fills the page width and runs continuously instead of a
+		   tall single column that leaves big vertical gaps. */
 		.shipped {
 			gap: 0.6rem;
 		}
+		.shipped-list {
+			column-count: 2;
+			column-gap: 1.4rem;
+		}
 		.shipped-item {
-			font-size: 9pt;
-			padding: 1pt 0;
+			font-size: 8.5pt;
+			padding: 0.5pt 0;
+			gap: 0.5rem;
+			break-inside: avoid;
+		}
+		.shipped-ref {
+			min-width: 4.6em;
 		}
 		.shipped-group-name {
 			font-size: 9.5pt;
@@ -817,27 +887,67 @@
 			font-size: 8.5pt;
 		}
 
-		/* Constrain chart height (overrides the inline height BarChart sets on
-		   .canvas) and tighten the legend for print. */
-		.chart-block :global(.canvas) {
-			height: 150px !important;
+		/* Compact rows: cap cell padding + line-height so a status table is
+		   physically short. Repeat the header row on every page the table
+		   spills onto (thead as a table-header-group), and right-size the
+		   grid so two compact tables sit side by side instead of one tall stack. */
+		.status-tables {
+			gap: 0.6rem 1.2rem;
+			grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 		}
-		.chart-block :global(.legend) {
-			font-size: 8pt;
-			margin-bottom: 0.25rem;
+		.status-table th,
+		.status-table td {
+			padding: 0.5pt 5pt;
+			line-height: 1.2;
+		}
+		.status-table thead {
+			display: table-header-group;
 		}
 
-		/* Keep logical units intact across page breaks; never split a table,
-		   a table row, a stat card, a chart, or a shipped group, and keep
-		   every section heading attached to the content that follows it. */
-		.block,
+		/* Charts grid for print. Tighten the gap and de-emphasise the panel
+		   chrome (no fill / border on paper). The chart heights are passed as
+		   small props (≈130–150px) identical to screen, so we DON'T override
+		   .canvas height here — that was the cause of the overlap: shrinking the
+		   box after LayerCake measured the screen height left the SVG drawn at
+		   the old range, spilling over the next panel. `overflow: hidden` clips
+		   any residual sub-pixel spill so panels can never bleed into each
+		   other. */
+		.charts-grid {
+			gap: 0.5rem 1.2rem;
+		}
+		.panel {
+			padding: 0;
+			border: none;
+			background: transparent;
+			gap: 0.2rem;
+		}
+		.panel-title {
+			font-size: 11pt;
+		}
+		.panel-sub {
+			font-size: 8pt;
+		}
+		.chart-panel :global(.canvas) {
+			overflow: hidden;
+		}
+		.chart-panel :global(.legend) {
+			font-size: 8pt;
+			margin-bottom: 0.2rem;
+		}
+
+		/* Keep small logical units intact across page breaks — a stat row, a
+		   stat card, a chart panel, the header. Deliberately DO NOT add
+		   `.block`, `.status-table`, or `.shipped-group` here: those can be
+		   taller than a page, and keeping them whole forces a jump to the next
+		   page that leaves a big blank gap (the page-1 symptom). They're allowed
+		   to flow across page boundaries instead; only the small atoms inside
+		   them (a table `tr`, a shipped line) are kept from splitting. */
 		.stat-row,
 		.stat-card,
-		.shipped-group,
 		.report-header,
-		.status-table,
+		.chart-panel,
 		.status-table tr,
-		.chart-block :global(.canvas) {
+		.chart-panel :global(.canvas) {
 			break-inside: avoid;
 		}
 		.block-title,
