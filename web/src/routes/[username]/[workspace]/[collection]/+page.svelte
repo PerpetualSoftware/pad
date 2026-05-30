@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 	import { api, PadApiError, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import type { Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
-	import { parseSettings, parseFields, parseSchema, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
+	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
@@ -39,6 +39,10 @@
 	let collection = $state<Collection | null>(null);
 	let viewMode = $state<ViewMode>('list');
 	let activeFilters = $state<Record<string, string>>({});
+	// Multi-select tag filter (OR semantics). Tags live on the top-level
+	// `tags` column, not in `fields` JSON, so they're tracked separately
+	// from `activeFilters` and applied in their own `filteredItems` branch.
+	let selectedTags = $state<string[]>([]);
 	let searchQuery = $state('');
 	let showArchived = $state(false);
 	let itemProgress = $state<Record<string, { total: number; done: number }>>({});
@@ -201,6 +205,10 @@
 		for (const [k, v] of Object.entries(activeFilters)) {
 			params.set(k, v);
 		}
+		// Tags are comma-joined under a single `tags` param. The tag editor
+		// uses comma as its add-delimiter, so tag values never contain
+		// commas — round-tripping through a comma-joined string is safe.
+		if (selectedTags.length > 0) params.set('tags', selectedTags.join(','));
 		if (searchQuery) params.set('q', searchQuery);
 		const qs = params.toString();
 		const newUrl = `/${username}/${wsSlug}/${collSlug}${qs ? '?' + qs : ''}`;
@@ -211,12 +219,18 @@
 	function loadUrlFilters() {
 		const url = new URL(page.url);
 		const filters: Record<string, string> = {};
-		const knownParams = new Set(['view', 'q']);
+		// Reset tags up-front so navigating to a collection whose URL has no
+		// `tags` param clears any selection carried over from the previous
+		// collection (absent = cleared).
+		selectedTags = [];
+		const knownParams = new Set(['view', 'q', 'tags']);
 		for (const [k, v] of url.searchParams.entries()) {
 			if (k === 'view' && (v === 'list' || v === 'board')) {
 				viewMode = v;
 			} else if (k === 'q') {
 				searchQuery = v;
+			} else if (k === 'tags') {
+				selectedTags = v.split(',').map((t) => t.trim()).filter(Boolean);
 			} else if (!knownParams.has(k)) {
 				filters[k] = v;
 			}
@@ -527,6 +541,18 @@
 			});
 		}
 
+		// Apply tag filter (OR semantics): keep items carrying ANY selected
+		// tag. Tags are a top-level column (not in `fields` JSON), so this
+		// is its own branch — mirroring the `parent`/`phase` special-case
+		// above. `parseTags` tolerates the JSON-array-string shape the
+		// local index stores.
+		if (selectedTags.length > 0) {
+			const wanted = new Set(selectedTags);
+			result = result.filter((item) =>
+				parseTags(item).some((t) => wanted.has(t)),
+			);
+		}
+
 		// Apply search query. PLAN-1343 Phase 3b: the local path
 		// populates `searchResultRank` synchronously (sub-ms) so the
 		// filter just intersects. The substring fallback below covers
@@ -578,6 +604,24 @@
 		return counts;
 	});
 
+	// Per-collection tag counts for the filter chips. Computed client-side
+	// from `items` (already collection-scoped via localIndex, and already
+	// honoring the `showArchived` toggle) — no network round-trip, and the
+	// counts reflect the full collection so each chip's number is stable
+	// regardless of which other tags are selected (OR semantics). Ordered
+	// by count desc then tag asc to match the workspace tags page.
+	let tagCounts = $derived.by(() => {
+		const counts = new Map<string, number>();
+		for (const item of items) {
+			for (const tag of parseTags(item)) {
+				counts.set(tag, (counts.get(tag) ?? 0) + 1);
+			}
+		}
+		return [...counts.entries()]
+			.map(([tag, count]) => ({ tag, count }))
+			.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+	});
+
 	const emptyHintMap: Record<string, string> = {
 		tasks: '/pad break down my current work into tasks',
 		ideas: "/pad I have an idea for...",
@@ -591,7 +635,7 @@
 	let emptyHint = $derived(emptyHintMap[collSlug] ?? null);
 
 	let filtersOpen = $state(false);
-	let hasActiveFilters = $derived(searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0);
+	let hasActiveFilters = $derived(searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0 || selectedTags.length > 0);
 
 	// ── Viewport detection ───────────────────────────────────────────────
 	// On mobile the 3-icon view toggle (list/board/table) is swapped for a
@@ -639,6 +683,11 @@
 
 	function handleFilterChange(filters: Record<string, string>) {
 		activeFilters = filters;
+		updateUrlFilters();
+	}
+
+	function handleTagFilterChange(tags: string[]) {
+		selectedTags = tags;
 		updateUrlFilters();
 	}
 
@@ -1229,8 +1278,17 @@
 	function buildViewConfig(): ViewConfig {
 		const config: ViewConfig = {};
 		const filterEntries = Object.entries(activeFilters);
-		if (filterEntries.length > 0) {
-			config.filters = filterEntries.map(([field, value]) => ({ field, op: 'eq', value }));
+		const filters: NonNullable<ViewConfig['filters']> = filterEntries.map(
+			([field, value]) => ({ field, op: 'eq', value }),
+		);
+		// Tags ride along as a single `in` filter (OR semantics) with an
+		// array value — the ViewFilter shape already supports `op: 'in'`
+		// + an array `value`.
+		if (selectedTags.length > 0) {
+			filters.push({ field: 'tags', op: 'in', value: [...selectedTags] });
+		}
+		if (filters.length > 0) {
+			config.filters = filters;
 		}
 		return config;
 	}
@@ -1249,19 +1307,23 @@
 
 		// Apply filters
 		const newFilters: Record<string, string> = {};
+		let newTags: string[] = [];
 		if (config.filters) {
 			for (const f of config.filters) {
-				if (f.op === 'eq' && typeof f.value === 'string') {
+				if (f.field === 'tags' && f.op === 'in') {
+					newTags = Array.isArray(f.value) ? f.value : [f.value];
+				} else if (f.op === 'eq' && typeof f.value === 'string') {
 					newFilters[f.field] = f.value;
 				}
 			}
 		}
 		activeFilters = newFilters;
+		selectedTags = newTags;
 		searchQuery = '';
 		searchResultRank = null;
 
 		// Open filters panel if the view has filters
-		if (Object.keys(newFilters).length > 0) {
+		if (Object.keys(newFilters).length > 0 || newTags.length > 0) {
 			filtersOpen = true;
 		}
 
@@ -1272,6 +1334,7 @@
 	function clearActiveView() {
 		activeViewId = null;
 		activeFilters = {};
+		selectedTags = [];
 		searchQuery = '';
 		searchResultRank = null;
 		filtersOpen = false;
@@ -1535,6 +1598,9 @@
 						onFilterChange={handleFilterChange}
 						onSearchChange={handleSearchChange}
 						{relationLabels}
+						{tagCounts}
+						{selectedTags}
+						onTagFilterChange={handleTagFilterChange}
 						bind:searchInputEl
 					/>
 				</div>
