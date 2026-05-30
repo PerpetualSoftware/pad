@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -105,7 +106,8 @@ func TestItemsChanges_MovedOutTombstoneForRestrictedMember(t *testing.T) {
 	}
 	if _, err := srv.store.CreateActivity(models.Activity{
 		WorkspaceID: ws.ID, DocumentID: item.ID, Action: "moved",
-		Metadata: `{"from_collection":"visible","to_collection":"hidden"}`,
+		Metadata: `{"from_collection":"visible","to_collection":"hidden","seq":"` +
+			strconv.FormatInt(moved.Seq, 10) + `"}`,
 	}); err != nil {
 		t.Fatalf("log move activity: %v", err)
 	}

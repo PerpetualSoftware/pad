@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -46,7 +47,8 @@ func TestListMovedOutSince(t *testing.T) {
 		WorkspaceID: ws.ID,
 		DocumentID:  item.ID,
 		Action:      "moved",
-		Metadata:    `{"from_collection":"` + visible.Slug + `","to_collection":"` + hidden.Slug + `"}`,
+		Metadata: `{"from_collection":"` + visible.Slug + `","to_collection":"` + hidden.Slug +
+			`","seq":"` + strconv.FormatInt(moved.Seq, 10) + `"}`,
 	}); err != nil {
 		t.Fatalf("log move activity: %v", err)
 	}
@@ -73,6 +75,18 @@ func TestListMovedOutSince(t *testing.T) {
 	rows, _ = s.ListMovedOutSince(ws.ID, moved.Seq, 0, []string{visible.ID}, visibleSlugs, nil)
 	if len(rows) != 0 {
 		t.Errorf("expected 0 rows when since >= move seq, got %d", len(rows))
+	}
+
+	// Re-fire regression (BUG-1675, Codex round 1): a later change while
+	// the item sits in the hidden collection bumps its current seq, but
+	// the tombstone is keyed on the MOVE's seq — so a caller who already
+	// consumed the tombstone (since = move seq) must NOT get it again.
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Fields: strPtr(`{"status":"done"}`)}); err != nil {
+		t.Fatalf("post-move update: %v", err)
+	}
+	rows, _ = s.ListMovedOutSince(ws.ID, moved.Seq, 0, []string{visible.ID}, visibleSlugs, nil)
+	if len(rows) != 0 {
+		t.Errorf("tombstone must not re-fire on a later hidden-collection change; got %d rows", len(rows))
 	}
 
 	// Caller who can see the TARGET collection: the item is visible to

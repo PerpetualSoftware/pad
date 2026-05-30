@@ -1557,9 +1557,16 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Log activity with metadata about the move
+	// Log activity with metadata about the move. `seq` records the
+	// item's post-move seq so /items-changes can emit a moved-out
+	// tombstone tied to THIS move event, not any later change while the
+	// item sits in a hidden collection (BUG-1675).
 	actor, source := actorFromRequest(r)
-	moveMeta := auditMeta(map[string]string{"from_collection": sourceColl.Slug, "to_collection": targetColl.Slug})
+	moveMeta := auditMeta(map[string]string{
+		"from_collection": sourceColl.Slug,
+		"to_collection":   targetColl.Slug,
+		"seq":             strconv.FormatInt(moved.Seq, 10),
+	})
 	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, moveMeta)
 
 	// Publish events for both old and new collections

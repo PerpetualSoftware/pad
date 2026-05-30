@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1255,17 +1256,25 @@ func (s *Store) ListMovedOutSince(
 	var out []MovedOutRow
 	for rows.Next() {
 		var id, metadata string
-		var seq int64
-		if err := rows.Scan(&id, &seq, &metadata); err != nil {
+		var curSeq int64
+		if err := rows.Scan(&id, &curSeq, &metadata); err != nil {
 			return nil, err
 		}
 		if seen[id] {
 			continue
 		}
-		// An item may have several `moved` rows; include it if ANY move
-		// originated from a collection the caller can see.
+		// An item may have several `moved` rows. Include it on the move
+		// that actually crossed OUT of the caller's visibility: a move
+		// whose from_collection is visible AND whose recorded seq is in
+		// this delta window (> since). Keying on the move's seq — not
+		// the item's current seq — is what stops a re-fire on every
+		// later hidden-collection change (which would leak that an
+		// invisible item keeps mutating) and lets the cursor settle
+		// past the move so the tombstone is delivered exactly once
+		// (BUG-1675, Codex round 1).
 		var meta struct {
 			FromCollection string `json:"from_collection"`
+			Seq            string `json:"seq"`
 		}
 		if err := json.Unmarshal([]byte(metadata), &meta); err != nil {
 			continue
@@ -1273,8 +1282,16 @@ func (s *Store) ListMovedOutSince(
 		if meta.FromCollection == "" || !visibleSlugs[meta.FromCollection] {
 			continue
 		}
+		// Moves logged before the seq was stamped (pre-BUG-1675) can't
+		// be tied to the window — skip them (they evict on the next
+		// full rebootstrap, the prior behavior) rather than risk the
+		// re-fire leak.
+		moveSeq, perr := strconv.ParseInt(meta.Seq, 10, 64)
+		if perr != nil || moveSeq <= since {
+			continue
+		}
 		seen[id] = true
-		out = append(out, MovedOutRow{ID: id, Seq: seq})
+		out = append(out, MovedOutRow{ID: id, Seq: moveSeq})
 		if len(out) >= limit {
 			break
 		}
