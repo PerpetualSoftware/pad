@@ -55,11 +55,15 @@
 		return isAdmin || (!!c.user_id && c.user_id === currentUserId);
 	}
 
-	// "edited" when the body has been updated after creation. Reactions live in
-	// separate tables and don't bump updated_at, so this is edit-specific.
+	// "edited" when the body has been updated after creation. On create both
+	// timestamps are set to the same value, so any positive delta means an
+	// edit; reactions live in separate tables and don't bump updated_at, so
+	// this is edit-specific. Stored at RFC3339 second precision, so an edit
+	// within the same wall-clock second as creation won't be flagged — an
+	// acceptable edge for v1 (an explicit edited_at column would close it).
 	function isEdited(c: Comment): boolean {
 		if (!c.updated_at || !c.created_at) return false;
-		return new Date(c.updated_at).getTime() - new Date(c.created_at).getTime() > 1000;
+		return new Date(c.updated_at).getTime() > new Date(c.created_at).getTime();
 	}
 
 	async function saveComment(body: string) {
