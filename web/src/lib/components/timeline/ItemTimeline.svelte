@@ -8,16 +8,11 @@
 	import TimelineCommentCard from './TimelineCommentCard.svelte';
 	import TimelineActivityCard from './TimelineActivityCard.svelte';
 	import TimelineVersionCard from './TimelineVersionCard.svelte';
-	import {
-		filesFromPaste,
-		filesFromDrop,
-		isFileDrag,
-		uploadIntoTextarea,
-		attachmentRefsIn
-	} from '$lib/utils/commentAttachments';
+	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import { fetchAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import { attachmentDownloadUrl, type AttachmentMeta } from '$lib/markdown/attachments';
 	import Lightbox, { type LightboxImage } from '$lib/components/common/Lightbox.svelte';
+	import CommentEditor from '$lib/components/CommentEditor.svelte';
 
 	interface Props {
 		wsSlug: string;
@@ -51,13 +46,6 @@
 	let loading: boolean = $state(false);
 	let loadingMore: boolean = $state(false);
 	let error: string = $state('');
-	let newBody: string = $state('');
-
-	// Comment composer attachment state (IDEA-1650). pendingUploads gates
-	// submit while a paste/drop upload is in flight; composeTextarea is the
-	// caret anchor the upload helper splices markdown into.
-	let pendingUploads: number = $state(0);
-	let composeTextarea: HTMLTextAreaElement | undefined = $state();
 
 	// Resolver for `pad-attachment:UUID` references in comment bodies.
 	// Metadata (MIME + size) is fetched lazily per UUID via a HEAD probe and
@@ -97,29 +85,6 @@
 			}
 		}
 	});
-
-	function startComposeUploads(files: File[]) {
-		if (!composeTextarea) return;
-		uploadIntoTextarea(files, composeTextarea, wsSlug, {
-			getValue: () => newBody,
-			setValue: (v) => {
-				newBody = v;
-			},
-			onPendingDelta: (d) => {
-				pendingUploads += d;
-			},
-			onError: (msg) => {
-				error = msg;
-			}
-		});
-	}
-
-	function handleComposePaste(e: ClipboardEvent) {
-		const files = filesFromPaste(e);
-		if (files.length === 0) return;
-		e.preventDefault();
-		startComposeUploads(files);
-	}
 
 	// Lightbox state (IDEA-1660). Set when a thumbnail is activated; cleared
 	// on close. Null = closed, so the host remounts fresh on each open.
@@ -193,20 +158,6 @@
 			}
 		});
 	});
-
-	function handleComposeDragOver(e: DragEvent) {
-		// Cancel only file drags so the browser delivers the drop here
-		// instead of navigating; text drag-drop within the textarea is left
-		// to default handling.
-		if (isFileDrag(e)) e.preventDefault();
-	}
-
-	function handleComposeDrop(e: DragEvent) {
-		const files = filesFromDrop(e);
-		if (files.length === 0) return;
-		e.preventDefault();
-		startComposeUploads(files);
-	}
 
 	// Current user ID for reaction toggle — read from the global auth store.
 	let currentUserId = $derived(authStore.userId);
@@ -311,28 +262,23 @@
 
 	let submitting: boolean = $state(false);
 
-	async function submitComment() {
-		if (!newBody.trim() || submitting || pendingUploads > 0) return;
+	// Posts a new comment. Throws on failure so CommentEditor preserves the
+	// draft; clears itself on success.
+	async function submitComment(body: string) {
 		submitting = true;
+		error = '';
 		try {
 			await api.comments.create(wsSlug, itemSlug, {
-				body: newBody.trim(),
+				body,
 				created_by: 'user',
 				source: 'web'
 			});
-			newBody = '';
 			await loadTimeline();
 		} catch (err: any) {
 			error = err?.message ?? 'Failed to post comment';
+			throw err;
 		} finally {
 			submitting = false;
-		}
-	}
-
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-			e.preventDefault();
-			submitComment();
 		}
 	}
 
@@ -397,32 +343,13 @@
 	     thread but cannot post; the composer is hidden entirely. -->
 	{#if canEdit}
 		<div class="compose">
-			<textarea
-				class="compose-input"
-				bind:this={composeTextarea}
-				placeholder="Write a comment... (paste or drop an image to attach)"
-				bind:value={newBody}
-				onkeydown={handleKeydown}
-				onpaste={handleComposePaste}
-				ondragover={handleComposeDragOver}
-				ondrop={handleComposeDrop}
-				disabled={submitting}
-			></textarea>
-			<div class="compose-actions">
-				<span class="shortcut-hint">
-					{pendingUploads > 0
-						? `Uploading ${pendingUploads} file${pendingUploads === 1 ? '' : 's'}…`
-						: 'Ctrl+Enter to submit'}
-				</span>
-				<button
-					class="submit-btn"
-					type="button"
-					disabled={!newBody.trim() || submitting || pendingUploads > 0}
-					onclick={submitComment}
-				>
-					{submitting ? 'Posting...' : 'Comment'}
-				</button>
-			</div>
+			<CommentEditor
+				{wsSlug}
+				placeholder="Write a comment… (paste or drop an image to attach)"
+				submitLabel="Comment"
+				{submitting}
+				onSubmit={submitComment}
+			/>
 		</div>
 	{/if}
 
@@ -536,65 +463,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
-	}
-
-	.compose-input {
-		width: 100%;
-		padding: var(--space-2) var(--space-3);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		color: var(--text-primary);
-		font-size: 0.9em;
-		font-family: inherit;
-		line-height: 1.5;
-		resize: vertical;
-		min-height: 60px;
-	}
-
-	.compose-input::placeholder {
-		color: var(--text-muted);
-	}
-
-	.compose-input:focus {
-		outline: none;
-		border-color: var(--accent-blue);
-	}
-
-	.compose-input:disabled {
-		opacity: 0.6;
-	}
-
-	.compose-actions {
-		display: flex;
-		align-items: center;
-		justify-content: flex-end;
-		gap: var(--space-3);
-	}
-
-	.shortcut-hint {
-		font-size: 0.75em;
-		color: var(--text-muted);
-	}
-
-	.submit-btn {
-		padding: var(--space-1) var(--space-4);
-		background: var(--accent-blue);
-		border: none;
-		border-radius: var(--radius);
-		color: #fff;
-		font-size: 0.85em;
-		font-weight: 500;
-		cursor: pointer;
-	}
-
-	.submit-btn:hover:not(:disabled) {
-		filter: brightness(1.1);
-	}
-
-	.submit-btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
 	}
 
 	/* ── Loading / Error ──────────────────────────────────────────────────── */

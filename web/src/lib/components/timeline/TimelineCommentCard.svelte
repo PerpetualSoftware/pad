@@ -2,7 +2,7 @@
 	import type { Comment, Item, Reaction } from '$lib/types';
 	import { relativeTime, renderMarkdown } from '$lib/utils/markdown';
 	import type { AttachmentResolver } from '$lib/markdown/attachments';
-	import { filesFromPaste, filesFromDrop, isFileDrag, uploadIntoTextarea } from '$lib/utils/commentAttachments';
+	import CommentEditor from '$lib/components/CommentEditor.svelte';
 	import ReactionPicker from './ReactionPicker.svelte';
 
 	interface Props {
@@ -36,72 +36,19 @@
 	let { comment, wsSlug, username = '', items, currentUserId = '', canEdit = true, attachmentResolver, onDelete, onReply, onReaction, onRemoveReaction }: Props = $props();
 
 	let showReplyForm = $state(false);
-	let replyBody = $state('');
 	let submittingReply = $state(false);
 
-	// Reply-box attachment upload (IDEA-1650). Mirrors the top-level
-	// composer in ItemTimeline; replyPending gates submit while a
-	// paste/drop upload is in flight.
-	let replyTextarea: HTMLTextAreaElement | undefined = $state();
-	let replyPending = $state(0);
-
-	function startReplyUploads(files: File[]) {
-		if (!replyTextarea) return;
-		uploadIntoTextarea(files, replyTextarea, wsSlug, {
-			getValue: () => replyBody,
-			setValue: (v) => {
-				replyBody = v;
-			},
-			onPendingDelta: (d) => {
-				replyPending += d;
-			},
-			onError: (msg) => {
-				if (typeof window !== 'undefined') window.alert(`Couldn't upload: ${msg}`);
-			}
-		});
-	}
-
-	function handleReplyPaste(e: ClipboardEvent) {
-		const files = filesFromPaste(e);
-		if (files.length === 0) return;
-		e.preventDefault();
-		startReplyUploads(files);
-	}
-
-	function handleReplyDragOver(e: DragEvent) {
-		if (isFileDrag(e)) e.preventDefault();
-	}
-
-	function handleReplyDrop(e: DragEvent) {
-		const files = filesFromDrop(e);
-		if (files.length === 0) return;
-		e.preventDefault();
-		startReplyUploads(files);
-	}
-
-	async function submitReply() {
-		const body = replyBody.trim();
-		if (!body || submittingReply || replyPending > 0) return;
+	// Posts a reply via the host callback. Throws on failure so CommentEditor
+	// keeps the draft; closes the form on success.
+	async function submitReply(body: string) {
 		submittingReply = true;
 		try {
 			await onReply(comment.id, body);
-			replyBody = '';
 			showReplyForm = false;
-		} catch {
-			// Keep draft on failure so the user can retry.
+		} catch (err) {
+			throw err;
 		} finally {
 			submittingReply = false;
-		}
-	}
-
-	function handleReplyKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-			e.preventDefault();
-			submitReply();
-		}
-		if (e.key === 'Escape') {
-			showReplyForm = false;
-			replyBody = '';
 		}
 	}
 
@@ -245,30 +192,15 @@
 
 	{#if showReplyForm && canEdit}
 		<div class="reply-compose">
-			<textarea
-				class="reply-input"
-				bind:this={replyTextarea}
-				placeholder="Write a reply... (paste or drop an image to attach)"
-				bind:value={replyBody}
-				onkeydown={handleReplyKeydown}
-				onpaste={handleReplyPaste}
-				ondragover={handleReplyDragOver}
-				ondrop={handleReplyDrop}
-				disabled={submittingReply}
-			></textarea>
-			<div class="reply-actions">
-				<span class="reply-hint">
-					{replyPending > 0
-						? `Uploading ${replyPending} file${replyPending === 1 ? '' : 's'}…`
-						: 'Ctrl+Enter to submit · Esc to cancel'}
-				</span>
-				<div class="reply-buttons">
-					<button class="reply-cancel" type="button" onclick={() => { showReplyForm = false; replyBody = ''; }}>Cancel</button>
-					<button class="reply-submit" type="button" disabled={!replyBody.trim() || submittingReply || replyPending > 0} onclick={submitReply}>
-						{submittingReply ? 'Posting...' : 'Reply'}
-					</button>
-				</div>
-			</div>
+			<CommentEditor
+				{wsSlug}
+				placeholder="Write a reply… (paste or drop an image to attach)"
+				submitLabel="Reply"
+				autofocus
+				submitting={submittingReply}
+				onSubmit={submitReply}
+				onCancel={() => { showReplyForm = false; }}
+			/>
 		</div>
 	{/if}
 
@@ -549,80 +481,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
-	}
-
-	.reply-input {
-		width: 100%;
-		padding: var(--space-2) var(--space-3);
-		background: var(--bg-tertiary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text-primary);
-		font-size: 0.85em;
-		font-family: inherit;
-		line-height: 1.5;
-		resize: vertical;
-		min-height: 52px;
-	}
-
-	.reply-input::placeholder {
-		color: var(--text-muted);
-	}
-
-	.reply-input:focus {
-		outline: none;
-		border-color: var(--accent-blue);
-	}
-
-	.reply-actions {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-	}
-
-	.reply-hint {
-		font-size: 0.7em;
-		color: var(--text-muted);
-	}
-
-	.reply-buttons {
-		display: flex;
-		gap: var(--space-2);
-	}
-
-	.reply-cancel {
-		padding: var(--space-1) var(--space-3);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		background: var(--bg-secondary);
-		color: var(--text-muted);
-		font-size: 0.8em;
-		cursor: pointer;
-	}
-
-	.reply-cancel:hover {
-		color: var(--text-primary);
-		border-color: var(--text-muted);
-	}
-
-	.reply-submit {
-		padding: var(--space-1) var(--space-3);
-		background: var(--accent-blue);
-		border: none;
-		border-radius: var(--radius-sm);
-		color: #fff;
-		font-size: 0.8em;
-		font-weight: 500;
-		cursor: pointer;
-	}
-
-	.reply-submit:hover:not(:disabled) {
-		filter: brightness(1.1);
-	}
-
-	.reply-submit:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
+		margin-top: var(--space-2);
 	}
 
 	.replies {
