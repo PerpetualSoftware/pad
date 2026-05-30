@@ -654,6 +654,7 @@ var reservedCollectionSlugs = map[string]bool{
 	"activity": true,
 	"roles":    true,
 	"starred":  true,
+	"tags":     true, // Tag pages: /{ws}/tags and /{ws}/tags/{tag} (PLAN-1652)
 	"library":  true,
 	"insights": true, // Insights analytics page route (PLAN-1628 / TASK-1633)
 	"new":      true,

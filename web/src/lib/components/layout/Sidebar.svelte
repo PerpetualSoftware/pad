@@ -34,7 +34,12 @@
 	let isRolesPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/roles` : false);
 	let isActivityPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/activity` : false);
 	let isStarredPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/starred` : false);
-	let isTagsPage = $derived(wsPrefix ? page.url.pathname.startsWith(`${wsPrefix}/tags`) : false);
+	let isTagsPage = $derived(
+		wsPrefix
+			? page.url.pathname === `${wsPrefix}/tags` ||
+					page.url.pathname.startsWith(`${wsPrefix}/tags/`)
+			: false
+	);
 
 	let activeCollectionSlug = $derived.by(() => {
 		if (!wsPrefix) return null;
