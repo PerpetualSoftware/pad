@@ -182,6 +182,18 @@ function createSSEService() {
 			broadcast({ type: 'sync_required' });
 		});
 
+		// Bulk mutations (TASK-1668) emit ONE `items_bulk_updated` event
+		// for the whole batch instead of per-item item_updated/archived
+		// events. It carries item_ids + a max seq but no per-item field
+		// payload, so rather than apply N in-place deltas we route it
+		// through the same incremental backfill the gap path uses — a
+		// /items-changes delta reconciles every affected row by seq.
+		// Broadcast so peer tabs reconcile too.
+		eventSource.addEventListener('items_bulk_updated', () => {
+			dispatchSyncRequired();
+			broadcast({ type: 'sync_required' });
+		});
+
 		// Handle unauthorized: the server's periodic membership revalidation
 		// detected that this session has lost access to the workspace. We
 		// must close the EventSource ourselves — otherwise the browser

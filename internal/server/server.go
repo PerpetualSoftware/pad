@@ -1113,6 +1113,10 @@ func (s *Server) setupRouter() {
 
 					// Items (cross-collection, v2)
 					r.Get("/items", s.handleListItems)
+					// Bulk mutation (TASK-1668). Static segment must be
+					// registered before the /items/{itemSlug} param route
+					// so "bulk" isn't captured as an item slug.
+					r.Post("/items/bulk", s.handleBulkItems)
 					r.Route("/items/{itemSlug}", func(r chi.Router) {
 						r.Get("/", s.handleGetItem)
 						r.Patch("/", s.handleUpdateItem)

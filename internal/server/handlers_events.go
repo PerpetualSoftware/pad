@@ -148,32 +148,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// Reads from the current `vis` snapshot so recomputes on each
 	// revalidation tick take effect immediately for the next event.
 	sseEventVisible := func(event events.Event) bool {
-		// User-scoped events (e.g. star/unstar) are only sent to the user who triggered them
-		if event.UserID != "" && event.UserID != sseUserID {
-			return false
-		}
-		collection := event.Collection
-		itemID := event.ItemID
-		if vis.visibleSlugSet == nil {
-			return true // all access
-		}
-		if collection == "" {
-			// Events without a collection (workspace-level, legacy docs) are
-			// only sent to actual members, not guests — they may contain
-			// operational metadata like member invites, role changes, etc.
-			if vis.isGuest {
-				return false
-			}
-			return true
-		}
-		if !vis.visibleSlugSet[collection] {
-			return false
-		}
-		// For guests with item-level grants, additionally check the item ID
-		if vis.grantedItemSet != nil && !vis.fullCollSet[collection] && itemID != "" {
-			return vis.grantedItemSet[itemID]
-		}
-		return true
+		return sseEventVisibleFor(vis, sseUserID, event)
 	}
 
 	// Send initial connected event. If even this first write fails the
@@ -344,6 +319,49 @@ var sseMembershipRevalInterval = 60 * time.Second
 // fields are rebuilt atomically on each revalidation tick so that
 // permission-tightening changes take effect for the very next event
 // without tearing down and rebuilding the stream.
+// sseEventVisibleFor decides whether a single event should be delivered
+// to a subscriber with the given visibility snapshot. Extracted from the
+// per-connection closure so the rule matrix is unit-testable in
+// isolation (the live handler just binds `vis` + `sseUserID`).
+func sseEventVisibleFor(vis sseVisibility, sseUserID string, event events.Event) bool {
+	// User-scoped events (e.g. star/unstar) only go to the triggering user.
+	if event.UserID != "" && event.UserID != sseUserID {
+		return false
+	}
+	collection := event.Collection
+	itemID := event.ItemID
+	if vis.visibleSlugSet == nil {
+		return true // all access
+	}
+	if collection == "" {
+		// Events without a collection (workspace-level, legacy docs) are
+		// only sent to actual members, not guests — they may contain
+		// operational metadata like member invites, role changes, etc.
+		if vis.isGuest {
+			return false
+		}
+		return true
+	}
+	if !vis.visibleSlugSet[collection] {
+		return false
+	}
+	// For subscribers filtered to item-level grants in this collection
+	// (no full-collection access):
+	if vis.grantedItemSet != nil && !vis.fullCollSet[collection] {
+		// Item-scoped events: gate on the specific granted item.
+		if itemID != "" {
+			return vis.grantedItemSet[itemID]
+		}
+		// Itemless collection-scoped events (e.g. the items_bulk_updated
+		// batch event, TASK-1668) can't be item-grant-filtered — they'd
+		// otherwise leak op/count/timing for items the subscriber can't
+		// see. Suppress; these subscribers reconcile their granted items
+		// via the next resume/reconnect /items-changes sync instead.
+		return false
+	}
+	return true
+}
+
 type sseVisibility struct {
 	// visibleSlugSet == nil → user has unrestricted access (admin / owner /
 	// editor with no collection scope). A non-nil empty map means deny all

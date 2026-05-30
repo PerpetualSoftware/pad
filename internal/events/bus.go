@@ -36,6 +36,13 @@ const (
 
 	// Composite events
 	ItemUpdatedWithComment = "item_updated_with_comment"
+
+	// Batch events. Emitted once for a whole bulk mutation (TASK-1668)
+	// instead of one ItemUpdated/ItemArchived per row — the lane-header
+	// bulk actions (archive/move/tag/untag/set-priority/assign all) can
+	// touch a whole filtered lane, so per-item fan-out would flood both
+	// SSE subscribers and webhooks.
+	ItemsBulkUpdated = "items_bulk_updated"
 )
 
 // Default replay buffer settings.
@@ -69,6 +76,20 @@ type Event struct {
 	// comment_*, reaction_*) and for legacy publishers that
 	// haven't been upgraded.
 	Seq int64 `json:"seq,omitempty"`
+	// Op / Count describe a batch event (ItemsBulkUpdated, TASK-1668).
+	// Op is the verb applied (archive/move/tag/untag/set-priority/
+	// assign); Count is the number of items affected in this event's
+	// Collection. Zero/empty for single-item events.
+	//
+	// A batch event is scoped to ONE Collection (the bulk endpoint emits
+	// one per affected collection) so the SSE visibility filter routes
+	// it like any collection-scoped event. It deliberately carries NO
+	// per-item IDs: a batch can't be item-grant-filtered for guests on a
+	// broadcast bus, so IDs would leak. Recipients react by running a
+	// /items-changes delta, which IS visibility-filtered server-side;
+	// Seq holds the max seq across the batch as the reconcile cursor.
+	Op    string `json:"op,omitempty"`
+	Count int    `json:"count,omitempty"`
 }
 
 // EventBus is the interface for pub/sub event distribution.
