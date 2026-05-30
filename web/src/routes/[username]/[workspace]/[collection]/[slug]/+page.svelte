@@ -475,6 +475,15 @@
 				itemsPromise
 			]);
 			item = itemData;
+			// If a tag save for this item is still in flight, the freshly
+			// loaded server tags may predate the optimistic edit. Reapply the
+			// saver's latest desired set so navigating away and back can't
+			// visually drop an unsaved tag edit (and then let a follow-up edit
+			// built on stale tags overwrite it). Per Codex PR #659 round 7.
+			const inFlightTagSaver = tagSavers.get(itemData.id);
+			if (inFlightTagSaver?.running) {
+				item = { ...itemData, tags: JSON.stringify(inFlightTagSaver.desired) };
+			}
 			collection = collData;
 			collectionStore.setActiveItem(itemData);
 			editorStore.resetForDoc();
@@ -1152,6 +1161,7 @@
 		itemId: string;
 		ws: string;
 		pending: string[] | null; // latest desired set not yet sent (coalesced)
+		desired: string[]; // latest desired set (in-flight OR pending) for reload reapply
 		running: boolean;
 		confirmed: string; // last server-acknowledged tags JSON (revert target)
 	};
@@ -1174,12 +1184,14 @@
 		const existing = tagSavers.get(targetItem.id);
 		if (existing && existing.running) {
 			existing.pending = newTags;
+			existing.desired = newTags;
 			return;
 		}
 		const saver: TagSaver = {
 			itemId: targetItem.id,
 			ws: targetWs,
 			pending: newTags,
+			desired: newTags,
 			running: false,
 			confirmed: targetItem.tags // confirmed baseline captured at burst start
 		};
