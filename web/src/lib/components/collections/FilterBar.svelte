@@ -2,6 +2,7 @@
 	import type { Collection } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import TagFilter from '$lib/components/collections/TagFilter.svelte';
 
 	interface Props {
 		collection: Collection;
@@ -10,10 +11,26 @@
 		onFilterChange: (filters: Record<string, string>) => void;
 		onSearchChange: (query: string) => void;
 		relationLabels?: Record<string, string>;
+		/** Tags present in this collection, with counts, ordered by count desc. */
+		tagCounts?: { tag: string; count: number }[];
+		/** Currently-selected tag filters (OR semantics). */
+		selectedTags?: string[];
+		onTagFilterChange?: (tags: string[]) => void;
 		searchInputEl?: HTMLInputElement | undefined;
 	}
 
-	let { collection, activeFilters, searchQuery, onFilterChange, onSearchChange, relationLabels = {}, searchInputEl = $bindable() }: Props = $props();
+	let {
+		collection,
+		activeFilters,
+		searchQuery,
+		onFilterChange,
+		onSearchChange,
+		relationLabels = {},
+		tagCounts = [],
+		selectedTags = [],
+		onTagFilterChange = () => {},
+		searchInputEl = $bindable(),
+	}: Props = $props();
 
 	let schema = $derived(parseSchema(collection));
 	let statusField = $derived(schema.fields.find((f) => f.key === 'status'));
@@ -160,6 +177,10 @@
 				{/each}
 			</select>
 		{/if}
+	{/if}
+
+	{#if tagCounts.length > 0}
+		<TagFilter tags={tagCounts} selected={selectedTags} onchange={onTagFilterChange} />
 	{/if}
 
 	<div class="search-wrapper">
