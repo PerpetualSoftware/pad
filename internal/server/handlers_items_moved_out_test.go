@@ -3,7 +3,6 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -98,18 +97,11 @@ func TestItemsChanges_MovedOutTombstoneForRestrictedMember(t *testing.T) {
 	}
 	baseCursor := baseline.Cursor
 
-	// Move the item into the hidden collection + log the move activity
-	// (mirrors what the move/bulk handlers do).
+	// Move the item into the hidden collection. MoveItem records the
+	// durable item_collection_moves row the tombstone query reads.
 	moved, err := srv.store.MoveItem(item.ID, hidden.ID, `{"status":"open"}`)
 	if err != nil {
 		t.Fatalf("move item: %v", err)
-	}
-	if _, err := srv.store.CreateActivity(models.Activity{
-		WorkspaceID: ws.ID, DocumentID: item.ID, Action: "moved",
-		Metadata: `{"from_collection":"visible","to_collection":"hidden","seq":"` +
-			strconv.FormatInt(moved.Seq, 10) + `"}`,
-	}); err != nil {
-		t.Fatalf("log move activity: %v", err)
 	}
 
 	// Delta since the baseline cursor: the member must get a moved_out

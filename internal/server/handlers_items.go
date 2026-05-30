@@ -366,13 +366,7 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		if len(grantedItemIDs) > 0 {
 			collLevelVisibleIDs = fullCollIDs
 		}
-		visibleSlugs := make(map[string]bool, len(collLevelVisibleIDs))
-		for _, id := range collLevelVisibleIDs {
-			if coll, _ := s.store.GetCollection(id); coll != nil {
-				visibleSlugs[coll.Slug] = true
-			}
-		}
-		movedOut, mErr := s.store.ListMovedOutSince(workspaceID, since, limit, collLevelVisibleIDs, visibleSlugs, grantedItemIDs)
+		movedOut, mErr := s.store.ListMovedOutSince(workspaceID, since, limit, collLevelVisibleIDs, grantedItemIDs)
 		if mErr != nil {
 			writeInternalError(w, mErr)
 			return
@@ -1557,16 +1551,12 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Log activity with metadata about the move. `seq` records the
-	// item's post-move seq so /items-changes can emit a moved-out
-	// tombstone tied to THIS move event, not any later change while the
-	// item sits in a hidden collection (BUG-1675).
+	// Log activity with metadata about the move (audit trail). The
+	// moved-out tombstone signal (BUG-1675) is recorded durably in
+	// item_collection_moves inside the move tx, not derived from this
+	// best-effort row.
 	actor, source := actorFromRequest(r)
-	moveMeta := auditMeta(map[string]string{
-		"from_collection": sourceColl.Slug,
-		"to_collection":   targetColl.Slug,
-		"seq":             strconv.FormatInt(moved.Seq, 10),
-	})
+	moveMeta := auditMeta(map[string]string{"from_collection": sourceColl.Slug, "to_collection": targetColl.Slug})
 	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, moveMeta)
 
 	// Publish events for both old and new collections

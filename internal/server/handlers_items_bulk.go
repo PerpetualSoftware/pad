@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/events"
@@ -236,11 +235,6 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			action = "moved"
 			meta["from_collection"] = item.CollectionSlug
 			meta["to_collection"] = req.Collection
-			// Post-move seq ties a moved-out tombstone to THIS move
-			// event, not any later hidden-collection change (BUG-1675).
-			if updated != nil {
-				meta["seq"] = strconv.FormatInt(updated.Seq, 10)
-			}
 		}
 		s.logActivityWithMeta(workspaceID, item.ID, action, r, auditMeta(meta))
 
