@@ -401,6 +401,25 @@ collect:
 	if !gotScopes["programs"] {
 		t.Error("expected a batch event for target collection 'programs'")
 	}
+
+	// The bulk move must log a "moved" activity with from/to collection
+	// slugs — /items-changes reads this to emit moved-out tombstones
+	// (BUG-1675). A generic "updated" action would silently break it.
+	acts, err := srv.store.ListDocumentActivity(a.ID, models.ActivityListParams{Limit: 20})
+	if err != nil {
+		t.Fatalf("list activity: %v", err)
+	}
+	foundMoved := false
+	for _, act := range acts {
+		if act.Action == "moved" &&
+			strings.Contains(act.Metadata, `"from_collection":"tasks"`) &&
+			strings.Contains(act.Metadata, `"to_collection":"programs"`) {
+			foundMoved = true
+		}
+	}
+	if !foundMoved {
+		t.Errorf("expected a 'moved' activity with from=tasks to=programs; got %+v", acts)
+	}
 }
 
 // TestBulkItems_CollectionMoveValidatesStatusOverride confirms a status

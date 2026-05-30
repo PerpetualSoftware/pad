@@ -235,13 +235,17 @@ export async function persistUpserts(
  * caught the divergence risk of separate row/cursor writes.
  *
  * Soft deletes flow through `rows` (as upserts with `deleted_at`
- * populated); hard removals still go through `persistRemovals`.
+ * populated). Hard removals are either passed as `removeIds` (so a
+ * moved-out eviction lands in the SAME tx as the cursor advance and
+ * can't resurrect on warm boot — BUG-1675) or, for paths without a
+ * cursor advance, go through `persistRemovals`.
  */
 export async function persistDelta(
 	userId: string | null,
 	ws: string,
 	rows: ItemIndexRow[],
 	cursor: string,
+	removeIds: string[] = [],
 ): Promise<void> {
 	if (!isSupported()) return;
 	const db = await open(userId, ws);
@@ -251,6 +255,9 @@ export async function persistDelta(
 		const itemsStore = tx.objectStore('items');
 		for (const row of rows) {
 			itemsStore.put(row).catch(() => undefined);
+		}
+		for (const id of removeIds) {
+			itemsStore.delete(id).catch(() => undefined);
 		}
 		tx.objectStore('meta')
 			.put({

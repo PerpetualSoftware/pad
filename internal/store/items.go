@@ -1167,6 +1167,121 @@ func scanItemsChanges(rows *sql.Rows) ([]models.Item, error) {
 	return items, rows.Err()
 }
 
+// MovedOutRow is a minimal "this item left your view" signal returned
+// by ListMovedOutSince — id + seq only, no title/fields/target so a
+// caller learns an item disappeared from a collection they can see
+// without leaking any data from the (invisible) destination.
+type MovedOutRow struct {
+	ID  string
+	Seq int64
+}
+
+// ListMovedOutSince finds items that the main /items-changes delta drops
+// because they moved OUT of the caller's visible scope: their current
+// collection is one the caller can't see (so the seq>since row is
+// filtered out), yet a `moved` activity shows they came FROM a
+// collection the caller CAN see. The caller has read access to that
+// source collection, so signalling "id X left your view" is within
+// their scope — and the returned row carries only id+seq, never any
+// destination data (BUG-1675).
+//
+// collLevelVisibleIDs / visibleSlugs describe the collections the caller
+// browses at the collection level (the same set used to filter the main
+// delta). grantedItemIDs are excluded: an item the caller holds a direct
+// grant on stays visible across a move (the grant transcends collection),
+// so the main delta still delivers it and it must NOT be tombstoned.
+//
+// Returns nil for unrestricted callers (empty visible scope) — full
+// members never lose visibility on a move, so this path is moot for them.
+func (s *Store) ListMovedOutSince(
+	workspaceID string,
+	since int64,
+	limit int,
+	collLevelVisibleIDs []string,
+	visibleSlugs map[string]bool,
+	grantedItemIDs []string,
+) ([]MovedOutRow, error) {
+	// No collection-level visibility → no source collection an item
+	// could have "left" from this caller's perspective.
+	if len(collLevelVisibleIDs) == 0 || len(visibleSlugs) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = DefaultItemChangesLimit
+	}
+	if limit > MaxItemChangesLimit {
+		limit = MaxItemChangesLimit
+	}
+
+	// Candidate set: changed items whose CURRENT collection is not one
+	// the caller browses, joined to their `moved` activity rows. The
+	// join keeps this selective (only items that ever moved). We read
+	// the activity metadata and decide the from-collection match in Go
+	// to stay dialect-neutral (no json_extract). Ordered by seq so the
+	// caller can page deterministically.
+	query := `
+		SELECT i.id, i.seq, a.metadata
+		FROM items i
+		JOIN activities a ON a.document_id = i.id AND a.action = 'moved'
+		WHERE i.workspace_id = ? AND i.seq > ?
+	`
+	args := []interface{}{workspaceID, since}
+
+	placeholders := make([]string, len(collLevelVisibleIDs))
+	for i, id := range collLevelVisibleIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	query += " AND i.collection_id NOT IN (" + strings.Join(placeholders, ",") + ")"
+
+	if len(grantedItemIDs) > 0 {
+		gph := make([]string, len(grantedItemIDs))
+		for i, id := range grantedItemIDs {
+			gph[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.id NOT IN (" + strings.Join(gph, ",") + ")"
+	}
+
+	query += " ORDER BY i.seq ASC"
+
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list moved-out: %w", err)
+	}
+	defer rows.Close()
+
+	seen := make(map[string]bool)
+	var out []MovedOutRow
+	for rows.Next() {
+		var id, metadata string
+		var seq int64
+		if err := rows.Scan(&id, &seq, &metadata); err != nil {
+			return nil, err
+		}
+		if seen[id] {
+			continue
+		}
+		// An item may have several `moved` rows; include it if ANY move
+		// originated from a collection the caller can see.
+		var meta struct {
+			FromCollection string `json:"from_collection"`
+		}
+		if err := json.Unmarshal([]byte(metadata), &meta); err != nil {
+			continue
+		}
+		if meta.FromCollection == "" || !visibleSlugs[meta.FromCollection] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, MovedOutRow{ID: id, Seq: seq})
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, rows.Err()
+}
+
 // MaxItemSeq returns the largest items.seq across the workspace, or 0
 // if the workspace has no items. This is the cursor floor for the
 // local-first read model (PLAN-1343 / TASK-1353): /items-index hands
