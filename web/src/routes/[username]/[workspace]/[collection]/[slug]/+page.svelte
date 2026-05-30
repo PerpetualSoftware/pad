@@ -1168,9 +1168,14 @@
 		if (!ws) return;
 		try {
 			const all = await api.tags.list(ws);
+			// Drop stale results: if the workspace changed while this request
+			// was in flight (page instance reused across navigation, or a
+			// post-save reload for a now-previous workspace), don't overwrite
+			// the current workspace's suggestions. Per Codex PR #659 round 2.
+			if (ws !== wsSlug) return;
 			tagSuggestions = all.map((t) => t.tag);
 		} catch {
-			tagSuggestions = [];
+			if (ws === wsSlug) tagSuggestions = [];
 		}
 	}
 
