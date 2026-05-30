@@ -116,3 +116,65 @@ func TestListMovedOutSince(t *testing.T) {
 		t.Errorf("empty scope should return nil, got %+v", rows)
 	}
 }
+
+// TestListMovedOutSince_PaginatesByMoveSeq is the BUG-1675 round-2
+// regression: pagination must order/limit by the MOVE seq, not the
+// item's current seq. An item that moved out early but then churned in
+// the hidden collection (high current seq) must not be dropped past the
+// limit while the cursor advances beyond its move seq.
+func TestListMovedOutSince_PaginatesByMoveSeq(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "MovedOutPaging")
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	visible, _ := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Visible", Schema: schema})
+	hidden, _ := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Hidden", Schema: schema})
+
+	logMove := func(id string, seq int64) {
+		if _, err := s.CreateActivity(models.Activity{
+			WorkspaceID: ws.ID, DocumentID: id, Action: "moved",
+			Metadata: `{"from_collection":"` + visible.Slug + `","to_collection":"` + hidden.Slug +
+				`","seq":"` + strconv.FormatInt(seq, 10) + `"}`,
+		}); err != nil {
+			t.Fatalf("log move: %v", err)
+		}
+	}
+
+	// Three items move out in order A, B, C (ascending move seq).
+	a, _ := s.CreateItem(ws.ID, visible.ID, models.ItemCreate{Title: "A", Fields: `{"status":"open"}`})
+	b, _ := s.CreateItem(ws.ID, visible.ID, models.ItemCreate{Title: "B", Fields: `{"status":"open"}`})
+	c, _ := s.CreateItem(ws.ID, visible.ID, models.ItemCreate{Title: "C", Fields: `{"status":"open"}`})
+	movedA, _ := s.MoveItem(a.ID, hidden.ID, `{"status":"open"}`)
+	logMove(a.ID, movedA.Seq)
+	movedB, _ := s.MoveItem(b.ID, hidden.ID, `{"status":"open"}`)
+	logMove(b.ID, movedB.Seq)
+	movedC, _ := s.MoveItem(c.ID, hidden.ID, `{"status":"open"}`)
+	logMove(c.ID, movedC.Seq)
+
+	// A then churns in the hidden collection — its CURRENT seq leaps past
+	// B and C, but its MOVE seq is still the smallest.
+	if _, err := s.UpdateItem(a.ID, models.ItemUpdate{Fields: strPtr(`{"status":"done"}`)}); err != nil {
+		t.Fatalf("churn A: %v", err)
+	}
+
+	vis := []string{visible.ID}
+	slugs := map[string]bool{visible.Slug: true}
+
+	// limit=2: must return the two SMALLEST move seqs (A, B) — A must
+	// not be starved by its high current seq.
+	page1, _ := s.ListMovedOutSince(ws.ID, 0, 2, vis, slugs, nil)
+	if len(page1) != 2 {
+		t.Fatalf("page1: expected 2 rows, got %d (%+v)", len(page1), page1)
+	}
+	if page1[0].ID != a.ID || page1[0].Seq != movedA.Seq {
+		t.Errorf("page1[0] should be A@%d, got %s@%d", movedA.Seq, page1[0].ID, page1[0].Seq)
+	}
+	if page1[1].ID != b.ID || page1[1].Seq != movedB.Seq {
+		t.Errorf("page1[1] should be B@%d, got %s@%d", movedB.Seq, page1[1].ID, page1[1].Seq)
+	}
+
+	// Next page from the last cursor → C, with no gap.
+	page2, _ := s.ListMovedOutSince(ws.ID, page1[1].Seq, 2, vis, slugs, nil)
+	if len(page2) != 1 || page2[0].ID != c.ID {
+		t.Fatalf("page2: expected [C], got %+v", page2)
+	}
+}

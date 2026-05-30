@@ -1252,26 +1252,25 @@ func (s *Store) ListMovedOutSince(
 	}
 	defer rows.Close()
 
-	seen := make(map[string]bool)
-	var out []MovedOutRow
+	// Collect the earliest in-window visibility-losing move per item,
+	// keyed by the MOVE's seq (not the item's current seq). We must not
+	// page by current seq + break early: an item with a low move seq but
+	// a high current seq (later hidden-collection edits) could be dropped
+	// past the limit while the cursor advances beyond its move seq,
+	// leaving it stranded in the client cache forever. So gather every
+	// eligible row, then sort by move seq and apply the limit at a move-
+	// seq boundary — anything past it re-fetches on the next poll
+	// (BUG-1675, Codex round 2).
+	byItem := make(map[string]int64)
 	for rows.Next() {
 		var id, metadata string
 		var curSeq int64
 		if err := rows.Scan(&id, &curSeq, &metadata); err != nil {
 			return nil, err
 		}
-		if seen[id] {
-			continue
-		}
 		// An item may have several `moved` rows. Include it on the move
-		// that actually crossed OUT of the caller's visibility: a move
-		// whose from_collection is visible AND whose recorded seq is in
-		// this delta window (> since). Keying on the move's seq — not
-		// the item's current seq — is what stops a re-fire on every
-		// later hidden-collection change (which would leak that an
-		// invisible item keeps mutating) and lets the cursor settle
-		// past the move so the tombstone is delivered exactly once
-		// (BUG-1675, Codex round 1).
+		// that crossed OUT of the caller's visibility: from_collection
+		// visible AND a recorded seq in this delta window (> since).
 		var meta struct {
 			FromCollection string `json:"from_collection"`
 			Seq            string `json:"seq"`
@@ -1283,20 +1282,31 @@ func (s *Store) ListMovedOutSince(
 			continue
 		}
 		// Moves logged before the seq was stamped (pre-BUG-1675) can't
-		// be tied to the window — skip them (they evict on the next
-		// full rebootstrap, the prior behavior) rather than risk the
-		// re-fire leak.
+		// be tied to the window — skip them (they evict on the next full
+		// rebootstrap, the prior behavior) rather than risk the re-fire.
 		moveSeq, perr := strconv.ParseInt(meta.Seq, 10, 64)
 		if perr != nil || moveSeq <= since {
 			continue
 		}
-		seen[id] = true
-		out = append(out, MovedOutRow{ID: id, Seq: moveSeq})
-		if len(out) >= limit {
-			break
+		// Keep the EARLIEST qualifying move per item so the cursor can't
+		// skip a still-unseen visibility loss.
+		if prev, ok := byItem[id]; !ok || moveSeq < prev {
+			byItem[id] = moveSeq
 		}
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]MovedOutRow, 0, len(byItem))
+	for id, seq := range byItem {
+		out = append(out, MovedOutRow{ID: id, Seq: seq})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
 }
 
 // MaxItemSeq returns the largest items.seq across the workspace, or 0
