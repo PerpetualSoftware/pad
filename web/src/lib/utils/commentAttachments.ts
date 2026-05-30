@@ -38,6 +38,18 @@ export function filesFromDrop(event: DragEvent): File[] {
 	return Array.from(dt.files);
 }
 
+/**
+ * True when a drag carries files (rather than dragged text / a selection).
+ * Used to decide whether to `preventDefault()` on `dragover` — browsers
+ * only deliver a file `drop` to a custom target if its `dragover` cancels
+ * the default; without that the page navigates to the file instead. We
+ * gate on file-ness so in-textarea text drag-and-drop keeps working.
+ */
+export function isFileDrag(event: DragEvent): boolean {
+	const types = event.dataTransfer?.types;
+	return !!types && Array.from(types).includes('Files');
+}
+
 // UUIDs are the only thing after the `pad-attachment:` prefix in a
 // well-formed reference; the 36-char canonical form is what the upload
 // handler returns. Anchored to that shape so trailing `)`/whitespace in

@@ -11,6 +11,7 @@
 	import {
 		filesFromPaste,
 		filesFromDrop,
+		isFileDrag,
 		uploadIntoTextarea,
 		attachmentRefsIn
 	} from '$lib/utils/commentAttachments';
@@ -117,6 +118,13 @@
 		if (files.length === 0) return;
 		e.preventDefault();
 		startComposeUploads(files);
+	}
+
+	function handleComposeDragOver(e: DragEvent) {
+		// Cancel only file drags so the browser delivers the drop here
+		// instead of navigating; text drag-drop within the textarea is left
+		// to default handling.
+		if (isFileDrag(e)) e.preventDefault();
 	}
 
 	function handleComposeDrop(e: DragEvent) {
@@ -321,6 +329,7 @@
 				bind:value={newBody}
 				onkeydown={handleKeydown}
 				onpaste={handleComposePaste}
+				ondragover={handleComposeDragOver}
 				ondrop={handleComposeDrop}
 				disabled={submitting}
 			></textarea>

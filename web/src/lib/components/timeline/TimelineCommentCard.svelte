@@ -2,7 +2,7 @@
 	import type { Comment, Item, Reaction } from '$lib/types';
 	import { relativeTime, renderMarkdown } from '$lib/utils/markdown';
 	import type { AttachmentResolver } from '$lib/markdown/attachments';
-	import { filesFromPaste, filesFromDrop, uploadIntoTextarea } from '$lib/utils/commentAttachments';
+	import { filesFromPaste, filesFromDrop, isFileDrag, uploadIntoTextarea } from '$lib/utils/commentAttachments';
 	import ReactionPicker from './ReactionPicker.svelte';
 
 	interface Props {
@@ -66,6 +66,10 @@
 		if (files.length === 0) return;
 		e.preventDefault();
 		startReplyUploads(files);
+	}
+
+	function handleReplyDragOver(e: DragEvent) {
+		if (isFileDrag(e)) e.preventDefault();
 	}
 
 	function handleReplyDrop(e: DragEvent) {
@@ -248,6 +252,7 @@
 				bind:value={replyBody}
 				onkeydown={handleReplyKeydown}
 				onpaste={handleReplyPaste}
+				ondragover={handleReplyDragOver}
 				ondrop={handleReplyDrop}
 				disabled={submittingReply}
 			></textarea>
