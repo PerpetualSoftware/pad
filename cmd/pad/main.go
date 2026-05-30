@@ -3148,6 +3148,7 @@ func listCmd() *cobra.Command {
 		priorityFilter string
 		assigneeFilter string
 		roleFilter     string
+		tagFilter      string
 		parentFilter   string
 		sortBy         string
 		groupBy        string
@@ -3211,6 +3212,9 @@ Examples:
 			if roleFilter != "" {
 				params.Set("agent_role_id", roleFilter)
 			}
+			if tagFilter != "" {
+				params.Set("tag", tagFilter)
+			}
 			if parentFilter != "" {
 				params.Set("parent", parentFilter)
 			}
@@ -3266,6 +3270,7 @@ Examples:
 	cmd.Flags().StringVar(&priorityFilter, "priority", "", "filter by priority")
 	cmd.Flags().StringVar(&assigneeFilter, "assign", "", "filter by assigned user (name or email)")
 	cmd.Flags().StringVar(&roleFilter, "role", "", "filter by agent role (slug)")
+	cmd.Flags().StringVar(&tagFilter, "tag", "", "filter by tag (exact match; spans collections)")
 	cmd.Flags().StringVar(&parentFilter, "parent", "", "filter by parent item (ref, slug, or ID)")
 	cmd.Flags().StringVar(&sortBy, "sort", "", "sort order (e.g. priority:desc,created_at:asc)")
 	cmd.Flags().StringVar(&groupBy, "group-by", "", "group results by field")
