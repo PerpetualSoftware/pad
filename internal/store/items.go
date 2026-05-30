@@ -1167,6 +1167,112 @@ func scanItemsChanges(rows *sql.Rows) ([]models.Item, error) {
 	return items, rows.Err()
 }
 
+// MovedOutRow is a minimal "this item left your view" signal returned
+// by ListMovedOutSince — id + seq only, no title/fields/target so a
+// caller learns an item disappeared from a collection they can see
+// without leaking any data from the (invisible) destination.
+type MovedOutRow struct {
+	ID  string
+	Seq int64
+}
+
+// ListMovedOutSince finds items that the main /items-changes delta drops
+// because they moved OUT of the caller's visible scope: their CURRENT
+// collection is one the caller can't see (so the seq>since row is
+// filtered out), yet item_collection_moves records that they left a
+// collection the caller CAN see at a seq in this delta window. The
+// caller has read access to that source collection, so signalling "id X
+// left your view" is within their scope — and the returned row carries
+// only id+seq, never any destination data (BUG-1675).
+//
+// Keyed on the MOVE's seq (item_collection_moves.seq), which is written
+// in the SAME transaction as the move and never changes on later edits —
+// so the tombstone fires once, pages deterministically, and can't be
+// raced or lost by the best-effort activity log (Codex rounds 1–3). The
+// per-move rows also handle multi-hop moves: only a move whose
+// from-collection is visible qualifies, and MIN(seq) picks the earliest
+// such visibility loss so the cursor can't skip it.
+//
+// collLevelVisibleIDs is the set of collections the caller browses at the
+// collection level (same set used to filter the main delta).
+// grantedItemIDs are excluded: an item the caller holds a direct grant on
+// stays visible across a move (the grant transcends collection), so the
+// main delta still delivers it and it must NOT be tombstoned.
+//
+// Returns nil for unrestricted callers (empty visible scope) — full
+// members never lose visibility on a move, so this path is moot for them.
+func (s *Store) ListMovedOutSince(
+	workspaceID string,
+	since int64,
+	limit int,
+	collLevelVisibleIDs []string,
+	grantedItemIDs []string,
+) ([]MovedOutRow, error) {
+	if len(collLevelVisibleIDs) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = DefaultItemChangesLimit
+	}
+	if limit > MaxItemChangesLimit {
+		limit = MaxItemChangesLimit
+	}
+
+	// Earliest in-window move OUT of a visible source collection, per
+	// item that is currently NOT visible to the caller. Fully SQL +
+	// indexed — no JSON parsing, no Go-side filtering.
+	query := `
+		SELECT m.item_id, MIN(m.seq) AS move_seq
+		FROM item_collection_moves m
+		JOIN items i ON i.id = m.item_id
+		WHERE m.workspace_id = ? AND m.seq > ?
+	`
+	args := []interface{}{workspaceID, since}
+
+	vis := make([]string, len(collLevelVisibleIDs))
+	for i, id := range collLevelVisibleIDs {
+		vis[i] = "?"
+		args = append(args, id)
+	}
+	// Left a collection the caller CAN see...
+	query += " AND m.from_collection_id IN (" + strings.Join(vis, ",") + ")"
+	// ...and now lives in one they CAN'T.
+	vis2 := make([]string, len(collLevelVisibleIDs))
+	for i, id := range collLevelVisibleIDs {
+		vis2[i] = "?"
+		args = append(args, id)
+	}
+	query += " AND i.collection_id NOT IN (" + strings.Join(vis2, ",") + ")"
+
+	if len(grantedItemIDs) > 0 {
+		gph := make([]string, len(grantedItemIDs))
+		for i, id := range grantedItemIDs {
+			gph[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.id NOT IN (" + strings.Join(gph, ",") + ")"
+	}
+
+	query += " GROUP BY m.item_id ORDER BY move_seq ASC LIMIT ?"
+	args = append(args, limit)
+
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list moved-out: %w", err)
+	}
+	defer rows.Close()
+
+	var out []MovedOutRow
+	for rows.Next() {
+		var r MovedOutRow
+		if err := rows.Scan(&r.ID, &r.Seq); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // MaxItemSeq returns the largest items.seq across the workspace, or 0
 // if the workspace has no items. This is the cursor floor for the
 // local-first read model (PLAN-1343 / TASK-1353): /items-index hands
@@ -3139,6 +3245,26 @@ func (s *Store) MoveItemWithPreCheck(
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, `+nextTransitionSeqSubquery+`)
 		`), newID(), itemID, existing.WorkspaceID, targetCollectionID, moveDoneKey, oldStatus, newStatus, moveTS); err != nil {
 			return nil, fmt.Errorf("record status transition on move: %w", err)
+		}
+	}
+
+	// Durable cross-collection move record (BUG-1675), written in the
+	// SAME tx as the move so /items-changes' moved-out tombstone can't
+	// depend on the best-effort post-commit activity row. Skip same-
+	// collection no-ops (move callers reject those upstream, but guard
+	// anyway). The seq is the value the UPDATE just assigned — read it
+	// back under the still-held lock so the tombstone seq matches what
+	// /items-changes sees for the item.
+	if targetCollectionID != existing.CollectionID {
+		var moveSeq int64
+		if err = tx.QueryRow(s.q(`SELECT seq FROM items WHERE id = ?`), itemID).Scan(&moveSeq); err != nil {
+			return nil, fmt.Errorf("read post-move seq: %w", err)
+		}
+		if _, err = tx.Exec(s.q(`
+			INSERT INTO item_collection_moves (id, workspace_id, item_id, from_collection_id, to_collection_id, seq, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`), newID(), existing.WorkspaceID, itemID, existing.CollectionID, targetCollectionID, moveSeq, moveTS); err != nil {
+			return nil, fmt.Errorf("record collection move: %w", err)
 		}
 	}
 

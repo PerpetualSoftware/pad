@@ -537,6 +537,7 @@ export const localIndex = {
 		if (newCursorNum <= startCursorNum) return;
 
 		const toPersist: ItemIndexRow[] = [];
+		const toRemove: string[] = [];
 		for (const change of changes) {
 			if (change.seq !== undefined) {
 				// Guard 2: row's seq vs. cursor floor.
@@ -545,7 +546,8 @@ export const localIndex = {
 				const existing = state.items.get(change.id);
 				if (
 					existing?.seq !== undefined &&
-					change.seq <= existing.seq
+					change.seq <= existing.seq &&
+					!change.moved_out
 				) {
 					// Existing wins in RAM. Include it in the
 					// persist set so the IDB cursor we're about
@@ -554,9 +556,22 @@ export const localIndex = {
 					// IDB write could still be pending / failed
 					// — Codex P? round 4). One redundant put is
 					// cheaper than a missing row on warm boot.
+					// (A moved-out eviction is unconditional — it
+					// removes the row regardless of stored seq.)
 					toPersist.push(existing);
 					continue;
 				}
+			}
+			// `moved_out: true` (BUG-1675) means the item left this
+			// caller's visibility (moved into a collection they can't
+			// see). The row carries only id + seq, so we HARD-evict it
+			// from RAM + search and queue the IDB delete into the same
+			// atomic cursor-advance tx below (no resurrect on warm boot).
+			if (change.moved_out) {
+				state.items.delete(change.id);
+				localSearch.remove(ws, change.id);
+				toRemove.push(change.id);
+				continue;
 			}
 			// `deleted: true` is the server's derived view of
 			// `deleted_at != nil` — a SOFT delete. The row still carries
@@ -584,7 +599,7 @@ export const localIndex = {
 		// in-memory only and never break the read path. Routed
 		// through the workspace's captured `userId` so a different
 		// user signing into the same browser sees their own cache.
-		persistDelta(state.userId, ws, toPersist, newCursor).catch(
+		persistDelta(state.userId, ws, toPersist, newCursor, toRemove).catch(
 			() => undefined,
 		);
 	},

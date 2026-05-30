@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -233,6 +234,14 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 type itemChangeRow struct {
 	models.Item
 	Deleted bool `json:"deleted"`
+	// MovedOut marks a row the caller can no longer see because the item
+	// moved into a collection outside their visibility (BUG-1675). Unlike
+	// `deleted` (a soft-delete the item still exists under), a moved-out
+	// row carries only id + seq — no title/fields/destination — and the
+	// client evicts it from its local cache. The item is alive for
+	// callers who can see the destination; it's just gone from THIS
+	// caller's view.
+	MovedOut bool `json:"moved_out,omitempty"`
 }
 
 // itemsChangesResponse wraps a delta-fetch result.
@@ -335,21 +344,65 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	// parent title / ref after the parent itself has been archived.
 	s.enrichItemsWithParent(workspaceID, rows, visibleIDs)
 
-	// Cursor: MAX(seq) in the response. When empty, return `since`
-	// unchanged so the client doesn't regress its position. When
-	// truncated by limit, the cursor sits at the last row's seq so
-	// the next poll resumes there (no overlap, no gap — seq is
-	// strictly monotonic per workspace).
-	cursorSeq := since
 	changes := make([]itemChangeRow, 0, len(rows))
 	for _, it := range rows {
-		if it.Seq > cursorSeq {
-			cursorSeq = it.Seq
-		}
 		changes = append(changes, itemChangeRow{
 			Item:    it,
 			Deleted: it.DeletedAt != nil,
 		})
+	}
+
+	// Moved-out tombstones (BUG-1675). Only restricted callers
+	// (visibleIDs != nil) can lose visibility on a move; full members
+	// (nil = all-access) never do, so skip the extra query for them.
+	// The main delta filters by current collection, so an item that
+	// moved into a collection this caller can't see vanishes with no
+	// eviction signal — append a minimal id+seq tombstone for those.
+	if visibleIDs != nil {
+		// Collections the caller browses at the collection level (the
+		// from-collection a move must originate in). With item grants
+		// the main query swaps to fullCollIDs; mirror that here.
+		collLevelVisibleIDs := visibleIDs
+		if len(grantedItemIDs) > 0 {
+			collLevelVisibleIDs = fullCollIDs
+		}
+		movedOut, mErr := s.store.ListMovedOutSince(workspaceID, since, limit, collLevelVisibleIDs, grantedItemIDs)
+		if mErr != nil {
+			writeInternalError(w, mErr)
+			return
+		}
+		for _, m := range movedOut {
+			changes = append(changes, itemChangeRow{
+				Item:     models.Item{ID: m.ID, Seq: m.Seq},
+				MovedOut: true,
+			})
+		}
+	}
+
+	// Merge main + moved-out rows into one seq-ascending stream, then
+	// cap at the effective limit so pagination stays gap-free: the
+	// cursor is the last kept row's seq and any row past it is dropped
+	// to be re-fetched on the next poll (seq is strictly monotonic per
+	// workspace, so no overlap, no gap).
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Seq < changes[j].Seq })
+	effLimit := limit
+	if effLimit <= 0 {
+		effLimit = store.DefaultItemChangesLimit
+	}
+	if effLimit > store.MaxItemChangesLimit {
+		effLimit = store.MaxItemChangesLimit
+	}
+	if len(changes) > effLimit {
+		changes = changes[:effLimit]
+	}
+
+	// Cursor: MAX(seq) in the (capped) response. When empty, return
+	// `since` unchanged so the client doesn't regress its position.
+	cursorSeq := since
+	for _, c := range changes {
+		if c.Seq > cursorSeq {
+			cursorSeq = c.Seq
+		}
 	}
 
 	writeJSON(w, http.StatusOK, itemsChangesResponse{
@@ -1498,7 +1551,10 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Log activity with metadata about the move
+	// Log activity with metadata about the move (audit trail). The
+	// moved-out tombstone signal (BUG-1675) is recorded durably in
+	// item_collection_moves inside the move tx, not derived from this
+	// best-effort row.
 	actor, source := actorFromRequest(r)
 	moveMeta := auditMeta(map[string]string{"from_collection": sourceColl.Slug, "to_collection": targetColl.Slug})
 	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, moveMeta)

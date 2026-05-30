@@ -520,7 +520,16 @@ export interface ItemIndexResponse {
 // one pass. Soft-deleted rows still carry their full skinny payload
 // (deleted_at is populated) — `deleted` is just the derived view of
 // that timestamp.
-export type ItemChangeRow = ItemIndexRow & { deleted: boolean };
+//
+// `moved_out` (BUG-1675) marks a row the caller can no longer see
+// because the item moved into a collection outside their visibility.
+// Unlike `deleted`, these rows carry ONLY `id` + `seq` (no title /
+// collection / fields — the destination is hidden from this caller), so
+// the consumer evicts the id from its local cache rather than upserting.
+export type ItemChangeRow = ItemIndexRow & {
+	deleted: boolean;
+	moved_out?: boolean;
+};
 
 // `ItemChangesResponse` wraps a delta-fetch result from
 // `GET /workspaces/{ws}/items-changes?since=<cursor>` (TASK-1354).

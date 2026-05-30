@@ -221,12 +221,22 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 
 		// Per-row activity log keeps the audit trail intact — it's a
 		// DB write, not the SSE/webhook fan-out the task is avoiding.
+		// A cross-collection move logs action="moved" with from/to
+		// collection slugs — same shape as the single-item move path
+		// (handleMoveItem). This is also what /items-changes reads to
+		// emit moved-out tombstones (BUG-1675), so a generic "updated"
+		// here would silently break cross-visibility move eviction.
 		action := "updated"
-		if req.Op == "archive" {
+		meta := map[string]string{"bulk_op": req.Op}
+		switch {
+		case req.Op == "archive":
 			action = "archived"
+		case req.Op == "move" && req.Collection != "" && req.Collection != item.CollectionSlug:
+			action = "moved"
+			meta["from_collection"] = item.CollectionSlug
+			meta["to_collection"] = req.Collection
 		}
-		s.logActivityWithMeta(workspaceID, item.ID, action,
-			r, auditMeta(map[string]string{"bulk_op": req.Op}))
+		s.logActivityWithMeta(workspaceID, item.ID, action, r, auditMeta(meta))
 
 		resp.Updated = append(resp.Updated, bulkItemOutcome{Ref: itemRefOrSlug(*item), ID: item.ID})
 		affectedIDs = append(affectedIDs, item.ID)
