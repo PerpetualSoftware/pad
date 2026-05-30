@@ -1194,7 +1194,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		}
 		commentInput.CreatedBy = actor
 		commentInput.Source = source
-		comment, cerr := s.store.CreateComment(workspaceID, updated.ID, commentInput)
+		comment, cerr := s.store.CreateComment(workspaceID, updated.ID, currentUserID(r), commentInput)
 		if cerr != nil {
 			slog.Warn("failed to create comment on item update", "item_id", updated.ID, "error", cerr)
 		}

@@ -32,7 +32,7 @@ func timelineFixture(t *testing.T, s *Store) (*models.Item, []models.Comment) {
 
 	var comments []models.Comment
 	for i, body := range []string{"first", "second", "third"} {
-		c, err := s.CreateComment(ws.ID, item.ID, models.CommentCreate{
+		c, err := s.CreateComment(ws.ID, item.ID, "", models.CommentCreate{
 			Body:      body,
 			Author:    "Tester",
 			CreatedBy: "user",
@@ -100,7 +100,7 @@ func TestListCommentsBeforeTime_SameSecondCursor(t *testing.T) {
 	// Three comments back-to-back with no sleep — they will share a second
 	// at RFC3339 precision (which is what the store stores).
 	for _, body := range []string{"a", "b", "c"} {
-		if _, err := s.CreateComment(ws.ID, item.ID, models.CommentCreate{
+		if _, err := s.CreateComment(ws.ID, item.ID, "", models.CommentCreate{
 			Body:      body,
 			Author:    "Tester",
 			CreatedBy: "user",

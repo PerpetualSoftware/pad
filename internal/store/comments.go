@@ -8,8 +8,12 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// CreateComment adds a new comment to an item.
-func (s *Store) CreateComment(workspaceID, itemID string, input models.CommentCreate) (*models.Comment, error) {
+// CreateComment adds a new comment to an item. userID is the authenticated
+// user authoring the comment (empty for agent/system comments); it's stored
+// as the canonical author identity for the comment-edit permission check —
+// the caller passes it explicitly rather than via the request body so it
+// can't be spoofed.
+func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.CommentCreate) (*models.Comment, error) {
 	id := newID()
 	ts := now()
 
@@ -27,9 +31,9 @@ func (s *Store) CreateComment(workspaceID, itemID string, input models.CommentCr
 	}
 
 	_, err := s.db.Exec(s.q(`
-		INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, activity_id, parent_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-		id, itemID, workspaceID, author, input.Body, createdBy, source,
+		INSERT INTO comments (id, item_id, workspace_id, author, user_id, body, created_by, source, activity_id, parent_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+		id, itemID, workspaceID, author, nilIfEmpty(userID), input.Body, createdBy, source,
 		nilIfEmpty(input.ActivityID), nilIfEmpty(input.ParentID), ts, ts,
 	)
 	if err != nil {
@@ -39,10 +43,27 @@ func (s *Store) CreateComment(workspaceID, itemID string, input models.CommentCr
 	return s.GetComment(id)
 }
 
+// UpdateComment replaces a comment's body and bumps updated_at. The
+// comments_fts_update trigger re-indexes the new body. Returns
+// sql.ErrNoRows when no live comment matches. Permission (author or
+// admin) is enforced by the handler, not here.
+func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
+	ts := now()
+	res, err := s.db.Exec(s.q(`UPDATE comments SET body = ?, updated_at = ? WHERE id = ?`), body, ts, id)
+	if err != nil {
+		return nil, fmt.Errorf("update comment: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return nil, sql.ErrNoRows
+	}
+	return s.GetComment(id)
+}
+
 // GetComment returns a single comment by ID.
 func (s *Store) GetComment(id string) (*models.Comment, error) {
 	row := s.db.QueryRow(s.q(`
-		SELECT c.id, c.item_id, c.workspace_id, c.author, c.body,
+		SELECT c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at,
 		       i.title, i.slug
@@ -53,7 +74,7 @@ func (s *Store) GetComment(id string) (*models.Comment, error) {
 	var c models.Comment
 	var createdAt, updatedAt string
 	err := row.Scan(
-		&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.Body,
+		&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.UserID, &c.Body,
 		&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
 		&createdAt, &updatedAt,
 		&c.ItemTitle, &c.ItemSlug,
@@ -72,7 +93,7 @@ func (s *Store) GetComment(id string) (*models.Comment, error) {
 // ListComments returns all comments for an item, ordered chronologically.
 func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT c.id, c.item_id, c.workspace_id, c.author, c.body,
+		SELECT c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at
 		FROM comments c
@@ -88,7 +109,7 @@ func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 		var c models.Comment
 		var createdAt, updatedAt string
 		if err := rows.Scan(
-			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.Body,
+			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.UserID, &c.Body,
 			&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
 			&createdAt, &updatedAt,
 		); err != nil {
@@ -110,7 +131,7 @@ func (s *Store) ListComments(itemID string) ([]models.Comment, error) {
 // bind parameter (SQLSTATE 22021). See BUG-1086.
 func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Comment, error) {
 	ts := before.Format(time.RFC3339)
-	const selectCols = `c.id, c.item_id, c.workspace_id, c.author, c.body,
+	const selectCols = `c.id, c.item_id, c.workspace_id, c.author, COALESCE(c.user_id, ''), c.body,
 		       c.created_by, c.source, COALESCE(c.activity_id, ''), COALESCE(c.parent_id, ''),
 		       c.created_at, c.updated_at`
 	const orderLimit = `ORDER BY c.created_at DESC, c.id DESC LIMIT ?`
@@ -140,7 +161,7 @@ func (s *Store) ListCommentsBeforeTime(itemID string, before time.Time, beforeID
 		var c models.Comment
 		var createdAt, updatedAt string
 		if err := rows.Scan(
-			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.Body,
+			&c.ID, &c.ItemID, &c.WorkspaceID, &c.Author, &c.UserID, &c.Body,
 			&c.CreatedBy, &c.Source, &c.ActivityID, &c.ParentID,
 			&createdAt, &updatedAt,
 		); err != nil {

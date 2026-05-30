@@ -23,6 +23,7 @@ const (
 
 	// Comment events
 	CommentCreated = "comment_created"
+	CommentUpdated = "comment_updated"
 	CommentDeleted = "comment_deleted"
 
 	// Reaction events

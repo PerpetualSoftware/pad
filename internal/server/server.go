@@ -1151,6 +1151,7 @@ func (s *Server) setupRouter() {
 
 					// Comments (v2)
 					r.Route("/comments/{commentID}", func(r chi.Router) {
+						r.Patch("/", s.handleUpdateComment)
 						r.Delete("/", s.handleDeleteComment)
 						r.Post("/replies", s.handleCreateReply)
 						r.Post("/reactions", s.handleAddReaction)

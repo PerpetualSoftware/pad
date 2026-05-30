@@ -8,6 +8,11 @@ type Comment struct {
 	ItemID      string    `json:"item_id"`
 	WorkspaceID string    `json:"workspace_id"`
 	Author      string    `json:"author"`
+	// UserID is the authenticated user who authored the comment. Empty for
+	// pre-identity comments (created before TASK-1663) and agent/system
+	// comments; the comment-edit permission check treats empty as
+	// "no provable author" → admin-only.
+	UserID      string    `json:"user_id,omitempty"`
 	Body        string    `json:"body"`
 	CreatedBy   string    `json:"created_by"`
 	Source      string    `json:"source"`
