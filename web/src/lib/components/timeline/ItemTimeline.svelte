@@ -8,6 +8,15 @@
 	import TimelineCommentCard from './TimelineCommentCard.svelte';
 	import TimelineActivityCard from './TimelineActivityCard.svelte';
 	import TimelineVersionCard from './TimelineVersionCard.svelte';
+	import {
+		filesFromPaste,
+		filesFromDrop,
+		isFileDrag,
+		uploadIntoTextarea,
+		attachmentRefsIn
+	} from '$lib/utils/commentAttachments';
+	import { fetchAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
+	import { attachmentDownloadUrl, type AttachmentMeta } from '$lib/markdown/attachments';
 
 	interface Props {
 		wsSlug: string;
@@ -42,6 +51,88 @@
 	let loadingMore: boolean = $state(false);
 	let error: string = $state('');
 	let newBody: string = $state('');
+
+	// Comment composer attachment state (IDEA-1650). pendingUploads gates
+	// submit while a paste/drop upload is in flight; composeTextarea is the
+	// caret anchor the upload helper splices markdown into.
+	let pendingUploads: number = $state(0);
+	let composeTextarea: HTMLTextAreaElement | undefined = $state();
+
+	// Resolver for `pad-attachment:UUID` references in comment bodies.
+	// Metadata (MIME + size) is fetched lazily per UUID via a HEAD probe and
+	// cached here; renderMarkdown reads it through the derived resolver so a
+	// newly-resolved attachment re-renders its comment inline.
+	let attMeta = $state<Map<string, AttachmentMeta>>(new Map());
+	let attachmentResolver = $derived((uuid: string) => attMeta.get(uuid) ?? null);
+
+	// In-flight / settled UUIDs — a non-reactive guard so the probe effect
+	// fires one HEAD per attachment without re-triggering on attMeta writes.
+	const probed = new Set<string>();
+
+	function probeAttachment(uuid: string) {
+		if (probed.has(uuid)) return;
+		probed.add(uuid);
+		fetchAttachmentMetadata(wsSlug, uuid, (id, variant) =>
+			attachmentDownloadUrl(wsSlug, id, variant)
+		).then((m) => {
+			if (!m) return;
+			const next = new Map(attMeta);
+			// filename is left empty — the markdown alt text is the chip/img
+			// label, and renderAttachmentImage only falls back to filename
+			// when alt is blank.
+			next.set(uuid, { id: uuid, mime_type: m.mime, filename: '', size_bytes: m.size });
+			attMeta = next;
+		});
+	}
+
+	// Probe every attachment referenced by a comment or reply as the
+	// timeline loads / changes. Depends only on `entries`.
+	$effect(() => {
+		for (const entry of entries) {
+			if (entry.kind !== 'comment' || !entry.comment) continue;
+			for (const id of attachmentRefsIn(entry.comment.body)) probeAttachment(id);
+			for (const reply of entry.comment.replies ?? []) {
+				for (const id of attachmentRefsIn(reply.body)) probeAttachment(id);
+			}
+		}
+	});
+
+	function startComposeUploads(files: File[]) {
+		if (!composeTextarea) return;
+		uploadIntoTextarea(files, composeTextarea, wsSlug, {
+			getValue: () => newBody,
+			setValue: (v) => {
+				newBody = v;
+			},
+			onPendingDelta: (d) => {
+				pendingUploads += d;
+			},
+			onError: (msg) => {
+				error = msg;
+			}
+		});
+	}
+
+	function handleComposePaste(e: ClipboardEvent) {
+		const files = filesFromPaste(e);
+		if (files.length === 0) return;
+		e.preventDefault();
+		startComposeUploads(files);
+	}
+
+	function handleComposeDragOver(e: DragEvent) {
+		// Cancel only file drags so the browser delivers the drop here
+		// instead of navigating; text drag-drop within the textarea is left
+		// to default handling.
+		if (isFileDrag(e)) e.preventDefault();
+	}
+
+	function handleComposeDrop(e: DragEvent) {
+		const files = filesFromDrop(e);
+		if (files.length === 0) return;
+		e.preventDefault();
+		startComposeUploads(files);
+	}
 
 	// Current user ID for reaction toggle — read from the global auth store.
 	let currentUserId = $derived(authStore.userId);
@@ -146,7 +237,7 @@
 	let submitting: boolean = $state(false);
 
 	async function submitComment() {
-		if (!newBody.trim() || submitting) return;
+		if (!newBody.trim() || submitting || pendingUploads > 0) return;
 		submitting = true;
 		try {
 			await api.comments.create(wsSlug, itemSlug, {
@@ -233,17 +324,25 @@
 		<div class="compose">
 			<textarea
 				class="compose-input"
-				placeholder="Write a comment..."
+				bind:this={composeTextarea}
+				placeholder="Write a comment... (paste or drop an image to attach)"
 				bind:value={newBody}
 				onkeydown={handleKeydown}
+				onpaste={handleComposePaste}
+				ondragover={handleComposeDragOver}
+				ondrop={handleComposeDrop}
 				disabled={submitting}
 			></textarea>
 			<div class="compose-actions">
-				<span class="shortcut-hint">Ctrl+Enter to submit</span>
+				<span class="shortcut-hint">
+					{pendingUploads > 0
+						? `Uploading ${pendingUploads} file${pendingUploads === 1 ? '' : 's'}…`
+						: 'Ctrl+Enter to submit'}
+				</span>
 				<button
 					class="submit-btn"
 					type="button"
-					disabled={!newBody.trim() || submitting}
+					disabled={!newBody.trim() || submitting || pendingUploads > 0}
 					onclick={submitComment}
 				>
 					{submitting ? 'Posting...' : 'Comment'}
@@ -279,6 +378,7 @@
 								{items}
 								{currentUserId}
 								{canEdit}
+								{attachmentResolver}
 								onDelete={handleDelete}
 								onReply={handleReply}
 								onReaction={handleReaction}
