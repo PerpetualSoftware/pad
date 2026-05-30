@@ -10,6 +10,7 @@ import type {
 	ItemChangeRow,
 	ItemChangesResponse,
 	ItemCreate,
+	TagCount,
 	ItemIndexResponse,
 	ItemIndexRow,
 	ItemUpdate,
@@ -510,6 +511,15 @@ export const api = {
 	},
 
 	// ── Items ─────────────────────────────────────────────────────────────────
+
+	tags: {
+		/**
+		 * Distinct tags used across the workspace's items with per-tag item
+		 * counts, ordered by count desc then tag asc. Powers the tags index
+		 * page and tag-input autocomplete.
+		 */
+		list: (ws: string) => request<TagCount[]>(`/workspaces/${ws}/tags`),
+	},
 
 	items: {
 		/** Cross-collection item listing with optional query params. */

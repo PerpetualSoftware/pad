@@ -1108,6 +1108,9 @@ func (s *Server) setupRouter() {
 					// Starred items
 					r.Get("/starred", s.handleListStarredItems)
 
+					// Distinct tags across the workspace (with item counts)
+					r.Get("/tags", s.handleListTags)
+
 					// Items (cross-collection, v2)
 					r.Get("/items", s.handleListItems)
 					r.Route("/items/{itemSlug}", func(r chi.Router) {

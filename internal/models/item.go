@@ -802,6 +802,14 @@ type ItemListParams struct {
 	Offset          int
 }
 
+// TagCount is a distinct tag used within a workspace and the number of items
+// carrying it. Returned by Store.ListWorkspaceTags and the
+// GET /workspaces/{ws}/tags endpoint, ordered by Count desc then Tag asc.
+type TagCount struct {
+	Tag   string `json:"tag"`
+	Count int    `json:"count"`
+}
+
 type ItemLink struct {
 	ID          string    `json:"id"`
 	WorkspaceID string    `json:"workspace_id"`

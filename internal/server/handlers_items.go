@@ -73,6 +73,45 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+// handleListTags returns the distinct tags used across the workspace's items
+// with per-tag item counts, ordered by count desc then tag asc. Respects the
+// same collection-visibility and item-grant filters as handleListItems so tag
+// counts never include items the caller can't see.
+func (s *Server) handleListTags(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	collIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	var itemIDs []string
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return
+	}
+	if len(grantedItemIDs) > 0 {
+		collIDs = fullCollIDs
+		itemIDs = grantedItemIDs
+	}
+
+	tags, err := s.store.ListWorkspaceTags(workspaceID, collIDs, itemIDs)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if tags == nil {
+		tags = []models.TagCount{}
+	}
+
+	writeJSON(w, http.StatusOK, tags)
+}
+
 // itemsIndexResponse wraps the skinny-projection items list with bookkeeping
 // the local-first read model (PLAN-1343) needs:
 //   - total: the row count so the client can size its in-memory array.
