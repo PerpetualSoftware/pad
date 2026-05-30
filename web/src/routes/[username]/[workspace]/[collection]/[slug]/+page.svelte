@@ -311,11 +311,7 @@
 						// a debounced save is in flight, but a user
 						// mid-keystroke with no save yet pending would
 						// still lose chars without this branch.
-						if (collabProvider) {
-							item = updated;
-						} else {
-							item = { ...updated, content: item.content };
-						}
+						item = adoptServerItem(updated);
 						const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 						if (!item || item.id !== reqItemId) return;
 						itemLinks = links;
@@ -328,11 +324,7 @@
 					try {
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
 						if (!item || item.id !== reqItemId) return;
-						if (collabProvider) {
-							item = updated;
-						} else {
-							item = { ...updated, content: item.content };
-						}
+						item = adoptServerItem(updated);
 					} catch {
 						// Ignore — will catch up on next event
 					}
@@ -374,11 +366,7 @@
 					// Same collab-aware adoption rule as the SSE
 					// handler above (TASK-1262).
 					if (!item || item.id !== reqItemId) return;
-					if (collabProvider) {
-						item = updated;
-					} else {
-						item = { ...updated, content: item.content };
-					}
+					item = adoptServerItem(updated);
 					const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 					if (!item || item.id !== reqItemId) return;
 					itemLinks = links;
@@ -390,11 +378,7 @@
 			try {
 				const updated = await api.items.get(reqWsSlug, reqItemSlug);
 				if (!item || item.id !== reqItemId) return;
-				if (collabProvider) {
-					item = updated;
-				} else {
-					item = { ...updated, content: item.content };
-				}
+				item = adoptServerItem(updated);
 				const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 				if (!item || item.id !== reqItemId) return;
 				itemLinks = links;
@@ -474,24 +458,10 @@
 				api.collections.get(wsSlug, collSlug),
 				itemsPromise
 			]);
-			item = itemData;
-			// If a tag save for this item is still in flight, the freshly
-			// loaded server tags may predate the optimistic edit. Reapply the
-			// saver's latest desired set so navigating away and back can't
-			// visually drop an unsaved tag edit (and then let a follow-up edit
-			// built on stale tags overwrite it). Per Codex PR #659 round 7.
-			const inFlightTagSaver = tagSavers.get(itemData.id);
-			if (inFlightTagSaver?.running) {
-				item = { ...itemData, tags: JSON.stringify(inFlightTagSaver.desired) };
-				// loadData reset saveStatus to 'idle' above, but a tag PATCH is
-				// still in flight. Restore 'saving' so the SSE/sync refresh
-				// guards (saveStatus === 'saving') keep skipping snapshot
-				// adoption until it drains — otherwise a stale server snapshot
-				// could land and a follow-up edit would build on it, dropping
-				// the in-flight tags. The saver's own completion path resets the
-				// indicator. Per Codex PR #659 round 8.
-				saveStatus = 'saving';
-			}
+			// Overlay any in-flight optimistic tag edit so navigating away and
+			// back mid-save can't show (and then let a follow-up edit overwrite
+			// with) stale server tags. See withInflightTags. Per Codex PR #659.
+			item = withInflightTags(itemData);
 			collection = collData;
 			collectionStore.setActiveItem(itemData);
 			editorStore.resetForDoc();
@@ -844,7 +814,7 @@
 						// item; a navigation away should not stamp
 						// fresh content into the OTHER item's slot.
 						if (item && item.id === refreshCtx.itemId) {
-							item = fresh;
+							item = withInflightTags(fresh);
 						}
 						// Refetch succeeded → safe to rebuild.
 						forceRefreshNonce += 1;
@@ -1074,7 +1044,7 @@
 		if (!item || titleDraft.trim() === item.title) return;
 		saveStatus = 'saving';
 		try {
-			item = await api.items.update(wsSlug, item.id, { title: titleDraft.trim() });
+			item = withInflightTags(await api.items.update(wsSlug, item.id, { title: titleDraft.trim() }));
 			showSaved();
 		} catch {
 			saveStatus = 'idle';
@@ -1246,6 +1216,29 @@
 		}
 	}
 
+	// Overlay an in-flight optimistic tag edit onto any server snapshot of an
+	// item before it's assigned to `item`. EVERY `item = <server data>`
+	// assignment (realtime SSE/sync, content-save echo, post-action refresh,
+	// initial load) must route through this: a tag PATCH owns `item.tags` until
+	// it drains, and the refresh handlers' `saveStatus === 'saving'` guard is
+	// racy (checked before their own await, not after), so overlaying the
+	// saver's latest desired set at assignment time is the only race-free
+	// guarantee that a concurrent snapshot can't drop the unsaved tags. Per
+	// Codex PR #659 rounds 8/9.
+	function withInflightTags(next: Item): Item {
+		const saver = tagSavers.get(next.id);
+		return saver?.running ? { ...next, tags: JSON.stringify(saver.desired) } : next;
+	}
+
+	// Realtime-refresh convenience: applies the content-adoption rule (under
+	// collab the editor reads Y.Doc so adopt server content verbatim; otherwise
+	// preserve the live local content) and the tag overlay.
+	function adoptServerItem(updated: Item): Item {
+		return withInflightTags(
+			collabProvider ? updated : { ...updated, content: item?.content ?? updated.content }
+		);
+	}
+
 	// Load the workspace's distinct tags for autocomplete. Pure data-fetch
 	// keyed on the workspace slug (see the $effect below) — kept separate from
 	// the item-load path per the Svelte 5 effect-splitting convention.
@@ -1314,7 +1307,7 @@
 				fields: JSON.stringify(merged)
 			});
 			if (item && item.id === targetItem.id) {
-				item = fresh;
+				item = withInflightTags(fresh);
 			}
 		} catch (err) {
 			// Non-fatal: the content was inserted regardless of whether
@@ -1427,7 +1420,7 @@
 			} else {
 				update.clear_assigned_user = true;
 			}
-			item = await api.items.update(wsSlug, item.id, update);
+			item = withInflightTags(await api.items.update(wsSlug, item.id, update));
 			showSaved();
 		} catch {
 			saveStatus = 'idle';
@@ -1445,7 +1438,7 @@
 			} else {
 				update.clear_agent_role = true;
 			}
-			item = await api.items.update(wsSlug, item.id, update);
+			item = withInflightTags(await api.items.update(wsSlug, item.id, update));
 			showSaved();
 		} catch {
 			saveStatus = 'idle';
@@ -1734,7 +1727,7 @@
 				// drop the queued edit. Mirrors the Round 8 fix in
 				// flushRawIfPending. Per Codex review round 9.
 				if (rawPendingMarkdown === toSave) {
-					item = updated;
+					item = withInflightTags(updated);
 					rawPendingMarkdown = null;
 					editorStore.setDirty(false);
 					showSaved();
@@ -1742,7 +1735,7 @@
 					// Newer pending edit; keep local content, adopt
 					// server-side metadata only. The next debounce
 					// cycle will land the queued edit.
-					item = { ...updated, content: item.content };
+					item = withInflightTags({ ...updated, content: item.content });
 				}
 			}).catch(() => {
 				if (!item || item.id !== reqItemId) return;
@@ -1823,13 +1816,13 @@
 					// from under the user's keystrokes and lose the
 					// queued edit. Per Codex review round 8.
 					if (rawPendingMarkdown === markdown) {
-						item = updated;
+						item = withInflightTags(updated);
 						rawPendingMarkdown = null;
 					} else {
 						// Newer edit pending — keep our local
 						// content but adopt server-side metadata
 						// (timestamps, version, modified_by).
-						item = { ...updated, content: item.content };
+						item = withInflightTags({ ...updated, content: item.content });
 					}
 				} catch {
 					saveStatus = 'idle';
@@ -1995,7 +1988,7 @@
 	}
 
 	function handleVersionRestore(updatedItem: Item) {
-		item = updatedItem;
+		item = withInflightTags(updatedItem);
 	}
 
 	async function handleDelete() {
@@ -2022,7 +2015,7 @@
 			itemLinks = itemLinks.filter(l => l.id !== linkId);
 			// Refresh item to update parent info
 			const refreshed = await api.items.get(wsSlug, itemSlug);
-			item = { ...refreshed, content: item.content };
+			item = withInflightTags({ ...refreshed, content: item.content });
 			toastStore.show('Relationship removed', 'success');
 		} catch (e: any) {
 			toastStore.show(e.message ?? 'Failed to remove relationship', 'error');
@@ -2070,7 +2063,7 @@
 			addLinkResults = [];
 			// Refresh item to update parent info
 			const refreshed = await api.items.get(wsSlug, itemSlug);
-			item = { ...refreshed, content: item.content };
+			item = withInflightTags({ ...refreshed, content: item.content });
 			toastStore.show('Relationship added', 'success');
 		} catch (e: any) {
 			toastStore.show(e.message ?? 'Failed to add relationship', 'error');
