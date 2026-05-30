@@ -186,6 +186,13 @@ func (c *Client) ListItems(wsSlug string, params url.Values) ([]models.Item, err
 	return result, c.get(path, &result)
 }
 
+// ListTags returns the distinct tags used across a workspace's items with
+// per-tag item counts (ordered by count desc then tag asc).
+func (c *Client) ListTags(wsSlug string) ([]models.TagCount, error) {
+	var result []models.TagCount
+	return result, c.get("/workspaces/"+wsSlug+"/tags", &result)
+}
+
 // ListCollectionItems returns items within a specific collection.
 func (c *Client) ListCollectionItems(wsSlug, collSlug string, params url.Values) ([]models.Item, error) {
 	var result []models.Item

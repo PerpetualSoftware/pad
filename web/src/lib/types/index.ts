@@ -426,6 +426,16 @@ export interface ItemDecisionLogEntry {
 	created_by?: string;
 }
 
+/**
+ * A distinct tag used within a workspace and the number of items carrying it.
+ * Returned by `GET /workspaces/{ws}/tags` (api.tags.list), ordered by count
+ * desc then tag asc.
+ */
+export interface TagCount {
+	tag: string;
+	count: number;
+}
+
 export interface Item {
 	id: string;
 	workspace_id: string;

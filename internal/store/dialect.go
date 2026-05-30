@@ -104,6 +104,14 @@ type Dialect interface {
 	// PostgreSQL: "column::jsonb @> ?::jsonb" with arg `["value"]`
 	JSONArrayContains(column, value string) (string, interface{})
 
+	// JSONArrayElements returns a FROM-clause table-function fragment that
+	// unnests a JSON text-array column into one row per element, plus the
+	// expression yielding each element's text value. Intended as a comma
+	// cross-join: `FROM items i, <fromExpr> WHERE ...` selecting <valueExpr>.
+	// SQLite:   fromExpr "json_each(i.tags) je",                                valueExpr "je.value"
+	// PostgreSQL: fromExpr "jsonb_array_elements_text(i.tags::jsonb) AS je(value)", valueExpr "je.value"
+	JSONArrayElements(column, alias string) (fromExpr, valueExpr string)
+
 	// DateBucket returns a SQL expression that truncates an RFC3339 UTC
 	// timestamp TEXT column to the start of its bucket, as a sortable TEXT
 	// label, for GROUP BY in time-series reports (PLAN-1628). granularity is
@@ -187,6 +195,10 @@ func (d *sqliteDialect) FTSRank(_, _ string) string {
 
 func (d *sqliteDialect) JSONArrayContains(column, value string) (string, interface{}) {
 	return column + " LIKE ?", "%\"" + value + "\"%"
+}
+
+func (d *sqliteDialect) JSONArrayElements(column, alias string) (string, string) {
+	return "json_each(" + column + ") " + alias, alias + ".value"
 }
 
 func (d *sqliteDialect) DateBucket(column, granularity string) string {
@@ -288,6 +300,10 @@ func (d *postgresDialect) FTSRank(table, column string) string {
 
 func (d *postgresDialect) JSONArrayContains(column, value string) (string, interface{}) {
 	return column + "::jsonb @> ?::jsonb", `["` + value + `"]`
+}
+
+func (d *postgresDialect) JSONArrayElements(column, alias string) (string, string) {
+	return "jsonb_array_elements_text(" + column + "::jsonb) AS " + alias + "(value)", alias + ".value"
 }
 
 func (d *postgresDialect) DateBucket(column, granularity string) string {

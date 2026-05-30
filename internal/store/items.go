@@ -830,6 +830,75 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 	return scanItems(rows)
 }
 
+// ListWorkspaceTags returns the distinct tags used across a workspace's items
+// with the number of (non-archived) items carrying each, ordered by count
+// desc then tag asc.
+//
+// collectionIDs / itemIDs are the same permission filters ListItems takes and
+// carry identical semantics: nil collectionIDs means no restriction (admins /
+// owners); a non-nil empty collectionIDs with no itemIDs means "no visible
+// collections" and returns an empty result. When both are non-empty (a guest
+// with collection- and item-level grants) the filters are OR'd, matching
+// ListItems exactly so tag counts can never leak items the caller can't see.
+func (s *Store) ListWorkspaceTags(workspaceID string, collectionIDs, itemIDs []string) ([]models.TagCount, error) {
+	if collectionIDs != nil && len(collectionIDs) == 0 && len(itemIDs) == 0 {
+		return []models.TagCount{}, nil
+	}
+
+	fromExpr, valueExpr := s.dialect.JSONArrayElements("i.tags", "je")
+	query := `
+		SELECT ` + valueExpr + ` AS tag, COUNT(*) AS cnt
+		FROM items i, ` + fromExpr + `
+		WHERE i.workspace_id = ? AND i.deleted_at IS NULL`
+	args := []interface{}{workspaceID}
+
+	if len(collectionIDs) > 0 && len(itemIDs) > 0 {
+		collPlaceholders := make([]string, len(collectionIDs))
+		for i, id := range collectionIDs {
+			collPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		itemPlaceholders := make([]string, len(itemIDs))
+		for i, id := range itemIDs {
+			itemPlaceholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND (i.collection_id IN (" + strings.Join(collPlaceholders, ",") + ") OR i.id IN (" + strings.Join(itemPlaceholders, ",") + "))"
+	} else if len(collectionIDs) > 0 {
+		placeholders := make([]string, len(collectionIDs))
+		for i, id := range collectionIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.collection_id IN (" + strings.Join(placeholders, ",") + ")"
+	} else if len(itemIDs) > 0 {
+		placeholders := make([]string, len(itemIDs))
+		for i, id := range itemIDs {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		query += " AND i.id IN (" + strings.Join(placeholders, ",") + ")"
+	}
+
+	query += " GROUP BY " + valueExpr + " ORDER BY cnt DESC, tag ASC"
+
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list workspace tags: %w", err)
+	}
+	defer rows.Close()
+
+	tags := []models.TagCount{}
+	for rows.Next() {
+		var tc models.TagCount
+		if err := rows.Scan(&tc.Tag, &tc.Count); err != nil {
+			return nil, fmt.Errorf("scan tag count: %w", err)
+		}
+		tags = append(tags, tc)
+	}
+	return tags, rows.Err()
+}
+
 // ItemIndexParams is the trimmed parameter set for ListItemsIndex.
 // It deliberately omits sort/search/pagination/field-filter knobs that the
 // "skinny projection" endpoint doesn't expose — the local-first read model
