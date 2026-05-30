@@ -483,6 +483,14 @@
 			const inFlightTagSaver = tagSavers.get(itemData.id);
 			if (inFlightTagSaver?.running) {
 				item = { ...itemData, tags: JSON.stringify(inFlightTagSaver.desired) };
+				// loadData reset saveStatus to 'idle' above, but a tag PATCH is
+				// still in flight. Restore 'saving' so the SSE/sync refresh
+				// guards (saveStatus === 'saving') keep skipping snapshot
+				// adoption until it drains — otherwise a stale server snapshot
+				// could land and a follow-up edit would build on it, dropping
+				// the in-flight tags. The saver's own completion path resets the
+				// indicator. Per Codex PR #659 round 8.
+				saveStatus = 'saving';
 			}
 			collection = collData;
 			collectionStore.setActiveItem(itemData);
