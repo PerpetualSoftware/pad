@@ -1079,7 +1079,7 @@
 
 		try {
 			const fresh = await doUpdate(false);
-			if (item && item.id === targetItem.id) item = fresh;
+			if (item && item.id === targetItem.id) item = withInflightTags(fresh);
 			showSaved();
 		} catch (e) {
 			// BUG-1538 / TASK-1539: same open-children-guard recovery
@@ -1103,7 +1103,7 @@
 					return;
 				}
 				if (forced) {
-					if (item && item.id === targetItem.id) item = forced;
+					if (item && item.id === targetItem.id) item = withInflightTags(forced);
 					showSaved();
 					return;
 				}
