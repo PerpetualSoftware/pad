@@ -1189,9 +1189,13 @@
 				});
 				saver.confirmed = fresh.tags;
 				// Reconcile the UI to server truth only when nothing newer is
-				// queued (avoids flicker) and we're still on this item.
+				// queued (avoids flicker) and we're still on this item. Route
+				// through adoptServerItem so the tag PATCH echo can't clobber
+				// unsaved editor content — its response carries the server's
+				// `content`, and non-collab editors mirror item.content. Per
+				// Codex PR #659 round 11.
 				if (saver.pending === null && item && item.id === saver.itemId) {
-					item = fresh;
+					item = adoptServerItem(fresh);
 				}
 			}
 			if (item && item.id === saver.itemId) showSaved();
