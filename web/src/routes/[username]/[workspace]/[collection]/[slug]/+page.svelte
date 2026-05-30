@@ -1155,7 +1155,11 @@
 		running: boolean;
 		confirmed: string; // last server-acknowledged tags JSON (revert target)
 	};
-	let tagSaver: TagSaver | null = null;
+	// Keyed by item id so each item's in-flight saver stays discoverable across
+	// navigation — navigating away from A and back must find A's running saver
+	// and coalesce into it, not spawn a second concurrent A saver. Per Codex
+	// PR #659 round 6.
+	const tagSavers = new Map<string, TagSaver>();
 
 	function updateTags(newTags: string[]) {
 		if (!item) return;
@@ -1164,20 +1168,23 @@
 		// Optimistic so chips react instantly.
 		item = { ...item, tags: JSON.stringify(newTags) };
 
-		// Reuse the running saver only when it's for THIS item; otherwise start
-		// a fresh one (a saver for a previous item keeps draining on its own).
-		if (tagSaver && tagSaver.running && tagSaver.itemId === targetItem.id) {
-			tagSaver.pending = newTags; // coalesce
+		// Coalesce into this item's running saver if one exists; otherwise
+		// start a fresh one. The currently-displayed item is the only one whose
+		// tags can be edited, so targetItem.id keys the right saver.
+		const existing = tagSavers.get(targetItem.id);
+		if (existing && existing.running) {
+			existing.pending = newTags;
 			return;
 		}
-		tagSaver = {
+		const saver: TagSaver = {
 			itemId: targetItem.id,
 			ws: targetWs,
 			pending: newTags,
 			running: false,
 			confirmed: targetItem.tags // confirmed baseline captured at burst start
 		};
-		void flushTagSaver(tagSaver);
+		tagSavers.set(targetItem.id, saver);
+		void flushTagSaver(saver);
 	}
 
 	async function flushTagSaver(saver: TagSaver) {
@@ -1211,6 +1218,11 @@
 			}
 		} finally {
 			saver.running = false;
+			// Drop the entry once fully drained so the map doesn't accumulate
+			// stale savers; guard on identity so a newer saver isn't evicted.
+			if (saver.pending === null && tagSavers.get(saver.itemId) === saver) {
+				tagSavers.delete(saver.itemId);
+			}
 		}
 	}
 
