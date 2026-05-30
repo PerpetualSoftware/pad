@@ -403,6 +403,48 @@ collect:
 	}
 }
 
+// TestBulkItems_CollectionMoveValidatesStatusOverride confirms a status
+// override on a collection move is validated against the target schema —
+// an out-of-options value is rejected (per-row), not written.
+func TestBulkItems_CollectionMoveValidatesStatusOverride(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSWithCollections(t, srv)
+
+	collResp := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/collections", map[string]interface{}{
+		"name":   "Programs",
+		"icon":   "package",
+		"schema": `{"fields":[{"key":"status","label":"Status","type":"select","options":["active","completed"]}]}`,
+	})
+	if collResp.Code != http.StatusCreated {
+		t.Fatalf("create programs: %d %s", collResp.Code, collResp.Body.String())
+	}
+
+	a := createBulkTestItem(t, srv, ws, "A", `{"status":"open"}`)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{
+		"ids": []string{a.Ref}, "op": "move", "collection": "programs", "status": "bogus",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 envelope, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp bulkItemsResponse
+	parseJSON(t, rr, &resp)
+	if len(resp.Updated) != 0 || len(resp.Failed) != 1 {
+		t.Fatalf("expected 0 updated / 1 failed for invalid status, got %+v", resp)
+	}
+	if resp.Failed[0].Code != "validation_error" {
+		t.Errorf("expected validation_error, got %q (%s)", resp.Failed[0].Code, resp.Failed[0].Error)
+	}
+
+	// The item must NOT have moved.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+ws+"/items/"+a.Slug, nil)
+	var fresh models.Item
+	parseJSON(t, rr, &fresh)
+	if fresh.CollectionSlug != "tasks" {
+		t.Errorf("item moved despite invalid status — now in %q", fresh.CollectionSlug)
+	}
+}
+
 // TestBulkItems_RouteDoesNotShadowItemSlug guards the route-ordering
 // fix: /items/bulk is a static segment registered before the
 // /items/{itemSlug} param route, so it must not be treated as an item
