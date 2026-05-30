@@ -231,20 +231,30 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 		resp.Updated = append(resp.Updated, bulkItemOutcome{Ref: itemRefOrSlug(*item), ID: item.ID})
 		affectedIDs = append(affectedIDs, item.ID)
 
-		// A collection move lands the item in the target collection;
-		// every other op leaves it where it was.
-		collSlug := item.CollectionSlug
-		if req.Op == "move" && req.Collection != "" {
-			collSlug = req.Collection
+		// Determine which collection scopes need a reconcile event.
+		// Every op notifies the collection the item lives in. A
+		// cross-collection move ALSO notifies the target, so a member
+		// watching the source lane (the item leaving) AND one watching
+		// the target lane (the item arriving) both reconcile. (Move
+		// rejects same-collection, so source != target here.)
+		scopes := []string{item.CollectionSlug}
+		if req.Op == "move" && req.Collection != "" && req.Collection != item.CollectionSlug {
+			scopes = append(scopes, req.Collection)
 		}
-		b := batches[collSlug]
-		if b == nil {
-			b = &collBatch{}
-			batches[collSlug] = b
+		var seq int64
+		if updated != nil {
+			seq = updated.Seq
 		}
-		b.count++
-		if updated != nil && updated.Seq > b.maxSeq {
-			b.maxSeq = updated.Seq
+		for _, sc := range scopes {
+			b := batches[sc]
+			if b == nil {
+				b = &collBatch{}
+				batches[sc] = b
+			}
+			b.count++
+			if seq > b.maxSeq {
+				b.maxSeq = seq
+			}
 		}
 	}
 

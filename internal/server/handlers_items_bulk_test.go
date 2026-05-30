@@ -347,6 +347,62 @@ loop:
 	}
 }
 
+// TestBulkItems_CollectionMoveNotifiesBothScopes asserts a bulk
+// collection move emits a batch event for BOTH the source and target
+// collections, so a member watching either lane reconciles.
+func TestBulkItems_CollectionMoveNotifiesBothScopes(t *testing.T) {
+	srv := testServerWithEvents(t)
+	ws := createWSWithCollections(t, srv)
+	wsRow, err := srv.store.GetWorkspaceBySlug(ws)
+	if err != nil || wsRow == nil {
+		t.Fatalf("resolve workspace: %v", err)
+	}
+
+	collResp := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/collections", map[string]interface{}{
+		"name":   "Programs",
+		"icon":   "package",
+		"schema": `{"fields":[{"key":"status","label":"Status","type":"select","options":["active","completed"]}]}`,
+	})
+	if collResp.Code != http.StatusCreated {
+		t.Fatalf("create programs: %d %s", collResp.Code, collResp.Body.String())
+	}
+
+	a := createBulkTestItem(t, srv, ws, "A", `{"status":"open"}`)
+
+	ch := srv.events.Subscribe(wsRow.ID)
+	defer srv.events.Unsubscribe(ch)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{
+		"ids": []string{a.Ref}, "op": "move", "collection": "programs",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk move: %d: %s", rr.Code, rr.Body.String())
+	}
+
+	gotScopes := map[string]bool{}
+	deadline := time.After(2 * time.Second)
+collect:
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Type == events.ItemsBulkUpdated {
+				gotScopes[ev.Collection] = true
+				if gotScopes["tasks"] && gotScopes["programs"] {
+					break collect
+				}
+			}
+		case <-deadline:
+			break collect
+		}
+	}
+	if !gotScopes["tasks"] {
+		t.Error("expected a batch event for source collection 'tasks'")
+	}
+	if !gotScopes["programs"] {
+		t.Error("expected a batch event for target collection 'programs'")
+	}
+}
+
 // TestBulkItems_RouteDoesNotShadowItemSlug guards the route-ordering
 // fix: /items/bulk is a static segment registered before the
 // /items/{itemSlug} param route, so it must not be treated as an item
