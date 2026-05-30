@@ -77,6 +77,7 @@
 		{ id: 'cycle_time', label: 'Cycle time' },
 		{ id: 'wip', label: 'Work in progress' },
 		{ id: 'completed_by_collection', label: 'Completed by collection' },
+		{ id: 'completed_items', label: 'What shipped' },
 		{ id: 'status_distribution', label: 'Status distribution' }
 	];
 
@@ -169,7 +170,10 @@
 			const data = await api.report.get(slug, {
 				window: win,
 				collections: colls.length > 0 ? colls : undefined,
-				offset: off
+				offset: off,
+				// Pull the completed items so the "What shipped" card can list them
+				// with links. Same payload the print report uses.
+				includeItems: true
 			});
 			// Only the latest in-flight request commits — discard stale responses.
 			if (seq !== reqSeq) return;
@@ -301,6 +305,29 @@
 			count: c.count
 		}))
 	);
+
+	// "What shipped" — completed items grouped by collection, preserving the
+	// newest-first order the API returns within each group. Mirrors the print
+	// report; here each ref is a link to the item (route resolves PREFIX-NUMBER
+	// refs via ResolveItem, so /{user}/{ws}/{collection}/{ref} loads the item).
+	const shippedGroups = $derived.by(() => {
+		const groups: { collection: string; items: { ref: string; title: string }[] }[] = [];
+		for (const it of report?.completed_items ?? []) {
+			let g = groups.find((x) => x.collection === it.collection);
+			if (!g) {
+				g = { collection: it.collection, items: [] };
+				groups.push(g);
+			}
+			g.items.push({ ref: it.ref, title: it.title });
+		}
+		return groups;
+	});
+
+	const shippedOverflow = $derived(report?.completed_items_overflow_count ?? 0);
+
+	function itemHref(collectionSlug: string, ref: string): string {
+		return `/${username}/${wsSlug}/${collectionSlug}/${ref}`;
+	}
 
 	const noActivity = $derived(
 		report !== null && report.totals.created === 0 && report.totals.completed === 0
@@ -599,6 +626,45 @@
 							height={220}
 							ariaLabel="Completed items grouped by collection"
 						/>
+					{/if}
+				</section>
+			{/if}
+
+			<!-- What shipped (completed items, with links) -->
+			{#if !hiddenCards.has('completed_items')}
+				<section class="card">
+					<div class="card-header">
+						<h2>What shipped</h2>
+						<span class="card-sub">Completed in this window</span>
+					</div>
+					{#if shippedGroups.length === 0}
+						<div class="card-empty">Nothing completed in this window.</div>
+					{:else}
+						<div class="shipped">
+							{#each shippedGroups as group (group.collection)}
+								<div class="shipped-group">
+									<div class="shipped-group-head">
+										<span class="shipped-group-name">{collLabel(group.collection)}</span>
+										<span class="shipped-group-count">{group.items.length}</span>
+									</div>
+									<ul class="shipped-list">
+										{#each group.items as item (item.ref)}
+											<li class="shipped-item">
+												<a class="shipped-ref" href={itemHref(group.collection, item.ref)}>
+													{item.ref}
+												</a>
+												<span class="shipped-item-title">{item.title}</span>
+											</li>
+										{/each}
+									</ul>
+								</div>
+							{/each}
+						</div>
+						{#if shippedOverflow > 0}
+							<p class="shipped-overflow">
+								+{shippedOverflow} more completed item{shippedOverflow === 1 ? '' : 's'} not shown.
+							</p>
+						{/if}
 					{/if}
 				</section>
 			{/if}
@@ -1109,6 +1175,71 @@
 	}
 
 	/* ── Responsive ───────────────────────────────────────────────────── */
+	/* ── What shipped ─────────────────────────────────────────────────────── */
+	.shipped {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-5);
+	}
+	.shipped-group-head {
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-2);
+		margin-bottom: var(--space-2);
+	}
+	.shipped-group-name {
+		font-size: 0.9em;
+		font-weight: 600;
+		color: var(--text-secondary);
+	}
+	.shipped-group-count {
+		font-size: 0.75em;
+		color: var(--text-muted);
+		background: var(--bg-tertiary);
+		padding: 1px 8px;
+		border-radius: 10px;
+	}
+	.shipped-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+	}
+	.shipped-item {
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-3);
+		padding: var(--space-1) 0;
+		font-size: 0.88em;
+		border-top: 1px solid var(--border);
+	}
+	.shipped-item:first-child {
+		border-top: none;
+	}
+	.shipped-ref {
+		flex-shrink: 0;
+		font-weight: 600;
+		font-variant-numeric: tabular-nums;
+		color: var(--accent-blue);
+		text-decoration: none;
+		min-width: 5.5em;
+	}
+	.shipped-ref:hover {
+		text-decoration: underline;
+	}
+	.shipped-item-title {
+		color: var(--text-primary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.shipped-overflow {
+		font-size: 0.82em;
+		color: var(--text-muted);
+		margin-top: var(--space-3);
+	}
+
 	@media (max-width: 768px) {
 		.grid {
 			grid-template-columns: 1fr;
