@@ -17,6 +17,7 @@
 	import { userColor } from '$lib/collab/cursorColor';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
+	import TagInput from '$lib/components/fields/TagInput.svelte';
 	import ItemTimeline from '$lib/components/timeline/ItemTimeline.svelte';
 	import ChildItems from '$lib/components/ChildItems.svelte';
 	import BacklinksPanel from '$lib/components/BacklinksPanel.svelte';
@@ -97,6 +98,32 @@
 	let titleInputEl = $state<HTMLTextAreaElement>();
 
 	let fields = $derived<Record<string, any>>(item ? parseFields(item) : {});
+	// Tags live on item.tags (a JSON-array string), NOT in the schema. Parse
+	// defensively — the column defaults to "[]" but tolerate empty/garbage.
+	let tags = $derived.by<string[]>(() => {
+		if (!item?.tags) return [];
+		try {
+			const parsed = JSON.parse(item.tags);
+			if (!Array.isArray(parsed)) return [];
+			// Dedupe case-insensitively (keep first as typed). The write path
+			// doesn't enforce per-item uniqueness, so an API/imported item can
+			// carry ["ux","ux"]; cleaning here keeps rendering keys unique and
+			// the dedupe gets persisted on the next save.
+			const seen = new Set<string>();
+			const out: string[] = [];
+			for (const t of parsed) {
+				if (typeof t !== 'string') continue;
+				const key = t.toLowerCase();
+				if (seen.has(key)) continue;
+				seen.add(key);
+				out.push(t);
+			}
+			return out;
+		} catch {
+			return [];
+		}
+	});
+	let tagSuggestions = $state<string[]>([]);
 	let schema = $derived(collection ? parseSchema(collection) : { fields: [] });
 	let settings = $derived<CollectionSettings>(collection ? parseSettings(collection) : { layout: 'balanced', default_view: 'list' });
 	let layout = $derived(settings.layout);
@@ -284,11 +311,7 @@
 						// a debounced save is in flight, but a user
 						// mid-keystroke with no save yet pending would
 						// still lose chars without this branch.
-						if (collabProvider) {
-							item = updated;
-						} else {
-							item = { ...updated, content: item.content };
-						}
+						item = adoptServerItem(updated);
 						const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 						if (!item || item.id !== reqItemId) return;
 						itemLinks = links;
@@ -301,11 +324,7 @@
 					try {
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
 						if (!item || item.id !== reqItemId) return;
-						if (collabProvider) {
-							item = updated;
-						} else {
-							item = { ...updated, content: item.content };
-						}
+						item = adoptServerItem(updated);
 					} catch {
 						// Ignore — will catch up on next event
 					}
@@ -347,11 +366,7 @@
 					// Same collab-aware adoption rule as the SSE
 					// handler above (TASK-1262).
 					if (!item || item.id !== reqItemId) return;
-					if (collabProvider) {
-						item = updated;
-					} else {
-						item = { ...updated, content: item.content };
-					}
+					item = adoptServerItem(updated);
 					const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 					if (!item || item.id !== reqItemId) return;
 					itemLinks = links;
@@ -363,11 +378,7 @@
 			try {
 				const updated = await api.items.get(reqWsSlug, reqItemSlug);
 				if (!item || item.id !== reqItemId) return;
-				if (collabProvider) {
-					item = updated;
-				} else {
-					item = { ...updated, content: item.content };
-				}
+				item = adoptServerItem(updated);
 				const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 				if (!item || item.id !== reqItemId) return;
 				itemLinks = links;
@@ -447,7 +458,10 @@
 				api.collections.get(wsSlug, collSlug),
 				itemsPromise
 			]);
-			item = itemData;
+			// Overlay any in-flight optimistic tag edit so navigating away and
+			// back mid-save can't show (and then let a follow-up edit overwrite
+			// with) stale server tags. See withInflightTags. Per Codex PR #659.
+			item = withInflightTags(itemData);
 			collection = collData;
 			collectionStore.setActiveItem(itemData);
 			editorStore.resetForDoc();
@@ -800,7 +814,7 @@
 						// item; a navigation away should not stamp
 						// fresh content into the OTHER item's slot.
 						if (item && item.id === refreshCtx.itemId) {
-							item = fresh;
+							item = withInflightTags(fresh);
 						}
 						// Refetch succeeded → safe to rebuild.
 						forceRefreshNonce += 1;
@@ -1030,7 +1044,7 @@
 		if (!item || titleDraft.trim() === item.title) return;
 		saveStatus = 'saving';
 		try {
-			item = await api.items.update(wsSlug, item.id, { title: titleDraft.trim() });
+			item = withInflightTags(await api.items.update(wsSlug, item.id, { title: titleDraft.trim() }));
 			showSaved();
 		} catch {
 			saveStatus = 'idle';
@@ -1065,7 +1079,7 @@
 
 		try {
 			const fresh = await doUpdate(false);
-			if (item && item.id === targetItem.id) item = fresh;
+			if (item && item.id === targetItem.id) item = withInflightTags(fresh);
 			showSaved();
 		} catch (e) {
 			// BUG-1538 / TASK-1539: same open-children-guard recovery
@@ -1089,7 +1103,7 @@
 					return;
 				}
 				if (forced) {
-					if (item && item.id === targetItem.id) item = forced;
+					if (item && item.id === targetItem.id) item = withInflightTags(forced);
 					showSaved();
 					return;
 				}
@@ -1110,6 +1124,146 @@
 			toastStore.show('Failed to save', 'error');
 		}
 	}
+
+	// Serialized, coalescing tag saver. Tags are a top-level item column
+	// (item.tags), not a schema field, and the chip input makes rapid edits
+	// easy — so instead of firing concurrent PATCHes and guarding the races,
+	// we keep ONE save in flight per item and coalesce to the latest desired
+	// set. This structurally removes the overlap class: no stale completion
+	// can clobber a newer set, and `confirmed` always tracks the last
+	// server-acknowledged tags so a failed save reverts to server truth (not
+	// to an optimistic, unconfirmed value). Scoped by item id so a save still
+	// draining for a previous item can't touch the current one. Per Codex
+	// PR #659 rounds 1/4/5.
+	type TagSaver = {
+		itemId: string;
+		ws: string;
+		pending: string[] | null; // latest desired set not yet sent (coalesced)
+		desired: string[]; // latest desired set (in-flight OR pending) for reload reapply
+		running: boolean;
+		confirmed: string; // last server-acknowledged tags JSON (revert target)
+	};
+	// Keyed by item id so each item's in-flight saver stays discoverable across
+	// navigation — navigating away from A and back must find A's running saver
+	// and coalesce into it, not spawn a second concurrent A saver. Per Codex
+	// PR #659 round 6.
+	const tagSavers = new Map<string, TagSaver>();
+
+	function updateTags(newTags: string[]) {
+		if (!item) return;
+		const targetItem = item;
+		const targetWs = wsSlug;
+		// Optimistic so chips react instantly.
+		item = { ...item, tags: JSON.stringify(newTags) };
+
+		// Coalesce into this item's running saver if one exists; otherwise
+		// start a fresh one. The currently-displayed item is the only one whose
+		// tags can be edited, so targetItem.id keys the right saver.
+		const existing = tagSavers.get(targetItem.id);
+		if (existing && existing.running) {
+			existing.pending = newTags;
+			existing.desired = newTags;
+			return;
+		}
+		const saver: TagSaver = {
+			itemId: targetItem.id,
+			ws: targetWs,
+			pending: newTags,
+			desired: newTags,
+			running: false,
+			confirmed: targetItem.tags // confirmed baseline captured at burst start
+		};
+		tagSavers.set(targetItem.id, saver);
+		void flushTagSaver(saver);
+	}
+
+	async function flushTagSaver(saver: TagSaver) {
+		saver.running = true;
+		saveStatus = 'saving';
+		try {
+			while (saver.pending !== null) {
+				const toSave = saver.pending;
+				saver.pending = null;
+				const fresh = await api.items.update(saver.ws, saver.itemId, {
+					tags: JSON.stringify(toSave)
+				});
+				saver.confirmed = fresh.tags;
+				// Reconcile the UI to server truth only when nothing newer is
+				// queued (avoids flicker) and we're still on this item. Route
+				// through adoptServerItem so the tag PATCH echo can't clobber
+				// unsaved editor content — its response carries the server's
+				// `content`, and non-collab editors mirror item.content. Per
+				// Codex PR #659 round 11.
+				if (saver.pending === null && item && item.id === saver.itemId) {
+					item = adoptServerItem(fresh);
+				}
+			}
+			if (item && item.id === saver.itemId) showSaved();
+			// A newly-created tag should appear in autocomplete next time.
+			void loadTagSuggestions(saver.ws);
+		} catch (e) {
+			console.error('Failed to save tags:', e);
+			saver.pending = null;
+			if (item && item.id === saver.itemId) {
+				// Revert to the last server-confirmed tags, not the optimistic set.
+				item = { ...item, tags: saver.confirmed };
+				saveStatus = 'idle';
+				toastStore.show('Failed to save', 'error');
+			}
+		} finally {
+			saver.running = false;
+			// Drop the entry once fully drained so the map doesn't accumulate
+			// stale savers; guard on identity so a newer saver isn't evicted.
+			if (saver.pending === null && tagSavers.get(saver.itemId) === saver) {
+				tagSavers.delete(saver.itemId);
+			}
+		}
+	}
+
+	// Overlay an in-flight optimistic tag edit onto any server snapshot of an
+	// item before it's assigned to `item`. EVERY `item = <server data>`
+	// assignment (realtime SSE/sync, content-save echo, post-action refresh,
+	// initial load) must route through this: a tag PATCH owns `item.tags` until
+	// it drains, and the refresh handlers' `saveStatus === 'saving'` guard is
+	// racy (checked before their own await, not after), so overlaying the
+	// saver's latest desired set at assignment time is the only race-free
+	// guarantee that a concurrent snapshot can't drop the unsaved tags. Per
+	// Codex PR #659 rounds 8/9.
+	function withInflightTags(next: Item): Item {
+		const saver = tagSavers.get(next.id);
+		return saver?.running ? { ...next, tags: JSON.stringify(saver.desired) } : next;
+	}
+
+	// Realtime-refresh convenience: applies the content-adoption rule (under
+	// collab the editor reads Y.Doc so adopt server content verbatim; otherwise
+	// preserve the live local content) and the tag overlay.
+	function adoptServerItem(updated: Item): Item {
+		return withInflightTags(
+			collabProvider ? updated : { ...updated, content: item?.content ?? updated.content }
+		);
+	}
+
+	// Load the workspace's distinct tags for autocomplete. Pure data-fetch
+	// keyed on the workspace slug (see the $effect below) — kept separate from
+	// the item-load path per the Svelte 5 effect-splitting convention.
+	async function loadTagSuggestions(ws: string) {
+		if (!ws) return;
+		try {
+			const all = await api.tags.list(ws);
+			// Drop stale results: if the workspace changed while this request
+			// was in flight (page instance reused across navigation, or a
+			// post-save reload for a now-previous workspace), don't overwrite
+			// the current workspace's suggestions. Per Codex PR #659 round 2.
+			if (ws !== wsSlug) return;
+			tagSuggestions = all.map((t) => t.tag);
+		} catch {
+			if (ws === wsSlug) tagSuggestions = [];
+		}
+	}
+
+	$effect(() => {
+		loadTagSuggestions(wsSlug);
+	});
 
 	// stampSourceUrl writes the pad_source_url + pad_imported_at orphan
 	// keys into the item's `fields` JSON. The keys aren't declared in
@@ -1157,7 +1311,7 @@
 				fields: JSON.stringify(merged)
 			});
 			if (item && item.id === targetItem.id) {
-				item = fresh;
+				item = withInflightTags(fresh);
 			}
 		} catch (err) {
 			// Non-fatal: the content was inserted regardless of whether
@@ -1270,7 +1424,7 @@
 			} else {
 				update.clear_assigned_user = true;
 			}
-			item = await api.items.update(wsSlug, item.id, update);
+			item = withInflightTags(await api.items.update(wsSlug, item.id, update));
 			showSaved();
 		} catch {
 			saveStatus = 'idle';
@@ -1288,7 +1442,7 @@
 			} else {
 				update.clear_agent_role = true;
 			}
-			item = await api.items.update(wsSlug, item.id, update);
+			item = withInflightTags(await api.items.update(wsSlug, item.id, update));
 			showSaved();
 		} catch {
 			saveStatus = 'idle';
@@ -1577,7 +1731,7 @@
 				// drop the queued edit. Mirrors the Round 8 fix in
 				// flushRawIfPending. Per Codex review round 9.
 				if (rawPendingMarkdown === toSave) {
-					item = updated;
+					item = withInflightTags(updated);
 					rawPendingMarkdown = null;
 					editorStore.setDirty(false);
 					showSaved();
@@ -1585,7 +1739,7 @@
 					// Newer pending edit; keep local content, adopt
 					// server-side metadata only. The next debounce
 					// cycle will land the queued edit.
-					item = { ...updated, content: item.content };
+					item = withInflightTags({ ...updated, content: item.content });
 				}
 			}).catch(() => {
 				if (!item || item.id !== reqItemId) return;
@@ -1666,13 +1820,13 @@
 					// from under the user's keystrokes and lose the
 					// queued edit. Per Codex review round 8.
 					if (rawPendingMarkdown === markdown) {
-						item = updated;
+						item = withInflightTags(updated);
 						rawPendingMarkdown = null;
 					} else {
 						// Newer edit pending — keep our local
 						// content but adopt server-side metadata
 						// (timestamps, version, modified_by).
-						item = { ...updated, content: item.content };
+						item = withInflightTags({ ...updated, content: item.content });
 					}
 				} catch {
 					saveStatus = 'idle';
@@ -1838,7 +1992,7 @@
 	}
 
 	function handleVersionRestore(updatedItem: Item) {
-		item = updatedItem;
+		item = withInflightTags(updatedItem);
 	}
 
 	async function handleDelete() {
@@ -1865,7 +2019,7 @@
 			itemLinks = itemLinks.filter(l => l.id !== linkId);
 			// Refresh item to update parent info
 			const refreshed = await api.items.get(wsSlug, itemSlug);
-			item = { ...refreshed, content: item.content };
+			item = withInflightTags({ ...refreshed, content: item.content });
 			toastStore.show('Relationship removed', 'success');
 		} catch (e: any) {
 			toastStore.show(e.message ?? 'Failed to remove relationship', 'error');
@@ -1913,7 +2067,7 @@
 			addLinkResults = [];
 			// Refresh item to update parent info
 			const refreshed = await api.items.get(wsSlug, itemSlug);
-			item = { ...refreshed, content: item.content };
+			item = withInflightTags({ ...refreshed, content: item.content });
 			toastStore.show('Relationship added', 'success');
 		} catch (e: any) {
 			toastStore.show(e.message ?? 'Failed to add relationship', 'error');
@@ -2342,6 +2496,19 @@
 						</div>
 					{/if}
 				{/each}
+
+				<!-- Tags (item.tags — spans collections, not a schema field) -->
+				<div class="field-row">
+					<span class="field-label">Tags</span>
+					<div class="field-value">
+						<TagInput
+							{tags}
+							suggestions={tagSuggestions}
+							onchange={updateTags}
+							readonly={!canEdit}
+						/>
+					</div>
+				</div>
 
 				<!-- Assignment: user + role -->
 				{#if workspaceMembers.length > 0 || agentRoles.length > 0}
