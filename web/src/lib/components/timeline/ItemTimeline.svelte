@@ -161,6 +161,7 @@
 
 	// Current user ID for reaction toggle — read from the global auth store.
 	let currentUserId = $derived(authStore.userId);
+	let isAdmin = $derived(authStore.user?.role === 'admin');
 
 	// Track IDs from the most recent first-page fetch, used by SSE merge
 	// to detect deletions without incorrectly removing older-page entries.
@@ -292,6 +293,19 @@
 			await loadTimeline();
 		} catch (err: any) {
 			error = err?.message ?? 'Failed to post reply';
+			throw err; // let CommentEditor keep the draft
+		}
+	}
+
+	// Edits a comment or reply (author/admin enforced server-side). Throws on
+	// failure so the inline CommentEditor preserves the draft.
+	async function handleEdit(commentId: string, body: string) {
+		try {
+			await api.comments.update(wsSlug, commentId, { body });
+			await loadTimeline();
+		} catch (err: any) {
+			error = err?.message ?? 'Failed to edit comment';
+			throw err;
 		}
 	}
 
@@ -380,9 +394,11 @@
 								{items}
 								{currentUserId}
 								{canEdit}
+								{isAdmin}
 								{attachmentResolver}
 								onDelete={handleDelete}
 								onReply={handleReply}
+								onEdit={handleEdit}
 								onReaction={handleReaction}
 								onRemoveReaction={handleRemoveReaction}
 							/>
