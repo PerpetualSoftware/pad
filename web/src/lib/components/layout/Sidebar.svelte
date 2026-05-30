@@ -34,6 +34,12 @@
 	let isRolesPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/roles` : false);
 	let isActivityPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/activity` : false);
 	let isStarredPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/starred` : false);
+	let isTagsPage = $derived(
+		wsPrefix
+			? page.url.pathname === `${wsPrefix}/tags` ||
+					page.url.pathname.startsWith(`${wsPrefix}/tags/`)
+			: false
+	);
 
 	let activeCollectionSlug = $derived.by(() => {
 		if (!wsPrefix) return null;
@@ -42,7 +48,7 @@
 		if (!path.startsWith(prefix)) return null;
 		const rest = path.slice(prefix.length);
 		const slug = rest.split('/')[0];
-		if (slug === 'settings' || slug === 'new' || slug === 'library' || slug === 'activity' || slug === 'starred' || slug === 'roles' || slug === 'insights' || slug === '') return null;
+		if (slug === 'settings' || slug === 'new' || slug === 'library' || slug === 'activity' || slug === 'starred' || slug === 'tags' || slug === 'roles' || slug === 'insights' || slug === '') return null;
 		return slug;
 	});
 
@@ -448,6 +454,15 @@
 				>
 					<span class="nav-icon">⭐</span>
 					<span class="nav-label">Starred</span>
+				</a>
+				<a
+					href="{wsPrefix}/tags"
+					class="nav-item"
+					class:active={isTagsPage}
+					onclick={() => uiStore.onNavigate()}
+				>
+					<span class="nav-icon">🏷</span>
+					<span class="nav-label">Tags</span>
 				</a>
 				{/if}
 
