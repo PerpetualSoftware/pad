@@ -1,6 +1,8 @@
 <script lang="ts">
 	import type { Comment, Item, Reaction } from '$lib/types';
 	import { relativeTime, renderMarkdown } from '$lib/utils/markdown';
+	import type { AttachmentResolver } from '$lib/markdown/attachments';
+	import { filesFromPaste, filesFromDrop, uploadIntoTextarea } from '$lib/utils/commentAttachments';
 	import ReactionPicker from './ReactionPicker.svelte';
 
 	interface Props {
@@ -18,21 +20,64 @@
 		 * don't pass it.
 		 */
 		canEdit?: boolean;
+		/**
+		 * Resolves `pad-attachment:UUID` references in the comment / reply
+		 * bodies to inline images or file chips (IDEA-1650). Optional —
+		 * without it those references render as plain (broken) markdown
+		 * links, the same graceful degradation renderMarkdown uses elsewhere.
+		 */
+		attachmentResolver?: AttachmentResolver;
 		onDelete: (commentId: string) => void;
 		onReply: (commentId: string, body: string) => void | Promise<void>;
 		onReaction: (commentId: string, emoji: string) => void;
 		onRemoveReaction: (commentId: string, emoji: string) => void;
 	}
 
-	let { comment, wsSlug, username = '', items, currentUserId = '', canEdit = true, onDelete, onReply, onReaction, onRemoveReaction }: Props = $props();
+	let { comment, wsSlug, username = '', items, currentUserId = '', canEdit = true, attachmentResolver, onDelete, onReply, onReaction, onRemoveReaction }: Props = $props();
 
 	let showReplyForm = $state(false);
 	let replyBody = $state('');
 	let submittingReply = $state(false);
 
+	// Reply-box attachment upload (IDEA-1650). Mirrors the top-level
+	// composer in ItemTimeline; replyPending gates submit while a
+	// paste/drop upload is in flight.
+	let replyTextarea: HTMLTextAreaElement | undefined = $state();
+	let replyPending = $state(0);
+
+	function startReplyUploads(files: File[]) {
+		if (!replyTextarea) return;
+		uploadIntoTextarea(files, replyTextarea, wsSlug, {
+			getValue: () => replyBody,
+			setValue: (v) => {
+				replyBody = v;
+			},
+			onPendingDelta: (d) => {
+				replyPending += d;
+			},
+			onError: (msg) => {
+				if (typeof window !== 'undefined') window.alert(`Couldn't upload: ${msg}`);
+			}
+		});
+	}
+
+	function handleReplyPaste(e: ClipboardEvent) {
+		const files = filesFromPaste(e);
+		if (files.length === 0) return;
+		e.preventDefault();
+		startReplyUploads(files);
+	}
+
+	function handleReplyDrop(e: DragEvent) {
+		const files = filesFromDrop(e);
+		if (files.length === 0) return;
+		e.preventDefault();
+		startReplyUploads(files);
+	}
+
 	async function submitReply() {
 		const body = replyBody.trim();
-		if (!body || submittingReply) return;
+		if (!body || submittingReply || replyPending > 0) return;
 		submittingReply = true;
 		try {
 			await onReply(comment.id, body);
@@ -160,7 +205,7 @@
 	{/if}
 
 	<div class="comment-body prose">
-		{@html renderMarkdown(comment.body, items, wsSlug, username)}
+		{@html renderMarkdown(comment.body, items, wsSlug, username, undefined, attachmentResolver)}
 	</div>
 
 	<div class="comment-footer">
@@ -198,16 +243,23 @@
 		<div class="reply-compose">
 			<textarea
 				class="reply-input"
-				placeholder="Write a reply..."
+				bind:this={replyTextarea}
+				placeholder="Write a reply... (paste or drop an image to attach)"
 				bind:value={replyBody}
 				onkeydown={handleReplyKeydown}
+				onpaste={handleReplyPaste}
+				ondrop={handleReplyDrop}
 				disabled={submittingReply}
 			></textarea>
 			<div class="reply-actions">
-				<span class="reply-hint">Ctrl+Enter to submit · Esc to cancel</span>
+				<span class="reply-hint">
+					{replyPending > 0
+						? `Uploading ${replyPending} file${replyPending === 1 ? '' : 's'}…`
+						: 'Ctrl+Enter to submit · Esc to cancel'}
+				</span>
 				<div class="reply-buttons">
 					<button class="reply-cancel" type="button" onclick={() => { showReplyForm = false; replyBody = ''; }}>Cancel</button>
-					<button class="reply-submit" type="button" disabled={!replyBody.trim() || submittingReply} onclick={submitReply}>
+					<button class="reply-submit" type="button" disabled={!replyBody.trim() || submittingReply || replyPending > 0} onclick={submitReply}>
 						{submittingReply ? 'Posting...' : 'Reply'}
 					</button>
 				</div>
@@ -243,7 +295,7 @@
 					</div>
 
 					<div class="reply-body prose">
-						{@html renderMarkdown(reply.body, items, wsSlug, username)}
+						{@html renderMarkdown(reply.body, items, wsSlug, username, undefined, attachmentResolver)}
 					</div>
 
 						<div class="reactions-row">

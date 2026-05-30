@@ -70,14 +70,15 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 			return res, err
 		}
 		// "Never-attached" rows (item_id IS NULL, deleted_at IS NULL)
-		// can still be referenced from item content via
-		// `pad-attachment:UUID` — the editor uploads first, then
-		// PATCHes content with the reference, but the attachments
+		// can still be referenced from item content or a comment body
+		// via `pad-attachment:UUID` — the editor / comment composer
+		// upload first, then save the reference, but the attachments
 		// row's item_id stays NULL. Scan items.content + items.fields
-		// before reclaiming so the GC doesn't destroy a legitimate
-		// reference. Codex P1 on PR #307 round 1.
+		// + comment bodies before reclaiming so the GC doesn't destroy
+		// a legitimate reference. Codex P1 on PR #307 round 1;
+		// comment-body coverage added for IDEA-1650.
 		if a.ItemID == nil && a.DeletedAt == nil {
-			referenced, err := s.store.AttachmentReferencedInItems(a.WorkspaceID, a.ID)
+			referenced, err := s.store.AttachmentReferenced(a.WorkspaceID, a.ID)
 			if err != nil {
 				slog.Warn("orphan GC: ref-scan failed",
 					"attachment_id", a.ID, "workspace_id", a.WorkspaceID, "error", err)

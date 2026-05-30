@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -270,6 +271,67 @@ func TestOrphanGC_KeepsReferencedNeverAttachedRows(t *testing.T) {
 	}
 	if got, _ := srv.store.GetAttachment(id); got == nil {
 		t.Errorf("referenced attachment was hard-deleted by GC; row gone")
+	}
+}
+
+// TestOrphanGC_KeepsAttachmentReferencedFromComment is the IDEA-1650
+// sibling of the item-content case above: a screenshot pasted into a
+// comment is referenced ONLY from comments.body, with attachments.item_id
+// left NULL. The GC's reference scan must cover comment bodies, otherwise
+// a never-attached row past the grace period would be reclaimed and the
+// comment's embed would break.
+func TestOrphanGC_KeepsAttachmentReferencedFromComment(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	wsID := workspaceIDForSlug(t, srv, slug)
+
+	if rr := doMultipartUpload(srv, slug, "kept.png", realPNG()); rr.Code != 201 {
+		t.Fatalf("upload: %d", rr.Code)
+	}
+	id := getOnlyAttachmentID(t, srv, wsID)
+
+	// Create a plain item (no reference in its content), then post a
+	// comment that references the attachment — mirrors the comment
+	// composer flow (upload → post comment with the ref). item_id on
+	// the attachment row stays NULL.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/docs/items",
+		map[string]any{"title": "Has A Comment"})
+	if rr.Code != 201 {
+		t.Fatalf("create item: %d %s", rr.Code, rr.Body.String())
+	}
+	var item map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &item); err != nil {
+		t.Fatalf("decode item: %v", err)
+	}
+	itemSlug, _ := item["slug"].(string)
+	if itemSlug == "" {
+		t.Fatalf("item response missing slug: %s", rr.Body.String())
+	}
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+itemSlug+"/comments",
+		map[string]any{"body": "see ![](pad-attachment:" + id + ")"})
+	if rr.Code != 201 {
+		t.Fatalf("create comment: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Backdate the attachment past the 30-day grace so the orphan
+	// SELECT picks it up.
+	pastTs := time.Now().UTC().Add(-31 * 24 * time.Hour).Format(time.RFC3339)
+	if _, err := srv.store.DB().Exec(
+		`UPDATE attachments SET created_at = ? WHERE id = ?`, pastTs, id,
+	); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	res, err := srv.runOrphanGCSweep(context.Background(),
+		time.Now().UTC().Add(-30*24*time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.Deleted != 0 {
+		t.Errorf("Deleted=%d, want 0 (a comment references the attachment)", res.Deleted)
+	}
+	if got, _ := srv.store.GetAttachment(id); got == nil {
+		t.Errorf("comment-referenced attachment was hard-deleted by GC; row gone")
 	}
 }
 

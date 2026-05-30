@@ -612,14 +612,18 @@ func (s *Store) CountProtectingAttachmentsForHash(hash, excludeID string, graceC
 	return n, nil
 }
 
-// AttachmentReferencedInItems returns true when any live item in the
-// workspace mentions "pad-attachment:<id>" in its content or fields
-// JSON. The editor upload flow leaves attachments.item_id NULL —
-// the canonical association is the markdown reference inside the
-// item's content, NOT a column in the attachments table — so the
-// orphan GC has to look at item content directly before reclaiming
-// a "never-attached" row, otherwise it'd hard-delete attachments
-// that markdown still points at.
+// AttachmentReferenced returns true when anything in the workspace
+// mentions "pad-attachment:<id>" — either a live item's content/fields
+// JSON or a comment body. The editor and comment-composer upload flows
+// both leave attachments.item_id NULL: the canonical association is the
+// markdown reference inside the item's content or a comment, NOT a
+// column in the attachments table — so the orphan GC has to look at
+// that text directly before reclaiming a "never-attached" row,
+// otherwise it'd hard-delete attachments that markdown still points at.
+//
+// Comments are covered because a pasted screenshot (IDEA-1650) may be
+// referenced ONLY from a comment body; without the comments scan the GC
+// would reclaim it after the grace period and break the embed.
 //
 // Scoped to one workspace because a "pad-attachment:UUID" reference
 // only resolves within the workspace where the attachment lives;
@@ -629,8 +633,9 @@ func (s *Store) CountProtectingAttachmentsForHash(hash, excludeID string, graceC
 // PostgreSQL (see migrations + pgmigrations). LIKE doesn't work on
 // JSONB so the Postgres path casts to text first. Codex P1 round 2
 // caught this — without the cast, the GC's reference scan errored
-// on Postgres and every never-attached row got skipped.
-func (s *Store) AttachmentReferencedInItems(workspaceID, attachmentID string) (bool, error) {
+// on Postgres and every never-attached row got skipped. comments.body
+// is TEXT on both dialects, so it needs no cast.
+func (s *Store) AttachmentReferenced(workspaceID, attachmentID string) (bool, error) {
 	if workspaceID == "" || attachmentID == "" {
 		return false, nil
 	}
@@ -644,12 +649,15 @@ func (s *Store) AttachmentReferencedInItems(workspaceID, attachmentID string) (b
 
 	var n int
 	err := s.db.QueryRow(s.q(`
-		SELECT COUNT(*) FROM items
-		WHERE workspace_id = ? AND deleted_at IS NULL
-		  AND (content LIKE ? OR `+fieldsExpr+` LIKE ?)
-	`), workspaceID, pattern, pattern).Scan(&n)
+		SELECT
+		  (SELECT COUNT(*) FROM items
+		     WHERE workspace_id = ? AND deleted_at IS NULL
+		       AND (content LIKE ? OR `+fieldsExpr+` LIKE ?))
+		+ (SELECT COUNT(*) FROM comments
+		     WHERE workspace_id = ? AND body LIKE ?)
+	`), workspaceID, pattern, pattern, workspaceID, pattern).Scan(&n)
 	if err != nil {
-		return false, fmt.Errorf("attachment referenced in items: %w", err)
+		return false, fmt.Errorf("attachment referenced: %w", err)
 	}
 	return n > 0, nil
 }
