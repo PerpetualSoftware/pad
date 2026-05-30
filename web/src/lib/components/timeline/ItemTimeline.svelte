@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -17,6 +17,7 @@
 	} from '$lib/utils/commentAttachments';
 	import { fetchAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import { attachmentDownloadUrl, type AttachmentMeta } from '$lib/markdown/attachments';
+	import Lightbox, { type LightboxImage } from '$lib/components/common/Lightbox.svelte';
 
 	interface Props {
 		wsSlug: string;
@@ -119,6 +120,79 @@
 		e.preventDefault();
 		startComposeUploads(files);
 	}
+
+	// Lightbox state (IDEA-1660). Set when a thumbnail is activated; cleared
+	// on close. Null = closed, so the host remounts fresh on each open.
+	let lightbox: { images: LightboxImage[]; index: number } | null = $state(null);
+	let entryListEl: HTMLElement | undefined = $state();
+
+	// Open the lightbox for a clicked/activated thumbnail, gathering sibling
+	// attachment images in the same comment/reply body so ←/→ can page them.
+	function openLightboxFromImg(imgEl: HTMLElement) {
+		const scope = imgEl.closest('.comment-body, .reply-body') ?? imgEl.parentElement;
+		const els = scope
+			? Array.from(scope.querySelectorAll<HTMLElement>('img[data-attachment-id]'))
+			: [imgEl];
+		const list: LightboxImage[] = els
+			.map((el) => ({ id: el.getAttribute('data-attachment-id') ?? '', alt: el.getAttribute('alt') ?? '' }))
+			.filter((x) => x.id !== '');
+		if (list.length === 0) return;
+		lightbox = { images: list, index: Math.max(0, els.indexOf(imgEl)) };
+	}
+
+	function onThumbClick(e: MouseEvent) {
+		const imgEl = (e.target as HTMLElement | null)?.closest(
+			'img[data-attachment-id]'
+		) as HTMLElement | null;
+		if (!imgEl) return;
+		e.preventDefault();
+		openLightboxFromImg(imgEl);
+	}
+
+	function onThumbKeydown(e: KeyboardEvent) {
+		if (e.key !== 'Enter' && e.key !== ' ') return;
+		const imgEl = (e.target as HTMLElement | null)?.closest(
+			'img[data-attachment-id]'
+		) as HTMLElement | null;
+		if (!imgEl) return;
+		e.preventDefault(); // Space would otherwise scroll the page
+		openLightboxFromImg(imgEl);
+	}
+
+	// Delegated click + keydown on the entry list (rather than declarative
+	// handlers on the static container, which the a11y lint would flag).
+	$effect(() => {
+		const el = entryListEl;
+		if (!el) return;
+		el.addEventListener('click', onThumbClick);
+		el.addEventListener('keydown', onThumbKeydown);
+		return () => {
+			el.removeEventListener('click', onThumbClick);
+			el.removeEventListener('keydown', onThumbKeydown);
+		};
+	});
+
+	// Inline attachment images come from sanitized {@html}, so we can't wrap
+	// them in a <button> at render time. Instead make each one a focusable,
+	// announced control imperatively so keyboard users can open the lightbox.
+	// Depends on BOTH `entries` (new comments) AND `attMeta` (an image only
+	// renders as an <img> once its metadata resolves — before that it's a
+	// "missing" placeholder span — so the pass must re-run on resolution).
+	$effect(() => {
+		void entries;
+		void attMeta;
+		const el = entryListEl;
+		if (!el) return;
+		tick().then(() => {
+			for (const img of el.querySelectorAll<HTMLElement>('img[data-attachment-id]')) {
+				if (img.getAttribute('role') === 'button') continue;
+				img.setAttribute('role', 'button');
+				img.setAttribute('tabindex', '0');
+				const alt = img.getAttribute('alt');
+				img.setAttribute('aria-label', alt ? `View image: ${alt}` : 'View attachment image');
+			}
+		});
+	});
 
 	function handleComposeDragOver(e: DragEvent) {
 		// Cancel only file drags so the browser delivers the drop here
@@ -363,7 +437,7 @@
 	{/if}
 
 	{#if !loading || entries.length > 0}
-		<div class="entry-list">
+		<div class="entry-list" bind:this={entryListEl}>
 			{#each entries as entry (entry.id)}
 				<div class="entry">
 					<div class="entry-rail">
@@ -411,6 +485,15 @@
 		{/if}
 	{/if}
 </section>
+
+{#if lightbox}
+	<Lightbox
+		images={lightbox.images}
+		index={lightbox.index}
+		{wsSlug}
+		onClose={() => (lightbox = null)}
+	/>
+{/if}
 
 <style>
 	.timeline {

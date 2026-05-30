@@ -125,9 +125,10 @@ function escapeHtml(s: string): string {
 export function renderAttachmentImage(
 	meta: AttachmentMeta,
 	alt: string,
-	workspaceSlug: string
+	workspaceSlug: string,
+	variant: 'thumb-sm' | 'thumb-md' = 'thumb-md'
 ): string {
-	const src = attachmentDownloadUrl(workspaceSlug, meta.id, 'thumb-md');
+	const src = attachmentDownloadUrl(workspaceSlug, meta.id, variant);
 	const altText = alt && alt.trim() !== '' ? alt : meta.filename;
 	const sizeAttrs =
 		meta.width && meta.height && meta.width > 0 && meta.height > 0
@@ -174,13 +175,14 @@ export function resolveAttachmentImage(
 	href: string,
 	alt: string,
 	workspaceSlug: string,
-	resolver: AttachmentResolver
+	resolver: AttachmentResolver,
+	variant: 'thumb-sm' | 'thumb-md' = 'thumb-md'
 ): string {
 	const uuid = parseAttachmentHref(href);
 	if (uuid === null) return '';
 	const meta = resolver(uuid);
 	if (!meta) return renderAttachmentMissing(uuid, alt);
-	if (isImageMime(meta.mime_type)) return renderAttachmentImage(meta, alt, workspaceSlug);
+	if (isImageMime(meta.mime_type)) return renderAttachmentImage(meta, alt, workspaceSlug, variant);
 	return renderAttachmentChip(meta, alt && alt.trim() !== '' ? alt : meta.filename, workspaceSlug);
 }
 
