@@ -214,6 +214,79 @@ func TestBulkItems_Validation(t *testing.T) {
 	}
 }
 
+// TestBulkItems_StatusMoveRunsOpenChildrenGuard confirms a bulk
+// status move to a terminal value is rejected (per-row) while the
+// item still has open children — same guard the single PATCH path runs.
+func TestBulkItems_StatusMoveRunsOpenChildrenGuard(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSWithCollections(t, srv)
+
+	plan, _ := seedParentAndChildren(t, srv, ws, []string{"open"})
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{
+		"ids": []string{plan.Ref}, "op": "move", "status": "completed",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 envelope, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp bulkItemsResponse
+	parseJSON(t, rr, &resp)
+	if len(resp.Updated) != 0 || len(resp.Failed) != 1 {
+		t.Fatalf("expected 0 updated / 1 failed, got %+v", resp)
+	}
+	if resp.Failed[0].Code != "open_children" {
+		t.Errorf("expected open_children code, got %q (%s)", resp.Failed[0].Code, resp.Failed[0].Error)
+	}
+
+	// force=true escapes the guard.
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{
+		"ids": []string{plan.Ref}, "op": "move", "status": "completed", "force": true,
+	})
+	parseJSON(t, rr, &resp)
+	if len(resp.Updated) != 1 {
+		t.Fatalf("force should bypass guard: %+v", resp)
+	}
+}
+
+// TestBulkItems_CollectionMoveRunsOpenChildrenGuard confirms a bulk
+// collection move that also sets a terminal status runs the guard
+// against the destination schema (Codex round-1 finding).
+func TestBulkItems_CollectionMoveRunsOpenChildrenGuard(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSWithCollections(t, srv)
+
+	collResp := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/collections", map[string]interface{}{
+		"name":   "Programs",
+		"icon":   "package",
+		"schema": `{"fields":[{"key":"status","label":"Status","type":"select","options":["active","completed"],"terminal_options":["completed"]}]}`,
+	})
+	if collResp.Code != http.StatusCreated {
+		t.Fatalf("create programs: %d %s", collResp.Code, collResp.Body.String())
+	}
+
+	plan, _ := seedParentAndChildren(t, srv, ws, []string{"open"})
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{
+		"ids": []string{plan.Ref}, "op": "move", "collection": "programs", "status": "completed",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 envelope, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp bulkItemsResponse
+	parseJSON(t, rr, &resp)
+	if len(resp.Failed) != 1 || resp.Failed[0].Code != "open_children" {
+		t.Fatalf("expected open_children failure, got %+v", resp)
+	}
+
+	// The plan must NOT have moved.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+ws+"/items/"+plan.Ref, nil)
+	var fresh models.Item
+	parseJSON(t, rr, &fresh)
+	if fresh.CollectionSlug != "plans" {
+		t.Errorf("plan moved despite guard rejection — now in %q", fresh.CollectionSlug)
+	}
+}
+
 // TestBulkItems_RouteDoesNotShadowItemSlug guards the route-ordering
 // fix: /items/bulk is a static segment registered before the
 // /items/{itemSlug} param route, so it must not be treated as an item

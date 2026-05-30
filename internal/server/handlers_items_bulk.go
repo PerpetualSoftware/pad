@@ -153,6 +153,19 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	actorName := actorNameFromRequest(r)
+	user := currentUser(r)
+	role := workspaceRole(r)
+
+	// Pre-compute collection visibility once. A member with
+	// collection_access="specific" (even an editor) must not be able to
+	// bulk-mutate items in collections they can't see — the single-item
+	// handlers enforce this per row via requireItemVisible, so the bulk
+	// path must too. nil = all-access (admin / fresh install).
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 
 	resp := bulkItemsResponse{
 		Op:      req.Op,
@@ -173,7 +186,19 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		updated, opErr := s.applyBulkOp(r, workspaceID, item, &req, actor, source)
+		// Per-item visibility gate. Report invisible items as
+		// not-found so a restricted member can't probe existence by ref.
+		visible, verr := s.checkItemVisible(workspaceID, item, user, role)
+		if verr != nil {
+			resp.Failed = append(resp.Failed, bulkItemFailure{Ref: ref, Error: verr.Error()})
+			continue
+		}
+		if !visible {
+			resp.Failed = append(resp.Failed, bulkItemFailure{Ref: ref, Error: "item not found"})
+			continue
+		}
+
+		updated, opErr := s.applyBulkOp(r, workspaceID, item, &req, actor, source, visibleIDs)
 		if opErr != nil {
 			resp.Failed = append(resp.Failed, bulkItemFailure{
 				Ref:     itemRefOrSlug(*item),
@@ -220,7 +245,7 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 // applyBulkOp dispatches one verb against one item, reusing the same
 // store paths as the single-item handlers. Returns the post-mutation
 // item (for seq) on success, or a structured per-row error.
-func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, actor, source string) (*models.Item, *bulkOpError) {
+func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, actor, source string, visibleIDs []string) (*models.Item, *bulkOpError) {
 	switch req.Op {
 	case "archive":
 		if err := s.store.DeleteItem(item.ID); err != nil {
@@ -236,13 +261,13 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 
 	case "move":
 		if req.Collection != "" {
-			return s.bulkMoveCollection(r, workspaceID, item, req)
+			return s.bulkMoveCollection(r, workspaceID, item, req, visibleIDs)
 		}
 		// Status-only move = a field update on the same collection.
-		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"status": req.Status}, req.Force, actor, source)
+		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"status": req.Status}, req.Force, visibleIDs, actor, source)
 
 	case "set-priority":
-		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"priority": req.Priority}, req.Force, actor, source)
+		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"priority": req.Priority}, req.Force, visibleIDs, actor, source)
 
 	case "tag":
 		return s.bulkTagUpdate(item, req.Tags, true, actor, source)
@@ -273,7 +298,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 // validates against the collection schema, runs the open-children guard
 // (unless force), and writes via UpdateItemWithPreCheck — the same path
 // the single PATCH handler uses. Used by status moves and set-priority.
-func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *models.Item, changes map[string]any, force bool, actor, source string) (*models.Item, *bulkOpError) {
+func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *models.Item, changes map[string]any, force bool, visibleIDs []string, actor, source string) (*models.Item, *bulkOpError) {
 	coll, err := s.store.GetCollection(item.CollectionID)
 	if err != nil || coll == nil {
 		return nil, &bulkOpError{message: "failed to load collection"}
@@ -305,10 +330,6 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 		if coll.Settings != "" {
 			_ = json.Unmarshal([]byte(coll.Settings), &settings)
 		}
-		visIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
-		if visErr != nil {
-			return nil, &bulkOpError{message: visErr.Error()}
-		}
 		guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
 		if gerr != nil {
 			return nil, &bulkOpError{message: gerr.Error()}
@@ -320,7 +341,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 			parentSchema:         schema,
 			parentSettings:       settings,
 			newFieldMap:          fieldMap,
-			visibleCollectionIDs: visIDs,
+			visibleCollectionIDs: visibleIDs,
 			guestFullCollIDs:     guestFull,
 			guestGrantedItemIDs:  guestGranted,
 		}
@@ -421,9 +442,15 @@ func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor
 // fields between schemas — the same core as handleMoveItem, applied
 // per row. A status override (req.Status) lands as a field override on
 // the migrated set.
-func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest) (*models.Item, *bulkOpError) {
+func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string) (*models.Item, *bulkOpError) {
 	targetColl, err := s.store.GetCollectionBySlug(workspaceID, req.Collection)
 	if err != nil || targetColl == nil {
+		return nil, &bulkOpError{message: "target collection not found", code: "invalid_collection"}
+	}
+	// Target-collection visibility gate — same as handleMoveItem. A
+	// restricted member must not be able to move items into a
+	// collection they can't see.
+	if !isCollectionVisible(targetColl.ID, visibleIDs) {
 		return nil, &bulkOpError{message: "target collection not found", code: "invalid_collection"}
 	}
 	if targetColl.ID == item.CollectionID {
@@ -463,8 +490,57 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 		return nil, &bulkOpError{message: "failed to serialize fields"}
 	}
 
-	moved, err := s.store.MoveItem(item.ID, targetColl.ID, string(fieldsJSON))
+	// Open-children guard (unless force), classified against the
+	// DESTINATION schema — same as handleMoveItem. A collection move
+	// that also sets a terminal status would otherwise mark a parent
+	// terminal while it still has open children. Routing every
+	// collection move through MoveItemWithPreCheck closes the bypass
+	// Codex flagged (a status-only move already ran the guard).
+	var precheck func(tx *sql.Tx, existing *models.Item) error
+	if !req.Force {
+		var destSettings models.CollectionSettings
+		if targetColl.Settings != "" {
+			_ = json.Unmarshal([]byte(targetColl.Settings), &destSettings)
+		}
+		guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
+		if gerr != nil {
+			return nil, &bulkOpError{message: gerr.Error()}
+		}
+		mgctx := openChildrenGuardContext{
+			r:                    r,
+			workspaceID:          workspaceID,
+			itemID:               item.ID,
+			parentSchema:         targetSchema,
+			parentSettings:       destSettings,
+			newFieldMap:          result.Fields,
+			visibleCollectionIDs: visibleIDs,
+			guestFullCollIDs:     guestFull,
+			guestGrantedItemIDs:  guestGranted,
+		}
+		precheck = func(tx *sql.Tx, existing *models.Item) error {
+			txCtx := mgctx
+			txCtx.currentFieldsJS = existing.Fields
+			details, derr := s.runOpenChildrenGuard(tx, txCtx)
+			if derr != nil {
+				return derr
+			}
+			if details != nil {
+				return &openChildrenGuardError{details: details}
+			}
+			return nil
+		}
+	}
+
+	moved, err := s.store.MoveItemWithPreCheck(item.ID, targetColl.ID, string(fieldsJSON), precheck)
 	if err != nil {
+		if details, ok := asOpenChildrenGuardError(err); ok {
+			raw, _ := json.Marshal(details)
+			return nil, &bulkOpError{
+				message: "cannot mark item terminal while it has open children",
+				code:    "open_children",
+				details: raw,
+			}
+		}
 		return nil, &bulkOpError{message: err.Error()}
 	}
 	return moved, nil
