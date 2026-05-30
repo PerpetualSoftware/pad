@@ -1162,14 +1162,19 @@
 		try {
 			const fresh = await api.items.update(targetWs, targetItem.id, { tags: payload });
 			if (seq !== tagSaveSeq) return; // superseded by a newer save
-			if (item && item.id === targetItem.id) item = fresh;
+			// Also bail if the user navigated to a different item while this
+			// was in flight — otherwise the completion UI (item swap, ✓ Saved,
+			// suggestion refresh) would fire on an unrelated page.
+			if (!item || item.id !== targetItem.id) return;
+			item = fresh;
 			showSaved();
 			// A newly-created tag should appear in autocomplete next time.
 			void loadTagSuggestions(targetWs);
 		} catch (e) {
 			console.error('Failed to save tags:', e);
 			if (seq !== tagSaveSeq) return; // a newer save owns the state now
-			if (item && item.id === targetItem.id) item = { ...item, tags: prevTags };
+			if (!item || item.id !== targetItem.id) return; // navigated away
+			item = { ...item, tags: prevTags };
 			saveStatus = 'idle';
 			toastStore.show('Failed to save', 'error');
 		}
