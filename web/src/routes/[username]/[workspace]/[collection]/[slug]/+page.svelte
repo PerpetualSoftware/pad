@@ -1124,6 +1124,14 @@
 		}
 	}
 
+	// Monotonic guard so overlapping tag saves can't clobber each other. The
+	// chip input makes rapid edits easy (add a, add b, remove c before the
+	// first PATCH resolves); only the LATEST request may apply its server
+	// result or revert, so a late-resolving older request can't replace the
+	// newer tag set with stale data. Combined with the item.id check it's also
+	// safe across navigation. Per Codex PR #659 round 1.
+	let tagSaveSeq = 0;
+
 	// Persist a new tag set. Tags are a top-level item column (item.tags), not
 	// a schema field, so this mirrors updateField but PATCHes `tags` and has
 	// no open-children guard (tags never gate completion). Optimistic so chips
@@ -1134,18 +1142,21 @@
 		const targetWs = wsSlug;
 		const prevTags = targetItem.tags;
 		const payload = JSON.stringify(newTags);
+		const seq = ++tagSaveSeq;
 		if (item.id === targetItem.id) item = { ...item, tags: payload };
 		saveStatus = 'saving';
 		try {
 			const fresh = await api.items.update(targetWs, targetItem.id, { tags: payload });
+			if (seq !== tagSaveSeq) return; // superseded by a newer save
 			if (item && item.id === targetItem.id) item = fresh;
 			showSaved();
 			// A newly-created tag should appear in autocomplete next time.
 			void loadTagSuggestions(targetWs);
 		} catch (e) {
+			console.error('Failed to save tags:', e);
+			if (seq !== tagSaveSeq) return; // a newer save owns the state now
 			if (item && item.id === targetItem.id) item = { ...item, tags: prevTags };
 			saveStatus = 'idle';
-			console.error('Failed to save tags:', e);
 			toastStore.show('Failed to save', 'error');
 		}
 	}
