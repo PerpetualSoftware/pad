@@ -36,6 +36,13 @@ const (
 
 	// Composite events
 	ItemUpdatedWithComment = "item_updated_with_comment"
+
+	// Batch events. Emitted once for a whole bulk mutation (TASK-1668)
+	// instead of one ItemUpdated/ItemArchived per row — the lane-header
+	// bulk actions (archive/move/tag/untag/set-priority/assign all) can
+	// touch a whole filtered lane, so per-item fan-out would flood both
+	// SSE subscribers and webhooks.
+	ItemsBulkUpdated = "items_bulk_updated"
 )
 
 // Default replay buffer settings.
@@ -69,6 +76,16 @@ type Event struct {
 	// comment_*, reaction_*) and for legacy publishers that
 	// haven't been upgraded.
 	Seq int64 `json:"seq,omitempty"`
+	// ItemIDs / Op / Count describe a batch event (ItemsBulkUpdated,
+	// TASK-1668). ItemIDs lists the affected item IDs; Op is the verb
+	// applied (archive/move/tag/untag/set-priority/assign); Count is
+	// len(ItemIDs). Empty/zero for single-item events. A batch event
+	// carries no per-item seq — Seq holds the max seq across the batch
+	// so a local-first client can decide whether to apply deltas or
+	// trigger a /items-changes backfill.
+	ItemIDs []string `json:"item_ids,omitempty"`
+	Op      string   `json:"op,omitempty"`
+	Count   int      `json:"count,omitempty"`
 }
 
 // EventBus is the interface for pub/sub event distribution.
