@@ -104,7 +104,21 @@
 		if (!item?.tags) return [];
 		try {
 			const parsed = JSON.parse(item.tags);
-			return Array.isArray(parsed) ? parsed : [];
+			if (!Array.isArray(parsed)) return [];
+			// Dedupe case-insensitively (keep first as typed). The write path
+			// doesn't enforce per-item uniqueness, so an API/imported item can
+			// carry ["ux","ux"]; cleaning here keeps rendering keys unique and
+			// the dedupe gets persisted on the next save.
+			const seen = new Set<string>();
+			const out: string[] = [];
+			for (const t of parsed) {
+				if (typeof t !== 'string') continue;
+				const key = t.toLowerCase();
+				if (seen.has(key)) continue;
+				seen.add(key);
+				out.push(t);
+			}
+			return out;
 		} catch {
 			return [];
 		}

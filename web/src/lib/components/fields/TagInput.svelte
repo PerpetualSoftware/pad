@@ -61,7 +61,9 @@
 		{#if tags.length === 0}
 			<span class="tag-empty">No tags</span>
 		{:else}
-			{#each tags as tag (tag)}
+			<!-- Key by index: the write path doesn't enforce per-item tag
+			     uniqueness, so a value key would collide on ["ux","ux"]. -->
+			{#each tags as tag, i (i)}
 				<span class="tag-chip readonly">{tag}</span>
 			{/each}
 		{/if}
@@ -69,7 +71,7 @@
 {:else}
 	<div class="tag-input">
 		<div class="tag-chips">
-			{#each tags as tag, i (tag)}
+			{#each tags as tag, i (i)}
 				<span class="tag-chip">
 					{tag}
 					<button
