@@ -108,8 +108,11 @@
 		}
 	});
 
-	// Track previous open state to detect open transitions
-	let prevOpen = $state(false);
+	// Track previous open state to detect open transitions. PLAIN variable
+	// (not $state): only used for edge-detection inside the effect below.
+	// As $state it makes the effect self-invalidating, silently wedging the
+	// effect scheduler in prod builds (see BUG-1687 / ShareDialog).
+	let prevOpen = false;
 
 	// Reset to step 1 whenever the modal opens (false -> true transition)
 	$effect.pre(() => {

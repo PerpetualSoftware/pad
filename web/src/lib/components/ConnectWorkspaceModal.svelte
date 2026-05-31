@@ -57,7 +57,10 @@
 	// user manually switched tabs, so we use a $state seeded by an $effect
 	// that fires only on the open→true transition.
 	let activeTab = $state<PrimaryTab>('cli');
-	let lastOpen = $state(false);
+	// PLAIN variable (not $state): only used for edge-detection inside the
+	// effect below. As $state it makes the effect self-invalidating, which
+	// silently wedges the effect scheduler in prod builds (BUG-1687).
+	let lastOpen = false;
 	$effect(() => {
 		if (open && !lastOpen) {
 			activeTab = mcpPublicUrl ? 'agent' : 'cli';
