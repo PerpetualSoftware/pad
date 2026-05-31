@@ -122,10 +122,27 @@
 		const items = baseParsedItems;
 		const view = activeSavedView;
 		if (!view) return items;
-		const filters = Array.isArray(view.config?.filters) ? view.config.filters : [];
-		if (filters.length === 0) return items;
-		return items.filter((item) => filters.every((f) => matchesFilter(item, f)));
+		const rawFilters = Array.isArray(view.config?.filters) ? view.config.filters : [];
+		// Only apply filters we can actually evaluate against the public
+		// payload. Share items carry `fields` only — NOT the logged-in page's
+		// top-level `tags` / `parent_link_id` / `phase`. A filter whose field
+		// is absent from every item would otherwise hide the entire collection
+		// (Codex round 2). Skipping the unsupported filter degrades gracefully:
+		// the viewer sees the (super)set rather than an empty view.
+		const applicable = rawFilters.filter((f) => filterFieldPresent(items, f));
+		if (applicable.length === 0) return items;
+		return items.filter((item) => applicable.every((f) => matchesFilter(item, f)));
 	});
+
+	// True when at least one item exposes the filter's target field, so the
+	// filter is meaningful against the public payload. Malformed/fieldless
+	// filters are treated as "present" so matchesFilter can no-op them.
+	function filterFieldPresent(items: PublicItem[], filter: unknown): boolean {
+		if (!filter || typeof filter !== 'object') return true;
+		const field = (filter as { field?: unknown }).field;
+		if (typeof field !== 'string') return true;
+		return items.some((item) => Object.prototype.hasOwnProperty.call(item.fields, field));
+	}
 
 	// Read-only filter evaluation mirroring the logged-in collection page's
 	// `eq` / `in` handling (the only ops saved-view configs emit). Unknown ops
@@ -222,12 +239,15 @@
 	}
 
 	// Mirror the active selection into the URL (`?view=`), replaceState so the
-	// switcher never pollutes history. A base 'list' (or selecting the owner
-	// default base) drops the param to keep canonical share links clean.
+	// switcher never pollutes history. Drop the param only when the base
+	// selection equals the owner default — that's the no-op case, and the
+	// reload-without-localStorage path resolves back to the same view. A
+	// non-default base (e.g. List on a board-default share) MUST keep the
+	// param so the link reproduces the viewer's choice (Codex round 2).
 	function syncUrl() {
 		const url = new URL(page.url);
 		const handle = selectedKind === 'saved' ? `saved:${selectedSavedSlug}` : selectedBase;
-		if (selectedKind === 'base' && selectedBase === 'list') {
+		if (selectedKind === 'base' && selectedBase === defaultView) {
 			url.searchParams.delete('view');
 		} else {
 			url.searchParams.set('view', handle);
