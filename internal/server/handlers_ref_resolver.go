@@ -200,6 +200,16 @@ func (s *Server) resolverWorkspaceRole(ws *models.Workspace, user *models.User, 
 	if err == nil && member != nil {
 		return member.Role
 	}
+	// Bearer-borne platform admin who isn't a member gets NO grant-based
+	// fallback — the membership-only stance (BUG-1616/1617/1618). Without
+	// this guard a single stray collection/item grant would yield "guest"
+	// below, and checkItemVisible's own `user.Role == "admin"` bypass
+	// (server.go) would then reopen full resolver access + 302 URL leakage
+	// for every item in the workspace. RequireWorkspaceAccess denies
+	// bearer-admin non-members before checking grants for the same reason.
+	if user.Role == "admin" && authIsBearer {
+		return ""
+	}
 	// Not a member — guest path requires at least one grant.
 	hasGrants, err := s.store.UserHasGrantsInWorkspace(ws.ID, user.ID)
 	if err == nil && hasGrants {

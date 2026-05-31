@@ -614,6 +614,48 @@ func TestRefResolver_AdminBearer_404OnNonMemberWorkspace(t *testing.T) {
 	}
 }
 
+// TestRefResolver_AdminBearer_404EvenWithGrant pins the membership-only
+// stance against the grant-fallback escape hatch (Codex round 1 on
+// BUG-1618). A bearer admin who is NOT a member but holds a single
+// collection grant must still get 404 — otherwise resolverWorkspaceRole
+// would return "guest" and checkItemVisible's own admin bypass would
+// reopen full resolver access + 302 URL leakage. Mirrors
+// TestSSESubscriberStillHasAccess_AdminBearer_DeniedEvenWithGrants.
+func TestRefResolver_AdminBearer_404EvenWithGrant(t *testing.T) {
+	f := newRefResolverFixture(t)
+	item := f.seedItem("decisions", "DECIS", "Orchestration model")
+
+	admin, err := f.srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Username: "adminuser",
+		Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	// Grant the admin view access on the item's collection — but DON'T add
+	// a membership row. A non-admin guest with this grant would 302; the
+	// bearer admin must not.
+	coll, err := f.srv.store.GetCollectionBySlug(f.ws.ID, "decisions")
+	if err != nil {
+		t.Fatalf("GetCollectionBySlug: %v", err)
+	}
+	if _, err := f.srv.store.CreateCollectionGrant(f.ws.ID, coll.ID, admin.ID, "view", f.owner.ID); err != nil {
+		t.Fatalf("CreateCollectionGrant: %v", err)
+	}
+	adminTok, err := f.srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{
+		Name: "admin-bearer-grant", WorkspaceID: f.ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	rr := f.doAuth(adminTok.Token, "GET", "/-/r/"+f.ws.Slug+"/"+item.Ref, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bearer admin with stray grant: got %d, want 404; body=%s",
+			rr.Code, rr.Body.String())
+	}
+}
+
 // TestRefResolver_AdminCookie_StillRedirects pins the other half of the
 // BUG-1618 gate: a cookie-session admin keeps the owner-equivalent bypass
 // so the web-UI affordance survives. Same admin, same non-member
