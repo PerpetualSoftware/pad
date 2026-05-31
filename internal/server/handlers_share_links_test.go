@@ -75,13 +75,24 @@ func TestResolveCollectionShareLink_EnrichedPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create board view: %v", err)
 	}
-	_, err = srv.store.CreateView(ws0.ID, models.ViewCreate{
+	tableView, err := srv.store.CreateView(ws0.ID, models.ViewCreate{
 		CollectionID: &coll.ID,
 		Name:         "Table",
 		ViewType:     "table",
 	})
 	if err != nil {
 		t.Fatalf("create table view: %v", err)
+	}
+	// Pin distinct sort_order values. CreateView always inserts sort_order=0
+	// and now() is second-granularity, so without this the "ORDER BY
+	// sort_order, created_at" tie could return either order and flake the
+	// position-based assertion below.
+	zero, one := 0, 1
+	if _, err := srv.store.UpdateView(boardView.ID, models.ViewUpdate{SortOrder: &zero}); err != nil {
+		t.Fatalf("set board sort_order: %v", err)
+	}
+	if _, err := srv.store.UpdateView(tableView.ID, models.ViewUpdate{SortOrder: &one}); err != nil {
+		t.Fatalf("set table sort_order: %v", err)
 	}
 
 	// Create a public collection share link directly via the store. The
@@ -202,7 +213,7 @@ func TestResolveCollectionShareLink_EnrichedPayload(t *testing.T) {
 		t.Fatalf("expected 2 saved views, got %d", len(resp.Collection.Views))
 	}
 	board := resp.Collection.Views[0]
-	if board.Name != "Board" || board.ViewType != "board" {
+	if board.Name != "Board" || board.ViewType != "board" || board.SortOrder != 0 {
 		t.Errorf("unexpected first view: %#v", board)
 	}
 	if board.Slug != boardView.Slug {
@@ -211,8 +222,8 @@ func TestResolveCollectionShareLink_EnrichedPayload(t *testing.T) {
 	if got, _ := board.Config["group_by"].(string); got != "status" {
 		t.Errorf("expected board config group_by 'status', got %#v", board.Config)
 	}
-	if resp.Collection.Views[1].ViewType != "table" {
-		t.Errorf("expected second view type 'table', got %q", resp.Collection.Views[1].ViewType)
+	if table := resp.Collection.Views[1]; table.ViewType != "table" || table.SortOrder != 1 {
+		t.Errorf("expected second view to be table at sort_order 1, got %#v", table)
 	}
 
 	// items: content included for inline expand.
