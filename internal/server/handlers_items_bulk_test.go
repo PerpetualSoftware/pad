@@ -168,6 +168,50 @@ func TestBulkItems_Archive(t *testing.T) {
 	}
 }
 
+// TestBulkItems_Restore covers the undo path (TASK-1674): a bulk archive
+// followed by a bulk restore brings the items back, resolving the
+// archived (soft-deleted) rows that ResolveItem normally hides.
+func TestBulkItems_Restore(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSWithCollections(t, srv)
+
+	a := createBulkTestItem(t, srv, ws, "A", `{"status":"open"}`)
+	b := createBulkTestItem(t, srv, ws, "B", `{"status":"open"}`)
+
+	// Archive both.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{
+		"ids": []string{a.Ref, b.Ref}, "op": "archive",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk archive: %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+ws+"/items", nil)
+	var items []models.Item
+	parseJSON(t, rr, &items)
+	if len(items) != 0 {
+		t.Fatalf("expected 0 live items after archive, got %d", len(items))
+	}
+
+	// Restore by id (the bulk response / undo passes ids).
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/items/bulk", map[string]any{
+		"ids": []string{a.ID, b.ID}, "op": "restore",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk restore: %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp bulkItemsResponse
+	parseJSON(t, rr, &resp)
+	if len(resp.Updated) != 2 || len(resp.Failed) != 0 {
+		t.Fatalf("expected 2 restored / 0 failed, got %+v", resp)
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+ws+"/items", nil)
+	parseJSON(t, rr, &items)
+	if len(items) != 2 {
+		t.Errorf("expected 2 live items after restore, got %d", len(items))
+	}
+}
+
 func TestBulkItems_PartialFailure(t *testing.T) {
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)

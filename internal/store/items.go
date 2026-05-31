@@ -482,6 +482,17 @@ func isUUID(s string) bool {
 
 // ResolveItemIncludeDeleted is like ResolveItem but includes soft-deleted items.
 func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*models.Item, error) {
+	// UUID lookup first, mirroring ResolveItem — but include-deleted so a
+	// bulk restore (TASK-1674) can resolve archived rows by id.
+	if isUUID(slugOrRef) {
+		item, err := s.GetItemIncludeDeleted(slugOrRef)
+		if err != nil {
+			return nil, err
+		}
+		if item != nil && item.WorkspaceID == workspaceID {
+			return item, nil
+		}
+	}
 	if prefix, number, ok := parseItemRef(slugOrRef); ok {
 		var item models.Item
 		var createdAt, updatedAt string
