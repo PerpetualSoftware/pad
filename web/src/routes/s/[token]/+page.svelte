@@ -281,6 +281,7 @@
 		selectedKind = 'base';
 		selectedBase = base;
 		selectedSavedSlug = '';
+		expandedKey = ''; // collapse any open row when switching views
 		saveSelection();
 		syncUrl();
 	}
@@ -296,21 +297,55 @@
 		selectedKind = 'saved';
 		selectedSavedSlug = slug;
 		selectedBase = coerceBaseView(savedViews.find((v) => v.slug === slug)?.view_type) ?? defaultView;
+		expandedKey = ''; // collapse any open row when switching views
 		saveSelection();
 		syncUrl();
 	}
 
-	let renderedContent = $derived.by(() => {
-		if (!itemData?.content) return '';
+	// Single sanitized markdown pipeline for the whole page: marked → DOMPurify.
+	// Used by both the single-ITEM share view (`renderedContent`) and the
+	// collection inline-expand (`renderItemContent`). Keeping ONE {@html} source
+	// means no second, divergent sanitization path — no new XSS surface.
+	function sanitizeMarkdown(content: string): string {
+		if (!content) return '';
 		try {
-			const raw = marked(itemData.content) as string;
+			const raw = marked(content) as string;
 			return typeof window !== 'undefined' ? DOMPurify.sanitize(raw) : raw;
 		} catch {
 			// Sanitize the fallback too — never pass user content to {@html} raw
-			const fallback = itemData.content;
-			return typeof window !== 'undefined' ? DOMPurify.sanitize(fallback) : fallback;
+			return typeof window !== 'undefined' ? DOMPurify.sanitize(content) : content;
 		}
+	}
+
+	let renderedContent = $derived.by(() => sanitizeMarkdown(itemData?.content ?? ''));
+
+	// Inline read-only expand (TASK-1684 / PLAN-1677 Phase 3). Clicking a row/
+	// card in the collection view expands the item's fields + content INLINE on
+	// this same page — items aren't individually shared, so there's no item
+	// route to navigate to (it would 404 or bypass item-level share ACLs).
+	// `expandedKey` is the active item's stable `key`; re-activating collapses.
+	let expandedKey = $state('');
+
+	function toggleExpanded(item: PublicItem) {
+		expandedKey = expandedKey === item.key ? '' : item.key;
+	}
+
+	// Memoize per-item sanitized HTML so toggling/re-rendering doesn't re-run
+	// marked()+DOMPurify on every keystroke or reactive pass. Keyed by the item's
+	// stable `key`. The map is rebuilt whenever the parsed item set changes.
+	let contentCache = $derived.by(() => {
+		// Touch the parsed items so the cache resets when the payload/view changes.
+		effectiveItems;
+		return new Map<string, string>();
 	});
+
+	function renderItemContent(item: PublicItem): string {
+		const cached = contentCache.get(item.key);
+		if (cached !== undefined) return cached;
+		const html = sanitizeMarkdown(item.content);
+		contentCache.set(item.key, html);
+		return html;
+	}
 
 	onMount(async () => {
 		if (!token) {
@@ -571,7 +606,10 @@
 				parsedCollection={effectiveCollection}
 				parsedItems={effectiveItems}
 				view={activeBaseView}
-				expandable={false}
+				expandable={true}
+				onactivate={toggleExpanded}
+				{expandedKey}
+				renderContent={renderItemContent}
 			/>
 		{/if}
 	</div>

@@ -10,16 +10,22 @@
 	import type { FieldDef } from '$lib/types';
 	import type { PublicCollection, PublicItem } from './shareView';
 	import { visibleFields, formatLabel, formatFieldValue, fieldValueColor } from './shareView';
+	import PublicItemExpansion from './PublicItemExpansion.svelte';
 
 	interface Props {
 		collection: PublicCollection;
 		items: PublicItem[];
-		/** Deferred inline-expand affordance (TASK-1684). */
+		/** Inline read-only expand affordance (TASK-1684). */
 		expandable?: boolean;
 		onactivate?: (item: PublicItem) => void;
+		/** `key` of the currently-expanded item ('' = none). */
+		expandedKey?: string;
+		/** Returns pre-sanitized HTML for an item's markdown body (route-owned). */
+		renderContent?: (item: PublicItem) => string;
 	}
 
-	let { collection, items, expandable = false, onactivate }: Props = $props();
+	let { collection, items, expandable = false, onactivate, expandedKey = '', renderContent }: Props =
+		$props();
 
 	let interactive = $derived(expandable && !!onactivate);
 	let columns = $derived(visibleFields(collection.fields));
@@ -32,6 +38,10 @@
 			...columns.map(() => 'auto')
 		].join(' ')
 	);
+
+	function panelIdFor(item: PublicItem): string {
+		return `pub-exp-${item.key.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+	}
 
 	// Color status/priority cells (and any other select-type field) using the
 	// schema-driven resolver so custom terminal vocabularies match the owner's
@@ -65,11 +75,15 @@
 			{/each}
 		</div>
 		{#each items as item (item.key)}
+			{@const expanded = interactive && expandedKey === item.key}
 			<div
 				class="table-row"
 				class:interactive
+				class:expanded
 				role="row"
 				tabindex={interactive ? 0 : undefined}
+				aria-expanded={interactive ? expanded : undefined}
+				aria-controls={expanded ? panelIdFor(item) : undefined}
 				onclick={interactive ? () => activate(item) : undefined}
 				onkeydown={interactive ? (e) => onKey(e, item) : undefined}
 			>
@@ -94,6 +108,19 @@
 					</div>
 				{/each}
 			</div>
+			{#if expanded}
+				<!-- Expansion spans the full grid width; presentational row, not a
+				     data row, so role="presentation" keeps it out of the table
+				     semantics. -->
+				<div class="table-expansion-row" role="presentation">
+					<PublicItemExpansion
+						{item}
+						fields={collection.fields}
+						html={renderContent?.(item) ?? ''}
+						id={panelIdFor(item)}
+					/>
+				</div>
+			{/if}
 		{/each}
 	</div>
 </div>
@@ -145,6 +172,19 @@
 	.table-row.interactive:focus-visible {
 		outline: 2px solid var(--accent-blue);
 		outline-offset: -2px;
+	}
+
+	.table-row.expanded:not(.table-header) {
+		background: var(--bg-secondary);
+		border-bottom: none;
+	}
+
+	/* Full-width expansion row. Spans every grid column and opts out of subgrid
+	   so the panel lays out as a normal block, not against the column tracks. */
+	.table-expansion-row {
+		grid-column: 1 / -1;
+		border-bottom: 1px solid var(--border-subtle, var(--border));
+		min-width: 0;
 	}
 
 	.table-cell {

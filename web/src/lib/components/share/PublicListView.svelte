@@ -15,18 +15,28 @@
 		formatLabel,
 		fieldValueColor
 	} from './shareView';
+	import PublicItemExpansion from './PublicItemExpansion.svelte';
 
 	interface Props {
 		collection: PublicCollection;
 		items: PublicItem[];
-		/** Deferred inline-expand affordance (TASK-1684). */
+		/** Inline read-only expand affordance (TASK-1684). */
 		expandable?: boolean;
 		onactivate?: (item: PublicItem) => void;
+		/** `key` of the currently-expanded item ('' = none). */
+		expandedKey?: string;
+		/** Returns pre-sanitized HTML for an item's markdown body (route-owned). */
+		renderContent?: (item: PublicItem) => string;
 	}
 
-	let { collection, items, expandable = false, onactivate }: Props = $props();
+	let { collection, items, expandable = false, onactivate, expandedKey = '', renderContent }: Props =
+		$props();
 
 	let interactive = $derived(expandable && !!onactivate);
+
+	function panelIdFor(item: PublicItem): string {
+		return `pub-exp-${item.key.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+	}
 
 	let groupField = $derived.by(() => {
 		const key = collection.settings.list_group_by;
@@ -73,32 +83,44 @@
 			{#each group.items as item (item.key)}
 				{@const status = statusOf(item)}
 				{@const priority = priorityOf(item)}
-				<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-				<!-- role + tabindex are runtime-correlated (both gated by
-				     `interactive`): focusable only when genuinely a button.
-				     Wiring lands in TASK-1684. -->
-				<div
-					class="list-row"
-					class:interactive
-					role={interactive ? 'button' : undefined}
-					tabindex={interactive ? 0 : undefined}
-					onclick={interactive ? () => activate(item) : undefined}
-					onkeydown={interactive ? (e) => onKey(e, item) : undefined}
-				>
-					{#if item.ref}<span class="row-ref">{item.ref}</span>{/if}
-					<span class="row-title">{item.title}</span>
-					<span class="row-meta">
-						{#if priorityFieldDef && priority}
-							<span class="row-priority" style:color={fieldValueColor(priorityFieldDef, priority)}
-								>{formatLabel(priority)}</span
-							>
-						{/if}
-						{#if statusFieldDef && status}
-							<span class="row-status" style:color={fieldValueColor(statusFieldDef, status)}
-								>{formatLabel(status).toUpperCase()}</span
-							>
-						{/if}
-					</span>
+				{@const expanded = interactive && expandedKey === item.key}
+				<div class="row-wrap" class:expanded>
+					<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+					<!-- role + tabindex are runtime-correlated (both gated by
+					     `interactive`): focusable only when genuinely a button. -->
+					<div
+						class="list-row"
+						class:interactive
+						role={interactive ? 'button' : undefined}
+						tabindex={interactive ? 0 : undefined}
+						aria-expanded={interactive ? expanded : undefined}
+						aria-controls={expanded ? panelIdFor(item) : undefined}
+						onclick={interactive ? () => activate(item) : undefined}
+						onkeydown={interactive ? (e) => onKey(e, item) : undefined}
+					>
+						{#if item.ref}<span class="row-ref">{item.ref}</span>{/if}
+						<span class="row-title">{item.title}</span>
+						<span class="row-meta">
+							{#if priorityFieldDef && priority}
+								<span class="row-priority" style:color={fieldValueColor(priorityFieldDef, priority)}
+									>{formatLabel(priority)}</span
+								>
+							{/if}
+							{#if statusFieldDef && status}
+								<span class="row-status" style:color={fieldValueColor(statusFieldDef, status)}
+									>{formatLabel(status).toUpperCase()}</span
+								>
+							{/if}
+						</span>
+					</div>
+					{#if expanded}
+						<PublicItemExpansion
+							{item}
+							fields={collection.fields}
+							html={renderContent?.(item) ?? ''}
+							id={panelIdFor(item)}
+						/>
+					{/if}
 				</div>
 			{/each}
 			{#if group.items.length === 0}
@@ -142,6 +164,12 @@
 		gap: var(--space-1);
 	}
 
+	.row-wrap {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+
 	.list-row {
 		display: flex;
 		align-items: center;
@@ -151,6 +179,11 @@
 		border: 1px solid var(--border-subtle, var(--border));
 		border-radius: var(--radius);
 		min-width: 0;
+	}
+
+	.row-wrap.expanded .list-row {
+		border-bottom: none;
+		border-radius: var(--radius) var(--radius) 0 0;
 	}
 
 	.list-row.interactive {
