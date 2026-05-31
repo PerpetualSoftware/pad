@@ -36,6 +36,12 @@
 			>
 				<span class="toast-icon">{iconForType(toast.type)}</span>
 				<span class="toast-message">{toast.message}{#if toast.link}<span class="toast-link-hint"> →</span>{/if}</span>
+				{#if toast.action}
+					<button
+						class="toast-action"
+						onclick={(e) => { e.stopPropagation(); toast.action?.onAction(); toastStore.dismiss(toast.id); }}
+					>{toast.action.label}</button>
+				{/if}
 				<button
 					class="toast-dismiss"
 					onclick={(e) => { e.stopPropagation(); toastStore.dismiss(toast.id); }}
@@ -119,6 +125,21 @@
 		flex: 1;
 		min-width: 0;
 		line-height: 1.4;
+	}
+
+	.toast-action {
+		flex-shrink: 0;
+		padding: 4px 10px;
+		border-radius: var(--radius-sm);
+		border: 1px solid var(--accent-blue);
+		background: none;
+		color: var(--accent-blue);
+		font-size: 0.9em;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.toast-action:hover {
+		background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
 	}
 
 	.toast-dismiss {
