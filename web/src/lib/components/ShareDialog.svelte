@@ -33,8 +33,12 @@
 	let newlyCreatedLinkId = $state<string | null>(null);
 	let deletingLinkId = $state<string | null>(null);
 
-	// Track previous open state to detect open transitions
-	let prevOpen = $state(false);
+	// Track previous open state to detect open transitions. This is a PLAIN
+	// variable (not $state) on purpose: it's only read/written inside the
+	// effect below for edge-detection. Making it $state turned the effect
+	// into a self-invalidating loop (it writes a state it reads), which in a
+	// production build silently wedges Svelte's effect scheduler on close.
+	let prevOpen = false;
 
 	$effect.pre(() => {
 		if (open && !prevOpen) {
