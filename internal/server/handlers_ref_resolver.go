@@ -167,8 +167,10 @@ func (s *Server) resolverItemVisible(r *http.Request, ws *models.Workspace, item
 		return false, nil
 	}
 
-	// Derive the role the same way RequireWorkspaceAccess does.
-	role := s.resolverWorkspaceRole(ws, user)
+	// Derive the role the same way RequireWorkspaceAccess does. Pass the
+	// bearer signal so a bearer-borne platform admin doesn't get a
+	// cross-workspace owner bypass (BUG-1618).
+	role := s.resolverWorkspaceRole(ws, user, isBearerAuth(r))
 	if role == "" {
 		// Not a member, no grants, not admin/owner. Not visible.
 		return false, nil
@@ -179,11 +181,19 @@ func (s *Server) resolverItemVisible(r *http.Request, ws *models.Workspace, item
 // resolverWorkspaceRole reproduces RequireWorkspaceAccess's role lookup
 // for a (workspace, user) pair without the *http.Request scaffolding.
 // Returns "" when the user has no role and no grants in the workspace.
-// The "owner" return value covers admins (admin gets owner-equivalent
-// access) AND the actual workspace owner — checkItemVisible treats
-// "owner" uniformly so the conflation is safe.
-func (s *Server) resolverWorkspaceRole(ws *models.Workspace, user *models.User) string {
-	if user.Role == "admin" || ws.OwnerID == user.ID {
+// The "owner" return value covers the actual workspace owner AND
+// cookie-session admins (admin gets owner-equivalent access) —
+// checkItemVisible treats "owner" uniformly so the conflation is safe.
+//
+// authIsBearer narrows the admin bypass: a platform admin authenticated
+// via a bearer surface (PAT / CLI / MCP) does NOT get cross-workspace
+// owner access — they fall through to the member-then-grants check, the
+// membership-only stance set by BUG-1616/1617. Cookie-session admins
+// keep the owner bypass so the web-UI affordance is preserved. The
+// workspace owner check is unconditional regardless of auth surface
+// (BUG-1618).
+func (s *Server) resolverWorkspaceRole(ws *models.Workspace, user *models.User, authIsBearer bool) string {
+	if ws.OwnerID == user.ID || (user.Role == "admin" && !authIsBearer) {
 		return "owner"
 	}
 	member, err := s.store.GetWorkspaceMember(ws.ID, user.ID)

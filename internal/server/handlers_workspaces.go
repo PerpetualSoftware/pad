@@ -197,8 +197,17 @@ func (s *Server) handleReorderWorkspaces(w http.ResponseWriter, r *http.Request)
 		if ws == nil {
 			continue
 		}
-		// Skip silently if user is not a member of this workspace
-		// (e.g. admin sees all workspaces but may not be joined to all)
+		// Skip silently if the user is not a member of this workspace.
+		// UpdateWorkspaceSortOrder is scoped to the caller's own
+		// workspace_members row (WHERE user_id = ? AND workspace_id = ?),
+		// so a non-member's PATCH touches zero rows and returns
+		// sql.ErrNoRows — there's no cross-workspace write or leak here
+		// even for an attacker-supplied slug list. (The old comment cited
+		// "admin sees all workspaces"; that rationale is stale —
+		// handleListWorkspaces returns membership-only for all
+		// authenticated users including admins since BUG-982, so the
+		// switcher never surfaces non-member workspaces to reorder.
+		// BUG-1618 confirmed this site needs no auth gate.)
 		if err := s.store.UpdateWorkspaceSortOrder(userID, ws.ID, item.SortOrder); err != nil {
 			if err == sql.ErrNoRows {
 				continue
