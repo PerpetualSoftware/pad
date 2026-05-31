@@ -6,6 +6,7 @@
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
 	import EmptyState from '../common/EmptyState.svelte';
+	import LaneActionsMenu from './LaneActionsMenu.svelte';
 
 
 	interface Props {
@@ -25,6 +26,21 @@
 		 * lane-header button calls this. Gated behind `canEdit`.
 		 */
 		onCreateInColumn?: (groupValue: string) => void;
+		/**
+		 * Bulk lane actions (TASK-1672), each operating on the lane's
+		 * CURRENTLY-FILTERED items via the bulk endpoint. Surfaced in the
+		 * ⋯ LaneActionsMenu. All canEdit-gated by the caller.
+		 */
+		onMoveColumn?: (items: Item[], status: string) => void;
+		onTagColumn?: (items: Item[], tag: string) => void;
+		onUntagColumn?: (items: Item[], tag: string) => void;
+		onSetPriorityColumn?: (items: Item[], priority: string) => void;
+		onAssignColumn?: (items: Item[], userId: string) => void;
+		/** Workspace members (for "Assign all") and tag suggestions (for "Tag all"). */
+		members?: { user_id: string; user_name?: string }[];
+		tagSuggestions?: string[];
+		/** True when a search/filter is narrowing the lanes — shown in menu labels. */
+		filtered?: boolean;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
 		/**
@@ -51,23 +67,19 @@
 		sortMode?: SortMode;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual' }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual' }: Props = $props();
 
-	let confirmArchiveColumn = $state<string | null>(null);
-	// Which lane's ⋯ menu is open (null = none). The menu is the new home
-	// for the column actions (archive today; move/tag/priority/assign land
-	// in TASK-1672). One menu open at a time.
+	// Which lane's ⋯ menu is open (null = none). One menu open at a time;
+	// the LaneActionsMenu component owns the drill-down + confirm state.
 	let openMenuColumn = $state<string | null>(null);
 	let isMobile = $state(false);
 
 	function toggleMenu(colValue: string) {
 		openMenuColumn = openMenuColumn === colValue ? null : colValue;
-		confirmArchiveColumn = null;
 	}
 
 	function closeMenu() {
 		openMenuColumn = null;
-		confirmArchiveColumn = null;
 	}
 
 	// Dismiss the open lane menu on any click outside it (mirrors the
@@ -314,47 +326,23 @@
 								onclick={(e) => { e.stopPropagation(); toggleMenu(colValue); }}
 							>⋯</button>
 							{#if openMenuColumn === colValue}
-								<!-- stopPropagation on every in-menu click: an
-								     onclick that mutates state (e.g. showing the
-								     archive confirm) re-renders and detaches the
-								     clicked button before the event bubbles to
-								     <svelte:window onclick>, where closest() on the
-								     now-orphaned node returns null and slams the
-								     menu shut. Same Svelte 5 same-click bubbling
-								     issue documented in console/+layout.svelte. -->
-								<div class="lane-menu" role="menu">
-									{#if onCreateInColumn}
-										<button
-											class="lane-menu-item"
-											role="menuitem"
-											onclick={(e) => { e.stopPropagation(); onCreateInColumn?.(colValue); closeMenu(); }}
-										>
-											<span class="lmi-icon" aria-hidden="true">＋</span> Add item here
-										</button>
-									{/if}
-									{#if onArchiveColumn && colItems.length > 0}
-										{#if onCreateInColumn}
-											<div class="lane-menu-sep"></div>
-										{/if}
-										{#if confirmArchiveColumn === colValue}
-											<div class="lane-menu-confirm">
-												<span>Archive {colItems.length} item{colItems.length === 1 ? '' : 's'}?</span>
-												<div class="lmc-actions">
-													<button class="lmc-yes" onclick={(e) => { e.stopPropagation(); onArchiveColumn?.(colItems); closeMenu(); }}>Archive</button>
-													<button class="lmc-no" onclick={(e) => { e.stopPropagation(); confirmArchiveColumn = null; }}>Cancel</button>
-												</div>
-											</div>
-										{:else}
-											<button
-												class="lane-menu-item lmi-danger"
-												role="menuitem"
-												onclick={(e) => { e.stopPropagation(); confirmArchiveColumn = colValue; }}
-											>
-												<span class="lmi-icon" aria-hidden="true">🗃</span> Archive all ({colItems.length})
-											</button>
-										{/if}
-									{/if}
-								</div>
+								<LaneActionsMenu
+									items={colItems}
+									groupValue={colValue}
+									{groupField}
+									{collection}
+									{filtered}
+									{members}
+									{tagSuggestions}
+									onClose={closeMenu}
+									onAddItem={() => onCreateInColumn?.(colValue)}
+									onArchive={() => onArchiveColumn?.(colItems)}
+									onMove={(status) => onMoveColumn?.(colItems, status)}
+									onTag={(tag) => onTagColumn?.(colItems, tag)}
+									onUntag={(tag) => onUntagColumn?.(colItems, tag)}
+									onSetPriority={(p) => onSetPriorityColumn?.(colItems, p)}
+									onAssign={(userId) => onAssignColumn?.(colItems, userId)}
+								/>
 							{/if}
 						</div>
 					{/if}
@@ -539,96 +527,8 @@
 		display: inline-flex;
 	}
 
-	.lane-menu {
-		position: absolute;
-		top: calc(100% + 4px);
-		right: 0;
-		z-index: 20;
-		min-width: 180px;
-		padding: var(--space-1);
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.15));
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-
-	.lane-menu-item {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		width: 100%;
-		padding: 8px 10px;
-		background: none;
-		border: none;
-		border-radius: var(--radius-sm);
-		color: var(--text-primary);
-		font-size: 0.875em;
-		text-align: left;
-		cursor: pointer;
-	}
-
-	.lane-menu-item:hover {
-		background: var(--bg-hover);
-	}
-
-	.lane-menu-item.lmi-danger {
-		color: var(--accent-red, #ef4444);
-	}
-
-	.lane-menu-item.lmi-danger:hover {
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
-	}
-
-	.lmi-icon {
-		width: 1.1em;
-		text-align: center;
-		flex-shrink: 0;
-	}
-
-	.lane-menu-sep {
-		height: 1px;
-		margin: 2px 0;
-		background: var(--border);
-	}
-
-	.lane-menu-confirm {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-2);
-		padding: 8px 10px;
-		font-size: 0.8125em;
-		color: var(--text-secondary);
-	}
-
-	.lmc-actions {
-		display: flex;
-		gap: var(--space-2);
-	}
-
-	.lmc-yes {
-		flex: 1;
-		padding: 6px 10px;
-		background: var(--accent-red, #ef4444);
-		border: none;
-		border-radius: var(--radius-sm);
-		color: #fff;
-		font-size: 0.8125em;
-		cursor: pointer;
-	}
-
-	.lmc-no {
-		flex: 1;
-		padding: 6px 10px;
-		background: var(--bg-tertiary);
-		border: none;
-		border-radius: var(--radius-sm);
-		color: var(--text-primary);
-		font-size: 0.8125em;
-		cursor: pointer;
-	}
+	/* The lane menu panel + its drill-down styles live in
+	   LaneActionsMenu.svelte (TASK-1672). */
 
 	@media (max-width: 768px) {
 		.lane-btn {

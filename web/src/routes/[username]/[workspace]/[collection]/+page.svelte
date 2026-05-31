@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api, PadApiError, isPlanLimitError, planLimitMessage } from '$lib/api/client';
-	import type { Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
+	import type { BulkItemsRequest, Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
@@ -77,7 +77,7 @@
 	let shareDialogOpen = $state(false);
 	let editCollectionOpen = $state(false);
 	let editCollectionSection = $state<'general' | 'fields' | 'display' | 'actions' | undefined>(undefined);
-	let workspaceMembers = $state<{ user_id: string; role: string }[]>([]);
+	let workspaceMembers = $state<{ user_id: string; role: string; user_name?: string; user_email?: string }[]>([]);
 	let searchInputEl = $state<HTMLInputElement>();
 	// `searchResultRank` is a Map<itemId, rank> where rank is the 0-indexed
 	// position in the ranked result list. `null` means no search active.
@@ -660,6 +660,10 @@
 			.sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
 	});
 
+	// Tag suggestions for the lane "Tag all" action (TASK-1672) — the
+	// workspace's tags by frequency.
+	let tagSuggestions = $derived(tagCounts.map((t) => t.tag));
+
 	const emptyHintMap: Record<string, string> = {
 		tasks: '/pad break down my current work into tasks',
 		ideas: "/pad I have an idea for...",
@@ -1155,33 +1159,59 @@
 		});
 	}
 
-	async function handleBulkArchive(itemsToArchive: Item[]) {
-		if (!wsSlug) return;
-		const count = itemsToArchive.length;
+	// Shared runner for the lane bulk actions (TASK-1672). One bulk call,
+	// then a deltaSync so the view reflects the change. `verb` is the past-
+	// tense word for the toast ("Archived", "Moved", …). Returns the
+	// affected item ids on success (for TASK-1674's undo); [] on failure.
+	async function runBulk(req: BulkItemsRequest, verb: string): Promise<string[]> {
+		if (!wsSlug) return [];
 		try {
-			for (const item of itemsToArchive) {
-				await api.items.delete(wsSlug, item.id);
-			}
-			// Server-side delete succeeded; pull the soft-delete
-			// tombstones into the local index. Gate the success
-			// toast on a successful deltaSync so the user sees the
-			// rows actually disappear from the view (Codex P3 round 2
-			// of TASK-1357). On deltaSync failure the deletes are
-			// still real server-side — SSE catches the cache up — but
-			// we surface a softer "queued" message so the user knows
-			// the UI hasn't reflected it yet.
-			const ok = await deltaSync(wsSlug);
-			if (ok) {
-				toastStore.show(`Archived ${count} item${count !== 1 ? 's' : ''}`, 'success');
+			const res = await api.items.bulk(wsSlug, req);
+			// Pull the change into the local index so rows update/disappear.
+			// On deltaSync failure the mutation is still real server-side
+			// (SSE catches the cache up) — soften the toast so the user
+			// knows the UI hasn't reflected it yet (matches the old
+			// archive flow, Codex P3 round 2 of TASK-1357).
+			const synced = await deltaSync(wsSlug);
+			const ok = res.updated.length;
+			const failed = res.failed.length;
+			if (failed > 0) {
+				toastStore.show(
+					`${verb} ${ok} item${ok !== 1 ? 's' : ''}, ${failed} failed`,
+					ok > 0 ? 'success' : 'error'
+				);
 			} else {
 				toastStore.show(
-					`Archived ${count} item${count !== 1 ? 's' : ''} (updating…)`,
-					'success',
+					`${verb} ${ok} item${ok !== 1 ? 's' : ''}${synced ? '' : ' (updating…)'}`,
+					'success'
 				);
 			}
-		} catch {
-			toastStore.show('Failed to archive some items', 'error');
+			return res.updated.map((u) => u.id);
+		} catch (e: any) {
+			toastStore.show(e?.message || `Failed to ${verb.toLowerCase()} items`, 'error');
+			return [];
 		}
+	}
+
+	const idsOf = (items: Item[]) => items.map((i) => i.id);
+
+	function handleBulkArchive(items: Item[]) {
+		return runBulk({ op: 'archive', ids: idsOf(items) }, 'Archived');
+	}
+	function handleBulkMove(items: Item[], status: string) {
+		return runBulk({ op: 'move', ids: idsOf(items), status }, 'Moved');
+	}
+	function handleBulkTag(items: Item[], tag: string) {
+		return runBulk({ op: 'tag', ids: idsOf(items), tags: [tag] }, 'Tagged');
+	}
+	function handleBulkUntag(items: Item[], tag: string) {
+		return runBulk({ op: 'untag', ids: idsOf(items), tags: [tag] }, 'Untagged');
+	}
+	function handleBulkSetPriority(items: Item[], priority: string) {
+		return runBulk({ op: 'set-priority', ids: idsOf(items), priority }, 'Updated');
+	}
+	function handleBulkAssign(items: Item[], userId: string) {
+		return runBulk({ op: 'assign', ids: idsOf(items), assigned_user_id: userId }, 'Assigned');
 	}
 
 	async function handleRestore(item: Item) {
@@ -1837,10 +1867,18 @@
 				{focusedItemId}
 				onStatusChange={handleStatusChange}
 				onReorder={handleReorder}
-				onArchiveColumn={handleBulkArchive}
+				onArchiveColumn={canEditThisCollection ? handleBulkArchive : undefined}
 				onGroupReorder={handleGroupReorder}
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				onCreateInColumn={canEditThisCollection ? quickCreateInColumn : undefined}
+				onMoveColumn={canEditThisCollection ? handleBulkMove : undefined}
+				onTagColumn={canEditThisCollection ? handleBulkTag : undefined}
+				onUntagColumn={canEditThisCollection ? handleBulkUntag : undefined}
+				onSetPriorityColumn={canEditThisCollection ? handleBulkSetPriority : undefined}
+				onAssignColumn={canEditThisCollection ? handleBulkAssign : undefined}
+				members={workspaceMembers}
+				{tagSuggestions}
+				filtered={hasActiveFilters}
 				{itemProgress}
 				{progressLabel}
 				canEdit={canEditThisCollection}
