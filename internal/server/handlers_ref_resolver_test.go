@@ -576,3 +576,114 @@ func TestRefResolver_RestrictedMemberWithCollectionGrant(t *testing.T) {
 		t.Errorf("expected redirect under /beta/, got %q", rr.Header().Get("Location"))
 	}
 }
+
+// TestRefResolver_AdminBearer_404OnNonMemberWorkspace pins the BUG-1618
+// fix at the third admin-bypass site enumerated under BUG-1617's audit:
+// resolverWorkspaceRole no longer returns "owner" for a platform admin
+// authenticated via a bearer surface (PAT / CLI / MCP). A bearer-borne
+// admin who isn't a member of the target workspace gets the same 404 the
+// resolver emits for a nonexistent ref — closing the existence/URL oracle
+// (workspace + ref + owner-username + collection-slug) the redirect would
+// otherwise leak. Membership-only stance, matching BUG-1616/1617.
+func TestRefResolver_AdminBearer_404OnNonMemberWorkspace(t *testing.T) {
+	f := newRefResolverFixture(t)
+	item := f.seedItem("decisions", "DECIS", "Orchestration model")
+
+	// Platform admin with NO membership row in the fixture workspace.
+	admin, err := f.srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Username: "adminuser",
+		Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	// Workspace-scoped PAT satisfies the token's NOT NULL workspace_id;
+	// the user-owned-token shape (not a membership) is what the resolver
+	// keys on — scoping it to f.ws does NOT grant access.
+	adminTok, err := f.srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{
+		Name: "admin-bearer", WorkspaceID: f.ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	rr := f.doAuth(adminTok.Token, "GET", "/-/r/"+f.ws.Slug+"/"+item.Ref, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bearer admin on non-member workspace: got %d, want 404; body=%s",
+			rr.Code, rr.Body.String())
+	}
+}
+
+// TestRefResolver_AdminBearer_404EvenWithGrant pins the membership-only
+// stance against the grant-fallback escape hatch (Codex round 1 on
+// BUG-1618). A bearer admin who is NOT a member but holds a single
+// collection grant must still get 404 — otherwise resolverWorkspaceRole
+// would return "guest" and checkItemVisible's own admin bypass would
+// reopen full resolver access + 302 URL leakage. Mirrors
+// TestSSESubscriberStillHasAccess_AdminBearer_DeniedEvenWithGrants.
+func TestRefResolver_AdminBearer_404EvenWithGrant(t *testing.T) {
+	f := newRefResolverFixture(t)
+	item := f.seedItem("decisions", "DECIS", "Orchestration model")
+
+	admin, err := f.srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Username: "adminuser",
+		Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	// Grant the admin view access on the item's collection — but DON'T add
+	// a membership row. A non-admin guest with this grant would 302; the
+	// bearer admin must not.
+	coll, err := f.srv.store.GetCollectionBySlug(f.ws.ID, "decisions")
+	if err != nil {
+		t.Fatalf("GetCollectionBySlug: %v", err)
+	}
+	if _, err := f.srv.store.CreateCollectionGrant(f.ws.ID, coll.ID, admin.ID, "view", f.owner.ID); err != nil {
+		t.Fatalf("CreateCollectionGrant: %v", err)
+	}
+	adminTok, err := f.srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{
+		Name: "admin-bearer-grant", WorkspaceID: f.ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	rr := f.doAuth(adminTok.Token, "GET", "/-/r/"+f.ws.Slug+"/"+item.Ref, nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bearer admin with stray grant: got %d, want 404; body=%s",
+			rr.Code, rr.Body.String())
+	}
+}
+
+// TestRefResolver_AdminCookie_StillRedirects pins the other half of the
+// BUG-1618 gate: a cookie-session admin keeps the owner-equivalent bypass
+// so the web-UI affordance survives. Same admin, same non-member
+// workspace as the bearer case above — only the auth surface differs, and
+// the cookie path still 302s to the canonical item URL.
+func TestRefResolver_AdminCookie_StillRedirects(t *testing.T) {
+	f := newRefResolverFixture(t)
+	item := f.seedItem("decisions", "DECIS", "Orchestration model")
+
+	admin, err := f.srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Username: "adminuser",
+		Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	// Cookie session bound to the same IP doRequestWithCookie sends from.
+	sessTok, err := f.srv.store.CreateSession(admin.ID, "web-test", "192.0.2.1", "", webSessionTTL)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	rr := doRequestWithCookie(f.srv, "GET", "/-/r/"+f.ws.Slug+"/"+item.Ref, nil, sessTok)
+	if rr.Code != http.StatusFound {
+		t.Fatalf("cookie admin: expected 302, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	want := "/owneruser/" + f.ws.Slug + "/decisions/" + item.Ref
+	if loc := rr.Header().Get("Location"); loc != want {
+		t.Errorf("cookie admin Location: got %q want %q", loc, want)
+	}
+}
