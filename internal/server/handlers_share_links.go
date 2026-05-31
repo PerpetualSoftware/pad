@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -13,6 +14,20 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/go-chi/chi/v5"
 )
+
+// publicCollectionSettings is the anonymous-viewer projection of
+// models.CollectionSettings exposed on the public share-link DTO
+// (TASK-1678). It carries only the presentation fields a read-only
+// viewer needs to reproduce the owner's view type and grouping; the
+// authoring affordances on the full struct (quick_actions,
+// content_template) are intentionally excluded from the public path.
+type publicCollectionSettings struct {
+	Layout       string `json:"layout,omitempty"`
+	DefaultView  string `json:"default_view,omitempty"`
+	BoardGroupBy string `json:"board_group_by,omitempty"`
+	ListSortBy   string `json:"list_sort_by,omitempty"`
+	ListGroupBy  string `json:"list_group_by,omitempty"`
+}
 
 // validateShareLinkOpts checks that share link creation constraints are sane.
 // Returns an error message string (empty if valid).
@@ -364,23 +379,54 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			writeInternalError(w, err)
 			return
 		}
-		// Build public item list with only safe fields
+		// Build public item list with only safe fields. content is the
+		// item's markdown body, included so the public viewer can render an
+		// inline read-only row expand (TASK-1678 / TASK-1684) without a
+		// second round-trip. No internal IDs, creator, or timestamps.
 		publicItems := make([]map[string]interface{}, 0, len(items))
 		for _, it := range items {
 			publicItem := map[string]interface{}{
-				"title":  it.Title,
-				"ref":    it.Ref,
-				"fields": it.Fields,
+				"title":   it.Title,
+				"ref":     it.Ref,
+				"fields":  it.Fields,
+				"content": it.Content,
 			}
 			publicItems = append(publicItems, publicItem)
 		}
+
+		// Public collection DTO. settings/schema are emitted as parsed JSON
+		// objects (not raw strings) so the public viewer can render the
+		// owner's chosen view type, grouping, labels, and status colors.
+		// settings is projected to the presentation-only view fields —
+		// quick_actions and content_template are deliberately omitted, as
+		// they're authoring affordances an anonymous viewer has no use for.
+		publicCollection := map[string]interface{}{
+			"name":        coll.Name,
+			"icon":        coll.Icon,
+			"description": coll.Description,
+		}
+		if s := strings.TrimSpace(coll.Settings); s != "" {
+			var settings models.CollectionSettings
+			if err := json.Unmarshal([]byte(s), &settings); err == nil {
+				publicCollection["settings"] = publicCollectionSettings{
+					Layout:       settings.Layout,
+					DefaultView:  settings.DefaultView,
+					BoardGroupBy: settings.BoardGroupBy,
+					ListSortBy:   settings.ListSortBy,
+					ListGroupBy:  settings.ListGroupBy,
+				}
+			}
+		}
+		if s := strings.TrimSpace(coll.Schema); s != "" {
+			var schema models.CollectionSchema
+			if err := json.Unmarshal([]byte(s), &schema); err == nil {
+				publicCollection["schema"] = schema
+			}
+		}
+
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"type": "collection",
-			"collection": map[string]interface{}{
-				"name":        coll.Name,
-				"icon":        coll.Icon,
-				"description": coll.Description,
-			},
+			"type":       "collection",
+			"collection": publicCollection,
 			"items":      publicItems,
 			"permission": "view",
 			"share_link": map[string]interface{}{
