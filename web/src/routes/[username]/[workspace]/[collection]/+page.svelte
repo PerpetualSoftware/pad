@@ -1174,30 +1174,35 @@
 	async function runBulk(req: BulkItemsRequest, verb: string): Promise<string[]> {
 		if (!wsSlug || req.ids.length === 0) return [];
 		const okIds: string[] = [];
-		let failed = 0;
-		try {
-			for (let i = 0; i < req.ids.length; i += BULK_CHUNK) {
-				const chunk = req.ids.slice(i, i + BULK_CHUNK);
+		let errMsg = '';
+		// A thrown chunk (network / auth / 4xx) stops further chunks but
+		// must NOT skip finalization: earlier chunks may already have
+		// mutated up to 1000+ items server-side, so we still deltaSync and
+		// report the partial result rather than leaving the UI stale behind
+		// a generic error. Codex round 2.
+		for (let i = 0; i < req.ids.length; i += BULK_CHUNK) {
+			const chunk = req.ids.slice(i, i + BULK_CHUNK);
+			try {
 				const res = await api.items.bulk(wsSlug, { ...req, ids: chunk });
 				for (const u of res.updated) okIds.push(u.id);
-				failed += res.failed.length;
+			} catch (e: any) {
+				errMsg = e?.message || '';
+				break;
 			}
-		} catch (e: any) {
-			toastStore.show(e?.message || `Failed to ${verb.toLowerCase()} items`, 'error');
-			return okIds;
 		}
-		// Pull the change into the local index so rows update/disappear.
-		// On deltaSync failure the mutation is still real server-side (SSE
-		// catches the cache up) — soften the toast so the user knows the UI
-		// hasn't reflected it yet (matches the old archive flow, Codex P3
-		// round 2 of TASK-1357).
-		const synced = await deltaSync(wsSlug);
 		const ok = okIds.length;
-		if (failed > 0) {
-			toastStore.show(
-				`${verb} ${ok} item${ok !== 1 ? 's' : ''}, ${failed} failed`,
-				ok > 0 ? 'success' : 'error'
-			);
+		// Everything not in okIds — per-row rejections AND items in an
+		// un-attempted chunk after a throw — is a failure for the toast.
+		const failed = req.ids.length - ok;
+		// Sync so the succeeded rows update/disappear. On deltaSync failure
+		// the mutation is still real server-side (SSE catches the cache up)
+		// — soften the toast (matches the old archive flow, Codex P3 round 2
+		// of TASK-1357).
+		const synced = ok > 0 ? await deltaSync(wsSlug) : true;
+		if (ok === 0) {
+			toastStore.show(errMsg || `Failed to ${verb.toLowerCase()} items`, 'error');
+		} else if (failed > 0) {
+			toastStore.show(`${verb} ${ok} item${ok !== 1 ? 's' : ''}, ${failed} failed`, 'success');
 		} else {
 			toastStore.show(
 				`${verb} ${ok} item${ok !== 1 ? 's' : ''}${synced ? '' : ' (updating…)'}`,
