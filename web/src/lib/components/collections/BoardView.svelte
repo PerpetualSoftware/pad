@@ -82,6 +82,21 @@
 		openMenuColumn = null;
 	}
 
+	// The ⋯ menu is shown when at least one of its entries is wired. Each
+	// callback already encodes the user's permission for that action, so
+	// this is the single source of truth for kebab visibility (TASK-1672).
+	let hasMenuActions = $derived(
+		!!(
+			onCreateInColumn ||
+			onArchiveColumn ||
+			onMoveColumn ||
+			onTagColumn ||
+			onUntagColumn ||
+			onSetPriorityColumn ||
+			onAssignColumn
+		)
+	);
+
 	// Dismiss the open lane menu on any click outside it (mirrors the
 	// QuickActionsMenu pattern). The menu markup lives under
 	// `.lane-menu-wrap`, so clicks there don't close it.
@@ -307,15 +322,22 @@
 				<span class="column-name">{formatLabel(colValue)}</span>
 				<div class="column-actions">
 					<span class="column-count">{colItems.length}</span>
-					{#if canEdit}
-						{#if onCreateInColumn}
-							<button
-								class="lane-btn lane-add-btn"
-								title="Add item to {formatLabel(colValue).toLowerCase()}"
-								aria-label="Add item to {formatLabel(colValue)}"
-								onclick={() => onCreateInColumn?.(colValue)}
-							>+</button>
-						{/if}
+					<!-- Affordance visibility is driven purely by callback
+					     presence — each callback already encodes its own
+					     permission (the `+` create is grant-aware; the bulk
+					     verbs are owner/editor-gated by the page). Don't gate
+					     on `canEdit`, or an owner/editor without a collection
+					     edit grant (canBulkEdit true, canEdit false) couldn't
+					     open the menu at all. TASK-1672 / Codex round 4. -->
+					{#if onCreateInColumn}
+						<button
+							class="lane-btn lane-add-btn"
+							title="Add item to {formatLabel(colValue).toLowerCase()}"
+							aria-label="Add item to {formatLabel(colValue)}"
+							onclick={() => onCreateInColumn?.(colValue)}
+						>+</button>
+					{/if}
+					{#if hasMenuActions}
 						<div class="lane-menu-wrap">
 							<button
 								class="lane-btn lane-menu-btn"
