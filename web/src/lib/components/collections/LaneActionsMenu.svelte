@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema } from '$lib/types';
+	import { SORT_OPTIONS, priorityField, type SortMode } from '$lib/collections/itemSort';
 
 	interface Props {
 		/** The lane's CURRENTLY-FILTERED items — every action operates on these. */
@@ -15,6 +16,13 @@
 		members: { user_id: string; user_name?: string }[];
 		/** Workspace tag suggestions for "Tag all". */
 		tagSuggestions: string[];
+		// Page-wide sort default + this lane's ephemeral override (TASK-1673).
+		// `laneSort` undefined = follow the page default. onSetLaneSort(null)
+		// clears the override. Sorting is a view preference, available to
+		// everyone (including viewers) — not gated on edit permission.
+		sortMode?: SortMode;
+		laneSort?: SortMode;
+		onSetLaneSort?: (mode: SortMode | null) => void;
 		onClose: () => void;
 		// Each action is optional: the caller passes only the ones the
 		// current user is permitted to perform (the single `+` create is
@@ -37,6 +45,9 @@
 		filtered,
 		members,
 		tagSuggestions,
+		sortMode = 'manual',
+		laneSort = undefined,
+		onSetLaneSort,
 		onClose,
 		onAddItem,
 		onArchive,
@@ -47,7 +58,7 @@
 		onAssign
 	}: Props = $props();
 
-	type View = 'root' | 'move' | 'tag' | 'untag' | 'priority' | 'assign';
+	type View = 'root' | 'move' | 'tag' | 'untag' | 'priority' | 'assign' | 'sort';
 	let view = $state<View>('root');
 	let confirmArchive = $state(false);
 	let tagInput = $state('');
@@ -70,6 +81,18 @@
 	);
 	let priorityOptions = $derived(priorityFieldDef?.options ?? []);
 
+	// Sort options offered in the "Sort lane by" submenu — same set the
+	// page toolbar uses, minus Priority when the collection has no priority
+	// field (TASK-1673). `effectiveSort` is the lane's current order: its
+	// override if set, else the page default.
+	let sortOptions = $derived(
+		priorityField(collection) ? SORT_OPTIONS : SORT_OPTIONS.filter((o) => o.value !== 'priority')
+	);
+	let effectiveSort = $derived(laneSort ?? sortMode);
+	let sortLabel = $derived(
+		SORT_OPTIONS.find((o) => o.value === effectiveSort)?.label ?? 'Manual'
+	);
+
 	// Untag offers only the tags actually present on the lane's items.
 	let laneTags = $derived.by(() => {
 		const set = new Set<string>();
@@ -82,6 +105,20 @@
 		}
 		return [...set].sort();
 	});
+
+	// Section presence — drives separators so none dangle when a section
+	// (e.g. the bulk verbs for a viewer) is empty. Declared after laneTags
+	// since hasVerbs references it.
+	let hasSort = $derived(count > 0 && !!onSetLaneSort);
+	let hasVerbs = $derived(
+		count > 0 &&
+			(!!(onMove && moveTargets.length) ||
+				!!onTag ||
+				!!(onUntag && laneTags.length) ||
+				!!(onSetPriority && priorityOptions.length) ||
+				!!(onAssign && members.length))
+	);
+	let hasArchive = $derived(count > 0 && !!onArchive);
 
 	function fmt(v: string): string {
 		return v.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
@@ -113,9 +150,16 @@
 			</button>
 		{/if}
 
-		{#if count > 0}
-			<div class="lane-menu-sep"></div>
+		{#if hasSort}
+			{#if onAddItem}<div class="lane-menu-sep"></div>{/if}
+			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => (view = 'sort'))}>
+				<span class="lmi-icon" aria-hidden="true">↕</span> Sort lane by
+				<span class="lmi-chevron">{sortLabel} ›</span>
+			</button>
+		{/if}
 
+		{#if hasVerbs}
+			{#if onAddItem || hasSort}<div class="lane-menu-sep"></div>{/if}
 			{#if onMove && moveTargets.length > 0}
 				<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => (view = 'move'))}>
 					<span class="lmi-icon" aria-hidden="true">→</span> Move all to <span class="lmi-chevron">›</span>
@@ -145,22 +189,22 @@
 					<span class="lmi-icon" aria-hidden="true">👤</span> Assign all <span class="lmi-chevron">›</span>
 				</button>
 			{/if}
+		{/if}
 
-			{#if onArchive}
-				<div class="lane-menu-sep"></div>
-				{#if confirmArchive}
-					<div class="lane-menu-confirm">
-						<span>Archive {count} item{count === 1 ? '' : 's'}{scopeNote}?</span>
-						<div class="lmc-actions">
-							<button class="lmc-yes" onclick={(e) => run(e, () => { onArchive?.(); onClose(); })}>Archive</button>
-							<button class="lmc-no" onclick={(e) => run(e, () => (confirmArchive = false))}>Cancel</button>
-						</div>
+		{#if hasArchive}
+			{#if onAddItem || hasSort || hasVerbs}<div class="lane-menu-sep"></div>{/if}
+			{#if confirmArchive}
+				<div class="lane-menu-confirm">
+					<span>Archive {count} item{count === 1 ? '' : 's'}{scopeNote}?</span>
+					<div class="lmc-actions">
+						<button class="lmc-yes" onclick={(e) => run(e, () => { onArchive?.(); onClose(); })}>Archive</button>
+						<button class="lmc-no" onclick={(e) => run(e, () => (confirmArchive = false))}>Cancel</button>
 					</div>
-				{:else}
-					<button class="lane-menu-item lmi-danger" role="menuitem" onclick={(e) => run(e, () => (confirmArchive = true))}>
-						<span class="lmi-icon" aria-hidden="true">🗃</span> Archive all ({count}{scopeNote})
-					</button>
-				{/if}
+				</div>
+			{:else}
+				<button class="lane-menu-item lmi-danger" role="menuitem" onclick={(e) => run(e, () => (confirmArchive = true))}>
+					<span class="lmi-icon" aria-hidden="true">🗃</span> Archive all ({count}{scopeNote})
+				</button>
 			{/if}
 		{/if}
 	{:else if view === 'move'}
@@ -211,6 +255,31 @@
 				</button>
 			{/each}
 		{/if}
+	{:else if view === 'sort'}
+		<button class="lane-menu-back" onclick={(e) => run(e, () => (view = 'root'))}>‹ Sort lane by</button>
+		<!-- Clear the ephemeral override → follow the page-wide sort. -->
+		<button
+			class="lane-menu-item"
+			role="menuitemradio"
+			aria-checked={laneSort === undefined}
+			onclick={(e) => run(e, () => { onSetLaneSort?.(null); onClose(); })}
+		>
+			<span class="lmi-check" aria-hidden="true">{laneSort === undefined ? '✓' : ''}</span>
+			Page default
+			<span class="lmi-chevron">{SORT_OPTIONS.find((o) => o.value === sortMode)?.label}</span>
+		</button>
+		<div class="lane-menu-sep"></div>
+		{#each sortOptions as opt (opt.value)}
+			<button
+				class="lane-menu-item"
+				role="menuitemradio"
+				aria-checked={laneSort === opt.value}
+				onclick={(e) => run(e, () => { onSetLaneSort?.(opt.value); onClose(); })}
+			>
+				<span class="lmi-check" aria-hidden="true">{laneSort === opt.value ? '✓' : ''}</span>
+				{opt.label}
+			</button>
+		{/each}
 	{/if}
 </div>
 
@@ -264,6 +333,13 @@
 		width: 1.1em;
 		text-align: center;
 		flex-shrink: 0;
+	}
+
+	.lmi-check {
+		width: 1.1em;
+		flex-shrink: 0;
+		color: var(--accent-blue);
+		font-size: 0.9em;
 	}
 
 	.lmi-chevron {
