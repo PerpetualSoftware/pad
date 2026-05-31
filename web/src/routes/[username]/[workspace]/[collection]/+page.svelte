@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
+	import { goto, beforeNavigate } from '$app/navigation';
 	import { api, PadApiError, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import type { BulkItemsRequest, Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
@@ -1004,13 +1004,20 @@
 		}
 	}
 
-	// Create an item directly in a board lane (TASK-1671 / IDEA-1159),
-	// pre-filling the lane's group field with its column value so it
-	// lands in that lane. Navigates to the new item to title it, like
-	// the top-level "+ New" → createNewItem flow.
-	async function quickCreateInColumn(groupValue: string) {
-		if (!wsSlug || !collSlug || creatingNew) return;
-		creatingNew = true;
+	// Create an item in a board lane from the inline draft card
+	// (TASK-1676, refines TASK-1671 / IDEA-1159). Pre-fills the lane's
+	// group field so the item lands in that lane. `navigate` true (Enter
+	// in the draft) opens the new item; false (nav-guard "Save") just
+	// upserts it into the local index and stays put. Throws on failure so
+	// BoardView can restore the draft. Returns the created item.
+	async function quickCreateInColumn(
+		groupValue: string,
+		title: string,
+		navigate: boolean
+	): Promise<Item | null> {
+		if (!wsSlug || !collSlug) return null;
+		const trimmed = title.trim();
+		if (!trimmed) return null;
 		try {
 			const schema = collection ? parseSchema(collection) : { fields: [] };
 			const defaultFields: Record<string, any> = {};
@@ -1022,21 +1029,117 @@
 			// board_group_by select) so the item opens in this lane.
 			defaultFields[groupField] = groupValue;
 			const item = await api.items.create(wsSlug, collSlug, {
-				title: 'Untitled',
+				title: trimmed,
 				content: '',
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
+			if (navigate) {
+				goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
+			} else {
+				localIndex.upsert(wsSlug, item);
+			}
+			return item;
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
-		} finally {
-			creatingNew = false;
+			throw err;
 		}
+	}
+
+	// ── Inline draft cards: page-owned state + leave guard (TASK-1676) ──
+	// State lives here (not in BoardView) so a draft survives a
+	// board↔list view switch that unmounts BoardView, and so the leave
+	// guard + dialog stay mounted regardless of view. BoardView binds
+	// these and renders the per-lane draft cards.
+	let draftText = $state<Record<string, string>>({});
+	let draftOpen = $state<Record<string, boolean>>({});
+	let savingDrafts = $state(false);
+	let showLeaveDialog = $state(false);
+	let pendingNav = $state<(() => void) | null>(null);
+	let bypassNavGuard = false;
+
+	let hasUnsavedDrafts = $derived(Object.values(draftText).some((t) => t.trim().length > 0));
+
+	// Intercept in-app navigation while a draft is unsaved. `nav.to` is
+	// null for full unload (reload / tab close / external) — drafts are
+	// kept only until reload, so those aren't guarded.
+	beforeNavigate((nav) => {
+		if (bypassNavGuard || !hasUnsavedDrafts || !nav.to) return;
+		// Only guard CLIENT-SIDE, in-app leaves we can replay with goto.
+		// `willUnload` (external links, hard document navigations) and
+		// full unload (reload / tab close, nav.to === null) are treated
+		// like reload — drafts live only until then, and goto can't replay
+		// a native navigation anyway (Codex round 3).
+		if (nav.willUnload) return;
+		// Same-pathname navigations are internal query/view state syncs
+		// (updateUrlFilters' replaceState on a view/filter/search change),
+		// not a real "leave" — the draft survives those (page state), so
+		// prompting would be wrong (Codex round 2).
+		if (nav.to.url.pathname === nav.from?.url.pathname) return;
+		const url = nav.to.url;
+		// Replay Back/Forward via history.go(delta) so cancelling +
+		// re-navigating preserves history order (a goto would push the
+		// target as a NEW entry, corrupting Back). Codex round 4.
+		const popDelta = nav.type === 'popstate' ? nav.delta : undefined;
+		nav.cancel();
+		pendingNav = () => {
+			bypassNavGuard = true;
+			if (typeof popDelta === 'number') {
+				history.go(popDelta);
+				// popstate has no completion promise — reset the bypass
+				// once the navigation has settled.
+				setTimeout(() => { bypassNavGuard = false; }, 0);
+			} else {
+				goto(url).finally(() => { bypassNavGuard = false; });
+			}
+		};
+		showLeaveDialog = true;
+	});
+
+	function runPendingNav() {
+		const act = pendingNav;
+		pendingNav = null;
+		showLeaveDialog = false;
+		act?.();
+	}
+
+	async function leaveSaveAll() {
+		if (savingDrafts) return;
+		savingDrafts = true;
+		try {
+			// Clear EACH draft as its create succeeds (not all at the end),
+			// so retrying after a partial failure can't re-create the ones
+			// that already saved (Codex round 1).
+			for (const [col, text] of Object.entries(draftText)) {
+				const title = text.trim();
+				if (!title) continue;
+				await quickCreateInColumn(col, title, false);
+				delete draftText[col];
+				delete draftOpen[col];
+			}
+		} catch {
+			// A create failed (already toasted) — keep the dialog open with
+			// the still-unsaved drafts so the user can retry or discard.
+			savingDrafts = false;
+			return;
+		}
+		savingDrafts = false;
+		runPendingNav();
+	}
+
+	function leaveDiscard() {
+		draftText = {};
+		draftOpen = {};
+		runPendingNav();
+	}
+
+	function leaveStay() {
+		pendingNav = null;
+		showLeaveDialog = false;
 	}
 
 	async function quickCreate() {
@@ -1952,6 +2055,8 @@
 				onGroupReorder={handleGroupReorder}
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				onCreateInColumn={canEditThisCollection ? quickCreateInColumn : undefined}
+				bind:draftText
+				bind:draftOpen
 				onMoveColumn={canBulkEdit ? handleBulkMove : undefined}
 				onTagColumn={canBulkEdit ? handleBulkTag : undefined}
 				onUntagColumn={canBulkEdit ? handleBulkUntag : undefined}
@@ -2030,7 +2135,88 @@
 	/>
 {/if}
 
+{#if showLeaveDialog}
+	<!-- Leave guard (TASK-1676): an in-app navigation was intercepted
+	     because a lane has an unsaved draft card. -->
+	<div
+		class="leave-overlay"
+		role="presentation"
+		onclick={(e) => { if (e.target === e.currentTarget) leaveStay(); }}
+		onkeydown={(e) => { if (e.key === 'Escape') leaveStay(); }}
+	>
+		<div class="leave-dialog" role="dialog" aria-modal="true" aria-label="Unsaved card" tabindex="-1">
+			<h3 class="leave-title">Unsaved card</h3>
+			<p class="leave-body">You have an unsaved card. Save it before leaving?</p>
+			<div class="leave-actions">
+				<button class="leave-stay" disabled={savingDrafts} onclick={leaveStay}>Stay</button>
+				<button class="leave-discard" disabled={savingDrafts} onclick={leaveDiscard}>Discard</button>
+				<button class="leave-save" disabled={savingDrafts} onclick={leaveSaveAll}>Save</button>
+			</div>
+		</div>
+	</div>
+{/if}
+
 <style>
+	.leave-overlay {
+		position: fixed;
+		inset: 0;
+		z-index: 1000;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: rgba(0, 0, 0, 0.45);
+		padding: var(--space-4);
+	}
+	.leave-dialog {
+		width: 100%;
+		max-width: 360px;
+		padding: var(--space-4);
+		background: var(--bg-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		box-shadow: var(--shadow-lg, 0 10px 30px rgba(0, 0, 0, 0.3));
+	}
+	.leave-title {
+		margin: 0 0 var(--space-2);
+		font-size: 1em;
+		color: var(--text-primary);
+	}
+	.leave-body {
+		margin: 0 0 var(--space-4);
+		font-size: 0.875em;
+		color: var(--text-secondary);
+	}
+	.leave-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--space-2);
+	}
+	.leave-actions button {
+		padding: 6px 14px;
+		border-radius: var(--radius-sm);
+		font-size: 0.8125em;
+		cursor: pointer;
+		border: 1px solid var(--border);
+	}
+	.leave-actions button:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+	.leave-stay {
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+	}
+	.leave-discard {
+		background: none;
+		border-color: var(--accent-red, #ef4444) !important;
+		color: var(--accent-red, #ef4444);
+	}
+	.leave-save {
+		background: var(--accent-blue);
+		border-color: var(--accent-blue) !important;
+		color: #fff;
+	}
+
 	.collection-page {
 		max-width: var(--content-max-width);
 		margin: 0 auto;

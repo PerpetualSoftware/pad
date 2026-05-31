@@ -21,11 +21,22 @@
 		onGroupReorder?: (newOrder: string[]) => void;
 		oncreate?: () => void;
 		/**
-		 * Create an item directly in this lane, pre-filling the lane's
-		 * group field with its column value (folds IDEA-1159). The `+`
-		 * lane-header button calls this. Gated behind `canEdit`.
+		 * Create an item in this lane from the inline draft card
+		 * (TASK-1676), pre-filling the lane's group value. `navigate` true
+		 * (Enter) opens the new item; false (nav-guard Save) just lands it
+		 * in the lane. Throws on failure so the draft can be restored.
+		 * Gated behind `canEdit`. When wired, the `+`/menu open a draft.
 		 */
-		onCreateInColumn?: (groupValue: string) => void;
+		onCreateInColumn?: (groupValue: string, title: string, navigate: boolean) => Promise<unknown> | void;
+		/**
+		 * Inline draft state (TASK-1676) — owned by the page (which holds
+		 * the leave guard + dialog) so a draft survives a board↔list view
+		 * switch that unmounts this component. Keyed by lane value:
+		 * `draftText` is the in-progress title, `draftOpen` the card
+		 * visibility. Bound.
+		 */
+		draftText?: Record<string, string>;
+		draftOpen?: Record<string, boolean>;
 		/**
 		 * Bulk lane actions (TASK-1672), each operating on the lane's
 		 * CURRENTLY-FILTERED items via the bulk endpoint. Surfaced in the
@@ -67,7 +78,10 @@
 		sortMode?: SortMode;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual' }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}) }: Props = $props();
+
+	// Local — disables the draft card while its Enter-create is in flight.
+	let savingDraft = $state(false);
 
 	// Which lane's ⋯ menu is open (null = none). One menu open at a time;
 	// the LaneActionsMenu component owns the drill-down + confirm state.
@@ -94,6 +108,46 @@
 		}
 	}
 	const laneSortFor = (colValue: string): SortMode => laneSortOverrides[colValue] ?? sortMode;
+
+	// ── Inline draft cards (TASK-1676) ──────────────────────────────────
+	// Trello/GitHub-style: the `+` opens an editable draft card in the
+	// lane; no item exists until Enter. The draft STATE lives on the page
+	// (bound here) so it survives a board↔list view switch (which unmounts
+	// this component) — the page also owns the leave guard + dialog. Blur
+	// keeps the card; Escape hides it but retains text (page state).
+	let draftInputs: Record<string, HTMLTextAreaElement | undefined> = {};
+
+	function openDraft(col: string) {
+		if (!onCreateInColumn) return;
+		draftOpen[col] = true;
+		requestAnimationFrame(() => draftInputs[col]?.focus());
+	}
+
+	// Escape hides the card but KEEPS the text so reopening restores it.
+	function escapeDraft(col: string) {
+		draftOpen[col] = false;
+	}
+
+	async function submitDraft(col: string) {
+		const title = (draftText[col] ?? '').trim();
+		if (!title || savingDraft || !onCreateInColumn) return;
+		savingDraft = true;
+		// Clear optimistically BEFORE the create navigates, so the page's
+		// leave guard (fires when onCreateInColumn opens the new item)
+		// doesn't re-flag this lane.
+		const prior = draftText[col];
+		delete draftText[col];
+		draftOpen[col] = false;
+		try {
+			await onCreateInColumn(col, title, true);
+		} catch {
+			// Restore the draft on failure (the page toasts the error).
+			draftText[col] = prior;
+			draftOpen[col] = true;
+		} finally {
+			savingDraft = false;
+		}
+	}
 
 	// Dismiss the open lane menu on any click outside it (mirrors the
 	// QuickActionsMenu pattern). The menu markup lives under
@@ -332,7 +386,7 @@
 							class="lane-btn lane-add-btn"
 							title="Add item to {formatLabel(colValue).toLowerCase()}"
 							aria-label="Add item to {formatLabel(colValue)}"
-							onclick={() => onCreateInColumn?.(colValue)}
+							onclick={() => openDraft(colValue)}
 						>+</button>
 					{/if}
 					<!-- Kebab shows for create OR any non-empty lane (sort is
@@ -360,7 +414,7 @@
 									laneSort={laneSortOverrides[colValue]}
 									onSetLaneSort={(m) => setLaneSort(colValue, m)}
 									onClose={closeMenu}
-									onAddItem={onCreateInColumn ? () => onCreateInColumn?.(colValue) : undefined}
+									onAddItem={onCreateInColumn ? () => openDraft(colValue) : undefined}
 									onArchive={onArchiveColumn ? () => onArchiveColumn?.(colItems) : undefined}
 									onMove={onMoveColumn ? (status) => onMoveColumn?.(colItems, status) : undefined}
 									onTag={onTagColumn ? (tag) => onTagColumn?.(colItems, tag) : undefined}
@@ -373,6 +427,37 @@
 					{/if}
 				</div>
 			</div>
+			{#if draftOpen[colValue]}
+				<!-- Inline draft card (TASK-1676). Lives ABOVE the dndzone so
+				     it isn't draggable and isn't a real item until saved. -->
+				<div class="lane-draft">
+					<textarea
+						bind:this={draftInputs[colValue]}
+						bind:value={draftText[colValue]}
+						class="lane-draft-input"
+						placeholder="Enter a title…"
+						rows="2"
+						disabled={savingDraft}
+						onkeydown={(e) => {
+							if (e.key === 'Enter' && !e.shiftKey) {
+								e.preventDefault();
+								submitDraft(colValue);
+							} else if (e.key === 'Escape') {
+								e.preventDefault();
+								escapeDraft(colValue);
+							}
+						}}
+					></textarea>
+					<div class="lane-draft-actions">
+						<button
+							class="lane-draft-add"
+							disabled={!draftText[colValue]?.trim() || savingDraft}
+							onclick={() => submitDraft(colValue)}
+						>Add card</button>
+						<button class="lane-draft-close" onclick={() => escapeDraft(colValue)}>Close</button>
+					</div>
+				</div>
+			{/if}
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
 				class="column-cards"
@@ -676,4 +761,66 @@
 			display: none;
 		}
 	}
+
+	/* Inline draft card (TASK-1676). */
+	.lane-draft {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		margin: var(--space-2) var(--space-2) 0;
+		padding: var(--space-2);
+		background: var(--bg-primary);
+		border: 1px solid var(--accent-blue);
+		border-radius: var(--radius-md);
+		box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.12));
+	}
+
+	.lane-draft-input {
+		width: 100%;
+		resize: vertical;
+		min-height: 2.4em;
+		padding: var(--space-2);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--text-primary);
+		font-size: 0.875em;
+		font-family: inherit;
+		line-height: 1.4;
+	}
+
+	.lane-draft-actions {
+		display: flex;
+		gap: var(--space-2);
+	}
+
+	.lane-draft-add {
+		padding: 5px 12px;
+		background: var(--accent-blue);
+		border: none;
+		border-radius: var(--radius-sm);
+		color: #fff;
+		font-size: 0.8125em;
+		font-weight: 600;
+		cursor: pointer;
+	}
+	.lane-draft-add:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+
+	.lane-draft-close {
+		padding: 5px 10px;
+		background: none;
+		border: none;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		font-size: 0.8125em;
+		cursor: pointer;
+	}
+	.lane-draft-close:hover {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+	}
+
 </style>
