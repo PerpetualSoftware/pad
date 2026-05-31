@@ -7,7 +7,6 @@
 	import ItemCard from './ItemCard.svelte';
 	import EmptyState from '../common/EmptyState.svelte';
 	import LaneActionsMenu from './LaneActionsMenu.svelte';
-	import { beforeNavigate, goto } from '$app/navigation';
 
 
 	interface Props {
@@ -29,6 +28,15 @@
 		 * Gated behind `canEdit`. When wired, the `+`/menu open a draft.
 		 */
 		onCreateInColumn?: (groupValue: string, title: string, navigate: boolean) => Promise<unknown> | void;
+		/**
+		 * Inline draft state (TASK-1676) — owned by the page (which holds
+		 * the leave guard + dialog) so a draft survives a board↔list view
+		 * switch that unmounts this component. Keyed by lane value:
+		 * `draftText` is the in-progress title, `draftOpen` the card
+		 * visibility. Bound.
+		 */
+		draftText?: Record<string, string>;
+		draftOpen?: Record<string, boolean>;
 		/**
 		 * Bulk lane actions (TASK-1672), each operating on the lane's
 		 * CURRENTLY-FILTERED items via the bulk endpoint. Surfaced in the
@@ -70,7 +78,10 @@
 		sortMode?: SortMode;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual' }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}) }: Props = $props();
+
+	// Local — disables the draft card while its Enter-create is in flight.
+	let savingDraft = $state(false);
 
 	// Which lane's ⋯ menu is open (null = none). One menu open at a time;
 	// the LaneActionsMenu component owns the drill-down + confirm state.
@@ -100,17 +111,11 @@
 
 	// ── Inline draft cards (TASK-1676) ──────────────────────────────────
 	// Trello/GitHub-style: the `+` opens an editable draft card in the
-	// lane; no item exists until Enter. `draftText` retains content per
-	// lane until reload (even after Escape hides the card); `draftOpen`
-	// controls visibility. Blur keeps the card but doesn't save.
-	let draftText = $state<Record<string, string>>({});
-	let draftOpen = $state<Record<string, boolean>>({});
+	// lane; no item exists until Enter. The draft STATE lives on the page
+	// (bound here) so it survives a board↔list view switch (which unmounts
+	// this component) — the page also owns the leave guard + dialog. Blur
+	// keeps the card; Escape hides it but retains text (page state).
 	let draftInputs: Record<string, HTMLTextAreaElement | undefined> = {};
-	let savingDraft = $state(false);
-
-	let hasUnsavedDrafts = $derived(
-		Object.values(draftText).some((t) => t.trim().length > 0)
-	);
 
 	function openDraft(col: string) {
 		if (!onCreateInColumn) return;
@@ -127,8 +132,8 @@
 		const title = (draftText[col] ?? '').trim();
 		if (!title || savingDraft || !onCreateInColumn) return;
 		savingDraft = true;
-		// Clear optimistically BEFORE the create navigates, so the nav
-		// guard (which fires when onCreateInColumn opens the new item)
+		// Clear optimistically BEFORE the create navigates, so the page's
+		// leave guard (fires when onCreateInColumn opens the new item)
 		// doesn't re-flag this lane.
 		const prior = draftText[col];
 		delete draftText[col];
@@ -142,64 +147,6 @@
 		} finally {
 			savingDraft = false;
 		}
-	}
-
-	// ── Leave guard: prompt to save/discard unsaved drafts (in-app nav) ──
-	let pendingNavUrl = $state<URL | null>(null);
-	let showLeaveDialog = $state(false);
-	let bypassGuard = false;
-
-	beforeNavigate((nav) => {
-		// Only guard in-app navigations with an unsaved draft. `nav.to`
-		// is null for full unload (reload / tab close / external) — the
-		// spec keeps drafts only until reload, so we don't guard those.
-		if (bypassGuard || !hasUnsavedDrafts || !nav.to) return;
-		nav.cancel();
-		pendingNavUrl = nav.to.url;
-		showLeaveDialog = true;
-	});
-
-	function proceedNav() {
-		const url = pendingNavUrl;
-		pendingNavUrl = null;
-		showLeaveDialog = false;
-		if (url) {
-			bypassGuard = true;
-			goto(url).finally(() => {
-				bypassGuard = false;
-			});
-		}
-	}
-
-	async function leaveSaveAll() {
-		if (savingDraft) return;
-		savingDraft = true;
-		try {
-			for (const [col, text] of Object.entries(draftText)) {
-				const title = text.trim();
-				if (title) await onCreateInColumn?.(col, title, false);
-			}
-			draftText = {};
-			draftOpen = {};
-		} catch {
-			// A create failed (page toasted it) — keep the dialog open so
-			// the user can retry or discard rather than navigating away.
-			savingDraft = false;
-			return;
-		}
-		savingDraft = false;
-		proceedNav();
-	}
-
-	function leaveDiscard() {
-		draftText = {};
-		draftOpen = {};
-		proceedNav();
-	}
-
-	function leaveStay() {
-		pendingNavUrl = null;
-		showLeaveDialog = false;
 	}
 
 	// Dismiss the open lane menu on any click outside it (mirrors the
@@ -557,27 +504,6 @@
 </div>
 {/if}
 
-{#if showLeaveDialog}
-	<!-- Leave guard (TASK-1676): an in-app navigation was intercepted
-	     because at least one lane has an unsaved draft. -->
-	<div
-		class="leave-overlay"
-		role="presentation"
-		onclick={(e) => { if (e.target === e.currentTarget) leaveStay(); }}
-		onkeydown={(e) => { if (e.key === 'Escape') leaveStay(); }}
-	>
-		<div class="leave-dialog" role="dialog" aria-modal="true" aria-label="Unsaved card" tabindex="-1">
-			<h3 class="leave-title">Unsaved card</h3>
-			<p class="leave-body">You have an unsaved card. Save it before leaving?</p>
-			<div class="leave-actions">
-				<button class="leave-stay" disabled={savingDraft} onclick={leaveStay}>Stay</button>
-				<button class="leave-discard" disabled={savingDraft} onclick={leaveDiscard}>Discard</button>
-				<button class="leave-save" disabled={savingDraft} onclick={leaveSaveAll}>Save</button>
-			</div>
-		</div>
-	</div>
-{/if}
-
 <style>
 	.board-view {
 		display: flex;
@@ -897,70 +823,4 @@
 		background: var(--bg-hover);
 	}
 
-	/* Leave-guard dialog (TASK-1676). */
-	.leave-overlay {
-		position: fixed;
-		inset: 0;
-		z-index: 1000;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: rgba(0, 0, 0, 0.45);
-		padding: var(--space-4);
-	}
-
-	.leave-dialog {
-		width: 100%;
-		max-width: 360px;
-		padding: var(--space-4);
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		box-shadow: var(--shadow-lg, 0 10px 30px rgba(0, 0, 0, 0.3));
-	}
-
-	.leave-title {
-		margin: 0 0 var(--space-2);
-		font-size: 1em;
-		color: var(--text-primary);
-	}
-
-	.leave-body {
-		margin: 0 0 var(--space-4);
-		font-size: 0.875em;
-		color: var(--text-secondary);
-	}
-
-	.leave-actions {
-		display: flex;
-		justify-content: flex-end;
-		gap: var(--space-2);
-	}
-
-	.leave-actions button {
-		padding: 6px 14px;
-		border-radius: var(--radius-sm);
-		font-size: 0.8125em;
-		cursor: pointer;
-		border: 1px solid var(--border);
-	}
-	.leave-actions button:disabled {
-		opacity: 0.5;
-		cursor: default;
-	}
-
-	.leave-stay {
-		background: var(--bg-secondary);
-		color: var(--text-primary);
-	}
-	.leave-discard {
-		background: none;
-		border-color: var(--accent-red, #ef4444) !important;
-		color: var(--accent-red, #ef4444);
-	}
-	.leave-save {
-		background: var(--accent-blue);
-		border-color: var(--accent-blue) !important;
-		color: #fff;
-	}
 </style>
