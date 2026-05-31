@@ -29,6 +29,22 @@ type publicCollectionSettings struct {
 	ListGroupBy  string `json:"list_group_by,omitempty"`
 }
 
+// publicShareView is the anonymous-viewer projection of models.View
+// exposed on the public collection share-link DTO (TASK-1681). It carries
+// only the presentation fields the read-only view switcher needs; internal
+// UUIDs (id, workspace_id, collection_id) and timestamps are stripped so
+// the public payload leaks nothing addressable. Config is emitted as a
+// parsed JSON object (not the raw stored string) to match how settings/
+// schema are projected.
+type publicShareView struct {
+	Name      string          `json:"name"`
+	Slug      string          `json:"slug"`
+	ViewType  string          `json:"view_type"`
+	Config    json.RawMessage `json:"config"`
+	IsDefault bool            `json:"is_default"`
+	SortOrder int             `json:"sort_order"`
+}
+
 // validateShareLinkOpts checks that share link creation constraints are sane.
 // Returns an error message string (empty if valid).
 func validateShareLinkOpts(expiresAt *string, maxViews *int) string {
@@ -423,6 +439,33 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 				publicCollection["schema"] = schema
 			}
 		}
+
+		// Saved views power the read-only view switcher (TASK-1681 →
+		// TASK-1682). Projected to a public shape — internal UUIDs and
+		// timestamps stripped, config parsed to an object. ListViews returns
+		// them ordered by sort_order; we always emit an array (never null) so
+		// the switcher can fall back to settings.default_view when empty.
+		views, err := s.store.ListViews(link.WorkspaceID, coll.ID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		publicViews := make([]publicShareView, 0, len(views))
+		for _, v := range views {
+			config := json.RawMessage("{}")
+			if c := strings.TrimSpace(v.Config); c != "" && json.Valid([]byte(c)) {
+				config = json.RawMessage(c)
+			}
+			publicViews = append(publicViews, publicShareView{
+				Name:      v.Name,
+				Slug:      v.Slug,
+				ViewType:  v.ViewType,
+				Config:    config,
+				IsDefault: v.IsDefault,
+				SortOrder: v.SortOrder,
+			})
+		}
+		publicCollection["views"] = publicViews
 
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"type":       "collection",
