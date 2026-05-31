@@ -35,13 +35,30 @@
 			.filter((entry) => entry.value !== '')
 	);
 
-	function colorFor(field: FieldDef, value: string): string | undefined {
+	// Categorical fields (status/priority/select) carry kebab/snake option keys
+	// the owner sees as title-cased labels — so we label-format + color those.
+	// Everything else is a LITERAL value (dates, IDs, slugs, URLs, free text)
+	// and must render verbatim — title-casing `2026-05-31` or `api_token` would
+	// corrupt it. Mirrors the single-item share view, which renders field values
+	// raw.
+	function isCategorical(field: FieldDef): boolean {
+		return field.key === 'status' || field.key === 'priority' || field.type === 'select';
+	}
+
+	function colorFor(field: FieldDef): string | undefined {
 		const raw = item.fields[field.key];
 		if (typeof raw !== 'string') return undefined;
-		if (field.key === 'status' || field.key === 'priority' || field.type === 'select') {
-			return fieldValueColor(field, raw);
-		}
+		if (isCategorical(field)) return fieldValueColor(field, raw);
 		return undefined;
+	}
+
+	function displayValue(field: FieldDef, value: string): string {
+		const base = isCategorical(field)
+			? field.key === 'status'
+				? formatLabel(value).toUpperCase()
+				: formatLabel(value)
+			: value;
+		return field.suffix ? `${base} ${field.suffix}` : base;
 	}
 </script>
 
@@ -49,14 +66,10 @@
 	{#if displayFields.length > 0}
 		<dl class="expansion-fields">
 			{#each displayFields as { field, value } (field.key)}
-				{@const color = colorFor(field, value)}
+				{@const color = colorFor(field)}
 				<div class="field-chip">
 					<dt class="field-chip-label">{field.label || formatLabel(field.key)}</dt>
-					<dd class="field-chip-value" style:color>
-						{field.key === 'status' ? formatLabel(value).toUpperCase() : formatLabel(value)}{field.suffix
-							? ` ${field.suffix}`
-							: ''}
-					</dd>
+					<dd class="field-chip-value" style:color>{displayValue(field, value)}</dd>
 				</div>
 			{/each}
 		</dl>
