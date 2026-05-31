@@ -359,6 +359,7 @@
 		<div class="compose">
 			<CommentEditor
 				{wsSlug}
+				{itemId}
 				placeholder="Write a comment… (paste or drop an image to attach)"
 				submitLabel="Comment"
 				{submitting}

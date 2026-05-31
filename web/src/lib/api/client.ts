@@ -1341,13 +1341,17 @@ export const api = {
 			} else {
 				fd.append('file', file, 'upload.bin');
 			}
+			// item_id also rides in the query string (not just the form
+			// body) so the server can authorize the upload via the item's
+			// grant chain BEFORE spooling the multipart payload (BUG-1661).
 			if (itemId) fd.append('item_id', itemId);
 
 			const headers: Record<string, string> = {};
 			const csrf = getCSRFToken();
 			if (csrf) headers['X-CSRF-Token'] = csrf;
 
-			const resp = await fetch(`${BASE}/workspaces/${workspaceSlug}/attachments`, {
+			const qs = itemId ? `?item_id=${encodeURIComponent(itemId)}` : '';
+			const resp = await fetch(`${BASE}/workspaces/${workspaceSlug}/attachments${qs}`, {
 				method: 'POST',
 				headers,
 				credentials: 'same-origin',

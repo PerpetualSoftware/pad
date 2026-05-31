@@ -349,6 +349,7 @@
 	let {
 		content = '',
 		editable = true,
+		itemId,
 		ydoc,
 		awareness,
 		collabUser,
@@ -358,6 +359,14 @@
 	}: {
 		content?: string;
 		editable?: boolean;
+		/**
+		 * UUID of the item being edited. Sent with attachment uploads so the
+		 * server can authorize against the item's grant chain — a grant-based
+		 * editor (share-link guest with no workspace editor role) can attach
+		 * instead of hitting a 403 (BUG-1661). Optional; without it uploads
+		 * fall back to the workspace editor-role gate.
+		 */
+		itemId?: string;
 		/**
 		 * Optional Yjs document to bind this editor to via the Tiptap
 		 * Collaboration extension (PLAN-1248). When set, the y-tiptap
@@ -681,7 +690,7 @@
 						// than leaving a silent stuck spinner.
 						throw new Error('No workspace context — drop a file from inside a workspace.');
 					}
-					return api.attachments.upload(wsSlug, file);
+					return api.attachments.upload(wsSlug, file, itemId);
 				},
 				onError: (filename, message) => {
 					// Surface upload failures to the user. The editor's

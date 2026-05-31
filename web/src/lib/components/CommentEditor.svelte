@@ -33,6 +33,14 @@
 		placeholder?: string;
 		/** Workspace slug — required for attachment upload + image URLs. */
 		wsSlug: string;
+		/**
+		 * UUID of the item this comment belongs to. Sent with attachment
+		 * uploads so the server can authorize against the item's grant chain
+		 * — a grant-based editor (share-link guest, no workspace editor role)
+		 * can attach instead of hitting a 403 (BUG-1661). Optional; without
+		 * it uploads fall back to the workspace editor-role gate.
+		 */
+		itemId?: string;
 		/** Label for the submit button (e.g. "Comment", "Reply", "Save"). */
 		submitLabel?: string;
 		/** External busy flag (network in flight in the host). */
@@ -52,6 +60,7 @@
 		content = '',
 		placeholder = 'Write a comment…',
 		wsSlug,
+		itemId,
 		submitLabel = 'Comment',
 		submitting = false,
 		autofocus = false,
@@ -123,7 +132,7 @@
 						}
 						pendingUploads += 1;
 						try {
-							return await api.attachments.upload(wsSlug, file);
+							return await api.attachments.upload(wsSlug, file, itemId);
 						} finally {
 							pendingUploads -= 1;
 						}

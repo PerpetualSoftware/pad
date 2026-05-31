@@ -208,6 +208,7 @@
 		<div class="edit-compose">
 			<CommentEditor
 				{wsSlug}
+				itemId={comment.item_id}
 				content={comment.body}
 				placeholder="Edit comment…"
 				submitLabel="Save"
@@ -257,6 +258,7 @@
 		<div class="reply-compose">
 			<CommentEditor
 				{wsSlug}
+				itemId={comment.item_id}
 				placeholder="Write a reply… (paste or drop an image to attach)"
 				submitLabel="Reply"
 				autofocus
@@ -309,6 +311,7 @@
 						<div class="edit-compose">
 							<CommentEditor
 								{wsSlug}
+								itemId={comment.item_id}
 								content={reply.body}
 								placeholder="Edit reply…"
 								submitLabel="Save"
