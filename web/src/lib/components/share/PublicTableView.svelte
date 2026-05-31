@@ -65,7 +65,7 @@
 				<div class="table-cell" role="columnheader">{field.label || formatLabel(field.key)}</div>
 			{/each}
 		</div>
-		{#each items as item (item.ref || item.title)}
+		{#each items as item (item.key)}
 			<div
 				class="table-row"
 				class:interactive

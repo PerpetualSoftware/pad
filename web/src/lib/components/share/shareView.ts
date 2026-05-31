@@ -39,8 +39,11 @@ export interface PublicCollection {
 /** One item in the share payload, normalized. `fields` is parsed from
  *  string-or-object; `content` is the raw markdown body (rendering is the
  *  renderer's concern — kept here so a future inline expand (TASK-1684) has
- *  the body without a re-fetch). */
+ *  the body without a re-fetch). `key` is a stable, unique identity assigned
+ *  at parse time (the item's position in the payload) — refs may be empty and
+ *  titles aren't unique, so renderers key `{#each}` blocks on this instead. */
 export interface PublicItem {
+	key: string;
 	title: string;
 	ref: string;
 	fields: Record<string, unknown>;
@@ -130,8 +133,9 @@ export function parsePublicCollection(raw: unknown): PublicCollection {
 }
 
 /** Normalize one raw item into a PublicItem. `fields` parsed defensively;
- *  `ref` falls back across `ref` / `item_ref`. */
-export function parsePublicItem(raw: unknown): PublicItem {
+ *  `ref` falls back across `ref` / `item_ref`. `index` is the item's position
+ *  in the payload, used to derive a stable unique `key`. */
+export function parsePublicItem(raw: unknown, index = 0): PublicItem {
 	const obj = coerceObject(raw);
 	const ref =
 		typeof obj.ref === 'string' && obj.ref
@@ -140,6 +144,9 @@ export function parsePublicItem(raw: unknown): PublicItem {
 				? obj.item_ref
 				: '';
 	return {
+		// Refs can be empty and titles aren't unique, so anchor the key on the
+		// payload position; prefix the ref when present for readable debugging.
+		key: ref ? `${ref}#${index}` : `idx#${index}`,
 		title: typeof obj.title === 'string' && obj.title ? obj.title : 'Untitled',
 		ref,
 		fields: coerceObject(obj.fields),
@@ -149,7 +156,7 @@ export function parsePublicItem(raw: unknown): PublicItem {
 
 export function parsePublicItems(raw: unknown): PublicItem[] {
 	if (!Array.isArray(raw)) return [];
-	return raw.map(parsePublicItem);
+	return raw.map((item, i) => parsePublicItem(item, i));
 }
 
 // ── Field lookup ──────────────────────────────────────────────────────────

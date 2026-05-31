@@ -39,7 +39,7 @@
 				<span class="column-count">{column.items.length}</span>
 			</header>
 			<div class="column-cards">
-				{#each column.items as item (item.ref || item.title)}
+				{#each column.items as item (item.key)}
 					<PublicItemCard {item} fields={collection.fields} {expandable} {onactivate} />
 				{/each}
 				{#if column.items.length === 0}

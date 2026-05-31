@@ -71,7 +71,7 @@
 			</h3>
 		{/if}
 		<div class="group-rows">
-			{#each group.items as item (item.ref || item.title)}
+			{#each group.items as item (item.key)}
 				{@const status = statusOf(item)}
 				{@const priority = priorityOf(item)}
 				<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
