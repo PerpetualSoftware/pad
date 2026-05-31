@@ -955,6 +955,41 @@
 		}
 	}
 
+	// Create an item directly in a board lane (TASK-1671 / IDEA-1159),
+	// pre-filling the lane's group field with its column value so it
+	// lands in that lane. Navigates to the new item to title it, like
+	// the top-level "+ New" → createNewItem flow.
+	async function quickCreateInColumn(groupValue: string) {
+		if (!wsSlug || !collSlug || creatingNew) return;
+		creatingNew = true;
+		try {
+			const schema = collection ? parseSchema(collection) : { fields: [] };
+			const defaultFields: Record<string, any> = {};
+			const statusField = schema.fields.find((f) => f.key === 'status');
+			if (statusField?.options?.length) {
+				defaultFields.status = statusField.options[0];
+			}
+			// Pre-fill the lane's group field (status, or a custom
+			// board_group_by select) so the item opens in this lane.
+			defaultFields[groupField] = groupValue;
+			const item = await api.items.create(wsSlug, collSlug, {
+				title: 'Untitled',
+				content: '',
+				fields: JSON.stringify(defaultFields),
+				source: 'web'
+			});
+			goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
+		} catch (err: any) {
+			if (isPlanLimitError(err)) {
+				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
+			} else {
+				toastStore.show(err?.message || 'Failed to create item', 'error');
+			}
+		} finally {
+			creatingNew = false;
+		}
+	}
+
 	async function quickCreate() {
 		const title = quickCreateTitle.trim();
 		if (!title || !wsSlug || !collSlug || creatingNew) return;
@@ -1751,6 +1786,7 @@
 				onArchiveColumn={handleBulkArchive}
 				onGroupReorder={handleGroupReorder}
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
+				onCreateInColumn={canEditThisCollection ? quickCreateInColumn : undefined}
 				{itemProgress}
 				{progressLabel}
 				canEdit={canEditThisCollection}

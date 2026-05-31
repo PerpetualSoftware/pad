@@ -18,6 +18,12 @@
 		onArchiveColumn?: (items: Item[]) => void;
 		onGroupReorder?: (newOrder: string[]) => void;
 		oncreate?: () => void;
+		/**
+		 * Create an item directly in this lane, pre-filling the lane's
+		 * group field with its column value (folds IDEA-1159). The `+`
+		 * lane-header button calls this. Gated behind `canEdit`.
+		 */
+		onCreateInColumn?: (groupValue: string) => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
 		/**
@@ -37,10 +43,34 @@
 		preserveOrder?: boolean;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false }: Props = $props();
 
 	let confirmArchiveColumn = $state<string | null>(null);
+	// Which lane's ⋯ menu is open (null = none). The menu is the new home
+	// for the column actions (archive today; move/tag/priority/assign land
+	// in TASK-1672). One menu open at a time.
+	let openMenuColumn = $state<string | null>(null);
 	let isMobile = $state(false);
+
+	function toggleMenu(colValue: string) {
+		openMenuColumn = openMenuColumn === colValue ? null : colValue;
+		confirmArchiveColumn = null;
+	}
+
+	function closeMenu() {
+		openMenuColumn = null;
+		confirmArchiveColumn = null;
+	}
+
+	// Dismiss the open lane menu on any click outside it (mirrors the
+	// QuickActionsMenu pattern). The menu markup lives under
+	// `.lane-menu-wrap`, so clicks there don't close it.
+	function handleWindowClick(e: MouseEvent) {
+		if (openMenuColumn === null) return;
+		const target = e.target as HTMLElement | null;
+		if (!target) return;
+		if (!target.closest('.lane-menu-wrap')) closeMenu();
+	}
 
 	const flipDurationMs = 200;
 	const touchDragDelayMs = 500;
@@ -221,6 +251,8 @@
 	}
 </script>
 
+<svelte:window onclick={handleWindowClick} />
+
 {#if items.length === 0}
 	<EmptyState {collection} {wsSlug} {oncreate} />
 {:else}
@@ -252,19 +284,60 @@
 				<span class="column-name">{formatLabel(colValue)}</span>
 				<div class="column-actions">
 					<span class="column-count">{colItems.length}</span>
-					{#if canEdit && onArchiveColumn && colItems.length > 0}
-						{#if confirmArchiveColumn === colValue}
-							<span class="archive-confirm">
-								<button class="archive-yes" onclick={() => { onArchiveColumn(colItems); confirmArchiveColumn = null; }}>Archive {colItems.length}?</button>
-								<button class="archive-no" onclick={() => confirmArchiveColumn = null}>Cancel</button>
-							</span>
-						{:else}
+					{#if canEdit}
+						{#if onCreateInColumn}
 							<button
-								class="archive-col-btn"
-								title="Archive all {formatLabel(colValue).toLowerCase()} items"
-								onclick={() => confirmArchiveColumn = colValue}
-							>&#128451;</button>
+								class="lane-btn lane-add-btn"
+								title="Add item to {formatLabel(colValue).toLowerCase()}"
+								aria-label="Add item to {formatLabel(colValue)}"
+								onclick={() => onCreateInColumn?.(colValue)}
+							>+</button>
 						{/if}
+						<div class="lane-menu-wrap">
+							<button
+								class="lane-btn lane-menu-btn"
+								title="Lane actions"
+								aria-label="{formatLabel(colValue)} lane actions"
+								aria-haspopup="menu"
+								aria-expanded={openMenuColumn === colValue}
+								onclick={() => toggleMenu(colValue)}
+							>⋯</button>
+							{#if openMenuColumn === colValue}
+								<div class="lane-menu" role="menu">
+									{#if onCreateInColumn}
+										<button
+											class="lane-menu-item"
+											role="menuitem"
+											onclick={() => { onCreateInColumn?.(colValue); closeMenu(); }}
+										>
+											<span class="lmi-icon" aria-hidden="true">＋</span> Add item here
+										</button>
+									{/if}
+									{#if onArchiveColumn && colItems.length > 0}
+										{#if onCreateInColumn}
+											<div class="lane-menu-sep"></div>
+										{/if}
+										{#if confirmArchiveColumn === colValue}
+											<div class="lane-menu-confirm">
+												<span>Archive {colItems.length} item{colItems.length === 1 ? '' : 's'}?</span>
+												<div class="lmc-actions">
+													<button class="lmc-yes" onclick={() => { onArchiveColumn?.(colItems); closeMenu(); }}>Archive</button>
+													<button class="lmc-no" onclick={() => (confirmArchiveColumn = null)}>Cancel</button>
+												</div>
+											</div>
+										{:else}
+											<button
+												class="lane-menu-item lmi-danger"
+												role="menuitem"
+												onclick={() => (confirmArchiveColumn = colValue)}
+											>
+												<span class="lmi-icon" aria-hidden="true">🗃</span> Archive all ({colItems.length})
+											</button>
+										{/if}
+									{/if}
+								</div>
+							{/if}
+						</div>
 					{/if}
 				</div>
 			</div>
@@ -408,61 +481,138 @@
 		border-radius: 10px;
 	}
 
-	.archive-col-btn {
+	/* Lane-header affordances (TASK-1671): a `+` add-into-lane button and
+	   a ⋯ kebab that opens the lane menu. Unlike the old hover-only
+	   archive button these are always visible with real (≥28px, ≥32px on
+	   touch) tap targets. */
+	.lane-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 28px;
+		height: 28px;
+		padding: 0 4px;
 		background: none;
 		border: none;
 		color: var(--text-muted);
-		font-size: 0.8em;
-		cursor: pointer;
-		padding: 2px 4px;
-		border-radius: var(--radius-sm);
-		opacity: 0;
-		transition: opacity 0.15s;
+		font-size: 1em;
 		line-height: 1;
+		cursor: pointer;
+		border-radius: var(--radius-sm);
+		transition: color 0.15s, background 0.15s;
 	}
 
-	.column-header:hover .archive-col-btn {
-		opacity: 1;
+	.lane-add-btn {
+		font-size: 1.15em;
+		font-weight: 600;
 	}
 
-	.archive-col-btn:hover {
+	.lane-btn:hover {
 		color: var(--text-primary);
 		background: var(--bg-hover);
 	}
 
-	.archive-confirm {
-		display: flex;
-		gap: var(--space-1);
-		align-items: center;
+	.lane-menu-wrap {
+		position: relative;
+		display: inline-flex;
 	}
 
-	.archive-yes {
+	.lane-menu {
+		position: absolute;
+		top: calc(100% + 4px);
+		right: 0;
+		z-index: 20;
+		min-width: 180px;
+		padding: var(--space-1);
+		background: var(--bg-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-md);
+		box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.15));
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
+
+	.lane-menu-item {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		width: 100%;
+		padding: 8px 10px;
 		background: none;
 		border: none;
-		color: var(--accent-red, #ef4444);
-		font-size: 0.75em;
-		cursor: pointer;
-		padding: 2px 6px;
 		border-radius: var(--radius-sm);
-		white-space: nowrap;
+		color: var(--text-primary);
+		font-size: 0.875em;
+		text-align: left;
+		cursor: pointer;
 	}
 
-	.archive-yes:hover {
+	.lane-menu-item:hover {
+		background: var(--bg-hover);
+	}
+
+	.lane-menu-item.lmi-danger {
+		color: var(--accent-red, #ef4444);
+	}
+
+	.lane-menu-item.lmi-danger:hover {
 		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
 	}
 
-	.archive-no {
-		background: none;
-		border: none;
-		color: var(--text-muted);
-		font-size: 0.75em;
-		cursor: pointer;
-		padding: 2px 6px;
-		border-radius: var(--radius-sm);
+	.lmi-icon {
+		width: 1.1em;
+		text-align: center;
+		flex-shrink: 0;
 	}
 
-	.archive-no:hover {
+	.lane-menu-sep {
+		height: 1px;
+		margin: 2px 0;
+		background: var(--border);
+	}
+
+	.lane-menu-confirm {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		padding: 8px 10px;
+		font-size: 0.8125em;
+		color: var(--text-secondary);
+	}
+
+	.lmc-actions {
+		display: flex;
+		gap: var(--space-2);
+	}
+
+	.lmc-yes {
+		flex: 1;
+		padding: 6px 10px;
+		background: var(--accent-red, #ef4444);
+		border: none;
+		border-radius: var(--radius-sm);
+		color: #fff;
+		font-size: 0.8125em;
+		cursor: pointer;
+	}
+
+	.lmc-no {
+		flex: 1;
+		padding: 6px 10px;
+		background: var(--bg-tertiary);
+		border: none;
+		border-radius: var(--radius-sm);
 		color: var(--text-primary);
+		font-size: 0.8125em;
+		cursor: pointer;
+	}
+
+	@media (max-width: 768px) {
+		.lane-btn {
+			min-width: 32px;
+			height: 32px;
+		}
 	}
 
 	.column-cards {
