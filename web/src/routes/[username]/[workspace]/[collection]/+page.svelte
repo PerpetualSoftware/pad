@@ -1004,13 +1004,20 @@
 		}
 	}
 
-	// Create an item directly in a board lane (TASK-1671 / IDEA-1159),
-	// pre-filling the lane's group field with its column value so it
-	// lands in that lane. Navigates to the new item to title it, like
-	// the top-level "+ New" → createNewItem flow.
-	async function quickCreateInColumn(groupValue: string) {
-		if (!wsSlug || !collSlug || creatingNew) return;
-		creatingNew = true;
+	// Create an item in a board lane from the inline draft card
+	// (TASK-1676, refines TASK-1671 / IDEA-1159). Pre-fills the lane's
+	// group field so the item lands in that lane. `navigate` true (Enter
+	// in the draft) opens the new item; false (nav-guard "Save") just
+	// upserts it into the local index and stays put. Throws on failure so
+	// BoardView can restore the draft. Returns the created item.
+	async function quickCreateInColumn(
+		groupValue: string,
+		title: string,
+		navigate: boolean
+	): Promise<Item | null> {
+		if (!wsSlug || !collSlug) return null;
+		const trimmed = title.trim();
+		if (!trimmed) return null;
 		try {
 			const schema = collection ? parseSchema(collection) : { fields: [] };
 			const defaultFields: Record<string, any> = {};
@@ -1022,20 +1029,24 @@
 			// board_group_by select) so the item opens in this lane.
 			defaultFields[groupField] = groupValue;
 			const item = await api.items.create(wsSlug, collSlug, {
-				title: 'Untitled',
+				title: trimmed,
 				content: '',
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
+			if (navigate) {
+				goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
+			} else {
+				localIndex.upsert(wsSlug, item);
+			}
+			return item;
 		} catch (err: any) {
 			if (isPlanLimitError(err)) {
 				toastStore.show(planLimitMessage(err) + ' Upgrade to Pro', 'error', 6000, '/console/billing');
 			} else {
 				toastStore.show(err?.message || 'Failed to create item', 'error');
 			}
-		} finally {
-			creatingNew = false;
+			throw err;
 		}
 	}
 
