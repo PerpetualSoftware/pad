@@ -590,6 +590,7 @@ export interface ItemUpdate {
 // event per affected collection + one webhook instead of per-item fan-out.
 export type BulkItemOp =
 	| 'archive'
+	| 'restore'
 	| 'move'
 	| 'tag'
 	| 'untag'
@@ -604,6 +605,7 @@ export type BulkItemOp =
 // at-least-one rule.
 export type BulkItemsRequest =
 	| { op: 'archive'; ids: string[]; force?: boolean }
+	| { op: 'restore'; ids: string[] }
 	| {
 			op: 'move';
 			ids: string[];

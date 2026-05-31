@@ -126,6 +126,7 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 	// request fails fast before touching any rows.
 	switch req.Op {
 	case "archive":
+	case "restore":
 	case "move":
 		if req.Status == "" && req.Collection == "" {
 			writeError(w, http.StatusBadRequest, "bad_request", "move requires status or collection")
@@ -186,7 +187,15 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 	batches := map[string]*collBatch{}
 
 	for _, ref := range req.IDs {
-		item, err := s.store.ResolveItem(workspaceID, ref)
+		// `restore` operates on ARCHIVED items, which ResolveItem hides —
+		// resolve include-deleted for that op (used by undo, TASK-1674).
+		var item *models.Item
+		var err error
+		if req.Op == "restore" {
+			item, err = s.store.ResolveItemIncludeDeleted(workspaceID, ref)
+		} else {
+			item, err = s.store.ResolveItem(workspaceID, ref)
+		}
 		if err != nil {
 			resp.Failed = append(resp.Failed, bulkItemFailure{Ref: ref, Error: err.Error()})
 			continue
@@ -231,6 +240,8 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case req.Op == "archive":
 			action = "archived"
+		case req.Op == "restore":
+			action = "restored"
 		case req.Op == "move" && req.Collection != "" && req.Collection != item.CollectionSlug:
 			action = "moved"
 			meta["from_collection"] = item.CollectionSlug
@@ -308,6 +319,24 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 			return d, nil
 		}
 		return item, nil
+
+	case "restore":
+		// Undo of a bulk archive (TASK-1674). RestoreItem clears
+		// deleted_at and bumps seq; returns the live row.
+		restored, err := s.store.RestoreItem(item.ID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return nil, &bulkOpError{message: "item not found or not archived"}
+			}
+			if strings.Contains(err.Error(), "UNIQUE constraint") || strings.Contains(err.Error(), "duplicate key") {
+				return nil, &bulkOpError{
+					message: "cannot restore: another item has claimed this slug or invocation slug",
+					code:    "conflict",
+				}
+			}
+			return nil, &bulkOpError{message: err.Error()}
+		}
+		return restored, nil
 
 	case "move":
 		if req.Collection != "" {
