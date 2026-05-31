@@ -1081,10 +1081,21 @@
 		// prompting would be wrong (Codex round 2).
 		if (nav.to.url.pathname === nav.from?.url.pathname) return;
 		const url = nav.to.url;
+		// Replay Back/Forward via history.go(delta) so cancelling +
+		// re-navigating preserves history order (a goto would push the
+		// target as a NEW entry, corrupting Back). Codex round 4.
+		const popDelta = nav.type === 'popstate' ? nav.delta : undefined;
 		nav.cancel();
 		pendingNav = () => {
 			bypassNavGuard = true;
-			goto(url).finally(() => { bypassNavGuard = false; });
+			if (typeof popDelta === 'number') {
+				history.go(popDelta);
+				// popstate has no completion promise — reset the bypass
+				// once the navigation has settled.
+				setTimeout(() => { bypassNavGuard = false; }, 0);
+			} else {
+				goto(url).finally(() => { bypassNavGuard = false; });
+			}
 		};
 		showLeaveDialog = true;
 	});
