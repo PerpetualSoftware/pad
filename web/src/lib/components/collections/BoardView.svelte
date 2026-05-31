@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
+	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
@@ -41,9 +42,16 @@
 		 * two matches share a column.
 		 */
 		preserveOrder?: boolean;
+		/**
+		 * Page-wide sort applied within each lane (TASK-1670). 'manual'
+		 * (default) keeps the stored sort_order — the drag order. Any
+		 * other mode also disables item drag, since reordering a sorted
+		 * lane would be meaningless (the comparator would re-sort it).
+		 */
+		sortMode?: SortMode;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual' }: Props = $props();
 
 	let confirmArchiveColumn = $state<string | null>(null);
 	// Which lane's ⋯ menu is open (null = none). The menu is the new home
@@ -163,10 +171,13 @@
 			}
 		}
 		// `preserveOrder` opts out of the in-column sort so search rank
-		// from the parent isn't overridden — TASK-1367.
+		// from the parent isn't overridden — TASK-1367. Otherwise sort
+		// each lane by the page-wide sort mode (TASK-1670); 'manual'
+		// resolves to the stored sort_order, preserving prior behavior.
 		if (!preserveOrder) {
+			const cmp = itemComparator(sortMode, collection);
 			for (const col of columns) {
-				result[col].sort((a, b) => a.sort_order - b.sort_order);
+				result[col].sort(cmp);
 			}
 		}
 		return result;
@@ -362,8 +373,11 @@
 					// requested rank-preserving order (search
 					// active) — otherwise a drag would persist the
 					// relevance-ranked subset order as the stored
-					// `sort_order`. TASK-1367 / Codex R5.
-					dragDisabled: isMobile || !canEdit || preserveOrder
+					// `sort_order`. TASK-1367 / Codex R5. Also disable
+					// under any non-manual page sort (TASK-1670): the
+					// lane is comparator-ordered, so a drag couldn't
+					// stick anyway.
+					dragDisabled: isMobile || !canEdit || preserveOrder || sortMode !== 'manual'
 				}}
 				onconsider={(e) => handleConsider(colValue, e)}
 				onfinalize={(e) => handleFinalize(colValue, e)}

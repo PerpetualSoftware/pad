@@ -25,6 +25,7 @@
 	import { localSearch, parseSearchQuery } from '$lib/stores/localSearch.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
+	import { SORT_OPTIONS, priorityField, type SortMode } from '$lib/collections/itemSort';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -38,6 +39,9 @@
 	let metaLoading = $state(true);
 	let collection = $state<Collection | null>(null);
 	let viewMode = $state<ViewMode>('list');
+	// Page-wide within-group sort (TASK-1670 / IDEA-1648). 'manual' is the
+	// stored sort_order (drag order). Persisted per collection.
+	let sortMode = $state<SortMode>('manual');
 	let activeFilters = $state<Record<string, string>>({});
 	// Multi-select tag filter (OR semantics). Tags live on the top-level
 	// `tags` column, not in `fields` JSON, so they're tracked separately
@@ -196,6 +200,39 @@
 		} catch {}
 		return defaultMode;
 	}
+
+	// Persist the page-wide sort per collection (mirrors saveViewMode).
+	function saveSortMode(mode: SortMode) {
+		sortMode = mode;
+		if (collSlug) {
+			try { localStorage.setItem(`pad-sort-${collSlug}`, mode); } catch {}
+		}
+	}
+
+	function loadSavedSortMode(coll: string): SortMode {
+		try {
+			const saved = localStorage.getItem(`pad-sort-${coll}`);
+			if (SORT_OPTIONS.some((o) => o.value === saved)) return saved as SortMode;
+		} catch {}
+		return 'manual';
+	}
+
+	// Sort options available for this collection: hide "Priority" when the
+	// collection has no `priority` select field (it would be a no-op).
+	let sortOptions = $derived(
+		collection && priorityField(collection)
+			? SORT_OPTIONS
+			: SORT_OPTIONS.filter((o) => o.value !== 'priority')
+	);
+
+	// Fall back to 'manual' if the active sort isn't valid for this
+	// collection (e.g. a 'priority' choice persisted for a collection
+	// that has no priority field after switching collections).
+	$effect(() => {
+		if (!sortOptions.some((o) => o.value === sortMode)) {
+			sortMode = 'manual';
+		}
+	});
 
 	// Sync filters to URL query params (shareable)
 	function updateUrlFilters() {
@@ -501,6 +538,7 @@
 			const defaultMode = (['board', 'list', 'table'].includes(settings.default_view))
 				? settings.default_view as ViewMode : 'list';
 			viewMode = loadSavedViewMode(coll, defaultMode);
+			sortMode = loadSavedSortMode(coll);
 
 			// Override with URL params if present
 			loadUrlFilters();
@@ -1542,6 +1580,22 @@
 						</div>
 					{/if}
 
+					{#if viewMode !== 'table'}
+						<label class="sort-control" title="Sort items">
+							<span class="sort-label">Sort</span>
+							<select
+								class="sort-select"
+								value={sortMode}
+								onchange={(e) => saveSortMode(e.currentTarget.value as SortMode)}
+								aria-label="Sort items"
+							>
+								{#each sortOptions as opt (opt.value)}
+									<option value={opt.value}>{opt.label}</option>
+								{/each}
+							</select>
+						</label>
+					{/if}
+
 					<button
 						class="filter-toggle-btn"
 						class:has-filters={hasActiveFilters}
@@ -1791,6 +1845,7 @@
 				{progressLabel}
 				canEdit={canEditThisCollection}
 				preserveOrder={searchQuery.trim() !== ''}
+				{sortMode}
 			/>
 		{:else if viewMode === 'table'}
 			<TableView
@@ -1819,6 +1874,7 @@
 				{progressLabel}
 				canEdit={canEditThisCollection}
 				preserveOrder={searchQuery.trim() !== ''}
+				{sortMode}
 			/>
 		{/if}
 	{/if}
@@ -2113,6 +2169,38 @@
 
 	.filters-panel {
 		padding: var(--space-3) 0;
+	}
+
+	/* Page-wide sort control (TASK-1670) — sits next to the view toggle. */
+	.sort-control {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		font-size: 0.82em;
+		color: var(--text-muted);
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+
+	.sort-label {
+		display: none;
+	}
+
+	@media (min-width: 900px) {
+		.sort-label {
+			display: inline;
+		}
+	}
+
+	.sort-select {
+		appearance: auto;
+		background: var(--bg-secondary);
+		color: var(--text-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		padding: 4px 6px;
+		font-size: inherit;
+		cursor: pointer;
 	}
 
 	.archive-toggle {

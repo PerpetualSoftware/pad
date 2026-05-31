@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
+	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
@@ -46,6 +47,13 @@
 		 * status column.
 		 */
 		preserveOrder?: boolean;
+		/**
+		 * Page-wide sort applied within each group (TASK-1670). 'manual'
+		 * (default) keeps the stored sort_order — the drag order. Any
+		 * other mode also disables item drag, since reordering a sorted
+		 * group would be meaningless.
+		 */
+		sortMode?: SortMode;
 	}
 
 	let {
@@ -63,7 +71,8 @@
 		itemProgress,
 		progressLabel = 'tasks',
 		canEdit = true,
-		preserveOrder = false
+		preserveOrder = false,
+		sortMode = 'manual'
 	}: Props = $props();
 
 	let confirmArchiveGroup = $state<string | null>(null);
@@ -151,9 +160,12 @@
 		// `preserveOrder` opts out of the in-group sort so a parent that
 		// already sorted by relevance (search active) doesn't get its
 		// ranking clobbered when two matches share a column. TASK-1367.
+		// Otherwise sort each group by the page-wide sort mode
+		// (TASK-1670); 'manual' resolves to the stored sort_order.
 		if (!preserveOrder) {
+			const cmp = itemComparator(sortMode, collection);
 			for (const key of Object.keys(result)) {
-				result[key].sort((a, b) => a.sort_order - b.sort_order);
+				result[key].sort(cmp);
 			}
 		}
 		return result;
@@ -304,7 +316,9 @@
 							// active) — otherwise a drag would persist
 							// the relevance-ranked subset order as the
 							// stored `sort_order`. TASK-1367 / Codex R5.
-							dragDisabled: !canEdit || preserveOrder
+							// Also disable under any non-manual page sort
+							// (TASK-1670) — the group is comparator-ordered.
+							dragDisabled: !canEdit || preserveOrder || sortMode !== 'manual'
 						}}
 						onconsider={(e) => handleConsider(groupName, e)}
 						onfinalize={(e) => handleFinalize(groupName, e)}
