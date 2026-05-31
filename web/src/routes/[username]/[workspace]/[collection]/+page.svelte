@@ -1069,6 +1069,12 @@
 	// kept only until reload, so those aren't guarded.
 	beforeNavigate((nav) => {
 		if (bypassNavGuard || !hasUnsavedDrafts || !nav.to) return;
+		// Ignore same-pathname navigations — those are internal query/view
+		// state syncs (updateUrlFilters' replaceState goto on a view/filter/
+		// search change), not a real "leave". The draft survives those (it's
+		// page state), so prompting would be wrong. Only guard true leaves
+		// to a different page. Codex round 2.
+		if (nav.to.url.pathname === nav.from?.url.pathname) return;
 		const url = nav.to.url;
 		nav.cancel();
 		pendingNav = () => {
