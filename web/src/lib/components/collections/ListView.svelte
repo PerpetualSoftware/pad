@@ -284,7 +284,12 @@
 					<span class="group-title">{formatLabel(groupName)}</span>
 					<span class="group-actions">
 						<span class="group-count">{itemCount(grpItems)}</span>
-						{#if canEdit && onArchiveGroup && itemCount(grpItems) > 0}
+						<!-- Gate on onArchiveGroup alone (not canEdit): archive-all
+						     is owner/editor-gated by the page via the callback, so
+						     an owner/editor without a collection edit grant
+						     (canEdit false) can still bulk-archive. TASK-1672 /
+						     Codex round 4. -->
+						{#if onArchiveGroup && itemCount(grpItems) > 0}
 							{#if confirmArchiveGroup === groupName}
 								<span class="archive-confirm">
 									<button class="archive-yes" onclick={(e) => { e.stopPropagation(); onArchiveGroup(grpItems); confirmArchiveGroup = null; }}>Archive {itemCount(grpItems)}?</button>
