@@ -33,9 +33,17 @@
 		parsedItems?: PublicItem[];
 		/** Override the rendered view; defaults to settings.default_view. */
 		view?: 'list' | 'board' | 'table';
-		/** Forwarded to leaf renderers for the deferred inline expand (TASK-1684). */
+		/** Forwarded to leaf renderers to enable the inline expand (TASK-1684). */
 		expandable?: boolean;
+		/** Fired when an expandable row/card is activated (toggle). */
 		onactivate?: (item: PublicItem) => void;
+		/** `key` of the currently-expanded item ('' = none). Drives the inline
+		 *  expansion panel in the leaf renderers. */
+		expandedKey?: string;
+		/** Returns pre-sanitized HTML for an item's markdown body. Owned by the
+		 *  route (single marked()+DOMPurify pipeline) so there's one {@html}
+		 *  source — no new XSS surface. */
+		renderContent?: (item: PublicItem) => string;
 	}
 
 	let {
@@ -45,7 +53,9 @@
 		parsedItems,
 		view,
 		expandable = false,
-		onactivate
+		onactivate,
+		expandedKey = '',
+		renderContent
 	}: Props = $props();
 
 	let coll = $derived<PublicCollection>(parsedCollection ?? parsePublicCollection(collection));
@@ -83,11 +93,32 @@
 			</p>
 		{/if}
 		{#if activeView === 'board'}
-			<PublicBoardView collection={coll} items={renderItems} {expandable} {onactivate} />
+			<PublicBoardView
+				collection={coll}
+				items={renderItems}
+				{expandable}
+				{onactivate}
+				{expandedKey}
+				{renderContent}
+			/>
 		{:else if activeView === 'table'}
-			<PublicTableView collection={coll} items={renderItems} {expandable} {onactivate} />
+			<PublicTableView
+				collection={coll}
+				items={renderItems}
+				{expandable}
+				{onactivate}
+				{expandedKey}
+				{renderContent}
+			/>
 		{:else}
-			<PublicListView collection={coll} items={renderItems} {expandable} {onactivate} />
+			<PublicListView
+				collection={coll}
+				items={renderItems}
+				{expandable}
+				{onactivate}
+				{expandedKey}
+				{renderContent}
+			/>
 		{/if}
 	{/if}
 </div>

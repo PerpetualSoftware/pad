@@ -19,12 +19,17 @@
 	interface Props {
 		collection: PublicCollection;
 		items: PublicItem[];
-		/** Forwarded to each card for the deferred inline-expand (TASK-1684). */
+		/** Forwarded to each card for the inline read-only expand (TASK-1684). */
 		expandable?: boolean;
 		onactivate?: (item: PublicItem) => void;
+		/** `key` of the currently-expanded item ('' = none). */
+		expandedKey?: string;
+		/** Returns pre-sanitized HTML for an item's markdown body (route-owned). */
+		renderContent?: (item: PublicItem) => string;
 	}
 
-	let { collection, items, expandable = false, onactivate }: Props = $props();
+	let { collection, items, expandable = false, onactivate, expandedKey = '', renderContent }: Props =
+		$props();
 
 	let groupField = $derived(resolveGroupField(collection));
 	let groupFieldDef = $derived(findField(collection.fields, groupField));
@@ -41,7 +46,14 @@
 			</header>
 			<div class="column-cards">
 				{#each column.items as item (item.key)}
-					<PublicItemCard {item} fields={collection.fields} {expandable} {onactivate} />
+					<PublicItemCard
+						{item}
+						fields={collection.fields}
+						{expandable}
+						{onactivate}
+						{expandedKey}
+						{renderContent}
+					/>
 				{/each}
 				{#if column.items.length === 0}
 					<p class="column-empty">No {(formatLabel(column.value) || 'ungrouped').toLowerCase()} items</p>
