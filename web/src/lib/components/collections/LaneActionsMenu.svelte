@@ -16,13 +16,17 @@
 		/** Workspace tag suggestions for "Tag all". */
 		tagSuggestions: string[];
 		onClose: () => void;
-		onAddItem: () => void;
-		onArchive: () => void;
-		onMove: (status: string) => void;
-		onTag: (tag: string) => void;
-		onUntag: (tag: string) => void;
-		onSetPriority: (priority: string) => void;
-		onAssign: (userId: string) => void;
+		// Each action is optional: the caller passes only the ones the
+		// current user is permitted to perform (the single `+` create is
+		// grant-aware; the bulk verbs require workspace owner/editor — see
+		// the page). An undefined callback hides its menu entry.
+		onAddItem?: () => void;
+		onArchive?: () => void;
+		onMove?: (status: string) => void;
+		onTag?: (tag: string) => void;
+		onUntag?: (tag: string) => void;
+		onSetPriority?: (priority: string) => void;
+		onAssign?: (userId: string) => void;
 	}
 
 	let {
@@ -95,7 +99,7 @@
 	function submitTag() {
 		const t = tagInput.trim();
 		if (t) {
-			onTag(t);
+			onTag?.(t);
 			onClose();
 		}
 	}
@@ -103,81 +107,87 @@
 
 <div class="lane-menu" role="menu" onkeydown={(e) => { if (e.key === 'Escape') onClose(); }} tabindex="-1">
 	{#if view === 'root'}
-		<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onAddItem(); onClose(); })}>
-			<span class="lmi-icon" aria-hidden="true">＋</span> Add item here
-		</button>
+		{#if onAddItem}
+			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onAddItem?.(); onClose(); })}>
+				<span class="lmi-icon" aria-hidden="true">＋</span> Add item here
+			</button>
+		{/if}
 
 		{#if count > 0}
 			<div class="lane-menu-sep"></div>
 
-			{#if moveTargets.length > 0}
+			{#if onMove && moveTargets.length > 0}
 				<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => (view = 'move'))}>
 					<span class="lmi-icon" aria-hidden="true">→</span> Move all to <span class="lmi-chevron">›</span>
 				</button>
 			{/if}
 
-			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => (view = 'tag'))}>
-				<span class="lmi-icon" aria-hidden="true">🏷</span> Tag all <span class="lmi-chevron">›</span>
-			</button>
+			{#if onTag}
+				<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => (view = 'tag'))}>
+					<span class="lmi-icon" aria-hidden="true">🏷</span> Tag all <span class="lmi-chevron">›</span>
+				</button>
+			{/if}
 
-			{#if laneTags.length > 0}
+			{#if onUntag && laneTags.length > 0}
 				<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => (view = 'untag'))}>
 					<span class="lmi-icon" aria-hidden="true">⌫</span> Untag all <span class="lmi-chevron">›</span>
 				</button>
 			{/if}
 
-			{#if priorityOptions.length > 0}
+			{#if onSetPriority && priorityOptions.length > 0}
 				<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => (view = 'priority'))}>
 					<span class="lmi-icon" aria-hidden="true">⚑</span> Set priority <span class="lmi-chevron">›</span>
 				</button>
 			{/if}
 
-			{#if members.length > 0}
+			{#if onAssign && members.length > 0}
 				<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => (view = 'assign'))}>
 					<span class="lmi-icon" aria-hidden="true">👤</span> Assign all <span class="lmi-chevron">›</span>
 				</button>
 			{/if}
 
-			<div class="lane-menu-sep"></div>
-			{#if confirmArchive}
-				<div class="lane-menu-confirm">
-					<span>Archive {count} item{count === 1 ? '' : 's'}{scopeNote}?</span>
-					<div class="lmc-actions">
-						<button class="lmc-yes" onclick={(e) => run(e, () => { onArchive(); onClose(); })}>Archive</button>
-						<button class="lmc-no" onclick={(e) => run(e, () => (confirmArchive = false))}>Cancel</button>
+			{#if onArchive}
+				<div class="lane-menu-sep"></div>
+				{#if confirmArchive}
+					<div class="lane-menu-confirm">
+						<span>Archive {count} item{count === 1 ? '' : 's'}{scopeNote}?</span>
+						<div class="lmc-actions">
+							<button class="lmc-yes" onclick={(e) => run(e, () => { onArchive?.(); onClose(); })}>Archive</button>
+							<button class="lmc-no" onclick={(e) => run(e, () => (confirmArchive = false))}>Cancel</button>
+						</div>
 					</div>
-				</div>
-			{:else}
-				<button class="lane-menu-item lmi-danger" role="menuitem" onclick={(e) => run(e, () => (confirmArchive = true))}>
-					<span class="lmi-icon" aria-hidden="true">🗃</span> Archive all ({count}{scopeNote})
-				</button>
+				{:else}
+					<button class="lane-menu-item lmi-danger" role="menuitem" onclick={(e) => run(e, () => (confirmArchive = true))}>
+						<span class="lmi-icon" aria-hidden="true">🗃</span> Archive all ({count}{scopeNote})
+					</button>
+				{/if}
 			{/if}
 		{/if}
 	{:else if view === 'move'}
 		<button class="lane-menu-back" onclick={(e) => run(e, () => (view = 'root'))}>‹ Move all to{scopeNote}</button>
 		{#each moveTargets as target (target)}
-			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onMove(target); onClose(); })}>
+			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onMove?.(target); onClose(); })}>
 				{fmt(target)}
 			</button>
 		{/each}
 	{:else if view === 'priority'}
 		<button class="lane-menu-back" onclick={(e) => run(e, () => (view = 'root'))}>‹ Set priority{scopeNote}</button>
 		{#each priorityOptions as p (p)}
-			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onSetPriority(p); onClose(); })}>
+			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onSetPriority?.(p); onClose(); })}>
 				{fmt(p)}
 			</button>
 		{/each}
 	{:else if view === 'assign'}
 		<button class="lane-menu-back" onclick={(e) => run(e, () => (view = 'root'))}>‹ Assign all{scopeNote}</button>
 		{#each members as m (m.user_id)}
-			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onAssign(m.user_id); onClose(); })}>
+			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onAssign?.(m.user_id); onClose(); })}>
 				{m.user_name || m.user_id}
 			</button>
 		{/each}
 	{:else if view === 'untag'}
 		<button class="lane-menu-back" onclick={(e) => run(e, () => (view = 'root'))}>‹ Untag all{scopeNote}</button>
 		{#each laneTags as t (t)}
-			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onUntag(t); onClose(); })}>
+			<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onUntag?.(t); onClose(); })}>
 				{t}
 			</button>
 		{/each}
@@ -196,7 +206,7 @@
 		{#if tagSuggestions.length > 0}
 			<div class="lane-menu-sep"></div>
 			{#each tagSuggestions as t (t)}
-				<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onTag(t); onClose(); })}>
+				<button class="lane-menu-item" role="menuitem" onclick={(e) => run(e, () => { onTag?.(t); onClose(); })}>
 					{t}
 				</button>
 			{/each}

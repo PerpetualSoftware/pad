@@ -184,6 +184,13 @@
 	let canEditThisCollection = $derived(
 		collection ? workspaceStore.canEditCollection(collection.id) : false
 	);
+	// The bulk endpoint (TASK-1668) gates on workspace owner/editor role —
+	// it is NOT grant-aware like single-item CRUD. So the lane BULK actions
+	// (move/tag/untag/set-priority/assign/archive-all) are gated on role
+	// here, not canEditThisCollection, or a collection-edit-grant guest
+	// would see them and get a 403 per click (TASK-1672 / Codex round 3).
+	// The single `+` create stays on canEditThisCollection (grant-aware).
+	let canBulkEdit = $derived(['owner', 'editor'].includes(workspaceStore.currentRole ?? ''));
 
 	// Persist view mode to localStorage per collection
 	function saveViewMode(mode: ViewMode) {
@@ -1886,15 +1893,15 @@
 				{focusedItemId}
 				onStatusChange={handleStatusChange}
 				onReorder={handleReorder}
-				onArchiveColumn={canEditThisCollection ? handleBulkArchive : undefined}
+				onArchiveColumn={canBulkEdit ? handleBulkArchive : undefined}
 				onGroupReorder={handleGroupReorder}
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				onCreateInColumn={canEditThisCollection ? quickCreateInColumn : undefined}
-				onMoveColumn={canEditThisCollection ? handleBulkMove : undefined}
-				onTagColumn={canEditThisCollection ? handleBulkTag : undefined}
-				onUntagColumn={canEditThisCollection ? handleBulkUntag : undefined}
-				onSetPriorityColumn={canEditThisCollection ? handleBulkSetPriority : undefined}
-				onAssignColumn={canEditThisCollection ? handleBulkAssign : undefined}
+				onMoveColumn={canBulkEdit ? handleBulkMove : undefined}
+				onTagColumn={canBulkEdit ? handleBulkTag : undefined}
+				onUntagColumn={canBulkEdit ? handleBulkUntag : undefined}
+				onSetPriorityColumn={canBulkEdit ? handleBulkSetPriority : undefined}
+				onAssignColumn={canBulkEdit ? handleBulkAssign : undefined}
 				members={workspaceMembers}
 				{tagSuggestions}
 				filtered={hasActiveFilters}
@@ -1924,7 +1931,7 @@
 				{statusOptions}
 				onStatusChange={handleStatusChange}
 				onReorder={handleReorder}
-				onArchiveGroup={handleBulkArchive}
+				onArchiveGroup={canBulkEdit ? handleBulkArchive : undefined}
 				onGroupReorder={handleGroupReorder}
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				{itemProgress}

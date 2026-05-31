@@ -335,13 +335,13 @@
 									{members}
 									{tagSuggestions}
 									onClose={closeMenu}
-									onAddItem={() => onCreateInColumn?.(colValue)}
-									onArchive={() => onArchiveColumn?.(colItems)}
-									onMove={(status) => onMoveColumn?.(colItems, status)}
-									onTag={(tag) => onTagColumn?.(colItems, tag)}
-									onUntag={(tag) => onUntagColumn?.(colItems, tag)}
-									onSetPriority={(p) => onSetPriorityColumn?.(colItems, p)}
-									onAssign={(userId) => onAssignColumn?.(colItems, userId)}
+									onAddItem={onCreateInColumn ? () => onCreateInColumn?.(colValue) : undefined}
+									onArchive={onArchiveColumn ? () => onArchiveColumn?.(colItems) : undefined}
+									onMove={onMoveColumn ? (status) => onMoveColumn?.(colItems, status) : undefined}
+									onTag={onTagColumn ? (tag) => onTagColumn?.(colItems, tag) : undefined}
+									onUntag={onUntagColumn ? (tag) => onUntagColumn?.(colItems, tag) : undefined}
+									onSetPriority={onSetPriorityColumn ? (p) => onSetPriorityColumn?.(colItems, p) : undefined}
+									onAssign={onAssignColumn ? (userId) => onAssignColumn?.(colItems, userId) : undefined}
 								/>
 							{/if}
 						</div>
