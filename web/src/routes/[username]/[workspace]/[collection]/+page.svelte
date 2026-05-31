@@ -1069,11 +1069,16 @@
 	// kept only until reload, so those aren't guarded.
 	beforeNavigate((nav) => {
 		if (bypassNavGuard || !hasUnsavedDrafts || !nav.to) return;
-		// Ignore same-pathname navigations — those are internal query/view
-		// state syncs (updateUrlFilters' replaceState goto on a view/filter/
-		// search change), not a real "leave". The draft survives those (it's
-		// page state), so prompting would be wrong. Only guard true leaves
-		// to a different page. Codex round 2.
+		// Only guard CLIENT-SIDE, in-app leaves we can replay with goto.
+		// `willUnload` (external links, hard document navigations) and
+		// full unload (reload / tab close, nav.to === null) are treated
+		// like reload — drafts live only until then, and goto can't replay
+		// a native navigation anyway (Codex round 3).
+		if (nav.willUnload) return;
+		// Same-pathname navigations are internal query/view state syncs
+		// (updateUrlFilters' replaceState on a view/filter/search change),
+		// not a real "leave" — the draft survives those (page state), so
+		// prompting would be wrong (Codex round 2).
 		if (nav.to.url.pathname === nav.from?.url.pathname) return;
 		const url = nav.to.url;
 		nav.cancel();
