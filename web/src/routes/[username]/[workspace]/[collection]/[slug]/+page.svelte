@@ -2729,6 +2729,7 @@
 								content={editorContent}
 								onUpdate={handleContentUpdate}
 								editable={false}
+								itemId={item.id}
 								onEditor={(e) => editorInstance = e}
 								onImportInserted={handleImportInserted}
 							/>
@@ -2763,6 +2764,7 @@
 									content={editorContent}
 									onUpdate={handleContentUpdate}
 									editable={true}
+									itemId={item.id}
 									ydoc={ydoc}
 									awareness={collabProvider?.awareness}
 									collabUser={collabUserState}

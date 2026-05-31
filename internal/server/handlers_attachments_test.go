@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -118,6 +119,93 @@ func TestUpload_HappyPathPNG(t *testing.T) {
 	// the path itself.
 	if !strings.Contains(resp.URL, "/attachments/"+resp.ID) || !strings.Contains(resp.URL, "/workspaces/"+slug) {
 		t.Errorf("url = %q, want to contain workspace slug %q and attachment id %q", resp.URL, slug, resp.ID)
+	}
+}
+
+// uploadAsGuest drives handleUploadAttachment directly with a synthesized
+// request context (workspace + guest user + "guest" role), mirroring the
+// direct-handler pattern TestStorageUsage_RejectsGuests uses. itemID, when
+// non-empty, rides in the ?item_id query string so the handler authorizes
+// via the item's grant chain (BUG-1661).
+func uploadAsGuest(srv *Server, wsID, itemID string, guest *models.User, body []byte) *httptest.ResponseRecorder {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, _ := mw.CreateFormFile("file", "shot.png")
+	part.Write(body)
+	mw.Close()
+
+	path := "/api/v1/workspaces/" + wsID + "/attachments"
+	if itemID != "" {
+		path += "?item_id=" + itemID
+	}
+	req := httptest.NewRequest("POST", path, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.RemoteAddr = "127.0.0.1:1234"
+
+	ctx := req.Context()
+	ctx = context.WithValue(ctx, ctxResolvedWorkspaceID, wsID)
+	ctx = context.WithValue(ctx, ctxCurrentUser, guest)
+	ctx = context.WithValue(ctx, ctxWorkspaceRole, "guest")
+	req = req.WithContext(ctx)
+
+	rr := httptest.NewRecorder()
+	srv.handleUploadAttachment(rr, req)
+	return rr
+}
+
+// TestUpload_GrantBasedEditorCanAttach covers BUG-1661: a guest holding an
+// item-level edit grant (but no workspace editor role) can upload an
+// attachment when the request carries the granted item's ?item_id. The
+// old flat requireMinRole("editor") gate rejected this with 403 even though
+// the editor / comment composer offered the paste/drop affordance.
+//
+// The companion assertion (no item_id → 403) confirms the editor-role
+// fallback for free-floating uploads didn't widen guest access.
+func TestUpload_GrantBasedEditorCanAttach(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Grants"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Tasks", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title: "Granted", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	// Guest: not a workspace editor, holds an item edit grant only.
+	guest, err := srv.store.CreateUser(models.UserCreate{
+		Email:    "guest@test.com",
+		Name:     "Guest",
+		Password: "correct-horse-battery-staple",
+		Role:     "member",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if _, err := srv.store.CreateItemGrant(ws.ID, item.ID, guest.ID, "edit", guest.ID); err != nil {
+		t.Fatalf("CreateItemGrant: %v", err)
+	}
+
+	// With the granted item's ?item_id → authorized via the grant chain.
+	rr := uploadAsGuest(srv, ws.ID, item.ID, guest, realPNG())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("granted upload: status = %d, want 201; body = %s", rr.Code, rr.Body.String())
+	}
+
+	// Without item context → falls back to the workspace editor-role gate,
+	// which this guest fails.
+	rr = uploadAsGuest(srv, ws.ID, "", guest, realPNG())
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("free-floating guest upload: status = %d, want 403; body = %s", rr.Code, rr.Body.String())
 	}
 }
 

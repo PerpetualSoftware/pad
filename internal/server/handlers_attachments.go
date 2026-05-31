@@ -60,9 +60,6 @@ const multipartParseMemory = 1 << 20 // 1 MiB
 //     workspace owner's storage_bytes limit. Phase 2 will enforce.
 //  9. Return JSON {id, url, mime, size, width?, height?, filename, category, render_mode}.
 func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	if s.attachments == nil {
 		writeError(w, http.StatusServiceUnavailable, "attachments_disabled",
 			"Attachment storage is not configured on this server")
@@ -70,6 +67,37 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
+		return
+	}
+
+	// Authorize the upload. The surfaces that offer upload (rich item
+	// editor, comment composer) gate their affordance on grant-aware edit
+	// permission, so a guest holding an item/collection edit grant via a
+	// share link — but no workspace editor role — must be able to attach
+	// (BUG-1661). When the caller supplies an ?item_id we authorize against
+	// that item's grant chain via requireEditPermission. Free-floating
+	// uploads (new-item creation, storage settings) carry no item context,
+	// so they keep the flat workspace editor-role gate.
+	//
+	// We read item_id from the query string here (before spooling the
+	// multipart body) so a denied upload trips early; the value is also
+	// re-read from the form below for association. A bogus/unresolvable
+	// item_id falls back to the editor-role check rather than leaking item
+	// existence.
+	if authItemID := strings.TrimSpace(r.URL.Query().Get("item_id")); authItemID != "" {
+		item, err := s.store.ResolveItem(workspaceID, authItemID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if item != nil {
+			if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+				return
+			}
+		} else if !requireMinRole(w, r, "editor") {
+			return
+		}
+	} else if !requireMinRole(w, r, "editor") {
 		return
 	}
 	// Attribution: prefer the logged-in user. On a fresh install (no
