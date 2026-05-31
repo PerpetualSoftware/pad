@@ -82,22 +82,18 @@
 		openMenuColumn = null;
 	}
 
-	// Any bulk verb wired (each encodes its own owner/editor permission).
-	// The bulk menu entries only render for a NON-empty lane, so kebab
-	// visibility is computed per-lane below as `onCreateInColumn ||
-	// (laneHasItems && hasBulkActions)` — otherwise a role-only bulk
-	// editor would get a ⋯ that opens an empty panel on an empty lane
-	// (TASK-1672 / Codex round 5).
-	let hasBulkActions = $derived(
-		!!(
-			onArchiveColumn ||
-			onMoveColumn ||
-			onTagColumn ||
-			onUntagColumn ||
-			onSetPriorityColumn ||
-			onAssignColumn
-		)
-	);
+	// Ephemeral per-lane sort overrides (TASK-1673): a lane sorts by its
+	// override when set, else the page-wide `sortMode`. Not persisted —
+	// cleared on reload. Available to everyone (sort is a view preference).
+	let laneSortOverrides = $state<Record<string, SortMode>>({});
+	function setLaneSort(colValue: string, mode: SortMode | null) {
+		if (mode === null) {
+			delete laneSortOverrides[colValue];
+		} else {
+			laneSortOverrides[colValue] = mode;
+		}
+	}
+	const laneSortFor = (colValue: string): SortMode => laneSortOverrides[colValue] ?? sortMode;
 
 	// Dismiss the open lane menu on any click outside it (mirrors the
 	// QuickActionsMenu pattern). The menu markup lives under
@@ -201,12 +197,12 @@
 		}
 		// `preserveOrder` opts out of the in-column sort so search rank
 		// from the parent isn't overridden — TASK-1367. Otherwise sort
-		// each lane by the page-wide sort mode (TASK-1670); 'manual'
+		// each lane by its effective mode — the per-lane override if set,
+		// else the page-wide sort (TASK-1670 / TASK-1673); 'manual'
 		// resolves to the stored sort_order, preserving prior behavior.
 		if (!preserveOrder) {
-			const cmp = itemComparator(sortMode, collection);
 			for (const col of columns) {
-				result[col].sort(cmp);
+				result[col].sort(itemComparator(laneSortFor(col), collection));
 			}
 		}
 		return result;
@@ -339,7 +335,9 @@
 							onclick={() => onCreateInColumn?.(colValue)}
 						>+</button>
 					{/if}
-					{#if onCreateInColumn || (colItems.length > 0 && hasBulkActions)}
+					<!-- Kebab shows for create OR any non-empty lane (sort is
+					     always available, even to viewers — TASK-1673). -->
+					{#if onCreateInColumn || colItems.length > 0}
 						<div class="lane-menu-wrap">
 							<button
 								class="lane-btn lane-menu-btn"
@@ -358,6 +356,9 @@
 									{filtered}
 									{members}
 									{tagSuggestions}
+									{sortMode}
+									laneSort={laneSortOverrides[colValue]}
+									onSetLaneSort={(m) => setLaneSort(colValue, m)}
 									onClose={closeMenu}
 									onAddItem={onCreateInColumn ? () => onCreateInColumn?.(colValue) : undefined}
 									onArchive={onArchiveColumn ? () => onArchiveColumn?.(colItems) : undefined}
@@ -389,7 +390,7 @@
 					// under any non-manual page sort (TASK-1670): the
 					// lane is comparator-ordered, so a drag couldn't
 					// stick anyway.
-					dragDisabled: isMobile || !canEdit || preserveOrder || sortMode !== 'manual'
+					dragDisabled: isMobile || !canEdit || preserveOrder || laneSortFor(colValue) !== 'manual'
 				}}
 				onconsider={(e) => handleConsider(colValue, e)}
 				onfinalize={(e) => handleFinalize(colValue, e)}
