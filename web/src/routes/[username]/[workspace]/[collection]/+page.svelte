@@ -1159,38 +1159,52 @@
 		});
 	}
 
-	// Shared runner for the lane bulk actions (TASK-1672). One bulk call,
-	// then a deltaSync so the view reflects the change. `verb` is the past-
-	// tense word for the toast ("Archived", "Moved", …). Returns the
-	// affected item ids on success (for TASK-1674's undo); [] on failure.
+	// The server's bulk endpoint caps a single request at 1000 ids
+	// (maxBulkItems). The old per-item archive loop had no ceiling, so
+	// chunk to keep very large filtered lanes working — one bulk call per
+	// chunk (a few SSE events instead of thousands; still far better than
+	// per-item). TASK-1672 / Codex round 1.
+	const BULK_CHUNK = 1000;
+
+	// Shared runner for the lane bulk actions (TASK-1672). Chunks ids,
+	// deltaSyncs so the view reflects the change, and toasts the aggregate
+	// updated/failed counts. `verb` is the past-tense toast word
+	// ("Archived", "Moved", …). Returns the affected item ids on success
+	// (for TASK-1674's undo); [] when nothing succeeded.
 	async function runBulk(req: BulkItemsRequest, verb: string): Promise<string[]> {
-		if (!wsSlug) return [];
+		if (!wsSlug || req.ids.length === 0) return [];
+		const okIds: string[] = [];
+		let failed = 0;
 		try {
-			const res = await api.items.bulk(wsSlug, req);
-			// Pull the change into the local index so rows update/disappear.
-			// On deltaSync failure the mutation is still real server-side
-			// (SSE catches the cache up) — soften the toast so the user
-			// knows the UI hasn't reflected it yet (matches the old
-			// archive flow, Codex P3 round 2 of TASK-1357).
-			const synced = await deltaSync(wsSlug);
-			const ok = res.updated.length;
-			const failed = res.failed.length;
-			if (failed > 0) {
-				toastStore.show(
-					`${verb} ${ok} item${ok !== 1 ? 's' : ''}, ${failed} failed`,
-					ok > 0 ? 'success' : 'error'
-				);
-			} else {
-				toastStore.show(
-					`${verb} ${ok} item${ok !== 1 ? 's' : ''}${synced ? '' : ' (updating…)'}`,
-					'success'
-				);
+			for (let i = 0; i < req.ids.length; i += BULK_CHUNK) {
+				const chunk = req.ids.slice(i, i + BULK_CHUNK);
+				const res = await api.items.bulk(wsSlug, { ...req, ids: chunk });
+				for (const u of res.updated) okIds.push(u.id);
+				failed += res.failed.length;
 			}
-			return res.updated.map((u) => u.id);
 		} catch (e: any) {
 			toastStore.show(e?.message || `Failed to ${verb.toLowerCase()} items`, 'error');
-			return [];
+			return okIds;
 		}
+		// Pull the change into the local index so rows update/disappear.
+		// On deltaSync failure the mutation is still real server-side (SSE
+		// catches the cache up) — soften the toast so the user knows the UI
+		// hasn't reflected it yet (matches the old archive flow, Codex P3
+		// round 2 of TASK-1357).
+		const synced = await deltaSync(wsSlug);
+		const ok = okIds.length;
+		if (failed > 0) {
+			toastStore.show(
+				`${verb} ${ok} item${ok !== 1 ? 's' : ''}, ${failed} failed`,
+				ok > 0 ? 'success' : 'error'
+			);
+		} else {
+			toastStore.show(
+				`${verb} ${ok} item${ok !== 1 ? 's' : ''}${synced ? '' : ' (updating…)'}`,
+				'success'
+			);
+		}
+		return okIds;
 	}
 
 	const idsOf = (items: Item[]) => items.map((i) => i.id);
