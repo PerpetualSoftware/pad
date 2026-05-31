@@ -709,12 +709,24 @@
 		flex-direction: column;
 		height: 100%;
 		overflow: hidden;
-		transition: transform 0.25s ease;
+		transition: transform 0.25s ease, width 0.25s ease, min-width 0.25s ease;
 		transform: translateX(0);
 	}
 	.sidebar.collapsed {
 		transform: translateX(calc(var(--sidebar-width) * -1));
 		pointer-events: none;
+	}
+	/*
+		BUG-1651: on desktop the sidebar is a flex child of .app-shell, so the
+		collapsed transform alone slides it off-screen but leaves its width
+		reserved in the flex row — .main-content can't expand into the gap.
+		Releasing width/min-width lets the row reflow so content fills the
+		space. Excluded on mobile, where the sidebar is position: fixed (out of
+		flow) and the width drives the slide-in drawer.
+	*/
+	.sidebar.collapsed:not(.mobile) {
+		width: 0;
+		min-width: 0;
 	}
 	.sidebar.mobile {
 		position: fixed;
