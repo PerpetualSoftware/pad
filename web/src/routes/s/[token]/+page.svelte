@@ -124,24 +124,28 @@
 		if (!view) return items;
 		const rawFilters = Array.isArray(view.config?.filters) ? view.config.filters : [];
 		// Only apply filters we can actually evaluate against the public
-		// payload. Share items carry `fields` only — NOT the logged-in page's
-		// top-level `tags` / `parent_link_id` / `phase`. A filter whose field
-		// is absent from every item would otherwise hide the entire collection
-		// (Codex round 2). Skipping the unsupported filter degrades gracefully:
-		// the viewer sees the (super)set rather than an empty view.
-		const applicable = rawFilters.filter((f) => filterFieldPresent(items, f));
+		// payload. Share items carry schema `fields` only — NOT the logged-in
+		// page's top-level `tags` / `parent_link_id` / `phase`. A filter on one
+		// of those would otherwise hide the entire collection (Codex round 2).
+		// Evaluability is decided against the COLLECTION SCHEMA (not item
+		// values): a `priority eq high` filter on a schema that HAS `priority`
+		// stays applied even when no shared item happens to set it (so the
+		// public view returns none, matching the owner) — Codex round 3. Only
+		// fields genuinely absent from the public schema are skipped.
+		const schemaKeys = new Set(baseParsedCollection.fields.map((f) => f.key));
+		const applicable = rawFilters.filter((f) => filterEvaluable(schemaKeys, f));
 		if (applicable.length === 0) return items;
 		return items.filter((item) => applicable.every((f) => matchesFilter(item, f)));
 	});
 
-	// True when at least one item exposes the filter's target field, so the
-	// filter is meaningful against the public payload. Malformed/fieldless
-	// filters are treated as "present" so matchesFilter can no-op them.
-	function filterFieldPresent(items: PublicItem[], filter: unknown): boolean {
+	// True when the filter targets a field present in the public collection
+	// schema, so it's meaningful against the shared payload. Malformed/fieldless
+	// filters are treated as evaluable so matchesFilter can no-op them.
+	function filterEvaluable(schemaKeys: Set<string>, filter: unknown): boolean {
 		if (!filter || typeof filter !== 'object') return true;
 		const field = (filter as { field?: unknown }).field;
 		if (typeof field !== 'string') return true;
-		return items.some((item) => Object.prototype.hasOwnProperty.call(item.fields, field));
+		return schemaKeys.has(field);
 	}
 
 	// Read-only filter evaluation mirroring the logged-in collection page's
@@ -233,9 +237,17 @@
 		selectedSavedSlug = '';
 
 		const urlHandle = page.url.searchParams.get('view');
-		if (applyViewHandle(urlHandle)) return;
-		if (applyViewHandle(loadSavedSelection())) return;
-		// Nothing valid — keep the owner default already set above.
+		const fromUrl = applyViewHandle(urlHandle);
+		if (!fromUrl) {
+			applyViewHandle(loadSavedSelection());
+			// Nothing valid → owner default already set above.
+		}
+		// Normalize the address bar to the resolved selection. A stale/invalid
+		// `?view=` (e.g. a deleted saved view) otherwise leaves the URL
+		// describing a view the page isn't rendering, so a copied link
+		// wouldn't reproduce what the viewer sees (Codex round 3). When the URL
+		// already matched, this is a harmless no-op replaceState.
+		syncUrl();
 	}
 
 	// Mirror the active selection into the URL (`?view=`), replaceState so the
