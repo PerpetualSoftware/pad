@@ -300,15 +300,23 @@
 								aria-label="{formatLabel(colValue)} lane actions"
 								aria-haspopup="menu"
 								aria-expanded={openMenuColumn === colValue}
-								onclick={() => toggleMenu(colValue)}
+								onclick={(e) => { e.stopPropagation(); toggleMenu(colValue); }}
 							>⋯</button>
 							{#if openMenuColumn === colValue}
+								<!-- stopPropagation on every in-menu click: an
+								     onclick that mutates state (e.g. showing the
+								     archive confirm) re-renders and detaches the
+								     clicked button before the event bubbles to
+								     <svelte:window onclick>, where closest() on the
+								     now-orphaned node returns null and slams the
+								     menu shut. Same Svelte 5 same-click bubbling
+								     issue documented in console/+layout.svelte. -->
 								<div class="lane-menu" role="menu">
 									{#if onCreateInColumn}
 										<button
 											class="lane-menu-item"
 											role="menuitem"
-											onclick={() => { onCreateInColumn?.(colValue); closeMenu(); }}
+											onclick={(e) => { e.stopPropagation(); onCreateInColumn?.(colValue); closeMenu(); }}
 										>
 											<span class="lmi-icon" aria-hidden="true">＋</span> Add item here
 										</button>
@@ -321,15 +329,15 @@
 											<div class="lane-menu-confirm">
 												<span>Archive {colItems.length} item{colItems.length === 1 ? '' : 's'}?</span>
 												<div class="lmc-actions">
-													<button class="lmc-yes" onclick={() => { onArchiveColumn?.(colItems); closeMenu(); }}>Archive</button>
-													<button class="lmc-no" onclick={() => (confirmArchiveColumn = null)}>Cancel</button>
+													<button class="lmc-yes" onclick={(e) => { e.stopPropagation(); onArchiveColumn?.(colItems); closeMenu(); }}>Archive</button>
+													<button class="lmc-no" onclick={(e) => { e.stopPropagation(); confirmArchiveColumn = null; }}>Cancel</button>
 												</div>
 											</div>
 										{:else}
 											<button
 												class="lane-menu-item lmi-danger"
 												role="menuitem"
-												onclick={() => (confirmArchiveColumn = colValue)}
+												onclick={(e) => { e.stopPropagation(); confirmArchiveColumn = colValue; }}
 											>
 												<span class="lmi-icon" aria-hidden="true">🗃</span> Archive all ({colItems.length})
 											</button>
