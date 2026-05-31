@@ -82,12 +82,14 @@
 		openMenuColumn = null;
 	}
 
-	// The ⋯ menu is shown when at least one of its entries is wired. Each
-	// callback already encodes the user's permission for that action, so
-	// this is the single source of truth for kebab visibility (TASK-1672).
-	let hasMenuActions = $derived(
+	// Any bulk verb wired (each encodes its own owner/editor permission).
+	// The bulk menu entries only render for a NON-empty lane, so kebab
+	// visibility is computed per-lane below as `onCreateInColumn ||
+	// (laneHasItems && hasBulkActions)` — otherwise a role-only bulk
+	// editor would get a ⋯ that opens an empty panel on an empty lane
+	// (TASK-1672 / Codex round 5).
+	let hasBulkActions = $derived(
 		!!(
-			onCreateInColumn ||
 			onArchiveColumn ||
 			onMoveColumn ||
 			onTagColumn ||
@@ -337,7 +339,7 @@
 							onclick={() => onCreateInColumn?.(colValue)}
 						>+</button>
 					{/if}
-					{#if hasMenuActions}
+					{#if onCreateInColumn || (colItems.length > 0 && hasBulkActions)}
 						<div class="lane-menu-wrap">
 							<button
 								class="lane-btn lane-menu-btn"
