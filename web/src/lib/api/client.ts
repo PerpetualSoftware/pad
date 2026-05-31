@@ -50,6 +50,7 @@ import type {
 	ItemGrant,
 	WorkspaceMembership,
 	ShareLink,
+	SharePayload,
 	TOTPSetupResponse,
 	TOTPVerifyResponse,
 	TOTPDisableResponse,
@@ -1183,7 +1184,7 @@ export const api = {
 	// ── Public Share (no auth) ──────────────────────────────────────────────
 
 	share: {
-		get: (token: string, password?: string) => {
+		get: (token: string, password?: string): Promise<SharePayload> => {
 			const headers: Record<string, string> = {};
 			if (password) headers['X-Share-Password'] = password;
 			return fetch(`${BASE}/s/${token}`, { credentials: 'same-origin', headers }).then(async (resp) => {
@@ -1192,7 +1193,7 @@ export const api = {
 					if (body?.error) throw new PadApiError(body.error);
 					throw new Error(`API error: ${resp.status}`);
 				}
-				return resp.json();
+				return resp.json() as Promise<SharePayload>;
 			});
 		},
 	},
