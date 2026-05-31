@@ -1,9 +1,18 @@
+export interface ToastAction {
+	label: string;
+	onAction: () => void;
+}
+
 export interface Toast {
 	id: string;
 	message: string;
 	type: 'success' | 'error' | 'info';
 	duration: number;
 	link?: string;
+	// Optional inline action button (e.g. "Undo" on a bulk archive,
+	// TASK-1674). Distinct from `link`, which navigates. Not persisted to
+	// history — the callback is only meaningful while the toast is live.
+	action?: ToastAction;
 }
 
 export interface HistoryEntry {
@@ -27,9 +36,9 @@ function generateId(): string {
 	return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-function show(message: string, type: Toast['type'] = 'info', duration: number = DEFAULT_DURATION, link?: string): string {
+function show(message: string, type: Toast['type'] = 'info', duration: number = DEFAULT_DURATION, link?: string, action?: ToastAction): string {
 	const id = generateId();
-	const toast: Toast = { id, message, type, duration, link };
+	const toast: Toast = { id, message, type, duration, link, action };
 
 	toasts.push(toast);
 

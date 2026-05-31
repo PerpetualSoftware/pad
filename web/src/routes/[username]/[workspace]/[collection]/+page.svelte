@@ -1173,13 +1173,27 @@
 	// per-item). TASK-1672 / Codex round 1.
 	const BULK_CHUNK = 1000;
 
+	// Longer dwell for toasts carrying an Undo so the user can react
+	// (TASK-1674).
+	const UNDO_TOAST_MS = 7000;
+
 	// Shared runner for the lane bulk actions (TASK-1672). Chunks ids,
 	// deltaSyncs so the view reflects the change, and toasts the aggregate
 	// updated/failed counts. `verb` is the past-tense toast word
-	// ("Archived", "Moved", …). Returns the affected item ids on success
-	// (for TASK-1674's undo); [] when nothing succeeded.
-	async function runBulk(req: BulkItemsRequest, verb: string): Promise<string[]> {
-		if (!wsSlug || req.ids.length === 0) return [];
+	// ("Archived", "Moved", …). `opts.undo` (TASK-1674) adds an Undo button
+	// to the success toast, invoked with the affected ids. Returns the
+	// affected item ids on success; [] when nothing succeeded.
+	// `ws` is captured by the caller at action time, NOT read live —
+	// the undo toast lives 7s and is global, so navigating to another
+	// workspace before clicking Undo must still target the workspace the
+	// original action ran on (Codex round 1 of TASK-1674).
+	async function runBulkOn(
+		ws: string,
+		req: BulkItemsRequest,
+		verb: string,
+		opts?: { undo?: (okIds: string[]) => void }
+	): Promise<string[]> {
+		if (!ws || req.ids.length === 0) return [];
 		const okIds: string[] = [];
 		let errMsg = '';
 		// A thrown chunk (network / auth / 4xx) stops further chunks but
@@ -1190,7 +1204,7 @@
 		for (let i = 0; i < req.ids.length; i += BULK_CHUNK) {
 			const chunk = req.ids.slice(i, i + BULK_CHUNK);
 			try {
-				const res = await api.items.bulk(wsSlug, { ...req, ids: chunk });
+				const res = await api.items.bulk(ws, { ...req, ids: chunk });
 				for (const u of res.updated) okIds.push(u.id);
 			} catch (e: any) {
 				errMsg = e?.message || '';
@@ -1205,27 +1219,68 @@
 		// the mutation is still real server-side (SSE catches the cache up)
 		// — soften the toast (matches the old archive flow, Codex P3 round 2
 		// of TASK-1357).
-		const synced = ok > 0 ? await deltaSync(wsSlug) : true;
+		const synced = ok > 0 ? await deltaSync(ws) : true;
+		// Attach an Undo button only when the action succeeded and the
+		// caller supplied an undo (archive / move — the destructive ops).
+		const undoAction =
+			ok > 0 && opts?.undo
+				? { label: 'Undo', onAction: () => opts.undo?.(okIds) }
+				: undefined;
+		const dwell = undoAction ? UNDO_TOAST_MS : undefined;
 		if (ok === 0) {
 			toastStore.show(errMsg || `Failed to ${verb.toLowerCase()} items`, 'error');
 		} else if (failed > 0) {
-			toastStore.show(`${verb} ${ok} item${ok !== 1 ? 's' : ''}, ${failed} failed`, 'success');
+			toastStore.show(
+				`${verb} ${ok} item${ok !== 1 ? 's' : ''}, ${failed} failed`,
+				'success',
+				dwell,
+				undefined,
+				undoAction
+			);
 		} else {
 			toastStore.show(
 				`${verb} ${ok} item${ok !== 1 ? 's' : ''}${synced ? '' : ' (updating…)'}`,
-				'success'
+				'success',
+				dwell,
+				undefined,
+				undoAction
 			);
 		}
 		return okIds;
 	}
 
+	// Convenience for the non-deferred actions: bind to the live workspace
+	// at call time (these complete immediately, no cross-workspace race).
+	function runBulk(
+		req: BulkItemsRequest,
+		verb: string,
+		opts?: { undo?: (okIds: string[]) => void }
+	): Promise<string[]> {
+		return runBulkOn(wsSlug, req, verb, opts);
+	}
+
 	const idsOf = (items: Item[]) => items.map((i) => i.id);
 
+	// Destructive bulk actions (archive / move) carry an Undo (TASK-1674):
+	// archive undoes via the bulk `restore` op; move undoes by moving the
+	// items back to their source lane (they all shared the lane's status).
+	// Both capture `ws` so a deferred Undo targets the original workspace
+	// even after the user navigates away (Codex round 1).
 	function handleBulkArchive(items: Item[]) {
-		return runBulk({ op: 'archive', ids: idsOf(items) }, 'Archived');
+		const ws = wsSlug;
+		return runBulkOn(ws, { op: 'archive', ids: idsOf(items) }, 'Archived', {
+			undo: (okIds) => runBulkOn(ws, { op: 'restore', ids: okIds }, 'Restored')
+		});
 	}
 	function handleBulkMove(items: Item[], status: string) {
-		return runBulk({ op: 'move', ids: idsOf(items), status }, 'Moved');
+		const ws = wsSlug;
+		// All lane items shared the lane's status; undo moves them back.
+		const sourceStatus = items.length ? String(parseFields(items[0]).status ?? '') : '';
+		return runBulkOn(ws, { op: 'move', ids: idsOf(items), status }, 'Moved', {
+			undo: sourceStatus
+				? (okIds) => runBulkOn(ws, { op: 'move', ids: okIds, status: sourceStatus }, 'Moved back')
+				: undefined
+		});
 	}
 	function handleBulkTag(items: Item[], tag: string) {
 		return runBulk({ op: 'tag', ids: idsOf(items), tags: [tag] }, 'Tagged');
