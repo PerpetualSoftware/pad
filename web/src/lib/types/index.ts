@@ -80,15 +80,30 @@ export type PublicShareSettings = Pick<
 	'layout' | 'default_view' | 'board_group_by' | 'list_sort_by' | 'list_group_by'
 >;
 
+/** One saved view in the public share payload (TASK-1681). Projected from
+ *  models.View with internal UUIDs (id, workspace_id, collection_id) and
+ *  timestamps stripped; `config` is a parsed JSON object. Powers the
+ *  read-only view switcher (TASK-1682). */
+export interface PublicShareView {
+	name: string;
+	slug: string;
+	view_type: string;
+	config: Record<string, unknown>;
+	is_default: boolean;
+	sort_order: number;
+}
+
 /** The `collection` branch of the public share payload (TASK-1678). `settings`
  *  and `schema` are parsed JSON objects, present only when the source collection
- *  defined them. */
+ *  defined them. `views` (TASK-1681) is always present — an empty array when the
+ *  collection has no saved views (the switcher falls back to settings.default_view). */
 export interface PublicShareCollection {
 	name: string;
 	icon?: string;
 	description?: string;
 	settings?: PublicShareSettings;
 	schema?: CollectionSchema;
+	views?: PublicShareView[];
 }
 
 /** One item in the public share payload. `fields` is still a JSON string;
