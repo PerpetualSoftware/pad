@@ -7,6 +7,8 @@ import type {
 	CollectionUpdate,
 	Backlink,
 	Item,
+	BulkItemsRequest,
+	BulkItemsResponse,
 	ItemChangeRow,
 	ItemChangesResponse,
 	ItemCreate,
@@ -708,6 +710,26 @@ export const api = {
 		delete: (ws: string, slug: string) =>
 			request<void>(`/workspaces/${ws}/items/${slug}`, {
 				method: 'DELETE'
+			}),
+
+		/**
+		 * Apply one mutation verb (archive / move / tag / untag /
+		 * set-priority / assign) to many items in a single request
+		 * (TASK-1668 / TASK-1669). Editor/owner gated.
+		 *
+		 * Emits ONE `items_bulk_updated` SSE event per affected collection
+		 * + one webhook instead of per-item fan-out — used by the lane-
+		 * header bulk actions, which operate on a whole filtered lane.
+		 *
+		 * The call resolves 200 even when some rows fail: inspect the
+		 * `failed` array (each carries `error` and, for structured
+		 * rejections like `open_children`, `code` + `details`). `updated`
+		 * lists the rows that changed and `total === updated + failed`.
+		 */
+		bulk: (ws: string, data: BulkItemsRequest) =>
+			request<BulkItemsResponse>(`/workspaces/${ws}/items/bulk`, {
+				method: 'POST',
+				body: JSON.stringify(data)
 			}),
 
 		restore: (ws: string, slug: string) =>

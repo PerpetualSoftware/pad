@@ -583,6 +583,74 @@ export interface ItemUpdate {
 	force?: boolean;
 }
 
+// ─── Bulk mutation (TASK-1668 / TASK-1669) ───────────────────────────────────
+
+// The verbs the bulk endpoint accepts. One mutation applied to many items
+// in a single request (POST /workspaces/{ws}/items/bulk), emitting one SSE
+// event per affected collection + one webhook instead of per-item fan-out.
+export type BulkItemOp =
+	| 'archive'
+	| 'move'
+	| 'tag'
+	| 'untag'
+	| 'set-priority'
+	| 'assign';
+
+// `BulkItemsRequest` is a discriminated union on `op` so each verb only
+// accepts (and requires) its own params. `ids` are item refs (TASK-5) or
+// UUIDs. `force` overrides the open-children guard on status-bearing moves
+// (mirrors ItemUpdate.force). `move` requires status and/or collection
+// (target slug) — kept both-optional here; the server validates the
+// at-least-one rule.
+export type BulkItemsRequest =
+	| { op: 'archive'; ids: string[]; force?: boolean }
+	| {
+			op: 'move';
+			ids: string[];
+			status?: string;
+			collection?: string;
+			force?: boolean;
+	  }
+	| { op: 'set-priority'; ids: string[]; priority: string; force?: boolean }
+	| { op: 'tag' | 'untag'; ids: string[]; tags: string[]; force?: boolean }
+	| {
+			op: 'assign';
+			ids: string[];
+			// Set an assignee/role by id. To CLEAR, use the clear flags —
+			// the server treats JSON null as absent (mirrors ItemUpdate),
+			// so `assigned_user_id: null` would be rejected, not a clear.
+			assigned_user_id?: string;
+			agent_role_id?: string;
+			clear_assigned_user?: boolean;
+			clear_agent_role?: boolean;
+			force?: boolean;
+	  };
+
+// One successfully-mutated row.
+export interface BulkItemOutcome {
+	ref: string;
+	id: string;
+}
+
+// One row that failed. `code`/`details` carry the structured server error
+// when present (e.g. `open_children` with the blocking-child list); `error`
+// is always the human-readable message.
+export interface BulkItemFailure {
+	ref: string;
+	error: string;
+	code?: string;
+	details?: unknown;
+}
+
+// Per-row outcome envelope. The HTTP call resolves 200 even on partial
+// failure — branch on `failed` to react. `total === updated + failed`.
+export interface BulkItemsResponse {
+	op: BulkItemOp;
+	updated: BulkItemOutcome[];
+	failed: BulkItemFailure[];
+	total: number;
+}
+
 // ─── Versions ────────────────────────────────────────────────────────────────
 
 export interface Version {
