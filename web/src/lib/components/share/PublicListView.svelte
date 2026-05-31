@@ -13,8 +13,7 @@
 		findField,
 		groupItems,
 		formatLabel,
-		statusColor,
-		priorityColor
+		fieldValueColor
 	} from './shareView';
 
 	interface Props {
@@ -90,12 +89,12 @@
 					<span class="row-title">{item.title}</span>
 					<span class="row-meta">
 						{#if priorityFieldDef && priority}
-							<span class="row-priority" style:color={priorityColor(priority)}
+							<span class="row-priority" style:color={fieldValueColor(priorityFieldDef, priority)}
 								>{formatLabel(priority)}</span
 							>
 						{/if}
 						{#if statusFieldDef && status}
-							<span class="row-status" style:color={statusColor(status)}
+							<span class="row-status" style:color={fieldValueColor(statusFieldDef, status)}
 								>{formatLabel(status).toUpperCase()}</span
 							>
 						{/if}

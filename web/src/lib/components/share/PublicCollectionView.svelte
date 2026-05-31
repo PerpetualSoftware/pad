@@ -17,7 +17,7 @@
 	// Phase 2 / TASK-1680, will drive this); `onactivate` + `expandable` are
 	// forwarded to the leaf renderers for the deferred inline expand (TASK-1684).
 	import type { PublicCollection, PublicItem } from './shareView';
-	import { parsePublicCollection, parsePublicItems } from './shareView';
+	import { parsePublicCollection, parsePublicItems, capItems } from './shareView';
 	import PublicBoardView from './PublicBoardView.svelte';
 	import PublicListView from './PublicListView.svelte';
 	import PublicTableView from './PublicTableView.svelte';
@@ -51,6 +51,13 @@
 	let coll = $derived<PublicCollection>(parsedCollection ?? parsePublicCollection(collection));
 	let list = $derived<PublicItem[]>(parsedItems ?? parsePublicItems(items));
 	let activeView = $derived(view ?? coll.settings.default_view);
+
+	// Cap very large collections so an anonymous viewer's page (and the DOM)
+	// stays bounded. Applied AFTER any saved-view filtering the caller did, so
+	// the banner reflects the visible set the viewer is actually browsing. The
+	// cap is visible — never a silent truncation.
+	let capped = $derived(capItems(list));
+	let renderItems = $derived(capped.items);
 </script>
 
 <div class="public-collection">
@@ -63,13 +70,25 @@
 	{/if}
 
 	{#if list.length === 0}
-		<p class="collection-empty">No items in this collection.</p>
-	{:else if activeView === 'board'}
-		<PublicBoardView collection={coll} items={list} {expandable} {onactivate} />
-	{:else if activeView === 'table'}
-		<PublicTableView collection={coll} items={list} {expandable} {onactivate} />
+		<div class="collection-empty" role="status">
+			<span class="empty-icon" aria-hidden="true">{coll.icon || '📭'}</span>
+			<p class="empty-title">Nothing here yet</p>
+			<p class="empty-hint">This collection has no items to show.</p>
+		</div>
 	{:else}
-		<PublicListView collection={coll} items={list} {expandable} {onactivate} />
+		{#if capped.capped}
+			<p class="cap-notice" role="status">
+				Showing the first <strong>{capped.items.length}</strong> of
+				<strong>{capped.total}</strong> items.
+			</p>
+		{/if}
+		{#if activeView === 'board'}
+			<PublicBoardView collection={coll} items={renderItems} {expandable} {onactivate} />
+		{:else if activeView === 'table'}
+			<PublicTableView collection={coll} items={renderItems} {expandable} {onactivate} />
+		{:else}
+			<PublicListView collection={coll} items={renderItems} {expandable} {onactivate} />
+		{/if}
 	{/if}
 </div>
 
@@ -106,9 +125,48 @@
 	}
 
 	.collection-empty {
-		color: var(--text-muted);
-		font-size: 0.9em;
-		padding: var(--space-4) 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		text-align: center;
+		gap: var(--space-1);
+		padding: var(--space-8) var(--space-4);
+		border: 1px dashed var(--border);
+		border-radius: var(--radius-lg);
+		background: var(--bg-secondary);
+	}
+
+	.empty-icon {
+		font-size: 2em;
+		line-height: 1;
+		opacity: 0.7;
+		margin-bottom: var(--space-1);
+	}
+
+	.empty-title {
+		font-weight: 600;
+		color: var(--text-secondary);
 		margin: 0;
+	}
+
+	.empty-hint {
+		color: var(--text-muted);
+		font-size: 0.88em;
+		margin: 0;
+	}
+
+	.cap-notice {
+		color: var(--text-secondary);
+		font-size: 0.85em;
+		padding: var(--space-2) var(--space-3);
+		margin: 0;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border-subtle, var(--border));
+		border-radius: var(--radius);
+	}
+
+	.cap-notice strong {
+		color: var(--text-primary);
+		font-weight: 600;
 	}
 </style>

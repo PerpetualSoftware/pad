@@ -118,6 +118,16 @@
 		return { ...coll, settings };
 	});
 
+	// NOTE (sort deferral, TASK-1683 / carried from TASK-1682): saved-view
+	// `config.sort` and `settings.list_sort_by` remain a no-op here. The public
+	// item payload (title/ref/fields/content) carries no `sort_order`,
+	// `created_at`, or `updated_at` — the columns most `list_sort_by` values
+	// reference (created_at/updated_at/quarter/date) — so a faithful sort would
+	// need either a backend ordering change or timestamps in the payload (a
+	// PLAN-1677 backend decision, not frontend polish). The payload already
+	// arrives in the owner's `sort_order` (server `ListItems` default), so the
+	// default "manual" order IS honored; only explicit field sorts are skipped.
+	// Deferred deliberately to avoid silently diverging from the owner's order.
 	let effectiveItems = $derived.by<PublicItem[]>(() => {
 		const items = baseParsedItems;
 		const view = activeSavedView;

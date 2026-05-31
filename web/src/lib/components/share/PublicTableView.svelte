@@ -7,14 +7,9 @@
 	// no row links, no status cycling. Status/priority cells get the shared
 	// color vocabulary; rows are inert (or expand-only once TASK-1684 wires
 	// `onactivate`).
+	import type { FieldDef } from '$lib/types';
 	import type { PublicCollection, PublicItem } from './shareView';
-	import {
-		visibleFields,
-		formatLabel,
-		formatFieldValue,
-		statusColor,
-		priorityColor
-	} from './shareView';
+	import { visibleFields, formatLabel, formatFieldValue, fieldValueColor } from './shareView';
 
 	interface Props {
 		collection: PublicCollection;
@@ -38,9 +33,13 @@
 		].join(' ')
 	);
 
-	function cellColor(key: string, value: string): string | undefined {
-		if (key === 'status') return statusColor(value);
-		if (key === 'priority') return priorityColor(value);
+	// Color status/priority cells (and any other select-type field) using the
+	// schema-driven resolver so custom terminal vocabularies match the owner's
+	// palette. Non-select fields render plain text (no color).
+	function cellColor(field: FieldDef, value: string): string | undefined {
+		if (field.key === 'status' || field.key === 'priority' || field.type === 'select') {
+			return fieldValueColor(field, value);
+		}
 		return undefined;
 	}
 
@@ -83,7 +82,7 @@
 				{#each columns as field (field.key)}
 					{@const raw = item.fields[field.key]}
 					{@const text = formatFieldValue(raw)}
-					{@const color = typeof raw === 'string' ? cellColor(field.key, raw) : undefined}
+					{@const color = typeof raw === 'string' ? cellColor(field, raw) : undefined}
 					<div class="table-cell" role="cell">
 						{#if field.key === 'status' && text}
 							<span class="cell-status" style:color>{formatLabel(text).toUpperCase()}</span>

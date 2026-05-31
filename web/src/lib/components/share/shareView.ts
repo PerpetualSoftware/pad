@@ -159,6 +159,34 @@ export function parsePublicItems(raw: unknown): PublicItem[] {
 	return raw.map((item, i) => parsePublicItem(item, i));
 }
 
+// ── Large-collection cap ────────────────────────────────────────────────────
+
+/** Maximum items a public share view renders. A shared collection can hold
+ *  thousands of items; rendering them all would blow up an anonymous viewer's
+ *  page (and our DOM) for no benefit — the audience is reading a snapshot, not
+ *  triaging a backlog. We render the first N (the owner's `sort_order`, the
+ *  order the payload arrives in) and surface a visible "showing N of M" banner
+ *  so nothing is silently truncated. 200 comfortably covers real shared
+ *  collections while bounding the worst case. */
+export const PUBLIC_ITEM_CAP = 200;
+
+export interface CappedItems {
+	items: PublicItem[];
+	/** Total before capping. */
+	total: number;
+	/** True when `total > PUBLIC_ITEM_CAP` and `items` was trimmed. */
+	capped: boolean;
+}
+
+/** Trim an item list to PUBLIC_ITEM_CAP, reporting whether it was capped so
+ *  the renderer can show the "showing N of M" banner. */
+export function capItems(items: PublicItem[]): CappedItems {
+	if (items.length <= PUBLIC_ITEM_CAP) {
+		return { items, total: items.length, capped: false };
+	}
+	return { items: items.slice(0, PUBLIC_ITEM_CAP), total: items.length, capped: true };
+}
+
 // ── Field lookup ──────────────────────────────────────────────────────────
 
 export function findField(fields: FieldDef[], key: string): FieldDef | undefined {
@@ -220,6 +248,42 @@ export function statusColor(status: string): string {
 	}
 }
 
+/** Schema-driven color for a select-field value. Prefers the literal status
+ *  vocabulary (so the canonical open/in_progress/done/blocked palette matches
+ *  the owner exactly), then falls back to the schema's `terminal_options`: a
+ *  value the owner marked terminal (e.g. `shipped`, `closed`, `archived`)
+ *  reads as "done" green even though it isn't literally `done`. Non-terminal,
+ *  non-canonical values get the neutral muted tone. This keeps colors faithful
+ *  to the owner's view while honoring custom status vocabularies that the bare
+ *  literal switch would miss. */
+export function fieldValueColor(field: FieldDef | undefined, value: string): string {
+	if (!value) return 'var(--text-muted)';
+	if (field?.key === 'priority') return priorityColor(value);
+	// Canonical status palette first — exact owner match.
+	if (value === 'open' || value === 'in_progress' || value === 'done' || value === 'blocked') {
+		return statusColor(value);
+	}
+	// Custom vocabulary: terminal options read as "done".
+	if (field?.terminal_options?.includes(value)) return 'var(--accent-green)';
+	return 'var(--text-muted)';
+}
+
+/** Schema-driven board-column accent class. Literal status values map to the
+ *  in-app palette; a custom terminal option falls back to the `done` accent so
+ *  a "Shipped"/"Closed" column still reads as a finished lane. */
+export function columnAccentClassFor(field: FieldDef | undefined, value: string): string {
+	switch (value) {
+		case 'in_progress':
+			return 'col-in-progress';
+		case 'done':
+			return 'col-done';
+		case 'blocked':
+			return 'col-blocked';
+	}
+	if (value && field?.terminal_options?.includes(value)) return 'col-done';
+	return '';
+}
+
 /** Priority color — mirrors ItemCard.priorityColor. */
 export function priorityColor(priority: string): string {
 	switch (priority) {
@@ -233,20 +297,6 @@ export function priorityColor(priority: string): string {
 			return 'var(--text-muted)';
 		default:
 			return 'var(--text-muted)';
-	}
-}
-
-/** A board column's accent class, mirroring BoardView.columnCssClass. */
-export function columnAccentClass(value: string): string {
-	switch (value) {
-		case 'in_progress':
-			return 'col-in-progress';
-		case 'done':
-			return 'col-done';
-		case 'blocked':
-			return 'col-blocked';
-		default:
-			return '';
 	}
 }
 

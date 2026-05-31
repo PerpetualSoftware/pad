@@ -13,7 +13,7 @@
 	// default), the card is an inert <div> — no interactivity is implied.
 	import type { FieldDef } from '$lib/types';
 	import type { PublicItem } from './shareView';
-	import { findField, formatLabel, statusColor, priorityColor } from './shareView';
+	import { findField, formatLabel, fieldValueColor } from './shareView';
 
 	interface Props {
 		item: PublicItem;
@@ -76,13 +76,13 @@
 	{#if (statusFieldDef && status) || (priorityFieldDef && priority)}
 		<div class="card-meta">
 			{#if statusFieldDef && status}
-				<span class="meta-status" style:color={statusColor(status)}>
+				<span class="meta-status" style:color={fieldValueColor(statusFieldDef, status)}>
 					{formatLabel(status).toUpperCase()}
 				</span>
 			{/if}
 			{#if priorityFieldDef && priority}
 				{#if statusFieldDef && status}<span class="meta-sep">&middot;</span>{/if}
-				<span class="meta-priority" style:color={priorityColor(priority)}>
+				<span class="meta-priority" style:color={fieldValueColor(priorityFieldDef, priority)}>
 					{formatLabel(priority)}
 				</span>
 			{/if}
