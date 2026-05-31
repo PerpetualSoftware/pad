@@ -12,7 +12,7 @@
 		resolveGroupField,
 		groupItems,
 		formatLabel,
-		columnAccentClass
+		columnAccentClassFor
 	} from './shareView';
 	import PublicItemCard from './PublicItemCard.svelte';
 
@@ -27,14 +27,15 @@
 	let { collection, items, expandable = false, onactivate }: Props = $props();
 
 	let groupField = $derived(resolveGroupField(collection));
-	let optionOrder = $derived(findField(collection.fields, groupField)?.options ?? []);
+	let groupFieldDef = $derived(findField(collection.fields, groupField));
+	let optionOrder = $derived(groupFieldDef?.options ?? []);
 	let columns = $derived(groupItems(items, groupField, optionOrder));
 </script>
 
 <div class="public-board">
 	{#each columns as column (column.value)}
 		<section class="board-column" aria-label="{formatLabel(column.value) || 'Ungrouped'} column">
-			<header class="column-header {columnAccentClass(column.value)}">
+			<header class="column-header {columnAccentClassFor(groupFieldDef, column.value)}">
 				<span class="column-name">{formatLabel(column.value) || 'Ungrouped'}</span>
 				<span class="column-count">{column.items.length}</span>
 			</header>
