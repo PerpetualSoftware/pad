@@ -97,8 +97,11 @@
 	// doesn't know which tab actually triggered the agent connection;
 	// any close is good-enough signal. Tracking `prevOpen` is the
 	// minimum reactive shape to detect the open → closed transition
-	// without re-firing on every render.
-	let prevOpen = $state(false);
+	// without re-firing on every render. PLAIN variable (not $state): it's
+	// only read/written for edge-detection inside the effect below — making
+	// it $state makes the effect self-invalidating, which silently wedges
+	// the effect scheduler in prod builds (see BUG-1687 / ShareDialog).
+	let prevOpen = false;
 	$effect.pre(() => {
 		if (prevOpen && !connectOpen) {
 			refreshHasAgentActivity(wsSlug);
