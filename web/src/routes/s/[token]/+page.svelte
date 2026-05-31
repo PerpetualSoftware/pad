@@ -4,6 +4,8 @@
 	import { api } from '$lib/api/client';
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
+	import PublicCollectionView from '$lib/components/share/PublicCollectionView.svelte';
+	import type { PublicShareCollection, PublicShareItem } from '$lib/types';
 
 	let token = $derived(page.params.token ?? '');
 
@@ -24,11 +26,13 @@
 		collection_icon?: string;
 		item_ref?: string;
 	} | null>(null);
+	// Raw `collection` + `items` branches of the share payload, fed straight to
+	// PublicCollectionView (which parses settings/schema/fields defensively and
+	// renders the owner's chosen view type). `name` is also used for the page
+	// title. Null until a collection payload has loaded.
 	let collectionData = $state<{
-		name: string;
-		icon?: string;
-		description?: string;
-		items: { title: string; item_ref?: string; status?: string }[];
+		collection: PublicShareCollection;
+		items: PublicShareItem[];
 	} | null>(null);
 
 	let renderedContent = $derived.by(() => {
@@ -85,25 +89,9 @@
 				};
 			} else if (data.type === 'collection') {
 				shareType = 'collection';
-				const rawItems = (data.items ?? []).map((item: any) => {
-					let status = '';
-					if (item.fields) {
-						try {
-							const fields = typeof item.fields === 'string' ? JSON.parse(item.fields) : item.fields;
-							status = fields.status ?? '';
-						} catch { /* ignore */ }
-					}
-					return {
-						title: item.title ?? 'Untitled',
-						item_ref: item.ref ?? item.item_ref ?? '',
-						status
-					};
-				});
 				collectionData = {
-					name: data.collection?.name ?? 'Collection',
-					icon: data.collection?.icon,
-					description: data.collection?.description,
-					items: rawItems
+					collection: data.collection ?? { name: 'Collection' },
+					items: data.items ?? []
 				};
 			} else {
 				error = 'Unknown share type.';
@@ -166,21 +154,9 @@
 				};
 			} else if (data.type === 'collection') {
 				shareType = 'collection';
-				const rawItems = (data.items ?? []).map((item: any) => {
-					let status = '';
-					if (item.fields) {
-						try {
-							const fields = typeof item.fields === 'string' ? JSON.parse(item.fields) : item.fields;
-							status = fields.status ?? '';
-						} catch { /* ignore */ }
-					}
-					return { title: item.title ?? 'Untitled', item_ref: item.ref ?? item.item_ref ?? '', status };
-				});
 				collectionData = {
-					name: data.collection?.name ?? 'Collection',
-					icon: data.collection?.icon,
-					description: data.collection?.description,
-					items: rawItems
+					collection: data.collection ?? { name: 'Collection' },
+					items: data.items ?? []
 				};
 			}
 		} catch (e: any) {
@@ -195,7 +171,7 @@
 	{#if itemData}
 		<title>{itemData.title} - Shared via Pad</title>
 	{:else if collectionData}
-		<title>{collectionData.name} - Shared via Pad</title>
+		<title>{collectionData.collection.name ?? 'Collection'} - Shared via Pad</title>
 	{:else}
 		<title>Shared - Pad</title>
 	{/if}
@@ -287,36 +263,11 @@
 				{/if}
 			</article>
 		{:else if shareType === 'collection' && collectionData}
-			<div class="share-collection">
-				<div class="collection-header">
-					{#if collectionData.icon}
-						<span class="collection-icon-large">{collectionData.icon}</span>
-					{/if}
-					<h1>{collectionData.name}</h1>
-				</div>
-
-				{#if collectionData.description}
-					<p class="collection-description">{collectionData.description}</p>
-				{/if}
-
-				{#if collectionData.items.length > 0}
-					<div class="collection-items">
-						{#each collectionData.items as item, i (i)}
-							<div class="collection-item-row">
-								<span class="collection-item-title">{item.title}</span>
-								{#if item.item_ref}
-									<span class="collection-item-ref">{item.item_ref}</span>
-								{/if}
-								{#if item.status}
-									<span class="collection-item-status">{item.status}</span>
-								{/if}
-							</div>
-						{/each}
-					</div>
-				{:else}
-					<p class="collection-empty">No items in this collection.</p>
-				{/if}
-			</div>
+			<PublicCollectionView
+				collection={collectionData.collection}
+				items={collectionData.items}
+				expandable={false}
+			/>
 		{/if}
 	</div>
 
@@ -588,83 +539,6 @@
 
 	.item-content :global(a) {
 		color: var(--accent-blue);
-	}
-
-	/* Collection view */
-	.share-collection {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-5);
-	}
-
-	.collection-header {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-	}
-
-	.collection-icon-large {
-		font-size: 1.6em;
-	}
-
-	.collection-header h1 {
-		font-size: 1.8em;
-		font-weight: 700;
-		letter-spacing: -0.02em;
-	}
-
-	.collection-description {
-		color: var(--text-secondary);
-		font-size: 0.95em;
-	}
-
-	.collection-items {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-1);
-	}
-
-	.collection-item-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		padding: var(--space-3) var(--space-4);
-		background: var(--bg-secondary);
-		border-radius: var(--radius);
-		border: 1px solid var(--border-subtle);
-	}
-
-	.collection-item-title {
-		flex: 1;
-		font-weight: 500;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	.collection-item-ref {
-		font-size: 0.8em;
-		color: var(--text-muted);
-		font-family: var(--font-mono);
-		flex-shrink: 0;
-	}
-
-	.collection-item-status {
-		font-size: 0.78em;
-		font-weight: 500;
-		color: var(--text-secondary);
-		background: var(--bg-tertiary);
-		padding: 2px 10px;
-		border-radius: 999px;
-		flex-shrink: 0;
-		text-transform: capitalize;
-	}
-
-	.collection-empty {
-		color: var(--text-muted);
-		font-size: 0.9em;
-		padding: var(--space-4) 0;
 	}
 
 	/* Footer */

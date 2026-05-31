@@ -72,6 +72,56 @@ export interface ShareLink {
 	target_title?: string;
 }
 
+/** Presentation-only subset of CollectionSettings emitted by the public share
+ *  endpoint (GET /api/v1/s/{token}). Authoring affordances (quick_actions,
+ *  content_template) are deliberately omitted. */
+export type PublicShareSettings = Pick<
+	CollectionSettings,
+	'layout' | 'default_view' | 'board_group_by' | 'list_sort_by' | 'list_group_by'
+>;
+
+/** The `collection` branch of the public share payload (TASK-1678). `settings`
+ *  and `schema` are parsed JSON objects, present only when the source collection
+ *  defined them. */
+export interface PublicShareCollection {
+	name: string;
+	icon?: string;
+	description?: string;
+	settings?: PublicShareSettings;
+	schema?: CollectionSchema;
+}
+
+/** One item in the public share payload. `fields` is still a JSON string;
+ *  `content` is the item's markdown body. */
+export interface PublicShareItem {
+	title: string;
+	ref?: string;
+	fields?: string;
+	content?: string;
+}
+
+/** The shape returned by GET /api/v1/s/{token}. Auth/password gates short-circuit
+ *  with `require_auth` / `require_password`; otherwise `type` discriminates the
+ *  item vs collection payload. */
+export interface SharePayload {
+	type?: 'item' | 'collection';
+	require_auth?: boolean;
+	require_password?: boolean;
+	permission?: string;
+	share_link?: { target_type: string };
+	item?: {
+		title: string;
+		content?: string;
+		fields?: string;
+		ref?: string;
+		item_ref?: string;
+		collection_name?: string;
+		collection_icon?: string;
+	};
+	collection?: PublicShareCollection;
+	items?: PublicShareItem[];
+}
+
 // ─── Grants ──────────────────────────────────────────────────────────────────
 
 export interface CollectionGrant {
