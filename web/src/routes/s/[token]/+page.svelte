@@ -5,7 +5,13 @@
 	import { marked } from 'marked';
 	import DOMPurify from 'dompurify';
 	import PublicCollectionView from '$lib/components/share/PublicCollectionView.svelte';
-	import type { PublicShareCollection, PublicShareItem } from '$lib/types';
+	import {
+		parsePublicCollection,
+		parsePublicItems,
+		type PublicCollection,
+		type PublicItem
+	} from '$lib/components/share/shareView';
+	import type { PublicShareCollection, PublicShareItem, PublicShareView } from '$lib/types';
 
 	let token = $derived(page.params.token ?? '');
 
@@ -69,14 +75,79 @@
 	// The effective base view fed to PublicCollectionView. A saved-view
 	// selection resolves through its `view_type`; an unknown/stale saved slug
 	// falls back to the owner default.
+	// The saved view object backing the current selection (null in base mode or
+	// when the slug is stale).
+	let activeSavedView = $derived.by<PublicShareView | null>(() => {
+		if (selectedKind !== 'saved') return null;
+		return savedViews.find((sv) => sv.slug === selectedSavedSlug) ?? null;
+	});
+
 	let activeBaseView = $derived.by<BaseView>(() => {
 		if (selectedKind === 'saved') {
-			const v = savedViews.find((sv) => sv.slug === selectedSavedSlug);
-			if (v) return coerceBaseView(v.view_type) ?? defaultView;
+			if (activeSavedView) return coerceBaseView(activeSavedView.view_type) ?? defaultView;
 			return defaultView;
 		}
 		return selectedBase;
 	});
+
+	// Parse the raw payload once into the renderer's PublicCollection /
+	// PublicItem shapes (string-or-object tolerant). When a saved view is
+	// active, overlay its config: grouping is mapped onto the matching
+	// settings knob (board → board_group_by, list → list_group_by) and the
+	// config's filters narrow the item set. Read-only — purely presentational,
+	// no server round-trip. Base-view selections render the unfiltered
+	// collection exactly as before.
+	let baseParsedCollection = $derived.by<PublicCollection>(() =>
+		parsePublicCollection(collectionData?.collection)
+	);
+	let baseParsedItems = $derived.by<PublicItem[]>(() =>
+		parsePublicItems(collectionData?.items)
+	);
+
+	let effectiveCollection = $derived.by<PublicCollection>(() => {
+		const coll = baseParsedCollection;
+		const view = activeSavedView;
+		if (!view) return coll;
+		const groupBy = typeof view.config?.group_by === 'string' ? view.config.group_by : '';
+		if (!groupBy) return coll;
+		// Clone settings so we don't mutate the shared parsed object; route the
+		// group key to the knob the active base renderer actually reads.
+		const settings = { ...coll.settings };
+		if (activeBaseView === 'board') settings.board_group_by = groupBy;
+		else if (activeBaseView === 'list') settings.list_group_by = groupBy;
+		return { ...coll, settings };
+	});
+
+	let effectiveItems = $derived.by<PublicItem[]>(() => {
+		const items = baseParsedItems;
+		const view = activeSavedView;
+		if (!view) return items;
+		const filters = Array.isArray(view.config?.filters) ? view.config.filters : [];
+		if (filters.length === 0) return items;
+		return items.filter((item) => filters.every((f) => matchesFilter(item, f)));
+	});
+
+	// Read-only filter evaluation mirroring the logged-in collection page's
+	// `eq` / `in` handling (the only ops saved-view configs emit). Unknown ops
+	// pass through (don't hide items we can't reason about).
+	function matchesFilter(item: PublicItem, filter: unknown): boolean {
+		if (!filter || typeof filter !== 'object') return true;
+		const f = filter as { field?: unknown; op?: unknown; value?: unknown };
+		if (typeof f.field !== 'string') return true;
+		const fieldVal = item.fields[f.field];
+		if (f.op === 'eq') {
+			return String(fieldVal ?? '') === String(f.value ?? '');
+		}
+		if (f.op === 'in') {
+			const wanted = Array.isArray(f.value) ? f.value.map((v) => String(v)) : [String(f.value)];
+			// Tags-style array fields: match if any item value is wanted.
+			if (Array.isArray(fieldVal)) {
+				return fieldVal.some((v) => wanted.includes(String(v)));
+			}
+			return wanted.includes(String(fieldVal ?? ''));
+		}
+		return true;
+	}
 
 	function coerceBaseView(value: unknown): BaseView | null {
 		if (value === 'list' || value === 'board' || value === 'table') return value;
@@ -455,8 +526,8 @@
 			</div>
 
 			<PublicCollectionView
-				collection={collectionData.collection}
-				items={collectionData.items}
+				parsedCollection={effectiveCollection}
+				parsedItems={effectiveItems}
 				view={activeBaseView}
 				expandable={false}
 			/>
