@@ -9,6 +9,25 @@
 
 	let token = $derived(page.params.token ?? '');
 
+	// Read-only view switcher (TASK-1682 / PLAN-1677 Phase 2). The anonymous
+	// viewer toggles between the three base view types (and any of the
+	// collection's saved views). The choice is purely presentational — it
+	// drives PublicCollectionView's `view` prop, which overrides the owner's
+	// `settings.default_view`. No server save (read-only context); we mirror
+	// the logged-in collection page's URL-param + localStorage persistence.
+	type BaseView = 'list' | 'board' | 'table';
+	const BASE_VIEWS: { value: BaseView; label: string; icon: string }[] = [
+		{ value: 'list', label: 'List', icon: '☰' },
+		{ value: 'board', label: 'Board', icon: '▦' },
+		{ value: 'table', label: 'Table', icon: '⚏' }
+	];
+
+	// Selection is a discriminated handle: either a base view type, or a saved
+	// view addressed by slug (which resolves to a base view_type for rendering).
+	let selectedKind = $state<'base' | 'saved'>('base');
+	let selectedBase = $state<BaseView>('list');
+	let selectedSavedSlug = $state('');
+
 	let loading = $state(true);
 	let error = $state('');
 	let requireAuth = $state(false);
@@ -34,6 +53,139 @@
 		collection: PublicShareCollection;
 		items: PublicShareItem[];
 	} | null>(null);
+
+	// Saved views from the share payload (empty array when the collection has
+	// none). Sorted by the owner's `sort_order` for stable presentation.
+	let savedViews = $derived.by(() => {
+		const views = collectionData?.collection.views ?? [];
+		return [...views].sort((a, b) => a.sort_order - b.sort_order);
+	});
+
+	// Owner's default base view, the fallback when nothing is selected.
+	let defaultView = $derived<BaseView>(
+		coerceBaseView(collectionData?.collection.settings?.default_view) ?? 'list'
+	);
+
+	// The effective base view fed to PublicCollectionView. A saved-view
+	// selection resolves through its `view_type`; an unknown/stale saved slug
+	// falls back to the owner default.
+	let activeBaseView = $derived.by<BaseView>(() => {
+		if (selectedKind === 'saved') {
+			const v = savedViews.find((sv) => sv.slug === selectedSavedSlug);
+			if (v) return coerceBaseView(v.view_type) ?? defaultView;
+			return defaultView;
+		}
+		return selectedBase;
+	});
+
+	function coerceBaseView(value: unknown): BaseView | null {
+		if (value === 'list' || value === 'board' || value === 'table') return value;
+		// Saved views may use 'kanban' as a synonym for the board renderer.
+		if (value === 'kanban') return 'board';
+		return null;
+	}
+
+	// localStorage persistence keyed by share token (mirrors the logged-in
+	// collection page's `pad-view-<coll>` pattern). Stores either a base view
+	// type or `saved:<slug>`. Wrapped in try/catch — share pages may run in
+	// privacy contexts where localStorage throws.
+	function viewStorageKey() {
+		return token ? `pad-share-view-${token}` : '';
+	}
+
+	function saveSelection() {
+		const key = viewStorageKey();
+		if (!key) return;
+		const handle = selectedKind === 'saved' ? `saved:${selectedSavedSlug}` : selectedBase;
+		try {
+			localStorage.setItem(key, handle);
+		} catch {}
+	}
+
+	function loadSavedSelection(): string | null {
+		const key = viewStorageKey();
+		if (!key) return null;
+		try {
+			return localStorage.getItem(key);
+		} catch {
+			return null;
+		}
+	}
+
+	// Apply a stored/URL handle to the selection state. Returns true if it
+	// resolved to a known view; false (caller falls back to the owner default)
+	// for an empty, malformed, or stale-saved handle.
+	function applyViewHandle(handle: string | null | undefined): boolean {
+		if (!handle) return false;
+		if (handle.startsWith('saved:')) {
+			const slug = handle.slice('saved:'.length);
+			if (savedViews.some((v) => v.slug === slug)) {
+				selectedKind = 'saved';
+				selectedSavedSlug = slug;
+				selectedBase = coerceBaseView(savedViews.find((v) => v.slug === slug)?.view_type) ?? defaultView;
+				return true;
+			}
+			return false;
+		}
+		const base = coerceBaseView(handle);
+		if (base) {
+			selectedKind = 'base';
+			selectedBase = base;
+			selectedSavedSlug = '';
+			return true;
+		}
+		return false;
+	}
+
+	// Resolve the initial selection: URL `?view=` param > localStorage >
+	// owner default. Called once after a collection payload loads.
+	function initSelection() {
+		selectedBase = defaultView;
+		selectedKind = 'base';
+		selectedSavedSlug = '';
+
+		const urlHandle = page.url.searchParams.get('view');
+		if (applyViewHandle(urlHandle)) return;
+		if (applyViewHandle(loadSavedSelection())) return;
+		// Nothing valid — keep the owner default already set above.
+	}
+
+	// Mirror the active selection into the URL (`?view=`), replaceState so the
+	// switcher never pollutes history. A base 'list' (or selecting the owner
+	// default base) drops the param to keep canonical share links clean.
+	function syncUrl() {
+		const url = new URL(page.url);
+		const handle = selectedKind === 'saved' ? `saved:${selectedSavedSlug}` : selectedBase;
+		if (selectedKind === 'base' && selectedBase === 'list') {
+			url.searchParams.delete('view');
+		} else {
+			url.searchParams.set('view', handle);
+		}
+		history.replaceState(history.state, '', url);
+	}
+
+	function selectBaseView(base: BaseView) {
+		selectedKind = 'base';
+		selectedBase = base;
+		selectedSavedSlug = '';
+		saveSelection();
+		syncUrl();
+	}
+
+	// Human label for a saved view's underlying base view type (used in the
+	// chip tooltip so viewers know what a saved view renders as).
+	function activeViewTypeLabel(viewType: string): string {
+		const base = coerceBaseView(viewType) ?? defaultView;
+		return BASE_VIEWS.find((b) => b.value === base)?.label ?? 'List';
+	}
+
+	function selectSavedView(slug: string) {
+		selectedKind = 'saved';
+		selectedSavedSlug = slug;
+		selectedBase = coerceBaseView(savedViews.find((v) => v.slug === slug)?.view_type) ?? defaultView;
+		saveSelection();
+		syncUrl();
+	}
 
 	let renderedContent = $derived.by(() => {
 		if (!itemData?.content) return '';
@@ -93,6 +245,7 @@
 					collection: data.collection ?? { name: 'Collection' },
 					items: data.items ?? []
 				};
+				initSelection();
 			} else {
 				error = 'Unknown share type.';
 			}
@@ -158,6 +311,7 @@
 					collection: data.collection ?? { name: 'Collection' },
 					items: data.items ?? []
 				};
+				initSelection();
 			}
 		} catch (e: any) {
 			passwordError = e.message ?? 'Failed to verify password';
@@ -263,9 +417,47 @@
 				{/if}
 			</article>
 		{:else if shareType === 'collection' && collectionData}
+			<div class="collection-toolbar">
+				<div class="view-toggle" role="group" aria-label="Select view">
+					{#each BASE_VIEWS as bv (bv.value)}
+						<button
+							type="button"
+							class="toggle-btn"
+							class:active={selectedKind === 'base' && selectedBase === bv.value}
+							aria-pressed={selectedKind === 'base' && selectedBase === bv.value}
+							aria-label={`${bv.label} view`}
+							title={`${bv.label} view`}
+							onclick={() => selectBaseView(bv.value)}
+						>
+							<span class="toggle-icon" aria-hidden="true">{bv.icon}</span>
+							<span class="toggle-label">{bv.label}</span>
+						</button>
+					{/each}
+				</div>
+
+				{#if savedViews.length > 0}
+					<div class="saved-views" role="group" aria-label="Saved views">
+						<span class="saved-views-label">Views</span>
+						{#each savedViews as sv (sv.slug)}
+							<button
+								type="button"
+								class="saved-view-chip"
+								class:active={selectedKind === 'saved' && selectedSavedSlug === sv.slug}
+								aria-pressed={selectedKind === 'saved' && selectedSavedSlug === sv.slug}
+								title={`${sv.name} (${activeViewTypeLabel(sv.view_type)})`}
+								onclick={() => selectSavedView(sv.slug)}
+							>
+								{sv.name}
+							</button>
+						{/each}
+					</div>
+				{/if}
+			</div>
+
 			<PublicCollectionView
 				collection={collectionData.collection}
 				items={collectionData.items}
+				view={activeBaseView}
 				expandable={false}
 			/>
 		{/if}
@@ -539,6 +731,108 @@
 
 	.item-content :global(a) {
 		color: var(--accent-blue);
+	}
+
+	/* Collection view switcher toolbar */
+	.collection-toolbar {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-3);
+		margin-bottom: var(--space-5);
+	}
+
+	.view-toggle {
+		display: flex;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		overflow: hidden;
+		flex-shrink: 0;
+	}
+
+	.toggle-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		background: var(--bg-secondary);
+		border: none;
+		padding: var(--space-1) var(--space-3);
+		cursor: pointer;
+		font-size: 0.85em;
+		color: var(--text-secondary);
+		line-height: 1;
+	}
+
+	.toggle-btn:not(:last-child) {
+		border-right: 1px solid var(--border);
+	}
+
+	.toggle-btn.active {
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
+		font-weight: 500;
+	}
+
+	.toggle-btn:hover:not(.active) {
+		background: var(--bg-hover, var(--bg-tertiary));
+	}
+
+	.toggle-icon {
+		font-size: 1em;
+	}
+
+	.saved-views {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-2);
+	}
+
+	.saved-views-label {
+		font-size: 0.75em;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+		font-weight: 500;
+	}
+
+	.saved-view-chip {
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		padding: var(--space-1) var(--space-3);
+		cursor: pointer;
+		font-size: 0.82em;
+		color: var(--text-secondary);
+		line-height: 1.2;
+	}
+
+	.saved-view-chip.active {
+		background: var(--accent-blue);
+		border-color: var(--accent-blue);
+		color: #fff;
+		font-weight: 500;
+	}
+
+	.saved-view-chip:hover:not(.active) {
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
+	}
+
+	/* Widen the container for collection views — list/board/table need more
+	   room than the 780px article column. */
+	.share-container:has(.collection-toolbar) {
+		max-width: 1100px;
+	}
+
+	@media (max-width: 640px) {
+		.toggle-label {
+			display: none;
+		}
+
+		.toggle-btn {
+			padding: var(--space-1) var(--space-2);
+		}
 	}
 
 	/* Footer */
