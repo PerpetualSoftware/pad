@@ -616,8 +616,11 @@ export type BulkItemsRequest =
 	| {
 			op: 'assign';
 			ids: string[];
-			assigned_user_id?: string | null;
-			agent_role_id?: string | null;
+			// Set an assignee/role by id. To CLEAR, use the clear flags —
+			// the server treats JSON null as absent (mirrors ItemUpdate),
+			// so `assigned_user_id: null` would be rejected, not a clear.
+			assigned_user_id?: string;
+			agent_role_id?: string;
 			clear_assigned_user?: boolean;
 			clear_agent_role?: boolean;
 			force?: boolean;
