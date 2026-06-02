@@ -208,12 +208,20 @@ func (s *Store) BackfillStatusTransitions() (*BackfillStatusTransitionsResult, e
 	// field change (every "key: a → b" segment contains the arrow). Order by
 	// created_at so multi-hop histories insert chronologically AND so the
 	// firstChangeFrom map below captures each item's earliest hop.
+	//
+	// metadata is jsonb on Postgres, where LIKE (~~) is undefined — cast to
+	// text first. SQLite stores it as TEXT, so no cast is needed there. Same
+	// dialect-guarded pattern as AttachmentReferenced in attachments.go.
+	metadataExpr := "a.metadata"
+	if s.dialect.Driver() == DriverPostgres {
+		metadataExpr = "a.metadata::text"
+	}
 	rows, err := s.db.Query(s.q(`
 		SELECT a.id, a.document_id, i.workspace_id, i.collection_id, a.metadata, a.created_at
 		FROM activities a
 		JOIN items i ON i.id = a.document_id
 		WHERE a.action = 'updated'
-		  AND a.metadata LIKE '%→%'
+		  AND ` + metadataExpr + ` LIKE '%→%'
 		ORDER BY a.created_at
 	`))
 	if err != nil {
