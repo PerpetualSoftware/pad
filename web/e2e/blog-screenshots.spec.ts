@@ -113,3 +113,56 @@ test.describe('BLOG-1007 conventions-and-playbooks', () => {
 		);
 	});
 });
+
+// ─── BLOG-1704: Pad v0.7 release roundup ─────────────────────────────────────
+
+test.describe('BLOG-1704 pad-v0-7', () => {
+	test.skip(!enabled, 'set PAD_BLOG_SCREENSHOTS=1 to regenerate blog screenshots');
+
+	// 2x device scale → ~2880px-wide source PNG, the high-res input
+	// optimize-cover.mjs wants for cover.webp (1600w) + og.png (1200x630).
+	test.use({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark', deviceScaleFactor: 2 });
+
+	const POST_SLUG = 'pad-v0-7-share-insights-tags';
+	const OUT_DIR = resolve(PAD_WEB_STATIC_BLOG, POST_SLUG);
+
+	test.beforeAll(async () => {
+		await mkdir(OUT_DIR, { recursive: true });
+	});
+
+	test('seed + capture public shared collection', async ({ page, fixture, request }) => {
+		test.setTimeout(120_000);
+
+		// Lived-in tasks collection (varied status/priority/parent linkage)
+		// so the public share view has something real to render.
+		await seedRealisticContent(fixture, request);
+
+		// Create a public collection share link for `tasks` (the headline
+		// v0.7 feature). The response carries the token; the anonymous page
+		// lives at /s/<token>.
+		const ws = fixture.workspaceSlug;
+		const shareResp = await request.post(
+			`/api/v1/workspaces/${ws}/collections/tasks/share-links`,
+			{ headers: { Authorization: `Bearer ${fixture.apiToken}` }, data: {} }
+		);
+		if (!shareResp.ok()) {
+			throw new Error(`share-link create failed (${shareResp.status()}): ${await shareResp.text()}`);
+		}
+		const link = (await shareResp.json()) as { token?: string };
+		if (!link.token) throw new Error('share-link created but response missing token');
+
+		// The public, unauthenticated page. Strip the Bearer header for this
+		// navigation so we capture exactly what a logged-out visitor sees.
+		await page.context().setExtraHTTPHeaders({});
+		await page.goto(`/s/${link.token}`);
+		await page.waitForLoadState('domcontentloaded');
+		// Assert the shared collection actually rendered (not an error / auth
+		// page) before capturing — a bare `h1, h2` would also match
+		// "Unable to load" / "Sign in to view" and save a bad screenshot.
+		await page
+			.getByRole('heading', { name: 'Tasks' })
+			.waitFor({ state: 'visible', timeout: 15_000 });
+		await page.waitForTimeout(1000); // settle view render
+		await page.screenshot({ path: resolve(OUT_DIR, '01-shared-collection.png'), fullPage: false });
+	});
+});
