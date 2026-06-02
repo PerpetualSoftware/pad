@@ -36,6 +36,20 @@
 	let isSharePage = $derived(page.url.pathname.startsWith('/s/'));
 	let isConsolePage = $derived(page.url.pathname.startsWith('/console'));
 
+	// Inside a workspace route ([username]/[workspace]/…) the mobile chrome is
+	// the BottomNav + YouSheet + contextual bar (PLAN-1694 Phase 2-3), so the
+	// global mobile <TopBar /> is retired there. It's kept for non-workspace
+	// shell pages (the workspace picker / user home) which have no BottomNav.
+	let inWorkspace = $derived(!!page.params.workspace);
+	let showMobileTopbar = $derived(uiStore.isMobile && !inWorkspace);
+
+	// `body.has-mobile-topbar` gates the .app-layout top padding in app.css so
+	// the offset only applies when the fixed mobile TopBar is actually rendered.
+	$effect(() => {
+		if (typeof document === 'undefined') return;
+		document.body.classList.toggle('has-mobile-topbar', showMobileTopbar);
+	});
+
 	// Register the 403-purge handler ONCE at app bootstrap (PLAN-1343
 	// / TASK-1360). The API client's request() path invokes this on
 	// GET/HEAD 403 for workspace-scoped endpoints; we drop the
@@ -204,8 +218,13 @@
 	<ToastContainer />
 	<OpenChildrenDialog />
 {:else}
-	{#if uiStore.isMobile}
+	{#if showMobileTopbar}
 		<!--
+			Inside a workspace the mobile header is retired in favour of BottomNav
+			+ YouSheet + contextual bar (PLAN-1694 Phase 2-3); this is gated on
+			`!inWorkspace` so it only serves non-workspace shell pages (the
+			workspace picker / user home), which have no BottomNav.
+
 			Mobile chrome: a single, always-rendered <TopBar mobile /> (IDEA-1121 /
 			TASK-1122). The previous design rendered TopBar only when the sidebar
 			was open and patched in a slim hamburger-only `.mobile-header` inside
@@ -301,7 +320,13 @@
 		fixed positioning, so the fix lives here on the layout container.
 	*/
 	@media (max-width: 768px) {
-		.app-layout {
+		/*
+			Only offset for the mobile TopBar when it's actually rendered — i.e.
+			on non-workspace shell pages. Inside a workspace the TopBar is retired
+			(PLAN-1694 Phase 2-3) so the layout runs full-height; the contextual
+			detail bar handles its own offset via body.has-context-bar in app.css.
+		*/
+		:global(body.has-mobile-topbar) .app-layout {
 			padding-top: var(--topbar-height);
 		}
 	}

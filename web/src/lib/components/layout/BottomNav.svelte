@@ -1,66 +1,40 @@
 <!--
 	BottomNav — mobile-only persistent bottom navigation (PLAN-1694).
 
-	Five slots: Dashboard · Search · Quick-capture (center ＋) · Activity · More.
-	Coexists with the existing mobile <TopBar /> this session; retiring the
-	header + consolidating workspace/account into a "You" sheet is a deferred
-	design checkpoint (PLAN-1694, DR-3).
+	Five slots: Dashboard · Search · Quick-capture (center ＋) · Activity · You.
+	The "You" slot opens YouSheet (workspace switch + nav overflow + account) —
+	together with this bar it replaces the retired mobile <TopBar /> inside a
+	workspace (PLAN-1694 Phase 2-3).
 
 	Rendered in the workspace layout ([username]/[workspace]/+layout.svelte) so
-	it only appears inside a workspace, never on login/console pages. Shows
-	itself only on mobile (uiStore.isMobile, ≤768px). While mounted on mobile it
-	toggles `body.has-bottom-nav`, which app.css uses to pad .main-content so
-	content can't hide under the fixed bar.
+	it only appears inside a workspace. Shows only on mobile (uiStore.isMobile,
+	≤768px). While mounted on mobile it toggles `body.has-bottom-nav`, which
+	app.css uses to pad .main-content so content can't hide under the fixed bar.
 
-	Nav destinations + active-state come from the shared source
-	($lib/nav/destinations) — the same module the Sidebar uses — so the two nav
-	surfaces can't drift (DR-1).
+	Active-state comes from the shared nav source ($lib/nav/destinations) — the
+	same module the Sidebar uses — so the surfaces can't drift (DR-1).
 -->
 <script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { page } from '$app/state';
-	import { goto } from '$app/navigation';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
-	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
-	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import QuickCaptureSheet from '$lib/components/layout/QuickCaptureSheet.svelte';
-	import { getPrimaryDestinations, getActiveKey } from '$lib/nav/destinations';
+	import YouSheet from '$lib/components/layout/YouSheet.svelte';
+	import { getActiveKey } from '$lib/nav/destinations';
 
 	let wsSlug = $derived(workspaceStore.current?.slug);
 	let wsUsername = $derived(workspaceStore.current?.owner_username ?? '');
 	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
-	let isGuest = $derived(workspaceStore.current?.is_guest ?? false);
 	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
 
-	let moreOpen = $state(false);
+	let youOpen = $state(false);
 	let captureOpen = $state(false);
 
-	// Keys promoted to their own primary slots — excluded from the More sheet.
+	// Keys with their own primary slot. "You" holds everything else (the nav
+	// overflow), so highlight it whenever the active page lives behind it.
 	const PRIMARY_SLOT_KEYS = ['dashboard', 'activity'];
-
-	// Overflow destinations for the More sheet: the static destinations not
-	// promoted to a slot, with guest-hidden ones (Settings) dropped for guests.
-	let overflowDestinations = $derived(
-		getPrimaryDestinations(wsPrefix)
-			.filter((d) => !PRIMARY_SLOT_KEYS.includes(d.key))
-			.filter((d) => !(d.guestHidden && isGuest))
-	);
-
-	// Collections, split like the Sidebar (regular vs agent/system).
-	const agentSlugs = ['conventions', 'playbooks'];
-	let regularCollections = $derived(
-		collectionStore.collections.filter((c) => !agentSlugs.includes(c.slug))
-	);
-	let agentCollections = $derived(
-		collectionStore.collections.filter((c) => agentSlugs.includes(c.slug))
-	);
-
-	// Highlight "More" whenever the active page lives behind it (i.e. not a
-	// primary slot and not nothing) so the bar reflects where you are.
-	let moreActive = $derived(
-		!!activeKey && !PRIMARY_SLOT_KEYS.includes(activeKey)
-	);
+	let youActive = $derived(!!activeKey && !PRIMARY_SLOT_KEYS.includes(activeKey));
 
 	// Drive the .main-content reflow only while the bar is actually shown
 	// (mobile). app.css owns the media-gated padding rule.
@@ -71,12 +45,6 @@
 	onDestroy(() => {
 		if (typeof document !== 'undefined') document.body.classList.remove('has-bottom-nav');
 	});
-
-	function navigate(href: string) {
-		moreOpen = false;
-		uiStore.onNavigate();
-		goto(href);
-	}
 </script>
 
 {#if uiStore.isMobile && wsPrefix}
@@ -124,62 +92,18 @@
 
 		<button
 			class="bn-item"
-			class:active={moreActive || moreOpen}
+			class:active={youActive || youOpen}
 			type="button"
-			onclick={() => (moreOpen = true)}
+			onclick={() => (youOpen = true)}
 			aria-haspopup="dialog"
-			aria-expanded={moreOpen}
+			aria-expanded={youOpen}
 		>
-			<span class="bn-icon" aria-hidden="true">☰</span>
-			<span class="bn-label">More</span>
+			<span class="bn-icon" aria-hidden="true">👤</span>
+			<span class="bn-label">You</span>
 		</button>
 	</nav>
 
-	<BottomSheet open={moreOpen} onclose={() => (moreOpen = false)} title="More">
-		<div class="more-sheet">
-			{#each overflowDestinations as dest (dest.key)}
-				<button
-					class="more-item"
-					class:active={activeKey === dest.key}
-					type="button"
-					onclick={() => navigate(dest.href)}
-				>
-					<span class="more-icon" aria-hidden="true">{dest.icon}</span>
-					<span>{dest.label}</span>
-				</button>
-			{/each}
-
-			{#if regularCollections.length}
-				<div class="more-section">Collections</div>
-				{#each regularCollections as coll (coll.id)}
-					<button
-						class="more-item"
-						class:active={activeKey === `collection:${coll.slug}`}
-						type="button"
-						onclick={() => navigate(`${wsPrefix}/${coll.slug}`)}
-					>
-						<span class="more-icon" aria-hidden="true">{coll.icon}</span>
-						<span>{coll.name}</span>
-					</button>
-				{/each}
-			{/if}
-
-			{#if agentCollections.length}
-				<div class="more-section">Agent</div>
-				{#each agentCollections as coll (coll.id)}
-					<button
-						class="more-item"
-						class:active={activeKey === `collection:${coll.slug}`}
-						type="button"
-						onclick={() => navigate(`${wsPrefix}/${coll.slug}`)}
-					>
-						<span class="more-icon" aria-hidden="true">{coll.icon}</span>
-						<span>{coll.name}</span>
-					</button>
-				{/each}
-			{/if}
-		</div>
-	</BottomSheet>
+	<YouSheet open={youOpen} onclose={() => (youOpen = false)} />
 
 	<QuickCaptureSheet
 		open={captureOpen}
@@ -251,48 +175,5 @@
 		font-size: 1.4em;
 		line-height: 1;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
-	}
-
-	.more-sheet {
-		display: flex;
-		flex-direction: column;
-		padding: 0 var(--space-3) var(--space-2);
-	}
-	.more-item {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		width: 100%;
-		background: none;
-		border: none;
-		cursor: pointer;
-		padding: var(--space-3) var(--space-3);
-		border-radius: var(--radius-sm);
-		color: var(--text-secondary);
-		font-size: 0.98em;
-		font-family: var(--font-ui);
-		text-align: left;
-	}
-	.more-item:hover {
-		background: var(--bg-hover);
-	}
-	.more-item.active {
-		color: var(--text-primary);
-		background: var(--bg-hover);
-		font-weight: 600;
-	}
-	.more-icon {
-		font-size: 1.1em;
-		width: 1.4em;
-		text-align: center;
-		flex-shrink: 0;
-	}
-	.more-section {
-		padding: var(--space-3) var(--space-3) var(--space-1);
-		font-size: 0.7em;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
-		color: var(--text-muted);
 	}
 </style>

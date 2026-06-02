@@ -12,6 +12,7 @@
 	import { titleStore } from '$lib/stores/title.svelte';
 	import ConnectBanner from '$lib/components/ConnectBanner.svelte';
 	import BottomNav from '$lib/components/layout/BottomNav.svelte';
+	import MobileContextBar from '$lib/components/layout/MobileContextBar.svelte';
 
 	let { children } = $props();
 
@@ -197,6 +198,8 @@
 	serverUrl={typeof window !== 'undefined' ? window.location.origin : ''}
 	workspaceName={workspaceStore.current?.name ?? ''}
 />
+
+<MobileContextBar />
 
 {@render children()}
 

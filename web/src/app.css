@@ -28,6 +28,7 @@
 
 	--topbar-height: 44px;
 	--bottom-nav-height: 56px;
+	--context-bar-height: 44px;
 	--sidebar-width: 260px;
 	--detail-panel-width: 300px;
 	--content-max-width: 960px;
@@ -970,6 +971,15 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 @media (max-width: 768px) {
 	body.has-bottom-nav .main-content {
 		padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px));
+	}
+	/*
+		Contextual top bar on detail screens (MobileContextBar, PLAN-1694
+		Phase 2). It's position: fixed; top: 0 and toggles body.has-context-bar
+		while shown, so pad the scroll container's top to match. Same body-class
+		pattern as the bottom-nav reflow above; safe-area inset clears the notch.
+	*/
+	body.has-context-bar .main-content {
+		padding-top: calc(var(--context-bar-height) + env(safe-area-inset-top, 0px));
 	}
 }
 
