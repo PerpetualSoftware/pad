@@ -11,6 +11,7 @@
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import ConnectBanner from '$lib/components/ConnectBanner.svelte';
+	import BottomNav from '$lib/components/layout/BottomNav.svelte';
 
 	let { children } = $props();
 
@@ -198,3 +199,5 @@
 />
 
 {@render children()}
+
+<BottomNav />

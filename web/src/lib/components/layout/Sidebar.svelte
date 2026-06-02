@@ -10,6 +10,7 @@
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { parseSchema, parseSettings, itemUrlId } from '$lib/types';
+	import { getActiveKey } from '$lib/nav/destinations';
 	import type { Collection } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import NotificationPanel from '$lib/components/common/NotificationPanel.svelte';
@@ -29,28 +30,19 @@
 	let wsUsername = $derived(workspaceStore.current?.owner_username ?? '');
 	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
 	let isGuest = $derived(workspaceStore.current?.is_guest ?? false);
-	let isDashboardPage = $derived(wsPrefix ? page.url.pathname === wsPrefix : false);
-	let isInsightsPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/insights` : false);
-	let isRolesPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/roles` : false);
-	let isActivityPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/activity` : false);
-	let isStarredPage = $derived(wsPrefix ? page.url.pathname === `${wsPrefix}/starred` : false);
-	let isTagsPage = $derived(
-		wsPrefix
-			? page.url.pathname === `${wsPrefix}/tags` ||
-					page.url.pathname.startsWith(`${wsPrefix}/tags/`)
-			: false
-	);
+	// Active-state derives from the shared nav source so the Sidebar and the
+	// mobile BottomNav/More sheet can't drift (PLAN-1694 DR-1).
+	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
+	let isDashboardPage = $derived(activeKey === 'dashboard');
+	let isInsightsPage = $derived(activeKey === 'insights');
+	let isRolesPage = $derived(activeKey === 'roles');
+	let isActivityPage = $derived(activeKey === 'activity');
+	let isStarredPage = $derived(activeKey === 'starred');
+	let isTagsPage = $derived(activeKey === 'tags');
 
-	let activeCollectionSlug = $derived.by(() => {
-		if (!wsPrefix) return null;
-		const prefix = `${wsPrefix}/`;
-		const path = page.url.pathname;
-		if (!path.startsWith(prefix)) return null;
-		const rest = path.slice(prefix.length);
-		const slug = rest.split('/')[0];
-		if (slug === 'settings' || slug === 'new' || slug === 'library' || slug === 'activity' || slug === 'starred' || slug === 'tags' || slug === 'roles' || slug === 'insights' || slug === '') return null;
-		return slug;
-	});
+	let activeCollectionSlug = $derived(
+		activeKey && activeKey.startsWith('collection:') ? activeKey.slice('collection:'.length) : null
+	);
 
 	let activeColl = $derived(
 		activeCollectionSlug
