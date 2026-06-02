@@ -42,6 +42,44 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, versions)
 }
 
+// handleGetItemVersion returns a single version with its diff resolved to full
+// content. The paginated timeline serves raw reverse-patch text (it can't resolve
+// a partial window), so the timeline card calls this to reconstruct real content
+// when a diff version is expanded — see BUG-1612.
+func (s *Server) handleGetItemVersion(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	itemSlug := chi.URLParam(r, "itemSlug")
+	versionID := chi.URLParam(r, "versionID")
+	item, err := s.store.ResolveItem(workspaceID, itemSlug)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		return
+	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+
+	version, err := s.store.GetItemVersionResolved(item.ID, versionID, item.Content)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if version == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Version not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, version)
+}
+
 // handleRestoreItemVersion restores an item's content from a specific version.
 func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)

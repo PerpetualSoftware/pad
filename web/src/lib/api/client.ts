@@ -855,6 +855,14 @@ export const api = {
 		list: (ws: string, itemSlug: string) =>
 			request<Version[]>(`/workspaces/${ws}/items/${itemSlug}/versions`),
 
+		/**
+		 * Fetch a single version with its diff resolved to full content. The
+		 * timeline serves raw reverse-patch text for diff versions; the version
+		 * card calls this to reconstruct real content when expanded (BUG-1612).
+		 */
+		get: (ws: string, itemSlug: string, versionId: string) =>
+			request<Version>(`/workspaces/${ws}/items/${itemSlug}/versions/${versionId}`),
+
 		restore: (ws: string, itemSlug: string, versionId: string) =>
 			request<Item>(`/workspaces/${ws}/items/${itemSlug}/versions/${versionId}/restore`, {
 				method: 'POST'

@@ -18,10 +18,35 @@
 	let confirming = $state(false);
 	let restoring = $state(false);
 
+	// The timeline endpoint serves raw reverse-patch text for diff versions
+	// (is_diff), so version.content is unreadable patch data, not real content.
+	// Resolve it lazily the first time the card is expanded (BUG-1612). Non-diff
+	// versions already carry full content, so displayContent falls straight through.
+	let fetchedContent = $state<string | null>(null);
+	let resolveError = $state(false);
+	let resolving = $state(false);
+	let displayContent = $derived(version.is_diff ? fetchedContent : version.content);
+
+	async function ensureResolved() {
+		if (!version.is_diff || fetchedContent !== null || resolving) return;
+		resolving = true;
+		resolveError = false;
+		try {
+			const full = await api.versions.get(wsSlug, itemSlug, version.id);
+			fetchedContent = full.content;
+		} catch {
+			resolveError = true;
+		} finally {
+			resolving = false;
+		}
+	}
+
 	function toggle() {
 		expanded = !expanded;
 		if (!expanded) {
 			confirming = false;
+		} else {
+			ensureResolved();
 		}
 	}
 
@@ -52,7 +77,8 @@
 		const labels: Record<string, string> = {
 			cli: 'CLI',
 			web: 'Web',
-			skill: 'Skill'
+			skill: 'Skill',
+			'collab-snapshot': 'Autosave'
 		};
 		return labels[source] ?? source;
 	}
@@ -88,7 +114,13 @@
 	{#if expanded}
 		<div class="card-body">
 			<div class="diff-container">
-				<DiffView oldContent={version.content} newContent={currentContent} />
+				{#if resolving}
+					<p class="diff-status">Loading version…</p>
+				{:else if resolveError}
+					<p class="diff-status">Couldn't load this version's content.</p>
+				{:else if displayContent !== null}
+					<DiffView oldContent={displayContent} newContent={currentContent} />
+				{/if}
 			</div>
 
 			<div class="restore-area">
@@ -184,6 +216,13 @@
 		white-space: nowrap;
 		overflow: hidden;
 		text-overflow: ellipsis;
+	}
+
+	.diff-status {
+		margin: 0;
+		padding: var(--space-2);
+		font-size: 0.85em;
+		color: var(--text-muted);
 	}
 
 	.badges {

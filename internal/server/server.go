@@ -1124,6 +1124,7 @@ func (s *Server) setupRouter() {
 						r.Post("/restore", s.handleRestoreItem)
 						r.Post("/move", s.handleMoveItem)
 						r.Get("/versions", s.handleListItemVersions)
+						r.Get("/versions/{versionID}", s.handleGetItemVersion)
 						r.Post("/versions/{versionID}/restore", s.handleRestoreItemVersion)
 						r.Get("/activity", s.handleListItemActivity)
 						r.Get("/links", s.handleGetItemLinks)
