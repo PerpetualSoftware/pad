@@ -37,15 +37,27 @@
 	// slot), so light it whenever the active page is workspace content.
 	let onWorkspaceContent = $derived(!!activeKey && activeKey !== 'activity');
 
-	// Tap toggles: a second tap on the active slot closes its sheet. Opening
-	// one always closes the other.
+	// Tap toggles: a second tap on the active slot closes its surface. Opening
+	// any of the three surfaces (Workspace / You / Search) closes the others.
 	function toggleWorkspace() {
 		youOpen = false;
+		uiStore.closeSearch();
 		workspaceOpen = !workspaceOpen;
 	}
 	function toggleYou() {
 		workspaceOpen = false;
+		uiStore.closeSearch();
 		youOpen = !youOpen;
+	}
+	function toggleSearch() {
+		if (uiStore.searchOpen) {
+			uiStore.closeSearch();
+		} else {
+			workspaceOpen = false;
+			youOpen = false;
+			uiStore.openSearch();
+			uiStore.onNavigate();
+		}
 	}
 
 	// Drive the .main-content reflow only while shown (mobile). app.css owns
@@ -77,11 +89,11 @@
 
 		<button
 			class="bn-item"
+			class:active={uiStore.searchOpen}
 			type="button"
-			onclick={() => {
-				uiStore.openSearch();
-				uiStore.onNavigate();
-			}}
+			onclick={toggleSearch}
+			aria-haspopup="dialog"
+			aria-expanded={uiStore.searchOpen}
 		>
 			<span class="bn-icon" aria-hidden="true">🔍</span>
 			<span class="bn-label">Search</span>
