@@ -27,6 +27,8 @@
 	--status-archived: #444444;
 
 	--topbar-height: 44px;
+	--bottom-nav-height: 56px;
+	--context-bar-height: 44px;
 	--sidebar-width: 260px;
 	--detail-panel-width: 300px;
 	--content-max-width: 960px;
@@ -953,6 +955,31 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 		font-size: 10pt;
 		font-weight: 700;
 		line-height: 1;
+	}
+}
+
+/*
+	Mobile bottom-nav reflow (PLAN-1694). <BottomNav /> is rendered in the
+	workspace layout and uses position: fixed; bottom: 0 on mobile. It toggles
+	`body.has-bottom-nav` while mounted on mobile so the scroll container
+	(.main-content, defined in the root +layout.svelte) gets bottom padding and
+	content can't hide under the bar. Gated by the same ≤768px breakpoint
+	uiStore.isMobile uses, and by the body class so non-workspace shell pages
+	(which share .main-content but have no bottom nav) aren't padded. The
+	safe-area inset keeps the last row clear of the iOS home indicator.
+*/
+@media (max-width: 768px) {
+	body.has-bottom-nav .main-content {
+		padding-bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px));
+	}
+	/*
+		Contextual top bar on detail screens (MobileContextBar, PLAN-1694
+		Phase 2). It's position: fixed; top: 0 and toggles body.has-context-bar
+		while shown, so pad the scroll container's top to match. Same body-class
+		pattern as the bottom-nav reflow above; safe-area inset clears the notch.
+	*/
+	body.has-context-bar .main-content {
+		padding-top: calc(var(--context-bar-height) + env(safe-area-inset-top, 0px));
 	}
 }
 

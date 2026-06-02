@@ -55,6 +55,26 @@
 	let searchTimeout: ReturnType<typeof setTimeout>;
 	let inputEl = $state<HTMLInputElement>();
 
+	// Mobile: swipe down on the grab handle to dismiss, matching the
+	// Workspace/You docked sheets (PLAN-1694). Desktop is unaffected — the grip
+	// is display:none above 768px.
+	let dragY = $state(0);
+	let dragging = $state(false);
+	let dragStartY = 0;
+	function gripStart(e: TouchEvent) {
+		dragStartY = e.touches[0].clientY;
+		dragging = true;
+	}
+	function gripMove(e: TouchEvent) {
+		if (!dragging) return;
+		dragY = Math.max(0, e.touches[0].clientY - dragStartY);
+	}
+	function gripEnd() {
+		dragging = false;
+		if (dragY > 90) uiStore.closeSearch();
+		dragY = 0;
+	}
+
 	// Filters
 	let filterCollection = $state<string | null>(null);
 	let filterStatus = $state<string | null>(null);
@@ -682,7 +702,26 @@
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="overlay" onclick={() => uiStore.closeSearch()}>
-		<div class="palette" onclick={(e) => e.stopPropagation()} onkeydown={handleKeydown}>
+		<div
+			class="palette"
+			onclick={(e) => e.stopPropagation()}
+			onkeydown={handleKeydown}
+			style:transform={dragY ? `translateY(${dragY}px)` : undefined}
+			style:transition={dragging ? 'none' : undefined}
+		>
+			<!--
+				Mobile grab handle (PLAN-1694) — matches the Workspace/You docked
+				sheets. Swipe down to dismiss; display:none on desktop.
+			-->
+			<!-- svelte-ignore a11y_no_static_element_interactions -->
+			<div
+				class="cp-grip"
+				ontouchstart={gripStart}
+				ontouchmove={gripMove}
+				ontouchend={gripEnd}
+			>
+				<span class="cp-handle" aria-hidden="true"></span>
+			</div>
 			<!-- Search input -->
 			<div class="search-row">
 				<svg
@@ -1014,6 +1053,10 @@
 		max-height: 65vh;
 		display: flex;
 		flex-direction: column;
+	}
+	/* Mobile-only grab handle; see the ≤768px block below. */
+	.cp-grip {
+		display: none;
 	}
 	.search-row {
 		display: flex;
@@ -1435,26 +1478,58 @@
 		  tap target since the full-screen palette leaves no overlay to
 		  tap-outside.
 	*/
+	/*
+		Mobile: dock the palette ABOVE the bottom nav as a sheet that matches
+		the Workspace/You docked sheets (PLAN-1694) — rounded top, grab handle,
+		a backdrop that stops above the nav (so the bar stays visible/tappable),
+		swipe-down / tap-out to dismiss. Replaces the previous full-screen
+		takeover. Desktop is byte-identical above this rule.
+
+		Keyboard handling is preserved: the input stays at the top of the sheet
+		and `.results` is the sole scroll target, so the on-screen keyboard
+		rises below the input. `min-height` keeps the input clear of the
+		keyboard even when the sheet is otherwise empty (just-opened state).
+	*/
 	@media (max-width: 768px) {
 		.overlay {
 			padding-top: 0;
-			/*
-				Belt-and-braces with the JS body-scroll lock: even if iOS
-				somehow drags the body, the overlay itself can't scroll its
-				own contents. The palette below is height: 100dvh so it
-				exactly fills the overlay; nothing should ever overflow.
-			*/
+			align-items: flex-end;
+			background: rgba(0, 0, 0, 0.45);
 			overflow: hidden;
 			overscroll-behavior: contain;
 		}
+		/*
+			Only lift above the bottom nav when it's actually present (in a
+			workspace — BottomNav toggles body.has-bottom-nav). On the
+			non-workspace picker the sheet sits flush to the bottom.
+		*/
+		:global(body.has-bottom-nav) .overlay {
+			bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px));
+		}
 		.palette {
 			max-width: none;
-			max-height: 100dvh;
-			height: 100dvh;
 			width: 100%;
+			height: auto;
+			min-height: 58dvh;
+			max-height: 80dvh;
 			border: none;
-			border-radius: 0;
-			box-shadow: none;
+			border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+			box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.45);
+		}
+		.cp-grip {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			padding: var(--space-2) 0;
+			flex-shrink: 0;
+			cursor: grab;
+			touch-action: none;
+		}
+		.cp-handle {
+			width: 36px;
+			height: 4px;
+			border-radius: 999px;
+			background: var(--border);
 		}
 		.search-input {
 			/* iOS Safari skips its focus-zoom only when font-size ≥ 16px. */
@@ -1463,21 +1538,10 @@
 		.search-hint {
 			display: none;
 		}
+		/* Dismiss via grab-handle swipe + tap-outside now — no X (matches sheets). */
 		.mobile-close {
-			display: flex;
+			display: none;
 		}
-		/*
-			Pin .results as the SOLE scroll target inside the palette so
-			the search-row stays at the top regardless of result-list
-			length. `flex: 1; min-height: 0` lets the flex item shrink
-			below its content size (without min-height: 0, an item with
-			overflow: auto in a flex column refuses to shrink and the
-			whole palette ends up taller than 100dvh — which is what made
-			the input scroll off-screen in the first reported bug).
-			`overscroll-behavior: contain` prevents bounce-scroll from
-			chaining out to the body, which on iOS would re-trigger the
-			scroll-to-input quirk we're trying to suppress.
-		*/
 		.results {
 			flex: 1;
 			min-height: 0;
