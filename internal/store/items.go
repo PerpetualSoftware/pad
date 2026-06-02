@@ -3386,6 +3386,25 @@ func (s *Store) ListItemVersionsResolved(itemID, currentContent string) ([]model
 	return versions, nil
 }
 
+// GetItemVersionResolved returns a single version with its diff resolved to
+// full content. Reverse-patch versions can only be reconstructed by walking the
+// chain from current content newest→oldest, so this resolves the whole chain and
+// returns the requested row. Used by the timeline's lazy "resolve on expand" path
+// (BUG-1612) — the paginated timeline serves raw patch text, so the card fetches
+// real content only when a diff version is expanded. Returns nil if not found.
+func (s *Store) GetItemVersionResolved(itemID, versionID, currentContent string) (*models.Version, error) {
+	versions, err := s.ListItemVersionsResolved(itemID, currentContent)
+	if err != nil {
+		return nil, err
+	}
+	for i := range versions {
+		if versions[i].ID == versionID {
+			return &versions[i], nil
+		}
+	}
+	return nil, nil
+}
+
 // ListItemVersionsBeforeTime returns versions for an item created before the given time,
 // ordered newest-first, limited to `limit` results. Used for cursor-based timeline pagination.
 //

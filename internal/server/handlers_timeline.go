@@ -237,5 +237,48 @@ func buildTimeline(comments []models.Comment, activities []models.Activity, vers
 		return entries[i].CreatedAt.After(entries[j].CreatedAt)
 	})
 
-	return entries
+	return collapseAutosaveBursts(entries)
+}
+
+// autosaveBurstWindow is how close two collab-snapshot versions must be (with no
+// other event between them) to collapse into a single timeline entry. The web
+// editor flushes a collab-snapshot every ~5s while a user types, so without this
+// every editing session litters the item timeline with near-identical "Content
+// updated" cards (BUG-1612). We keep the newest snapshot of each burst as the
+// restore point and drop the rest.
+const autosaveBurstWindow = 10 * time.Minute
+
+// isAutosaveVersion reports whether an entry is a collab-snapshot version row
+// (the web editor's 5s auto-flush). These are the only versions we collapse —
+// manual web/CLI/skill saves stay individual.
+func isAutosaveVersion(e models.TimelineEntry) bool {
+	return e.Kind == "version" && e.Version != nil && e.Version.Source == "collab-snapshot"
+}
+
+// collapseAutosaveBursts walks the newest-first entries and drops a
+// collab-snapshot version when the previous kept entry is also a collab-snapshot
+// version within autosaveBurstWindow — i.e. an uninterrupted burst of autosaves
+// collapses to its newest row. Any non-autosave entry between two autosaves
+// breaks the run, so each distinct editing session still leaves one restore point.
+func collapseAutosaveBursts(entries []models.TimelineEntry) []models.TimelineEntry {
+	if len(entries) == 0 {
+		return entries
+	}
+	kept := entries[:0:0]
+	var lastAutosaveAt time.Time
+	for _, e := range entries {
+		if isAutosaveVersion(e) {
+			if !lastAutosaveAt.IsZero() && lastAutosaveAt.Sub(e.CreatedAt) <= autosaveBurstWindow {
+				// Same burst as the autosave we already kept — skip this older one.
+				lastAutosaveAt = e.CreatedAt
+				continue
+			}
+			lastAutosaveAt = e.CreatedAt
+		} else {
+			// A non-autosave event ends the current burst.
+			lastAutosaveAt = time.Time{}
+		}
+		kept = append(kept, e)
+	}
+	return kept
 }
