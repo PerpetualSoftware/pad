@@ -25,7 +25,7 @@ func TestResolveCollectionShareLink_EnrichedPayload(t *testing.T) {
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
 		"name":   "Roadmap",
 		"prefix": "ROAD",
-		"icon": "🗺️",
+		"icon":   "🗺️",
 		// schema is a JSON-encoded string on CollectionCreate.
 		"schema": `{"fields":[` +
 			`{"key":"status","label":"Status","type":"select","options":["open","doing","done"],"terminal_options":["done"]},` +

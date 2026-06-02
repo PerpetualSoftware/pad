@@ -4,22 +4,22 @@ import "time"
 
 // Comment represents a comment on an item.
 type Comment struct {
-	ID          string    `json:"id"`
-	ItemID      string    `json:"item_id"`
-	WorkspaceID string    `json:"workspace_id"`
-	Author      string    `json:"author"`
+	ID          string `json:"id"`
+	ItemID      string `json:"item_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Author      string `json:"author"`
 	// UserID is the authenticated user who authored the comment. Empty for
 	// pre-identity comments (created before TASK-1663) and agent/system
 	// comments; the comment-edit permission check treats empty as
 	// "no provable author" → admin-only.
-	UserID      string    `json:"user_id,omitempty"`
-	Body        string    `json:"body"`
-	CreatedBy   string    `json:"created_by"`
-	Source      string    `json:"source"`
-	ActivityID  string    `json:"activity_id,omitempty"`
-	ParentID    string    `json:"parent_id,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	UserID     string    `json:"user_id,omitempty"`
+	Body       string    `json:"body"`
+	CreatedBy  string    `json:"created_by"`
+	Source     string    `json:"source"`
+	ActivityID string    `json:"activity_id,omitempty"`
+	ParentID   string    `json:"parent_id,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 
 	// Populated by joins (not stored)
 	ItemTitle string `json:"item_title,omitempty"`
