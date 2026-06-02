@@ -37,13 +37,15 @@
 	// slot), so light it whenever the active page is workspace content.
 	let onWorkspaceContent = $derived(!!activeKey && activeKey !== 'activity');
 
-	function openWorkspace() {
+	// Tap toggles: a second tap on the active slot closes its sheet. Opening
+	// one always closes the other.
+	function toggleWorkspace() {
 		youOpen = false;
-		workspaceOpen = true;
+		workspaceOpen = !workspaceOpen;
 	}
-	function openYou() {
+	function toggleYou() {
 		workspaceOpen = false;
-		youOpen = true;
+		youOpen = !youOpen;
 	}
 
 	// Drive the .main-content reflow only while shown (mobile). app.css owns
@@ -63,7 +65,7 @@
 			class="bn-item"
 			class:active={onWorkspaceContent || workspaceOpen}
 			type="button"
-			onclick={openWorkspace}
+			onclick={toggleWorkspace}
 			aria-haspopup="dialog"
 			aria-expanded={workspaceOpen}
 		>
@@ -108,7 +110,7 @@
 			class="bn-item"
 			class:active={youOpen}
 			type="button"
-			onclick={openYou}
+			onclick={toggleYou}
 			aria-haspopup="dialog"
 			aria-expanded={youOpen}
 		>
