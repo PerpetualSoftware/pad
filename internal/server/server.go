@@ -1238,6 +1238,12 @@ func (s *Server) setupRouter() {
 					// Dashboard (v2)
 					r.Get("/dashboard", s.handleGetDashboard)
 
+					// Workspace graph — {nodes, edges} for the 3D
+					// graph view (PLAN-1730 / TASK-1731). Active
+					// items by default; ?include_terminal=true for
+					// the full history.
+					r.Get("/graph", s.handleGetWorkspaceGraph)
+
 					// Project report — windowed throughput/flow/status
 					// stats (PLAN-1628 / TASK-1630).
 					r.Get("/report", s.handleGetReport)
