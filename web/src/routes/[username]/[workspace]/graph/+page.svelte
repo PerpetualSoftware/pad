@@ -89,10 +89,38 @@
 	let selectedRef: string | null = null;
 	let neighborRefs = new Set<string>();
 
+	// ── Blocker-chain tracing (PLAN-1730 / TASK-1737) ────────────────────────────
+	// "Why can't TASK-X start?" — the answer lit up as a path through the space. On
+	// select we walk the transitive blocker chain UPSTREAM over 'blocks' edges (a
+	// node's blockers are the SOURCES of blocks-edges whose target is that node) and
+	// stash the result in two plain `let` Sets the accessors read (CONVE-1688: no
+	// $state in the imperative render path; re-evaluated via graph.refresh()).
+	//   chainRefs  — every node in the transitive chain, NOT including the selected
+	//                node itself.
+	//   chainEdges — the blocks-edges that make up the chain, keyed
+	//                `${sourceRef}->${targetRef}` (includes the final hop INTO the
+	//                selected node, so the energy visibly flows all the way in).
+	let chainRefs = new Set<string>();
+	let chainEdges = new Set<string>();
+	// Depth of the deepest blocker hop from the selected node (1 = a direct blocker).
+	// Surfaced to the detail card so a chain deeper than its direct blockers reads as
+	// such. Plain `let` — bookkeeping alongside the chain Sets, never $state.
+	let chainDepth = 0;
+
 	// The selected node, surfaced to the detail-card template. A separate $state from
 	// the plain Sets above: this one is READ in markup, so it must be reactive — but
 	// no $effect both reads and writes it (it's only written from event handlers).
 	let selectedNode = $state<GraphNode3D | null>(null);
+	// Direct blockers of the selected node, surfaced to the detail card's "Blocked by"
+	// section (TASK-1737). Resolved to {ref,title} from filteredData nodes. Reactive
+	// $state because the card markup reads it; written only from event handlers
+	// (selectNode/deselect), never read+written by an $effect — CONVE-1688-clean.
+	let selectedBlockedBy = $state<{ ref: string; title: string }[]>([]);
+	// Count of items the selected node blocks (outgoing blocks-edges). One-line stat
+	// in the card (no list this round). Same reactivity reasoning as above.
+	let selectedBlocksCount = $state(0);
+	// Mirror of chainDepth for the card (reactive copy of the plain `let`).
+	let selectedChainDepth = $state(0);
 	// Richer item detail, fetched lazily on select (priority / assignee live here).
 	let selectedItem = $state<Item | null>(null);
 	let selectedItemLoading = $state(false);
@@ -263,7 +291,25 @@
 				// In focus mode, adjacent links brighten and the rest fade out.
 				.linkColor((l: LinkObject<NodeObject>) => linkColor(asLink(l)))
 				.linkOpacity(0.5)
-				.linkWidth((l: LinkObject<NodeObject>) => (asLink(l).type === 'blocks' ? 1.5 : 0.5))
+				// Chain edges read wider (~2) so the lit blocker path stands out from the
+				// ordinary blocks (1.5) and structural (0.5) links.
+				.linkWidth((l: LinkObject<NodeObject>) => linkWidth(asLink(l)))
+				// Directional particles flow ONLY along chain edges (source→target, i.e.
+				// blocker→blocked, so energy visibly streams toward the selected node).
+				// The accessors return 0/undefined for every non-chain link, so no
+				// particles render elsewhere. Accessor names verified against
+				// node_modules/3d-force-graph (README + three-forcegraph .d.ts:
+				// linkDirectionalParticles / *ParticleWidth / *ParticleSpeed, all
+				// per-link function-accessor form).
+				.linkDirectionalParticles((l: LinkObject<NodeObject>) =>
+					isChainEdge(asLink(l)) ? 3 : 0
+				)
+				.linkDirectionalParticleWidth((l: LinkObject<NodeObject>) =>
+					isChainEdge(asLink(l)) ? 1.5 : 0
+				)
+				.linkDirectionalParticleSpeed((l: LinkObject<NodeObject>) =>
+					isChainEdge(asLink(l)) ? 0.006 : 0
+				)
 				.linkDirectionalArrowLength((l: LinkObject<NodeObject>) =>
 					asLink(l).type === 'blocks' ? 3 : 0
 				)
@@ -309,12 +355,19 @@
 		const t = pulseFactor(n.ref);
 		const lit = t > 0 ? mixHex(base, '#ffffff', t) : base;
 		if (selectedRef === null) return lit;
-		// Focus-mode composition (pulse-vs-dim): apply the pulse FIRST (on the lit
-		// hex), THEN the dim alpha for out-of-neighborhood nodes — so a touched node
-		// outside the selection still pulses, just subtly (it reads as a faint flash
-		// in the dimmed crowd rather than vanishing). In-neighborhood nodes pulse at
-		// full strength. This keeps the ambient-liveness signal visible without
-		// fighting the focus highlight.
+		// Focus-mode precedence (CHAIN > pulse > dim): a blocker-chain node is "the
+		// reason you're stuck", so it wins over everything — even an out-of-
+		// neighborhood chain node stays bright (never dimmed). We mix its collection
+		// color toward the blocks red (#f43f5e) at full alpha so the lit path reads as
+		// a distinct red-tinted thread, NOT the ordinary white-ish neighborhood
+		// highlight. Pulse is intentionally skipped on chain nodes — the chain signal
+		// dominates the ambient-liveness one here.
+		if (chainRefs.has(n.ref)) return mixHex(base, '#f43f5e', 0.7);
+		// Otherwise the existing pulse-vs-dim composition: apply the pulse FIRST (on
+		// the lit hex), THEN the dim alpha for out-of-neighborhood nodes — so a touched
+		// node outside the selection still pulses, just subtly (a faint flash in the
+		// dimmed crowd rather than vanishing). In-neighborhood nodes pulse at full
+		// strength. Keeps ambient liveness visible without fighting the focus highlight.
 		return neighborRefs.has(n.ref) ? lit : hexToRgba(lit, 0.15);
 	}
 
@@ -323,6 +376,11 @@
 	// In focus mode: links touching the selected node brighten; the rest fade hard.
 	function linkColor(l: GraphLink3D): string {
 		if (selectedRef !== null) {
+			// Focus-mode precedence (CHAIN > adjacent-highlight > dim): a chain edge is
+			// part of the lit blocker path, so it always burns bright red at full alpha
+			// regardless of whether it touches the selected node directly (deep-chain
+			// hops don't, but must still glow). Checked FIRST so it can't be dimmed.
+			if (chainEdges.has(`${l.sourceRef}->${l.targetRef}`)) return 'rgba(244, 63, 94, 1)';
 			// Compare against the preserved raw refs — the force layout mutates
 			// source/target into node objects after ingest.
 			const adjacent = l.sourceRef === selectedRef || l.targetRef === selectedRef;
@@ -331,10 +389,30 @@
 			return 'rgba(148, 163, 184, 0.95)';
 		}
 		if (l.type === 'blocks') return 'rgba(244, 63, 94, 0.85)';
-		if (l.type === 'parent' || l.type === 'implements' || l.type === 'supersedes' || l.type === 'split-from') {
+		// Structural links share a bright slate, but supersedes/split-from read as
+		// "lineage" rather than "structure" — give them a slightly lower alpha (0.6 vs
+		// 0.85) so the hard parent/implements scaffolding stays the dominant structure.
+		if (l.type === 'supersedes' || l.type === 'split-from') {
+			return 'rgba(148, 163, 184, 0.6)';
+		}
+		if (l.type === 'parent' || l.type === 'implements') {
 			return 'rgba(148, 163, 184, 0.85)';
 		}
 		return 'rgba(148, 163, 184, 0.35)';
+	}
+
+	// True when a link is on the lit blocker chain (keyed by raw refs, since the force
+	// layout mutates source/target into node objects after ingest). Drives the chain-
+	// only width bump + directional particles.
+	function isChainEdge(l: GraphLink3D): boolean {
+		return chainEdges.has(`${l.sourceRef}->${l.targetRef}`);
+	}
+
+	// Link width: chain edges widest (~2), then blocks (1.5), then structural/soft
+	// (0.5). Chain checked first so a chain'd blocks-edge gets the wider treatment.
+	function linkWidth(l: GraphLink3D): number {
+		if (isChainEdge(l)) return 2;
+		return l.type === 'blocks' ? 1.5 : 0.5;
 	}
 
 	// Hex (#rrggbb) → rgba() with the given alpha. The dim treatment for out-of-
@@ -394,10 +472,86 @@
 		return set;
 	}
 
+	// Cycle-safe BFS over the CURRENT filtered edges to trace the transitive blocker
+	// chain UPSTREAM from `ref`. 'blocks' semantics: source blocks target, so the
+	// blockers of node X are the SOURCES of blocks-edges whose target is X. We walk
+	// target→source, layer by layer, recording every blocker node (chainRefs) and
+	// every traversed blocks-edge (chainEdges, keyed `${src}->${tgt}`), tracking the
+	// deepest hop in `chainDepth`. A `visited` set makes it cycle-safe — a blocks
+	// cycle (A blocks B blocks A) terminates instead of looping. Uses filteredData so
+	// the lit path matches what's actually on screen; a filtered-out blocker can't be
+	// highlighted anyway. Mutates the plain `let` chain Sets in place (CONVE-1688).
+	function computeBlockerChain(ref: string) {
+		chainRefs = new Set<string>();
+		chainEdges = new Set<string>();
+		chainDepth = 0;
+		const edges = filteredData?.edges ?? [];
+		// visited tracks nodes whose blockers we've already enqueued, so we don't
+		// re-expand them (cycle-safety + dedupe). Seed with the selected node — its own
+		// blockers are the first layer, but the node itself is never a chain member.
+		const visited = new Set<string>([ref]);
+		let frontier = [ref];
+		let depth = 0;
+		while (frontier.length > 0) {
+			depth++;
+			const next: string[] = [];
+			for (const target of frontier) {
+				for (const e of edges) {
+					if (e.type !== 'blocks' || e.target !== target) continue;
+					const blocker = e.source;
+					// Record the hop INTO `target` (includes the final hop into the
+					// selected node on the first layer — energy flows all the way in).
+					chainEdges.add(`${e.source}->${e.target}`);
+					if (!visited.has(blocker)) {
+						visited.add(blocker);
+						chainRefs.add(blocker);
+						next.push(blocker);
+					}
+				}
+			}
+			if (next.length > 0) chainDepth = depth;
+			frontier = next;
+		}
+	}
+
+	// Direct blockers of `ref` (one hop upstream), resolved to {ref,title} from the
+	// filtered node set so titles match what's rendered. Feeds the card's "Blocked by"
+	// list. Skips blockers whose node was filtered out (no title to show).
+	function directBlockers(ref: string): { ref: string; title: string }[] {
+		const edges = filteredData?.edges ?? [];
+		const nodes = filteredData?.nodes ?? [];
+		const titleByRef = new Map(nodes.map((n) => [n.ref, n.title]));
+		const out: { ref: string; title: string }[] = [];
+		const seen = new Set<string>();
+		for (const e of edges) {
+			if (e.type !== 'blocks' || e.target !== ref) continue;
+			if (seen.has(e.source)) continue;
+			seen.add(e.source);
+			const title = titleByRef.get(e.source);
+			if (title !== undefined) out.push({ ref: e.source, title });
+		}
+		return out;
+	}
+
+	// Count of items `ref` blocks: outgoing blocks-edges (ref is the source).
+	function blocksCount(ref: string): number {
+		const edges = filteredData?.edges ?? [];
+		let n = 0;
+		for (const e of edges) if (e.type === 'blocks' && e.source === ref) n++;
+		return n;
+	}
+
 	function selectNode(node: GraphNode3D) {
 		// Plain-`let` selection state (consulted by the accessors).
 		selectedRef = node.ref;
 		neighborRefs = computeNeighbors(node.ref);
+		// Trace the blocker chain (plain `let` Sets the accessors read). Auto-runs on
+		// every select — both click and search arrive here.
+		computeBlockerChain(node.ref);
+		// Reactive copies for the detail card.
+		selectedBlockedBy = directBlockers(node.ref);
+		selectedBlocksCount = blocksCount(node.ref);
+		selectedChainDepth = chainDepth;
 		// Reactive copy for the detail card.
 		selectedNode = node;
 
@@ -419,6 +573,18 @@
 		// Fetch richer detail (priority / assignee) for the card. Stale-gated so a
 		// rapid re-select can't be overwritten by an older response.
 		void loadSelectedItem(node.ref);
+	}
+
+	// Re-trace the chain + refresh the card's blocker bookkeeping for the CURRENT
+	// selection without touching the camera or the item fetch — used by the renderer-
+	// sync effect when a selection survives a payload/filter change (the filtered
+	// edges, hence the chain, may have shifted). No-op if nothing's selected.
+	function recomputeChainForSelection() {
+		if (selectedRef === null) return;
+		computeBlockerChain(selectedRef);
+		selectedBlockedBy = directBlockers(selectedRef);
+		selectedBlocksCount = blocksCount(selectedRef);
+		selectedChainDepth = chainDepth;
 	}
 
 	// ── Filter toggles (TASK-1735) ───────────────────────────────────────────────
@@ -477,7 +643,14 @@
 		if (selectedRef === null) return;
 		selectedRef = null;
 		neighborRefs = new Set<string>();
+		// Clear the blocker chain (plain `let` Sets + depth) so the lit path goes dark.
+		chainRefs = new Set<string>();
+		chainEdges = new Set<string>();
+		chainDepth = 0;
 		selectedNode = null;
+		selectedBlockedBy = [];
+		selectedBlocksCount = 0;
+		selectedChainDepth = 0;
 		selectedItem = null;
 		selectedItemLoading = false;
 		selectSeq++;
@@ -606,6 +779,16 @@
 		if (selectedRef !== null) {
 			const stillPresent = (graphData?.nodes ?? []).some((n) => n.ref === selectedRef);
 			if (!stillPresent) deselect();
+			else {
+				// Selection survived, but the FILTERED edges may differ (a filter toggle,
+				// or a refetch that added/removed blocks-edges) — so the blocker chain
+				// could be stale. Recompute it (and the card's blocker bookkeeping) here.
+				// This effect reads filteredData (which the chain BFS also reads) but only
+				// WRITES the plain `let` chain Sets + reactive card $state that no $effect
+				// reads — so it stays CONVE-1688-clean. recomputeChain reads selectedRef,
+				// guarded non-null above.
+				recomputeChainForSelection();
+			}
 		}
 		if (!rendererReady || !graph) return;
 		// Reset color assignment so collection→color stays stable per payload. Built
@@ -840,6 +1023,10 @@
 			color={colorForCollection(selectedNode.collection)}
 			item={selectedItem}
 			itemLoading={selectedItemLoading}
+			blockedBy={selectedBlockedBy}
+			blocksCount={selectedBlocksCount}
+			chainDepth={selectedChainDepth}
+			onjump={flyToRef}
 			onopen={openSelected}
 			onclose={deselect}
 		/>
