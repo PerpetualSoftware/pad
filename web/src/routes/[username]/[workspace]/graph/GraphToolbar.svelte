@@ -182,6 +182,7 @@
 				bind:value={query}
 				oninput={onInput}
 				onfocus={() => (searchOpen = true)}
+				onblur={() => (searchOpen = false)}
 				onkeydown={onSearchKeydown}
 				role="combobox"
 				aria-expanded={dropdownVisible}
