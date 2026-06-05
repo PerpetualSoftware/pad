@@ -24,9 +24,12 @@ type GraphNode struct {
 
 // GraphEdge is one typed relationship between two graph nodes. Source
 // and target are refs. Type is one of 'parent' | 'blocks' |
-// 'implements' | 'related' | 'wiki-link'. For 'parent', source is the
-// child and target is the parent (matching item_links semantics); for
-// 'blocks', source blocks target.
+// 'implements' | 'related' | 'split-from' | 'supersedes' |
+// 'wiki-link' (the canonical item_links vocabulary, hyphenated — see
+// store.graphEdgeType — plus synthesized wiki-link edges from the
+// PLAN-1593 reverse index). For 'parent', source is the child and
+// target is the parent (matching item_links semantics); for 'blocks',
+// source blocks target.
 type GraphEdge struct {
 	Source string `json:"source"`
 	Target string `json:"target"`

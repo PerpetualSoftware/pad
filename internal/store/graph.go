@@ -11,7 +11,25 @@ import (
 type GraphLink struct {
 	SourceID string
 	TargetID string
-	Type     string // 'parent' | 'blocks' | 'implements' | 'related' | 'wiki-link'
+	Type     string // hyphenated graph edge type — see graphEdgeType
+}
+
+// graphEdgeType maps a stored item_links.link_type (canonical
+// underscore forms per models.NormalizeItemLinkType) to the
+// hyphenated edge vocabulary the graph API advertises. Synthesized
+// wiki-link edges from item_wiki_links use the same 'wiki-link'
+// spelling as stored wiki_link rows so the client sees one type.
+// Unknown future types pass through lowercased as-is rather than
+// being dropped — a renderer can still draw them as generic edges.
+func graphEdgeType(linkType string) string {
+	switch linkType {
+	case "wiki_link":
+		return "wiki-link"
+	case "split_from":
+		return "split-from"
+	default:
+		return linkType
+	}
 }
 
 // ListWorkspaceGraphLinks returns every edge for the workspace graph view:
@@ -47,6 +65,7 @@ func (s *Store) ListWorkspaceGraphLinks(workspaceID string) ([]GraphLink, error)
 		if err := rows.Scan(&l.SourceID, &l.TargetID, &l.Type); err != nil {
 			return nil, fmt.Errorf("scan graph item link: %w", err)
 		}
+		l.Type = graphEdgeType(l.Type)
 		links = append(links, l)
 	}
 	if err := rows.Err(); err != nil {
@@ -78,5 +97,21 @@ func (s *Store) ListWorkspaceGraphLinks(workspaceID string) ([]GraphLink, error)
 		}
 		links = append(links, l)
 	}
-	return links, wikiRows.Err()
+	if err := wikiRows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Dedupe (source, target, type) — a stored wiki_link item_links row
+	// and a parsed [[...]] mention of the same pair both normalize to
+	// 'wiki-link' and would otherwise emit twice.
+	seen := make(map[GraphLink]bool, len(links))
+	deduped := links[:0]
+	for _, l := range links {
+		if seen[l] {
+			continue
+		}
+		seen[l] = true
+		deduped = append(deduped, l)
+	}
+	return deduped, nil
 }

@@ -84,6 +84,14 @@ func TestGraphNodesAndTypedEdges(t *testing.T) {
 	}
 	// task blocks blocked
 	createBlocksLink(t, srv, slug, task.Slug, blocked.ID)
+	// blocked split from plan — stored as split_from, must surface
+	// hyphenated per the advertised edge vocabulary.
+	rr2 := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+blocked.Slug+"/links", map[string]interface{}{
+		"target_id": plan.ID, "link_type": "split_from",
+	})
+	if rr2.Code != http.StatusCreated {
+		t.Fatalf("create split_from link: expected 201, got %d: %s", rr2.Code, rr2.Body.String())
+	}
 
 	resp := getGraph(t, srv, slug, "")
 	if len(resp.Nodes) != 3 {
@@ -117,6 +125,9 @@ func TestGraphNodesAndTypedEdges(t *testing.T) {
 	if !hasGraphEdge(resp, task.Ref, blocked.Ref, "blocks") {
 		t.Errorf("expected blocks edge %s -> %s, edges: %+v", task.Ref, blocked.Ref, resp.Edges)
 	}
+	if !hasGraphEdge(resp, blocked.Ref, plan.Ref, "split-from") {
+		t.Errorf("expected split-from edge %s -> %s, edges: %+v", blocked.Ref, plan.Ref, resp.Edges)
+	}
 }
 
 func TestGraphWikiLinkEdges(t *testing.T) {
@@ -131,6 +142,14 @@ func TestGraphWikiLinkEdges(t *testing.T) {
 		"title":   "Wiki source",
 		"content": "See [[" + target.Ref + "]] and again [[" + target.Ref + "]].",
 	})
+	// A stored wiki_link item_links row for the same pair normalizes to
+	// the same 'wiki-link' type and must dedupe with the parsed mention.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+source.Slug+"/links", map[string]interface{}{
+		"target_id": target.ID, "link_type": "wiki_link",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create wiki_link link: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
 
 	resp := getGraph(t, srv, slug, "")
 	count := 0
