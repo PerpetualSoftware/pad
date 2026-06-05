@@ -657,6 +657,7 @@ var reservedCollectionSlugs = map[string]bool{
 	"tags":     true, // Tag pages: /{ws}/tags and /{ws}/tags/{tag} (PLAN-1652)
 	"library":  true,
 	"insights": true, // Insights analytics page route (PLAN-1628 / TASK-1633)
+	"graph":    true, // 3D workspace graph page route (PLAN-1730 / TASK-1733)
 	"new":      true,
 	// "ref" is reserved for the cross-workspace wiki-link resolver route
 	// (IDEA-1492): GET /{username}/{workspace}/ref/{REF} → 302 to the
