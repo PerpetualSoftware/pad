@@ -50,6 +50,7 @@
 		"@tiptap/starter-kit": "^3.22.5",
 		"@tiptap/suggestion": "^3.22.5",
 		"@tiptap/y-tiptap": "^3.0.3",
+		"3d-force-graph": "1.80.0",
 		"d3-scale": "4.0.2",
 		"diff": "^9.0.0",
 		"dompurify": "^3.4.2",

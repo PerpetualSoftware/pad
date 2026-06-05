@@ -16,6 +16,7 @@
 export type NavKey =
 	| 'dashboard'
 	| 'insights'
+	| 'graph'
 	| 'roles'
 	| 'activity'
 	| 'starred'
@@ -47,6 +48,7 @@ export const RESERVED_SLUGS = [
 	'tags',
 	'roles',
 	'insights',
+	'graph',
 	''
 ] as const;
 
@@ -59,6 +61,7 @@ export function getPrimaryDestinations(wsPrefix: string): NavDestination[] {
 	return [
 		{ key: 'dashboard', href: wsPrefix, icon: '📊', label: 'Dashboard' },
 		{ key: 'insights', href: `${wsPrefix}/insights`, icon: '📈', label: 'Insights' },
+		{ key: 'graph', href: `${wsPrefix}/graph`, icon: '🕸', label: 'Graph' },
 		{ key: 'roles', href: `${wsPrefix}/roles`, icon: '🎭', label: 'Roles' },
 		{ key: 'activity', href: `${wsPrefix}/activity`, icon: '📋', label: 'Activity' },
 		{ key: 'starred', href: `${wsPrefix}/starred`, icon: '⭐', label: 'Starred' },
@@ -76,6 +79,7 @@ export function getActiveKey(pathname: string, wsPrefix: string): string | null 
 	if (!wsPrefix) return null;
 	if (pathname === wsPrefix) return 'dashboard';
 	if (pathname === `${wsPrefix}/insights`) return 'insights';
+	if (pathname === `${wsPrefix}/graph`) return 'graph';
 	if (pathname === `${wsPrefix}/roles`) return 'roles';
 	if (pathname === `${wsPrefix}/activity`) return 'activity';
 	if (pathname === `${wsPrefix}/starred`) return 'starred';

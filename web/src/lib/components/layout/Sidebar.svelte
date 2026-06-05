@@ -35,6 +35,7 @@
 	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
 	let isDashboardPage = $derived(activeKey === 'dashboard');
 	let isInsightsPage = $derived(activeKey === 'insights');
+	let isGraphPage = $derived(activeKey === 'graph');
 	let isRolesPage = $derived(activeKey === 'roles');
 	let isActivityPage = $derived(activeKey === 'activity');
 	let isStarredPage = $derived(activeKey === 'starred');
@@ -419,6 +420,15 @@
 				>
 					<span class="nav-icon">📈</span>
 					<span class="nav-label">Insights</span>
+				</a>
+				<a
+					href="{wsPrefix}/graph"
+					class="nav-item"
+					class:active={isGraphPage}
+					onclick={() => uiStore.onNavigate()}
+				>
+					<span class="nav-icon">🕸</span>
+					<span class="nav-label">Graph</span>
 				</a>
 				<a
 					href="{wsPrefix}/roles"
