@@ -659,9 +659,15 @@
 
 	onMount(() => {
 		unsubscribeSSE = sseService.onItemEvent(handleItemEvent);
+		// Bulk mutations (items_bulk_updated) and replay-buffer gaps don't fan
+		// out through onItemEvent — the SSE service routes them to
+		// onSyncRequired. Either way the graph may be stale, so fold them into
+		// the same debounced refetch (Codex PR #704 round 1).
+		const unsubscribeSync = sseService.onSyncRequired(() => scheduleRefetch());
 		return () => {
 			unsubscribeSSE?.();
 			unsubscribeSSE = null;
+			unsubscribeSync();
 		};
 	});
 
