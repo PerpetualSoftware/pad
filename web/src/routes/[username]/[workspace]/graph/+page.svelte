@@ -12,7 +12,8 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import type { NodeObject, LinkObject } from '3d-force-graph';
-	import type { GraphResponse } from '$lib/types';
+	import type { GraphResponse, Item } from '$lib/types';
+	import DetailCard from './DetailCard.svelte';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -43,6 +44,27 @@
 	let resizeObserver: ResizeObserver | null = null;
 	// Latches once the renderer is constructed; the data-sync effect waits on it.
 	let rendererReady = $state(false);
+
+	// ── Focus / selection state (PLAN-1730 / TASK-1734) ──────────────────────────
+	// The dim-everything-else highlight is driven by two plain `let` Sets that the
+	// renderer accessor closures read. Per CONVE-1688 these stay non-reactive — they
+	// are mutated imperatively in the click handler, never tracked by an $effect.
+	// Re-evaluation is triggered explicitly by calling `graph.refresh()` after each
+	// change (3d-force-graph README: `refresh()` "Redraws all the nodes/links",
+	// re-running every color/opacity accessor).
+	let selectedRef: string | null = null;
+	let neighborRefs = new Set<string>();
+
+	// The selected node, surfaced to the detail-card template. A separate $state from
+	// the plain Sets above: this one is READ in markup, so it must be reactive — but
+	// no $effect both reads and writes it (it's only written from event handlers).
+	let selectedNode = $state<GraphNode3D | null>(null);
+	// Richer item detail, fetched lazily on select (priority / assignee live here).
+	let selectedItem = $state<Item | null>(null);
+	let selectedItemLoading = $state(false);
+	// Stale-select token — same shape as reqSeq; gates which in-flight item fetch
+	// commits so a fast re-select can't be clobbered by an older response.
+	let selectSeq = 0;
 
 	// Node-count / edge-count readout for the toolbar.
 	const nodeCount = $derived(graphData?.nodes.length ?? 0);
@@ -118,11 +140,15 @@
 				.nodeRelSize(4)
 				// Subtree-weighted node size: parents/plans with children read bigger.
 				.nodeVal((n: NodeObject) => 1 + (asNode(n).child_count ?? 0) * 2)
-				.nodeColor((n: NodeObject) => colorForCollection(asNode(n).collection))
+				// Selection-aware color: in focus mode, anything outside the selected
+				// node's neighborhood is dimmed to a low-alpha version of its collection
+				// color (the accessor reads the plain `let` Sets above).
+				.nodeColor((n: NodeObject) => nodeColor(asNode(n)))
 				.nodeLabel((n: NodeObject) => `${escapeHtml(asNode(n).ref)} — ${escapeHtml(asNode(n).name)}`)
 				.nodeOpacity(0.95)
 				// 'blocks' edges read red with a directional arrow; structural links
 				// (parent/implements) brighter than soft links (wiki-link/related).
+				// In focus mode, adjacent links brighten and the rest fade out.
 				.linkColor((l: LinkObject<NodeObject>) => linkColor(asLink(l)))
 				.linkOpacity(0.5)
 				.linkWidth((l: LinkObject<NodeObject>) => (asLink(l).type === 'blocks' ? 1.5 : 0.5))
@@ -130,13 +156,9 @@
 					asLink(l).type === 'blocks' ? 3 : 0
 				)
 				.linkDirectionalArrowRelPos(1)
-				.onNodeClick((n: NodeObject) => {
-					const node = asNode(n);
-					// Item pages live at [collection]/[slug]; the server's ResolveItem
-					// resolves a PREFIX-NUMBER ref in the slug param (same path the
-					// insights "What shipped" links use), so the ref works directly.
-					void goto(`/${username}/${wsSlug}/${node.collection}/${node.ref}`);
-				});
+				.onNodeClick((n: NodeObject) => selectNode(asNode(n)))
+				// Click empty space → exit focus mode (camera is left where it is).
+				.onBackgroundClick(() => deselect());
 
 			graph = instance;
 			rendererReady = true;
@@ -161,14 +183,134 @@
 		}
 	}
 
+	// ── Selection-aware accessors ────────────────────────────────────────────────
+	// All three read the plain `let` selection Sets directly (CONVE-1688: no $state
+	// in the imperative path). `graph.refresh()` re-runs them after each change.
+
+	// Node color: collection hex normally; dimmed (low-alpha) when a selection is
+	// active and this node isn't in the neighborhood.
+	function nodeColor(n: GraphNode3D): string {
+		const base = colorForCollection(n.collection);
+		if (selectedRef === null) return base;
+		return neighborRefs.has(n.ref) ? base : hexToRgba(base, 0.15);
+	}
+
 	// 'blocks' → red-ish; structural (parent/implements/supersedes/split-from) →
 	// bright slate; soft (wiki-link/related) → dim slate. Alpha carries emphasis.
+	// In focus mode: links touching the selected node brighten; the rest fade hard.
 	function linkColor(l: GraphLink3D): string {
+		if (selectedRef !== null) {
+			const adjacent = l.source === selectedRef || l.target === selectedRef;
+			if (!adjacent) return 'rgba(148, 163, 184, 0.06)';
+			if (l.type === 'blocks') return 'rgba(244, 63, 94, 0.95)';
+			return 'rgba(148, 163, 184, 0.95)';
+		}
 		if (l.type === 'blocks') return 'rgba(244, 63, 94, 0.85)';
 		if (l.type === 'parent' || l.type === 'implements' || l.type === 'supersedes' || l.type === 'split-from') {
 			return 'rgba(148, 163, 184, 0.85)';
 		}
 		return 'rgba(148, 163, 184, 0.35)';
+	}
+
+	// Hex (#rrggbb) → rgba() with the given alpha. The dim treatment for out-of-
+	// neighborhood nodes; mixing toward transparent reads as receding into the
+	// dark backdrop without losing the collection hue entirely.
+	function hexToRgba(hex: string, alpha: number): string {
+		const r = parseInt(hex.slice(1, 3), 16);
+		const g = parseInt(hex.slice(3, 5), 16);
+		const b = parseInt(hex.slice(5, 7), 16);
+		return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+	}
+
+	// ── Selection / focus mode ───────────────────────────────────────────────────
+	// After the linked-list edges resolve to node objects the renderer mutates
+	// `source`/`target` from refs into the node instances; but our GraphLink3D still
+	// carries the original ref strings via the raw payload. We compute neighborhoods
+	// from `graphData.edges` (the source of truth, untouched by the renderer).
+	function computeNeighbors(ref: string): Set<string> {
+		const set = new Set<string>([ref]);
+		const edges = graphData?.edges ?? [];
+		for (const e of edges) {
+			if (e.source === ref) set.add(e.target);
+			else if (e.target === ref) set.add(e.source);
+		}
+		return set;
+	}
+
+	function selectNode(node: GraphNode3D) {
+		// Plain-`let` selection state (consulted by the accessors).
+		selectedRef = node.ref;
+		neighborRefs = computeNeighbors(node.ref);
+		// Reactive copy for the detail card.
+		selectedNode = node;
+
+		// Camera fly-to: position the camera a comfortable distance out along the
+		// node's position vector, looking at the node. Standard 3d-force-graph
+		// pattern; guard the at-origin case where the vector has zero length.
+		const dist = 60;
+		const hyp = Math.hypot(node.x ?? 0, node.y ?? 0, node.z ?? 0);
+		const ratio = hyp > 0 ? 1 + dist / hyp : 1;
+		graph?.cameraPosition(
+			{ x: (node.x ?? 0) * ratio, y: (node.y ?? 0) * ratio, z: (node.z ?? 0) * ratio },
+			{ x: node.x ?? 0, y: node.y ?? 0, z: node.z ?? 0 },
+			800
+		);
+
+		// Re-run every node/link accessor so the dim/highlight takes effect.
+		graph?.refresh();
+
+		// Fetch richer detail (priority / assignee) for the card. Stale-gated so a
+		// rapid re-select can't be overwritten by an older response.
+		void loadSelectedItem(node.ref);
+	}
+
+	async function loadSelectedItem(ref: string) {
+		const seq = ++selectSeq;
+		selectedItem = null;
+		selectedItemLoading = true;
+		try {
+			// Refs resolve server-side (same path the node click used to navigate to).
+			const item = await api.items.get(wsSlug, ref);
+			if (seq !== selectSeq) return;
+			selectedItem = item;
+		} catch {
+			// Card degrades gracefully — it just won't show priority/assignee.
+			if (seq !== selectSeq) return;
+			selectedItem = null;
+		} finally {
+			if (seq === selectSeq) selectedItemLoading = false;
+		}
+	}
+
+	// Clear focus mode: un-dim everything, close the card. Does NOT move the camera
+	// back (kept simple per TASK-1734). Bumps selectSeq so any in-flight item fetch
+	// is discarded.
+	function deselect() {
+		if (selectedRef === null) return;
+		selectedRef = null;
+		neighborRefs = new Set<string>();
+		selectedNode = null;
+		selectedItem = null;
+		selectedItemLoading = false;
+		selectSeq++;
+		graph?.refresh();
+	}
+
+	// Open the selected item's page — this is where the old direct-click navigation
+	// moved to. Item pages live at [collection]/[slug]; the server's ResolveItem
+	// resolves a PREFIX-NUMBER ref in the slug param, so the ref works directly.
+	function openSelected() {
+		if (!selectedNode) return;
+		void goto(`/${username}/${wsSlug}/${selectedNode.collection}/${selectedNode.ref}`);
+	}
+
+	// Escape exits focus mode — but only when a node is selected, so it doesn't
+	// swallow the key from other handlers (spirit of CONVE-639).
+	function onKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape' && selectedRef !== null) {
+			e.preventDefault();
+			deselect();
+		}
 	}
 
 	// ── Data load + sync ─────────────────────────────────────────────────────────
@@ -177,6 +319,12 @@
 	$effect(() => {
 		const slug = wsSlug;
 		const withTerminal = showCompleted;
+		// Either trigger (workspace switch or show-completed toggle) yields a fresh
+		// payload in which the selected node may no longer exist — clear focus mode
+		// so the dim/highlight + detail card don't reference a vanished node. This
+		// effect reads graphData-independent state only via deselect() (which never
+		// reads graphData), so it stays CONVE-1688-clean.
+		deselect();
 		if (slug !== graphWsSlug) {
 			graphWsSlug = slug;
 			// Drop the previous workspace's graph so it doesn't linger under the new
@@ -245,6 +393,11 @@
 		is_terminal: boolean;
 		child_count: number;
 		updated_at: string;
+		// Position coords the renderer assigns as the force simulation runs. Present
+		// on any node that's been laid out (always true by the time it's clicked).
+		x?: number;
+		y?: number;
+		z?: number;
 	}
 	interface GraphLink3D {
 		source: string;
@@ -252,6 +405,8 @@
 		type: string;
 	}
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <div class="graph-page">
 	<!-- Controls overlay (top-left) -->
@@ -269,6 +424,18 @@
 
 	<!-- The renderer mounts here; it owns its own canvas. -->
 	<div class="canvas" bind:this={containerEl}></div>
+
+	<!-- Focus-mode detail card (slides in from the right when a node is selected). -->
+	{#if selectedNode}
+		<DetailCard
+			node={selectedNode}
+			color={colorForCollection(selectedNode.collection)}
+			item={selectedItem}
+			itemLoading={selectedItemLoading}
+			onopen={openSelected}
+			onclose={deselect}
+		/>
+	{/if}
 
 	<!-- Overlay states (the canvas stays mounted underneath so the renderer keeps
 	     its WebGL context across reloads). -->
