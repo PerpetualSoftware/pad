@@ -971,6 +971,46 @@ export interface DashboardResponse {
 	};
 }
 
+// ─── Workspace Graph (PLAN-1730 / TASK-1732) ─────────────────────────────────
+
+/** One item in the workspace graph. Keyed by ref (e.g. "TASK-5"). */
+export interface GraphNode {
+	ref: string;
+	title: string;
+	/** collection slug */
+	collection: string;
+	status?: string;
+	/** true when the item is in a terminal status for its collection */
+	is_terminal: boolean;
+	/** number of child items (parent + implements links pointing here) */
+	child_count: number;
+	updated_at: string;
+}
+
+/**
+ * One typed relationship between two graph nodes. Source/target are
+ * refs. For 'parent', source is the child and target is the parent;
+ * for 'blocks', source blocks target.
+ */
+export interface GraphEdge {
+	source: string;
+	target: string;
+	type:
+		| 'parent'
+		| 'blocks'
+		| 'implements'
+		| 'related'
+		| 'split-from'
+		| 'supersedes'
+		| 'wiki-link';
+}
+
+/** GET /workspaces/{ws}/graph — the whole workspace as {nodes, edges}. */
+export interface GraphResponse {
+	nodes: GraphNode[];
+	edges: GraphEdge[];
+}
+
 // ─── Project Report (PLAN-1628 / TASK-1630) ──────────────────────────────────
 
 export type ReportWindow = 'day' | 'week' | '2wk' | 'month';

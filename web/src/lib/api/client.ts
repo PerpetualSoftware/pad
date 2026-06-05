@@ -22,6 +22,7 @@ import type {
 	CommentCreate,
 	Version,
 	DashboardResponse,
+	GraphResponse,
 	ReportData,
 	ReportLayout,
 	ReportWindow,
@@ -974,6 +975,19 @@ export const api = {
 	dashboard: {
 		get: (ws: string) =>
 			request<DashboardResponse>(`/workspaces/${ws}/dashboard`)
+	},
+
+	// ── Workspace Graph (PLAN-1730 / TASK-1732) ───────────────────────────────
+
+	graph: {
+		/**
+		 * Whole-workspace graph: nodes + typed edges. Active items only by
+		 * default; includeTerminal=true returns the full history.
+		 */
+		get: (ws: string, includeTerminal = false) =>
+			request<GraphResponse>(
+				`/workspaces/${ws}/graph${includeTerminal ? '?include_terminal=true' : ''}`
+			)
 	},
 
 	// ── Project Report (PLAN-1628 / TASK-1630) ────────────────────────────────
