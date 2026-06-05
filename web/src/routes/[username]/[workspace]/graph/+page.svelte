@@ -200,7 +200,9 @@
 	// In focus mode: links touching the selected node brighten; the rest fade hard.
 	function linkColor(l: GraphLink3D): string {
 		if (selectedRef !== null) {
-			const adjacent = l.source === selectedRef || l.target === selectedRef;
+			// Compare against the preserved raw refs — the force layout mutates
+			// source/target into node objects after ingest.
+			const adjacent = l.sourceRef === selectedRef || l.targetRef === selectedRef;
 			if (!adjacent) return 'rgba(148, 163, 184, 0.06)';
 			if (l.type === 'blocks') return 'rgba(244, 63, 94, 0.95)';
 			return 'rgba(148, 163, 184, 0.95)';
@@ -350,7 +352,17 @@
 		graph.graphData({
 			nodes: data ? data.nodes.map((n) => ({ ...n, id: n.ref, name: n.title })) : [],
 			links: data
-				? data.edges.map((e) => ({ source: e.source, target: e.target, type: e.type }))
+				? // sourceRef/targetRef preserve the raw ref strings: after ingest the
+					// force layout mutates source/target into node OBJECTS, so any
+					// accessor comparing endpoints against a ref (linkColor's focus-mode
+					// adjacency check) must read these instead (Codex PR #702 round 1).
+					data.edges.map((e) => ({
+						source: e.source,
+						target: e.target,
+						sourceRef: e.source,
+						targetRef: e.target,
+						type: e.type
+					}))
 				: []
 		});
 	});
@@ -400,8 +412,12 @@
 		z?: number;
 	}
 	interface GraphLink3D {
-		source: string;
-		target: string;
+		// source/target start as ref strings but are mutated into node objects by
+		// the force layout after ingest — compare sourceRef/targetRef instead.
+		source: string | NodeObject;
+		target: string | NodeObject;
+		sourceRef: string;
+		targetRef: string;
 		type: string;
 	}
 </script>
