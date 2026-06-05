@@ -26,6 +26,10 @@
 		color,
 		item,
 		itemLoading,
+		blockedBy,
+		blocksCount,
+		chainDepth,
+		onjump,
 		onopen,
 		onclose
 	}: {
@@ -35,9 +39,26 @@
 		/** full item, fetched lazily by the page; null until it arrives. */
 		item: Item | null;
 		itemLoading: boolean;
+		/** direct blockers of this node (TASK-1737) — clickable to drill up the chain. */
+		blockedBy: { ref: string; title: string }[];
+		/** how many items this node blocks (outgoing blocks-edges). */
+		blocksCount: number;
+		/** deepest blocker hop from this node (1 = a direct blocker; >direct = chain). */
+		chainDepth: number;
+		/** fly to + re-select a blocker by ref (re-traces ITS chain — natural drill-up). */
+		onjump: (ref: string) => void;
 		onopen: () => void;
 		onclose: () => void;
 	} = $props();
+
+	// Cap the rendered blocker list; the rest fold into a "+N more" line. The full
+	// chain is still walkable by jumping into any listed blocker.
+	const BLOCKER_LIMIT = 6;
+	const shownBlockers = $derived(blockedBy.slice(0, BLOCKER_LIMIT));
+	const moreBlockers = $derived(Math.max(0, blockedBy.length - BLOCKER_LIMIT));
+	// "chain depth N" is only worth showing when the transitive chain runs DEEPER than
+	// the direct blockers in the card — otherwise it just restates the list length.
+	const showChainDepth = $derived(chainDepth > 1 && chainDepth > blockedBy.length);
 
 	// item.fields is a JSON string on the Item type. Parse defensively — handle a
 	// pre-parsed object too (some callers/snapshots hydrate it eagerly) and never
@@ -99,6 +120,34 @@
 			{/if}
 		{/if}
 	</div>
+
+	<!-- Blocker chain (TASK-1737): direct blockers, clickable to drill up the chain.
+	     Red accent — these are the reason this item is stuck. -->
+	{#if blockedBy.length > 0}
+		<section class="blockers" aria-label="Blocked by">
+			<p class="blockers-head">Blocked by</p>
+			<ul class="blocker-list">
+				{#each shownBlockers as b (b.ref)}
+					<li>
+						<button class="blocker-row" onclick={() => onjump(b.ref)} title="Trace this blocker">
+							<span class="blocker-ref">{b.ref}</span>
+							<span class="blocker-title">{b.title}</span>
+						</button>
+					</li>
+				{/each}
+			</ul>
+			{#if moreBlockers > 0}
+				<p class="blockers-more">+{moreBlockers} more</p>
+			{/if}
+			{#if showChainDepth}
+				<p class="chain-depth">chain depth {chainDepth}</p>
+			{/if}
+		</section>
+	{/if}
+
+	{#if blocksCount > 0}
+		<p class="blocks-count">Blocks {blocksCount} {blocksCount === 1 ? 'item' : 'items'}</p>
+	{/if}
 
 	<button class="open-btn" onclick={onopen}>Open item</button>
 </aside>
@@ -249,6 +298,71 @@
 		to {
 			background-position: -200% 0;
 		}
+	}
+
+	/* ── Blocker chain (TASK-1737) ─────────────────────────────────────────────── */
+	.blockers {
+		margin: var(--space-3) 0;
+		padding-top: var(--space-3);
+		border-top: 1px solid color-mix(in srgb, var(--blocks-red, #f43f5e) 25%, transparent);
+	}
+	.blockers-head {
+		margin: 0 0 var(--space-2);
+		font-size: 0.7em;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--blocks-red, #f43f5e);
+	}
+	.blocker-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+	.blocker-row {
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-2);
+		width: 100%;
+		padding: 0.2rem 0.35rem;
+		text-align: left;
+		background: transparent;
+		border: none;
+		border-radius: var(--radius-sm, 4px);
+		cursor: pointer;
+	}
+	.blocker-row:hover {
+		background: color-mix(in srgb, var(--blocks-red, #f43f5e) 12%, transparent);
+	}
+	.blocker-ref {
+		flex: 0 0 auto;
+		font-family: var(--font-mono, ui-monospace, monospace);
+		font-size: 0.7em;
+		font-weight: 600;
+		color: var(--blocks-red, #f43f5e);
+	}
+	.blocker-title {
+		flex: 1 1 auto;
+		min-width: 0;
+		font-size: 0.78em;
+		color: var(--text-secondary);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.blockers-more,
+	.chain-depth {
+		margin: var(--space-1, 0.25rem) 0 0 0.35rem;
+		font-size: 0.7em;
+		color: var(--text-muted);
+	}
+	.blocks-count {
+		margin: var(--space-2) 0;
+		font-size: 0.75em;
+		color: var(--text-muted);
 	}
 
 	.open-btn {
