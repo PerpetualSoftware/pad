@@ -191,14 +191,19 @@
 	// Push freshly-loaded data into the renderer once both are ready. Reads
 	// graphData (reactive) + rendererReady (reactive); writes only the imperative
 	// `graph` handle and the plain `collectionColors` map, never a tracked $state.
+	// A null graphData (workspace switch in flight, or load error) clears the
+	// canvas too — otherwise the previous workspace's nodes linger behind the
+	// loading overlay (Codex round-1 finding #1).
 	$effect(() => {
 		const data = graphData;
-		if (!rendererReady || !graph || !data) return;
+		if (!rendererReady || !graph) return;
 		// Reset color assignment so collection→color stays stable per payload.
 		collectionColors = {};
 		graph.graphData({
-			nodes: data.nodes.map((n) => ({ ...n, id: n.ref, name: n.title })),
-			links: data.edges.map((e) => ({ source: e.source, target: e.target, type: e.type }))
+			nodes: data ? data.nodes.map((n) => ({ ...n, id: n.ref, name: n.title })) : [],
+			links: data
+				? data.edges.map((e) => ({ source: e.source, target: e.target, type: e.type }))
+				: []
 		});
 	});
 
