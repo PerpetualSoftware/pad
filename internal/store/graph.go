@@ -2,6 +2,8 @@ package store
 
 import (
 	"fmt"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // GraphLink is one typed edge in the workspace graph
@@ -14,21 +16,27 @@ type GraphLink struct {
 	Type     string // hyphenated graph edge type — see graphEdgeType
 }
 
-// graphEdgeType maps a stored item_links.link_type (canonical
-// underscore forms per models.NormalizeItemLinkType) to the
-// hyphenated edge vocabulary the graph API advertises. Synthesized
-// wiki-link edges from item_wiki_links use the same 'wiki-link'
-// spelling as stored wiki_link rows so the client sees one type.
-// Unknown future types pass through lowercased as-is rather than
-// being dropped — a renderer can still draw them as generic edges.
+// graphEdgeType maps a stored item_links.link_type to the hyphenated
+// edge vocabulary the graph API advertises. Stored values are first
+// canonicalized through models.NormalizeItemLinkType (handles aliases
+// and casing); anything it rejects — possible via the import path,
+// which inserts link types without a DB CHECK — degrades to 'related'
+// so the advertised enum stays closed while the edge still renders as
+// a generic relationship. Synthesized wiki-link edges from
+// item_wiki_links use the same 'wiki-link' spelling as stored
+// wiki_link rows so the client sees one type.
 func graphEdgeType(linkType string) string {
-	switch linkType {
-	case "wiki_link":
+	canonical, err := models.NormalizeItemLinkType(linkType)
+	if err != nil {
+		return models.ItemLinkTypeRelated
+	}
+	switch canonical {
+	case models.ItemLinkTypeWikiLink:
 		return "wiki-link"
-	case "split_from":
+	case models.ItemLinkTypeSplitFrom:
 		return "split-from"
 	default:
-		return linkType
+		return canonical
 	}
 }
 
