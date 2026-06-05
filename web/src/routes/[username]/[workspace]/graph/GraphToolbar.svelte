@@ -132,7 +132,10 @@
 			const target = highlight >= 0 ? matches[highlight] : matches[0];
 			if (target) pick(target.ref);
 		} else if (e.key === 'Escape') {
-			if (searchOpen) {
+			// Gate on the dropdown actually being VISIBLE (not just searchOpen):
+			// Escape in a focused-but-empty search should fall through to the
+			// page-level deselect handler (Codex PR #703 round 2).
+			if (dropdownVisible) {
 				e.preventDefault();
 				e.stopPropagation();
 				searchOpen = false;
