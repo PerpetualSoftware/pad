@@ -11,6 +11,7 @@
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
+	import { sseService, type ItemEvent } from '$lib/services/sse.svelte';
 	import type { NodeObject, LinkObject } from '3d-force-graph';
 	import type { GraphResponse, Item } from '$lib/types';
 	import DetailCard from './DetailCard.svelte';
@@ -45,6 +46,38 @@
 	let resizeObserver: ResizeObserver | null = null;
 	// Latches once the renderer is constructed; the data-sync effect waits on it.
 	let rendererReady = $state(false);
+
+	// ── Live layer (SSE) state (PLAN-1730 / TASK-1736) ───────────────────────────
+	// The graph reacts to workspace mutations in real time: touched items glow and
+	// fade; created/archived/restored items appear/disappear via a debounced
+	// refetch. All of this state is plain `let` (CONVE-1688) — it's mutated from the
+	// SSE callback + an interval and read by the renderer accessors, never by an
+	// $effect. Re-evaluation is forced explicitly via graph.refresh().
+
+	// How long a touched node glows before it has fully decayed back to its base
+	// collection color (~45s of ambient afterglow).
+	const PULSE_MS = 45_000;
+	// Trailing-debounce window for structural refetches: coalesce a burst of
+	// create/archive/restore/update events into a single loadGraph call.
+	const REFETCH_DEBOUNCE_MS = 1500;
+	// Prune/refresh cadence while any node is glowing — drives the fade animation by
+	// re-running nodeColor on a steady tick.
+	const PRUNE_INTERVAL_MS = 2000;
+
+	// uuid → ref map, rebuilt from graphData on every payload commit. SSE events
+	// carry the item UUID (item_id); the renderer keys on ref. This is the bridge.
+	// IMPORTANT (per the renderer mapping `{ ...n, id: n.ref }`): we can't read the
+	// uuid back off a renderer node, so we maintain it from the raw GraphResponse.
+	let uuidToRef = new Map<string, string>();
+	// ref → timestamp(ms) of last touch. A node touched < PULSE_MS ago glows.
+	let touchedAt = new Map<string, number>();
+	// Refs of items created while this page is open — marked glowing once the
+	// refetch that brings them in lands (their uuid enters uuidToRef then).
+	let pendingNewUuids = new Set<string>();
+	// Plain `let` handles (CONVE-1688) cleared in teardown.
+	let pruneInterval: ReturnType<typeof setInterval> | null = null;
+	let refetchTimer: ReturnType<typeof setTimeout> | null = null;
+	let unsubscribeSSE: (() => void) | null = null;
 
 	// ── Focus / selection state (PLAN-1730 / TASK-1734) ──────────────────────────
 	// The dim-everything-else highlight is driven by two plain `let` Sets that the
@@ -270,8 +303,19 @@
 	// active and this node isn't in the neighborhood.
 	function nodeColor(n: GraphNode3D): string {
 		const base = colorForCollection(n.collection);
-		if (selectedRef === null) return base;
-		return neighborRefs.has(n.ref) ? base : hexToRgba(base, 0.15);
+		// Live-layer glow: a recently-touched node mixes toward white, brightest on a
+		// fresh touch and decaying back to base over PULSE_MS (the prune interval's
+		// graph.refresh ticks animate the fade). When nothing's touched, t=0 → base.
+		const t = pulseFactor(n.ref);
+		const lit = t > 0 ? mixHex(base, '#ffffff', t) : base;
+		if (selectedRef === null) return lit;
+		// Focus-mode composition (pulse-vs-dim): apply the pulse FIRST (on the lit
+		// hex), THEN the dim alpha for out-of-neighborhood nodes — so a touched node
+		// outside the selection still pulses, just subtly (it reads as a faint flash
+		// in the dimmed crowd rather than vanishing). In-neighborhood nodes pulse at
+		// full strength. This keeps the ambient-liveness signal visible without
+		// fighting the focus highlight.
+		return neighborRefs.has(n.ref) ? lit : hexToRgba(lit, 0.15);
 	}
 
 	// 'blocks' → red-ish; structural (parent/implements/supersedes/split-from) →
@@ -301,6 +345,36 @@
 		const g = parseInt(hex.slice(3, 5), 16);
 		const b = parseInt(hex.slice(5, 7), 16);
 		return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+	}
+
+	// Linear-interpolate two #rrggbb hex colors by t∈[0,1] (0 → a, 1 → b),
+	// returning #rrggbb. Drives the glow: mix the collection color toward white
+	// proportionally to a touched node's freshness.
+	function mixHex(a: string, b: string, t: number): string {
+		const c = Math.max(0, Math.min(1, t));
+		const ar = parseInt(a.slice(1, 3), 16);
+		const ag = parseInt(a.slice(3, 5), 16);
+		const ab = parseInt(a.slice(5, 7), 16);
+		const br = parseInt(b.slice(1, 3), 16);
+		const bg = parseInt(b.slice(3, 5), 16);
+		const bb = parseInt(b.slice(5, 7), 16);
+		const r = Math.round(ar + (br - ar) * c);
+		const g = Math.round(ag + (bg - ag) * c);
+		const bl = Math.round(ab + (bb - ab) * c);
+		const hex = (v: number) => v.toString(16).padStart(2, '0');
+		return `#${hex(r)}${hex(g)}${hex(bl)}`;
+	}
+
+	// Glow factor for a ref: 0 when not touched (or fully decayed), else a value
+	// that starts at PULSE_PEAK on a fresh touch and decays linearly to 0 over
+	// PULSE_MS. Used by nodeColor to mix the base toward white.
+	const PULSE_PEAK = 0.85;
+	function pulseFactor(ref: string): number {
+		const at = touchedAt.get(ref);
+		if (at === undefined) return 0;
+		const age = Date.now() - at;
+		if (age >= PULSE_MS) return 0;
+		return PULSE_PEAK * (1 - age / PULSE_MS);
 	}
 
 	// ── Selection / focus mode ───────────────────────────────────────────────────
@@ -453,6 +527,19 @@
 			filterCollections = [];
 			filterStatuses = [];
 			filterRole = null;
+			// Drop live-layer state carried over from the previous workspace: stale
+			// glows, a stale uuid→ref bridge, pending-new uuids, and any in-flight
+			// debounced refetch (which would otherwise fire loadGraph for the NEW slug
+			// — harmless, but the explicit loadGraph below already covers it). The
+			// prune interval self-stops once touchedAt empties on its next tick. Plain
+			// `let` writes (CONVE-1688) this effect doesn't read.
+			touchedAt.clear();
+			uuidToRef.clear();
+			pendingNewUuids.clear();
+			if (refetchTimer) {
+				clearTimeout(refetchTimer);
+				refetchTimer = null;
+			}
 		}
 		if (slug) {
 			void loadGraph(slug, withTerminal);
@@ -488,6 +575,38 @@
 		// $states); writes only the imperative `graph` handle + the plain
 		// collectionColors map, never a tracked $state — CONVE-1688-clean.
 		const data = filteredData;
+		// Rebuild the uuid→ref bridge from the FULL payload (not the filtered subset)
+		// so SSE correlation works for items the current filter happens to hide — a
+		// touch on a filtered-out item still records correctly, and a refetch that
+		// surfaces it shows it already glowing. Reads graphData; writes only the plain
+		// uuidToRef map + glow bookkeeping, never a tracked $state — CONVE-1688-clean.
+		uuidToRef = new Map<string, string>();
+		for (const n of graphData?.nodes ?? []) uuidToRef.set(n.id, n.ref);
+		// Items created since this page opened: now that the refetch has landed and
+		// their uuid is in the bridge, mark their ref touched so they arrive glowing.
+		if (pendingNewUuids.size > 0) {
+			for (const uuid of pendingNewUuids) {
+				const ref = uuidToRef.get(uuid);
+				if (ref) {
+					touchedAt.set(ref, Date.now());
+					pendingNewUuids.delete(uuid);
+				}
+			}
+			ensurePruneInterval();
+		}
+		// A refetch (same filter, e.g. an item archived) may have dropped the selected
+		// node. The deselect-on-filter-change effect doesn't cover a same-filter
+		// refetch, so check here: if the selection's ref is gone from the FULL payload,
+		// clear focus mode. (uuidToRef keys are uuids; the selection is keyed by ref —
+		// the renderer mapping overwrites node.id with the ref — so test the ref set.)
+		// deselect() writes selection $state but never reads graphData/filteredData, so
+		// this stays CONVE-1688-clean. Test against the full payload, not filteredData,
+		// so a filter-driven hide is left to the filter-change effect; here we only
+		// react to the item genuinely leaving the graph (archived).
+		if (selectedRef !== null) {
+			const stillPresent = (graphData?.nodes ?? []).some((n) => n.ref === selectedRef);
+			if (!stillPresent) deselect();
+		}
 		if (!rendererReady || !graph) return;
 		// Reset color assignment so collection→color stays stable per payload. Built
 		// from the FULL node list (not the filtered subset) so a collection keeps its
@@ -530,8 +649,125 @@
 		}
 	}
 
+	// ── Live layer: SSE wiring (TASK-1736) ───────────────────────────────────────
+	// The workspace +layout already calls sseService.connect(wsSlug) (and owns the
+	// connection lifecycle across workspace switches), so the page only subscribes —
+	// it never connects/disconnects. The SSE connection is workspace-scoped (the
+	// EventSource URL pins ?workspace=slug), so events arriving here already belong
+	// to the current workspace; the workspace_id guard below is belt-and-suspenders
+	// for the cross-tab BroadcastChannel fan-out edge.
+
+	onMount(() => {
+		unsubscribeSSE = sseService.onItemEvent(handleItemEvent);
+		// Bulk mutations (items_bulk_updated) and replay-buffer gaps don't fan
+		// out through onItemEvent — the SSE service routes them to
+		// onSyncRequired. Either way the graph may be stale, so fold them into
+		// the same debounced refetch (Codex PR #704 round 1).
+		const unsubscribeSync = sseService.onSyncRequired(() => scheduleRefetch());
+		return () => {
+			unsubscribeSSE?.();
+			unsubscribeSSE = null;
+			unsubscribeSync();
+		};
+	});
+
+	function handleItemEvent(event: ItemEvent) {
+		// Defensive workspace guard. The connection is already workspace-scoped, but
+		// the store may carry the current workspace UUID — drop anything that doesn't
+		// match. When the UUID isn't loaded yet, trust the connection scope.
+		const wsId = workspaceStore.current?.id;
+		if (wsId && event.workspace_id && event.workspace_id !== wsId) return;
+
+		switch (event.type) {
+			case 'item_updated': {
+				// Glow immediately off the event (snappy), AND fold into the debounced
+				// refetch — an update can change status/title/role, the fields the
+				// card/filters read. Tradeoff: one refetch per burst (trailing-debounced),
+				// and the graph payload is active-only and small, so the extra fetch is
+				// cheap and keeps the rendered data true without per-field SSE patching.
+				touchItem(event.item_id);
+				scheduleRefetch();
+				break;
+			}
+			case 'item_created':
+			case 'item_archived':
+			case 'item_restored': {
+				// Structural changes: a node needs to appear/disappear. A created item's
+				// uuid isn't in the bridge yet, so stash it — the renderer-sync effect
+				// marks it glowing once the refetch lands and its uuid resolves to a ref.
+				if (event.type === 'item_created') pendingNewUuids.add(event.item_id);
+				else touchItem(event.item_id); // restore/archive: glow the surviving/leaving node
+				scheduleRefetch();
+				break;
+			}
+			case 'comment_created': {
+				// A discussion lighting up its item is exactly the ambient liveness this
+				// feature wants — treat it as a touch (glow only, no structural refetch).
+				touchItem(event.item_id);
+				break;
+			}
+			// Ignore everything else (comment_updated/deleted, reaction_*,
+			// workspace_updated, items_bulk_updated, etc.).
+		}
+	}
+
+	// Resolve an event's item UUID to a ref via the bridge and mark it touched. A
+	// uuid not in the bridge (e.g. an item the current payload doesn't contain —
+	// filtered out server-side as terminal, or a just-created item) simply no-ops
+	// here; created items glow via the pendingNewUuids path after the refetch.
+	function touchItem(uuid: string) {
+		const ref = uuidToRef.get(uuid);
+		if (!ref) return;
+		touchedAt.set(ref, Date.now());
+		ensurePruneInterval();
+		graph?.refresh();
+	}
+
+	// Trailing-debounced refetch of the CURRENT (wsSlug, showCompleted) graph through
+	// the existing loadGraph path — the filteredData pipeline + renderer-sync effect
+	// then do the rest. Reuses loadGraph's stale-token (reqSeq) so an in-flight
+	// manual load can't be clobbered. Plain `let` timer, cleared in teardown.
+	function scheduleRefetch() {
+		if (refetchTimer) clearTimeout(refetchTimer);
+		refetchTimer = setTimeout(() => {
+			refetchTimer = null;
+			if (wsSlug) void loadGraph(wsSlug, showCompleted);
+		}, REFETCH_DEBOUNCE_MS);
+	}
+
+	// The prune/fade ticker. Started lazily when the first node is touched and
+	// stopped once touchedAt empties, so an idle graph runs no timer (the fade is
+	// only interesting while something is glowing). Each tick drops fully-decayed
+	// entries and calls graph.refresh() so nodeColor re-runs and the fade animates.
+	function ensurePruneInterval() {
+		if (pruneInterval) return;
+		pruneInterval = setInterval(() => {
+			const now = Date.now();
+			for (const [ref, at] of touchedAt) {
+				if (now - at >= PULSE_MS) touchedAt.delete(ref);
+			}
+			graph?.refresh();
+			if (touchedAt.size === 0 && pruneInterval) {
+				clearInterval(pruneInterval);
+				pruneInterval = null;
+			}
+		}, PRUNE_INTERVAL_MS);
+	}
+
 	// ── Teardown ─────────────────────────────────────────────────────────────────
 	onDestroy(() => {
+		// Live-layer handles (plain `let`, CONVE-1688). The page never owns the SSE
+		// connection (the +layout does), so we only drop our subscription + timers.
+		unsubscribeSSE?.();
+		unsubscribeSSE = null;
+		if (refetchTimer) {
+			clearTimeout(refetchTimer);
+			refetchTimer = null;
+		}
+		if (pruneInterval) {
+			clearInterval(pruneInterval);
+			pruneInterval = null;
+		}
 		resizeObserver?.disconnect();
 		resizeObserver = null;
 		// 3d-force-graph's teardown: stops the render loop and frees WebGL context.
