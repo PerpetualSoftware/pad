@@ -20,6 +20,9 @@ type GraphNode struct {
 	IsTerminal bool      `json:"is_terminal"`
 	ChildCount int       `json:"child_count"`
 	UpdatedAt  time.Time `json:"updated_at"`
+	// Role is the assigned agent-role slug, when set. Feeds the graph
+	// view's role filter (TASK-1735).
+	Role string `json:"role,omitempty"`
 }
 
 // GraphEdge is one typed relationship between two graph nodes. Source
@@ -130,6 +133,7 @@ func (s *Server) handleGetWorkspaceGraph(w http.ResponseWriter, r *http.Request)
 			Status:     status,
 			IsTerminal: terminal,
 			UpdatedAt:  item.UpdatedAt,
+			Role:       item.AgentRoleSlug,
 		})
 	}
 
