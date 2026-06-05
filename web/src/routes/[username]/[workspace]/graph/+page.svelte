@@ -14,6 +14,7 @@
 	import type { NodeObject, LinkObject } from '3d-force-graph';
 	import type { GraphResponse, Item } from '$lib/types';
 	import DetailCard from './DetailCard.svelte';
+	import GraphToolbar from './GraphToolbar.svelte';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -66,9 +67,87 @@
 	// commits so a fast re-select can't be clobbered by an older response.
 	let selectSeq = 0;
 
-	// Node-count / edge-count readout for the toolbar.
-	const nodeCount = $derived(graphData?.nodes.length ?? 0);
-	const edgeCount = $derived(graphData?.edges.length ?? 0);
+	// ── Filters (PLAN-1730 / TASK-1735) ──────────────────────────────────────────
+	// Client-side filters over the loaded payload. All three are reactive $state so
+	// the renderer-sync effect (which reads `filteredData`, derived from these) re-
+	// runs on any change. Empty collection/status selection === no filter on that
+	// axis (matches the insights page semantics); a null role === no role filter.
+	// Per CONVE-1688: these are written only from event handlers (the toolbar
+	// callbacks) and a deselect-on-change effect that writes deselect()'s state but
+	// never reads graphData — never read+written by the same effect.
+	let filterCollections = $state<string[]>([]);
+	let filterStatuses = $state<string[]>([]);
+	let filterRole = $state<string | null>(null);
+
+	// Distinct option lists for the toolbar controls, in first-seen order so the
+	// chips stay stable within a payload.
+	const distinctCollections = $derived.by<string[]>(() => {
+		const seen = new Set<string>();
+		const out: string[] = [];
+		for (const n of graphData?.nodes ?? []) {
+			if (!seen.has(n.collection)) {
+				seen.add(n.collection);
+				out.push(n.collection);
+			}
+		}
+		return out;
+	});
+	const distinctStatuses = $derived.by<string[]>(() => {
+		const seen = new Set<string>();
+		const out: string[] = [];
+		for (const n of graphData?.nodes ?? []) {
+			if (n.status && !seen.has(n.status)) {
+				seen.add(n.status);
+				out.push(n.status);
+			}
+		}
+		return out;
+	});
+	const distinctRoles = $derived.by<string[]>(() => {
+		const seen = new Set<string>();
+		const out: string[] = [];
+		for (const n of graphData?.nodes ?? []) {
+			if (n.role && !seen.has(n.role)) {
+				seen.add(n.role);
+				out.push(n.role);
+			}
+		}
+		return out;
+	});
+
+	// Any filter active? Drives the "X of Y" vs "X" count readout.
+	const filtersActive = $derived(
+		filterCollections.length > 0 || filterStatuses.length > 0 || filterRole !== null
+	);
+
+	// The filtered subset fed to the renderer: nodes matching every active axis, and
+	// edges where BOTH endpoints survive. The force layout re-settles on change —
+	// expected and fine. When no filter is active this is graphData verbatim.
+	const filteredData = $derived.by<GraphResponse | null>(() => {
+		if (!graphData) return null;
+		if (!filtersActive) return graphData;
+		const collSet = new Set(filterCollections);
+		const statusSet = new Set(filterStatuses);
+		const nodes = graphData.nodes.filter((n) => {
+			if (collSet.size > 0 && !collSet.has(n.collection)) return false;
+			if (statusSet.size > 0 && (!n.status || !statusSet.has(n.status))) return false;
+			if (filterRole !== null && n.role !== filterRole) return false;
+			return true;
+		});
+		const surviving = new Set(nodes.map((n) => n.ref));
+		const edges = graphData.edges.filter(
+			(e) => surviving.has(e.source) && surviving.has(e.target)
+		);
+		return { nodes, edges };
+	});
+
+	// Node/edge counts: FILTERED for the live readout, total for the "X of Y" form.
+	const nodeCount = $derived(filteredData?.nodes.length ?? 0);
+	const edgeCount = $derived(filteredData?.edges.length ?? 0);
+	const totalNodeCount = $derived(graphData?.nodes.length ?? 0);
+	const totalEdgeCount = $derived(graphData?.edges.length ?? 0);
+	// Empty state keys off the unfiltered payload — a filter that hides everything is
+	// the user's doing, not an empty workspace.
 	const isEmpty = $derived(graphData !== null && graphData.nodes.length === 0);
 
 	// ── Color palette ────────────────────────────────────────────────────────────
@@ -231,7 +310,9 @@
 	// from `graphData.edges` (the source of truth, untouched by the renderer).
 	function computeNeighbors(ref: string): Set<string> {
 		const set = new Set<string>([ref]);
-		const edges = graphData?.edges ?? [];
+		// Use the FILTERED edges so the neighborhood matches what's actually rendered —
+		// a filtered-out neighbor isn't on screen to highlight anyway.
+		const edges = filteredData?.edges ?? [];
 		for (const e of edges) {
 			if (e.source === ref) set.add(e.target);
 			else if (e.target === ref) set.add(e.source);
@@ -264,6 +345,37 @@
 		// Fetch richer detail (priority / assignee) for the card. Stale-gated so a
 		// rapid re-select can't be overwritten by an older response.
 		void loadSelectedItem(node.ref);
+	}
+
+	// ── Filter toggles (TASK-1735) ───────────────────────────────────────────────
+	// Event-handler writes to the filter $state (CONVE-1688: no effect reads+writes
+	// these). The deselect-on-filter-change effect handles clearing a now-hidden
+	// selection; the filteredData derived + sync effect handle the re-render.
+	function toggleCollectionFilter(slug: string) {
+		filterCollections = filterCollections.includes(slug)
+			? filterCollections.filter((s) => s !== slug)
+			: [...filterCollections, slug];
+	}
+	function toggleStatusFilter(status: string) {
+		filterStatuses = filterStatuses.includes(status)
+			? filterStatuses.filter((s) => s !== status)
+			: [...filterStatuses, status];
+	}
+	function selectRoleFilter(role: string | null) {
+		filterRole = role;
+	}
+
+	// Search fly-to (TASK-1735). The toolbar emits the chosen ref; resolve it to the
+	// LIVE renderer node — `graph.graphData().nodes` carry the current x/y/z the
+	// camera math in selectNode() needs (our static GraphResponse nodes don't). If
+	// the node isn't found (shouldn't happen — search lists POST-filter nodes that
+	// are by definition in the renderer), no-op gracefully.
+	function flyToRef(ref: string) {
+		if (!graph) return;
+		const nodes = (graph.graphData()?.nodes ?? []) as NodeObject[];
+		const match = nodes.find((n) => asNode(n).ref === ref);
+		if (!match) return;
+		selectNode(asNode(match));
 	}
 
 	async function loadSelectedItem(ref: string) {
@@ -332,10 +444,35 @@
 			// Drop the previous workspace's graph so it doesn't linger under the new
 			// URL while the fetch is in flight — `loading` covers the gap.
 			graphData = null;
+			// A workspace switch brings a different collection/status/role universe, so
+			// any prior selection would over-filter (none of B's slugs match A's). Reset
+			// to no-filter. NOT done on a show-completed toggle: that's the SAME
+			// workspace with a superset payload, where keeping filters is the right call.
+			// These writes are filter $state this effect doesn't read — and the
+			// filteredData/sync effects don't write them — so it stays CONVE-1688-clean.
+			filterCollections = [];
+			filterStatuses = [];
+			filterRole = null;
 		}
 		if (slug) {
 			void loadGraph(slug, withTerminal);
 		}
+	});
+
+	// Deselect whenever the filters change: the selected node may have just been
+	// filtered out, in which case the dim/highlight + detail card would reference a
+	// node that's no longer rendered. Reads the three filter $states (reactive) and
+	// calls deselect() (which writes selection $state but never reads graphData or
+	// the filter states) — so this effect never read+writes the same $state, keeping
+	// it CONVE-1688-clean. Separate from the renderer-sync effect on purpose: that
+	// one must NOT call deselect (it reads filteredData, and deselect writes selection
+	// state — mixing them risks a read/write cycle on shared state).
+	$effect(() => {
+		// Track the filter axes.
+		filterCollections;
+		filterStatuses;
+		filterRole;
+		deselect();
 	});
 
 	// Push freshly-loaded data into the renderer once both are ready. Reads
@@ -345,10 +482,19 @@
 	// canvas too — otherwise the previous workspace's nodes linger behind the
 	// loading overlay (Codex round-1 finding #1).
 	$effect(() => {
-		const data = graphData;
+		// Feed the FILTERED subset (TASK-1735) — not the raw payload. filteredData is
+		// graphData verbatim when no filter is active, so the unfiltered path is
+		// unchanged. Reads filteredData (reactive, derived from graphData + the filter
+		// $states); writes only the imperative `graph` handle + the plain
+		// collectionColors map, never a tracked $state — CONVE-1688-clean.
+		const data = filteredData;
 		if (!rendererReady || !graph) return;
-		// Reset color assignment so collection→color stays stable per payload.
+		// Reset color assignment so collection→color stays stable per payload. Built
+		// from the FULL node list (not the filtered subset) so a collection keeps its
+		// hue whether or not the current filter happens to include it — the filter
+		// chips and the rendered nodes must agree on color.
 		collectionColors = {};
+		for (const n of graphData?.nodes ?? []) colorForCollection(n.collection);
 		graph.graphData({
 			nodes: data ? data.nodes.map((n) => ({ ...n, id: n.ref, name: n.title })) : [],
 			links: data
@@ -402,6 +548,7 @@
 		title: string;
 		collection: string;
 		status?: string;
+		role?: string;
 		is_terminal: boolean;
 		child_count: number;
 		updated_at: string;
@@ -425,18 +572,27 @@
 <svelte:window onkeydown={onKeydown} />
 
 <div class="graph-page">
-	<!-- Controls overlay (top-left) -->
-	<div class="toolbar">
-		<label class="toggle">
-			<input type="checkbox" bind:checked={showCompleted} />
-			<span>Show completed</span>
-		</label>
-		<span class="counts">
-			<span class="count">{nodeCount} node{nodeCount === 1 ? '' : 's'}</span>
-			<span class="count-sep">·</span>
-			<span class="count">{edgeCount} edge{edgeCount === 1 ? '' : 's'}</span>
-		</span>
-	</div>
+	<!-- Controls overlay (top-left): toggle + filters + search fly-to. -->
+	<GraphToolbar
+		bind:showCompleted
+		{nodeCount}
+		{edgeCount}
+		{totalNodeCount}
+		{totalEdgeCount}
+		filtered={filtersActive}
+		collections={distinctCollections}
+		statuses={distinctStatuses}
+		roles={distinctRoles}
+		selectedCollections={filterCollections}
+		selectedStatuses={filterStatuses}
+		selectedRole={filterRole}
+		searchNodes={filteredData?.nodes ?? []}
+		{colorForCollection}
+		ontogglecollection={toggleCollectionFilter}
+		ontogglestatus={toggleStatusFilter}
+		onselectrole={selectRoleFilter}
+		onsearchpick={flyToRef}
+	/>
 
 	<!-- The renderer mounts here; it owns its own canvas. -->
 	<div class="canvas" bind:this={containerEl}></div>
@@ -497,47 +653,6 @@
 	.canvas {
 		position: absolute;
 		inset: 0;
-	}
-
-	/* ── Toolbar ──────────────────────────────────────────────────────────────── */
-	.toolbar {
-		position: absolute;
-		top: var(--space-4);
-		left: var(--space-4);
-		z-index: 10;
-		display: flex;
-		align-items: center;
-		gap: var(--space-4);
-		padding: var(--space-2) var(--space-4);
-		background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
-		backdrop-filter: blur(6px);
-	}
-	.toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-2);
-		font-size: 0.82em;
-		font-weight: 600;
-		color: var(--text-secondary);
-		cursor: pointer;
-		user-select: none;
-	}
-	.toggle input {
-		cursor: pointer;
-	}
-	.counts {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-2);
-		font-size: 0.78em;
-		color: var(--text-muted);
-		font-variant-numeric: tabular-nums;
-	}
-	.count-sep {
-		opacity: 0.5;
 	}
 
 	/* ── State overlays ───────────────────────────────────────────────────────── */

@@ -985,6 +985,8 @@ export interface GraphNode {
 	/** number of child items (parent + implements links pointing here) */
 	child_count: number;
 	updated_at: string;
+	/** assigned agent-role slug, when set — feeds the graph view's role filter */
+	role?: string;
 }
 
 /**
