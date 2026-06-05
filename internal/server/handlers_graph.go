@@ -13,6 +13,10 @@ import (
 // keyed by ref (TASK-5) rather than UUID: refs are what the web UI's
 // force-graph uses for display, deep links, and edge endpoints.
 type GraphNode struct {
+	// ID is the item UUID. The graph view needs it to correlate SSE
+	// item events (which carry item_id, not ref) with rendered nodes
+	// for the live glow/pulse layer (TASK-1736).
+	ID         string    `json:"id"`
 	Ref        string    `json:"ref"`
 	Title      string    `json:"title"`
 	Collection string    `json:"collection"`
@@ -127,6 +131,7 @@ func (s *Server) handleGetWorkspaceGraph(w http.ResponseWriter, r *http.Request)
 		refByID[item.ID] = item.Ref
 		nodeIdx[item.ID] = len(resp.Nodes)
 		resp.Nodes = append(resp.Nodes, GraphNode{
+			ID:         item.ID,
 			Ref:        item.Ref,
 			Title:      item.Title,
 			Collection: item.CollectionSlug,

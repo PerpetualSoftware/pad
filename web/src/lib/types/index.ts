@@ -975,6 +975,8 @@ export interface DashboardResponse {
 
 /** One item in the workspace graph. Keyed by ref (e.g. "TASK-5"). */
 export interface GraphNode {
+	/** item UUID — correlates SSE item events (item_id) with nodes */
+	id: string;
 	ref: string;
 	title: string;
 	/** collection slug */
