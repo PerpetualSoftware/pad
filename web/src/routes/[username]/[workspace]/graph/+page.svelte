@@ -279,7 +279,9 @@
 				.backgroundColor('rgba(0,0,0,0)')
 				.nodeRelSize(4)
 				// Subtree-weighted node size: parents/plans with children read bigger.
-				.nodeVal((n: NodeObject) => 1 + (asNode(n).child_count ?? 0) * 2)
+				// Terminal items (visible only with show-completed on) shrink to a
+				// fraction so they recede — "burned down", clearly out of the active set.
+				.nodeVal((n: NodeObject) => nodeVal(asNode(n)))
 				// Selection-aware color: in focus mode, anything outside the selected
 				// node's neighborhood is dimmed to a low-alpha version of its collection
 				// color (the accessor reads the plain `let` Sets above).
@@ -319,6 +321,7 @@
 				.onBackgroundClick(() => deselect());
 
 			graph = instance;
+			tuneForces(instance);
 			rendererReady = true;
 
 			// Size to the container now and on every resize.
@@ -341,14 +344,103 @@
 		}
 	}
 
+	// ── Force tuning: plans-as-gravity-wells (TASK-1738) ─────────────────────────
+	// The default d3 layout treats every edge identically, so the space reads as
+	// undifferentiated soup. We retune the built-in 'link' and 'charge' forces ONCE
+	// at construction so structural edges pull children tight into local clusters
+	// while soft associative edges stay long and slack — items-with-children become
+	// gravity wells their children orbit, and cross-cutting wiki/related filaments
+	// don't drag separate clusters into each other.
+	//
+	// Per-link-type constants. distance = the spring's rest length (shorter ⇒ tighter
+	// orbit); strength ∈ [0,1] = how hard the spring pulls toward that rest length
+	// (higher ⇒ more rigid). Numbers are eyeballed against the d3-force-3d defaults
+	// (distance 30, strength ≈ 1/min(deg(src),deg(tgt))) — see node_modules/
+	// d3-force-3d/README.md §link_distance / §link_strength.
+	const LINK_TIGHT_DISTANCE = 30; // parent/implements: children hug their parent
+	const LINK_TIGHT_STRENGTH = 0.9; // …rigidly
+	const LINK_DEP_DISTANCE = 60; // blocks: dependency tension visible…
+	const LINK_DEP_STRENGTH = 0.3; // …but not clustering
+	const LINK_SOFT_DISTANCE = 120; // wiki-link/related/other: long associative…
+	const LINK_SOFT_STRENGTH = 0.05; // …filaments that barely pull
+	// Charge (repulsion) scales with subtree mass so a parent carves out space for
+	// its orbiting children. Default many-body strength is -30 (README §manyBody_
+	// strength); we scale that base by (1 + clamped child_count). The clamp at 10
+	// caps a 100-child plan so it can't blast the whole scene apart.
+	const CHARGE_BASE = -30;
+	const CHARGE_CHILD_CAP = 10;
+
+	function linkDistance(l: GraphLink3D): number {
+		if (l.type === 'parent' || l.type === 'implements') return LINK_TIGHT_DISTANCE;
+		if (l.type === 'blocks') return LINK_DEP_DISTANCE;
+		return LINK_SOFT_DISTANCE;
+	}
+	function linkStrength(l: GraphLink3D): number {
+		if (l.type === 'parent' || l.type === 'implements') return LINK_TIGHT_STRENGTH;
+		if (l.type === 'blocks') return LINK_DEP_STRENGTH;
+		return LINK_SOFT_STRENGTH;
+	}
+
+	// Apply ONCE at construction. d3-force-3d caches each link's distance/strength
+	// (and each node's charge) when the force is (re)initialized — the README is
+	// explicit that these accessors are NOT re-run on every simulation tick, only on
+	// init or when the setter is called again. 3d-force-graph re-initializes the
+	// forces on every graphData() assignment (which our renderer-sync effect does on
+	// each payload/filter swap), so the function accessors re-read the NEW link/node
+	// objects automatically — no need to re-call tuneForces() on data change.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	function tuneForces(instance: any) {
+		const link = instance.d3Force('link');
+		// Guard: only the d3 simulation engine exposes these forces (README: "only
+		// applicable if using the d3 simulation engine"), which is the default.
+		if (link) {
+			link.distance((l: LinkObject<NodeObject>) => linkDistance(asLink(l)));
+			link.strength((l: LinkObject<NodeObject>) => linkStrength(asLink(l)));
+		}
+		const charge = instance.d3Force('charge');
+		if (charge) {
+			charge.strength(
+				(n: NodeObject) =>
+					CHARGE_BASE * (1 + Math.min(asNode(n).child_count ?? 0, CHARGE_CHILD_CAP))
+			);
+		}
+	}
+
 	// ── Selection-aware accessors ────────────────────────────────────────────────
 	// All three read the plain `let` selection Sets directly (CONVE-1688: no $state
 	// in the imperative path). `graph.refresh()` re-runs them after each change.
 
+	// ── Terminal recede (TASK-1738) ─────────────────────────────────────────────
+	// Terminal items (only ever on screen with show-completed on) shrink AND dim so
+	// the active workspace stays the visual subject. SIZE_FACTOR scales nodeVal;
+	// ALPHA fades the color toward the dark backdrop.
+	const TERMINAL_SIZE_FACTOR = 0.4;
+	const TERMINAL_ALPHA = 0.35;
+
+	// Subtree-weighted size; terminal nodes scaled down so they recede.
+	function nodeVal(n: GraphNode3D): number {
+		const base = 1 + (n.child_count ?? 0) * 2;
+		return n.is_terminal ? base * TERMINAL_SIZE_FACTOR : base;
+	}
+
 	// Node color: collection hex normally; dimmed (low-alpha) when a selection is
 	// active and this node isn't in the neighborhood.
+	//
+	// Terminal-recede precedence: terminal recede is the LOWEST-priority signal —
+	// full order is CHAIN > pulse > dim > terminal. It's folded in as a base-color
+	// modifier (`base`) used ONLY by the resting/pulse/dim path; the brighter signals
+	// override it. The chain branch deliberately reads the PURE collection color
+	// (`collectionHex`), not the faded `base`, so a terminal node sitting on a blocker
+	// chain still burns full red — being burned-down doesn't excuse it from being the
+	// reason you're stuck. Pulse still fires on a terminal node (it mixes toward white
+	// off the faded base, so a touch reads as a faint flash rather than full-bright).
 	function nodeColor(n: GraphNode3D): string {
-		const base = colorForCollection(n.collection);
+		const collectionHex = colorForCollection(n.collection);
+		// Resting color, faded toward the backdrop for terminal nodes. mixHex keeps the
+		// collection hue recognizable while reading as "receded into the dark".
+		const base = n.is_terminal
+			? mixHex(collectionHex, '#0a0a1a', 1 - TERMINAL_ALPHA)
+			: collectionHex;
 		// Live-layer glow: a recently-touched node mixes toward white, brightest on a
 		// fresh touch and decaying back to base over PULSE_MS (the prune interval's
 		// graph.refresh ticks animate the fade). When nothing's touched, t=0 → base.
@@ -357,12 +449,12 @@
 		if (selectedRef === null) return lit;
 		// Focus-mode precedence (CHAIN > pulse > dim): a blocker-chain node is "the
 		// reason you're stuck", so it wins over everything — even an out-of-
-		// neighborhood chain node stays bright (never dimmed). We mix its collection
-		// color toward the blocks red (#f43f5e) at full alpha so the lit path reads as
-		// a distinct red-tinted thread, NOT the ordinary white-ish neighborhood
-		// highlight. Pulse is intentionally skipped on chain nodes — the chain signal
-		// dominates the ambient-liveness one here.
-		if (chainRefs.has(n.ref)) return mixHex(base, '#f43f5e', 0.7);
+		// neighborhood chain node stays bright (never dimmed). We mix the PURE
+		// collection color toward the blocks red (#f43f5e) at full alpha (ignoring the
+		// terminal fade) so the lit path reads as a distinct red-tinted thread, NOT the
+		// ordinary white-ish neighborhood highlight. Pulse is intentionally skipped on
+		// chain nodes — the chain signal dominates the ambient-liveness one here.
+		if (chainRefs.has(n.ref)) return mixHex(collectionHex, '#f43f5e', 0.7);
 		// Otherwise the existing pulse-vs-dim composition: apply the pulse FIRST (on
 		// the lit hex), THEN the dim alpha for out-of-neighborhood nodes — so a touched
 		// node outside the selection still pulses, just subtly (a faint flash in the
