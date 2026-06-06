@@ -216,6 +216,15 @@
 				// Whole-row selection: prefer structural row removal so undo restores
 				// the rows intact in one step.
 				//
+				// Header-row cut (selTop === 0, !allRows): deleteRow is safe here.
+				// The tiptap Table extension schema is `table: { content: "tableRow+" }`
+				// and `tableRow: { content: "(tableCell | tableHeader)*" }` — no leading
+				// header row is required by the schema (verified in
+				// node_modules/@tiptap/extension-table/src/table/table.ts:270 and
+				// src/row/table-row.ts:27). Row 0 is a "header row" only because its
+				// cells happen to be tableHeader (th) nodes; the schema does not enforce
+				// a mandatory first row, so removing it yields a valid table.
+				//
 				// Edge case: if the selection covers every row in the table, deleteRow
 				// refuses (prosemirror-tables intentionally prevents making a zero-row
 				// table). In that case we fall through to deleteTable so the user's
@@ -255,13 +264,23 @@
 	//
 	// Returns true (and calls event.preventDefault) only when ALL of:
 	//   1. Anchor is inside a table cell.
-	//   2. text/plain contains \t or \n (multi-cell TSV content).
+	//   2. text/plain contains \t (tab character — the TSV discriminator).
 	//   3. text/html does NOT contain a <table> element (spreadsheet pastes
 	//      that carry <table> HTML are left for ProseMirror's HTML handler,
 	//      which already reconstructs cells correctly).
 	//
 	// Falls through (returns false) on every non-matching path so default
 	// paste and tiptap-markdown's transform are unaffected.
+	//
+	// TSV discriminator rationale: we require \t, not (\t OR \n). Newline-
+	// only text (multi-line prose, code snippets, addresses) must NOT trigger
+	// this handler — it would silently overwrite cells downward. The tradeoff:
+	// our own editor's single-column cut writes tab-free TSV (one cell per
+	// line, no \t), so that cut output won't round-trip through this handler;
+	// it lands as multi-line text in the anchor cell via default paste.
+	// Spreadsheet single-column pastes are handled correctly via their
+	// text/html <table> path (guard 3). Do not change this to (\t OR \n)
+	// without also writing table HTML on the cut side.
 	//
 	// Known limitations:
 	//   - RFC-4180 quoted cells ("a\nb" spanning multiple lines) are NOT
@@ -285,9 +304,11 @@
 		const htmlData = event.clipboardData.getData('text/html');
 		if (/<table[\s>]/i.test(htmlData)) return false;
 
-		// Guard 3: plain text must look like multi-cell TSV (has \t or \n).
+		// Guard 3: plain text must contain a tab — the TSV discriminator.
+		// Newline-only text (prose, code) must fall through to default paste;
+		// see the comment block above for the full rationale.
 		const plainText = event.clipboardData.getData('text/plain');
-		if (!plainText.includes('\t') && !plainText.includes('\n')) return false;
+		if (!plainText.includes('\t')) return false;
 
 		// Parse the plain text into a 2D array of cell strings.
 		// Strip trailing \r from each line (Windows line endings from spreadsheets).
