@@ -52,7 +52,7 @@
 	// fade; created/archived/restored items appear/disappear via a debounced
 	// refetch. All of this state is plain `let` (CONVE-1688) — it's mutated from the
 	// SSE callback + an interval and read by the renderer accessors, never by an
-	// $effect. Re-evaluation is forced explicitly via graph.refresh().
+	// $effect. Re-evaluation is forced explicitly via repaint() (BUG-1742).
 
 	// How long a touched node glows before it has fully decayed back to its base
 	// collection color (~45s of ambient afterglow).
@@ -83,9 +83,9 @@
 	// The dim-everything-else highlight is driven by two plain `let` Sets that the
 	// renderer accessor closures read. Per CONVE-1688 these stay non-reactive — they
 	// are mutated imperatively in the click handler, never tracked by an $effect.
-	// Re-evaluation is triggered explicitly by calling `graph.refresh()` after each
-	// change (3d-force-graph README: `refresh()` "Redraws all the nodes/links",
-	// re-running every color/opacity accessor).
+	// Re-evaluation is triggered explicitly by calling `repaint()` after each
+	// change (fresh accessor closures → the lib's in-place update path; NOT
+	// graph.refresh(), which flushes + rebuilds the whole scene — BUG-1742).
 	let selectedRef: string | null = null;
 	let neighborRefs = new Set<string>();
 
@@ -94,7 +94,7 @@
 	// select we walk the transitive blocker chain UPSTREAM over 'blocks' edges (a
 	// node's blockers are the SOURCES of blocks-edges whose target is that node) and
 	// stash the result in two plain `let` Sets the accessors read (CONVE-1688: no
-	// $state in the imperative render path; re-evaluated via graph.refresh()).
+	// $state in the imperative render path; re-evaluated via repaint()).
 	//   chainRefs  — every node in the transitive chain, NOT including the selected
 	//                node itself.
 	//   chainEdges — the blocks-edges that make up the chain, keyed
@@ -408,7 +408,7 @@
 
 	// ── Selection-aware accessors ────────────────────────────────────────────────
 	// All three read the plain `let` selection Sets directly (CONVE-1688: no $state
-	// in the imperative path). `graph.refresh()` re-runs them after each change.
+	// in the imperative path). `repaint()` re-runs them after each change.
 
 	// ── Terminal recede (TASK-1738) ─────────────────────────────────────────────
 	// Terminal items (only ever on screen with show-completed on) shrink AND dim so
@@ -495,16 +495,43 @@
 
 	// True when a link is on the lit blocker chain (keyed by raw refs, since the force
 	// layout mutates source/target into node objects after ingest). Drives the chain-
-	// only width bump + directional particles.
+	// only color + directional particles (width stays static — see linkWidth).
 	function isChainEdge(l: GraphLink3D): boolean {
 		return chainEdges.has(`${l.sourceRef}->${l.targetRef}`);
 	}
 
-	// Link width: chain edges widest (~2), then blocks (1.5), then structural/soft
-	// (0.5). Chain checked first so a chain'd blocks-edge gets the wider treatment.
+	// Link width: blocks 1.5, structural/soft 0.5. STATIC per edge type — width
+	// deliberately does NOT vary with chain state: linkWidth is the one visual
+	// accessor whose prop-change makes the lib flush + rebuild every link object
+	// (new cylinder geometry — it's in three-forcegraph's clear list), which is
+	// exactly the full-scene rebuild repaint() exists to avoid (BUG-1742). Chain
+	// emphasis rides on full-alpha red + directional particles instead.
 	function linkWidth(l: GraphLink3D): number {
-		if (isChainEdge(l)) return 2;
 		return l.type === 'blocks' ? 1.5 : 0.5;
+	}
+
+	// Re-evaluate the selection/pulse/chain-dependent visual accessors WITHOUT
+	// graph.refresh(). refresh() sets _flushObjects, which destroys and recreates
+	// every Three.js object in the scene — invisible on desktop GPUs, a visible
+	// full-screen flash on mobile (BUG-1742). Re-assigning a FRESH closure per
+	// prop instead makes the lib take its in-place update path: materials and
+	// particle photons update, objects survive. Only props whose accessors read
+	// mutable selection/pulse/chain state are re-assigned; static accessors
+	// (nodeVal, linkWidth, arrows) are left alone.
+	function repaint() {
+		if (!graph) return;
+		graph
+			.nodeColor((n: NodeObject) => nodeColor(asNode(n)))
+			.linkColor((l: LinkObject<NodeObject>) => linkColor(asLink(l)))
+			.linkDirectionalParticles((l: LinkObject<NodeObject>) =>
+				isChainEdge(asLink(l)) ? 3 : 0
+			)
+			.linkDirectionalParticleWidth((l: LinkObject<NodeObject>) =>
+				isChainEdge(asLink(l)) ? 1.5 : 0
+			)
+			.linkDirectionalParticleSpeed((l: LinkObject<NodeObject>) =>
+				isChainEdge(asLink(l)) ? 0.006 : 0
+			);
 	}
 
 	// Hex (#rrggbb) → rgba() with the given alpha. The dim treatment for out-of-
@@ -659,8 +686,9 @@
 			800
 		);
 
-		// Re-run every node/link accessor so the dim/highlight takes effect.
-		graph?.refresh();
+		// Re-run the selection-dependent accessors so the dim/highlight takes
+		// effect (in-place — see repaint(); BUG-1742).
+		repaint();
 
 		// Fetch richer detail (priority / assignee) for the card. Stale-gated so a
 		// rapid re-select can't be overwritten by an older response.
@@ -746,7 +774,7 @@
 		selectedItem = null;
 		selectedItemLoading = false;
 		selectSeq++;
-		graph?.refresh();
+		repaint();
 	}
 
 	// Open the selected item's page — this is where the old direct-click navigation
@@ -995,7 +1023,7 @@
 		if (!ref) return;
 		touchedAt.set(ref, Date.now());
 		ensurePruneInterval();
-		graph?.refresh();
+		repaint();
 	}
 
 	// Trailing-debounced refetch of the CURRENT (wsSlug, showCompleted) graph through
@@ -1013,7 +1041,7 @@
 	// The prune/fade ticker. Started lazily when the first node is touched and
 	// stopped once touchedAt empties, so an idle graph runs no timer (the fade is
 	// only interesting while something is glowing). Each tick drops fully-decayed
-	// entries and calls graph.refresh() so nodeColor re-runs and the fade animates.
+	// entries and calls repaint() so nodeColor re-runs and the fade animates.
 	function ensurePruneInterval() {
 		if (pruneInterval) return;
 		pruneInterval = setInterval(() => {
@@ -1021,7 +1049,7 @@
 			for (const [ref, at] of touchedAt) {
 				if (now - at >= PULSE_MS) touchedAt.delete(ref);
 			}
-			graph?.refresh();
+			repaint();
 			if (touchedAt.size === 0 && pruneInterval) {
 				clearInterval(pruneInterval);
 				pruneInterval = null;
@@ -1168,6 +1196,9 @@
 	.canvas {
 		position: absolute;
 		inset: 0;
+		/* Kill the gray mobile tap-highlight overlay on the full-screen canvas —
+		   it reads as a flash on every tap (BUG-1742). */
+		-webkit-tap-highlight-color: transparent;
 	}
 
 	/* ── State overlays ───────────────────────────────────────────────────────── */
