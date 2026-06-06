@@ -12,7 +12,15 @@
 	import TaskList from '@tiptap/extension-task-list';
 	import TaskItem from '@tiptap/extension-task-item';
 	import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
-	import { CellSelection } from '@tiptap/pm/tables';
+	import {
+		CellSelection,
+		deleteRow,
+		deleteTable,
+		isInTable,
+		selectionCell,
+		findTable,
+		TableMap,
+	} from '@tiptap/pm/tables';
 	import Link from '@tiptap/extension-link';
 	import CodeBlock from '@tiptap/extension-code-block';
 	import Placeholder from '@tiptap/extension-placeholder';
@@ -149,6 +157,7 @@
 			handleDOMEvents: {
 				copy: (view, event) => writeTableClipboard(view, event as ClipboardEvent, false),
 				cut: (view, event) => writeTableClipboard(view, event as ClipboardEvent, true),
+				paste: (view, event) => readTablePasteClipboard(view, event as ClipboardEvent),
 			},
 		},
 	});
@@ -203,9 +212,153 @@
 		event.clipboardData.setData('text/html', '');
 
 		if (isCut) {
-			const tr = state.tr.deleteSelection();
-			view.dispatch(tr);
+			if (selection instanceof CellSelection && selection.isRowSelection()) {
+				// Whole-row selection: prefer structural row removal so undo restores
+				// the rows intact in one step.
+				//
+				// Edge case: if the selection covers every row in the table, deleteRow
+				// refuses (prosemirror-tables intentionally prevents making a zero-row
+				// table). In that case we fall through to deleteTable so the user's
+				// mental model ("I cut everything → it's gone") is honoured.
+				const table = selection.$anchorCell.node(-1);
+				const map = TableMap.get(table);
+				// Compute the row extent of this selection via the map.
+				const anchorPos = selection.$anchorCell.pos - selection.$anchorCell.start(-1);
+				const headPos = selection.$headCell.pos - selection.$headCell.start(-1);
+				const anchorRect = map.findCell(anchorPos);
+				const headRect = map.findCell(headPos);
+				const selTop = Math.min(anchorRect.top, headRect.top);
+				const selBottom = Math.max(anchorRect.bottom, headRect.bottom);
+				const allRows = selTop === 0 && selBottom === map.height;
+
+				if (allRows) {
+					// Deleting all rows ≡ deleting the table.
+					deleteTable(state, view.dispatch);
+				} else {
+					// deleteRow reads the CellSelection from state.selection and
+					// removes only the rows that are fully covered.
+					deleteRow(state, view.dispatch);
+				}
+			} else {
+				// Partial cell selection or plain-text range within a table:
+				// clear cell content but keep the row/cell structure intact.
+				// This is the correct ProseMirror semantic for partial cuts.
+				const tr = state.tr.deleteSelection();
+				view.dispatch(tr);
+			}
 		}
+		return true;
+	}
+
+	// ProseMirror plugin handler: reconstruct table cells from tab-separated
+	// clipboard text when the paste target is inside a table cell.
+	//
+	// Returns true (and calls event.preventDefault) only when ALL of:
+	//   1. Anchor is inside a table cell.
+	//   2. text/plain contains \t or \n (multi-cell TSV content).
+	//   3. text/html does NOT contain a <table> element (spreadsheet pastes
+	//      that carry <table> HTML are left for ProseMirror's HTML handler,
+	//      which already reconstructs cells correctly).
+	//
+	// Falls through (returns false) on every non-matching path so default
+	// paste and tiptap-markdown's transform are unaffected.
+	//
+	// Known limitations:
+	//   - RFC-4180 quoted cells ("a\nb" spanning multiple lines) are NOT
+	//     parsed. The grid is split naively on \n then \t. A quoted
+	//     multi-line cell will be split across rows. Full RFC-4180 is a
+	//     follow-on task.
+	//   - Paste data wider or taller than the remaining table is clamped
+	//     and dropped (table is NOT grown).
+	//   - Empty cells in the paste grid CLEAR the target cell (write an
+	//     empty paragraph). This is intentional: it preserves cut→paste
+	//     round-trip fidelity and matches spreadsheet convention.
+	function readTablePasteClipboard(view: any, event: ClipboardEvent): boolean {
+		if (!event.clipboardData) return false;
+		const { state } = view;
+
+		// Guard 1: anchor must be inside a table.
+		if (!isInTable(state)) return false;
+
+		// Guard 2: if the HTML clipboard carries a <table>, let ProseMirror's
+		// existing HTML paste handler take over (spreadsheet paste path).
+		const htmlData = event.clipboardData.getData('text/html');
+		if (/<table[\s>]/i.test(htmlData)) return false;
+
+		// Guard 3: plain text must look like multi-cell TSV (has \t or \n).
+		const plainText = event.clipboardData.getData('text/plain');
+		if (!plainText.includes('\t') && !plainText.includes('\n')) return false;
+
+		// Parse the plain text into a 2D array of cell strings.
+		// Strip trailing \r from each line (Windows line endings from spreadsheets).
+		// Empty trailing rows (blank line at end of clipboard) are dropped.
+		const grid: string[][] = plainText
+			.split('\n')
+			.map((line) => line.replace(/\r$/, '').split('\t'))
+			.filter((row, i, arr) => !(i === arr.length - 1 && row.length === 1 && row[0] === ''));
+
+		if (grid.length === 0) return false;
+
+		// Find the anchor cell and the containing table.
+		// selectionCell is marked @internal in prosemirror-tables but is the
+		// canonical helper to resolve the anchor cell from any selection type;
+		// we're pinned to a specific version so a breakage here is visible.
+		// Note: ProseMirror names resolved positions with a $ prefix by convention;
+		// Svelte 5 runes mode reserves $ for reactive primitives, so we use
+		// `anchorCell` (no prefix) instead.
+		const anchorCell = selectionCell(state);
+		const tableInfo = findTable(anchorCell);
+		if (!tableInfo) return false;
+		const { node: table, start: tableStart } = tableInfo;
+		const map = TableMap.get(table);
+
+		// Determine the anchor cell's position in the map.
+		const anchorOffset = anchorCell.pos - tableStart;
+		const anchorCellRect = map.findCell(anchorOffset);
+		const startRow = anchorCellRect.top;
+		const startCol = anchorCellRect.left;
+
+		// Build a transaction that fills each target cell with the pasted text.
+		let tr = state.tr;
+		let changed = false;
+
+		for (let r = 0; r < grid.length; r++) {
+			const targetRow = startRow + r;
+			if (targetRow >= map.height) break; // clamp at bottom edge
+
+			for (let c = 0; c < grid[r].length; c++) {
+				const targetCol = startCol + c;
+				if (targetCol >= map.width) break; // clamp at right edge
+
+				// positionAt returns the position *before* the cell node, relative
+				// to the start of the table. Add tableStart to get the doc position.
+				const cellPos = tableStart + map.positionAt(targetRow, targetCol, table);
+
+				// Find the cell node and its content range.
+				// The cell is always one level above a paragraph/block content node.
+				const cellNode = tr.doc.nodeAt(cellPos);
+				if (!cellNode) continue;
+
+				const cellContentStart = cellPos + 1; // first position inside the cell
+				const cellContentEnd = cellPos + cellNode.nodeSize - 1; // last position inside the cell
+
+				// Replace the entire cell content with a single paragraph containing
+				// the pasted text. Empty paste cells write an empty paragraph —
+				// intentional: preserves cut→paste round-trip fidelity.
+				const cellValue = grid[r][c];
+				const paraContent = cellValue
+					? [state.schema.text(cellValue)]
+					: [];
+				const para = state.schema.nodes.paragraph.create({}, paraContent);
+				tr = tr.replaceWith(cellContentStart, cellContentEnd, para);
+				changed = true;
+			}
+		}
+
+		if (!changed) return false;
+
+		event.preventDefault();
+		view.dispatch(tr);
 		return true;
 	}
 
