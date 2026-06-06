@@ -89,6 +89,33 @@
 	let selectedRef: string | null = null;
 	let neighborRefs = new Set<string>();
 
+	// ── Always-visible node labels (TASK-1743) ───────────────────────────────────
+	// Each node carries a camera-facing SpriteText showing its ref. Anti-soup rules
+	// (applied imperatively in updateLabelVisibility, never via accessors):
+	//   • Hubs (child_count > 0): label ALWAYS visible.
+	//   • Selection context (selected + neighborhood + blocker-chain): always visible
+	//     while focus mode is active.
+	//   • Everything else: fades in only when the camera is close (distance band),
+	//     so the wide view stays clean.
+	//   • Focus mode: labels of DIMMED (out-of-context) nodes hide entirely — they
+	//     must not compete with the highlight.
+	// The walk is throttled off the orbit-controls 'change' event and re-run wherever
+	// repaint() runs (it's invoked from inside repaint), so selection/payload/glow
+	// changes all refresh labels in lockstep without ever touching nodeThreeObject.
+	//
+	// Distance band: below NEAR → full opacity; above FAR → hidden; linear fade
+	// between. Squared bounds avoid a sqrt per node in the hot walk.
+	const LABEL_NEAR = 120;
+	const LABEL_FAR = 160;
+	const LABEL_NEAR_SQ = LABEL_NEAR * LABEL_NEAR;
+	const LABEL_FAR_SQ = LABEL_FAR * LABEL_FAR;
+	// Trailing-throttle window for the controls-driven walk (BUG-1742 cadence: cheap,
+	// never flushes — just toggles sprite.visible / material.opacity in place).
+	const LABEL_THROTTLE_MS = 250;
+	// Plain `let` handles (CONVE-1688), cleared in teardown.
+	let controlsChangeHandler: (() => void) | null = null;
+	let labelThrottleTimer: ReturnType<typeof setTimeout> | null = null;
+
 	// ── Blocker-chain tracing (PLAN-1730 / TASK-1737) ────────────────────────────
 	// "Why can't TASK-X start?" — the answer lit up as a path through the space. On
 	// select we walk the transitive blocker chain UPSTREAM over 'blocks' edges (a
@@ -273,11 +300,26 @@
 			// entry bundle. The default export is a factory class; v1.80 supports
 			// `new ForceGraph3D(el)`.
 			const ForceGraph3D = (await import('3d-force-graph')).default;
+			// SpriteText via the SAME dynamic-import discipline as 3d-force-graph: it
+			// pulls canvas/text-rendering helpers we don't want in the entry bundle, so
+			// it must land in a lazy chunk alongside the renderer (TASK-1743 — mirror
+			// the TASK-1733 dynamic-import rule). NEVER add a static top-level import.
+			const SpriteText = (await import('three-spritetext')).default;
 			if (cancelled || !containerEl) return;
 
 			const instance = new ForceGraph3D(containerEl)
 				.backgroundColor('rgba(0,0,0,0)')
 				.nodeRelSize(4)
+				// Always-on ref labels (TASK-1743). nodeThreeObjectExtend(true) keeps the
+				// built-in node sphere AND appends our sprite (vs replacing it).
+				.nodeThreeObjectExtend(true)
+				// CRITICAL (no-reassign rule): nodeThreeObject is in three-forcegraph's
+				// flush list — re-assigning it destroys + rebuilds every node object
+				// (the mobile-flash failure mode BUG-1742 forbids). Set it EXACTLY ONCE
+				// here. repaint() must NEVER touch it. New nodes arriving via payload
+				// swaps get a sprite automatically through the lib's onCreateObj path,
+				// which calls this accessor per new node — no re-assign needed.
+				.nodeThreeObject((n: NodeObject) => makeLabelSprite(asNode(n), SpriteText))
 				// Subtree-weighted node size: parents/plans with children read bigger.
 				// Terminal items (visible only with show-completed on) shrink to a
 				// fraction so they recede — "burned down", clearly out of the active set.
@@ -323,6 +365,25 @@
 			graph = instance;
 			tuneForces(instance);
 			rendererReady = true;
+
+			// Label visibility is camera-distance-aware, so it must re-evaluate as the
+			// user orbits/zooms. controls() returns the OrbitControls instance (a
+			// THREE.EventDispatcher) — confirmed against 3d-force-graph's d.ts
+			// (`controls(): object`) and its README "Trackball/Orbit/Fly controls"
+			// section. We attach a trailing-throttled handler to its 'change' event so a
+			// drag fires the walk at most every LABEL_THROTTLE_MS, not per frame.
+			const controls = instance.controls() as {
+				addEventListener?: (type: string, fn: () => void) => void;
+				removeEventListener?: (type: string, fn: () => void) => void;
+			};
+			if (controls?.addEventListener) {
+				controlsChangeHandler = scheduleLabelVisibility;
+				controls.addEventListener('change', controlsChangeHandler);
+			}
+			// Initial settle: run once now (and again shortly after, once the force
+			// layout has produced node positions) so labels are correct on first paint.
+			updateLabelVisibility();
+			scheduleLabelVisibility();
 
 			// Size to the container now and on every resize.
 			syncSize();
@@ -532,6 +593,111 @@
 			.linkDirectionalParticleSpeed((l: LinkObject<NodeObject>) =>
 				isChainEdge(asLink(l)) ? 0.006 : 0
 			);
+		// Label visibility tracks the same selection/chain/pulse state these accessors
+		// read, so fold the walk into every repaint() (select/deselect/pulse-tick/touch
+		// all funnel through here). Cheap in-place toggle — see updateLabelVisibility.
+		updateLabelVisibility();
+	}
+
+	// ── Label sprite construction (TASK-1743) ────────────────────────────────────
+	// Build the camera-facing ref label for a node and stash it on the node object so
+	// the visibility walk can find it (n.__labelSprite). Called ONCE per node by the
+	// lib's nodeThreeObject accessor — at construction for the initial payload and via
+	// onCreateObj for nodes arriving in later payload swaps. Never re-runs for an
+	// existing node (the no-reassign rule on nodeThreeObject), so it's a pure factory:
+	// no visibility logic here — that lives entirely in updateLabelVisibility.
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	function makeLabelSprite(n: GraphNode3D, SpriteText: any) {
+		// Soft slate so labels read against the dark backdrop without out-shouting the
+		// colored nodes. textHeight ~3 keeps them legible but small.
+		const sprite = new SpriteText(n.ref, 3, '#cbd5e1');
+		// depthWrite off so labels never z-fight with node spheres / each other.
+		sprite.material.depthWrite = false;
+		sprite.material.transparent = true;
+		// Float the label just above the node sphere. The lib sizes spheres as
+		// radius ≈ nodeRelSize(4) · ∛nodeVal, so a constant offset would bury labels
+		// inside the biggest hubs (val 21 → radius ~11) — and hubs are exactly the
+		// always-labeled set. Compute the real radius once here (the factory runs
+		// once per node) and clear it with a small pad.
+		sprite.position.y = 4 * Math.cbrt(Math.max(nodeVal(n), 1)) + 3;
+		// Start hidden; the visibility walk (run on settle + every repaint + every
+		// throttled controls 'change') decides the real state immediately after.
+		sprite.visible = false;
+		// Stash for the imperative walk. The cast lets us attach without widening the
+		// shared GraphNode3D shape with a Three.js-specific field.
+		(n as unknown as { __labelSprite?: unknown }).__labelSprite = sprite;
+		return sprite;
+	}
+
+	// ── Label visibility walk (TASK-1743) ────────────────────────────────────────
+	// Imperative pass over the live renderer nodes, toggling each sprite's
+	// visible/opacity per the anti-soup rules. No flush, no accessor re-assignment —
+	// just mutates Three.js material state, so it's repaint()-cheap (BUG-1742-safe).
+	function updateLabelVisibility() {
+		if (!graph) return;
+		const nodes = (graph.graphData()?.nodes ?? []) as NodeObject[];
+		// Camera position via the cameraPosition() getter (no-arg overload returns
+		// Coords) — confirmed in 3d-force-graph's d.ts (`cameraPosition(): Coords`).
+		// graph.camera().position is the equivalent THREE vector; we use the documented
+		// getter to stay on the public surface.
+		const cam = graph.cameraPosition() as { x: number; y: number; z: number };
+		const focusing = selectedRef !== null;
+		for (const raw of nodes) {
+			const n = asNode(raw);
+			const sprite = (n as unknown as { __labelSprite?: ReturnType<typeof Object> })
+				.__labelSprite as
+				| { visible: boolean; material: { opacity: number; transparent: boolean } }
+				| undefined;
+			if (!sprite) continue;
+
+			const isHub = (n.child_count ?? 0) > 0;
+			const inContext =
+				focusing &&
+				(n.ref === selectedRef || neighborRefs.has(n.ref) || chainRefs.has(n.ref));
+
+			// Rule 1: hubs are always labeled. Rule 2: selection context is always
+			// labeled while focusing. Both win over distance.
+			if (isHub || inContext) {
+				sprite.visible = true;
+				sprite.material.opacity = 1;
+				continue;
+			}
+			// Rule 3: in focus mode, a non-context node is DIMMED — hide its label so it
+			// doesn't compete with the highlight.
+			if (focusing) {
+				sprite.visible = false;
+				continue;
+			}
+			// Rule 4 (wide view): distance fade. Below NEAR → full; above FAR → hidden;
+			// linear opacity ramp between. Squared compare avoids a sqrt per node.
+			const dx = (n.x ?? 0) - cam.x;
+			const dy = (n.y ?? 0) - cam.y;
+			const dz = (n.z ?? 0) - cam.z;
+			const distSq = dx * dx + dy * dy + dz * dz;
+			if (distSq <= LABEL_NEAR_SQ) {
+				sprite.visible = true;
+				sprite.material.opacity = 1;
+			} else if (distSq >= LABEL_FAR_SQ) {
+				sprite.visible = false;
+			} else {
+				// In the fade band: opacity from 1 (at NEAR) → 0 (at FAR). Interpolate on
+				// the linear distance (one sqrt only for nodes actually in the band).
+				const dist = Math.sqrt(distSq);
+				sprite.visible = true;
+				sprite.material.opacity = (LABEL_FAR - dist) / (LABEL_FAR - LABEL_NEAR);
+			}
+		}
+	}
+
+	// Trailing-throttle the walk so a continuous orbit/zoom drag (which fires the
+	// controls 'change' event per frame) runs updateLabelVisibility at most once per
+	// LABEL_THROTTLE_MS. Plain `let` timer, cleared in teardown (CONVE-1688).
+	function scheduleLabelVisibility() {
+		if (labelThrottleTimer) return;
+		labelThrottleTimer = setTimeout(() => {
+			labelThrottleTimer = null;
+			updateLabelVisibility();
+		}, LABEL_THROTTLE_MS);
 	}
 
 	// Hex (#rrggbb) → rgba() with the given alpha. The dim treatment for out-of-
@@ -933,6 +1099,13 @@
 					}))
 				: []
 		});
+		// Fresh payload: nodes arriving via this swap get their sprites built by the
+		// lib's onCreateObj → makeLabelSprite path, but those start hidden. Run the
+		// walk so they pick up correct visibility immediately (hubs labeled, the rest
+		// distance-gated), and re-run shortly after once the force layout has produced
+		// positions for the new nodes (the distance band needs real x/y/z). TASK-1743.
+		updateLabelVisibility();
+		scheduleLabelVisibility();
 	});
 
 	async function loadGraph(slug: string, withTerminal: boolean) {
@@ -1073,6 +1246,19 @@
 		}
 		resizeObserver?.disconnect();
 		resizeObserver = null;
+		// Label-visibility handles (TASK-1743, plain `let` per CONVE-1688): detach the
+		// orbit-controls 'change' listener and cancel any pending throttled walk.
+		if (controlsChangeHandler && graph) {
+			const controls = graph.controls?.() as
+				| { removeEventListener?: (type: string, fn: () => void) => void }
+				| undefined;
+			controls?.removeEventListener?.('change', controlsChangeHandler);
+		}
+		controlsChangeHandler = null;
+		if (labelThrottleTimer) {
+			clearTimeout(labelThrottleTimer);
+			labelThrottleTimer = null;
+		}
 		// 3d-force-graph's teardown: stops the render loop and frees WebGL context.
 		graph?._destructor?.();
 		graph = null;
