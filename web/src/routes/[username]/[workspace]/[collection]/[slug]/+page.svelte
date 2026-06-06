@@ -2904,6 +2904,7 @@
 		<div id="item-timeline" class="timeline-section">
 			<ItemTimeline
 				{wsSlug}
+				{username}
 				{itemSlug}
 				currentContent={item.content ?? ''}
 				items={collectionStore.items ?? []}

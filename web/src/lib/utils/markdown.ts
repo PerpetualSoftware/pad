@@ -305,7 +305,10 @@ export function renderMarkdown(
 	attachmentResolver?: AttachmentResolver,
 	attachmentImageVariant: 'thumb-sm' | 'thumb-md' = 'thumb-md'
 ): string {
-	const withLinks = content.replace(/\[\[([^\]]+)\]\]/g, (_match, body: string) => {
+	// Body may contain backslash-escaped chars (`\]`, `\\`, `\|`) — same
+	// capture as wikiLinksToMarkdown so the two renderers accept identical
+	// stored syntax (BUG-1744).
+	const withLinks = content.replace(/\[\[((?:\\.|[^\]\\])+)\]\]/g, (_match, body: string) => {
 		// Cross-workspace form: [[workspace-slug::REF]] or [[workspace-slug::REF|Display]].
 		// `::` is the unambiguous separator. The workspace prefix is recognized
 		// only when both the slug AND the right-hand side match their expected
@@ -352,22 +355,27 @@ export function renderMarkdown(
 			const safeDisplay = escapeHtml(xw.display ?? `${xw.workspace}::${xw.ref}`);
 			return `<a href="/-/r/${xw.workspace}/${xw.ref}" class="doc-link cross-workspace">${safeDisplay}</a>`;
 		}
-		// Escape user-controlled title so it can't break out of attribute
+		// Same-workspace resolution, shared with wikiLinksToMarkdown (the
+		// Tiptap editor path) so the two renderers resolve [[REF]] /
+		// [[REF|Display]] / [[Title]] identically — renderMarkdown previously
+		// lacked the ref-based lookup, so refs in comments rendered as broken
+		// links (BUG-1744).
+		//
+		// Escape user-controlled text so it can't break out of attribute
 		// quotes. sanitizeMarkdownHtml would strip the worst offenders after
 		// the fact, but escaping up-front keeps the intermediate HTML valid
 		// and avoids relying on the sanitizer to paper over bad markup.
-		const title = body;
-		const safeTitle = escapeHtml(title);
-		const item = items.find(i => i.title === title);
+		const { item, displayText } = resolveWikiBody(body, items);
+		const safeText = escapeHtml(displayText);
 		if (item && item.collection_slug) {
 			// Check visibility: if a visibility set is provided, check it
 			if (visibleCollectionSlugs !== undefined && !visibleCollectionSlugs.has(item.collection_slug)) {
-				return `<span class="doc-link locked" title="You don't have access to this item">🔒 ${safeTitle}</span>`;
+				return `<span class="doc-link locked" title="You don't have access to this item">🔒 ${safeText}</span>`;
 			}
 			const prefix = username ? `/${username}/${workspaceSlug}` : `/${workspaceSlug}`;
-			return `<a href="${prefix}/${item.collection_slug}/${itemUrlId(item)}" class="doc-link">${safeTitle}</a>`;
+			return `<a href="${prefix}/${item.collection_slug}/${itemUrlId(item)}" class="doc-link">${safeText}</a>`;
 		}
-		return `<span class="doc-link broken">${safeTitle}</span>`;
+		return `<span class="doc-link broken">${safeText}</span>`;
 	});
 	// Wire the attachment resolver into the global renderer for the duration
 	// of this synchronous parse. The try/finally ensures we never leak the
@@ -458,6 +466,91 @@ function findItemByRef(items: Item[], ref: string): Item | undefined {
 }
 
 /**
+ * Resolve a same-workspace wiki-link body against the in-memory items list.
+ * Callers handle the cross-workspace `[[ws::REF]]` form first; this covers
+ * everything else. Shared by renderMarkdown (comments, previews) and
+ * wikiLinksToMarkdown (the Tiptap editor path) so the two renderers cannot
+ * drift on resolution order again (BUG-1744 — renderMarkdown lacked the
+ * ref-based lookup, so [[REF]] links in comments rendered as broken).
+ *
+ * Resolution order — ref storage is canonical, so it must win over any
+ * legacy title that happens to match the ref literal (otherwise [[BUG-585]]
+ * could silently retarget onto a user-created item titled "BUG-585"):
+ *   1. [[REF-123]] / [[REF-123|Display]] — ref lookup. An unresolved
+ *      ref-shaped body falls through, because something like [[ISO-9001]]
+ *      may legitimately be a pre-existing title link.
+ *   2. Exact full-body title match, BEFORE the pipe split — handles stored
+ *      legacy titles that contain a literal `|` (e.g. "[[A|B]]" where the
+ *      item's real title is "A|B"), including the collection-qualified form.
+ *   3. Exact title match on the pipe-split key (case-insensitive).
+ *   4. The [[collection/Title]] disambiguation syntax.
+ *
+ * `item` is null when nothing resolves (or the match lacks a collection
+ * slug); `displayText` is what the caller should render either way.
+ */
+function resolveWikiBody(body: string, items: Item[]): { item: Item | null; displayText: string } {
+	// Split optional display override on the FIRST unescaped pipe. We do
+	// this up-front so REF_PATTERN can check the key alone (a ref like
+	// "BUG-585" contains no pipe, so this is a no-op for ref storage).
+	const { key: rawKey, displayOverride: rawDisplay } = splitWikiBody(body);
+	const key = unescapeWikiBody(rawKey);
+	const displayOverride = rawDisplay == null ? null : unescapeWikiBody(rawDisplay);
+
+	// 1. Ref-based lookup.
+	if (REF_PATTERN.test(key.trim())) {
+		const byRef = findItemByRef(items, key.trim());
+		if (byRef && byRef.collection_slug) {
+			return { item: byRef, displayText: displayOverride ?? byRef.title };
+		}
+		// Intentional fall-through to the legacy title lookups below.
+	}
+
+	// 2. Full-body legacy titles containing a literal pipe. Only relevant
+	//    when the body actually has a pipe — otherwise the already-split
+	//    `key` is identical to the full body.
+	if (rawDisplay != null) {
+		const fullBody = unescapeWikiBody(body);
+		const fullTitleItem = items.find(i => i.title.toLowerCase() === fullBody.toLowerCase());
+		if (fullTitleItem && fullTitleItem.collection_slug) {
+			return { item: fullTitleItem, displayText: fullTitleItem.title };
+		}
+		// Collection-qualified legacy form whose title contains a pipe.
+		if (fullBody.includes('/')) {
+			const [qualColl, ...qualRest] = fullBody.split('/');
+			const qualTitle = qualRest.join('/');
+			const qualItem = items.find(i =>
+				i.title.toLowerCase() === qualTitle.toLowerCase() &&
+				i.collection_slug === qualColl
+			);
+			if (qualItem && qualItem.collection_slug) {
+				return { item: qualItem, displayText: qualItem.title };
+			}
+		}
+	}
+
+	// 3. Exact title match on the key.
+	const titleLower = key.toLowerCase();
+	let item = items.find(i => i.title.toLowerCase() === titleLower);
+	let displayText = displayOverride ?? key;
+
+	// 4. The [[collection/Title]] disambiguation syntax.
+	if (!item && key.includes('/')) {
+		const [collFilter, ...rest] = key.split('/');
+		const searchTitle = rest.join('/');
+		const found = items.find(i =>
+			i.title.toLowerCase() === searchTitle.toLowerCase() &&
+			i.collection_slug === collFilter
+		);
+		if (found) {
+			item = found;
+			if (displayOverride == null) displayText = searchTitle;
+		}
+	}
+
+	return { item: item && item.collection_slug ? item : null, displayText };
+}
+
+/**
  * Convert wiki-link storage syntax into markdown links for Tiptap rendering.
  * Supports three forms, in preference order:
  *   - [[REF-123]]              → ref lookup; visible text = current item title
@@ -498,77 +591,9 @@ export function wikiLinksToMarkdown(content: string, items: Item[], workspaceSlu
 			return `[${escapeMarkdownLinkText(display)}](/-/r/${xw.workspace}/${xw.ref})`;
 		}
 
-		// Split optional display override on the FIRST unescaped pipe. We do
-		// this up-front so REF_PATTERN can check the key alone (a ref like
-		// "BUG-585" contains no pipe, so this is a no-op for ref storage).
-		const { key: rawKey, displayOverride: rawDisplay } = splitWikiBody(body);
-		const key = unescapeWikiBody(rawKey);
-		const displayOverride = rawDisplay == null ? null : unescapeWikiBody(rawDisplay);
-
-		// 1. Ref-based lookup FIRST. Ref storage is our canonical form, so
-		//    it must win over any legacy title that happens to match the
-		//    ref literal — otherwise `[[BUG-585]]` could silently retarget
-		//    onto a user-created item whose title is "BUG-585". If the ref
-		//    doesn't resolve we FALL THROUGH to the legacy title path,
-		//    because a ref-shaped body like `[[ISO-9001]]` may legitimately
-		//    be a pre-existing title link.
-		if (REF_PATTERN.test(key.trim())) {
-			const ref = key.trim();
-			const byRef = items.find(i =>
-				!!i.item_number && !!i.collection_prefix &&
-				`${i.collection_prefix}-${i.item_number}`.toLowerCase() === ref.toLowerCase()
-			);
-			if (byRef && byRef.collection_slug) {
-				const text = displayOverride ?? byRef.title;
-				return `[${escapeMarkdownLinkText(text)}](${prefix}/${byRef.collection_slug}/${itemUrlId(byRef)})`;
-			}
-			// Intentional fall-through to the legacy title lookups below.
-		}
-
-		// 2. Legacy: exact full-body title match, BEFORE the pipe split.
-		//    Handles pre-existing stored titles that contain a literal `|`
-		//    (e.g. "[[A|B]]" where the item's real title is "A|B"). Only
-		//    relevant when the body actually has a pipe — otherwise the
-		//    already-split `key` is identical to the full body.
-		if (rawDisplay != null) {
-			const fullBody = unescapeWikiBody(body);
-			const fullTitleItem = items.find(i => i.title.toLowerCase() === fullBody.toLowerCase());
-			if (fullTitleItem && fullTitleItem.collection_slug) {
-				return `[${escapeMarkdownLinkText(fullTitleItem.title)}](${prefix}/${fullTitleItem.collection_slug}/${itemUrlId(fullTitleItem)})`;
-			}
-			// Collection-qualified legacy form whose title contains a pipe.
-			if (fullBody.includes('/')) {
-				const [qualColl, ...qualRest] = fullBody.split('/');
-				const qualTitle = qualRest.join('/');
-				const qualItem = items.find(i =>
-					i.title.toLowerCase() === qualTitle.toLowerCase() &&
-					i.collection_slug === qualColl
-				);
-				if (qualItem && qualItem.collection_slug) {
-					return `[${escapeMarkdownLinkText(qualItem.title)}](${prefix}/${qualItem.collection_slug}/${itemUrlId(qualItem)})`;
-				}
-			}
-		}
-
-		// 3. Legacy: exact title match on the key.
-		const titleLower = key.toLowerCase();
-		let item = items.find(i => i.title.toLowerCase() === titleLower);
-		let displayText = displayOverride ?? key;
-
-		// 4. Legacy: the [[collection/Title]] disambiguation syntax.
-		if (!item && key.includes('/')) {
-			const [collFilter, ...rest] = key.split('/');
-			const searchTitle = rest.join('/');
-			const found = items.find(i =>
-				i.title.toLowerCase() === searchTitle.toLowerCase() &&
-				i.collection_slug === collFilter
-			);
-			if (found) {
-				item = found;
-				if (displayOverride == null) displayText = searchTitle;
-			}
-		}
-
+		// Same-workspace resolution — shared with renderMarkdown via
+		// resolveWikiBody (see its doc comment for the resolution order).
+		const { item, displayText } = resolveWikiBody(body, items);
 		if (item && item.collection_slug) {
 			return `[${escapeMarkdownLinkText(displayText)}](${prefix}/${item.collection_slug}/${itemUrlId(item)})`;
 		}

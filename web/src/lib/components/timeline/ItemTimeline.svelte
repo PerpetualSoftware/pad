@@ -16,6 +16,13 @@
 
 	interface Props {
 		wsSlug: string;
+		/**
+		 * Workspace owner's username — needed so comment wiki-links render
+		 * with the full `/{username}/{workspace}/...` href. Without it the
+		 * links resolve visually but navigate to a dead 3-segment route
+		 * (BUG-1744 verification finding).
+		 */
+		username?: string;
 		itemSlug: string;
 		currentContent: string;
 		items?: Item[];
@@ -31,7 +38,7 @@
 		collectionId?: string;
 	}
 
-	let { wsSlug, itemSlug, currentContent, items = [], onRestore, itemId, collectionId }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller).
@@ -392,6 +399,7 @@
 							<TimelineCommentCard
 								comment={entry.comment}
 								{wsSlug}
+								{username}
 								{items}
 								{currentUserId}
 								{canEdit}
