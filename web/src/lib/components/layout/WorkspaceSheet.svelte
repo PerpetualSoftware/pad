@@ -43,7 +43,17 @@
 		collectionStore.collections.filter((c) => agentSlugs.includes(c.slug))
 	);
 
-	let switching = $state(false);
+	// Inline switcher list expansion. Reassignable $derived (Svelte 5.25+)
+	// instead of $state: the card's onclick toggles it by reassignment, and
+	// it snaps back to collapsed whenever `open` changes. This state lives
+	// here (not in DockedSheet's children, which unmount on close), so plain
+	// $state would survive close/reopen and the list would come back stale —
+	// including via backdrop/swipe dismissal, which no handler in this
+	// component sees (IDEA-1720).
+	let switching = $derived.by(() => {
+		void open;
+		return false;
+	});
 
 	// Close on navigation (the switcher card navigates on select).
 	afterNavigate((nav) => {
