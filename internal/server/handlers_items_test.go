@@ -2163,6 +2163,107 @@ func TestCollectionChildProgress(t *testing.T) {
 		t.Fatalf("archived parentA: expected total=2, done=1; got total=%d, done=%d", r.Total, r.Done)
 	}
 
+	// ── include_archived: done-semantics must use archived parents' child
+	// collections (childrenDoneFiltersForCollection gap, codex round 3) ──────
+	//
+	// Create a custom "Widgets" collection whose done field is `state` with
+	// terminal value "shipped" — NOT the default `status` terminals. If
+	// childrenDoneFiltersForCollection still filters parents with
+	// `p.deleted_at IS NULL` while the main query includes archived parents,
+	// the widgets collection never enters the done-filter map, and the child
+	// done-check falls back to default status terminals → done=0 (bug).
+	// With the fix, the filter-discovery query also sees archived parents →
+	// widgets enters the map → done=1 (correct).
+	//
+	// Crucially: NO live task parent links into widgets. That would mask the
+	// bug by pulling widgets into the filter map via the live-parent path.
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
+		"name": "Widgets",
+		// board_group_by=state causes TerminalValuesForDoneField to use the
+		// state field's terminal_options instead of the status field.
+		"schema":   `{"fields":[{"key":"state","label":"State","type":"select","options":["open","shipped"],"terminal_options":["shipped"],"default":"open"}]}`,
+		"settings": `{"board_group_by":"state"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create widgets collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var widgetsColl models.Collection
+	parseJSON(t, rr, &widgetsColl)
+
+	// widgetDone: state=shipped → done under widgets' semantics.
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/widgets/items", map[string]interface{}{
+		"title":  "Widget Done",
+		"fields": `{"state":"shipped"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create widget done: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var widgetDone models.Item
+	parseJSON(t, rr, &widgetDone)
+
+	// widgetOpen: state=open → not done.
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/widgets/items", map[string]interface{}{
+		"title":  "Widget Open",
+		"fields": `{"state":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create widget open: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var widgetOpen models.Item
+	parseJSON(t, rr, &widgetOpen)
+
+	// widgetParent: a task (in the tasks collection) that has NO live task
+	// children — only the two widget children. Will be archived immediately.
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Widget Parent (tasks)",
+		"fields": `{"status":"done"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create widgetParent: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var widgetParent models.Item
+	parseJSON(t, rr, &widgetParent)
+
+	// Link both widgets as children of widgetParent.
+	for _, w := range []models.Item{widgetDone, widgetOpen} {
+		rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+w.Slug+"/links", map[string]interface{}{
+			"target_id": widgetParent.ID,
+			"link_type": models.ItemLinkTypeParent,
+		})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("link %s → widgetParent: expected 201, got %d: %s", w.Title, rr.Code, rr.Body.String())
+		}
+	}
+
+	// Archive widgetParent. Now NO live task parent links into widgets.
+	rr = doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/items/"+widgetParent.Slug, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("archive widgetParent: expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// With include_archived=true: widgetParent must appear with total=2,
+	// done=1 (shipped widget). If childrenDoneFiltersForCollection still
+	// excludes archived parents, widgets drops from the filter map and the
+	// done check falls back to default status terminals — which would give
+	// done=0 because neither widget has a `status` field set to a terminal
+	// value (they have `state` instead). done=1 proves the fix is in effect.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/child-progress?include_archived=true", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("widgets include_archived: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rows = nil
+	parseJSON(t, rr, &rows)
+	byID = map[string]progressRow{}
+	for _, r := range rows {
+		byID[r.ItemID] = r
+	}
+	if r, ok := byID[widgetParent.ID]; !ok {
+		t.Fatalf("archived widgetParent missing from include_archived=true response")
+	} else if r.Total != 2 || r.Done != 1 {
+		t.Fatalf("archived widgetParent: expected total=2 done=1 (state-based done); got total=%d done=%d (if done=0 the filter-discovery bug is live)", r.Total, r.Done)
+	}
+
 	// ── Visibility gate: restricted member without tasks access ───────────────
 	// Create a regular member, restrict them to only the "ideas" collection,
 	// then confirm that GET /child-progress for "tasks" returns [] (not a
