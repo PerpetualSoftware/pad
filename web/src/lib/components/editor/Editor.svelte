@@ -172,21 +172,46 @@
 		let text: string | null = null;
 
 		if (selection instanceof CellSelection) {
-			// Multi-cell selection — iterate cells, group by row, build TSV.
+			// Multi-cell selection — emit a RECTANGULAR TSV by walking the
+			// visual grid slot-by-slot using the TableMap.
+			//
+			// WHY NOT forEachCell: forEachCell (and cellsInRect) deduplicates
+			// physical cells, yielding one entry per merged cell. That makes
+			// the row field-count non-rectangular when merged cells are present
+			// (a colspan=2 cell in a 2-col selection would emit one field for
+			// that row, not two). The resulting TSV misaligns columns on paste.
+			//
+			// Instead we walk every visual (row, col) slot in the selection
+			// rect. For each slot we check whether it is the ORIGIN of its
+			// physical cell (cellRect.top === row && cellRect.left === col).
+			// Origin slots emit the cell's text; covered slots emit '' (empty
+			// field). This guarantees every TSV row has the same field count.
+			const selectionTable = selection.$anchorCell.node(-1);
+			const selectionMap = TableMap.get(selectionTable);
+			const selectionTableStart = selection.$anchorCell.start(-1);
+			const selectionRect = selectionMap.rectBetween(
+				selection.$anchorCell.pos - selectionTableStart,
+				selection.$headCell.pos - selectionTableStart,
+			);
 			const rows: string[][] = [];
-			let currentRow: string[] = [];
-			let prevRow: any = null;
-			selection.forEachCell((cellNode: any, cellPos: number) => {
-				const resolvedCellPos = state.doc.resolve(cellPos);
-				const row = resolvedCellPos.parent;
-				if (row !== prevRow) {
-					if (currentRow.length) rows.push(currentRow);
-					currentRow = [];
-					prevRow = row;
+			for (let row = selectionRect.top; row < selectionRect.bottom; row++) {
+				const cols: string[] = [];
+				for (let col = selectionRect.left; col < selectionRect.right; col++) {
+					const slotIndex = row * selectionMap.width + col;
+					const cellOffset = selectionMap.map[slotIndex];
+					const cellRect = selectionMap.findCell(cellOffset);
+					const isOrigin = cellRect.top === row && cellRect.left === col;
+					if (isOrigin) {
+						const cellNode = selectionTable.nodeAt(cellOffset);
+						cols.push((cellNode?.textContent ?? '').replace(/\s+$/g, ''));
+					} else {
+						// Covered slot of a merged cell: emit empty field so
+						// every TSV row has an equal number of columns.
+						cols.push('');
+					}
 				}
-				currentRow.push((cellNode.textContent ?? '').replace(/\s+$/g, ''));
-			});
-			if (currentRow.length) rows.push(currentRow);
+				rows.push(cols);
+			}
 			text = rows.map(r => r.join('\t')).join('\n');
 		} else {
 			// Plain text selection — must be entirely inside a single table.
@@ -339,26 +364,43 @@
 		const startRow = anchorCellRect.top;
 		const startCol = anchorCellRect.left;
 
-		// Collect all (row, col, value) entries to fill, then reverse them so we
-		// process bottom-right → top-left in document order.
+		// Collect cells to fill in FORWARD (top-left → bottom-right) visual order,
+		// deduplicating by physical position so merged cells are written once.
+		// Then REVERSE the list before dispatching so each tr.replaceWith only
+		// shifts positions that are later in the document (already processed).
 		//
-		// WHY REVERSE: each tr.replaceWith shifts all doc positions AFTER the
-		// replaced range. Iterating forward would make every subsequent cellPos
-		// (computed from the original pre-transaction map) point into a document
-		// that has already shifted — wrong cells get written, or replaceWith
-		// throws a RangeError on size-delta mismatches. Reverse order means each
-		// replacement only shifts positions that come LATER in the document (higher
-		// address), which are cells we have already processed. The remaining
-		// unprocessed cells sit at lower doc positions and are untouched.
-		// DO NOT change this back to forward order without re-running verify-paste.cjs.
-		const cellsToFill: Array<{ targetRow: number; targetCol: number; value: string }> = [];
+		// WHY FORWARD FIRST WITH DEDUP: TableMap.positionAt returns the same
+		// physical cell position for every visual slot a rowspan/colspan covers.
+		// Without deduplication, the paste loop would write that physical cell once
+		// per covered slot, corrupting its content (e.g. 'NEW00NEW01' instead of
+		// 'NEW00'). By deduplicating on the first (top-left) encounter in forward
+		// order, we ensure the top-left grid value writes the merged cell —
+		// matching spreadsheet convention.
+		//
+		// WHY ALSO REVERSE: each tr.replaceWith shifts all doc positions AFTER the
+		// replaced range. Forward iteration (high-to-low doc address last) would
+		// make later cellPos values stale after earlier replaceWith calls. Reverse
+		// iteration means each write only displaces positions we have already
+		// processed. The dedup Set makes the collected list position-unique, so
+		// the combined collect-forward/dedup/reverse approach is correct.
+		// DO NOT remove either the dedup Set or the reverse without re-running
+		// the verification scripts (verify-paste.cjs, verify-paste3.cjs).
+		const seenCellOffsets = new Set<number>();
+		const cellsToFill: Array<{ cellPos: number; value: string }> = [];
 		for (let r = 0; r < grid.length; r++) {
 			const targetRow = startRow + r;
 			if (targetRow >= map.height) break; // clamp at bottom edge
 			for (let c = 0; c < grid[r].length; c++) {
 				const targetCol = startCol + c;
 				if (targetCol >= map.width) break; // clamp at right edge
-				cellsToFill.push({ targetRow, targetCol, value: grid[r][c] });
+				// positionAt returns the table-relative offset of the physical cell
+				// at this visual slot. For merged cells (rowspan/colspan > 1),
+				// positionAt skips covered slots in the same row and returns the
+				// same offset for all slots the cell covers.
+				const cellOffset = map.positionAt(targetRow, targetCol, table);
+				if (seenCellOffsets.has(cellOffset)) continue; // merged slot — origin already collected
+				seenCellOffsets.add(cellOffset);
+				cellsToFill.push({ cellPos: tableStart + cellOffset, value: grid[r][c] });
 			}
 		}
 		cellsToFill.reverse();
@@ -366,12 +408,7 @@
 		let tr = state.tr;
 		let changed = false;
 
-		for (const { targetRow, targetCol, value } of cellsToFill) {
-			// positionAt returns the offset from the table's content start.
-			// tableStart is the position of the table's first content token,
-			// so tableStart + positionAt(...) is the doc position before the cell.
-			const cellPos = tableStart + map.positionAt(targetRow, targetCol, table);
-
+		for (const { cellPos, value } of cellsToFill) {
 			// Re-read the cell node from tr.doc at the (still-valid) cellPos.
 			// Because we iterate in reverse, positions of unprocessed cells have
 			// not been displaced yet, so cellPos is accurate for tr.doc.
