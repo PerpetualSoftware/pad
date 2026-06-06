@@ -318,41 +318,56 @@
 		const startRow = anchorCellRect.top;
 		const startCol = anchorCellRect.left;
 
-		// Build a transaction that fills each target cell with the pasted text.
-		let tr = state.tr;
-		let changed = false;
-
+		// Collect all (row, col, value) entries to fill, then reverse them so we
+		// process bottom-right → top-left in document order.
+		//
+		// WHY REVERSE: each tr.replaceWith shifts all doc positions AFTER the
+		// replaced range. Iterating forward would make every subsequent cellPos
+		// (computed from the original pre-transaction map) point into a document
+		// that has already shifted — wrong cells get written, or replaceWith
+		// throws a RangeError on size-delta mismatches. Reverse order means each
+		// replacement only shifts positions that come LATER in the document (higher
+		// address), which are cells we have already processed. The remaining
+		// unprocessed cells sit at lower doc positions and are untouched.
+		// DO NOT change this back to forward order without re-running verify-paste.cjs.
+		const cellsToFill: Array<{ targetRow: number; targetCol: number; value: string }> = [];
 		for (let r = 0; r < grid.length; r++) {
 			const targetRow = startRow + r;
 			if (targetRow >= map.height) break; // clamp at bottom edge
-
 			for (let c = 0; c < grid[r].length; c++) {
 				const targetCol = startCol + c;
 				if (targetCol >= map.width) break; // clamp at right edge
-
-				// positionAt returns the position *before* the cell node, relative
-				// to the start of the table. Add tableStart to get the doc position.
-				const cellPos = tableStart + map.positionAt(targetRow, targetCol, table);
-
-				// Find the cell node and its content range.
-				// The cell is always one level above a paragraph/block content node.
-				const cellNode = tr.doc.nodeAt(cellPos);
-				if (!cellNode) continue;
-
-				const cellContentStart = cellPos + 1; // first position inside the cell
-				const cellContentEnd = cellPos + cellNode.nodeSize - 1; // last position inside the cell
-
-				// Replace the entire cell content with a single paragraph containing
-				// the pasted text. Empty paste cells write an empty paragraph —
-				// intentional: preserves cut→paste round-trip fidelity.
-				const cellValue = grid[r][c];
-				const paraContent = cellValue
-					? [state.schema.text(cellValue)]
-					: [];
-				const para = state.schema.nodes.paragraph.create({}, paraContent);
-				tr = tr.replaceWith(cellContentStart, cellContentEnd, para);
-				changed = true;
+				cellsToFill.push({ targetRow, targetCol, value: grid[r][c] });
 			}
+		}
+		cellsToFill.reverse();
+
+		let tr = state.tr;
+		let changed = false;
+
+		for (const { targetRow, targetCol, value } of cellsToFill) {
+			// positionAt returns the offset from the table's content start.
+			// tableStart is the position of the table's first content token,
+			// so tableStart + positionAt(...) is the doc position before the cell.
+			const cellPos = tableStart + map.positionAt(targetRow, targetCol, table);
+
+			// Re-read the cell node from tr.doc at the (still-valid) cellPos.
+			// Because we iterate in reverse, positions of unprocessed cells have
+			// not been displaced yet, so cellPos is accurate for tr.doc.
+			const cellNode = tr.doc.nodeAt(cellPos);
+			if (!cellNode) continue;
+
+			const cellContentStart = cellPos + 1; // first position inside the cell
+			const cellContentEnd = cellPos + cellNode.nodeSize - 1; // last position inside
+
+			// Replace the entire cell content with a single paragraph.
+			// Empty paste cells write an empty paragraph — intentional: preserves
+			// cut→paste round-trip fidelity and matches spreadsheet convention
+			// (Excel pastes blanks as blanks).
+			const paraContent = value ? [state.schema.text(value)] : [];
+			const para = state.schema.nodes.paragraph.create({}, paraContent);
+			tr = tr.replaceWith(cellContentStart, cellContentEnd, para);
+			changed = true;
 		}
 
 		if (!changed) return false;
