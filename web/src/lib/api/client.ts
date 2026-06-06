@@ -810,6 +810,22 @@ export const api = {
 			request<{item_id: string; total: number; done: number}[]>(`/workspaces/${ws}/plans-progress`),
 
 		/**
+		 * Child-item completion progress for every item in a collection
+		 * (BUG-1509). Returns `{item_id, total, done}` for ALL items in
+		 * the collection — those with no linked children have total=0.
+		 * The server enforces the same visibility/guest-grant rules as
+		 * /plans-progress so restricted callers can't enumerate hidden
+		 * child counts. Pass `includeArchived: true` to match the
+		 * collection page's archived-items toggle.
+		 */
+		collectionChildProgress: (ws: string, coll: string, opts?: { includeArchived?: boolean }) =>
+			request<{item_id: string; total: number; done: number}[]>(
+				`/workspaces/${ws}/collections/${coll}/child-progress${qs({
+					include_archived: opts?.includeArchived ? 'true' : undefined,
+				})}`
+			),
+
+		/**
 		 * Markdown-checkbox progress for items in a single collection.
 		 * The server scans `- [ ]` / `- [x]` markers in each item's
 		 * `content` and returns `{item_id, total, done}` for items with

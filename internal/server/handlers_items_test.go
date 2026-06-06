@@ -2007,3 +2007,308 @@ func firstID(items []models.Item) string {
 	}
 	return items[0].ID
 }
+
+// TestCollectionChildProgress covers the /collections/{coll}/child-progress
+// endpoint introduced in BUG-1509. It verifies:
+//   - Happy path: items with linked children show correct total/done counts.
+//   - Items without linked children appear with total=0, done=0.
+//   - Unknown collection → 404.
+//   - Empty collection → 200 + [].
+//   - Visibility gate: a restricted member without access to the collection
+//     receives an empty response (not child counts for a hidden collection).
+func TestCollectionChildProgress(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Resolve workspace for direct store calls.
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("GetWorkspaceBySlug: %v", err)
+	}
+
+	// ── Happy path setup ─────────────────────────────────────────────────────
+
+	// parentA: a task with two linked children (one done, one open).
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Parent A",
+		"fields": `{"status":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create parentA: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var parentA models.Item
+	parseJSON(t, rr, &parentA)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Child Done",
+		"fields": `{"status":"done"}`,
+	})
+	var childDone models.Item
+	parseJSON(t, rr, &childDone)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Child Open",
+		"fields": `{"status":"open"}`,
+	})
+	var childOpen models.Item
+	parseJSON(t, rr, &childOpen)
+
+	// Link both children to parentA via "parent" link type.
+	for _, child := range []models.Item{childDone, childOpen} {
+		rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+child.Slug+"/links", map[string]interface{}{
+			"target_id": parentA.ID,
+			"link_type": models.ItemLinkTypeParent,
+		})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create parent link for %s: expected 201, got %d: %s", child.Title, rr.Code, rr.Body.String())
+		}
+	}
+
+	// parentB: a task with no linked children (checkbox-only control).
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":   "Parent B — checkboxes only",
+		"content": "- [ ] alpha\n- [x] beta\n",
+		"fields":  `{"status":"open"}`,
+	})
+	var parentB models.Item
+	parseJSON(t, rr, &parentB)
+
+	// ── Happy path assertions ─────────────────────────────────────────────────
+
+	type progressRow struct {
+		ItemID string `json:"item_id"`
+		Total  int    `json:"total"`
+		Done   int    `json:"done"`
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/child-progress", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("child-progress: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var rows []progressRow
+	parseJSON(t, rr, &rows)
+
+	byID := map[string]progressRow{}
+	for _, r := range rows {
+		byID[r.ItemID] = r
+	}
+
+	// parentA must have total=2 (two linked children), done=1 (childDone).
+	if r, ok := byID[parentA.ID]; !ok {
+		t.Fatalf("parentA missing from child-progress response")
+	} else if r.Total != 2 || r.Done != 1 {
+		t.Fatalf("parentA: expected total=2, done=1; got total=%d, done=%d", r.Total, r.Done)
+	}
+
+	// parentB has no linked children → total=0, done=0 (present, but zero).
+	if r, ok := byID[parentB.ID]; !ok {
+		t.Fatalf("parentB missing from child-progress response (should be present with total=0)")
+	} else if r.Total != 0 || r.Done != 0 {
+		t.Fatalf("parentB: expected total=0, done=0; got total=%d, done=%d", r.Total, r.Done)
+	}
+
+	// ── Unknown collection → 404 ──────────────────────────────────────────────
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/nonexistent/child-progress", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown collection, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// ── Empty collection (ideas — no items, no children) → 200 + [] ──────────
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/ideas/child-progress", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("child-progress empty: expected 200, got %d", rr.Code)
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`[]`)) {
+		t.Fatalf("expected empty array for ideas, got %s", rr.Body.String())
+	}
+
+	// ── include_archived: archived parent with children ───────────────────────
+	// Archive parentA (soft-delete). Without include_archived it must
+	// disappear from the default response; with it the row reappears.
+
+	rr = doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/items/"+parentA.Slug, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("archive parentA: expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Default (no include_archived) — parentA must be absent.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/child-progress", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("child-progress after archive: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rows = nil
+	parseJSON(t, rr, &rows)
+	for _, r := range rows {
+		if r.ItemID == parentA.ID {
+			t.Fatalf("archived parentA should not appear in default child-progress response")
+		}
+	}
+
+	// With include_archived=true — parentA must reappear with total=2, done=1.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/child-progress?include_archived=true", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("child-progress include_archived: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rows = nil
+	parseJSON(t, rr, &rows)
+	byID = map[string]progressRow{}
+	for _, r := range rows {
+		byID[r.ItemID] = r
+	}
+	if r, ok := byID[parentA.ID]; !ok {
+		t.Fatalf("archived parentA missing from include_archived=true response")
+	} else if r.Total != 2 || r.Done != 1 {
+		t.Fatalf("archived parentA: expected total=2, done=1; got total=%d, done=%d", r.Total, r.Done)
+	}
+
+	// ── include_archived: done-semantics must use archived parents' child
+	// collections (childrenDoneFiltersForCollection gap, codex round 3) ──────
+	//
+	// Create a custom "Widgets" collection whose done field is `state` with
+	// terminal value "shipped" — NOT the default `status` terminals. If
+	// childrenDoneFiltersForCollection still filters parents with
+	// `p.deleted_at IS NULL` while the main query includes archived parents,
+	// the widgets collection never enters the done-filter map, and the child
+	// done-check falls back to default status terminals → done=0 (bug).
+	// With the fix, the filter-discovery query also sees archived parents →
+	// widgets enters the map → done=1 (correct).
+	//
+	// Crucially: NO live task parent links into widgets. That would mask the
+	// bug by pulling widgets into the filter map via the live-parent path.
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
+		"name": "Widgets",
+		// board_group_by=state causes TerminalValuesForDoneField to use the
+		// state field's terminal_options instead of the status field.
+		"schema":   `{"fields":[{"key":"state","label":"State","type":"select","options":["open","shipped"],"terminal_options":["shipped"],"default":"open"}]}`,
+		"settings": `{"board_group_by":"state"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create widgets collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var widgetsColl models.Collection
+	parseJSON(t, rr, &widgetsColl)
+
+	// widgetDone: state=shipped → done under widgets' semantics.
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/widgets/items", map[string]interface{}{
+		"title":  "Widget Done",
+		"fields": `{"state":"shipped"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create widget done: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var widgetDone models.Item
+	parseJSON(t, rr, &widgetDone)
+
+	// widgetOpen: state=open → not done.
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/widgets/items", map[string]interface{}{
+		"title":  "Widget Open",
+		"fields": `{"state":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create widget open: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var widgetOpen models.Item
+	parseJSON(t, rr, &widgetOpen)
+
+	// widgetParent: a task (in the tasks collection) that has NO live task
+	// children — only the two widget children. Will be archived immediately.
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Widget Parent (tasks)",
+		"fields": `{"status":"done"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create widgetParent: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var widgetParent models.Item
+	parseJSON(t, rr, &widgetParent)
+
+	// Link both widgets as children of widgetParent.
+	for _, w := range []models.Item{widgetDone, widgetOpen} {
+		rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+w.Slug+"/links", map[string]interface{}{
+			"target_id": widgetParent.ID,
+			"link_type": models.ItemLinkTypeParent,
+		})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("link %s → widgetParent: expected 201, got %d: %s", w.Title, rr.Code, rr.Body.String())
+		}
+	}
+
+	// Archive widgetParent. Now NO live task parent links into widgets.
+	rr = doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/items/"+widgetParent.Slug, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("archive widgetParent: expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// With include_archived=true: widgetParent must appear with total=2,
+	// done=1 (shipped widget). If childrenDoneFiltersForCollection still
+	// excludes archived parents, widgets drops from the filter map and the
+	// done check falls back to default status terminals — which would give
+	// done=0 because neither widget has a `status` field set to a terminal
+	// value (they have `state` instead). done=1 proves the fix is in effect.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/child-progress?include_archived=true", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("widgets include_archived: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rows = nil
+	parseJSON(t, rr, &rows)
+	byID = map[string]progressRow{}
+	for _, r := range rows {
+		byID[r.ItemID] = r
+	}
+	if r, ok := byID[widgetParent.ID]; !ok {
+		t.Fatalf("archived widgetParent missing from include_archived=true response")
+	} else if r.Total != 2 || r.Done != 1 {
+		t.Fatalf("archived widgetParent: expected total=2 done=1 (state-based done); got total=%d done=%d (if done=0 the filter-discovery bug is live)", r.Total, r.Done)
+	}
+
+	// ── Visibility gate: restricted member without tasks access ───────────────
+	// Create a regular member, restrict them to only the "ideas" collection,
+	// then confirm that GET /child-progress for "tasks" returns [] (not a
+	// data leak of parentA's child counts).
+
+	restrictedUser, err := srv.store.CreateUser(models.UserCreate{
+		Email: "restricted@example.com", Name: "Restricted", Username: "restricted-user",
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser restricted: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, restrictedUser.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+
+	// Resolve ideas collection ID for the access grant via the store directly
+	// (the HTTP endpoint may require auth once a workspace owner exists).
+	ideasColl, err := srv.store.GetCollectionBySlug(ws.ID, "ideas")
+	if err != nil || ideasColl == nil {
+		t.Fatalf("GetCollectionBySlug ideas: %v", err)
+	}
+
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, restrictedUser.ID, "specific", []string{ideasColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+	token, err := srv.store.CreateSession(restrictedUser.ID, "go-test", "192.0.2.1", "", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Restricted user must get an empty response for tasks, not parentA's data.
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/child-progress", nil, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restricted/tasks child-progress: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var restricted []progressRow
+	parseJSON(t, rr, &restricted)
+	if len(restricted) != 0 {
+		t.Fatalf("restricted member should see no task child-progress; got %d rows: %+v", len(restricted), restricted)
+	}
+
+	// Restricted user CAN see ideas (within their grant).
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/ideas/child-progress", nil, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restricted/ideas child-progress: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}

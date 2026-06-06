@@ -49,7 +49,7 @@
 	let selectedTags = $state<string[]>([]);
 	let searchQuery = $state('');
 	let showArchived = $state(false);
-	let itemProgress = $state<Record<string, { total: number; done: number }>>({});
+	let itemProgress = $state<Record<string, { total: number; done: number; label?: string }>>({});
 	let progressLabel = $state('tasks');
 	// `relationLabels` maps plan id → plan title for the task-card
 	// "relates to" badge. `$derived` so it picks up plans as they
@@ -452,29 +452,48 @@
 	async function refreshProgress(ws: string, coll: string, itemList: typeof items) {
 		if (coll === 'plans') {
 			const progress = await api.items.plansProgress(ws).catch(() => []);
-			const map: Record<string, { total: number; done: number }> = {};
+			const map: Record<string, { total: number; done: number; label?: string }> = {};
 			for (const p of progress) {
 				map[p.item_id] = { total: p.total, done: p.done };
 			}
 			itemProgress = map;
+			progressLabel = 'tasks';
 		} else {
-			// Non-plans collections: pull markdown-checkbox progress from
-			// the new server-side endpoint. Pre-TASK-1349 this loop walked
-			// `it.content` client-side, but the skinny /items-index
-			// payload doesn't ship content. The server endpoint computes
-			// the same counts via LENGTH/REPLACE arithmetic on the
-			// stored rows — same shape `{item_id, total, done}` as
-			// /plans-progress.
+			// Non-plans collections: prefer child-item progress (real linked
+			// children) for items that have them; fall back to markdown-checkbox
+			// progress for items that don't. Fetched in parallel (BUG-1509).
 			//
-			// Pass `includeArchived` so the toggle-on view (which renders
-			// archived rows alongside live ones) still gets their
-			// progress badges. Per Codex round 2 [P2] on PR #491.
-			const map: Record<string, { total: number; done: number }> = {};
-			const progress = await api.items
-				.collectionCheckboxProgress(ws, coll, { includeArchived: showArchived })
-				.catch(() => []);
-			for (const p of progress) {
-				map[p.item_id] = { total: p.total, done: p.done };
+			// child-progress returns ALL items in the collection with total=0
+			// for those with no linked children, so we can distinguish "has
+			// children" from "no children" per item.
+			//
+			// Pass `includeArchived` to both endpoints so the archived-items
+			// toggle keeps progress badges on archived items (PR #491 [P2]).
+			const [childRows, checkboxRows] = await Promise.all([
+				api.items.collectionChildProgress(ws, coll, { includeArchived: showArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
+				api.items.collectionCheckboxProgress(ws, coll, { includeArchived: showArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
+			]);
+
+			const checkboxMap: Record<string, { total: number; done: number }> = {};
+			for (const p of checkboxRows) {
+				checkboxMap[p.item_id] = { total: p.total, done: p.done };
+			}
+
+			const map: Record<string, { total: number; done: number; label?: string }> = {};
+			for (const p of childRows) {
+				if (p.total > 0) {
+					map[p.item_id] = { total: p.total, done: p.done, label: 'tasks' };
+				} else if (checkboxMap[p.item_id]) {
+					map[p.item_id] = { ...checkboxMap[p.item_id], label: 'done' };
+				}
+			}
+			// Items that only have checkboxes (not in child-progress rows at
+			// all — shouldn't happen since child-progress covers all items —
+			// but be defensive).
+			for (const p of checkboxRows) {
+				if (!map[p.item_id]) {
+					map[p.item_id] = { total: p.total, done: p.done, label: 'done' };
+				}
 			}
 			itemProgress = map;
 		}
@@ -499,11 +518,11 @@
 			workspaceMembers = membersData.members ?? [];
 			activeViewId = null;
 
-			// Fetch plan progress if viewing plans collection
+			// Fetch progress badges for the collection's items.
 			if (coll === 'plans') {
 				try {
 					const progress = await api.items.plansProgress(ws);
-					const map: Record<string, { total: number; done: number }> = {};
+					const map: Record<string, { total: number; done: number; label?: string }> = {};
 					for (const p of progress) {
 						map[p.item_id] = { total: p.total, done: p.done };
 					}
@@ -513,26 +532,47 @@
 					itemProgress = {};
 				}
 			} else {
-				// Non-plans collections: pull progress from the new
-				// /collections/{coll}/checkbox-progress endpoint instead
-				// of parsing `item.content` client-side. /items-index
-				// doesn't ship content, so the old client-side parse
-				// would be a no-op; the server-side endpoint computes
-				// the same counts via LENGTH/REPLACE arithmetic on the
-				// stored rows. `includeArchived` is plumbed through so
-				// the toggle-on view keeps progress badges on archived
-				// items (per Codex round 2 [P2] on PR #491).
+				// Non-plans collections: prefer child-item progress (real
+				// linked children, label "tasks") per item; fall back to
+				// markdown-checkbox progress (label "done") for items that
+				// have no linked children (BUG-1509). Fetched in parallel.
+				//
+				// child-progress returns ALL items including those with
+				// total=0 (no linked children), so we can make the
+				// per-item decision without a second fetch.
+				//
+				// `includeArchived` is passed to checkbox-progress so the
+				// archived-items toggle keeps its badges (PR #491 [P2]).
 				try {
-					const progress = await api.items.collectionCheckboxProgress(ws, coll, { includeArchived });
-					const map: Record<string, { total: number; done: number }> = {};
-					for (const p of progress) {
-						map[p.item_id] = { total: p.total, done: p.done };
+					const [childRows, checkboxRows] = await Promise.all([
+						api.items.collectionChildProgress(ws, coll, { includeArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
+						api.items.collectionCheckboxProgress(ws, coll, { includeArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
+					]);
+
+					const checkboxMap: Record<string, { total: number; done: number }> = {};
+					for (const p of checkboxRows) {
+						checkboxMap[p.item_id] = { total: p.total, done: p.done };
+					}
+
+					const map: Record<string, { total: number; done: number; label?: string }> = {};
+					for (const p of childRows) {
+						if (p.total > 0) {
+							map[p.item_id] = { total: p.total, done: p.done, label: 'tasks' };
+						} else if (checkboxMap[p.item_id]) {
+							map[p.item_id] = { ...checkboxMap[p.item_id], label: 'done' };
+						}
+					}
+					// Defensive: cover any items only in checkbox-progress.
+					for (const p of checkboxRows) {
+						if (!map[p.item_id]) {
+							map[p.item_id] = { total: p.total, done: p.done, label: 'done' };
+						}
 					}
 					itemProgress = map;
+					progressLabel = 'done';
 				} catch {
 					itemProgress = {};
 				}
-				progressLabel = 'done';
 			}
 
 			// `relationLabels` is computed reactively below — no need

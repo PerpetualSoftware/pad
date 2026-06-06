@@ -1692,99 +1692,203 @@ func (s *Server) handleCollectionCheckboxProgress(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, progress)
 }
 
-// handlePlansProgress returns child item completion progress for all non-deleted plans.
-// This is a backward-compat endpoint; the general form is per-item via /items/{slug}/children.
+// collectionChildrenProgress is the shared implementation for child-item
+// completion progress across any collection. It enforces the same
+// visibility/guest-grant filtering that the plans-specific path did,
+// generalised to an arbitrary collectionSlug.
+//
+// The caller is responsible for verifying that the collection exists and is
+// visible before calling this helper — the helper does NOT write HTTP
+// responses.
+//
+// N+1 note: the restricted-visibility recompute path issues one GetChildItems
+// query per parent item. For large collections (e.g. tasks with hundreds of
+// items and a guest caller) this can be expensive. The plans endpoint shared
+// the same trade-off; it was tolerable for small plan sets. Fixing this
+// requires a single-query recompute (e.g. a bulk join limited to visible
+// child collections) — tracked as a known limitation, deferred.
+func (s *Server) collectionChildrenProgress(
+	r *http.Request,
+	workspaceID string,
+	collectionSlug string,
+	collectionID string,
+	visibleIDs []string,
+	fullCollIDs []string,
+	grantedItemIDs []string,
+	includeArchived bool,
+) ([]store.ItemProgress, error) {
+	allProgress, err := s.store.GetAllItemProgress(workspaceID, collectionSlug, includeArchived)
+	if err != nil {
+		return nil, err
+	}
+
+	// For guests with item-level grants, filter the parent items themselves
+	// so callers without a grant to a specific parent don't see its row.
+	if len(grantedItemIDs) > 0 {
+		grantedSet := make(map[string]bool, len(grantedItemIDs))
+		for _, id := range grantedItemIDs {
+			grantedSet[id] = true
+		}
+		fullSet := make(map[string]bool, len(fullCollIDs))
+		for _, id := range fullCollIDs {
+			fullSet[id] = true
+		}
+		// Check if this collection has a full grant (bypass item-level filter).
+		if !fullSet[collectionID] {
+			filtered := allProgress[:0]
+			for _, p := range allProgress {
+				if grantedSet[p.ItemID] {
+					filtered = append(filtered, p)
+				}
+			}
+			allProgress = filtered
+		}
+	}
+
+	// Build a done-context map once so each child is evaluated against its
+	// own collection's configured done field, not a global default.
+	// ListCollectionsMinimal avoids the per-collection COUNT queries that
+	// ListCollections would run — we only need schema + settings.
+	wsCollections, _ := s.store.ListCollectionsMinimal(workspaceID)
+	ctxMap := buildDoneContextMap(wsCollections)
+
+	// Recompute each parent's progress using only visible children so hidden
+	// child counts don't leak through the aggregate totals.
+	for i, p := range allProgress {
+		children, cerr := s.store.GetChildItems(p.ItemID)
+		if cerr != nil {
+			continue
+		}
+		total, done := 0, 0
+		for _, child := range children {
+			if !isCollectionVisible(child.CollectionID, visibleIDs) {
+				continue
+			}
+			if !s.isItemVisibleToGuest(r, workspaceID, &child, fullCollIDs, grantedItemIDs) {
+				continue
+			}
+			total++
+			if isItemDone(child.Fields, child.CollectionID, ctxMap) {
+				done++
+			}
+		}
+		allProgress[i].Total = total
+		allProgress[i].Done = done
+	}
+	return allProgress, nil
+}
+
+// handlePlansProgress returns child item completion progress for all
+// non-deleted plans. Kept as a backward-compat endpoint at /plans-progress;
+// delegates to collectionChildrenProgress for the shared visibility logic.
 func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
-	// Check that the plans collection is visible to this user
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	ppFullCollIDs, ppGrantedItemIDs, ppGrantErr := s.guestResourceFilter(r, workspaceID)
-	if ppGrantErr != nil {
-		writeInternalError(w, ppGrantErr)
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
 		return
 	}
+
+	// Check that the plans collection is visible to this user.
+	plansColl, _ := s.store.GetCollectionBySlug(workspaceID, "plans")
 	if visibleIDs != nil {
-		plansColl, _ := s.store.GetCollectionBySlug(workspaceID, "plans")
 		if plansColl == nil || !isCollectionVisible(plansColl.ID, visibleIDs) {
 			writeJSON(w, http.StatusOK, []interface{}{})
 			return
 		}
 	}
 
-	// When user has restricted visibility, compute progress from visible
-	// children only so hidden child counts don't leak.
 	if visibleIDs != nil {
-		allProgress, err := s.store.GetAllItemProgress(workspaceID, "plans")
+		collID := ""
+		if plansColl != nil {
+			collID = plansColl.ID
+		}
+		// /plans-progress does not support include_archived — plans are
+		// always queried without archived parents (false).
+		progress, err := s.collectionChildrenProgress(r, workspaceID, "plans", collID, visibleIDs, fullCollIDs, grantedItemIDs, false)
 		if err != nil {
 			writeInternalError(w, err)
 			return
 		}
-
-		// For guests with item-level grants, filter plans themselves
-		if len(ppGrantedItemIDs) > 0 {
-			ppGrantedSet := make(map[string]bool, len(ppGrantedItemIDs))
-			for _, id := range ppGrantedItemIDs {
-				ppGrantedSet[id] = true
-			}
-			ppFullSet := make(map[string]bool, len(ppFullCollIDs))
-			for _, id := range ppFullCollIDs {
-				ppFullSet[id] = true
-			}
-			// Check if plans collection has a full grant
-			plansColl, _ := s.store.GetCollectionBySlug(workspaceID, "plans")
-			if plansColl != nil && !ppFullSet[plansColl.ID] {
-				filtered := allProgress[:0]
-				for _, p := range allProgress {
-					if ppGrantedSet[p.ItemID] {
-						filtered = append(filtered, p)
-					}
-				}
-				allProgress = filtered
-			}
-		}
-
-		// Build a done-context map once so each child is evaluated against
-		// its own collection's configured done field, not a global default.
-		// ListCollectionsMinimal avoids the per-collection COUNT queries
-		// that ListCollections would run — we only need schema + settings.
-		wsCollections, _ := s.store.ListCollectionsMinimal(workspaceID)
-		ctxMap := buildDoneContextMap(wsCollections)
-
-		// Recompute each plan's progress using only visible children
-		for i, p := range allProgress {
-			children, cerr := s.store.GetChildItems(p.ItemID)
-			if cerr != nil {
-				continue
-			}
-			total, done := 0, 0
-			for _, child := range children {
-				if !isCollectionVisible(child.CollectionID, visibleIDs) {
-					continue
-				}
-				if !s.isItemVisibleToGuest(r, workspaceID, &child, ppFullCollIDs, ppGrantedItemIDs) {
-					continue
-				}
-				total++
-				if isItemDone(child.Fields, child.CollectionID, ctxMap) {
-					done++
-				}
-			}
-			allProgress[i].Total = total
-			allProgress[i].Done = done
-		}
-		writeJSON(w, http.StatusOK, allProgress)
+		writeJSON(w, http.StatusOK, progress)
 		return
 	}
 
-	progress, err := s.store.GetAllItemProgress(workspaceID, "plans")
+	progress, err := s.store.GetAllItemProgress(workspaceID, "plans", false)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, progress)
+}
+
+// handleCollectionChildrenProgress returns child-item completion progress for
+// all items in an arbitrary collection. It preserves the same
+// visibility/guest-grant filtering semantics as handlePlansProgress so
+// restricted callers can't enumerate hidden child-item counts.
+// Supports ?include_archived=true to include soft-deleted parent rows,
+// matching the collection page's archived-items toggle.
+//
+// Route: GET /workspaces/{ws}/collections/{collSlug}/child-progress
+func (s *Server) handleCollectionChildrenProgress(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+
+	collSlug := chi.URLParam(r, "collSlug")
+	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if coll == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+
+	// Collection-visibility gate: a restricted user without visibility into
+	// this collection must receive the same empty/denied shape they'd get
+	// from any other guarded endpoint — not child counts for a hidden
+	// collection.
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if visibleIDs != nil && !isCollectionVisible(coll.ID, visibleIDs) {
+		writeJSON(w, http.StatusOK, []interface{}{})
+		return
+	}
+
+	includeArchived := r.URL.Query().Get("include_archived") == "true"
+
+	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
+	if grantErr != nil {
+		writeInternalError(w, grantErr)
+		return
+	}
+
+	if visibleIDs != nil {
+		progress, err := s.collectionChildrenProgress(r, workspaceID, collSlug, coll.ID, visibleIDs, fullCollIDs, grantedItemIDs, includeArchived)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, progress)
+		return
+	}
+
+	progress, err := s.store.GetAllItemProgress(workspaceID, collSlug, includeArchived)
 	if err != nil {
 		writeInternalError(w, err)
 		return

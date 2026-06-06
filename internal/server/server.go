@@ -1070,6 +1070,10 @@ func (s *Server) setupRouter() {
 							// list/board/table progress badges without
 							// fetching item content (TASK-1349).
 							r.Get("/checkbox-progress", s.handleCollectionCheckboxProgress)
+							// Child-item completion progress for any collection
+							// (BUG-1509). Same visibility/guest-grant semantics
+							// as /plans-progress but collection-generic.
+							r.Get("/child-progress", s.handleCollectionChildrenProgress)
 							// Collection grants
 							r.Get("/grants", s.handleListCollectionGrants)
 							r.Post("/grants", s.handleCreateCollectionGrant)

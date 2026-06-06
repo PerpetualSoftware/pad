@@ -2751,17 +2751,28 @@ func (s *Store) doneFiltersForWorkspace(workspaceID string) []collectionDoneFilt
 // childrenDoneFiltersForParent — callers count items regardless of their
 // collection's deleted_at, and we want items from soft-deleted
 // collections to still be evaluated against their own done rules.
-func (s *Store) childrenDoneFiltersForCollection(workspaceID, collectionSlug string) []collectionDoneFilter {
+//
+// includeArchived mirrors the same flag in GetAllItemProgress: when true,
+// the parent-row join does NOT filter out archived parents. This matters
+// because if a child collection's only parent links point to archived
+// parents, the collection would be absent from the filter map under the
+// live-only predicate — causing those children to fall back to default
+// done semantics and producing wrong done counts in the main query.
+func (s *Store) childrenDoneFiltersForCollection(workspaceID, collectionSlug string, includeArchived bool) []collectionDoneFilter {
+	parentDeletedFilter := "AND p.deleted_at IS NULL"
+	if includeArchived {
+		parentDeletedFilter = ""
+	}
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT DISTINCT c.id, c.schema, c.settings
 		FROM items t
 		JOIN collections c ON c.id = t.collection_id
 		JOIN item_links il ON il.source_id = t.id AND il.link_type IN (%s)
-		JOIN items p ON p.id = il.target_id AND p.deleted_at IS NULL
+		JOIN items p ON p.id = il.target_id %s
 		JOIN collections pc ON pc.id = p.collection_id AND pc.slug = ?
 		WHERE p.workspace_id = ?
 		  AND t.deleted_at IS NULL
-	`, childLinkTypeSQL())), collectionSlug, workspaceID)
+	`, childLinkTypeSQL(), parentDeletedFilter)), collectionSlug, workspaceID)
 	if err != nil {
 		return nil
 	}
@@ -2864,12 +2875,22 @@ type ItemProgress struct {
 	Done   int    `json:"done"`
 }
 
-// GetAllItemProgress returns child item completion counts for every non-deleted
-// item in the given collection within a workspace.
-func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemProgress, error) {
-	filters := s.childrenDoneFiltersForCollection(workspaceID, collectionSlug)
+// GetAllItemProgress returns child item completion counts for every item in
+// the given collection within a workspace.
+//
+// includeArchived controls whether soft-deleted parent items contribute rows.
+// When false (the default for /plans-progress) only live parents are returned.
+// When true (used by /child-progress with include_archived=true) archived
+// parents also appear — matching the archived-toggle semantics on the
+// collection page (mirrors CollectionCheckboxProgress's includeArchived param).
+func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string, includeArchived bool) ([]ItemProgress, error) {
+	filters := s.childrenDoneFiltersForCollection(workspaceID, collectionSlug, includeArchived)
 	doneExpr, doneArgs := s.buildChildrenDoneExpr(filters, "t")
 	args := append(doneArgs, workspaceID, collectionSlug)
+	parentDeletedFilter := "AND p.deleted_at IS NULL"
+	if includeArchived {
+		parentDeletedFilter = ""
+	}
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT p.id,
 		       COUNT(t.id),
@@ -2881,9 +2902,9 @@ func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemPr
 		                  AND t.deleted_at IS NULL
 		WHERE p.workspace_id = ?
 		  AND pc.slug = ?
-		  AND p.deleted_at IS NULL
+		  %s
 		GROUP BY p.id
-	`, doneExpr, childLinkTypeSQL())), args...)
+	`, doneExpr, childLinkTypeSQL(), parentDeletedFilter)), args...)
 	if err != nil {
 		return nil, fmt.Errorf("get all item progress: %w", err)
 	}
