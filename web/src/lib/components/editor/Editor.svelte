@@ -365,9 +365,7 @@
 		const startCol = anchorCellRect.left;
 
 		// Collect cells to fill in FORWARD (top-left → bottom-right) visual order,
-		// deduplicating by physical position so merged cells are written once.
-		// Then REVERSE the list before dispatching so each tr.replaceWith only
-		// shifts positions that are later in the document (already processed).
+		// skipping covered slots by origin-check, then REVERSE for safe dispatch.
 		//
 		// WHY map.map[] NOT positionAt(): positionAt(row, col, table) SKIPS covered
 		// slots — for a visual slot covered by a rowspan from above it advances to
@@ -375,23 +373,24 @@
 		// 2-col table, (0,0) has rowspan=2. positionAt(1,0) skips the covered slot
 		// and returns cell C (col 1), so grid[1][0] (a col-0 value) lands in a
 		// col-1 cell. map.map[row * width + col] returns the OWNING cell's offset
-		// for every visual slot — covered or not — which matches the serializer's
-		// slot-by-slot walk and produces correct column alignment.
+		// for every visual slot — covered or not — matching the serializer.
 		//
-		// WHY FORWARD FIRST WITH DEDUP: map.map[] returns the same offset for every
-		// slot the owning cell covers. Without a dedup Set the paste loop would
-		// write that physical cell once per covered slot, corrupting its content.
-		// By deduplicating on the FIRST (top-left origin) encounter in forward
-		// order, the covered slot's grid value is dropped and the origin receives
-		// the top-left grid value — matching spreadsheet convention.
+		// WHY ORIGIN-CHECK: map.map[] returns the owning cell's offset even when
+		// that cell's top-left origin is OUTSIDE the paste rectangle. Without the
+		// origin-check, a covered slot whose owner lives above or left of the
+		// anchor would silently overwrite a cell the user never selected. The fix:
+		// only write a cell when the current (targetRow, targetCol) is exactly the
+		// cell's origin (cellRect.top === targetRow && cellRect.left === targetCol).
+		// This skips covered slots structurally — intra-rect and partial-intersection
+		// alike. The dedup Set below is now a redundant-but-cheap invariant guard
+		// (an origin can recur only via colspan > table-width, which is malformed);
+		// it is kept to document intent and protect against future edits.
 		//
 		// WHY ALSO REVERSE: each tr.replaceWith shifts all doc positions AFTER the
 		// replaced range. Forward iteration would make later cellPos values stale.
 		// Reverse iteration means each write only displaces already-processed
-		// positions. The dedup Set makes the collected list position-unique, so
-		// the combined collect-forward/dedup/reverse approach is correct.
-		// DO NOT change map.map[] back to positionAt(), remove the dedup Set, or
-		// remove the reverse — see verify-paste.cjs, verify-paste4.cjs.
+		// positions. DO NOT change map.map[] back to positionAt(), remove the
+		// origin-check, or remove the reverse — see verify-paste.cjs, verify-paste5.cjs.
 		const seenCellOffsets = new Set<number>();
 		const cellsToFill: Array<{ cellPos: number; value: string }> = [];
 		for (let r = 0; r < grid.length; r++) {
@@ -403,8 +402,14 @@
 				// map.map[] gives the owning cell's table-relative offset for every
 				// visual slot including covered ones. positionAt() would skip covered
 				// slots and misalign columns — see comment block above.
-				const cellOffset = map.map[(targetRow) * map.width + targetCol];
-				if (seenCellOffsets.has(cellOffset)) continue; // covered slot — grid value belongs to origin, already collected
+				const cellOffset = map.map[targetRow * map.width + targetCol];
+				// Origin-check: only write a cell at its top-left origin slot.
+				// Covered slots (whether intra-rect or with origin outside the rect)
+				// resolve to the owning cell's offset; their origin row/col won't
+				// match targetRow/targetCol, so they are dropped here.
+				const cellRect = map.findCell(cellOffset);
+				if (cellRect.top !== targetRow || cellRect.left !== targetCol) continue;
+				if (seenCellOffsets.has(cellOffset)) continue; // invariant guard
 				seenCellOffsets.add(cellOffset);
 				cellsToFill.push({ cellPos: tableStart + cellOffset, value: grid[r][c] });
 			}
