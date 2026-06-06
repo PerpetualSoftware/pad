@@ -2007,3 +2007,168 @@ func firstID(items []models.Item) string {
 	}
 	return items[0].ID
 }
+
+// TestCollectionChildProgress covers the /collections/{coll}/child-progress
+// endpoint introduced in BUG-1509. It verifies:
+//   - Happy path: items with linked children show correct total/done counts.
+//   - Items without linked children appear with total=0, done=0.
+//   - Unknown collection → 404.
+//   - Empty collection → 200 + [].
+//   - Visibility gate: a restricted member without access to the collection
+//     receives an empty response (not child counts for a hidden collection).
+func TestCollectionChildProgress(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Resolve workspace for direct store calls.
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("GetWorkspaceBySlug: %v", err)
+	}
+
+	// ── Happy path setup ─────────────────────────────────────────────────────
+
+	// parentA: a task with two linked children (one done, one open).
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Parent A",
+		"fields": `{"status":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create parentA: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var parentA models.Item
+	parseJSON(t, rr, &parentA)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Child Done",
+		"fields": `{"status":"done"}`,
+	})
+	var childDone models.Item
+	parseJSON(t, rr, &childDone)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":  "Child Open",
+		"fields": `{"status":"open"}`,
+	})
+	var childOpen models.Item
+	parseJSON(t, rr, &childOpen)
+
+	// Link both children to parentA via "parent" link type.
+	for _, child := range []models.Item{childDone, childOpen} {
+		rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+child.Slug+"/links", map[string]interface{}{
+			"target_id": parentA.ID,
+			"link_type": models.ItemLinkTypeParent,
+		})
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create parent link for %s: expected 201, got %d: %s", child.Title, rr.Code, rr.Body.String())
+		}
+	}
+
+	// parentB: a task with no linked children (checkbox-only control).
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":   "Parent B — checkboxes only",
+		"content": "- [ ] alpha\n- [x] beta\n",
+		"fields":  `{"status":"open"}`,
+	})
+	var parentB models.Item
+	parseJSON(t, rr, &parentB)
+
+	// ── Happy path assertions ─────────────────────────────────────────────────
+
+	type progressRow struct {
+		ItemID string `json:"item_id"`
+		Total  int    `json:"total"`
+		Done   int    `json:"done"`
+	}
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/child-progress", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("child-progress: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var rows []progressRow
+	parseJSON(t, rr, &rows)
+
+	byID := map[string]progressRow{}
+	for _, r := range rows {
+		byID[r.ItemID] = r
+	}
+
+	// parentA must have total=2 (two linked children), done=1 (childDone).
+	if r, ok := byID[parentA.ID]; !ok {
+		t.Fatalf("parentA missing from child-progress response")
+	} else if r.Total != 2 || r.Done != 1 {
+		t.Fatalf("parentA: expected total=2, done=1; got total=%d, done=%d", r.Total, r.Done)
+	}
+
+	// parentB has no linked children → total=0, done=0 (present, but zero).
+	if r, ok := byID[parentB.ID]; !ok {
+		t.Fatalf("parentB missing from child-progress response (should be present with total=0)")
+	} else if r.Total != 0 || r.Done != 0 {
+		t.Fatalf("parentB: expected total=0, done=0; got total=%d, done=%d", r.Total, r.Done)
+	}
+
+	// ── Unknown collection → 404 ──────────────────────────────────────────────
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/nonexistent/child-progress", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown collection, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// ── Empty collection (ideas — no items, no children) → 200 + [] ──────────
+
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/ideas/child-progress", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("child-progress empty: expected 200, got %d", rr.Code)
+	}
+	if !bytes.Contains(rr.Body.Bytes(), []byte(`[]`)) {
+		t.Fatalf("expected empty array for ideas, got %s", rr.Body.String())
+	}
+
+	// ── Visibility gate: restricted member without tasks access ───────────────
+	// Create a regular member, restrict them to only the "ideas" collection,
+	// then confirm that GET /child-progress for "tasks" returns [] (not a
+	// data leak of parentA's child counts).
+
+	restrictedUser, err := srv.store.CreateUser(models.UserCreate{
+		Email: "restricted@example.com", Name: "Restricted", Username: "restricted-user",
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser restricted: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, restrictedUser.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+
+	// Resolve ideas collection ID for the access grant via the store directly
+	// (the HTTP endpoint may require auth once a workspace owner exists).
+	ideasColl, err := srv.store.GetCollectionBySlug(ws.ID, "ideas")
+	if err != nil || ideasColl == nil {
+		t.Fatalf("GetCollectionBySlug ideas: %v", err)
+	}
+
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, restrictedUser.ID, "specific", []string{ideasColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+	token, err := srv.store.CreateSession(restrictedUser.ID, "go-test", "192.0.2.1", "", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Restricted user must get an empty response for tasks, not parentA's data.
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/child-progress", nil, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restricted/tasks child-progress: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var restricted []progressRow
+	parseJSON(t, rr, &restricted)
+	if len(restricted) != 0 {
+		t.Fatalf("restricted member should see no task child-progress; got %d rows: %+v", len(restricted), restricted)
+	}
+
+	// Restricted user CAN see ideas (within their grant).
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/ideas/child-progress", nil, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restricted/ideas child-progress: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}

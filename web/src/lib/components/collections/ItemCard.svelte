@@ -13,7 +13,7 @@
 		showCollection?: boolean;
 		statusOptions?: string[];
 		onStatusClick?: (item: Item, newStatus: string) => void;
-		progress?: { total: number; done: number } | null;
+		progress?: { total: number; done: number; label?: string } | null;
 		progressLabel?: string;
 	}
 
@@ -202,7 +202,7 @@
 			<div class="card-progress-bar">
 				<div class="card-progress-fill" style:width="{Math.round((progress.done / progress.total) * 100)}%"></div>
 			</div>
-			<span class="card-progress-text">{progress.done}/{progress.total} {progressLabel}</span>
+			<span class="card-progress-text">{progress.done}/{progress.total} {progress.label ?? progressLabel}</span>
 		</div>
 	{/if}
 </a>

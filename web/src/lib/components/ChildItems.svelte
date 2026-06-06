@@ -180,7 +180,7 @@
 	}
 </script>
 
-{#if loading || children.length > 0}
+{#if loading || error || children.length > 0}
 <div class="child-items">
 	<div class="section-header">
 		<h3>Children</h3>
