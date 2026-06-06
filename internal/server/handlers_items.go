@@ -1715,8 +1715,9 @@ func (s *Server) collectionChildrenProgress(
 	visibleIDs []string,
 	fullCollIDs []string,
 	grantedItemIDs []string,
+	includeArchived bool,
 ) ([]store.ItemProgress, error) {
-	allProgress, err := s.store.GetAllItemProgress(workspaceID, collectionSlug)
+	allProgress, err := s.store.GetAllItemProgress(workspaceID, collectionSlug, includeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -1811,7 +1812,9 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 		if plansColl != nil {
 			collID = plansColl.ID
 		}
-		progress, err := s.collectionChildrenProgress(r, workspaceID, "plans", collID, visibleIDs, fullCollIDs, grantedItemIDs)
+		// /plans-progress does not support include_archived — plans are
+		// always queried without archived parents (false).
+		progress, err := s.collectionChildrenProgress(r, workspaceID, "plans", collID, visibleIDs, fullCollIDs, grantedItemIDs, false)
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -1820,7 +1823,7 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	progress, err := s.store.GetAllItemProgress(workspaceID, "plans")
+	progress, err := s.store.GetAllItemProgress(workspaceID, "plans", false)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -1829,9 +1832,11 @@ func (s *Server) handlePlansProgress(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCollectionChildrenProgress returns child-item completion progress for
-// all non-deleted items in an arbitrary collection. It preserves the same
+// all items in an arbitrary collection. It preserves the same
 // visibility/guest-grant filtering semantics as handlePlansProgress so
 // restricted callers can't enumerate hidden child-item counts.
+// Supports ?include_archived=true to include soft-deleted parent rows,
+// matching the collection page's archived-items toggle.
 //
 // Route: GET /workspaces/{ws}/collections/{collSlug}/child-progress
 func (s *Server) handleCollectionChildrenProgress(w http.ResponseWriter, r *http.Request) {
@@ -1865,6 +1870,8 @@ func (s *Server) handleCollectionChildrenProgress(w http.ResponseWriter, r *http
 		return
 	}
 
+	includeArchived := r.URL.Query().Get("include_archived") == "true"
+
 	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
 	if grantErr != nil {
 		writeInternalError(w, grantErr)
@@ -1872,7 +1879,7 @@ func (s *Server) handleCollectionChildrenProgress(w http.ResponseWriter, r *http
 	}
 
 	if visibleIDs != nil {
-		progress, err := s.collectionChildrenProgress(r, workspaceID, collSlug, coll.ID, visibleIDs, fullCollIDs, grantedItemIDs)
+		progress, err := s.collectionChildrenProgress(r, workspaceID, collSlug, coll.ID, visibleIDs, fullCollIDs, grantedItemIDs, includeArchived)
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -1881,7 +1888,7 @@ func (s *Server) handleCollectionChildrenProgress(w http.ResponseWriter, r *http
 		return
 	}
 
-	progress, err := s.store.GetAllItemProgress(workspaceID, collSlug)
+	progress, err := s.store.GetAllItemProgress(workspaceID, collSlug, includeArchived)
 	if err != nil {
 		writeInternalError(w, err)
 		return

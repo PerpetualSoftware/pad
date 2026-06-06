@@ -2124,6 +2124,45 @@ func TestCollectionChildProgress(t *testing.T) {
 		t.Fatalf("expected empty array for ideas, got %s", rr.Body.String())
 	}
 
+	// ── include_archived: archived parent with children ───────────────────────
+	// Archive parentA (soft-delete). Without include_archived it must
+	// disappear from the default response; with it the row reappears.
+
+	rr = doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/items/"+parentA.Slug, nil)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("archive parentA: expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Default (no include_archived) — parentA must be absent.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/child-progress", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("child-progress after archive: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rows = nil
+	parseJSON(t, rr, &rows)
+	for _, r := range rows {
+		if r.ItemID == parentA.ID {
+			t.Fatalf("archived parentA should not appear in default child-progress response")
+		}
+	}
+
+	// With include_archived=true — parentA must reappear with total=2, done=1.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/tasks/child-progress?include_archived=true", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("child-progress include_archived: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rows = nil
+	parseJSON(t, rr, &rows)
+	byID = map[string]progressRow{}
+	for _, r := range rows {
+		byID[r.ItemID] = r
+	}
+	if r, ok := byID[parentA.ID]; !ok {
+		t.Fatalf("archived parentA missing from include_archived=true response")
+	} else if r.Total != 2 || r.Done != 1 {
+		t.Fatalf("archived parentA: expected total=2, done=1; got total=%d, done=%d", r.Total, r.Done)
+	}
+
 	// ── Visibility gate: restricted member without tasks access ───────────────
 	// Create a regular member, restrict them to only the "ideas" collection,
 	// then confirm that GET /child-progress for "tasks" returns [] (not a

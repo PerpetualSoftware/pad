@@ -457,6 +457,7 @@
 				map[p.item_id] = { total: p.total, done: p.done };
 			}
 			itemProgress = map;
+			progressLabel = 'tasks';
 		} else {
 			// Non-plans collections: prefer child-item progress (real linked
 			// children) for items that have them; fall back to markdown-checkbox
@@ -466,10 +467,10 @@
 			// for those with no linked children, so we can distinguish "has
 			// children" from "no children" per item.
 			//
-			// Pass `includeArchived` to checkbox-progress so the toggle-on
-			// view keeps progress badges on archived items (PR #491 [P2]).
+			// Pass `includeArchived` to both endpoints so the archived-items
+			// toggle keeps progress badges on archived items (PR #491 [P2]).
 			const [childRows, checkboxRows] = await Promise.all([
-				api.items.collectionChildProgress(ws, coll).catch(() => [] as {item_id: string; total: number; done: number}[]),
+				api.items.collectionChildProgress(ws, coll, { includeArchived: showArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
 				api.items.collectionCheckboxProgress(ws, coll, { includeArchived: showArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
 			]);
 
@@ -544,7 +545,7 @@
 				// archived-items toggle keeps its badges (PR #491 [P2]).
 				try {
 					const [childRows, checkboxRows] = await Promise.all([
-						api.items.collectionChildProgress(ws, coll).catch(() => [] as {item_id: string; total: number; done: number}[]),
+						api.items.collectionChildProgress(ws, coll, { includeArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
 						api.items.collectionCheckboxProgress(ws, coll, { includeArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
 					]);
 
@@ -568,10 +569,10 @@
 						}
 					}
 					itemProgress = map;
+					progressLabel = 'done';
 				} catch {
 					itemProgress = {};
 				}
-				progressLabel = 'done';
 			}
 
 			// `relationLabels` is computed reactively below — no need

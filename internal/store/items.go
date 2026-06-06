@@ -2864,12 +2864,22 @@ type ItemProgress struct {
 	Done   int    `json:"done"`
 }
 
-// GetAllItemProgress returns child item completion counts for every non-deleted
-// item in the given collection within a workspace.
-func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemProgress, error) {
+// GetAllItemProgress returns child item completion counts for every item in
+// the given collection within a workspace.
+//
+// includeArchived controls whether soft-deleted parent items contribute rows.
+// When false (the default for /plans-progress) only live parents are returned.
+// When true (used by /child-progress with include_archived=true) archived
+// parents also appear — matching the archived-toggle semantics on the
+// collection page (mirrors CollectionCheckboxProgress's includeArchived param).
+func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string, includeArchived bool) ([]ItemProgress, error) {
 	filters := s.childrenDoneFiltersForCollection(workspaceID, collectionSlug)
 	doneExpr, doneArgs := s.buildChildrenDoneExpr(filters, "t")
 	args := append(doneArgs, workspaceID, collectionSlug)
+	parentDeletedFilter := "AND p.deleted_at IS NULL"
+	if includeArchived {
+		parentDeletedFilter = ""
+	}
 	rows, err := s.db.Query(s.q(fmt.Sprintf(`
 		SELECT p.id,
 		       COUNT(t.id),
@@ -2881,9 +2891,9 @@ func (s *Store) GetAllItemProgress(workspaceID, collectionSlug string) ([]ItemPr
 		                  AND t.deleted_at IS NULL
 		WHERE p.workspace_id = ?
 		  AND pc.slug = ?
-		  AND p.deleted_at IS NULL
+		  %s
 		GROUP BY p.id
-	`, doneExpr, childLinkTypeSQL())), args...)
+	`, doneExpr, childLinkTypeSQL(), parentDeletedFilter)), args...)
 	if err != nil {
 		return nil, fmt.Errorf("get all item progress: %w", err)
 	}
