@@ -12,7 +12,15 @@
 	import TaskList from '@tiptap/extension-task-list';
 	import TaskItem from '@tiptap/extension-task-item';
 	import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table';
-	import { CellSelection } from '@tiptap/pm/tables';
+	import {
+		CellSelection,
+		deleteRow,
+		deleteTable,
+		isInTable,
+		selectionCell,
+		findTable,
+		TableMap,
+	} from '@tiptap/pm/tables';
 	import Link from '@tiptap/extension-link';
 	import CodeBlock from '@tiptap/extension-code-block';
 	import Placeholder from '@tiptap/extension-placeholder';
@@ -149,6 +157,7 @@
 			handleDOMEvents: {
 				copy: (view, event) => writeTableClipboard(view, event as ClipboardEvent, false),
 				cut: (view, event) => writeTableClipboard(view, event as ClipboardEvent, true),
+				paste: (view, event) => readTablePasteClipboard(view, event as ClipboardEvent),
 			},
 		},
 	});
@@ -163,21 +172,46 @@
 		let text: string | null = null;
 
 		if (selection instanceof CellSelection) {
-			// Multi-cell selection — iterate cells, group by row, build TSV.
+			// Multi-cell selection — emit a RECTANGULAR TSV by walking the
+			// visual grid slot-by-slot using the TableMap.
+			//
+			// WHY NOT forEachCell: forEachCell (and cellsInRect) deduplicates
+			// physical cells, yielding one entry per merged cell. That makes
+			// the row field-count non-rectangular when merged cells are present
+			// (a colspan=2 cell in a 2-col selection would emit one field for
+			// that row, not two). The resulting TSV misaligns columns on paste.
+			//
+			// Instead we walk every visual (row, col) slot in the selection
+			// rect. For each slot we check whether it is the ORIGIN of its
+			// physical cell (cellRect.top === row && cellRect.left === col).
+			// Origin slots emit the cell's text; covered slots emit '' (empty
+			// field). This guarantees every TSV row has the same field count.
+			const selectionTable = selection.$anchorCell.node(-1);
+			const selectionMap = TableMap.get(selectionTable);
+			const selectionTableStart = selection.$anchorCell.start(-1);
+			const selectionRect = selectionMap.rectBetween(
+				selection.$anchorCell.pos - selectionTableStart,
+				selection.$headCell.pos - selectionTableStart,
+			);
 			const rows: string[][] = [];
-			let currentRow: string[] = [];
-			let prevRow: any = null;
-			selection.forEachCell((cellNode: any, cellPos: number) => {
-				const resolvedCellPos = state.doc.resolve(cellPos);
-				const row = resolvedCellPos.parent;
-				if (row !== prevRow) {
-					if (currentRow.length) rows.push(currentRow);
-					currentRow = [];
-					prevRow = row;
+			for (let row = selectionRect.top; row < selectionRect.bottom; row++) {
+				const cols: string[] = [];
+				for (let col = selectionRect.left; col < selectionRect.right; col++) {
+					const slotIndex = row * selectionMap.width + col;
+					const cellOffset = selectionMap.map[slotIndex];
+					const cellRect = selectionMap.findCell(cellOffset);
+					const isOrigin = cellRect.top === row && cellRect.left === col;
+					if (isOrigin) {
+						const cellNode = selectionTable.nodeAt(cellOffset);
+						cols.push((cellNode?.textContent ?? '').replace(/\s+$/g, ''));
+					} else {
+						// Covered slot of a merged cell: emit empty field so
+						// every TSV row has an equal number of columns.
+						cols.push('');
+					}
 				}
-				currentRow.push((cellNode.textContent ?? '').replace(/\s+$/g, ''));
-			});
-			if (currentRow.length) rows.push(currentRow);
+				rows.push(cols);
+			}
 			text = rows.map(r => r.join('\t')).join('\n');
 		} else {
 			// Plain text selection — must be entirely inside a single table.
@@ -203,9 +237,212 @@
 		event.clipboardData.setData('text/html', '');
 
 		if (isCut) {
-			const tr = state.tr.deleteSelection();
-			view.dispatch(tr);
+			if (selection instanceof CellSelection && selection.isRowSelection()) {
+				// Whole-row selection: prefer structural row removal so undo restores
+				// the rows intact in one step.
+				//
+				// Header-row cut (selTop === 0, !allRows): deleteRow is safe here.
+				// The tiptap Table extension schema is `table: { content: "tableRow+" }`
+				// and `tableRow: { content: "(tableCell | tableHeader)*" }` — no leading
+				// header row is required by the schema (verified in
+				// node_modules/@tiptap/extension-table/src/table/table.ts:270 and
+				// src/row/table-row.ts:27). Row 0 is a "header row" only because its
+				// cells happen to be tableHeader (th) nodes; the schema does not enforce
+				// a mandatory first row, so removing it yields a valid table.
+				//
+				// Edge case: if the selection covers every row in the table, deleteRow
+				// refuses (prosemirror-tables intentionally prevents making a zero-row
+				// table). In that case we fall through to deleteTable so the user's
+				// mental model ("I cut everything → it's gone") is honoured.
+				const table = selection.$anchorCell.node(-1);
+				const map = TableMap.get(table);
+				// Compute the row extent of this selection via the map.
+				const anchorPos = selection.$anchorCell.pos - selection.$anchorCell.start(-1);
+				const headPos = selection.$headCell.pos - selection.$headCell.start(-1);
+				const anchorRect = map.findCell(anchorPos);
+				const headRect = map.findCell(headPos);
+				const selTop = Math.min(anchorRect.top, headRect.top);
+				const selBottom = Math.max(anchorRect.bottom, headRect.bottom);
+				const allRows = selTop === 0 && selBottom === map.height;
+
+				if (allRows) {
+					// Deleting all rows ≡ deleting the table.
+					deleteTable(state, view.dispatch);
+				} else {
+					// deleteRow reads the CellSelection from state.selection and
+					// removes only the rows that are fully covered.
+					deleteRow(state, view.dispatch);
+				}
+			} else {
+				// Partial cell selection or plain-text range within a table:
+				// clear cell content but keep the row/cell structure intact.
+				// This is the correct ProseMirror semantic for partial cuts.
+				const tr = state.tr.deleteSelection();
+				view.dispatch(tr);
+			}
 		}
+		return true;
+	}
+
+	// ProseMirror plugin handler: reconstruct table cells from tab-separated
+	// clipboard text when the paste target is inside a table cell.
+	//
+	// Returns true (and calls event.preventDefault) only when ALL of:
+	//   1. Anchor is inside a table cell.
+	//   2. text/plain contains \t (tab character — the TSV discriminator).
+	//   3. text/html does NOT contain a <table> element (spreadsheet pastes
+	//      that carry <table> HTML are left for ProseMirror's HTML handler,
+	//      which already reconstructs cells correctly).
+	//
+	// Falls through (returns false) on every non-matching path so default
+	// paste and tiptap-markdown's transform are unaffected.
+	//
+	// TSV discriminator rationale: we require \t, not (\t OR \n). Newline-
+	// only text (multi-line prose, code snippets, addresses) must NOT trigger
+	// this handler — it would silently overwrite cells downward. The tradeoff:
+	// our own editor's single-column cut writes tab-free TSV (one cell per
+	// line, no \t), so that cut output won't round-trip through this handler;
+	// it lands as multi-line text in the anchor cell via default paste.
+	// Spreadsheet single-column pastes are handled correctly via their
+	// text/html <table> path (guard 3). Do not change this to (\t OR \n)
+	// without also writing table HTML on the cut side.
+	//
+	// Known limitations:
+	//   - RFC-4180 quoted cells ("a\nb" spanning multiple lines) are NOT
+	//     parsed. The grid is split naively on \n then \t. A quoted
+	//     multi-line cell will be split across rows. Full RFC-4180 is a
+	//     follow-on task.
+	//   - Paste data wider or taller than the remaining table is clamped
+	//     and dropped (table is NOT grown).
+	//   - Empty cells in the paste grid CLEAR the target cell (write an
+	//     empty paragraph). This is intentional: it preserves cut→paste
+	//     round-trip fidelity and matches spreadsheet convention.
+	function readTablePasteClipboard(view: any, event: ClipboardEvent): boolean {
+		if (!event.clipboardData) return false;
+		const { state } = view;
+
+		// Guard 1: anchor must be inside a table.
+		if (!isInTable(state)) return false;
+
+		// Guard 2: if the HTML clipboard carries a <table>, let ProseMirror's
+		// existing HTML paste handler take over (spreadsheet paste path).
+		const htmlData = event.clipboardData.getData('text/html');
+		if (/<table[\s>]/i.test(htmlData)) return false;
+
+		// Guard 3: plain text must contain a tab — the TSV discriminator.
+		// Newline-only text (prose, code) must fall through to default paste;
+		// see the comment block above for the full rationale.
+		const plainText = event.clipboardData.getData('text/plain');
+		if (!plainText.includes('\t')) return false;
+
+		// Parse the plain text into a 2D array of cell strings.
+		// Strip trailing \r from each line (Windows line endings from spreadsheets).
+		// Empty trailing rows (blank line at end of clipboard) are dropped.
+		const grid: string[][] = plainText
+			.split('\n')
+			.map((line) => line.replace(/\r$/, '').split('\t'))
+			.filter((row, i, arr) => !(i === arr.length - 1 && row.length === 1 && row[0] === ''));
+
+		if (grid.length === 0) return false;
+
+		// Find the anchor cell and the containing table.
+		// selectionCell is marked @internal in prosemirror-tables but is the
+		// canonical helper to resolve the anchor cell from any selection type;
+		// we're pinned to a specific version so a breakage here is visible.
+		// Note: ProseMirror names resolved positions with a $ prefix by convention;
+		// Svelte 5 runes mode reserves $ for reactive primitives, so we use
+		// `anchorCell` (no prefix) instead.
+		const anchorCell = selectionCell(state);
+		const tableInfo = findTable(anchorCell);
+		if (!tableInfo) return false;
+		const { node: table, start: tableStart } = tableInfo;
+		const map = TableMap.get(table);
+
+		// Determine the anchor cell's position in the map.
+		const anchorOffset = anchorCell.pos - tableStart;
+		const anchorCellRect = map.findCell(anchorOffset);
+		const startRow = anchorCellRect.top;
+		const startCol = anchorCellRect.left;
+
+		// Collect cells to fill in FORWARD (top-left → bottom-right) visual order,
+		// skipping covered slots by origin-check, then REVERSE for safe dispatch.
+		//
+		// WHY map.map[] NOT positionAt(): positionAt(row, col, table) SKIPS covered
+		// slots — for a visual slot covered by a rowspan from above it advances to
+		// the next physical cell in that row, causing column misalignment. Example:
+		// 2-col table, (0,0) has rowspan=2. positionAt(1,0) skips the covered slot
+		// and returns cell C (col 1), so grid[1][0] (a col-0 value) lands in a
+		// col-1 cell. map.map[row * width + col] returns the OWNING cell's offset
+		// for every visual slot — covered or not — matching the serializer.
+		//
+		// WHY ORIGIN-CHECK: map.map[] returns the owning cell's offset even when
+		// that cell's top-left origin is OUTSIDE the paste rectangle. Without the
+		// origin-check, a covered slot whose owner lives above or left of the
+		// anchor would silently overwrite a cell the user never selected. The fix:
+		// only write a cell when the current (targetRow, targetCol) is exactly the
+		// cell's origin (cellRect.top === targetRow && cellRect.left === targetCol).
+		// This skips covered slots structurally — intra-rect and partial-intersection
+		// alike. The dedup Set below is now a redundant-but-cheap invariant guard
+		// (an origin can recur only via colspan > table-width, which is malformed);
+		// it is kept to document intent and protect against future edits.
+		//
+		// WHY ALSO REVERSE: each tr.replaceWith shifts all doc positions AFTER the
+		// replaced range. Forward iteration would make later cellPos values stale.
+		// Reverse iteration means each write only displaces already-processed
+		// positions. DO NOT change map.map[] back to positionAt(), remove the
+		// origin-check, or remove the reverse — see verify-paste.cjs, verify-paste5.cjs.
+		const seenCellOffsets = new Set<number>();
+		const cellsToFill: Array<{ cellPos: number; value: string }> = [];
+		for (let r = 0; r < grid.length; r++) {
+			const targetRow = startRow + r;
+			if (targetRow >= map.height) break; // clamp at bottom edge
+			for (let c = 0; c < grid[r].length; c++) {
+				const targetCol = startCol + c;
+				if (targetCol >= map.width) break; // clamp at right edge
+				// map.map[] gives the owning cell's table-relative offset for every
+				// visual slot including covered ones. positionAt() would skip covered
+				// slots and misalign columns — see comment block above.
+				const cellOffset = map.map[targetRow * map.width + targetCol];
+				// Origin-check: only write a cell at its top-left origin slot.
+				// Covered slots (whether intra-rect or with origin outside the rect)
+				// resolve to the owning cell's offset; their origin row/col won't
+				// match targetRow/targetCol, so they are dropped here.
+				const cellRect = map.findCell(cellOffset);
+				if (cellRect.top !== targetRow || cellRect.left !== targetCol) continue;
+				if (seenCellOffsets.has(cellOffset)) continue; // invariant guard
+				seenCellOffsets.add(cellOffset);
+				cellsToFill.push({ cellPos: tableStart + cellOffset, value: grid[r][c] });
+			}
+		}
+		cellsToFill.reverse();
+
+		let tr = state.tr;
+		let changed = false;
+
+		for (const { cellPos, value } of cellsToFill) {
+			// Re-read the cell node from tr.doc at the (still-valid) cellPos.
+			// Because we iterate in reverse, positions of unprocessed cells have
+			// not been displaced yet, so cellPos is accurate for tr.doc.
+			const cellNode = tr.doc.nodeAt(cellPos);
+			if (!cellNode) continue;
+
+			const cellContentStart = cellPos + 1; // first position inside the cell
+			const cellContentEnd = cellPos + cellNode.nodeSize - 1; // last position inside
+
+			// Replace the entire cell content with a single paragraph.
+			// Empty paste cells write an empty paragraph — intentional: preserves
+			// cut→paste round-trip fidelity and matches spreadsheet convention
+			// (Excel pastes blanks as blanks).
+			const paraContent = value ? [state.schema.text(value)] : [];
+			const para = state.schema.nodes.paragraph.create({}, paraContent);
+			tr = tr.replaceWith(cellContentStart, cellContentEnd, para);
+			changed = true;
+		}
+
+		if (!changed) return false;
+
+		event.preventDefault();
+		view.dispatch(tr);
 		return true;
 	}
 
