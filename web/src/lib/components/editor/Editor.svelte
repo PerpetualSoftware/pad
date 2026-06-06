@@ -369,22 +369,29 @@
 		// Then REVERSE the list before dispatching so each tr.replaceWith only
 		// shifts positions that are later in the document (already processed).
 		//
-		// WHY FORWARD FIRST WITH DEDUP: TableMap.positionAt returns the same
-		// physical cell position for every visual slot a rowspan/colspan covers.
-		// Without deduplication, the paste loop would write that physical cell once
-		// per covered slot, corrupting its content (e.g. 'NEW00NEW01' instead of
-		// 'NEW00'). By deduplicating on the first (top-left) encounter in forward
-		// order, we ensure the top-left grid value writes the merged cell —
-		// matching spreadsheet convention.
+		// WHY map.map[] NOT positionAt(): positionAt(row, col, table) SKIPS covered
+		// slots — for a visual slot covered by a rowspan from above it advances to
+		// the next physical cell in that row, causing column misalignment. Example:
+		// 2-col table, (0,0) has rowspan=2. positionAt(1,0) skips the covered slot
+		// and returns cell C (col 1), so grid[1][0] (a col-0 value) lands in a
+		// col-1 cell. map.map[row * width + col] returns the OWNING cell's offset
+		// for every visual slot — covered or not — which matches the serializer's
+		// slot-by-slot walk and produces correct column alignment.
+		//
+		// WHY FORWARD FIRST WITH DEDUP: map.map[] returns the same offset for every
+		// slot the owning cell covers. Without a dedup Set the paste loop would
+		// write that physical cell once per covered slot, corrupting its content.
+		// By deduplicating on the FIRST (top-left origin) encounter in forward
+		// order, the covered slot's grid value is dropped and the origin receives
+		// the top-left grid value — matching spreadsheet convention.
 		//
 		// WHY ALSO REVERSE: each tr.replaceWith shifts all doc positions AFTER the
-		// replaced range. Forward iteration (high-to-low doc address last) would
-		// make later cellPos values stale after earlier replaceWith calls. Reverse
-		// iteration means each write only displaces positions we have already
-		// processed. The dedup Set makes the collected list position-unique, so
+		// replaced range. Forward iteration would make later cellPos values stale.
+		// Reverse iteration means each write only displaces already-processed
+		// positions. The dedup Set makes the collected list position-unique, so
 		// the combined collect-forward/dedup/reverse approach is correct.
-		// DO NOT remove either the dedup Set or the reverse without re-running
-		// the verification scripts (verify-paste.cjs, verify-paste3.cjs).
+		// DO NOT change map.map[] back to positionAt(), remove the dedup Set, or
+		// remove the reverse — see verify-paste.cjs, verify-paste4.cjs.
 		const seenCellOffsets = new Set<number>();
 		const cellsToFill: Array<{ cellPos: number; value: string }> = [];
 		for (let r = 0; r < grid.length; r++) {
@@ -393,12 +400,11 @@
 			for (let c = 0; c < grid[r].length; c++) {
 				const targetCol = startCol + c;
 				if (targetCol >= map.width) break; // clamp at right edge
-				// positionAt returns the table-relative offset of the physical cell
-				// at this visual slot. For merged cells (rowspan/colspan > 1),
-				// positionAt skips covered slots in the same row and returns the
-				// same offset for all slots the cell covers.
-				const cellOffset = map.positionAt(targetRow, targetCol, table);
-				if (seenCellOffsets.has(cellOffset)) continue; // merged slot — origin already collected
+				// map.map[] gives the owning cell's table-relative offset for every
+				// visual slot including covered ones. positionAt() would skip covered
+				// slots and misalign columns — see comment block above.
+				const cellOffset = map.map[(targetRow) * map.width + targetCol];
+				if (seenCellOffsets.has(cellOffset)) continue; // covered slot — grid value belongs to origin, already collected
 				seenCellOffsets.add(cellOffset);
 				cellsToFill.push({ cellPos: tableStart + cellOffset, value: grid[r][c] });
 			}
