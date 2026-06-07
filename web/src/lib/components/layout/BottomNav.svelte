@@ -2,10 +2,11 @@
 	BottomNav — mobile-only persistent bottom navigation (PLAN-1694).
 
 	Five slots: Workspace · Search · Quick-capture (center ＋) · Activity · You.
-	"Workspace" and "You" open docked sheets (DockedSheet) that anchor ABOVE
-	this bar, so the nav stays visible and the active slot stays lit:
+	"Workspace", "You" and the center ＋ open docked sheets (DockedSheet) that
+	anchor ABOVE this bar, so the nav stays visible and the active slot stays lit:
 	  - WorkspaceSheet — switcher card + Navigate + Collections.
 	  - YouSheet — account (profile, theme, settings, sign out, …).
+	  - QuickCaptureSheet — pick a collection, type a title, create (BUG-1765).
 	Together with the contextual bar they replace the retired mobile <TopBar />
 	inside a workspace (PLAN-1694 Phase 2-3, redesigned in TASK-1701).
 
@@ -38,26 +39,36 @@
 	let onWorkspaceContent = $derived(!!activeKey && activeKey !== 'activity');
 
 	// Tap toggles: a second tap on the active slot closes its surface. Opening
-	// any of the three surfaces (Workspace / You / Search) closes the others.
-	function toggleWorkspace() {
+	// any of the four surfaces (Workspace / You / Search / Quick-capture)
+	// closes the others (BUG-1765).
+	function closeAllSurfaces() {
+		workspaceOpen = false;
 		youOpen = false;
+		captureOpen = false;
 		uiStore.closeSearch();
-		workspaceOpen = !workspaceOpen;
+	}
+	function toggleWorkspace() {
+		const next = !workspaceOpen;
+		closeAllSurfaces();
+		workspaceOpen = next;
 	}
 	function toggleYou() {
-		workspaceOpen = false;
-		uiStore.closeSearch();
-		youOpen = !youOpen;
+		const next = !youOpen;
+		closeAllSurfaces();
+		youOpen = next;
 	}
 	function toggleSearch() {
-		if (uiStore.searchOpen) {
-			uiStore.closeSearch();
-		} else {
-			workspaceOpen = false;
-			youOpen = false;
+		const next = !uiStore.searchOpen;
+		closeAllSurfaces();
+		if (next) {
 			uiStore.openSearch();
 			uiStore.onNavigate();
 		}
+	}
+	function toggleCapture() {
+		const next = !captureOpen;
+		closeAllSurfaces();
+		captureOpen = next;
 	}
 
 	// Drive the .main-content reflow only while shown (mobile). app.css owns
@@ -101,9 +112,12 @@
 
 		<button
 			class="bn-item bn-capture"
+			class:active={captureOpen}
 			type="button"
-			onclick={() => (captureOpen = true)}
+			onclick={toggleCapture}
 			aria-label="Quick capture"
+			aria-haspopup="dialog"
+			aria-expanded={captureOpen}
 		>
 			<span class="bn-capture-plus" aria-hidden="true">＋</span>
 		</button>
@@ -112,7 +126,10 @@
 			class="bn-item"
 			class:active={activeKey === 'activity'}
 			href={`${wsPrefix}/activity`}
-			onclick={() => uiStore.onNavigate()}
+			onclick={() => {
+				closeAllSurfaces();
+				uiStore.onNavigate();
+			}}
 		>
 			<span class="bn-icon" aria-hidden="true">📋</span>
 			<span class="bn-label">Activity</span>
@@ -219,5 +236,11 @@
 		font-size: 1.4em;
 		line-height: 1;
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+	}
+	/* Lit while its sheet is open — same ring the Workspace avatar uses. */
+	.bn-capture.active .bn-capture-plus {
+		box-shadow:
+			0 0 0 2px color-mix(in srgb, var(--accent-blue) 55%, transparent),
+			0 2px 8px rgba(0, 0, 0, 0.35);
 	}
 </style>

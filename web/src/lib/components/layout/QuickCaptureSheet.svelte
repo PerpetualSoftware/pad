@@ -6,6 +6,12 @@
 	mounted and renders a desktop-ish overlay (Codex review of PLAN-1694). The
 	create logic mirrors Sidebar.svelte's submitQuickAdd so behaviour (default
 	status, content template, navigate to the new item) stays consistent.
+
+	Presents as a DockedSheet (anchored above the bottom nav) like the
+	Workspace/You sheets, so the nav stays visible/tappable, the ＋ slot stays
+	lit, and BottomNav's mutual-exclusion toggles work symmetrically. It was
+	previously a full-screen common/BottomSheet that covered the nav and
+	stacked on top of an open Search/Workspace/You surface (BUG-1765).
 -->
 <script lang="ts">
 	import { goto } from '$app/navigation';
@@ -14,7 +20,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { parseSchema, parseSettings, itemUrlId } from '$lib/types';
-	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
 
 	let {
 		open,
@@ -107,8 +113,9 @@
 	}
 </script>
 
-<BottomSheet {open} onclose={close} title="Quick capture">
+<DockedSheet {open} onclose={close} label="Quick capture">
 	<div class="capture">
+		<h2 class="capture-heading">Quick capture</h2>
 		<select class="capture-collection" bind:value={selectedSlug} aria-label="Collection">
 			{#each collections as c (c.id)}
 				<option value={c.slug}>{c.icon} {c.name}</option>
@@ -134,7 +141,7 @@
 			</button>
 		</div>
 	</div>
-</BottomSheet>
+</DockedSheet>
 
 <style>
 	.capture {
@@ -142,6 +149,12 @@
 		flex-direction: column;
 		gap: var(--space-3);
 		padding: 0 var(--space-5) var(--space-4);
+	}
+	.capture-heading {
+		margin: 0;
+		font-size: 1.05em;
+		font-weight: 600;
+		color: var(--text-primary);
 	}
 	.capture-collection {
 		appearance: none;
