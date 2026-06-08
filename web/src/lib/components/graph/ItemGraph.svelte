@@ -453,6 +453,10 @@
 
 	function onPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
+		// Don't start a pan when the press lands on an interactive overlay
+		// (legend toggles, detail-card actions, error retry) — they sit inside the
+		// viewport, so without this a click on them would also begin a drag.
+		if ((e.target as Element).closest?.('.legend, .detail-card, .state-overlay')) return;
 		dragging = true;
 		dragStartX = e.clientX;
 		dragStartY = e.clientY;
@@ -475,18 +479,38 @@
 		}
 	}
 
-	// Fit the content bounds into the current viewport with a margin.
+	// Bounds of the currently VISIBLE nodes (respecting legend toggles), falling
+	// back to the full laid-out bounds when nothing is visible. Computed live so
+	// Fit frames what's actually on screen after collections are hidden.
+	function currentBounds() {
+		const ns = visibleNodes;
+		if (!ns.length) return contentBounds;
+		let minX = Infinity;
+		let minY = Infinity;
+		let maxX = -Infinity;
+		let maxY = -Infinity;
+		for (const n of ns) {
+			minX = Math.min(minX, n.x - NODE_W / 2);
+			minY = Math.min(minY, n.y - NODE_H / 2);
+			maxX = Math.max(maxX, n.x + NODE_W / 2);
+			maxY = Math.max(maxY, n.y + NODE_H / 2);
+		}
+		return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
+	}
+
+	// Fit the visible content into the current viewport with a margin.
 	function fitView() {
 		const rect = viewport?.getBoundingClientRect();
-		if (!rect || contentBounds.w <= 0 || contentBounds.h <= 0) return;
+		const b = currentBounds();
+		if (!rect || b.w <= 0 || b.h <= 0) return;
 		const margin = 40;
 		const availW = Math.max(1, rect.width - margin * 2);
 		const availH = Math.max(1, rect.height - margin * 2);
-		const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.min(availW / contentBounds.w, availH / contentBounds.h)));
+		const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.min(availW / b.w, availH / b.h)));
 		scale = next;
 		// Center the content within the viewport.
-		const contentCx = contentBounds.x + contentBounds.w / 2;
-		const contentCy = contentBounds.y + contentBounds.h / 2;
+		const contentCx = b.x + b.w / 2;
+		const contentCy = b.y + b.h / 2;
 		tx = rect.width / 2 - contentCx * next;
 		ty = rect.height / 2 - contentCy * next;
 	}
@@ -765,7 +789,7 @@
 		<!-- Node detail panel (single-click selection). -->
 		{#if selectedNode}
 			{@const sel = selectedNode}
-			<div class="detail-card" role="dialog" aria-label="Item details">
+			<div class="detail-card" role="group" aria-label="Item details">
 				<div class="detail-head">
 					<span class="detail-ref">{sel.ref}</span>
 					<button
