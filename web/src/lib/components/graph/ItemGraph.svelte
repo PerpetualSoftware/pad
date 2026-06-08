@@ -303,6 +303,13 @@
 	}
 
 	function scheduleRefetch() {
+		// Background refetch only makes sense once a graph is committed on screen.
+		// Before that (initial load in flight, or an error/idle state), a
+		// background load would cancel the foreground load's token while skipping
+		// fit + error handling — leaving the view un-fitted or stuck on the
+		// spinner. The in-flight initial load already fetches the latest data, so
+		// dropping events here loses nothing.
+		if (loadState !== 'ready') return;
 		if (refetchTimer) clearTimeout(refetchTimer);
 		refetchTimer = setTimeout(() => {
 			refetchTimer = null;
