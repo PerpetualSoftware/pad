@@ -1003,7 +1003,26 @@ export const api = {
 		get: (ws: string, includeTerminal = false) =>
 			request<GraphResponse>(
 				`/workspaces/${ws}/graph${includeTerminal ? '?include_terminal=true' : ''}`
-			)
+			),
+
+		/**
+		 * Focused neighborhood around a single item (PLAN-1780): the nodes
+		 * reachable within `depth` hops (server default 2, clamped [1,5])
+		 * plus the edges among them. The response's `truncated` flag is set
+		 * when the neighborhood hit the server's node cap. includeTerminal
+		 * pulls done items into the neighborhood (the focused item itself is
+		 * always returned, even when terminal).
+		 */
+		getFocused: (
+			ws: string,
+			focusRef: string,
+			opts: { depth?: number; includeTerminal?: boolean } = {}
+		) => {
+			const params = new URLSearchParams({ focus: focusRef });
+			if (opts.depth != null) params.set('depth', String(opts.depth));
+			if (opts.includeTerminal) params.set('include_terminal', 'true');
+			return request<GraphResponse>(`/workspaces/${ws}/graph?${params}`);
+		}
 	},
 
 	// ── Project Report (PLAN-1628 / TASK-1630) ────────────────────────────────
