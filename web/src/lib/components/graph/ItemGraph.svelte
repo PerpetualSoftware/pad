@@ -1,0 +1,772 @@
+<script lang="ts">
+	// 2D directional dependency-graph renderer for a single item's neighborhood
+	// (PLAN-1780 / TASK-1783).
+	//
+	// Given a workspace + a focused item ref, fetches the dependency neighborhood
+	// from the API and lays it out top-to-bottom with dagre (parents above,
+	// children below), rendering to SVG. Clicking a non-focus node re-roots the
+	// graph along the dependency chain; clicking the focus node (or the Open
+	// button) opens the item. The SVG is pannable (pointer-drag) and zoomable
+	// (wheel).
+	//
+	// Styling mirrors the 3D graph's control/detail surfaces (color-mix
+	// translucency, backdrop-blur) so it reads as the same UI inside a drawer.
+
+	import { untrack } from 'svelte';
+	import { api } from '$lib/api/client';
+	import type { GraphEdge, GraphNode, GraphResponse } from '$lib/types';
+	import { createCollectionColorMap } from '$lib/graph/palette';
+
+	let {
+		workspace,
+		focusRef,
+		depth: initialDepth = 2,
+		onOpenItem
+	}: {
+		workspace: string;
+		focusRef: string;
+		depth?: number;
+		onOpenItem?: (ref: string) => void;
+	} = $props();
+
+	// ── Fixed layout geometry ────────────────────────────────────────────────────
+	const NODE_W = 160;
+	const NODE_H = 48;
+
+	// ── Re-rooting + controls state ───────────────────────────────────────────────
+	// The graph re-roots on `currentFocus`, NOT the prop directly — clicking a node
+	// navigates without the parent component touching the prop. A separate prop-sync
+	// effect (CONVE-606) reconciles `currentFocus` when the prop itself changes.
+	// Seed local state from the props ONCE (untrack so reading the prop here doesn't
+	// register a reactive dependency — subsequent prop changes flow through the
+	// prop-sync effect below, CONVE-606). currentFocus, not the prop, drives the
+	// graph so click-to-reroot can navigate without the parent touching the prop.
+	let currentFocus = $state(untrack(() => focusRef));
+	let depth = $state(untrack(() => clampDepth(initialDepth)));
+	let includeTerminal = $state(false);
+
+	function clampDepth(d: number): number {
+		return Math.min(5, Math.max(1, Math.round(d)));
+	}
+
+	// Track the last prop value we synced from, so the prop-sync effect only fires on
+	// an actual external change (and never fights the click-to-reroot writes).
+	let lastSyncedProp = $state(untrack(() => focusRef));
+	$effect(() => {
+		if (focusRef !== lastSyncedProp) {
+			lastSyncedProp = focusRef;
+			currentFocus = focusRef;
+		}
+	});
+
+	// ── Rendered model ────────────────────────────────────────────────────────────
+	interface RenderNode {
+		ref: string;
+		title: string;
+		collection: string;
+		status?: string;
+		isTerminal: boolean;
+		childCount: number;
+		x: number; // center
+		y: number; // center
+		color: string;
+	}
+	interface RenderEdge {
+		source: string;
+		target: string;
+		type: GraphEdge['type'];
+		x1: number;
+		y1: number;
+		x2: number;
+		y2: number;
+	}
+
+	type LoadState = 'idle' | 'loading' | 'ready' | 'error';
+
+	let loadState = $state<LoadState>('idle');
+	let errorMessage = $state('');
+	let renderNodes = $state<RenderNode[]>([]);
+	let renderEdges = $state<RenderEdge[]>([]);
+	let legend = $state<{ slug: string; color: string }[]>([]);
+	let truncated = $state(false);
+	let contentBounds = $state({ x: 0, y: 0, w: 1, h: 1 });
+
+	// Bumped by retry() to force the load effect to re-run after an error,
+	// even when none of the real inputs changed.
+	let retryNonce = $state(0);
+
+	// Monotonic load token (CONVE-1688): the load effect reads inputs and writes
+	// $state, but must not read+write the SAME rune in one pass. We bump a local
+	// token at the start of each load and only commit results when the token still
+	// matches — discarding stale in-flight responses without re-reading committed
+	// $state inside the effect's reactive frame.
+	let loadToken = 0;
+
+	async function runLayout(payload: GraphResponse): Promise<{
+		nodes: RenderNode[];
+		edges: RenderEdge[];
+		legend: { slug: string; color: string }[];
+		bounds: { x: number; y: number; w: number; h: number };
+	}> {
+		const dagre = await import('@dagrejs/dagre');
+		const g = new dagre.graphlib.Graph();
+		g.setGraph({ rankdir: 'TB', nodesep: 40, ranksep: 70, marginx: 20, marginy: 20 });
+		g.setDefaultEdgeLabel(() => ({}));
+
+		// Fresh color map per payload so legend + nodes agree (palette contract).
+		const palette = createCollectionColorMap();
+
+		const byRef = new Map<string, GraphNode>();
+		for (const n of payload.nodes) {
+			byRef.set(n.ref, n);
+			g.setNode(n.ref, { width: NODE_W, height: NODE_H });
+		}
+
+		// Only wire edges whose BOTH endpoints are present as nodes — dagre throws
+		// otherwise, and a truncated neighborhood can reference pruned refs.
+		const keptEdges: GraphEdge[] = [];
+		for (const e of payload.edges) {
+			if (byRef.has(e.source) && byRef.has(e.target)) {
+				g.setEdge(e.source, e.target);
+				keptEdges.push(e);
+			}
+		}
+
+		dagre.layout(g);
+
+		const nodes: RenderNode[] = [];
+		let minX = Infinity;
+		let minY = Infinity;
+		let maxX = -Infinity;
+		let maxY = -Infinity;
+		for (const n of payload.nodes) {
+			const pos = g.node(n.ref);
+			if (!pos) continue;
+			const color = palette.colorForCollection(n.collection);
+			nodes.push({
+				ref: n.ref,
+				title: n.title,
+				collection: n.collection,
+				status: n.status,
+				isTerminal: n.is_terminal,
+				childCount: n.child_count,
+				x: pos.x,
+				y: pos.y,
+				color
+			});
+			minX = Math.min(minX, pos.x - NODE_W / 2);
+			minY = Math.min(minY, pos.y - NODE_H / 2);
+			maxX = Math.max(maxX, pos.x + NODE_W / 2);
+			maxY = Math.max(maxY, pos.y + NODE_H / 2);
+		}
+
+		const posByRef = new Map(nodes.map((n) => [n.ref, n]));
+		const edges: RenderEdge[] = [];
+		for (const e of keptEdges) {
+			const s = posByRef.get(e.source);
+			const t = posByRef.get(e.target);
+			if (!s || !t) continue;
+			edges.push({
+				source: e.source,
+				target: e.target,
+				type: e.type,
+				x1: s.x,
+				y1: s.y,
+				x2: t.x,
+				y2: t.y
+			});
+		}
+
+		// Legend in palette-assignment order.
+		const legendEntries = Object.entries(palette.colors).map(([slug, color]) => ({
+			slug,
+			color
+		}));
+
+		const bounds = Number.isFinite(minX)
+			? { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) }
+			: { x: 0, y: 0, w: 1, h: 1 };
+
+		return { nodes, edges, legend: legendEntries, bounds };
+	}
+
+	// ── Data-loading effect ───────────────────────────────────────────────────────
+	// Separate from the prop-sync effect (CONVE-606). Depends on workspace,
+	// currentFocus, depth, includeTerminal. Uses the loadToken guard so it never
+	// reads+writes the same committed $state in one reactive pass (CONVE-1688).
+	$effect(() => {
+		const ws = workspace;
+		const focus = currentFocus;
+		const d = depth;
+		const term = includeTerminal;
+		void retryNonce; // dependency only — retry() bumps it to force a re-run
+
+		const token = ++loadToken;
+		loadState = 'loading';
+		errorMessage = '';
+
+		let cancelled = false;
+		(async () => {
+			try {
+				const payload = await api.graph.getFocused(ws, focus, {
+					depth: d,
+					includeTerminal: term
+				});
+				if (cancelled || token !== loadToken) return;
+				const laid = await runLayout(payload);
+				if (cancelled || token !== loadToken) return;
+				renderNodes = laid.nodes;
+				renderEdges = laid.edges;
+				legend = laid.legend;
+				truncated = payload.truncated ?? false;
+				contentBounds = laid.bounds;
+				loadState = 'ready';
+				// Re-fit the view to the freshly laid-out content.
+				queueFit();
+			} catch (err) {
+				if (cancelled || token !== loadToken) return;
+				errorMessage = err instanceof Error ? err.message : 'Failed to load the graph.';
+				loadState = 'error';
+			}
+		})();
+
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	function retry() {
+		// Force the load effect to re-run without changing any real input —
+		// re-rooting to the same ref wouldn't register as a change.
+		retryNonce++;
+	}
+
+	// ── Pan / zoom ────────────────────────────────────────────────────────────────
+	let viewport = $state<HTMLDivElement | null>(null);
+	let tx = $state(0);
+	let ty = $state(0);
+	let scale = $state(1);
+
+	const MIN_SCALE = 0.25;
+	const MAX_SCALE = 2.5;
+
+	let dragging = false;
+	let dragStartX = 0;
+	let dragStartY = 0;
+	let dragOriginTx = 0;
+	let dragOriginTy = 0;
+
+	function onWheel(e: WheelEvent) {
+		e.preventDefault();
+		const rect = viewport?.getBoundingClientRect();
+		if (!rect) return;
+		const cx = e.clientX - rect.left;
+		const cy = e.clientY - rect.top;
+		const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+		const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale * factor));
+		const applied = next / scale;
+		// Keep the cursor anchored over the same content point while zooming.
+		tx = cx - (cx - tx) * applied;
+		ty = cy - (cy - ty) * applied;
+		scale = next;
+	}
+
+	function onPointerDown(e: PointerEvent) {
+		if (e.button !== 0) return;
+		dragging = true;
+		dragStartX = e.clientX;
+		dragStartY = e.clientY;
+		dragOriginTx = tx;
+		dragOriginTy = ty;
+		(e.currentTarget as Element).setPointerCapture(e.pointerId);
+	}
+	function onPointerMove(e: PointerEvent) {
+		if (!dragging) return;
+		tx = dragOriginTx + (e.clientX - dragStartX);
+		ty = dragOriginTy + (e.clientY - dragStartY);
+	}
+	function onPointerUp(e: PointerEvent) {
+		if (!dragging) return;
+		dragging = false;
+		try {
+			(e.currentTarget as Element).releasePointerCapture(e.pointerId);
+		} catch {
+			// pointer may already be released — ignore.
+		}
+	}
+
+	// Fit the content bounds into the current viewport with a margin.
+	function fitView() {
+		const rect = viewport?.getBoundingClientRect();
+		if (!rect || contentBounds.w <= 0 || contentBounds.h <= 0) return;
+		const margin = 40;
+		const availW = Math.max(1, rect.width - margin * 2);
+		const availH = Math.max(1, rect.height - margin * 2);
+		const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.min(availW / contentBounds.w, availH / contentBounds.h)));
+		scale = next;
+		// Center the content within the viewport.
+		const contentCx = contentBounds.x + contentBounds.w / 2;
+		const contentCy = contentBounds.y + contentBounds.h / 2;
+		tx = rect.width / 2 - contentCx * next;
+		ty = rect.height / 2 - contentCy * next;
+	}
+
+	// Defer the fit until after the DOM reflects new content + the viewport exists.
+	function queueFit() {
+		requestAnimationFrame(() => fitView());
+	}
+
+	// ── Interactions ──────────────────────────────────────────────────────────────
+	function onNodeClick(ref: string) {
+		if (ref === currentFocus) {
+			onOpenItem?.(ref);
+		} else {
+			currentFocus = ref;
+		}
+	}
+
+	function openFocused() {
+		onOpenItem?.(currentFocus);
+	}
+
+	function backToOrigin() {
+		currentFocus = focusRef;
+	}
+
+	function changeDepth(value: string) {
+		depth = clampDepth(Number(value));
+	}
+
+	// ── Edge styling helpers ──────────────────────────────────────────────────────
+	type EdgeClass = 'hierarchy' | 'blocks' | 'wiki' | 'muted';
+	function edgeClass(type: GraphEdge['type']): EdgeClass {
+		if (type === 'parent' || type === 'implements') return 'hierarchy';
+		if (type === 'blocks') return 'blocks';
+		if (type === 'wiki-link') return 'wiki';
+		return 'muted';
+	}
+
+	// Cubic path between two node centers for a softer hierarchy tether.
+	function edgePath(e: RenderEdge): string {
+		const midY = (e.y1 + e.y2) / 2;
+		return `M ${e.x1} ${e.y1} C ${e.x1} ${midY}, ${e.x2} ${midY}, ${e.x2} ${e.y2}`;
+	}
+
+	function truncate(text: string, max = 28): string {
+		return text.length > max ? text.slice(0, max - 1) + '…' : text;
+	}
+
+	const isEmptyNeighborhood = $derived(loadState === 'ready' && renderNodes.length <= 1);
+	const atOrigin = $derived(currentFocus === focusRef);
+</script>
+
+<div class="item-graph">
+	<!-- Controls bar -->
+	<div class="controls">
+		<div class="control-group">
+			<label class="ctrl-label" for="ig-depth">Depth</label>
+			<select
+				id="ig-depth"
+				class="select"
+				value={String(depth)}
+				onchange={(e) => changeDepth(e.currentTarget.value)}
+			>
+				{#each [1, 2, 3, 4, 5] as d (d)}
+					<option value={String(d)}>{d}</option>
+				{/each}
+			</select>
+		</div>
+
+		<label class="toggle">
+			<input type="checkbox" bind:checked={includeTerminal} />
+			<span>Include done</span>
+		</label>
+
+		{#if !atOrigin}
+			<button type="button" class="ghost-btn" onclick={backToOrigin} title="Return to the original item">
+				← {focusRef}
+			</button>
+		{/if}
+
+		<div class="spacer"></div>
+
+		<button type="button" class="ghost-btn" onclick={fitView} title="Fit graph to view">Fit</button>
+		<button type="button" class="open-btn" onclick={openFocused}>Open ↗</button>
+	</div>
+
+	<!-- Canvas -->
+	<div
+		class="viewport"
+		bind:this={viewport}
+		onwheel={onWheel}
+		onpointerdown={onPointerDown}
+		onpointermove={onPointerMove}
+		onpointerup={onPointerUp}
+		onpointercancel={onPointerUp}
+		role="application"
+		aria-label="Dependency graph canvas"
+	>
+		{#if loadState === 'loading'}
+			<div class="state-overlay" aria-live="polite">
+				<div class="spinner" aria-hidden="true"></div>
+				<p>Loading graph…</p>
+			</div>
+		{:else if loadState === 'error'}
+			<div class="state-overlay" role="alert">
+				<p class="error-msg">{errorMessage}</p>
+				<button type="button" class="open-btn" onclick={retry}>Retry</button>
+			</div>
+		{/if}
+
+		{#if loadState === 'ready' || renderNodes.length > 0}
+			<svg class="canvas" width="100%" height="100%" aria-hidden={loadState !== 'ready'}>
+				<defs>
+					<marker
+						id="ig-arrow-blocks"
+						viewBox="0 0 10 10"
+						refX="9"
+						refY="5"
+						markerWidth="7"
+						markerHeight="7"
+						orient="auto-start-reverse"
+					>
+						<path d="M 0 0 L 10 5 L 0 10 z" fill="#f43f5e" />
+					</marker>
+				</defs>
+
+				<g transform="translate({tx} {ty}) scale({scale})">
+					<!-- Edges first so nodes paint over them. -->
+					{#each renderEdges as e (e.source + '->' + e.target + ':' + e.type)}
+						{@const cls = edgeClass(e.type)}
+						<path
+							class="edge {cls}"
+							d={edgePath(e)}
+							marker-end={cls === 'blocks' ? 'url(#ig-arrow-blocks)' : undefined}
+						/>
+					{/each}
+
+					<!-- Nodes. -->
+					{#each renderNodes as n (n.ref)}
+						{@const isFocus = n.ref === currentFocus}
+						<g
+							class="node"
+							class:focus={isFocus}
+							class:terminal={n.isTerminal}
+							transform="translate({n.x - NODE_W / 2} {n.y - NODE_H / 2})"
+							role="button"
+							tabindex="0"
+							aria-label={n.ref + ': ' + n.title}
+							onclick={() => onNodeClick(n.ref)}
+							onkeydown={(e) => {
+								if (e.key === 'Enter' || e.key === ' ') {
+									e.preventDefault();
+									onNodeClick(n.ref);
+								}
+							}}
+						>
+							<rect
+								class="node-bg"
+								width={NODE_W}
+								height={NODE_H}
+								rx="10"
+								ry="10"
+								style:fill="color-mix(in srgb, {n.color} 15%, transparent)"
+								style:stroke={isFocus ? n.color : 'color-mix(in srgb, {n.color} 55%, transparent)'}
+							/>
+							<rect
+								class="node-accent"
+								width="4"
+								height={NODE_H}
+								rx="2"
+								style:fill={n.color}
+							/>
+							<text class="node-ref" x="14" y="20">{n.ref}</text>
+							<text class="node-title" x="14" y="36">{truncate(n.title)}</text>
+						</g>
+					{/each}
+				</g>
+			</svg>
+		{/if}
+
+		{#if isEmptyNeighborhood && loadState === 'ready'}
+			<div class="empty-hint">No linked items — this item stands alone.</div>
+		{/if}
+
+		<!-- Legend overlay -->
+		{#if legend.length > 0 && loadState === 'ready'}
+			<div class="legend" aria-label="Collection legend">
+				{#each legend as entry (entry.slug)}
+					<span class="legend-item">
+						<span class="legend-dot" style:background-color={entry.color} aria-hidden="true"></span>
+						{entry.slug}
+					</span>
+				{/each}
+			</div>
+		{/if}
+
+		<!-- Truncation indicator -->
+		{#if truncated && loadState === 'ready'}
+			<div class="truncated-note">
+				Showing the closest {renderNodes.length} items — click a node to explore further.
+			</div>
+		{/if}
+	</div>
+</div>
+
+<style>
+	.item-graph {
+		position: relative;
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-height: 0;
+		background: var(--bg-primary, #0a0a1a);
+		color: var(--text-primary);
+	}
+
+	/* ── Controls ─────────────────────────────────────────────────────────────── */
+	.controls {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		flex-wrap: wrap;
+		padding: var(--space-2) var(--space-3);
+		background: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
+		border-bottom: 1px solid var(--border);
+		backdrop-filter: blur(6px);
+	}
+	.control-group {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+	.ctrl-label {
+		font-size: 0.72em;
+		font-weight: 700;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--text-muted);
+	}
+	.select {
+		padding: var(--space-1) var(--space-2);
+		font-size: 0.8em;
+		color: var(--text-primary);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		cursor: pointer;
+	}
+	.toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: 0.8em;
+		font-weight: 600;
+		color: var(--text-secondary);
+		cursor: pointer;
+		user-select: none;
+	}
+	.toggle input {
+		cursor: pointer;
+	}
+	.spacer {
+		flex: 1 1 auto;
+	}
+	.ghost-btn {
+		padding: var(--space-1) var(--space-3);
+		font-size: 0.78em;
+		font-weight: 600;
+		color: var(--text-secondary);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		cursor: pointer;
+		transition: border-color 0.15s, color 0.15s;
+	}
+	.ghost-btn:hover {
+		border-color: var(--text-muted);
+		color: var(--text-primary);
+	}
+	.open-btn {
+		padding: var(--space-1) var(--space-3);
+		font-size: 0.8em;
+		font-weight: 600;
+		color: var(--btn-primary-text, #fff);
+		background: var(--accent, #6366f1);
+		border: none;
+		border-radius: var(--radius);
+		cursor: pointer;
+	}
+	.open-btn:hover {
+		filter: brightness(1.08);
+	}
+
+	/* ── Viewport / canvas ────────────────────────────────────────────────────── */
+	.viewport {
+		position: relative;
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow: hidden;
+		cursor: grab;
+		touch-action: none;
+	}
+	.viewport:active {
+		cursor: grabbing;
+	}
+	.canvas {
+		display: block;
+		width: 100%;
+		height: 100%;
+	}
+
+	/* ── Edges ────────────────────────────────────────────────────────────────── */
+	.edge {
+		fill: none;
+		stroke-width: 1.5;
+	}
+	.edge.hierarchy {
+		stroke: color-mix(in srgb, var(--text-muted) 55%, transparent);
+	}
+	.edge.blocks {
+		stroke: #f43f5e;
+		stroke-width: 2;
+	}
+	.edge.wiki {
+		stroke: color-mix(in srgb, var(--text-muted) 35%, transparent);
+		stroke-width: 1;
+		stroke-dasharray: 2 4;
+	}
+	.edge.muted {
+		stroke: color-mix(in srgb, var(--text-muted) 45%, transparent);
+		stroke-dasharray: 5 4;
+	}
+
+	/* ── Nodes ────────────────────────────────────────────────────────────────── */
+	.node {
+		cursor: pointer;
+	}
+	.node-bg {
+		stroke-width: 1.5;
+		transition: stroke-width 0.12s;
+	}
+	.node.focus .node-bg {
+		stroke-width: 3;
+		filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent, #6366f1) 60%, transparent));
+	}
+	.node.terminal {
+		opacity: 0.5;
+	}
+	.node.terminal .node-bg {
+		stroke-dasharray: 4 3;
+	}
+	.node:hover .node-bg {
+		stroke-width: 2.5;
+	}
+	.node:focus-visible .node-bg {
+		stroke-width: 3;
+	}
+	.node-ref {
+		font-family: var(--font-mono, ui-monospace, monospace);
+		font-size: 11px;
+		font-weight: 700;
+		fill: var(--text-primary);
+	}
+	.node-title {
+		font-size: 10px;
+		fill: var(--text-secondary);
+	}
+
+	/* ── Overlays ─────────────────────────────────────────────────────────────── */
+	.state-overlay {
+		position: absolute;
+		inset: 0;
+		z-index: 5;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-3);
+		font-size: 0.85em;
+		color: var(--text-muted);
+		background: color-mix(in srgb, var(--bg-primary, #0a0a1a) 70%, transparent);
+		backdrop-filter: blur(2px);
+	}
+	.error-msg {
+		max-width: 24rem;
+		text-align: center;
+		color: var(--blocks-red, #f43f5e);
+	}
+	.spinner {
+		width: 1.6rem;
+		height: 1.6rem;
+		border: 2px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+		border-top-color: var(--accent, #6366f1);
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	.empty-hint {
+		position: absolute;
+		bottom: var(--space-4);
+		left: 50%;
+		transform: translateX(-50%);
+		padding: var(--space-1) var(--space-3);
+		font-size: 0.78em;
+		color: var(--text-muted);
+		background: color-mix(in srgb, var(--bg-secondary) 90%, transparent);
+		border: 1px solid var(--border);
+		border-radius: 999px;
+		backdrop-filter: blur(6px);
+	}
+
+	.legend {
+		position: absolute;
+		top: var(--space-3);
+		left: var(--space-3);
+		z-index: 4;
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		max-width: calc(100% - var(--space-6));
+		padding: var(--space-1) var(--space-3);
+		background: color-mix(in srgb, var(--bg-secondary) 86%, transparent);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		backdrop-filter: blur(6px);
+	}
+	.legend-item {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		font-size: 0.72em;
+		text-transform: capitalize;
+		color: var(--text-secondary);
+	}
+	.legend-dot {
+		width: 0.6rem;
+		height: 0.6rem;
+		border-radius: 50%;
+		flex: 0 0 auto;
+	}
+
+	.truncated-note {
+		position: absolute;
+		bottom: var(--space-3);
+		left: var(--space-3);
+		right: var(--space-3);
+		z-index: 4;
+		padding: var(--space-1) var(--space-3);
+		font-size: 0.74em;
+		text-align: center;
+		color: var(--text-muted);
+		background: color-mix(in srgb, var(--bg-secondary) 90%, transparent);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		backdrop-filter: blur(6px);
+	}
+</style>

@@ -14,6 +14,7 @@
 	import { sseService, type ItemEvent } from '$lib/services/sse.svelte';
 	import type { NodeObject, LinkObject } from '3d-force-graph';
 	import type { GraphResponse, Item } from '$lib/types';
+	import { GRAPH_PALETTE } from '$lib/graph/palette';
 	import DetailCard from './DetailCard.svelte';
 	import GraphToolbar from './GraphToolbar.svelte';
 
@@ -240,18 +241,10 @@
 
 	// ── Color palette ────────────────────────────────────────────────────────────
 	// The chart PALETTE in $lib/components/charts/theme.ts is CSS-var-based, which
-	// WebGL can't resolve — so we keep a local hex palette and assign colors to
-	// collection slugs in first-seen order (stable within a single graph payload).
-	const PALETTE = [
-		'#6366f1', // indigo
-		'#06b6d4', // cyan
-		'#f59e0b', // amber
-		'#10b981', // emerald
-		'#f43f5e', // rose
-		'#8b5cf6', // violet
-		'#84cc16', // lime
-		'#0ea5e9' // sky
-	];
+	// WebGL can't resolve — so we use the shared hex GRAPH_PALETTE (also used by the
+	// 2D per-item graph, PLAN-1780) and assign colors to collection slugs in
+	// first-seen order (stable within a single graph payload).
+	const PALETTE = GRAPH_PALETTE;
 	// Built fresh on each graphData change. Plain `let` (rebuilt imperatively).
 	let collectionColors: Record<string, string> = {};
 
