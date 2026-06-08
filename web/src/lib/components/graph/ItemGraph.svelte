@@ -105,6 +105,11 @@
 	// matches — discarding stale in-flight responses without re-reading committed
 	// $state inside the effect's reactive frame.
 	let loadToken = 0;
+	// True while any load() is awaiting. Used to COALESCE background refetches:
+	// starting a new one mid-flight would bump loadToken and invalidate the
+	// in-flight response, so a steady event stream could starve updates forever.
+	// Instead we defer until the current load settles, then run exactly one.
+	let loadInFlight = false;
 
 	async function runLayout(payload: GraphResponse): Promise<{
 		nodes: RenderNode[];
@@ -220,6 +225,7 @@
 		const term = includeTerminal;
 
 		const token = ++loadToken;
+		loadInFlight = true;
 		if (background) {
 			refreshing = true;
 		} else {
@@ -247,12 +253,6 @@
 			contentBounds = laid.bounds;
 			loadState = 'ready';
 			if (!background) queueFit(); // don't yank the view on ambient updates
-			// A mutation that arrived mid-load was deferred; now that we're ready,
-			// reconcile it (the just-committed response may predate it).
-			if (pendingRefetch) {
-				pendingRefetch = false;
-				scheduleRefetch();
-			}
 		} catch (err) {
 			if (token !== loadToken) return;
 			if (!background) {
@@ -261,7 +261,20 @@
 			}
 			// background failures: keep the last good graph, try again next event
 		} finally {
-			if (token === loadToken) refreshing = false;
+			// Only the latest load owns the shared flags — a stale (superseded)
+			// load must not clear them out from under the newer one.
+			if (token === loadToken) {
+				refreshing = false;
+				loadInFlight = false;
+				// Flush a coalesced/deferred refetch now that we're idle. runRefetch
+				// re-decides foreground (error recovery) vs background (ready) — so a
+				// mid-load mutation reconciles, and a failed load can still recover
+				// on the next event instead of getting stuck.
+				if (pendingRefetch) {
+					pendingRefetch = false;
+					scheduleRefetch();
+				}
+			}
 		}
 	}
 
@@ -321,28 +334,29 @@
 	}
 
 	function scheduleRefetch() {
-		// Background refetch only makes sense once a graph is committed on screen.
-		// Before that (initial load in flight, or an error/idle state), a
-		// background load would cancel the foreground load's token while skipping
-		// fit + error handling — leaving the view un-fitted or stuck on the
-		// spinner. Defer instead of drop: the initial load may have been issued
-		// before this mutation, so we flush a refetch once it reaches ready.
-		if (loadState !== 'ready') {
+		if (refetchTimer) clearTimeout(refetchTimer);
+		refetchTimer = setTimeout(runRefetch, REFETCH_DEBOUNCE_MS);
+	}
+
+	// Fire a refetch, choosing the right mode for the current state. Deferring
+	// (pendingRefetch) is flushed from load()'s finally once it settles, so no
+	// signal is lost and no second load runs concurrently.
+	function runRefetch() {
+		refetchTimer = null;
+		if (loadInFlight) {
+			// Coalesce — a load is already awaiting; run one after it settles.
 			pendingRefetch = true;
 			return;
 		}
-		if (refetchTimer) clearTimeout(refetchTimer);
-		refetchTimer = setTimeout(() => {
-			refetchTimer = null;
-			// Re-check at fire time: state may have left 'ready' since scheduling
-			// (e.g. a foreground reroot started, or an error). Defer rather than
-			// clobber the foreground load.
-			if (loadState !== 'ready') {
-				pendingRefetch = true;
-				return;
-			}
-			void load(true);
-		}, REFETCH_DEBOUNCE_MS);
+		if (loadState === 'ready') {
+			void load(true); // background: keep the current graph visible
+		} else if (loadState === 'error') {
+			void load(false); // recover from a transient failure on the next event
+		} else {
+			// 'loading'/'idle' with nothing in flight shouldn't happen, but defer
+			// to be safe rather than start an unguarded load.
+			pendingRefetch = true;
+		}
 	}
 
 	function handleItemEvent(event: ItemEvent) {
