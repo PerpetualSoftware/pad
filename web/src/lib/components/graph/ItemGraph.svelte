@@ -273,9 +273,11 @@
 	const REFETCH_DEBOUNCE_MS = 400;
 	let touchedRefs = $state(new Set<string>());
 	let refetchTimer: ReturnType<typeof setTimeout> | null = null;
-	// Pending glow-clear timers, tracked so teardown can cancel them — otherwise
-	// a timeout could fire and write touchedRefs on a destroyed component.
-	const glowTimers = new Set<ReturnType<typeof setTimeout>>();
+	// Pending glow-clear timers, keyed by ref so a re-touch RESETS that ref's
+	// window (a burst keeps it lit; the fade starts GLOW_MS after the LAST
+	// event, not the first). Tracked so teardown can cancel them — otherwise a
+	// timeout could fire and write touchedRefs on a destroyed component.
+	const glowTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 	function refForUuid(uuid: string): string | undefined {
 		return renderNodes.find((n) => n.id === uuid)?.ref;
@@ -284,16 +286,20 @@
 	function touch(uuid: string) {
 		const ref = refForUuid(uuid);
 		if (!ref) return;
-		const next = new Set(touchedRefs);
-		next.add(ref);
-		touchedRefs = next;
+		const existing = glowTimers.get(ref);
+		if (existing) clearTimeout(existing); // reset this ref's fade window
+		if (!touchedRefs.has(ref)) {
+			const next = new Set(touchedRefs);
+			next.add(ref);
+			touchedRefs = next;
+		}
 		const handle = setTimeout(() => {
-			glowTimers.delete(handle);
+			glowTimers.delete(ref);
 			const after = new Set(touchedRefs);
 			after.delete(ref);
 			touchedRefs = after;
 		}, GLOW_MS);
-		glowTimers.add(handle);
+		glowTimers.set(ref, handle);
 	}
 
 	function scheduleRefetch() {
@@ -337,7 +343,7 @@
 			unsubEvent();
 			unsubSync();
 			if (refetchTimer) clearTimeout(refetchTimer);
-			for (const h of glowTimers) clearTimeout(h);
+			for (const h of glowTimers.values()) clearTimeout(h);
 			glowTimers.clear();
 			// Invalidate any in-flight load so it can't commit $state (or queue a
 			// fitView) after the drawer closes / component unmounts.
@@ -764,7 +770,7 @@
 	}
 	.node-bg {
 		stroke-width: 1.5;
-		transition: stroke-width 0.12s;
+		transition: stroke-width 0.12s, filter 0.5s ease-out;
 	}
 	.node.focus .node-bg {
 		stroke-width: 3;
@@ -782,19 +788,12 @@
 	.node:focus-visible .node-bg {
 		stroke-width: 3;
 	}
-	/* Transient glow when an item changes live (SSE). */
+	/* Transient glow when an item changes live (SSE). Transition-based (not a
+	   one-shot keyframe) so a burst of events keeps the node lit and it fades
+	   out via the .node-bg filter transition once the ref leaves touchedRefs. */
 	.node.touched .node-bg {
-		animation: node-pulse 2.5s ease-out;
-	}
-	@keyframes node-pulse {
-		0% {
-			filter: drop-shadow(0 0 0 color-mix(in srgb, #fff 90%, transparent));
-			stroke-width: 3.5;
-		}
-		100% {
-			filter: drop-shadow(0 0 10px color-mix(in srgb, #fff 0%, transparent));
-			stroke-width: 1.5;
-		}
+		filter: drop-shadow(0 0 9px color-mix(in srgb, #fff 80%, transparent));
+		stroke-width: 3;
 	}
 	.node-ref {
 		font-family: var(--font-mono, ui-monospace, monospace);
