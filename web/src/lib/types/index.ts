@@ -1013,6 +1013,13 @@ export interface GraphEdge {
 export interface GraphResponse {
 	nodes: GraphNode[];
 	edges: GraphEdge[];
+	/**
+	 * Focus mode only (PLAN-1780): true when the neighborhood hit the
+	 * server's node cap and BFS expansion stopped early — the client
+	 * should offer expand-on-click rather than treat the graph as
+	 * complete. Absent (falsy) for the whole-workspace view.
+	 */
+	truncated?: boolean;
 }
 
 // ─── Project Report (PLAN-1628 / TASK-1630) ──────────────────────────────────
