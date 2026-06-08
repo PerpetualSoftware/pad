@@ -143,9 +143,7 @@
 		typeof import('$lib/components/graph/ItemGraph.svelte').default | null
 	>(null);
 	let graphLoadError = $state(false);
-	async function openGraph() {
-		graphLoadError = false;
-		showGraph = true;
+	async function ensureGraphComp() {
 		if (!ItemGraphComp) {
 			try {
 				ItemGraphComp = (await import('$lib/components/graph/ItemGraph.svelte')).default;
@@ -154,15 +152,57 @@
 			}
 		}
 	}
+	// ?graph=1 is the SINGLE SOURCE OF TRUTH for the drawer's open state, so it
+	// follows navigation, browser back/forward, and search-param-only URL changes
+	// uniformly — and data refreshes (which don't touch the URL) never affect it.
+	// This effect only reads the URL and writes showGraph; the lazy component load
+	// is deferred to a microtask so reading ItemGraphComp inside ensureGraphComp
+	// isn't captured as a dependency of this effect.
+	$effect(() => {
+		const wantGraph = page.url.searchParams.get('graph') === '1';
+		if (wantGraph) {
+			graphLoadError = false;
+			showGraph = true;
+			void Promise.resolve().then(ensureGraphComp);
+		} else {
+			showGraph = false;
+		}
+	});
+	// Toggle the drawer by changing the param; the effect above reflects it.
+	// Uses replaceState — an ephemeral drawer toggle deliberately doesn't push a
+	// history entry. No-op when already in the desired state to avoid a redundant
+	// navigation (e.g. clicking open while already deep-linked with ?graph=1).
+	function setGraphParam(open: boolean) {
+		const has = page.url.searchParams.get('graph') === '1';
+		if (has === open) return;
+		const url = new URL(page.url);
+		if (open) url.searchParams.set('graph', '1');
+		else url.searchParams.delete('graph');
+		goto(url, { replaceState: true, noScroll: true, keepFocus: true });
+	}
+	function openGraph() {
+		setGraphParam(true);
+	}
+	function closeGraph() {
+		setGraphParam(false);
+	}
+	// Retry the lazy component import after a load failure. The ?graph param is
+	// already set (the drawer is open showing the error), so setGraphParam would
+	// no-op — re-run the import directly.
+	function retryGraphLoad() {
+		graphLoadError = false;
+		void ensureGraphComp();
+	}
 	function openItemFromGraph(ref: string, collection?: string) {
-		showGraph = false;
+		// Navigate to the item without ?graph; the URL-watching effect closes the
+		// drawer once the new route (no param) takes effect.
 		goto(`/${username}/${wsSlug}/${collection ?? collSlug}/${ref}`);
 	}
 	// ESC closes the graph drawer (only while open — no global listener otherwise).
 	$effect(() => {
 		if (!showGraph) return;
 		const onKey = (e: KeyboardEvent) => {
-			if (e.key === 'Escape') showGraph = false;
+			if (e.key === 'Escape') closeGraph();
 		};
 		window.addEventListener('keydown', onKey);
 		return () => window.removeEventListener('keydown', onKey);
@@ -2978,21 +3018,21 @@
 			role="button"
 			tabindex="-1"
 			aria-label="Close dependency graph"
-			onclick={() => (showGraph = false)}
+			onclick={closeGraph}
 			onkeydown={(e) => {
-				if (e.key === 'Enter' || e.key === ' ') showGraph = false;
+				if (e.key === 'Enter' || e.key === ' ') closeGraph();
 			}}
 		></div>
 		<aside class="graph-drawer" aria-label="Dependency graph">
 			<header class="graph-drawer-header">
 				<span class="graph-drawer-title">🕸 {graphFocusRef} — dependency graph</span>
-				<button class="action-btn" onclick={() => (showGraph = false)}>Close ✕</button>
+				<button class="action-btn" onclick={closeGraph}>Close ✕</button>
 			</header>
 			<div class="graph-drawer-body">
 				{#if graphLoadError}
 					<div class="graph-drawer-state">
 						<p>Couldn’t load the graph view.</p>
-						<button class="action-btn" onclick={openGraph}>Retry</button>
+						<button class="action-btn" onclick={retryGraphLoad}>Retry</button>
 					</div>
 				{:else if ItemGraphComp}
 					{@const Graph = ItemGraphComp}
