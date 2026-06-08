@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // helper: fetch the workspace graph and return the parsed response
@@ -224,5 +226,235 @@ func TestGraphExcludesDeletedItems(t *testing.T) {
 	}
 	if len(resp.Edges) != 0 {
 		t.Errorf("expected edges to deleted items excluded, got %+v", resp.Edges)
+	}
+}
+
+// chainTasks creates n open tasks linked in a blocks chain
+// t0 -> t1 -> ... -> t(n-1) and returns them in order.
+func chainTasks(t *testing.T, srv *Server, slug string, n int) []models.Item {
+	t.Helper()
+	tasks := make([]models.Item, n)
+	for i := 0; i < n; i++ {
+		tasks[i] = createItem(t, srv, slug, "tasks", map[string]interface{}{
+			"title": "Chain task", "fields": map[string]interface{}{"status": "open"},
+		})
+	}
+	for i := 0; i+1 < n; i++ {
+		createBlocksLink(t, srv, slug, tasks[i].Slug, tasks[i+1].ID)
+	}
+	return tasks
+}
+
+func TestGraphFocusDepth(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	// t0 - t1 - t2 - t3 - t4 (undirected neighborhood for BFS).
+	tk := chainTasks(t, srv, slug, 5)
+
+	// depth=1 around t0 → t0, t1 only.
+	d1 := getGraph(t, srv, slug, "?focus="+tk[0].Ref+"&depth=1")
+	if len(d1.Nodes) != 2 {
+		t.Fatalf("depth=1: expected 2 nodes, got %d: %+v", len(d1.Nodes), d1.Nodes)
+	}
+	if graphNode(d1, tk[0].Ref) == nil || graphNode(d1, tk[1].Ref) == nil {
+		t.Errorf("depth=1: expected t0 and t1 present")
+	}
+	if graphNode(d1, tk[2].Ref) != nil {
+		t.Errorf("depth=1: expected t2 excluded")
+	}
+
+	// depth=2 around t0 → t0, t1, t2.
+	d2 := getGraph(t, srv, slug, "?focus="+tk[0].Ref+"&depth=2")
+	if len(d2.Nodes) != 3 {
+		t.Fatalf("depth=2: expected 3 nodes, got %d: %+v", len(d2.Nodes), d2.Nodes)
+	}
+	if graphNode(d2, tk[3].Ref) != nil {
+		t.Errorf("depth=2: expected t3 excluded")
+	}
+
+	// default depth (no param) is 2.
+	def := getGraph(t, srv, slug, "?focus="+tk[0].Ref)
+	if len(def.Nodes) != 3 {
+		t.Errorf("default depth: expected 3 nodes, got %d", len(def.Nodes))
+	}
+
+	// focus in the middle reaches both directions.
+	mid := getGraph(t, srv, slug, "?focus="+tk[2].Ref+"&depth=1")
+	if len(mid.Nodes) != 3 {
+		t.Fatalf("mid focus: expected 3 nodes (t1,t2,t3), got %d: %+v", len(mid.Nodes), mid.Nodes)
+	}
+	for _, ref := range []string{tk[1].Ref, tk[2].Ref, tk[3].Ref} {
+		if graphNode(mid, ref) == nil {
+			t.Errorf("mid focus: expected %s present", ref)
+		}
+	}
+
+	// depth is clamped — a huge depth still resolves the whole 5-chain,
+	// not an error.
+	clamped := getGraph(t, srv, slug, "?focus="+tk[0].Ref+"&depth=999")
+	if len(clamped.Nodes) != 5 {
+		t.Errorf("clamped depth: expected all 5 nodes, got %d", len(clamped.Nodes))
+	}
+}
+
+func TestGraphFocusTerminal(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// The focused item is always included, even when terminal.
+	done := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Done focus", "fields": map[string]interface{}{"status": "done"},
+	})
+	active := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Active neighbor", "fields": map[string]interface{}{"status": "open"},
+	})
+	createBlocksLink(t, srv, slug, done.Slug, active.ID)
+
+	resp := getGraph(t, srv, slug, "?focus="+done.Ref)
+	dn := graphNode(resp, done.Ref)
+	if dn == nil {
+		t.Fatalf("expected terminal focus node %s included", done.Ref)
+	}
+	if !dn.IsTerminal {
+		t.Errorf("expected focus node is_terminal=true")
+	}
+	if graphNode(resp, active.Ref) == nil {
+		t.Errorf("expected active neighbor %s included", active.Ref)
+	}
+
+	// A terminal neighbor is hidden by default, restored with the flag.
+	focus := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Active focus", "fields": map[string]interface{}{"status": "open"},
+	})
+	doneNb := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Done neighbor", "fields": map[string]interface{}{"status": "done"},
+	})
+	createBlocksLink(t, srv, slug, focus.Slug, doneNb.ID)
+
+	def := getGraph(t, srv, slug, "?focus="+focus.Ref)
+	if graphNode(def, doneNb.Ref) != nil {
+		t.Errorf("expected terminal neighbor %s hidden by default", doneNb.Ref)
+	}
+	full := getGraph(t, srv, slug, "?focus="+focus.Ref+"&include_terminal=true")
+	if graphNode(full, doneNb.Ref) == nil {
+		t.Errorf("expected terminal neighbor %s restored with include_terminal=true", doneNb.Ref)
+	}
+}
+
+func TestGraphFocusUnknownRef(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Some task", "fields": map[string]interface{}{"status": "open"},
+	})
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/graph?focus=TASK-9999", nil)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown focus ref, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestGraphFocusCrossCollectionEdges(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	plan := createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title": "Focus plan", "fields": map[string]interface{}{"status": "active"},
+	})
+	task := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Focus task", "fields": map[string]interface{}{"status": "open"},
+	})
+	bug := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Related bug", "fields": map[string]interface{}{"status": "open"},
+	})
+	// task is a child of plan; task blocks bug.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+task.Slug+"/links", map[string]interface{}{
+		"target_id": plan.ID, "link_type": "parent",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create parent link: %d %s", rr.Code, rr.Body.String())
+	}
+	createBlocksLink(t, srv, slug, task.Slug, bug.ID)
+
+	// Focus on the task at depth 1 pulls in both the parent plan and the
+	// blocked bug, across collections, with typed edges preserved.
+	resp := getGraph(t, srv, slug, "?focus="+task.Ref+"&depth=1")
+	if len(resp.Nodes) != 3 {
+		t.Fatalf("expected 3 nodes, got %d: %+v", len(resp.Nodes), resp.Nodes)
+	}
+	if !hasGraphEdge(resp, task.Ref, plan.Ref, "parent") {
+		t.Errorf("expected parent edge %s -> %s", task.Ref, plan.Ref)
+	}
+	if !hasGraphEdge(resp, task.Ref, bug.Ref, "blocks") {
+		t.Errorf("expected blocks edge %s -> %s", task.Ref, bug.Ref)
+	}
+	if resp.Truncated {
+		t.Errorf("did not expect truncation for a 3-node neighborhood")
+	}
+}
+
+func TestGraphFocusChildCountBeyondDepth(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// focus - mid(parent of leaf). At depth 1 from focus, mid is included
+	// but leaf (depth 2) is not — yet mid must still report child_count=1.
+	focus := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Focus", "fields": map[string]interface{}{"status": "open"},
+	})
+	mid := createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title": "Mid parent", "fields": map[string]interface{}{"status": "active"},
+	})
+	leaf := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Leaf child", "fields": map[string]interface{}{"status": "open"},
+	})
+	createBlocksLink(t, srv, slug, focus.Slug, mid.ID)
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+leaf.Slug+"/links", map[string]interface{}{
+		"target_id": mid.ID, "link_type": "parent",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create parent link: %d %s", rr.Code, rr.Body.String())
+	}
+
+	resp := getGraph(t, srv, slug, "?focus="+focus.Ref+"&depth=1")
+	if graphNode(resp, leaf.Ref) != nil {
+		t.Fatalf("leaf should be beyond depth=1, but was included")
+	}
+	mn := graphNode(resp, mid.Ref)
+	if mn == nil {
+		t.Fatalf("mid node missing")
+	}
+	if mn.ChildCount != 1 {
+		t.Errorf("expected mid child_count=1 (true visible count) even though leaf omitted, got %d", mn.ChildCount)
+	}
+}
+
+func TestGraphFocusTruncation(t *testing.T) {
+	// Lower the cap so we don't have to create 200 items (which would
+	// trip the per-IP create rate limiter). Restore after.
+	orig := maxFocusNodes
+	maxFocusNodes = 5
+	defer func() { maxFocusNodes = orig }()
+
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// A star larger than maxFocusNodes around a single focus node.
+	hub := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Hub", "fields": map[string]interface{}{"status": "open"},
+	})
+	for i := 0; i < maxFocusNodes+5; i++ {
+		leaf := createItem(t, srv, slug, "tasks", map[string]interface{}{
+			"title": "Leaf", "fields": map[string]interface{}{"status": "open"},
+		})
+		createBlocksLink(t, srv, slug, hub.Slug, leaf.ID)
+	}
+
+	resp := getGraph(t, srv, slug, "?focus="+hub.Ref+"&depth=1")
+	if !resp.Truncated {
+		t.Errorf("expected truncated=true for an oversized neighborhood")
+	}
+	if len(resp.Nodes) != maxFocusNodes {
+		t.Errorf("expected node count capped at %d, got %d", maxFocusNodes, len(resp.Nodes))
 	}
 }
