@@ -273,6 +273,9 @@
 	const REFETCH_DEBOUNCE_MS = 400;
 	let touchedRefs = $state(new Set<string>());
 	let refetchTimer: ReturnType<typeof setTimeout> | null = null;
+	// Pending glow-clear timers, tracked so teardown can cancel them — otherwise
+	// a timeout could fire and write touchedRefs on a destroyed component.
+	const glowTimers = new Set<ReturnType<typeof setTimeout>>();
 
 	function refForUuid(uuid: string): string | undefined {
 		return renderNodes.find((n) => n.id === uuid)?.ref;
@@ -284,11 +287,13 @@
 		const next = new Set(touchedRefs);
 		next.add(ref);
 		touchedRefs = next;
-		setTimeout(() => {
+		const handle = setTimeout(() => {
+			glowTimers.delete(handle);
 			const after = new Set(touchedRefs);
 			after.delete(ref);
 			touchedRefs = after;
 		}, GLOW_MS);
+		glowTimers.add(handle);
 	}
 
 	function scheduleRefetch() {
@@ -332,6 +337,8 @@
 			unsubEvent();
 			unsubSync();
 			if (refetchTimer) clearTimeout(refetchTimer);
+			for (const h of glowTimers) clearTimeout(h);
+			glowTimers.clear();
 			// Invalidate any in-flight load so it can't commit $state (or queue a
 			// fitView) after the drawer closes / component unmounts.
 			loadToken++;
