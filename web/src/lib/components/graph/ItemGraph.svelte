@@ -300,21 +300,26 @@
 	}
 
 	function handleItemEvent(event: ItemEvent) {
+		// Only react to items in the CURRENT neighborhood — an edit to an
+		// unrelated item elsewhere in the workspace must not trigger a refetch
+		// (the SSE stream is workspace-wide and chatty). A brand-new item isn't
+		// in view and has no links to us yet, so item_created no-ops here; when
+		// it's actually linked into the neighborhood, the visible endpoint gets
+		// an item_updated, which is in-view and refetches — surfacing the new
+		// neighbor then.
+		if (!refForUuid(event.item_id)) return;
 		switch (event.type) {
 			case 'item_updated':
-				touch(event.item_id); // snappy glow
-				scheduleRefetch(); // status/title/terminal may have changed
-				break;
-			case 'item_created':
 			case 'item_archived':
 			case 'item_restored':
-				// Structural: a node may need to appear or disappear.
-				scheduleRefetch();
+				touch(event.item_id); // snappy glow
+				scheduleRefetch(); // status/title/terminal/structure may have changed
 				break;
 			case 'comment_created':
 				touch(event.item_id); // ambient liveness, glow only
 				break;
-			// Ignore comment_updated/deleted, reaction_*, workspace_updated, etc.
+			// Ignore item_created (not in view), comment_updated/deleted,
+			// reaction_*, workspace_updated, etc.
 		}
 	}
 
@@ -327,6 +332,9 @@
 			unsubEvent();
 			unsubSync();
 			if (refetchTimer) clearTimeout(refetchTimer);
+			// Invalidate any in-flight load so it can't commit $state (or queue a
+			// fitView) after the drawer closes / component unmounts.
+			loadToken++;
 		};
 	});
 
