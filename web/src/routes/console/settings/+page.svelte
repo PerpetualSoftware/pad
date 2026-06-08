@@ -37,6 +37,22 @@
 	let disablePassword = $state('');
 	let showDisableConfirm = $state(false);
 
+	// OAuth providers shown in Linked Accounts. `webLinkable` is whether the
+	// provider can be LINKED from the browser: GitHub/Google have a
+	// /auth/<provider>/link redirect flow; Apple does NOT — Sign in with
+	// Apple is native-iOS-only (PLAN-1772), so there's no web link route to
+	// point a button at. Apple still appears here (badge + Unlink) once it's
+	// linked from the app; it's just never offered a "Link" button.
+	const linkProviders = [
+		{ id: 'github', name: 'GitHub', webLinkable: true },
+		{ id: 'google', name: 'Google', webLinkable: true },
+		{ id: 'apple', name: 'Apple', webLinkable: false }
+	];
+
+	function providerName(provider: string): string {
+		return linkProviders.find((p) => p.id === provider)?.name ?? 'the provider';
+	}
+
 	async function unlinkProvider(provider: string) {
 		providerMsg = '';
 		providerError = '';
@@ -44,7 +60,7 @@
 			await api.auth.unlinkProvider(provider);
 			// Refresh profile to get updated providers list
 			profile = await api.auth.me();
-			providerMsg = `${provider === 'github' ? 'GitHub' : 'Google'} unlinked.`;
+			providerMsg = `${providerName(provider)} unlinked.`;
 		} catch (err) {
 			providerError = err instanceof Error ? err.message : 'Failed to unlink provider';
 		}
@@ -70,22 +86,19 @@
 		const errCode = url.searchParams.get('error');
 		const provider = url.searchParams.get('provider'); // optional hint
 
-		if (linked === 'github') {
-			providerMsg = 'GitHub linked.';
-		} else if (linked === 'google') {
-			providerMsg = 'Google linked.';
+		if (linked) {
+			providerMsg = `${providerName(linked)} linked.`;
 		} else if (errCode) {
-			const providerName =
-				provider === 'github' ? 'GitHub' : provider === 'google' ? 'Google' : 'the provider';
+			const name = providerName(provider ?? '');
 			switch (errCode) {
 				case 'not_logged_in':
 					providerError = 'Your session expired while linking. Sign in and try again.';
 					break;
 				case 'email_mismatch':
-					providerError = `The ${providerName} account uses a different email than your Pad account. Sign into ${providerName} as your Pad email, then retry.`;
+					providerError = `The ${name} account uses a different email than your Pad account. Sign into ${name} as your Pad email, then retry.`;
 					break;
 				case 'link_failed':
-					providerError = `Couldn't link ${providerName}. Try again in a moment.`;
+					providerError = `Couldn't link ${name}. Try again in a moment.`;
 					break;
 				default:
 					// Unknown code — never break the page.
@@ -524,23 +537,28 @@
 				<h2 class="card-title">Linked Accounts</h2>
 				<div class="card-body">
 					<p class="section-desc">Link OAuth providers for single sign-on. You can sign in with any linked provider.</p>
-					{#each ['github', 'google'] as provider (provider)}
-						{@const linked = profile?.oauth_providers?.includes(provider) ?? false}
-						<div class="provider-row">
-							<div class="provider-info">
-								<span class="provider-name">{provider === 'github' ? 'GitHub' : 'Google'}</span>
+					{#each linkProviders as p (p.id)}
+						{@const linked = profile?.oauth_providers?.includes(p.id) ?? false}
+						<!-- Apple (and any non-web-linkable provider) only appears
+						     once linked — there's no web flow to link it, so an
+						     unlinked row with no action would just be noise. -->
+						{#if p.webLinkable || linked}
+							<div class="provider-row">
+								<div class="provider-info">
+									<span class="provider-name">{p.name}</span>
+									{#if linked}
+										<span class="provider-badge linked">Linked</span>
+									{:else}
+										<span class="provider-badge">Not linked</span>
+									{/if}
+								</div>
 								{#if linked}
-									<span class="provider-badge linked">Linked</span>
-								{:else}
-									<span class="provider-badge">Not linked</span>
+									<button class="delete-btn" onclick={() => unlinkProvider(p.id)}>Unlink</button>
+								{:else if p.webLinkable}
+									<a href="/auth/{p.id}/link" data-sveltekit-reload class="primary-btn small">Link {p.name}</a>
 								{/if}
 							</div>
-							{#if linked}
-								<button class="delete-btn" onclick={() => unlinkProvider(provider)}>Unlink</button>
-							{:else}
-								<a href="/auth/{provider}/link" data-sveltekit-reload class="primary-btn small">Link {provider === 'github' ? 'GitHub' : 'Google'}</a>
-							{/if}
-						</div>
+						{/if}
 					{/each}
 					{#if providerMsg}<p class="success" role="status" aria-live="polite">{providerMsg}</p>{/if}
 					{#if providerError}<p class="error" role="alert" aria-live="assertive">{providerError}</p>{/if}
