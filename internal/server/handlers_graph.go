@@ -240,17 +240,41 @@ func (s *Server) handleGetWorkspaceGraph(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Child counts: 'parent' and 'implements' edges both render as
+	// children in the existing UI surfaces (see wiki_links_test.go's
+	// lineage note). Count over the FULL visible item set — NOT the
+	// focus-filtered subgraph — so a boundary node whose children fell
+	// outside depth/maxFocusNodes still reports its true visible child
+	// count. The web UI gates hub-label and children-pill visibility on
+	// child_count > 0, so a filtered count would hide those (TASK-1781
+	// review). The child (source) honors the terminal filter, matching
+	// the whole-workspace semantics this replaces: only children that
+	// would themselves be visible are counted.
+	childCount := make(map[string]int) // parent item ID → visible child count
+	for _, l := range links {
+		if l.Type != "parent" && l.Type != "implements" {
+			continue
+		}
+		childMeta, srcOK := metaByID[l.SourceID]
+		_, tgtOK := metaByID[l.TargetID]
+		if !srcOK || !tgtOK {
+			continue
+		}
+		if childMeta.terminal && !includeTerminal {
+			continue
+		}
+		childCount[l.TargetID]++
+	}
+
 	// Build nodes in items order (stable) for the included set; edges are
 	// filtered against it so guests never see dangling endpoints.
 	refByID := make(map[string]string, len(included))
-	nodeIdx := make(map[string]int, len(included)) // item ID → index in resp.Nodes
 	for _, item := range items {
 		if item.Ref == "" || !included[item.ID] {
 			continue
 		}
 		m := metaByID[item.ID]
 		refByID[item.ID] = item.Ref
-		nodeIdx[item.ID] = len(resp.Nodes)
 		resp.Nodes = append(resp.Nodes, GraphNode{
 			ID:         item.ID,
 			Ref:        item.Ref,
@@ -258,6 +282,7 @@ func (s *Server) handleGetWorkspaceGraph(w http.ResponseWriter, r *http.Request)
 			Collection: item.CollectionSlug,
 			Status:     m.status,
 			IsTerminal: m.terminal,
+			ChildCount: childCount[item.ID],
 			UpdatedAt:  item.UpdatedAt,
 			Role:       item.AgentRoleSlug,
 		})
@@ -270,12 +295,6 @@ func (s *Server) handleGetWorkspaceGraph(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		resp.Edges = append(resp.Edges, GraphEdge{Source: srcRef, Target: tgtRef, Type: l.Type})
-		// Child counts derive from the edge list: 'parent' and
-		// 'implements' both render as children in the existing UI
-		// surfaces (see wiki_links_test.go's lineage note).
-		if l.Type == "parent" || l.Type == "implements" {
-			resp.Nodes[nodeIdx[l.TargetID]].ChildCount++
-		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)

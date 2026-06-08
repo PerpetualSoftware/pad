@@ -393,6 +393,42 @@ func TestGraphFocusCrossCollectionEdges(t *testing.T) {
 	}
 }
 
+func TestGraphFocusChildCountBeyondDepth(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// focus - mid(parent of leaf). At depth 1 from focus, mid is included
+	// but leaf (depth 2) is not — yet mid must still report child_count=1.
+	focus := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Focus", "fields": map[string]interface{}{"status": "open"},
+	})
+	mid := createItem(t, srv, slug, "plans", map[string]interface{}{
+		"title": "Mid parent", "fields": map[string]interface{}{"status": "active"},
+	})
+	leaf := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title": "Leaf child", "fields": map[string]interface{}{"status": "open"},
+	})
+	createBlocksLink(t, srv, slug, focus.Slug, mid.ID)
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+leaf.Slug+"/links", map[string]interface{}{
+		"target_id": mid.ID, "link_type": "parent",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create parent link: %d %s", rr.Code, rr.Body.String())
+	}
+
+	resp := getGraph(t, srv, slug, "?focus="+focus.Ref+"&depth=1")
+	if graphNode(resp, leaf.Ref) != nil {
+		t.Fatalf("leaf should be beyond depth=1, but was included")
+	}
+	mn := graphNode(resp, mid.Ref)
+	if mn == nil {
+		t.Fatalf("mid node missing")
+	}
+	if mn.ChildCount != 1 {
+		t.Errorf("expected mid child_count=1 (true visible count) even though leaf omitted, got %d", mn.ChildCount)
+	}
+}
+
 func TestGraphFocusTruncation(t *testing.T) {
 	// Lower the cap so we don't have to create 200 items (which would
 	// trip the per-IP create rate limiter). Restore after.
