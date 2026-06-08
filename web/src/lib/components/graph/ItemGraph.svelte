@@ -124,10 +124,20 @@
 
 		// Only wire edges whose BOTH endpoints are present as nodes — dagre throws
 		// otherwise, and a truncated neighborhood can reference pruned refs.
+		//
+		// Edge direction here controls VERTICAL RANKING only (rankdir TB places an
+		// edge's source above its target). The API models 'parent'/'implements' as
+		// child → parent, so we reverse those for layout to get parents above
+		// children. The rendered edges (keptEdges → RenderEdge below) keep the true
+		// semantic source → target, so 'blocks' arrowheads still point the right way.
 		const keptEdges: GraphEdge[] = [];
 		for (const e of payload.edges) {
 			if (byRef.has(e.source) && byRef.has(e.target)) {
-				g.setEdge(e.source, e.target);
+				if (e.type === 'parent' || e.type === 'implements') {
+					g.setEdge(e.target, e.source); // parent above child
+				} else {
+					g.setEdge(e.source, e.target);
+				}
 				keptEdges.push(e);
 			}
 		}
@@ -471,7 +481,7 @@
 								rx="10"
 								ry="10"
 								style:fill="color-mix(in srgb, {n.color} 15%, transparent)"
-								style:stroke={isFocus ? n.color : 'color-mix(in srgb, {n.color} 55%, transparent)'}
+								style:stroke={isFocus ? n.color : `color-mix(in srgb, ${n.color} 55%, transparent)`}
 							/>
 							<rect
 								class="node-accent"
