@@ -241,7 +241,7 @@
 	let canEdit = $derived(item ? workspaceStore.canEditItem(item) : false);
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
-			loadData();
+			loadData(true); // navigation (route params changed)
 		}
 	});
 
@@ -435,7 +435,7 @@
 		collectionStore.setActiveItem(null);
 	});
 
-	async function loadData() {
+	async function loadData(isNavigation = false) {
 		loading = true;
 		error = '';
 		// Clear per-item state that must NOT leak across navigation.
@@ -570,12 +570,13 @@
 			pendingNewItemEdit = page.url.searchParams.get('new') === '1';
 
 			// Deep-link: ?graph=1 opens the dependency-graph drawer on load, so
-			// item pages / standup / chat can link straight into the view. Apply
-			// only when this load is still the current route — a newer navigation
-			// runs its own loadData and owns the drawer state. Always reassign
-			// (open OR close) so a stale open state can't linger on a subsequent
-			// item.
-			if (reqWsSlug === wsSlug && reqCollSlug === collSlug && reqItemSlug === itemSlug) {
+			// item pages / standup / chat can link straight into the view. Only on
+			// NAVIGATION (not same-item data refreshes — those would stomp a local
+			// drawer toggle made mid-refresh), and only when this load is still the
+			// current route (a newer navigation owns the drawer state). Always
+			// reassign (open OR close) so a stale open state can't linger onto a
+			// subsequent item.
+			if (isNavigation && reqWsSlug === wsSlug && reqCollSlug === collSlug && reqItemSlug === itemSlug) {
 				if (reqGraph) {
 					graphLoadError = false;
 					showGraph = true;
