@@ -12,10 +12,11 @@
 	// Styling mirrors the 3D graph's control/detail surfaces (color-mix
 	// translucency, backdrop-blur) so it reads as the same UI inside a drawer.
 
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
 	import type { GraphEdge, GraphNode, GraphResponse } from '$lib/types';
 	import { createCollectionColorMap } from '$lib/graph/palette';
+	import { sseService, type ItemEvent } from '$lib/services/sse.svelte';
 
 	let {
 		workspace,
@@ -63,6 +64,7 @@
 
 	// ── Rendered model ────────────────────────────────────────────────────────────
 	interface RenderNode {
+		id: string; // item UUID — bridges SSE item events (item_id) to nodes
 		ref: string;
 		title: string;
 		collection: string;
@@ -156,6 +158,7 @@
 			if (!pos) continue;
 			const color = palette.colorForCollection(n.collection);
 			nodes.push({
+				id: n.id,
 				ref: n.ref,
 				title: n.title,
 				collection: n.collection,
@@ -202,56 +205,130 @@
 		return { nodes, edges, legend: legendEntries, bounds };
 	}
 
-	// ── Data-loading effect ───────────────────────────────────────────────────────
-	// Separate from the prop-sync effect (CONVE-606). Depends on workspace,
-	// currentFocus, depth, includeTerminal. Uses the loadToken guard so it never
-	// reads+writes the same committed $state in one reactive pass (CONVE-1688).
-	$effect(() => {
+	let refreshing = $state(false);
+
+	// Fetch + lay out the current (workspace, currentFocus, depth, includeTerminal).
+	// `background` mode (SSE-driven refetch) keeps the existing graph visible — no
+	// loading spinner, no view-refit, and errors are swallowed so an ambient blip
+	// never replaces a good graph with an error card. The loadToken guard discards
+	// stale in-flight responses (CONVE-1688: never read+write the same committed
+	// $state inside one reactive pass — the token is a plain local, not a rune).
+	async function load(background: boolean) {
 		const ws = workspace;
 		const focus = currentFocus;
 		const d = depth;
 		const term = includeTerminal;
-		void retryNonce; // dependency only — retry() bumps it to force a re-run
 
 		const token = ++loadToken;
-		loadState = 'loading';
-		errorMessage = '';
+		if (background) {
+			refreshing = true;
+		} else {
+			loadState = 'loading';
+			errorMessage = '';
+		}
 
-		let cancelled = false;
-		(async () => {
-			try {
-				const payload = await api.graph.getFocused(ws, focus, {
-					depth: d,
-					includeTerminal: term
-				});
-				if (cancelled || token !== loadToken) return;
-				const laid = await runLayout(payload);
-				if (cancelled || token !== loadToken) return;
-				renderNodes = laid.nodes;
-				renderEdges = laid.edges;
-				legend = laid.legend;
-				truncated = payload.truncated ?? false;
-				contentBounds = laid.bounds;
-				loadState = 'ready';
-				// Re-fit the view to the freshly laid-out content.
-				queueFit();
-			} catch (err) {
-				if (cancelled || token !== loadToken) return;
+		try {
+			const payload = await api.graph.getFocused(ws, focus, { depth: d, includeTerminal: term });
+			if (token !== loadToken) return;
+			const laid = await runLayout(payload);
+			if (token !== loadToken) return;
+			renderNodes = laid.nodes;
+			renderEdges = laid.edges;
+			legend = laid.legend;
+			truncated = payload.truncated ?? false;
+			contentBounds = laid.bounds;
+			loadState = 'ready';
+			if (!background) queueFit(); // don't yank the view on ambient updates
+		} catch (err) {
+			if (token !== loadToken) return;
+			if (!background) {
 				errorMessage = err instanceof Error ? err.message : 'Failed to load the graph.';
 				loadState = 'error';
 			}
-		})();
+			// background failures: keep the last good graph, try again next event
+		} finally {
+			if (token === loadToken) refreshing = false;
+		}
+	}
 
-		return () => {
-			cancelled = true;
-		};
+	// ── Data-loading effect ───────────────────────────────────────────────────────
+	// Separate from the prop-sync effect (CONVE-606). load() reads workspace,
+	// currentFocus, depth, includeTerminal synchronously (before its first await),
+	// so they register as this effect's dependencies; retryNonce is read here to
+	// force a re-run after an error without changing a real input.
+	$effect(() => {
+		void retryNonce;
+		void load(false);
 	});
 
 	function retry() {
-		// Force the load effect to re-run without changing any real input —
-		// re-rooting to the same ref wouldn't register as a change.
 		retryNonce++;
 	}
+
+	// ── Live updates (SSE) ──────────────────────────────────────────────────────────
+	// The workspace layout owns sseService.connect(); the open drawer only
+	// subscribes. Events are workspace-scoped — we correlate to the visible
+	// neighborhood by item UUID (node.id); events for items not in view no-op.
+	const GLOW_MS = 2500;
+	const REFETCH_DEBOUNCE_MS = 400;
+	let touchedRefs = $state(new Set<string>());
+	let refetchTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function refForUuid(uuid: string): string | undefined {
+		return renderNodes.find((n) => n.id === uuid)?.ref;
+	}
+
+	function touch(uuid: string) {
+		const ref = refForUuid(uuid);
+		if (!ref) return;
+		const next = new Set(touchedRefs);
+		next.add(ref);
+		touchedRefs = next;
+		setTimeout(() => {
+			const after = new Set(touchedRefs);
+			after.delete(ref);
+			touchedRefs = after;
+		}, GLOW_MS);
+	}
+
+	function scheduleRefetch() {
+		if (refetchTimer) clearTimeout(refetchTimer);
+		refetchTimer = setTimeout(() => {
+			refetchTimer = null;
+			void load(true);
+		}, REFETCH_DEBOUNCE_MS);
+	}
+
+	function handleItemEvent(event: ItemEvent) {
+		switch (event.type) {
+			case 'item_updated':
+				touch(event.item_id); // snappy glow
+				scheduleRefetch(); // status/title/terminal may have changed
+				break;
+			case 'item_created':
+			case 'item_archived':
+			case 'item_restored':
+				// Structural: a node may need to appear or disappear.
+				scheduleRefetch();
+				break;
+			case 'comment_created':
+				touch(event.item_id); // ambient liveness, glow only
+				break;
+			// Ignore comment_updated/deleted, reaction_*, workspace_updated, etc.
+		}
+	}
+
+	onMount(() => {
+		const unsubEvent = sseService.onItemEvent(handleItemEvent);
+		// Bulk updates / replay-gap backfills route through onSyncRequired, not
+		// onItemEvent — fold them into the same debounced refetch.
+		const unsubSync = sseService.onSyncRequired(() => scheduleRefetch());
+		return () => {
+			unsubEvent();
+			unsubSync();
+			if (refetchTimer) clearTimeout(refetchTimer);
+		};
+	});
 
 	// ── Pan / zoom ────────────────────────────────────────────────────────────────
 	let viewport = $state<HTMLDivElement | null>(null);
@@ -468,6 +545,7 @@
 							class="node"
 							class:focus={isFocus}
 							class:terminal={n.isTerminal}
+							class:touched={touchedRefs.has(n.ref)}
 							transform="translate({n.x - NODE_W / 2} {n.y - NODE_H / 2})"
 							role="button"
 							tabindex="0"
@@ -524,6 +602,14 @@
 		{#if truncated && loadState === 'ready'}
 			<div class="truncated-note">
 				Showing the closest {renderNodes.length} items — click a node to explore further.
+			</div>
+		{/if}
+
+		<!-- Live-refresh indicator (SSE-driven background reload). -->
+		{#if refreshing && loadState === 'ready'}
+			<div class="live-note" aria-live="polite">
+				<span class="live-dot" aria-hidden="true"></span>
+				updating…
 			</div>
 		{/if}
 	</div>
@@ -681,6 +767,20 @@
 	.node:focus-visible .node-bg {
 		stroke-width: 3;
 	}
+	/* Transient glow when an item changes live (SSE). */
+	.node.touched .node-bg {
+		animation: node-pulse 2.5s ease-out;
+	}
+	@keyframes node-pulse {
+		0% {
+			filter: drop-shadow(0 0 0 color-mix(in srgb, #fff 90%, transparent));
+			stroke-width: 3.5;
+		}
+		100% {
+			filter: drop-shadow(0 0 10px color-mix(in srgb, #fff 0%, transparent));
+			stroke-width: 1.5;
+		}
+	}
 	.node-ref {
 		font-family: var(--font-mono, ui-monospace, monospace);
 		font-size: 11px;
@@ -784,5 +884,38 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 		backdrop-filter: blur(6px);
+	}
+
+	.live-note {
+		position: absolute;
+		top: var(--space-3);
+		right: var(--space-3);
+		z-index: 4;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		padding: 2px var(--space-2);
+		font-size: 0.72em;
+		color: var(--text-muted);
+		background: color-mix(in srgb, var(--bg-secondary) 90%, transparent);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		backdrop-filter: blur(6px);
+	}
+	.live-dot {
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: #10b981;
+		animation: live-blink 1s ease-in-out infinite;
+	}
+	@keyframes live-blink {
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.3;
+		}
 	}
 </style>
