@@ -143,9 +143,7 @@
 		typeof import('$lib/components/graph/ItemGraph.svelte').default | null
 	>(null);
 	let graphLoadError = $state(false);
-	async function openGraph() {
-		graphLoadError = false;
-		showGraph = true;
+	async function ensureGraphComp() {
 		if (!ItemGraphComp) {
 			try {
 				ItemGraphComp = (await import('$lib/components/graph/ItemGraph.svelte')).default;
@@ -154,15 +152,38 @@
 			}
 		}
 	}
+	// Keep the ?graph=1 deep-link param in sync with the open state so the drawer
+	// is shareable + back-button-aware. No-op when already in the desired state to
+	// avoid a redundant navigation (e.g. opening from an existing ?graph=1 load).
+	function setGraphParam(open: boolean) {
+		const has = page.url.searchParams.get('graph') === '1';
+		if (has === open) return;
+		const url = new URL(page.url);
+		if (open) url.searchParams.set('graph', '1');
+		else url.searchParams.delete('graph');
+		goto(url, { replaceState: true, noScroll: true, keepFocus: true });
+	}
+	function openGraph() {
+		graphLoadError = false;
+		showGraph = true;
+		void ensureGraphComp();
+		setGraphParam(true);
+	}
+	function closeGraph() {
+		showGraph = false;
+		setGraphParam(false);
+	}
 	function openItemFromGraph(ref: string, collection?: string) {
 		showGraph = false;
+		// Navigating to a new item replaces the URL (the ?graph param doesn't
+		// carry), so no explicit param cleanup is needed here.
 		goto(`/${username}/${wsSlug}/${collection ?? collSlug}/${ref}`);
 	}
 	// ESC closes the graph drawer (only while open — no global listener otherwise).
 	$effect(() => {
 		if (!showGraph) return;
 		const onKey = (e: KeyboardEvent) => {
-			if (e.key === 'Escape') showGraph = false;
+			if (e.key === 'Escape') closeGraph();
 		};
 		window.addEventListener('keydown', onKey);
 		return () => window.removeEventListener('keydown', onKey);
@@ -541,6 +562,18 @@
 			// (true OR false) so a stale flag from a previous ?new=1 load
 			// can't fire on a subsequent non-new item load — Codex round 6.
 			pendingNewItemEdit = page.url.searchParams.get('new') === '1';
+
+			// Deep-link: ?graph=1 opens the dependency-graph drawer on load, so
+			// item pages / standup / chat can link straight into the view. Mirror
+			// the one-shot capture above — always reassign so a stale open state
+			// from a previous ?graph load doesn't linger on a subsequent item.
+			if (page.url.searchParams.get('graph') === '1') {
+				graphLoadError = false;
+				showGraph = true;
+				void ensureGraphComp();
+			} else {
+				showGraph = false;
+			}
 		}
 	}
 
@@ -2978,15 +3011,15 @@
 			role="button"
 			tabindex="-1"
 			aria-label="Close dependency graph"
-			onclick={() => (showGraph = false)}
+			onclick={closeGraph}
 			onkeydown={(e) => {
-				if (e.key === 'Enter' || e.key === ' ') showGraph = false;
+				if (e.key === 'Enter' || e.key === ' ') closeGraph();
 			}}
 		></div>
 		<aside class="graph-drawer" aria-label="Dependency graph">
 			<header class="graph-drawer-header">
 				<span class="graph-drawer-title">🕸 {graphFocusRef} — dependency graph</span>
-				<button class="action-btn" onclick={() => (showGraph = false)}>Close ✕</button>
+				<button class="action-btn" onclick={closeGraph}>Close ✕</button>
 			</header>
 			<div class="graph-drawer-body">
 				{#if graphLoadError}
