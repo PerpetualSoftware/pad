@@ -223,6 +223,14 @@
 		if (background) {
 			refreshing = true;
 		} else {
+			// A foreground load (initial, reroot, depth/term change) supersedes any
+			// armed background refetch — cancel its timer so the delayed callback
+			// can't fire later and bump loadToken, cancelling THIS load and
+			// (on a background failure) leaving the view stuck on the spinner.
+			if (refetchTimer) {
+				clearTimeout(refetchTimer);
+				refetchTimer = null;
+			}
 			loadState = 'loading';
 			errorMessage = '';
 		}
@@ -326,6 +334,13 @@
 		if (refetchTimer) clearTimeout(refetchTimer);
 		refetchTimer = setTimeout(() => {
 			refetchTimer = null;
+			// Re-check at fire time: state may have left 'ready' since scheduling
+			// (e.g. a foreground reroot started, or an error). Defer rather than
+			// clobber the foreground load.
+			if (loadState !== 'ready') {
+				pendingRefetch = true;
+				return;
+			}
 			void load(true);
 		}, REFETCH_DEBOUNCE_MS);
 	}
