@@ -131,6 +131,42 @@
 	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
 	let shareDialogOpen = $state(false);
 	let editCollectionOpen = $state(false);
+
+	// Per-item dependency graph drawer (PLAN-1780 / TASK-1784). The renderer
+	// (and its dagre layout lib) are dynamically imported on first open so they
+	// stay out of the item-page bundle.
+	let showGraph = $state(false);
+	// The graph focuses by issue ref (e.g. TASK-5); null when the item has no
+	// number (shouldn't happen, but gates the button so we never focus on '').
+	let graphFocusRef = $derived(item ? formatItemRef(item) : null);
+	let ItemGraphComp = $state<
+		typeof import('$lib/components/graph/ItemGraph.svelte').default | null
+	>(null);
+	let graphLoadError = $state(false);
+	async function openGraph() {
+		graphLoadError = false;
+		showGraph = true;
+		if (!ItemGraphComp) {
+			try {
+				ItemGraphComp = (await import('$lib/components/graph/ItemGraph.svelte')).default;
+			} catch {
+				graphLoadError = true;
+			}
+		}
+	}
+	function openItemFromGraph(ref: string, collection?: string) {
+		showGraph = false;
+		goto(`/${username}/${wsSlug}/${collection ?? collSlug}/${ref}`);
+	}
+	// ESC closes the graph drawer (only while open — no global listener otherwise).
+	$effect(() => {
+		if (!showGraph) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === 'Escape') showGraph = false;
+		};
+		window.addEventListener('keydown', onKey);
+		return () => window.removeEventListener('keydown', onKey);
+	});
 	let editCollectionSection = $state<'general' | 'fields' | 'display' | 'actions' | undefined>(undefined);
 	let agentRoles = $state<AgentRole[]>([]);
 	let childItemIds = $state<Set<string>>(new Set());
@@ -2328,6 +2364,15 @@
 			>
 				Timeline
 			</button>
+			{#if graphFocusRef}
+				<button
+					class="action-btn"
+					title="View this item's dependency graph"
+					onclick={openGraph}
+				>
+					🕸 Graph
+				</button>
+			{/if}
 			{#if backlinksCount > 0}
 				<!--
 					Mention badge (PLAN-1593 / TASK-1596). Surfaces the inbound
@@ -2924,6 +2969,39 @@
 			targetName={formatItemRef(item) || item.title}
 			bind:open={shareDialogOpen}
 		/>
+	{/if}
+
+	{#if showGraph && item && graphFocusRef}
+		<!-- Per-item dependency graph drawer (PLAN-1780 / TASK-1784). -->
+		<div
+			class="graph-drawer-backdrop"
+			role="button"
+			tabindex="-1"
+			aria-label="Close dependency graph"
+			onclick={() => (showGraph = false)}
+			onkeydown={(e) => {
+				if (e.key === 'Enter' || e.key === ' ') showGraph = false;
+			}}
+		></div>
+		<aside class="graph-drawer" aria-label="Dependency graph">
+			<header class="graph-drawer-header">
+				<span class="graph-drawer-title">🕸 {graphFocusRef} — dependency graph</span>
+				<button class="action-btn" onclick={() => (showGraph = false)}>Close ✕</button>
+			</header>
+			<div class="graph-drawer-body">
+				{#if graphLoadError}
+					<div class="graph-drawer-state">
+						<p>Couldn’t load the graph view.</p>
+						<button class="action-btn" onclick={openGraph}>Retry</button>
+					</div>
+				{:else if ItemGraphComp}
+					{@const Graph = ItemGraphComp}
+					<Graph workspace={wsSlug} focusRef={graphFocusRef} onOpenItem={openItemFromGraph} />
+				{:else}
+					<div class="graph-drawer-state">Loading graph…</div>
+				{/if}
+			</div>
+		</aside>
 	{/if}
 
 	{#if isOwner && collection}
@@ -3714,6 +3792,65 @@
 		background: var(--accent-blue);
 		border-color: var(--accent-blue);
 		color: #fff;
+	}
+
+	/* Per-item dependency graph drawer (PLAN-1780 / TASK-1784). Right-docked
+	   panel with a dimming backdrop; on narrow viewports it fills the screen. */
+	.graph-drawer-backdrop {
+		position: fixed;
+		inset: 0;
+		background: color-mix(in srgb, #000 55%, transparent);
+		backdrop-filter: blur(2px);
+		z-index: 90;
+		border: 0;
+		cursor: pointer;
+	}
+	.graph-drawer {
+		position: fixed;
+		top: 0;
+		right: 0;
+		bottom: 0;
+		width: min(900px, 92vw);
+		display: flex;
+		flex-direction: column;
+		background: var(--bg-primary);
+		border-left: 1px solid var(--border);
+		box-shadow: -8px 0 32px rgba(0, 0, 0, 0.4);
+		z-index: 91;
+	}
+	.graph-drawer-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2);
+		padding: var(--space-3) var(--space-4);
+		border-bottom: 1px solid var(--border);
+		flex: 0 0 auto;
+	}
+	.graph-drawer-title {
+		font-weight: 600;
+		font-size: 0.95em;
+		color: var(--text-primary);
+	}
+	.graph-drawer-body {
+		flex: 1 1 auto;
+		min-height: 0;
+		position: relative;
+	}
+	.graph-drawer-state {
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-3);
+		height: 100%;
+		color: var(--text-secondary);
+	}
+	@media (max-width: 640px) {
+		.graph-drawer {
+			width: 100vw;
+			border-left: 0;
+		}
 	}
 	.star-btn.starred {
 		color: var(--accent-amber);

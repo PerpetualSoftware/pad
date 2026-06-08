@@ -26,7 +26,9 @@
 		workspace: string;
 		focusRef: string;
 		depth?: number;
-		onOpenItem?: (ref: string) => void;
+		/** Called to open an item — collection is provided so callers can build
+		 *  a /{user}/{ws}/{collection}/{ref} URL without a lookup. */
+		onOpenItem?: (ref: string, collection?: string) => void;
 	} = $props();
 
 	// ── Fixed layout geometry ────────────────────────────────────────────────────
@@ -327,16 +329,20 @@
 	}
 
 	// ── Interactions ──────────────────────────────────────────────────────────────
+	function collectionFor(ref: string): string | undefined {
+		return renderNodes.find((n) => n.ref === ref)?.collection;
+	}
+
 	function onNodeClick(ref: string) {
 		if (ref === currentFocus) {
-			onOpenItem?.(ref);
+			onOpenItem?.(ref, collectionFor(ref));
 		} else {
 			currentFocus = ref;
 		}
 	}
 
 	function openFocused() {
-		onOpenItem?.(currentFocus);
+		onOpenItem?.(currentFocus, collectionFor(currentFocus));
 	}
 
 	function backToOrigin() {
