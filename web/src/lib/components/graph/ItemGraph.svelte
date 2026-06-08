@@ -239,6 +239,12 @@
 			contentBounds = laid.bounds;
 			loadState = 'ready';
 			if (!background) queueFit(); // don't yank the view on ambient updates
+			// A mutation that arrived mid-load was deferred; now that we're ready,
+			// reconcile it (the just-committed response may predate it).
+			if (pendingRefetch) {
+				pendingRefetch = false;
+				scheduleRefetch();
+			}
 		} catch (err) {
 			if (token !== loadToken) return;
 			if (!background) {
@@ -278,6 +284,10 @@
 	// event, not the first). Tracked so teardown can cancel them — otherwise a
 	// timeout could fire and write touchedRefs on a destroyed component.
 	const glowTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	// Set when a refetch is requested before the first graph is ready; flushed
+	// once load() commits a ready graph, so a mutation that lands mid-initial-load
+	// (and may not be reflected in that first response) still gets reconciled.
+	let pendingRefetch = false;
 
 	function refForUuid(uuid: string): string | undefined {
 		return renderNodes.find((n) => n.id === uuid)?.ref;
@@ -307,9 +317,12 @@
 		// Before that (initial load in flight, or an error/idle state), a
 		// background load would cancel the foreground load's token while skipping
 		// fit + error handling — leaving the view un-fitted or stuck on the
-		// spinner. The in-flight initial load already fetches the latest data, so
-		// dropping events here loses nothing.
-		if (loadState !== 'ready') return;
+		// spinner. Defer instead of drop: the initial load may have been issued
+		// before this mutation, so we flush a refetch once it reaches ready.
+		if (loadState !== 'ready') {
+			pendingRefetch = true;
+			return;
+		}
 		if (refetchTimer) clearTimeout(refetchTimer);
 		refetchTimer = setTimeout(() => {
 			refetchTimer = null;
