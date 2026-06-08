@@ -17,6 +17,24 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
+// supportedOAuthProviders is the set of OAuth providers pad accepts for
+// cloud login/linking. The pad-cloud sidecar verifies the provider response
+// (GitHub/Google via the browser redirect flow; Apple via native
+// identity-token verification — PLAN-1772) before calling these endpoints,
+// so this is a defense-in-depth allowlist, not the primary trust boundary.
+// Storage (users.oauth_providers) is a free-form JSON array with no DB
+// constraint, so adding a provider here is the only gate to widen.
+var supportedOAuthProviders = map[string]bool{
+	"github": true,
+	"google": true,
+	"apple":  true,
+}
+
+// isSupportedOAuthProvider reports whether provider is one pad accepts.
+func isSupportedOAuthProvider(provider string) bool {
+	return supportedOAuthProviders[provider]
+}
+
 // validateCloudSecret checks the cloud_secret field in a JSON request body
 // against the server's configured cloud secret. Returns true if the secret
 // matches; writes a 403 error and returns false otherwise.
@@ -161,8 +179,8 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", "provider is required")
 		return
 	}
-	if input.Provider != "github" && input.Provider != "google" {
-		writeError(w, http.StatusBadRequest, "bad_request", "provider must be 'github' or 'google'")
+	if !isSupportedOAuthProvider(input.Provider) {
+		writeError(w, http.StatusBadRequest, "bad_request", "provider must be 'github', 'google', or 'apple'")
 		return
 	}
 
@@ -385,8 +403,8 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Validate provider
-	if input.Provider != "github" && input.Provider != "google" {
-		writeError(w, http.StatusBadRequest, "bad_request", "provider must be 'github' or 'google'")
+	if !isSupportedOAuthProvider(input.Provider) {
+		writeError(w, http.StatusBadRequest, "bad_request", "provider must be 'github', 'google', or 'apple'")
 		return
 	}
 
@@ -457,8 +475,8 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Provider != "github" && input.Provider != "google" {
-		writeError(w, http.StatusBadRequest, "bad_request", "provider must be 'github' or 'google'")
+	if !isSupportedOAuthProvider(input.Provider) {
+		writeError(w, http.StatusBadRequest, "bad_request", "provider must be 'github', 'google', or 'apple'")
 		return
 	}
 
