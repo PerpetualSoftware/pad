@@ -94,6 +94,45 @@ func TestOAuthLogin_AppleProvider_StillRequiresVerifiedEmail(t *testing.T) {
 	}
 }
 
+// TestOAuthLink_AppleProvider_Links exercises the second allowlist site
+// (handleOAuthLink) through the real handler, proving the shared helper was
+// wired there too — not just in oauth-login. (oauth-unlink shares the same
+// isSupportedOAuthProvider gate; it's covered by the unit test.)
+func TestOAuthLink_AppleProvider_Links(t *testing.T) {
+	srv := testServer(t)
+	srv.SetCloudMode(oauthProviderTestSecret)
+
+	// Create the account first via a google login, then link apple to it.
+	if rr := postOAuthLogin(t, srv, map[string]interface{}{
+		"provider":       "google",
+		"email":          "linker@example.com",
+		"name":           "Linker",
+		"email_verified": true,
+	}); rr.Code != http.StatusOK {
+		t.Fatalf("seed google login: got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	req := cloudAdminReq(t, "POST", "/api/v1/auth/oauth-link", map[string]interface{}{
+		"provider":       "apple",
+		"email":          "linker@example.com",
+		"email_verified": true,
+		"cloud_secret":   oauthProviderTestSecret,
+	}, map[string]string{"X-Cloud-Secret": oauthProviderTestSecret})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("oauth-link apple: got %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+
+	user, err := srv.store.GetUserByEmail("linker@example.com")
+	if err != nil || user == nil {
+		t.Fatalf("user lookup: %v", err)
+	}
+	if !user.HasOAuthProvider("apple") {
+		t.Errorf("apple not linked via oauth-link: %q", user.OAuthProviders)
+	}
+}
+
 func TestOAuthLogin_UnknownProvider_Rejected(t *testing.T) {
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
