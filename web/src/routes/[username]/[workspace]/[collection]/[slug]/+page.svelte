@@ -153,8 +153,10 @@
 		}
 	}
 	// Keep the ?graph=1 deep-link param in sync with the open state so the drawer
-	// is shareable + back-button-aware. No-op when already in the desired state to
-	// avoid a redundant navigation (e.g. opening from an existing ?graph=1 load).
+	// is shareable (copying the URL reopens it). Uses replaceState — an ephemeral
+	// drawer toggle deliberately doesn't push a history entry. No-op when already
+	// in the desired state to avoid a redundant navigation (e.g. opening from an
+	// existing ?graph=1 load).
 	function setGraphParam(open: boolean) {
 		const has = page.url.searchParams.get('graph') === '1';
 		if (has === open) return;
@@ -472,6 +474,10 @@
 		const reqWsSlug = wsSlug;
 		const reqCollSlug = collSlug;
 		const reqItemSlug = itemSlug;
+		// Capture the ?graph deep-link intent at request scope (not in the async
+		// finally) so a late-finishing load can't read a URL that has since
+		// changed and force the drawer open against the newer route.
+		const reqGraph = page.url.searchParams.get('graph') === '1';
 		try {
 			// Workspace items are needed for wiki-link resolution at Y.Doc
 			// seed time (the $effect ~line 904 below) and for the
@@ -564,15 +570,19 @@
 			pendingNewItemEdit = page.url.searchParams.get('new') === '1';
 
 			// Deep-link: ?graph=1 opens the dependency-graph drawer on load, so
-			// item pages / standup / chat can link straight into the view. Mirror
-			// the one-shot capture above — always reassign so a stale open state
-			// from a previous ?graph load doesn't linger on a subsequent item.
-			if (page.url.searchParams.get('graph') === '1') {
-				graphLoadError = false;
-				showGraph = true;
-				void ensureGraphComp();
-			} else {
-				showGraph = false;
+			// item pages / standup / chat can link straight into the view. Apply
+			// only when this load is still the current route — a newer navigation
+			// runs its own loadData and owns the drawer state. Always reassign
+			// (open OR close) so a stale open state can't linger on a subsequent
+			// item.
+			if (reqWsSlug === wsSlug && reqCollSlug === collSlug && reqItemSlug === itemSlug) {
+				if (reqGraph) {
+					graphLoadError = false;
+					showGraph = true;
+					void ensureGraphComp();
+				} else {
+					showGraph = false;
+				}
 			}
 		}
 	}
