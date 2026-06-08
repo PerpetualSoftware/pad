@@ -36,6 +36,7 @@
 		}
 	},
 	"dependencies": {
+		"@dagrejs/dagre": "3.0.0",
 		"@tiptap/core": "^3.22.5",
 		"@tiptap/extension-bubble-menu": "^3.22.5",
 		"@tiptap/extension-code-block-lowlight": "^3.22.5",
