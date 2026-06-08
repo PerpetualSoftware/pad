@@ -152,11 +152,26 @@
 			}
 		}
 	}
-	// Keep the ?graph=1 deep-link param in sync with the open state so the drawer
-	// is shareable (copying the URL reopens it). Uses replaceState — an ephemeral
-	// drawer toggle deliberately doesn't push a history entry. No-op when already
-	// in the desired state to avoid a redundant navigation (e.g. opening from an
-	// existing ?graph=1 load).
+	// ?graph=1 is the SINGLE SOURCE OF TRUTH for the drawer's open state, so it
+	// follows navigation, browser back/forward, and search-param-only URL changes
+	// uniformly — and data refreshes (which don't touch the URL) never affect it.
+	// This effect only reads the URL and writes showGraph; the lazy component load
+	// is deferred to a microtask so reading ItemGraphComp inside ensureGraphComp
+	// isn't captured as a dependency of this effect.
+	$effect(() => {
+		const wantGraph = page.url.searchParams.get('graph') === '1';
+		if (wantGraph) {
+			graphLoadError = false;
+			showGraph = true;
+			void Promise.resolve().then(ensureGraphComp);
+		} else {
+			showGraph = false;
+		}
+	});
+	// Toggle the drawer by changing the param; the effect above reflects it.
+	// Uses replaceState — an ephemeral drawer toggle deliberately doesn't push a
+	// history entry. No-op when already in the desired state to avoid a redundant
+	// navigation (e.g. clicking open while already deep-linked with ?graph=1).
 	function setGraphParam(open: boolean) {
 		const has = page.url.searchParams.get('graph') === '1';
 		if (has === open) return;
@@ -166,19 +181,21 @@
 		goto(url, { replaceState: true, noScroll: true, keepFocus: true });
 	}
 	function openGraph() {
-		graphLoadError = false;
-		showGraph = true;
-		void ensureGraphComp();
 		setGraphParam(true);
 	}
 	function closeGraph() {
-		showGraph = false;
 		setGraphParam(false);
 	}
+	// Retry the lazy component import after a load failure. The ?graph param is
+	// already set (the drawer is open showing the error), so setGraphParam would
+	// no-op — re-run the import directly.
+	function retryGraphLoad() {
+		graphLoadError = false;
+		void ensureGraphComp();
+	}
 	function openItemFromGraph(ref: string, collection?: string) {
-		showGraph = false;
-		// Navigating to a new item replaces the URL (the ?graph param doesn't
-		// carry), so no explicit param cleanup is needed here.
+		// Navigate to the item without ?graph; the URL-watching effect closes the
+		// drawer once the new route (no param) takes effect.
 		goto(`/${username}/${wsSlug}/${collection ?? collSlug}/${ref}`);
 	}
 	// ESC closes the graph drawer (only while open — no global listener otherwise).
@@ -241,7 +258,7 @@
 	let canEdit = $derived(item ? workspaceStore.canEditItem(item) : false);
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
-			loadData(true); // navigation (route params changed)
+			loadData();
 		}
 	});
 
@@ -435,7 +452,7 @@
 		collectionStore.setActiveItem(null);
 	});
 
-	async function loadData(isNavigation = false) {
+	async function loadData() {
 		loading = true;
 		error = '';
 		// Clear per-item state that must NOT leak across navigation.
@@ -474,10 +491,6 @@
 		const reqWsSlug = wsSlug;
 		const reqCollSlug = collSlug;
 		const reqItemSlug = itemSlug;
-		// Capture the ?graph deep-link intent at request scope (not in the async
-		// finally) so a late-finishing load can't read a URL that has since
-		// changed and force the drawer open against the newer route.
-		const reqGraph = page.url.searchParams.get('graph') === '1';
 		try {
 			// Workspace items are needed for wiki-link resolution at Y.Doc
 			// seed time (the $effect ~line 904 below) and for the
@@ -568,23 +581,6 @@
 			// (true OR false) so a stale flag from a previous ?new=1 load
 			// can't fire on a subsequent non-new item load — Codex round 6.
 			pendingNewItemEdit = page.url.searchParams.get('new') === '1';
-
-			// Deep-link: ?graph=1 opens the dependency-graph drawer on load, so
-			// item pages / standup / chat can link straight into the view. Only on
-			// NAVIGATION (not same-item data refreshes — those would stomp a local
-			// drawer toggle made mid-refresh), and only when this load is still the
-			// current route (a newer navigation owns the drawer state). Always
-			// reassign (open OR close) so a stale open state can't linger onto a
-			// subsequent item.
-			if (isNavigation && reqWsSlug === wsSlug && reqCollSlug === collSlug && reqItemSlug === itemSlug) {
-				if (reqGraph) {
-					graphLoadError = false;
-					showGraph = true;
-					void ensureGraphComp();
-				} else {
-					showGraph = false;
-				}
-			}
 		}
 	}
 
@@ -3036,7 +3032,7 @@
 				{#if graphLoadError}
 					<div class="graph-drawer-state">
 						<p>Couldn’t load the graph view.</p>
-						<button class="action-btn" onclick={openGraph}>Retry</button>
+						<button class="action-btn" onclick={retryGraphLoad}>Retry</button>
 					</div>
 				{:else if ItemGraphComp}
 					{@const Graph = ItemGraphComp}
