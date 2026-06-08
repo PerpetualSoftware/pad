@@ -3,10 +3,29 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// Focus-mode bounds for the per-item neighborhood view (PLAN-1780 /
+// TASK-1781). defaultFocusDepth is the BFS hop count when ?depth is
+// omitted; maxFocusDepth caps it so a deep chain can't expand into the
+// whole workspace. maxFocusNodes caps the neighborhood size — when the
+// BFS would exceed it, expansion stops (closest nodes first) and the
+// response is flagged truncated so the client can offer expand-on-click.
+const (
+	defaultFocusDepth = 2
+	maxFocusDepth     = 5
+)
+
+// maxFocusNodes caps the focus-mode neighborhood size — when the BFS
+// would exceed it, expansion stops (closest nodes first) and the
+// response is flagged truncated so the client can offer expand-on-click.
+// A var, not a const, so tests can lower it without standing up hundreds
+// of items (which would trip the per-IP create rate limiter).
+var maxFocusNodes = 200
 
 // GraphNode is one item in the workspace graph
 // (GET /workspaces/{ws}/graph — PLAN-1730 / TASK-1731). Nodes are
@@ -45,10 +64,16 @@ type GraphEdge struct {
 
 // GraphResponse is the payload of GET /workspaces/{ws}/graph — the
 // whole workspace as {nodes, edges} in one call, feeding the 3D graph
-// view (PLAN-1730).
+// view (PLAN-1730) and the per-item neighborhood view (PLAN-1780).
 type GraphResponse struct {
 	Nodes []GraphNode `json:"nodes"`
 	Edges []GraphEdge `json:"edges"`
+	// Truncated is set in focus mode when the neighborhood hit
+	// maxFocusNodes and BFS expansion stopped early — the client should
+	// offer expand-on-click rather than treat the graph as complete.
+	// Omitted (false) for the unbounded whole-workspace view so its
+	// payload shape is unchanged.
+	Truncated bool `json:"truncated,omitempty"`
 }
 
 // handleGetWorkspaceGraph serves GET /api/v1/workspaces/{ws}/graph.
@@ -57,7 +82,14 @@ type GraphResponse struct {
 //   - include_terminal=true — include items in terminal status
 //     (done/fixed/archived/...). Default false: the graph view opens
 //     showing active work only; large workspaces would otherwise be
-//     hairball soup.
+//     hairball soup. The focused item itself is always included even
+//     when terminal — you asked to look at it.
+//   - focus=REF — render only the neighborhood around this item
+//     (PLAN-1780). BFS-traverses typed edges out from the ref,
+//     undirected, returning nodes reachable within `depth` hops plus the
+//     edges among them. An unknown/invisible ref returns 404.
+//   - depth=N — focus-mode hop count (default 2, clamped to
+//     [1, maxFocusDepth]). Ignored without focus.
 //
 // Visibility follows the dashboard model exactly: collection-level
 // visibility via visibleCollectionIDs, item-level guest grants via
@@ -71,6 +103,19 @@ func (s *Server) handleGetWorkspaceGraph(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	includeTerminal := r.URL.Query().Get("include_terminal") == "true"
+	focus := r.URL.Query().Get("focus")
+	depth := defaultFocusDepth
+	if d := r.URL.Query().Get("depth"); d != "" {
+		if n, err := strconv.Atoi(d); err == nil {
+			depth = n
+		}
+	}
+	if depth < 1 {
+		depth = 1
+	}
+	if depth > maxFocusDepth {
+		depth = maxFocusDepth
+	}
 
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
 	if err != nil {
@@ -114,20 +159,96 @@ func (s *Server) handleGetWorkspaceGraph(w http.ResponseWriter, r *http.Request)
 
 	resp := GraphResponse{Nodes: []GraphNode{}, Edges: []GraphEdge{}}
 
-	// Build the visible node set first; edges are filtered against it.
-	refByID := make(map[string]string, len(items))
-	nodeIdx := make(map[string]int, len(items)) // item ID → index in resp.Nodes
+	// Per-item terminal/status data for every visible item, keyed by ID.
+	// Computed once; both the whole-workspace path and focus BFS read it.
+	type itemMeta struct {
+		terminal bool
+		status   string
+	}
+	metaByID := make(map[string]itemMeta, len(items))
+	focusID := ""
 	for _, item := range items {
 		if item.Ref == "" {
 			continue
 		}
 		terminal := isItemDone(item.Fields, item.CollectionID, ctxMap)
-		if terminal && !includeTerminal {
-			continue
-		}
 		var fields map[string]any
 		_ = json.Unmarshal([]byte(item.Fields), &fields)
 		status, _ := fields["status"].(string)
+		metaByID[item.ID] = itemMeta{terminal: terminal, status: status}
+		if focus != "" && item.Ref == focus {
+			focusID = item.ID
+		}
+	}
+
+	// Decide which item IDs are in the rendered node set.
+	included := make(map[string]bool, len(items))
+	if focus == "" {
+		// Whole-workspace view: every visible item, terminal filtered.
+		for id, m := range metaByID {
+			if m.terminal && !includeTerminal {
+				continue
+			}
+			included[id] = true
+		}
+	} else {
+		// Focus view: BFS the neighborhood around focusID. An unknown or
+		// invisible ref is a 404 — the caller can't tell those apart, by
+		// design (no leaking existence of items the user can't see).
+		if focusID == "" {
+			writeError(w, http.StatusNotFound, "not_found", "focus item not found")
+			return
+		}
+		// Undirected adjacency among visible items only, so the BFS can't
+		// hop through (or to) items outside the visible set.
+		adj := make(map[string][]string)
+		for _, l := range links {
+			_, srcOK := metaByID[l.SourceID]
+			_, tgtOK := metaByID[l.TargetID]
+			if !srcOK || !tgtOK {
+				continue
+			}
+			adj[l.SourceID] = append(adj[l.SourceID], l.TargetID)
+			adj[l.TargetID] = append(adj[l.TargetID], l.SourceID)
+		}
+		// The focus node is always included, even if terminal — you asked
+		// to view it. Neighbors honor the terminal filter.
+		included[focusID] = true
+		frontier := []string{focusID}
+		for hop := 0; hop < depth && len(frontier) > 0 && !resp.Truncated; hop++ {
+			var next []string
+			for _, id := range frontier {
+				for _, nb := range adj[id] {
+					if included[nb] {
+						continue
+					}
+					if metaByID[nb].terminal && !includeTerminal {
+						continue
+					}
+					if len(included) >= maxFocusNodes {
+						resp.Truncated = true
+						break
+					}
+					included[nb] = true
+					next = append(next, nb)
+				}
+				if resp.Truncated {
+					break
+				}
+			}
+			frontier = next
+		}
+	}
+
+	// Build nodes in items order (stable) for the included set; edges are
+	// filtered against it so guests never see dangling endpoints.
+	refByID := make(map[string]string, len(included))
+	nodeIdx := make(map[string]int, len(included)) // item ID → index in resp.Nodes
+	for _, item := range items {
+		if item.Ref == "" || !included[item.ID] {
+			continue
+		}
+		m := metaByID[item.ID]
 		refByID[item.ID] = item.Ref
 		nodeIdx[item.ID] = len(resp.Nodes)
 		resp.Nodes = append(resp.Nodes, GraphNode{
@@ -135,8 +256,8 @@ func (s *Server) handleGetWorkspaceGraph(w http.ResponseWriter, r *http.Request)
 			Ref:        item.Ref,
 			Title:      item.Title,
 			Collection: item.CollectionSlug,
-			Status:     status,
-			IsTerminal: terminal,
+			Status:     m.status,
+			IsTerminal: m.terminal,
 			UpdatedAt:  item.UpdatedAt,
 			Role:       item.AgentRoleSlug,
 		})
