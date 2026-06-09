@@ -3850,7 +3850,7 @@
 		top: 0;
 		right: 0;
 		bottom: 0;
-		width: min(900px, 92vw);
+		width: min(1500px, 94vw);
 		display: flex;
 		flex-direction: column;
 		background: var(--bg-primary);

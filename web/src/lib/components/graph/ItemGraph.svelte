@@ -4,10 +4,10 @@
 	//
 	// Given a workspace + a focused item ref, fetches the dependency neighborhood
 	// from the API and lays it out top-to-bottom with dagre (parents above,
-	// children below), rendering to SVG. Clicking a non-focus node re-roots the
-	// graph along the dependency chain; clicking the focus node (or the Open
-	// button) opens the item. The SVG is pannable (pointer-drag) and zoomable
-	// (wheel).
+	// children below), rendering to SVG. Single-clicking a node selects it and
+	// opens a detail panel (status + open/re-root actions); double-clicking zooms
+	// to it. The legend toggles collection visibility. The SVG is pannable
+	// (pointer-drag) and zoomable (wheel).
 	//
 	// Styling mirrors the 3D graph's control/detail surfaces (color-mix
 	// translucency, backdrop-blur) so it reads as the same UI inside a drawer.
@@ -33,8 +33,8 @@
 	} = $props();
 
 	// ── Fixed layout geometry ────────────────────────────────────────────────────
-	const NODE_W = 160;
-	const NODE_H = 48;
+	const NODE_W = 212;
+	const NODE_H = 60;
 
 	// ── Re-rooting + controls state ───────────────────────────────────────────────
 	// The graph re-roots on `currentFocus`, NOT the prop directly — clicking a node
@@ -93,7 +93,21 @@
 	let renderEdges = $state<RenderEdge[]>([]);
 	let legend = $state<{ slug: string; color: string }[]>([]);
 	let truncated = $state(false);
-	let contentBounds = $state({ x: 0, y: 0, w: 1, h: 1 });
+
+	// Collections toggled off via the legend — their nodes (and any edge touching
+	// them) are hidden without recomputing the layout, so positions stay stable.
+	let hiddenCollections = $state(new Set<string>());
+	// The node whose detail panel is open (single-click selection).
+	let selectedRef = $state<string | null>(null);
+
+	const visibleNodes = $derived(renderNodes.filter((n) => !hiddenCollections.has(n.collection)));
+	const visibleRefs = $derived(new Set(visibleNodes.map((n) => n.ref)));
+	const visibleEdges = $derived(
+		renderEdges.filter((e) => visibleRefs.has(e.source) && visibleRefs.has(e.target))
+	);
+	const selectedNode = $derived(
+		selectedRef ? (renderNodes.find((n) => n.ref === selectedRef) ?? null) : null
+	);
 
 	// Bumped by retry() to force the load effect to re-run after an error,
 	// even when none of the real inputs changed.
@@ -115,7 +129,6 @@
 		nodes: RenderNode[];
 		edges: RenderEdge[];
 		legend: { slug: string; color: string }[];
-		bounds: { x: number; y: number; w: number; h: number };
 	}> {
 		const dagre = await import('@dagrejs/dagre');
 		const g = new dagre.graphlib.Graph();
@@ -154,10 +167,6 @@
 		dagre.layout(g);
 
 		const nodes: RenderNode[] = [];
-		let minX = Infinity;
-		let minY = Infinity;
-		let maxX = -Infinity;
-		let maxY = -Infinity;
 		for (const n of payload.nodes) {
 			const pos = g.node(n.ref);
 			if (!pos) continue;
@@ -174,10 +183,6 @@
 				y: pos.y,
 				color
 			});
-			minX = Math.min(minX, pos.x - NODE_W / 2);
-			minY = Math.min(minY, pos.y - NODE_H / 2);
-			maxX = Math.max(maxX, pos.x + NODE_W / 2);
-			maxY = Math.max(maxY, pos.y + NODE_H / 2);
 		}
 
 		const posByRef = new Map(nodes.map((n) => [n.ref, n]));
@@ -203,11 +208,7 @@
 			color
 		}));
 
-		const bounds = Number.isFinite(minX)
-			? { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) }
-			: { x: 0, y: 0, w: 1, h: 1 };
-
-		return { nodes, edges, legend: legendEntries, bounds };
+		return { nodes, edges, legend: legendEntries };
 	}
 
 	let refreshing = $state(false);
@@ -250,7 +251,10 @@
 			renderEdges = laid.edges;
 			legend = laid.legend;
 			truncated = payload.truncated ?? false;
-			contentBounds = laid.bounds;
+			// Drop a selection that no longer exists in the new neighborhood.
+			if (selectedRef && !laid.nodes.some((n) => n.ref === selectedRef)) {
+				selectedRef = null;
+			}
 			loadState = 'ready';
 			if (!background) queueFit(); // don't yank the view on ambient updates
 		} catch (err) {
@@ -434,6 +438,10 @@
 
 	function onPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
+		// Don't start a pan when the press lands on an interactive overlay
+		// (legend toggles, detail-card actions, error retry) — they sit inside the
+		// viewport, so without this a click on them would also begin a drag.
+		if ((e.target as Element).closest?.('.legend, .detail-card, .state-overlay')) return;
 		dragging = true;
 		dragStartX = e.clientX;
 		dragStartY = e.clientY;
@@ -456,18 +464,40 @@
 		}
 	}
 
-	// Fit the content bounds into the current viewport with a margin.
+	// Bounds of the currently VISIBLE nodes (respecting legend toggles), or null
+	// when nothing is visible. Computed live so Fit frames what's actually on
+	// screen after collections are hidden.
+	function currentBounds(): { x: number; y: number; w: number; h: number } | null {
+		const ns = visibleNodes;
+		if (!ns.length) return null;
+		let minX = Infinity;
+		let minY = Infinity;
+		let maxX = -Infinity;
+		let maxY = -Infinity;
+		for (const n of ns) {
+			minX = Math.min(minX, n.x - NODE_W / 2);
+			minY = Math.min(minY, n.y - NODE_H / 2);
+			maxX = Math.max(maxX, n.x + NODE_W / 2);
+			maxY = Math.max(maxY, n.y + NODE_H / 2);
+		}
+		return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
+	}
+
+	// Fit the visible content into the current viewport with a margin. No-ops when
+	// nothing is visible (e.g. every collection hidden) rather than framing the
+	// hidden graph.
 	function fitView() {
 		const rect = viewport?.getBoundingClientRect();
-		if (!rect || contentBounds.w <= 0 || contentBounds.h <= 0) return;
+		const b = currentBounds();
+		if (!rect || !b || b.w <= 0 || b.h <= 0) return;
 		const margin = 40;
 		const availW = Math.max(1, rect.width - margin * 2);
 		const availH = Math.max(1, rect.height - margin * 2);
-		const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.min(availW / contentBounds.w, availH / contentBounds.h)));
+		const next = Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.min(availW / b.w, availH / b.h)));
 		scale = next;
 		// Center the content within the viewport.
-		const contentCx = contentBounds.x + contentBounds.w / 2;
-		const contentCy = contentBounds.y + contentBounds.h / 2;
+		const contentCx = b.x + b.w / 2;
+		const contentCy = b.y + b.h / 2;
 		tx = rect.width / 2 - contentCx * next;
 		ty = rect.height / 2 - contentCy * next;
 	}
@@ -482,16 +512,28 @@
 		return renderNodes.find((n) => n.ref === ref)?.collection;
 	}
 
+	// Single click selects a node and opens its detail panel. Re-rooting and
+	// opening the item are explicit actions in that panel (so a stray click can't
+	// navigate away). Double click zooms to the node.
 	function onNodeClick(ref: string) {
-		if (ref === currentFocus) {
-			onOpenItem?.(ref, collectionFor(ref));
-		} else {
-			currentFocus = ref;
-		}
+		selectedRef = ref;
+	}
+
+	function onNodeDblClick(ref: string) {
+		selectedRef = ref;
+		zoomToNode(ref);
+	}
+
+	function openItem(ref: string) {
+		onOpenItem?.(ref, collectionFor(ref));
+	}
+
+	function focusHere(ref: string) {
+		currentFocus = ref; // re-root the neighborhood on this node
 	}
 
 	function openFocused() {
-		onOpenItem?.(currentFocus, collectionFor(currentFocus));
+		openItem(currentFocus);
 	}
 
 	function backToOrigin() {
@@ -500,6 +542,30 @@
 
 	function changeDepth(value: string) {
 		depth = clampDepth(Number(value));
+	}
+
+	// Legend toggle (#3): hide/show a collection's nodes without recomputing the
+	// layout. Reassign the Set so the derived filters re-run.
+	function toggleCollection(slug: string) {
+		const next = new Set(hiddenCollections);
+		if (next.has(slug)) next.delete(slug);
+		else next.add(slug);
+		hiddenCollections = next;
+		// Close the detail panel if its node just got hidden.
+		if (selectedNode && hiddenCollections.has(selectedNode.collection)) {
+			selectedRef = null;
+		}
+	}
+
+	// Center the viewport on a node and zoom in (double-click, #4).
+	function zoomToNode(ref: string) {
+		const n = renderNodes.find((x) => x.ref === ref);
+		const rect = viewport?.getBoundingClientRect();
+		if (!n || !rect) return;
+		const targetScale = Math.min(MAX_SCALE, Math.max(scale, 1.6));
+		scale = targetScale;
+		tx = rect.width / 2 - n.x * targetScale;
+		ty = rect.height / 2 - n.y * targetScale;
 	}
 
 	// ── Edge styling helpers ──────────────────────────────────────────────────────
@@ -517,8 +583,32 @@
 		return `M ${e.x1} ${e.y1} C ${e.x1} ${midY}, ${e.x2} ${midY}, ${e.x2} ${e.y2}`;
 	}
 
-	function truncate(text: string, max = 28): string {
-		return text.length > max ? text.slice(0, max - 1) + '…' : text;
+	// Wrap a title into up to maxLines lines of ~maxPerLine chars for the node
+	// card, breaking on spaces where possible and ellipsizing any overflow.
+	function titleLines(title: string, maxPerLine = 32, maxLines = 2): string[] {
+		const trimmed = title.trim();
+		if (trimmed.length <= maxPerLine) return [trimmed];
+		const lines: string[] = [];
+		let rest = trimmed;
+		while (rest.length && lines.length < maxLines) {
+			if (rest.length <= maxPerLine) {
+				lines.push(rest);
+				rest = '';
+				break;
+			}
+			let cut = rest.lastIndexOf(' ', maxPerLine);
+			if (cut < maxPerLine * 0.55) cut = maxPerLine; // no good space → hard cut
+			lines.push(rest.slice(0, cut).trim());
+			rest = rest.slice(cut).trim();
+		}
+		if (rest.length) {
+			// Overflow beyond maxLines — ellipsize the last line.
+			const last = lines[lines.length - 1];
+			lines[lines.length - 1] =
+				(last.length > maxPerLine - 1 ? last.slice(0, maxPerLine - 1) : last).replace(/\s+$/, '') +
+				'…';
+		}
+		return lines;
 	}
 
 	const isEmptyNeighborhood = $derived(loadState === 'ready' && renderNodes.length <= 1);
@@ -601,7 +691,7 @@
 
 				<g transform="translate({tx} {ty}) scale({scale})">
 					<!-- Edges first so nodes paint over them. -->
-					{#each renderEdges as e (e.source + '->' + e.target + ':' + e.type)}
+					{#each visibleEdges as e (e.source + '->' + e.target + ':' + e.type)}
 						{@const cls = edgeClass(e.type)}
 						<path
 							class="edge {cls}"
@@ -611,18 +701,21 @@
 					{/each}
 
 					<!-- Nodes. -->
-					{#each renderNodes as n (n.ref)}
+					{#each visibleNodes as n (n.ref)}
 						{@const isFocus = n.ref === currentFocus}
+						{@const lines = titleLines(n.title)}
 						<g
 							class="node"
 							class:focus={isFocus}
 							class:terminal={n.isTerminal}
 							class:touched={touchedRefs.has(n.ref)}
+							class:selected={n.ref === selectedRef}
 							transform="translate({n.x - NODE_W / 2} {n.y - NODE_H / 2})"
 							role="button"
 							tabindex="0"
 							aria-label={n.ref + ': ' + n.title}
 							onclick={() => onNodeClick(n.ref)}
+							ondblclick={() => onNodeDblClick(n.ref)}
 							onkeydown={(e) => {
 								if (e.key === 'Enter' || e.key === ' ') {
 									e.preventDefault();
@@ -647,7 +740,9 @@
 								style:fill={n.color}
 							/>
 							<text class="node-ref" x="14" y="20">{n.ref}</text>
-							<text class="node-title" x="14" y="36">{truncate(n.title)}</text>
+							{#each lines as line, i (i)}
+								<text class="node-title" x="14" y={36 + i * 13}>{line}</text>
+							{/each}
 						</g>
 					{/each}
 				</g>
@@ -658,15 +753,54 @@
 			<div class="empty-hint">No linked items — this item stands alone.</div>
 		{/if}
 
-		<!-- Legend overlay -->
+		<!-- Legend overlay — click an entry to hide/show that collection. -->
 		{#if legend.length > 0 && loadState === 'ready'}
-			<div class="legend" aria-label="Collection legend">
+			<div class="legend" aria-label="Collection legend — click to toggle">
 				{#each legend as entry (entry.slug)}
-					<span class="legend-item">
+					{@const off = hiddenCollections.has(entry.slug)}
+					<button
+						type="button"
+						class="legend-item"
+						class:off
+						aria-pressed={!off}
+						title={off ? `Show ${entry.slug}` : `Hide ${entry.slug}`}
+						onclick={() => toggleCollection(entry.slug)}
+					>
 						<span class="legend-dot" style:background-color={entry.color} aria-hidden="true"></span>
 						{entry.slug}
-					</span>
+					</button>
 				{/each}
+			</div>
+		{/if}
+
+		<!-- Node detail panel (single-click selection). -->
+		{#if selectedNode}
+			{@const sel = selectedNode}
+			<div class="detail-card" role="group" aria-label="Item details">
+				<div class="detail-head">
+					<span class="detail-ref">{sel.ref}</span>
+					<button
+						type="button"
+						class="detail-close"
+						aria-label="Close details"
+						onclick={() => (selectedRef = null)}>✕</button
+					>
+				</div>
+				<p class="detail-title">{sel.title}</p>
+				<div class="detail-meta">
+					<span class="detail-chip" style:background-color="color-mix(in srgb, {sel.color} 22%, transparent)" style:border-color={sel.color}>{sel.collection}</span>
+					{#if sel.status}<span class="detail-stat">{sel.status}</span>{/if}
+					{#if sel.isTerminal}<span class="detail-stat done">✓ done</span>{/if}
+					{#if sel.childCount > 0}
+						<span class="detail-stat">{sel.childCount} child{sel.childCount === 1 ? '' : 'ren'}</span>
+					{/if}
+				</div>
+				<div class="detail-actions">
+					<button type="button" class="open-btn" onclick={() => openItem(sel.ref)}>Open item ↗</button>
+					{#if sel.ref !== currentFocus}
+						<button type="button" class="ghost-btn" onclick={() => focusHere(sel.ref)}>Focus here</button>
+					{/if}
+				</div>
 			</div>
 		{/if}
 
@@ -839,6 +973,11 @@
 	.node:focus-visible .node-bg {
 		stroke-width: 3;
 	}
+	/* Selected node (single-click) — distinct ring from the focus/root node. */
+	.node.selected .node-bg {
+		stroke-width: 3;
+		filter: drop-shadow(0 0 7px color-mix(in srgb, var(--text-primary) 45%, transparent));
+	}
 	/* Transient glow when an item changes live (SSE). Transition-based (not a
 	   one-shot keyframe) so a burst of events keeps the node lit and it fades
 	   out via the .node-bg filter transition once the ref leaves touchedRefs. */
@@ -927,6 +1066,24 @@
 		font-size: 0.72em;
 		text-transform: capitalize;
 		color: var(--text-secondary);
+		background: none;
+		border: none;
+		padding: 2px 4px;
+		border-radius: var(--radius);
+		cursor: pointer;
+	}
+	.legend-item:hover {
+		color: var(--text-primary);
+		background: color-mix(in srgb, var(--text-muted) 12%, transparent);
+	}
+	/* Toggled-off collection — dimmed + struck through, dot hollowed. */
+	.legend-item.off {
+		opacity: 0.45;
+		text-decoration: line-through;
+	}
+	.legend-item.off .legend-dot {
+		background: transparent !important;
+		box-shadow: inset 0 0 0 1.5px currentColor;
 	}
 	.legend-dot {
 		width: 0.6rem;
@@ -982,5 +1139,85 @@
 		50% {
 			opacity: 0.3;
 		}
+	}
+
+	/* ── Node detail panel ────────────────────────────────────────────────────── */
+	.detail-card {
+		position: absolute;
+		right: var(--space-3);
+		bottom: var(--space-3);
+		z-index: 6;
+		width: min(320px, calc(100% - var(--space-6)));
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		padding: var(--space-3);
+		background: color-mix(in srgb, var(--bg-secondary) 94%, transparent);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+		backdrop-filter: blur(8px);
+	}
+	.detail-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2);
+	}
+	.detail-ref {
+		font-family: var(--font-mono, ui-monospace, monospace);
+		font-size: 0.8em;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+	.detail-close {
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		cursor: pointer;
+		font-size: 0.85em;
+		line-height: 1;
+		padding: 2px;
+	}
+	.detail-close:hover {
+		color: var(--text-primary);
+	}
+	.detail-title {
+		margin: 0;
+		font-size: 0.9em;
+		font-weight: 600;
+		color: var(--text-primary);
+		line-height: 1.3;
+	}
+	.detail-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.35rem;
+		align-items: center;
+	}
+	.detail-chip {
+		font-size: 0.7em;
+		text-transform: capitalize;
+		color: var(--text-primary);
+		padding: 1px 8px;
+		border: 1px solid;
+		border-radius: 999px;
+	}
+	.detail-stat {
+		font-size: 0.7em;
+		color: var(--text-secondary);
+		background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+		padding: 1px 8px;
+		border-radius: 999px;
+		text-transform: capitalize;
+	}
+	.detail-stat.done {
+		color: #10b981;
+	}
+	.detail-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		margin-top: 2px;
 	}
 </style>
