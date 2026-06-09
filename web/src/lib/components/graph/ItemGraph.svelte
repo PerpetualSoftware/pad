@@ -463,6 +463,13 @@
 	}
 	function onPointerMove(e: PointerEvent) {
 		if (!maybeDrag) return;
+		// If the primary button is no longer held, the press ended off-viewport
+		// before a drag engaged (no capture yet, so we never got pointerup) — abort
+		// rather than start a ghost pan with no button down.
+		if ((e.buttons & 1) === 0) {
+			maybeDrag = false;
+			return;
+		}
 		const dx = e.clientX - dragStartX;
 		const dy = e.clientY - dragStartY;
 		if (!dragging) {
@@ -491,6 +498,12 @@
 				}
 				capturedPointerId = null;
 			}
+			// Suppress the click this pan produces, then clear on the next tick so a
+			// later genuine click (even one ending on empty canvas) isn't affected.
+			suppressClick = true;
+			setTimeout(() => {
+				suppressClick = false;
+			}, 0);
 		}
 	}
 
@@ -546,10 +559,7 @@
 	// opening the item are explicit actions in that panel (so a stray click can't
 	// navigate away). Double click zooms to the node.
 	function onNodeClick(ref: string) {
-		if (suppressClick) {
-			suppressClick = false; // this click concluded a pan gesture — ignore it
-			return;
-		}
+		if (suppressClick) return; // this click concluded a pan gesture — ignore it
 		selectedRef = ref;
 	}
 
