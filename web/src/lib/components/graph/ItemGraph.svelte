@@ -93,7 +93,6 @@
 	let renderEdges = $state<RenderEdge[]>([]);
 	let legend = $state<{ slug: string; color: string }[]>([]);
 	let truncated = $state(false);
-	let contentBounds = $state({ x: 0, y: 0, w: 1, h: 1 });
 
 	// Collections toggled off via the legend — their nodes (and any edge touching
 	// them) are hidden without recomputing the layout, so positions stay stable.
@@ -130,7 +129,6 @@
 		nodes: RenderNode[];
 		edges: RenderEdge[];
 		legend: { slug: string; color: string }[];
-		bounds: { x: number; y: number; w: number; h: number };
 	}> {
 		const dagre = await import('@dagrejs/dagre');
 		const g = new dagre.graphlib.Graph();
@@ -169,10 +167,6 @@
 		dagre.layout(g);
 
 		const nodes: RenderNode[] = [];
-		let minX = Infinity;
-		let minY = Infinity;
-		let maxX = -Infinity;
-		let maxY = -Infinity;
 		for (const n of payload.nodes) {
 			const pos = g.node(n.ref);
 			if (!pos) continue;
@@ -189,10 +183,6 @@
 				y: pos.y,
 				color
 			});
-			minX = Math.min(minX, pos.x - NODE_W / 2);
-			minY = Math.min(minY, pos.y - NODE_H / 2);
-			maxX = Math.max(maxX, pos.x + NODE_W / 2);
-			maxY = Math.max(maxY, pos.y + NODE_H / 2);
 		}
 
 		const posByRef = new Map(nodes.map((n) => [n.ref, n]));
@@ -218,11 +208,7 @@
 			color
 		}));
 
-		const bounds = Number.isFinite(minX)
-			? { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) }
-			: { x: 0, y: 0, w: 1, h: 1 };
-
-		return { nodes, edges, legend: legendEntries, bounds };
+		return { nodes, edges, legend: legendEntries };
 	}
 
 	let refreshing = $state(false);
@@ -265,7 +251,6 @@
 			renderEdges = laid.edges;
 			legend = laid.legend;
 			truncated = payload.truncated ?? false;
-			contentBounds = laid.bounds;
 			// Drop a selection that no longer exists in the new neighborhood.
 			if (selectedRef && !laid.nodes.some((n) => n.ref === selectedRef)) {
 				selectedRef = null;
@@ -479,12 +464,12 @@
 		}
 	}
 
-	// Bounds of the currently VISIBLE nodes (respecting legend toggles), falling
-	// back to the full laid-out bounds when nothing is visible. Computed live so
-	// Fit frames what's actually on screen after collections are hidden.
-	function currentBounds() {
+	// Bounds of the currently VISIBLE nodes (respecting legend toggles), or null
+	// when nothing is visible. Computed live so Fit frames what's actually on
+	// screen after collections are hidden.
+	function currentBounds(): { x: number; y: number; w: number; h: number } | null {
 		const ns = visibleNodes;
-		if (!ns.length) return contentBounds;
+		if (!ns.length) return null;
 		let minX = Infinity;
 		let minY = Infinity;
 		let maxX = -Infinity;
@@ -498,11 +483,13 @@
 		return { x: minX, y: minY, w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) };
 	}
 
-	// Fit the visible content into the current viewport with a margin.
+	// Fit the visible content into the current viewport with a margin. No-ops when
+	// nothing is visible (e.g. every collection hidden) rather than framing the
+	// hidden graph.
 	function fitView() {
 		const rect = viewport?.getBoundingClientRect();
 		const b = currentBounds();
-		if (!rect || b.w <= 0 || b.h <= 0) return;
+		if (!rect || !b || b.w <= 0 || b.h <= 0) return;
 		const margin = 40;
 		const availW = Math.max(1, rect.width - margin * 2);
 		const availH = Math.max(1, rect.height - margin * 2);
