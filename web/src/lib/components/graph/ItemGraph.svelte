@@ -22,14 +22,15 @@
 		workspace,
 		focusRef,
 		depth: initialDepth = 2,
-		onOpenItem
+		itemHref
 	}: {
 		workspace: string;
 		focusRef: string;
 		depth?: number;
-		/** Called to open an item — collection is provided so callers can build
-		 *  a /{user}/{ws}/{collection}/{ref} URL without a lookup. */
-		onOpenItem?: (ref: string, collection?: string) => void;
+		/** Builds the href for an item — opens are rendered as real <a> links so
+		 *  cmd/ctrl-click opens the item in a new tab. Collection is passed so the
+		 *  caller can build /{user}/{ws}/{collection}/{ref} without a lookup. */
+		itemHref: (ref: string, collection?: string) => string;
 	} = $props();
 
 	// ── Fixed layout geometry ────────────────────────────────────────────────────
@@ -415,7 +416,15 @@
 	const MIN_SCALE = 0.25;
 	const MAX_SCALE = 2.5;
 
+	// Drag is engaged only AFTER the pointer moves past a small threshold — a
+	// plain press (a click/double-click on a node) must not capture the pointer,
+	// because pointer capture on pointerdown suppresses the node's click/dblclick
+	// events (which drive selection + zoom).
+	const DRAG_THRESHOLD = 4;
+	let maybeDrag = false;
 	let dragging = false;
+	let suppressClick = false;
+	let capturedPointerId: number | null = null;
 	let dragStartX = 0;
 	let dragStartY = 0;
 	let dragOriginTx = 0;
@@ -442,25 +451,59 @@
 		// (legend toggles, detail-card actions, error retry) — they sit inside the
 		// viewport, so without this a click on them would also begin a drag.
 		if ((e.target as Element).closest?.('.legend, .detail-card, .state-overlay')) return;
-		dragging = true;
+		maybeDrag = true;
+		dragging = false;
+		suppressClick = false;
 		dragStartX = e.clientX;
 		dragStartY = e.clientY;
 		dragOriginTx = tx;
 		dragOriginTy = ty;
-		(e.currentTarget as Element).setPointerCapture(e.pointerId);
+		// NOTE: no setPointerCapture here — capturing on pointerdown would swallow
+		// the node's click/dblclick. We capture only once a real drag starts.
 	}
 	function onPointerMove(e: PointerEvent) {
-		if (!dragging) return;
-		tx = dragOriginTx + (e.clientX - dragStartX);
-		ty = dragOriginTy + (e.clientY - dragStartY);
+		if (!maybeDrag) return;
+		// If the primary button is no longer held, the press ended off-viewport
+		// before a drag engaged (no capture yet, so we never got pointerup) — abort
+		// rather than start a ghost pan with no button down.
+		if ((e.buttons & 1) === 0) {
+			maybeDrag = false;
+			return;
+		}
+		const dx = e.clientX - dragStartX;
+		const dy = e.clientY - dragStartY;
+		if (!dragging) {
+			if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+			dragging = true;
+			suppressClick = true; // this gesture is a pan, not a click
+			capturedPointerId = e.pointerId;
+			try {
+				(e.currentTarget as Element).setPointerCapture(e.pointerId);
+			} catch {
+				// capture unsupported/failed — panning still works while over the viewport
+			}
+		}
+		tx = dragOriginTx + dx;
+		ty = dragOriginTy + dy;
 	}
 	function onPointerUp(e: PointerEvent) {
-		if (!dragging) return;
-		dragging = false;
-		try {
-			(e.currentTarget as Element).releasePointerCapture(e.pointerId);
-		} catch {
-			// pointer may already be released — ignore.
+		maybeDrag = false;
+		if (dragging) {
+			dragging = false;
+			if (capturedPointerId !== null) {
+				try {
+					(e.currentTarget as Element).releasePointerCapture(capturedPointerId);
+				} catch {
+					// pointer may already be released — ignore.
+				}
+				capturedPointerId = null;
+			}
+			// Suppress the click this pan produces, then clear on the next tick so a
+			// later genuine click (even one ending on empty canvas) isn't affected.
+			suppressClick = true;
+			setTimeout(() => {
+				suppressClick = false;
+			}, 0);
 		}
 	}
 
@@ -516,6 +559,7 @@
 	// opening the item are explicit actions in that panel (so a stray click can't
 	// navigate away). Double click zooms to the node.
 	function onNodeClick(ref: string) {
+		if (suppressClick) return; // this click concluded a pan gesture — ignore it
 		selectedRef = ref;
 	}
 
@@ -524,16 +568,8 @@
 		zoomToNode(ref);
 	}
 
-	function openItem(ref: string) {
-		onOpenItem?.(ref, collectionFor(ref));
-	}
-
 	function focusHere(ref: string) {
 		currentFocus = ref; // re-root the neighborhood on this node
-	}
-
-	function openFocused() {
-		openItem(currentFocus);
 	}
 
 	function backToOrigin() {
@@ -646,7 +682,7 @@
 		<div class="spacer"></div>
 
 		<button type="button" class="ghost-btn" onclick={fitView} title="Fit graph to view">Fit</button>
-		<button type="button" class="open-btn" onclick={openFocused}>Open ↗</button>
+		<a class="open-btn" href={itemHref(currentFocus, collectionFor(currentFocus))}>Open ↗</a>
 	</div>
 
 	<!-- Canvas -->
@@ -796,7 +832,7 @@
 					{/if}
 				</div>
 				<div class="detail-actions">
-					<button type="button" class="open-btn" onclick={() => openItem(sel.ref)}>Open item ↗</button>
+					<a class="open-btn" href={itemHref(sel.ref, sel.collection)}>Open item ↗</a>
 					{#if sel.ref !== currentFocus}
 						<button type="button" class="ghost-btn" onclick={() => focusHere(sel.ref)}>Focus here</button>
 					{/if}
@@ -896,6 +932,7 @@
 		color: var(--text-primary);
 	}
 	.open-btn {
+		display: inline-block;
 		padding: var(--space-1) var(--space-3);
 		font-size: 0.8em;
 		font-weight: 600;
@@ -904,6 +941,8 @@
 		border: none;
 		border-radius: var(--radius);
 		cursor: pointer;
+		text-decoration: none;
+		text-align: center;
 	}
 	.open-btn:hover {
 		filter: brightness(1.08);

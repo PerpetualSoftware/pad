@@ -193,10 +193,12 @@
 		graphLoadError = false;
 		void ensureGraphComp();
 	}
-	function openItemFromGraph(ref: string, collection?: string) {
-		// Navigate to the item without ?graph; the URL-watching effect closes the
-		// drawer once the new route (no param) takes effect.
-		goto(`/${username}/${wsSlug}/${collection ?? collSlug}/${ref}`);
+	// Build an item URL for the graph's open links. Rendered as real <a href> in
+	// ItemGraph so cmd/ctrl-click opens in a new tab; a plain click is a normal
+	// SvelteKit navigation, and the new route (no ?graph) closes the drawer via
+	// the URL-watching effect.
+	function graphItemHref(ref: string, collection?: string): string {
+		return `/${username}/${wsSlug}/${collection ?? collSlug}/${ref}`;
 	}
 	// ESC closes the graph drawer (only while open — no global listener otherwise).
 	$effect(() => {
@@ -3036,7 +3038,7 @@
 					</div>
 				{:else if ItemGraphComp}
 					{@const Graph = ItemGraphComp}
-					<Graph workspace={wsSlug} focusRef={graphFocusRef} onOpenItem={openItemFromGraph} />
+					<Graph workspace={wsSlug} focusRef={graphFocusRef} itemHref={graphItemHref} />
 				{:else}
 					<div class="graph-drawer-state">Loading graph…</div>
 				{/if}
