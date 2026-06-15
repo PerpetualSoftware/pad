@@ -6,6 +6,41 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
+// TestCreateAPITokenUserScoped covers the account-settings path
+// (handleCreateUserToken), which creates a workspace-agnostic token with no
+// WorkspaceID set. The store inserts NULL for workspace_id; this must succeed
+// and the token must validate. Regression test for the SQLite-only NOT NULL
+// constraint on api_tokens.workspace_id fixed in migration
+// 068_api_tokens_workspace_nullable.sql (Postgres already allowed NULL).
+func TestCreateAPITokenUserScoped(t *testing.T) {
+	s := testStore(t)
+	u := createTestUser(t, s, "test@test.com", "Test", "password123")
+
+	token, err := s.CreateAPIToken(u.ID, models.APITokenCreate{
+		Name: "user-scoped",
+	}, 90, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken (no workspace) error: %v", err)
+	}
+	if token.Token == "" {
+		t.Fatal("expected plaintext token")
+	}
+	if token.WorkspaceID != "" {
+		t.Errorf("expected empty workspace, got %q", token.WorkspaceID)
+	}
+
+	validated, err := s.ValidateToken(token.Token)
+	if err != nil {
+		t.Fatalf("ValidateToken error: %v", err)
+	}
+	if validated == nil {
+		t.Fatal("expected user-scoped token to validate")
+	}
+	if validated.WorkspaceID != "" {
+		t.Errorf("expected empty workspace on validate, got %q", validated.WorkspaceID)
+	}
+}
+
 func TestCreateAPITokenWithExpiry(t *testing.T) {
 	s := testStore(t)
 	u := createTestUser(t, s, "test@test.com", "Test", "password123")
