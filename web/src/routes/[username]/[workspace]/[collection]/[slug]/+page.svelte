@@ -338,7 +338,33 @@
 			// them on a non-existent item is worse than discarding the
 			// edit. Per Codex review round 2.
 			if (event.type === 'item_archived') {
-				goto(`/${username}/${wsSlug}/${collSlug}`);
+				// The open item was archived (another tab / user). GET still
+				// returns soft-deleted items (deleted_at set, #733), so re-fetch
+				// and show the in-place Archived banner instead of yanking the
+				// user back to the collection (TASK-1833). Two cases keep the
+				// prior redirect: mid-edit (an in-flight save will fail against
+				// the archived row and re-fetching would clobber the editor —
+				// the Codex-round-2 reasoning still holds there), and a re-fetch
+				// 404 (item hard-deleted — gone for real).
+				// editorStore.dirty catches unsaved content BEFORE the 1.2s
+				// debounced save flips saveStatus to 'saving' — without it a
+				// live archive in that window would re-fetch and clobber the
+				// user's in-progress edit (Codex P1).
+				if (saveStatus === 'saving' || editingTitle || editorStore.dirty) {
+					goto(`/${username}/${wsSlug}/${collSlug}`);
+					return;
+				}
+				const archItemId = item.id;
+				const archWsSlug = wsSlug;
+				const archItemSlug = itemSlug;
+				try {
+					const archived = await api.items.get(archWsSlug, archItemSlug);
+					if (!item || item.id !== archItemId) return;
+					item = withInflightTags(archived);
+				} catch {
+					if (!item || item.id !== archItemId) return;
+					goto(`/${username}/${wsSlug}/${collSlug}`);
+				}
 				return;
 			}
 
@@ -410,7 +436,31 @@
 			// Check this BEFORE the edit-conflict guard so a deleted item
 			// doesn't sit there gated by an in-flight save.
 			if (result.type === 'incremental' && result.changes.deleted.includes(item.id)) {
-				goto(`/${username}/${wsSlug}/${collSlug}`);
+				// Archived or hard-deleted while we were away. GET returns
+				// soft-deleted items (deleted_at set) but 404s on a hard delete,
+				// so re-fetch: an archived item shows the in-place banner, a
+				// hard-deleted one redirects (TASK-1833). Keep the prior redirect
+				// when mid-edit (don't clobber an in-flight save against a
+				// now-archived row).
+				// editorStore.dirty catches unsaved content BEFORE the 1.2s
+				// debounced save flips saveStatus to 'saving' — without it a
+				// live archive in that window would re-fetch and clobber the
+				// user's in-progress edit (Codex P1).
+				if (saveStatus === 'saving' || editingTitle || editorStore.dirty) {
+					goto(`/${username}/${wsSlug}/${collSlug}`);
+					return;
+				}
+				const delItemId = item.id;
+				const delWsSlug = wsSlug;
+				const delItemSlug = itemSlug;
+				try {
+					const refreshed = await api.items.get(delWsSlug, delItemSlug);
+					if (!item || item.id !== delItemId) return;
+					item = withInflightTags(refreshed);
+				} catch {
+					if (!item || item.id !== delItemId) return;
+					goto(`/${username}/${wsSlug}/${collSlug}`);
+				}
 				return;
 			}
 
