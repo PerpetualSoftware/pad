@@ -684,6 +684,23 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, item)
 }
 
+// writeItemResolveError distinguishes a soft-deleted (archived) item from a
+// genuinely-missing one for mutation handlers. An archived item still appears
+// in include-archived list results and can be fetched read-only via GET, so a
+// bare "Item not found" here misled callers into thinking the data was lost or
+// corrupt (BUG-1791). Visibility is enforced exactly as the active path, so an
+// archived item is never revealed to a caller who could not otherwise see it.
+func (s *Server) writeItemResolveError(w http.ResponseWriter, r *http.Request, workspaceID, ref string) {
+	if archived, err := s.store.ResolveItemIncludeDeleted(workspaceID, ref); err == nil && archived != nil && archived.DeletedAt != nil {
+		if visible, verr := s.checkItemVisible(workspaceID, archived, currentUser(r), workspaceRole(r)); verr == nil && visible {
+			writeError(w, http.StatusConflict, "archived",
+				fmt.Sprintf("%q is archived. Fetch it read-only with GET, or restore it before editing.", ref))
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "not_found", "Item not found")
+}
+
 // handleGetItem retrieves a single item by slug.
 func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
@@ -692,7 +709,7 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	itemSlug := chi.URLParam(r, "itemSlug")
-	item, err := s.store.ResolveItem(workspaceID, itemSlug)
+	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, itemSlug)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -728,7 +745,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if item == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		s.writeItemResolveError(w, r, workspaceID, itemSlug)
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
@@ -1284,7 +1301,7 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if item == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		s.writeItemResolveError(w, r, workspaceID, itemSlug)
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {
@@ -1384,8 +1401,12 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
-	if err != nil || item == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if item == nil {
+		s.writeItemResolveError(w, r, workspaceID, itemSlug)
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {

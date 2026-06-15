@@ -718,7 +718,7 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		       i.item_number, i.seq, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
-		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		LEFT JOIN users au ON au.id = i.assigned_user_id
@@ -1432,7 +1432,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			       i.item_number, i.seq, i.created_at, i.updated_at,
 			       c.slug, c.name, c.icon, c.prefix,
 			       COALESCE(au.name, ''), COALESCE(au.email, ''),
-			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
 			FROM items i
 			JOIN collections c ON c.id = i.collection_id
 			LEFT JOIN users au ON au.id = i.assigned_user_id
@@ -1458,7 +1458,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			       i.item_number, i.seq, i.created_at, i.updated_at,
 			       c.slug, c.name, c.icon, c.prefix,
 			       COALESCE(au.name, ''), COALESCE(au.email, ''),
-			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+			       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
 			FROM items i
 			JOIN items_fts fts ON i.rowid = fts.rowid
 			JOIN collections c ON c.id = i.collection_id
@@ -3108,7 +3108,7 @@ func (s *Store) getChildItems(q childQueryer, parentItemID string) ([]models.Ite
 		       i.item_number, i.seq, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
-		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id = ?
@@ -3504,6 +3504,7 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 	for rows.Next() {
 		var item models.Item
 		var createdAt, updatedAt string
+		var deletedAt *string
 		var pinned bool
 		if err := rows.Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
@@ -3514,12 +3515,14 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
 			&item.AssignedUserName, &item.AssignedUserEmail,
 			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
+			&deletedAt,
 		); err != nil {
 			return nil, err
 		}
 		item.Pinned = pinned
 		item.CreatedAt = parseTime(createdAt)
 		item.UpdatedAt = parseTime(updatedAt)
+		item.DeletedAt = parseTimePtr(deletedAt)
 		hydrateItemComputedMetadata(&item)
 		items = append(items, item)
 	}
@@ -3546,7 +3549,7 @@ func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated
 		       i.item_number, i.seq, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
-		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		LEFT JOIN users au ON au.id = i.assigned_user_id

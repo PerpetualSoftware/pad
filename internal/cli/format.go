@@ -156,6 +156,9 @@ func PrintItemTable(items []models.Item) {
 		} else {
 			titlePart = Bold.Sprint(item.Title)
 		}
+		if item.DeletedAt != nil {
+			titlePart += "  " + Dim.Sprint("(archived)")
+		}
 		collLabel := item.CollectionName
 		if item.CollectionIcon != "" {
 			collLabel = item.CollectionIcon + " " + collLabel
@@ -241,6 +244,11 @@ func PrintItemMeta(item *models.Item) {
 		fmt.Printf("%s  %s\n", BoldCyan.Sprint(ref), Bold.Sprint(item.Title))
 	} else {
 		fmt.Printf("%s\n", Bold.Sprint(item.Title))
+	}
+
+	if item.DeletedAt != nil {
+		fmt.Printf("%s %s\n", label.Sprint("Archived:  "),
+			color.New(color.FgYellow, color.Bold).Sprintf("⚠ yes (soft-deleted %s) — restore before editing", RelativeTime(*item.DeletedAt)))
 	}
 
 	if item.CollectionName != "" {

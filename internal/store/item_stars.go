@@ -101,7 +101,7 @@ func (s *Store) ListStarredItems(userID, workspaceID string, includeTerminal boo
 		       i.item_number, i.seq, i.created_at, i.updated_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
-		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
 		FROM item_stars s
 		JOIN items i ON i.id = s.item_id
 		JOIN collections c ON c.id = i.collection_id
