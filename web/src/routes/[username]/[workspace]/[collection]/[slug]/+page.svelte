@@ -124,6 +124,7 @@
 	let saveStatusTimer: ReturnType<typeof setTimeout> | undefined;
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
+	let restoring = $state(false);
 	let rawMode = $state(false);
 	let showMoveMenu = $state(false);
 	let moving = $state(false);
@@ -253,11 +254,20 @@
 	// by workspaceStore.setCurrent via the /me endpoint. workspaceMembers is
 	// still loaded for the assignee dropdown (line ~947).
 	let isOwner = $derived(workspaceStore.isOwner);
+	// Archived ("soft-deleted") items are returned read-only by the API
+	// (HTTP 200 with deleted_at populated) so they can be reviewed and
+	// restored. TASK-1829.
+	let isArchived = $derived(!!item?.deleted_at);
 	// Per-item edit predicate (PLAN-1100 / TASK-1105). Mirrors the server's
 	// ResolveUserPermission cascade: owner → item grant → collection grant
 	// → role + visibility. Drives title / content / FieldEditor / delete /
-	// status affordance gating below.
-	let canEdit = $derived(item ? workspaceStore.canEditItem(item) : false);
+	// status affordance gating below. Folds in the archived gate (TASK-1829)
+	// so every edit affordance disables while the item is archived.
+	let canEdit = $derived(item && !item.deleted_at ? workspaceStore.canEditItem(item) : false);
+	// Restore requires edit permission server-side, independent of the
+	// archived gate that forces canEdit false — otherwise the Restore CTA
+	// would render for read-only viewers and just 403 on click (Codex).
+	let canRestore = $derived(item ? workspaceStore.canEditItem(item) : false);
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
 			loadData();
@@ -2066,6 +2076,27 @@
 		}
 	}
 
+	// Restore a soft-deleted ("archived") item. Standalone async handler
+	// (not folded into a route-change $effect — CONVE-606/CONVE-1688) that
+	// mutates `item` directly: on success it re-fetches via api.items.get so
+	// the archived banner disappears and `canEdit` re-enables. The restore
+	// endpoint can 409 if the slug/invocation_slug was reclaimed while
+	// archived — surface that message the same way other handlers do. TASK-1829.
+	async function handleRestore() {
+		if (!item || restoring) return;
+		restoring = true;
+		try {
+			await api.items.restore(wsSlug, itemSlug);
+			const refreshed = await api.items.get(wsSlug, itemSlug);
+			item = withInflightTags(refreshed);
+			toastStore.show('Item restored', 'success');
+		} catch (e: any) {
+			toastStore.show(e.message ?? 'Failed to restore item', 'error');
+		} finally {
+			restoring = false;
+		}
+	}
+
 	let allCollections = $derived(collectionStore.collections ?? []);
 	let moveTargets = $derived(allCollections.filter(c => c.slug !== collSlug));
 
@@ -2273,6 +2304,27 @@
 				{/if}
 			</nav>
 		</div>
+
+		<!-- Archived banner (TASK-1829) — read-only notice shown above the
+		     title/content when the item is soft-deleted. Restore re-enables
+		     editing by re-fetching the (now active) item. -->
+		{#if isArchived}
+			<div class="archived-banner" role="status">
+				<svg class="archived-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="21 8 21 21 3 21 3 8"></polyline><rect x="1" y="3" width="22" height="5"></rect><line x1="10" y1="12" x2="14" y2="12"></line></svg>
+				<div class="archived-text">
+					<strong>This item is archived</strong>
+					{#if item.deleted_at}
+						<span class="archived-date" title={new Date(item.deleted_at).toLocaleString()}>Archived {relativeTime(item.deleted_at)}</span>
+					{/if}
+					<span class="archived-hint">It's read-only until restored.</span>
+				</div>
+				{#if canRestore}
+					<button class="archived-restore-btn" onclick={handleRestore} disabled={restoring}>
+						{restoring ? 'Restoring…' : 'Restore'}
+					</button>
+				{/if}
+			</div>
+		{/if}
 
 		<!-- Title -->
 		<div class="title-row">
@@ -3628,6 +3680,58 @@
 		font-size: 0.95em;
 		font-weight: 600;
 		color: var(--text-secondary);
+	}
+	/* Archived banner (TASK-1829) — accent-bordered callout matching the
+	   .link-row.tone-* idiom; Restore mirrors .delete-confirm-btn.yes. */
+	.archived-banner {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		margin-bottom: var(--space-4);
+		padding: var(--space-3);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-left: 3px solid var(--accent-orange);
+		border-radius: var(--radius);
+	}
+	.archived-icon {
+		flex-shrink: 0;
+		color: var(--accent-orange);
+	}
+	.archived-text {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		gap: var(--space-1) var(--space-2);
+		font-size: 0.9em;
+		color: var(--text-secondary);
+	}
+	.archived-text strong {
+		color: var(--text-primary);
+	}
+	.archived-date,
+	.archived-hint {
+		color: var(--text-muted);
+	}
+	.archived-restore-btn {
+		margin-left: auto;
+		flex-shrink: 0;
+		padding: var(--space-1) var(--space-3);
+		border-radius: var(--radius);
+		font-size: 0.85em;
+		font-weight: 500;
+		cursor: pointer;
+		border: 1px solid var(--accent-orange);
+		background: var(--bg-secondary);
+		color: var(--accent-orange);
+	}
+	.archived-restore-btn:hover:not(:disabled) {
+		background: var(--accent-orange);
+		color: #fff;
+	}
+	.archived-restore-btn:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
 	}
 	.link-row {
 		display: flex;
