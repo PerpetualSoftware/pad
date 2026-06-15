@@ -206,6 +206,10 @@ func init() {
 			method:       http.MethodDelete,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}",
 		}.toRouteMapper(),
+		"item restore": routeSpec{
+			method:       http.MethodPost,
+			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/restore",
+		}.toRouteMapper(),
 		"item list":   mapItemList,
 		"item move":   mapItemMove,
 		"item search": mapItemSearch,

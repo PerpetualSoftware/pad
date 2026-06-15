@@ -40,12 +40,13 @@ var padItemTool = ToolDef{
 	},
 	Actions: map[string]ActionFn{
 		// Lifecycle
-		"create": passThrough([]string{"item", "create"}),
-		"update": passThrough([]string{"item", "update"}),
-		"delete": passThrough([]string{"item", "delete"}),
-		"get":    passThrough([]string{"item", "show"}),
-		"list":   passThrough([]string{"item", "list"}),
-		"move":   passThrough([]string{"item", "move"}),
+		"create":  passThrough([]string{"item", "create"}),
+		"update":  passThrough([]string{"item", "update"}),
+		"delete":  passThrough([]string{"item", "delete"}),
+		"get":     passThrough([]string{"item", "show"}),
+		"list":    passThrough([]string{"item", "list"}),
+		"move":    passThrough([]string{"item", "move"}),
+		"restore": passThrough([]string{"item", "restore"}),
 
 		// Relationships — link/unlink fan out to per-type cmdPaths.
 		"link":   actionItemLink,
@@ -94,7 +95,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12). Required for: update, delete, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide. NOT used for bulk-update — pass `refs` (array) instead."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide. NOT used for bulk-update — pass `refs` (array) instead."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
@@ -190,6 +191,8 @@ Actions:
                   Optional: title, status, priority, content, role, assign, parent, comment, tags.
                   Same placement rules as create.
   delete        — Archive an item.
+                  Required: ref.
+  restore       — Un-archive (restore) a soft-deleted item by ref.
                   Required: ref.
   get           — Read an item.
                   Required: ref.

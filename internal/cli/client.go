@@ -222,6 +222,14 @@ func (c *Client) DeleteItem(wsSlug, itemSlug string) error {
 	return c.delete("/workspaces/" + wsSlug + "/items/" + itemSlug)
 }
 
+// RestoreItem un-archives a soft-deleted item via the restore endpoint, which
+// resolves the ref/slug with include-deleted semantics server-side (the normal
+// resolver 404s on archived items). Returns the restored item.
+func (c *Client) RestoreItem(wsSlug, itemSlug string) (*models.Item, error) {
+	var result models.Item
+	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/restore", nil, &result)
+}
+
 // StarItem stars an item for the current user.
 func (c *Client) StarItem(wsSlug, itemSlug string) error {
 	return c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/star", nil, nil)

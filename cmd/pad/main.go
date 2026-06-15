@@ -3828,6 +3828,46 @@ func deleteCmd() *cobra.Command {
 	}
 }
 
+// --- restore ---
+
+func restoreCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restore <ref>",
+		Short: "Restore (un-archive) a soft-deleted item",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			// The restore endpoint resolves the (archived) ref server-side
+			// with include-deleted semantics and returns the restored item.
+			item, err := client.RestoreItem(ws, args[0])
+			if err != nil {
+				return err
+			}
+
+			ref := cli.ItemRef(*item)
+
+			// JSON branch: mirror delete's structured envelope so MCP agents
+			// can confirm the restore landed without scraping text.
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{
+					"ref":      ref,
+					"title":    item.Title,
+					"restored": true,
+				})
+			}
+
+			if ref != "" {
+				fmt.Printf("Restored %s %q\n", ref, item.Title)
+			} else {
+				fmt.Printf("Restored %q\n", args[0])
+			}
+			return nil
+		},
+	}
+}
+
 // --- move ---
 
 func moveCmd() *cobra.Command {

@@ -631,7 +631,7 @@ func TestRoute_RoleList(t *testing.T) {
 // rather than silently flipping a tool back to "not yet implemented."
 func TestRouteTable_ContainsExpectedCommands(t *testing.T) {
 	want := []string{
-		"item create", "item show", "item list", "item delete",
+		"item create", "item show", "item list", "item delete", "item restore",
 		"item move", "item search", "item comment", "item comments",
 		"project dashboard", "collection list", "role list",
 	}
@@ -644,6 +644,16 @@ func TestRouteTable_ContainsExpectedCommands(t *testing.T) {
 	if len(missing) > 0 {
 		sort.Strings(missing)
 		t.Errorf("routeTable missing entries: %v", missing)
+	}
+}
+
+func TestRoute_ItemRestore(t *testing.T) {
+	m, p, _, err := routeTable["item restore"](map[string]any{"workspace": "docapp", "ref": "TASK-5"})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if m != http.MethodPost || p != "/api/v1/workspaces/docapp/items/TASK-5/restore" {
+		t.Errorf("got %s %s", m, p)
 	}
 }
 

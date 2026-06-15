@@ -113,6 +113,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "get"}:           {"item", "show"},
 		{"pad_item", "list"}:          {"item", "list"},
 		{"pad_item", "move"}:          {"item", "move"},
+		{"pad_item", "restore"}:       {"item", "restore"},
 		{"pad_item", "deps"}:          {"item", "deps"},
 		{"pad_item", "star"}:          {"item", "star"},
 		{"pad_item", "unstar"}:        {"item", "unstar"},
@@ -250,6 +251,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "get"}:           {"item", "show"},
 		{"pad_item", "list"}:          {"item", "list"},
 		{"pad_item", "move"}:          {"item", "move"},
+		{"pad_item", "restore"}:       {"item", "restore"},
 		{"pad_item", "deps"}:          {"item", "deps"},
 		{"pad_item", "star"}:          {"item", "star"},
 		{"pad_item", "unstar"}:        {"item", "unstar"},
@@ -547,6 +549,11 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			},
 			"item delete": {
 				Summary: "delete item",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace"),
+			},
+			"item restore": {
+				Summary: "restore item",
 				Args:    mkArgs("ref"),
 				Flags:   mkFlags("workspace"),
 			},
