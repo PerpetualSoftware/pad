@@ -99,13 +99,18 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 				rejectInvalidBearer(w, r, next, "unauthorized", "Invalid or expired session")
 				return
 			}
-			// Session binding: validate User-Agent hasn't changed
+			// Session binding: log a User-Agent change for visibility but do
+			// NOT reject. The UA is client-supplied and trivially replayed by
+			// anyone who already stole the token, so hard-enforcing it adds
+			// little security while breaking legitimate clients (browser/WebView
+			// updates, DevTools device emulation, mobile-app rebuilds). This
+			// mirrors the default IP-change handling (logged, request allowed);
+			// strict rejection on IP change is still available via
+			// PAD_IP_CHANGE_ENFORCE=strict.
 			if session.UAHash != "" && sha256hex(r.UserAgent()) != session.UAHash {
-				slog.Warn("session binding mismatch: User-Agent changed",
+				slog.Warn("session binding mismatch: User-Agent changed (logged, request allowed)",
 					"session_ip", session.IPAddress,
 					"client_ip", clientIP(r))
-				writeError(w, http.StatusUnauthorized, "unauthorized", "Session expired")
-				return
 			}
 			// Session binding: detect IP changes. Log to audit log in all modes;
 			// reject only when PAD_IP_CHANGE_ENFORCE=strict.
@@ -125,6 +130,14 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 				writeError(w, http.StatusUnauthorized, "session_ip_changed",
 					"Session client IP changed — please log in again.")
 				return
+			}
+			// Sliding renewal: extend the session's expiry on activity so an
+			// actively-used token never hits the fixed TTL cliff. Bearer
+			// clients hold the token directly (no cookie to re-issue) — just
+			// push the row's expiry forward. Best-effort: a renewal error must
+			// not fail an otherwise-valid request.
+			if _, _, err := s.store.RenewSessionIfStale(token); err != nil {
+				slog.Warn("session renewal failed (request allowed)", "error", err)
 			}
 			ctx := context.WithValue(r.Context(), ctxCurrentUser, session.User)
 			next.ServeHTTP(w, r.WithContext(ctx))
@@ -206,13 +219,15 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Session binding: validate User-Agent hasn't changed
+		// Session binding: log a User-Agent change for visibility but do NOT
+		// de-authenticate. See the matching note in TokenAuth above — UA is
+		// client-supplied, weak as a binding, and false-positives on routine
+		// client churn (browser/WebView updates, DevTools device emulation,
+		// mobile-app rebuilds). Logged-but-allowed, like the default IP path.
 		if session.UAHash != "" && sha256hex(r.UserAgent()) != session.UAHash {
-			slog.Warn("session binding mismatch: User-Agent changed",
+			slog.Warn("session binding mismatch: User-Agent changed (logged, request allowed)",
 				"session_ip", session.IPAddress,
 				"client_ip", clientIP(r))
-			next.ServeHTTP(w, r)
-			return
 		}
 
 		// Session binding: detect IP changes. Log to audit log in all modes;
@@ -227,10 +242,30 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		// Sliding renewal: extend the session's expiry on activity and re-issue
+		// the session cookie (plus CSRF, to keep their lifetimes in sync) with a
+		// fresh Max-Age so an actively-used session never expires out from under
+		// the user at the fixed TTL. Best-effort: a renewal error must not fail
+		// an otherwise-valid request. When this re-issues the CSRF cookie it
+		// also covers the "missing CSRF cookie" case below.
+		renewed := false
+		if newExpiry, didRenew, err := s.store.RenewSessionIfStale(cookie.Value); err != nil {
+			slog.Warn("session renewal failed (request allowed)", "error", err)
+		} else if didRenew {
+			if maxAge := int(time.Until(newExpiry).Seconds()); maxAge > 0 {
+				setSessionCookie(w, cookie.Value, maxAge, s.secureCookies)
+				if !strings.HasPrefix(r.URL.Path, "/api/v1/auth/") {
+					setCSRFCookie(w, maxAge, s.secureCookies)
+				}
+				renewed = true
+			}
+		}
+
 		// Re-issue CSRF cookie if the session is valid but the cookie is missing.
 		// This can happen when cookies expire at different times or are selectively cleared.
 		// Skip for auth endpoints — they manage their own CSRF cookies (login sets, logout clears).
-		if !strings.HasPrefix(r.URL.Path, "/api/v1/auth/") {
+		// Skip when sliding renewal already re-issued the CSRF cookie above.
+		if !renewed && !strings.HasPrefix(r.URL.Path, "/api/v1/auth/") {
 			if _, csrfErr := r.Cookie(csrfCookieName(s.secureCookies)); csrfErr != nil {
 				setCSRFCookie(w, 7*24*60*60, s.secureCookies)
 			}
@@ -862,6 +897,23 @@ func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, s
 
 // clearSessionCookie expires the session cookie on the client so a
 // subsequent request doesn't keep presenting a now-revoked token.
+// setSessionCookie (re)issues the session cookie with the given value and
+// max-age (seconds). Used by the sliding-renewal path to push the cookie's
+// lifetime forward in lockstep with the extended server-side expiry. The
+// attributes mirror createAuthSession and clearSessionCookie so the cookie's
+// identity (name/path/flags) stays stable across issue, renew, and clear.
+func setSessionCookie(w http.ResponseWriter, value string, maxAge int, secure bool) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName(secure),
+		Value:    value,
+		Path:     "/",
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
+	})
+}
+
 func clearSessionCookie(w http.ResponseWriter, secure bool) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName(secure),

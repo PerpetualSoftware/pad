@@ -303,5 +303,123 @@ func TestCreateTestUserHelper(t *testing.T) {
 	}
 }
 
+// setSessionTimes backdates a session's expires_at (and optionally created_at)
+// so renewal-threshold and absolute-cap paths can be exercised deterministically
+// without sleeping. Targets by user_id since test users hold a single session.
+func setSessionTimes(t *testing.T, s *Store, userID string, expiresAt, createdAt time.Time) {
+	t.Helper()
+	if createdAt.IsZero() {
+		_, err := s.db.Exec(s.q(`UPDATE sessions SET expires_at = ? WHERE user_id = ?`),
+			expiresAt.UTC().Format(time.RFC3339), userID)
+		if err != nil {
+			t.Fatalf("backdate session expiry: %v", err)
+		}
+		return
+	}
+	_, err := s.db.Exec(s.q(`UPDATE sessions SET expires_at = ?, created_at = ? WHERE user_id = ?`),
+		expiresAt.UTC().Format(time.RFC3339), createdAt.UTC().Format(time.RFC3339), userID)
+	if err != nil {
+		t.Fatalf("backdate session times: %v", err)
+	}
+}
+
+func TestRenewSessionExtendsWhenStale(t *testing.T) {
+	s := testStore(t)
+	u := createTestUser(t, s, "renew@test.com", "Renew", "password123")
+
+	token, err := s.CreateSession(u.ID, "web", "127.0.0.1", "UA", 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Drop remaining lifetime under the half-window threshold.
+	setSessionTimes(t, s, u.ID, time.Now().UTC().Add(1*time.Hour), time.Time{})
+
+	newExpiry, renewed, err := s.RenewSessionIfStale(token)
+	if err != nil {
+		t.Fatalf("RenewSessionIfStale: %v", err)
+	}
+	if !renewed {
+		t.Fatal("expected stale session to be renewed")
+	}
+	// Should have been pushed back out to ~now + full window.
+	want := time.Now().UTC().Add(7 * 24 * time.Hour)
+	if diff := newExpiry.Sub(want); diff > time.Minute || diff < -time.Minute {
+		t.Errorf("new expiry %v not within a minute of %v", newExpiry, want)
+	}
+	if s2, _ := s.ValidateSession(token); s2 == nil {
+		t.Error("session should still validate after renewal")
+	}
+}
+
+func TestRenewSessionSkipsWhenFresh(t *testing.T) {
+	s := testStore(t)
+	u := createTestUser(t, s, "fresh@test.com", "Fresh", "password123")
+
+	token, err := s.CreateSession(u.ID, "web", "127.0.0.1", "UA", 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Fresh session has a full window remaining → no renewal.
+	_, renewed, err := s.RenewSessionIfStale(token)
+	if err != nil {
+		t.Fatalf("RenewSessionIfStale: %v", err)
+	}
+	if renewed {
+		t.Error("fresh session should not be renewed")
+	}
+}
+
+func TestRenewSessionRespectsMaxLifetime(t *testing.T) {
+	s := testStore(t)
+	u := createTestUser(t, s, "cap@test.com", "Cap", "password123")
+
+	token, err := s.CreateSession(u.ID, "web", "127.0.0.1", "UA", 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Session created 89 days ago, nearly expired now: renewal must be capped
+	// at created_at + SessionMaxLifetime (~1 day out), not now + 7 days.
+	created := time.Now().UTC().Add(-89 * 24 * time.Hour)
+	setSessionTimes(t, s, u.ID, time.Now().UTC().Add(1*time.Hour), created)
+
+	newExpiry, renewed, err := s.RenewSessionIfStale(token)
+	if err != nil {
+		t.Fatalf("RenewSessionIfStale: %v", err)
+	}
+	if !renewed {
+		t.Fatal("expected renewal up to the cap")
+	}
+	cap := created.Add(SessionMaxLifetime)
+	if diff := newExpiry.Sub(cap); diff > time.Minute || diff < -time.Minute {
+		t.Errorf("expected expiry capped near %v, got %v", cap, newExpiry)
+	}
+}
+
+func TestRenewSessionLegacyZeroTTLNotRenewed(t *testing.T) {
+	s := testStore(t)
+	u := createTestUser(t, s, "legacy@test.com", "Legacy", "password123")
+
+	token, err := s.CreateSession(u.ID, "web", "127.0.0.1", "UA", 7*24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	// Simulate a pre-migration row: stale expiry but no renewal window.
+	setSessionTimes(t, s, u.ID, time.Now().UTC().Add(1*time.Hour), time.Time{})
+	if _, err := s.db.Exec(s.q(`UPDATE sessions SET renew_ttl_seconds = 0 WHERE user_id = ?`), u.ID); err != nil {
+		t.Fatalf("zero renew ttl: %v", err)
+	}
+
+	_, renewed, err := s.RenewSessionIfStale(token)
+	if err != nil {
+		t.Fatalf("RenewSessionIfStale: %v", err)
+	}
+	if renewed {
+		t.Error("legacy session (renew_ttl_seconds=0) should not be renewed")
+	}
+}
+
 // Suppress unused import warning — models is used in createTestUser
 var _ = models.UserCreate{}

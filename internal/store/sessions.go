@@ -46,9 +46,9 @@ func (s *Store) CreateSession(userID, deviceInfo, ipAddress, userAgent string, t
 	expiresAt := time.Now().UTC().Add(ttl).Format(time.RFC3339)
 
 	_, err := s.db.Exec(s.q(`
-		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, userID, tokenHash, deviceInfo, ipAddress, uaHash, expiresAt, ts)
+		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at, renew_ttl_seconds)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, userID, tokenHash, deviceInfo, ipAddress, uaHash, expiresAt, ts, int64(ttl/time.Second))
 	if err != nil {
 		return "", fmt.Errorf("insert session: %w", err)
 	}
@@ -92,6 +92,90 @@ func (s *Store) ValidateSession(token string) (*SessionInfo, error) {
 		IPAddress: ipAddress,
 		UAHash:    uaHash,
 	}, nil
+}
+
+// SessionMaxLifetime caps the total sliding lifetime of a session measured
+// from its creation. Sliding renewal can push expires_at forward repeatedly
+// while a session is active, but never past created_at + SessionMaxLifetime —
+// so an indefinitely-active client still has to re-authenticate eventually.
+const SessionMaxLifetime = 90 * 24 * time.Hour
+
+// RenewSessionIfStale implements sliding-window expiration. When a session is
+// past its renewal threshold (less than half its renewal window remaining) it
+// extends expires_at to now + the session's renewal window, capped at
+// created_at + SessionMaxLifetime. It returns the resulting expiry and whether
+// a renewal was written.
+//
+// Sessions with renew_ttl_seconds <= 0 (legacy rows from before sliding
+// renewal, and rows created with a non-positive TTL) are never renewed — their
+// current expiry is returned with renewed=false.
+//
+// The threshold gate keeps writes rare: a 7-day window renews at most once
+// every ~3.5 days of activity, not on every request. The UPDATE is a
+// compare-and-set on the old expiry so concurrent requests don't double-write.
+//
+// Callers should treat this as best-effort: a renewal error must not fail an
+// otherwise-valid request (the session is still valid until its current
+// expiry).
+func (s *Store) RenewSessionIfStale(token string) (time.Time, bool, error) {
+	hash := sha256.Sum256([]byte(token))
+	tokenHash := hex.EncodeToString(hash[:])
+
+	var expiresAtStr, createdAtStr string
+	var renewSeconds int64
+	err := s.db.QueryRow(s.q(`
+		SELECT expires_at, created_at, renew_ttl_seconds FROM sessions WHERE token_hash = ?
+	`), tokenHash).Scan(&expiresAtStr, &createdAtStr, &renewSeconds)
+	if err == sql.ErrNoRows {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("read session for renewal: %w", err)
+	}
+
+	expiresAt := parseTime(expiresAtStr)
+	if renewSeconds <= 0 {
+		// Sliding renewal disabled for this session (legacy row).
+		return expiresAt, false, nil
+	}
+	renewWindow := time.Duration(renewSeconds) * time.Second
+
+	nowT := time.Now().UTC()
+	// Only renew once we're past the threshold (< half the window remaining).
+	if expiresAt.Sub(nowT) >= renewWindow/2 {
+		return expiresAt, false, nil
+	}
+
+	newExpiry := nowT.Add(renewWindow)
+	// Never let sliding renewal exceed the absolute lifetime cap.
+	if createdAt := parseTime(createdAtStr); !createdAt.IsZero() {
+		if cap := createdAt.Add(SessionMaxLifetime); newExpiry.After(cap) {
+			newExpiry = cap
+		}
+	}
+	// Never shorten an existing expiry (e.g. once the cap is reached).
+	if !newExpiry.After(expiresAt) {
+		return expiresAt, false, nil
+	}
+
+	newExpiryStr := newExpiry.Format(time.RFC3339)
+	res, err := s.db.Exec(s.q(`
+		UPDATE sessions SET expires_at = ? WHERE token_hash = ? AND expires_at = ?
+	`), newExpiryStr, tokenHash, expiresAtStr)
+	if err != nil {
+		return expiresAt, false, fmt.Errorf("renew session: %w", err)
+	}
+	// Only report a renewal when this request's CAS actually wrote the row.
+	// A zero-row update means we lost the race to a concurrent renewal (the
+	// session is still renewed, just not by us) or the session was deleted
+	// between the read and the write — in either case the caller must NOT
+	// reissue a cookie advertising an expiry it didn't set. Treat an
+	// unreliable RowsAffected as "not renewed" so we fail safe.
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return expiresAt, false, nil
+	}
+	return newExpiry, true, nil
 }
 
 // UpdateSessionIPIfEquals atomically rotates the stored IP on a session

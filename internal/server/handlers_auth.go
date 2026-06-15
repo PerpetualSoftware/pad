@@ -216,9 +216,14 @@ func requestIsLoopback(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// validateSessionCookie validates a session cookie including session binding
-// (User-Agent check). Returns the user if valid, nil otherwise. This must be
-// used instead of calling ValidateSession directly to ensure binding is enforced.
+// validateSessionCookie validates a session cookie and returns the user if
+// valid, nil otherwise. A User-Agent change is logged but NOT rejected — this
+// must stay in lockstep with the TokenAuth/SessionAuth middleware, which also
+// treats UA binding as log-only (see middleware_auth.go and BUG-1815).
+// Enforcing it here while the middleware allows it would split auth semantics:
+// the same session would be accepted on middleware-protected routes but
+// rejected on the helper-based routes (CLI-auth approval, account/2FA setup,
+// session check) that call this.
 func (s *Server) validateSessionCookie(r *http.Request) *models.User {
 	cookie, err := r.Cookie(sessionCookieName(s.secureCookies))
 	if err != nil {
@@ -232,9 +237,14 @@ func (s *Server) validateSessionCookie(r *http.Request) *models.User {
 	if session == nil || session.User == nil {
 		return nil
 	}
-	// Session binding: reject if User-Agent has changed
+	// Session binding: a User-Agent change is logged for visibility but not
+	// rejected. UA is client-supplied and weak as a binding, and false-positives
+	// on routine client churn (browser/WebView updates, DevTools device
+	// emulation, mobile-app rebuilds).
 	if session.UAHash != "" && sha256hex(r.UserAgent()) != session.UAHash {
-		return nil
+		slog.Warn("session binding mismatch: User-Agent changed (logged, request allowed)",
+			"session_ip", session.IPAddress,
+			"client_ip", clientIP(r))
 	}
 	return session.User
 }
