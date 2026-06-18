@@ -148,6 +148,41 @@ func TestAuthSessionBillingAvailable(t *testing.T) {
 	}
 }
 
+// version is surfaced on /auth/session (IDEA-1826 / TASK-1839) so the mobile
+// shells can read the server build version in the call they already make on
+// connect and warn when it's below their minimum. It must appear in BOTH the
+// pre-setup payload (no users yet — the shell validates fresh servers too) and
+// the post-setup authenticated/unauthenticated payload.
+func TestAuthSessionEmitsVersion(t *testing.T) {
+	srv := testServer(t)
+	srv.version = "1.2.3"
+
+	// Pre-setup (no users): setupStatePayload must carry version.
+	rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("session check: expected 200, got %d", rr.Code)
+	}
+	var session map[string]interface{}
+	parseJSON(t, rr, &session)
+	if session["setup_required"] != true {
+		t.Fatal("expected setup_required=true when no users exist")
+	}
+	if got := session["version"]; got != "1.2.3" {
+		t.Errorf("expected version=1.2.3 in setup-state payload, got %v", got)
+	}
+
+	// Post-setup, authenticated: sessionStatePayload must carry version too.
+	token := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/auth/session", nil, token)
+	parseJSON(t, rr, &session)
+	if session["authenticated"] != true {
+		t.Fatal("expected authenticated=true after bootstrap")
+	}
+	if got := session["version"]; got != "1.2.3" {
+		t.Errorf("expected version=1.2.3 in authenticated payload, got %v", got)
+	}
+}
+
 func TestAuthBootstrapRequiresLoopback(t *testing.T) {
 	srv := testServer(t)
 

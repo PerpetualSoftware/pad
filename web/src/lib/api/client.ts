@@ -332,6 +332,11 @@ export interface AuthSession {
 	// AND the deployment is in cloud mode. Use authStore.billingAvailable rather
 	// than reading this field directly. TASK-800.
 	billing_available?: boolean;
+	// version is the server build version (same value as HealthResponse.version),
+	// surfaced on /auth/session so clients — notably the mobile shells — can read
+	// it in the call they already make on connect (IDEA-1826). Empty string only
+	// when no version was stamped at build time; "dev" on dev builds.
+	version?: string;
 	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string };
 }
 
