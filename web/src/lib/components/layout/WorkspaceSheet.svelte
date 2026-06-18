@@ -2,9 +2,12 @@
 	WorkspaceSheet — the mobile "Workspace" slot surface (PLAN-1694, TASK-1701).
 
 	A docked sheet (DockedSheet, anchored above the nav) for moving around the
-	current workspace: a purpose-built workspace switcher card (tap to expand an
-	inline list — no reused WorkspaceSwitcher), a Navigate tile grid
-	(Dashboard/Insights/Roles/Starred/Tags/Settings), and the Collections list.
+	current workspace: a Navigate tile grid (Dashboard/Insights/Roles/Starred/
+	Tags/Settings) and the Collections list.
+
+	The workspace *switcher* used to live here as a card; IDEA-1835 moved it to
+	the persistent top bar (MobileContextBar), so this sheet is now navigation
+	only. The bottom-nav slot keeps its "Workspace" label and avatar.
 -->
 <script lang="ts">
 	import { page } from '$app/state';
@@ -12,8 +15,6 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
-	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
-	import { avatarColor, avatarInitial } from '$lib/utils/avatar';
 	import { getPrimaryDestinations, getActiveKey } from '$lib/nav/destinations';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
 
@@ -22,9 +23,7 @@
 	let wsSlug = $derived(workspaceStore.current?.slug);
 	let wsUsername = $derived(workspaceStore.current?.owner_username ?? '');
 	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
-	let wsName = $derived(workspaceStore.current?.name ?? 'Workspace');
 	let isGuest = $derived(workspaceStore.current?.is_guest ?? false);
-	let role = $derived(workspaceStore.currentRole);
 	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
 
 	// Navigate tiles: every static destination except Activity (its own nav
@@ -43,19 +42,7 @@
 		collectionStore.collections.filter((c) => agentSlugs.includes(c.slug))
 	);
 
-	// Inline switcher list expansion. Reassignable $derived (Svelte 5.25+)
-	// instead of $state: the card's onclick toggles it by reassignment, and
-	// it snaps back to collapsed whenever `open` changes. This state lives
-	// here (not in DockedSheet's children, which unmount on close), so plain
-	// $state would survive close/reopen and the list would come back stale —
-	// including via backdrop/swipe dismissal, which no handler in this
-	// component sees (IDEA-1720).
-	let switching = $derived.by(() => {
-		void open;
-		return false;
-	});
-
-	// Close on navigation (the switcher card navigates on select).
+	// Close on navigation (the tiles/collections navigate on select).
 	afterNavigate((nav) => {
 		if (nav.type !== 'enter' && open) onclose();
 	});
@@ -65,58 +52,10 @@
 		uiStore.onNavigate();
 		goto(href);
 	}
-
-	function selectWorkspace(ws: { slug: string; owner_username?: string }) {
-		const current = workspaceStore.current;
-		const isCurrent = !!current && ws.slug === current.slug;
-		const target = isCurrent
-			? `/${current.owner_username}/${current.slug}`
-			: workspaceRestoreTarget(ws);
-		onclose();
-		goto(target);
-	}
-
-	function newWorkspace() {
-		onclose();
-		uiStore.openCreateWorkspace();
-	}
 </script>
 
 <DockedSheet {open} {onclose} label="Workspace">
 	<div class="ws">
-		<!-- Workspace switcher card -->
-		<button class="ws-card" type="button" onclick={() => (switching = !switching)}>
-			<span class="ws-avatar" style:background={avatarColor(wsName)}>{avatarInitial(wsName)}</span>
-			<span class="ws-meta">
-				<span class="ws-name">{wsName}</span>
-				{#if role}<span class="ws-role">{role}</span>{/if}
-			</span>
-			<span class="ws-switch">Switch <span class="ws-chev" class:up={switching}>⌄</span></span>
-		</button>
-
-		{#if switching}
-			<div class="ws-list">
-				{#each workspaceStore.workspaces as ws (ws.slug)}
-					<button
-						class="ws-row"
-						class:active={ws.slug === wsSlug}
-						type="button"
-						onclick={() => selectWorkspace(ws)}
-					>
-						<span class="ws-row-avatar" style:background={avatarColor(ws.name)}>
-							{avatarInitial(ws.name)}
-						</span>
-						<span class="ws-row-name">{ws.name}</span>
-						{#if ws.slug === wsSlug}<span class="ws-row-check" aria-hidden="true">✓</span>{/if}
-					</button>
-				{/each}
-				<button class="ws-row ws-new" type="button" onclick={newWorkspace}>
-					<span class="ws-row-avatar plus" aria-hidden="true">＋</span>
-					<span class="ws-row-name">New workspace</span>
-				</button>
-			</div>
-		{/if}
-
 		<!-- Navigate -->
 		<div class="ws-label">Navigate</div>
 		<div class="ws-grid">
@@ -169,125 +108,6 @@
 		display: flex;
 		flex-direction: column;
 		padding: 0 var(--space-4);
-	}
-
-	/* Workspace switcher card */
-	.ws-card {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		width: 100%;
-		padding: var(--space-3);
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		cursor: pointer;
-		text-align: left;
-	}
-	.ws-avatar {
-		flex-shrink: 0;
-		width: 40px;
-		height: 40px;
-		border-radius: var(--radius-md, 6px);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: #fff;
-		font-weight: 700;
-		font-size: 1.1em;
-	}
-	.ws-meta {
-		display: flex;
-		flex-direction: column;
-		gap: 1px;
-		min-width: 0;
-		flex: 1;
-	}
-	.ws-name {
-		font-weight: 600;
-		color: var(--text-primary);
-		font-size: 1em;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.ws-role {
-		font-size: 0.75em;
-		color: var(--text-muted);
-		text-transform: capitalize;
-	}
-	.ws-switch {
-		flex-shrink: 0;
-		display: flex;
-		align-items: center;
-		gap: 2px;
-		font-size: 0.8em;
-		color: var(--text-secondary);
-	}
-	.ws-chev {
-		display: inline-block;
-		transition: transform 0.15s ease;
-	}
-	.ws-chev.up {
-		transform: rotate(180deg);
-	}
-
-	.ws-list {
-		display: flex;
-		flex-direction: column;
-		margin-top: var(--space-2);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-md, 6px);
-		overflow: hidden;
-	}
-	.ws-row {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
-		padding: var(--space-2) var(--space-3);
-		background: none;
-		border: none;
-		cursor: pointer;
-		text-align: left;
-		color: var(--text-secondary);
-	}
-	.ws-row:hover {
-		background: var(--bg-hover);
-	}
-	.ws-row.active {
-		color: var(--text-primary);
-	}
-	.ws-row-avatar {
-		flex-shrink: 0;
-		width: 26px;
-		height: 26px;
-		border-radius: var(--radius-sm);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		color: #fff;
-		font-weight: 700;
-		font-size: 0.8em;
-	}
-	.ws-row-avatar.plus {
-		background: transparent;
-		border: 1px dashed var(--border);
-		color: var(--text-muted);
-	}
-	.ws-row-name {
-		flex: 1;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-size: 0.95em;
-	}
-	.ws-row-check {
-		color: var(--accent-blue);
-		font-size: 0.9em;
-	}
-	.ws-new .ws-row-name {
-		color: var(--text-muted);
 	}
 
 	.ws-label {
