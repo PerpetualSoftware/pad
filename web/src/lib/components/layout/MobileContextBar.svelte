@@ -1,13 +1,18 @@
 <!--
-	MobileContextBar — slim contextual top bar for detail screens (PLAN-1694
-	Phase 2, TASK-1700).
+	MobileContextBar — the unified mobile top bar (PLAN-1694 Phase 2,
+	TASK-1700; generalized to all screens in IDEA-1835).
 
-	With the global mobile <TopBar /> retired inside workspaces, root/tab
-	screens render full-height (no top chrome). Drill-in "detail" screens still
-	need a back affordance + title — that's this bar. Shown only on mobile and
-	only when the path is ≥2 segments deep past the workspace prefix (item
-	detail `/coll/slug`, tag detail `/tags/tag`, playbook editor, …). Root tabs
-	and collection lists (depth 0-1) have their own in-page headers.
+	Originally a detail-only back+title bar. IDEA-1835 promoted it to a
+	persistent top bar shown on EVERY mobile screen inside a workspace so the
+	workspace switcher (moved here from the bottom nav) is always visible and
+	the collection/item name reads the same everywhere. Layout is
+	`[back?] [title] [workspace switcher]`:
+	  - back affordance shows only when there's a parent to return to (i.e.
+	    not on the workspace home/root, where `segments` is empty);
+	  - title is the page's own title (item ref → section → humanized last
+	    segment), so collection lists show the collection name and item
+	    details show the ref — no per-page in-page header needed;
+	  - the workspace switcher (name + chevron) opens a BottomSheet to switch.
 
 	Mounted in the workspace layout next to <BottomNav />. While shown it
 	toggles `body.has-context-bar`, which app.css uses to pad .main-content top.
@@ -19,6 +24,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
 
 	// Count in-app navigations so goBack() knows whether history.back() stays
 	// inside Pad. history.length is unreliable — a deep link opened from
@@ -43,14 +49,22 @@
 	let wsUsername = $derived(workspaceStore.current?.owner_username ?? '');
 	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
 
-	// Segments past the workspace prefix. depth ≥ 2 ⇒ a drill-in detail screen.
+	// Segments past the workspace prefix. Empty ⇒ the workspace home/root.
 	let segments = $derived.by(() => {
 		const path = page.url.pathname;
 		if (!wsPrefix || !path.startsWith(`${wsPrefix}/`)) return [];
 		return path.slice(wsPrefix.length + 1).split('/').filter(Boolean);
 	});
-	let isDetail = $derived(segments.length >= 2);
-	let show = $derived(uiStore.isMobile && isDetail);
+
+	// Shown on every mobile screen inside a workspace (IDEA-1835) — the home
+	// (path === wsPrefix) plus any deeper route. The back affordance is gated
+	// separately so the root screen doesn't offer a dead-end "back".
+	let inWorkspace = $derived(
+		!!wsPrefix &&
+			(page.url.pathname === wsPrefix || page.url.pathname.startsWith(`${wsPrefix}/`))
+	);
+	let show = $derived(uiStore.isMobile && inWorkspace);
+	let canGoBack = $derived(segments.length >= 1);
 
 	// Deterministic parent (drop the last path segment) — used as a safe
 	// fallback when there's no in-app history to go back to (deep link).
@@ -87,19 +101,23 @@
 
 {#if show}
 	<header class="context-bar">
-		<button class="cb-back" type="button" onclick={goBack} aria-label="Back">
-			<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-				<path
-					d="M12.5 4L6.5 10L12.5 16"
-					stroke="currentColor"
-					stroke-width="1.8"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-				/>
-			</svg>
-		</button>
+		{#if canGoBack}
+			<button class="cb-back" type="button" onclick={goBack} aria-label="Back">
+				<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+					<path
+						d="M12.5 4L6.5 10L12.5 16"
+						stroke="currentColor"
+						stroke-width="1.8"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+					/>
+				</svg>
+			</button>
+		{/if}
 		<h1 class="cb-title">{title}</h1>
-		<span class="cb-spacer" aria-hidden="true"></span>
+		<div class="cb-ws">
+			<WorkspaceSwitcher mobile={true} />
+		</div>
 	</header>
 {/if}
 
@@ -125,8 +143,8 @@
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: 36px;
-		height: 36px;
+		width: 40px;
+		height: 40px;
 		background: none;
 		border: none;
 		border-radius: var(--radius-sm);
@@ -140,16 +158,32 @@
 		flex: 1;
 		min-width: 0;
 		margin: 0;
-		font-size: 1em;
+		font-size: 1.15em;
 		font-weight: 600;
 		color: var(--text-primary);
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* Balance the back button so the title sits optically centered. */
-	.cb-spacer {
-		flex: 0 0 auto;
-		width: 36px;
+	/* Workspace switcher, right-anchored. Capped so a long workspace name
+	   can't crowd out the title — the switcher's own `.name` ellipsizes. */
+	.cb-ws {
+		flex: 0 1 auto;
+		min-width: 0;
+		max-width: 62%;
+	}
+	/* The embedded <WorkspaceSwitcher> paints its trigger with the same
+	   --bg-secondary as this bar, so it'd vanish. Lift it onto --bg-tertiary
+	   and size it to fill the bar's height (without growing the bar) so it
+	   reads as a substantial control rather than a small floating chip. */
+	.cb-ws :global(.current) {
+		max-width: 100%;
+		min-height: 34px;
+		padding: var(--space-2) var(--space-3);
+		background: var(--bg-tertiary);
+		font-size: 1em;
+	}
+	.cb-ws :global(.current:hover) {
+		background: var(--bg-hover);
 	}
 </style>

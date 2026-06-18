@@ -2768,6 +2768,13 @@
 	}
 
 	@media (max-width: 768px) {
+		/* The collection name now lives in the persistent top bar
+		   (MobileContextBar, IDEA-1835) — drop the duplicate in-page heading
+		   but keep the view controls in the row. */
+		.title-row h1 {
+			display: none;
+		}
+
 		.title-row {
 			flex-direction: column;
 			align-items: flex-start;
