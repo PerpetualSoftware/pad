@@ -69,6 +69,12 @@ If the user references a workspace this connection can't see (you'll get a 403 f
 
 For brand-new workspaces, `pad_workspace.create` with `{name: "<name>"}` (and optional `template`) creates the workspace AND auto-adds it to this connection's allow-list in one call — no claim code needed. Only works when the user granted "may create workspaces" at consent time; if that scope was declined the create call still succeeds but the workspace doesn't auto-join — direct the user to the claim flow above to bring it in.
 
+## New workspace: offer to set it up
+
+The bootstrap blob (from `pad_meta.action: bootstrap`, `pad_set_workspace`, or the `pad://workspace/{ws}/bootstrap` resource) carries `needs_onboarding: bool` — true when the workspace has zero user-created items (template seeds don't count). When it's true, **lead with an active offer before anything else**: *"This workspace is brand new and isn't set up yet. Want me to set it up? I'll ask a few quick questions and adapt it to your project."*
+
+This is an **offer, not an auto-run** — wait for the user to say yes before running onboarding. If they accept, run the `onboard` playbook (use the `pad_onboard` prompt, or load the body via `pad_playbook` `action: get`, `ref: onboard`). If they decline, or already declined earlier in the session, respect that and skip the offer. The flag flips to false the moment any item exists, so it won't nag past first setup.
+
 ## Multi-step workflows
 
 Four prompts ship with the server: `pad_plan`, `pad_ideate`, `pad_retro`, `pad_onboard`. Use them when the user wants help planning, brainstorming, retrospecting, or onboarding into a workspace — they encode the multi-step Pad-aware playbook for each.
