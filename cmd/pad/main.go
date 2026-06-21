@@ -1167,7 +1167,11 @@ legacy in-terminal email/name/password prompts.`,
 			if cliPrompt {
 				return runCLISetup(cfg, client)
 			}
-			return runBrowserSetup(cmd.Context(), cfg, client)
+			if err := runBrowserSetup(cmd.Context(), cfg, client); err != nil {
+				return err
+			}
+			printPostSetupNextStepsHint()
+			return nil
 		},
 	}
 	// --cli-prompt is the deliberate hedge from IDEA-1179 / TASK-1216: we
@@ -1181,14 +1185,18 @@ legacy in-terminal email/name/password prompts.`,
 	return cmd
 }
 
-// runBrowserSetup drives the browser-based first-admin bootstrap and then
-// chains a CLI auth-session login so the user ends up authenticated on
-// the CLI — mirroring the post-condition of the legacy --cli-prompt path
-// (Bootstrap returns a token and we save credentials in one shot). Two
-// browser approvals — one to create the admin, one to authorize the CLI
-// — but each is a single click in a browser the operator already has
-// open, and the alternative (telling them to manually run `pad auth
-// login` afterwards) is a worse UX.
+// runBrowserSetup drives the browser-based first-admin bootstrap and the
+// CLI authorization in a SINGLE browser handoff. Before printing anything
+// it creates a pending CLI auth session, then hands /setup a next= target
+// pointing at that session's approval page. The operator opens one URL,
+// creates the admin account, and the browser auto-navigates to the
+// "Authorize CLI" page in the same tab — where, already authenticated by
+// the bootstrap they just completed, a single click finishes login. The
+// CLI polls that pre-created session and saves credentials on approval.
+//
+// This closes BUG-1843: the pre-fix flow created the admin, dropped the
+// operator on the console, and only THEN printed a second auth URL back in
+// the terminal — which a user who'd moved to the browser never saw.
 func runBrowserSetup(ctx context.Context, cfg *config.Config, client *cli.Client) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -1206,7 +1214,17 @@ func runBrowserSetup(ctx context.Context, cfg *config.Config, client *cli.Client
 		}
 	}()
 
-	if err := cli.RunBrowserBootstrap(bootstrapCtx, client, cfg); err != nil {
+	// Create the CLI auth session FIRST so we know the approval-page path
+	// to hand /setup as its post-bootstrap redirect target. CreateCLIAuthSession
+	// is unauthenticated (it mints a pending request), so it works on a
+	// fresh instance with no users yet.
+	sess, err := client.CreateCLIAuthSession()
+	if err != nil {
+		return fmt.Errorf("failed to start login session: %w", err)
+	}
+	next := "/auth/cli/" + sess.SessionCode
+
+	if err := cli.RunBrowserBootstrap(bootstrapCtx, client, cfg, next); err != nil {
 		// Map ctx cancellation to the canonical errCancelled sentinel so
 		// the deferred isCancellation() check in the parent RunE routes
 		// us through "Cancelled." + exit 130 instead of cobra's generic
@@ -1220,12 +1238,8 @@ func runBrowserSetup(ctx context.Context, cfg *config.Config, client *cli.Client
 	green := color.New(color.FgGreen).SprintFunc()
 	fmt.Printf("  %s First admin account created\n", green("✓"))
 	fmt.Println()
-	fmt.Println("  Authenticating the CLI…")
-	if err := doBrowserLogin(client, cfg); err != nil {
-		return err
-	}
-	printPostSetupNextStepsHint()
-	return nil
+	fmt.Println("  Authorizing the CLI… approve the request in the browser tab that just opened.")
+	return pollAndSaveCLIAuth(bootstrapCtx, client, cfg, sess)
 }
 
 // runCLISetup is the legacy in-terminal admin bootstrap, reachable via
@@ -1366,6 +1380,18 @@ func doBrowserLogin(client *cli.Client, cfg *config.Config) error {
 		cancel()
 	}()
 
+	return pollAndSaveCLIAuth(ctx, client, cfg, sess)
+}
+
+// pollAndSaveCLIAuth polls a pending CLI auth session until it is approved,
+// then persists the issued token as credentials for cfg.BaseURL(). It is the
+// shared tail of every browser auth flow: doBrowserLogin (which prints its
+// own /auth/cli URL) and the first-run setup handoff (where the browser
+// auto-navigates to that same approval page from /setup, so no URL is
+// printed — BUG-1843). The caller owns ctx and its SIGINT wiring; on
+// cancellation this returns errCancelled so the standard "Cancelled." +
+// exit-130 path fires.
+func pollAndSaveCLIAuth(ctx context.Context, client *cli.Client, cfg *config.Config, sess *cli.CLIAuthSessionResponse) error {
 	// Poll until approved, expired, or cancelled
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
@@ -2228,10 +2254,24 @@ a workspace in one step.`,
 				return fmt.Errorf("failed to check auth status: %w", err)
 			}
 			if session.SetupRequired {
-				printSetupRequiredHint(cfg)
-				dim := color.New(color.Faint)
-				fmt.Println(dim.Sprint("\nTip: Run 'pad init' to set up everything at once."))
-				return fmt.Errorf("this Pad instance has not been initialized yet")
+				// Remote/cloud instances can only be bootstrapped from the
+				// server host — a client machine can't create the first
+				// admin. Keep the pointing-at-the-host hint for those.
+				switch cfg.Mode {
+				case config.ModeRemote, config.ModeCloud:
+					printSetupRequiredHint(cfg)
+					return fmt.Errorf("this Pad instance has not been initialized yet")
+				}
+				// Fresh local instance: drive the full first-run setup
+				// (create the first admin + authorize this CLI) inline so
+				// `pad init` is a genuine one-shot rather than bouncing the
+				// user to `pad auth setup` and back. BUG-1843.
+				fmt.Println("This Pad instance hasn't been set up yet — let's create your admin account.")
+				if err := runBrowserSetup(cmd.Context(), cfg, client); err != nil {
+					return err
+				}
+				fmt.Println()
+				client = cli.NewClientFromURL(cfg.BaseURL())
 			} else if !session.Authenticated {
 				fmt.Println("Log in to continue.")
 				fmt.Println()

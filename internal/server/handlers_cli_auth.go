@@ -14,7 +14,19 @@ import (
 // The CLI calls this, then presents the auth URL to the user.
 // POST /api/v1/auth/cli/sessions
 func (s *Server) handleCreateCLIAuthSession(w http.ResponseWriter, r *http.Request) {
-	sess, err := s.store.CreateCLIAuthSession()
+	// On a fresh instance (no users yet) this session is part of the
+	// first-run setup handoff: the CLI mints it BEFORE the operator creates
+	// the admin account in the browser, so /setup can redirect straight to
+	// the approval page (BUG-1843). Grant the longer setup TTL so the
+	// combined account-creation + approval window doesn't expire mid-flow.
+	// Once users exist (normal `pad auth login`), use the shorter default.
+	// A failed count falls back to the default TTL rather than blocking login.
+	create := s.store.CreateCLIAuthSession
+	if count, err := s.store.UserCount(); err == nil && count == 0 {
+		create = s.store.CreateCLIAuthSessionForSetup
+	}
+
+	sess, err := create()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create CLI auth session")
 		return

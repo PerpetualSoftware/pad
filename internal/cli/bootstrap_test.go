@@ -70,7 +70,7 @@ func TestRunBrowserBootstrap_Idempotent(t *testing.T) {
 
 	// Deliberately do NOT write a token file. If the helper short-circuits
 	// correctly on setup_required: false, it should never need to read it.
-	if err := RunBrowserBootstrap(context.Background(), client, cfg); err != nil {
+	if err := RunBrowserBootstrap(context.Background(), client, cfg, ""); err != nil {
 		t.Fatalf("RunBrowserBootstrap returned %v on already-bootstrapped server, want nil", err)
 	}
 }
@@ -99,7 +99,7 @@ func TestRunBrowserBootstrap_LogsTokenSuccess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := RunBrowserBootstrap(ctx, client, cfg)
+	err := RunBrowserBootstrap(ctx, client, cfg, "")
 	if err != nil {
 		t.Fatalf("RunBrowserBootstrap: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestRunBrowserBootstrap_OpenMode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	if err := RunBrowserBootstrap(ctx, client, cfg); err != nil {
+	if err := RunBrowserBootstrap(ctx, client, cfg, ""); err != nil {
 		t.Fatalf("RunBrowserBootstrap (open mode): %v", err)
 	}
 }
@@ -147,7 +147,7 @@ func TestRunBrowserBootstrap_TokenMissing(t *testing.T) {
 	// No writeBootstrapToken — file is absent.
 
 	client := NewClientFromURL(srv.URL)
-	err := RunBrowserBootstrap(context.Background(), client, cfg)
+	err := RunBrowserBootstrap(context.Background(), client, cfg, "")
 	if err == nil {
 		t.Fatal("RunBrowserBootstrap returned nil with missing token, want error")
 	}
@@ -172,7 +172,7 @@ func TestRunBrowserBootstrap_TokenEmpty(t *testing.T) {
 	writeBootstrapToken(t, cfg.DataDir, "   ")
 
 	client := NewClientFromURL(srv.URL)
-	err := RunBrowserBootstrap(context.Background(), client, cfg)
+	err := RunBrowserBootstrap(context.Background(), client, cfg, "")
 	if err == nil {
 		t.Fatal("RunBrowserBootstrap returned nil with empty token, want error")
 	}
@@ -192,7 +192,7 @@ func TestRunBrowserBootstrap_LocalCLIMethod(t *testing.T) {
 	cfg := newTestConfig(t, srv.URL)
 
 	client := NewClientFromURL(srv.URL)
-	err := RunBrowserBootstrap(context.Background(), client, cfg)
+	err := RunBrowserBootstrap(context.Background(), client, cfg, "")
 	if err == nil {
 		t.Fatal("RunBrowserBootstrap returned nil with setup_method=local_cli, want error")
 	}
@@ -211,7 +211,7 @@ func TestRunBrowserBootstrap_UnknownMethod(t *testing.T) {
 	cfg := newTestConfig(t, srv.URL)
 
 	client := NewClientFromURL(srv.URL)
-	err := RunBrowserBootstrap(context.Background(), client, cfg)
+	err := RunBrowserBootstrap(context.Background(), client, cfg, "")
 	if err == nil {
 		t.Fatal("RunBrowserBootstrap returned nil with unknown setup_method, want error")
 	}
@@ -253,7 +253,7 @@ func TestRunBrowserBootstrap_TimeoutFires(t *testing.T) {
 	writeBootstrapToken(t, cfg.DataDir, "tok")
 
 	client := NewClientFromURL(srv.URL)
-	err := RunBrowserBootstrap(context.Background(), client, cfg)
+	err := RunBrowserBootstrap(context.Background(), client, cfg, "")
 	if err == nil {
 		t.Fatal("RunBrowserBootstrap returned nil after internal timeout, want error")
 	}
@@ -292,7 +292,7 @@ func TestRunBrowserBootstrap_ContextCancelled(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	err := RunBrowserBootstrap(ctx, client, cfg)
+	err := RunBrowserBootstrap(ctx, client, cfg, "")
 	elapsed := time.Since(start)
 
 	if err == nil {
@@ -319,11 +319,46 @@ func TestBuildBootstrapURL_LogsTokenFragment(t *testing.T) {
 	cfg := newTestConfig(t, "http://example.test:7777")
 	writeBootstrapToken(t, cfg.DataDir, "abc123")
 
-	got, err := buildBootstrapURL(cfg, "logs_token")
+	got, err := buildBootstrapURL(cfg, "logs_token", "")
 	if err != nil {
 		t.Fatalf("buildBootstrapURL: %v", err)
 	}
 	want := "http://example.test:7777/setup#token=abc123"
+	if got != want {
+		t.Errorf("buildBootstrapURL = %q, want %q", got, want)
+	}
+}
+
+// TestBuildBootstrapURL_NextBeforeFragment locks down the BUG-1843 handoff
+// shape: the next= query param MUST sit before the #token fragment.
+// A query placed after the fragment would be swallowed by it and never
+// reach the /setup page's searchParams, breaking the post-bootstrap
+// redirect to the CLI-authorize page. The path is URL-escaped so the
+// leading slash round-trips intact.
+func TestBuildBootstrapURL_NextBeforeFragment(t *testing.T) {
+	cfg := newTestConfig(t, "http://example.test:7777")
+	writeBootstrapToken(t, cfg.DataDir, "abc123")
+
+	got, err := buildBootstrapURL(cfg, "logs_token", "/auth/cli/XYZ")
+	if err != nil {
+		t.Fatalf("buildBootstrapURL: %v", err)
+	}
+	want := "http://example.test:7777/setup?next=%2Fauth%2Fcli%2FXYZ#token=abc123"
+	if got != want {
+		t.Errorf("buildBootstrapURL = %q, want %q", got, want)
+	}
+}
+
+// TestBuildBootstrapURL_OpenModeNext — in open mode (no token) the next=
+// query still attaches, with no fragment.
+func TestBuildBootstrapURL_OpenModeNext(t *testing.T) {
+	cfg := newTestConfig(t, "http://example.test:7777")
+
+	got, err := buildBootstrapURL(cfg, "open", "/auth/cli/XYZ")
+	if err != nil {
+		t.Fatalf("buildBootstrapURL: %v", err)
+	}
+	want := "http://example.test:7777/setup?next=%2Fauth%2Fcli%2FXYZ"
 	if got != want {
 		t.Errorf("buildBootstrapURL = %q, want %q", got, want)
 	}
