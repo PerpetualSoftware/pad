@@ -58,8 +58,8 @@
 	<div class="nudge-body">
 		<span class="nudge-title">Set up your workspace</span>
 		<p class="nudge-text">
-			Your workspace is ready. Connect your agent and type
-			<code>/pad onboard</code> to walk through setting it up.
+			Your workspace is ready. Connect your agent, then just say
+			<code>set up my workspace</code> &mdash; it'll walk you through setup.
 		</p>
 	</div>
 	<span class="nudge-actions">
