@@ -60,13 +60,17 @@ Always confirm before creating or mutating items.
 
 const promptOnboardBody = `# Pad: Onboard workflow
 
-The canonical workspace-onboarding interview lives in the ` + "`/pad onboard`" + ` invokable library playbook (PLAN-1496 / TASK-1499). Every new workspace auto-seeds it as ` + "`status=active`" + ` (TASK-1500), so it should be directly invokable.
+The canonical workspace-onboarding interview lives in the **onboard** invokable library playbook (PLAN-1496 / TASK-1499). Every new workspace auto-seeds it as ` + "`status=active`" + ` (TASK-1500), so it should be directly invokable.
 
-To run it:
+Natural language is the canonical trigger and works on every surface — when the user says "set up my workspace" / "onboard me," run this playbook. The slug shortcuts (` + "`/pad onboard`" + ` in Claude Code, ` + "`$pad onboard`" + ` in Codex, this ` + "`pad_onboard`" + ` prompt) are equivalent entry points into the same playbook.
 
-1. Confirm the playbook is activated. ` + "`pad playbook list --format json`" + ` and look for ` + "`invocation_slug=onboard`" + ` with ` + "`status=active`" + `. If it's missing, activate from the library: ` + "`pad library activate playbook \"Onboard a workspace\"`" + ` (web UI: ` + "`/{ws}/library?tab=playbooks`" + `).
-2. Load the body. ` + "`pad playbook show onboard --format markdown`" + `.
+To run it (using your MCP tools — no shell required):
+
+1. Confirm the playbook is activated. Call ` + "`pad_playbook`" + ` with ` + "`action: list`" + ` and look for ` + "`invocation_slug=onboard`" + ` with ` + "`status=active`" + `. If it's missing, the user can activate it from the library in the web UI (` + "`/{ws}/library?tab=playbooks`" + `).
+2. Load the body. Call ` + "`pad_playbook`" + ` with ` + "`action: get`" + ` and ` + "`ref: onboard`" + ` (this returns the full body; it is side-effect-free).
 3. Follow the body's instructions. It teaches you the surface-agnostic interview: discover the domain, propose collections, adapt seeded conventions/playbooks to the project's actual tooling, suggest roles, seed a first item. The body is the source of truth — this prompt is just the dispatcher.
+
+(CLI-capable agents can equivalently use ` + "`pad playbook list`" + ` / ` + "`pad playbook show onboard --format markdown`" + `; the ` + "`pad_playbook`" + ` tool is the surface-neutral path that also works for shell-less MCP clients.)
 
 The pre-PLAN-1496 step-by-step workflow that used to live here (codebase-scan / suggest-conventions / draft-doc / propose-plan / suggest-roles) was retired in TASK-1505. All of it is now embedded in the playbook body, surface-agnostic so MCP-only agents can follow it too.
 `
