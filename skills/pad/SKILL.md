@@ -36,7 +36,7 @@ The returned `AgentBootstrap` blob carries everything the skill needs to start a
 - `roles [...]` — agent roles configured in the workspace
 - `playbooks [...]` — METADATA ONLY: `ref`, `title`, `slug`, `invocation_slug`, `trigger`, `scope`, `status`, `has_arguments`, `summary`. Full bodies load on invocation via `pad playbook show <slug>`.
 - `dashboard {...}` — active items, attention, suggested next, recent activity. Five sub-arrays are capped to 5 entries each (`attention`, `recent_activity`, `active_items`, `active_plans`, `by_role`); each pairs with a `<name>_overflow_count` int field surfaced when truncation kicked in. Use `pad project dashboard` to pull the full set when any overflow > 0.
-- `needs_onboarding: bool` — true when the workspace has zero user-created items (template seeds don't count). PLAN-1496 / TASK-1504. **When this is true, lead your response with a one-line nudge:** *"This workspace hasn't been set up yet — say `/pad onboard` to walk through setup."* Then proceed with whatever else the user asked. The flag flips to false the moment any user/agent-created item exists; don't nag past that point. If the user has already declined onboarding (look at recent conversation), respect that and skip the nudge for this session.
+- `needs_onboarding: bool` — true when the workspace has zero user-created items (template seeds don't count). PLAN-1496 / TASK-1504. **When this is true, lead your response with a one-line nudge:** *"This workspace hasn't been set up yet — just say **set up my workspace** and I'll walk you through it."* Lead with the natural-language phrasing (it works on every surface); don't hardcode a slash command in the nudge, since this skill runs under Claude Code (`/pad`), Codex (`$pad`), and others. Then proceed with whatever else the user asked. The flag flips to false the moment any user/agent-created item exists; don't nag past that point. If the user has already declined onboarding (look at recent conversation), respect that and skip the nudge for this session.
 
 If the conventions list includes items, treat them as project rules you must follow. The vocabulary depends on the workspace domain — a software workspace ships rules like "use conventional commit format," a hiring workspace ships rules like "anonymize candidate names in exports," a research workspace ships rules like "always cite sources." Follow whatever the workspace has configured.
 
@@ -172,8 +172,8 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Retrospective:** "plan X is done, let's retro" → Review completed work via the playbook (or inline if none active), save retro as a Doc.
 
 **Onboarding:**
-- "set up my workspace" / "onboard me" / "scan this codebase" → `/pad onboard` (canonical entry; activate via library if the bootstrap's `playbooks` array lacks `invocation_slug=onboard, status=active`). The playbook's body is the script — surface-agnostic interview, codebase scan if available, adapt seeded artifacts to the project, seed a first item.
-- "use pad to get IDEA-1" → also `/pad onboard`. Legacy phrasing from before PLAN-1496; the IDEA-1/PLAN-2/TASK-3/DOC-4 seed-item pattern was retired. Don't try to fetch `IDEA-1` directly — newly-created workspaces don't have it.
+- "set up my workspace" / "onboard me" / "scan this codebase" → **run the onboard playbook.** Natural language is the canonical trigger and works on every surface; the slug shortcuts (`/pad onboard` in Claude Code, `$pad onboard` in Codex, the `pad_onboard` MCP prompt) are equivalent entry points into the same playbook. To run it, load the body and follow it: `pad playbook show onboard --format markdown` (CLI) or `pad_playbook` with `action: get` (MCP). Activate via library first if the bootstrap's `playbooks` array lacks `invocation_slug=onboard, status=active`. The playbook's body is the script — surface-agnostic interview, codebase scan if available, adapt seeded artifacts to the project, seed a first item.
+- "use pad to get IDEA-1" → also runs the onboard playbook. Legacy phrasing from before PLAN-1496; the IDEA-1/PLAN-2/TASK-3/DOC-4 seed-item pattern was retired. Don't try to fetch `IDEA-1` directly — newly-created workspaces don't have it.
 
 **Creating a playbook:** "save this workflow as a playbook" / "let's make a playbook for X" / "I want a `/pad <slug>` for this" → Create an item in the `playbooks` collection. Two fields make it user-callable:
 
@@ -340,7 +340,7 @@ Use the `decompose` invokable playbook: **`/pad decompose <PLAN-ref>`**. Accepts
 
 ### Onboarding
 
-Use the `/pad onboard` invokable playbook — see the **Onboarding** entry under Natural Language Routing above. The playbook body is the canonical instruction set (interview flow, codebase scan if available, collection/convention/role/playbook adaptation, first-item seed). Don't reimplement it here; this skill is the dispatcher, the playbook is the script. PLAN-1496 / TASK-1499 retired the standalone Onboarding workflow that used to live in this file.
+Run the **onboard** invokable playbook — see the **Onboarding** entry under Natural Language Routing above. Natural language ("set up my workspace") is the canonical trigger; `/pad onboard`, `$pad onboard`, and the `pad_onboard` MCP prompt are per-surface shortcuts into the same playbook. The playbook body is the canonical instruction set (interview flow, codebase scan if available, collection/convention/role/playbook adaptation, first-item seed). Don't reimplement it here; this skill is the dispatcher, the playbook is the script. PLAN-1496 / TASK-1499 retired the standalone Onboarding workflow that used to live in this file.
 
 ### Retrospective: "Plan X is done, let's retro"
 
