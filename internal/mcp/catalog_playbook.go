@@ -178,14 +178,17 @@ const padPlaybookToolDescription = `Playbooks — first-class invokable procedur
 
 Playbooks are agent-executed multi-step workflows that ship in a workspace's
 playbooks collection. Each can declare a kebab-case ` + "`invocation_slug`" + ` (e.g.
-"ship", "release") that maps directly to ` + "`/pad <slug>`" + ` in chat-driven skills,
-and an ` + "`## Arguments`" + ` section that names + types the inputs it expects.
+"ship", "release"), and an ` + "`## Arguments`" + ` section that names + types the
+inputs it expects. Natural language is the canonical way to invoke one
+("ship these tasks"); the slug is a per-surface shortcut — ` + "`pad_playbook run <slug>`" + `
+here, ` + "`/pad <slug>`" + ` in Claude Code, ` + "`$pad <slug>`" + ` in Codex — that resolves
+to the same playbook.
 
 Actions:
   list  — Workspace playbook catalog. Returns metadata only (no bodies):
           ref, title, slug, invocation_slug, trigger, scope, status,
           has_arguments, summary. Sorted with invocation_slug-bearing
-          playbooks first so user-facing /pad <slug> candidates surface
+          playbooks first so user-invokable candidates surface
           at the top.
           Required: workspace.
   get   — Full item for one playbook, including body content + structured
