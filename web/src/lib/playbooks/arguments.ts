@@ -400,6 +400,12 @@ export function argumentsFromJSON(raw: unknown): PlaybookArgument[] {
  * the rendered command doesn't show empty=`= ` pairs.
  */
 export interface TestInvocationRendering {
+	/**
+	 * The canonical, surface-neutral form: plain natural language. Works on
+	 * every agent surface (PLAN-1858 / IDEA-1846). The other fields are
+	 * per-surface shortcuts that resolve to the same playbook.
+	 */
+	nl: string;
 	claude: string;
 	cli: string;
 	mcp: string;
@@ -439,6 +445,7 @@ export function buildTestInvocation(
 	}
 
 	return {
+		nl: `run the ${safeSlug} playbook${claudeTokens.length ? ' ' + claudeTokens.join(' ') : ''}`,
 		claude: `/pad ${safeSlug}${claudeTokens.length ? ' ' + claudeTokens.join(' ') : ''}`,
 		cli: `pad playbook run ${safeSlug}${cliTokens.length ? ' ' + cliTokens.join(' ') : ''}`,
 		mcp: JSON.stringify(
