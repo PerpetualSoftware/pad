@@ -19,7 +19,7 @@ const decomposePlaybookBody = `Turn a plan into a set of child task items. The a
 body, proposes a task list, gets the user's approval, and creates the
 tasks linked back to the plan via ` + "`--parent`" + `.
 
-This is the natural follow-up to ` + "`/pad plan`" + `: that playbook
+This is the natural follow-up to the ` + "`plan`" + ` playbook: that one
 creates the plan with a breakdown in the body; this playbook turns
 that breakdown into actionable items the team can claim, work, and
 ship.
@@ -115,7 +115,7 @@ Dependencies wired:
   - TASK-Y blocks TASK-Z
   - …
 
-Next: /pad ship PLAN-N to start working through them, or /pad item show TASK-X to dive into the first task.
+Next: run the ship playbook on PLAN-N to start working through them (shortcut: ` + "`/pad ship PLAN-N`" + ` in Claude Code), or open TASK-X to dive into the first task.
 ` + "```" + `
 
 ## Philosophy
