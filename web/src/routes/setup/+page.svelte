@@ -37,6 +37,25 @@
 	let token = $state('');
 	let pastedToken = $state('');
 
+	// nextPath is the local path to navigate to after the admin account is
+	// created, passed by the CLI as ?next=… (BUG-1843). The CLI hands us
+	// "/auth/cli/<code>" so account creation flows straight into the
+	// "Authorize CLI" page in the same tab instead of dumping the operator
+	// on the console while a second auth URL waits unseen in the terminal.
+	// Empty unless a SAFE local path is supplied — see isSafeLocalPath.
+	// Plain (non-reactive) let: it's resolved once during synchronous init
+	// and only read later inside onMount/handleSubmit closures, never in the
+	// template, so it doesn't need to be a $state rune.
+	let nextPath = '';
+
+	// isSafeLocalPath gates the next= target to same-origin paths so the
+	// redirect can't be turned into an open redirect (//evil.com, /\evil,
+	// or an absolute http(s):// URL). Must be a single leading slash
+	// followed by a non-slash, non-backslash char.
+	function isSafeLocalPath(p: string): boolean {
+		return /^\/[^/\\]/.test(p);
+	}
+
 	// openMode is true when the server has been started with
 	// PAD_BYPASS_SETUP_TOKEN=true on a self-host deployment with no users
 	// yet. The /setup form works directly — no paste-token step, no
@@ -47,6 +66,13 @@
 	let openMode = $state(false);
 
 	if (typeof window !== 'undefined') {
+		// Capture next= BEFORE any fragment scrub below — the scrub rewrites
+		// the URL and would otherwise drop the query string with it.
+		const rawNext = new URLSearchParams(window.location.search).get('next');
+		if (rawNext && isSafeLocalPath(rawNext)) {
+			nextPath = rawNext;
+		}
+
 		const hash = window.location.hash;
 		if (hash.startsWith('#token=')) {
 			const raw = hash.slice('#token='.length);
@@ -62,8 +88,10 @@
 			// Scrub the fragment from the URL bar before paint so the
 			// secret doesn't survive in browser history, screen recordings,
 			// or screenshots (F10). replaceState keeps the navigation
-			// entry — we just rewrite its URL.
-			history.replaceState({}, '', '/setup');
+			// entry — we just rewrite its URL. Preserve next= so a reload
+			// (or the post-bootstrap redirect) still has its handoff target.
+			const scrubbed = nextPath ? `/setup?next=${encodeURIComponent(nextPath)}` : '/setup';
+			history.replaceState({}, '', scrubbed);
 		}
 	}
 
@@ -84,7 +112,10 @@
 		try {
 			const session = await authStore.ensureLoaded();
 			if (session?.authenticated) {
-				await goto('/');
+				// Already signed in — honor the CLI's next= handoff (e.g. a
+				// reload after the admin was created) so a pending CLI auth
+				// session still lands on its approval page. BUG-1843.
+				await goto(nextPath || '/');
 				return;
 			}
 			// Self-host operators who set PAD_BYPASS_SETUP_TOKEN=true get
@@ -137,7 +168,9 @@
 			// Bootstrap success — server has set the session cookie. Reload
 			// the auth store so subsequent navigations see the new session.
 			await authStore.load();
-			await goto('/');
+			// Hand off to the CLI's next= target when present (the "Authorize
+			// CLI" page), otherwise land on the console. BUG-1843.
+			await goto(nextPath || '/');
 		} catch (err: unknown) {
 			// 403: token rejected (expired / already used / wrong). Clear
 			// the in-memory token, drop back to the paste prompt, and

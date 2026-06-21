@@ -171,26 +171,20 @@ Examples:
 					fmt.Printf("Admin account created — logged in as %s (%s)\n", resp.User.Name, resp.User.Email)
 					fmt.Println()
 				} else {
-					// Default browser path. RunBrowserBootstrap returns once
-					// the server reports setup_required: false but the CLI
-					// has no credentials — the browser owns the session
-					// cookie. Chain doBrowserLogin afterwards so the rest
-					// of pad init (workspace creation, etc.) can hit
-					// authenticated endpoints.
+					// Default browser path: a SINGLE handoff that creates the
+					// admin account AND authorizes this CLI in the same
+					// browser tab. runBrowserSetup mints the pending CLI auth
+					// session first, hands /setup a next= target pointing at
+					// its approval page, then polls until approved — so the
+					// operator never has to return to the terminal to copy a
+					// second URL. BUG-1843.
 					//
 					// SIGINT is already handled by installInitCancelHandler
-					// at the top of this RunE — it short-circuits the whole
-					// process via os.Exit(130), so the helper doesn't need
-					// its own signal-aware context. Background suffices.
-					if err := cli.RunBrowserBootstrap(context.Background(), client, cfg); err != nil {
+					// at the top of this RunE (os.Exit(130)); runBrowserSetup
+					// installs a redundant handler of its own, which is
+					// harmless.
+					if err := runBrowserSetup(context.Background(), cfg, client); err != nil {
 						return err
-					}
-					green.Print("✓ ")
-					fmt.Println("First admin account created")
-					fmt.Println()
-					fmt.Println("  Authenticating the CLI…")
-					if err := doBrowserLogin(client, cfg); err != nil {
-						return fmt.Errorf("login: %w", err)
 					}
 					fmt.Println()
 				}

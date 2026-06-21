@@ -23,6 +23,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,12 +51,17 @@ const bootstrapTokenFilename = ".bootstrap-token"
 var bootstrapPollInterval = 2 * time.Second
 
 // bootstrapPollTimeout caps how long RunBrowserBootstrap waits for the
-// browser side to finish. 5 minutes is generous for an interactive admin
-// form and short enough that an abandoned terminal doesn't sit waiting
-// indefinitely. The caller's SIGINT path can cut this short via ctx.
-// var (not const) so tests can exercise the timeout branch in
+// browser side to finish. It MUST stay >= the server's setup-session TTL
+// (cliAuthSetupSessionTTL, 20m in internal/store/cli_auth_sessions.go):
+// the unified setup handoff (BUG-1843) pre-creates a 20-minute CLI auth
+// session, so the terminal must keep polling for setup at least that long
+// — otherwise a user who takes >5m on the admin form would have the CLI
+// give up here while the browser session is still valid, exactly the
+// half-fixed expiry class this aligns away. Still finite so an abandoned
+// terminal doesn't wait forever; the caller's SIGINT path cuts it short
+// via ctx. var (not const) so tests can exercise the timeout branch in
 // milliseconds.
-var bootstrapPollTimeout = 5 * time.Minute
+var bootstrapPollTimeout = 20 * time.Minute
 
 // RunBrowserBootstrap walks the operator through the browser-based first-
 // admin bootstrap. Returns nil on success (server has flipped to
@@ -72,11 +78,18 @@ var bootstrapPollTimeout = 5 * time.Minute
 // want the CLI to be authenticated afterwards should chain a CLI-auth-
 // session login (see doBrowserLogin in cmd/pad/main.go) once this returns.
 //
+// next, when non-empty, is a local path the /setup page navigates to after
+// the admin account is created (instead of dropping the operator at the
+// console). Callers pass "/auth/cli/<code>" for a pre-created CLI auth
+// session so account creation flows straight into the CLI-authorize step
+// in the SAME browser tab — no second URL to copy back in the terminal
+// (BUG-1843).
+//
 // The helper is idempotent: if the server already reports
 // setup_required: false on entry, it returns nil immediately without
 // touching the token file or printing anything. That matters for any
 // caller invoking it against a server where setup is already done.
-func RunBrowserBootstrap(ctx context.Context, client *Client, cfg *config.Config) error {
+func RunBrowserBootstrap(ctx context.Context, client *Client, cfg *config.Config, next string) error {
 	if client == nil {
 		return errors.New("RunBrowserBootstrap: nil client")
 	}
@@ -93,7 +106,7 @@ func RunBrowserBootstrap(ctx context.Context, client *Client, cfg *config.Config
 		return nil
 	}
 
-	url, err := buildBootstrapURL(cfg, session.SetupMethod)
+	setupURL, err := buildBootstrapURL(cfg, session.SetupMethod, next)
 	if err != nil {
 		return err
 	}
@@ -102,7 +115,7 @@ func RunBrowserBootstrap(ctx context.Context, client *Client, cfg *config.Config
 	fmt.Println()
 	fmt.Println("  Open this URL in your browser to finish setup:")
 	fmt.Println()
-	fmt.Printf("  %s\n", bold(url))
+	fmt.Printf("  %s\n", bold(setupURL))
 	fmt.Println()
 	fmt.Println("  Waiting for setup to complete (Ctrl+C to cancel)...")
 
@@ -137,8 +150,18 @@ func RunBrowserBootstrap(ctx context.Context, client *Client, cfg *config.Config
 //
 //   - anything else — newer server speaking a method this CLI doesn't know.
 //     Bail loudly with the same --cli-prompt fallback hint.
-func buildBootstrapURL(cfg *config.Config, setupMethod string) (string, error) {
+func buildBootstrapURL(cfg *config.Config, setupMethod, next string) (string, error) {
 	base := cfg.BrowserURL()
+
+	// The next= handoff target rides as a query param, which MUST sit
+	// before any #token fragment (a query after the fragment would be
+	// parsed as part of the fragment and never reach the page's
+	// searchParams). url.QueryEscape keeps the leading slash and any
+	// nested path safe to round-trip through the address bar.
+	query := ""
+	if next != "" {
+		query = "?next=" + url.QueryEscape(next)
+	}
 
 	switch setupMethod {
 	case "logs_token":
@@ -146,10 +169,10 @@ func buildBootstrapURL(cfg *config.Config, setupMethod string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("%s/setup#token=%s", base, token), nil
+		return fmt.Sprintf("%s/setup%s#token=%s", base, query, token), nil
 
 	case "open":
-		return base + "/setup", nil
+		return base + "/setup" + query, nil
 
 	case "", "local_cli":
 		return "", fmt.Errorf("server has no bootstrap token configured (setup_method=%q); re-run with --cli-prompt to use the legacy TTY flow", setupMethod)

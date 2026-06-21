@@ -10,6 +10,16 @@ import (
 
 const cliAuthSessionTTL = 5 * time.Minute
 
+// cliAuthSetupSessionTTL is the longer window granted to a CLI auth session
+// minted during first-run setup (no users exist yet). The setup handoff
+// creates the session BEFORE the operator fills out the admin-account form
+// in the browser (so /setup can redirect straight to the approval page —
+// BUG-1843), so its clock must cover account creation AND the approval
+// click, not just the click. 5 minutes was tight for that combined window;
+// 20 gives comfortable headroom. Normal `pad auth login` (users already
+// exist) keeps the shorter default.
+const cliAuthSetupSessionTTL = 20 * time.Minute
+
 // CLIAuthSession represents a pending or approved CLI login session.
 type CLIAuthSession struct {
 	Code      string `json:"code"`
@@ -21,9 +31,21 @@ type CLIAuthSession struct {
 }
 
 // CreateCLIAuthSession generates a new pending CLI auth session with a
-// cryptographically random code. Returns the session including the code
-// the CLI should present to the user.
+// cryptographically random code and the default TTL. Returns the session
+// including the code the CLI should present to the user.
 func (s *Store) CreateCLIAuthSession() (*CLIAuthSession, error) {
+	return s.createCLIAuthSession(cliAuthSessionTTL)
+}
+
+// CreateCLIAuthSessionForSetup is CreateCLIAuthSession with the longer
+// first-run window. The setup handoff mints the session before the admin
+// account is even created (BUG-1843), so its clock must cover account
+// creation as well as the approval click.
+func (s *Store) CreateCLIAuthSessionForSetup() (*CLIAuthSession, error) {
+	return s.createCLIAuthSession(cliAuthSetupSessionTTL)
+}
+
+func (s *Store) createCLIAuthSession(ttl time.Duration) (*CLIAuthSession, error) {
 	// Clean up expired sessions opportunistically
 	_, _ = s.db.Exec(s.q(`
 		DELETE FROM cli_auth_sessions WHERE expires_at < ?
@@ -37,7 +59,7 @@ func (s *Store) CreateCLIAuthSession() (*CLIAuthSession, error) {
 	code := hex.EncodeToString(raw)
 
 	ts := now()
-	expiresAt := time.Now().UTC().Add(cliAuthSessionTTL).Format(time.RFC3339)
+	expiresAt := time.Now().UTC().Add(ttl).Format(time.RFC3339)
 
 	_, err := s.db.Exec(s.q(`
 		INSERT INTO cli_auth_sessions (code, status, created_at, expires_at)
