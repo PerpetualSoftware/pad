@@ -21,6 +21,12 @@
 
 	let loading = $state(true);
 	let dashboard = $state<DashboardResponse | null>(null);
+	// The workspace slug the current `dashboard` data was fetched for. A silent
+	// reload leaves stale `dashboard` in place while `wsSlug` already changed on
+	// a workspace switch, so route-param-keyed logic can read mismatched state.
+	// Stamping the data's own slug lets consumers (the aha-highlight effect) gate
+	// on data that actually belongs to the current route.
+	let dashboardSlug = $state<string | null>(null);
 	let collections = $state<Collection[]>([]);
 
 	// Scroll position restoration (BUG-1425). Dashboard renders progressively
@@ -73,6 +79,41 @@
 	// scope) but no longer has a consumer in this page — the
 	// OnboardingIdeaBanner that read it was retired with this task.
 	let needsOnboarding = $derived(dashboard?.needs_onboarding ?? false);
+
+	// Sprint-to-aha (PLAN-1847 Phase 2 / TASK-1853). When needs_onboarding
+	// flips true→false, the first real item(s) have just appeared — an agent
+	// created them while the launchpad was showing. Capture their slugs so
+	// their dashboard cards get a "✨ your agent just created this" highlight
+	// for the rest of the session.
+	//
+	// Scoped tightly to the live transition: on a later page load
+	// needs_onboarding is already false, so no transition fires and nothing
+	// is highlighted — it only celebrates the launchpad→board moment, never
+	// every subsequent create. The track is keyed on `dashboardSlug` (the
+	// workspace the data belongs to), NOT the route `wsSlug`: on a switch,
+	// `wsSlug` flips before the new dashboard arrives, so a route-keyed edge
+	// would read the OLD dashboard's onboarding=true under the NEW slug and
+	// then false-positive when fresh data lands. Keying on the data's own
+	// slug means the true→false edge is only ever computed across two loads
+	// of the SAME workspace's data.
+	let justCreatedSlugs = $state<Set<string>>(new Set());
+	let onboardingTrack: { slug: string; onboarding: boolean } | null = null;
+	$effect(() => {
+		const slug = dashboardSlug;
+		const onboarding = needsOnboarding;
+		untrack(() => {
+			if (slug === null) return;
+			const prev = onboardingTrack;
+			if (!prev || prev.slug !== slug) {
+				// First load of this workspace's data (or a switch) — clear stale highlight.
+				justCreatedSlugs = new Set();
+			} else if (prev.onboarding && !onboarding) {
+				// Same workspace, onboarding just completed: these are the first items.
+				justCreatedSlugs = new Set((dashboard?.active_items ?? []).map((i) => i.slug));
+			}
+			onboardingTrack = { slug, onboarding };
+		});
+	});
 
 	// Sync dismissed state from localStorage when workspace changes
 	$effect(() => {
@@ -152,6 +193,7 @@
 				api.collections.list(slug)
 			]);
 			dashboard = dash;
+			dashboardSlug = slug;
 			collections = colls;
 		} catch {
 			// allow partial render
@@ -320,7 +362,10 @@
 				</div>
 				<div class="active-grid">
 					{#each dashboard.active_items as item (item.slug)}
-						<a href="/{username}/{wsSlug}/{item.collection_slug}/{item.slug}" class="active-card">
+						<a href="/{username}/{wsSlug}/{item.collection_slug}/{item.slug}" class="active-card" class:just-created={justCreatedSlugs.has(item.slug)}>
+							{#if justCreatedSlugs.has(item.slug)}
+								<span class="just-created-badge">✨ your agent just created this</span>
+							{/if}
 							<div class="active-card-top">
 								{#if item.item_ref}
 									<span class="active-ref">{item.item_ref}</span>
@@ -721,6 +766,20 @@
 		border-color: var(--accent-blue);
 		background: var(--bg-hover);
 		text-decoration: none;
+	}
+	/* Sprint-to-aha highlight (TASK-1853): the first agent-created item(s)
+	   surfaced live as the launchpad handed off to the board. */
+	.active-card.just-created {
+		border-left-color: var(--accent-blue);
+		border-color: color-mix(in srgb, var(--accent-blue) 45%, var(--border));
+		background: color-mix(in srgb, var(--accent-blue) 6%, var(--bg-secondary));
+	}
+	.just-created-badge {
+		display: inline-block;
+		margin-bottom: var(--space-1);
+		font-size: 0.72em;
+		font-weight: 600;
+		color: var(--accent-blue);
 	}
 	.active-card-top {
 		display: flex;
