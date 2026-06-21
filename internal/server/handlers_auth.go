@@ -132,6 +132,7 @@ func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 		"cloud_mode":        s.cloudMode,
 		"mcp_public_url":    s.mcpPublicURL,
 		"billing_available": s.cloudMode && s.billingAvailable,
+		"version":           s.version,
 	}
 }
 
@@ -152,6 +153,13 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 		"cloud_mode":        s.cloudMode,
 		"mcp_public_url":    s.mcpPublicURL,
 		"billing_available": s.cloudMode && s.billingAvailable,
+		// version is the server build version (same source as /health),
+		// surfaced here so the mobile shells can read it in the
+		// /auth/session call they already make on connect and warn when a
+		// server is below their minimum supported version (IDEA-1826).
+		// Empty string only on builds with no version stamped; release
+		// builds carry a semver, dev builds carry "dev".
+		"version": s.version,
 	}
 	if authenticated {
 		payload["user"] = sessionUserPayload(user)
