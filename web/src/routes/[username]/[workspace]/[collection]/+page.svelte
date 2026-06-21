@@ -2266,7 +2266,16 @@
 	.collection-page.board-active {
 		max-width: none;
 		padding: var(--space-6) var(--space-6);
-		height: 100vh;
+		/*
+			Fill the scrollable .main-content region, NOT the viewport.
+			.main-content (root +layout) already sizes itself below the
+			workspace TopBar via flexbox, so `height: 100%` resolves to
+			exactly the available space whether the TopBar is shown or
+			hidden. The old `height: 100vh` claimed the full viewport and
+			overflowed .main-content by the TopBar's height whenever the
+			bar was visible — the extra scrollable space in BUG-1844.
+		*/
+		height: 100%;
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
