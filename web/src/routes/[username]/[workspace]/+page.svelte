@@ -205,6 +205,10 @@
 	let totalItems = $derived(dashboard?.summary.total_items ?? 0);
 	let firstCollection = $derived(collections.filter(c => !c.is_system && c.slug !== 'tasks').sort((a, b) => a.sort_order - b.sort_order)[0]);
 	let hasTasksCollection = $derived(collections.some(c => c.slug === 'tasks'));
+	// A workspace with no user-facing collections (only system ones, or none)
+	// has no manual path to create anything from the board. Drives the
+	// web-only escape hatch on the skipped-onboarding board (TASK-1856).
+	let hasUserCollections = $derived(collections.some(c => !c.is_system));
 
 	function statusColor(status: string): string {
 		const s = status.toLowerCase().replace(/-/g, '_');
@@ -344,13 +348,39 @@
 			and ConnectBanner use.
 		-->
 		{#if needsOnboarding && onboardingDismissed}
-			<!--
-				Reshow affordance for users who skipped the launchpad. Clicking
-				restores the launchpad render-mode (clears the dismissed flag).
-			-->
-			<div class="onboarding-reshow">
-				<button class="reshow-btn" onclick={showOnboarding}>Show setup guide</button>
-			</div>
+			{#if isOwner && !hasUserCollections}
+				<!--
+					Web-only escape hatch (TASK-1856). A user who skipped the
+					launchpad on a still-empty workspace has no manual path to
+					create anything from the board (collections live behind
+					Settings). Offer a direct "create a collection" affordance so
+					declining an agent isn't a dead end — owner-gated to match the
+					server's create-collection boundary, with a reshow link back to
+					the launchpad. Hidden once any user collection exists.
+				-->
+				<div class="empty-escape">
+					<span class="empty-escape-icon" aria-hidden="true">📋</span>
+					<div class="empty-escape-body">
+						<p class="empty-escape-title">Your workspace is empty</p>
+						<p class="empty-escape-text">
+							Connect an agent and say <strong>set up my workspace</strong> to
+							have it set up for you — or create your first collection by hand.
+						</p>
+						<div class="empty-escape-actions">
+							<button class="btn btn-primary" onclick={() => (showCreateCollection = true)}>+ Create a collection</button>
+							<button class="btn btn-secondary" onclick={showOnboarding}>Show setup guide</button>
+						</div>
+					</div>
+				</div>
+			{:else}
+				<!--
+					Reshow affordance for users who skipped the launchpad. Clicking
+					restores the launchpad render-mode (clears the dismissed flag).
+				-->
+				<div class="onboarding-reshow">
+					<button class="reshow-btn" onclick={showOnboarding}>Show setup guide</button>
+				</div>
+			{/if}
 		{/if}
 
 		<!-- 3. Active Work -->
@@ -708,6 +738,49 @@
 	.reshow-btn:hover {
 		color: var(--text-primary);
 		border-color: var(--text-muted);
+	}
+
+	/* Web-only escape hatch (TASK-1856) — manual start for users who skip the
+	   agent flow on an empty workspace. */
+	.empty-escape {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-3);
+		margin-bottom: var(--space-4);
+		padding: var(--space-4);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+	}
+	.empty-escape-icon {
+		font-size: 1.4em;
+		line-height: 1.2;
+		flex-shrink: 0;
+	}
+	.empty-escape-body {
+		flex: 1;
+		min-width: 0;
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+	.empty-escape-title {
+		margin: 0;
+		font-size: 0.95em;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.empty-escape-text {
+		margin: 0;
+		font-size: 0.85em;
+		line-height: 1.45;
+		color: var(--text-secondary);
+	}
+	.empty-escape-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+		margin-top: var(--space-1);
 	}
 
 	/* ── Section headers ────────────────────────────────────────────────── */
