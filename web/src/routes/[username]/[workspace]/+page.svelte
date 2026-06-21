@@ -8,7 +8,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
-	import OnboardingNudgeBanner from '$lib/components/OnboardingNudgeBanner.svelte';
+	import OnboardingLaunchpad from '$lib/components/OnboardingLaunchpad.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -254,6 +254,22 @@
 			</div>
 		</div>
 	{:else if dashboard}
+		{#if needsOnboarding && !onboardingDismissed}
+			<!--
+				Launchpad render-mode (PLAN-1847 Phase 2 / TASK-1852). While
+				needs_onboarding is true and not dismissed, the workspace renders
+				as a dedicated setup launchpad INSTEAD of the empty board (which
+				reads as broken, not new). Dismissing ("Skip setup") falls through
+				to the normal board with a reshow affordance. The flag flips to
+				false on the first real item, swapping back to the board.
+			-->
+			<OnboardingLaunchpad
+				{wsSlug}
+				workspaceName={workspaceStore.current?.name ?? wsSlug}
+				onconnect={() => (connectOpen = true)}
+				ondismiss={dismissOnboarding}
+			/>
+		{:else}
 		<!-- 1. Header -->
 		<header class="dash-header">
 			<div class="dash-header-left">
@@ -286,15 +302,11 @@
 			ConnectWorkspaceModal — same modal the Phase F auto-open hook
 			and ConnectBanner use.
 		-->
-		{#if needsOnboarding && !onboardingDismissed}
-			<div class="onboarding-wrapper">
-				<OnboardingNudgeBanner
-					{wsSlug}
-					onconnect={() => (connectOpen = true)}
-					ondismiss={dismissOnboarding}
-				/>
-			</div>
-		{:else if needsOnboarding && onboardingDismissed}
+		{#if needsOnboarding && onboardingDismissed}
+			<!--
+				Reshow affordance for users who skipped the launchpad. Clicking
+				restores the launchpad render-mode (clears the dismissed flag).
+			-->
 			<div class="onboarding-reshow">
 				<button class="reshow-btn" onclick={showOnboarding}>Show setup guide</button>
 			</div>
@@ -513,6 +525,7 @@
 					{/each}
 				</div>
 			</section>
+		{/if}
 		{/if}
 	{:else}
 		<div class="loading">No dashboard data available.</div>
