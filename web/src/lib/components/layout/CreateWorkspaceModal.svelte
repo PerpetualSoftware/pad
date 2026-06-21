@@ -28,6 +28,10 @@
 	// Picking any template card replaces 'blank' with that template's name.
 	let mode = $state<'create' | 'import'>('create');
 	let newName = $state('');
+	// Optional "what are you tracking?" intent captured at creation. Stored as
+	// the workspace description and surfaced in the bootstrap blob so the
+	// onboard playbook starts the interview warm (PLAN-1847 Phase 3 / TASK-1855).
+	let newDescription = $state('');
 	let selectedTemplate = $state('blank');
 	// Independent of `selectedTemplate` — collapsed by default per IDEA-1516
 	// §2. Users who expand and pick a template flip `selectedTemplate` to
@@ -57,6 +61,7 @@
 			// Reset state on open
 			mode = 'create';
 			newName = '';
+			newDescription = '';
 			selectedTemplate = 'blank';
 			templatesExpanded = false;
 			importFile = null;
@@ -103,6 +108,7 @@
 		try {
 			const ws = await workspaceStore.create({
 				name: newName.trim(),
+				description: newDescription.trim() || undefined,
 				template: selectedTemplate || undefined
 			});
 			// Fire the Phase F hook BEFORE close + goto so the consumer can
@@ -218,6 +224,16 @@
 			/>
 
 			{#if mode === 'create'}
+				<label class="field-label" for="ws-create-desc">What are you tracking? <span class="field-optional">(optional)</span></label>
+				<textarea
+					id="ws-create-desc"
+					class="desc-input"
+					bind:value={newDescription}
+					rows="2"
+					placeholder="e.g. a SvelteKit SaaS app, my job search, a research project on…"
+				></textarea>
+				<p class="field-hint">Your agent uses this to set the workspace up for you.</p>
+
 				<!--
 					Primary "Start blank" card — visually selected when
 					selectedTemplate === 'blank'. Clicking it returns to
@@ -439,6 +455,31 @@
 		font-size: 0.9em;
 	}
 	.modal-body input:focus { outline: none; border-color: var(--accent-blue); }
+
+	.field-optional {
+		text-transform: none;
+		font-weight: 400;
+		letter-spacing: 0;
+		color: var(--text-muted);
+	}
+	.desc-input {
+		width: 100%;
+		box-sizing: border-box;
+		padding: var(--space-2) var(--space-3);
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text-primary);
+		font-size: 0.9em;
+		font-family: inherit;
+		resize: vertical;
+	}
+	.desc-input:focus { outline: none; border-color: var(--accent-blue); }
+	.field-hint {
+		margin: calc(-1 * var(--space-1)) 0 0;
+		font-size: 0.78em;
+		color: var(--text-muted);
+	}
 
 	/* Primary "Start blank" card — bigger than a template card to anchor it
 	   as the recommended option. Same selection treatment (accent border +

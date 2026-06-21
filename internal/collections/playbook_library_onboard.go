@@ -72,6 +72,8 @@ seeded to the project at hand.
 
 1. **Load the bootstrap blob.** ` + "`pad bootstrap --format json`" + ` (CLI) or the ` + "`pad_meta.action: bootstrap`" + ` MCP action. This is one round-trip and gives you everything you need: workspace name, user, collections (with schemas), conventions, playbooks, roles, dashboard, recent activity.
 
+   **Read ` + "`workspace.description`" + ` if present** — it's the free-text "what are you tracking?" the user gave at workspace creation. Treat it as the user's stated intent: it seeds the interview so you don't have to open with "what is this project?". Reflect it back to confirm rather than asking cold (see B1).
+
 2. **Detect mode.** Inspect the bootstrap to pick the right path:
    - **build** — workspace has only the two system collections (` + "`conventions`" + `, ` + "`playbooks`" + `) AND no user-created items AND no seeded conventions/playbooks (beyond this onboard playbook itself). This is the ` + "`blank`" + ` template path.
    - **audit** — workspace has a template's seeded user-facing collections (Tasks/Ideas/Plans/Docs/Backlog/Sprints/etc.) and possibly seeded conventions/playbooks, but no user-created items yet. This is the non-blank templates path. The user picked an opinionated starting point; your job is to make it fit.
@@ -92,7 +94,7 @@ The user picked the blank template (or somehow ended up with a workspace that ha
 
 ### B1. Discover the domain
 
-Open question: "What is this workspace for?" Listen to the answer.
+If ` + "`workspace.description`" + ` was set at creation, lead by reflecting it back instead of asking cold: "You mentioned this workspace is for <description> — let's build around that. Tell me more about how you work?" Only fall back to the open question — "What is this workspace for?" — when no description was captured. Listen to the answer either way.
 
 Use the codebase context if you have it. Example: "I see a Go project with a Makefile and GitHub Actions — does this workspace track software development for that codebase?"
 

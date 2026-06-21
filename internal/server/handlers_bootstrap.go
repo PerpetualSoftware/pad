@@ -235,10 +235,16 @@ func projectBootstrapRole(r models.AgentRole) BootstrapRole {
 
 // AgentBootstrapWorkspace is the minimal workspace projection (slug + name
 // + id) the agent needs to address the workspace in subsequent calls.
+// Description carries the free-text "what are you tracking?" captured at
+// workspace creation (PLAN-1847 Phase 3 / TASK-1855) so the onboard playbook
+// can start the interview warm instead of asking "what is this project?".
+// Omitted when empty — additive to the bootstrap contract, so existing
+// clients are unaffected.
 type AgentBootstrapWorkspace struct {
-	ID   string `json:"id"`
-	Slug string `json:"slug"`
-	Name string `json:"name"`
+	ID          string `json:"id"`
+	Slug        string `json:"slug"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // AgentBootstrapUser is the calling user's projection. Email is included
@@ -376,9 +382,10 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 
 	out := &AgentBootstrap{
 		Workspace: AgentBootstrapWorkspace{
-			ID:   ws.ID,
-			Slug: ws.Slug,
-			Name: ws.Name,
+			ID:          ws.ID,
+			Slug:        ws.Slug,
+			Name:        ws.Name,
+			Description: ws.Description,
 		},
 	}
 	if user != nil {
