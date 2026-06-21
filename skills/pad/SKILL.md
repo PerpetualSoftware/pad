@@ -109,7 +109,7 @@ Show project status conversationally. Run `pad project dashboard --format json`,
 
 Playbooks are first-class invokable procedures: workspace-owned, user-editable, multi-step workflows that ship in the playbooks collection. They're the answer to "I want to do this same sequence again." Each can declare a kebab-case `invocation_slug` (e.g. `ship`, `release`, `draft-tweet`).
 
-**Natural language is the canonical way to invoke a playbook** — *"ship these tasks"*, *"cut a release"*, *"break this plan into tasks"* — and it works on every surface. The slug is a per-surface *shortcut* that resolves to the same playbook: `/pad ship` in Claude Code, `$pad ship` in Codex, `pad_playbook run ship` via MCP, `pad playbook run ship` at the CLI. Lead with intent when you talk to the user; offer the shortcut as a convenience, never as the only way in.
+**Natural language is the canonical way to invoke a playbook** — *"ship these tasks"*, *"cut a release"*, *"break this plan into tasks"* — and it works on every surface. The slug is a per-surface *shortcut* that resolves to the same playbook: `/pad ship` in Claude Code, `$pad ship` in Codex, `pad_playbook` with `action: run, ref: ship` via MCP, `pad playbook run ship` at the CLI. Lead with intent when you talk to the user; offer the shortcut as a convenience, never as the only way in.
 
 **Routing rule.** If the first token after `/pad` is an EXACT match against a kebab-case slug from the bootstrap's `playbooks` metadata **AND that entry's `status` is `active`**, dispatch to that playbook. Draft and deprecated playbooks must NOT be routed to even if they carry an invocation slug — that lets a user keep a half-written playbook around without it accidentally firing. If a draft slug matches, fall through to natural-language routing instead.
 
@@ -179,7 +179,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Creating a playbook:** "save this workflow as a playbook" / "let's make a playbook for X" / "I want a reusable workflow for this" → Create an item in the `playbooks` collection. Two fields make it user-callable:
 
-1. **`invocation_slug`** (optional, kebab-case 2+ chars) — makes the playbook directly invokable by intent (and via the per-surface shortcut: `/pad <slug>` in Claude Code, `$pad <slug>` in Codex, `pad_playbook run <slug>` via MCP). Leave blank for trigger-only playbooks that fire automatically (e.g. `trigger=on-release`).
+1. **`invocation_slug`** (optional, kebab-case 2+ chars) — makes the playbook directly invokable by intent (and via the per-surface shortcut: `/pad <slug>` in Claude Code, `$pad <slug>` in Codex, `pad_playbook` with `action: run, ref: <slug>` via MCP). Leave blank for trigger-only playbooks that fire automatically (e.g. `trigger=on-release`).
 2. **`arguments`** (optional, JSON array) — declares the args. Types: `ref`, `string`, `flag`, `enum`, `number`. Mirror the spec in the body's `## Arguments` section so a human reading the playbook sees the same contract.
 
 **Activation matters.** New playbooks default to `status=draft`; slug routing and trigger-intent matching only dispatch `status=active` entries. ALWAYS include `--field status=active` on `pad item create playbook` (or flip the status field in the Web UI editor) when the user wants the playbook to fire — otherwise the slug shortcut will silently fall through to NL routing.
@@ -315,11 +315,11 @@ For everything else (`pad workspace init`, `pad agent install`, `pad github link
 
 ### Planning: "Let's create a plan"
 
-Run the `plan` invokable playbook — by intent ("let's plan <topic>") or the shortcut **`/pad plan <topic>`** (Claude Code) / `$pad plan` (Codex) / `pad_playbook run plan` (MCP). Software templates auto-seed it (`softwareStarterPlaybookTitles`); confirm activation by looking for `invocation_slug=plan, status=active` in the bootstrap's `playbooks` array — `pad playbook show plan` resolves by slug regardless of status, so it can't be used as an activation check on its own. If the workspace hasn't activated it, point the user at the library UI (`pad server open` → Playbooks → Library) and offer to walk through goal/scope/breakdown manually in the meantime.
+Run the `plan` invokable playbook — by intent ("let's plan <topic>") or the shortcut **`/pad plan <topic>`** (Claude Code) / `$pad plan` (Codex) / `pad_playbook` `action: run, ref: plan` (MCP). Software templates auto-seed it (`softwareStarterPlaybookTitles`); confirm activation by looking for `invocation_slug=plan, status=active` in the bootstrap's `playbooks` array — `pad playbook show plan` resolves by slug regardless of status, so it can't be used as an activation check on its own. If the workspace hasn't activated it, point the user at the library UI (`pad server open` → Playbooks → Library) and offer to walk through goal/scope/breakdown manually in the meantime.
 
 ### Decomposition: "Break plan X into tasks"
 
-Run the `decompose` invokable playbook — by intent ("break PLAN-2 into tasks") or the shortcut **`/pad decompose <PLAN-ref>`** (Claude Code) / `$pad decompose` (Codex) / `pad_playbook run decompose` (MCP). Accepts `target` (the plan ref), `dry-run` (propose without creating), and `collection` (default=tasks); handles child reconciliation, dependency wiring, and per-task confirmation. Same activation story as `plan` — check the bootstrap's `playbooks` array for `invocation_slug=decompose, status=active`; library activation otherwise.
+Run the `decompose` invokable playbook — by intent ("break PLAN-2 into tasks") or the shortcut **`/pad decompose <PLAN-ref>`** (Claude Code) / `$pad decompose` (Codex) / `pad_playbook` `action: run, ref: decompose` (MCP). Accepts `target` (the plan ref), `dry-run` (propose without creating), and `collection` (default=tasks); handles child reconciliation, dependency wiring, and per-task confirmation. Same activation story as `plan` — check the bootstrap's `playbooks` array for `invocation_slug=decompose, status=active`; library activation otherwise.
 
 ### Status Check: "How are we doing?"
 
