@@ -15,7 +15,6 @@
 	 * inherently transient.
 	 */
 	interface Props {
-		wsSlug: string;
 		workspaceName: string;
 		/** Opens the workspace's ConnectWorkspaceModal (mounted by the parent). */
 		onconnect: () => void;

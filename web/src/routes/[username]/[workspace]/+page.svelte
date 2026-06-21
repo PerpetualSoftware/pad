@@ -264,7 +264,6 @@
 				false on the first real item, swapping back to the board.
 			-->
 			<OnboardingLaunchpad
-				{wsSlug}
 				workspaceName={workspaceStore.current?.name ?? wsSlug}
 				onconnect={() => (connectOpen = true)}
 				ondismiss={dismissOnboarding}
