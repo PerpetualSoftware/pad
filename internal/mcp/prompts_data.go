@@ -66,7 +66,7 @@ Natural language is the canonical trigger and works on every surface — when th
 
 To run it (using your MCP tools — no shell required):
 
-1. Confirm the playbook is activated. Call ` + "`pad_playbook`" + ` with ` + "`action: list`" + ` and look for ` + "`invocation_slug=onboard`" + ` with ` + "`status=active`" + `. If it's missing, the user can activate it from the library in the web UI (` + "`/{ws}/library?tab=playbooks`" + `).
+1. Confirm the playbook is activated. Call ` + "`pad_playbook`" + ` with ` + "`action: list`" + ` and look for ` + "`invocation_slug=onboard`" + ` with ` + "`status=active`" + `. If it's missing, activate it yourself — call ` + "`pad_library`" + ` with ` + "`action: activate`" + ` and ` + "`title: \"Onboard a workspace\"`" + ` (no shell needed), then re-list. (The user can also activate it from the library in the web UI: ` + "`/{ws}/library?tab=playbooks`" + `.)
 2. Load the body. Call ` + "`pad_playbook`" + ` with ` + "`action: get`" + ` and ` + "`ref: onboard`" + ` (this returns the full body; it is side-effect-free).
 3. Follow the body's instructions. It teaches you the surface-agnostic interview: discover the domain, propose collections, adapt seeded conventions/playbooks to the project's actual tooling, suggest roles, seed a first item. The body is the source of truth — this prompt is just the dispatcher.
 
