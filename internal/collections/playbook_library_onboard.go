@@ -177,7 +177,7 @@ Help the user create their first task / idea / plan / whatever the dominant coll
 
 ### B7. Recap
 
-Summarize what was created (collections, conventions, roles, playbooks, first item). Point the user at ` + "`pad project dashboard`" + ` or the web UI. Mention they can re-run ` + "`/pad onboard`" + ` later to add or change things.
+Summarize what was created (collections, conventions, roles, playbooks, first item). Point the user at ` + "`pad project dashboard`" + ` or the web UI. Mention they can re-run onboarding later — just say "set up my workspace" (or the shortcut ` + "`/pad onboard`" + ` in Claude Code) — to add or change things.
 
 ## Mode: audit (templated workspace)
 
@@ -245,7 +245,7 @@ The ` + "`defaults`" + ` flag short-circuits the interview. Use the codebase-det
 - Roles: skip unless the user explicitly opts in.
 - First item: prompt the user for one sentence.
 
-Report what was picked. Tell the user they can re-run ` + "`/pad onboard mode=audit`" + ` to walk through and adjust.
+Report what was picked. Tell the user they can re-run onboarding in audit mode any time — say "audit my workspace setup" (shortcut ` + "`/pad onboard mode=audit`" + ` in Claude Code) — to walk through and adjust.
 
 ## Philosophy
 

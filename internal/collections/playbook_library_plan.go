@@ -36,7 +36,7 @@ Detect which mode the user invoked by inspecting the first positional:
 - **Looks like a ref** (matches ` + "`^[A-Z]+-\\d+$`" + ` and resolves to a real item in the workspace) → **elaborate mode**. Load the item with ` + "`pad item show <ref> --format markdown`" + `, ask the user what they want to expand or clarify, and update the item via ` + "`pad item update <ref> --stdin`" + ` with the agreed-upon body.
 - **Otherwise** → **create-new mode**. Run the full Conversation flow below to design and create a fresh plan.
 
-Quick-action prompts of the form ` + "`/pad plan <REF> \"<title>\" — outline goals, deliverables, and timeline`" + ` are the elaborate-mode entry point — the trailing freeform text after the title is conversational context, not extra positional args.
+Quick-action prompts that invoke this playbook with a ref + title and trailing intent — e.g. ` + "`plan <REF> \"<title>\" — outline goals, deliverables, and timeline`" + ` (shortcut form ` + "`/pad plan …`" + ` in Claude Code) — are the elaborate-mode entry point; the freeform text after the title is conversational context, not extra positional args.
 
 ## Pre-flight
 
@@ -96,7 +96,7 @@ exists. Each task should be PR-sized (one branch, one meaningful unit of
 work). If a task feels large, split it.
 
 Ask the user to approve the list in bulk OR to mark which to keep, drop,
-or merge. Don't create the tasks yet — that's ` + "`/pad decompose <new-plan-ref>`" + `'s job after the plan exists.
+or merge. Don't create the tasks yet — that's the ` + "`decompose`" + ` playbook's job after the plan exists.
 
 ### 6. Create the plan
 
@@ -140,7 +140,7 @@ Capture the new plan's ref from the CLI output (e.g. ` + "`PLAN-N`" + `).
 
 Two natural follow-ups:
 
-- **Decompose now:** turn the approved breakdown into child task items. Check whether the workspace has a ` + "`decompose`" + ` playbook activated (` + "`pad playbook list --format json`" + `) — if so, invoke it with ` + "`/pad decompose <new-plan-ref>`" + `; otherwise create the tasks inline:
+- **Decompose now:** turn the approved breakdown into child task items. Check whether the workspace has a ` + "`decompose`" + ` playbook activated (` + "`pad playbook list --format json`" + `) — if so, run it on the new plan ref (shortcut ` + "`/pad decompose <new-plan-ref>`" + ` in Claude Code); otherwise create the tasks inline:
 
   ` + "```bash" + `
   pad item create task "<task title>" --parent <new-plan-ref> --priority <X>
