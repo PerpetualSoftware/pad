@@ -311,6 +311,7 @@
 			-->
 			<OnboardingLaunchpad
 				workspaceName={workspaceStore.current?.name ?? wsSlug}
+				agentActive={dashboard.has_agent_activity}
 				onconnect={() => (connectOpen = true)}
 				ondismiss={dismissOnboarding}
 			/>

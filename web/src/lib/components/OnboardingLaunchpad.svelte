@@ -16,13 +16,30 @@
 	 */
 	interface Props {
 		workspaceName: string;
+		/**
+		 * Whether an agent has already acted in this workspace
+		 * (dashboard.has_agent_activity). Ticks the "Agent connected" checklist
+		 * step. Note: this signal flips on the first agent-CREATED item, which
+		 * also clears needs_onboarding and removes the launchpad — so in
+		 * practice the checklist is an orientation device (you're on step 1),
+		 * not a live mid-launchpad tracker. A distinct "connected but hasn't
+		 * acted yet" signal is deferred (see IDEA-1854).
+		 */
+		agentActive?: boolean;
 		/** Opens the workspace's ConnectWorkspaceModal (mounted by the parent). */
 		onconnect: () => void;
 		/** Skip setup for now — parent falls back to the normal (empty) board. */
 		ondismiss: () => void;
 	}
 
-	let { workspaceName, onconnect, ondismiss }: Props = $props();
+	let { workspaceName, agentActive = false, onconnect, ondismiss }: Props = $props();
+
+	// Compact setup-progress checklist (TASK-1857). Existing signals only.
+	let progress = $derived([
+		{ label: 'Workspace created', done: true },
+		{ label: 'Agent connected', done: agentActive },
+		{ label: 'Setup complete', done: false }
+	]);
 
 	// Per-surface shortcuts for step ②. Natural language is the canonical
 	// trigger (works on every surface, matches TASK-1849/1851); these are
@@ -43,6 +60,15 @@
 			questions and adapt this workspace to your project.
 		</p>
 	</header>
+
+	<ul class="lp-progress" aria-label="Setup progress">
+		{#each progress as p (p.label)}
+			<li class="lp-progress-item" class:done={p.done}>
+				<span class="lp-progress-mark" aria-hidden="true">{p.done ? '✓' : '○'}</span>
+				<span>{p.label}</span>
+			</li>
+		{/each}
+	</ul>
 
 	<ol class="lp-steps">
 		<li class="lp-step">
@@ -130,6 +156,33 @@
 		font-size: 0.95em;
 		line-height: 1.5;
 		color: var(--text-secondary);
+	}
+
+	.lp-progress {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		gap: var(--space-2) var(--space-4);
+	}
+	.lp-progress-item {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		font-size: 0.82em;
+		color: var(--text-muted);
+	}
+	.lp-progress-item.done {
+		color: var(--text-secondary);
+	}
+	.lp-progress-mark {
+		font-weight: 700;
+		color: var(--border);
+	}
+	.lp-progress-item.done .lp-progress-mark {
+		color: var(--accent-blue);
 	}
 
 	.lp-steps {
