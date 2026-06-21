@@ -560,6 +560,22 @@
 
 		<div class="invocation-block">
 			<div class="invocation-header">
+				<span class="invocation-label">Natural language <span class="invocation-canonical">— works anywhere</span></span>
+				<button
+					type="button"
+					class="copy-btn"
+					onclick={() => copyToClipboard('nl', invocation.nl)}
+				>
+					{copiedKey === 'nl' ? 'Copied!' : 'Copy'}
+				</button>
+			</div>
+			<pre class="invocation-code">{invocation.nl}</pre>
+		</div>
+
+		<p class="invocation-shortcuts-note">Or use the shortcut for your agent:</p>
+
+		<div class="invocation-block">
+			<div class="invocation-header">
 				<span class="invocation-label">Claude Code</span>
 				<button
 					type="button"
@@ -795,6 +811,17 @@
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
 		color: var(--text-secondary);
+	}
+	.invocation-canonical {
+		font-weight: 600;
+		text-transform: none;
+		letter-spacing: 0;
+		color: var(--accent-blue);
+	}
+	.invocation-shortcuts-note {
+		margin: var(--space-3) 0 0;
+		font-size: 0.78em;
+		color: var(--text-muted);
 	}
 	.copy-btn {
 		padding: 2px var(--space-2);

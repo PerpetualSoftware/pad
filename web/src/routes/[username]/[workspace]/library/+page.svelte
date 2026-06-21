@@ -229,7 +229,7 @@
 									<h3 class="card-title">{playbook.title}</h3>
 									<div class="badges">
 										{#if playbook.invocation_slug}
-											<span class="badge slug" title={`Invoke via /pad ${playbook.invocation_slug}`}>/pad {playbook.invocation_slug}</span>
+											<span class="badge slug" title={`Run it by saying "run the ${playbook.invocation_slug} playbook" — or the shortcut for your agent: /pad ${playbook.invocation_slug} (Claude Code), $pad ${playbook.invocation_slug} (Codex), pad_playbook action=run ref=${playbook.invocation_slug} (MCP)`}>▶ {playbook.invocation_slug}</span>
 										{/if}
 										<span class="badge trigger">{playbook.trigger}</span>
 										<span class="badge scope">{playbook.scope}</span>
