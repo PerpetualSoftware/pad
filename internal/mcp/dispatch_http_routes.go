@@ -214,6 +214,29 @@ func init() {
 		"item move":   mapItemMove,
 		"item search": mapItemSearch,
 
+		// --- Artifact export / import (PLAN artifact, Phase 5) ---
+		// `item export` is a plain path-param GET — same shape as `item
+		// show` — that returns the portable artifact bytes (YAML
+		// frontmatter + Markdown body). The catalog action forces
+		// `output=-` for the stdio/exec path so the CLI streams to
+		// stdout; over HTTP that flag is meaningless (the endpoint just
+		// returns the artifact in the response body), so the mapper
+		// ignores `output` entirely and relies on the route below.
+		//
+		// `item import` POSTs the raw artifact text to the workspace's
+		// import-artifact endpoint with Content-Type text/markdown — the
+		// same raw-body shape parseArtifactRequest reads. Because the
+		// RouteMapper contract only carries a JSON-ish []byte body (and
+		// buildHTTPRequest stamps application/json on every body), import
+		// can't ride the routeTable: it needs a non-JSON content type and
+		// a verbatim (un-marshalled) body. So it's a special-case method
+		// on the dispatcher (dispatchItemImport) handled in the switch in
+		// dispatch_http.go, mirroring item.note / project.standup.
+		"item export": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/export",
+		}.toRouteMapper(),
+
 		// --- Comments ---
 		"item comment": mapItemComment,
 		"item comments": routeSpec{

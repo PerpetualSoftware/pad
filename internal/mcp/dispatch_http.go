@@ -346,6 +346,8 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 		return d.dispatchItemNote(ctx, input, user)
 	case "item decide":
 		return d.dispatchItemDecide(ctx, input, user)
+	case "item import":
+		return d.dispatchItemImport(ctx, input, user)
 	case "project ready":
 		return d.dispatchProjectReady(ctx, input, user)
 	case "project stale":
