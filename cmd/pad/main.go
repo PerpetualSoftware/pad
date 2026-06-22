@@ -3985,6 +3985,112 @@ Examples:
 	return cmd
 }
 
+// --- artifact export / import ---
+
+func itemExportCmd() *cobra.Command {
+	var outPath string
+	cmd := &cobra.Command{
+		Use:   "export <ref>",
+		Short: "Export a playbook or convention as a portable artifact",
+		Long: `Export a single playbook or convention item to a portable artifact
+(Markdown body + YAML frontmatter) that can be imported into another workspace.
+
+Only playbooks and conventions are exportable as artifacts; any other item
+type is rejected by the server.
+
+Items can be referenced by issue ID (e.g. PLAYB-3) or slug.
+
+Examples:
+  pad item export PLAYB-3                  # Write PLAYB-3 to <slug>.pad.md
+  pad item export ship -o ship.pad.md      # Write to a specific path
+  pad item export CONVE-7 -o -             # Write the artifact to stdout`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			res, err := client.ExportItemArtifact(ws, args[0])
+			if err != nil {
+				return err
+			}
+
+			// `-o -` streams the artifact to stdout with no confirmation line.
+			if outPath == "-" {
+				_, err := os.Stdout.Write(res.Body)
+				return err
+			}
+
+			// Default filename: the server-suggested Content-Disposition
+			// filename (<slug>.pad.md), falling back to the ref when the
+			// header is missing.
+			if outPath == "" {
+				if res.Filename != "" {
+					outPath = res.Filename
+				} else {
+					outPath = args[0] + ".pad.md"
+				}
+			}
+
+			if err := os.WriteFile(outPath, res.Body, 0o644); err != nil {
+				return fmt.Errorf("write artifact: %w", err)
+			}
+			fmt.Printf("Exported %s to %s\n", args[0], outPath)
+			return nil
+		},
+	}
+	cmd.Flags().StringVarP(&outPath, "output", "o", "", "output file path (default <slug>.pad.md; use - for stdout)")
+	return cmd
+}
+
+func itemImportCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "import <file>",
+		Short: "Import a playbook or convention artifact into the workspace",
+		Long: `Import a portable artifact (Markdown body + YAML frontmatter) as a new
+playbook or convention in the current workspace.
+
+The item is always imported as a draft — review and activate it afterward.
+The server may emit warnings (e.g. a foreign select value cleared, or an
+invocation_slug de-collided); each is printed on its own line.
+
+Use - to read the artifact from stdin.
+
+Examples:
+  pad item import ship.pad.md     # Import from a file
+  cat ship.pad.md | pad item import -   # Import from stdin`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			var (
+				body []byte
+				err  error
+			)
+			if args[0] == "-" {
+				body, err = io.ReadAll(os.Stdin)
+			} else {
+				body, err = os.ReadFile(args[0])
+			}
+			if err != nil {
+				return fmt.Errorf("read artifact: %w", err)
+			}
+
+			res, err := client.ImportArtifact(ws, body)
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Imported %s (%s) as a draft\n", res.Ref, res.Slug)
+			for _, warning := range res.Warnings {
+				fmt.Printf("⚠ %s\n", warning)
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
 // --- comments ---
 
 func commentCmd() *cobra.Command {
