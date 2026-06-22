@@ -64,7 +64,8 @@ import type {
 	AttachmentListFilters,
 	AttachmentListResponse,
 	ConnectedApp,
-	ClaimCodeResponse
+	ClaimCodeResponse,
+	ImportArtifactResult
 } from '$lib/types';
 
 const BASE = '/api/v1';
@@ -286,6 +287,28 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	}
 	if (resp.status === 204) return undefined as T;
 	return resp.json();
+}
+
+/**
+ * Pull the filename out of a Content-Disposition header value. Handles both
+ * the RFC 5987 `filename*=UTF-8''...` form (preferred when present) and the
+ * plain quoted/unquoted `filename="..."` form. Returns null when no filename
+ * token is present so the caller can fall back to a computed default.
+ */
+function parseContentDispositionFilename(disposition: string): string | null {
+	if (!disposition) return null;
+	// RFC 5987 extended form takes precedence — it's percent-encoded UTF-8.
+	const extended = disposition.match(/filename\*=(?:UTF-8'')?([^;]+)/i);
+	if (extended?.[1]) {
+		try {
+			return decodeURIComponent(extended[1].trim().replace(/^"|"$/g, ''));
+		} catch {
+			// Fall through to the plain form on a malformed percent-encoding.
+		}
+	}
+	const plain = disposition.match(/filename="?([^";]+)"?/i);
+	if (plain?.[1]) return plain[1].trim();
+	return null;
 }
 
 function qs(params?: Record<string, string | number | boolean | undefined>): string {
@@ -1630,6 +1653,74 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify({ url })
 		}),
+
+	// ── Artifact Export / Import ───────────────────────────────────────────────
+	//
+	// Round-trip an item as a Markdown+frontmatter artifact (the `.pad.md`
+	// shape). Both bypass the shared `request` helper: export consumes the
+	// raw response body as text (not JSON) and reads the filename out of the
+	// Content-Disposition header, and import sends raw Markdown bytes with a
+	// text/markdown Content-Type rather than JSON.
+
+	/**
+	 * GET the export endpoint and return the artifact text plus the filename
+	 * the server suggested via Content-Disposition (falling back to
+	 * `<ref>.pad.md` when the header is missing or unparseable). Auth is by
+	 * item visibility; a 4xx surfaces as a PadApiError like every other call.
+	 */
+	exportItemArtifact: async (
+		ws: string,
+		ref: string
+	): Promise<{ filename: string; text: string }> => {
+		const resp = await fetch(`${BASE}/workspaces/${ws}/items/${ref}/export`, {
+			credentials: 'same-origin'
+		});
+		if (resp.status === 401) {
+			if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+				window.location.href = '/login';
+			}
+			throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+		}
+		if (!resp.ok) {
+			const body = await resp.json().catch(() => null);
+			if (body?.error) throw new PadApiError(body.error);
+			throw new Error(`export failed: ${resp.status}`);
+		}
+		const text = await resp.text();
+		const disposition = resp.headers.get('Content-Disposition') ?? '';
+		const filename = parseContentDispositionFilename(disposition) ?? `${ref}.pad.md`;
+		return { filename, text };
+	},
+
+	/**
+	 * POST the raw artifact bytes (text/markdown) and parse the JSON result.
+	 * Editor-gated server-side; oversized / malformed / over-quota artifacts
+	 * 4xx with the standard `{ error: { code, message } }` envelope, surfaced
+	 * here as a PadApiError so callers can show `err.message` cleanly.
+	 */
+	importArtifact: async (ws: string, body: string): Promise<ImportArtifactResult> => {
+		const headers: Record<string, string> = { 'Content-Type': 'text/markdown' };
+		const csrf = getCSRFToken();
+		if (csrf) headers['X-CSRF-Token'] = csrf;
+		const resp = await fetch(`${BASE}/workspaces/${ws}/import-artifact`, {
+			method: 'POST',
+			headers,
+			credentials: 'same-origin',
+			body
+		});
+		if (resp.status === 401) {
+			if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+				window.location.href = '/login';
+			}
+			throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+		}
+		if (!resp.ok) {
+			const errBody = await resp.json().catch(() => null);
+			if (errBody?.error) throw new PadApiError(errBody.error);
+			throw new Error(`import failed: ${resp.status}`);
+		}
+		return (await resp.json()) as ImportArtifactResult;
+	},
 
 	// ── Admin ────────────────────────────────────────────────────────────────
 

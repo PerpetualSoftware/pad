@@ -226,6 +226,16 @@ export interface ClaimCodeResponse {
 	suppression_grant_name?: string;
 }
 
+// ImportArtifactResult is the wire shape returned by
+// POST /workspaces/{ws}/import-artifact — the new item's ref + slug plus
+// any non-fatal warnings (coerced fields, renamed slug, forced-draft) the
+// server surfaced while importing the Markdown+frontmatter artifact.
+export interface ImportArtifactResult {
+	ref: string;
+	slug: string;
+	warnings: string[];
+}
+
 export interface Workspace {
 	id: string;
 	name: string;

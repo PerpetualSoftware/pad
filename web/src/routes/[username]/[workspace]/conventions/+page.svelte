@@ -2,9 +2,10 @@
 	import { page } from '$app/state';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import type { Collection, Item, ItemConventionMetadata, ItemCreate } from '$lib/types';
-	import { parseFields, parseSchema } from '$lib/types';
+	import { parseFields, parseSchema, itemUrlId } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
+	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
 
 	const TRIGGERS = ['always','on-task-start','on-task-complete','on-implement','on-commit','on-pr-create','on-plan-start','on-plan-complete','on-plan'] as const;
@@ -61,6 +62,12 @@
 	let editingSlug = $state<string | null>(null);
 	let editContent = $state('');
 	let saving = $state(false);
+
+	// Artifact export/import state. `importing` gates the import button while a
+	// POST is in flight; `exportingSlug` tracks which row's Export is busy.
+	let exportingSlug = $state<string | null>(null);
+	let importing = $state(false);
+	let importInputEl = $state<HTMLInputElement | null>(null);
 
 	// Inline create form state
 	let newTitle = $state('');
@@ -309,6 +316,72 @@
 		editContent = '';
 	}
 
+	async function handleExport(item: Item) {
+		if (!workspace || exportingSlug) return;
+		exportingSlug = item.slug;
+		try {
+			await exportAndDownloadArtifact(workspace, itemUrlId(item));
+			toastStore.show('Convention exported', 'success');
+		} catch (err: unknown) {
+			toastStore.show(
+				err instanceof Error ? err.message : 'Failed to export convention',
+				'error'
+			);
+		} finally {
+			exportingSlug = null;
+		}
+	}
+
+	// Open the hidden file-picker. The selected file is handled entirely in
+	// `onImportFileChange` (the change-event handler) — we never route the
+	// file through a `$state` that an `$effect` reads (CONVE-1688).
+	function openImportPicker() {
+		importInputEl?.click();
+	}
+
+	async function onImportFileChange(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		// Reset the input synchronously so picking the same file again still
+		// fires a change event next time.
+		input.value = '';
+		if (!file || !workspace || importing) return;
+		importing = true;
+		try {
+			const result = await importArtifactFile(workspace, file);
+			// Surface each warning (coerced fields, renamed slug, forced-draft)
+			// as its own info toast so none get lost behind the success line.
+			for (const warning of result.warnings) {
+				toastStore.show(warning, 'info', 6000);
+			}
+			// The import endpoint returns ref + slug but not the destination
+			// collection, and item-detail routes are collection-scoped
+			// (/{user}/{ws}/{collection}/{slug}). Resolve the created item to
+			// build an accurate deep link; if that lookup fails, still report
+			// success without a link rather than 404-ing the user.
+			let link: string | undefined;
+			try {
+				const created = await api.items.get(workspace, result.slug);
+				if (created.collection_slug) {
+					link = `/${username}/${workspace}/${created.collection_slug}/${created.slug}`;
+				}
+			} catch {
+				link = undefined;
+			}
+			toastStore.show(`Imported ${result.ref} as a draft`, 'success', 6000, link);
+			// Refresh the list so a newly-imported convention shows up.
+			loadConventions(workspace);
+		} catch (err: unknown) {
+			toastStore.show(
+				err instanceof Error ? err.message : 'Failed to import artifact',
+				'error',
+				6000
+			);
+		} finally {
+			importing = false;
+		}
+	}
+
 	async function bulkToggleGroup(group: { trigger: string; items: Item[] }, enable: boolean) {
 		if (!workspace) return;
 		const targetStatus = enable ? 'active' : 'disabled';
@@ -406,9 +479,24 @@
 			</div>
 			<div class="header-actions">
 				<a href="/{username}/{workspace}/library" class="btn btn-secondary">Browse Library</a>
+				<button
+					class="btn btn-secondary"
+					disabled={importing}
+					onclick={openImportPicker}
+					title="Import a convention or playbook from a .pad.md artifact"
+				>
+					{importing ? 'Importing…' : 'Import artifact'}
+				</button>
 				<button class="btn btn-primary" onclick={() => (showCreate = !showCreate)}>
 					{showCreate ? 'Cancel' : '+ New Convention'}
 				</button>
+				<input
+					bind:this={importInputEl}
+					type="file"
+					accept=".md,text/markdown"
+					class="visually-hidden-input"
+					onchange={onImportFileChange}
+				/>
 			</div>
 		</header>
 
@@ -602,6 +690,14 @@
 													{/if}
 													<div class="expanded-actions">
 														<button class="btn btn-small btn-secondary" onclick={() => startEditing(item)}>Edit</button>
+														<button
+															class="btn btn-small btn-secondary"
+															disabled={exportingSlug === item.slug}
+															onclick={() => handleExport(item)}
+															title="Download as a .pad.md artifact"
+														>
+															{exportingSlug === item.slug ? 'Exporting…' : 'Export'}
+														</button>
 														{#if confirmDelete === item.slug}
 															<span class="confirm-text">Delete this convention?</span>
 															<button class="btn btn-small btn-danger" onclick={() => deleteConvention(item)}>Confirm</button>
@@ -632,7 +728,8 @@
 	.page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-4); margin-bottom: var(--space-6); flex-wrap: wrap; }
 	.header-text h1 { font-size: 1.6em; margin-bottom: var(--space-1); }
 	.subtitle { color: var(--text-secondary); font-size: 0.9em; }
-	.header-actions { display: flex; gap: var(--space-2); flex-shrink: 0; }
+	.header-actions { display: flex; gap: var(--space-2); flex-shrink: 0; flex-wrap: wrap; }
+	.visually-hidden-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 	/* Buttons */
 	.btn { padding: var(--space-1) var(--space-4); border-radius: var(--radius); font-size: 0.85em; font-weight: 600; cursor: pointer; border: none; white-space: nowrap; text-decoration: none; display: inline-flex; align-items: center; }

@@ -2,9 +2,10 @@
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
-	import { parseFields, parseSchema, type Collection, type Item } from '$lib/types';
+	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
+	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
 	import {
 		argumentsFromJSON,
@@ -35,6 +36,7 @@
 	let existingPlaybooks = $state<Item[]>([]);
 	let loading = $state(true);
 	let saving = $state(false);
+	let exporting = $state(false);
 
 	// Scroll position restoration (BUG-1425). Form pages are usually short
 	// enough that scroll position isn't critical, but if the body grows the
@@ -223,6 +225,22 @@
 	function cancel() {
 		goto(`/${username}/${wsSlug}/playbooks`);
 	}
+
+	async function handleExport() {
+		if (!item || exporting) return;
+		exporting = true;
+		try {
+			await exportAndDownloadArtifact(wsSlug, itemUrlId(item));
+			toastStore.show('Playbook exported', 'success');
+		} catch (err: unknown) {
+			toastStore.show(
+				err instanceof Error ? err.message : 'Failed to export playbook',
+				'error'
+			);
+		} finally {
+			exporting = false;
+		}
+	}
 </script>
 
 <div class="edit-page">
@@ -244,6 +262,15 @@
 			</div>
 			<div class="header-actions">
 				<button type="button" class="btn btn-secondary" onclick={cancel}>Cancel</button>
+				<button
+					type="button"
+					class="btn btn-secondary"
+					disabled={exporting}
+					onclick={handleExport}
+					title="Download this playbook as a .pad.md artifact"
+				>
+					{exporting ? 'Exporting…' : 'Export'}
+				</button>
 				<button
 					type="button"
 					class="btn btn-primary"

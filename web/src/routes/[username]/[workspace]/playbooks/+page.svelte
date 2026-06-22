@@ -5,6 +5,7 @@
 	import { parseFields, parseSchema, itemUrlId, type Collection, type Item } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
+	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
 	import {
 		PLAYBOOK_SKELETON_BODY,
@@ -40,6 +41,9 @@
 	let confirmDeleteSlug = $state<string | null>(null);
 	let togglingStatus = $state<string | null>(null);
 	let duplicating = $state<string | null>(null);
+	let exportingSlug = $state<string | null>(null);
+	let importing = $state(false);
+	let importInputEl = $state<HTMLInputElement | null>(null);
 	let searchQuery = $state('');
 	let filterTrigger = $state<string>('');
 	let filterScope = $state<string>('');
@@ -292,6 +296,65 @@
 		} finally { duplicating = null; }
 	}
 
+	async function exportPlaybook(item: Item) {
+		if (exportingSlug) return;
+		exportingSlug = item.slug;
+		try {
+			await exportAndDownloadArtifact(wsSlug, itemUrlId(item));
+			toastStore.show('Playbook exported', 'success');
+		} catch (err: unknown) {
+			toastStore.show(
+				err instanceof Error ? err.message : 'Failed to export playbook',
+				'error'
+			);
+		} finally {
+			exportingSlug = null;
+		}
+	}
+
+	// Open the hidden file-picker; the selected file is handled entirely in the
+	// change-event handler so the File never routes through a `$state` an
+	// `$effect` reads (CONVE-1688).
+	function openImportPicker() {
+		importInputEl?.click();
+	}
+
+	async function onImportFileChange(e: Event) {
+		const input = e.currentTarget as HTMLInputElement;
+		const file = input.files?.[0];
+		// Reset synchronously so re-picking the same file fires change again.
+		input.value = '';
+		if (!file || importing) return;
+		importing = true;
+		try {
+			const result = await importArtifactFile(wsSlug, file);
+			for (const warning of result.warnings) {
+				toastStore.show(warning, 'info', 6000);
+			}
+			// Resolve the created item to build a collection-scoped deep link
+			// (the import response carries ref + slug but not the collection).
+			let link: string | undefined;
+			try {
+				const created = await api.items.get(wsSlug, result.slug);
+				if (created.collection_slug) {
+					link = `/${username}/${wsSlug}/${created.collection_slug}/${created.slug}`;
+				}
+			} catch {
+				link = undefined;
+			}
+			toastStore.show(`Imported ${result.ref} as a draft`, 'success', 6000, link);
+			await loadPlaybooks(wsSlug);
+		} catch (err: unknown) {
+			toastStore.show(
+				err instanceof Error ? err.message : 'Failed to import artifact',
+				'error',
+				6000
+			);
+		} finally {
+			importing = false;
+		}
+	}
+
 	function clearFilters() { searchQuery = ''; filterTrigger = ''; filterScope = ''; }
 
 	function resetForm() {
@@ -319,9 +382,23 @@
 				<p class="subtitle">Multi-step workflows that agents follow for specific actions</p>
 			</div>
 			{#if !showNewForm}
-				<div style="display:flex;gap:var(--space-2);align-items:center;">
+				<div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;">
 					<a href="/{username}/{wsSlug}/library?tab=playbooks" class="new-btn" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);">📚 Browse Library</a>
+					<button
+						class="new-btn"
+						style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);"
+						disabled={importing}
+						onclick={openImportPicker}
+						title="Import a playbook or convention from a .pad.md artifact"
+					>{importing ? 'Importing…' : 'Import artifact'}</button>
 					<button class="new-btn" onclick={() => (showNewForm = true)}>+ New Playbook</button>
+					<input
+						bind:this={importInputEl}
+						type="file"
+						accept=".md,text/markdown"
+						class="visually-hidden-input"
+						onchange={onImportFileChange}
+					/>
 				</div>
 			{/if}
 		</header>
@@ -461,6 +538,9 @@
 									<button class="action-btn" disabled={duplicating === item.slug} onclick={() => duplicatePlaybook(item)}>
 										{duplicating === item.slug ? '...' : 'Duplicate'}
 									</button>
+									<button class="action-btn" disabled={exportingSlug === item.slug} onclick={() => exportPlaybook(item)} title="Download as a .pad.md artifact">
+										{exportingSlug === item.slug ? '...' : 'Export'}
+									</button>
 									{#if confirmDeleteSlug === item.slug}
 										<span class="delete-confirm">
 											Delete?
@@ -488,6 +568,8 @@
 	.subtitle { color: var(--text-secondary); font-size: 0.95em; }
 	.new-btn { background: var(--accent-blue); color: #fff; padding: var(--space-2) var(--space-5); border-radius: var(--radius); font-size: 0.85em; font-weight: 600; white-space: nowrap; flex-shrink: 0; transition: opacity 0.15s; }
 	.new-btn:hover { opacity: 0.85; }
+	.new-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+	.visually-hidden-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 	.empty-state { text-align: center; padding: var(--space-10) var(--space-6); color: var(--text-secondary); }
 	.empty-icon { font-size: 3em; margin-bottom: var(--space-4); opacity: 0.6; }
 	.empty-state h2 { font-size: 1.2em; font-weight: 600; margin-bottom: var(--space-2); color: var(--text-primary); }
