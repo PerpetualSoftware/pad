@@ -615,21 +615,64 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := items.ValidateFields(fieldMap, schema); err != nil {
-		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, fieldMap, parentValue)
+	if cerr != nil {
+		writeError(w, cerr.status, cerr.code, cerr.message)
 		return
 	}
 
-	if err := s.checkUniqueFields(workspaceID, coll.ID, "", schema, fieldMap); err != nil {
-		writeError(w, http.StatusConflict, "conflict", err.Error())
+	createVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
+	if err := s.enrichItemForResponse(item, createVisIDs); err != nil {
+		writeInternalError(w, err)
 		return
+	}
+
+	writeJSON(w, http.StatusCreated, item)
+}
+
+// itemCreateError carries an HTTP-status hint out of createItemChecked so
+// callers (handleCreateItem and the artifact-import handler) can map the
+// failure to a response without re-classifying it. Mirrors the
+// importStatusError pattern in handlers_import_bundle.go.
+type itemCreateError struct {
+	status  int
+	code    string
+	message string
+}
+
+func (e *itemCreateError) Error() string { return e.message }
+
+// createItemChecked is the shared item-create core: schema-field validation →
+// workspace-unique-field precheck → persist → optional parent link → activity
+// log + SSE event + webhook dispatch. Both handleCreateItem and the
+// artifact-import handler call it so neither path can drop straight to
+// store.CreateItem and skip validation, the uniqueness precheck, or the
+// create side effects.
+//
+// The caller owns everything upstream of the validate step: resolving the
+// collection, enforcing edit permission + collection visibility, decoding the
+// request body, enforcing plan limits, and resolving + visibility-gating any
+// parent (passed in as parentValue, an already-resolved item ID or "").
+// fieldMap is the parsed-but-not-yet-validated structured fields; this helper
+// validates it against schema, marshals the validated/defaulted result back
+// into input.Fields, and stamps input.Source from the request auth context
+// when the caller left it blank.
+//
+// Returns the created item (Ref/Slug populated by the store) or an
+// *itemCreateError with a status hint.
+func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *models.Collection, schema models.CollectionSchema, input models.ItemCreate, fieldMap map[string]any, parentValue string) (*models.Item, *itemCreateError) {
+	if err := items.ValidateFields(fieldMap, schema); err != nil {
+		return nil, &itemCreateError{http.StatusBadRequest, "validation_error", err.Error()}
+	}
+
+	if err := s.checkUniqueFields(workspaceID, coll.ID, "", schema, fieldMap); err != nil {
+		return nil, &itemCreateError{http.StatusConflict, "conflict", err.Error()}
 	}
 
 	// Marshal validated/defaulted fields back
 	validatedFields, err := json.Marshal(fieldMap)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to marshal validated fields")
-		return
+		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "Failed to marshal validated fields"}
 	}
 	input.Fields = string(validatedFields)
 
@@ -654,34 +697,26 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 			// message generic so it covers both — the application-layer
 			// pre-check (checkUniqueFields) catches the common case with a
 			// targeted error message; only a true concurrent race lands here.
-			writeError(w, http.StatusConflict, "conflict", "An item conflicts with an existing record (duplicate slug, title, or invocation slug)")
-			return
+			return nil, &itemCreateError{http.StatusConflict, "conflict", "An item conflicts with an existing record (duplicate slug, title, or invocation slug)"}
 		}
-		writeInternalError(w, err)
-		return
+		slog.Error("createItemChecked: store.CreateItem failed", "error", err)
+		return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "An internal error occurred"}
 	}
 
 	// Create parent link if specified
 	if parentValue != "" {
 		actor, _ := actorFromRequest(r)
 		if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("item created but parent link failed: %v", err))
-			return
+			return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", fmt.Sprintf("item created but parent link failed: %v", err)}
 		}
 	}
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "created", r)
-	s.publishItemEventWithName(events.ItemCreated, workspaceID, item.ID, item.Title, collSlug, actor, actorNameFromRequest(r), source, item.Seq)
+	s.publishItemEventWithName(events.ItemCreated, workspaceID, item.ID, item.Title, coll.Slug, actor, actorNameFromRequest(r), source, item.Seq)
 	s.dispatchWebhook(workspaceID, "item.created", item)
 
-	createVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
-	if err := s.enrichItemForResponse(item, createVisIDs); err != nil {
-		writeInternalError(w, err)
-		return
-	}
-
-	writeJSON(w, http.StatusCreated, item)
+	return item, nil
 }
 
 // writeItemResolveError distinguishes a soft-deleted (archived) item from a

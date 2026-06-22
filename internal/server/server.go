@@ -143,6 +143,14 @@ type Server struct {
 	// exports can opt in without recompiling.
 	importBundleMaxBytes int64
 
+	// importArtifactMaxBytes caps a single playbook/convention artifact
+	// import (POST /workspaces/{ws}/import-artifact). 0 →
+	// defaultImportArtifactMaxBytes (1 MiB). A single artifact is tiny;
+	// the cap is the first line of defense against an oversized body
+	// being materialized before the YAML-bomb guard runs. Set via
+	// SetImportArtifactMaxBytes from cmd/pad/main.go.
+	importArtifactMaxBytes int64
+
 	// orphanGC holds the periodic-sweep config + lifecycle for the
 	// attachment orphan garbage collector (TASK-886). Configured via
 	// SetOrphanGCConfig and started via StartOrphanGC. Stop() signals
@@ -531,6 +539,13 @@ func (s *Server) uploadInFlight(hash string) bool {
 // flight at a time, ≤25 MiB) for a longer import wall-clock.
 func (s *Server) SetImportBundleMaxBytes(n int64) {
 	s.importBundleMaxBytes = n
+}
+
+// SetImportArtifactMaxBytes overrides the default 1 MiB cap on a single
+// playbook/convention artifact import. Set to 0 to fall back to the
+// default. Wired from PAD_IMPORT_ARTIFACT_MAX_BYTES in cmd/pad/main.go.
+func (s *Server) SetImportArtifactMaxBytes(n int64) {
+	s.importArtifactMaxBytes = n
 }
 
 // SetSecureCookies enables the Secure flag on all cookies.
@@ -1023,6 +1038,11 @@ func (s *Server) setupRouter() {
 					r.Patch("/", s.handleUpdateWorkspace)
 					r.Delete("/", s.handleDeleteWorkspace)
 					r.Get("/export", s.handleExportWorkspace)
+					// Import a single playbook/convention artifact (Markdown
+					// + YAML frontmatter) into this workspace. Editor+ gate
+					// is enforced inside the handler against the destination
+					// collection.
+					r.Post("/import-artifact", s.handleImportArtifact)
 
 					// Activity (workspace level)
 					r.Get("/activity", s.handleListWorkspaceActivity)
@@ -1127,6 +1147,12 @@ func (s *Server) setupRouter() {
 						r.Delete("/", s.handleDeleteItem)
 						r.Post("/restore", s.handleRestoreItem)
 						r.Post("/move", s.handleMoveItem)
+						// Export a single playbook/convention item as a
+						// portable artifact (Markdown + YAML frontmatter).
+						// Gated by per-item visibility, not the workspace-
+						// export owner gate — a viewer who can see the item
+						// may export it.
+						r.Get("/export", s.handleExportItemArtifact)
 						r.Get("/versions", s.handleListItemVersions)
 						r.Get("/versions/{versionID}", s.handleGetItemVersion)
 						r.Post("/versions/{versionID}/restore", s.handleRestoreItemVersion)

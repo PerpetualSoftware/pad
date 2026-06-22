@@ -723,6 +723,18 @@ func serveCmd() *cobra.Command {
 				}
 			}
 
+			// Single-artifact import cap. Default is 1 MiB inside
+			// internal/server; PAD_IMPORT_ARTIFACT_MAX_BYTES lets
+			// operators raise the ceiling without recompiling.
+			if v := os.Getenv("PAD_IMPORT_ARTIFACT_MAX_BYTES"); v != "" {
+				if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
+					srv.SetImportArtifactMaxBytes(n)
+					slog.Info("Import artifact cap overridden", "max_bytes", n)
+				} else {
+					slog.Warn("PAD_IMPORT_ARTIFACT_MAX_BYTES ignored — not a positive integer", "value", v)
+				}
+			}
+
 			// Orphan GC (TASK-886). Periodic sweep that reclaims
 			// attachments tombstoned past the grace period, plus
 			// uploads that were never associated with an item.
