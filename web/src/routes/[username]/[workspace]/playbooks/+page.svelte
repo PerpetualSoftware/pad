@@ -325,9 +325,15 @@
 		// Reset synchronously so re-picking the same file fires change again.
 		input.value = '';
 		if (!file || importing) return;
+		// Snapshot the reactive wsSlug/username BEFORE the first await. If the
+		// user switches workspace mid-import, the follow-up get, the deep link,
+		// and the list refresh must target the workspace the import went to —
+		// not whatever `wsSlug`/`username` have since become.
+		const ws = wsSlug;
+		const user = username;
 		importing = true;
 		try {
-			const result = await importArtifactFile(wsSlug, file);
+			const result = await importArtifactFile(ws, file);
 			for (const warning of result.warnings) {
 				toastStore.show(warning, 'info', 6000);
 			}
@@ -335,15 +341,15 @@
 			// (the import response carries ref + slug but not the collection).
 			let link: string | undefined;
 			try {
-				const created = await api.items.get(wsSlug, result.slug);
+				const created = await api.items.get(ws, result.slug);
 				if (created.collection_slug) {
-					link = `/${username}/${wsSlug}/${created.collection_slug}/${created.slug}`;
+					link = `/${user}/${ws}/${created.collection_slug}/${created.slug}`;
 				}
 			} catch {
 				link = undefined;
 			}
 			toastStore.show(`Imported ${result.ref} as a draft`, 'success', 6000, link);
-			await loadPlaybooks(wsSlug);
+			await loadPlaybooks(ws);
 		} catch (err: unknown) {
 			toastStore.show(
 				err instanceof Error ? err.message : 'Failed to import artifact',

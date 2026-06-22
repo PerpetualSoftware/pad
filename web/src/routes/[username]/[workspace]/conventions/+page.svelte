@@ -346,9 +346,15 @@
 		// fires a change event next time.
 		input.value = '';
 		if (!file || !workspace || importing) return;
+		// Snapshot the reactive workspace/username BEFORE the first await. If the
+		// user switches workspace mid-import, the follow-up get, the deep link,
+		// and the list refresh must target the workspace the import went to —
+		// not whatever `workspace`/`username` have since become.
+		const ws = workspace;
+		const user = username;
 		importing = true;
 		try {
-			const result = await importArtifactFile(workspace, file);
+			const result = await importArtifactFile(ws, file);
 			// Surface each warning (coerced fields, renamed slug, forced-draft)
 			// as its own info toast so none get lost behind the success line.
 			for (const warning of result.warnings) {
@@ -361,16 +367,16 @@
 			// success without a link rather than 404-ing the user.
 			let link: string | undefined;
 			try {
-				const created = await api.items.get(workspace, result.slug);
+				const created = await api.items.get(ws, result.slug);
 				if (created.collection_slug) {
-					link = `/${username}/${workspace}/${created.collection_slug}/${created.slug}`;
+					link = `/${user}/${ws}/${created.collection_slug}/${created.slug}`;
 				}
 			} catch {
 				link = undefined;
 			}
 			toastStore.show(`Imported ${result.ref} as a draft`, 'success', 6000, link);
 			// Refresh the list so a newly-imported convention shows up.
-			loadConventions(workspace);
+			loadConventions(ws);
 		} catch (err: unknown) {
 			toastStore.show(
 				err instanceof Error ? err.message : 'Failed to import artifact',

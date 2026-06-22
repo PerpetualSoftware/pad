@@ -291,19 +291,43 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 /**
  * Pull the filename out of a Content-Disposition header value. Handles both
- * the RFC 5987 `filename*=UTF-8''...` form (preferred when present) and the
- * plain quoted/unquoted `filename="..."` form. Returns null when no filename
- * token is present so the caller can fall back to a computed default.
+ * the RFC 5987 extended `filename*=charset'lang'value` form (preferred when
+ * present) and the plain quoted/unquoted `filename="..."` form. Returns null
+ * when no filename token is present so the caller can fall back to a computed
+ * default.
+ *
+ * The extended form is `filename*=<charset>'<lang>'<percent-encoded-value>`,
+ * e.g. `filename*=UTF-8'en'r%C3%A9sum%C3%A9.pad.md`. Per RFC 5987 we drop the
+ * charset + language by splitting on the first two `'` characters, then
+ * percent-decode the remaining value. Malformed input (missing the two `'`
+ * delimiters, or a bad percent-encoding) falls through to the plain form.
  */
 function parseContentDispositionFilename(disposition: string): string | null {
 	if (!disposition) return null;
-	// RFC 5987 extended form takes precedence — it's percent-encoded UTF-8.
-	const extended = disposition.match(/filename\*=(?:UTF-8'')?([^;]+)/i);
+	// RFC 5987 extended form takes precedence — it's percent-encoded.
+	const extended = disposition.match(/filename\*=([^;]+)/i);
 	if (extended?.[1]) {
-		try {
-			return decodeURIComponent(extended[1].trim().replace(/^"|"$/g, ''));
-		} catch {
-			// Fall through to the plain form on a malformed percent-encoding.
+		// Strip surrounding whitespace/quotes the producer may have added.
+		const raw = extended[1].trim().replace(/^"|"$/g, '');
+		// Split on the first two `'` to drop `charset` and `lang`, leaving the
+		// percent-encoded value. A well-formed header has exactly two before
+		// the value (the value itself can't contain a bare `'`).
+		const firstQuote = raw.indexOf("'");
+		const secondQuote = firstQuote >= 0 ? raw.indexOf("'", firstQuote + 1) : -1;
+		if (secondQuote >= 0) {
+			const value = raw.slice(secondQuote + 1);
+			try {
+				return decodeURIComponent(value);
+			} catch {
+				// Malformed percent-encoding — fall through to the plain form.
+			}
+		} else {
+			// No charset'lang' prefix present — treat the whole token as the value.
+			try {
+				return decodeURIComponent(raw);
+			} catch {
+				// Fall through to the plain form on a malformed percent-encoding.
+			}
 		}
 	}
 	const plain = disposition.match(/filename="?([^";]+)"?/i);
