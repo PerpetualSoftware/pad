@@ -23,6 +23,22 @@ func doArtifactRequest(srv *Server, method, path string, body []byte) *httptest.
 	return rr
 }
 
+// doArtifactRequestWithCookie is doArtifactRequest with session + CSRF cookies,
+// for the cloud-mode paths that require authentication.
+func doArtifactRequestWithCookie(srv *Server, method, path string, body []byte, token string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "text/markdown")
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: token})
+	// Double-submit CSRF cookie/header — any fixed 64-char hex string works.
+	const testCSRF = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: testCSRF})
+	req.Header.Set("X-CSRF-Token", testCSRF)
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	return rr
+}
+
 // ---- Export ----
 
 func TestExportPlaybookArtifactRoundTrip(t *testing.T) {
@@ -264,6 +280,86 @@ func TestImportArtifactNormalPasses(t *testing.T) {
 	rr := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", data)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("normal import: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// ---- Import: validation parity with the create path ----
+
+// TestImportArtifactEmptyTitleRejected confirms an artifact with no title is
+// rejected with 400, matching handleCreateItem's "Title is required" gate.
+// artifact.Decode tolerates a missing/blank title (it would otherwise produce
+// an "untitled" item), so the import handler must enforce it explicitly.
+func TestImportArtifactEmptyTitleRejected(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	// Whitespace-only title — must be treated the same as empty.
+	art := artifact.Artifact{
+		Kind:          artifact.KindConvention,
+		FormatVersion: artifact.FormatVersion,
+		Title:         "   ",
+		Fields:        map[string]any{"status": "active", "trigger": "on-commit", "scope": "all"},
+		Body:          "x\n",
+	}
+	data, err := artifact.Encode(art)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	rr := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", data)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("empty-title import: expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "Title is required") {
+		t.Errorf("expected 'Title is required' message, got: %s", rr.Body.String())
+	}
+}
+
+// TestImportArtifactRejectedWhenOverWorkspaceItemQuota confirms the import path
+// enforces the same workspace item-count limit handleCreateItem does, returning
+// the same 403 plan_limit_exceeded response when the cap is hit.
+func TestImportArtifactRejectedWhenOverWorkspaceItemQuota(t *testing.T) {
+	srv := testServer(t)
+
+	// Bootstrap the first admin (before cloud mode — bootstrap is disabled in
+	// cloud mode) and create a workspace they own.
+	token := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Quota"}, token)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create workspace: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	// Pin the workspace owner to a zero item-per-workspace limit, then turn on
+	// cloud mode so enforcePlanLimit actually runs (it's a no-op self-hosted).
+	owner, err := srv.store.GetUserByEmail("admin@test.com")
+	if err != nil || owner == nil {
+		t.Fatalf("get owner: %v", err)
+	}
+	if err := srv.store.SetUserPlanOverrides(owner.ID, `{"items_per_workspace":0}`); err != nil {
+		t.Fatalf("set plan overrides: %v", err)
+	}
+	srv.SetCloudMode("cloud-secret")
+
+	art := artifact.Artifact{
+		Kind:          artifact.KindConvention,
+		FormatVersion: artifact.FormatVersion,
+		Title:         "Over Quota",
+		Fields:        map[string]any{"status": "active", "trigger": "on-commit", "scope": "all"},
+		Body:          "x\n",
+	}
+	data, err := artifact.Encode(art)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	rr = doArtifactRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/import-artifact", data, token)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("over-quota import: expected 403, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "plan_limit_exceeded") {
+		t.Errorf("expected plan_limit_exceeded error code, got: %s", rr.Body.String())
 	}
 }
 

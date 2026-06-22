@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/artifact"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -51,6 +52,15 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	art, err := parseArtifactRequest(w, r, s.importArtifactMaxBytes)
 	if err != nil {
 		writeArtifactParseError(w, err)
+		return
+	}
+
+	// Require a title, matching handleCreateItem's "Title is required" gate.
+	// artifact.Decode tolerates a missing title (producing an "untitled"
+	// item), so we enforce it here so an import can't diverge from the normal
+	// create path's validation.
+	if strings.TrimSpace(art.Title) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "Title is required")
 		return
 	}
 
@@ -123,6 +133,13 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	// matching every other create path.
 	if u := currentUser(r); u != nil {
 		input.CreatedBy = u.ID
+	}
+
+	// Enforce the workspace item-count limit (workspace-scoped), identical to
+	// handleCreateItem. Writes the 403 plan_limit_exceeded response itself when
+	// the cap is hit; no-op in self-hosted mode.
+	if !s.enforcePlanLimit(w, workspaceID, "items_per_workspace") {
+		return
 	}
 
 	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, fields, "")
