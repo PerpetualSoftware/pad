@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -617,6 +619,100 @@ func (c *Client) DeleteAgentRole(wsSlug, idOrSlug string) error {
 }
 
 // --- Export / Import ---
+
+// ExportItemArtifactResult holds the bytes of an exported artifact plus the
+// download filename the server suggested via Content-Disposition. The CLI uses
+// Filename to pick a default output path (`<slug>.pad.md`) when `-o` is omitted.
+type ExportItemArtifactResult struct {
+	Body     []byte
+	Filename string
+}
+
+// ExportItemArtifact GETs the single-item artifact export endpoint
+// (GET /workspaces/{ws}/items/{ref}/export) and returns the artifact bytes
+// (Markdown + YAML frontmatter) plus the server-suggested download filename.
+//
+// ref is an issue ID (e.g. PLAYB-3) or slug. A non-playbook/convention ref
+// comes back as a 4xx whose server message is surfaced via parseError.
+func (c *Client) ExportItemArtifact(wsSlug, ref string) (*ExportItemArtifactResult, error) {
+	req, err := c.newRequest("GET", "/workspaces/"+wsSlug+"/items/"+ref+"/export", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, c.parseError(resp)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read export body: %w", err)
+	}
+	return &ExportItemArtifactResult{
+		Body:     body,
+		Filename: filenameFromContentDisposition(resp.Header.Get("Content-Disposition")),
+	}, nil
+}
+
+// ImportArtifactResult is the JSON body returned by a successful artifact
+// import (POST /workspaces/{ws}/import-artifact). Mirrors the server's
+// artifactImportResponse.
+type ImportArtifactResult struct {
+	Ref      string   `json:"ref"`
+	Slug     string   `json:"slug"`
+	Warnings []string `json:"warnings"`
+}
+
+// ImportArtifact POSTs the raw artifact bytes to the workspace import endpoint
+// (POST /workspaces/{ws}/import-artifact) and decodes the {ref, slug, warnings}
+// JSON. The request body is the raw artifact (Markdown + YAML frontmatter), not
+// a JSON wrapper — the server reads r.Body directly. Server errors (oversized /
+// malformed / over-quota) are surfaced via parseError.
+func (c *Client) ImportArtifact(wsSlug string, body []byte) (*ImportArtifactResult, error) {
+	var result ImportArtifactResult
+	if err := c.PostRawWithContentType(
+		"/workspaces/"+wsSlug+"/import-artifact",
+		body,
+		"text/markdown; charset=utf-8",
+		&result,
+	); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// filenameFromContentDisposition extracts the filename token from a
+// Content-Disposition header value (e.g. `attachment; filename="foo.pad.md"`).
+// Returns "" when the header is absent or carries no parseable filename.
+//
+// The result is always reduced to filepath.Base to defuse a hostile or
+// malformed server-supplied filename (e.g. "../../etc/x" or an absolute
+// path) that would otherwise become the export's default output path —
+// mirrors parseAttachmentFilename in the attachment download command.
+// A base that collapses to a path separator, "", ".", or ".." is treated
+// as unusable and "" is returned so the caller falls back to a safe name.
+func filenameFromContentDisposition(header string) string {
+	if header == "" {
+		return ""
+	}
+	if _, params, err := mime.ParseMediaType(header); err == nil {
+		if fn := params["filename"]; fn != "" {
+			// filepath.Base normalizes separators and strips directory
+			// components; the remaining special values can't be used as a
+			// real filename, so treat them as "no usable name".
+			base := filepath.Base(fn)
+			switch base {
+			case "", ".", "..", "/", `\`:
+				return ""
+			}
+			return base
+		}
+	}
+	return ""
+}
 
 // RawGet fetches raw bytes from the API.
 //
