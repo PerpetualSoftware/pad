@@ -4031,7 +4031,7 @@ Examples:
 				}
 			}
 
-			if err := os.WriteFile(outPath, res.Body, 0o644); err != nil {
+			if err := writeFileAtomic(outPath, res.Body, 0o644); err != nil {
 				return fmt.Errorf("write artifact: %w", err)
 			}
 			fmt.Printf("Exported %s to %s\n", args[0], outPath)
@@ -4040,6 +4040,47 @@ Examples:
 	}
 	cmd.Flags().StringVarP(&outPath, "output", "o", "", "output file path (default <slug>.pad.md; use - for stdout)")
 	return cmd
+}
+
+// writeFileAtomic writes data to a sibling temp file, fsyncs it, then
+// atomically renames it onto path. Unlike os.WriteFile it never
+// truncates an existing destination before the bytes are known-good, so
+// a failed/partial write can't leave a corrupt artifact behind. Mirrors
+// the temp-then-rename strategy used by downloadAttachmentToPath; like
+// that path it deliberately overwrites an existing destination on
+// success (os.Rename replaces atomically on every supported platform).
+func writeFileAtomic(path string, data []byte, perm os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp in %s: %w", dir, err)
+	}
+	tmpPath := tmp.Name()
+	committed := false
+	defer func() {
+		tmp.Close()
+		if !committed {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := tmp.Write(data); err != nil {
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp: %w", err)
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return fmt.Errorf("chmod temp: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename %s -> %s: %w", tmpPath, path, err)
+	}
+	committed = true
+	return nil
 }
 
 func itemImportCmd() *cobra.Command {

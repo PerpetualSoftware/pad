@@ -129,7 +129,8 @@ func TestImportArtifact_ServerError(t *testing.T) {
 }
 
 // TestFilenameFromContentDisposition covers the header-parsing helper,
-// including the empty-header fallback path.
+// including the empty-header fallback path and path-traversal defense
+// (a hostile server filename must reduce to a safe base name).
 func TestFilenameFromContentDisposition(t *testing.T) {
 	cases := []struct {
 		header string
@@ -139,6 +140,15 @@ func TestFilenameFromContentDisposition(t *testing.T) {
 		{`attachment; filename=plain.pad.md`, "plain.pad.md"},
 		{"", ""},
 		{"attachment", ""},
+		// Path traversal / absolute path: must collapse to the base name.
+		{`attachment; filename="../../etc/x"`, "x"},
+		{`attachment; filename="/etc/passwd"`, "passwd"},
+		{`attachment; filename="../../../tmp/evil.pad.md"`, "evil.pad.md"},
+		// A filename that is nothing but traversal/separators is unusable;
+		// caller falls back to a synthetic name.
+		{`attachment; filename=".."`, ""},
+		{`attachment; filename="."`, ""},
+		{`attachment; filename="/"`, ""},
 	}
 	for _, tc := range cases {
 		if got := filenameFromContentDisposition(tc.header); got != tc.want {

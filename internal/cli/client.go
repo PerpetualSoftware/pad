@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -686,13 +687,28 @@ func (c *Client) ImportArtifact(wsSlug string, body []byte) (*ImportArtifactResu
 // filenameFromContentDisposition extracts the filename token from a
 // Content-Disposition header value (e.g. `attachment; filename="foo.pad.md"`).
 // Returns "" when the header is absent or carries no parseable filename.
+//
+// The result is always reduced to filepath.Base to defuse a hostile or
+// malformed server-supplied filename (e.g. "../../etc/x" or an absolute
+// path) that would otherwise become the export's default output path —
+// mirrors parseAttachmentFilename in the attachment download command.
+// A base that collapses to a path separator, "", ".", or ".." is treated
+// as unusable and "" is returned so the caller falls back to a safe name.
 func filenameFromContentDisposition(header string) string {
 	if header == "" {
 		return ""
 	}
 	if _, params, err := mime.ParseMediaType(header); err == nil {
 		if fn := params["filename"]; fn != "" {
-			return fn
+			// filepath.Base normalizes separators and strips directory
+			// components; the remaining special values can't be used as a
+			// real filename, so treat them as "no usable name".
+			base := filepath.Base(fn)
+			switch base {
+			case "", ".", "..", "/", `\`:
+				return ""
+			}
+			return base
 		}
 	}
 	return ""
