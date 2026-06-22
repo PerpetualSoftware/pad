@@ -283,6 +283,42 @@ func TestImportArtifactNormalPasses(t *testing.T) {
 	}
 }
 
+// TestImportArtifactWithArguments is the regression for BUG-1883: a playbook
+// artifact carrying an `arguments` array (a json-typed field) must import
+// cleanly. artifact.Decode normalizes arguments to []map[string]any, which the
+// json case of ValidateFields rejects unless the handler normalizes the field
+// map through JSON first (matching the wire create path's []any shape).
+func TestImportArtifactWithArguments(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSForTest(t, srv)
+
+	art := artifact.Artifact{
+		Kind:          artifact.KindPlaybook,
+		FormatVersion: artifact.FormatVersion,
+		Title:         "Playbook With Args",
+		Fields: map[string]any{
+			"status":          "active",
+			"trigger":         "manual",
+			"scope":           "all",
+			"invocation_slug": "with-args",
+			"arguments": []map[string]any{
+				{"name": "target", "type": "ref", "required": true, "description": "the thing"},
+				{"name": "dry-run", "type": "flag", "required": false, "default": false},
+			},
+		},
+		Body: "Do the thing.\n",
+	}
+	data, err := artifact.Encode(art)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	rr := doArtifactRequest(srv, "POST", "/api/v1/workspaces/"+ws+"/import-artifact", data)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("import with arguments: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // ---- Import: validation parity with the create path ----
 
 // TestImportArtifactEmptyTitleRejected confirms an artifact with no title is

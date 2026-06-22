@@ -118,6 +118,18 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Normalize the field map through JSON so its nested types match what the
+	// normal create path validates. handleCreateItem builds its fieldMap by
+	// unmarshalling the JSON request body, so structured values are canonical
+	// JSON types ([]any, map[string]any). The artifact decode produces Go-native
+	// types (e.g. arguments as []map[string]any), which ValidateFields' json case
+	// rejects — round-tripping fixes that without special-casing any field.
+	normalizedFields := make(map[string]any)
+	if err := json.Unmarshal(fieldsJSON, &normalizedFields); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to normalize fields")
+		return
+	}
+
 	body := art.Body
 	if footer := artifactProvenanceFooter(art.Provenance); footer != "" {
 		body = body + footer
@@ -142,7 +154,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, fields, "")
+	item, cerr := s.createItemChecked(r, workspaceID, coll, schema, input, normalizedFields, "")
 	if cerr != nil {
 		writeError(w, cerr.status, cerr.code, cerr.message)
 		return
