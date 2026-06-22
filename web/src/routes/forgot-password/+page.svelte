@@ -10,6 +10,13 @@
 	let loading = $state(false);
 	let sent = $state(false);
 
+	// When a self-host instance has no email provider, no reset link can be
+	// sent — so we hide the form and explain the host-side recovery path
+	// instead of letting the user submit into a void. Cloud always has email,
+	// and emailConfigured defaults to true until the session loads, so the
+	// normal form is what renders first / on cloud.
+	const noEmailRecovery = $derived(!authStore.cloudMode && !authStore.emailConfigured);
+
 	onMount(() => {
 		// Re-populate authStore if a prior logout cleared it (see auth.svelte.ts
 		// ensureLoaded). Without this, authStore.cloudMode would stay false here
@@ -56,7 +63,22 @@
 			<h1 class="logo">Pad</h1>
 		{/if}
 
-		{#if sent}
+		{#if noEmailRecovery}
+			<p class="subtitle">Reset your password</p>
+			<p class="message">
+				This Pad instance has no email provider configured, so it can't send reset
+				links. Ask whoever runs the server to recover your account from the host:
+			</p>
+			<pre class="recovery-cmd">pad auth reset-password {email || 'you@example.com'}</pre>
+			<p class="message">
+				That prints a one-time reset link (or, with <code>--temp-password</code>, a
+				temporary password) for them to share with you. It only works when run on
+				the server itself.
+			</p>
+			<p class="back-link">
+				<a href="/login">Back to sign in</a>
+			</p>
+		{:else if sent}
 			<p class="subtitle">Check your email</p>
 			<p class="message">
 				If an account with that email exists, we've sent a password reset link. Check your inbox and spam folder.
@@ -175,6 +197,28 @@
 		color: #ef4444;
 		font-size: 0.85rem;
 		text-align: left;
+	}
+
+	.recovery-cmd {
+		text-align: left;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-3) var(--space-4);
+		margin-bottom: var(--space-6);
+		font-family: var(--font-mono, monospace);
+		font-size: 0.82rem;
+		color: var(--text-primary);
+		white-space: pre-wrap;
+		word-break: break-all;
+	}
+
+	.message code {
+		font-family: var(--font-mono, monospace);
+		font-size: 0.82rem;
+		background: var(--bg-tertiary);
+		padding: 0.1em 0.35em;
+		border-radius: var(--radius-sm, 4px);
 	}
 
 	button {

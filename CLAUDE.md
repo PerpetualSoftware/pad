@@ -77,7 +77,7 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET /api/v1/collab/{itemID}?schema_version=N` — WebSocket upgrade for real-time collaborative editing (Yjs binary protocol; client must announce schema version)
 - `GET /workspaces/{ws}/members` — list members + pending invitations
 - `POST /workspaces/{ws}/members/invite` — invite user to workspace
-- `GET /api/v1/auth/session` — auth status (`setup_required`, `setup_method`, `auth_method`, `authenticated`, `user`)
+- `GET /api/v1/auth/session` — auth status (`setup_required`, `setup_method`, `auth_method`, `authenticated`, `email_configured`, `user`)
 - `POST /api/v1/auth/bootstrap` — create the first admin account from localhost on a fresh instance
 - `POST /api/v1/auth/register` — create account (admin-created or invitation-based after setup)
 - `POST /api/v1/auth/login` — email/password login (returns session token)
@@ -85,6 +85,7 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET/PATCH /api/v1/auth/me` — current user profile (GET) and update name/password (PATCH)
 - `POST /api/v1/auth/forgot-password` — request password reset email
 - `POST /api/v1/auth/reset-password` — reset password with token
+- `POST /api/v1/auth/local-reset` — localhost-only account recovery (self-host, non-cloud). Loopback-gated, no auth — the bootstrap trust model. Returns a single-use reset link, or a temp password with `{"temp_password": true}`. Backs `pad auth reset-password`.
 - `GET/POST/DELETE /api/v1/auth/tokens` — user-scoped API tokens
 - `GET/PATCH /api/v1/admin/settings` — platform settings (admin-only)
 - `POST /api/v1/admin/test-email` — send test email (admin-only)
@@ -103,11 +104,23 @@ pad auth setup         # Create the first admin account on the server host
 pad auth login         # Email + password prompt
 pad auth whoami        # Show current user
 pad auth logout        # Sign out
-pad auth reset-password user@example.com  # Generate reset link (admin fallback)
+pad auth reset-password user@example.com  # Recover a locked-out account (run ON THE SERVER HOST)
+pad auth reset-password user@example.com --temp-password  # ...set a temp password instead of a reset link
 
 # Credentials stored in ~/.pad/credentials.json (0600 permissions)
 # CLI auto-attaches auth token to all API requests
 ```
+
+### Locked-out account recovery (self-host, no email)
+
+When a self-hosted instance has no email provider, a forgotten password can't be reset by email. Two host-side recovery paths (both require shell access to the server — the same trust boundary as `pad auth setup`):
+
+- **`pad auth reset-password <email>`** — run it **on the server host**. It calls the loopback-only `/api/v1/auth/local-reset` endpoint (no login required — that's the point) and prints a single-use reset link. Add `--temp-password` to instead set a random temporary password printed to the terminal (headless boxes with no browser). The endpoint refuses proxied/remote requests and is disabled in cloud mode.
+- **Server log** — if a user submits the web `/forgot-password` form on a non-cloud instance with no email, the server logs the reset path (`slog.Info ... reset_path=/reset-password/<token>`). Paste it after the instance's base URL to finish the reset by hand.
+
+The web `/forgot-password` page detects `email_configured == false` (from the session payload) and shows the `pad auth reset-password` recovery instructions instead of a dead "we emailed you a link" message.
+
+Code: `internal/server/handlers_auth.go::handleLocalReset` (loopback + non-cloud gates), `cmd/pad/main.go::resetPasswordCmd`, `web/src/routes/forgot-password/+page.svelte`.
 
 After any workspace is created (via `pad init` or `pad workspace init` — note that `pad auth setup` only creates the admin account, not a workspace), the success output points new users at the canonical onboarding entry point. Open a fresh agent session in the workspace's directory and say:
 

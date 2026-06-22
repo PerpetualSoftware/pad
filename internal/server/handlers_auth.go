@@ -130,6 +130,7 @@ func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 		"setup_method":      setupMethod,
 		"auth_method":       authMethodPassword,
 		"cloud_mode":        s.cloudMode,
+		"email_configured":  s.email != nil,
 		"mcp_public_url":    s.mcpPublicURL,
 		"billing_available": s.cloudMode && s.billingAvailable,
 		"version":           s.version,
@@ -147,10 +148,16 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 	// deployment is in cloud mode. Used by the web UI to show/hide Stripe
 	// Checkout CTAs. TASK-800.
 	payload := map[string]interface{}{
-		"authenticated":     authenticated,
-		"setup_required":    false,
-		"auth_method":       authMethodPassword,
-		"cloud_mode":        s.cloudMode,
+		"authenticated":  authenticated,
+		"setup_required": false,
+		"auth_method":    authMethodPassword,
+		"cloud_mode":     s.cloudMode,
+		// email_configured tells the web UI whether transactional email is
+		// wired. The /forgot-password page uses it to swap its "we emailed
+		// you a link" copy for host-recovery guidance when false (self-host
+		// with no Maileroo key). Low-sensitivity deployment config, same
+		// class as cloud_mode/mcp_public_url.
+		"email_configured":  s.email != nil,
 		"mcp_public_url":    s.mcpPublicURL,
 		"billing_available": s.cloudMode && s.billingAvailable,
 		// version is the server build version (same source as /health),
@@ -1038,11 +1045,132 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 				slog.Error("failed to send password reset email", "error", err)
 			}
 		})
+	} else if !s.cloudMode {
+		// Self-host with no email provider: the server log is the recovery
+		// channel. Emit the path an operator pastes after the base URL to
+		// complete the reset by hand. Gated on !cloudMode so a cloud
+		// deployment never writes a live reset token to its logs.
+		slog.Info("password reset generated (email not configured) — open this path on the server to finish",
+			"reset_path", "/reset-password/"+token)
 	} else {
 		slog.Info("password reset token generated (email not configured)")
 	}
 
 	writeJSON(w, http.StatusOK, okResponse)
+}
+
+// handleLocalReset is the self-host account-recovery escape hatch for an
+// operator who is locked out — forgot the only admin password and has no
+// email provider configured. It is the password-reset analogue of
+// bootstrap: authorization IS proof of access to the server host,
+// established by the strict loopback check, so it deliberately requires no
+// session (the whole point is that the caller cannot log in).
+//
+// Two hard gates, both required:
+//
+//   - NOT cloud mode. On Pad Cloud the host process must never be able to
+//     reset an arbitrary tenant's password; cloud always has email plus
+//     admin tooling, so the escape hatch is pure downside there.
+//   - requestIsLoopback — a direct loopback TCP connection with no proxy
+//     headers. A reverse proxy forwarding public traffic always sets
+//     X-Forwarded-For / X-Real-IP and is rejected, so this cannot be
+//     reached from off-box. Same invariant bootstrap relies on.
+//
+// POST /api/v1/auth/local-reset  {email, temp_password?}
+// Default: returns a single-use reset token+path the operator opens in a
+// browser to choose a new password. temp_password=true instead force-sets
+// a random temporary password and returns it (headless-friendly).
+func (s *Server) handleLocalReset(w http.ResponseWriter, r *http.Request) {
+	if s.cloudMode {
+		writeError(w, http.StatusForbidden, "forbidden", "Local password reset is disabled in cloud mode")
+		return
+	}
+	if !requestIsLoopback(r) {
+		writeError(w, http.StatusForbidden, "forbidden", "Local password reset is only allowed from localhost on the server host")
+		return
+	}
+
+	var input struct {
+		Email        string `json:"email"`
+		TempPassword bool   `json:"temp_password"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+	input.Email = strings.TrimSpace(input.Email)
+	if input.Email == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Email is required")
+		return
+	}
+
+	// Unlike forgot-password, we DO reveal whether the account exists: the
+	// caller already holds shell-equivalent access to the host, so there is
+	// no enumeration boundary left to defend, and a clear "no such account"
+	// beats a silent no-op for an operator mid-recovery.
+	user, err := s.store.GetUserByEmail(input.Email)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if user == nil {
+		writeError(w, http.StatusNotFound, "not_found", "No account found with that email")
+		return
+	}
+
+	if input.TempPassword {
+		tempPassword, err := generateTempPassword()
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		pwd := tempPassword
+		if _, err := s.store.UpdateUser(user.ID, models.UserUpdate{Password: &pwd}); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		// Force re-login everywhere with the new credential.
+		if err := s.store.DeleteUserSessions(user.ID); err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		s.logAuditEvent(models.ActionPasswordResetByAdmin, r, auditMeta(map[string]string{
+			"target_user_id": user.ID,
+			"method":         "localhost_temp_password",
+		}))
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"ok":            true,
+			"method":        "temp_password",
+			"temp_password": tempPassword,
+			"email":         user.Email,
+		})
+		return
+	}
+
+	token, err := s.store.CreatePasswordReset(user.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	s.logAuditEvent(models.ActionPasswordResetByAdmin, r, auditMeta(map[string]string{
+		"target_user_id": user.ID,
+		"method":         "localhost_reset_link",
+	}))
+	resetPath := "/reset-password/" + token
+	resp := map[string]interface{}{
+		"ok":         true,
+		"method":     "reset_url",
+		"reset_path": resetPath,
+		"email":      user.Email,
+	}
+	// The request reaches us over loopback, but the operator may need to
+	// open or share the link from the instance's real hostname. When the
+	// server knows its public base URL, hand back a ready-to-use absolute
+	// link so the CLI doesn't have to print a loopback-only one.
+	if s.baseURL != "" {
+		resp["reset_url"] = s.baseURL + resetPath
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleResetPassword validates a reset token and sets a new password.

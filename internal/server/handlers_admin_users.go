@@ -498,6 +498,17 @@ func (s *Server) handleAdminUpdateUser(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// generateTempPassword returns a random hex temporary password for an
+// operator-initiated reset (16 bytes → 32 hex chars). Shared by the admin
+// reset endpoint and the localhost recovery endpoint.
+func generateTempPassword() (string, error) {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
+}
+
 // handleAdminResetPassword force-resets a user's password.
 // If email is configured, sends a reset link. Otherwise returns a temporary password.
 // POST /api/v1/admin/users/{userID}/reset-password
@@ -545,12 +556,11 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 	}
 
 	// No email: generate a temporary password
-	raw := make([]byte, 16)
-	if _, err := rand.Read(raw); err != nil {
+	tempPassword, err := generateTempPassword()
+	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
-	tempPassword := hex.EncodeToString(raw)
 
 	pwd := tempPassword
 	if _, err := s.store.UpdateUser(userID, models.UserUpdate{Password: &pwd}); err != nil {

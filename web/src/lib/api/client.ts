@@ -379,6 +379,11 @@ export interface AuthSession {
 	// AND the deployment is in cloud mode. Use authStore.billingAvailable rather
 	// than reading this field directly. TASK-800.
 	billing_available?: boolean;
+	// email_configured is false when the self-host server has no transactional
+	// email provider (no Maileroo key). The /forgot-password page reads it to
+	// replace "we emailed you a link" with host-recovery guidance, since no
+	// email can actually be sent. Absent on older servers — treat as true.
+	email_configured?: boolean;
 	// version is the server build version (same value as HealthResponse.version),
 	// surfaced on /auth/session so clients — notably the mobile shells — can read
 	// it in the call they already make on connect (IDEA-1826). Empty string only

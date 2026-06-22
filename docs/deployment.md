@@ -103,6 +103,36 @@ Email enables sending workspace invitation links. Without it, users can still jo
 | `PAD_EMAIL_FROM` | `noreply@getpad.dev` | Sender email address |
 | `PAD_EMAIL_FROM_NAME` | `Pad` | Sender display name |
 
+### Password recovery (when email is not configured)
+
+Without an email provider, the web "Forgot password" flow can't send a reset
+link — the page says so and points users at the host-side recovery below.
+Recover a locked-out account **from the server host** (the same trust model
+as `pad auth setup` — shell access to the box):
+
+```bash
+# Print a single-use reset link (open it in a browser to choose a new password)
+pad auth reset-password admin@example.com
+
+# Or set a random temporary password, printed to the terminal (headless boxes).
+# Log in with it, then change it immediately — all existing sessions are signed out.
+pad auth reset-password admin@example.com --temp-password
+```
+
+This calls a loopback-only endpoint (`POST /api/v1/auth/local-reset`): it
+needs no login (you're locked out, after all), but it **only** works for a
+direct request from the server itself — proxied or remote requests are
+refused, and it's disabled entirely in cloud mode.
+
+Alternatively, if a user submits the web reset form, the server logs the
+reset path on a non-cloud instance with no email configured:
+
+```
+password reset generated (email not configured) ... reset_path=/reset-password/<token>
+```
+
+Open `<base-url>/reset-password/<token>` to finish the reset by hand.
+
 ## Deployment Options
 
 ### Single Binary (SQLite)
