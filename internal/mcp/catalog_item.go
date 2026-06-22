@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
@@ -81,6 +82,16 @@ var padItemTool = ToolDef{
 		"bulk-update": actionItemBulkUpdate,
 		"note":        passThrough([]string{"item", "note"}),
 		"decide":      passThrough([]string{"item", "decide"}),
+
+		// Artifact export / import (PLAN artifact export/import, Phase 5).
+		// Both are CUSTOM: the CLI defaults are filesystem-oriented
+		// (export writes a file, import reads a file) which is useless to
+		// an MCP caller. export forces `-o -` so the artifact bytes come
+		// back as the tool result; import writes the supplied body to a
+		// temp file because ExecDispatcher doesn't pipe stdin to the
+		// subprocess. See actionItemExport / actionItemImport below.
+		"export": actionItemExport,
+		"import": actionItemImport,
 	},
 }
 
@@ -95,7 +106,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide. NOT used for bulk-update — pass `refs` (array) instead."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, IDEA-12, PLAYB-3, CONVE-7). Required for: update, delete, restore, get, move, link, unlink, deps, star, unstar, comment, list-comments, note, decide, export. NOT used for bulk-update — pass `refs` (array) instead."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink (paired with `ref` and `link_type`). For link_type=blocks, target is the item being blocked; for blocked-by it's the blocker; for supersedes it's the superseded item; etc."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
@@ -104,6 +115,15 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "collection", Type: "string", Description: "Collection slug (e.g. \"tasks\", \"ideas\"). Required for: create. Optional filter for: list."},
 	{Name: "title", Type: "string", Description: "Item title. Required for: create. Optional rename for: update."},
 	{Name: "content", Type: "string", Description: "Markdown body. Optional for: create, update."},
+
+	// ── Artifact export / import ── (Phase 5)
+	// `artifact`: the full portable artifact text (YAML frontmatter +
+	// Markdown body) that `import` ingests as a new draft. Distinct from
+	// `content` (which is only the item's Markdown body) because the
+	// artifact carries the frontmatter the server needs to reconstruct
+	// the item's collection + typed fields. `export` returns this same
+	// text as its tool result.
+	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import — this is the artifact a prior `export` produced. NOT the same as `content` (which is just the item's Markdown body)."},
 
 	// ── Status / priority / scheduling ──
 	{Name: "status", Type: "string", Description: "Item status (collection-specific enum). Optional for: create, update, list filter, bulk-update."},
@@ -235,6 +255,21 @@ Actions:
   decide        — Record a decision on an item.
                   Required: ref, decision.
                   Optional: rationale.
+  export        — Export a playbook or convention as a portable artifact.
+                  Required: ref (PLAYB-N / CONVE-N, or slug).
+                  Returns the artifact TEXT (YAML frontmatter + Markdown
+                  body) as the tool result — ready to hand to import in
+                  another workspace. Only playbooks and conventions are
+                  exportable; the server rejects any other item type.
+                  Read-only / side-effect-free.
+  import        — Import a portable artifact as a new DRAFT item.
+                  Required: artifact (the full artifact text a prior
+                  export produced).
+                  Creates a playbook or convention draft (the server
+                  gates by the artifact's collection) and returns
+                  {ref, slug, warnings}. The item lands as a draft —
+                  review and activate it afterward. Mutating but not
+                  destructive (creates an item, like create).
 
 ALWAYS prefer issue refs (TASK-5, IDEA-12) over slugs.
 
@@ -539,4 +574,92 @@ func normalizeBulkUpdateRefs(raw any) ([]string, error) {
 // (every bulk-update entry).
 func trimSpace(s string) string {
 	return strings.TrimSpace(s)
+}
+
+// actionItemExport handles pad_item.action=export. The CLI's
+// `pad item export <ref>` defaults to WRITING A FILE (<slug>.pad.md),
+// which is useless to an MCP caller — the bytes have to come back as
+// the tool result. So the action forces the CLI's stdout sink
+// (`-o -`): the CLI streams the artifact to stdout, ExecDispatcher
+// captures stdout, and packageJSONResult surfaces it as the result.
+//
+// We inject `output: "-"` rather than asking agents to pass it, so the
+// MCP surface stays "give me a ref, get the artifact back" with no
+// filesystem semantics leaking through. An agent-supplied `output`
+// would be a local-filesystem path the MCP host can't see, so we
+// always override it.
+//
+// Read-only / side-effect-free: the server's export endpoint only
+// reads the item.
+func actionItemExport(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	if ref, _ := input["ref"].(string); strings.TrimSpace(ref) == "" {
+		return errStructured("pad_item.export",
+			fmt.Errorf("ref is required (PLAYB-N, CONVE-N, or slug)")), nil
+	}
+	out := make(map[string]any, len(input)+1)
+	for k, v := range input {
+		out[k] = v
+	}
+	// Force stdout. cmdhelp's `item export` flag is `output` (shorthand
+	// -o); BuildCLIArgs emits the long form, so this becomes
+	// `--output -` and the CLI streams the artifact bytes to stdout.
+	out["output"] = "-"
+	return env.Dispatch(ctx, []string{"item", "export"}, out)
+}
+
+// actionItemImport handles pad_item.action=import. The CLI's
+// `pad item import <file>` reads the artifact from a file (or stdin
+// when the positional is `-`). ExecDispatcher does NOT pipe the MCP
+// transport's data to the subprocess's stdin — cmd.Stdin is never set
+// — so the stdin route isn't available here. Instead the action writes
+// the supplied artifact body to a temp file, dispatches
+// `item import <tmpfile>`, and removes the temp file afterward.
+//
+// The artifact body arrives in the `artifact` param (NOT `content`):
+// `content` is just the item's Markdown body, whereas the artifact
+// carries the YAML frontmatter the server needs to reconstruct the
+// item's collection + typed fields.
+//
+// Mutating but not destructive — the server imports the artifact as a
+// draft item (same risk profile as action=create), returning
+// {ref, slug, warnings}.
+func actionItemImport(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	artifact, _ := input["artifact"].(string)
+	if strings.TrimSpace(artifact) == "" {
+		return errStructured("pad_item.import",
+			fmt.Errorf("artifact is required (the full artifact text from a prior export)")), nil
+	}
+
+	// ExecDispatcher can't pipe stdin, so spill the artifact to a temp
+	// file and hand the CLI a real path. Cleaned up unconditionally
+	// after dispatch returns.
+	tmp, err := os.CreateTemp("", "pad-artifact-*.pad.md")
+	if err != nil {
+		return errStructured("pad_item.import",
+			fmt.Errorf("create temp artifact file: %w", err)), nil
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString(artifact); err != nil {
+		tmp.Close()
+		return errStructured("pad_item.import",
+			fmt.Errorf("write temp artifact file: %w", err)), nil
+	}
+	if err := tmp.Close(); err != nil {
+		return errStructured("pad_item.import",
+			fmt.Errorf("close temp artifact file: %w", err)), nil
+	}
+
+	// Build the dispatch input from scratch: drop the catalog-only
+	// `artifact` key and inject the CLI's positional `file`, which
+	// BuildCLIArgs emits as the lone positional for `item import`.
+	out := make(map[string]any, len(input))
+	for k, v := range input {
+		if k == "artifact" {
+			continue
+		}
+		out[k] = v
+	}
+	out["file"] = tmpPath
+	return env.Dispatch(ctx, []string{"item", "import"}, out)
 }

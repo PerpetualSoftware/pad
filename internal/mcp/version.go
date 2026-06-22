@@ -72,13 +72,28 @@ const CmdhelpVersion = "0.1"
 //     existing tool/action/param/bootstrap shapes changed. Backwards-
 //     compatible for any v0.4 consumer that doesn't enumerate the new
 //     tool.
-//   - "0.6" — current. PLAN-1593 / TASK-1596: adds `backlinks` action
+//   - "0.6" — historical. PLAN-1593 / TASK-1596: adds `backlinks` action
 //     to `pad_item` so MCP callers can answer "what mentions X?"
 //     without scanning the full content corpus. Adds `offset` to the
 //     param vocabulary, extends `limit` to cover the backlinks
 //     pagination. Pure addition; existing pad_item actions unchanged.
 //     Backwards-compatible for v0.5 consumers that don't enumerate
 //     the new action.
+//   - "0.7" — current. Artifact export/import (Phase 5): adds two
+//     actions to `pad_item` mirroring the CLI `pad item export` /
+//     `pad item import`. `export` (read-only) takes `ref` and returns
+//     the portable artifact TEXT (YAML frontmatter + Markdown body) —
+//     it forces the CLI's stdout sink (`-o -`) so the bytes come back
+//     as the tool result rather than being written to a file the MCP
+//     host can't see. `import` (mutating, not destructive — creates a
+//     draft like create) takes a new `artifact` param (the full
+//     artifact text) and returns {ref, slug, warnings}; because the
+//     ExecDispatcher doesn't pipe stdin, it spills the artifact to a
+//     temp file and dispatches `item import <tmpfile>`. Both cover
+//     playbooks AND conventions (the server gates by collection). Adds
+//     the `artifact` param to the vocabulary. Pure addition; existing
+//     pad_item actions unchanged. Backwards-compatible for v0.6
+//     consumers that don't enumerate the new actions.
 //   - "0.4" — PLAN-1410: comprehensive bootstrap-payload
 //     trim, cutting ~40% of bytes off the AgentBootstrap response.
 //     Same tool catalog (still eight resource × action tools +
@@ -121,7 +136,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.6"
+const ToolSurfaceVersion = "0.7"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

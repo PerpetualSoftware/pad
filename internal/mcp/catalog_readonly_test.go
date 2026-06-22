@@ -148,6 +148,11 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 	skipActions := map[[2]string]bool{
 		{"pad_item", "link"}:   true,
 		{"pad_item", "unlink"}: true,
+		// export forces `-o -` and import spills to a temp file before
+		// dispatch — both reshape input, so they're outside the simple
+		// 1:1 cmdPath bijection. Covered by catalog_item_artifact_test.go.
+		{"pad_item", "export"}: true,
+		{"pad_item", "import"}: true,
 	}
 
 	// Direction 1: every expected cmdPath resolves in cmdhelp.
@@ -650,6 +655,16 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Summary: "record decision",
 				Args:    mkArgs("ref", "decision"),
 				Flags:   mkFlags("workspace", "rationale"),
+			},
+			"item export": {
+				Summary: "export artifact",
+				Args:    mkArgs("ref"),
+				Flags:   mkFlags("workspace", "output"),
+			},
+			"item import": {
+				Summary: "import artifact",
+				Args:    mkArgs("file"),
+				Flags:   mkFlags("workspace"),
 			},
 			// Link family — used by catalog_item_test.go for the
 			// link/unlink dispatch tests. Args mirror the real CLI's
