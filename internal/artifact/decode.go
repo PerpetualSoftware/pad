@@ -14,8 +14,13 @@ import (
 // reconstructs Fields from only the keys valid for the kind (omitting
 // empty/zero values). The body is everything after the closing fence with the
 // single separating blank line trimmed.
+//
+// CRLF line endings are normalized to LF up front so artifacts authored or
+// transported on Windows decode identically — fence detection and body
+// preservation both operate on canonical LF text.
 func Decode(data []byte) (Artifact, error) {
-	fmText, body, err := splitFrontmatter(string(data))
+	normalized := strings.ReplaceAll(string(data), "\r\n", "\n")
+	fmText, body, err := splitFrontmatter(normalized)
 	if err != nil {
 		return Artifact{}, err
 	}

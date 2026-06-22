@@ -3,6 +3,7 @@ package artifact
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -80,6 +81,28 @@ func TestDecodeBodyPreserved(t *testing.T) {
 	}
 	if got.Body != body {
 		t.Errorf("body not preserved:\ngot:  %q\nwant: %q", got.Body, body)
+	}
+}
+
+func TestDecodeCRLFTolerant(t *testing.T) {
+	// An artifact authored/transported on Windows uses CRLF. Decoding it must
+	// yield the same result as the LF form: fences detected, body LF-normalized.
+	a := sampleConvention()
+	a.Body = "Line one\n\nLine three\n"
+	lf, err := Encode(a)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	crlf := strings.ReplaceAll(string(lf), "\n", "\r\n")
+	got, err := Decode([]byte(crlf))
+	if err != nil {
+		t.Fatalf("Decode(CRLF): %v", err)
+	}
+	if got.Kind != a.Kind || got.Title != a.Title {
+		t.Errorf("CRLF decode mismatch: got kind=%q title=%q", got.Kind, got.Title)
+	}
+	if got.Body != a.Body {
+		t.Errorf("CRLF body not LF-normalized:\ngot:  %q\nwant: %q", got.Body, a.Body)
 	}
 }
 
