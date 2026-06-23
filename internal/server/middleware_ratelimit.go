@@ -344,7 +344,7 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 			switch {
 			case path == "/api/v1/auth/login" || path == "/api/v1/auth/bootstrap" || path == "/api/v1/auth/2fa/login-verify":
 				limiter = s.rateLimiters.Auth
-			case path == "/api/v1/auth/forgot-password" || path == "/api/v1/auth/reset-password":
+			case path == "/api/v1/auth/forgot-password" || path == "/api/v1/auth/reset-password" || path == "/api/v1/auth/local-reset":
 				limiter = s.rateLimiters.PasswordReset
 			case path == "/api/v1/auth/register":
 				limiter = s.rateLimiters.Register

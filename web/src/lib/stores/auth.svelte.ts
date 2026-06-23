@@ -29,6 +29,12 @@ export const authStore = {
 	// this value — false means the CTA is hidden entirely, not just disabled.
 	// TASK-800.
 	get billingAvailable() { return session?.billing_available ?? false; },
+	// emailConfigured is false on a self-host instance with no transactional
+	// email provider wired. Defaults to true when absent (older servers, or
+	// before the session loads) so reset/invite flows keep their normal copy
+	// unless the server explicitly says email is off. The /forgot-password
+	// page swaps to host-recovery guidance when this is false.
+	get emailConfigured() { return session?.email_configured ?? true; },
 	get loading() { return loading; },
 
 	async load() {

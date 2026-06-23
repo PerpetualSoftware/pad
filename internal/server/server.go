@@ -857,6 +857,8 @@ func (s *Server) setupRouter() {
 				// Password reset
 				r.Post("/forgot-password", s.handleForgotPassword)
 				r.Post("/reset-password", s.handleResetPassword)
+				// Localhost-only recovery escape hatch (self-host, non-cloud).
+				r.Post("/local-reset", s.handleLocalReset)
 
 				// Two-factor authentication
 				r.Post("/2fa/setup", s.handleTOTPSetup)

@@ -2169,29 +2169,74 @@ the response 'note' field explains.`,
 // --- reset-password ---
 
 func resetPasswordCmd() *cobra.Command {
-	return &cobra.Command{
+	var tempPassword bool
+	cmd := &cobra.Command{
 		Use:   "reset-password <email>",
-		Short: "Generate a password reset link (admin only)",
-		Long:  "Generate a password reset token and print the reset URL. Use this when email is not configured or a user is locked out.",
-		Args:  cobra.ExactArgs(1),
+		Short: "Recover a locked-out account from the server host",
+		Long: `Recover an account when you're locked out and email isn't configured.
+
+Run this ON THE SERVER HOST. It talks to the local Pad instance over
+loopback — the same trust model as 'pad auth setup' — so it needs no
+login (the whole point is that you can't log in). The endpoint refuses
+proxied or remote requests and is disabled entirely in cloud mode.
+
+By default it prints a single-use reset link; open it in a browser to
+choose a new password. Use --temp-password to instead set a random
+temporary password printed to this terminal — handy on a headless box.
+Rotate it right after you log in.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			client, _ := getClient()
+			_, cfg := getClient()
 			emailAddr := args[0]
 
-			// Request a reset token via the forgot-password endpoint
-			body, _ := json.Marshal(map[string]string{"email": emailAddr})
-			var result map[string]interface{}
-			if err := client.PostRaw("/auth/forgot-password", body, &result); err != nil {
-				return fmt.Errorf("failed to request password reset: %w", err)
+			// Always talk to the local server over loopback, regardless of
+			// the client's configured base URL. On a self-host instance the
+			// CLI is usually pointed at the public hostname, which routes
+			// through the reverse proxy and is rejected by the server's
+			// loopback gate — defeating the whole recovery path. Targeting
+			// 127.0.0.1:<port> directly is the only request the gate accepts.
+			localURL := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+			client := cli.NewClientFromURL(localURL)
+
+			body, _ := json.Marshal(map[string]interface{}{
+				"email":         emailAddr,
+				"temp_password": tempPassword,
+			})
+			var result struct {
+				Method       string `json:"method"`
+				ResetPath    string `json:"reset_path"`
+				ResetURL     string `json:"reset_url"`
+				TempPassword string `json:"temp_password"`
+				Email        string `json:"email"`
+			}
+			if err := client.PostRaw("/auth/local-reset", body, &result); err != nil {
+				if apiErr, ok := err.(*cli.APIError); ok && apiErr.Code == "forbidden" {
+					return fmt.Errorf("%s\n\nThis command must run on the server host — it uses a loopback-only recovery endpoint.\nIf you still have a working admin account, reset other users from the web UI under Admin → Users instead", apiErr.Message)
+				}
+				return fmt.Errorf("failed to reset password: %w", err)
 			}
 
 			green := color.New(color.FgGreen).SprintFunc()
-			fmt.Printf("%s Password reset requested for %s\n", green("✓"), emailAddr)
-			fmt.Println("If email is configured, a reset link has been sent.")
-			fmt.Println("If not, check the server logs for the reset token.")
+			if result.Method == "temp_password" {
+				fmt.Printf("%s Temporary password set for %s:\n\n    %s\n\n", green("✓"), result.Email, result.TempPassword)
+				fmt.Println("Log in with it now, then change it immediately. All existing sessions were signed out.")
+				return nil
+			}
+
+			// Prefer the server's absolute link (built from its public base
+			// URL, so it's shareable/openable from anywhere). Fall back to the
+			// loopback URL we just used when the server has no base URL set.
+			resetURL := result.ResetURL
+			if resetURL == "" {
+				resetURL = localURL + result.ResetPath
+			}
+			fmt.Printf("%s Reset link generated for %s:\n\n    %s\n\n", green("✓"), result.Email, resetURL)
+			fmt.Println("Open it in a browser to choose a new password. The link is single-use and expires.")
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&tempPassword, "temp-password", false, "Set a random temporary password instead of printing a reset link")
+	return cmd
 }
 
 // --- init ---
