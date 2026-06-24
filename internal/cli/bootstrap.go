@@ -165,7 +165,7 @@ func buildBootstrapURL(cfg *config.Config, setupMethod, next string) (string, er
 
 	switch setupMethod {
 	case "logs_token":
-		token, err := readBootstrapToken(cfg.DataDir)
+		token, err := ReadBootstrapToken(cfg.DataDir)
 		if err != nil {
 			return "", err
 		}
@@ -182,7 +182,7 @@ func buildBootstrapURL(cfg *config.Config, setupMethod, next string) (string, er
 	}
 }
 
-// readBootstrapToken reads <DataDir>/.bootstrap-token. The file is created
+// ReadBootstrapToken reads <DataDir>/.bootstrap-token. The file is created
 // by EnsureBootstrapToken in internal/server/bootstrap.go with mode 0600
 // and contains the base64url-encoded token followed by a trailing newline.
 //
@@ -191,7 +191,10 @@ func buildBootstrapURL(cfg *config.Config, setupMethod, next string) (string, er
 // resolves to. The "--cli-prompt" hint is appended because that's the
 // recoverable fallback for every failure mode here (file consumed already,
 // permissions wrong, DataDir on a read-only mount).
-func readBootstrapToken(dataDir string) (string, error) {
+//
+// Callers that want a best-effort token (absent → empty, not an error) should
+// ignore the returned error and use the token only when non-empty.
+func ReadBootstrapToken(dataDir string) (string, error) {
 	path := filepath.Join(dataDir, bootstrapTokenFilename)
 	data, err := os.ReadFile(path)
 	if err != nil {

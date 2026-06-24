@@ -165,6 +165,14 @@ Examples:
 						return fmt.Errorf("--password is required when using headless bootstrap (--email and --name were provided)")
 					}
 
+					// doHeadlessBootstrap reads the on-disk first-run token,
+					// calls BootstrapWithToken (X-Bootstrap-Token header set
+					// when a token is present), saves credentials, and calls
+					// client.SetAuthToken. BUG-988 / round-1 finding #1.
+					//
+					// pad init is a multi-step flow; the human-readable step
+					// header is always printed. For machine-readable bootstrap
+					// output use `pad auth setup --email … --format json`.
 					if actioned {
 						fmt.Println(bold.Sprint("Step 2: Create admin account"))
 					} else {
@@ -172,7 +180,7 @@ Examples:
 					}
 					fmt.Println()
 
-					resp, err := client.Bootstrap(emailFlag, nameFlag, passwordFlag)
+					resp, err := doHeadlessBootstrap(cfg, client, emailFlag, nameFlag, passwordFlag)
 					if err != nil {
 						var apiErr *cli.APIError
 						if errors.As(err, &apiErr) && apiErr.Code == "conflict" {
@@ -180,10 +188,6 @@ Examples:
 						}
 						return fmt.Errorf("setup failed: %w", err)
 					}
-					if err := saveCredentials(cfg, resp); err != nil {
-						return err
-					}
-					client.SetAuthToken(resp.Token)
 					green.Print("✓ ")
 					fmt.Printf("Admin account created — logged in as %s (%s)\n", resp.User.Name, resp.User.Email)
 					fmt.Println()

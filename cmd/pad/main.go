@@ -1316,21 +1316,53 @@ func runCLISetup(cfg *config.Config, client *cli.Client) error {
 	return nil
 }
 
-// runHeadlessSetup drives the non-interactive (agent) admin bootstrap
-// introduced by BUG-988. It calls the existing POST /api/v1/auth/bootstrap
-// endpoint directly with the supplied credentials and saves the returned
-// session token, bypassing both the browser handoff (TASK-1216) and any
-// interactive prompt. Callers must validate that all three of email/name/
-// password are non-empty before calling here.
+// doHeadlessBootstrap is the shared core of the non-interactive (agent)
+// admin bootstrap introduced by BUG-988. Both setupCmd and padInitCmd funnel
+// through here, which ensures token reading, the Bootstrap call, credential
+// saving, and SetAuthToken all happen in exactly one place.
+//
+// It reads the on-disk bootstrap token best-effort (absent or unreadable →
+// empty token → loopback-only gate still protects the pure-local case). When
+// present, the token is forwarded as the X-Bootstrap-Token header so the
+// self-host deployment path (setup_method=logs_token, TASK-1167) works without
+// requiring a separate browser step. Callers must validate that email/name/
+// password are all non-empty before calling here.
+//
+// On success the caller's client is authenticated (SetAuthToken applied) and
+// credentials are persisted; the LoginResponse is returned so callers can
+// format output as they see fit.
+//
+// The "already initialized" conflict is mapped to a clean APIError so callers
+// can detect it via errors.As without parsing HTTP status codes.
+func doHeadlessBootstrap(cfg *config.Config, client *cli.Client, email, name, password string) (*cli.LoginResponse, error) {
+	// Read the on-disk first-run token. Absent or unreadable → empty token →
+	// request proceeds without the header (loopback gate still guards it).
+	bootstrapToken, _ := cli.ReadBootstrapToken(cfg.DataDir)
+
+	resp, err := client.BootstrapWithToken(email, name, password, bootstrapToken)
+	if err != nil {
+		return nil, err
+	}
+	if err := saveCredentials(cfg, resp); err != nil {
+		return nil, err
+	}
+	client.SetAuthToken(resp.Token)
+	return resp, nil
+}
+
+// runHeadlessSetup drives the output layer for `pad auth setup --email …`.
+// It delegates the actual work to doHeadlessBootstrap and then prints the
+// result (respecting --format json) or a clean error.
 //
 // Output respects --format json: on success it emits a LoginResponse-shaped
 // JSON object (user + token) so agent callers can parse the result. On a
 // non-json format it prints the same human-readable lines as runCLISetup.
 //
 // "already initialized" (conflict from the server) is surfaced as a clean
-// error rather than a raw 409 body; agents can distinguish it by message text.
+// error + structured JSON error object (under --format json) so agents get
+// deterministic output in both the fresh and already-initialized cases.
 func runHeadlessSetup(cfg *config.Config, client *cli.Client, email, name, password string) error {
-	resp, err := client.Bootstrap(email, name, password)
+	resp, err := doHeadlessBootstrap(cfg, client, email, name, password)
 	if err != nil {
 		// Map the conflict code to a clear human message so agents (and
 		// humans) know what happened without parsing an HTTP status.
@@ -1347,10 +1379,6 @@ func runHeadlessSetup(cfg *config.Config, client *cli.Client, email, name, passw
 			return fmt.Errorf("setup failed: %s (Pad is already initialized — run 'pad auth login' to sign in)", apiErr.Message)
 		}
 		return fmt.Errorf("setup failed: %w", err)
-	}
-
-	if err := saveCredentials(cfg, resp); err != nil {
-		return err
 	}
 
 	if formatFlag == "json" {
@@ -1757,18 +1785,20 @@ func printSetupRequiredHint(cfg *config.Config) {
 
 func readPassword() (string, error) {
 	fd := int(os.Stdin.Fd())
-	// Guard: if stdin is not a terminal, term.ReadPassword will fail and
-	// the bufio fallback would block indefinitely on an empty pipe. Fail
-	// fast with a generic error. Callers on the bootstrap path (promptAndBootstrap)
-	// have their own earlier guard that emits bootstrap-specific help text;
-	// this generic guard protects any other caller (e.g. login --interactive)
-	// without leaking bootstrap-specific flag names into an unrelated flow.
-	if !term.IsTerminal(fd) {
-		return "", fmt.Errorf("cannot read password: stdin is not a terminal")
-	}
 	pw, err := term.ReadPassword(fd)
 	if err != nil {
-		return "", err
+		// Fallback for non-terminal (pipes, tests). Note: callers on the
+		// bootstrap path reach this only via promptAndBootstrap, which has
+		// an earlier non-TTY guard that returns a clear error before any
+		// read is attempted — so this fallback is never reached for bootstrap.
+		// It remains available for other callers (e.g. login --interactive
+		// used in scripted environments that pipe a password via stdin).
+		reader := bufio.NewReader(os.Stdin)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(line), nil
 	}
 	return string(pw), nil
 }

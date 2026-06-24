@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -449,4 +450,131 @@ func TestHeadlessInitPathSuccess(t *testing.T) {
 	}
 
 	_ = project // used implicitly by os.Chdir in isolateHome
+}
+
+// TestHeadlessSetupSendsBootstrapToken verifies that when the DataDir contains
+// a .bootstrap-token file, doHeadlessBootstrap (and thus the headless path of
+// both setup and init) forwards it as the X-Bootstrap-Token header. This is
+// required for self-host deployments where the server uses setup_method=logs_token
+// and would otherwise reject the request with 403 (finding #1 from round-1 codex
+// review).
+func TestHeadlessSetupSendsBootstrapToken(t *testing.T) {
+	isolateHome(t)
+
+	tokenReceived := ""
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/health":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/bootstrap":
+			tokenReceived = r.Header.Get("X-Bootstrap-Token")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"token": "padsess_token_test",
+				"user": map[string]interface{}{
+					"id": "u1", "email": "a@b.com", "name": "A", "role": "admin",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := remoteHeadlessCfg(srv.URL)
+	// Write a .bootstrap-token file into DataDir so ReadBootstrapToken finds it
+	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+		t.Fatalf("mkdir datadir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.DataDir, ".bootstrap-token"), []byte("test-token-value\n"), 0600); err != nil {
+		t.Fatalf("write bootstrap token: %v", err)
+	}
+
+	client := cli.NewClientFromURL(srv.URL)
+	resp, err := doHeadlessBootstrap(cfg, client, "a@b.com", "A", "correct-horse-battery-staple")
+	if err != nil {
+		t.Fatalf("doHeadlessBootstrap: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if tokenReceived != "test-token-value" {
+		t.Errorf("expected X-Bootstrap-Token=test-token-value, got %q", tokenReceived)
+	}
+}
+
+// TestHeadlessSetupNoTokenFileOK verifies that when no .bootstrap-token file
+// exists, doHeadlessBootstrap silently omits the header (best-effort) and the
+// request still succeeds — covering the pure-loopback case where no token is
+// required.
+func TestHeadlessSetupNoTokenFileOK(t *testing.T) {
+	isolateHome(t)
+
+	tokenReceived := "sentinel" // will be overwritten to "" if no header sent
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/health":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/bootstrap":
+			tokenReceived = r.Header.Get("X-Bootstrap-Token")
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"token": "padsess_notoken_test",
+				"user": map[string]interface{}{
+					"id": "u1", "email": "a@b.com", "name": "A", "role": "admin",
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := remoteHeadlessCfg(srv.URL)
+	// DataDir does NOT contain a .bootstrap-token file
+	client := cli.NewClientFromURL(srv.URL)
+	_, err := doHeadlessBootstrap(cfg, client, "a@b.com", "A", "correct-horse-battery-staple")
+	if err != nil {
+		t.Fatalf("doHeadlessBootstrap without token file: %v", err)
+	}
+	if tokenReceived != "" {
+		t.Errorf("expected no X-Bootstrap-Token header when file absent, got %q", tokenReceived)
+	}
+}
+
+// TestReadPasswordFallback verifies that readPassword still works when stdin
+// is a pipe (non-TTY) by falling back to a bufio read. This guards against
+// the regression introduced in round 1 where the fallback was removed. The
+// fallback is used by `pad auth login --interactive` in scripted environments
+// that pipe a password via stdin.
+func TestReadPasswordFallback(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+
+	// Write the password before switching stdin (pipe buffer is large enough)
+	if _, err := pw.WriteString("my-piped-password\n"); err != nil {
+		t.Fatalf("write password to pipe: %v", err)
+	}
+	pw.Close()
+
+	origStdin := os.Stdin
+	os.Stdin = pr
+	t.Cleanup(func() {
+		os.Stdin = origStdin
+		pr.Close()
+	})
+
+	got, err := readPassword()
+	if err != nil {
+		t.Fatalf("readPassword with piped input: %v", err)
+	}
+	if got != "my-piped-password" {
+		t.Errorf("readPassword = %q, want %q", got, "my-piped-password")
+	}
 }
