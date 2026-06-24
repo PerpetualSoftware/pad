@@ -5,6 +5,7 @@ package main
 // needed. The cfg is wired in Remote mode so cli.EnsureServer no-ops.
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"net/http"
@@ -547,15 +548,9 @@ func TestHeadlessSetupNoTokenFileOK(t *testing.T) {
 }
 
 // TestReadPasswordBufioFallback verifies that readPassword's bufio fallback
-// returns a line from a non-TTY (pipe) reader. It exercises readPassword IN
-// ISOLATION only — it does NOT cover doInteractiveLogin end-to-end.
-//
-// Known limitation (BUG-1886): doInteractiveLogin constructs its own
-// bufio.Reader on stdin for the email prompt, then readPassword constructs a
-// second independent bufio.Reader on the same fd. Because bufio reads ahead in
-// chunks the first reader can consume bytes belonging to the password line,
-// breaking piped `pad auth login --interactive`. That bug predates BUG-988
-// and is tracked separately.
+// returns a line from a non-TTY (pipe) reader, exercising readPassword in
+// isolation. The shared-reader integration (doInteractiveLogin's email-then-
+// password sequence) is covered by TestReadPasswordFromSharedReader below.
 func TestReadPasswordBufioFallback(t *testing.T) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
@@ -581,5 +576,43 @@ func TestReadPasswordBufioFallback(t *testing.T) {
 	}
 	if got != "my-piped-password" {
 		t.Errorf("readPassword = %q, want %q", got, "my-piped-password")
+	}
+}
+
+// TestReadPasswordFromSharedReader reproduces the doInteractiveLogin sequence
+// that BUG-1886 broke: read an email line from a bufio.Reader, then read the
+// password from the SAME reader. With piped "email\npassword\n", the first
+// ReadString buffers past its newline (bufio reads in chunks), so a second
+// independent reader on os.Stdin would hit EOF and lose the password. Sharing
+// the reader via readPasswordFrom keeps the stream consistent.
+func TestReadPasswordFromSharedReader(t *testing.T) {
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	if _, err := pw.WriteString("user@example.com\nshared-secret\n"); err != nil {
+		t.Fatalf("write to pipe: %v", err)
+	}
+	pw.Close()
+
+	origStdin := os.Stdin
+	os.Stdin = pr
+	t.Cleanup(func() {
+		os.Stdin = origStdin
+		pr.Close()
+	})
+
+	reader := bufio.NewReader(os.Stdin)
+	email, _ := reader.ReadString('\n')
+	if got := strings.TrimSpace(email); got != "user@example.com" {
+		t.Fatalf("email = %q, want %q", got, "user@example.com")
+	}
+
+	got, err := readPasswordFrom(reader)
+	if err != nil {
+		t.Fatalf("readPasswordFrom after email read: %v", err)
+	}
+	if got != "shared-secret" {
+		t.Errorf("readPasswordFrom = %q, want %q (BUG-1886 regression — a fresh reader would lose this)", got, "shared-secret")
 	}
 }
