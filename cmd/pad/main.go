@@ -1321,12 +1321,16 @@ func runCLISetup(cfg *config.Config, client *cli.Client) error {
 // through here, which ensures token reading, the Bootstrap call, credential
 // saving, and SetAuthToken all happen in exactly one place.
 //
-// It reads the on-disk bootstrap token best-effort (absent or unreadable →
-// empty token → loopback-only gate still protects the pure-local case). When
-// present, the token is forwarded as the X-Bootstrap-Token header so the
+// It reads the on-disk bootstrap token with partial best-effort semantics:
+// absent (ErrNotExist) → empty token → loopback gate still guards the
+// pure-local case; any other read error (permissions, corrupt file) is
+// surfaced so the operator can diagnose rather than get a silent 403.
+// When present, the token is forwarded as the X-Bootstrap-Token header so the
 // self-host deployment path (setup_method=logs_token, TASK-1167) works without
 // requiring a separate browser step. Callers must validate that email/name/
 // password are all non-empty before calling here.
+// A 403/forbidden from the server is wrapped with an actionable hint pointing
+// at the loopback gate, token-file path, and PAD_BYPASS_SETUP_TOKEN.
 //
 // On success the caller's client is authenticated (SetAuthToken applied) and
 // credentials are persisted; the LoginResponse is returned so callers can
@@ -1335,12 +1339,24 @@ func runCLISetup(cfg *config.Config, client *cli.Client) error {
 // The "already initialized" conflict is mapped to a clean APIError so callers
 // can detect it via errors.As without parsing HTTP status codes.
 func doHeadlessBootstrap(cfg *config.Config, client *cli.Client, email, name, password string) (*cli.LoginResponse, error) {
-	// Read the on-disk first-run token. Absent or unreadable → empty token →
-	// request proceeds without the header (loopback gate still guards it).
-	bootstrapToken, _ := cli.ReadBootstrapToken(cfg.DataDir)
+	// Read the on-disk first-run token (best-effort).
+	// Absent (os.ErrNotExist) → proceed without the header; the server's
+	// loopback gate still guards pure-local deployments.
+	// Any other error (file exists but unreadable, permissions, etc.) →
+	// surface it so operators can diagnose instead of getting a confusing 403.
+	bootstrapToken, tokenErr := cli.ReadBootstrapToken(cfg.DataDir)
+	if tokenErr != nil && !errors.Is(tokenErr, os.ErrNotExist) {
+		tokenPath := filepath.Join(cfg.DataDir, ".bootstrap-token")
+		return nil, fmt.Errorf("could not read bootstrap token %s: %w", tokenPath, tokenErr)
+	}
 
 	resp, err := client.BootstrapWithToken(email, name, password, bootstrapToken)
 	if err != nil {
+		var apiErr *cli.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == "forbidden" {
+			tokenPath := filepath.Join(cfg.DataDir, ".bootstrap-token")
+			return nil, fmt.Errorf("%w\n\nhint: bootstrap was rejected — this may mean:\n  • the CLI is not running on the server host (loopback gate)\n  • the bootstrap token file is missing or unreadable (%s)\n  • the server started without PAD_BYPASS_SETUP_TOKEN=true\nRe-run on the server host, or ensure the token file is readable", err, tokenPath)
+		}
 		return nil, err
 	}
 	if err := saveCredentials(cfg, resp); err != nil {

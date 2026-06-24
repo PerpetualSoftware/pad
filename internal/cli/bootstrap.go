@@ -199,7 +199,10 @@ func ReadBootstrapToken(dataDir string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("bootstrap token file %s not found — the server may have already consumed it, or token generation failed at startup. Re-run with --cli-prompt to use the legacy TTY flow", path)
+			// Wrap with %w so callers can errors.Is(err, os.ErrNotExist) to
+			// distinguish "file absent" from other read failures (e.g. to
+			// treat absence as best-effort rather than a hard error).
+			return "", fmt.Errorf("bootstrap token file %s not found (%w) — the server may have already consumed it, or token generation failed at startup. Re-run with --cli-prompt to use the legacy TTY flow", path, os.ErrNotExist)
 		}
 		return "", fmt.Errorf("read bootstrap token %s: %w (re-run with --cli-prompt to use the legacy TTY flow)", path, err)
 	}

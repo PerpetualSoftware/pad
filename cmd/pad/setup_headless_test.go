@@ -546,12 +546,17 @@ func TestHeadlessSetupNoTokenFileOK(t *testing.T) {
 	}
 }
 
-// TestReadPasswordFallback verifies that readPassword still works when stdin
-// is a pipe (non-TTY) by falling back to a bufio read. This guards against
-// the regression introduced in round 1 where the fallback was removed. The
-// fallback is used by `pad auth login --interactive` in scripted environments
-// that pipe a password via stdin.
-func TestReadPasswordFallback(t *testing.T) {
+// TestReadPasswordBufioFallback verifies that readPassword's bufio fallback
+// returns a line from a non-TTY (pipe) reader. It exercises readPassword IN
+// ISOLATION only — it does NOT cover doInteractiveLogin end-to-end.
+//
+// Known limitation (BUG-1886): doInteractiveLogin constructs its own
+// bufio.Reader on stdin for the email prompt, then readPassword constructs a
+// second independent bufio.Reader on the same fd. Because bufio reads ahead in
+// chunks the first reader can consume bytes belonging to the password line,
+// breaking piped `pad auth login --interactive`. That bug predates BUG-988
+// and is tracked separately.
+func TestReadPasswordBufioFallback(t *testing.T) {
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
