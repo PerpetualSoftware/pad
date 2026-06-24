@@ -875,13 +875,41 @@ func (c *Client) Register(email, name, password string) (*LoginResponse, error) 
 
 // Bootstrap creates the first admin account on a fresh instance.
 func (c *Client) Bootstrap(email, name, password string) (*LoginResponse, error) {
-	var result LoginResponse
-	err := c.post("/auth/bootstrap", map[string]string{
+	return c.BootstrapWithToken(email, name, password, "")
+}
+
+// BootstrapWithToken is like Bootstrap but sends token as the
+// X-Bootstrap-Token header when token is non-empty. This is required for
+// self-host deployments where the server generated a first-run token (the
+// "logs_token" setup_method path — TASK-1167). Pass an empty string on
+// pure-loopback deployments where the header is not required.
+func (c *Client) BootstrapWithToken(email, name, password, token string) (*LoginResponse, error) {
+	data, err := json.Marshal(map[string]string{
 		"email":    email,
 		"name":     name,
 		"password": password,
-	}, &result)
-	return &result, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := c.newRequest("POST", "/auth/bootstrap", bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("X-Bootstrap-Token", token)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	var result LoginResponse
+	if err := c.handleResponse(resp, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 // CLIAuthSessionResponse is the response from POST /auth/cli/sessions.

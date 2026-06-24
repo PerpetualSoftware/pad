@@ -23,6 +23,10 @@ import (
 func padInitCmd() *cobra.Command {
 	var templateFlag string
 	var cliPromptFlag bool
+	// Headless bootstrap flags (BUG-988). All three must be supplied
+	// together when any one is present. They drive the bootstrap step only;
+	// the rest of init (workspace creation, skill install) still runs.
+	var emailFlag, nameFlag, passwordFlag string
 
 	cmd := &cobra.Command{
 		Use:   "init [name]",
@@ -138,55 +142,110 @@ Examples:
 			}
 
 			if session.SetupRequired {
-				// Only local mode can bootstrap inline
-				if cfg.Mode != config.ModeLocal && cfg.Mode != "" {
-					printSetupRequiredHint(cfg)
-					return fmt.Errorf("this Pad instance has not been initialized yet")
-				}
-
-				if !canPromptForConfig() {
-					printSetupRequiredHint(cfg)
-					return fmt.Errorf("this Pad instance has not been initialized yet (run 'pad auth setup' in an interactive terminal)")
-				}
-
-				if actioned {
-					fmt.Println(bold.Sprint("Step 2: Create admin account"))
-				} else {
-					fmt.Println(bold.Sprint("Create admin account"))
-				}
-				fmt.Println()
-
-				if cliPromptFlag {
-					// Legacy --cli-prompt path: in-terminal email/name/password
-					// prompts. Same Bootstrap call the pre-TASK-1217 flow used,
-					// kept verbatim as a zero-cost hedge per IDEA-1179.
-					resp, err := promptAndBootstrap(client)
-					if err != nil {
-						return err
+				// Headless path: all three flags must be present when any one
+				// is supplied (BUG-988). Checked BEFORE the local-only mode
+				// guard so an agent running on a remote server host can bootstrap
+				// it; the loopback gate is enforced server-side.
+				// This branch runs the bootstrap step only; the rest of init
+				// (workspace, skills) continues below.
+				//
+				// NOTE: --password appears in the process argument list and is
+				// therefore visible in `ps` output. This is acceptable for the
+				// headless-agent use case. Env-var bootstrap (PAD_ADMIN_*)
+				// is the tracked follow-up (Option A, deferred).
+				headless := emailFlag != "" || nameFlag != "" || passwordFlag != ""
+				if headless {
+					if emailFlag == "" {
+						return fmt.Errorf("--email is required when using headless bootstrap (--name and --password were provided)")
 					}
-					if err := saveCredentials(cfg, resp); err != nil {
-						return err
+					if nameFlag == "" {
+						return fmt.Errorf("--name is required when using headless bootstrap (--email and --password were provided)")
+					}
+					if passwordFlag == "" {
+						return fmt.Errorf("--password is required when using headless bootstrap (--email and --name were provided)")
+					}
+
+					// doHeadlessBootstrap reads the on-disk first-run token,
+					// calls BootstrapWithToken (X-Bootstrap-Token header set
+					// when a token is present), saves credentials, and calls
+					// client.SetAuthToken. BUG-988 / round-1 finding #1.
+					//
+					// pad init is a multi-step flow; the human-readable step
+					// header is always printed. For machine-readable bootstrap
+					// output use `pad auth setup --email … --format json`.
+					if actioned {
+						fmt.Println(bold.Sprint("Step 2: Create admin account"))
+					} else {
+						fmt.Println(bold.Sprint("Create admin account"))
+					}
+					fmt.Println()
+
+					resp, err := doHeadlessBootstrap(cfg, client, emailFlag, nameFlag, passwordFlag)
+					if err != nil {
+						var apiErr *cli.APIError
+						if errors.As(err, &apiErr) && apiErr.Code == "conflict" {
+							return fmt.Errorf("setup failed: %s (Pad is already initialized — run 'pad auth login' to sign in)", apiErr.Message)
+						}
+						return fmt.Errorf("setup failed: %w", err)
 					}
 					green.Print("✓ ")
 					fmt.Printf("Admin account created — logged in as %s (%s)\n", resp.User.Name, resp.User.Email)
 					fmt.Println()
+				} else if cfg.Mode != config.ModeLocal && cfg.Mode != "" {
+					// Non-headless paths (browser / --cli-prompt) only work when
+					// the operator is running locally — a remote browser flow
+					// requires a browser on the remote server host, and
+					// --cli-prompt requires a TTY there too. Use --email/--name/
+					// --password to bootstrap a remote instance non-interactively.
+					printSetupRequiredHint(cfg)
+					return fmt.Errorf("this Pad instance has not been initialized yet")
+				} else if !canPromptForConfig() {
+					printSetupRequiredHint(cfg)
+					return fmt.Errorf(
+						"this Pad instance has not been initialized yet.\n" +
+							"Run with --email, --name, and --password for non-interactive bootstrap:\n" +
+							"  pad init --email you@example.com --name \"Your Name\" --password <pass>\n" +
+							"Or run 'pad auth setup' in an interactive terminal.")
 				} else {
-					// Default browser path: a SINGLE handoff that creates the
-					// admin account AND authorizes this CLI in the same
-					// browser tab. runBrowserSetup mints the pending CLI auth
-					// session first, hands /setup a next= target pointing at
-					// its approval page, then polls until approved — so the
-					// operator never has to return to the terminal to copy a
-					// second URL. BUG-1843.
-					//
-					// SIGINT is already handled by installInitCancelHandler
-					// at the top of this RunE (os.Exit(130)); runBrowserSetup
-					// installs a redundant handler of its own, which is
-					// harmless.
-					if err := runBrowserSetup(context.Background(), cfg, client); err != nil {
-						return err
+					if actioned {
+						fmt.Println(bold.Sprint("Step 2: Create admin account"))
+					} else {
+						fmt.Println(bold.Sprint("Create admin account"))
 					}
 					fmt.Println()
+
+					if cliPromptFlag {
+						// Legacy --cli-prompt path: in-terminal email/name/password
+						// prompts. Same Bootstrap call the pre-TASK-1217 flow used,
+						// kept verbatim as a zero-cost hedge per IDEA-1179.
+						resp, err := promptAndBootstrap(client)
+						if err != nil {
+							return err
+						}
+						if err := saveCredentials(cfg, resp); err != nil {
+							return err
+						}
+						green.Print("✓ ")
+						fmt.Printf("Admin account created — logged in as %s (%s)\n", resp.User.Name, resp.User.Email)
+						fmt.Println()
+					} else {
+						// Default browser path: a SINGLE handoff that creates the
+						// admin account AND authorizes this CLI in the same
+						// browser tab. runBrowserSetup mints the pending CLI auth
+						// session first, hands /setup a next= target pointing at
+						// its approval page, then polls until approved — so the
+						// operator never has to return to the terminal to copy a
+						// second URL. BUG-1843.
+						//
+						// SIGINT is already handled by installInitCancelHandler
+						// at the top of this RunE (os.Exit(130)); runBrowserSetup
+						// installs a redundant handler of its own, which is
+						// harmless.
+						if err := runBrowserSetup(context.Background(), cfg, client); err != nil {
+							return err
+						}
+						fmt.Println()
+					}
 				}
 
 				// Refresh client with credentials
@@ -274,6 +333,13 @@ Examples:
 	// terminal email/name/password prompts for the admin-creation step.
 	// Workspace creation (cwd-bound) stays CLI in either case.
 	cmd.Flags().BoolVar(&cliPromptFlag, "cli-prompt", false, "Use the legacy in-terminal email/name/password prompts for the admin-account step instead of the browser /setup flow.")
+	// Headless bootstrap flags for non-interactive (agent) use (BUG-988).
+	// All three must be supplied together; any one implies the other two.
+	// Only active when setup is required; ignored on already-initialized instances.
+	cmd.Flags().StringVar(&emailFlag, "email", "", "Admin email address (headless bootstrap — requires --name and --password)")
+	cmd.Flags().StringVar(&nameFlag, "name", "", "Admin display name (headless bootstrap — requires --email and --password)")
+	// NOTE: argv passwords are visible in process listings; see comment in RunE.
+	cmd.Flags().StringVar(&passwordFlag, "password", "", "Admin password (headless bootstrap — requires --email and --name)")
 	return cmd
 }
 

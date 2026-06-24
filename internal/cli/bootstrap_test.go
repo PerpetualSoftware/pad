@@ -48,7 +48,7 @@ func newTestConfig(t *testing.T, browserURL string) *config.Config {
 
 // writeBootstrapToken drops a token file at <dataDir>/.bootstrap-token in
 // the same shape EnsureBootstrapToken would produce — token + trailing
-// newline, mode 0600 — so readBootstrapToken sees what it expects.
+// newline, mode 0600 — so ReadBootstrapToken sees what it expects.
 func writeBootstrapToken(t *testing.T, dataDir, token string) {
 	t.Helper()
 	path := filepath.Join(dataDir, bootstrapTokenFilename)
@@ -373,11 +373,11 @@ func TestReadBootstrapToken_TrimsTrailingNewline(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, bootstrapTokenFilename), []byte("hello-token\n"), 0600); err != nil {
 		t.Fatalf("write token: %v", err)
 	}
-	got, err := readBootstrapToken(dir)
+	got, err := ReadBootstrapToken(dir)
 	if err != nil {
-		t.Fatalf("readBootstrapToken: %v", err)
+		t.Fatalf("ReadBootstrapToken: %v", err)
 	}
 	if got != "hello-token" {
-		t.Errorf("readBootstrapToken = %q, want %q", got, "hello-token")
+		t.Errorf("ReadBootstrapToken = %q, want %q", got, "hello-token")
 	}
 }

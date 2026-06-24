@@ -1133,20 +1133,14 @@ By default the CLI hands the operator a deep link into the browser-based
 /setup form (which uses password managers, HTML5 email validation, and the
 live strength meter). If the browser path won't work — headless server
 without an SSH tunnel, broken X11, etc. — re-run with --cli-prompt for the
-legacy in-terminal email/name/password prompts.`,
+legacy in-terminal email/name/password prompts, or supply --email/--name/
+--password for fully non-interactive (agent) use.`,
 		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
 			cfg := getConfig()
 			if !cfg.IsConfigured() {
 				// Allow host-local bootstrap on a pristine machine before the
 				// client has been explicitly configured.
 				cfg.Mode = config.ModeLocal
-			}
-
-			if cfg.IsConfigured() {
-				switch cfg.Mode {
-				case config.ModeRemote, config.ModeCloud:
-					return fmt.Errorf("remote Pad instances must be initialized on the server host with 'pad auth setup'")
-				}
 			}
 
 			// Honour the same Cancelled. + exit-130 path as login when the
@@ -1156,6 +1150,48 @@ legacy in-terminal email/name/password prompts.`,
 					cancelInit()
 				}
 			}()
+
+			// Headless path: all three flags required when any one is present
+			// (BUG-988). Drives the existing POST /api/v1/auth/bootstrap
+			// endpoint directly — no browser, no stdin reads. Checked BEFORE
+			// the remote-mode guard so an agent running on a remote server
+			// host can bootstrap it; the loopback gate is enforced server-side.
+			//
+			// NOTE: --password appears in the process argument list and is
+			// therefore visible in `ps` output. This is acceptable for the
+			// headless-agent use case this flag targets. Env-var bootstrap
+			// (PAD_ADMIN_EMAIL / PAD_ADMIN_PASSWORD / PAD_ADMIN_NAME) is the
+			// tracked follow-up (Option A, deferred to a later task).
+			headlessEmail, _ := cmd.Flags().GetString("email")
+			headlessName, _ := cmd.Flags().GetString("name")
+			headlessPassword, _ := cmd.Flags().GetString("password")
+			if headlessEmail != "" || headlessName != "" || headlessPassword != "" {
+				if headlessEmail == "" {
+					return fmt.Errorf("--email is required when using headless bootstrap (--name and --password were provided)")
+				}
+				if headlessName == "" {
+					return fmt.Errorf("--name is required when using headless bootstrap (--email and --password were provided)")
+				}
+				if headlessPassword == "" {
+					return fmt.Errorf("--password is required when using headless bootstrap (--email and --name were provided)")
+				}
+				if err := cli.EnsureServer(cfg); err != nil {
+					return err
+				}
+				client := cli.NewClientFromURL(cfg.BaseURL())
+				return runHeadlessSetup(cfg, client, headlessEmail, headlessName, headlessPassword)
+			}
+
+			// Non-headless paths (browser / --cli-prompt) only work when the
+			// operator is running locally — a remote browser flow would need
+			// the browser on the remote host, and the --cli-prompt path needs
+			// a TTY on the server host.
+			if cfg.IsConfigured() {
+				switch cfg.Mode {
+				case config.ModeRemote, config.ModeCloud:
+					return fmt.Errorf("remote Pad instances must be initialized on the server host with 'pad auth setup'")
+				}
+			}
 
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
@@ -1194,6 +1230,12 @@ legacy in-terminal email/name/password prompts.`,
 	// concrete blocker shows up. Each --cli-prompt usage is a signal we
 	// should rethink the assumption.
 	cmd.Flags().Bool("cli-prompt", false, "Use the legacy in-terminal email/name/password prompts instead of the browser /setup flow.")
+	// Headless flags for non-interactive (agent) bootstrap (BUG-988).
+	// All three must be supplied together; any one implies the other two.
+	cmd.Flags().String("email", "", "Admin email address (headless bootstrap — requires --name and --password)")
+	cmd.Flags().String("name", "", "Admin display name (headless bootstrap — requires --email and --password)")
+	// NOTE: argv passwords are visible in process listings; see comment in RunE.
+	cmd.Flags().String("password", "", "Admin password (headless bootstrap — requires --email and --name)")
 	return cmd
 }
 
@@ -1265,6 +1307,99 @@ func runCLISetup(cfg *config.Config, client *cli.Client) error {
 	}
 	if err := saveCredentials(cfg, resp); err != nil {
 		return err
+	}
+
+	green := color.New(color.FgGreen).SprintFunc()
+	fmt.Printf("%s First admin account created\n", green("✓"))
+	fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
+	printPostSetupNextStepsHint()
+	return nil
+}
+
+// doHeadlessBootstrap is the shared core of the non-interactive (agent)
+// admin bootstrap introduced by BUG-988. Both setupCmd and padInitCmd funnel
+// through here, which ensures token reading, the Bootstrap call, credential
+// saving, and SetAuthToken all happen in exactly one place.
+//
+// It reads the on-disk bootstrap token with partial best-effort semantics:
+// absent (ErrNotExist) → empty token → loopback gate still guards the
+// pure-local case; any other read error (permissions, corrupt file) is
+// surfaced so the operator can diagnose rather than get a silent 403.
+// When present, the token is forwarded as the X-Bootstrap-Token header so the
+// self-host deployment path (setup_method=logs_token, TASK-1167) works without
+// requiring a separate browser step. Callers must validate that email/name/
+// password are all non-empty before calling here.
+// A 403/forbidden from the server is wrapped with an actionable hint pointing
+// at the loopback gate, token-file path, and PAD_BYPASS_SETUP_TOKEN.
+//
+// On success the caller's client is authenticated (SetAuthToken applied) and
+// credentials are persisted; the LoginResponse is returned so callers can
+// format output as they see fit.
+//
+// The "already initialized" conflict is mapped to a clean APIError so callers
+// can detect it via errors.As without parsing HTTP status codes.
+func doHeadlessBootstrap(cfg *config.Config, client *cli.Client, email, name, password string) (*cli.LoginResponse, error) {
+	// Read the on-disk first-run token (best-effort).
+	// Absent (os.ErrNotExist) → proceed without the header; the server's
+	// loopback gate still guards pure-local deployments.
+	// Any other error (file exists but unreadable, permissions, etc.) →
+	// surface it so operators can diagnose instead of getting a confusing 403.
+	bootstrapToken, tokenErr := cli.ReadBootstrapToken(cfg.DataDir)
+	if tokenErr != nil && !errors.Is(tokenErr, os.ErrNotExist) {
+		tokenPath := filepath.Join(cfg.DataDir, ".bootstrap-token")
+		return nil, fmt.Errorf("could not read bootstrap token %s: %w", tokenPath, tokenErr)
+	}
+
+	resp, err := client.BootstrapWithToken(email, name, password, bootstrapToken)
+	if err != nil {
+		var apiErr *cli.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == "forbidden" {
+			tokenPath := filepath.Join(cfg.DataDir, ".bootstrap-token")
+			return nil, fmt.Errorf("%w\n\nhint: bootstrap was rejected — this may mean:\n  • the CLI is not running on the server host (loopback gate)\n  • the bootstrap token file is missing or unreadable (%s)\n  • the server started without PAD_BYPASS_SETUP_TOKEN=true\nRe-run on the server host, or ensure the token file is readable", err, tokenPath)
+		}
+		return nil, err
+	}
+	if err := saveCredentials(cfg, resp); err != nil {
+		return nil, err
+	}
+	client.SetAuthToken(resp.Token)
+	return resp, nil
+}
+
+// runHeadlessSetup drives the output layer for `pad auth setup --email …`.
+// It delegates the actual work to doHeadlessBootstrap and then prints the
+// result (respecting --format json) or a clean error.
+//
+// Output respects --format json: on success it emits a LoginResponse-shaped
+// JSON object (user + token) so agent callers can parse the result. On a
+// non-json format it prints the same human-readable lines as runCLISetup.
+//
+// "already initialized" (conflict from the server) is surfaced as a clean
+// error + structured JSON error object (under --format json) so agents get
+// deterministic output in both the fresh and already-initialized cases.
+func runHeadlessSetup(cfg *config.Config, client *cli.Client, email, name, password string) error {
+	resp, err := doHeadlessBootstrap(cfg, client, email, name, password)
+	if err != nil {
+		// Map the conflict code to a clear human message so agents (and
+		// humans) know what happened without parsing an HTTP status.
+		var apiErr *cli.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == "conflict" {
+			if formatFlag == "json" {
+				outputJSON(map[string]interface{}{
+					"error": map[string]interface{}{
+						"code":    "already_initialized",
+						"message": apiErr.Message,
+					},
+				})
+			}
+			return fmt.Errorf("setup failed: %s (Pad is already initialized — run 'pad auth login' to sign in)", apiErr.Message)
+		}
+		return fmt.Errorf("setup failed: %w", err)
+	}
+
+	if formatFlag == "json" {
+		outputJSON(resp)
+		return nil
 	}
 
 	green := color.New(color.FgGreen).SprintFunc()
@@ -1558,6 +1693,17 @@ const maxAccountSetupAttempts = 5
 // rarely rejects them and re-typing them on every weak-password retry
 // is the primary UX complaint behind BUG-1155.
 func promptAndBootstrap(client *cli.Client) (*cli.LoginResponse, error) {
+	// Guard: refuse to block on a pipe read. An agent or script that
+	// reaches this path without a TTY would hang indefinitely on
+	// reader.ReadString('\n'). Fail fast with a hint pointing at the
+	// headless flags instead (BUG-988).
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil, fmt.Errorf(
+			"stdin is not a terminal — cannot prompt for admin credentials.\n" +
+				"Run with --email, --name, and --password for non-interactive bootstrap:\n" +
+				"  pad auth setup --email you@example.com --name \"Your Name\" --password <pass>")
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Print("  Email: ")
@@ -1657,7 +1803,12 @@ func readPassword() (string, error) {
 	fd := int(os.Stdin.Fd())
 	pw, err := term.ReadPassword(fd)
 	if err != nil {
-		// Fallback for non-terminal (pipes, tests)
+		// Fallback for non-terminal (pipes, tests). Note: callers on the
+		// bootstrap path reach this only via promptAndBootstrap, which has
+		// an earlier non-TTY guard that returns a clear error before any
+		// read is attempted — so this fallback is never reached for bootstrap.
+		// It remains available for other callers (e.g. login --interactive
+		// used in scripted environments that pipe a password via stdin).
 		reader := bufio.NewReader(os.Stdin)
 		line, err := reader.ReadString('\n')
 		if err != nil {
