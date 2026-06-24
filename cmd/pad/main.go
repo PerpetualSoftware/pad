@@ -1604,7 +1604,9 @@ func doInteractiveLogin(client *cli.Client, cfg *config.Config) error {
 	email = strings.TrimSpace(email)
 
 	fmt.Print("  Password: ")
-	password, err := readPassword()
+	// Share `reader` with the email/2FA reads above and below — a second
+	// bufio.Reader on os.Stdin would miss piped bytes already buffered (BUG-1886).
+	password, err := readPasswordFrom(reader)
 	if err != nil {
 		return fmt.Errorf("read password: %w", err)
 	}
@@ -1800,17 +1802,28 @@ func printSetupRequiredHint(cfg *config.Config) {
 }
 
 func readPassword() (string, error) {
+	return readPasswordFrom(bufio.NewReader(os.Stdin))
+}
+
+// readPasswordFrom reads a password without echo when stdin is a TTY, and
+// otherwise falls back to reading a line from the supplied bufio.Reader.
+//
+// Callers that ALSO read other lines from stdin (e.g. doInteractiveLogin reads
+// email and 2FA codes) MUST pass the SAME bufio.Reader they used for those
+// reads. A bufio.Reader buffers in chunks, so a second independent reader on
+// os.Stdin can miss bytes the first reader already buffered past its newline —
+// that double-reader bug broke piped `login --interactive` (BUG-1886). Sharing
+// one reader keeps the stream consistent across reads.
+//
+// On the bootstrap path this fallback is never reached: promptAndBootstrap has
+// an earlier non-TTY guard that returns a clear error before any read. The
+// fallback exists for non-TTY callers like scripted `login --interactive` that
+// pipe a password via stdin.
+func readPasswordFrom(fallback *bufio.Reader) (string, error) {
 	fd := int(os.Stdin.Fd())
 	pw, err := term.ReadPassword(fd)
 	if err != nil {
-		// Fallback for non-terminal (pipes, tests). Note: callers on the
-		// bootstrap path reach this only via promptAndBootstrap, which has
-		// an earlier non-TTY guard that returns a clear error before any
-		// read is attempted — so this fallback is never reached for bootstrap.
-		// It remains available for other callers (e.g. login --interactive
-		// used in scripted environments that pipe a password via stdin).
-		reader := bufio.NewReader(os.Stdin)
-		line, err := reader.ReadString('\n')
+		line, err := fallback.ReadString('\n')
 		if err != nil {
 			return "", err
 		}
