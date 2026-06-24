@@ -1133,20 +1133,14 @@ By default the CLI hands the operator a deep link into the browser-based
 /setup form (which uses password managers, HTML5 email validation, and the
 live strength meter). If the browser path won't work — headless server
 without an SSH tunnel, broken X11, etc. — re-run with --cli-prompt for the
-legacy in-terminal email/name/password prompts.`,
+legacy in-terminal email/name/password prompts, or supply --email/--name/
+--password for fully non-interactive (agent) use.`,
 		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
 			cfg := getConfig()
 			if !cfg.IsConfigured() {
 				// Allow host-local bootstrap on a pristine machine before the
 				// client has been explicitly configured.
 				cfg.Mode = config.ModeLocal
-			}
-
-			if cfg.IsConfigured() {
-				switch cfg.Mode {
-				case config.ModeRemote, config.ModeCloud:
-					return fmt.Errorf("remote Pad instances must be initialized on the server host with 'pad auth setup'")
-				}
 			}
 
 			// Honour the same Cancelled. + exit-130 path as login when the
@@ -1156,6 +1150,48 @@ legacy in-terminal email/name/password prompts.`,
 					cancelInit()
 				}
 			}()
+
+			// Headless path: all three flags required when any one is present
+			// (BUG-988). Drives the existing POST /api/v1/auth/bootstrap
+			// endpoint directly — no browser, no stdin reads. Checked BEFORE
+			// the remote-mode guard so an agent running on a remote server
+			// host can bootstrap it; the loopback gate is enforced server-side.
+			//
+			// NOTE: --password appears in the process argument list and is
+			// therefore visible in `ps` output. This is acceptable for the
+			// headless-agent use case this flag targets. Env-var bootstrap
+			// (PAD_ADMIN_EMAIL / PAD_ADMIN_PASSWORD / PAD_ADMIN_NAME) is the
+			// tracked follow-up (Option A, deferred to a later task).
+			headlessEmail, _ := cmd.Flags().GetString("email")
+			headlessName, _ := cmd.Flags().GetString("name")
+			headlessPassword, _ := cmd.Flags().GetString("password")
+			if headlessEmail != "" || headlessName != "" || headlessPassword != "" {
+				if headlessEmail == "" {
+					return fmt.Errorf("--email is required when using headless bootstrap (--name and --password were provided)")
+				}
+				if headlessName == "" {
+					return fmt.Errorf("--name is required when using headless bootstrap (--email and --password were provided)")
+				}
+				if headlessPassword == "" {
+					return fmt.Errorf("--password is required when using headless bootstrap (--email and --name were provided)")
+				}
+				if err := cli.EnsureServer(cfg); err != nil {
+					return err
+				}
+				client := cli.NewClientFromURL(cfg.BaseURL())
+				return runHeadlessSetup(cfg, client, headlessEmail, headlessName, headlessPassword)
+			}
+
+			// Non-headless paths (browser / --cli-prompt) only work when the
+			// operator is running locally — a remote browser flow would need
+			// the browser on the remote host, and the --cli-prompt path needs
+			// a TTY on the server host.
+			if cfg.IsConfigured() {
+				switch cfg.Mode {
+				case config.ModeRemote, config.ModeCloud:
+					return fmt.Errorf("remote Pad instances must be initialized on the server host with 'pad auth setup'")
+				}
+			}
 
 			if err := cli.EnsureServer(cfg); err != nil {
 				return err
@@ -1194,6 +1230,12 @@ legacy in-terminal email/name/password prompts.`,
 	// concrete blocker shows up. Each --cli-prompt usage is a signal we
 	// should rethink the assumption.
 	cmd.Flags().Bool("cli-prompt", false, "Use the legacy in-terminal email/name/password prompts instead of the browser /setup flow.")
+	// Headless flags for non-interactive (agent) bootstrap (BUG-988).
+	// All three must be supplied together; any one implies the other two.
+	cmd.Flags().String("email", "", "Admin email address (headless bootstrap — requires --name and --password)")
+	cmd.Flags().String("name", "", "Admin display name (headless bootstrap — requires --email and --password)")
+	// NOTE: argv passwords are visible in process listings; see comment in RunE.
+	cmd.Flags().String("password", "", "Admin password (headless bootstrap — requires --email and --name)")
 	return cmd
 }
 
@@ -1265,6 +1307,55 @@ func runCLISetup(cfg *config.Config, client *cli.Client) error {
 	}
 	if err := saveCredentials(cfg, resp); err != nil {
 		return err
+	}
+
+	green := color.New(color.FgGreen).SprintFunc()
+	fmt.Printf("%s First admin account created\n", green("✓"))
+	fmt.Printf("%s Logged in as %s (%s)\n", green("✓"), resp.User.Name, resp.User.Email)
+	printPostSetupNextStepsHint()
+	return nil
+}
+
+// runHeadlessSetup drives the non-interactive (agent) admin bootstrap
+// introduced by BUG-988. It calls the existing POST /api/v1/auth/bootstrap
+// endpoint directly with the supplied credentials and saves the returned
+// session token, bypassing both the browser handoff (TASK-1216) and any
+// interactive prompt. Callers must validate that all three of email/name/
+// password are non-empty before calling here.
+//
+// Output respects --format json: on success it emits a LoginResponse-shaped
+// JSON object (user + token) so agent callers can parse the result. On a
+// non-json format it prints the same human-readable lines as runCLISetup.
+//
+// "already initialized" (conflict from the server) is surfaced as a clean
+// error rather than a raw 409 body; agents can distinguish it by message text.
+func runHeadlessSetup(cfg *config.Config, client *cli.Client, email, name, password string) error {
+	resp, err := client.Bootstrap(email, name, password)
+	if err != nil {
+		// Map the conflict code to a clear human message so agents (and
+		// humans) know what happened without parsing an HTTP status.
+		var apiErr *cli.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == "conflict" {
+			if formatFlag == "json" {
+				outputJSON(map[string]interface{}{
+					"error": map[string]interface{}{
+						"code":    "already_initialized",
+						"message": apiErr.Message,
+					},
+				})
+			}
+			return fmt.Errorf("setup failed: %s (Pad is already initialized — run 'pad auth login' to sign in)", apiErr.Message)
+		}
+		return fmt.Errorf("setup failed: %w", err)
+	}
+
+	if err := saveCredentials(cfg, resp); err != nil {
+		return err
+	}
+
+	if formatFlag == "json" {
+		outputJSON(resp)
+		return nil
 	}
 
 	green := color.New(color.FgGreen).SprintFunc()
@@ -1558,6 +1649,17 @@ const maxAccountSetupAttempts = 5
 // rarely rejects them and re-typing them on every weak-password retry
 // is the primary UX complaint behind BUG-1155.
 func promptAndBootstrap(client *cli.Client) (*cli.LoginResponse, error) {
+	// Guard: refuse to block on a pipe read. An agent or script that
+	// reaches this path without a TTY would hang indefinitely on
+	// reader.ReadString('\n'). Fail fast with a hint pointing at the
+	// headless flags instead (BUG-988).
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return nil, fmt.Errorf(
+			"stdin is not a terminal — cannot prompt for admin credentials.\n" +
+				"Run with --email, --name, and --password for non-interactive bootstrap:\n" +
+				"  pad auth setup --email you@example.com --name \"Your Name\" --password <pass>")
+	}
+
 	reader := bufio.NewReader(os.Stdin)
 
 	fmt.Print("  Email: ")
@@ -1655,15 +1757,18 @@ func printSetupRequiredHint(cfg *config.Config) {
 
 func readPassword() (string, error) {
 	fd := int(os.Stdin.Fd())
+	// Guard: if stdin is not a terminal, term.ReadPassword will fail and
+	// the bufio fallback would block indefinitely on an empty pipe. Fail
+	// fast with a generic error. Callers on the bootstrap path (promptAndBootstrap)
+	// have their own earlier guard that emits bootstrap-specific help text;
+	// this generic guard protects any other caller (e.g. login --interactive)
+	// without leaking bootstrap-specific flag names into an unrelated flow.
+	if !term.IsTerminal(fd) {
+		return "", fmt.Errorf("cannot read password: stdin is not a terminal")
+	}
 	pw, err := term.ReadPassword(fd)
 	if err != nil {
-		// Fallback for non-terminal (pipes, tests)
-		reader := bufio.NewReader(os.Stdin)
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(line), nil
+		return "", err
 	}
 	return string(pw), nil
 }
