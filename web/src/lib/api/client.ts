@@ -389,6 +389,11 @@ export interface AuthSession {
 	// it in the call they already make on connect (IDEA-1826). Empty string only
 	// when no version was stamped at build time; "dev" on dev builds.
 	version?: string;
+	// webmcp_enabled gates the browser-side WebMCP surface (PLAN-1888 DR-6).
+	// The web client registers document.modelContext tools only when true.
+	// Absent on older servers and default false on fresh instances — treat
+	// absent as false.
+	webmcp_enabled?: boolean;
 	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string };
 }
 

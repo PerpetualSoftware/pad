@@ -19,6 +19,10 @@ const (
 	// Token policy settings
 	settingTokenDefaultExpiryDays = "token_default_expiry_days" // Default: 90
 	settingTokenMaxLifetimeDays   = "token_max_lifetime_days"   // Default: 0 (no limit)
+
+	// WebMCP opt-in. "true" enables the browser-side WebMCP surface; any other
+	// value (including unset) means disabled. Default off (PLAN-1888 DR-6).
+	settingWebMCPEnabled = "webmcp_enabled"
 )
 
 // handleGetPlatformSettings returns all platform settings.
@@ -34,6 +38,12 @@ func (s *Server) handleGetPlatformSettings(w http.ResponseWriter, r *http.Reques
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load settings")
 		return
+	}
+
+	// Surface webmcp_enabled with an explicit default so the admin UI toggle
+	// always has a value to bind to on a fresh instance (PLAN-1888 DR-6).
+	if _, ok := settings[settingWebMCPEnabled]; !ok {
+		settings[settingWebMCPEnabled] = "false"
 	}
 
 	// Mask sensitive values
@@ -70,6 +80,7 @@ func (s *Server) handleUpdatePlatformSettings(w http.ResponseWriter, r *http.Req
 		settingPlatformName:           true,
 		settingTokenDefaultExpiryDays: true,
 		settingTokenMaxLifetimeDays:   true,
+		settingWebMCPEnabled:          true,
 	}
 
 	for key, value := range input {

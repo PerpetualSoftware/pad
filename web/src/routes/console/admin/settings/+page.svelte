@@ -28,6 +28,8 @@
 	let platformSettings = $state<Record<string, string>>({});
 	let savingPlatform = $state(false);
 	let platformStatus = $state<'idle' | 'saved' | 'error'>('idle');
+	let savingIntegrations = $state(false);
+	let integrationsStatus = $state<'idle' | 'saved' | 'error'>('idle');
 	let testingEmail = $state(false);
 	let testEmailResult = $state<{ message: string; type: 'success' | 'error' } | null>(null);
 
@@ -77,6 +79,19 @@
 			platformStatus = 'error';
 		} finally {
 			savingPlatform = false;
+		}
+	}
+
+	async function saveIntegrations() {
+		savingIntegrations = true;
+		integrationsStatus = 'idle';
+		try {
+			await adminPatch('/admin/settings', { webmcp_enabled: platformSettings.webmcp_enabled ?? 'false' });
+			integrationsStatus = 'saved';
+		} catch {
+			integrationsStatus = 'error';
+		} finally {
+			savingIntegrations = false;
 		}
 	}
 
@@ -251,6 +266,43 @@
 				</div>
 			{/if}
 		</section>
+
+		<section class="section">
+			<h2 class="section-title">Integrations</h2>
+			<p class="section-desc">
+				WebMCP lets browser-based AI agents invoke Pad tools — including item create, update,
+				delete, and import — under your full logged-in web session. Per-invocation browser consent is
+				the only WebMCP-specific guard on destructive actions, and platform-admin sessions reach all
+				workspaces. Disabled by default; enable only if you understand the risk.
+			</p>
+
+			<div class="email-card">
+				<label class="toggle-row">
+					<input
+						type="checkbox"
+						checked={platformSettings.webmcp_enabled === 'true'}
+						onchange={(e) => {
+							platformSettings = {
+								...platformSettings,
+								webmcp_enabled: e.currentTarget.checked ? 'true' : 'false'
+							};
+						}}
+					/>
+					<span>Enable WebMCP (browser AI agent tools)</span>
+				</label>
+
+				<div class="edit-actions">
+					<button class="btn primary" disabled={savingIntegrations} onclick={saveIntegrations}>
+						{savingIntegrations ? 'Saving...' : 'Save Integrations'}
+					</button>
+					{#if integrationsStatus === 'saved'}
+						<span class="save-msg">Saved</span>
+					{:else if integrationsStatus === 'error'}
+						<span class="save-msg">Failed to save</span>
+					{/if}
+				</div>
+			</div>
+		</section>
 	{/if}
 </div>
 
@@ -403,5 +455,17 @@
 		font-weight: 600;
 		color: var(--text-primary);
 		margin: 0;
+	}
+
+	.toggle-row {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: 0.85rem;
+		color: var(--text-primary);
+		cursor: pointer;
+	}
+	.toggle-row input[type='checkbox'] {
+		cursor: pointer;
 	}
 </style>
