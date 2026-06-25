@@ -86,6 +86,15 @@ type Server struct {
 	mcpPublicURL     string // canonical public URL of the MCP vhost (e.g. https://mcp.getpad.dev)
 	mcpAuthServerURL string // canonical URL of the OAuth auth server (e.g. https://app.getpad.dev), TASK-951
 
+	// MCP tool-surface descriptor source (PLAN-1888 / TASK-1891). Wired
+	// via SetToolSurfaceHandler at startup from mcp.ToolSurfaceJSON. The
+	// injection mirrors SetMCPTransport and exists for the same reason:
+	// internal/mcp imports internal/server (dispatch_http.go), so this
+	// package CANNOT import internal/mcp to build the catalog JSON
+	// itself. cmd/pad/main.go imports both and injects the serializer.
+	// nil → GET /api/v1/mcp/tool-surface returns 404 (handler not wired).
+	toolSurfaceJSON func() ([]byte, error)
+
 	// OAuth 2.1 authorization server (PLAN-943 TASK-1024 sub-PR B,
 	// HTTP handlers in TASK-1025 sub-PR C). Wired via SetOAuthServer
 	// at startup when the deployment is in cloud mode + has the
@@ -1309,6 +1318,18 @@ func (s *Server) setupRouter() {
 
 			// Search
 			r.Get("/search", s.handleSearch)
+
+			// MCP tool-surface descriptor (PLAN-1888 / TASK-1891). Serves
+			// the catalog JSON (the nine env.Catalog tools + per-action
+			// read_only flags) for the browser-side WebMCP layer to build
+			// tool descriptors. Inside the authed group so it inherits
+			// TokenAuth/SessionAuth/CSRFProtect/RequireAuth — same-origin
+			// session/token only, NOT the bearer-gated /mcp infra path.
+			// The handler nil-checks toolSurfaceJSON: 404 when the
+			// serializer hasn't been injected (mirrors the SetMCPTransport
+			// gating). Exposes only catalog descriptors — no route table,
+			// handler internals, or other server state.
+			r.Get("/mcp/tool-surface", s.handleMCPToolSurface)
 		})
 
 		// Cross-workspace wiki-link resolver (IDEA-1492). Resolves
