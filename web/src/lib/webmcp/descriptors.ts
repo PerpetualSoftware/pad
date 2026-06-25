@@ -11,6 +11,12 @@
 //   - DR-2: `annotations.readOnlyHint = true` only when EVERY action the tool
 //     exposes is `read_only`. Mixed tools (e.g. pad_item) get no hint, so the
 //     host prompts for per-invocation consent on writes.
+//   - DR-2 (prompt-injection hardening): `annotations.untrustedContentHint =
+//     true` for every tool whose output can echo user-authored workspace
+//     content — i.e. every tool except a pure version/meta surface (every
+//     action is content-free server introspection). Signals the agent to treat
+//     the result as unverified input. NB: `pad_meta` carries the hint, since
+//     its `bootstrap` action returns the workspace bootstrap blob.
 
 import type {
 	ToolSurfaceTool,
@@ -74,12 +80,46 @@ export function isAllReadOnly(tool: ToolSurfaceTool): boolean {
 	return tool.actions.every((a) => a.read_only);
 }
 
+// The catalog actions whose output is pure server introspection — version
+// metadata, the tool-catalog dump, server-info — read from in-memory server
+// state, never from any item/comment/dashboard. A tool is content-free ONLY if
+// EVERY action it exposes is one of these. NB: `pad_meta` is NOT content-free
+// despite its name — it also exposes `bootstrap`, which returns the workspace
+// bootstrap blob (user + workspace content). So `pad_meta` correctly DOES carry
+// untrustedContentHint; only a hypothetical pure version/meta surface wouldn't.
+const META_INTROSPECTION_ACTIONS: ReadonlySet<string> = new Set([
+	'server-info',
+	'version',
+	'tool-surface',
+]);
+
+/**
+ * Derive `untrustedContentHint` per DR-2 (prompt-injection hardening): true for
+ * every tool whose output can surface user-authored workspace content — i.e.
+ * every catalog tool except a pure version/meta-only surface (every action is
+ * server introspection). The hint tells the browser agent to treat the result
+ * as unverified data so a malicious item body can't smuggle instructions back
+ * to the agent.
+ *
+ * Derived from the action set, NOT the tool name: a tool surfaces content
+ * unless EVERY action it exposes is a content-free introspection action. This
+ * correctly flags `pad_meta` (its `bootstrap` action returns workspace content)
+ * while still exempting a purely version/meta tool. A tool with zero actions
+ * (shouldn't happen for catalog tools) is treated as content-surfacing — the
+ * conservative direction.
+ */
+export function surfacesUntrustedContent(tool: ToolSurfaceTool): boolean {
+	if (!tool.actions || tool.actions.length === 0) return true;
+	return !tool.actions.every((a) => META_INTROSPECTION_ACTIONS.has(a.name));
+}
+
 /**
  * Build a single ModelContextTool descriptor from a tool-surface tool.
  *
  * - STRIPS the `workspace` param (DR-4) — it is never placed in the schema.
  * - `action` stays required (the catalog dispatch verb).
  * - readOnlyHint applied per DR-2.
+ * - untrustedContentHint applied per DR-2 for content-surfacing tools.
  *
  * `execute` is supplied by the caller (the dispatcher closure) so this stays
  * pure and side-effect-free for testing.
@@ -109,6 +149,7 @@ export function buildDescriptor(
 
 	const annotations: ModelContextToolAnnotations = {};
 	if (isAllReadOnly(tool)) annotations.readOnlyHint = true;
+	if (surfacesUntrustedContent(tool)) annotations.untrustedContentHint = true;
 
 	const descriptor: ModelContextTool = {
 		name: tool.name,

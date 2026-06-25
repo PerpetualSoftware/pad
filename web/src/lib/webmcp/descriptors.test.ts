@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { ToolSurfaceTool, ToolSurfaceResponse } from '$lib/api/client';
-import { buildDescriptor, buildDescriptors, isAllReadOnly } from './descriptors';
+import {
+	buildDescriptor,
+	buildDescriptors,
+	isAllReadOnly,
+	surfacesUntrustedContent,
+} from './descriptors';
 
 // A no-op execute closure — the builder is pure aside from carrying it through.
 const noopExecute = async (): Promise<ModelContextToolResult> => ({
@@ -41,6 +46,43 @@ const padItem: ToolSurfaceTool = {
 	],
 };
 
+// pad_meta as the REAL catalog serves it: server-info/version/tool-surface are
+// pure introspection, but `bootstrap` returns the workspace bootstrap blob
+// (user + workspace content). So pad_meta IS content-surfacing — it must carry
+// untrustedContentHint. (Mirrors internal/mcp/catalog_meta.go's Actions map.)
+const padMeta: ToolSurfaceTool = {
+	name: 'pad_meta',
+	description: 'Server introspection + the agent bootstrap blob.',
+	workspace: true,
+	actions: [
+		{ name: 'server-info', read_only: true },
+		{ name: 'version', read_only: true },
+		{ name: 'tool-surface', read_only: true },
+		{ name: 'bootstrap', read_only: true },
+	],
+	params: [
+		{
+			name: 'action',
+			type: 'string',
+			enum: ['server-info', 'version', 'tool-surface', 'bootstrap'],
+		},
+	],
+};
+
+// A hypothetical PURE version/meta surface — every action is content-free
+// server introspection, no bootstrap. The only shape that must NOT carry
+// untrustedContentHint.
+const pureMeta: ToolSurfaceTool = {
+	name: 'pad_meta_pure',
+	description: 'Version/meta only.',
+	workspace: false,
+	actions: [
+		{ name: 'version', read_only: true },
+		{ name: 'tool-surface', read_only: true },
+	],
+	params: [{ name: 'action', type: 'string', enum: ['version', 'tool-surface'] }],
+};
+
 describe('isAllReadOnly (DR-2)', () => {
 	it('true when every action is read_only', () => {
 		expect(isAllReadOnly(padSearch)).toBe(true);
@@ -52,6 +94,56 @@ describe('isAllReadOnly (DR-2)', () => {
 
 	it('false when the tool has zero actions (conservative)', () => {
 		expect(isAllReadOnly({ ...padSearch, actions: [] })).toBe(false);
+	});
+});
+
+describe('surfacesUntrustedContent (DR-2, prompt-injection hardening)', () => {
+	it('true for a content-surfacing tool (pad_search)', () => {
+		expect(surfacesUntrustedContent(padSearch)).toBe(true);
+	});
+
+	it('true for a mixed read/write content tool (pad_item)', () => {
+		expect(surfacesUntrustedContent(padItem)).toBe(true);
+	});
+
+	it('true for pad_meta — its bootstrap action surfaces workspace content', () => {
+		expect(surfacesUntrustedContent(padMeta)).toBe(true);
+	});
+
+	it('false only for a pure version/meta surface (no bootstrap)', () => {
+		expect(surfacesUntrustedContent(pureMeta)).toBe(false);
+	});
+
+	it('true for a zero-action tool (conservative)', () => {
+		expect(surfacesUntrustedContent({ ...padSearch, actions: [] })).toBe(true);
+	});
+});
+
+describe('buildDescriptor — untrustedContentHint (DR-2)', () => {
+	it('sets untrustedContentHint=true for a content tool', () => {
+		const { tool } = buildDescriptor(padSearch, noopExecute);
+		expect(tool.annotations?.untrustedContentHint).toBe(true);
+	});
+
+	it('sets untrustedContentHint=true even on a read-only content tool', () => {
+		// pad_search is all-read, so it ALSO gets readOnlyHint — both coexist.
+		const { tool } = buildDescriptor(padSearch, noopExecute);
+		expect(tool.annotations?.readOnlyHint).toBe(true);
+		expect(tool.annotations?.untrustedContentHint).toBe(true);
+	});
+
+	it('sets untrustedContentHint=true for the real pad_meta (bootstrap)', () => {
+		const { tool } = buildDescriptor(padMeta, noopExecute);
+		// All-read → readOnlyHint, and content-surfacing via bootstrap → hint.
+		expect(tool.annotations?.readOnlyHint).toBe(true);
+		expect(tool.annotations?.untrustedContentHint).toBe(true);
+	});
+
+	it('omits untrustedContentHint for a pure version/meta surface', () => {
+		const { tool } = buildDescriptor(pureMeta, noopExecute);
+		// All-read → readOnlyHint set, but NOT untrustedContentHint.
+		expect(tool.annotations?.readOnlyHint).toBe(true);
+		expect('untrustedContentHint' in (tool.annotations ?? {})).toBe(false);
 	});
 });
 
@@ -88,10 +180,12 @@ describe('buildDescriptor — readOnlyHint (DR-2)', () => {
 		expect(tool.annotations?.readOnlyHint).toBe(true);
 	});
 
-	it('omits annotations entirely for a mixed tool', () => {
+	it('omits readOnlyHint for a mixed tool (but still flags untrusted content)', () => {
 		const { tool } = buildDescriptor(padItem, noopExecute);
-		// No readOnlyHint at all → the host prompts for per-invocation consent.
-		expect(tool.annotations).toBeUndefined();
+		// No readOnlyHint → the host prompts for per-invocation consent. The
+		// tool still surfaces user content, so untrustedContentHint is set.
+		expect(tool.annotations?.readOnlyHint).toBeUndefined();
+		expect(tool.annotations?.untrustedContentHint).toBe(true);
 	});
 });
 
