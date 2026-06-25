@@ -232,7 +232,7 @@ Both are also returned by `pad://_meta/version` and `pad_meta.action: version`.
 **Dispatchers.** Two ship in `internal/mcp/`:
 
 - `ExecDispatcher` — shells out to the `pad` binary; subprocess inherits credentials from `~/.pad/credentials.json`. Used by `pad mcp serve` for local stdio MCP.
-- `HTTPHandlerDispatcher` — calls pad-cloud's HTTP handlers in-process with the requesting user attached via `server.WithCurrentUser`. Used by the future `/mcp` endpoint (PLAN-943) where the dispatcher serves multiple OAuth users from a single process. Tools are wired into the route table at `internal/mcp/dispatch_http.go` (`routeTable`); add a `RouteMapper` per command — `mapItemCreate` is the seed entry from TASK-965.
+- `HTTPHandlerDispatcher` — calls pad-cloud's HTTP handlers in-process with the requesting user attached via `server.WithCurrentUser`. Backs the **live** remote MCP server on the dedicated `mcp.getpad.dev` vhost (PLAN-943), where the dispatcher serves multiple OAuth users from a single process. The Streamable HTTP transport is mounted by `Server.SetMCPTransport` / `registerMCPRoutes` (cloud-mode-gated; self-hosted binaries leave it unmounted) — see `internal/server/handlers_mcp.go`. Tools are wired into the route table at `internal/mcp/dispatch_http.go` (`routeTable`); add a `RouteMapper` per command — `mapItemCreate` is the seed entry from TASK-965.
 
 Code lives in `internal/mcp/` (built on `github.com/mark3labs/mcp-go`). Public docs at `getpad.dev/mcp/local`.
 

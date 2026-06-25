@@ -137,6 +137,17 @@ func (s *Server) setupStatePayload(setupMethod string) map[string]interface{} {
 	}
 }
 
+// webMCPEnabled reports whether the WebMCP browser surface is opted in via the
+// webmcp_enabled platform setting. Fails closed: any read error or an unset/
+// non-"true" value yields false (PLAN-1888 DR-6).
+func (s *Server) webMCPEnabled() bool {
+	v, err := s.store.GetPlatformSetting(settingWebMCPEnabled)
+	if err != nil {
+		return false
+	}
+	return v == "true"
+}
+
 func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[string]interface{} {
 	// mcp_public_url is the canonical URL clients paste into their MCP-capable
 	// agent (e.g. "https://mcp.getpad.dev"). Empty string when PAD_MCP_PUBLIC_URL
@@ -160,6 +171,11 @@ func (s *Server) sessionStatePayload(authenticated bool, user *models.User) map[
 		"email_configured":  s.email != nil,
 		"mcp_public_url":    s.mcpPublicURL,
 		"billing_available": s.cloudMode && s.billingAvailable,
+		// webmcp_enabled gates the browser-side WebMCP surface. Read from the
+		// platform_settings kv table; default false when unset/absent or on
+		// any read error (fail closed). The web client uses it to decide
+		// whether to register tools via document.modelContext (PLAN-1888 DR-6).
+		"webmcp_enabled": s.webMCPEnabled(),
 		// version is the server build version (same source as /health),
 		// surfaced here so the mobile shells can read it in the
 		// /auth/session call they already make on connect and warn when a
