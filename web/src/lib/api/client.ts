@@ -397,6 +397,54 @@ export interface AuthSession {
 	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string };
 }
 
+// ── WebMCP tool-surface (PLAN-1888 / TASK-1892) ────────────────────────────
+// Mirrors internal/mcp/tool_surface.go's serialized payload. The browser
+// WebMCP module (web/src/lib/webmcp/) fetches this once per workspace entry
+// to build document.modelContext tool descriptors from the live catalog.
+
+/** One action of a catalog tool, with its read-only classification. */
+export interface ToolSurfaceAction {
+	name: string;
+	/** True when this action performs no mutation (DR-2 read set). */
+	read_only: boolean;
+}
+
+/** One parameter of a catalog tool's flat param union. */
+export interface ToolSurfaceParam {
+	name: string;
+	type: string;
+	description?: string;
+	enum?: string[];
+}
+
+/** One catalog tool (pad_item, pad_search, …) as served over REST. */
+export interface ToolSurfaceTool {
+	name: string;
+	description: string;
+	/**
+	 * True when the underlying ToolDef declared `Schema.Workspace` — i.e.
+	 * the serializer emitted a `workspace` param. The WebMCP builder MUST
+	 * strip that param and force the route wsSlug (DR-4).
+	 */
+	workspace: boolean;
+	actions: ToolSurfaceAction[];
+	params: ToolSurfaceParam[];
+}
+
+export interface ToolSurfaceResponse {
+	tool_surface_version: string;
+	rollout_status?: string;
+	tools: ToolSurfaceTool[];
+}
+
+/**
+ * Playbook metadata as returned by `GET /workspaces/{ws}/playbooks` — the
+ * same projection the bootstrap blob carries (ref, title, slug,
+ * invocation_slug, trigger, scope, status, has_arguments, summary). Loosely
+ * typed (Record) since the WebMCP read path forwards it verbatim as JSON.
+ */
+export type PlaybookMeta = Record<string, unknown>;
+
 // ImportURLResponse mirrors internal/server/handlers_import.go's
 // importURLResponse. Side-effect-free: no DB writes happen on the
 // server during this call; the editor decides whether to splice the
@@ -426,6 +474,29 @@ export const api = {
 
 	templates: {
 		list: () => request<WorkspaceTemplate[]>('/templates'),
+	},
+
+	// ── WebMCP tool-surface (PLAN-1888 / TASK-1892) ───────────────────────────
+
+	mcp: {
+		/**
+		 * The catalog tool-surface descriptor blob (`GET /api/v1/mcp/tool-surface`,
+		 * added in Phase 2). Session-authed; the browser WebMCP module fetches it
+		 * once per workspace entry to build document.modelContext tools.
+		 */
+		toolSurface: () => request<ToolSurfaceResponse>('/mcp/tool-surface'),
+	},
+
+	// ── Playbooks ─────────────────────────────────────────────────────────────
+
+	playbooks: {
+		/** Playbook metadata for the workspace (bootstrap-shaped projection). */
+		list: (ws: string) =>
+			request<PlaybookMeta[]>(`/workspaces/${ws}/playbooks`),
+
+		/** Full playbook item by ref / slug / invocation_slug. */
+		get: (ws: string, ref: string) =>
+			request<Item>(`/workspaces/${ws}/playbooks/${ref}`),
 	},
 
 	// ── Workspaces ────────────────────────────────────────────────────────────

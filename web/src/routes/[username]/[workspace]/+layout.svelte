@@ -10,6 +10,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
+	import { registerWorkspaceTools, type WebMcpHandle } from '$lib/webmcp/register';
 	import ConnectBanner from '$lib/components/ConnectBanner.svelte';
 	import BottomNav from '$lib/components/layout/BottomNav.svelte';
 	import MobileContextBar from '$lib/components/layout/MobileContextBar.svelte';
@@ -20,6 +21,8 @@
 	let username = $derived(page.params.username ?? '');
 	let unsubscribeSSE: (() => void) | null = null;
 	let unsubscribeSync: (() => void) | null = null;
+	let webmcpTeardown: WebMcpHandle | null = null;
+	let webmcpToken = 0;
 
 	onMount(() => {
 		// Initialize the sync coordinator (sets up visibilitychange listener once)
@@ -41,6 +44,8 @@
 		unsubscribeSync?.();
 		sseService.disconnect();
 		titleStore.clearPageTitle();
+		webmcpTeardown?.();
+		webmcpTeardown = null;
 	});
 
 	// These two effects are split on purpose:
@@ -111,6 +116,7 @@
 				starredStore.load(wsSlug);
 				syncService.setWorkspace(wsSlug);
 				connectSSE();
+				connectWebMCP();
 			});
 		}
 	});
@@ -190,6 +196,25 @@
 				}
 			}
 		});
+	}
+
+	function connectWebMCP() {
+		webmcpTeardown?.();
+		webmcpTeardown = null;
+		const token = ++webmcpToken;
+		if (!wsSlug) return;
+
+		registerWorkspaceTools(wsSlug)
+			.then((handle) => {
+				// A newer registration superseded this one while the async
+				// tool-surface fetch was in flight — discard the stale tools.
+				if (token !== webmcpToken) {
+					handle();
+					return;
+				}
+				webmcpTeardown = handle;
+			})
+			.catch(() => {});
 	}
 </script>
 
