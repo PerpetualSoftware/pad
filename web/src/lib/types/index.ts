@@ -384,6 +384,7 @@ export interface Collection {
 export interface CollectionCreate {
 	name: string;
 	slug?: string;
+	prefix?: string;
 	icon?: string;
 	description?: string;
 	schema?: string;
@@ -397,6 +398,7 @@ export interface FieldMigration {
 
 export interface CollectionUpdate {
 	name?: string;
+	prefix?: string;
 	icon?: string;
 	description?: string;
 	schema?: string;
@@ -629,6 +631,8 @@ export interface ItemCreate {
 	tags?: string;
 	pinned?: boolean;
 	parent_id?: string;
+	assigned_user_id?: string;
+	agent_role_id?: string;
 	created_by?: string;
 	source?: string;
 }

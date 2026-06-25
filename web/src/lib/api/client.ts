@@ -497,6 +497,24 @@ export const api = {
 		/** Full playbook item by ref / slug / invocation_slug. */
 		get: (ws: string, ref: string) =>
 			request<Item>(`/workspaces/${ws}/playbooks/${ref}`),
+
+		/**
+		 * Bind args to a playbook's declared spec and return the body +
+		 * bound args + any unsatisfied required args. Side-effect-free
+		 * server-side (the server only parses; the agent executes) —
+		 * mirrors the CLI's `pad playbook run` and the MCP
+		 * `pad_playbook.action=run`. Pass either a pre-parsed `args` map
+		 * or raw CLI tokens (`raw_args`); the server merges them.
+		 */
+		run: (
+			ws: string,
+			ref: string,
+			body?: { args?: Record<string, unknown>; raw_args?: string[] }
+		) =>
+			request<unknown>(`/workspaces/${ws}/playbooks/${ref}/run`, {
+				method: 'POST',
+				body: JSON.stringify(body ?? {})
+			}),
 	},
 
 	// ── Workspaces ────────────────────────────────────────────────────────────
@@ -1126,6 +1144,20 @@ export const api = {
 			request<DashboardResponse>(`/workspaces/${ws}/dashboard`)
 	},
 
+	// ── Agent bootstrap ───────────────────────────────────────────────────────
+
+	/**
+	 * One-round-trip agent context for a workspace — user + collections +
+	 * always-on conventions + roles + playbook metadata + dashboard +
+	 * `needs_onboarding`. Mirrors the CLI `pad bootstrap`, the MCP
+	 * `pad_meta.action=bootstrap`, and the `pad://workspace/{ws}/bootstrap`
+	 * resource. Read-only. Typed loosely (`unknown`) because the
+	 * AgentBootstrap shape lives in the Go server package and is not
+	 * mirrored as a TS interface.
+	 */
+	agentBootstrap: (ws: string) =>
+		request<unknown>(`/workspaces/${ws}/agent/bootstrap`),
+
 	// ── Workspace Graph (PLAN-1730 / TASK-1732) ───────────────────────────────
 
 	graph: {
@@ -1282,6 +1314,34 @@ export const api = {
 					content: playbook.content,
 					fields: JSON.stringify(fields)
 				})
+			});
+		},
+
+		/**
+		 * Activate a library convention or playbook by its exact title.
+		 * Resolves the title against the global library client-side
+		 * (conventions first, then playbooks — the same precedence the CLI
+		 * `pad library activate` and the MCP `pad_library.action=activate`
+		 * use) and creates the matching workspace item. There is no
+		 * server-side activate-by-title endpoint; the resolution lives in
+		 * the client, mirroring cmd/pad/main.go::libraryActivateCmd.
+		 *
+		 * Throws when no entry matches the title.
+		 */
+		activateByTitle: async (ws: string, title: string): Promise<Item> => {
+			const conv = await api.library.get();
+			for (const cat of conv.categories ?? []) {
+				const match = (cat.conventions ?? []).find((c) => c.title === title);
+				if (match) return api.library.activate(ws, match);
+			}
+			const plib = await api.library.getPlaybooks();
+			for (const cat of plib.categories ?? []) {
+				const match = (cat.playbooks ?? []).find((p) => p.title === title);
+				if (match) return api.library.activatePlaybook(ws, match);
+			}
+			throw new PadApiError({
+				code: 'not_found',
+				message: `no library convention or playbook titled ${JSON.stringify(title)}`
 			});
 		}
 	},
