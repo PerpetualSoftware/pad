@@ -415,6 +415,16 @@ func serveCmd() *cobra.Command {
 			srv.SetIPChangeEnforce(cfg.IPChangeEnforce)
 			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace)
 
+			// MCP tool-surface descriptor endpoint (PLAN-1888 / TASK-1891).
+			// Inject the cycle-free catalog→JSON serializer so the authed
+			// GET /api/v1/mcp/tool-surface route can serve it. Wired here
+			// (not in the cloud block) because the browser-side WebMCP layer
+			// needs the descriptors on BOTH cloud and self-host. Mirrors the
+			// SetMCPTransport injection: internal/server can't import
+			// internal/mcp (cycle), so cmd/pad — which imports both — hands
+			// the serializer down. Must be set before setupRouter runs.
+			srv.SetToolSurfaceHandler(mcpserver.ToolSurfaceJSON)
+
 			// Billing CTA gate (TASK-800). PAD_BILLING_AVAILABLE=true when
 			// the pad-cloud sidecar has Stripe keys configured so the web UI
 			// can show "Upgrade to Pro" buttons. Defaults to false so a fresh

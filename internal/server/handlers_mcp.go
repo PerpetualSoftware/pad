@@ -85,6 +85,49 @@ func (s *Server) SetMCPTransport(transport http.Handler, mcpPublicURL, authServe
 	s.startMCPSessionTracker()
 }
 
+// SetToolSurfaceHandler wires the MCP catalog→JSON serializer onto the
+// server (PLAN-1888 / TASK-1891). Called once at startup by
+// cmd/pad/main.go with mcp.ToolSurfaceJSON.
+//
+// Why injection rather than a direct import: internal/mcp imports
+// internal/server (dispatch_http.go), so internal/server cannot import
+// internal/mcp to build the catalog descriptor JSON itself — that would
+// close the import cycle. This is the exact SetMCPTransport pattern:
+// cmd/pad/main.go imports both packages and hands the serializer down.
+//
+// Unlike SetMCPTransport, the tool-surface endpoint mounts
+// unconditionally inside the authed API group (it's available on both
+// cloud and self-host — the browser WebMCP layer needs it everywhere),
+// so this can be called any time before the first request. When the
+// serializer is nil (never injected), handleMCPToolSurface returns 404.
+func (s *Server) SetToolSurfaceHandler(fn func() ([]byte, error)) {
+	s.toolSurfaceJSON = fn
+}
+
+// handleMCPToolSurface serves the MCP tool-surface descriptor JSON —
+// the nine catalog tools, their actions (each with a read_only bool),
+// and their input schemas. Backs GET /api/v1/mcp/tool-surface, mounted
+// in the authed API group so it inherits the session/token auth chain.
+//
+// The body is built entirely by the injected serializer
+// (mcp.ToolSurfaceJSON), which reads only the static MCP catalog. No
+// request state, route table, or other server internals reach the
+// response — the endpoint exposes catalog descriptors and nothing else.
+func (s *Server) handleMCPToolSurface(w http.ResponseWriter, _ *http.Request) {
+	if s.toolSurfaceJSON == nil {
+		writeError(w, http.StatusNotFound, "not_found", "MCP tool surface not available")
+		return
+	}
+	body, err := s.toolSurfaceJSON()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to serialize MCP tool surface")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
 // registerMCPRoutes installs the /mcp + /.well-known endpoints on r,
 // gated by cloud mode. Called from setupRouter at infrastructure-
 // middleware level (NOT inside the API group), because:

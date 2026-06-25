@@ -150,77 +150,15 @@ func actionMetaBootstrap(ctx context.Context, input map[string]any, env ActionEn
 // docs generators: they don't have to reproduce buildToolFromDef's
 // implicit-param logic separately.
 func actionMetaToolSurface(_ context.Context, _ map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
-	type actionSummary struct {
-		Name string `json:"name"`
-	}
-	type paramSummary struct {
-		Name        string   `json:"name"`
-		Type        string   `json:"type"`
-		Description string   `json:"description,omitempty"`
-		Enum        []string `json:"enum,omitempty"`
-	}
-	type toolSummary struct {
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		Workspace   bool            `json:"workspace"`
-		Actions     []actionSummary `json:"actions"`
-		Params      []paramSummary  `json:"params"`
-	}
-	tools := make([]toolSummary, 0, len(env.Catalog))
-	for _, def := range env.Catalog {
-		actions := make([]actionSummary, 0, len(def.Actions))
-		for _, name := range sortedActionNames(def) {
-			actions = append(actions, actionSummary{Name: name})
-		}
-		// `action` is always present and always required — buildToolFromDef
-		// injects it into the schema. Synthesize it here so consumers
-		// reading tool-surface get the full param picture without having
-		// to know about that injection. Enum mirrors sortedActionNames.
-		params := []paramSummary{{
-			Name:        "action",
-			Type:        "string",
-			Description: "The action to perform. Required.",
-			Enum:        sortedActionNames(def),
-		}}
-		if def.Schema.Workspace {
-			params = append(params, paramSummary{
-				Name: "workspace",
-				Type: "string",
-				Description: "Workspace slug. Defaults to the session workspace " +
-					"set via pad_set_workspace, then to the CWD-linked workspace " +
-					"from .pad.toml.",
-			})
-		}
-		for _, p := range def.Schema.Params {
-			params = append(params, paramSummary{
-				Name:        p.Name,
-				Type:        p.Type,
-				Description: p.Description,
-				Enum:        p.Enum,
-			})
-		}
-		tools = append(tools, toolSummary{
-			Name:        def.Name,
-			Description: def.Description,
-			Workspace:   def.Schema.Workspace,
-			Actions:     actions,
-			Params:      params,
-		})
-	}
-	// rollout_status is "complete" only after TASK-981 retires the
-	// cmdhelp walker and the catalog is the sole tools/list source.
-	// Before then, "in-progress" signals to consumers that the catalog
-	// is a strict subset of the advertised surface and they should
-	// read tools/list directly if they need everything.
-	rolloutStatus := "in-progress"
-	if ToolSurfaceVersion != "0.1" {
-		rolloutStatus = "complete"
-	}
-	payload := map[string]any{
-		"tool_surface_version": ToolSurfaceVersion,
-		"rollout_status":       rolloutStatus,
-		"tools":                tools,
-	}
+	// Shared serializer (TASK-1891): buildToolSurfacePayload is the
+	// single source of truth for the tool-surface shape, consumed by
+	// both this MCP action and the cycle-free ToolSurfaceJSON() that
+	// backs GET /api/v1/mcp/tool-surface. env.Catalog is the same slice
+	// as the package-global Catalog at registration time; passing it
+	// explicitly keeps the action reading the env it was wired with.
+	// Each action now carries a `read_only` bool — additive metadata,
+	// so consumers that ignore unknown keys are unaffected.
+	payload := buildToolSurfacePayload(env.Catalog)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return mcp.NewToolResultErrorf("pad_meta.tool-surface: marshal: %s", err.Error()), nil
