@@ -1,8 +1,11 @@
 <script lang="ts">
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields, formatItemRef, itemUrlId } from '$lib/types';
+	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
+	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
 	import { page } from '$app/state';
 	import EmptyState from '../common/EmptyState.svelte';
+	import ItemActionsMenu from './ItemActionsMenu.svelte';
 
 	interface Props {
 		items: Item[];
@@ -12,6 +15,17 @@
 		oncreate?: () => void;
 		itemProgress?: Record<string, { total: number; done: number }>;
 		progressLabel?: string;
+		/**
+		 * Reorder plumbing (IDEA-1898). Unlike List/Board, the table had no
+		 * manual-order surface — it only column-header-sorts ephemerally. To
+		 * support the reorder menu it now honors the page-wide `sortMode`
+		 * (manual ⇒ stored sort_order) when no column-header sort is active,
+		 * and persists moves through `onReorder`.
+		 */
+		onReorder?: (updates: { slug: string; sort_order: number }[]) => void;
+		canEdit?: boolean;
+		preserveOrder?: boolean;
+		sortMode?: SortMode;
 	}
 
 	let {
@@ -21,7 +35,11 @@
 		onStatusChange,
 		oncreate,
 		itemProgress,
-		progressLabel
+		progressLabel,
+		onReorder,
+		canEdit = true,
+		preserveOrder = false,
+		sortMode = 'manual'
 	}: Props = $props();
 
 	let resolvedWsSlug = $derived(wsSlug || page.params.workspace || '');
@@ -33,7 +51,13 @@
 	let sortDir = $state<'asc' | 'desc'>('asc');
 
 	let sortedItems = $derived.by(() => {
-		if (!sortKey) return items;
+		// No column-header sort active: fall back to the page-wide sort so
+		// the table reflects the same order as List/Board (manual ⇒ stored
+		// sort_order). `preserveOrder` (search active) keeps the parent's
+		// relevance order untouched.
+		if (!sortKey) {
+			return preserveOrder ? items : [...items].sort(itemComparator(sortMode, collection));
+		}
 
 		const sorted = [...items].sort((a, b) => {
 			let aVal: any;
@@ -68,6 +92,22 @@
 		} else {
 			sortKey = key;
 			sortDir = 'asc';
+		}
+	}
+
+	// Reorder is only meaningful in manual sort with no column-header
+	// override (a column sort would immediately re-order the rows) and not
+	// while search preserves relevance order. A column-header click thus
+	// transparently hides the menu until the user clears it back to the
+	// default (manual) order. The table is a flat list, so the group is the
+	// whole displayed set.
+	let canReorder = $derived(canEdit && sortMode === 'manual' && !sortKey && !preserveOrder && !!onReorder);
+
+	function reorderItem(item: Item, dir: ReorderDirection) {
+		if (!onReorder) return;
+		const updates = reorderGroup(sortedItems, item.id, dir);
+		if (updates.length > 0) {
+			onReorder(updates.map((u) => ({ slug: u.item.id, sort_order: u.sort_order })));
 		}
 	}
 
@@ -124,7 +164,13 @@
 	 * field columns, matching the pre-refactor `.col-*` widths.
 	 */
 	let gridTemplate = $derived(
-		['70px', 'minmax(200px, 1fr)', ...visibleFields.map(() => 'auto'), '90px'].join(' ')
+		[
+			'70px',
+			'minmax(200px, 1fr)',
+			...visibleFields.map(() => 'auto'),
+			'90px',
+			...(canReorder ? ['44px'] : [])
+		].join(' ')
 	);
 </script>
 
@@ -148,8 +194,11 @@
 				</div>
 			{/each}
 			<div class="table-cell col-updated" role="columnheader">Updated</div>
+			{#if canReorder}
+				<div class="table-cell col-actions" role="columnheader"><span class="sr-only">Reorder</span></div>
+			{/if}
 		</div>
-		{#each sortedItems as item (item.id)}
+		{#each sortedItems as item, i (item.id)}
 			{@const fields = parseFields(item)}
 			<div class="table-row" role="row">
 				<div class="table-cell col-ref" role="cell"><span class="ref">{formatItemRef(item) ?? ''}</span></div>
@@ -175,6 +224,16 @@
 					</div>
 				{/each}
 				<div class="table-cell col-updated" role="cell"><span class="cell-date">{relativeTime(item.updated_at)}</span></div>
+				{#if canReorder}
+					<div class="table-cell col-actions" role="cell">
+						<ItemActionsMenu
+							{item}
+							label={item.title}
+							disabledDirs={disabledDirections(i, sortedItems.length)}
+							onReorder={(dir) => reorderItem(item, dir)}
+						/>
+					</div>
+				{/if}
 			</div>
 		{/each}
 	</div>
@@ -352,5 +411,23 @@
 	.cell-progress-text {
 		font-size: 0.7em;
 		color: var(--text-muted);
+	}
+
+	.col-actions {
+		justify-content: center;
+		padding-left: 0;
+		padding-right: var(--space-2);
+	}
+
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 </style>

@@ -9,6 +9,13 @@
 	import { parseFields, formatItemRef } from '$lib/types';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
+	import {
+		reorderGroup,
+		reorderedList,
+		disabledDirections,
+		type ReorderDirection
+	} from '$lib/collections/reorder';
+	import ItemActionsMenu from './collections/ItemActionsMenu.svelte';
 	import ChildChart from './ChildChart.svelte';
 	import NestedChildren from './NestedChildren.svelte';
 
@@ -124,6 +131,32 @@
 		}
 	}
 
+	// Menu-driven reorder (IDEA-1898) — the non-drag counterpart, scoped to
+	// the child's status group. Unlike List/Board (which persist through the
+	// page's optimistic local index), ChildItems owns its own `children`
+	// state, so it updates the displayed group optimistically here and
+	// persists the changed rows via the same per-child update loop the drag
+	// path uses. A canonical reload (SSE/sync) settles it afterward.
+	async function reorderChild(status: string, child: Item, dir: ReorderDirection) {
+		const grp = (groupData[status] ?? []).filter(
+			(i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]
+		);
+		const reordered = reorderedList(grp, child.id, dir);
+		if (reordered === grp) return; // no-op (edge of group)
+
+		// Optimistic: show the new order immediately with dense sort_order.
+		groupData[status] = reordered.map((it, idx) => ({ ...it, sort_order: idx }));
+
+		const updates = reorderGroup(grp, child.id, dir);
+		try {
+			for (const u of updates) {
+				await api.items.update(wsSlug, u.item.id, { sort_order: u.sort_order });
+			}
+		} catch (e) {
+			console.error('Failed to persist reorder:', e);
+		}
+	}
+
 	// ── Data loading ─────────────────────────────────────────────────────────
 
 	async function loadChildren() {
@@ -219,7 +252,7 @@
 					onconsider={(e) => handleConsider(status, e)}
 					onfinalize={(e) => handleFinalize(status, e)}
 				>
-					{#each groupData[status] ?? [] as child (child.id)}
+					{#each groupData[status] ?? [] as child, i (child.id)}
 						{@const fields = parseFields(child)}
 						{@const isDone = terminal.includes(fields.status)}
 						{@const isExpanded = expandedIds.has(child.id)}
@@ -244,6 +277,14 @@
 										</span>
 									{/if}
 								</a>
+								{#if canEdit}
+									<ItemActionsMenu
+										item={child}
+										label={child.title}
+										disabledDirs={disabledDirections(i, (groupData[status] ?? []).length)}
+										onReorder={(dir) => reorderChild(status, child, dir)}
+									/>
+								{/if}
 							</div>
 							{#if canExpand && isExpanded}
 								<NestedChildren {wsSlug} {username} parentSlug={child.slug} depth={1} maxDepth={3} {terminalStatuses} />
@@ -384,6 +425,10 @@
 		border-radius: var(--radius-sm);
 	}
 
+	.child-row-container :global(.item-actions-menu) {
+		padding: 0 var(--space-1);
+	}
+
 	.child-row {
 		display: flex;
 		align-items: center;
@@ -397,6 +442,10 @@
 		-webkit-touch-callout: none;
 		-webkit-user-select: none;
 		user-select: none;
+		/* Fill the row so the reorder kebab (a sibling of this <a> in the
+		   flex container) sits flush right. */
+		flex: 1;
+		min-width: 0;
 	}
 
 	.child-row:hover {
@@ -407,7 +456,7 @@
 		cursor: grabbing;
 	}
 
-	.child-row:last-child {
+	.child-item-wrapper:last-child .child-row {
 		border-bottom: none;
 	}
 

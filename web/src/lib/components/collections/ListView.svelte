@@ -2,6 +2,7 @@
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
+	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
@@ -224,6 +225,23 @@
 		return groupItems.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]).length;
 	}
 
+	// Menu-driven reorder (IDEA-1898) — the non-drag counterpart. Gated on
+	// the same conditions as item drag: edit permission, manual sort
+	// (sort_order is only honored then), and not while search is
+	// preserving relevance order.
+	let canReorderItems = $derived(canEdit && sortMode === 'manual' && !preserveOrder);
+
+	function reorderItem(groupName: string, item: Item, dir: ReorderDirection) {
+		if (!onReorder) return;
+		const grp = (groupData[groupName] ?? []).filter(
+			(i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]
+		);
+		const updates = reorderGroup(grp, item.id, dir);
+		if (updates.length > 0) {
+			onReorder(updates.map((u) => ({ slug: u.item.id, sort_order: u.sort_order })));
+		}
+	}
+
 	function toggleGroup(groupName: string) {
 		if (collapsedGroups.has(groupName)) {
 			collapsedGroups.delete(groupName);
@@ -329,7 +347,7 @@
 						onfinalize={(e) => handleFinalize(groupName, e)}
 						oncontextmenu={(e) => e.preventDefault()}
 					>
-						{#each grpItems as item (item.id)}
+						{#each grpItems as item, i (item.id)}
 							<div class="list-row" class:kb-focused={focusedItemId === item.id}>
 								<ItemCard
 									{item}
@@ -340,6 +358,8 @@
 									onStatusClick={onStatusChange}
 									progress={itemProgress?.[item.id] ?? null}
 									{progressLabel}
+									onReorderItem={canReorderItems ? (it, dir) => reorderItem(groupName, it, dir) : undefined}
+									reorderDisabledDirs={canReorderItems ? disabledDirections(i, grpItems.length) : undefined}
 								/>
 							</div>
 						{/each}

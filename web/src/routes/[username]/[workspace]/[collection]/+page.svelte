@@ -2117,9 +2117,13 @@
 				{collection}
 				{wsSlug}
 				onStatusChange={handleStatusChange}
+				onReorder={handleReorder}
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
 				{itemProgress}
 				{progressLabel}
+				canEdit={canEditThisCollection}
+				preserveOrder={searchQuery.trim() !== ''}
+				{sortMode}
 			/>
 		{:else}
 			<ListView
