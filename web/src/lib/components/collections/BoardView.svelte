@@ -2,6 +2,7 @@
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
+	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
@@ -327,6 +328,28 @@
 		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
 
+	// Menu-driven reorder (IDEA-1898), lane-relative — the non-drag
+	// counterpart for touch (board drag is disabled on mobile) and long
+	// lanes. Scope is the item's own lane, matching the drag handler.
+	function reorderItem(columnValue: string, item: Item, dir: ReorderDirection) {
+		if (!onReorder) return;
+		const grp = (columnData[columnValue] ?? []).filter(
+			(i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]
+		);
+		const updates = reorderGroup(grp, item.id, dir);
+		if (updates.length > 0) {
+			onReorder(updates.map((u) => ({ slug: u.item.id, sort_order: u.sort_order })));
+		}
+	}
+
+	// Per-lane gate: edit permission, not search-preserving order, and the
+	// lane is in manual sort (its override, else page sort). Deliberately
+	// NOT gated on isMobile — unlike drag (disabled on mobile), the menu IS
+	// the mobile reorder mechanism.
+	function canReorderLane(columnValue: string): boolean {
+		return canEdit && !preserveOrder && laneSortFor(columnValue) === 'manual';
+	}
+
 	function columnCssClass(value: string): string {
 		switch (value) {
 			case 'in_progress':
@@ -481,7 +504,7 @@
 				onfinalize={(e) => handleFinalize(colValue, e)}
 				oncontextmenu={(e) => e.preventDefault()}
 			>
-				{#each colItems as item (item.id)}
+				{#each colItems as item, i (item.id)}
 					<div class="card-wrapper" class:no-drag={isMobile}>
 						<ItemCard
 							{item}
@@ -492,6 +515,8 @@
 							onStatusClick={onStatusChange}
 							progress={itemProgress?.[item.id] ?? null}
 							{progressLabel}
+							onReorderItem={canReorderLane(colValue) ? (it, dir) => reorderItem(colValue, it, dir) : undefined}
+							reorderDisabledDirs={canReorderLane(colValue) ? disabledDirections(i, colItems.length) : undefined}
 						/>
 					</div>
 				{/each}

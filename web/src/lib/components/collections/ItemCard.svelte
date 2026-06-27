@@ -4,6 +4,8 @@
 	import type { Item, Collection } from '$lib/types';
 	import { parseFields, parseSchema, parseTags, formatItemRef, itemUrlId } from '$lib/types';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import ItemActionsMenu from './ItemActionsMenu.svelte';
+	import type { ReorderDirection } from '$lib/collections/reorder';
 
 	interface Props {
 		item: Item;
@@ -15,9 +17,19 @@
 		onStatusClick?: (item: Item, newStatus: string) => void;
 		progress?: { total: number; done: number; label?: string } | null;
 		progressLabel?: string;
+		/**
+		 * Opt-in per-item reorder menu (IDEA-1898). The host (ListView /
+		 * BoardView / TableView) passes a bound handler + the disabled
+		 * directions for this item's position in its group. When omitted —
+		 * the default — no menu renders, so read-only / aggregation views
+		 * (share pages, starred, tags, dashboard) get nothing. ItemCard
+		 * stays dumb: it forwards these, it has no ordering context.
+		 */
+		onReorderItem?: (item: Item, dir: ReorderDirection) => void;
+		reorderDisabledDirs?: Set<ReorderDirection>;
 	}
 
-	let { item, collection, compact = false, focused = false, showCollection = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks' }: Props = $props();
+	let { item, collection, compact = false, focused = false, showCollection = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks', onReorderItem, reorderDisabledDirs }: Props = $props();
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -141,6 +153,14 @@
 			</span>
 		{/if}
 		{#if itemRef}<span class="item-ref">{itemRef}</span>{/if}
+		{#if onReorderItem}
+			<ItemActionsMenu
+				{item}
+				disabledDirs={reorderDisabledDirs}
+				label={item.title}
+				onReorder={(dir) => onReorderItem?.(item, dir)}
+			/>
+		{/if}
 	</div>
 
 	<div class="card-title">
@@ -276,6 +296,13 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
+	}
+
+	/* Reorder kebab sits at the far right of the top row. When a PR badge
+	   is present the `.has-pr` padding-right reservation keeps it clear of
+	   the absolutely-positioned badge (kebab lands just left of it). */
+	.card-top-row :global(.item-actions-menu) {
+		margin-left: auto;
 	}
 
 	/* Reserve horizontal room on the right of the top row for the
