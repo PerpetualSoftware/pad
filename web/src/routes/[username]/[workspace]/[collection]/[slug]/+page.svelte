@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { tick, onMount, onDestroy } from 'svelte';
+	import { tick, onMount, onDestroy, untrack } from 'svelte';
 	import { api, PadApiError, type ImportURLResponse } from '$lib/api/client';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { marked } from 'marked';
@@ -827,7 +827,24 @@
 		// Snapshot the workspace alongside the itemId. activeCollabContext
 		// is what the timer-driven + cleanup-driven flushes target so
 		// they always PATCH the right URL even after navigation.
-		const ctx = { wsSlug, itemId };
+		//
+		// `baseline` is the content the item loaded with — i.e. what the
+		// server already has. It rides on the per-item context (not the
+		// global `lastFlushedContent`, which the next item's load resets to
+		// null before this item's unmount-flush runs) so a no-edit VIEW can
+		// be deduped: opening an item seeds the editor from server state and
+		// arms a 5s / on-unmount snapshot flush; without a baseline that
+		// flush re-PATCHes identical content, bumping updated_at/seq and
+		// floating the item to the top of manual-sorted lists (BUG-1899).
+		//
+		// Read item.content UNTRACKED: this effect's lifecycle is keyed on
+		// `collabKey` (= item.id) only. Tracking the full `item` here would
+		// rebuild the provider/Y.Doc on any same-item refresh (SSE adoption,
+		// title/tag/field edits), dropping in-flight edits and interrupting
+		// active editing. collabKey just changed to this itemId, so item is
+		// the freshly-loaded item for it. Per Codex review.
+		const baseline = untrack(() => (item && item.id === itemId ? item.content ?? '' : ''));
+		const ctx = { wsSlug, itemId, baseline };
 		activeCollabContext = ctx;
 
 		const doc = new Y.Doc();
@@ -1629,7 +1646,7 @@
 	// flushes still PATCH the OLD item's URL with its OLD markdown,
 	// so we never cross-write one item's content into another. Per
 	// Codex review round 1.
-	let activeCollabContext: { wsSlug: string; itemId: string } | null = null;
+	let activeCollabContext: { wsSlug: string; itemId: string; baseline: string } | null = null;
 
 	// Provider we've already attempted the lazy seed against. Reset
 	// implicitly when collabProvider is replaced (the new provider
@@ -1649,7 +1666,7 @@
 		if (!ctx) return;
 		collabFlushTimer = setTimeout(() => {
 			collabFlushTimer = undefined;
-			void runCollabFlush(ctx.wsSlug, ctx.itemId, markdown, false);
+			void runCollabFlush(ctx.wsSlug, ctx.itemId, markdown, false, ctx.baseline);
 		}, COLLAB_FLUSH_IDLE_MS);
 	}
 
@@ -1681,6 +1698,7 @@
 		itemId: string,
 		markdown: string,
 		keepalive: boolean,
+		baseline: string,
 	): Promise<CollabFlushResult> {
 		// Force-refresh recovery is in flight: any markdown derived
 		// from the soon-to-be-discarded Y.Doc is, by definition,
@@ -1701,7 +1719,15 @@
 		// every shared edit converges. Returns 'deduped' (NOT
 		// 'failed') so callers can distinguish "no work needed"
 		// from a real error. Per Codex review round 8.
-		if (lastFlushedContent === toSave) return 'deduped';
+		// Dedupe against what the server already has for this item. Once
+		// we've flushed this session that's `lastFlushedContent`; before any
+		// flush it's the per-item `baseline` captured at load. The baseline
+		// arm is what makes merely VIEWING an item a no-op — a real edit
+		// changes `toSave`, so only genuine no-ops are suppressed. (Revert-
+		// safe: after a real flush `lastFlushedContent` is non-null and
+		// takes precedence, so editing away then back still flushes.)
+		const serverContent = lastFlushedContent ?? baseline;
+		if (serverContent === toSave) return 'deduped';
 
 		// UI mutations only fire when:
 		//   - This is a foreground (user-driven) flush (!keepalive),
@@ -1779,7 +1805,7 @@
 	// {#key}-driven unmounts, so the OLD editor (whose markdown we
 	// want) is still mounted. Used by $effect cleanup + beforeunload
 	// to land any in-flight markdown before the provider tears down.
-	function flushCollabNow(ctx: { wsSlug: string; itemId: string }, keepalive: boolean): boolean {
+	function flushCollabNow(ctx: { wsSlug: string; itemId: string; baseline: string }, keepalive: boolean): boolean {
 		clearTimeout(collabFlushTimer);
 		collabFlushTimer = undefined;
 		if (!editorInstance) return false;
@@ -1792,7 +1818,7 @@
 		// runCollabFlush is async but its return value is irrelevant
 		// for synchronous callers — fire-and-forget under
 		// keepalive=true is the contract on the unmount path.
-		void runCollabFlush(ctx.wsSlug, ctx.itemId, md, keepalive);
+		void runCollabFlush(ctx.wsSlug, ctx.itemId, md, keepalive, ctx.baseline);
 		return true;
 	}
 
@@ -2802,6 +2828,7 @@
 							if (collabProvider && editorInstance && item) {
 								const ws = wsSlug;
 								const itemId = item.id;
+								const baseline = item.content ?? '';
 								const ed = editorInstance;
 								try {
 									// keepalive=false on the explicit
@@ -2821,7 +2848,7 @@
 									let aborted = false;
 									for (let i = 0; i < 3; i++) {
 										if (typeof md !== 'string') break;
-										const result = await runCollabFlush(ws, itemId, md, false);
+										const result = await runCollabFlush(ws, itemId, md, false, baseline);
 										if (result === 'failed' || result === 'skipped') {
 											// 'failed' — PATCH errored;
 											//   runCollabFlush already
