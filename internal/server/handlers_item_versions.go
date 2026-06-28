@@ -17,7 +17,7 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	itemSlug := chi.URLParam(r, "itemSlug")
-	item, err := s.store.ResolveItem(workspaceID, itemSlug)
+	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, itemSlug)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -54,7 +54,7 @@ func (s *Server) handleGetItemVersion(w http.ResponseWriter, r *http.Request) {
 
 	itemSlug := chi.URLParam(r, "itemSlug")
 	versionID := chi.URLParam(r, "versionID")
-	item, err := s.store.ResolveItem(workspaceID, itemSlug)
+	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, itemSlug)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -96,7 +96,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if item == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		s.writeItemResolveError(w, r, workspaceID, itemSlug)
 		return
 	}
 	if !s.requireItemVisible(w, r, workspaceID, item) {

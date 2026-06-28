@@ -48,7 +48,7 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 	}
 
 	itemSlug := chi.URLParam(r, "itemSlug")
-	item, err := s.store.ResolveItem(workspaceID, itemSlug)
+	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, itemSlug)
 	if err != nil {
 		writeInternalError(w, err)
 		return

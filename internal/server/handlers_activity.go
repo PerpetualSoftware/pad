@@ -149,7 +149,11 @@ func (s *Server) enrichActivities(activities []models.Activity) {
 		if activities[i].DocumentID == "" {
 			continue
 		}
-		item, err := s.store.GetItem(activities[i].DocumentID)
+		// Include-deleted so an archived item's activity is enriched with its
+		// real title/slug/collection instead of staying blank — a blank row
+		// otherwise masquerades as workspace-level activity and bypasses the
+		// collection-visibility filter applied by the caller.
+		item, err := s.store.GetItemIncludeDeleted(activities[i].DocumentID)
 		if err != nil || item == nil {
 			continue
 		}

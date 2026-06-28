@@ -705,22 +705,28 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				CreatedAt: a.CreatedAt.Format("2006-01-02T15:04:05Z"),
 				Metadata:  a.Metadata,
 			}
-			// Look up item title if we have a document/item ID
+			// Look up item title if we have a document/item ID. Use the
+			// include-deleted lookup so an archived item's activity renders
+			// with its real title/slug — gated by the same visibility checks —
+			// instead of a blank "ghost" row that also skipped those gates.
+			// If the referenced item is gone entirely, drop the row rather
+			// than emit a blank entry.
 			if a.DocumentID != "" {
-				item, err := s.store.GetItem(a.DocumentID)
-				if err == nil && item != nil {
-					// Skip items in hidden collections
-					if visibleSlugSet != nil && !visibleSlugSet[item.CollectionSlug] {
-						continue
-					}
-					// For users with item grants: skip items not directly granted
-					if !s.isItemVisibleToGuest(r, workspaceID, item, dashFullCollIDs, dashGrantedItemIDs) {
-						continue
-					}
-					da.ItemTitle = item.Title
-					da.ItemSlug = item.Slug
-					da.CollectionSlug = item.CollectionSlug
+				item, err := s.store.GetItemIncludeDeleted(a.DocumentID)
+				if err != nil || item == nil {
+					continue
 				}
+				// Skip items in hidden collections
+				if visibleSlugSet != nil && !visibleSlugSet[item.CollectionSlug] {
+					continue
+				}
+				// For users with item grants: skip items not directly granted
+				if !s.isItemVisibleToGuest(r, workspaceID, item, dashFullCollIDs, dashGrantedItemIDs) {
+					continue
+				}
+				da.ItemTitle = item.Title
+				da.ItemSlug = item.Slug
+				da.CollectionSlug = item.CollectionSlug
 			} else if workspaceRole(r) == "guest" {
 				// Workspace-level activity (no item) — skip for guests since
 				// it may contain audit metadata (member invites, role changes).

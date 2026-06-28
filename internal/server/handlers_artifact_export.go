@@ -42,7 +42,7 @@ func (s *Server) handleExportItemArtifact(w http.ResponseWriter, r *http.Request
 	}
 
 	itemSlug := chi.URLParam(r, "itemSlug")
-	item, err := s.store.ResolveItem(ws.ID, itemSlug)
+	item, err := s.store.ResolveItemIncludeDeleted(ws.ID, itemSlug)
 	if err != nil {
 		writeInternalError(w, err)
 		return
