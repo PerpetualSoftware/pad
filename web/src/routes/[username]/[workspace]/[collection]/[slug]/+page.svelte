@@ -1711,7 +1711,13 @@
 		// flushCollabNow) without needing per-call-site guards. Per
 		// Codex round 8 [P1] of TASK-1319.
 		if (forceRefreshInFlight) return 'skipped';
-		const allItems = localIndex.getAll(wsSlug);
+		// Resolve links against the CAPTURED `ws` (the item being
+		// flushed), not the live route `wsSlug`. A background/unmount
+		// flush can fire after navigating to another workspace; the PATCH
+		// already targets `ws`, so the link index must match it — using
+		// `wsSlug` would convert links against the wrong workspace's
+		// index. Per Codex review (round 1).
+		const allItems = localIndex.getAll(ws);
 		let toSave = unescapeDocLinks(markdown);
 		if (allItems.length > 0) {
 			toSave = markdownToWikiLinks(toSave, allItems);
