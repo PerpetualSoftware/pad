@@ -5,6 +5,7 @@
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { marked } from 'marked';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import Editor from '$lib/components/editor/Editor.svelte';
@@ -112,7 +113,7 @@
 	let editorContent = $derived.by(() => {
 		if (!item) return '';
 		const raw = item.content ?? '';
-		const allItems = collectionStore.items ?? [];
+		const allItems = localIndex.getAll(wsSlug);
 		if (allItems.length > 0 && raw.includes('[[')) {
 			return wikiLinksToMarkdown(raw, allItems, wsSlug, username);
 		}
@@ -554,22 +555,25 @@
 		const reqCollSlug = collSlug;
 		const reqItemSlug = itemSlug;
 		try {
-			// Workspace items are needed for wiki-link resolution at Y.Doc
-			// seed time (the $effect ~line 904 below) and for the
+			// The workspace item index is needed for wiki-link resolution
+			// at Y.Doc seed time (the $effect ~line 904 below) and for the
 			// non-collab editorContent derived (~line 103 above). Both
-			// silently fall back to raw markdown when the items array is
-			// empty, baking literal `[[X]]` text into the Y.Doc the first
-			// time a fresh item with wiki-links is opened (BUG-1461). We
-			// fold the load into this Promise.all and AWAIT it before
-			// `item` is set so the downstream readers always see a
-			// populated items list paired with the correct workspace.
-			// The freshness gate (workspace-scoped, not length-based) is
-			// what prevents a stale cross-workspace items array from
-			// satisfying a naive `items.length > 0` check after a
-			// workspace switch.
-			const itemsPromise = collectionStore.itemsAreFreshFor(wsSlug)
-				? Promise.resolve()
-				: collectionStore.loadItems(wsSlug);
+			// silently fall back to raw markdown when the index is empty,
+			// baking literal `[[X]]` text into the Y.Doc the first time a
+			// fresh item with wiki-links is opened (BUG-1461). We fold the
+			// load into this Promise.all and AWAIT it before `item` is set
+			// so the downstream readers always see a populated index.
+			//
+			// We resolve links from the shared local-first read model
+			// (localIndex), the SAME source the collection list pages use —
+			// it carries the body-stripped /items-index projection (no rich
+			// content), is IndexedDB-cached, and bootstrap() is idempotent
+			// (a no-op when already hydrated). This replaced a detail-page-
+			// only 4.7MB full-content /items load that timed the page out on
+			// large workspaces; warm navigations now do ZERO extra fetch.
+			const itemsPromise = localIndex.bootstrap(wsSlug, {
+				userId: authStore.userId || null,
+			});
 			const [itemData, collData] = await Promise.all([
 				api.items.get(wsSlug, itemSlug),
 				api.collections.get(wsSlug, collSlug),
@@ -1114,7 +1118,7 @@
 		// wiki-links resolve to clickable refs. The 5s flush will
 		// later round-trip back to canonical [[wiki-link]] form via
 		// markdownToWikiLinks.
-		const allItems = collectionStore.items ?? [];
+		const allItems = localIndex.getAll(wsSlug);
 		const seedMd =
 			allItems.length > 0 && seedRaw.includes('[[')
 				? wikiLinksToMarkdown(seedRaw, allItems, wsSlug, username)
@@ -1619,7 +1623,7 @@
 			// Set lastSaveTime BEFORE the API call so the SSE guard works
 			// even if the SSE event arrives before the response.
 			editorStore.setLastSaveTime(Date.now());
-			const allItems = collectionStore.items ?? [];
+			const allItems = localIndex.getAll(wsSlug);
 			let toSave = markdown;
 			if (allItems.length > 0) {
 				toSave = markdownToWikiLinks(toSave, allItems);
@@ -1707,7 +1711,7 @@
 		// flushCollabNow) without needing per-call-site guards. Per
 		// Codex round 8 [P1] of TASK-1319.
 		if (forceRefreshInFlight) return 'skipped';
-		const allItems = collectionStore.items ?? [];
+		const allItems = localIndex.getAll(wsSlug);
 		let toSave = unescapeDocLinks(markdown);
 		if (allItems.length > 0) {
 			toSave = markdownToWikiLinks(toSave, allItems);
@@ -2995,7 +2999,7 @@
 							editor={editorInstance}
 							{wsSlug}
 							collections={collectionStore.collections}
-							onItemCreated={() => collectionStore.loadItems(wsSlug)}
+							onItemCreated={(item) => localIndex.upsert(wsSlug, item)}
 						/>
 						<EditorLinkPopover editor={editorInstance} />
 					{/if}
@@ -3123,7 +3127,7 @@
 				{username}
 				{itemSlug}
 				currentContent={item.content ?? ''}
-				items={collectionStore.items ?? []}
+				items={localIndex.getAll(wsSlug)}
 				onRestore={handleVersionRestore}
 				itemId={item.id}
 				collectionId={item.collection_id}

@@ -494,6 +494,39 @@ export const localIndex = {
 	},
 
 	/**
+	 * Flat list of EVERY item in the workspace (all collections), as
+	 * Item[] with empty `content`. This is the workspace-wide lookup the
+	 * item-detail page's wiki-link resolver and the editor's `[[` link
+	 * picker need — both match on title / ref / slug across all
+	 * collections but never read the rich-text body. Reusing the
+	 * already-hydrated read model here means a detail page resolves links
+	 * with ZERO extra fetch (it replaced a 4.7MB full-content /items
+	 * load). Mirrors getByCollection's archived filter + sort. Returns []
+	 * when the workspace isn't hydrated yet — callers bootstrap() first.
+	 */
+	getAll(ws: string, opts?: { includeArchived?: boolean }): Item[] {
+		const state = workspaces.get(ws);
+		if (!state) return [];
+		const includeArchived = opts?.includeArchived === true;
+		const out: Item[] = [];
+		for (const row of state.items.values()) {
+			if (!includeArchived && row.deleted_at) continue;
+			// content:'' — link resolution/picker never read the body;
+			// the skinny index rows don't carry it. Matches how the
+			// collection page adapts getByCollection rows to Item.
+			out.push({ ...row, content: '' } as Item);
+		}
+		out.sort((a, b) => {
+			if (a.updated_at !== b.updated_at) {
+				return a.updated_at < b.updated_at ? 1 : -1;
+			}
+			if (a.id === b.id) return 0;
+			return a.id < b.id ? -1 : 1;
+		});
+		return out;
+	},
+
+	/**
 	 * Apply a batch of changes from `/items-changes`. Always upserts
 	 * — `deleted: true` on a change is the server's derived view of
 	 * `deleted_at != nil` (a SOFT delete) and the row still carries

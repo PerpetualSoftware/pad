@@ -27,7 +27,28 @@ type Store struct {
 	db            *sql.DB
 	dialect       Dialect
 	encryptionKey []byte // 32-byte AES-256 key for encrypting sensitive fields (e.g., TOTP secrets)
+
+	// stopMaint signals the background WAL checkpointer to exit; maintDone
+	// is closed once it has. Both are nil on the Postgres path (no WAL
+	// file to checkpoint) and Close() guards on nil accordingly.
+	stopMaint chan struct{}
+	maintDone chan struct{}
 }
+
+// sqliteMaxOpenConns bounds the SQLite connection pool. SQLite is a
+// single-writer database, so an UNBOUNDED pool (the prior default) lets a
+// burst of concurrent writers each open a connection and block up to
+// busy_timeout (30s) on BEGIN IMMEDIATE — unbounded goroutine/connection
+// growth under load. WAL still serves many concurrent readers from the
+// snapshot, so a modest cap preserves read concurrency while bounding
+// the writer pile-up. (The Postgres path sets its own cap in
+// openPostgresDB.)
+const sqliteMaxOpenConns = 16
+
+// walCheckpointInterval is how often the background checkpointer runs
+// PRAGMA wal_checkpoint(TRUNCATE) to keep the WAL file from growing
+// without bound. See startWALCheckpointer.
+const walCheckpointInterval = 60 * time.Second
 
 // D returns the store's dialect for building backend-specific SQL.
 func (s *Store) D() Dialect { return s.dialect }
@@ -111,6 +132,13 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("enable WAL: %w", err)
 	}
 
+	// Bound the pool (see sqliteMaxOpenConns). Keep idle == max so a read
+	// burst doesn't churn connections open/closed (each open re-applies
+	// the DSN pragmas), and recycle hourly as a safety valve.
+	db.SetMaxOpenConns(sqliteMaxOpenConns)
+	db.SetMaxIdleConns(sqliteMaxOpenConns)
+	db.SetConnMaxLifetime(time.Hour)
+
 	s := &Store{db: db, dialect: &sqliteDialect{}}
 	if err := s.migrate(); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
@@ -128,7 +156,39 @@ func New(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("backfill usernames: %w", err)
 	}
 
+	s.startWALCheckpointer()
+
 	return s, nil
+}
+
+// startWALCheckpointer runs PRAGMA wal_checkpoint(TRUNCATE) on a timer so
+// the WAL file can't grow without bound. SQLite's automatic
+// wal_autocheckpoint is PASSIVE: it can only checkpoint frames no reader
+// still needs and never truncates the file. Pad's web UI keeps a steady
+// stream of pollers (dashboard/items/changes) and SSE readers active, so
+// under a write burst (e.g. collab op-log appends) the WAL would
+// otherwise keep growing and slow every large read. A periodic TRUNCATE
+// checkpoint reclaims it during quiet windows. Best-effort: a busy
+// checkpoint (readers active) just retries next tick. SQLite-only —
+// Close() stops it; the Postgres constructor never calls this.
+func (s *Store) startWALCheckpointer() {
+	s.stopMaint = make(chan struct{})
+	s.maintDone = make(chan struct{})
+	go func() {
+		defer close(s.maintDone)
+		ticker := time.NewTicker(walCheckpointInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-s.stopMaint:
+				return
+			case <-ticker.C:
+				if _, err := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+					slog.Warn("wal checkpoint failed", "error", err)
+				}
+			}
+		}
+	}()
 }
 
 // openPostgresDB opens and configures a PostgreSQL connection pool.
@@ -178,6 +238,13 @@ func NewPostgres(connStr string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
+	// Stop the WAL checkpointer (SQLite only) and wait for it to exit so
+	// it can't run a PRAGMA against a closing handle. nil on Postgres.
+	if s.stopMaint != nil {
+		close(s.stopMaint)
+		<-s.maintDone
+		s.stopMaint = nil
+	}
 	return s.db.Close()
 }
 

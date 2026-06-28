@@ -569,6 +569,7 @@
 	import { formatItemRef, itemUrlId, type Item } from '$lib/types';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { api } from '$lib/api/client';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
@@ -746,7 +747,14 @@
 	}
 
 	function getFilteredLinks() {
-		const items = collectionStore.items ?? [];
+		// Pull link targets from the shared local-first read model (the
+		// same source the detail page resolves wiki-links from), NOT
+		// collectionStore.items — that slot is only populated by the
+		// legacy full-content loadItems() path, which the detail page no
+		// longer calls. localIndex carries every workspace item (skinny,
+		// no body) and is already hydrated on these routes.
+		const wsSlug = page.params.workspace ?? workspaceStore.current?.slug ?? '';
+		const items = localIndex.getAll(wsSlug);
 		if (!linkQuery) return items.slice(0, 10);
 		const q = linkQuery.toLowerCase();
 		return items
