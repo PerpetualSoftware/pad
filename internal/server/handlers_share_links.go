@@ -72,13 +72,16 @@ func (s *Server) handleCreateItemShareLink(w http.ResponseWriter, r *http.Reques
 	}
 
 	itemSlug := chi.URLParam(r, "itemSlug")
-	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, itemSlug)
+	// Creating a share link is a mutation: reject archived items with 409
+	// (a public link to an archived item would 404 at resolve time anyway,
+	// since the public resolver excludes soft-deleted items).
+	item, err := s.store.ResolveItem(workspaceID, itemSlug)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
-		writeError(w, http.StatusNotFound, "not_found", "Item not found")
+		s.writeItemResolveError(w, r, workspaceID, itemSlug)
 		return
 	}
 
@@ -204,13 +207,15 @@ func (s *Server) handleListItemShareLinks(w http.ResponseWriter, r *http.Request
 	}
 
 	itemSlug := chi.URLParam(r, "itemSlug")
-	item, err := s.store.ResolveItem(workspaceID, itemSlug)
+	// Listing share links is read-only, so an archived item resolves (200)
+	// like the main GET; a genuinely-missing item still 404s.
+	item, err := s.store.ResolveItemIncludeDeleted(workspaceID, itemSlug)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 	if item == nil {
-		s.writeItemResolveError(w, r, workspaceID, itemSlug)
+		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
 
