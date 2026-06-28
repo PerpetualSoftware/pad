@@ -34,6 +34,7 @@
 	},
 	"overrides": {
 		"cookie": "^0.7.2",
+		"linkify-it": "^5.0.1",
 		"layercake": {
 			"typescript": "$typescript"
 		}
