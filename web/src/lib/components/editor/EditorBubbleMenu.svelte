@@ -16,7 +16,7 @@
 		editor: Editor | null;
 		wsSlug: string;
 		collections: Collection[];
-		onItemCreated?: (item: Item) => void;
+		onItemCreated?: (item: Item, ws: string) => void;
 	} = $props();
 
 	let visible = $state(false);
@@ -139,6 +139,12 @@
 		creating = true;
 		errorMsg = '';
 
+		// Capture the workspace at create time. handleCreate awaits the
+		// create call and fires onItemCreated after it; reading the live
+		// `wsSlug` prop post-await could mis-attribute the item if the user
+		// navigated to another workspace mid-create. Per Codex review (round 2).
+		const ws = wsSlug;
+
 		const coll = collections.find((c) => c.slug === selectedCollectionSlug);
 		if (!coll) {
 			errorMsg = 'Collection not found';
@@ -152,7 +158,7 @@
 			const trimmedTitle = title.trim();
 			const fullText = selectedText.trim();
 			const content = fullText.length > trimmedTitle.length ? fullText : '';
-			const item = await api.items.create(wsSlug, selectedCollectionSlug, {
+			const item = await api.items.create(ws, selectedCollectionSlug, {
 				title: trimmedTitle,
 				content,
 				fields: JSON.stringify(defaultFields),
@@ -168,7 +174,7 @@
 				.insertContentAt(selFrom, wikiLink)
 				.run();
 
-			onItemCreated?.(item);
+			onItemCreated?.(item, ws);
 			toastStore.show(`Created "${item.title}"`, 'success');
 			hide();
 		} catch (err: any) {
