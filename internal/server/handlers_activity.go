@@ -157,8 +157,10 @@ func (s *Server) enrichActivities(activities []models.Activity) {
 		if err != nil || item == nil {
 			continue
 		}
+		item.ComputeRef()
 		activities[i].ItemTitle = item.Title
 		activities[i].ItemSlug = item.Slug
+		activities[i].ItemRef = item.Ref
 		activities[i].CollectionSlug = item.CollectionSlug
 	}
 }

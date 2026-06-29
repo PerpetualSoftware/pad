@@ -589,6 +589,9 @@
 							{/if}
 							<span class="activity-dot" style="color: {activity.action === 'created' ? 'var(--accent-green)' : activity.action === 'archived' ? 'var(--text-muted)' : 'var(--accent-blue)'};">{activityIcon(activity.action)}</span>
 							<span class="activity-verb">{activityVerb(activity.action)}</span>
+							{#if activity.item_ref}
+								<span class="activity-ref">{activity.item_ref}</span>
+							{/if}
 							{#if activity.item_title}
 								<a href="/{username}/{wsSlug}/{activity.collection_slug}/{activity.item_slug}" class="activity-item">{activity.item_title}</a>
 							{/if}
@@ -1184,6 +1187,12 @@
 	.activity-verb {
 		white-space: nowrap;
 		color: var(--text-secondary);
+	}
+	.activity-ref {
+		font-family: var(--font-mono);
+		font-size: 0.8em;
+		color: var(--text-muted);
+		white-space: nowrap;
 	}
 	.activity-item {
 		font-weight: 600;

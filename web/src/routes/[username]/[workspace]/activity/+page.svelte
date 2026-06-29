@@ -5,6 +5,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
+	import { parseFieldChanges } from '$lib/utils/activityChanges';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import type { Activity, Collection } from '$lib/types';
 
@@ -329,7 +330,9 @@
 							{@const meta = parseMeta(activity.metadata)}
 							{@const itemTitle = activity.item_title || meta.item_title || meta.title}
 							{@const itemSlug = activity.item_slug || meta.item_slug}
+							{@const itemRef = activity.item_ref || meta.item_ref}
 							{@const collSlug = activity.collection_slug || meta.collection_slug}
+							{@const fieldChanges = parseFieldChanges(meta.changes)}
 							{@const src = getSourceLabel(activity.source, activity.actor, activity.actor_name)}
 							<div class="entry {borderClass(activity.source, activity.actor)}">
 								<span
@@ -341,6 +344,9 @@
 								<div class="entry-content">
 									<div class="entry-main">
 										<span class="entry-verb">{activityVerb(activity.action)}</span>
+										{#if itemRef}
+											<span class="entry-ref">{itemRef}</span>
+										{/if}
 										{#if itemTitle && itemSlug && collSlug}
 											<a
 												href="/{username}/{wsSlug}/{collSlug}/{itemSlug}"
@@ -353,8 +359,19 @@
 											<span class="entry-collection">{collSlug}</span>
 										{/if}
 									</div>
-									{#if meta.changes}
-										<div class="entry-detail">{meta.changes}</div>
+									{#if fieldChanges.length > 0}
+										<div class="entry-detail">
+											{#each fieldChanges as change, i (i)}
+												<span class="change-pill">
+													<span class="change-field">{change.field}:</span>
+													<span class="change-from">{change.from}</span>
+													<span class="change-arrow">&rarr;</span>
+													<span class="change-to">{change.to}</span>
+												</span>
+											{/each}
+										</div>
+									{:else if meta.changes}
+										<div class="entry-detail entry-detail-raw">{meta.changes}</div>
 									{/if}
 								</div>
 								<div class="entry-meta">
@@ -555,6 +572,12 @@
 		color: var(--text-secondary);
 		white-space: nowrap;
 	}
+	.entry-ref {
+		font-family: var(--font-mono);
+		font-size: 0.9em;
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
 	.entry-item-link {
 		font-weight: 600;
 		color: var(--text-primary);
@@ -583,11 +606,36 @@
 		white-space: nowrap;
 	}
 	.entry-detail {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1);
 		font-size: 0.8em;
 		color: var(--text-muted);
+	}
+	.entry-detail-raw {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	.change-pill {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.3em;
+		padding: 1px 8px;
+		background: var(--bg-tertiary);
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		white-space: nowrap;
+	}
+	.change-field {
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.change-arrow {
+		opacity: 0.5;
+	}
+	.change-to {
+		color: var(--text-primary);
 	}
 
 	.entry-meta {

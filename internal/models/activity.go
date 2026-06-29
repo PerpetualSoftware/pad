@@ -74,6 +74,7 @@ type Activity struct {
 	// Enrichment fields — populated by handlers, not stored in DB
 	ItemTitle      string `json:"item_title,omitempty"`
 	ItemSlug       string `json:"item_slug,omitempty"`
+	ItemRef        string `json:"item_ref,omitempty"` // e.g. "BUG-1748" — computed from the referenced item
 	CollectionSlug string `json:"collection_slug,omitempty"`
 	ActorName      string `json:"actor_name,omitempty"`
 }
