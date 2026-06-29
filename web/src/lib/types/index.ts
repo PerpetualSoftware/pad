@@ -902,6 +902,7 @@ export interface Activity {
 	created_at: string;
 	item_title?: string;
 	item_slug?: string;
+	item_ref?: string;
 	collection_slug?: string;
 }
 
@@ -947,6 +948,7 @@ export interface DashboardResponse {
 		created_at: string;
 		item_title?: string;
 		item_slug?: string;
+		item_ref?: string;
 		collection_slug?: string;
 		metadata?: string;
 	}[];

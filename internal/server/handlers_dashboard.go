@@ -116,6 +116,7 @@ type DashboardActivity struct {
 	CreatedAt      string `json:"created_at"`
 	ItemTitle      string `json:"item_title,omitempty"`
 	ItemSlug       string `json:"item_slug,omitempty"`
+	ItemRef        string `json:"item_ref,omitempty"` // e.g. "BUG-1748"
 	CollectionSlug string `json:"collection_slug,omitempty"`
 	Metadata       string `json:"metadata,omitempty"`
 }
@@ -724,8 +725,10 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				if !s.isItemVisibleToGuest(r, workspaceID, item, dashFullCollIDs, dashGrantedItemIDs) {
 					continue
 				}
+				item.ComputeRef()
 				da.ItemTitle = item.Title
 				da.ItemSlug = item.Slug
+				da.ItemRef = item.Ref
 				da.CollectionSlug = item.CollectionSlug
 			} else if workspaceRole(r) == "guest" {
 				// Workspace-level activity (no item) — skip for guests since

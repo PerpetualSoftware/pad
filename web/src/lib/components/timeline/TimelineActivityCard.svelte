@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { Activity } from '$lib/types';
 	import { relativeTime } from '$lib/utils/markdown';
+	import { parseFieldChanges } from '$lib/utils/activityChanges';
 
 	let { activity }: { activity: Activity } = $props();
 
@@ -12,30 +13,8 @@
 		}
 	}
 
-	interface Change {
-		field: string;
-		from: string;
-		to: string;
-	}
-
-	function parseChanges(changesStr: string): Change[] {
-		if (!changesStr) return [];
-		return changesStr.split(';').map((part) => {
-			const trimmed = part.trim();
-			const colonIdx = trimmed.indexOf(':');
-			if (colonIdx === -1) return null;
-			const field = trimmed.slice(0, colonIdx).trim();
-			const valuePart = trimmed.slice(colonIdx + 1).trim();
-			const arrowParts = valuePart.split('\u2192');
-			if (arrowParts.length === 2) {
-				return { field, from: arrowParts[0].trim(), to: arrowParts[1].trim() };
-			}
-			return null;
-		}).filter((c): c is Change => c !== null);
-	}
-
 	const metadata = $derived(parseMetadata(activity.metadata));
-	const changes = $derived(parseChanges(metadata.changes ?? ''));
+	const changes = $derived(parseFieldChanges(metadata.changes ?? ''));
 
 	const actionLabels: Record<string, string> = {
 		created: 'created',
