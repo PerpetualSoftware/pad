@@ -44,6 +44,7 @@ type Server struct {
 	webhooks              *webhooks.Dispatcher // webhook dispatcher (optional)
 	email                 *email.Sender        // transactional email sender (optional)
 	emailAPIKey           string               // Maileroo API key (used for unsubscribe HMAC)
+	emailEnvConfigured    bool                 // email was wired from env vars (SetEmailSender); reconfigureEmail must not tear this down when platform settings clear the key
 	rateLimiters          *RateLimiters        // per-endpoint rate limiters
 	baseURL               string               // public base URL for generating links (e.g. invite URLs)
 	corsOrigins           string               // comma-separated CORS origins (empty = localhost defaults)
@@ -471,6 +472,10 @@ func (s *Server) SetWebhookDispatcher(d *webhooks.Dispatcher) {
 // either order.
 func (s *Server) SetEmailSender(e *email.Sender, apiKey ...string) {
 	s.email = e
+	// A sender wired here comes from an out-of-band source (env vars at startup).
+	// Mark it so reconfigureEmail leaves it in place when platform settings carry
+	// no key — env is the deployment baseline, not something the admin UI disables.
+	s.emailEnvConfigured = e != nil
 	if len(apiKey) > 0 {
 		s.emailAPIKey = apiKey[0]
 	}
@@ -685,7 +690,16 @@ func (s *Server) reconfigureEmail() {
 	fromName, _ := s.store.GetPlatformSetting(settingEmailFromName)
 
 	if apiKey == "" {
-		return // No API key — leave email as-is (may still have env var config)
+		// No platform-settings key. If email was wired from env vars, leave that
+		// sender in place — env is the deployment baseline. Otherwise the admin
+		// cleared the only email config (e.g. selecting provider "None"), so tear
+		// down the live sender: clearing the DB key alone left the running process
+		// sending mail until restart (BUG-1890).
+		if !s.emailEnvConfigured {
+			s.email = nil
+			s.emailAPIKey = ""
+		}
+		return
 	}
 
 	s.emailAPIKey = apiKey

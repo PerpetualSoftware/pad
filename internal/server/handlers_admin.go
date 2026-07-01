@@ -47,13 +47,26 @@ func (s *Server) handleGetPlatformSettings(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Mask sensitive values
-	if key, ok := settings[settingMailerooAPIKey]; ok && len(key) > 8 {
-		settings[settingMailerooAPIKey] = key[:4] + "..." + key[len(key)-4:]
-	} else if ok && key != "" {
-		settings[settingMailerooAPIKey] = "****"
+	if key, ok := settings[settingMailerooAPIKey]; ok && key != "" {
+		settings[settingMailerooAPIKey] = maskAPIKey(key)
 	}
 
 	writeJSON(w, http.StatusOK, settings)
+}
+
+// maskAPIKey returns the display form of a sensitive setting value. Keys longer
+// than 8 chars show their first and last 4 chars (abcd...wxyz); shorter non-empty
+// keys collapse to "****". Empty stays empty. This is the single source of truth
+// for the mask format — handleGetPlatformSettings emits it and
+// handleUpdatePlatformSettings uses it to detect an unchanged (echoed-back) key.
+func maskAPIKey(key string) string {
+	if len(key) > 8 {
+		return key[:4] + "..." + key[len(key)-4:]
+	}
+	if key != "" {
+		return "****"
+	}
+	return ""
 }
 
 // handleUpdatePlatformSettings updates one or more platform settings.
@@ -86,6 +99,27 @@ func (s *Server) handleUpdatePlatformSettings(w http.ResponseWriter, r *http.Req
 	for key, value := range input {
 		if !allowed[key] {
 			continue
+		}
+		// Defensive guard against BUG-1890: the GET handler returns the API key
+		// masked (abcd...wxyz / ****). If a client echoes that mask back unchanged
+		// (e.g. an admin saving the email form without re-typing the key), persisting
+		// it would corrupt the real key and silently break email. Treat an incoming
+		// value that equals the mask of the stored key as "unchanged" and skip it.
+		//
+		// This is a best-effort backstop; the authoritative fix is client-side (the
+		// web form omits the key unless the admin actually edits it). It recognizes
+		// the mask of the *current* key, so a mask captured before a concurrent key
+		// change by another admin wouldn't be caught — an accepted, negligible gap
+		// for the backstop given the client never sends the mask on a no-op save.
+		if key == settingMailerooAPIKey && value != "" {
+			current, err := s.store.GetPlatformSetting(settingMailerooAPIKey)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load setting: "+key)
+				return
+			}
+			if current != "" && value == maskAPIKey(current) {
+				continue
+			}
 		}
 		if err := s.store.SetPlatformSetting(key, value); err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to save setting: "+key)
