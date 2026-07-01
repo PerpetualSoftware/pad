@@ -156,9 +156,10 @@ func buildToolSurfaceTools(catalog []ToolDef) []toolSurfaceToolSummary {
 			params = append(params, toolSurfaceParamSummary{
 				Name: "workspace",
 				Type: "string",
-				Description: "Workspace slug. Defaults to the session workspace " +
-					"set via pad_set_workspace, then to the CWD-linked workspace " +
-					"from .pad.toml.",
+				Description: "Workspace slug. An explicit value always wins. A " +
+					"single-user local server else uses the pad_set_workspace " +
+					"session default, then the .pad.toml workspace; a multi-user/" +
+					"remote server requires an explicit workspace per call.",
 			})
 		}
 		for _, p := range def.Schema.Params {

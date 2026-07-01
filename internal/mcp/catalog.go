@@ -156,7 +156,7 @@ func (env ActionEnv) Dispatch(ctx context.Context, cmdPath []string, input map[s
 			Hint:    "Catalog action's cmdPath doesn't appear in the cmdhelp Doc — programmer error in the catalog. File a bug.",
 		}), nil
 	}
-	cliArgs, err := BuildCLIArgs(cmdInfo, input, env.Workspace.Get(), env.RootFlags)
+	cliArgs, err := BuildCLIArgs(cmdInfo, input, env.Workspace.ResolveDefault(), env.RootFlags)
 	if err != nil {
 		// BUG-987 bug 12: BuildCLIArgs returns plain Go errors for
 		// missing required args / bad types. Previously those came
@@ -166,7 +166,7 @@ func (env ActionEnv) Dispatch(ctx context.Context, cmdPath []string, input map[s
 		// shape across the surface and can branch on error.code.
 		return validationFailedFromBuildErr(pathStr, err), nil
 	}
-	ctx = WithDispatchInput(ctx, mergeDispatchInput(input, env.Workspace.Get(), env.RootFlags))
+	ctx = WithDispatchInput(ctx, mergeDispatchInput(input, env.Workspace.ResolveDefault(), env.RootFlags))
 	return env.Dispatcher.Dispatch(ctx, cmdPath, cliArgs)
 }
 
@@ -281,11 +281,12 @@ func buildToolFromDef(def ToolDef) mcp.Tool {
 		opts = append(opts,
 			mcp.WithString("workspace",
 				mcp.Description(
-					"Workspace slug to target for this call. Resolution order: "+
-						"(1) explicit value here wins, (2) else session default set via "+
-						"pad_set_workspace, (3) else the CWD-linked workspace from .pad.toml. "+
-						"Pass explicitly to switch workspaces mid-session without affecting "+
-						"the session default.",
+					"Workspace slug to target for this call. An explicit value here "+
+						"ALWAYS wins. Otherwise resolution depends on the server: a "+
+						"single-user local server falls back to the session default set "+
+						"via pad_set_workspace, then the CWD-linked workspace from "+
+						".pad.toml. A multi-user/remote server does NOT persist a session "+
+						"default, so you must pass workspace explicitly on every call.",
 				),
 			),
 		)

@@ -504,8 +504,18 @@ func serveCmd() *cobra.Command {
 					OnScopeDenied: srv.RecordMCPTierMismatch,
 				}
 				if _, regErr := mcpserver.Register(mcpSrv.MCP(), mcpserver.RegistryOptions{
-					Doc:        mcpDoc,
-					Workspace:  mcpserver.NewWorkspaceState(""),
+					Doc: mcpDoc,
+					// Shared multi-user state: this one stateless process
+					// dispatches for every OAuth user, so the session
+					// workspace must NEVER be trusted as a per-call
+					// resolution default — it would bleed across users /
+					// concurrent sessions (BUG-1865). NewSharedWorkspaceState
+					// makes ResolveDefault() always return "", forcing
+					// per-call explicit `workspace` (or the per-user
+					// maybeInjectWorkspace default). Local `pad mcp serve`
+					// (cmd/pad/mcp.go) keeps NewWorkspaceState — it's
+					// single-user-per-process and safe to inject.
+					Workspace:  mcpserver.NewSharedWorkspaceState(),
 					Dispatcher: dispatcher,
 					PadVersion: fullVersion(),
 				}); regErr != nil {

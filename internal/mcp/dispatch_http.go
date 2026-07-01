@@ -655,7 +655,7 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 	workspace, _ := input["workspace"].(string)
 	collection, _ := input["collection"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required (set --workspace or pad_set_workspace)")
+		return "", "", nil, fmt.Errorf("workspace is required — pass workspace=<slug> explicitly")
 	}
 	if collection == "" {
 		return "", "", nil, fmt.Errorf("collection is required")
@@ -879,7 +879,7 @@ func ingestFieldKVP(s string, dst map[string]any) {
 func mapPlaybookRun(input map[string]any) (method, path string, body []byte, err error) {
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
-		return "", "", nil, fmt.Errorf("workspace is required (set --workspace or pad_set_workspace)")
+		return "", "", nil, fmt.Errorf("workspace is required — pass workspace=<slug> explicitly")
 	}
 	ref, _ := input["ref"].(string)
 	if ref == "" {

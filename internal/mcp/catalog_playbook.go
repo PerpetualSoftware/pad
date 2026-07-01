@@ -112,7 +112,7 @@ func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv)
 		// attach it manually and call the dispatcher directly. The
 		// resulting POST body preserves structured args including
 		// explicit false values on flag-typed entries.
-		ctx = WithDispatchInput(ctx, mergeDispatchInput(input, env.Workspace.Get(), env.RootFlags))
+		ctx = WithDispatchInput(ctx, mergeDispatchInput(input, env.Workspace.ResolveDefault(), env.RootFlags))
 		return env.Dispatcher.Dispatch(ctx, []string{"playbook", "run"}, nil)
 	}
 
