@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Item } from '$lib/types';
-import { reorderGroup, reorderedList, disabledDirections } from './reorder';
+import { reorderGroup, reorderedList, disabledDirections, adjacentColumn } from './reorder';
 
 // Minimal Item stand-in — reorder only touches `id` and `sort_order`.
 function item(id: string, sort_order: number): Item {
@@ -102,5 +102,34 @@ describe('disabledDirections', () => {
 
 	it('disables nothing for a middle item', () => {
 		expect(disabledDirections(1, 4).size).toBe(0);
+	});
+});
+
+describe('adjacentColumn', () => {
+	const cols = ['open', 'in_progress', 'done'];
+
+	it('returns both neighbours for a middle column', () => {
+		expect(adjacentColumn(cols, 'in_progress', 'left')).toBe('open');
+		expect(adjacentColumn(cols, 'in_progress', 'right')).toBe('done');
+	});
+
+	it('returns null moving left from the first column', () => {
+		expect(adjacentColumn(cols, 'open', 'left')).toBeNull();
+		expect(adjacentColumn(cols, 'open', 'right')).toBe('in_progress');
+	});
+
+	it('returns null moving right from the last column', () => {
+		expect(adjacentColumn(cols, 'done', 'right')).toBeNull();
+		expect(adjacentColumn(cols, 'done', 'left')).toBe('in_progress');
+	});
+
+	it('returns null for a single-column board in either direction', () => {
+		expect(adjacentColumn(['only'], 'only', 'left')).toBeNull();
+		expect(adjacentColumn(['only'], 'only', 'right')).toBeNull();
+	});
+
+	it('returns null when the current value is not in the order', () => {
+		expect(adjacentColumn(cols, 'archived', 'left')).toBeNull();
+		expect(adjacentColumn(cols, 'archived', 'right')).toBeNull();
 	});
 });

@@ -26,10 +26,19 @@
 		 * stays dumb: it forwards these, it has no ordering context.
 		 */
 		onReorderItem?: (item: Item, dir: ReorderDirection) => void;
-		reorderDisabledDirs?: Set<ReorderDirection>;
+		reorderDisabledDirs?: Set<ReorderDirection | 'left' | 'right'>;
+		/**
+		 * Board-only adjacent-column move (TASK-1908). Pass-through to the
+		 * menu's `onMove`; only BoardView wires it, so left/right never
+		 * appear on List/Table/Child cards. The vertical `onReorderItem`
+		 * type is deliberately left untouched (DR-6).
+		 */
+		onMoveItem?: (item: Item, dir: 'left' | 'right') => void;
+		/** Render the Move left / Move right menu entries (BoardView only). */
+		horizontal?: boolean;
 	}
 
-	let { item, collection, compact = false, focused = false, showCollection = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks', onReorderItem, reorderDisabledDirs }: Props = $props();
+	let { item, collection, compact = false, focused = false, showCollection = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks', onReorderItem, reorderDisabledDirs, onMoveItem, horizontal = false }: Props = $props();
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -156,9 +165,11 @@
 		{#if onReorderItem}
 			<ItemActionsMenu
 				{item}
+				{horizontal}
 				disabledDirs={reorderDisabledDirs}
 				label={item.title}
 				onReorder={(dir) => onReorderItem?.(item, dir)}
+				onMove={onMoveItem ? (dir) => onMoveItem?.(item, dir) : undefined}
 			/>
 		{/if}
 	</div>

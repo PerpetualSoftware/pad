@@ -2,7 +2,7 @@
 	import type { Item, Collection } from '$lib/types';
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
-	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
+	import { reorderGroup, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
@@ -286,40 +286,66 @@
 	async function handleFinalize(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
 		columnData[columnValue] = e.detail.items;
 
-		const reorderUpdates = columnData[columnValue]
-			.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
-			.map((item, index) => ({ slug: item.id, sort_order: index }));
-
 		const { id: itemId, trigger } = e.detail.info;
-
 		isDragging = false;
-		dropCooldown = true;
 
-		let moveSucceeded = true;
-
+		// The zone that RECEIVED the card owns the group-value change + the
+		// target-lane reindex; delegate that to the shared commit path,
+		// passing the dnd-provided drop order as the placement.
 		if (trigger === TRIGGERS.DROPPED_INTO_ZONE) {
 			const originalItem = items.find((i) => i.id === itemId);
 			if (originalItem) {
-				const fields = parseFields(originalItem);
-				if (fields[groupField] !== columnValue) {
-					try {
-						await onStatusChange(originalItem, columnValue);
-					} catch {
-						moveSucceeded = false;
-					}
-				}
+				await commitColumnMove(originalItem, columnValue, e.detail.items);
+				return;
+			}
+		}
+
+		// Source/other zone (the card left this lane) or the item is gone:
+		// no status change — just re-densify this lane's remaining order.
+		dropCooldown = true;
+		if (onReorder) {
+			const reorderUpdates = e.detail.items
+				.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
+				.map((item, index) => ({ slug: item.id, sort_order: index }));
+			if (reorderUpdates.length > 0) onReorder(reorderUpdates);
+		}
+		setTimeout(() => { dropCooldown = false; }, 2000);
+	}
+
+	// Shared commit tail for a card that changes columns — used by both drag
+	// (handleFinalize's receiving zone) and the menu's Move left/right
+	// (moveItem). Guards with the drop cooldown, changes the group value via
+	// the page's status handler, persists the target lane's sort_order, then
+	// releases the cooldown after SSE settles — or reverts the optimistic
+	// order on failure. `placement` stays parametric: drag passes the
+	// dnd-provided target order (e.detail.items); the menu passes 'top' (the
+	// card has already been inserted at the target lane's head). DR-7.
+	async function commitColumnMove(item: Item, targetColumn: string, placement: Item[] | 'top') {
+		dropCooldown = true;
+
+		let moveSucceeded = true;
+		const fields = parseFields(item);
+		if (fields[groupField] !== targetColumn) {
+			try {
+				await onStatusChange(item, targetColumn);
+			} catch {
+				moveSucceeded = false;
 			}
 		}
 
 		if (moveSucceeded) {
-			// Only persist reorder after a successful move
-			if (onReorder && reorderUpdates.length > 0) {
-				onReorder(reorderUpdates);
+			// Only persist reorder after a successful move.
+			if (onReorder) {
+				const order = placement === 'top' ? (columnData[targetColumn] ?? []) : placement;
+				const reorderUpdates = order
+					.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
+					.map((it, index) => ({ slug: it.id, sort_order: index }));
+				if (reorderUpdates.length > 0) onReorder(reorderUpdates);
 			}
-			// Let SSE events settle before re-syncing from props
+			// Let SSE events settle before re-syncing from props.
 			setTimeout(() => { dropCooldown = false; }, 2000);
 		} else {
-			// Move failed — immediately restore original positions
+			// Move failed — immediately restore original positions.
 			dropCooldown = false;
 		}
 	}
@@ -342,12 +368,51 @@
 		}
 	}
 
+	// Menu-driven adjacent-column move (TASK-1908) — the horizontal
+	// counterpart to reorderItem. Sets the item's group field to the
+	// neighbouring column's value and lands the card at the TOP of that lane,
+	// reusing the drag commit path (commitColumnMove). Because a menu move —
+	// unlike a drag — doesn't get source-lane removal for free from the dnd
+	// library, we optimistically pull the card out of the source lane and
+	// insert it at the target lane's head BEFORE committing; otherwise the
+	// card would render in BOTH lanes until the cooldown/SSE settle (DR-7).
+	function moveItem(columnValue: string, item: Item, dir: 'left' | 'right') {
+		const target = adjacentColumn(columnOrder, columnValue, dir);
+		if (!target) return;
+
+		const source = (columnData[columnValue] ?? []).filter((i) => i.id !== item.id);
+		const dest = [item, ...(columnData[target] ?? []).filter((i) => i.id !== item.id)];
+		columnData[columnValue] = source;
+		columnData[target] = dest;
+
+		commitColumnMove(item, target, 'top');
+	}
+
 	// Per-lane gate: edit permission, not search-preserving order, and the
 	// lane is in manual sort (its override, else page sort). Deliberately
 	// NOT gated on isMobile — unlike drag (disabled on mobile), the menu IS
 	// the mobile reorder mechanism.
 	function canReorderLane(columnValue: string): boolean {
 		return canEdit && !preserveOrder && laneSortFor(columnValue) === 'manual';
+	}
+
+	// Combined hidden-direction set for a card's reorder menu: the vertical
+	// edges (disabledDirections) plus the horizontal edges — hide `left` in
+	// the first column, `right` in the last, so the edge option simply isn't
+	// rendered (DR-1). Pure derivation from columnOrder — read in the
+	// template, never a $state an $effect writes (CONVE-1688).
+	function moveDisabledDirs(
+		columnValue: string,
+		index: number,
+		length: number
+	): Set<ReorderDirection | 'left' | 'right'> {
+		const disabled: Set<ReorderDirection | 'left' | 'right'> = new Set(
+			disabledDirections(index, length)
+		);
+		const colIdx = columnOrder.indexOf(columnValue);
+		if (colIdx <= 0) disabled.add('left');
+		if (colIdx >= columnOrder.length - 1) disabled.add('right');
+		return disabled;
 	}
 
 	function columnCssClass(value: string): string {
@@ -516,7 +581,9 @@
 							progress={itemProgress?.[item.id] ?? null}
 							{progressLabel}
 							onReorderItem={canReorderLane(colValue) ? (it, dir) => reorderItem(colValue, it, dir) : undefined}
-							reorderDisabledDirs={canReorderLane(colValue) ? disabledDirections(i, colItems.length) : undefined}
+							onMoveItem={canReorderLane(colValue) ? (it, dir) => moveItem(colValue, it, dir) : undefined}
+							horizontal={canReorderLane(colValue)}
+							reorderDisabledDirs={canReorderLane(colValue) ? moveDisabledDirs(colValue, i, colItems.length) : undefined}
 						/>
 					</div>
 				{/each}
