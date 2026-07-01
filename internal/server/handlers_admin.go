@@ -25,8 +25,30 @@ const (
 	settingWebMCPEnabled = "webmcp_enabled"
 )
 
-// handleGetPlatformSettings returns all platform settings.
-// Admin-only. Sensitive values (API keys) are masked.
+// adminManagedSettings is the canonical allowlist of admin-editable platform
+// settings. It gates BOTH the read (handleGetPlatformSettings) and the write
+// (handleUpdatePlatformSettings) so the two can't drift.
+//
+// Deny-by-default is load-bearing for security: the platform_settings table also
+// holds server secrets (2fa_challenge_secret — the 2FA challenge HMAC key) and
+// plan-limit rows (plan_limits_*). Returning the whole table leaked the 2FA
+// secret to any admin client (BUG-1909). GET emits only these keys; a value that
+// is settable but sensitive (maileroo_api_key) is additionally masked. Any key
+// not listed here is neither exposed nor writable through this endpoint.
+var adminManagedSettings = map[string]bool{
+	settingEmailProvider:          true,
+	settingMailerooAPIKey:         true,
+	settingEmailFrom:              true,
+	settingEmailFromName:          true,
+	settingPlatformName:           true,
+	settingTokenDefaultExpiryDays: true,
+	settingTokenMaxLifetimeDays:   true,
+	settingWebMCPEnabled:          true,
+}
+
+// handleGetPlatformSettings returns the admin-managed platform settings.
+// Admin-only. Only allowlisted keys are returned (deny-by-default — see
+// adminManagedSettings); sensitive values (API keys) are masked.
 func (s *Server) handleGetPlatformSettings(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	if user == nil || user.Role != "admin" {
@@ -34,10 +56,19 @@ func (s *Server) handleGetPlatformSettings(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	settings, err := s.store.GetPlatformSettings()
+	stored, err := s.store.GetPlatformSettings()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load settings")
 		return
+	}
+
+	// Project only the admin-managed keys — never the 2FA secret or plan-limit
+	// rows that also live in platform_settings (BUG-1909).
+	settings := make(map[string]string, len(adminManagedSettings))
+	for key := range adminManagedSettings {
+		if v, ok := stored[key]; ok {
+			settings[key] = v
+		}
 	}
 
 	// Surface webmcp_enabled with an explicit default so the admin UI toggle
@@ -84,20 +115,11 @@ func (s *Server) handleUpdatePlatformSettings(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Whitelist known settings
-	allowed := map[string]bool{
-		settingEmailProvider:          true,
-		settingMailerooAPIKey:         true,
-		settingEmailFrom:              true,
-		settingEmailFromName:          true,
-		settingPlatformName:           true,
-		settingTokenDefaultExpiryDays: true,
-		settingTokenMaxLifetimeDays:   true,
-		settingWebMCPEnabled:          true,
-	}
-
+	// Whitelist known settings — same canonical set the GET handler exposes, so a
+	// caller can neither read nor write server secrets (2fa_challenge_secret) or
+	// plan-limit rows through this endpoint (BUG-1909 / BUG-1890).
 	for key, value := range input {
-		if !allowed[key] {
+		if !adminManagedSettings[key] {
 			continue
 		}
 		// Defensive guard against BUG-1890: the GET handler returns the API key
@@ -133,7 +155,7 @@ func (s *Server) handleUpdatePlatformSettings(w http.ResponseWriter, r *http.Req
 	// Log which settings were changed (keys only, not values for security)
 	var keys []string
 	for key := range input {
-		if allowed[key] {
+		if adminManagedSettings[key] {
 			keys = append(keys, key)
 		}
 	}

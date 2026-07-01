@@ -3,10 +3,94 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/email"
 )
+
+// TestAdminSettings_SecretsNotExposed is the BUG-1909 regression: GET
+// /admin/settings must return ONLY admin-managed keys. The platform_settings
+// table also holds the 2FA challenge signing secret and plan-limit rows; neither
+// may leak to the admin client.
+func TestAdminSettings_SecretsNotExposed(t *testing.T) {
+	srv := testServer(t)
+	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	// Seed the kinds of rows that live in platform_settings alongside the
+	// admin-managed keys: a server secret and a plan-limit row.
+	const secret = "5FTmIeLVxG3wC+NwjOdSch79IQASkY0ybmRHU65ufAc="
+	if err := srv.store.SetPlatformSetting("2fa_challenge_secret", secret); err != nil {
+		t.Fatalf("seed 2fa secret: %v", err)
+	}
+	if err := srv.store.SetPlatformSetting("plan_limits_free_workspaces", "3"); err != nil {
+		t.Fatalf("seed limit row: %v", err)
+	}
+	// And a legitimate admin-managed key to prove the allowlist still passes those.
+	if err := srv.store.SetPlatformSetting(settingPlatformName, "Acme Pad"); err != nil {
+		t.Fatalf("seed platform_name: %v", err)
+	}
+
+	rr := doRequestWithCookie(srv, "GET", "/api/v1/admin/settings", nil, adminToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("get: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	// Raw-body check: the secret must not appear anywhere in the response, even
+	// as a substring (guards against future serialization changes).
+	if body := rr.Body.String(); strings.Contains(body, secret) {
+		t.Fatalf("2fa_challenge_secret leaked in GET /admin/settings body: %s", body)
+	}
+
+	var got map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := got["2fa_challenge_secret"]; ok {
+		t.Error("2fa_challenge_secret present as a key in GET /admin/settings")
+	}
+	if _, ok := got["plan_limits_free_workspaces"]; ok {
+		t.Error("plan_limits_* row leaked into GET /admin/settings")
+	}
+	if got[settingPlatformName] != "Acme Pad" {
+		t.Errorf("admin-managed platform_name missing/wrong: %q", got[settingPlatformName])
+	}
+	// Every returned key must be in the allowlist.
+	for k := range got {
+		if !adminManagedSettings[k] {
+			t.Errorf("GET returned non-allowlisted key %q", k)
+		}
+	}
+}
+
+// TestAdminSettings_SecretNotWritable pins the write side of deny-by-default: a
+// PATCH cannot overwrite the 2FA secret (or any non-allowlisted key) through the
+// settings endpoint.
+func TestAdminSettings_SecretNotWritable(t *testing.T) {
+	srv := testServer(t)
+	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	const secret = "original-2fa-secret-value"
+	if err := srv.store.SetPlatformSetting("2fa_challenge_secret", secret); err != nil {
+		t.Fatalf("seed 2fa secret: %v", err)
+	}
+
+	body := map[string]any{
+		"2fa_challenge_secret":        "attacker-controlled",
+		"plan_limits_free_workspaces": "9999",
+	}
+	rr := doRequestWithCookie(srv, "PATCH", "/api/v1/admin/settings", body, adminToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+
+	if stored, _ := srv.store.GetPlatformSetting("2fa_challenge_secret"); stored != secret {
+		t.Errorf("2fa_challenge_secret was overwritten via settings PATCH: got %q, want %q", stored, secret)
+	}
+	if stored, _ := srv.store.GetPlatformSetting("plan_limits_free_workspaces"); stored != "" {
+		t.Errorf("plan_limits row was written via settings PATCH: got %q", stored)
+	}
+}
 
 // TestMaskAPIKey pins the single source of truth for the sensitive-value mask
 // (BUG-1890). GET /admin/settings emits this form and the update handler compares
