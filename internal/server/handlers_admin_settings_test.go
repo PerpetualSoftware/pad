@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/email"
 )
 
 // TestMaskAPIKey pins the single source of truth for the sensitive-value mask
@@ -140,6 +142,60 @@ func TestAdminSettings_RealKeyUpdateWins(t *testing.T) {
 	}
 	if stored != newKey {
 		t.Errorf("new key not persisted: got %q, want %q", stored, newKey)
+	}
+}
+
+// TestAdminSettings_DisableTearsDownLiveSender pins the BUG-1890 follow-up: when a
+// UI-configured (no env) instance disables email by clearing the key, the live
+// in-memory sender must be torn down — not just the DB row — so mail actually
+// stops without a restart.
+func TestAdminSettings_DisableTearsDownLiveSender(t *testing.T) {
+	srv := testServer(t)
+	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	// Configure email through the platform-settings path (no env sender).
+	body := map[string]any{
+		settingEmailProvider:  "maileroo",
+		settingMailerooAPIKey: "mlr-live-configured-123456",
+		settingEmailFrom:      "noreply@example.com",
+	}
+	rr := doRequestWithCookie(srv, "PATCH", "/api/v1/admin/settings", body, adminToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("configure patch: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if srv.email == nil {
+		t.Fatal("expected live email sender after configuring a key")
+	}
+
+	// Disable: provider None + cleared key (what the fixed client sends).
+	body = map[string]any{settingEmailProvider: "", settingMailerooAPIKey: ""}
+	rr = doRequestWithCookie(srv, "PATCH", "/api/v1/admin/settings", body, adminToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("disable patch: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	if srv.email != nil {
+		t.Error("live sender not torn down after clearing key — email still active until restart")
+	}
+	if srv.emailAPIKey != "" {
+		t.Errorf("emailAPIKey=%q after disable, want empty", srv.emailAPIKey)
+	}
+}
+
+// TestReconfigureEmail_EnvSenderPreserved is the counterpart guard: an env-wired
+// sender (the deployment baseline) must survive a reconfigure when platform
+// settings carry no key — the admin UI doesn't disable env-configured email.
+func TestReconfigureEmail_EnvSenderPreserved(t *testing.T) {
+	srv := testServer(t)
+
+	srv.SetEmailSender(email.NewSender("env-key-abcdef", "env@example.com", "Pad", "http://localhost"), "env-key-abcdef")
+	if srv.email == nil {
+		t.Fatal("precondition: env sender should be set")
+	}
+
+	// No platform-settings key stored; reconfigure must not wipe the env sender.
+	srv.reconfigureEmail()
+	if srv.email == nil {
+		t.Error("env-configured sender was torn down by reconfigureEmail with empty platform key")
 	}
 }
 
