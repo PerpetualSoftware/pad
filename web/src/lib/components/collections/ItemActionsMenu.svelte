@@ -22,30 +22,51 @@
 	import type { Item } from '$lib/types';
 	import type { ReorderDirection } from '$lib/collections/reorder';
 
+	// Horizontal (adjacent-column) moves ride a SEPARATE optional callback so
+	// the shared vertical `onReorder` type stays 'top'|'bottom'|'up'|'down'
+	// for the List/Table/Child hosts (TASK-1908 / DR-6). MenuDirection is
+	// internal to this menu — it never appears on a prop those hosts consume.
+	type MenuDirection = ReorderDirection | 'left' | 'right';
+
 	interface Props {
 		item: Item;
-		/** Fire the reorder. The host has the item + group context bound. */
+		/** Fire the vertical reorder. The host has the item + group context bound. */
 		onReorder: (dir: ReorderDirection) => void;
-		/** Directions to hide (edge of group) — see disabledDirections(). */
-		disabledDirs?: Set<ReorderDirection>;
+		/**
+		 * Fire an adjacent-column move (board only). Only wired by BoardView;
+		 * omitted by every other host, so left/right never fire elsewhere.
+		 */
+		onMove?: (dir: 'left' | 'right') => void;
+		/** Render the Move left / Move right entries (BoardView passes true). */
+		horizontal?: boolean;
+		/** Directions to hide (edge of group / board) — see disabledDirections(). */
+		disabledDirs?: Set<MenuDirection>;
 		/** Accessible label suffix, e.g. the item title. */
 		label?: string;
 	}
 
-	let { item, onReorder, disabledDirs, label }: Props = $props();
+	let { item, onReorder, onMove, horizontal = false, disabledDirs, label }: Props = $props();
 
 	interface Action {
-		dir: ReorderDirection;
+		dir: MenuDirection;
 		icon: string;
 		text: string;
 	}
-	const ALL_ACTIONS: Action[] = [
+	const VERTICAL_ACTIONS: Action[] = [
 		{ dir: 'top', icon: '⤒', text: 'Move to top' },
 		{ dir: 'up', icon: '↑', text: 'Move up' },
 		{ dir: 'down', icon: '↓', text: 'Move down' },
 		{ dir: 'bottom', icon: '⤓', text: 'Move to bottom' }
 	];
-	let actions = $derived(ALL_ACTIONS.filter((a) => !disabledDirs?.has(a.dir)));
+	const HORIZONTAL_ACTIONS: Action[] = [
+		{ dir: 'left', icon: '←', text: 'Move left' },
+		{ dir: 'right', icon: '→', text: 'Move right' }
+	];
+	let actions = $derived(
+		[...VERTICAL_ACTIONS, ...(horizontal ? HORIZONTAL_ACTIONS : [])].filter(
+			(a) => !disabledDirs?.has(a.dir)
+		)
+	);
 
 	let open = $state(false);
 	let triggerEl = $state<HTMLButtonElement>();
@@ -102,14 +123,18 @@
 		if (returnFocus) triggerEl?.focus();
 	}
 
-	function pick(dir: ReorderDirection) {
+	function pick(dir: MenuDirection) {
 		if (disabledDirs?.has(dir)) return;
 		// Close before firing so the menu can't be machine-gunned against
 		// the optimistic reorder state — a second move needs a reopen, by
 		// which point the new order has settled. (Drag is naturally
 		// debounced; menu clicks are not.)
 		closeMenu(false);
-		onReorder(dir);
+		if (dir === 'left' || dir === 'right') {
+			onMove?.(dir);
+		} else {
+			onReorder(dir);
+		}
 	}
 
 	function onTriggerClick(e: MouseEvent) {

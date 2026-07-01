@@ -88,6 +88,27 @@ export function reorderGroup(
 }
 
 /**
+ * Return the value of the column immediately to the left/right of `current`
+ * in `columnOrder` (the board's left→right display order), or `null` when
+ * there is no neighbour in that direction: `current` is at the relevant edge
+ * (first + `left`, last + `right`), isn't present in `columnOrder`, or the
+ * board has a single column. Pure — used by the kanban card menu's
+ * Move left / Move right (TASK-1908) to pick the adjacent column and to
+ * decide when the edge option should be hidden.
+ */
+export function adjacentColumn(
+	columnOrder: string[],
+	current: string,
+	dir: 'left' | 'right'
+): string | null {
+	const idx = columnOrder.indexOf(current);
+	if (idx === -1) return null;
+	const target = dir === 'left' ? idx - 1 : idx + 1;
+	if (target < 0 || target >= columnOrder.length) return null;
+	return columnOrder[target];
+}
+
+/**
  * Which directions are unavailable for the item at `index` in a group of
  * `length` items — used to hide no-op menu entries (first item can't move
  * up / to top; last can't move down / to bottom; a lone item moves
