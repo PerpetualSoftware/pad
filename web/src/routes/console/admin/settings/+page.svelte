@@ -78,16 +78,23 @@
 		platformStatus = 'idle';
 		try {
 			// Scope the PATCH to the fields this email form owns (mirrors the
-			// Integrations save). Only include the API key when the admin actually
-			// edited it — otherwise the field still holds the masked placeholder
-			// from GET /admin/settings, and saving it would corrupt the real
-			// stored key, silently breaking email (BUG-1890).
+			// Integrations save).
 			const payload: Record<string, string> = {
 				email_provider: platformSettings.email_provider ?? '',
 				email_from: platformSettings.email_from ?? '',
 				email_from_name: platformSettings.email_from_name ?? ''
 			};
-			if (apiKeyEdited) {
+			if (payload.email_provider !== 'maileroo') {
+				// Disabling the provider: clear the stored key so email actually
+				// turns off. The server keys email enablement off the presence of
+				// maileroo_api_key (reconfigureEmail ignores email_provider), so
+				// leaving a stale key would keep sending mail after "None".
+				payload.maileroo_api_key = '';
+			} else if (apiKeyEdited) {
+				// Provider is Maileroo: only send the key when the admin actually
+				// edited it — otherwise the field still holds the masked placeholder
+				// from GET /admin/settings, and saving it would corrupt the real
+				// stored key, silently breaking email (BUG-1890).
 				payload.maileroo_api_key = platformSettings.maileroo_api_key ?? '';
 			}
 			await adminPatch('/admin/settings', payload);
