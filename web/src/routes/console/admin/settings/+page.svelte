@@ -26,6 +26,10 @@
 
 	// Email settings
 	let platformSettings = $state<Record<string, string>>({});
+	// GET /admin/settings returns the Maileroo key masked (abcd...wxyz / ****).
+	// Track whether the admin actually re-typed it so we never persist the mask
+	// back over the real stored key (BUG-1890).
+	let apiKeyEdited = $state(false);
 	let savingPlatform = $state(false);
 	let platformStatus = $state<'idle' | 'saved' | 'error'>('idle');
 	let savingIntegrations = $state(false);
@@ -73,7 +77,20 @@
 		savingPlatform = true;
 		platformStatus = 'idle';
 		try {
-			await adminPatch('/admin/settings', platformSettings);
+			// Scope the PATCH to the fields this email form owns (mirrors the
+			// Integrations save). Only include the API key when the admin actually
+			// edited it — otherwise the field still holds the masked placeholder
+			// from GET /admin/settings, and saving it would corrupt the real
+			// stored key, silently breaking email (BUG-1890).
+			const payload: Record<string, string> = {
+				email_provider: platformSettings.email_provider ?? '',
+				email_from: platformSettings.email_from ?? '',
+				email_from_name: platformSettings.email_from_name ?? ''
+			};
+			if (apiKeyEdited) {
+				payload.maileroo_api_key = platformSettings.maileroo_api_key ?? '';
+			}
+			await adminPatch('/admin/settings', payload);
 			platformStatus = 'saved';
 		} catch {
 			platformStatus = 'error';
@@ -202,6 +219,7 @@
 							type="password"
 							value={platformSettings.maileroo_api_key ?? ''}
 							oninput={(e) => {
+								apiKeyEdited = true;
 								platformSettings = {
 									...platformSettings,
 									maileroo_api_key: e.currentTarget.value
