@@ -4,6 +4,7 @@
 	import type { Item, Collection } from '$lib/types';
 	import { parseFields, parseSchema, parseTags, formatItemRef, itemUrlId } from '$lib/types';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import { copyToClipboard } from '$lib/utils/clipboard';
 	import ItemActionsMenu from './ItemActionsMenu.svelte';
 	import type { ReorderDirection } from '$lib/collections/reorder';
 
@@ -133,6 +134,20 @@
 		e.stopPropagation();
 		starredStore.toggle(wsSlug, item.slug, item.id);
 	}
+
+	// Copy the item's issue ID (e.g. IDEA-1904) without opening the card.
+	// The card is an <a>, so we must swallow the click (IDEA-1904).
+	let copied = $state(false);
+	async function copyRef(e: MouseEvent) {
+		e.preventDefault();
+		e.stopPropagation();
+		if (!itemRef) return;
+		const ok = await copyToClipboard(itemRef);
+		if (ok) {
+			copied = true;
+			setTimeout(() => { copied = false; }, 1500);
+		}
+	}
 </script>
 
 <a href={itemUrl} class="item-card" class:compact class:focused class:has-pr={!!pullRequest}>
@@ -161,7 +176,25 @@
 				{#if item.collection_icon}{item.collection_icon} {/if}{item.collection_name}
 			</span>
 		{/if}
-		{#if itemRef}<span class="item-ref">{itemRef}</span>{/if}
+		{#if itemRef}
+			<span class="item-ref-wrap">
+				<span class="item-ref">{itemRef}</span>
+				<button
+					type="button"
+					class="copy-ref-btn"
+					class:copied
+					onclick={copyRef}
+					title="Copy item ID"
+					aria-label="Copy item ID"
+				>
+					{#if copied}
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+					{:else}
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+					{/if}
+				</button>
+			</span>
+		{/if}
 		{#if onReorderItem}
 			<ItemActionsMenu
 				{item}
@@ -341,12 +374,53 @@
 		white-space: nowrap;
 	}
 
+	.item-ref-wrap {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+	}
+
 	.item-ref {
 		font-family: var(--font-mono);
 		font-size: 0.75em;
 		color: var(--text-muted);
 		font-weight: 400;
 		white-space: nowrap;
+	}
+
+	/* Copy-ID affordance sits just right of the item ref. Hidden until the
+	   card is hovered/focused to keep dense boards clean; the check state
+	   stays visible through its 1.5s window regardless of hover. */
+	.copy-ref-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 18px;
+		height: 18px;
+		padding: 0;
+		background: none;
+		border: none;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity 0.15s, color 0.15s, background 0.15s;
+		flex-shrink: 0;
+	}
+
+	.item-card:hover .copy-ref-btn,
+	.copy-ref-btn:focus-visible,
+	.copy-ref-btn.copied {
+		opacity: 1;
+	}
+
+	.copy-ref-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-tertiary);
+	}
+
+	.copy-ref-btn.copied {
+		color: var(--accent-green, #22c55e);
 	}
 
 	.card-title {
