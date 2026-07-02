@@ -371,7 +371,7 @@ func (s *Store) ListSystemCollectionIDs(workspaceID string) ([]string, error) {
 // workspace row timestamp.
 func (s *Store) GetUserMemberWorkspaces(userID string) ([]models.Workspace, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at,
+		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at,
 		       wm.sort_order
 		FROM workspaces w
 		JOIN workspace_members wm ON wm.workspace_id = w.id
@@ -390,7 +390,7 @@ func (s *Store) GetUserMemberWorkspaces(userID string) ([]models.Workspace, erro
 		var createdAt, updatedAt string
 		var deletedAt *string
 		if err := rows.Scan(
-			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings,
+			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings, &ws.Source,
 			&createdAt, &updatedAt, &deletedAt,
 			&ws.SortOrder,
 		); err != nil {
@@ -419,7 +419,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 	// short-circuits and behaves like an unrestricted MAX. The
 	// visibility rule mirrors VisibleCollectionIDs above.
 	rows, err := s.db.Query(s.q(`
-		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at,
+		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at,
 		       wm.sort_order,
 		       (
 		           SELECT MAX(i.updated_at) FROM items i
@@ -469,7 +469,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		var deletedAt *string
 		var lastItemActivity sql.NullString
 		if err := rows.Scan(
-			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings,
+			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings, &ws.Source,
 			&createdAt, &updatedAt, &deletedAt,
 			&ws.SortOrder,
 			&lastItemActivity,
@@ -499,7 +499,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 	// items behind grants the guest doesn't hold. The visible-items
 	// subquery mirrors the WHERE-clause grant logic below.
 	guestRows, err := s.db.Query(s.q(`
-		SELECT DISTINCT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at,
+		SELECT DISTINCT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at,
 		       (
 		           SELECT MAX(i.updated_at) FROM items i
 		           JOIN collections c ON c.id = i.collection_id
@@ -549,7 +549,7 @@ func (s *Store) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
 		var deletedAt *string
 		var lastItemActivity sql.NullString
 		if err := guestRows.Scan(
-			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings,
+			&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerID, &ws.OwnerUsername, &ws.Description, &ws.Settings, &ws.Source,
 			&createdAt, &updatedAt, &deletedAt,
 			&lastItemActivity,
 		); err != nil {

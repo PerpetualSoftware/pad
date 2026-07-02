@@ -48,6 +48,98 @@ func createBlocksLink(t *testing.T, srv *Server, wsSlug, sourceSlug, targetID st
 	return link
 }
 
+// TestDashboardHasAgentActivityFromWorkspaceSource covers BUG-1557: a
+// workspace created through an agent surface (CLI / MCP — both persist
+// source="cli") reports has_agent_activity=true even with zero items, so the
+// web UI stops nagging to "connect an agent" right after `pad init`. A
+// workspace created via the web (cookie session, no Authorization header)
+// still reports false until an agent actually creates an item.
+func TestDashboardHasAgentActivityFromWorkspaceSource(t *testing.T) {
+	srv := testServer(t)
+	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+
+	getHasAgent := func(t *testing.T, slug string) bool {
+		t.Helper()
+		rr := doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+slug+"/dashboard", nil, sessionToken)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("dashboard: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var resp DashboardResponse
+		parseJSON(t, rr, &resp)
+		return resp.HasAgentActivity
+	}
+
+	t.Run("cli-created workspace is agent-connected with zero items", func(t *testing.T) {
+		// Authorization: Bearer simulates the CLI flow — actorFromRequest
+		// flips source to "cli". This is exactly the `pad init` case.
+		rr := doRequestWithHeaders(srv, "POST", "/api/v1/workspaces",
+			map[string]string{"name": "CLI Made"},
+			map[string]string{"Authorization": "Bearer " + sessionToken},
+		)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create cli ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var ws models.Workspace
+		parseJSON(t, rr, &ws)
+		if ws.Source != "cli" {
+			t.Fatalf("expected workspace source=cli, got %q", ws.Source)
+		}
+		if !getHasAgent(t, ws.Slug) {
+			t.Fatalf("expected has_agent_activity=true for a CLI-created workspace with no items")
+		}
+	})
+
+	t.Run("web-created workspace is not agent-connected until an item exists", func(t *testing.T) {
+		rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+			map[string]string{"name": "Web Made"}, sessionToken)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create web ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var ws models.Workspace
+		parseJSON(t, rr, &ws)
+		if ws.Source != "web" {
+			t.Fatalf("expected workspace source=web, got %q", ws.Source)
+		}
+		if getHasAgent(t, ws.Slug) {
+			t.Fatalf("expected has_agent_activity=false for a web-created workspace with no items")
+		}
+
+		// The item-based signal still works: an agent (CLI) creating an
+		// item flips it true even though the workspace itself is web-origin.
+		itemRR := doRequestWithHeaders(srv, "POST",
+			"/api/v1/workspaces/"+ws.Slug+"/collections/tasks/items",
+			map[string]interface{}{"title": "agent item", "fields": `{"status":"open"}`},
+			map[string]string{"Authorization": "Bearer " + sessionToken},
+		)
+		if itemRR.Code != http.StatusCreated {
+			t.Fatalf("create item via cli: expected 201, got %d: %s", itemRR.Code, itemRR.Body.String())
+		}
+		if !getHasAgent(t, ws.Slug) {
+			t.Fatalf("expected has_agent_activity=true after a CLI-sourced item was created")
+		}
+	})
+
+	t.Run("web client cannot spoof source=cli via the request body", func(t *testing.T) {
+		// Source is attributed server-side from the request auth shape, not
+		// the body (WorkspaceCreate.Source is json:"-"). A cookie-session
+		// caller passing {"source":"cli"} must still be recorded as "web" so
+		// it can't self-suppress the connect-agent/onboarding prompts.
+		rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces",
+			map[string]string{"name": "Spoof Attempt", "source": "cli"}, sessionToken)
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("create ws: expected 201, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var ws models.Workspace
+		parseJSON(t, rr, &ws)
+		if ws.Source != "web" {
+			t.Fatalf("expected body-supplied source to be ignored (web), got %q", ws.Source)
+		}
+		if getHasAgent(t, ws.Slug) {
+			t.Fatalf("expected has_agent_activity=false — a spoofed body source must not mark the workspace agent-connected")
+		}
+	})
+}
+
 func TestDashboardEmpty(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)

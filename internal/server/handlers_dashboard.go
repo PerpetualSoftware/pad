@@ -374,6 +374,22 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	if err != nil {
 		return nil, err
 	}
+	// A workspace created through an agent surface (`pad init`, `pad
+	// workspace init`, MCP pad_workspace.create — all persist source
+	// cli/mcp) already has an agent wired up before that agent creates its
+	// first item. Fold that in so the "connect an agent" banner and the
+	// onboarding launchpad's "Agent connected" step don't nag right after
+	// `pad init` (BUG-1557). Unlike WorkspaceHasAgentActivity this is a
+	// workspace-level property (not visibility-scoped), so it's OR'd in
+	// unconditionally — but only queried when the cheap item EXISTS check
+	// came up empty. A load failure is non-fatal: buildDashboardResponse
+	// also backs the bootstrap endpoint, and a missing source signal must
+	// not break the whole dashboard.
+	if !hasAgent {
+		if ws, wErr := s.store.GetWorkspaceByID(workspaceID); wErr == nil && ws != nil {
+			hasAgent = ws.Source == "cli" || ws.Source == "mcp"
+		}
+	}
 	resp.HasAgentActivity = hasAgent
 
 	// needs_onboarding mirrors AgentBootstrap.NeedsOnboarding (TASK-1504):

@@ -22,7 +22,7 @@ func (s *Store) ListWorkspaces() ([]models.Workspace, error) {
 	// renamed?". Done in two steps (scalar subquery + Go-side max) to
 	// stay portable across SQLite (no GREATEST) and Postgres.
 	rows, err := s.db.Query(s.q(`
-		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at,
+		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at,
 		       (SELECT MAX(i.updated_at) FROM items i WHERE i.workspace_id = w.id AND i.deleted_at IS NULL)
 		FROM workspaces w
 		LEFT JOIN users ou ON ou.id = w.owner_id
@@ -39,7 +39,7 @@ func (s *Store) ListWorkspaces() ([]models.Workspace, error) {
 		var w models.Workspace
 		var createdAt, updatedAt string
 		var lastItemActivity sql.NullString
-		if err := rows.Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &createdAt, &updatedAt, &lastItemActivity); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &w.Source, &createdAt, &updatedAt, &lastItemActivity); err != nil {
 			return nil, err
 		}
 		w.CreatedAt = parseTime(createdAt)
@@ -98,9 +98,9 @@ func (s *Store) CreateWorkspace(input models.WorkspaceCreate) (*models.Workspace
 	}
 
 	_, err = s.db.Exec(s.q(`
-		INSERT INTO workspaces (id, name, slug, owner_id, description, settings, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, input.Name, finalSlug, input.OwnerID, input.Description, settings, ts, ts)
+		INSERT INTO workspaces (id, name, slug, owner_id, description, settings, source, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, input.Name, finalSlug, input.OwnerID, input.Description, settings, input.Source, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert workspace: %w", err)
 	}
@@ -129,11 +129,11 @@ func (s *Store) GetWorkspaceBySlug(slug string) (*models.Workspace, error) {
 	var deletedAt *string
 
 	err := s.db.QueryRow(s.q(`
-		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at
+		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at
 		FROM workspaces w
 		LEFT JOIN users ou ON ou.id = w.owner_id
 		WHERE w.slug = ? AND w.deleted_at IS NULL
-	`), slug).Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &createdAt, &updatedAt, &deletedAt)
+	`), slug).Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &w.Source, &createdAt, &updatedAt, &deletedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -154,11 +154,11 @@ func (s *Store) GetWorkspaceByID(id string) (*models.Workspace, error) {
 	var deletedAt *string
 
 	err := s.db.QueryRow(s.q(`
-		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at, w.deleted_at
+		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at
 		FROM workspaces w
 		LEFT JOIN users ou ON ou.id = w.owner_id
 		WHERE w.id = ? AND w.deleted_at IS NULL
-	`), id).Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &createdAt, &updatedAt, &deletedAt)
+	`), id).Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &w.Source, &createdAt, &updatedAt, &deletedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -177,7 +177,7 @@ func (s *Store) GetWorkspaceByID(id string) (*models.Workspace, error) {
 // to the given user (owned, member, or guest with grants).
 func (s *Store) GetWorkspacesBySlugForUser(slug, userID string) ([]models.Workspace, error) {
 	rows, err := s.db.Query(s.q(`
-		SELECT DISTINCT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.created_at, w.updated_at
+		SELECT DISTINCT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at
 		FROM workspaces w
 		LEFT JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.user_id = ?
 		LEFT JOIN collection_grants cg ON cg.workspace_id = w.id AND cg.user_id = ?
@@ -195,7 +195,7 @@ func (s *Store) GetWorkspacesBySlugForUser(slug, userID string) ([]models.Worksp
 	for rows.Next() {
 		var w models.Workspace
 		var createdAt, updatedAt string
-		if err := rows.Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &w.Source, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		w.CreatedAt = parseTime(createdAt)
