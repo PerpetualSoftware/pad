@@ -4,6 +4,7 @@
 	import type { Item, Collection } from '$lib/types';
 	import { parseFields, parseSchema, parseTags, formatItemRef, itemUrlId } from '$lib/types';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import { copyToClipboard } from '$lib/utils/clipboard';
 	import ItemActionsMenu from './ItemActionsMenu.svelte';
 	import type { ReorderDirection } from '$lib/collections/reorder';
 
@@ -133,6 +134,20 @@
 		e.stopPropagation();
 		starredStore.toggle(wsSlug, item.slug, item.id);
 	}
+
+	// Copy the item's issue ID (e.g. IDEA-1904) without opening the card.
+	// The card is an <a>, so we must swallow the click (IDEA-1904).
+	let copied = $state(false);
+	async function copyRef(e: MouseEvent) {
+		e.preventDefault();
+		e.stopPropagation();
+		if (!itemRef) return;
+		const ok = await copyToClipboard(itemRef);
+		if (ok) {
+			copied = true;
+			setTimeout(() => { copied = false; }, 1500);
+		}
+	}
 </script>
 
 <a href={itemUrl} class="item-card" class:compact class:focused class:has-pr={!!pullRequest}>
@@ -161,7 +176,28 @@
 				{#if item.collection_icon}{item.collection_icon} {/if}{item.collection_name}
 			</span>
 		{/if}
-		{#if itemRef}<span class="item-ref">{itemRef}</span>{/if}
+		{#if itemRef}
+			<span class="item-ref-wrap">
+				<span class="item-ref">{itemRef}</span>
+				<button
+					type="button"
+					class="copy-ref-btn"
+					class:copied
+					onclick={copyRef}
+					title="Copy item ID"
+					aria-label={copied ? `Copied ${itemRef}` : `Copy item ID ${itemRef}`}
+				>
+					{#if copied}
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>
+					{:else}
+						<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+					{/if}
+				</button>
+				<!-- Announce copy success to assistive tech; the icon/color swap
+				     alone is invisible to screen readers (IDEA-1904 a11y review). -->
+				<span class="sr-only" aria-live="polite">{copied ? `Copied ${itemRef}` : ''}</span>
+			</span>
+		{/if}
 		{#if onReorderItem}
 			<ItemActionsMenu
 				{item}
@@ -341,12 +377,74 @@
 		white-space: nowrap;
 	}
 
+	.item-ref-wrap {
+		display: inline-flex;
+		align-items: center;
+		gap: 2px;
+	}
+
 	.item-ref {
 		font-family: var(--font-mono);
 		font-size: 0.75em;
 		color: var(--text-muted);
 		font-weight: 400;
 		white-space: nowrap;
+	}
+
+	/* Copy-ID affordance sits just right of the item ref. Hidden until the
+	   card is hovered/focused to keep dense boards clean; the check state
+	   stays visible through its 1.5s window regardless of hover. */
+	.copy-ref-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 22px;
+		height: 22px;
+		padding: 0;
+		background: none;
+		border: none;
+		border-radius: var(--radius-sm);
+		color: var(--text-muted);
+		cursor: pointer;
+		opacity: 0;
+		transition: opacity 0.15s, color 0.15s, background 0.15s;
+		flex-shrink: 0;
+	}
+
+	.item-card:hover .copy-ref-btn,
+	.copy-ref-btn:focus-visible,
+	.copy-ref-btn.copied {
+		opacity: 1;
+	}
+
+	/* Touch devices have no hover and don't reliably match :focus-visible on
+	   tap, so a purely hover-revealed control would be invisible there. Keep
+	   it at a low resting opacity like the sibling star button (IDEA-1904). */
+	@media (hover: none) {
+		.copy-ref-btn {
+			opacity: 0.65;
+		}
+	}
+
+	.copy-ref-btn:hover {
+		color: var(--text-primary);
+		background: var(--bg-tertiary);
+	}
+
+	.copy-ref-btn.copied {
+		color: var(--accent-green, #22c55e);
+	}
+
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
 	}
 
 	.card-title {
