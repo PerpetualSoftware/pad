@@ -10,6 +10,11 @@
 	 *   ① connect an agent  ② tell it (in natural language) to set up
 	 *   ③ watch the result appear here live (via the page's SSE feed).
 	 *
+	 * Step ① adapts to `agentActive`: when an agent is already connected (e.g.
+	 * the workspace was created via a cli/mcp surface — BUG-1557), step ①
+	 * collapses to a "connected" confirmation and the emphasis shifts to
+	 * step ② as the primary next action.
+	 *
 	 * The flag flips to false the moment any real item exists, at which point
 	 * the parent swaps back to the normal dashboard — so this view is
 	 * inherently transient.
@@ -17,13 +22,17 @@
 	interface Props {
 		workspaceName: string;
 		/**
-		 * Whether an agent has already acted in this workspace
+		 * Whether an agent is connected to this workspace
 		 * (dashboard.has_agent_activity). Ticks the "Agent connected" checklist
-		 * step. Note: this signal flips on the first agent-CREATED item, which
-		 * also clears needs_onboarding and removes the launchpad — so in
-		 * practice the checklist is an orientation device (you're on step 1),
-		 * not a live mid-launchpad tracker. A distinct "connected but hasn't
-		 * acted yet" signal is deferred (see IDEA-1854).
+		 * step and collapses step ① to a confirmation. This now flips true in
+		 * two cases (BUG-1557): (a) the first agent-CREATED item — which also
+		 * clears needs_onboarding and removes the launchpad; and (b) the
+		 * workspace itself was created via a cli/mcp agent surface (`pad init`,
+		 * MCP), which reports has_agent_activity=true before any item exists.
+		 * Because of (b) the launchpad can legitimately render with
+		 * agentActive=true, so it is a live signal — step ① adapts to it — not
+		 * just the orientation device the pre-BUG-1557 code assumed (the
+		 * deferred "connected but hasn't acted yet" signal of IDEA-1854).
 		 */
 		agentActive?: boolean;
 		/** Opens the workspace's ConnectWorkspaceModal (mounted by the parent). */
@@ -72,20 +81,29 @@
 
 	<ol class="lp-steps">
 		<li class="lp-step">
-			<span class="lp-step-num" aria-hidden="true">1</span>
+			<span class="lp-step-num" class:done={agentActive} aria-hidden="true"
+				>{agentActive ? '✓' : '1'}</span
+			>
 			<div class="lp-step-body">
-				<h2 class="lp-step-title">Connect your agent</h2>
-				<p class="lp-step-text">
-					Add Pad to Claude Code, Cursor, Codex, or Claude Desktop — it takes a
-					few seconds.
-				</p>
-				<button class="lp-connect-btn" type="button" onclick={onconnect}>
-					Connect agent &rarr;
-				</button>
+				{#if agentActive}
+					<h2 class="lp-step-title">Agent connected</h2>
+					<p class="lp-step-text">
+						Your agent is already connected to this workspace.
+					</p>
+				{:else}
+					<h2 class="lp-step-title">Connect your agent</h2>
+					<p class="lp-step-text">
+						Add Pad to Claude Code, Cursor, Codex, or Claude Desktop — it takes a
+						few seconds.
+					</p>
+					<button class="lp-connect-btn" type="button" onclick={onconnect}>
+						Connect agent &rarr;
+					</button>
+				{/if}
 			</div>
 		</li>
 
-		<li class="lp-step">
+		<li class="lp-step" class:next={agentActive}>
 			<span class="lp-step-num" aria-hidden="true">2</span>
 			<div class="lp-step-body">
 				<h2 class="lp-step-title">Tell it to set up</h2>
@@ -202,6 +220,11 @@
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
 	}
+	/* When step ① is already done (agent connected), step ② becomes the
+	   primary next action — accent its border. */
+	.lp-step.next {
+		border-color: var(--accent-blue);
+	}
 	.lp-step-num {
 		display: inline-flex;
 		align-items: center;
@@ -214,6 +237,12 @@
 		color: var(--accent-blue);
 		font-weight: 700;
 		font-size: 0.85em;
+	}
+	/* Completed step marker (agent already connected) — filled accent-blue
+	   check, matching the .lp-progress-item.done accent language. */
+	.lp-step-num.done {
+		background: var(--accent-blue);
+		color: #fff;
 	}
 	.lp-step-body {
 		flex: 1;

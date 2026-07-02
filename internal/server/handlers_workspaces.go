@@ -236,6 +236,16 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Attribute the creation surface AUTHORITATIVELY from the request's auth
+	// shape — never from the request body (WorkspaceCreate.Source is
+	// `json:"-"` for exactly this reason). CLI and Remote MCP callers
+	// present a bearer token / api-token context => "cli"; cookie-session
+	// web callers => "web". A cli/mcp origin is what tells the dashboard an
+	// agent is already connected right after `pad init`, so a web client
+	// must not be able to spoof it to suppress the connect-agent/onboarding
+	// prompts (BUG-1557).
+	_, input.Source = actorFromRequest(r)
+
 	// Set owner to the authenticated user
 	if userID := currentUserID(r); userID != "" {
 		input.OwnerID = userID

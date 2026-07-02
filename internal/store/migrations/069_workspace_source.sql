@@ -1,0 +1,19 @@
+-- Add `source` to workspaces: record how a workspace was created (web UI /
+-- CLI / MCP). Drives the dashboard's has_agent_activity signal — a workspace
+-- created through an agent surface (`pad init`, `pad workspace init`, MCP
+-- pad_workspace.create) already has an agent wired up before that agent
+-- creates its first item, so the "connect an agent" banner should not fire
+-- for it (BUG-1557).
+--
+-- Existing rows predate this tracking, so they default to '' ("unknown /
+-- legacy origin") — deliberately NOT 'web', since many pre-existing
+-- workspaces were created via `pad init` (CLI). An empty value means
+-- "provenance unknown" and is never treated as agent-created. New workspaces
+-- set 'web' | 'cli' | 'mcp' explicitly at creation time.
+--
+-- SQLite has no `ADD COLUMN IF NOT EXISTS`, so this is a bare ADD COLUMN. The
+-- migration runner tolerates the "duplicate column name" error for
+-- `ALTER TABLE ... ADD COLUMN`, so a partially-applied re-run is idempotent.
+-- Adding a NOT NULL column is legal here only because a constant DEFAULT is
+-- supplied.
+ALTER TABLE workspaces ADD COLUMN source TEXT NOT NULL DEFAULT '';
