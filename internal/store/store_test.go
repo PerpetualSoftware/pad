@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -15,8 +16,8 @@ import (
 
 // testStore creates a Store for testing. When PAD_TEST_POSTGRES_URL is set,
 // it creates an isolated PostgreSQL database; otherwise it falls back to a
-// temporary SQLite file. Every test gets its own database so tests never
-// interfere with each other.
+// fast SQLite fixture (see testStoreSQLite). Every test gets its own
+// database so tests never interfere with each other.
 func testStore(t *testing.T) *Store {
 	t.Helper()
 
@@ -24,14 +25,132 @@ func testStore(t *testing.T) *Store {
 		return testStorePostgres(t, pgURL)
 	}
 
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	s, err := New(dbPath)
+	return testStoreSQLite(t)
+}
+
+// testStoreSQLite mirrors internal/store/storetest's NewSQLite (IDEA-1914):
+// the full migration chain runs at most once per test binary (a
+// sync.Once-guarded template DB), and every call gets a plain file copy
+// of it, opened via New like any other test store.
+//
+// This logic is DUPLICATED from internal/store/storetest/storetest.go
+// rather than shared, because internal/store's own white-box tests
+// (package store, this file) cannot import a package that itself imports
+// store — Go rejects that as an import cycle ("import cycle not allowed
+// in test", verified). KEEP THIS FUNCTION AND storetest.go's
+// buildTemplate/NewSQLite IN SYNC — see that file's package doc for the
+// full rationale.
+var (
+	// sqliteTemplateMu guards sqliteTemplatePath against removeSQLiteTemplate
+	// racing an in-flight build/copy — mirrors storetest.go's templateMu.
+	sqliteTemplateMu   sync.RWMutex
+	sqliteTemplateOnce sync.Once
+	sqliteTemplatePath string
+	sqliteTemplateErr  error
+)
+
+func testStoreSQLite(t *testing.T) *Store {
+	t.Helper()
+
+	dst := filepath.Join(t.TempDir(), "test.db")
+	if err := lockedCopyFromSQLiteTemplate(dst); err != nil {
+		t.Fatalf("%v", err)
+	}
+
+	s, err := New(dst)
 	if err != nil {
 		t.Fatalf("failed to create store: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+// lockedCopyFromSQLiteTemplate builds the template (once) and copies it
+// to dst, holding sqliteTemplateMu for read across both steps so
+// removeSQLiteTemplate (which takes the write lock) can't remove the
+// template out from under an in-flight build or copy. Mirrors
+// storetest.go's lockedCopyFromTemplate.
+func lockedCopyFromSQLiteTemplate(dst string) error {
+	sqliteTemplateMu.RLock()
+	defer sqliteTemplateMu.RUnlock()
+
+	sqliteTemplateOnce.Do(func() {
+		sqliteTemplatePath, sqliteTemplateErr = buildSQLiteTemplate()
+	})
+	if sqliteTemplateErr != nil {
+		return fmt.Errorf("build template db: %w", sqliteTemplateErr)
+	}
+	if err := copyTemplateFile(sqliteTemplatePath, dst); err != nil {
+		return fmt.Errorf("copy template db: %w", err)
+	}
+	return nil
+}
+
+// buildSQLiteTemplate runs the full migration chain once into a
+// process-wide temp file. The template is checkpointed and left in
+// DELETE journal mode (no -wal/-shm sidecars), so testStoreSQLite's copy
+// is a single-file operation.
+//
+// The template dir is removed on any error path (MkdirTemp succeeded but
+// a later step failed) so a failed build doesn't leak a /tmp directory;
+// mirrors storetest.go's buildTemplate.
+func buildSQLiteTemplate() (string, error) {
+	dir, err := os.MkdirTemp("", "pad-store-template-*")
+	if err != nil {
+		return "", fmt.Errorf("mkdir template dir: %w", err)
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+
+	path := filepath.Join(dir, "template.db")
+
+	s, err := New(path)
+	if err != nil {
+		return "", fmt.Errorf("build template store: %w", err)
+	}
+	defer s.Close()
+
+	if _, err := s.DB().Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		return "", fmt.Errorf("checkpoint template: %w", err)
+	}
+	if _, err := s.DB().Exec("PRAGMA journal_mode=DELETE"); err != nil {
+		return "", fmt.Errorf("set template journal_mode=DELETE: %w", err)
+	}
+	ok = true
+	return path, nil
+}
+
+func copyTemplateFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", src, err)
+	}
+	defer in.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", dst, err)
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, in); err != nil {
+		return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
+	}
+	return out.Close()
+}
+
+// removeSQLiteTemplate deletes the template directory built by
+// buildSQLiteTemplate, if any. Called from TestMain after m.Run().
+func removeSQLiteTemplate() {
+	sqliteTemplateMu.Lock()
+	defer sqliteTemplateMu.Unlock()
+	if sqliteTemplatePath != "" {
+		_ = os.RemoveAll(filepath.Dir(sqliteTemplatePath))
+	}
 }
 
 // testStorePostgres creates an isolated test database on the PostgreSQL server.

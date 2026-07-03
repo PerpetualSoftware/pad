@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"runtime"
 	"sync/atomic"
 	"testing"
@@ -14,25 +13,26 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
 func testServer(t *testing.T) *Server {
 	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	s, err := store.New(dbPath)
-	if err != nil {
-		t.Fatalf("failed to create store: %v", err)
-	}
+	// storetest.NewSQLite (IDEA-1914) runs the full migration chain at
+	// most once per test binary instead of once per call — see its
+	// package doc. It already registers its own t.Cleanup(s.Close);
+	// because testing.T runs cleanups LIFO, registering srv.Stop() here
+	// AFTER that call still runs Stop() BEFORE Close(), preserving the
+	// BUG-842 drain-then-close ordering below.
+	s := storetest.NewSQLite(t)
 	srv := New(s)
-	// Drain background goroutines BEFORE closing the store. Without this,
+	// Drain background goroutines BEFORE the store closes. Without this,
 	// fire-and-forget writes spawned by request middleware (e.g.
 	// TouchUserActivity in middleware_auth) can race the SQLite WAL/SHM
 	// file removal in t.TempDir's cleanup, causing
 	// "TempDir RemoveAll cleanup: directory not empty" — see BUG-842.
 	t.Cleanup(func() {
 		srv.Stop()
-		s.Close()
 	})
 	return srv
 }
@@ -426,13 +426,9 @@ func TestServer_Stop_DrainsRateLimiterCleanup(t *testing.T) {
 
 	const cycles = 5
 	for i := 0; i < cycles; i++ {
-		// Use the bare New(s) constructor (not testServer) so we control
-		// when Stop runs and don't entangle with t.Cleanup ordering.
-		dir := t.TempDir()
-		s, err := store.New(filepath.Join(dir, "test.db"))
-		if err != nil {
-			t.Fatalf("store.New: %v", err)
-		}
+		// Use storetest.NewSQLiteUnmanaged (not testServer) so we control
+		// when Stop/Close run and don't entangle with t.Cleanup ordering.
+		s := storetest.NewSQLiteUnmanaged(t)
 		srv := New(s)
 
 		// Each NewRateLimiters spawns 9 cleanup goroutines.
