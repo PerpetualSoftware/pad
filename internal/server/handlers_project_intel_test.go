@@ -385,3 +385,108 @@ func TestProjectIntelEndpoints_ScopeToVisibleCollections(t *testing.T) {
 		}
 	}
 }
+
+// TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped pins the
+// codex round-1 finding: projectIntelVisibility must be bearer-aware
+// (mirrors reportVisibleCollections / the BUG-1616/1617 pattern —
+// handlers_admin_bearer_gate_test.go). A platform admin who is only a
+// RESTRICTED member of this workspace gets the full unrestricted view over
+// a cookie session (the web UI admin affordance) but must be scoped to
+// their actual grant over a bearer token (PAT/CLI/OAuth) — never leaking
+// the hidden collection's completions through standup or changelog.
+func TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped(t *testing.T) {
+	srv := testServer(t)
+
+	admin, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "BearerScoped", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, admin.ID, "editor"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	visible, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Visible", Slug: "visible", Prefix: "VIS", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create visible: %v", err)
+	}
+	hidden, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Hidden", Slug: "hidden", Prefix: "HID", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create hidden: %v", err)
+	}
+	visibleItem, err := srv.store.CreateItem(ws.ID, visible.ID, models.ItemCreate{
+		Title: "Visible completion", Fields: `{"status":"done"}`,
+	})
+	if err != nil {
+		t.Fatalf("create visible item: %v", err)
+	}
+	if _, err := srv.store.CreateItem(ws.ID, hidden.ID, models.ItemCreate{
+		Title: "Hidden completion", Fields: `{"status":"done"}`,
+	}); err != nil {
+		t.Fatalf("create hidden item: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, admin.ID, "specific", []string{visible.ID}); err != nil {
+		t.Fatalf("set access: %v", err)
+	}
+	visibleItem.ComputeRef()
+
+	tok, err := srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{
+		Name: "admin-pat", WorkspaceID: ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	// Bearer admin → scoped: changelog sees only the visible completion.
+	rr := doRequestWithBearer(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/changelog", tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bearer changelog: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var changelog ChangelogResponse
+	parseJSON(t, rr, &changelog)
+	if changelog.Total != 1 {
+		t.Fatalf("bearer admin changelog should be scoped to 1 item, got %d (%+v)", changelog.Total, changelog)
+	}
+	for _, g := range changelog.Groups {
+		if g.Collection == "Hidden" {
+			t.Fatalf("bearer admin changelog leaked the hidden collection: %+v", changelog.Groups)
+		}
+	}
+
+	// Bearer admin → standup's completed/in_progress are scoped too.
+	rr = doRequestWithBearer(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/standup", tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bearer standup: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var standup StandupResponse
+	parseJSON(t, rr, &standup)
+	if len(standup.Completed) != 1 || standup.Completed[0].Ref != visibleItem.Ref {
+		t.Fatalf("bearer admin standup.completed should be scoped to the visible item (%s), got %+v",
+			visibleItem.Ref, standup.Completed)
+	}
+
+	// Cookie admin → unrestricted (the pre-existing web UI admin affordance):
+	// changelog sees both completions.
+	sessTok, err := srv.store.CreateSession(admin.ID, "web-test", "192.0.2.1", "", webSessionTTL)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/changelog", nil, sessTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cookie changelog: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	parseJSON(t, rr, &changelog)
+	if changelog.Total != 2 {
+		t.Fatalf("cookie admin changelog should be unrestricted (2 items), got %d (%+v)", changelog.Total, changelog)
+	}
+}

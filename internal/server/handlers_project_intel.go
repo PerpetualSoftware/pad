@@ -25,6 +25,20 @@ import (
 // endpoints (route-table + delete the custom dispatchers) — until then,
 // changes here need a matching change (or an explicit noted divergence) in
 // both siblings above.
+//
+// Known asymmetry (TASK-1894 codex round 1): handleGetProjectStandup scopes
+// its own completed/in_progress ListItems calls through the bearer-aware
+// projectIntelVisibility (see below), but its dashboard-derived sections
+// (blockers, suggested_next) come from buildDashboardResponse, which is
+// NOT bearer-aware — same gap as handleGetProjectNext, which deliberately
+// stays on buildDashboardResponse's ungated visibility so it keeps exact
+// parity with dashboard.suggested_next (gating next but not dashboard would
+// break that parity for bearer admins and diverge next from both siblings).
+// Net effect: a bearer-authed platform admin who is only a restricted member
+// of the workspace gets correctly-scoped completed/in_progress from standup,
+// but ungated blockers/suggested_next — until the visibleCollectionIDs
+// bearer-gate bug filed from TASK-1894 review is fixed for
+// buildDashboardResponse itself, at which point this asymmetry resolves.
 
 // parseDaysParam reads a "days" query param with a fallback default. Mirrors
 // the CLI's `n > 0` gate (standupCmd/changelogCmd flag defaults) and the MCP
@@ -60,12 +74,46 @@ func itemMatchesParentFilter(item models.Item, parent string) bool {
 	return false
 }
 
-// projectIntelVisibility computes the same (collectionIDs, itemIDs)
-// visibility-scoping pair used by handleListItems / handleGetDashboard /
-// handleGetWorkspaceGraph, for the item-list calls the standup/changelog
-// handlers make directly (outside of buildDashboardResponse).
+// bearerAwareVisibleCollectionIDs mirrors visibleCollectionIDs (server.go)
+// but closes the gap reportVisibleCollections (handlers_reports.go) already
+// closes for the report endpoint (the BUG-1616/1617 pattern — see its doc
+// comment and handlers_admin_bearer_gate_test.go): a platform admin
+// authenticated via a bearer token (PAT/CLI/OAuth) who is only a restricted
+// member of THIS workspace must be scoped to their real membership, not
+// granted the unrestricted admin view a cookie-session admin gets.
+// visibleCollectionIDs itself — and everything still built directly on it
+// (buildDashboardResponse, handleListItems, handleGetWorkspaceGraph) — does
+// NOT have this gate; that's the visibleCollectionIDs bearer-gate bug filed
+// from TASK-1894 review, tracked separately from this fix.
+func (s *Server) bearerAwareVisibleCollectionIDs(r *http.Request, workspaceID string) ([]string, error) {
+	user := currentUser(r)
+	if user == nil || (user.Role == "admin" && !isBearerAuth(r)) {
+		return nil, nil // unrestricted, same as visibleCollectionIDs' nil-user/admin branch
+	}
+	return s.store.VisibleCollectionIDs(workspaceID, user.ID)
+}
+
+// projectIntelVisibility computes the (collectionIDs, itemIDs)
+// visibility-scoping pair for the item-list calls the standup/changelog
+// handlers make directly (outside of buildDashboardResponse), using
+// bearerAwareVisibleCollectionIDs rather than visibleCollectionIDs.
+//
+// This does NOT delegate to reportVisibleCollections despite the shared
+// admin-bypass gate: reportVisibleCollections returns (scopeToVisible bool,
+// ids []string) and deliberately drops item-level grant granularity, because
+// aggregate report counts have no item-level filtering (a collection is
+// either fully in-scope or fully excluded — see its doc comment). standup and
+// changelog list actual items, so they need the same item-level grant
+// filtering handleListItems applies (ItemListParams.ItemIDs) — hence the
+// (collIDs, itemIDs) shape and the guestResourceFilter call below, matching
+// handleListItems' pattern exactly except for the visibility call itself.
+//
+// visibleIDs == nil covers BOTH "unrestricted" (nil/cookie-admin user) and
+// "all-access member" (store.VisibleCollectionIDs returns nil) — both mean
+// "no collection filtering", identically to visibleCollectionIDs' contract,
+// so no separate branch is needed for the all-access-member case.
 func (s *Server) projectIntelVisibility(r *http.Request, workspaceID string) (collIDs, itemIDs []string, err error) {
-	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	visibleIDs, err := s.bearerAwareVisibleCollectionIDs(r, workspaceID)
 	if err != nil {
 		return nil, nil, err
 	}
