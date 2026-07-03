@@ -202,7 +202,7 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if input.Schema != nil && *input.Schema != "" {
+	if input.Schema != nil {
 		var schema models.CollectionSchema
 		if err := json.Unmarshal([]byte(*input.Schema), &schema); err != nil {
 			writeError(w, http.StatusBadRequest, "bad_request", "Invalid schema JSON")

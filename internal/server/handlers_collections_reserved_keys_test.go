@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -164,6 +165,74 @@ func TestUpdateCollection_ReservedFieldKeys(t *testing.T) {
 		})
 		if rr.Code != http.StatusOK {
 			t.Fatalf("expected 200 for unrelated schema update, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("empty-string schema is rejected rather than stored verbatim", func(t *testing.T) {
+		// Regression guard: input.Schema is a non-nil *string pointing at
+		// "" here (the client explicitly sent `"schema": ""`), which is
+		// distinct from omitting the field entirely (nil, see the sibling
+		// subtest below). "" is not valid JSON, so it must be rejected up
+		// front by this validation block rather than flowing through to
+		// store.UpdateCollection, which would write it verbatim
+		// (store/collections.go) and break every later item-create
+		// against the collection with a 500 at handlers_items.go:565
+		// ("Failed to parse collection schema") instead of failing the
+		// mutation that caused it.
+		createRR := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
+			"name":   "Gamma",
+			"schema": `{"fields":[]}`,
+		})
+		if createRR.Code != http.StatusCreated {
+			t.Fatalf("seed create: expected 201, got %d: %s", createRR.Code, createRR.Body.String())
+		}
+		var coll models.Collection
+		parseJSON(t, createRR, &coll)
+
+		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
+			"schema": "",
+		})
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for empty-string schema, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "Invalid schema JSON") {
+			t.Fatalf("expected 'Invalid schema JSON' message, got: %s", rr.Body.String())
+		}
+
+		// Confirm the rejected PATCH didn't get partially applied: the
+		// collection's schema must still be the original, valid one.
+		getRR := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, nil)
+		var refetched models.Collection
+		parseJSON(t, getRR, &refetched)
+		if refetched.Schema != `{"fields":[]}` {
+			t.Fatalf("expected schema to remain %q after rejected update, got %q", `{"fields":[]}`, refetched.Schema)
+		}
+	})
+
+	t.Run("omitting schema entirely (nil) leaves it untouched", func(t *testing.T) {
+		createRR := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
+			"name":   "Delta",
+			"schema": `{"fields":[{"key":"priority","label":"Priority","type":"text"}]}`,
+		})
+		if createRR.Code != http.StatusCreated {
+			t.Fatalf("seed create: expected 201, got %d: %s", createRR.Code, createRR.Body.String())
+		}
+		var coll models.Collection
+		parseJSON(t, createRR, &coll)
+
+		// No "schema" key at all in the PATCH body — input.Schema stays
+		// nil, so the validation block (and store.UpdateCollection's own
+		// `if input.Schema != nil` SET clause) is skipped entirely.
+		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
+			"description": "updated description, no schema field present",
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 for PATCH omitting schema, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var updated models.Collection
+		parseJSON(t, rr, &updated)
+		if updated.Schema != coll.Schema {
+			t.Fatalf("expected schema unchanged when omitted from PATCH, got %q, want %q", updated.Schema, coll.Schema)
 		}
 	})
 }
