@@ -392,6 +392,116 @@ describe('dispatch — pad_item writes', () => {
 	});
 });
 
+// ── malformed scalar params (str/num/bool) — no silent drop/coercion ────────
+//
+// Mirrors the strArray hardening above: a present-but-wrong-typed scalar
+// throws a precise tool error instead of silently vanishing from the write.
+// Absent (undefined/null) and empty-string params stay non-erroring — that
+// looseness is existing behavior, not new, and is covered by the regression
+// cases at the end of this block.
+
+describe('dispatch — malformed scalar params', () => {
+	it('create errors (no client call) on a numeric `title` (string expected)', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_item', {
+			action: 'create',
+			collection: 'tasks',
+			title: 5,
+		});
+		expect(parse(result).isError).toBe(true);
+		expect(parse(result).text).toMatch(/title/i);
+		expect(api.items.create).not.toHaveBeenCalled();
+	});
+
+	it('search errors on a boolean `limit` (number expected)', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_search', { action: 'query', query: 'x', limit: true });
+		expect(parse(result).isError).toBe(true);
+		expect(parse(result).text).toMatch(/limit/i);
+		expect(api.search).not.toHaveBeenCalled();
+	});
+
+	it('list errors on an object `limit` (number expected)', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_item', { action: 'list', limit: {} });
+		expect(parse(result).isError).toBe(true);
+		expect(parse(result).text).toMatch(/limit/i);
+		expect(api.items.list).not.toHaveBeenCalled();
+	});
+
+	it('update errors (no partial write) on a numeric `force` (boolean expected)', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_item', { action: 'update', ref: 'TASK-1', force: 1 });
+		expect(parse(result).isError).toBe(true);
+		expect(parse(result).text).toMatch(/force/i);
+		expect(api.items.update).not.toHaveBeenCalled();
+	});
+
+	it('bulk-update errors on an array `force` (boolean expected)', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_item', {
+			action: 'bulk-update',
+			refs: ['TASK-1'],
+			status: 'done',
+			force: [],
+		});
+		expect(parse(result).isError).toBe(true);
+		expect(api.items.bulk).not.toHaveBeenCalled();
+	});
+
+	it('collection update errors on a non-numeric `sort_order` string — malformed, not absent', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_collection', {
+			action: 'update',
+			slug: 'risks',
+			sort_order: 'abc',
+		});
+		expect(parse(result).isError).toBe(true);
+		expect(parse(result).text).toMatch(/sort_order/i);
+		expect(api.collections.update).not.toHaveBeenCalled();
+	});
+
+	it('create errors on an array `title` (string expected)', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_item', {
+			action: 'create',
+			collection: 'tasks',
+			title: ['not', 'a', 'string'],
+		});
+		expect(parse(result).isError).toBe(true);
+		expect(api.items.create).not.toHaveBeenCalled();
+	});
+
+	// ── regression: absent-vs-malformed line stays where it was ──────────────
+
+	it('update still accepts a null `content` as absent (no error, fields untouched)', async () => {
+		const api = mockApi();
+		await run(api, 'pad_item', { action: 'update', ref: 'TASK-1', content: null });
+		const data = (api.items.update.mock.calls[0] as unknown as [string, string, any])[2];
+		expect(data.content).toBeUndefined();
+	});
+
+	it('update still accepts a null `force` as absent (no error, force untouched)', async () => {
+		const api = mockApi();
+		await run(api, 'pad_item', { action: 'update', ref: 'TASK-1', force: null });
+		const data = (api.items.update.mock.calls[0] as unknown as [string, string, any])[2];
+		expect(data.force).toBeUndefined();
+	});
+
+	it('update still works with `force` omitted entirely (no error)', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_item', { action: 'update', ref: 'TASK-1', title: 'X' });
+		expect(parse(result).isError).toBe(false);
+		expect(api.items.update).toHaveBeenCalledTimes(1);
+	});
+
+	it('search still accepts a numeric-string `limit` (transport leniency preserved)', async () => {
+		const api = mockApi();
+		await run(api, 'pad_search', { action: 'query', query: 'x', limit: '42' });
+		expect(api.search).toHaveBeenCalledWith('x', expect.objectContaining({ limit: 42 }));
+	});
+});
+
 // ── pad_item link / unlink ───────────────────────────────────────────────────
 
 describe('dispatch — pad_item link/unlink', () => {
@@ -652,6 +762,28 @@ describe('dispatch — result envelope + errors', () => {
 		const result = await run(api, 'pad_item', {});
 		expect(parse(result).isError).toBe(true);
 		expect(parse(result).text).toMatch(/action/);
+	});
+
+	// Regression for the round-1 codex finding: the `action` read happens
+	// via str(), which now throws on a malformed type. It must stay inside
+	// dispatch()'s try/catch so a bad `action` resolves to an error envelope
+	// — the same contract as every other malformed-scalar case — rather than
+	// rejecting the returned promise (register.ts assumes dispatch() always
+	// resolves). `.resolves` makes a promise rejection fail the assertion
+	// instead of throwing out of the test, so this distinguishes the two.
+	it('resolves with an error envelope (not a rejected promise) on a numeric `action`', async () => {
+		const api = mockApi();
+		const promise = run(api, 'pad_item', { action: 1 });
+		await expect(promise).resolves.toEqual(expect.objectContaining({ isError: true }));
+		expect(parse(await promise).text).toMatch(/action/i);
+		expect(api.items.list).not.toHaveBeenCalled();
+	});
+
+	it('resolves with an error envelope (not a rejected promise) on an object `action`', async () => {
+		const api = mockApi();
+		const promise = run(api, 'pad_item', { action: {} });
+		await expect(promise).resolves.toEqual(expect.objectContaining({ isError: true }));
+		expect(parse(await promise).text).toMatch(/action/i);
 	});
 
 	it('errors for a catalog action with no browser mapping (pad_project.standup)', async () => {

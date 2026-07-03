@@ -39,27 +39,62 @@ type Handler = (
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+/**
+ * Read a string param. Absent (undefined/null) returns undefined — not an
+ * error, matching strArray's absent-vs-malformed line. A present value of any
+ * other type (number, boolean, object, array) throws a precise tool error
+ * rather than silently dropping it. An empty string is still treated as
+ * absent (existing looseness, preserved: an agent sending `title: ""` behaves
+ * like the arg wasn't supplied at all).
+ */
 function str(args: Record<string, unknown>, key: string): string | undefined {
 	const v = args[key];
-	if (typeof v === 'string' && v.length > 0) return v;
-	return undefined;
+	if (v === undefined || v === null) return undefined;
+	if (typeof v !== 'string') {
+		throw new Error(`'${key}' must be a string (got ${JSON.stringify(v)})`);
+	}
+	return v.length > 0 ? v : undefined;
 }
 
+/**
+ * Read a number param. Absent (undefined/null) returns undefined. Accepts a
+ * numeric string (the MCP transport may deliver numbers as strings) — an
+ * empty/blank string is still treated as absent. Any other present value
+ * (boolean, object, array, a non-numeric string like "abc", or a bare NaN —
+ * reachable here since WebMCP args arrive via structured clone rather than
+ * JSON.parse, which can't produce NaN) throws rather than silently dropping.
+ */
 function num(args: Record<string, unknown>, key: string): number | undefined {
 	const v = args[key];
-	if (typeof v === 'number') return v;
-	if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) {
-		return Number(v);
+	if (v === undefined || v === null) return undefined;
+	if (typeof v === 'number') {
+		if (Number.isNaN(v)) throw new Error(`'${key}' must be a number (got NaN)`);
+		return v;
 	}
-	return undefined;
+	if (typeof v === 'string') {
+		if (v.trim() === '') return undefined;
+		const n = Number(v);
+		if (Number.isNaN(n)) {
+			throw new Error(`'${key}' must be a number (got ${JSON.stringify(v)})`);
+		}
+		return n;
+	}
+	throw new Error(`'${key}' must be a number (got ${JSON.stringify(v)})`);
 }
 
+/**
+ * Read a boolean param. Absent (undefined/null) returns undefined. Accepts
+ * the literal strings "true"/"false" (transport leniency). Any other present
+ * value (number, object, array, any other string) throws rather than
+ * silently dropping.
+ */
 function bool(args: Record<string, unknown>, key: string): boolean | undefined {
 	const v = args[key];
+	if (v === undefined || v === null) return undefined;
 	if (typeof v === 'boolean') return v;
 	if (v === 'true') return true;
 	if (v === 'false') return false;
-	return undefined;
+	throw new Error(`'${key}' must be a boolean (got ${JSON.stringify(v)})`);
 }
 
 function requireRef(args: Record<string, unknown>): string {
@@ -582,27 +617,37 @@ export async function dispatch(
 		return errResult('no active workspace');
 	}
 
-	const action = str(args, 'action');
-	if (!action) {
-		return errResult(`missing required arg 'action' for ${toolName}`);
-	}
-
-	const key = `${toolName}:${action}`;
-	const handler = HANDLERS[key];
-	if (!handler) {
-		// A catalog action with no browser mapping (e.g. pad_project.standup,
-		// pending TASK-1894). Honest error, never a fake result or silent
-		// no-op.
-		return errResult(
-			`${toolName}.${action} is not available in the browser WebMCP surface`,
-		);
-	}
-
+	// The action read (str() can now throw on a malformed `action`, e.g.
+	// `action: 1`) is inside this try/catch — along with everything else that
+	// touches `args` — so a malformed scalar anywhere in the dispatch path
+	// returns an error envelope rather than rejecting the promise. Callers
+	// (register.ts) expect `dispatch()` to always resolve to a DispatchResult.
+	let action: string | undefined;
 	try {
+		action = str(args, 'action');
+		if (!action) {
+			return errResult(`missing required arg 'action' for ${toolName}`);
+		}
+
+		const key = `${toolName}:${action}`;
+		const handler = HANDLERS[key];
+		if (!handler) {
+			// A catalog action with no browser mapping (e.g. pad_project.standup,
+			// pending TASK-1894). Honest error, never a fake result or silent
+			// no-op.
+			return errResult(
+				`${toolName}.${action} is not available in the browser WebMCP surface`,
+			);
+		}
+
 		const result = await handler(api, wsSlug, args);
 		return ok(result);
 	} catch (e) {
 		const message = e instanceof Error ? e.message : String(e);
-		return errResult(`${toolName}.${action} failed: ${message}`);
+		return errResult(
+			action
+				? `${toolName}.${action} failed: ${message}`
+				: `${toolName} dispatch failed: ${message}`,
+		);
 	}
 }
