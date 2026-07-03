@@ -458,3 +458,95 @@ func TestGraphFocusTruncation(t *testing.T) {
 		t.Errorf("expected node count capped at %d, got %d", maxFocusNodes, len(resp.Nodes))
 	}
 }
+
+// TestGraph_AdminBearer_RestrictedMemberIsScoped pins BUG-1917 for
+// handleGetWorkspaceGraph: a platform admin who is only a restricted member
+// (collection_access "specific") of a workspace gets the full unrestricted
+// graph over a cookie session (the pre-existing web UI admin affordance),
+// but must be scoped to their actual membership over a bearer token
+// (PAT/CLI/OAuth) — the hidden collection's node must not appear, nor leak
+// via a dangling edge endpoint.
+func TestGraph_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
+	srv := testServer(t)
+
+	admin, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "GraphBearer", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, admin.ID, "editor"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	visible, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Visible", Slug: "visible", Prefix: "VIS", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create visible collection: %v", err)
+	}
+	hidden, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Hidden", Slug: "hidden", Prefix: "HID", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create hidden collection: %v", err)
+	}
+	visItem, err := srv.store.CreateItem(ws.ID, visible.ID, models.ItemCreate{
+		Title: "Visible item", Fields: `{"status":"open"}`,
+	})
+	if err != nil {
+		t.Fatalf("create visible item: %v", err)
+	}
+	hidItem, err := srv.store.CreateItem(ws.ID, hidden.ID, models.ItemCreate{
+		Title: "Hidden item", Fields: `{"status":"open"}`,
+	})
+	if err != nil {
+		t.Fatalf("create hidden item: %v", err)
+	}
+	visItem.ComputeRef()
+	hidItem.ComputeRef()
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, admin.ID, "specific", []string{visible.ID}); err != nil {
+		t.Fatalf("set member collection access: %v", err)
+	}
+
+	tok, err := srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{
+		Name: "admin-pat", WorkspaceID: ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	// Bearer path — scoped: hidden item's node must not appear.
+	rr := doRequestWithBearer(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/graph", tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bearer graph: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var bearerResp GraphResponse
+	parseJSON(t, rr, &bearerResp)
+	if graphNode(bearerResp, hidItem.Ref) != nil {
+		t.Errorf("bearer admin graph leaked the hidden collection's node: %+v", bearerResp.Nodes)
+	}
+	if graphNode(bearerResp, visItem.Ref) == nil {
+		t.Errorf("bearer admin graph missing the visible collection's node: %+v", bearerResp.Nodes)
+	}
+
+	// Cookie path — unrestricted (the pre-existing web UI admin affordance).
+	sessTok, err := srv.store.CreateSession(admin.ID, "web-test", "192.0.2.1", "", webSessionTTL)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/graph", nil, sessTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cookie graph: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var cookieResp GraphResponse
+	parseJSON(t, rr, &cookieResp)
+	if graphNode(cookieResp, hidItem.Ref) == nil {
+		t.Errorf("cookie admin graph should be unrestricted (see hidden node); got %+v", cookieResp.Nodes)
+	}
+}

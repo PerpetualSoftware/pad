@@ -875,3 +875,89 @@ func TestPlaybookSummaryPrefersFirstParagraph(t *testing.T) {
 		t.Errorf("truncated summary missing ellipsis: %q", got)
 	}
 }
+
+// TestBootstrap_AdminBearer_RestrictedMemberIsScoped pins BUG-1917 for the
+// bootstrap endpoint (the agents' primary path — TASK-1379 has it call
+// buildDashboardResponse directly). A platform admin who is only a
+// restricted member (collection_access "specific") of a workspace must be
+// scoped to their actual membership over a bearer token (PAT/CLI/OAuth),
+// while a cookie session keeps the pre-existing unrestricted admin view.
+// Mirrors TestDashboard_AdminBearer_RestrictedMemberIsScoped's fixture.
+func TestBootstrap_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
+	srv := testServer(t)
+
+	admin, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "BootstrapBearer", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, admin.ID, "editor"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	visible, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Visible", Slug: "visible", Prefix: "VIS", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create visible collection: %v", err)
+	}
+	if _, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Hidden", Slug: "hidden", Prefix: "HID", Schema: schema,
+	}); err != nil {
+		t.Fatalf("create hidden collection: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, admin.ID, "specific", []string{visible.ID}); err != nil {
+		t.Fatalf("set member collection access: %v", err)
+	}
+
+	tok, err := srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{
+		Name: "admin-pat", WorkspaceID: ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	hasCollection := func(bs AgentBootstrap, slug string) bool {
+		for _, c := range bs.Collections {
+			if c.Slug == slug {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Bearer path — scoped: only the visible collection shows up.
+	rr := doRequestWithBearer(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/agent/bootstrap", tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bearer bootstrap: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var bearerBS AgentBootstrap
+	parseJSON(t, rr, &bearerBS)
+	if hasCollection(bearerBS, "hidden") {
+		t.Errorf("bearer admin bootstrap leaked the hidden collection: %+v", bearerBS.Collections)
+	}
+	if !hasCollection(bearerBS, "visible") {
+		t.Errorf("bearer admin bootstrap missing the visible collection: %+v", bearerBS.Collections)
+	}
+
+	// Cookie path — unrestricted (the pre-existing web UI admin affordance).
+	sessTok, err := srv.store.CreateSession(admin.ID, "web-test", "192.0.2.1", "", webSessionTTL)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/agent/bootstrap", nil, sessTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cookie bootstrap: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var cookieBS AgentBootstrap
+	parseJSON(t, rr, &cookieBS)
+	if !hasCollection(cookieBS, "hidden") {
+		t.Errorf("cookie admin bootstrap should be unrestricted (see hidden collection); got %+v", cookieBS.Collections)
+	}
+}

@@ -435,6 +435,15 @@ func TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped(t *testing.T)
 	}); err != nil {
 		t.Fatalf("create hidden item: %v", err)
 	}
+	// An overdue task in the hidden collection surfaces in
+	// dashboard.attention (type "overdue") and, via buildDashboardResponse,
+	// in standup.blockers — the exact section the file-header "Known
+	// asymmetry" comment called out as staying ungated until BUG-1917.
+	if _, err := srv.store.CreateItem(ws.ID, hidden.ID, models.ItemCreate{
+		Title: "Hidden overdue blocker", Fields: `{"status":"open","due_date":"2020-01-01"}`,
+	}); err != nil {
+		t.Fatalf("create hidden overdue item: %v", err)
+	}
 	if err := srv.store.SetMemberCollectionAccess(ws.ID, admin.ID, "specific", []string{visible.ID}); err != nil {
 		t.Fatalf("set access: %v", err)
 	}
@@ -474,9 +483,18 @@ func TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped(t *testing.T)
 		t.Fatalf("bearer admin standup.completed should be scoped to the visible item (%s), got %+v",
 			visibleItem.Ref, standup.Completed)
 	}
+	// BUG-1917: standup's dashboard-derived blockers section must now be
+	// scoped too — this is the asymmetry the file-header comment on
+	// handlers_project_intel.go documented until this fix.
+	for _, b := range standup.Blockers {
+		if b.Title == "Hidden overdue blocker" {
+			t.Fatalf("bearer admin standup.blockers leaked the hidden collection's overdue item: %+v", standup.Blockers)
+		}
+	}
 
 	// Cookie admin → unrestricted (the pre-existing web UI admin affordance):
-	// changelog sees both completions.
+	// changelog sees both completions, and standup.blockers includes the
+	// hidden collection's overdue item too (checked below).
 	sessTok, err := srv.store.CreateSession(admin.ID, "web-test", "192.0.2.1", "", webSessionTTL)
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -488,5 +506,20 @@ func TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped(t *testing.T)
 	parseJSON(t, rr, &changelog)
 	if changelog.Total != 2 {
 		t.Fatalf("cookie admin changelog should be unrestricted (2 items), got %d (%+v)", changelog.Total, changelog)
+	}
+
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/standup", nil, sessTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cookie standup: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	parseJSON(t, rr, &standup)
+	foundHiddenBlocker := false
+	for _, b := range standup.Blockers {
+		if b.Title == "Hidden overdue blocker" {
+			foundHiddenBlocker = true
+		}
+	}
+	if !foundHiddenBlocker {
+		t.Fatalf("cookie admin standup.blockers should be unrestricted (see hidden overdue item); got %+v", standup.Blockers)
 	}
 }
