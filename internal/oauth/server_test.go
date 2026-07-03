@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
 // Tests for the OAuth server constructor + audience strategy +
@@ -32,20 +32,14 @@ import (
 // constructor + adapter contracts so sub-PR C can rely on them
 // without re-asserting fosite's behaviour on every handler test.
 
-// testStoreOAuth produces a *store.Store with the migrations applied
-// — same pattern internal/store/oauth_test.go uses, but importing
-// /internal/store would create a test-only cycle. Inline a tiny
-// helper here that opens a fresh SQLite in t.TempDir.
+// testStoreOAuth produces a *store.Store with the migrations applied,
+// via storetest.NewSQLite (IDEA-1914) — the migration chain runs at
+// most once per test binary instead of once per call. See its package
+// doc for why /internal/store's own white-box tests can't share this
+// helper (import cycle); this package has no such constraint.
 func testStoreOAuth(t *testing.T) *store.Store {
 	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	s, err := store.New(dbPath)
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-	return s
+	return storetest.NewSQLite(t)
 }
 
 // =====================================================================
