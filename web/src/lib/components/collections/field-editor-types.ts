@@ -93,6 +93,13 @@ export const RESERVED_FIELD_KEYS: ReadonlySet<string> = new Set([
 	'pinned',
 	'sort_order',
 	'parent_id',
+	// TASK-1912: a schema field keyed exactly 'parent' or 'plan' makes the
+	// server's schemaHasField guard skip parent-link extraction for that
+	// key, silently disabling subtask linking. Server rejects newly-added
+	// occurrences of these keys (case-sensitive exact match); reserving
+	// them here too so the UI steers authors away before they hit the 400.
+	'parent',
+	'plan',
 	'created_by',
 	'last_modified_by',
 	'source',

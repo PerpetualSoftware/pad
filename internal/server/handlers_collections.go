@@ -2,7 +2,9 @@ package server
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -10,6 +12,43 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// reservedSchemaFieldKeys are collection schema field keys that collide
+// with the parent/plan extraction at handlers_items.go:584 (create),
+// :851 (PATCH), and :2147 (list filter). A schema field keyed exactly
+// "parent" or "plan" makes schemaHasField (handlers_items.go:2190) return
+// true, which makes those sites silently skip fields-JSON extraction —
+// disabling subtask linking for the collection with no error anywhere
+// (TASK-1912, stage 1 of the IDEA-1746 consolidation plan).
+var reservedSchemaFieldKeys = []string{"parent", "plan"}
+
+// validateNoReservedFieldKeys rejects a schema that newly introduces a
+// field keyed "parent" or "plan". prevSchema is nil on collection create
+// (nothing to grandfather); on update it's the collection's schema before
+// this request, so a reserved key already present there is grandfathered
+// in rather than rejected, letting existing workspaces keep working.
+//
+// Matching is exact and case-sensitive, mirroring schemaHasField (which
+// does a plain f.Key == key comparison, no case-folding). Do not make this
+// case-insensitive: the web layer's RESERVED_FIELD_KEYS check lowercases
+// before comparing, which is stricter than this server-side check — that
+// asymmetry is intentional (a client stricter than the server is safe;
+// the reverse would mean a field the server rejects could still reach
+// schemaHasField's exact-match guard under a different case).
+func validateNoReservedFieldKeys(schema models.CollectionSchema, prevSchema *models.CollectionSchema) error {
+	for _, f := range schema.Fields {
+		for _, reserved := range reservedSchemaFieldKeys {
+			if f.Key != reserved {
+				continue
+			}
+			if prevSchema != nil && schemaHasField(*prevSchema, reserved) {
+				continue
+			}
+			return fmt.Errorf("field key %q is reserved and cannot be used in a collection schema", reserved)
+		}
+	}
+	return nil
+}
 
 func (s *Server) handleListCollections(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
@@ -71,6 +110,18 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 	if input.Name == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "Name is required")
 		return
+	}
+
+	if input.Schema != "" {
+		var schema models.CollectionSchema
+		if err := json.Unmarshal([]byte(input.Schema), &schema); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "Invalid schema JSON")
+			return
+		}
+		if err := validateNoReservedFieldKeys(schema, nil); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
 	}
 
 	coll, err := s.store.CreateCollection(workspaceID, input)
@@ -149,6 +200,25 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		}
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
+	}
+
+	if input.Schema != nil {
+		var schema models.CollectionSchema
+		if err := json.Unmarshal([]byte(*input.Schema), &schema); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "Invalid schema JSON")
+			return
+		}
+		// prevSchema is best-effort: a parse failure on the collection's
+		// existing (already-stored) schema falls back to the zero value,
+		// which grandfathers nothing — the newer/incoming schema is then
+		// held to the stricter no-grandfathering rule rather than risking
+		// a false grandfather off of unparsable state.
+		var prevSchema models.CollectionSchema
+		_ = json.Unmarshal([]byte(coll.Schema), &prevSchema)
+		if err := validateNoReservedFieldKeys(schema, &prevSchema); err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
 	}
 
 	// Extract migrations before updating (they're not stored on the collection)
