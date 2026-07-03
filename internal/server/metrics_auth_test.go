@@ -3,30 +3,27 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/metrics"
-	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
 // newMetricsTestServer builds a Server with metrics enabled and the given
-// static token. Uses a unique SQLite DB per test so tests never share state.
+// static token, via storetest.NewSQLite (IDEA-1914) — see testServer in
+// server_test.go for why this is fast (once-per-binary migration chain).
 func newMetricsTestServer(t *testing.T, token string) *Server {
 	t.Helper()
-	dir := t.TempDir()
-	s, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
+	s := storetest.NewSQLite(t)
 	srv := New(s)
 	srv.SetMetrics(metrics.New())
 	srv.SetMetricsToken(token)
-	// Drain background goroutines BEFORE closing the store — see
-	// testServer in server_test.go for the BUG-842 race details.
+	// storetest.NewSQLite already registers t.Cleanup(store.Close); since
+	// t.Cleanup runs LIFO, registering Stop() here afterward still drains
+	// background goroutines BEFORE the store closes — see testServer in
+	// server_test.go for the BUG-842 race details.
 	t.Cleanup(func() {
 		srv.Stop()
-		s.Close()
 	})
 	return srv
 }

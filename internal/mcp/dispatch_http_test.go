@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +15,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
 // fixedUserResolver is a tiny helper for the unit tests that need a
@@ -934,25 +934,26 @@ func TestHTTPHandlerDispatcher_Integration(t *testing.T) {
 }
 
 // newPadServer stands up the same *server.Server that production
-// uses, wired to a temp SQLite store. Mirrors testServer in
-// internal/server/server_test.go but accessible from this package.
+// uses, wired to a fast fixture SQLite store (storetest.NewSQLite,
+// IDEA-1914). Mirrors testServer in internal/server/server_test.go
+// but accessible from this package.
 //
-// Cleanup drains the server's background goroutines before closing
-// the store to avoid the WAL/SHM races BUG-842 fixed (see comment in
-// internal/server/server_test.go).
+// storetest.NewSQLite already registers its own t.Cleanup(store.Close);
+// because t.Cleanup runs LIFO, registering the Stop()+sleep cleanup
+// here AFTER that call still runs it BEFORE the store closes, so the
+// server's background goroutines drain — and the belt-and-braces
+// sleep still elapses — before storetest closes the store and
+// t.TempDir's RemoveAll runs, avoiding the WAL/SHM races BUG-842 fixed
+// (see comment in internal/server/server_test.go).
 func newPadServer(t *testing.T) (*server.Server, *store.Store) {
 	t.Helper()
-	dir := t.TempDir()
-	st, err := store.New(filepath.Join(dir, "test.db"))
-	if err != nil {
-		t.Fatalf("store.New: %v", err)
-	}
+	st := storetest.NewSQLite(t)
 	srv := server.New(st)
 	t.Cleanup(func() {
 		srv.Stop()
-		st.Close()
 		// Belt-and-braces: brief sleep gives any straggler timers a
-		// chance to wind down before t.TempDir's RemoveAll runs.
+		// chance to wind down before storetest closes the store and
+		// t.TempDir's RemoveAll runs.
 		time.Sleep(10 * time.Millisecond)
 	})
 	return srv, st
