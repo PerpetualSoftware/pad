@@ -235,12 +235,18 @@ func (s *Server) handleUpdateComment(w http.ResponseWriter, r *http.Request) {
 // canEditComment reports whether the requester may edit the given comment:
 // the authenticated author (matching user_id) or a platform admin. A comment
 // with an empty user_id has no provable author, so only admins can edit it.
+//
+// The admin bypass is cookie-session only (BUG-1616/BUG-1919): a
+// bearer-borne admin (PAT/CLI/MCP) falls through to the author check like
+// any other member, so a bearer admin can no longer edit another user's
+// comment, including empty-user_id ones. Mirrors the gate in
+// handlers_collab.go's authorizeCollabAccess.
 func (s *Server) canEditComment(r *http.Request, comment *models.Comment) bool {
 	u := currentUser(r)
 	if u == nil {
 		return false
 	}
-	if u.Role == "admin" {
+	if u.Role == "admin" && !isBearerAuth(r) {
 		return true
 	}
 	return comment.UserID != "" && comment.UserID == u.ID
