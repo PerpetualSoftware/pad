@@ -28,6 +28,9 @@ func (s *Server) handleListCollectionGrants(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return
 	}
+	if !s.requireCollectionFullyVisible(w, r, workspaceID, coll) {
+		return
+	}
 
 	grants, err := s.store.ListCollectionGrants(coll.ID)
 	if err != nil {
@@ -57,6 +60,9 @@ func (s *Server) handleCreateCollectionGrant(w http.ResponseWriter, r *http.Requ
 	}
 	if coll == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+	if !s.requireCollectionFullyVisible(w, r, workspaceID, coll) {
 		return
 	}
 
@@ -144,6 +150,9 @@ func (s *Server) handleListItemGrants(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	grants, err := s.store.ListItemGrants(item.ID)
 	if err != nil {
@@ -173,6 +182,9 @@ func (s *Server) handleCreateItemGrant(w http.ResponseWriter, r *http.Request) {
 	}
 	if item == nil {
 		s.writeItemResolveError(w, r, workspaceID, itemSlug)
+		return
+	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
 
