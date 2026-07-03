@@ -617,27 +617,37 @@ export async function dispatch(
 		return errResult('no active workspace');
 	}
 
-	const action = str(args, 'action');
-	if (!action) {
-		return errResult(`missing required arg 'action' for ${toolName}`);
-	}
-
-	const key = `${toolName}:${action}`;
-	const handler = HANDLERS[key];
-	if (!handler) {
-		// A catalog action with no browser mapping (e.g. pad_project.standup,
-		// pending TASK-1894). Honest error, never a fake result or silent
-		// no-op.
-		return errResult(
-			`${toolName}.${action} is not available in the browser WebMCP surface`,
-		);
-	}
-
+	// The action read (str() can now throw on a malformed `action`, e.g.
+	// `action: 1`) is inside this try/catch — along with everything else that
+	// touches `args` — so a malformed scalar anywhere in the dispatch path
+	// returns an error envelope rather than rejecting the promise. Callers
+	// (register.ts) expect `dispatch()` to always resolve to a DispatchResult.
+	let action: string | undefined;
 	try {
+		action = str(args, 'action');
+		if (!action) {
+			return errResult(`missing required arg 'action' for ${toolName}`);
+		}
+
+		const key = `${toolName}:${action}`;
+		const handler = HANDLERS[key];
+		if (!handler) {
+			// A catalog action with no browser mapping (e.g. pad_project.standup,
+			// pending TASK-1894). Honest error, never a fake result or silent
+			// no-op.
+			return errResult(
+				`${toolName}.${action} is not available in the browser WebMCP surface`,
+			);
+		}
+
 		const result = await handler(api, wsSlug, args);
 		return ok(result);
 	} catch (e) {
 		const message = e instanceof Error ? e.message : String(e);
-		return errResult(`${toolName}.${action} failed: ${message}`);
+		return errResult(
+			action
+				? `${toolName}.${action} failed: ${message}`
+				: `${toolName} dispatch failed: ${message}`,
+		);
 	}
 }

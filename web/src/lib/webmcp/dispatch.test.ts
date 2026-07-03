@@ -764,6 +764,28 @@ describe('dispatch — result envelope + errors', () => {
 		expect(parse(result).text).toMatch(/action/);
 	});
 
+	// Regression for the round-1 codex finding: the `action` read happens
+	// via str(), which now throws on a malformed type. It must stay inside
+	// dispatch()'s try/catch so a bad `action` resolves to an error envelope
+	// — the same contract as every other malformed-scalar case — rather than
+	// rejecting the returned promise (register.ts assumes dispatch() always
+	// resolves). `.resolves` makes a promise rejection fail the assertion
+	// instead of throwing out of the test, so this distinguishes the two.
+	it('resolves with an error envelope (not a rejected promise) on a numeric `action`', async () => {
+		const api = mockApi();
+		const promise = run(api, 'pad_item', { action: 1 });
+		await expect(promise).resolves.toEqual(expect.objectContaining({ isError: true }));
+		expect(parse(await promise).text).toMatch(/action/i);
+		expect(api.items.list).not.toHaveBeenCalled();
+	});
+
+	it('resolves with an error envelope (not a rejected promise) on an object `action`', async () => {
+		const api = mockApi();
+		const promise = run(api, 'pad_item', { action: {} });
+		await expect(promise).resolves.toEqual(expect.objectContaining({ isError: true }));
+		expect(parse(await promise).text).toMatch(/action/i);
+	});
+
 	it('errors for a catalog action with no browser mapping (pad_project.standup)', async () => {
 		const api = mockApi();
 		const result = await run(api, 'pad_project', { action: 'standup' });
