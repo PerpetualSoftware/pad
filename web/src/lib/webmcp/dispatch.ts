@@ -39,27 +39,62 @@ type Handler = (
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+/**
+ * Read a string param. Absent (undefined/null) returns undefined — not an
+ * error, matching strArray's absent-vs-malformed line. A present value of any
+ * other type (number, boolean, object, array) throws a precise tool error
+ * rather than silently dropping it. An empty string is still treated as
+ * absent (existing looseness, preserved: an agent sending `title: ""` behaves
+ * like the arg wasn't supplied at all).
+ */
 function str(args: Record<string, unknown>, key: string): string | undefined {
 	const v = args[key];
-	if (typeof v === 'string' && v.length > 0) return v;
-	return undefined;
+	if (v === undefined || v === null) return undefined;
+	if (typeof v !== 'string') {
+		throw new Error(`'${key}' must be a string (got ${JSON.stringify(v)})`);
+	}
+	return v.length > 0 ? v : undefined;
 }
 
+/**
+ * Read a number param. Absent (undefined/null) returns undefined. Accepts a
+ * numeric string (the MCP transport may deliver numbers as strings) — an
+ * empty/blank string is still treated as absent. Any other present value
+ * (boolean, object, array, a non-numeric string like "abc", or a bare NaN —
+ * reachable here since WebMCP args arrive via structured clone rather than
+ * JSON.parse, which can't produce NaN) throws rather than silently dropping.
+ */
 function num(args: Record<string, unknown>, key: string): number | undefined {
 	const v = args[key];
-	if (typeof v === 'number') return v;
-	if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) {
-		return Number(v);
+	if (v === undefined || v === null) return undefined;
+	if (typeof v === 'number') {
+		if (Number.isNaN(v)) throw new Error(`'${key}' must be a number (got NaN)`);
+		return v;
 	}
-	return undefined;
+	if (typeof v === 'string') {
+		if (v.trim() === '') return undefined;
+		const n = Number(v);
+		if (Number.isNaN(n)) {
+			throw new Error(`'${key}' must be a number (got ${JSON.stringify(v)})`);
+		}
+		return n;
+	}
+	throw new Error(`'${key}' must be a number (got ${JSON.stringify(v)})`);
 }
 
+/**
+ * Read a boolean param. Absent (undefined/null) returns undefined. Accepts
+ * the literal strings "true"/"false" (transport leniency). Any other present
+ * value (number, object, array, any other string) throws rather than
+ * silently dropping.
+ */
 function bool(args: Record<string, unknown>, key: string): boolean | undefined {
 	const v = args[key];
+	if (v === undefined || v === null) return undefined;
 	if (typeof v === 'boolean') return v;
 	if (v === 'true') return true;
 	if (v === 'false') return false;
-	return undefined;
+	throw new Error(`'${key}' must be a boolean (got ${JSON.stringify(v)})`);
 }
 
 function requireRef(args: Record<string, unknown>): string {
