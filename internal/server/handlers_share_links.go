@@ -84,6 +84,13 @@ func (s *Server) handleCreateItemShareLink(w http.ResponseWriter, r *http.Reques
 		s.writeItemResolveError(w, r, workspaceID, itemSlug)
 		return
 	}
+	// BUG-1920: a workspace-role "owner" can be independently restricted
+	// via collection_access="specific". Without this check, a restricted
+	// owner could mint a public share-link token for an item in a
+	// collection hidden from them — an exfiltration path.
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	var input struct {
 		Password        string  `json:"password,omitempty"`
@@ -148,6 +155,9 @@ func (s *Server) handleCreateCollectionShareLink(w http.ResponseWriter, r *http.
 	}
 	if coll == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+	if !s.requireCollectionVisible(w, r, workspaceID, coll) {
 		return
 	}
 
@@ -218,6 +228,9 @@ func (s *Server) handleListItemShareLinks(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
 
 	links, err := s.store.ListShareLinks("item", item.ID)
 	if err != nil {
@@ -247,6 +260,9 @@ func (s *Server) handleListCollectionShareLinks(w http.ResponseWriter, r *http.R
 	}
 	if coll == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+	if !s.requireCollectionVisible(w, r, workspaceID, coll) {
 		return
 	}
 

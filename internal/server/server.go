@@ -1650,6 +1650,25 @@ func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]st
 	return s.store.VisibleCollectionIDs(workspaceID, user.ID)
 }
 
+// requireCollectionVisible checks that the collection itself is visible to
+// the requesting user (BUG-1920). Mirrors handleGetCollection's inline
+// visibleCollectionIDs + isCollectionVisible check so every handler that
+// resolves a collection by slug decides visibility identically. Writes a
+// 404 and returns false if not visible; callers should invoke this
+// immediately after resolving a collection by slug/ID.
+func (s *Server) requireCollectionVisible(w http.ResponseWriter, r *http.Request, workspaceID string, coll *models.Collection) bool {
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	if !isCollectionVisible(coll.ID, visibleIDs) {
+		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return false
+	}
+	return true
+}
+
 // requireItemVisible checks that the item's collection is visible to the
 // requesting user. For guests with item-level grants, also verifies that the
 // specific item is granted (not just the collection). Writes a 404 and returns
