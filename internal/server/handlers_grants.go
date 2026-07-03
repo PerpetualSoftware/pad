@@ -122,6 +122,43 @@ func (s *Server) handleDeleteCollectionGrant(w http.ResponseWriter, r *http.Requ
 	}
 
 	grantID := chi.URLParam(r, "grantID")
+
+	// BUG-1923: this handler operates on the grant ID directly, so unlike
+	// the slug-resolving create/list siblings above it never had a parent
+	// resource to gate on — a restricted owner who knew a grant ID could
+	// revoke a grant on a collection hidden from them. Resolve the grant's
+	// collection first and apply the same requireCollectionFullyVisible
+	// gate the minting/listing handlers use (STRICT — an item-level grant
+	// must not qualify for collection-wide operations).
+	grant, err := s.store.GetCollectionGrant(grantID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if grant == nil || grant.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "Grant not found")
+		return
+	}
+	// GetCollectionAnyState (not GetCollection) — a grant on a
+	// soft-deleted collection must stay revocable. DeleteCollection
+	// soft-deletes and does NOT cascade-delete collection_grants, so
+	// gating on GetCollection's `deleted_at IS NULL` filter would 404
+	// every delete attempt the moment the collection is archived,
+	// permanently stranding the grant row. Mirrors the item-grant
+	// handler's GetItemIncludeDeleted choice below.
+	coll, err := s.store.GetCollectionAnyState(grant.CollectionID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if coll == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Grant not found")
+		return
+	}
+	if !s.requireCollectionFullyVisible(w, r, workspaceID, coll) {
+		return
+	}
+
 	if err := s.store.DeleteCollectionGrant(grantID, workspaceID); err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "Grant not found")
 		return
@@ -243,6 +280,33 @@ func (s *Server) handleDeleteItemGrant(w http.ResponseWriter, r *http.Request) {
 	}
 
 	grantID := chi.URLParam(r, "grantID")
+
+	// BUG-1923: resolve the grant's item and gate on visibility before
+	// deleting — mirrors the collection-grant fix above. GetItemIncludeDeleted
+	// (not GetItem) matches handleListItemGrants' ResolveItemIncludeDeleted:
+	// a grant on a trashed-but-still-visible item stays revocable.
+	grant, err := s.store.GetItemGrant(grantID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if grant == nil || grant.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "Grant not found")
+		return
+	}
+	item, err := s.store.GetItemIncludeDeleted(grant.ItemID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Grant not found")
+		return
+	}
+	if !s.requireItemVisible(w, r, workspaceID, item) {
+		return
+	}
+
 	if err := s.store.DeleteItemGrant(grantID, workspaceID); err != nil {
 		writeError(w, http.StatusNotFound, "not_found", "Grant not found")
 		return

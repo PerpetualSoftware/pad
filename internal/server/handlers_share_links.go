@@ -288,6 +288,24 @@ func (s *Server) handleDeleteShareLink(w http.ResponseWriter, r *http.Request) {
 	}
 
 	linkID := chi.URLParam(r, "linkID")
+
+	// BUG-1923: this handler operated on the link ID directly with no
+	// visibility check on the underlying target — a restricted owner who
+	// knew a link ID could delete a share link on a hidden item/collection.
+	// Resolve the link and its target before deleting.
+	link, err := s.store.GetShareLink(linkID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if link == nil || link.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "Share link not found")
+		return
+	}
+	if !s.requireShareLinkTargetVisible(w, r, workspaceID, link) {
+		return
+	}
+
 	if err := s.store.DeleteShareLink(linkID, workspaceID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(w, http.StatusNotFound, "not_found", "Share link not found")
@@ -297,6 +315,55 @@ func (s *Server) handleDeleteShareLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// requireShareLinkTargetVisible resolves a share link's target (item or
+// collection) and gates on the appropriate visibility check (BUG-1923).
+// Item-scoped links go through requireItemVisible; collection-scoped links
+// go through the STRICTER requireCollectionFullyVisible, matching the
+// minting/listing gates (BUG-1920) so an item-level grant can't promote to
+// collection-wide share-link operations. Writes a 404 and returns false if
+// the target is missing (never existed / wrong workspace) or not visible;
+// callers should invoke this immediately after confirming the link belongs
+// to the workspace.
+//
+// Both target lookups deliberately include soft-deleted parents
+// (GetItemIncludeDeleted / GetCollectionAnyState, not their deleted_at-
+// filtered counterparts): DeleteItem/DeleteCollection soft-delete and do
+// NOT cascade-delete share_links, so a share link on an archived item or
+// collection must stay both revocable (handleDeleteShareLink) and
+// inspectable (handleShareLinkViews) — gating on the filtered getters would
+// permanently strand the link the moment its target is archived.
+func (s *Server) requireShareLinkTargetVisible(w http.ResponseWriter, r *http.Request, workspaceID string, link *models.ShareLink) bool {
+	switch link.TargetType {
+	case "item":
+		item, err := s.store.GetItemIncludeDeleted(link.TargetID)
+		if err != nil {
+			writeInternalError(w, err)
+			return false
+		}
+		if item == nil {
+			writeError(w, http.StatusNotFound, "not_found", "Share link not found")
+			return false
+		}
+		return s.requireItemVisible(w, r, workspaceID, item)
+	case "collection":
+		coll, err := s.store.GetCollectionAnyState(link.TargetID)
+		if err != nil {
+			writeInternalError(w, err)
+			return false
+		}
+		if coll == nil {
+			writeError(w, http.StatusNotFound, "not_found", "Share link not found")
+			return false
+		}
+		return s.requireCollectionFullyVisible(w, r, workspaceID, coll)
+	default:
+		// Fail closed on an unrecognized target type rather than assume
+		// visibility — the model only allows "item"/"collection" today.
+		writeError(w, http.StatusNotFound, "not_found", "Share link not found")
+		return false
+	}
 }
 
 // handleResolveShareLink is the /s/{token} route. It resolves a share link
@@ -522,6 +589,12 @@ func (s *Server) handleShareLinkViews(w http.ResponseWriter, r *http.Request) {
 	}
 	if link == nil || link.WorkspaceID != workspaceID {
 		writeError(w, http.StatusNotFound, "not_found", "Share link not found")
+		return
+	}
+	// BUG-1923: this handler already resolved the link but never checked
+	// visibility on its target — a restricted owner who knew a link ID
+	// could read view-history metadata for a hidden item/collection.
+	if !s.requireShareLinkTargetVisible(w, r, workspaceID, link) {
 		return
 	}
 
