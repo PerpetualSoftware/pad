@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -17,6 +18,15 @@ type AgentTool struct {
 	Aliases []string
 	// DetectDirs are directories whose presence suggests this tool is in use.
 	DetectDirs []string
+	// DetectHomeDirs are directories (relative to $HOME) whose presence
+	// suggests this tool is installed on the machine, even outside the
+	// current project. Only populated for tools with an unambiguous home
+	// directory signal.
+	DetectHomeDirs []string
+	// DetectBinaries are executable names checked via exec.LookPath whose
+	// presence on PATH suggests this tool is installed on the machine. Only
+	// populated for tools with an unambiguous, unique binary name.
+	DetectBinaries []string
 	// SkillDir is the relative path from project root for the skill file directory.
 	SkillDir string
 	// SkillFile is the filename within SkillDir.
@@ -27,20 +37,24 @@ type AgentTool struct {
 // The "agents" target covers Codex, Cursor, and Windsurf via the shared .agents/skills/ directory.
 var SupportedTools = []AgentTool{
 	{
-		Name:       "claude",
-		Label:      "Claude Code",
-		Aliases:    nil,
-		DetectDirs: []string{".claude"},
-		SkillDir:   filepath.Join(".claude", "skills", "pad"),
-		SkillFile:  "SKILL.md",
+		Name:           "claude",
+		Label:          "Claude Code",
+		Aliases:        nil,
+		DetectDirs:     []string{".claude"},
+		DetectHomeDirs: []string{".claude"},
+		DetectBinaries: []string{"claude"},
+		SkillDir:       filepath.Join(".claude", "skills", "pad"),
+		SkillFile:      "SKILL.md",
 	},
 	{
-		Name:       "agents",
-		Label:      "Codex / Cursor / Windsurf",
-		Aliases:    []string{"codex", "cursor", "windsurf"},
-		DetectDirs: []string{".cursor", ".windsurf", ".codex", ".agents"},
-		SkillDir:   filepath.Join(".agents", "skills", "pad"),
-		SkillFile:  "SKILL.md",
+		Name:           "agents",
+		Label:          "Codex / Cursor / Windsurf",
+		Aliases:        []string{"codex", "cursor", "windsurf"},
+		DetectDirs:     []string{".cursor", ".windsurf", ".codex", ".agents"},
+		DetectHomeDirs: []string{".cursor", ".windsurf", ".codex", ".agents"},
+		DetectBinaries: []string{"codex", "cursor", "windsurf"},
+		SkillDir:       filepath.Join(".agents", "skills", "pad"),
+		SkillFile:      "SKILL.md",
 	},
 	{
 		Name:       "copilot",
@@ -85,29 +99,45 @@ func ResolveTool(nameOrAlias string) *AgentTool {
 	return nil
 }
 
-// DetectTools returns the tools that appear to be in use based on directory presence.
+// DetectTools returns the tools that appear to be in use, based on any of:
+// a project-local directory, a home-directory install, or a binary on PATH.
 func DetectTools() []AgentTool {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return nil
-	}
+	cwd, cwdErr := os.Getwd()
+	homeDir, homeErr := os.UserHomeDir()
 
 	var detected []AgentTool
-	seen := map[string]bool{}
 	for _, tool := range SupportedTools {
-		if seen[tool.Name] {
+		switch {
+		case cwdErr == nil && dirPresent(cwd, tool.DetectDirs):
+		case homeErr == nil && dirPresent(homeDir, tool.DetectHomeDirs):
+		case binaryPresent(tool.DetectBinaries):
+		default:
 			continue
 		}
-		for _, dir := range tool.DetectDirs {
-			info, err := os.Stat(filepath.Join(cwd, dir))
-			if err == nil && info.IsDir() {
-				detected = append(detected, tool)
-				seen[tool.Name] = true
-				break
-			}
-		}
+		detected = append(detected, tool)
 	}
 	return detected
+}
+
+// dirPresent reports whether any of dirs (relative to base) exists as a directory.
+func dirPresent(base string, dirs []string) bool {
+	for _, dir := range dirs {
+		info, err := os.Stat(filepath.Join(base, dir))
+		if err == nil && info.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// binaryPresent reports whether any of the given executable names is found on PATH.
+func binaryPresent(bins []string) bool {
+	for _, bin := range bins {
+		if _, err := exec.LookPath(bin); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // ToolSkillPath returns the full path where a tool's skill file would be installed.
