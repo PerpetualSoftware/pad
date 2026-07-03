@@ -727,7 +727,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 // archived item is never revealed to a caller who could not otherwise see it.
 func (s *Server) writeItemResolveError(w http.ResponseWriter, r *http.Request, workspaceID, ref string) {
 	if archived, err := s.store.ResolveItemIncludeDeleted(workspaceID, ref); err == nil && archived != nil && archived.DeletedAt != nil {
-		if visible, verr := s.checkItemVisible(workspaceID, archived, currentUser(r), workspaceRole(r)); verr == nil && visible {
+		if visible, verr := s.checkItemVisible(workspaceID, archived, currentUser(r), workspaceRole(r), isBearerAuth(r)); verr == nil && visible {
 			writeError(w, http.StatusConflict, "archived",
 				fmt.Sprintf("%q is archived. Fetch it read-only with GET, or restore it before editing.", ref))
 			return

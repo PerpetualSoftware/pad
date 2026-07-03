@@ -1662,7 +1662,7 @@ func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]st
 // (e.g. handlers_ref_resolver.go) should use checkItemVisible directly with
 // a manually-derived role.
 func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item) bool {
-	visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r))
+	visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
 	if err != nil {
 		writeInternalError(w, err)
 		return false
@@ -1687,6 +1687,15 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 //   - user — currentUser(r) at the call site; nil for unauthenticated.
 //   - role — workspaceRole(r) at the call site, or the role derived
 //     manually by callers operating outside RequireWorkspaceAccess.
+//   - isBearer — isBearerAuth(r) at the call site (BUG-1918). Narrows
+//     rule 3 below the same way BUG-1616/1617 narrowed the analogous
+//     bypasses in visibleCollectionIDs, resolverWorkspaceRole, and
+//     guestResourceFilterCore: a platform admin's global read access is
+//     a cookie-session / web-UI affordance only. A bearer-borne admin
+//     (CLI / PAT / MCP) who is a restricted workspace member must fall
+//     through to the same per-collection filter every other member
+//     faces — otherwise BUG-1917's list-level scoping is bypassable by
+//     guessing a ref and hitting the single-item endpoints directly.
 //
 // Rules (in order):
 //
@@ -1704,7 +1713,8 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 //  2. nil user past rule 1 → not visible. Anonymous viewers without a
 //     tokenized role have no item-read access (share links own the
 //     public-read surface via /s/{token}).
-//  3. Admin user (user.Role == "admin") → always visible.
+//  3. Admin user via cookie session (user.Role == "admin" && !isBearer)
+//     → always visible. Bearer-borne admins fall through to rule 4.
 //  4. Otherwise: replay the guestResourceFilterCore + member-collection-
 //     access logic that requireItemVisible used to inline, with a system-
 //     collections union added to the item-grants branch (Codex round-2
@@ -1712,7 +1722,7 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 //     an unrelated item grant previously 404'd on system-collection items
 //     because the item-grants branch only checked direct grants + the
 //     member's explicit collection-access list).
-func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *models.User, role string) (bool, error) {
+func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *models.User, role string, isBearer bool) (bool, error) {
 	// Tokenized-nil-user bypass. RequireWorkspaceAccess synthesizes
 	// "owner" on fresh installs (UserCount == 0, currentUser == nil) and
 	// "editor" for legacy workspace-scoped API tokens (currentUser ==
@@ -1730,8 +1740,11 @@ func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *m
 	if user == nil {
 		return false, nil
 	}
-	// Admin sees everything (matches visibleCollectionIDs's nil-filter shape).
-	if user.Role == "admin" {
+	// Admin sees everything, but only for cookie-session auth (matches
+	// visibleCollectionIDs's nil-filter shape). Bearer-borne admins
+	// (BUG-1918) fall through to the same per-collection filter every
+	// other member faces.
+	if user.Role == "admin" && !isBearer {
 		return true, nil
 	}
 

@@ -301,7 +301,7 @@ func TestCheckItemVisible_TokenizedRoleAllowsNilUser(t *testing.T) {
 	}
 
 	for _, role := range []string{"owner", "editor"} {
-		ok, err := srv.checkItemVisible(ws.ID, item, nil, role)
+		ok, err := srv.checkItemVisible(ws.ID, item, nil, role, false)
 		if err != nil {
 			t.Errorf("role=%q: unexpected error: %v", role, err)
 		}
@@ -312,10 +312,10 @@ func TestCheckItemVisible_TokenizedRoleAllowsNilUser(t *testing.T) {
 
 	// Sanity: nil user with no role still rejects (this is the path that
 	// distinguishes legitimate legacy tokens from anonymous probes).
-	if ok, _ := srv.checkItemVisible(ws.ID, item, nil, ""); ok {
+	if ok, _ := srv.checkItemVisible(ws.ID, item, nil, "", false); ok {
 		t.Error("nil user + empty role: expected visible=false")
 	}
-	if ok, _ := srv.checkItemVisible(ws.ID, item, nil, "guest"); ok {
+	if ok, _ := srv.checkItemVisible(ws.ID, item, nil, "guest", false); ok {
 		t.Error("nil user + guest role: expected visible=false (guest needs grants which require a user)")
 	}
 }
@@ -389,7 +389,7 @@ func TestCheckItemVisible_AuthenticatedEditorWithRestrictedAccess(t *testing.T) 
 	// return false. The round-2 bug returned true here, disabling the
 	// per-collection gate for every read AND write path through
 	// requireItemVisible / the resolver.
-	visible, err := srv.checkItemVisible(ws.ID, itemB, editor, "editor")
+	visible, err := srv.checkItemVisible(ws.ID, itemB, editor, "editor", false)
 	if err != nil {
 		t.Fatalf("checkItemVisible: unexpected error: %v", err)
 	}
@@ -406,12 +406,114 @@ func TestCheckItemVisible_AuthenticatedEditorWithRestrictedAccess(t *testing.T) 
 	if err != nil {
 		t.Fatalf("CreateItem in alpha: %v", err)
 	}
-	visible, err = srv.checkItemVisible(ws.ID, itemA, editor, "editor")
+	visible, err = srv.checkItemVisible(ws.ID, itemA, editor, "editor", false)
 	if err != nil {
 		t.Fatalf("checkItemVisible (allowed): %v", err)
 	}
 	if !visible {
 		t.Error("authenticated editor on an allowed-collection item: expected visible=true")
+	}
+}
+
+// TestCheckItemVisible_AdminBearerRestrictedRoleDeniedOnHiddenCollection
+// pins BUG-1918: checkItemVisible's unconditional `user.Role == "admin"`
+// bypass ignored isBearerAuth entirely, so a bearer-authed platform
+// admin could see ANY item by ref regardless of their actual workspace
+// role — bypassing BUG-1917's list-level scoping for anyone who could
+// guess (or enumerate) a ref.
+//
+// This is a unit-level test of checkItemVisible directly rather than an
+// HTTP-level one, because no HTTP-reachable admin-bearer request can
+// demonstrate the bug for a REAL restricted member: RequireWorkspaceAccess
+// already derives the member's actual (non-owner) role for a bearer-admin
+// member (middleware_auth.go), so `role` here is exactly what a live
+// request would carry — this test exercises checkItemVisible with that
+// same (user, role, isBearer) shape directly, which is representative of
+// every requireItemVisible-mediated HTTP handler (GET/PATCH/DELETE, and
+// every comment/link/star/version/timeline/playbook/backlink/storage
+// consumer that funnels through it).
+//
+// Note this shape does NOT cover the artifact-export consumer
+// (handlers_artifact_export.go): exportable items live exclusively in
+// system collections (playbooks/conventions), which
+// store.VisibleCollectionIDs always includes for members regardless of
+// collection_access="specific" — so a restricted-member admin sees them
+// either way, fixed or not. And a bearer-admin who is NOT a member gets
+// 403 at RequireWorkspaceAccess before ever reaching checkItemVisible,
+// even with an unrelated grant (BUG-1616/1618's membership-only stance
+// denies the grant-fallback for bearer admins specifically, unlike
+// ordinary non-admin guests). So the export path has no HTTP-reachable
+// scenario where this fix changes behavior — it's protected end-to-end
+// by those two other invariants, and this test's coverage of the shared
+// checkItemVisible helper is what backs it, same as every other
+// requireItemVisible consumer.
+func TestCheckItemVisible_AdminBearerRestrictedRoleDeniedOnHiddenCollection(t *testing.T) {
+	srv := testServer(t)
+
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email: "owner2@example.com", Name: "Owner2", Username: "owner2",
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser owner: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{
+		Name: "WS2", OwnerID: owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	collA, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Alpha2", Slug: "alpha2", Prefix: "ALPHA2",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection alpha2: %v", err)
+	}
+	collB, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Beta2", Slug: "beta2", Prefix: "BETA2",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection beta2: %v", err)
+	}
+	itemB, err := srv.store.CreateItem(ws.ID, collB.ID, models.ItemCreate{
+		Title: "Forbidden",
+	})
+	if err != nil {
+		t.Fatalf("CreateItem in beta2: %v", err)
+	}
+
+	admin, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin2@example.com", Name: "Admin2", Username: "admin2",
+		Password: "pw-test-12345", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser admin: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, admin.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember admin: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, admin.ID, "specific", []string{collA.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	// Bearer admin: the gate applies — restricted "editor" role with
+	// collection_access="specific" (only collA) must not see collB's item.
+	visible, err := srv.checkItemVisible(ws.ID, itemB, admin, "editor", true)
+	if err != nil {
+		t.Fatalf("checkItemVisible: unexpected error: %v", err)
+	}
+	if visible {
+		t.Fatal("bearer-admin with restricted collection_access saw a hidden-collection item: BUG-1918 regression")
+	}
+
+	// Cookie admin (isBearer=false): the pre-existing unconditional
+	// bypass still applies.
+	visible, err = srv.checkItemVisible(ws.ID, itemB, admin, "editor", false)
+	if err != nil {
+		t.Fatalf("checkItemVisible: unexpected error: %v", err)
+	}
+	if !visible {
+		t.Fatal("cookie-session admin should see any item regardless of collection_access")
 	}
 }
 

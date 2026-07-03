@@ -508,6 +508,54 @@ func TestBulkItems_CollectionMoveValidatesStatusOverride(t *testing.T) {
 	}
 }
 
+// TestBulkItems_AdminBearer_RestrictedMemberBlockedOnHiddenItem pins
+// BUG-1918 for handleBulkItems' own direct checkItemVisible call site
+// (the per-ref loop, distinct from the requireItemVisible shim the
+// single-item handlers use). Not part of the dispatcher's explicit test
+// sweep for this bug, but it's a call site the fix touches directly, so
+// it gets its own coverage: a bearer-authed admin who is a restricted
+// member (collection_access="specific") gets the hidden-collection item
+// reported as a per-ref "not found" failure, same as any other
+// restricted member — not silently archived via the old unconditional
+// admin bypass — while the visible-collection item still succeeds.
+func TestBulkItems_AdminBearer_RestrictedMemberBlockedOnHiddenItem(t *testing.T) {
+	f := newBearerGateItemFixture(t)
+
+	rr := doRequestWithHeaders(f.srv, "POST", "/api/v1/workspaces/"+f.ws.Slug+"/items/bulk",
+		map[string]any{"ids": []string{f.hiddenItem.Ref, f.visibleItem.Ref}, "op": "archive"},
+		f.bearerHeaders())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk bearer admin: expected 200 envelope, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp bulkItemsResponse
+	parseJSON(t, rr, &resp)
+	if len(resp.Updated) != 1 || resp.Updated[0].Ref != f.visibleItem.Ref {
+		t.Fatalf("expected only the visible item archived, got %+v", resp.Updated)
+	}
+	if len(resp.Failed) != 1 || resp.Failed[0].Ref != f.hiddenItem.Ref {
+		t.Fatalf("expected the hidden item to fail as not-found, got %+v", resp.Failed)
+	}
+
+	// Cookie admin — unrestricted, both succeed. Fresh items: the
+	// visible-collection item above was already archived by the bearer
+	// call, and ResolveItem (used for every op but "restore") hides
+	// archived items, so reusing it here would fail for an unrelated
+	// reason (already gone) rather than exercising the assertion.
+	hidden2 := f.newItem(t, f.hiddenCollID, "Hidden item 2")
+	visible2 := f.newItem(t, f.visibleCollID, "Visible item 2")
+	rr = doRequestWithCookie(f.srv, "POST", "/api/v1/workspaces/"+f.ws.Slug+"/items/bulk",
+		map[string]any{"ids": []string{hidden2.Ref, visible2.Ref}, "op": "archive"},
+		f.sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk cookie admin: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var cookieResp bulkItemsResponse
+	parseJSON(t, rr, &cookieResp)
+	if len(cookieResp.Updated) != 2 {
+		t.Fatalf("expected both items archived for cookie admin, got %+v", cookieResp)
+	}
+}
+
 // TestBulkItems_RouteDoesNotShadowItemSlug guards the route-ordering
 // fix: /items/bulk is a static segment registered before the
 // /items/{itemSlug} param route, so it must not be treated as an item
