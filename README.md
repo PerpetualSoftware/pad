@@ -26,7 +26,7 @@
 
 ---
 
-> One binary. Local-first. No accounts required. Pad gives you a CLI, a web UI, and an AI agent skill — all backed by SQLite, all running on your machine. Your project data never leaves your laptop.
+> One binary. Local-first. No accounts required. Pad gives you a CLI, a web UI, and an AI agent skill — all backed by SQLite, all running on your machine. Your project data stays on your laptop — unless you take it to [Pad Cloud](https://app.getpad.dev).
 
 <p align="center">
   <img src="docs/screenshots/dashboard.png" width="900" alt="Pad dashboard showing collection summaries, active work, an active plan with progress, and a recent activity feed" />
@@ -53,13 +53,13 @@ Your new workspace ships with the canonical `onboard` playbook auto-activated. T
 
 ## Why Pad?
 
-Tools like Linear, Jira, and Notion are built for teams on the cloud. Pad is built for **developers on their machine** — and for the AI agents working alongside them.
+Tools like Linear, Jira, and Notion are built for teams on the cloud. Pad is built for **developers on their machine** — and for the AI agents working alongside them. When you do want your projects on every device or a teammate on the board, [Pad Cloud](https://app.getpad.dev) hosts the same product with sync, workspace invites, and role-based access.
 
 | | Pad | Linear / Jira | Notion |
 |---|---|---|---|
 | **Setup** | `pad init` | Create account, invite team, configure | Create account, pick template |
 | **AI agents** | Native `/pad` skill for 7+ tools | Third-party integrations | Third-party integrations |
-| **Data** | Local SQLite, you own it | Their cloud | Their cloud |
+| **Data** | Local SQLite you own — or opt-in Pad Cloud | Their cloud | Their cloud |
 | **Offline** | Full functionality | Read-only cache at best | Limited |
 | **CLI** | First-class | Afterthought | None |
 | **Price** | Free, open source | Per-seat pricing | Per-seat pricing |
@@ -195,6 +195,16 @@ For multi-instance deployments, Pad supports Postgres + Redis via `docker-compos
 
 Pre-built binaries for macOS, Linux, and Windows are available on the [releases page](https://github.com/PerpetualSoftware/pad/releases).
 
+### Pad Cloud (hosted)
+
+Don't want to run anything? [Pad Cloud](https://app.getpad.dev/register) is the managed option — same product, same CLI, same `/pad` skill, free during beta. Sign up on the web, then connect a project directory:
+
+```bash
+pad init --url https://app.getpad.dev --workspace my-workspace
+```
+
+Self-hosting stays first-class: the binary is unchanged and no features are Cloud-only.
+
 ## Getting Started
 
 ### 1. Set up Pad
@@ -302,6 +312,11 @@ taxonomy.
 
 Full guide at [getpad.dev/mcp/local](https://getpad.dev/mcp/local) — install
 paths, action enums per tool, error taxonomy, troubleshooting.
+
+**On Pad Cloud?** Skip the install: add `https://mcp.getpad.dev` as a remote
+MCP server in Claude Desktop, Claude.ai, Cursor, or Windsurf and sign in with
+OAuth — same tool surface, no local binary. Setup guide at
+[getpad.dev/mcp/remote](https://getpad.dev/mcp/remote).
 
 ## CLI Reference
 
@@ -421,7 +436,7 @@ pad workspace join <code>
 - **Single binary** — serves the API and web UI, runs on macOS, Linux, and Windows
 - **Workspace-per-project** — each project gets its own workspace linked by a `.pad.toml` file
 
-All data lives in `~/.pad/pad.db`. Your data. Your machine. No telemetry, no cloud, no accounts required.
+Self-hosted, all data lives in `~/.pad/pad.db`. Your data. Your machine. No telemetry, no accounts required — cloud only if you opt in.
 
 ## Contributing
 
