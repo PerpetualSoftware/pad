@@ -335,6 +335,19 @@ func (s *Server) handleListUserGrants(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+
+	// BUG-1928: a caller other than the target user must not see grants on
+	// resources hidden from THEM — self-queries stay unfiltered (you can
+	// always see your own grants, including item-grant-only entries on
+	// collections you can't otherwise see).
+	if currentUserID(r) != userID {
+		collGrants, itemGrants, err = s.filterUserGrantsForCaller(r, workspaceID, collGrants, itemGrants)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+	}
+
 	if collGrants == nil {
 		collGrants = []models.CollectionGrant{}
 	}

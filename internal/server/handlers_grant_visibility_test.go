@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -861,5 +863,155 @@ func TestItemShareLinksAndGrants_NonOwner_403BeforeVisibility(t *testing.T) {
 		if rr.Code != http.StatusForbidden {
 			t.Errorf("%s: editor (non-owner) expected 403, got %d: %s", tc.name, rr.Code, rr.Body.String())
 		}
+	}
+}
+
+// ─── handleListUserGrants (BUG-1928) ───────────────────────────────────
+
+// userGrantsResponse mirrors handleListUserGrants' JSON shape for test decoding.
+type userGrantsResponse struct {
+	CollectionGrants []models.CollectionGrant `json:"collection_grants"`
+	ItemGrants       []models.ItemGrant       `json:"item_grants"`
+}
+
+// decodeUserGrantsResponse requires a 200 and decodes the body, failing the
+// test otherwise.
+func decodeUserGrantsResponse(t *testing.T, rr *httptest.ResponseRecorder) userGrantsResponse {
+	t.Helper()
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp userGrantsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return resp
+}
+
+// TestListUserGrants_RestrictedOwner_FiltersHiddenResourceGrants pins
+// BUG-1928: a restricted owner (collection_access="specific") listing
+// ANOTHER user's grants must not see grants on resources hidden from the
+// CALLER, even though the grants belong to the target user. Exercised over
+// both auth classes (bearer PAT + session cookie), mirroring the fixture's
+// usual dual-auth coverage.
+func TestListUserGrants_RestrictedOwner_FiltersHiddenResourceGrants(t *testing.T) {
+	f := newRestrictedOwnerVisibilityFixture(t)
+	target := f.seedGrantee(t)
+
+	if _, err := f.srv.store.CreateCollectionGrant(f.ws.ID, f.hiddenColl.ID, target.ID, "view", f.ownerID); err != nil {
+		t.Fatalf("seed hidden collection grant: %v", err)
+	}
+	if _, err := f.srv.store.CreateCollectionGrant(f.ws.ID, f.visibleColl.ID, target.ID, "view", f.ownerID); err != nil {
+		t.Fatalf("seed visible collection grant: %v", err)
+	}
+	if _, err := f.srv.store.CreateItemGrant(f.ws.ID, f.hiddenItem.ID, target.ID, "view", f.ownerID); err != nil {
+		t.Fatalf("seed hidden item grant: %v", err)
+	}
+	if _, err := f.srv.store.CreateItemGrant(f.ws.ID, f.visibleItem.ID, target.ID, "view", f.ownerID); err != nil {
+		t.Fatalf("seed visible item grant: %v", err)
+	}
+
+	path := "/api/v1/workspaces/" + f.ws.Slug + "/users/" + target.ID + "/grants"
+
+	assertFiltered := func(t *testing.T, rr *httptest.ResponseRecorder) {
+		t.Helper()
+		resp := decodeUserGrantsResponse(t, rr)
+		if resp.CollectionGrants == nil {
+			t.Error("collection_grants must not be null (empty-slice semantics)")
+		}
+		if resp.ItemGrants == nil {
+			t.Error("item_grants must not be null (empty-slice semantics)")
+		}
+		if len(resp.CollectionGrants) != 1 || resp.CollectionGrants[0].CollectionID != f.visibleColl.ID {
+			t.Errorf("expected only the visible collection grant, got %+v", resp.CollectionGrants)
+		}
+		if len(resp.ItemGrants) != 1 || resp.ItemGrants[0].ItemID != f.visibleItem.ID {
+			t.Errorf("expected only the visible item grant, got %+v", resp.ItemGrants)
+		}
+	}
+
+	rr := doRequestWithHeaders(f.srv, "GET", path, nil, f.bearerHeaders())
+	assertFiltered(t, rr)
+
+	rr = doRequestWithCookie(f.srv, "GET", path, nil, f.sessionToken)
+	assertFiltered(t, rr)
+}
+
+// TestListUserGrants_SelfQuery_Unfiltered pins BUG-1928's self-query
+// carve-out: a restricted owner listing their OWN grants sees everything,
+// including an item-grant-only entry on a collection otherwise hidden from
+// them by collection_access="specific".
+func TestListUserGrants_SelfQuery_Unfiltered(t *testing.T) {
+	f := newRestrictedOwnerVisibilityFixture(t)
+	f.grantHiddenItemToOwner(t)
+
+	path := "/api/v1/workspaces/" + f.ws.Slug + "/users/" + f.ownerID + "/grants"
+	rr := doRequestWithHeaders(f.srv, "GET", path, nil, f.bearerHeaders())
+	resp := decodeUserGrantsResponse(t, rr)
+
+	found := false
+	for _, g := range resp.ItemGrants {
+		if g.ItemID == f.hiddenItem.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("self-query must include the item grant on the hidden item unfiltered, got %+v", resp.ItemGrants)
+	}
+}
+
+// TestListUserGrants_UnrestrictedOwner_Unfiltered pins the cheap
+// short-circuit for unrestricted callers: a plain owner (no
+// collection_access restriction) listing another user's grants sees
+// everything, with no filtering applied.
+func TestListUserGrants_UnrestrictedOwner_Unfiltered(t *testing.T) {
+	srv := testServer(t)
+
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email: "unrestricted-owner@example.com", Name: "Unrestricted Owner", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "GrantVisibilityUnrestricted", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Coll", Slug: "coll", Prefix: "COL", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+
+	target, err := srv.store.CreateUser(models.UserCreate{
+		Email: "target@example.com", Name: "Target", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	if _, err := srv.store.CreateCollectionGrant(ws.ID, coll.ID, target.ID, "view", owner.ID); err != nil {
+		t.Fatalf("seed collection grant: %v", err)
+	}
+
+	tok, err := srv.store.CreateAPIToken(owner.ID, models.APITokenCreate{
+		Name: "owner-pat", WorkspaceID: ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+	headers := map[string]string{"Authorization": "Bearer " + tok.Token}
+
+	path := "/api/v1/workspaces/" + ws.Slug + "/users/" + target.ID + "/grants"
+	rr := doRequestWithHeaders(srv, "GET", path, nil, headers)
+	resp := decodeUserGrantsResponse(t, rr)
+
+	if len(resp.CollectionGrants) != 1 || resp.CollectionGrants[0].CollectionID != coll.ID {
+		t.Errorf("unrestricted owner should see the target's grant unfiltered, got %+v", resp.CollectionGrants)
 	}
 }

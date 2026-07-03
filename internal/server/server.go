@@ -1983,6 +1983,85 @@ func isCollectionVisible(collectionID string, visibleIDs []string) bool {
 	return false
 }
 
+// filterUserGrantsForCaller narrows collGrants/itemGrants — the TARGET
+// user's grants, already loaded by the caller — down to what the CALLER can
+// see. Only meaningful when caller != target; handleListUserGrants skips
+// calling this for self-queries (a user can always see their own grants).
+//
+// BUG-1928: handleListUserGrants returned the target's raw grants
+// (including collection_id/item_id) to any workspace owner unconditionally.
+// A restricted owner (collection_access="specific") could enumerate
+// hidden-resource IDs this way — the disclosure half of the primitive
+// BUG-1923's handlers fixed the action half of (know-the-ID → operate-on-it).
+//
+// Reuses the existing guestResourceFilter/isCollectionVisible/
+// isItemVisibleToGuest helpers rather than a bespoke visibility pass:
+// guestResourceFilter's fullCollIDs is already the STRICT full-access set
+// (member_collection_access ∪ system collections ∪ direct collection
+// grants, excluding item-grant-only collections) — the same strict set
+// requireCollectionFullyVisible narrows to — so collection grants are
+// filtered directly against it with no extra narrowing step.
+//
+// Filtering is pure ID-set membership: no parent collection/item lookup is
+// needed to decide visibility, so a grant on a soft- (or even hard-)
+// deleted parent is filtered the same as any other grant, matching #798's
+// "still revocable/inspectable" precedent for grants on archived resources.
+// The one exception is item grants, which only carry an item_id — those are
+// resolved to their collection_id via a single bulk GetItemCollectionRefs
+// call (state-agnostic; no deleted_at filter) rather than N per-grant
+// lookups.
+func (s *Server) filterUserGrantsForCaller(r *http.Request, workspaceID string, collGrants []models.CollectionGrant, itemGrants []models.ItemGrant) ([]models.CollectionGrant, []models.ItemGrant, error) {
+	fullCollIDs, grantedItemIDs, err := s.guestResourceFilter(r, workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if fullCollIDs == nil && grantedItemIDs == nil {
+		// Unrestricted caller (admin/cookie session, or a member with
+		// full collection access) — no filtering, and no further store
+		// calls needed.
+		return collGrants, itemGrants, nil
+	}
+
+	filteredColl := make([]models.CollectionGrant, 0, len(collGrants))
+	for _, g := range collGrants {
+		if isCollectionVisible(g.CollectionID, fullCollIDs) {
+			filteredColl = append(filteredColl, g)
+		}
+	}
+
+	filteredItem := make([]models.ItemGrant, 0, len(itemGrants))
+	if len(itemGrants) > 0 {
+		itemIDs := make([]string, len(itemGrants))
+		for i, g := range itemGrants {
+			itemIDs[i] = g.ItemID
+		}
+		refs, err := s.store.GetItemCollectionRefs(workspaceID, itemIDs)
+		if err != nil {
+			return nil, nil, err
+		}
+		collByItem := make(map[string]string, len(refs))
+		for _, ref := range refs {
+			collByItem[ref.ID] = ref.CollectionID
+		}
+		for _, g := range itemGrants {
+			collID, ok := collByItem[g.ItemID]
+			if !ok {
+				// item_grants.item_id is ON DELETE CASCADE, so a grant
+				// row can't outlive its item — this should be
+				// unreachable. Exclude defensively rather than show a
+				// grant with no resolvable parent.
+				continue
+			}
+			item := &models.Item{ID: g.ItemID, CollectionID: collID}
+			if s.isItemVisibleToGuest(r, workspaceID, item, fullCollIDs, grantedItemIDs) {
+				filteredItem = append(filteredItem, g)
+			}
+		}
+	}
+
+	return filteredColl, filteredItem, nil
+}
+
 // requireEditPermission checks if the user has edit access to the given item.
 // For regular members (editor/owner), this uses the standard role check.
 // For members with insufficient roles (e.g., viewers), it falls back to

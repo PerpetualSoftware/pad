@@ -3602,7 +3602,23 @@ type ItemCollectionRef struct {
 
 // GetDeletedItemsWithCollection returns minimal item info (ID + CollectionID)
 // for soft-deleted items, used to filter deleted item IDs by collection visibility.
+//
+// Despite the name, this is just GetItemCollectionRefs under the hood — the
+// underlying query has no deleted_at filter, so it works for any item state.
+// The name is kept for this call site's existing meaning (its caller only
+// ever passes already-known-deleted IDs); BUG-1928 needed the same
+// state-agnostic lookup for live-or-deleted item grants, hence the rename
+// of the shared implementation to the more accurate GetItemCollectionRefs.
 func (s *Store) GetDeletedItemsWithCollection(workspaceID string, itemIDs []string) ([]ItemCollectionRef, error) {
+	return s.GetItemCollectionRefs(workspaceID, itemIDs)
+}
+
+// GetItemCollectionRefs returns minimal item info (ID + CollectionID) for the
+// given item IDs, scoped to the workspace. State-agnostic: the query has no
+// deleted_at filter, so it resolves live and soft-deleted items alike. Used
+// wherever a caller needs an item_id → collection_id mapping without paying
+// for a full item fetch (e.g. bulk visibility filtering).
+func (s *Store) GetItemCollectionRefs(workspaceID string, itemIDs []string) ([]ItemCollectionRef, error) {
 	if len(itemIDs) == 0 {
 		return nil, nil
 	}
@@ -3617,14 +3633,14 @@ func (s *Store) GetDeletedItemsWithCollection(workspaceID string, itemIDs []stri
 		WHERE workspace_id = ? AND id IN (%s)
 	`, strings.Join(placeholders, ","))), args...)
 	if err != nil {
-		return nil, fmt.Errorf("get deleted items with collection: %w", err)
+		return nil, fmt.Errorf("get item collection refs: %w", err)
 	}
 	defer rows.Close()
 	var results []ItemCollectionRef
 	for rows.Next() {
 		var r ItemCollectionRef
 		if err := rows.Scan(&r.ID, &r.CollectionID); err != nil {
-			return nil, fmt.Errorf("scan deleted item: %w", err)
+			return nil, fmt.Errorf("scan item collection ref: %w", err)
 		}
 		results = append(results, r)
 	}
