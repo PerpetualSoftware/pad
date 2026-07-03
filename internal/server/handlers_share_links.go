@@ -323,8 +323,17 @@ func (s *Server) handleDeleteShareLink(w http.ResponseWriter, r *http.Request) {
 // go through the STRICTER requireCollectionFullyVisible, matching the
 // minting/listing gates (BUG-1920) so an item-level grant can't promote to
 // collection-wide share-link operations. Writes a 404 and returns false if
-// the target is missing/deleted or not visible; callers should invoke this
-// immediately after confirming the link belongs to the workspace.
+// the target is missing (never existed / wrong workspace) or not visible;
+// callers should invoke this immediately after confirming the link belongs
+// to the workspace.
+//
+// Both target lookups deliberately include soft-deleted parents
+// (GetItemIncludeDeleted / GetCollectionAnyState, not their deleted_at-
+// filtered counterparts): DeleteItem/DeleteCollection soft-delete and do
+// NOT cascade-delete share_links, so a share link on an archived item or
+// collection must stay both revocable (handleDeleteShareLink) and
+// inspectable (handleShareLinkViews) — gating on the filtered getters would
+// permanently strand the link the moment its target is archived.
 func (s *Server) requireShareLinkTargetVisible(w http.ResponseWriter, r *http.Request, workspaceID string, link *models.ShareLink) bool {
 	switch link.TargetType {
 	case "item":
@@ -339,7 +348,7 @@ func (s *Server) requireShareLinkTargetVisible(w http.ResponseWriter, r *http.Re
 		}
 		return s.requireItemVisible(w, r, workspaceID, item)
 	case "collection":
-		coll, err := s.store.GetCollection(link.TargetID)
+		coll, err := s.store.GetCollectionAnyState(link.TargetID)
 		if err != nil {
 			writeInternalError(w, err)
 			return false

@@ -624,6 +624,137 @@ func TestCollectionGrantAndShareLinkDelete_ItemGrantOnly_HiddenCollection404(t *
 	}
 }
 
+// ─── Soft-deleted collection parent must not permanently strand
+//     collection-scoped grants/share-links (BUG-1923 round-3 regression) ──
+
+// TestDeleteCollectionGrant_SoftDeletedCollection_StillRevocable pins a
+// regression codex R3 found in the initial BUG-1923 fix: resolving the
+// grant/link's parent via GetCollection (`deleted_at IS NULL`) would 404 the
+// delete/view-history handlers the instant the collection is soft-deleted,
+// since DeleteCollection does NOT cascade-delete collection_grants or
+// share_links (collections.go DeleteCollection) — the row would become
+// permanently un-revocable via the API. Fixed by resolving through
+// GetCollectionAnyState instead (mirrors the item-side GetItemIncludeDeleted
+// choice).
+//
+// Exercises a restricted owner whose member_collection_access already
+// included the collection before it was archived: visibility is preserved
+// post-soft-delete because GetMemberCollectionAccess reads the raw
+// member_collection_access table with no deleted_at join — confirmed by
+// tracing requireCollectionFullyVisible → visibleCollectionIDs /
+// guestResourceFilter → GetMemberCollectionAccess.
+func TestDeleteCollectionGrant_SoftDeletedCollection_StillRevocable(t *testing.T) {
+	f := newRestrictedOwnerVisibilityFixture(t)
+	grantee := f.seedGrantee(t)
+
+	if err := f.srv.store.DeleteCollection(f.visibleColl.ID); err != nil {
+		t.Fatalf("soft-delete visible collection: %v", err)
+	}
+
+	grant, err := f.srv.store.CreateCollectionGrant(f.ws.ID, f.visibleColl.ID, grantee.ID, "view", f.ownerID)
+	if err != nil {
+		t.Fatalf("seed grant on soft-deleted collection: %v", err)
+	}
+	link, err := f.srv.store.CreateShareLink(f.ws.ID, "collection", f.visibleColl.ID, "view", f.ownerID, nil)
+	if err != nil {
+		t.Fatalf("seed share link on soft-deleted collection: %v", err)
+	}
+
+	grantPath := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + f.visibleColl.Slug + "/grants/" + grant.ID
+	rr := doRequestWithHeaders(f.srv, "DELETE", grantPath, nil, f.bearerHeaders())
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("restricted owner delete grant on soft-deleted (previously visible) collection: expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	viewsPath := "/api/v1/workspaces/" + f.ws.Slug + "/share-links/" + link.ID + "/views"
+	rr = doRequestWithHeaders(f.srv, "GET", viewsPath, nil, f.bearerHeaders())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restricted owner view-history on soft-deleted (previously visible) collection's link: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	deletePath := "/api/v1/workspaces/" + f.ws.Slug + "/share-links/" + link.ID
+	rr = doRequestWithHeaders(f.srv, "DELETE", deletePath, nil, f.bearerHeaders())
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("restricted owner delete share link on soft-deleted (previously visible) collection: expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestDeleteCollectionGrant_SoftDeletedCollection_UnrestrictedOwnerStillRevokes
+// pins the MAIN regression case codex R3 flagged: an UNRESTRICTED owner
+// (member.CollectionAccess == "all" → visibleCollectionIDs == nil) must be
+// able to revoke a grant/share-link and read view-history for ANY
+// soft-deleted collection — this is the common case (most owners are
+// unrestricted) and was fully broken by the GetCollection-based lookup.
+func TestDeleteCollectionGrant_SoftDeletedCollection_UnrestrictedOwnerStillRevokes(t *testing.T) {
+	srv := testServer(t)
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email: "unrestricted-owner@example.com", Name: "Unrestricted Owner", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "SoftDeleteRegression", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Archivable", Slug: "archivable", Prefix: "ARC", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create collection: %v", err)
+	}
+	grantee, err := srv.store.CreateUser(models.UserCreate{
+		Email: "grantee3@example.com", Name: "Grantee3", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("create grantee: %v", err)
+	}
+	grant, err := srv.store.CreateCollectionGrant(ws.ID, coll.ID, grantee.ID, "view", owner.ID)
+	if err != nil {
+		t.Fatalf("create collection grant: %v", err)
+	}
+	link, err := srv.store.CreateShareLink(ws.ID, "collection", coll.ID, "view", owner.ID, nil)
+	if err != nil {
+		t.Fatalf("create share link: %v", err)
+	}
+	tok, err := srv.store.CreateAPIToken(owner.ID, models.APITokenCreate{
+		Name: "owner-pat", WorkspaceID: ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+	headers := map[string]string{"Authorization": "Bearer " + tok.Token}
+
+	// Soft-delete AFTER seeding the grant/link, mirroring the real
+	// sequence: mint on a live collection, then the collection gets
+	// archived out from under them.
+	if err := srv.store.DeleteCollection(coll.ID); err != nil {
+		t.Fatalf("soft-delete collection: %v", err)
+	}
+
+	grantPath := "/api/v1/workspaces/" + ws.Slug + "/collections/" + coll.Slug + "/grants/" + grant.ID
+	rr := doRequestWithHeaders(srv, "DELETE", grantPath, nil, headers)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("unrestricted owner delete grant on soft-deleted collection: expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	viewsPath := "/api/v1/workspaces/" + ws.Slug + "/share-links/" + link.ID + "/views"
+	rr = doRequestWithHeaders(srv, "GET", viewsPath, nil, headers)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unrestricted owner view-history on soft-deleted collection's link: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	deletePath := "/api/v1/workspaces/" + ws.Slug + "/share-links/" + link.ID
+	rr = doRequestWithHeaders(srv, "DELETE", deletePath, nil, headers)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("unrestricted owner delete share link on soft-deleted collection: expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
 // ─── Layering: requireMinRole (403) must run BEFORE visibility (404),
 //     ID-keyed delete/views handlers (BUG-1923) ──────────────────────────
 

@@ -139,7 +139,14 @@ func (s *Server) handleDeleteCollectionGrant(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "not_found", "Grant not found")
 		return
 	}
-	coll, err := s.store.GetCollection(grant.CollectionID)
+	// GetCollectionAnyState (not GetCollection) — a grant on a
+	// soft-deleted collection must stay revocable. DeleteCollection
+	// soft-deletes and does NOT cascade-delete collection_grants, so
+	// gating on GetCollection's `deleted_at IS NULL` filter would 404
+	// every delete attempt the moment the collection is archived,
+	// permanently stranding the grant row. Mirrors the item-grant
+	// handler's GetItemIncludeDeleted choice below.
+	coll, err := s.store.GetCollectionAnyState(grant.CollectionID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
