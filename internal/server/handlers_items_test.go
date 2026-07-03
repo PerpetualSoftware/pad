@@ -2312,3 +2312,170 @@ func TestCollectionChildProgress(t *testing.T) {
 		t.Fatalf("restricted/ideas child-progress: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+// TestListItems_AdminBearer_RestrictedMemberIsScoped pins BUG-1917 for
+// handleListItems: a platform admin who is only a restricted member
+// (collection_access "specific") of a workspace gets the full unrestricted
+// item list over a cookie session (the pre-existing web UI admin
+// affordance), but must be scoped to their actual membership over a bearer
+// token (PAT/CLI/OAuth). Mirrors handlers_admin_bearer_gate_test.go's
+// fixture idiom.
+func TestListItems_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
+	srv := testServer(t)
+
+	admin, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "ItemsBearer", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, admin.ID, "editor"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	visible, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Visible", Slug: "visible", Prefix: "VIS", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create visible collection: %v", err)
+	}
+	hidden, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Hidden", Slug: "hidden", Prefix: "HID", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create hidden collection: %v", err)
+	}
+	if _, err := srv.store.CreateItem(ws.ID, visible.ID, models.ItemCreate{
+		Title: "Visible item", Fields: `{"status":"open"}`,
+	}); err != nil {
+		t.Fatalf("create visible item: %v", err)
+	}
+	if _, err := srv.store.CreateItem(ws.ID, hidden.ID, models.ItemCreate{
+		Title: "Hidden item", Fields: `{"status":"open"}`,
+	}); err != nil {
+		t.Fatalf("create hidden item: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, admin.ID, "specific", []string{visible.ID}); err != nil {
+		t.Fatalf("set member collection access: %v", err)
+	}
+
+	tok, err := srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{
+		Name: "admin-pat", WorkspaceID: ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	// Bearer path — scoped to the visible collection only.
+	rr := doRequestWithHeaders(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/items", nil,
+		map[string]string{"Authorization": "Bearer " + tok.Token})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bearer items: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var bearerItems []models.Item
+	parseJSON(t, rr, &bearerItems)
+	if len(bearerItems) != 1 || bearerItems[0].CollectionSlug != "visible" {
+		t.Fatalf("bearer admin items should be scoped to 1 visible-collection item, got %d: %+v", len(bearerItems), bearerItems)
+	}
+
+	// Cookie path — unrestricted (the pre-existing web UI admin affordance).
+	sessTok, err := srv.store.CreateSession(admin.ID, "web-test", "192.0.2.1", "", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/items", nil, sessTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cookie items: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var cookieItems []models.Item
+	parseJSON(t, rr, &cookieItems)
+	if len(cookieItems) != 2 {
+		t.Fatalf("cookie admin items should be unrestricted (2 items), got %d: %+v", len(cookieItems), cookieItems)
+	}
+}
+
+// TestCreateItem_AdminBearer_RestrictedMemberIsScoped pins the WRITE-path
+// side of BUG-1917: handleCreateItem gates its collection-visibility check
+// (handlers_items.go, "Check collection visibility") through the same
+// visibleCollectionIDs helper, so the fix applies symmetrically to writes,
+// not just the read surfaces. A bearer-authed admin who is a restricted
+// member (no grant on the target collection) attempting to create an item
+// there gets the same 404 an equivalent restricted member would see;
+// creating in their visible collection still succeeds. A cookie session
+// keeps the pre-existing unrestricted admin affordance on both collections.
+func TestCreateItem_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
+	srv := testServer(t)
+
+	admin, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "CreateItemBearer", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, admin.ID, "editor"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	visible, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Visible", Slug: "visible", Prefix: "VIS", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create visible collection: %v", err)
+	}
+	if _, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Hidden", Slug: "hidden", Prefix: "HID", Schema: schema,
+	}); err != nil {
+		t.Fatalf("create hidden collection: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, admin.ID, "specific", []string{visible.ID}); err != nil {
+		t.Fatalf("set member collection access: %v", err)
+	}
+
+	tok, err := srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{
+		Name: "admin-pat", WorkspaceID: ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	// Bearer admin creating in the HIDDEN collection (outside their
+	// membership grant) must be rejected, same as a restricted member.
+	rr := doRequestWithHeaders(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections/hidden/items",
+		map[string]interface{}{"title": "Should be blocked", "fields": `{"status":"open"}`},
+		map[string]string{"Authorization": "Bearer " + tok.Token},
+	)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bearer admin create in hidden collection: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Bearer admin creating in their VISIBLE collection still succeeds.
+	rr = doRequestWithHeaders(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections/visible/items",
+		map[string]interface{}{"title": "Should succeed", "fields": `{"status":"open"}`},
+		map[string]string{"Authorization": "Bearer " + tok.Token},
+	)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("bearer admin create in visible collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Cookie admin — unrestricted, can create in the hidden collection too
+	// (the pre-existing web UI admin affordance).
+	sessTok, err := srv.store.CreateSession(admin.ID, "web-test", "192.0.2.1", "", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections/hidden/items",
+		map[string]interface{}{"title": "Cookie admin can create here", "fields": `{"status":"open"}`}, sessTok)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("cookie admin create in hidden collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+}

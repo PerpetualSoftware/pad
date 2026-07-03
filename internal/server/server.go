@@ -1632,12 +1632,20 @@ func (s *Server) getWorkspace(w http.ResponseWriter, r *http.Request) (*models.W
 
 // visibleCollectionIDs returns the set of collection IDs the current user can
 // see in the given workspace. Returns nil if the user has "all" access (no
-// filtering needed), or a non-nil slice for "specific" access. Admins and
-// unauthenticated users (fresh install) always get nil (all access).
+// filtering needed), or a non-nil slice for "specific" access. Unauthenticated
+// users (fresh install) always get nil (all access), as do platform admins —
+// but ONLY over a cookie session. Bearer-authed admins (CLI / PAT / MCP —
+// detected via isBearerAuth) fall through to the store lookup and are scoped
+// to their actual membership, matching RequireWorkspaceAccess's admin-bypass
+// suppression for bearer auth (BUG-1616/1617) and reportVisibleCollections'
+// gate (handlers_reports.go). Fixes BUG-1917 — this was the last of the
+// bearer-gate consumers (buildDashboardResponse, handleListItems, the graph
+// handler, handleCreateItem's collection-visibility check, and every other
+// direct caller) still granting a bearer admin an unrestricted view.
 func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]string, error) {
 	user := currentUser(r)
-	if user == nil || user.Role == "admin" {
-		return nil, nil // No filtering for admins or unauthenticated
+	if user == nil || (user.Role == "admin" && !isBearerAuth(r)) {
+		return nil, nil // No filtering for admins (cookie session) or unauthenticated
 	}
 	return s.store.VisibleCollectionIDs(workspaceID, user.ID)
 }

@@ -1250,3 +1250,94 @@ func filterAttention(items []DashboardAttention, typ string) []DashboardAttentio
 	}
 	return result
 }
+
+// TestDashboard_AdminBearer_RestrictedMemberIsScoped pins BUG-1917: a
+// platform admin who is only a restricted member (collection_access
+// "specific") of a workspace gets the full unrestricted dashboard over a
+// cookie session (the pre-existing web UI admin affordance), but must be
+// scoped to their actual membership over a bearer token (PAT/CLI/OAuth) —
+// mirroring the BUG-1616/1617 pattern already enforced for
+// reportVisibleCollections and pinned for SSE/collab in
+// handlers_admin_bearer_gate_test.go. Before this fix, buildDashboardResponse
+// called the ungated visibleCollectionIDs and leaked the hidden collection's
+// items to a bearer-authed admin.
+func TestDashboard_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
+	srv := testServer(t)
+
+	admin, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "DashBearer", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, admin.ID, "editor"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	visible, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Visible", Slug: "visible", Prefix: "VIS", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create visible collection: %v", err)
+	}
+	hidden, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Hidden", Slug: "hidden", Prefix: "HID", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create hidden collection: %v", err)
+	}
+	if _, err := srv.store.CreateItem(ws.ID, visible.ID, models.ItemCreate{
+		Title: "Visible item", Fields: `{"status":"open"}`,
+	}); err != nil {
+		t.Fatalf("create visible item: %v", err)
+	}
+	if _, err := srv.store.CreateItem(ws.ID, hidden.ID, models.ItemCreate{
+		Title: "Hidden item", Fields: `{"status":"open"}`,
+	}); err != nil {
+		t.Fatalf("create hidden item: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, admin.ID, "specific", []string{visible.ID}); err != nil {
+		t.Fatalf("set member collection access: %v", err)
+	}
+
+	tok, err := srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{
+		Name: "admin-pat", WorkspaceID: ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+
+	// Bearer path — scoped to the visible collection only.
+	rr := doRequestWithBearer(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/dashboard", tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bearer dashboard: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var bearerResp DashboardResponse
+	parseJSON(t, rr, &bearerResp)
+	if _, ok := bearerResp.Summary.ByCollection["hidden"]; ok {
+		t.Errorf("bearer admin dashboard leaked the hidden collection: %+v", bearerResp.Summary.ByCollection)
+	}
+	if _, ok := bearerResp.Summary.ByCollection["visible"]; !ok {
+		t.Errorf("bearer admin dashboard missing the visible collection: %+v", bearerResp.Summary.ByCollection)
+	}
+
+	// Cookie path — unrestricted (the pre-existing web UI admin affordance).
+	sessTok, err := srv.store.CreateSession(admin.ID, "web-test", "192.0.2.1", "", webSessionTTL)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+ws.Slug+"/dashboard", nil, sessTok)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cookie dashboard: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var cookieResp DashboardResponse
+	parseJSON(t, rr, &cookieResp)
+	if _, ok := cookieResp.Summary.ByCollection["hidden"]; !ok {
+		t.Errorf("cookie admin dashboard should be unrestricted (see hidden collection); got %+v", cookieResp.Summary.ByCollection)
+	}
+}

@@ -26,19 +26,16 @@ import (
 // changes here need a matching change (or an explicit noted divergence) in
 // both siblings above.
 //
-// Known asymmetry (TASK-1894 codex round 1): handleGetProjectStandup scopes
-// its own completed/in_progress ListItems calls through the bearer-aware
-// projectIntelVisibility (see below), but its dashboard-derived sections
-// (blockers, suggested_next) come from buildDashboardResponse, which is
-// NOT bearer-aware — same gap as handleGetProjectNext, which deliberately
-// stays on buildDashboardResponse's ungated visibility so it keeps exact
-// parity with dashboard.suggested_next (gating next but not dashboard would
-// break that parity for bearer admins and diverge next from both siblings).
-// Net effect: a bearer-authed platform admin who is only a restricted member
-// of the workspace gets correctly-scoped completed/in_progress from standup,
-// but ungated blockers/suggested_next — until BUG-1917 (the
-// visibleCollectionIDs bearer-gate gap) is fixed for buildDashboardResponse
-// itself, at which point this asymmetry resolves.
+// Asymmetry resolved (TASK-1894 codex round 1 / BUG-1917): handleGetProjectStandup
+// scopes its own completed/in_progress ListItems calls through
+// projectIntelVisibility (see below), and its dashboard-derived sections
+// (blockers, suggested_next) come from buildDashboardResponse — both now sit
+// on the same bearer-gated visibleCollectionIDs (server.go), so a bearer-authed
+// platform admin who is only a restricted member of the workspace gets
+// correctly-scoped completed/in_progress AND blockers/suggested_next from
+// standup. handleGetProjectNext stays on buildDashboardResponse's visibility
+// so it keeps exact parity with dashboard.suggested_next; that parity was the
+// reason the two couldn't diverge on gating in the first place.
 
 // parseDaysParam reads a "days" query param with a fallback default. Mirrors
 // the CLI's `n > 0` gate (standupCmd/changelogCmd flag defaults) and the MCP
@@ -74,28 +71,10 @@ func itemMatchesParentFilter(item models.Item, parent string) bool {
 	return false
 }
 
-// bearerAwareVisibleCollectionIDs mirrors visibleCollectionIDs (server.go)
-// but closes the gap reportVisibleCollections (handlers_reports.go) already
-// closes for the report endpoint (the BUG-1616/1617 pattern — see its doc
-// comment and handlers_admin_bearer_gate_test.go): a platform admin
-// authenticated via a bearer token (PAT/CLI/OAuth) who is only a restricted
-// member of THIS workspace must be scoped to their real membership, not
-// granted the unrestricted admin view a cookie-session admin gets.
-// visibleCollectionIDs itself — and everything still built directly on it
-// (buildDashboardResponse, handleListItems, handleGetWorkspaceGraph) — does
-// NOT have this gate; that's BUG-1917, tracked separately from this fix.
-func (s *Server) bearerAwareVisibleCollectionIDs(r *http.Request, workspaceID string) ([]string, error) {
-	user := currentUser(r)
-	if user == nil || (user.Role == "admin" && !isBearerAuth(r)) {
-		return nil, nil // unrestricted, same as visibleCollectionIDs' nil-user/admin branch
-	}
-	return s.store.VisibleCollectionIDs(workspaceID, user.ID)
-}
-
 // projectIntelVisibility computes the (collectionIDs, itemIDs)
 // visibility-scoping pair for the item-list calls the standup/changelog
 // handlers make directly (outside of buildDashboardResponse), using
-// bearerAwareVisibleCollectionIDs rather than visibleCollectionIDs.
+// visibleCollectionIDs (server.go), which is bearer-gated (BUG-1917).
 //
 // This does NOT delegate to reportVisibleCollections despite the shared
 // admin-bypass gate: reportVisibleCollections returns (scopeToVisible bool,
@@ -112,7 +91,7 @@ func (s *Server) bearerAwareVisibleCollectionIDs(r *http.Request, workspaceID st
 // "no collection filtering", identically to visibleCollectionIDs' contract,
 // so no separate branch is needed for the all-access-member case.
 func (s *Server) projectIntelVisibility(r *http.Request, workspaceID string) (collIDs, itemIDs []string, err error) {
-	visibleIDs, err := s.bearerAwareVisibleCollectionIDs(r, workspaceID)
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
 	if err != nil {
 		return nil, nil, err
 	}
