@@ -26,6 +26,13 @@ import (
 // transport's response indistinguishable from project dashboard,
 // which the CLI no longer does. Catalog actions must produce the
 // same shape on both transports.
+//
+// KEEP IN SYNC — TASK-1894 added a THIRD reproduction of this same
+// contract: internal/server/handlers_project_intel.go's
+// handleGetProjectNext (browser REST + WebMCP surface). A follow-up
+// task will consolidate this dispatcher onto that REST endpoint; until
+// then, changes here need a matching change (or a noted divergence)
+// there.
 func (d *HTTPHandlerDispatcher) dispatchProjectNext(
 	ctx context.Context,
 	input map[string]any,
@@ -72,6 +79,13 @@ func (d *HTTPHandlerDispatcher) dispatchProjectNext(
 // schemas (registry.go strips them). Without the default, a missing
 // `days` input would zero-out the cutoff and report nothing as
 // "completed", surprising agents that omit the flag.
+//
+// KEEP IN SYNC — TASK-1894 added a THIRD reproduction of this same
+// contract: internal/server/handlers_project_intel.go's
+// handleGetProjectStandup (browser REST + WebMCP surface). A follow-up
+// task will consolidate this dispatcher onto that REST endpoint; until
+// then, changes here need a matching change (or a noted divergence)
+// there.
 func (d *HTTPHandlerDispatcher) dispatchProjectStandup(
 	ctx context.Context,
 	input map[string]any,
@@ -204,6 +218,13 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStandup(
 // CLI defaults: --days 7, --since "" (overrides days), --parent "".
 // The dispatcher applies the same defaults in-process so MCP agents
 // don't need to know the cmdhelp-stripped defaults.
+//
+// KEEP IN SYNC — TASK-1894 added a THIRD reproduction of this same
+// contract: internal/server/handlers_project_intel.go's
+// handleGetProjectChangelog (browser REST + WebMCP surface). A
+// follow-up task will consolidate this dispatcher onto that REST
+// endpoint; until then, changes here need a matching change (or a
+// noted divergence) there.
 func (d *HTTPHandlerDispatcher) dispatchProjectChangelog(
 	ctx context.Context,
 	input map[string]any,
