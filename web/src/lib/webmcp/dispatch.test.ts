@@ -33,6 +33,9 @@ function mockApi() {
 			create: vi.fn(async () => ({ id: 'c-1' })),
 		},
 		dashboard: { get: vi.fn(async () => ({ ok: true })) },
+		next: vi.fn(async () => [{ item_slug: 'task-1', item_title: 'Do it', collection: 'tasks', reason: 'high priority' }]),
+		standup: vi.fn(async () => ({ date: '2026-01-01', days: 1, completed: [], in_progress: [], blockers: [], suggested_next: [] })),
+		changelog: vi.fn(async () => ({ period: 'last 7 days', since: '2026-01-01', total: 0, groups: [] })),
 		collections: {
 			list: vi.fn(async () => []),
 			create: vi.fn(async () => ({ slug: 'risks' })),
@@ -85,6 +88,9 @@ const READ = new Set([
 	'pad_item:backlinks',
 	'pad_item:export',
 	'pad_project:dashboard',
+	'pad_project:next',
+	'pad_project:standup',
+	'pad_project:changelog',
 	'pad_collection:list',
 	'pad_role:list',
 	'pad_playbook:list',
@@ -746,6 +752,72 @@ describe('dispatch — playbook/library/meta writes', () => {
 	});
 });
 
+// ── pad_project reads: next / standup / changelog (TASK-1894) ───────────────
+
+describe('dispatch — pad_project next/standup/changelog', () => {
+	it('next maps to api.next with the route ws, no args', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_project', { action: 'next' });
+		expect(api.next).toHaveBeenCalledWith(WS);
+		expect(parse(result).isError).toBe(false);
+	});
+
+	it('standup passes days through to api.standup', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_project', { action: 'standup', days: 3 });
+		expect(api.standup).toHaveBeenCalledWith(WS, { days: 3 });
+		expect(parse(result).isError).toBe(false);
+	});
+
+	it('standup omits days when not supplied', async () => {
+		const api = mockApi();
+		await run(api, 'pad_project', { action: 'standup' });
+		expect(api.standup).toHaveBeenCalledWith(WS, { days: undefined });
+	});
+
+	it('changelog passes days/since/parent through to api.changelog', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_project', {
+			action: 'changelog',
+			days: 14,
+			since: '2026-01-01',
+			parent: 'PLAN-3',
+		});
+		expect(api.changelog).toHaveBeenCalledWith(WS, {
+			days: 14,
+			since: '2026-01-01',
+			parent: 'PLAN-3',
+		});
+		expect(parse(result).isError).toBe(false);
+	});
+
+	it('changelog with only since (no days) still dispatches', async () => {
+		const api = mockApi();
+		await run(api, 'pad_project', { action: 'changelog', since: '2026-01-01' });
+		expect(api.changelog).toHaveBeenCalledWith(WS, {
+			days: undefined,
+			since: '2026-01-01',
+			parent: undefined,
+		});
+	});
+
+	it('standup errors (no client call) on a malformed `days`', async () => {
+		const api = mockApi();
+		const result = await run(api, 'pad_project', { action: 'standup', days: 'abc' });
+		expect(parse(result).isError).toBe(true);
+		expect(api.standup).not.toHaveBeenCalled();
+	});
+
+	it('changelog surfaces a thrown client error (e.g. server 400 on bad since) as an error result', async () => {
+		const api = mockApi();
+		api.changelog.mockRejectedValueOnce(new Error("invalid 'since' date"));
+		const result = await run(api, 'pad_project', { action: 'changelog', since: 'not-a-date' });
+		const { isError, text } = parse(result);
+		expect(isError).toBe(true);
+		expect(text).toMatch(/since/);
+	});
+});
+
 // ── Envelope + error behaviour ───────────────────────────────────────────────
 
 describe('dispatch — result envelope + errors', () => {
@@ -786,9 +858,13 @@ describe('dispatch — result envelope + errors', () => {
 		expect(parse(await promise).text).toMatch(/action/i);
 	});
 
-	it('errors for a catalog action with no browser mapping (pad_project.standup)', async () => {
+	// pad_project.next/standup/changelog are wired as of TASK-1894 (see the
+	// "dispatch — pad_project next/standup/changelog" describe block above).
+	// `report` has no browser REST mapping yet — still exercises the "not
+	// available" fallback.
+	it('errors for a catalog action with no browser mapping (pad_project.report)', async () => {
 		const api = mockApi();
-		const result = await run(api, 'pad_project', { action: 'standup' });
+		const result = await run(api, 'pad_project', { action: 'report' });
 		const { isError, text } = parse(result);
 		expect(isError).toBe(true);
 		expect(text).toMatch(/not available/i);
