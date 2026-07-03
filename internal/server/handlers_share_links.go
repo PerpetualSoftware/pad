@@ -157,7 +157,7 @@ func (s *Server) handleCreateCollectionShareLink(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return
 	}
-	if !s.requireCollectionVisible(w, r, workspaceID, coll) {
+	if !s.requireCollectionFullyVisible(w, r, workspaceID, coll) {
 		return
 	}
 
@@ -262,7 +262,7 @@ func (s *Server) handleListCollectionShareLinks(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return
 	}
-	if !s.requireCollectionVisible(w, r, workspaceID, coll) {
+	if !s.requireCollectionFullyVisible(w, r, workspaceID, coll) {
 		return
 	}
 

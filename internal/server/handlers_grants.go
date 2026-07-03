@@ -28,7 +28,7 @@ func (s *Server) handleListCollectionGrants(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return
 	}
-	if !s.requireCollectionVisible(w, r, workspaceID, coll) {
+	if !s.requireCollectionFullyVisible(w, r, workspaceID, coll) {
 		return
 	}
 
@@ -62,7 +62,7 @@ func (s *Server) handleCreateCollectionGrant(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return
 	}
-	if !s.requireCollectionVisible(w, r, workspaceID, coll) {
+	if !s.requireCollectionFullyVisible(w, r, workspaceID, coll) {
 		return
 	}
 

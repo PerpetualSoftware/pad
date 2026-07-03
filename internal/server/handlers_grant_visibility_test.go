@@ -19,6 +19,7 @@ import (
 type restrictedOwnerVisibilityFixture struct {
 	srv          *Server
 	ws           *models.Workspace
+	ownerID      string
 	hiddenColl   *models.Collection
 	visibleColl  *models.Collection
 	hiddenItem   *models.Item
@@ -91,7 +92,7 @@ func newRestrictedOwnerVisibilityFixture(t *testing.T) *restrictedOwnerVisibilit
 	}
 
 	return &restrictedOwnerVisibilityFixture{
-		srv: srv, ws: ws,
+		srv: srv, ws: ws, ownerID: owner.ID,
 		hiddenColl: hidden, visibleColl: visible,
 		hiddenItem: hiddenItem, visibleItem: visibleItem,
 		bearerToken: tok.Token, sessionToken: sessTok,
@@ -100,6 +101,20 @@ func newRestrictedOwnerVisibilityFixture(t *testing.T) *restrictedOwnerVisibilit
 
 func (f *restrictedOwnerVisibilityFixture) bearerHeaders() map[string]string {
 	return map[string]string{"Authorization": "Bearer " + f.bearerToken}
+}
+
+// grantHiddenItemToOwner gives the fixture's restricted owner an item-level
+// grant on the hidden item, independent of their collection_access
+// restriction — the item-grant-only scenario from BUG-1920's codex R2
+// follow-up. VisibleCollectionIDs (workspace_members.go) folds
+// item-grant-derived collections into the nav-lenient visible set, but
+// requireCollectionFullyVisible must NOT treat an item grant as full access
+// to the collection it lives in.
+func (f *restrictedOwnerVisibilityFixture) grantHiddenItemToOwner(t *testing.T) {
+	t.Helper()
+	if _, err := f.srv.store.CreateItemGrant(f.ws.ID, f.hiddenItem.ID, f.ownerID, "view", f.ownerID); err != nil {
+		t.Fatalf("CreateItemGrant hidden item to owner: %v", err)
+	}
 }
 
 // ─── handleCreateItemShareLink ──────────────────────────────────────────
@@ -271,6 +286,94 @@ func TestCollectionGrants_RestrictedOwner_HiddenCollection404(t *testing.T) {
 	rr = doRequestWithHeaders(f.srv, "POST", visCreatePath, body, f.bearerHeaders())
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("bearer restricted owner create collection grant on visible collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// ─── Item-grant-only must NOT promote to collection-wide access ───────
+
+// TestCollectionShareLinksAndGrants_ItemGrantOnly_HiddenCollection404 pins
+// codex R2's follow-up finding: VisibleCollectionIDs folds in collections
+// that are visible ONLY via an item-level grant ("so the collection appears
+// in navigation" — workspace_members.go), which made the original
+// requireCollectionVisible pass for a restricted owner holding nothing more
+// than an item grant on ONE item inside the hidden collection — letting
+// them mint/list a share link or grant for the ENTIRE hidden collection.
+// requireCollectionFullyVisible must narrow to full-collection-access
+// semantics and 404 here, over both auth classes, while the SAME owner's
+// item-level operations on the granted item itself keep working (an item
+// grant legitimately entitles the holder to act on that item).
+func TestCollectionShareLinksAndGrants_ItemGrantOnly_HiddenCollection404(t *testing.T) {
+	f := newRestrictedOwnerVisibilityFixture(t)
+	f.grantHiddenItemToOwner(t)
+
+	grantee, err := f.srv.store.CreateUser(models.UserCreate{
+		Email: "grantee@example.com", Name: "Grantee", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("create grantee: %v", err)
+	}
+	grantBody := map[string]interface{}{"user_id": grantee.ID, "permission": "view"}
+
+	// Collection-level share link create + list on the hidden collection:
+	// item grant on hiddenItem must NOT qualify as full collection access.
+	collSharePath := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + f.hiddenColl.Slug + "/share-links"
+	rr := doRequestWithHeaders(f.srv, "POST", collSharePath, map[string]interface{}{}, f.bearerHeaders())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bearer item-grant-only owner create collection share-link on hidden collection: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequestWithCookie(f.srv, "POST", collSharePath, map[string]interface{}{}, f.sessionToken)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("session item-grant-only owner create collection share-link on hidden collection: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequestWithHeaders(f.srv, "GET", collSharePath, nil, f.bearerHeaders())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bearer item-grant-only owner list collection share-links on hidden collection: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequestWithCookie(f.srv, "GET", collSharePath, nil, f.sessionToken)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("session item-grant-only owner list collection share-links on hidden collection: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Collection-level grant create + list on the hidden collection: same.
+	collGrantPath := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + f.hiddenColl.Slug + "/grants"
+	rr = doRequestWithHeaders(f.srv, "POST", collGrantPath, grantBody, f.bearerHeaders())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bearer item-grant-only owner create collection grant on hidden collection: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequestWithCookie(f.srv, "POST", collGrantPath, grantBody, f.sessionToken)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("session item-grant-only owner create collection grant on hidden collection: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequestWithHeaders(f.srv, "GET", collGrantPath, nil, f.bearerHeaders())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bearer item-grant-only owner list collection grants on hidden collection: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequestWithCookie(f.srv, "GET", collGrantPath, nil, f.sessionToken)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("session item-grant-only owner list collection grants on hidden collection: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Item-level operations on the granted item itself must still succeed
+	// (both auth classes) — an item grant legitimately entitles the holder
+	// to mint/list a share link or grant for that specific item.
+	itemSharePath := "/api/v1/workspaces/" + f.ws.Slug + "/items/" + f.hiddenItem.Slug + "/share-links"
+	rr = doRequestWithHeaders(f.srv, "POST", itemSharePath, map[string]interface{}{}, f.bearerHeaders())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("bearer item-grant-only owner create item share-link on granted item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequestWithCookie(f.srv, "GET", itemSharePath, nil, f.sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("session item-grant-only owner list item share-links on granted item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	itemGrantPath := "/api/v1/workspaces/" + f.ws.Slug + "/items/" + f.hiddenItem.Slug + "/grants"
+	rr = doRequestWithHeaders(f.srv, "POST", itemGrantPath, grantBody, f.bearerHeaders())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("bearer item-grant-only owner create item grant on granted item: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequestWithCookie(f.srv, "GET", itemGrantPath, nil, f.sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("session item-grant-only owner list item grants on granted item: expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 

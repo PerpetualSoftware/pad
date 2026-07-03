@@ -1650,17 +1650,47 @@ func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]st
 	return s.store.VisibleCollectionIDs(workspaceID, user.ID)
 }
 
-// requireCollectionVisible checks that the collection itself is visible to
-// the requesting user (BUG-1920). Mirrors handleGetCollection's inline
-// visibleCollectionIDs + isCollectionVisible check so every handler that
-// resolves a collection by slug decides visibility identically. Writes a
-// 404 and returns false if not visible; callers should invoke this
+// requireCollectionFullyVisible checks that the collection is visible to the
+// requesting user under FULL-collection-access semantics (BUG-1920 —
+// codex R2 follow-up). This is deliberately STRICTER than
+// handleGetCollection's inline visibleCollectionIDs + isCollectionVisible
+// check: VisibleCollectionIDs (workspace_members.go) intentionally folds in
+// collections that are visible ONLY via an item-level grant, "so the
+// collection appears in navigation" — item-level filtering is left to the
+// handlers. That nav-lenient shape is correct for handleGetCollection
+// (viewing collection metadata), but WRONG here: this helper's only callers
+// are the four handlers that mint or list a collection-wide share link or
+// grant, where passing would hand out (or reveal) access to the ENTIRE
+// collection — an item grant on a single item inside it must NOT qualify.
+//
+// Mirrors reportVisibleCollections' fullCollIDs narrowing
+// (handlers_reports.go): when the caller holds any item-level grants, the
+// acceptable set narrows from the nav-lenient VisibleCollectionIDs set to
+// the full-access-only set (guestResourceFilter's fullCollIDs — collection
+// grants + member_collection_access + system collections, excluding
+// item-grant-only collections).
+//
+// Writes a 404 and returns false if not visible; callers should invoke this
 // immediately after resolving a collection by slug/ID.
-func (s *Server) requireCollectionVisible(w http.ResponseWriter, r *http.Request, workspaceID string, coll *models.Collection) bool {
+func (s *Server) requireCollectionFullyVisible(w http.ResponseWriter, r *http.Request, workspaceID string, coll *models.Collection) bool {
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return false
+	}
+	if visibleIDs != nil {
+		// Restricted (non-nil visibleIDs): narrow to full-access
+		// collections only when the caller's restricted visibility
+		// includes any item-level grants, so an item-grant-only
+		// collection can't qualify for collection-wide operations.
+		fullCollIDs, grantedItemIDs, gErr := s.guestResourceFilter(r, workspaceID)
+		if gErr != nil {
+			writeInternalError(w, gErr)
+			return false
+		}
+		if len(grantedItemIDs) > 0 {
+			visibleIDs = fullCollIDs
+		}
 	}
 	if !isCollectionVisible(coll.ID, visibleIDs) {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
