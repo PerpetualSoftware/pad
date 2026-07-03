@@ -36,9 +36,9 @@ import (
 // break that parity for bearer admins and diverge next from both siblings).
 // Net effect: a bearer-authed platform admin who is only a restricted member
 // of the workspace gets correctly-scoped completed/in_progress from standup,
-// but ungated blockers/suggested_next — until the visibleCollectionIDs
-// bearer-gate bug filed from TASK-1894 review is fixed for
-// buildDashboardResponse itself, at which point this asymmetry resolves.
+// but ungated blockers/suggested_next — until BUG-1917 (the
+// visibleCollectionIDs bearer-gate gap) is fixed for buildDashboardResponse
+// itself, at which point this asymmetry resolves.
 
 // parseDaysParam reads a "days" query param with a fallback default. Mirrors
 // the CLI's `n > 0` gate (standupCmd/changelogCmd flag defaults) and the MCP
@@ -83,8 +83,7 @@ func itemMatchesParentFilter(item models.Item, parent string) bool {
 // granted the unrestricted admin view a cookie-session admin gets.
 // visibleCollectionIDs itself — and everything still built directly on it
 // (buildDashboardResponse, handleListItems, handleGetWorkspaceGraph) — does
-// NOT have this gate; that's the visibleCollectionIDs bearer-gate bug filed
-// from TASK-1894 review, tracked separately from this fix.
+// NOT have this gate; that's BUG-1917, tracked separately from this fix.
 func (s *Server) bearerAwareVisibleCollectionIDs(r *http.Request, workspaceID string) ([]string, error) {
 	user := currentUser(r)
 	if user == nil || (user.Role == "admin" && !isBearerAuth(r)) {
