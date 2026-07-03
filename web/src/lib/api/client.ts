@@ -22,6 +22,9 @@ import type {
 	CommentCreate,
 	Version,
 	DashboardResponse,
+	DashboardSuggestion,
+	StandupResponse,
+	ChangelogResponse,
 	GraphResponse,
 	ReportData,
 	ReportLayout,
@@ -1142,6 +1145,33 @@ export const api = {
 	dashboard: {
 		get: (ws: string) =>
 			request<DashboardResponse>(`/workspaces/${ws}/dashboard`)
+	},
+
+	// ── Project intelligence: next / standup / changelog (PLAN-1888 / TASK-1894) ──
+	// Same data `pad project next|standup|changelog` computes — see the Go
+	// handlers in internal/server/handlers_project_intel.go.
+
+	/** The dashboard's suggested_next array — a bare array, matching the CLI's
+	 *  `pad project next --format json` output. */
+	next: (ws: string) => request<DashboardSuggestion[]>(`/workspaces/${ws}/next`),
+
+	/** Daily standup report: recently completed, in-progress, blockers, suggested-next. */
+	standup: (ws: string, opts?: { days?: number }) => {
+		const params = new URLSearchParams();
+		if (opts?.days != null) params.set('days', String(opts.days));
+		const qs = params.toString();
+		return request<StandupResponse>(`/workspaces/${ws}/standup${qs ? `?${qs}` : ''}`);
+	},
+
+	/** Changelog of completed items, grouped by collection. `since` takes
+	 *  precedence over `days` when both are given (mirrors the CLI). */
+	changelog: (ws: string, opts?: { days?: number; since?: string; parent?: string }) => {
+		const params = new URLSearchParams();
+		if (opts?.days != null) params.set('days', String(opts.days));
+		if (opts?.since) params.set('since', opts.since);
+		if (opts?.parent) params.set('parent', opts.parent);
+		const qs = params.toString();
+		return request<ChangelogResponse>(`/workspaces/${ws}/changelog${qs ? `?${qs}` : ''}`);
 	},
 
 	// ── Agent bootstrap ───────────────────────────────────────────────────────

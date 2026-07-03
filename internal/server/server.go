@@ -1306,6 +1306,16 @@ func (s *Server) setupRouter() {
 					r.Get("/report/layout", s.handleGetReportLayout)
 					r.Put("/report/layout", s.handleSaveReportLayout)
 
+					// Project intelligence reads — next/standup/changelog
+					// (PLAN-1888 / TASK-1894). Mirror `pad project
+					// next|standup|changelog` (cmd/pad/main.go) and the MCP
+					// HTTP transport's dispatchProjectNext/Standup/Changelog
+					// (internal/mcp/dispatch_http_slice4.go) — KEEP IN SYNC,
+					// see handlers_project_intel.go's doc comments.
+					r.Get("/next", s.handleGetProjectNext)
+					r.Get("/standup", s.handleGetProjectStandup)
+					r.Get("/changelog", s.handleGetProjectChangelog)
+
 					// Agent bootstrap (PLAN-1377 / TASK-1379) — single
 					// round-trip that returns workspace + user +
 					// collections + always-on conventions + roles +

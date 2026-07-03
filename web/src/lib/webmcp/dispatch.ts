@@ -366,11 +366,6 @@ async function dispatchItemUnlink(
 // consent gate (DR-2), not by which table an action lives in. Each handler
 // receives the ROUTE wsSlug — never an arg-supplied one (DR-4).
 //
-// pad_project next/standup/changelog and any other catalog read with no
-// browser REST mapping are intentionally absent and fall through to the "not
-// available in browser" branch rather than being faked (TASK-1894 wires
-// next/standup/changelog once their backend endpoints exist).
-
 const HANDLERS: Record<string, Handler> = {
 	// ── pad_search ──
 	'pad_search:query': (api, ws, args) =>
@@ -500,8 +495,22 @@ const HANDLERS: Record<string, Handler> = {
 	'pad_item:import': (api, ws, args) =>
 		api.importArtifact(ws, requireArg(args, 'artifact')),
 
-	// ── pad_project reads — only dashboard has a browser REST endpoint today.
+	// ── pad_project reads ──
 	'pad_project:dashboard': (api, ws) => api.dashboard.get(ws),
+	'pad_project:next': (api, ws) => api.next(ws),
+	'pad_project:standup': (api, ws, args) => api.standup(ws, { days: num(args, 'days') }),
+	// since takes precedence over days when both are given — matches the
+	// CLI's silent since-wins (cmd/pad/main.go changelogCmd) and the MCP
+	// HTTP transport's dispatchProjectChangelog. A malformed since/parent
+	// type throws via str() (caught by dispatch()'s try/catch); a malformed
+	// server-side since VALUE (e.g. not a real date) surfaces as a 400 →
+	// thrown client error, also caught.
+	'pad_project:changelog': (api, ws, args) =>
+		api.changelog(ws, {
+			days: num(args, 'days'),
+			since: str(args, 'since'),
+			parent: str(args, 'parent'),
+		}),
 
 	// ── pad_collection ──
 	'pad_collection:list': (api, ws) => api.collections.list(ws),

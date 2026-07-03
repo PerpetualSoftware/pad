@@ -919,6 +919,16 @@ export interface DashboardActiveItem {
 	item_ref?: string;
 }
 
+/** One recommended-next entry — dashboard.suggested_next, and the bare-array
+ *  shape returned by GET /workspaces/{ws}/next (PLAN-1888 / TASK-1894). */
+export interface DashboardSuggestion {
+	item_slug: string;
+	item_ref?: string;
+	item_title: string;
+	collection: string;
+	reason: string;
+}
+
 export interface DashboardResponse {
 	summary: {
 		total_items: number;
@@ -952,12 +962,7 @@ export interface DashboardResponse {
 		collection_slug?: string;
 		metadata?: string;
 	}[];
-	suggested_next: {
-		item_slug: string;
-		item_title: string;
-		collection: string;
-		reason: string;
-	}[];
+	suggested_next: DashboardSuggestion[];
 	// has_agent_activity is true when any item in the workspace was created
 	// by an agent surface (CLI or Remote MCP — both persist source='cli'
 	// today; future MCP-distinct attribution lands as source='mcp', which
@@ -985,6 +990,52 @@ export interface DashboardResponse {
 		// (untouched) status — banner shows only when this is true.
 		active: boolean;
 	};
+}
+
+// ─── Project Intelligence: standup / changelog (PLAN-1888 / TASK-1894) ──────
+//
+// (next() reuses DashboardSuggestion[] directly — see above.)
+
+/** One row in a StandupResponse list. Mirrors the Go StandupItem type. */
+export interface StandupItem {
+	ref: string;
+	title: string;
+	status?: string;
+	priority?: string;
+	reason?: string;
+}
+
+/** GET /workspaces/{ws}/standup response. Mirrors the Go StandupResponse type. */
+export interface StandupResponse {
+	date: string;
+	days: number;
+	completed: StandupItem[];
+	in_progress: StandupItem[];
+	blockers: StandupItem[];
+	suggested_next: StandupItem[];
+}
+
+/** One row in a ChangelogGroup. Mirrors the Go ChangelogItem type. */
+export interface ChangelogItem {
+	ref: string;
+	title: string;
+	status: string;
+}
+
+/** One collection's bucket of completed items. Mirrors the Go ChangelogGroup type. */
+export interface ChangelogGroup {
+	collection: string;
+	icon?: string;
+	count: number;
+	items: ChangelogItem[];
+}
+
+/** GET /workspaces/{ws}/changelog response. Mirrors the Go ChangelogResponse type. */
+export interface ChangelogResponse {
+	period: string;
+	since: string;
+	total: number;
+	groups: ChangelogGroup[];
 }
 
 // ─── Workspace Graph (PLAN-1730 / TASK-1732) ─────────────────────────────────
