@@ -36,6 +36,12 @@ import (
 )
 
 var (
+	// templateMu guards templatePath against Cleanup racing an in-flight
+	// build/copy: newFromTemplate holds it for read across the build +
+	// copy, Cleanup takes the write lock before removing the template
+	// dir. Near-theoretical in the normal TestMain lifecycle (m.Run joins
+	// all tests before Cleanup runs), but cheap to make deterministic.
+	templateMu   sync.RWMutex
 	templateOnce sync.Once
 	templatePath string
 	templateErr  error
@@ -69,16 +75,9 @@ func NewSQLiteUnmanaged(t *testing.T) *store.Store {
 func newFromTemplate(t *testing.T) *store.Store {
 	t.Helper()
 
-	templateOnce.Do(func() {
-		templatePath, templateErr = buildTemplate()
-	})
-	if templateErr != nil {
-		t.Fatalf("storetest: build template db: %v", templateErr)
-	}
-
 	dst := filepath.Join(t.TempDir(), "test.db")
-	if err := copyFile(templatePath, dst); err != nil {
-		t.Fatalf("storetest: copy template db: %v", err)
+	if err := lockedCopyFromTemplate(dst); err != nil {
+		t.Fatalf("storetest: %v", err)
 	}
 
 	s, err := store.New(dst)
@@ -88,10 +87,32 @@ func newFromTemplate(t *testing.T) *store.Store {
 	return s
 }
 
+// lockedCopyFromTemplate builds the template (once) and copies it to
+// dst, holding templateMu for read across both steps so Cleanup (which
+// takes the write lock) can't remove the template out from under an
+// in-flight build or copy.
+func lockedCopyFromTemplate(dst string) error {
+	templateMu.RLock()
+	defer templateMu.RUnlock()
+
+	templateOnce.Do(func() {
+		templatePath, templateErr = buildTemplate()
+	})
+	if templateErr != nil {
+		return fmt.Errorf("build template db: %w", templateErr)
+	}
+	if err := copyFile(templatePath, dst); err != nil {
+		return fmt.Errorf("copy template db: %w", err)
+	}
+	return nil
+}
+
 // Cleanup removes the process-wide template database, if one was built.
 // Call it from TestMain after m.Run() so a lazily-built template file
 // doesn't linger past the test binary's lifetime.
 func Cleanup() {
+	templateMu.Lock()
+	defer templateMu.Unlock()
 	if templatePath != "" {
 		_ = os.RemoveAll(filepath.Dir(templatePath))
 	}
@@ -101,6 +122,11 @@ func Cleanup() {
 // temp file and returns its path. The template is checkpointed and left
 // in DELETE journal mode (no -wal/-shm sidecars), so NewSQLite's copy is
 // a single-file operation with no sidecar bookkeeping to get wrong.
+//
+// The template dir is removed on any error path (MkdirTemp succeeded but
+// a later step failed) so a failed build doesn't leak a /tmp directory;
+// the deferred cleanup is disarmed only once buildTemplate returns
+// successfully.
 func buildTemplate() (string, error) {
 	atomic.AddInt32(&buildCount, 1)
 
@@ -108,6 +134,13 @@ func buildTemplate() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("mkdir template dir: %w", err)
 	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+
 	path := filepath.Join(dir, "template.db")
 
 	s, err := store.New(path)
@@ -122,6 +155,7 @@ func buildTemplate() (string, error) {
 	if _, err := s.DB().Exec("PRAGMA journal_mode=DELETE"); err != nil {
 		return "", fmt.Errorf("set template journal_mode=DELETE: %w", err)
 	}
+	ok = true
 	return path, nil
 }
 

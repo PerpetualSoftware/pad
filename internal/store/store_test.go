@@ -41,6 +41,9 @@ func testStore(t *testing.T) *Store {
 // buildTemplate/NewSQLite IN SYNC — see that file's package doc for the
 // full rationale.
 var (
+	// sqliteTemplateMu guards sqliteTemplatePath against removeSQLiteTemplate
+	// racing an in-flight build/copy — mirrors storetest.go's templateMu.
+	sqliteTemplateMu   sync.RWMutex
 	sqliteTemplateOnce sync.Once
 	sqliteTemplatePath string
 	sqliteTemplateErr  error
@@ -49,16 +52,9 @@ var (
 func testStoreSQLite(t *testing.T) *Store {
 	t.Helper()
 
-	sqliteTemplateOnce.Do(func() {
-		sqliteTemplatePath, sqliteTemplateErr = buildSQLiteTemplate()
-	})
-	if sqliteTemplateErr != nil {
-		t.Fatalf("build template db: %v", sqliteTemplateErr)
-	}
-
 	dst := filepath.Join(t.TempDir(), "test.db")
-	if err := copyTemplateFile(sqliteTemplatePath, dst); err != nil {
-		t.Fatalf("copy template db: %v", err)
+	if err := lockedCopyFromSQLiteTemplate(dst); err != nil {
+		t.Fatalf("%v", err)
 	}
 
 	s, err := New(dst)
@@ -69,15 +65,47 @@ func testStoreSQLite(t *testing.T) *Store {
 	return s
 }
 
+// lockedCopyFromSQLiteTemplate builds the template (once) and copies it
+// to dst, holding sqliteTemplateMu for read across both steps so
+// removeSQLiteTemplate (which takes the write lock) can't remove the
+// template out from under an in-flight build or copy. Mirrors
+// storetest.go's lockedCopyFromTemplate.
+func lockedCopyFromSQLiteTemplate(dst string) error {
+	sqliteTemplateMu.RLock()
+	defer sqliteTemplateMu.RUnlock()
+
+	sqliteTemplateOnce.Do(func() {
+		sqliteTemplatePath, sqliteTemplateErr = buildSQLiteTemplate()
+	})
+	if sqliteTemplateErr != nil {
+		return fmt.Errorf("build template db: %w", sqliteTemplateErr)
+	}
+	if err := copyTemplateFile(sqliteTemplatePath, dst); err != nil {
+		return fmt.Errorf("copy template db: %w", err)
+	}
+	return nil
+}
+
 // buildSQLiteTemplate runs the full migration chain once into a
 // process-wide temp file. The template is checkpointed and left in
 // DELETE journal mode (no -wal/-shm sidecars), so testStoreSQLite's copy
 // is a single-file operation.
+//
+// The template dir is removed on any error path (MkdirTemp succeeded but
+// a later step failed) so a failed build doesn't leak a /tmp directory;
+// mirrors storetest.go's buildTemplate.
 func buildSQLiteTemplate() (string, error) {
 	dir, err := os.MkdirTemp("", "pad-store-template-*")
 	if err != nil {
 		return "", fmt.Errorf("mkdir template dir: %w", err)
 	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+
 	path := filepath.Join(dir, "template.db")
 
 	s, err := New(path)
@@ -92,6 +120,7 @@ func buildSQLiteTemplate() (string, error) {
 	if _, err := s.DB().Exec("PRAGMA journal_mode=DELETE"); err != nil {
 		return "", fmt.Errorf("set template journal_mode=DELETE: %w", err)
 	}
+	ok = true
 	return path, nil
 }
 
@@ -117,6 +146,8 @@ func copyTemplateFile(src, dst string) error {
 // removeSQLiteTemplate deletes the template directory built by
 // buildSQLiteTemplate, if any. Called from TestMain after m.Run().
 func removeSQLiteTemplate() {
+	sqliteTemplateMu.Lock()
+	defer sqliteTemplateMu.Unlock()
 	if sqliteTemplatePath != "" {
 		_ = os.RemoveAll(filepath.Dir(sqliteTemplatePath))
 	}
