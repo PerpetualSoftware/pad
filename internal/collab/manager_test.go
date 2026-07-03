@@ -1497,7 +1497,23 @@ func TestRoomManagerCursorSuppressedDuringReplay(t *testing.T) {
 	// (3 replayed + 1 live) and the post-replay + live cursor
 	// frames. If a cursor frame for id=4 arrives BEFORE all
 	// binary frames are accounted for, this is the regression.
-	binarySeen := 0
+	//
+	// We count DISTINCT op payloads rather than raw frames because
+	// runConn (manager.go:497-514) deliberately starts the writer
+	// before replayTo so live broadcasts during a long replay aren't
+	// lost; the documented trade-off is that an op appended during
+	// the replay window can be delivered twice — once via the live
+	// bus subscription, once via replayTo sweeping it out of the op
+	// log — which Yjs update application tolerates idempotently.
+	// That's a legitimate outcome of the race, not a bug: don't
+	// "fix" this back to a raw frame count. Dedup by exact byte
+	// content is safe here because every one of the 4 expected ops
+	// has a distinguishable payload (seeded ops carry 0x01/0x02/0x03,
+	// the live op carries 0xFF), so a genuinely dropped op still
+	// caps distinctSeen at 3, not 4 — only a true duplicate is
+	// tolerated.
+	seen := map[string]int{}
+	distinctSeen := 0
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		b.SetReadDeadline(deadline)
@@ -1506,7 +1522,11 @@ func TestRoomManagerCursorSuppressedDuringReplay(t *testing.T) {
 			break
 		}
 		if mt == websocket.BinaryMessage {
-			binarySeen++
+			key := string(data)
+			if seen[key] == 0 {
+				distinctSeen++
+			}
+			seen[key]++
 			continue
 		}
 		if mt != websocket.TextMessage {
@@ -1520,13 +1540,13 @@ func TestRoomManagerCursorSuppressedDuringReplay(t *testing.T) {
 			continue
 		}
 		// A live cursor with id=4 must only arrive AFTER all 4
-		// binary frames are accounted for; otherwise replay-mid
-		// cursor advancement leaked through.
-		if msg.OpLogID == 4 && binarySeen < 4 {
-			t.Errorf("cursor id=4 arrived after only %d/4 binary frames; replay-mid cursor leaked", binarySeen)
+		// distinct binary ops are accounted for; otherwise
+		// replay-mid cursor advancement leaked through.
+		if msg.OpLogID == 4 && distinctSeen < 4 {
+			t.Errorf("cursor id=4 arrived after only %d/4 distinct binary ops; replay-mid cursor leaked", distinctSeen)
 		}
 	}
-	if binarySeen != 4 {
-		t.Errorf("binary frames seen: want 4, got %d", binarySeen)
+	if distinctSeen != 4 {
+		t.Errorf("distinct binary ops seen: want 4, got %d", distinctSeen)
 	}
 }
