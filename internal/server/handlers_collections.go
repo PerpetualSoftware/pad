@@ -187,6 +187,9 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return
 	}
+	if !s.requireCollectionFullyVisible(w, r, workspaceID, coll) {
+		return
+	}
 
 	var input models.CollectionUpdate
 	if err := decodeJSON(r, &input); err != nil {
@@ -263,6 +266,9 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 	}
 	if coll == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+		return
+	}
+	if !s.requireCollectionFullyVisible(w, r, workspaceID, coll) {
 		return
 	}
 
