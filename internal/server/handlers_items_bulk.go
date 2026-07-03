@@ -207,7 +207,7 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 
 		// Per-item visibility gate. Report invisible items as
 		// not-found so a restricted member can't probe existence by ref.
-		visible, verr := s.checkItemVisible(workspaceID, item, user, role)
+		visible, verr := s.checkItemVisible(workspaceID, item, user, role, isBearerAuth(r))
 		if verr != nil {
 			resp.Failed = append(resp.Failed, bulkItemFailure{Ref: ref, Error: verr.Error()})
 			continue

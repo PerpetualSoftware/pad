@@ -2479,3 +2479,184 @@ func TestCreateItem_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
 		t.Fatalf("cookie admin create in hidden collection: expected 201, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+// bearerGateItemFixture seeds a platform admin who is also a restricted
+// workspace member (collection_access="specific", scoped to "visible"
+// only), one item in the "hidden" collection, and one in "visible".
+// Shared setup for BUG-1918's single-item bearer-gate tests
+// (GET/PATCH/DELETE/export), mirroring
+// TestCreateItem_AdminBearer_RestrictedMemberIsScoped's fixture shape.
+type bearerGateItemFixture struct {
+	srv           *Server
+	ws            *models.Workspace
+	admin         *models.User
+	hiddenCollID  string
+	visibleCollID string
+	hiddenItem    *models.Item
+	visibleItem   *models.Item
+	bearerToken   string
+	sessionToken  string
+}
+
+// newItem creates a fresh item in the given (hidden/visible) collection.
+// Used by tests that mutate the fixture's default hiddenItem/visibleItem
+// (e.g. archiving them) and need an untouched pair for a follow-up
+// assertion.
+func (f *bearerGateItemFixture) newItem(t *testing.T, collID, title string) *models.Item {
+	t.Helper()
+	item, err := f.srv.store.CreateItem(f.ws.ID, collID, models.ItemCreate{
+		Title: title, Fields: `{"status":"open"}`,
+	})
+	if err != nil {
+		t.Fatalf("create item %q: %v", title, err)
+	}
+	return item
+}
+
+func newBearerGateItemFixture(t *testing.T) *bearerGateItemFixture {
+	t.Helper()
+	srv := testServer(t)
+
+	admin, err := srv.store.CreateUser(models.UserCreate{
+		Email: "admin@example.com", Name: "Admin", Password: "correct-horse-battery-staple", Role: "admin",
+	})
+	if err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "ItemGateBearer", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, admin.ID, "editor"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`
+	visible, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Visible", Slug: "visible", Prefix: "VIS", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create visible collection: %v", err)
+	}
+	hidden, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Hidden", Slug: "hidden", Prefix: "HID", Schema: schema,
+	})
+	if err != nil {
+		t.Fatalf("create hidden collection: %v", err)
+	}
+	visibleItem, err := srv.store.CreateItem(ws.ID, visible.ID, models.ItemCreate{
+		Title: "Visible item", Fields: `{"status":"open"}`,
+	})
+	if err != nil {
+		t.Fatalf("create visible item: %v", err)
+	}
+	hiddenItem, err := srv.store.CreateItem(ws.ID, hidden.ID, models.ItemCreate{
+		Title: "Hidden item", Fields: `{"status":"open"}`,
+	})
+	if err != nil {
+		t.Fatalf("create hidden item: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, admin.ID, "specific", []string{visible.ID}); err != nil {
+		t.Fatalf("set member collection access: %v", err)
+	}
+
+	tok, err := srv.store.CreateAPIToken(admin.ID, models.APITokenCreate{
+		Name: "admin-pat", WorkspaceID: ws.ID,
+	}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+	sessTok, err := srv.store.CreateSession(admin.ID, "web-test", "192.0.2.1", "", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	return &bearerGateItemFixture{
+		srv: srv, ws: ws, admin: admin,
+		hiddenCollID: hidden.ID, visibleCollID: visible.ID,
+		hiddenItem: hiddenItem, visibleItem: visibleItem,
+		bearerToken: tok.Token, sessionToken: sessTok,
+	}
+}
+
+func (f *bearerGateItemFixture) bearerHeaders() map[string]string {
+	return map[string]string{"Authorization": "Bearer " + f.bearerToken}
+}
+
+// TestGetItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection pins
+// the read-path side of BUG-1918: checkItemVisible's unconditional
+// admin bypass previously let a bearer-authed admin fetch ANY item by
+// ref, even one in a collection they can't see per their own
+// member_collection_access — bypassing BUG-1917's list-level scoping
+// entirely for anyone who can guess (or enumerate) a ref.
+func TestGetItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection(t *testing.T) {
+	f := newBearerGateItemFixture(t)
+
+	rr := doRequestWithHeaders(f.srv, "GET", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.hiddenItem.Slug, nil, f.bearerHeaders())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bearer admin GET hidden item: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr = doRequestWithHeaders(f.srv, "GET", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.visibleItem.Slug, nil, f.bearerHeaders())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bearer admin GET visible item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Cookie admin — unrestricted, sees both (the pre-existing web UI
+	// admin affordance).
+	rr = doRequestWithCookie(f.srv, "GET", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.hiddenItem.Slug, nil, f.sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cookie admin GET hidden item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequestWithCookie(f.srv, "GET", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.visibleItem.Slug, nil, f.sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cookie admin GET visible item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestUpdateItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection
+// pins the write-path side of BUG-1918. PATCH must 404 at
+// requireItemVisible before requireEditPermission's role/grant check
+// ever runs — the hidden-collection item must be indistinguishable from
+// a genuinely nonexistent one.
+func TestUpdateItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection(t *testing.T) {
+	f := newBearerGateItemFixture(t)
+
+	rr := doRequestWithHeaders(f.srv, "PATCH", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.hiddenItem.Slug,
+		map[string]interface{}{"title": "Renamed"}, f.bearerHeaders())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bearer admin PATCH hidden item: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Visible-collection item: admin is an editor member there, so the
+	// edit succeeds.
+	rr = doRequestWithHeaders(f.srv, "PATCH", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.visibleItem.Slug,
+		map[string]interface{}{"title": "Renamed"}, f.bearerHeaders())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bearer admin PATCH visible item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Cookie admin — unrestricted, can PATCH the hidden item too.
+	rr = doRequestWithCookie(f.srv, "PATCH", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.hiddenItem.Slug,
+		map[string]interface{}{"title": "Cookie renamed"}, f.sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("cookie admin PATCH hidden item: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestDeleteItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection
+// completes the write-path sweep for BUG-1918 (DELETE).
+func TestDeleteItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection(t *testing.T) {
+	f := newBearerGateItemFixture(t)
+
+	rr := doRequestWithHeaders(f.srv, "DELETE", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.hiddenItem.Slug, nil, f.bearerHeaders())
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("bearer admin DELETE hidden item: expected 404, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Cookie admin — unrestricted, can delete the hidden item.
+	rr = doRequestWithCookie(f.srv, "DELETE", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.hiddenItem.Slug, nil, f.sessionToken)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("cookie admin DELETE hidden item: expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+}

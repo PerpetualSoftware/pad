@@ -170,12 +170,19 @@ func (s *Server) resolverItemVisible(r *http.Request, ws *models.Workspace, item
 	// Derive the role the same way RequireWorkspaceAccess does. Pass the
 	// bearer signal so a bearer-borne platform admin doesn't get a
 	// cross-workspace owner bypass (BUG-1618).
-	role := s.resolverWorkspaceRole(ws, user, isBearerAuth(r))
+	authIsBearer := isBearerAuth(r)
+	role := s.resolverWorkspaceRole(ws, user, authIsBearer)
 	if role == "" {
 		// Not a member, no grants, not admin/owner. Not visible.
 		return false, nil
 	}
-	return s.checkItemVisible(ws.ID, item, user, role)
+	// checkItemVisible's own admin bypass must also be bearer-gated
+	// (BUG-1918) — otherwise a bearer-admin member with a restricted
+	// role (correctly derived above) would still get the unconditional
+	// admin bypass inside checkItemVisible, reopening the exact
+	// cross-workspace leak resolverWorkspaceRole's authIsBearer param
+	// exists to close.
+	return s.checkItemVisible(ws.ID, item, user, role, authIsBearer)
 }
 
 // resolverWorkspaceRole reproduces RequireWorkspaceAccess's role lookup
