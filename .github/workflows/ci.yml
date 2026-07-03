@@ -90,10 +90,15 @@ jobs:
         # ipRateLimiter goroutine drain). The PLAN-866 attachment work
         # (image decode/encode/resize across thumbnail + transform tests)
         # pushes total race-step runtime past 20m on the GitHub-hosted
-        # runner — kept at 30m to give headroom without papering over
-        # an actual hang. Genuine deadlocks would still hit this and
-        # produce the goroutine-dump panic.
-        run: go test -race -timeout=30m ./...
+        # runner. BUG-1913: the suite organically grew past the old 30m
+        # budget (734 server-package tests, ~30.3m under -race even on a
+        # fast local machine; no single test exceeds 14s — aggregate
+        # weight, not a hang), turning most main runs red. 45m restores
+        # headroom; genuine deadlocks still hit this and produce the
+        # goroutine-dump panic, just up to 15m later. The real fix
+        # (cheaper suite: shared fixtures / sharding) is tracked on
+        # BUG-1913.
+        run: go test -race -timeout=45m ./...
 
       - name: Build binary
         run: go build -o pad ./cmd/pad
@@ -139,12 +144,15 @@ jobs:
         # Runs on both push-to-main AND pull_request — see SQLite race-step
         # comment for the public-repo / BUG-1371 reasoning.
         #
-        # 30m headroom over the default 10m. PostgreSQL adds latency on
+        # Headroom over the default 10m. PostgreSQL adds latency on
         # every CREATE/DROP, and the PLAN-866 attachment work pushed the
         # cumulative wall over 20m. The bootstrap-user bcrypt cost that
         # blew past 30m on main (BUG-1371) is now handled by TestMain
         # dropping the cost to bcrypt.MinCost for test binaries.
-        run: go test -race -timeout=30m ./... -count=1
+        # BUG-1913: raised 30m → 45m alongside the SQLite step — the
+        # suite's aggregate runtime crossed the old budget (this job
+        # variant failed main at f235a04 with the same timeout panic).
+        run: go test -race -timeout=45m ./... -count=1
 
   web:
     name: Web
