@@ -63,13 +63,14 @@ func sessionUserPayload(user *models.User) map[string]interface{} {
 		return nil
 	}
 	return map[string]interface{}{
-		"id":           user.ID,
-		"email":        user.Email,
-		"username":     user.Username,
-		"name":         user.Name,
-		"role":         user.Role,
-		"totp_enabled": user.TOTPEnabled,
-		"plan":         user.Plan,
+		"id":             user.ID,
+		"email":          user.Email,
+		"username":       user.Username,
+		"name":           user.Name,
+		"role":           user.Role,
+		"totp_enabled":   user.TOTPEnabled,
+		"plan":           user.Plan,
+		"email_verified": user.IsEmailVerified(),
 	}
 }
 
