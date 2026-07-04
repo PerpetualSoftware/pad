@@ -127,6 +127,30 @@ type HTTPHandlerDispatcher struct {
 	// The local stdio transport (ExecDispatcher) doesn't go through
 	// this dispatcher, so its lister wiring is independent.
 	Lister WorkspaceLister
+
+	// RequireVerifiedEmail, when non-nil, gates the remote MCP write
+	// path for PLAN-1933 DR-4. It's invoked in buildAuthedRequest —
+	// the single chokepoint every synthesized request passes through,
+	// same place the token-scope check lives — for MUTATING methods
+	// only (reads stay open). Returning true BLOCKS the request: the
+	// dispatcher fails the build with an email_not_verified error
+	// instead of hitting the handler, so no content mutation reaches
+	// the store.
+	//
+	// The /mcp mount lives outside the /api/v1 middleware stack, so the
+	// RequireVerifiedEmail HTTP middleware can't cover it directly; this
+	// hook is the perimeter's own gate. cmd/pad/main.go wires it to
+	// `srv.IsCloud() && user != nil && !user.IsEmailVerified()`. A
+	// callback (rather than importing a cloudMode flag) keeps the
+	// dispatcher decoupled from server config, matching the OnScopeDenied
+	// pattern above.
+	//
+	// nil → no gate (self-host, stdio, and tests that don't exercise the
+	// verified-email perimeter). Belt-and-suspenders with the /api/v1
+	// middleware: even without this hook a synthesized write re-enters
+	// the /api/v1 chain and the middleware blocks it, but wiring the hook
+	// stops the request before it's ever built.
+	RequireVerifiedEmail func(user *models.User) bool
 }
 
 // RouteMapper translates a tool's JSON input into a concrete HTTP
@@ -439,6 +463,17 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 				Hint:    "Token scope does not permit this operation. Re-issue with the required scopes (read for GET; write for POST/PATCH; admin for workspace settings).",
 			}), nil
 		}
+		// PLAN-1933 DR-4: the RequireVerifiedEmail gate rejected this
+		// write because the cloud user hasn't verified their email.
+		// Surface as permission_denied (the closest closed-set code) so
+		// agents branch consistently with a backend 403.
+		if strings.HasPrefix(err.Error(), errEmailNotVerifiedPrefix+":") {
+			return NewErrorResult(ErrorPayload{
+				Code:    ErrPermissionDenied,
+				Message: fmt.Sprintf("%s: %s", cmdKey, err.Error()),
+				Hint:    "Verify your email address (check your inbox for the verification link) before creating or editing content.",
+			}), nil
+		}
 		return dispatcherErrorResult(cmdKey, "build request", err), nil
 	}
 
@@ -487,6 +522,24 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 // dispatch_http_project.go's bulk-update path (PATCH issued
 // directly via buildAuthedRequest + ServeHTTP, bypassing
 // executeRequest's previous scope check).
+// errEmailNotVerifiedPrefix tags the build-request error the
+// RequireVerifiedEmail gate returns so executeRequest can map it to a
+// clean permission_denied envelope (mirrors the "permission_denied:"
+// prefix convention used for token-scope denials).
+const errEmailNotVerifiedPrefix = "email_not_verified"
+
+// isMutatingMethod reports whether an HTTP method can mutate server
+// state. The verified-email gate only fires on these; reads pass
+// through so an unverified user can still fetch context over MCP.
+func isMutatingMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPatch, http.MethodPut, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
 func (d *HTTPHandlerDispatcher) buildAuthedRequest(
 	ctx context.Context,
 	method, urlPath string,
@@ -503,6 +556,15 @@ func (d *HTTPHandlerDispatcher) buildAuthedRequest(
 			d.OnScopeDenied(method, urlPath)
 		}
 		return nil, fmt.Errorf("permission_denied: token scope does not permit %s on this resource", method)
+	}
+	// PLAN-1933 DR-4: block the remote MCP write path for an unverified
+	// cloud user. Only mutating methods are gated — the read prefetches
+	// (dispatchItemUpdate's GET, lookupAssigneeID's members fetch) pass
+	// through so an unverified user can still read. The errEmailNotVerified
+	// prefix is recognised by executeRequest to surface a clean
+	// permission_denied envelope.
+	if isMutatingMethod(method) && d.RequireVerifiedEmail != nil && d.RequireVerifiedEmail(user) {
+		return nil, fmt.Errorf("%s: verify your email address before mutating content over MCP", errEmailNotVerifiedPrefix)
 	}
 	req, err := buildHTTPRequest(ctx, method, urlPath, body, user)
 	if err != nil {

@@ -849,6 +849,14 @@ func (s *Server) setupRouter() {
 		r.Use(s.RateLimit)
 		r.Use(s.CSRFProtect)
 		r.Use(s.RequireAuth)
+		// PLAN-1933 DR-4: block content-mutating requests from an
+		// authenticated cloud user whose email is unverified. Mounted
+		// AFTER RequireAuth so currentUser is already resolved; a no-op
+		// on self-host and for verified / unauthenticated callers. The
+		// method gate here covers the /api/v1 surface (session + PAT);
+		// the collab GET-upgrade, the OAuth-provider flow, and the MCP
+		// write path are gated at their own out-of-band mounts.
+		r.Use(s.RequireVerifiedEmail)
 		r.Use(jsonContentType)
 
 		// SSE endpoint (outside jsonContentType middleware — but inherits auth)
