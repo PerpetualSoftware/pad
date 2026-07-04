@@ -173,6 +173,13 @@ type Server struct {
 	// StartOpLogGC; Stop() signals the loop via stopOpLogGC.
 	opLogGC opLogGCConfig
 
+	// tokenReaper holds the periodic-sweep config + lifecycle for the
+	// short-lived-credential reaper (PLAN-1933 DR-5 / TASK-1936).
+	// Mirrors orphanGC/opLogGC. Configured via SetTokenReaperConfig +
+	// started via StartTokenReaper; Stop() signals the loop via
+	// stopTokenReaper.
+	tokenReaper tokenReaperConfig
+
 	// inFlightUploadHashes tracks content_hash values for uploads
 	// that have called AttachmentStore.Put but not yet inserted the
 	// attachments row. Without this, the orphan GC could delete a
@@ -256,6 +263,9 @@ func (s *Server) Stop() {
 	// Yjs op-log prune sweeper (TASK-1309). Same lifecycle pattern;
 	// signals BEFORE Wait() so the goroutine sees the close and exits.
 	s.stopOpLogGC()
+	// Short-lived-credential reaper (PLAN-1933 DR-5 / TASK-1936). Same
+	// lifecycle pattern; signal BEFORE Wait() so the goroutine exits.
+	s.stopTokenReaper()
 	// MCP audit writer / sweeper run on s.bg too. Signal first so
 	// the workers see the close BEFORE Wait() blocks; without the
 	// signal Wait would hang forever on the writer's blocking

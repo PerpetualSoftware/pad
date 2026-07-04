@@ -38,6 +38,12 @@ const (
 	ActionUserDisabled         = "user_disabled"
 	ActionUserEnabled          = "user_enabled"
 	ActionAccountDeleted       = "account_deleted"
+	// ActionEmailVerified is logged when a user confirms their email address
+	// via a verification link (POST /auth/verify-email). PLAN-1933 / TASK-1936.
+	ActionEmailVerified = "email_verified"
+	// ActionEmailVerifiedByAdmin is logged when an admin force-verifies a
+	// user's email from the admin console (DR-7). PLAN-1933 / TASK-1936.
+	ActionEmailVerifiedByAdmin = "email_verified_by_admin"
 	// ActionSessionIPChanged is logged when a session presents a different
 	// client IP than the one recorded at creation. We don't strict-check IP
 	// by default (that breaks legitimate geo shifts — VPN toggle, mobile

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -183,6 +184,42 @@ func TestSendWelcome(t *testing.T) {
 	}
 	if received.To[0].DisplayName != "Alice" {
 		t.Errorf("expected to name 'Alice', got %q", received.To[0].DisplayName)
+	}
+}
+
+func TestSendEmailVerification(t *testing.T) {
+	var received mailerooPayload
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&received)
+		json.NewEncoder(w).Encode(mailerooResponse{Success: true, Message: "sent"})
+	}))
+	defer ts.Close()
+
+	s := newTestSender(ts)
+
+	verifyURL := "https://example.com/verify-email/padver_abc123"
+	err := s.SendEmailVerification(context.Background(), "newuser@example.com", "New User", verifyURL)
+	if err != nil {
+		t.Fatalf("SendEmailVerification failed: %v", err)
+	}
+
+	if received.Subject != "Verify your Pad email address" {
+		t.Errorf("unexpected subject: %q", received.Subject)
+	}
+	if received.To[0].DisplayName != "New User" {
+		t.Errorf("expected to name 'New User', got %q", received.To[0].DisplayName)
+	}
+	// The 24h TTL copy must be parameterized (not the 1h reset copy).
+	if !strings.Contains(received.HTML, "24 hours") || !strings.Contains(received.Plain, "24 hours") {
+		t.Errorf("expected '24 hours' expiry copy in both bodies\nHTML=%q\nPlain=%q", received.HTML, received.Plain)
+	}
+	if strings.Contains(received.HTML, "1 hour") || strings.Contains(received.Plain, "1 hour") {
+		t.Errorf("verification email must not carry the reset flow's '1 hour' copy")
+	}
+	// The verification link must be present in both bodies.
+	if !strings.Contains(received.HTML, verifyURL) || !strings.Contains(received.Plain, verifyURL) {
+		t.Errorf("verify URL missing from bodies\nHTML=%q\nPlain=%q", received.HTML, received.Plain)
 	}
 }
 

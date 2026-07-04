@@ -833,6 +833,17 @@ func serveCmd() *cobra.Command {
 			}
 			srv.StartOpLogGC()
 
+			// Token reaper (PLAN-1933 DR-5 / TASK-1936). Periodic sweep
+			// that deletes expired/used email-verification tokens,
+			// password-reset tokens, sessions, and CLI-auth sessions —
+			// the CleanExpired* methods existed but were never called.
+			// Default: 1h interval, override-able via env
+			// (PAD_TOKEN_REAPER_INTERVAL=1m for tests/CI).
+			if reaperInterval := parseDurationEnv("PAD_TOKEN_REAPER_INTERVAL", 0); reaperInterval != 0 {
+				srv.SetTokenReaperConfig(reaperInterval)
+			}
+			srv.StartTokenReaper()
+
 			// Attach webhook dispatcher for outgoing notifications
 			srv.SetWebhookDispatcher(webhooks.NewDispatcher(s))
 
