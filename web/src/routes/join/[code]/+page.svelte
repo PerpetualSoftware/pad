@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
-	import { api } from '$lib/api/client';
+	import { api, type InvitationPreview } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
@@ -16,6 +16,12 @@
 	// Auth form state
 	let mode = $state<'login' | 'register'>('register');
 	let email = $state('');
+	// When the non-consuming preview (BUG-1934) resolves the invited address,
+	// we prefill `email` and lock the field: the backend binds the invite to
+	// this exact address (register 403s on mismatch; accept requires the
+	// signed-in account to match), so letting the invitee retype it only
+	// invites the confusing invitation_email_mismatch rejection this fixes.
+	let invitedEmail = $state<string | null>(null);
 	let name = $state('');
 	let username = $state('');
 	let password = $state('');
@@ -39,33 +45,53 @@
 		// fetch is mid-flight, and it lights up once authStore resolves.
 		authStore.ensureLoaded().catch(() => {});
 
+		// Kick off the non-consuming invitation preview (BUG-1934) in parallel
+		// with the session probe. It's always-200 and never accepts the invite;
+		// it just tells us the invited email (to prefill read-only) and whether
+		// an account already exists (to pick login vs register). Best-effort: on
+		// failure we fall back to a blank, editable email field.
+		const previewPromise = api.members.previewInvitation(code).catch(() => null);
+
 		try {
 			const session = await api.auth.session();
 			if (session.authenticated) {
 				// Already logged in — try to accept directly
 				await acceptInvitation();
-			} else if (session.setup_required) {
+				return;
+			}
+			if (session.setup_required) {
 				setupMethod = session.setup_method;
 				status = 'setup';
-			} else {
-				// Logged out. Default to REGISTER, not login: a never-registered
-				// invitee has no account to sign into, and the register submit
-				// (below) passes the invitation code, which bypasses the normal
-				// registration gate and auto-accepts the invite in one step. The
-				// "already have an account? sign in" switch still lets a
-				// returning user flip to login. Do NOT change this default back
-				// to 'login' — that's BUG-1930 (dead-ends every fresh invitee
-				// in a login-a-nonexistent-account loop). See IDEA-1927 §B3.
-				mode = 'register';
-				status = 'login';
+				return;
 			}
-		} catch {
-			// Session probe itself failed — same reasoning as above: don't
-			// assume "returning user" here either. See BUG-1930.
+			// Logged out — show the auth form.
+			await applyPreview(previewPromise);
 			status = 'login';
-			mode = 'register';
+		} catch {
+			// Session probe itself failed — still show the form (defaulting to
+			// register unless the preview says an account exists). See BUG-1930.
+			await applyPreview(previewPromise);
+			status = 'login';
 		}
 	});
+
+	// Apply the invitation preview to the auth form: prefill + lock the invited
+	// email, and default the mode by whether an account already exists. When
+	// the preview is unavailable (invalid/expired code, or the request failed)
+	// we keep the register default — a never-registered invitee has no account
+	// to sign into, and register passes the code to auto-accept in one step
+	// (BUG-1930). The "already have an account? sign in" switch still lets a
+	// returning user flip to login.
+	async function applyPreview(previewPromise: Promise<InvitationPreview | null>) {
+		const preview = await previewPromise;
+		if (preview?.found && preview.email) {
+			email = preview.email;
+			invitedEmail = preview.email;
+			mode = preview.has_account ? 'login' : 'register';
+		} else {
+			mode = 'register';
+		}
+	}
 
 	async function acceptInvitation() {
 		status = 'accepting';
@@ -303,11 +329,16 @@
 				<input
 					type="email"
 					placeholder="Email"
+					class:locked={invitedEmail !== null}
 					bind:value={email}
 					onkeydown={handleKeydown}
 					disabled={submitting}
+					readonly={invitedEmail !== null}
 					autocomplete="email"
 				/>
+				{#if invitedEmail !== null}
+					<p class="field-hint">This invitation was sent to this address.</p>
+				{/if}
 				<input
 					type="password"
 					placeholder="Password"
@@ -425,6 +456,17 @@
 	input::placeholder { color: var(--text-muted); }
 	input:focus { border-color: var(--accent-blue); }
 	input:disabled { opacity: 0.6; }
+	input.locked {
+		color: var(--text-secondary);
+		cursor: not-allowed;
+	}
+	input.locked:focus { border-color: var(--border); }
+
+	.field-hint {
+		color: var(--text-muted);
+		font-size: 0.75rem;
+		margin: calc(-1 * var(--space-2)) 0 0;
+	}
 
 	.error {
 		color: #ef4444;

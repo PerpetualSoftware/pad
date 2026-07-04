@@ -307,6 +307,13 @@ func isPublicAPIPath(path string) bool {
 		strings.HasPrefix(path, "/api/v1/health/") ||
 		strings.HasPrefix(path, "/api/v1/s/") ||
 		path == "/api/v1/plan-limits" ||
+		// Non-consuming invitation preview (BUG-1934). A logged-out invitee
+		// hits /join/{code} before authenticating, and the page fetches the
+		// invited email + workspace name to prefill the form. Read-only and
+		// always-200 (enumeration-safe); the accept path (/accept) stays
+		// auth-gated. Matches only the trailing /preview segment so
+		// /invitations/{code}/accept is unaffected.
+		(strings.HasPrefix(path, "/api/v1/invitations/") && strings.HasSuffix(path, "/preview")) ||
 		// Server capability profile (TASK-878). The editor reads this
 		// before login on shared-item preview surfaces, and the
 		// handler is intentionally read-only (no DB writes, no
