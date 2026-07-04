@@ -85,25 +85,41 @@ func itemMatchesParentFilter(item models.Item, parent string) bool {
 // (collIDs, itemIDs) shape and the guestResourceFilter call below, matching
 // handleListItems' pattern exactly except for the visibility call itself.
 //
-// visibleIDs == nil covers BOTH "unrestricted" (nil/cookie-admin user) and
+// collIDs == nil covers BOTH "unrestricted" (nil/cookie-admin user) and
 // "all-access member" (store.VisibleCollectionIDs returns nil) — both mean
 // "no collection filtering", identically to visibleCollectionIDs' contract,
 // so no separate branch is needed for the all-access-member case.
-func (s *Server) projectIntelVisibility(r *http.Request, workspaceID string) (collIDs, itemIDs []string, err error) {
+//
+// navVisibleIDs is the UNNARROWED result of visibleCollectionIDs — returned
+// separately from collIDs because they serve different purposes and must
+// NOT be conflated (codex R1 P1, TASK-1916): collIDs (narrowed to
+// guestResourceFilter's fullCollIDs when the caller holds any item-level
+// grants) is correct for the LIST query, exactly matching
+// handleListItems' params.CollectionIDs narrowing. But
+// enrichItemsWithParent's visibility check must use the nav-lenient
+// visibleCollectionIDs set (which still includes item-grant-only
+// collections, "so the collection appears in navigation" — see
+// requireCollectionFullyVisible's doc comment), exactly matching
+// handleListItems' enrichItemsWithParent(..., visibleIDs) call. Passing the
+// narrowed collIDs to enrichItemsWithParent instead (the pre-fix bug) drops
+// ParentLinkID/ParentRef/ParentTitle for any item whose parent lives in an
+// item-grant-only collection, silently breaking changelog's ?parent= filter
+// for that combination.
+func (s *Server) projectIntelVisibility(r *http.Request, workspaceID string) (collIDs, itemIDs, navVisibleIDs []string, err error) {
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	fullCollIDs, grantedItemIDs, err := s.guestResourceFilter(r, workspaceID)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	collIDs = visibleIDs
 	if len(grantedItemIDs) > 0 {
 		collIDs = fullCollIDs
 		itemIDs = grantedItemIDs
 	}
-	return collIDs, itemIDs, nil
+	return collIDs, itemIDs, visibleIDs, nil
 }
 
 // listTerminalItemsSince fetches items in each of models.DefaultTerminalStatuses
@@ -213,7 +229,7 @@ func (s *Server) handleGetProjectStandup(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	collIDs, itemIDs, err := s.projectIntelVisibility(r, workspaceID)
+	collIDs, itemIDs, _, err := s.projectIntelVisibility(r, workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -348,7 +364,7 @@ func (s *Server) handleGetProjectChangelog(w http.ResponseWriter, r *http.Reques
 		cutoff = time.Now().AddDate(0, 0, -days)
 	}
 
-	collIDs, itemIDs, err := s.projectIntelVisibility(r, workspaceID)
+	collIDs, itemIDs, navVisibleIDs, err := s.projectIntelVisibility(r, workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -359,7 +375,15 @@ func (s *Server) handleGetProjectChangelog(w http.ResponseWriter, r *http.Reques
 		// The parent filter needs the items' own parent-link metadata
 		// (parent_link_id / parent_ref / parent_title) populated —
 		// batch-enrich before filtering, same helper handleListItems uses.
-		s.enrichItemsWithParent(workspaceID, items, collIDs)
+		//
+		// Pass navVisibleIDs (nav-lenient), NOT collIDs (narrowed to
+		// full-access collections when the caller holds item-level
+		// grants) — mirrors handleListItems, which lists with the
+		// narrowed set but enriches with the original visibleIDs
+		// (codex R1 P1, TASK-1916: using collIDs here dropped parent
+		// fields for items whose parent lives in an item-grant-only
+		// collection, silently breaking ?parent= for that guest).
+		s.enrichItemsWithParent(workspaceID, items, navVisibleIDs)
 		filtered := items[:0]
 		for _, item := range items {
 			if itemMatchesParentFilter(item, parent) {
