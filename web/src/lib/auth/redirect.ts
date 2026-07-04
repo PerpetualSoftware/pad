@@ -108,13 +108,23 @@ export async function navigateToRedirectTarget(target: string): Promise<void> {
  * potentially-cross-origin values. Callers can compare the return
  * value against DEFAULT_REDIRECT to detect "no real redirect requested"
  * without re-parsing.
+ *
+ * Beyond the literal `//` and `/\` prefixes, also reject any percent-encoded
+ * slash or backslash (`%2f`, `%5c`, case-insensitive) anywhere in the value.
+ * `page.url.searchParams.get()` already decodes standard query-string
+ * encoding once, so these normally can't reach here still encoded — but a
+ * caller that hands this function an already-decoded-once value (or any
+ * future caller that doesn't go through URLSearchParams) could. Rejecting
+ * them defensively costs nothing: no legitimate SPA route ever contains a
+ * literal `%2f`/`%5c` sequence. BUG-1929 follow-up (Codex R2).
  */
 export function validateRedirect(raw: string | null | undefined): string {
 	if (
 		raw &&
 		raw.startsWith('/') &&
 		!raw.startsWith('//') &&
-		!raw.startsWith('/\\')
+		!raw.startsWith('/\\') &&
+		!/%2f|%5c/i.test(raw)
 	) {
 		return raw;
 	}

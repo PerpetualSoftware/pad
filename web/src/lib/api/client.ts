@@ -240,6 +240,21 @@ function getCSRFToken(): string | null {
 	return match ? match[1] : null;
 }
 
+/**
+ * Endpoints hit only from explicit, unauthenticated auth-form submissions
+ * (login, register, 2FA challenge). A 401 from these means "the
+ * credentials/code the user just typed were wrong", not "your session
+ * expired" — so the interceptor must NOT redirect or mask the response
+ * body here; the server's real message ("Invalid email or password",
+ * "Invalid 2FA verification", ...) needs to reach the form. Mirrors the
+ * grouping `middleware_ratelimit.go` already uses for these same three
+ * paths. BUG-1929 / IDEA-1927 §B2.
+ *
+ * `register` never actually 401s server-side today (only 400/403) but is
+ * included for defense-in-depth per the audit.
+ */
+const AUTH_FORM_401_PATHS = new Set(['/auth/login', '/auth/register', '/auth/2fa/login-verify']);
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
@@ -256,9 +271,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 		...options
 	});
 	if (resp.status === 401) {
-		// Redirect to login page (avoid infinite loop)
+		const barePath = path.split('?')[0];
+		if (AUTH_FORM_401_PATHS.has(barePath)) {
+			const body = await resp.json().catch(() => null);
+			if (body?.error) throw new PadApiError(body.error);
+			throw new PadApiError({ code: 'unauthorized', message: 'Authentication failed' });
+		}
+		// Redirect to login page (avoid infinite loop), preserving the
+		// current location as a return-to target so a genuine session
+		// expiry doesn't strand the user wherever they were (BUG-1929 /
+		// IDEA-1927 §B2(c)) — /login already validates and consumes
+		// `?redirect=` (see $lib/auth/redirect.ts).
 		if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-			window.location.href = '/login';
+			const target = window.location.pathname + window.location.search;
+			window.location.href = `/login?redirect=${encodeURIComponent(target)}`;
 		}
 		throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 	}
