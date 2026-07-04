@@ -275,8 +275,13 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Create session (30-day TTL for OAuth sessions)
-	token, err := s.createAuthSession(w, r, user, 30*24*time.Hour)
+	// 7. Create session. Uses webSessionTTL (not a longer OAuth-specific
+	// TTL) so the session cookie, CSRF cookie, and store session row all
+	// expire together with every other web login — a longer-lived OAuth
+	// cookie used to outlive its server-side session, producing silent
+	// 401s once the store row expired but the browser kept presenting
+	// the cookie (B9, TASK-1932).
+	token, err := s.createAuthSession(w, r, user, webSessionTTL)
 	if err != nil {
 		return // Error already written by createAuthSession
 	}
