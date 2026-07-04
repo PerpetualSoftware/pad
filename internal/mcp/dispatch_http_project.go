@@ -71,6 +71,108 @@ func (d *HTTPHandlerDispatcher) dispatchProjectStale(
 	})
 }
 
+// dispatchProjectNext proxies `project next` to GET
+// /workspaces/{ws}/next — handleGetProjectNext
+// (internal/server/handlers_project_intel.go), the browser/REST
+// surface PLAN-1888 / TASK-1894 added. Before TASK-1916 this method
+// fetched the dashboard itself and sliced out suggested_next (there
+// was no REST endpoint to route to yet — see BUG-987 bug 6: without
+// that slicing, `project next` was indistinguishable from `project
+// dashboard`); now the REST endpoint already returns exactly that
+// slice, so this is a thin validate-then-forward.
+//
+// Kept as a hand-written method rather than a routeTable entry so the
+// missing-workspace error keeps the pad_set_workspace hint every other
+// workspace-required dispatcher uses (a plain routeSpec's missing
+// {workspace} placeholder produces a more generic "check your input
+// shape" hint instead — see expandPath in dispatch_http_routes.go).
+//
+// No re-marshaling needed for the BUG-985 array-wrap: executeRequest's
+// packageHTTPResponse already wraps top-level JSON arrays as
+// {items: [...]} for every proxied GET, and /next returns a bare
+// array.
+func (d *HTTPHandlerDispatcher) dispatchProjectNext(
+	ctx context.Context,
+	input map[string]any,
+	user *models.User,
+) (*mcp.CallToolResult, error) {
+	const cmdKey = "project next"
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+	}
+	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/next"
+	return d.executeRequest(ctx, cmdKey, user, http.MethodGet, path, nil)
+}
+
+// dispatchProjectStandup proxies `project standup` to GET
+// /workspaces/{ws}/standup?days=N — handleGetProjectStandup
+// (internal/server/handlers_project_intel.go). Before TASK-1916 this
+// method reproduced the CLI's standupCmd JSON branch itself (dashboard
+// fetch + per-terminal-status ListItems loop + in-progress fetch);
+// that reshaping, its days=1 default, and its per-status best-effort
+// error handling (a failed status is skipped, not fatal) now all live
+// server-side in handleGetProjectStandup / listTerminalItemsSince,
+// so this method only validates workspace (same pad_set_workspace
+// hint as dispatchProjectNext above, same routeTable-vs-custom-method
+// reasoning) and forwards `days` as-is via the shared buildQuery
+// helper (dispatch_http_routes.go) — parseDaysParam server-side
+// applies the identical n<=0-falls-back-to-default gate the
+// in-dispatcher `numericInput(...) && n > 0` check used to.
+func (d *HTTPHandlerDispatcher) dispatchProjectStandup(
+	ctx context.Context,
+	input map[string]any,
+	user *models.User,
+) (*mcp.CallToolResult, error) {
+	const cmdKey = "project standup"
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+	}
+	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/standup"
+	if q := buildQuery(input, map[string]string{"days": "days"}); q != "" {
+		path += "?" + q
+	}
+	return d.executeRequest(ctx, cmdKey, user, http.MethodGet, path, nil)
+}
+
+// dispatchProjectChangelog proxies `project changelog` to GET
+// /workspaces/{ws}/changelog?days=N&since=YYYY-MM-DD&parent=REF —
+// handleGetProjectChangelog (internal/server/handlers_project_intel.go).
+// Same consolidation as dispatchProjectStandup above: the per-status
+// listing loop, days=7 default, since-overrides-days precedence,
+// parent filtering, and collection grouping all now live server-side.
+//
+// One observable behavior change from consolidation: a malformed
+// `since` used to get a bespoke dispatcher-side hint ("Pass
+// since=YYYY-MM-DD..."); now it flows through the REST endpoint's 400
+// and the generic HTTP-error classifier (classifyHTTPStatusKind) like
+// every other proxied validation error in this codebase — same
+// ErrValidationFailed code, but the hint text becomes the generic
+// "Backend: invalid 'since' date...Adjust the input shape and retry."
+// rather than the old bespoke wording. Accepted as part of TASK-1916's
+// consolidation (keeping the bespoke hint here would mean re-parsing
+// `since` twice and defeats the point of proxying).
+func (d *HTTPHandlerDispatcher) dispatchProjectChangelog(
+	ctx context.Context,
+	input map[string]any,
+	user *models.User,
+) (*mcp.CallToolResult, error) {
+	const cmdKey = "project changelog"
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass `workspace=<slug>` or set a session default via pad_set_workspace."), nil
+	}
+	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/changelog"
+	if q := buildQuery(input, map[string]string{"days": "days", "since": "since", "parent": "parent"}); q != "" {
+		path += "?" + q
+	}
+	return d.executeRequest(ctx, cmdKey, user, http.MethodGet, path, nil)
+}
+
 // fetchDashboardJSON hits the workspace dashboard endpoint and decodes
 // the response into a generic map[string]any so the dispatcher
 // preserves every field the server emits — no maintenance burden when

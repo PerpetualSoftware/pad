@@ -128,9 +128,10 @@ func TestProjectStandupEndpoint_HappyPath(t *testing.T) {
 
 // TestProjectStandupEndpoint_DaysParam_FiltersOldCompletions pins the days
 // cutoff and the "malformed days silently falls back to the default"
-// semantics (matches dispatchProjectStandup's `numericInput(...) && n > 0`
-// gate and this codebase's REST convention for lenient numeric query params
-// — handleGetWorkspaceGraph's `depth`, GetReport's `window`).
+// semantics — this codebase's REST convention for lenient numeric query
+// params (handleGetWorkspaceGraph's `depth`, GetReport's `window`). The MCP
+// HTTP transport forwards `days` as-is and relies on this same gate
+// (TASK-1916) rather than replicating it.
 func TestProjectStandupEndpoint_DaysParam_FiltersOldCompletions(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -157,8 +158,7 @@ func TestProjectStandupEndpoint_DaysParam_FiltersOldCompletions(t *testing.T) {
 	}
 
 	// days=abc (malformed) and days=-3 (non-positive) both silently fall
-	// back to the default (1), NOT a 400 — matches dispatchProjectStandup's
-	// exact gate.
+	// back to the default (1), NOT a 400.
 	for _, malformed := range []string{"abc", "-3", "0"} {
 		rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/standup?days="+malformed, nil)
 		if rr.Code != http.StatusOK {
@@ -229,8 +229,8 @@ func TestProjectChangelogEndpoint_HappyPath(t *testing.T) {
 }
 
 // TestProjectChangelogEndpoint_SinceOverridesDays pins the CLI's silent
-// since-wins behavior (cmd/pad/main.go changelogCmd's if/else and
-// dispatchProjectChangelog): both since and days given → since wins, no 400.
+// since-wins behavior (cmd/pad/main.go changelogCmd's if/else): both since
+// and days given → since wins, no 400.
 func TestProjectChangelogEndpoint_SinceOverridesDays(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -265,9 +265,9 @@ func TestProjectChangelogEndpoint_InvalidSinceReturns400(t *testing.T) {
 	}
 }
 
-// TestProjectChangelogEndpoint_ParentFilter pins the parent-ref filter,
-// matching itemMatchesParentFilter / dispatchProjectChangelog's
-// itemMatchesParent: case-insensitive match against the item's parent ref.
+// TestProjectChangelogEndpoint_ParentFilter pins the parent-ref filter via
+// itemMatchesParentFilter: case-insensitive match against the item's parent
+// ref.
 func TestProjectChangelogEndpoint_ParentFilter(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -521,5 +521,123 @@ func TestProjectIntelEndpoints_BearerAdminRestrictedMemberIsScoped(t *testing.T)
 	}
 	if !foundHiddenBlocker {
 		t.Fatalf("cookie admin standup.blockers should be unrestricted (see hidden overdue item); got %+v", standup.Blockers)
+	}
+}
+
+// TestProjectChangelogEndpoint_GuestParentFilter_ItemGrantOnlyCollection
+// pins codex R1 P1 (TASK-1916, root cause pre-existing since TASK-1894 but
+// imported into MCP wire behavior by this consolidation): a guest whose
+// granted item's PARENT lives in an item-grant-only collection must still
+// get that parent's link fields populated so ?parent= matches it.
+//
+// enrichItemsWithParent's visibility check runs against the PARENT item's
+// own collection (item_lineage.go: it fetches the parent via GetParentMap
+// and checks isCollectionVisible(parent.CollectionID, vis) — NOT the
+// child's collection), so both the granted child AND its parent must sit
+// in the SAME item-grant-only collection ("tasks" here) for the bug to
+// reproduce:
+//   - The guest holds a DIRECT collection grant elsewhere ("ideas") — this
+//     is what makes guestResourceFilter's fullCollIDs non-nil (and
+//     therefore narrower than the nav-lenient visibleCollectionIDs set);
+//     with zero direct collection grants, fullCollIDs stays nil
+//     ("unrestricted"), which would mask the bug.
+//   - The guest ALSO holds an item-level grant on `child` (in "tasks"),
+//     whose parent `parentItem` also lives in "tasks". GuestVisibleCollectionIDs
+//     (nav-lenient) includes "tasks" because of the item grant "so the
+//     collection appears in navigation" (requireCollectionFullyVisible's
+//     doc comment), but guestResourceFilter's fullCollIDs deliberately
+//     excludes item-grant-only collections.
+//
+// Pre-fix, handleGetProjectChangelog passed the narrowed collIDs (missing
+// "tasks") into enrichItemsWithParent instead of the nav-lenient set
+// handleListItems uses — isCollectionVisible(parentItem's "tasks", narrowed)
+// failed, so the parent link never got populated on `child`, and
+// itemMatchesParentFilter silently dropped `child` from ?parent= results
+// even though the caller is legitimately allowed to see it (it's already in
+// the unfiltered changelog).
+func TestProjectChangelogEndpoint_GuestParentFilter_ItemGrantOnlyCollection(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("GetWorkspaceBySlug: %v", err)
+	}
+	// Create the items via the still-unauthenticated (zero-user, fresh
+	// install, CSRF-exempt) doRequest path BEFORE any user exists —
+	// creating a user first would make createItem's plain doRequest POST
+	// trip CSRFProtect's "cookie session, no token" 403 once
+	// s.store.UserCount() > 0.
+	//
+	// Both parentItem and child live in "tasks" — the item-grant-only
+	// collection whose visibility for the PARENT is what this test pins.
+	parentItem := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Q1 Launch",
+		"fields": `{"status":"in-progress"}`,
+	})
+	child := createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Scoped to plan",
+		"fields": `{"status":"done","parent":"` + parentItem.Ref + `"}`,
+	})
+
+	ideasColl, err := srv.store.GetCollectionBySlug(ws.ID, "ideas")
+	if err != nil || ideasColl == nil {
+		t.Fatalf("GetCollectionBySlug ideas: %v", err)
+	}
+
+	// Real user record purely to satisfy grants.granted_by's NOT NULL FK —
+	// createWSWithCollections creates the workspace unauthenticated, so
+	// ws.OwnerID is empty.
+	granter, err := srv.store.CreateUser(models.UserCreate{
+		Email: "granter@example.com", Name: "Granter", Username: "granter",
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser granter: %v", err)
+	}
+
+	guest, err := srv.store.CreateUser(models.UserCreate{
+		Email: "guest-changelog@example.com", Name: "Guest", Username: "guest-changelog",
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser guest: %v", err)
+	}
+	// Direct collection grant on "ideas" — makes fullCollIDs non-nil.
+	if _, err := srv.store.CreateCollectionGrant(ws.ID, ideasColl.ID, guest.ID, "view", granter.ID); err != nil {
+		t.Fatalf("CreateCollectionGrant: %v", err)
+	}
+	// Item-level grant on `child` only (NOT parentItem) — makes "tasks"
+	// nav-visible via GuestVisibleCollectionIDs while staying excluded
+	// from fullCollIDs.
+	if _, err := srv.store.CreateItemGrant(ws.ID, child.ID, guest.ID, "view", granter.ID); err != nil {
+		t.Fatalf("CreateItemGrant: %v", err)
+	}
+	token, err := srv.store.CreateSession(guest.ID, "go-test", "192.0.2.1", "go-test", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Sanity check: the granted child is visible in the unfiltered
+	// changelog (confirms the LIST step is unaffected by this bug/fix —
+	// only parent-link enrichment is at stake).
+	rrUnfiltered := doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+slug+"/changelog", nil, token)
+	var unfiltered ChangelogResponse
+	parseJSON(t, rrUnfiltered, &unfiltered)
+	if unfiltered.Total != 1 {
+		t.Fatalf("sanity check failed: expected the granted child visible unfiltered, got total=%d: %+v", unfiltered.Total, unfiltered)
+	}
+
+	rr := doRequestWithCookie(srv, "GET", "/api/v1/workspaces/"+slug+"/changelog?parent="+parentItem.Ref, nil, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("guest changelog: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp ChangelogResponse
+	parseJSON(t, rr, &resp)
+	if resp.Total != 1 {
+		t.Fatalf("expected the granted child item to match ?parent=%s (parent lives in an item-grant-only collection), got total=%d: %+v",
+			parentItem.Ref, resp.Total, resp)
+	}
+	if len(resp.Groups) != 1 || len(resp.Groups[0].Items) != 1 || resp.Groups[0].Items[0].Ref != child.Ref {
+		t.Fatalf("expected only the granted child %s, got %+v", child.Ref, resp.Groups)
 	}
 }
