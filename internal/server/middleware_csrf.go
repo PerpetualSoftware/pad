@@ -14,12 +14,39 @@ const (
 )
 
 // authCSRFExemptPaths lists the exact /api/v1/auth/* paths that are safe to
-// exempt from the double-submit CSRF check (B8, TASK-1932). Every other
-// mutating /api/v1/auth/* endpoint is cookie-session-gated and requires the
-// CSRF token like any other authenticated mutation — the web client's
-// shared request() wrapper already attaches X-CSRF-Token on every
-// non-GET/HEAD call, so narrowing this list doesn't require a frontend
-// change.
+// exempt from the double-submit CSRF check WHEN THE REQUEST IS
+// UNAUTHENTICATED (B8, TASK-1932; tightened for a P1 in codex round 2 — see
+// below). Every other mutating /api/v1/auth/* endpoint is cookie-session-
+// gated and requires the CSRF token like any other authenticated mutation —
+// the web client's shared request() wrapper already attaches X-CSRF-Token
+// on every non-GET/HEAD call, so narrowing this list doesn't require a
+// frontend change.
+//
+// The exemption is conditioned on currentUser(r) == nil (checked at the
+// call site below), not just the path. codex round 2 caught that
+// /auth/register is genuinely anonymous MOST of the time, but
+// handleRegister also has an admin-session branch (an already-logged-in
+// admin can create a verified account with no invitation code) — a plain
+// path exemption let a cross-site POST ride the admin's cookie straight
+// into that branch with no CSRF token, the same class of hole as the
+// oauth-unlink case B8 already closed. Gating on currentUser(r) == nil
+// closes register's admin branch, and any other session-authenticated
+// branch a future handler on this list grows, without touching handler
+// code: a request that resolved to a real session via SessionAuth (which
+// runs before CSRFProtect — server.go's TokenAuth/SessionAuth/RateLimit/
+// CSRFProtect/RequireAuth ordering) falls through to the normal
+// double-submit check below instead of the early exemption. Bearer/PAT
+// requests are unaffected — TokenAuth also populates currentUser for
+// those, but they hit their own unconditional exemption further down
+// this function regardless. The pad-cloud sidecar sends no cookies at
+// all, so oauth-login/oauth-link stay exempt (currentUser(r) is always
+// nil for them). One accepted interaction with the round-1 legacy-cookie
+// decision: a user resolved via SessionAuth's legacy pad_session cookie
+// fallback also loses this exemption and needs a real CSRF token to
+// re-hit login/register — harmless, since they're already logged in and
+// the frontend sends the header anyway; an EXPIRED or absent legacy
+// session resolves to currentUser(r) == nil and stays exempt, so there's
+// no lockout path for a genuinely anonymous visitor.
 //
 // This is an EXACT path match (not a prefix), on purpose: a prefix match is
 // exactly the bug B8 flags. In particular:
@@ -96,7 +123,22 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 		// account, oauth-unlink, CLI-session approve, logout, ...) still
 		// falls through to the CSRF check below like any other
 		// authenticated mutation (B8, TASK-1932).
-		if authCSRFExemptPaths[r.URL.Path] {
+		//
+		// The currentUser(r) == nil guard closes a P1 codex found in
+		// round 2: handleRegister has an admin-session branch (an
+		// already-logged-in admin can create a verified account with no
+		// invitation code), so exempting the bare path let a cross-site
+		// POST ride the admin's cookie into that branch with no CSRF
+		// token. SessionAuth runs before CSRFProtect, so currentUser(r)
+		// is already populated for any request carrying a valid session
+		// — gating on it here means a session-authenticated request to
+		// one of these paths falls through to the real double-submit
+		// check below, while a genuinely anonymous request (no session,
+		// including one that failed the round-1 legacy-cookie decision)
+		// keeps the exemption. See authCSRFExemptPaths's doc comment for
+		// the full reasoning, including why Bearer/cloud-secret callers
+		// are unaffected.
+		if authCSRFExemptPaths[r.URL.Path] && currentUser(r) == nil {
 			next.ServeHTTP(w, r)
 			return
 		}

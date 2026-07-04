@@ -469,3 +469,83 @@ func TestCSRF_LegacyCookieFallback_NotAcceptedWhenSecure(t *testing.T) {
 		t.Errorf("expected a csrf_error response, got: %s", w.Body.String())
 	}
 }
+
+// TestCSRF_AdminSessionRegister_RequiresCSRF covers the P1 codex found in
+// round 2 of TASK-1932: handleRegister has an admin-session branch (an
+// already-logged-in admin can create a verified account with no invitation
+// code), but /api/v1/auth/register was unconditionally CSRF-exempt by
+// path — a cross-site POST could ride the admin's cookie into that branch
+// with no CSRF token, same class of hole as the oauth-unlink case B8
+// already closed. An admin session hitting /register without a CSRF token
+// must now be blocked.
+func TestCSRF_AdminSessionRegister_RequiresCSRF(t *testing.T) {
+	srv := testServer(t)
+
+	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(
+		`{"email":"newadmin@test.com","name":"New Admin","password":"correct-horse-battery-staple"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: adminToken})
+	// Deliberately no CSRF cookie/header.
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "csrf") {
+		t.Fatalf("admin-session register without CSRF token must be blocked, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCSRF_AdminSessionRegister_ValidCSRFStillSucceeds is the companion to
+// the test above: an admin session WITH a valid double-submit pair must
+// still be able to create accounts — the P1 fix only closes the missing-
+// token gap, it doesn't break the legitimate admin-created-account flow.
+func TestCSRF_AdminSessionRegister_ValidCSRFStillSucceeds(t *testing.T) {
+	srv := testServer(t)
+
+	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	csrfVal := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(
+		`{"email":"newadmin2@test.com","name":"New Admin","password":"correct-horse-battery-staple"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrfVal)
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: adminToken})
+	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: csrfVal})
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("admin-session register with valid CSRF token: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCSRF_AnonymousRegister_StillExempt confirms the P1 fix didn't
+// collateral-damage the genuinely anonymous case: a request carrying no
+// session at all must still reach handleRegister rather than being
+// rejected by CSRF, even once users already exist (so the separate
+// "fresh install" bypass doesn't mask the result).
+func TestCSRF_AnonymousRegister_StillExempt(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register", strings.NewReader(
+		`{"email":"anon@test.com","name":"Anon","password":"correct-horse-battery-staple"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "192.0.2.1:1234"
+	// No cookies at all — genuinely anonymous.
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	// Self-hosted (non-cloud), non-admin, no invitation: the handler
+	// correctly rejects this with "forbidden" business logic — the point
+	// is that it's a business-logic rejection, not a CSRF one.
+	if strings.Contains(w.Body.String(), "csrf") {
+		t.Fatalf("anonymous register must not be blocked by CSRF, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("anonymous register on a non-cloud instance: expected 403 forbidden (business logic), got %d: %s", w.Code, w.Body.String())
+	}
+}
