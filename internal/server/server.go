@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -449,6 +451,155 @@ func (s *Server) SetBaseURL(rawURL string) {
 			slog.Warn("server base URL has an unspecified host; emailed links (password reset, invites, share links) will not be reachable. Set PAD_URL or PUBLIC_URL to the deployment's public URL (e.g. https://app.getpad.dev).", "base_url", s.baseURL)
 		}
 	}
+}
+
+// specialUseTLDs is the (finite) set of reserved top-level names from the IANA
+// Special-Use Domain Names registry + related RFCs that never resolve to a
+// public web host, so an emailed link using one is undeliverable. Matched on
+// the final label so example.com (public) is allowed while foo.example /
+// foo.test / bar.internal / pad.home.arpa / x.onion / y.alt (non-public) are
+// rejected. Sources: RFC 6761 (localhost/invalid/test/example), RFC 6762
+// (local), RFC 8375 (home.arpa) + the "arpa" infrastructure TLD, RFC 7686
+// (onion), RFC 9476 (alt), and ICANN-reserved "internal".
+var specialUseTLDs = map[string]bool{
+	"localhost": true, "local": true, "internal": true,
+	"invalid": true, "test": true, "example": true, "arpa": true,
+	"onion": true, "alt": true,
+}
+
+// hasUsableBaseURL reports whether s.baseURL is a URL a verification-email
+// recipient on the public internet can actually reach. It supersets the
+// unreachable-host warning in SetBaseURL (BUG-899): the bind-all hosts
+// 0.0.0.0 / :: are the right thing to bind() to but the wrong thing to email,
+// and so is every other host an external recipient can't resolve or route to.
+//
+// This gates the cloud self-serve signup path (PLAN-1933 DR-6): creating an
+// UNVERIFIED user whose only way out of the write-lock is an emailed link we
+// can't deliver would strand them permanently. So "usable" is conservative —
+// anything not clearly a public web endpoint disqualifies self-serve signup:
+//
+//   - scheme must be http/https (a browser can't follow ftp://, file://, …);
+//   - no query/fragment (the link is built by concatenation, so either would
+//     push the /verify-email/<token> route into the query/fragment);
+//   - a present port must be a valid TCP port (1–65535);
+//   - the host must be a valid public DNS FQDN, NOT a literal IP. A real cloud
+//     verification endpoint is a hostname (Pad Cloud is app.getpad.dev);
+//     bare-IP base URLs aren't used for emailed links, and exhaustively
+//     enumerating every non-public IP range (loopback / private / CGNAT /
+//     TEST-NET / 6to4 / benchmarking / reserved / … across IPv4 and IPv6) is a
+//     losing game — so we require a hostname and fail closed on any IP literal.
+//
+// No usable base URL → no self-serve signup (registration stays closed rather
+// than minting a write-locked user). Self-host and admin/invitation signup are
+// unaffected either way.
+func (s *Server) hasUsableBaseURL() bool {
+	if s.baseURL == "" {
+		return false
+	}
+	u, err := url.Parse(s.baseURL)
+	if err != nil {
+		return false
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return false
+	}
+	// The verification link is built by concatenation (baseURL +
+	// "/verify-email/" + token), so a base URL carrying a query or fragment
+	// would push the route into the query/fragment and break the link.
+	if u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	// A present port must be a valid TCP port (1–65535); url.Parse accepts
+	// out-of-range numeric ports that no client can actually connect to.
+	if p := u.Port(); p != "" {
+		n, perr := strconv.Atoi(p)
+		if perr != nil || n < 1 || n > 65535 {
+			return false
+		}
+	}
+
+	// Reject literal IPs outright — a usable public verification endpoint is a
+	// DNS hostname, and "is this IP publicly reachable" is not decidable from a
+	// finite denylist. Fail closed on any IP.
+	if _, aerr := netip.ParseAddr(host); aerr == nil {
+		return false
+	}
+
+	// The host must be a syntactically-valid, multi-label public FQDN (rejects
+	// malformed hosts like ".com", "foo..com", "-a.com" and special-use TLDs).
+	return isPublicDNSName(host)
+}
+
+// isPublicDNSName reports whether host is a syntactically-valid public FQDN
+// (RFC 1123 labels) whose TLD is neither a special-use reserved name nor
+// all-numeric. Empty labels, over-length labels, and invalid characters are
+// rejected. Assumes host is not an IP literal (that's handled before this is
+// called). Punycode/IDN TLDs (xn--…) are accepted since they aren't all-digit.
+func isPublicDNSName(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if !isValidDNSLabel(l) {
+			return false
+		}
+	}
+	tld := labels[len(labels)-1]
+	if specialUseTLDs[tld] || isAllDigits(tld) {
+		return false
+	}
+	return true
+}
+
+// isValidDNSLabel reports whether l is a valid RFC 1123 hostname label:
+// 1–63 chars of [a-z0-9-], not starting or ending with a hyphen.
+func isValidDNSLabel(l string) bool {
+	if len(l) == 0 || len(l) > 63 {
+		return false
+	}
+	if l[0] == '-' || l[len(l)-1] == '-' {
+		return false
+	}
+	for i := 0; i < len(l); i++ {
+		c := l[i]
+		if !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// isAllDigits reports whether s is non-empty and entirely ASCII digits. A
+// public TLD is never all-numeric (RFC 3696), so an all-digit final label
+// signals a malformed host rather than a reachable name.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// emailConfigured reports whether this instance can actually SEND an emailed
+// link — a sender is wired AND the public base URL is usable. This is the
+// DR-6 gate for cloud email self-registration: the sender-only check (s.email
+// != nil) is insufficient because link generation also needs a reachable
+// public base URL (see handleRegister's verification email + BUG-899).
+func (s *Server) emailConfigured() bool {
+	return s.email != nil && s.hasUsableBaseURL()
 }
 
 // SetEventBus attaches an event bus for real-time SSE streaming.
@@ -900,6 +1051,14 @@ func (s *Server) setupRouter() {
 				r.Post("/reset-password", s.handleResetPassword)
 				// Localhost-only recovery escape hatch (self-host, non-cloud).
 				r.Post("/local-reset", s.handleLocalReset)
+
+				// Email verification (PLAN-1933 Wave 3b). Both are
+				// enumeration-safe and rate-limited (middleware_ratelimit.go
+				// reuses the PasswordReset bucket) and are already in
+				// RequireVerifiedEmail's exempt list so an unverified user
+				// can reach them to clear their own unverified state.
+				r.Post("/verify-email", s.handleVerifyEmail)
+				r.Post("/resend-verification", s.handleResendVerification)
 
 				// Two-factor authentication
 				r.Post("/2fa/setup", s.handleTOTPSetup)

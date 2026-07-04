@@ -346,6 +346,25 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// DR-1: accepting an email-bound invitation proves control of that email
+	// address, so verify the account if it's still unverified. This makes
+	// "invited = verified" hold for later accepts too — an existing unverified
+	// self-signup who accepts an invite becomes verified. Because currentUser
+	// is re-read fresh from the DB per request (ValidateSession → GetUser),
+	// this flip unblocks the user's subsequent mutations under
+	// RequireVerifiedEmail immediately, in the same session. Best-effort: a
+	// failure here doesn't undo the accepted membership.
+	if !user.IsEmailVerified() {
+		if err := s.store.SetUserEmailVerified(user.ID); err != nil {
+			slog.Error("failed to mark email verified on invite accept", "error", err, "user_id", user.ID)
+		} else {
+			s.logAuditEventForUser(models.ActionEmailVerified, r, user.ID, auditMeta(map[string]string{
+				"email":  user.Email,
+				"method": "invitation_accept",
+			}))
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"accepted":     true,
 		"workspace_id": inv.WorkspaceID,
