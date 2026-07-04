@@ -1125,6 +1125,7 @@ func (s *Server) setupRouter() {
 				r.Get("/users/{userID}/metrics", s.handleAdminGetUserMetrics)
 				r.Post("/users/{userID}/disable", s.handleAdminDisableUser)
 				r.Post("/users/{userID}/enable", s.handleAdminEnableUser)
+				r.Post("/users/{userID}/verify-email", s.handleAdminVerifyEmail)
 
 				// Invitations
 				r.Get("/invitations", s.handleAdminListInvitations)

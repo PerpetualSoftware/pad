@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -210,4 +211,145 @@ func itoa(n int) string {
 		return "-" + string(buf)
 	}
 	return string(buf)
+}
+
+// TestAdminVerifyEmail_ForceVerifiesUnverifiedUser pins TASK-1939's core
+// acceptance criterion (PLAN-1933 DR-7): in cloud mode an unverified user is
+// blocked from mutating content (403 email_not_verified); an admin calls the
+// force-verify override; the row flips to verified; the audit feed records
+// the DISTINCT ActionEmailVerifiedByAdmin action; and the same now-verified
+// session is unblocked.
+func TestAdminVerifyEmail_ForceVerifiesUnverifiedUser(t *testing.T) {
+	srv := testServer(t)
+	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	// Cloud mode makes RequireVerifiedEmail live so the before/after gate is
+	// observable. Bootstrap MUST precede SetCloudMode (bootstrap is disabled
+	// in cloud mode).
+	srv.cloudMode = true
+
+	admin, err := srv.store.GetUserByEmail("admin@test.com")
+	if err != nil || admin == nil {
+		t.Fatalf("GetUserByEmail admin: %v", err)
+	}
+
+	// A workspace + collection owned by the admin so the cloud-mode
+	// item-create plan check can resolve the owner's plan.
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Verify WS", OwnerID: admin.ID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	// An UNVERIFIED user (the only path that writes NULL is cloud self-serve;
+	// the store's Unverified flag is the test's explicit control).
+	target, err := srv.store.CreateUser(models.UserCreate{
+		Email: "unverified@test.com", Name: "Unverified",
+		Password: "correct-horse-battery-staple", Role: "member", Unverified: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if target.IsEmailVerified() {
+		t.Fatal("precondition: target should start unverified")
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, target.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	sess, err := srv.store.CreateSession(target.ID, "web", "192.0.2.1", "", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	itemsPath := "/api/v1/workspaces/" + ws.Slug + "/collections/" + coll.Slug + "/items"
+
+	// Before verification: the unverified user's content mutation is blocked.
+	rr := doRequestWithCookie(srv, "POST", itemsPath, map[string]any{"title": "blocked"}, sess)
+	if rr.Code != http.StatusForbidden || veErrorCode(rr) != "email_not_verified" {
+		t.Fatalf("pre-verify item-create: expected 403 email_not_verified, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Admin force-verifies.
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/admin/users/"+target.ID+"/verify-email", nil, adminToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("admin verify-email: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// The row flipped to verified.
+	got, err := srv.store.GetUser(target.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetUser after verify: %v", err)
+	}
+	if !got.IsEmailVerified() {
+		t.Fatal("admin force-verify should set email_verified_at")
+	}
+
+	// The audit feed records the DISTINCT admin action (not the self-serve one).
+	rr = doRequestWithCookie(srv, "GET", "/api/v1/audit-log?limit=20", nil, adminToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("audit-log: status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var entries []struct {
+		Action string `json:"action"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("decode audit-log: %v body=%s", err, rr.Body.String())
+	}
+	foundAdmin, foundSelfServe := false, false
+	for _, e := range entries {
+		if e.Action == models.ActionEmailVerifiedByAdmin {
+			foundAdmin = true
+		}
+		if e.Action == models.ActionEmailVerified {
+			foundSelfServe = true
+		}
+	}
+	if !foundAdmin {
+		t.Errorf("audit feed missing %q; entries=%+v", models.ActionEmailVerifiedByAdmin, entries)
+	}
+	if foundSelfServe {
+		t.Errorf("audit feed should NOT contain the self-serve %q for an admin override", models.ActionEmailVerified)
+	}
+
+	// After verification: the SAME session performs the mutation (the DB flip
+	// is immediately visible because the user is re-read per request).
+	rr = doRequestWithCookie(srv, "POST", itemsPath, map[string]any{"title": "unblocked"}, sess)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("post-verify item-create: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestAdminVerifyEmail_NonAdminForbidden pins the admin-only gate: a
+// non-admin caller hitting the force-verify endpoint gets 403 (mirrors
+// TestAdminUpdateUser_NonAdminForbidden). Non-cloud server so the
+// RequireVerifiedEmail middleware is a no-op and requireAdmin is the sole
+// gate under test.
+func TestAdminVerifyEmail_NonAdminForbidden(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	memberToken := registerNonAdmin(t, srv, "member@test.com", "Member")
+
+	target, err := srv.store.CreateUser(models.UserCreate{
+		Email: "victim@test.com", Name: "Victim",
+		Password: "correct-horse-battery-staple", Role: "member", Unverified: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/admin/users/"+target.ID+"/verify-email", nil, memberToken)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("non-admin verify-email: status=%d, want 403", rr.Code)
+	}
+
+	// The target remains unverified — the forbidden call had no side-effect.
+	got, err := srv.store.GetUser(target.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetUser: %v", err)
+	}
+	if got.IsEmailVerified() {
+		t.Error("target should remain unverified after a forbidden verify-email call")
+	}
 }
