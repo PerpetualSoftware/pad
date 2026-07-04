@@ -70,6 +70,16 @@ export function itemComparator(
 				});
 		case 'manual':
 		default:
-			return (a, b) => a.sort_order - b.sort_order;
+			// Deterministic tiebreak on equal sort_order (created_at asc,
+			// then id) so a stray updated_at bump — e.g. a spurious
+			// collab-flush PATCH, BUG-1941 — can't reorder cards that were
+			// never actually dragged. Every un-dragged card in a lane
+			// shares sort_order = 0, so without this the comparator was a
+			// no-op there and silently inherited whatever order the input
+			// array arrived in (updated_at DESC from the API).
+			return (a, b) =>
+				a.sort_order - b.sort_order ||
+				timeValue(a.created_at) - timeValue(b.created_at) ||
+				a.id.localeCompare(b.id);
 	}
 }

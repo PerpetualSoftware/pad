@@ -16,6 +16,7 @@
 	import * as Y from 'yjs';
 	import { CollabProvider, type CollabConnectionState } from '$lib/collab/wsProvider.svelte';
 	import { userColor } from '$lib/collab/cursorColor';
+	import { shouldDedupeEditorSpace } from '$lib/collab/flushDedupe';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import TagInput from '$lib/components/fields/TagInput.svelte';
@@ -848,7 +849,16 @@
 		// active editing. collabKey just changed to this itemId, so item is
 		// the freshly-loaded item for it. Per Codex review.
 		const baseline = untrack(() => (item && item.id === itemId ? item.content ?? '' : ''));
-		const ctx = { wsSlug, itemId, baseline };
+		// seedMd starts null and is populated (if at all) by the lazy-seed
+		// effect below, only when it actually calls setContent — see that
+		// effect's comment for why. Lives on this per-item ctx object so it
+		// resets automatically on every item load, same as `baseline`.
+		const ctx: { wsSlug: string; itemId: string; baseline: string; seedMd: string | null } = {
+			wsSlug,
+			itemId,
+			baseline,
+			seedMd: null,
+		};
 		activeCollabContext = ctx;
 
 		const doc = new Y.Doc();
@@ -1124,6 +1134,13 @@
 				? wikiLinksToMarkdown(seedRaw, allItems, wsSlug, username)
 				: seedRaw;
 
+		// Snapshot activeCollabContext now so the microtask below can
+		// record the seed onto the SAME ctx object the flush path reads
+		// (BUG-1941). By the time this effect runs, the ctx-creating
+		// $effect above has already set activeCollabContext for this
+		// item — see the ordering note there.
+		const ctx = activeCollabContext;
+
 		// Microtask-yield + recheck: a concurrent peer's seed may
 		// have already propagated and just hasn't been applied to
 		// our fragment yet. Yielding once gives the y-protocol
@@ -1137,6 +1154,15 @@
 			const lowest2 = peerIds2.reduce((min, id) => (id < min ? id : min), peerIds2[0]);
 			if (lowest2 !== localId) return;
 			editorInstance!.commands.setContent(seedMd);
+			// Record the exact markdown that just landed in the Y.Doc, in
+			// the same normalized space runCollabFlush compares against
+			// (unescapeDocLinks — see flushDedupe.ts and the +page.svelte
+			// PR notes for the escaping-space equivalence). Guarded on
+			// `activeCollabContext === ctx` so a losing multi-tab election
+			// peer (which never reaches this point) or a superseded
+			// item-load can't stamp a seed nobody actually wrote. Per
+			// BUG-1941.
+			if (ctx && activeCollabContext === ctx) ctx.seedMd = unescapeDocLinks(seedMd);
 		});
 	});
 
@@ -1650,7 +1676,7 @@
 	// flushes still PATCH the OLD item's URL with its OLD markdown,
 	// so we never cross-write one item's content into another. Per
 	// Codex review round 1.
-	let activeCollabContext: { wsSlug: string; itemId: string; baseline: string } | null = null;
+	let activeCollabContext: { wsSlug: string; itemId: string; baseline: string; seedMd: string | null } | null = null;
 
 	// Provider we've already attempted the lazy seed against. Reset
 	// implicitly when collabProvider is replaced (the new provider
@@ -1670,7 +1696,7 @@
 		if (!ctx) return;
 		collabFlushTimer = setTimeout(() => {
 			collabFlushTimer = undefined;
-			void runCollabFlush(ctx.wsSlug, ctx.itemId, markdown, false, ctx.baseline);
+			void runCollabFlush(ctx.wsSlug, ctx.itemId, markdown, false, ctx.baseline, ctx.seedMd);
 		}, COLLAB_FLUSH_IDLE_MS);
 	}
 
@@ -1703,6 +1729,7 @@
 		markdown: string,
 		keepalive: boolean,
 		baseline: string,
+		seedMarkdown: string | null = null,
 	): Promise<CollabFlushResult> {
 		// Force-refresh recovery is in flight: any markdown derived
 		// from the soon-to-be-discarded Y.Doc is, by definition,
@@ -1711,6 +1738,25 @@
 		// flushCollabNow) without needing per-call-site guards. Per
 		// Codex round 8 [P1] of TASK-1319.
 		if (forceRefreshInFlight) return 'skipped';
+		const normalizedMarkdown = unescapeDocLinks(markdown);
+		// Editor-markdown-space short-circuit (BUG-1941, regression of
+		// BUG-1899). BEFORE re-serializing through markdownToWikiLinks —
+		// which depends on the FLUSH-TIME wiki-link index and can diverge
+		// from a stable seed on index drift or a merely non-canonical
+		// stored link — check whether this is a pure no-edit view of the
+		// exact markdown that was seeded into the Y.Doc this session.
+		// shouldDedupeEditorSpace scopes this to the baseline arm only
+		// (lastFlushedContent === null); see its own doc comment for the
+		// revert-safety rationale the storage-space compare below still
+		// owns. Known boundary: seedMarkdown is only ever non-null when
+		// the lazy-seed effect actually fired THIS session (first-ever
+		// collab connect for the item, or after an op-log prune) — index
+		// drift across two sessions of an already-established item, with
+		// no lazy-seed in either, still falls through to the storage-space
+		// compare unchanged. Accepted scope per BUG-1941.
+		if (shouldDedupeEditorSpace(lastFlushedContent, seedMarkdown, normalizedMarkdown)) {
+			return 'deduped';
+		}
 		// Resolve links against the CAPTURED `ws` (the item being
 		// flushed), not the live route `wsSlug`. A background/unmount
 		// flush can fire after navigating to another workspace; the PATCH
@@ -1718,7 +1764,7 @@
 		// `wsSlug` would convert links against the wrong workspace's
 		// index. Per Codex review (round 1).
 		const allItems = localIndex.getAll(ws);
-		let toSave = unescapeDocLinks(markdown);
+		let toSave = normalizedMarkdown;
 		if (allItems.length > 0) {
 			toSave = markdownToWikiLinks(toSave, allItems);
 		}
@@ -1815,7 +1861,7 @@
 	// {#key}-driven unmounts, so the OLD editor (whose markdown we
 	// want) is still mounted. Used by $effect cleanup + beforeunload
 	// to land any in-flight markdown before the provider tears down.
-	function flushCollabNow(ctx: { wsSlug: string; itemId: string; baseline: string }, keepalive: boolean): boolean {
+	function flushCollabNow(ctx: { wsSlug: string; itemId: string; baseline: string; seedMd: string | null }, keepalive: boolean): boolean {
 		clearTimeout(collabFlushTimer);
 		collabFlushTimer = undefined;
 		if (!editorInstance) return false;
@@ -1828,7 +1874,7 @@
 		// runCollabFlush is async but its return value is irrelevant
 		// for synchronous callers — fire-and-forget under
 		// keepalive=true is the contract on the unmount path.
-		void runCollabFlush(ctx.wsSlug, ctx.itemId, md, keepalive, ctx.baseline);
+		void runCollabFlush(ctx.wsSlug, ctx.itemId, md, keepalive, ctx.baseline, ctx.seedMd);
 		return true;
 	}
 
