@@ -20,6 +20,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { adminFetch, adminPatch, adminPost, type AdminUser } from '$lib/stores/admin.svelte';
+	import { api } from '$lib/api/client';
 
 	interface Props {
 		user: AdminUser;
@@ -66,6 +67,11 @@
 	// NEW for T1551: typed-email confirmation for disable. The user must
 	// type the target email exactly before the Disable button enables.
 	let disableTyped = $state('');
+
+	// Email force-verify override (PLAN-1933 DR-7 / TASK-1939). Admin-only,
+	// web-console only. Surfaced only when the target is unverified.
+	let verifySaving = $state(false);
+	let verifyMsg = $state('');
 
 	// Hydrate form state when the modal switches to a different user.
 	//
@@ -255,6 +261,24 @@
 		}
 	}
 
+	// Force-verify the user's email (admin override). Refetches the user so
+	// the panel reflects the now-verified state (which hides this control).
+	async function verifyEmail() {
+		const userId = user.id;
+		verifySaving = true;
+		verifyMsg = '';
+		try {
+			await api.admin.verifyEmail(userId);
+			const updated = await adminFetch(`/admin/users/${userId}`);
+			onUserUpdated?.(updated as AdminUser);
+			verifyMsg = 'Email marked verified';
+		} catch (e) {
+			verifyMsg = e instanceof Error ? e.message : 'Action failed';
+		} finally {
+			verifySaving = false;
+		}
+	}
+
 	async function saveUser() {
 		const userId = user.id;
 		saving = true;
@@ -438,6 +462,22 @@
 			>
 		{/if}
 	</div>
+
+	<!-- Email verification — admin force-verify override (PLAN-1933 DR-7).
+	     Shown only when the target is unverified; verifying hides the field. -->
+	{#if !user.email_verified_at}
+		<div class="field">
+			<div class="field-label">Email verification</div>
+			{#if verifyMsg}<div class="msg" class:error={verifyMsg === 'Action failed'}>{verifyMsg}</div>{/if}
+			<p class="hint">
+				This user hasn't confirmed their email. Marking it verified unblocks content
+				mutations and invites for their account.
+			</p>
+			<button class="btn" type="button" disabled={verifySaving} onclick={verifyEmail}
+				>{verifySaving ? 'Verifying…' : 'Mark email verified'}</button
+			>
+		</div>
+	{/if}
 
 	<!-- Plan + overrides -->
 	<div class="field">

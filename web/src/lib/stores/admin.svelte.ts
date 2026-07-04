@@ -21,6 +21,14 @@ export interface AdminUser {
 	plan_overrides: string | null;
 	totp_enabled: boolean;
 	disabled_at: string | null;
+	/**
+	 * Email-verification timestamp (RFC3339) or null/undefined when the
+	 * user hasn't confirmed their email. Mirrors disabled_at. Surfaced by
+	 * the admin list + get-user handlers (PLAN-1933 Wave 1's SearchUsers
+	 * scan). Drives the "Mark email verified" force-verify override in the
+	 * admin user panel — shown only while this is falsy. TASK-1939 / DR-7.
+	 */
+	email_verified_at: string | null;
 	last_active_at: string | null;
 	/**
 	 * Last mutating action (item/comment/attachment) — distinct from

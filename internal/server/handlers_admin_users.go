@@ -86,45 +86,47 @@ func (s *Server) handleAdminListUsers(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type adminUser struct {
-		ID             string `json:"id"`
-		Email          string `json:"email"`
-		Username       string `json:"username"`
-		Name           string `json:"name"`
-		Role           string `json:"role"`
-		Plan           string `json:"plan"`
-		PlanExpiresAt  string `json:"plan_expires_at,omitempty"`
-		PlanOverrides  string `json:"plan_overrides,omitempty"`
-		TOTPEnabled    bool   `json:"totp_enabled"`
-		DisabledAt     string `json:"disabled_at,omitempty"`
-		LastActiveAt   string `json:"last_active_at,omitempty"`
-		LastWriteAt    string `json:"last_write_at,omitempty"`
-		CreatedAt      string `json:"created_at"`
-		UpdatedAt      string `json:"updated_at"`
-		WorkspaceCount int    `json:"workspace_count"`
-		StorageBytes   int64  `json:"storage_bytes"`
-		Status         string `json:"status"`
+		ID              string `json:"id"`
+		Email           string `json:"email"`
+		Username        string `json:"username"`
+		Name            string `json:"name"`
+		Role            string `json:"role"`
+		Plan            string `json:"plan"`
+		PlanExpiresAt   string `json:"plan_expires_at,omitempty"`
+		PlanOverrides   string `json:"plan_overrides,omitempty"`
+		TOTPEnabled     bool   `json:"totp_enabled"`
+		DisabledAt      string `json:"disabled_at,omitempty"`
+		EmailVerifiedAt string `json:"email_verified_at,omitempty"`
+		LastActiveAt    string `json:"last_active_at,omitempty"`
+		LastWriteAt     string `json:"last_write_at,omitempty"`
+		CreatedAt       string `json:"created_at"`
+		UpdatedAt       string `json:"updated_at"`
+		WorkspaceCount  int    `json:"workspace_count"`
+		StorageBytes    int64  `json:"storage_bytes"`
+		Status          string `json:"status"`
 	}
 
 	users := make([]adminUser, 0, len(result.Users))
 	for _, u := range result.Users {
 		users = append(users, adminUser{
-			ID:             u.ID,
-			Email:          u.Email,
-			Username:       u.Username,
-			Name:           u.Name,
-			Role:           u.Role,
-			Plan:           u.Plan,
-			PlanExpiresAt:  u.PlanExpiresAt,
-			PlanOverrides:  u.PlanOverrides,
-			TOTPEnabled:    u.TOTPEnabled,
-			DisabledAt:     u.DisabledAt,
-			LastActiveAt:   u.LastActiveAt,
-			LastWriteAt:    u.LastWriteAt,
-			CreatedAt:      u.CreatedAt.Format("2006-01-02T15:04:05Z"),
-			UpdatedAt:      u.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-			WorkspaceCount: u.WorkspaceCount,
-			StorageBytes:   u.StorageBytes,
-			Status:         u.Status,
+			ID:              u.ID,
+			Email:           u.Email,
+			Username:        u.Username,
+			Name:            u.Name,
+			Role:            u.Role,
+			Plan:            u.Plan,
+			PlanExpiresAt:   u.PlanExpiresAt,
+			PlanOverrides:   u.PlanOverrides,
+			TOTPEnabled:     u.TOTPEnabled,
+			DisabledAt:      u.DisabledAt,
+			EmailVerifiedAt: u.EmailVerifiedAt,
+			LastActiveAt:    u.LastActiveAt,
+			LastWriteAt:     u.LastWriteAt,
+			CreatedAt:       u.CreatedAt.Format("2006-01-02T15:04:05Z"),
+			UpdatedAt:       u.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			WorkspaceCount:  u.WorkspaceCount,
+			StorageBytes:    u.StorageBytes,
+			Status:          u.Status,
 		})
 	}
 
@@ -172,23 +174,24 @@ func (s *Server) handleAdminGetUser(w http.ResponseWriter, r *http.Request) {
 	status := store.ComputeAdminUserStatusValue(user.DisabledAt, user.LastWriteAt, wsCount)
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"id":              user.ID,
-		"email":           user.Email,
-		"username":        user.Username,
-		"name":            user.Name,
-		"role":            user.Role,
-		"plan":            user.Plan,
-		"plan_expires_at": user.PlanExpiresAt,
-		"plan_overrides":  user.PlanOverrides,
-		"totp_enabled":    user.TOTPEnabled,
-		"disabled_at":     user.DisabledAt,
-		"last_active_at":  user.LastActiveAt,
-		"last_write_at":   user.LastWriteAt,
-		"created_at":      user.CreatedAt,
-		"updated_at":      user.UpdatedAt,
-		"workspace_count": wsCount,
-		"storage_bytes":   storageBytes,
-		"status":          status,
+		"id":                user.ID,
+		"email":             user.Email,
+		"username":          user.Username,
+		"name":              user.Name,
+		"role":              user.Role,
+		"plan":              user.Plan,
+		"plan_expires_at":   user.PlanExpiresAt,
+		"plan_overrides":    user.PlanOverrides,
+		"totp_enabled":      user.TOTPEnabled,
+		"disabled_at":       user.DisabledAt,
+		"email_verified_at": user.EmailVerifiedAt,
+		"last_active_at":    user.LastActiveAt,
+		"last_write_at":     user.LastWriteAt,
+		"created_at":        user.CreatedAt,
+		"updated_at":        user.UpdatedAt,
+		"workspace_count":   wsCount,
+		"storage_bytes":     storageBytes,
+		"status":            status,
 	})
 }
 
@@ -667,6 +670,48 @@ func (s *Server) handleAdminEnableUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ok":      true,
 		"message": "User re-enabled",
+	})
+}
+
+// handleAdminVerifyEmail force-verifies a user's email address — the admin
+// override for a locked-out unverified account (PLAN-1933 DR-7). Web-console
+// only: no CLI, no MCP (matches the no-auth-mutation-on-MCP rule). Reuses the
+// tokenless SetUserEmailVerified store method. Distinct from the self-serve
+// verify-email flow — a force-verify is an operator security action, so it
+// audits with ActionEmailVerifiedByAdmin rather than ActionEmailVerified.
+// POST /api/v1/admin/users/{userID}/verify-email
+func (s *Server) handleAdminVerifyEmail(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+
+	userID := chi.URLParam(r, "userID")
+	user, err := s.store.GetUser(userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if user == nil {
+		writeError(w, http.StatusNotFound, "not_found", "User not found")
+		return
+	}
+	if user.IsEmailVerified() {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true, "message": "User email is already verified"})
+		return
+	}
+
+	if err := s.store.SetUserEmailVerified(userID); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	s.logAuditEvent(models.ActionEmailVerifiedByAdmin, r, auditMeta(map[string]string{
+		"target_user_id": userID,
+	}))
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":      true,
+		"message": "User email verified",
 	})
 }
 

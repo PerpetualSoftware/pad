@@ -1979,7 +1979,18 @@ export const api = {
 		// stripe_configured + cloud_unreachable booleans on the body.
 		// Cloud-mode only (returns 404 in self-host).
 		getBillingStats: () =>
-			request<AdminBillingStats>('/admin/billing-stats')
+			request<AdminBillingStats>('/admin/billing-stats'),
+		/**
+		 * Force-verify a user's email address — the admin override for a
+		 * locked-out unverified account (PLAN-1933 DR-7 / TASK-1939).
+		 * Web-console only (no CLI, no MCP). Backs the "Mark email verified"
+		 * button in the admin user panel; the button is shown only when the
+		 * target user is unverified. Admin-only server-side (non-admin → 403).
+		 */
+		verifyEmail: (userId: string) =>
+			request<{ ok: boolean; message: string }>(`/admin/users/${userId}/verify-email`, {
+				method: 'POST'
+			})
 	},
 
 	// ── Billing (user-facing Stripe Checkout / Portal) ────────────────────
