@@ -1595,6 +1595,18 @@ export const api = {
 				method: 'POST',
 				body: JSON.stringify({ token, password })
 			}),
+		// Consume the email-verification link a self-registered Pad Cloud user
+		// clicks (PLAN-1933 / BUG-1942). This is the token-consume endpoint —
+		// distinct from admin.verifyEmail, which force-verifies a user by id.
+		// The token in the link is the credential, so this is a bare POST with
+		// no form. Returns the freshly-verified user so the SPA can refresh its
+		// auth store without a second round-trip; 400 invalid_token when the
+		// link is invalid, expired, or already used.
+		verifyEmailToken: (token: string) =>
+			request<{ ok: boolean; user: { id: string; email: string; username: string; name: string; role: string } }>('/auth/verify-email', {
+				method: 'POST',
+				body: JSON.stringify({ token })
+			}),
 		me: () => request<User>('/auth/me'),
 		updateProfile: (data: UserProfileUpdate) =>
 			request<User>('/auth/me', {
