@@ -502,6 +502,16 @@ func serveCmd() *cobra.Command {
 					// because Server.RecordMCPTierMismatch nil-checks
 					// internally.
 					OnScopeDenied: srv.RecordMCPTierMismatch,
+					// PLAN-1933 DR-4: gate the remote MCP write path for
+					// unverified cloud users. /mcp mounts outside the
+					// /api/v1 stack, so the RequireVerifiedEmail HTTP
+					// middleware can't cover it — this hook is the
+					// perimeter's own gate (fires on mutating methods
+					// only, inside buildAuthedRequest). Cloud-only via
+					// srv.IsCloud(); a no-op on self-host.
+					RequireVerifiedEmail: func(user *models.User) bool {
+						return srv.IsCloud() && user != nil && !user.IsEmailVerified()
+					},
 				}
 				if _, regErr := mcpserver.Register(mcpSrv.MCP(), mcpserver.RegistryOptions{
 					Doc: mcpDoc,

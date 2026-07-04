@@ -579,6 +579,18 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	if fresh.IsDisabled() {
 		return newStatusError(http.StatusForbidden, "forbidden", "User is disabled")
 	}
+	// PLAN-1933 DR-4: the collab upgrade authorizes then persists
+	// incoming Yjs frames to item_yjs_updates (room.go) — a content
+	// mutation reached over a GET, so the /api/v1 method gate can't
+	// catch it. Reject the upgrade for an unverified cloud user before
+	// any admin/membership bypass below (the write-lock applies to
+	// everyone, including an unverified admin). No-op on self-host and
+	// for verified users via emailUnverifiedBlocked. Uses the freshly
+	// re-fetched user so an admin force-verify mid-session is honoured.
+	if s.emailUnverifiedBlocked(fresh) {
+		return newStatusError(http.StatusForbidden, "email_not_verified",
+			"Verify your email address to edit content.")
+	}
 	// Admin platform-role bypass — cookie session auth only (BUG-1616).
 	// Bearer-borne admin (CLI / PAT / MCP) falls through to the
 	// membership-only check below. Mirrors RequireWorkspaceAccess.

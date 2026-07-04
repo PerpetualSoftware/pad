@@ -602,6 +602,17 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// PLAN-1933 DR-4: /oauth/* is mounted outside the /api/v1 chain, so
+	// the RequireVerifiedEmail middleware never runs here. Block the
+	// consent render for an unverified cloud user — the decide POST that
+	// mints the auth code is blocked too (below), but stopping the flow
+	// at the render is friendlier than letting them fill out consent and
+	// fail. No-op on self-host / for verified users.
+	if s.emailUnverifiedBlocked(user) {
+		writeEmailNotVerified(w)
+		return
+	}
+
 	// TASK-961: consent render is the canonical "flow started" signal —
 	// the user has identified themselves AND fosite has accepted the
 	// authorize request. From here the only outcomes are
@@ -672,6 +683,18 @@ func (s *Server) handleOAuthAuthorizeDecide(w http.ResponseWriter, r *http.Reque
 		// (whose underlying request will be carried via the form
 		// fields they're about to submit).
 		http.Redirect(w, r, "/login", http.StatusFound)
+		return
+	}
+
+	// PLAN-1933 DR-4: this is the load-bearing block for the OAuth-
+	// provider perimeter — /oauth/authorize/decide persists the OAuth
+	// connection and mints an auth code (which the client then exchanges
+	// at /oauth/token). Reject it for an unverified cloud user so no
+	// bearer credential is ever minted for an unverified account. Checked
+	// before CSRF/authorize-request parsing so the gate can't be probed
+	// around; no-op on self-host / for verified users.
+	if s.emailUnverifiedBlocked(user) {
+		writeEmailNotVerified(w)
 		return
 	}
 
