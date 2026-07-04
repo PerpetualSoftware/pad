@@ -22,6 +22,32 @@ import (
 // evolve the JSON schema and the bundle format on different cadences.
 const exportBundleVersion = 1
 
+// requireUnrestrictedExportAccess denies workspace export (both the JSON
+// and tar.gz bundle forms) to a caller whose workspace access is scoped to
+// specific collections (BUG-1922). Dave's ruling: workspace export is an
+// owner affordance for backup/portability, not a visibility-scoped view —
+// so rather than filtering the export contents to what the caller can see
+// (which would silently produce incomplete backups), a restricted caller
+// is denied the export outright. member_collection_access has no role
+// exclusion (see BUG-1920), so a workspace-role "owner" can still be
+// restricted; requireMinRole("owner") alone doesn't catch that.
+//
+// Must be called after requireMinRole(w, r, "owner") has already passed,
+// and before any export content is read from the store or written to the
+// response — a 403 here must never follow partial output.
+func (s *Server) requireUnrestrictedExportAccess(w http.ResponseWriter, r *http.Request, workspaceID string) bool {
+	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	if visibleIDs != nil {
+		writeError(w, http.StatusForbidden, "forbidden", "Workspace export requires unrestricted workspace access")
+		return false
+	}
+	return true
+}
+
 // handleExportWorkspaceBundle streams a tar.gz containing the
 // workspace JSON export plus every original (non-thumbnail)
 // attachment blob and a manifest. Bundle layout:
@@ -48,8 +74,9 @@ const exportBundleVersion = 1
 // wire. The error is logged with attachment_id context so operators
 // can diagnose without re-running the export.
 //
-// Auth: owner. The plain JSON path is owner-only too; the bundle
-// has the same access scope plus the user-uploaded attachment
+// Auth: owner, and requireUnrestrictedExportAccess further denies a
+// restricted owner (BUG-1922). The plain JSON path is owner-only too; the
+// bundle has the same access scope plus the user-uploaded attachment
 // blobs, so don't loosen.
 func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
@@ -57,6 +84,9 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	}
 	ws, ok := s.getWorkspace(w, r)
 	if !ok {
+		return
+	}
+	if !s.requireUnrestrictedExportAccess(w, r, ws.ID) {
 		return
 	}
 
