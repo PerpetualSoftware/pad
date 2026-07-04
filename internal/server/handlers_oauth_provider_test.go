@@ -94,6 +94,45 @@ func TestOAuthLogin_AppleProvider_StillRequiresVerifiedEmail(t *testing.T) {
 	}
 }
 
+// TestOAuthLogin_SessionTTLMatchesWebSession guards B9 (TASK-1932): OAuth
+// sessions used to mint a 30-day cookie while every other web login (and
+// the underlying store session row) used the shorter webSessionTTL. A
+// longer-lived cookie outliving its server-side session produces silent
+// 401s once the store row expires but the browser keeps presenting the
+// cookie. createAuthSession derives the session cookie's MaxAge from the
+// same ttl argument it uses for the store row, so asserting the cookie is
+// sufficient to pin both.
+func TestOAuthLogin_SessionTTLMatchesWebSession(t *testing.T) {
+	srv := testServer(t)
+	srv.SetCloudMode(oauthProviderTestSecret)
+
+	rr := postOAuthLogin(t, srv, map[string]interface{}{
+		"provider":       "google",
+		"email":          "ttlcheck@example.com",
+		"name":           "TTL Check",
+		"email_verified": true,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("oauth-login: got %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+
+	var sessionCookie *http.Cookie
+	for _, c := range rr.Result().Cookies() {
+		if c.Name == sessionCookieName(false) {
+			sessionCookie = c
+			break
+		}
+	}
+	if sessionCookie == nil {
+		t.Fatal("expected oauth-login to set a session cookie")
+	}
+	wantMaxAge := int(webSessionTTL.Seconds())
+	if sessionCookie.MaxAge != wantMaxAge {
+		t.Errorf("oauth session cookie MaxAge = %d, want %d (webSessionTTL) — OAuth sessions must not outlive the web session TTL",
+			sessionCookie.MaxAge, wantMaxAge)
+	}
+}
+
 // TestOAuthLink_AppleProvider_Links exercises the second allowlist site
 // (handleOAuthLink) through the real handler, proving the shared helper was
 // wired there too — not just in oauth-login. (oauth-unlink shares the same

@@ -443,6 +443,11 @@ func serveCmd() *cobra.Command {
 				if cfg.CloudSecret == "" {
 					return fmt.Errorf("PAD_CLOUD_SECRET is required when running in cloud mode (PAD_MODE=cloud or PAD_CLOUD=true)")
 				}
+				// B7 (TASK-1932): fail fast rather than relying on the
+				// operator to always pair PAD_CLOUD with PAD_SECURE_COOKIES.
+				if err := cfg.ValidateCloudSecureCookies(); err != nil {
+					return err
+				}
 				srv.SetCloudMode(cfg.CloudSecret)
 				slog.Info("Cloud mode enabled")
 

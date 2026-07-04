@@ -275,8 +275,13 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Create session (30-day TTL for OAuth sessions)
-	token, err := s.createAuthSession(w, r, user, 30*24*time.Hour)
+	// 7. Create session. Uses webSessionTTL (not a longer OAuth-specific
+	// TTL) so the session cookie, CSRF cookie, and store session row all
+	// expire together with every other web login — a longer-lived OAuth
+	// cookie used to outlive its server-side session, producing silent
+	// 401s once the store row expired but the browser kept presenting
+	// the cookie (B9, TASK-1932).
+	token, err := s.createAuthSession(w, r, user, webSessionTTL)
 	if err != nil {
 		return // Error already written by createAuthSession
 	}
@@ -1207,8 +1212,28 @@ func (s *Server) autoCreateWorkspace(user *models.User) {
 		slog.Warn("auto-create workspace: failed to seed collections", "workspace_id", ws.ID, "error", err)
 	}
 
-	// Add user as owner
-	_ = s.store.AddWorkspaceMember(ws.ID, user.ID, "owner")
+	// Add user as owner. This is not optional bookkeeping: without a
+	// workspace_members row, RequireWorkspaceAccess 403s the owner on
+	// every request (owner_id alone grants no access), and the
+	// workspace never shows up in GetUserWorkspaces — it becomes a
+	// permanently orphaned, completely unreachable row. Retry once for
+	// transient blips (e.g. a dropped Postgres connection); if it still
+	// fails, delete the now-useless workspace rather than leaving that
+	// orphan behind, and log loudly either way so on-call can see it
+	// happened (B6, TASK-1932).
+	if err := s.store.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+		slog.Warn("auto-create workspace: add owner member failed, retrying",
+			"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
+		if err := s.store.AddWorkspaceMember(ws.ID, user.ID, "owner"); err != nil {
+			slog.Error("auto-create workspace: add owner member failed after retry; deleting orphaned workspace",
+				"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", err)
+			if delErr := s.store.DeleteWorkspace(ws.Slug); delErr != nil {
+				slog.Error("auto-create workspace: failed to clean up orphaned workspace; manual intervention required",
+					"workspace_id", ws.ID, "workspace_slug", ws.Slug, "user_id", user.ID, "error", delErr)
+			}
+			return
+		}
+	}
 
 	slog.Info("auto-created default workspace", "user_id", user.ID, "workspace", ws.Slug)
 }

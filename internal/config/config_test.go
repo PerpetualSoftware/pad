@@ -262,6 +262,62 @@ func TestIsCloudServerOnlyOptsInViaEnv(t *testing.T) {
 	})
 }
 
+// TestValidateCloudSecureCookies guards B7 (TASK-1932): a server opted into
+// cloud-tenant mode without secure cookies must fail fast at startup rather
+// than silently shipping a __Host-pad_session cookie that pad's own cookie
+// reader can never see (cookie-name mismatch — "logged in but appears
+// logged out").
+func TestValidateCloudSecureCookies(t *testing.T) {
+	t.Run("cloud server without secure cookies is rejected", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("PAD_CLOUD", "true")
+		t.Setenv("PAD_SECURE_COOKIES", "")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if cfg.SecureCookies {
+			t.Fatal("test setup invariant broken: expected SecureCookies to default false")
+		}
+		if err := cfg.ValidateCloudSecureCookies(); err == nil {
+			t.Fatal("expected an error for PAD_CLOUD=true without PAD_SECURE_COOKIES")
+		}
+	})
+
+	t.Run("cloud server with secure cookies is accepted", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("PAD_CLOUD", "true")
+		t.Setenv("PAD_SECURE_COOKIES", "true")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if err := cfg.ValidateCloudSecureCookies(); err != nil {
+			t.Fatalf("expected no error when secure cookies are enabled, got: %v", err)
+		}
+	})
+
+	t.Run("non-cloud server without secure cookies is unaffected", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("PAD_CLOUD", "")
+		t.Setenv("PAD_MODE", "")
+		t.Setenv("PAD_SECURE_COOKIES", "")
+
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if err := cfg.ValidateCloudSecureCookies(); err != nil {
+			t.Fatalf("self-hosted (non-cloud-server) mode must not require secure cookies, got: %v", err)
+		}
+	})
+}
+
 func TestBrowserURLNormalizesUnspecifiedHost(t *testing.T) {
 	cases := []struct {
 		name string

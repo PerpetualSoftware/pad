@@ -321,6 +321,23 @@ func (c *Config) IsCloudServer() bool {
 	return c.cloudServerOptIn
 }
 
+// ValidateCloudSecureCookies returns an error if this server process is
+// opted into cloud-tenant mode (see IsCloudServer) without secure cookies
+// enabled. OAuth mints a hardcoded __Host-pad_session cookie (see
+// pad-cloud's oauth.go); browsers silently drop __Host--prefixed cookies
+// set without the Secure attribute, while pad's own session-cookie reader
+// falls back to the unprefixed "pad_session" name — so the mismatch never
+// surfaces as an error, it just makes users look "logged in but appears
+// logged out" (B7, TASK-1932). Self-hosted servers (IsCloudServer() ==
+// false) are unaffected — they can run without TLS on a LAN today and this
+// must not regress that.
+func (c *Config) ValidateCloudSecureCookies() error {
+	if c.IsCloudServer() && !c.SecureCookies {
+		return fmt.Errorf("PAD_SECURE_COOKIES must be true when running in cloud mode (PAD_CLOUD=true or PAD_MODE=cloud); insecure cookies break OAuth's __Host-pad_session cookie")
+	}
+	return nil
+}
+
 // Addr returns the host:port listen address.
 func (c *Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
