@@ -1308,10 +1308,12 @@ func (s *Server) setupRouter() {
 
 					// Project intelligence reads — next/standup/changelog
 					// (PLAN-1888 / TASK-1894). Mirror `pad project
-					// next|standup|changelog` (cmd/pad/main.go) and the MCP
-					// HTTP transport's dispatchProjectNext/Standup/Changelog
-					// (internal/mcp/dispatch_http_slice4.go) — KEEP IN SYNC,
-					// see handlers_project_intel.go's doc comments.
+					// next|standup|changelog` (cmd/pad/main.go) — KEEP IN
+					// SYNC, see handlers_project_intel.go's doc comments.
+					// The MCP HTTP transport's dispatchProjectNext/Standup/
+					// Changelog (internal/mcp/dispatch_http_project.go)
+					// proxy directly to these three handlers (TASK-1916),
+					// so they need no separate sync-keeping.
 					r.Get("/next", s.handleGetProjectNext)
 					r.Get("/standup", s.handleGetProjectStandup)
 					r.Get("/changelog", s.handleGetProjectChangelog)

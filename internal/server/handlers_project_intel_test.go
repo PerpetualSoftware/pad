@@ -128,9 +128,10 @@ func TestProjectStandupEndpoint_HappyPath(t *testing.T) {
 
 // TestProjectStandupEndpoint_DaysParam_FiltersOldCompletions pins the days
 // cutoff and the "malformed days silently falls back to the default"
-// semantics (matches dispatchProjectStandup's `numericInput(...) && n > 0`
-// gate and this codebase's REST convention for lenient numeric query params
-// — handleGetWorkspaceGraph's `depth`, GetReport's `window`).
+// semantics — this codebase's REST convention for lenient numeric query
+// params (handleGetWorkspaceGraph's `depth`, GetReport's `window`). The MCP
+// HTTP transport forwards `days` as-is and relies on this same gate
+// (TASK-1916) rather than replicating it.
 func TestProjectStandupEndpoint_DaysParam_FiltersOldCompletions(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -157,8 +158,7 @@ func TestProjectStandupEndpoint_DaysParam_FiltersOldCompletions(t *testing.T) {
 	}
 
 	// days=abc (malformed) and days=-3 (non-positive) both silently fall
-	// back to the default (1), NOT a 400 — matches dispatchProjectStandup's
-	// exact gate.
+	// back to the default (1), NOT a 400.
 	for _, malformed := range []string{"abc", "-3", "0"} {
 		rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/standup?days="+malformed, nil)
 		if rr.Code != http.StatusOK {
@@ -229,8 +229,8 @@ func TestProjectChangelogEndpoint_HappyPath(t *testing.T) {
 }
 
 // TestProjectChangelogEndpoint_SinceOverridesDays pins the CLI's silent
-// since-wins behavior (cmd/pad/main.go changelogCmd's if/else and
-// dispatchProjectChangelog): both since and days given → since wins, no 400.
+// since-wins behavior (cmd/pad/main.go changelogCmd's if/else): both since
+// and days given → since wins, no 400.
 func TestProjectChangelogEndpoint_SinceOverridesDays(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -265,9 +265,9 @@ func TestProjectChangelogEndpoint_InvalidSinceReturns400(t *testing.T) {
 	}
 }
 
-// TestProjectChangelogEndpoint_ParentFilter pins the parent-ref filter,
-// matching itemMatchesParentFilter / dispatchProjectChangelog's
-// itemMatchesParent: case-insensitive match against the item's parent ref.
+// TestProjectChangelogEndpoint_ParentFilter pins the parent-ref filter via
+// itemMatchesParentFilter: case-insensitive match against the item's parent
+// ref.
 func TestProjectChangelogEndpoint_ParentFilter(t *testing.T) {
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)

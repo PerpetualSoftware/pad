@@ -4,33 +4,38 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// --- project next / ready / stale ---
+// --- project next / standup / changelog / ready / stale ---
 
-// TestDispatch_ProjectNext_SlicesToSuggestedNext is the post-BUG-987
-// regression test. Pre-fix, `project next` was a route-table alias
-// for /dashboard and returned the entire dashboard payload — making
-// the action indistinguishable from `project dashboard`. Now it's
-// dispatched as a method on HTTPHandlerDispatcher that fetches the
-// dashboard then slices to suggested_next, matching the CLI's
-// post-fix `pad project next --format json` behaviour.
-func TestDispatch_ProjectNext_SlicesToSuggestedNext(t *testing.T) {
+// TestDispatch_ProjectNext_ProxiesToRESTEndpoint pins TASK-1916's
+// consolidation: `project next` no longer fetches /dashboard and
+// slices suggested_next itself (that reshaping — and its BUG-987 bug
+// 6 fix, keeping `project next` distinct from `project dashboard` —
+// now lives entirely in handleGetProjectNext,
+// internal/server/handlers_project_intel.go). The dispatcher just
+// forwards to GET /workspaces/{ws}/next and packages the response;
+// this test pins that forwarding plus the BUG-985 array-wrap, which
+// packageHTTPResponse applies generically to every proxied GET that
+// returns a bare JSON array.
+func TestDispatch_ProjectNext_ProxiesToRESTEndpoint(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/workspaces/docapp/dashboard", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/docapp/next", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"summary": {"total_items": 99},
-			"active_items": [{"slug":"x"}],
-			"suggested_next": [
-				{"item_ref":"TASK-1","item_title":"First","reason":"high priority"},
-				{"item_ref":"TASK-2","item_title":"Second","reason":"in_progress"}
-			]
-		}`))
+		_, _ = w.Write([]byte(`[
+			{"item_ref":"TASK-1","item_title":"First","reason":"high priority"},
+			{"item_ref":"TASK-2","item_title":"Second","reason":"in_progress"}
+		]`))
+	})
+	// /dashboard MUST NOT be hit — the dispatcher no longer fetches it
+	// for `project next`.
+	mux.HandleFunc("/api/v1/workspaces/docapp/dashboard", func(_ http.ResponseWriter, _ *http.Request) {
+		t.Errorf("project next should proxy straight to /next, not /dashboard")
 	})
 	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
 	res, err := d.Dispatch(
@@ -52,24 +57,16 @@ func TestDispatch_ProjectNext_SlicesToSuggestedNext(t *testing.T) {
 	if len(items) != 2 {
 		t.Errorf("expected 2 suggestions, got %d", len(items))
 	}
-	// Critical: dashboard-only fields must NOT appear at the top level
-	// of the structured content (the WHOLE point of project.next is to
-	// be smaller than the dashboard).
-	for _, leaked := range []string{"summary", "active_items"} {
-		if _, present := wrapped[leaked]; present {
-			t.Errorf("project.next leaked dashboard field %q at top level: %#v", leaked, wrapped)
-		}
-	}
 }
 
-// TestDispatch_ProjectNext_EmptyDashboardYieldsEmptyArray covers the
-// "no candidates" path — the response must still produce a valid
-// items envelope, not return an error or a missing field.
-func TestDispatch_ProjectNext_EmptyDashboardYieldsEmptyArray(t *testing.T) {
+// TestDispatch_ProjectNext_EmptyArrayStaysEmpty covers the "no
+// candidates" path — the response must still produce a valid items
+// envelope, not an error or a missing field.
+func TestDispatch_ProjectNext_EmptyArrayStaysEmpty(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/workspaces/docapp/dashboard", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/docapp/next", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"suggested_next": []}`))
+		_, _ = w.Write([]byte(`[]`))
 	})
 	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
 	res, err := d.Dispatch(
@@ -86,6 +83,236 @@ func TestDispatch_ProjectNext_EmptyDashboardYieldsEmptyArray(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Errorf("expected 0 suggestions, got %d", len(items))
+	}
+}
+
+// TestDispatch_ProjectNext_RequiresWorkspace pins the pad_set_workspace
+// hint even though the action is now a thin proxy: a plain routeTable
+// entry's missing-{workspace}-placeholder error uses a different,
+// more generic hint (see expandPath, dispatch_http_routes.go), so
+// dispatchProjectNext validates workspace itself before ever building
+// the proxied request.
+func TestDispatch_ProjectNext_RequiresWorkspace(t *testing.T) {
+	d := &HTTPHandlerDispatcher{
+		Handler:      errorHandler(t, "must not be called when workspace missing"),
+		UserResolver: fixedUserResolver(&models.User{ID: "u"}),
+	}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{}),
+		[]string{"project", "next"}, nil,
+	)
+	if err != nil {
+		t.Fatalf("Dispatch err: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("expected IsError when workspace missing")
+	}
+	if !containsToolText(res, "pad_set_workspace") {
+		t.Errorf("hint should mention pad_set_workspace: %#v", res)
+	}
+}
+
+// --- project standup ---
+
+// TestDispatch_ProjectStandup_RequiresWorkspace moved from the
+// pre-TASK-1916 dispatch_http_slice4_test.go — still valid unchanged:
+// the thin proxy validates workspace before ever touching Handler.
+func TestDispatch_ProjectStandup_RequiresWorkspace(t *testing.T) {
+	d := &HTTPHandlerDispatcher{
+		Handler:      errorHandler(t, "must not be called when workspace missing"),
+		UserResolver: fixedUserResolver(&models.User{ID: "u"}),
+	}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{}),
+		[]string{"project", "standup"}, nil,
+	)
+	if err != nil {
+		t.Fatalf("Dispatch err: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("expected IsError when workspace missing")
+	}
+}
+
+// TestDispatch_ProjectStandup_ForwardsDaysAndPackagesResponse pins
+// TASK-1916's consolidation: the dispatcher no longer builds the
+// standup payload itself (dashboard fetch + per-status ListItems loop
+// + in-progress fetch — all now in handleGetProjectStandup,
+// internal/server/handlers_project_intel.go, and covered there by
+// TestProjectStandupEndpoint_*). This test only pins the parts that
+// live in the dispatcher: `days` forwarded as a query param, and the
+// REST JSON object response passed through as structuredContent
+// verbatim (no re-wrap — only bare arrays get the {items:[...]} wrap).
+func TestDispatch_ProjectStandup_ForwardsDaysAndPackagesResponse(t *testing.T) {
+	var gotDays string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/standup", func(w http.ResponseWriter, r *http.Request) {
+		gotDays = r.URL.Query().Get("days")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"date":"2026-07-03","days":3,"completed":[],"in_progress":[],"blockers":[],"suggested_next":[]}`))
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{
+			"workspace": "docapp",
+			"days":      float64(3),
+		}),
+		[]string{"project", "standup"}, nil,
+	)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	if gotDays != "3" {
+		t.Errorf("days query param = %q, want %q", gotDays, "3")
+	}
+	payload, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent = %T, want map[string]any", res.StructuredContent)
+	}
+	if payload["days"].(float64) != 3 {
+		t.Errorf("payload days = %v, want 3 (server response passed through verbatim)", payload["days"])
+	}
+}
+
+// TestDispatch_ProjectStandup_OmitsDaysWhenNotGiven confirms the
+// dispatcher no longer applies its own days=1 default — that default
+// is redundant now that parseDaysParam (handlers_project_intel.go)
+// applies the identical fallback server-side, so the dispatcher simply
+// omits the query param when the caller didn't supply one.
+func TestDispatch_ProjectStandup_OmitsDaysWhenNotGiven(t *testing.T) {
+	sawDaysParam := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/standup", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Has("days") {
+			sawDaysParam = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"date":"2026-07-03","days":1,"completed":[],"in_progress":[],"blockers":[],"suggested_next":[]}`))
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{"workspace": "docapp"}),
+		[]string{"project", "standup"}, nil,
+	)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	if sawDaysParam {
+		t.Errorf("dispatcher should omit ?days when caller didn't supply one, letting the server default apply")
+	}
+}
+
+// --- project changelog ---
+
+// TestDispatch_ProjectChangelog_ForwardsQueryParams pins TASK-1916's
+// consolidation for changelog: days/since/parent forwarded as query
+// params, response passed through verbatim. The grouping/filtering/
+// since-precedence business logic this used to test at the MCP layer
+// now lives in handleGetProjectChangelog and is covered there by
+// TestProjectChangelogEndpoint_*.
+func TestDispatch_ProjectChangelog_ForwardsQueryParams(t *testing.T) {
+	var gotQuery url.Values
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/changelog", func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"period":"since 2025-01-01 (parent: PLAN-3)","since":"2025-01-01","total":0,"groups":[]}`))
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{
+			"workspace": "docapp",
+			"days":      float64(7),
+			"since":     "2025-01-01",
+			"parent":    "PLAN-3",
+		}),
+		[]string{"project", "changelog"}, nil,
+	)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	if gotQuery.Get("days") != "7" {
+		t.Errorf("days query param = %q, want %q", gotQuery.Get("days"), "7")
+	}
+	if gotQuery.Get("since") != "2025-01-01" {
+		t.Errorf("since query param = %q, want %q", gotQuery.Get("since"), "2025-01-01")
+	}
+	if gotQuery.Get("parent") != "PLAN-3" {
+		t.Errorf("parent query param = %q, want %q", gotQuery.Get("parent"), "PLAN-3")
+	}
+	payload, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent = %T, want map[string]any", res.StructuredContent)
+	}
+	if payload["since"] != "2025-01-01" {
+		t.Errorf("payload since = %v, want 2025-01-01 (server response passed through verbatim)", payload["since"])
+	}
+}
+
+// TestDispatch_ProjectChangelog_RequiresWorkspace mirrors standup's:
+// the thin proxy validates workspace before touching Handler.
+func TestDispatch_ProjectChangelog_RequiresWorkspace(t *testing.T) {
+	d := &HTTPHandlerDispatcher{
+		Handler:      errorHandler(t, "must not be called when workspace missing"),
+		UserResolver: fixedUserResolver(&models.User{ID: "u"}),
+	}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{}),
+		[]string{"project", "changelog"}, nil,
+	)
+	if err != nil {
+		t.Fatalf("Dispatch err: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("expected IsError when workspace missing")
+	}
+}
+
+// TestDispatch_ProjectChangelog_BadSinceProxiesGenericValidationError
+// pins the one observable behavior change TASK-1916 accepted: a
+// malformed `since` no longer gets a bespoke dispatcher-side hint —
+// it flows through the REST endpoint's 400 and the generic
+// classifyHTTPStatusKind path like every other proxied validation
+// error. The ErrValidationFailed code is unchanged; only the hint
+// wording is generic now (still contains the backend's reason via the
+// "Backend: ..." clause).
+func TestDispatch_ProjectChangelog_BadSinceProxiesGenericValidationError(t *testing.T) {
+	srv, st := newPadServer(t)
+	wsRec := doJSONReq(t, srv, http.MethodPost, "/api/v1/workspaces", map[string]any{"name": "DocApp"})
+	if wsRec.Code != http.StatusCreated {
+		t.Fatalf("create workspace: %d %s", wsRec.Code, wsRec.Body.String())
+	}
+	var ws models.Workspace
+	if err := json.Unmarshal(wsRec.Body.Bytes(), &ws); err != nil {
+		t.Fatalf("decode workspace: %v", err)
+	}
+	owner, err := st.CreateUser(models.UserCreate{Email: "dave2@example.com", Name: "Dave", Password: "x"})
+	if err != nil {
+		t.Fatalf("create owner: %v", err)
+	}
+	if err := st.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("add owner: %v", err)
+	}
+	d := &HTTPHandlerDispatcher{Handler: srv, UserResolver: fixedUserResolver(owner)}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{
+			"workspace": ws.Slug,
+			"since":     "not-a-date",
+		}),
+		[]string{"project", "changelog"}, nil,
+	)
+	if err != nil {
+		t.Fatalf("Dispatch err: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("expected IsError for malformed since")
+	}
+	env := unwrapErrorEnvelope(t, res)
+	if env.Error.Code != ErrValidationFailed {
+		t.Errorf("code = %q, want %q (code must stay stable across the consolidation)", env.Error.Code, ErrValidationFailed)
+	}
+	if !strings.Contains(env.Error.Hint, "since") {
+		t.Errorf("hint should still surface the backend's since-date reason: %q", env.Error.Hint)
 	}
 }
 

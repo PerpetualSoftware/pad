@@ -12,19 +12,18 @@ import (
 // This file implements the browser/REST surface for the "project
 // intelligence" reads (PLAN-1888 / TASK-1894): next, standup, changelog.
 //
-// KEEP IN SYNC — these three handlers are the THIRD reproduction of this
-// reshaping contract, alongside:
-//   - cmd/pad/main.go: nextCmd / standupCmd / changelogCmd (the canonical
-//     CLI implementations `pad project next|standup|changelog --format json`)
-//   - internal/mcp/dispatch_http_slice4.go: dispatchProjectNext /
-//     dispatchProjectStandup / dispatchProjectChangelog (the MCP HTTP
-//     transport's reproduction of the same contract)
+// KEEP IN SYNC — these three handlers are the canonical server-side
+// reshaping contract, alongside cmd/pad/main.go's nextCmd / standupCmd /
+// changelogCmd (the CLI implementations of `pad project
+// next|standup|changelog --format json`). The two must agree on defaults,
+// per-status best-effort semantics, and output shape.
 //
-// All three must agree on defaults, per-status best-effort semantics, and
-// output shape. A follow-up task will consolidate slice4 onto these REST
-// endpoints (route-table + delete the custom dispatchers) — until then,
-// changes here need a matching change (or an explicit noted divergence) in
-// both siblings above.
+// internal/mcp/dispatch_http_project.go's dispatchProjectNext /
+// dispatchProjectStandup / dispatchProjectChangelog are NOT a third
+// reproduction — as of TASK-1916 they're thin proxies that forward to these
+// handlers (GET /next, /standup, /changelog) and package the response, so
+// reshaping/default changes made here reach the MCP transport automatically
+// with no matching change required there.
 //
 // Asymmetry resolved (TASK-1894 codex round 1 / BUG-1917): handleGetProjectStandup
 // scopes its own completed/in_progress ListItems calls through
@@ -38,11 +37,12 @@ import (
 // reason the two couldn't diverge on gating in the first place.
 
 // parseDaysParam reads a "days" query param with a fallback default. Mirrors
-// the CLI's `n > 0` gate (standupCmd/changelogCmd flag defaults) and the MCP
-// HTTP transport's `numericInput(...) && n > 0` gate in dispatch_http_slice4.go:
-// absent, non-numeric, zero, or negative all silently fall back to the
-// default rather than erroring — this also matches this codebase's existing
-// REST convention for lenient numeric query params (handleGetWorkspaceGraph's
+// the CLI's `n > 0` gate (standupCmd/changelogCmd flag defaults); the MCP
+// HTTP transport forwards `days` as-is and relies on this same gate rather
+// than replicating it (TASK-1916). Absent, non-numeric, zero, or negative
+// all silently fall back to the default rather than erroring — this also
+// matches this codebase's existing REST convention for lenient numeric
+// query params (handleGetWorkspaceGraph's
 // `depth`, GetReport's `window`), so days is not a divergence from either
 // sibling or the surrounding REST style.
 func parseDaysParam(r *http.Request, def int) int {
@@ -58,10 +58,9 @@ func parseDaysParam(r *http.Request, def int) int {
 }
 
 // itemMatchesParentFilter mirrors the CLI's parent-filter matching
-// (cmd/pad/main.go's changelogCmd) and dispatch_http_slice4.go's
-// itemMatchesParent: case-insensitive comparison against the item's parent
-// link id, parent ref, or parent title. Lets an agent/user pass a UUID, an
-// issue ref like "PLAN-3", or the human-readable title.
+// (cmd/pad/main.go's changelogCmd): case-insensitive comparison against the
+// item's parent link id, parent ref, or parent title. Lets an agent/user
+// pass a UUID, an issue ref like "PLAN-3", or the human-readable title.
 func itemMatchesParentFilter(item models.Item, parent string) bool {
 	for _, v := range []string{item.ParentLinkID, item.ParentRef, item.ParentTitle} {
 		if v != "" && strings.EqualFold(v, parent) {
@@ -108,12 +107,13 @@ func (s *Server) projectIntelVisibility(r *http.Request, workspaceID string) (co
 }
 
 // listTerminalItemsSince fetches items in each of models.DefaultTerminalStatuses
-// (one ListItems call per status — mirrors the CLI/slice4 loop rather than
-// OR-ing statuses into a single query), keeping only items updated after
-// cutoff, up to limit items considered per status. A store error for one
-// status is swallowed and the loop continues — matches the CLI's and
-// slice4's best-effort semantics: a transient failure on one status must not
-// blank out the whole report.
+// (one ListItems call per status — mirrors the CLI's loop rather than OR-ing
+// statuses into a single query), keeping only items updated after cutoff, up
+// to limit items considered per status. A store error for one status is
+// swallowed and the loop continues — matches the CLI's best-effort
+// semantics: a transient failure on one status must not blank out the whole
+// report. The MCP transport inherits this by proxying here (TASK-1916)
+// rather than replicating the loop.
 func (s *Server) listTerminalItemsSince(
 	workspaceID string, collIDs, itemIDs []string, cutoff time.Time, limit int,
 ) []models.Item {
@@ -143,8 +143,10 @@ func (s *Server) listTerminalItemsSince(
 // handleGetProjectNext returns the dashboard's suggested_next array — the
 // same data `pad project next --format json` prints (cmd/pad/main.go's
 // nextCmd, post BUG-987 bug 6: ONLY the suggested_next array, not the whole
-// dashboard) and dispatchProjectNext (dispatch_http_slice4.go) returns over
-// the MCP HTTP transport. Returned as a bare JSON array (matching the CLI's
+// dashboard). The MCP HTTP transport's dispatchProjectNext
+// (internal/mcp/dispatch_http_project.go) proxies straight to this endpoint
+// (TASK-1916), so it returns the exact same shape. Returned as a bare JSON
+// array (matching the CLI's
 // `cli.PrintJSON(dash.SuggestedNext)` and the handleListItems bare-array
 // convention), never null (buildDashboardResponse initializes SuggestedNext
 // to []DashboardSuggestion{}).
@@ -164,8 +166,9 @@ func (s *Server) handleGetProjectNext(w http.ResponseWriter, r *http.Request) {
 // --- GET /workspaces/{slug}/standup ---
 
 // StandupItem is one row in a StandupResponse list. Field-for-field mirror
-// of cmd/pad/main.go's standupCmd `standupItem` JSON type and
-// dispatch_http_slice4.go's dispatchProjectStandup `standupItem` type.
+// of cmd/pad/main.go's standupCmd `standupItem` JSON type. The MCP HTTP
+// transport's dispatchProjectStandup proxies to this endpoint (TASK-1916)
+// rather than defining its own type, so this is the sole server-side shape.
 type StandupItem struct {
 	Ref      string `json:"ref"`
 	Title    string `json:"title"`
@@ -175,7 +178,8 @@ type StandupItem struct {
 }
 
 // StandupResponse mirrors cmd/pad/main.go's standupCmd `standupJSON` type
-// and dispatch_http_slice4.go's dispatchProjectStandup payload map exactly.
+// exactly; the MCP HTTP transport proxies to this endpoint (TASK-1916) and
+// passes the encoded response through verbatim.
 type StandupResponse struct {
 	Date          string        `json:"date"`
 	Days          int           `json:"days"`
@@ -191,10 +195,10 @@ type StandupResponse struct {
 //	See parseDaysParam for the lenient-default semantics.
 //
 // Mirrors `pad project standup --format json` (cmd/pad/main.go standupCmd)
-// and dispatchProjectStandup (dispatch_http_slice4.go) exactly: dashboard
-// for active items / blockers / suggested-next, plus a per-terminal-status
-// ListItems loop (limit 20, best-effort) for "completed", plus an unbounded
-// in-progress ListItems call.
+// exactly: dashboard for active items / blockers / suggested-next, plus a
+// per-terminal-status ListItems loop (limit 20, best-effort) for
+// "completed", plus an unbounded in-progress ListItems call. The MCP HTTP
+// transport's dispatchProjectStandup proxies straight here (TASK-1916).
 func (s *Server) handleGetProjectStandup(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -219,7 +223,7 @@ func (s *Server) handleGetProjectStandup(w http.ResponseWriter, r *http.Request)
 
 	// In-progress items: unbounded, best-effort (a store error yields an
 	// empty list rather than failing the whole standup — matches the CLI's
-	// `inProgressItems = nil` fallback and slice4's identical tolerance).
+	// `inProgressItems = nil` fallback).
 	inProgress, err := s.store.ListItems(workspaceID, models.ItemListParams{
 		CollectionIDs: collIDs,
 		ItemIDs:       itemIDs,
@@ -273,8 +277,9 @@ func (s *Server) handleGetProjectStandup(w http.ResponseWriter, r *http.Request)
 // --- GET /workspaces/{slug}/changelog ---
 
 // ChangelogItem is one row in a ChangelogGroup. Field-for-field mirror of
-// cmd/pad/main.go's changelogCmd `changelogItem` JSON type and
-// dispatch_http_slice4.go's dispatchProjectChangelog `changelogItem` type.
+// cmd/pad/main.go's changelogCmd `changelogItem` JSON type. The MCP HTTP
+// transport's dispatchProjectChangelog proxies to this endpoint (TASK-1916)
+// rather than defining its own type.
 type ChangelogItem struct {
 	Ref    string `json:"ref"`
 	Title  string `json:"title"`
@@ -282,8 +287,7 @@ type ChangelogItem struct {
 }
 
 // ChangelogGroup is one collection's bucket of completed items within the
-// changelog window. Mirrors changelogCmd's `changelogGroup` /
-// dispatchProjectChangelog's `changelogGroup`.
+// changelog window. Mirrors changelogCmd's `changelogGroup`.
 type ChangelogGroup struct {
 	Collection string          `json:"collection"`
 	Icon       string          `json:"icon,omitempty"`
@@ -291,8 +295,9 @@ type ChangelogGroup struct {
 	Items      []ChangelogItem `json:"items"`
 }
 
-// ChangelogResponse mirrors changelogCmd's `changelogJSON` type and
-// dispatchProjectChangelog's payload map exactly.
+// ChangelogResponse mirrors changelogCmd's `changelogJSON` type exactly; the
+// MCP HTTP transport proxies to this endpoint (TASK-1916) and passes the
+// encoded response through verbatim.
 type ChangelogResponse struct {
 	Period string           `json:"period"`
 	Since  string           `json:"since"`
@@ -306,19 +311,20 @@ type ChangelogResponse struct {
 //
 //	days   (optional, default 7) — lookback window. See parseDaysParam.
 //	since  (optional, YYYY-MM-DD) — takes precedence over days when both are
-//	       given (silent since-wins, matching the CLI's if/else and
-//	       dispatchProjectChangelog exactly — all three surfaces already
-//	       agree on this, REST doesn't get to be the odd one out). Malformed
-//	       since → 400 bad_request (matches the CLI's hard error and
-//	       dispatchProjectChangelog's validationFailedResult).
+//	       given (silent since-wins, matching the CLI's if/else — REST
+//	       doesn't get to be the odd one out). Malformed since → 400
+//	       bad_request (matches the CLI's hard error; the MCP transport gets
+//	       this for free by proxying — see TASK-1916's note on
+//	       dispatchProjectChangelog about the resulting generic-hint
+//	       divergence from the pre-consolidation bespoke wording).
 //	parent (optional, ref/slug/UUID/title) — scope to items whose parent
 //	       matches, via itemMatchesParentFilter.
 //
 // Mirrors `pad project changelog --format json` (cmd/pad/main.go
-// changelogCmd) and dispatchProjectChangelog (dispatch_http_slice4.go)
-// exactly: a per-terminal-status ListItems loop (limit 100, best-effort),
-// cutoff + parent filtering, grouped by collection preserving first-seen
-// order.
+// changelogCmd) exactly: a per-terminal-status ListItems loop (limit 100,
+// best-effort), cutoff + parent filtering, grouped by collection preserving
+// first-seen order. The MCP HTTP transport's dispatchProjectChangelog
+// proxies straight here (TASK-1916).
 func (s *Server) handleGetProjectChangelog(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -364,7 +370,7 @@ func (s *Server) handleGetProjectChangelog(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Group by collection slug, preserving first-seen ordering (matches the
-	// CLI's groupOrder slice / dispatchProjectChangelog's identical approach).
+	// CLI's groupOrder slice).
 	groupOrder := make([]string, 0)
 	groups := make(map[string]*ChangelogGroup)
 	for _, item := range items {
