@@ -352,25 +352,27 @@ func TestCSRF_CLISessionApprove_RequiresCSRF(t *testing.T) {
 }
 
 // TestCSRF_TrailingSlashVariant_OfExemptPath_NotExempted guards the exact-
-// match design of authCSRFExemptPaths: a trailing-slash variant of an
-// otherwise-exempt path (e.g. "/api/v1/auth/register/") must NOT inherit
-// the bare path's exemption via prefix-matching or path normalization.
+// match design of authCSRFUnconditionalExemptPaths: a trailing-slash
+// variant of an otherwise-exempt path (e.g. "/api/v1/auth/login/") must
+// NOT inherit the bare path's exemption via prefix-matching or path
+// normalization. Uses login (unconditionally exempt) rather than register
+// (session-gated) so this test isolates the exact-match property from the
+// currentUser(r) == nil gate register alone carries.
 func TestCSRF_TrailingSlashVariant_OfExemptPath_NotExempted(t *testing.T) {
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
-	sessionToken := loginUser(t, srv, "admin@test.com", "correct-horse-battery-staple")
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/register/", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login/", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
 	req.RemoteAddr = "192.0.2.1:1234"
-	req.AddCookie(&http.Cookie{Name: "pad_session", Value: sessionToken})
-	// Deliberately no CSRF cookie/header.
+	// No session cookie either — the point is that the trailing slash
+	// alone must not carry the exemption, independent of session state.
 	w := httptest.NewRecorder()
 	srv.ServeHTTP(w, req)
 
 	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "csrf") {
-		t.Errorf("trailing-slash variant of an exempt path must still require CSRF, got %d: %s", w.Code, w.Body.String())
+		t.Errorf("trailing-slash variant of an unconditionally exempt path must still require CSRF, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -633,4 +635,66 @@ func TestCSRF_ValidBearerPlusSessionCookie_ExemptRegardless(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("valid Bearer + session cookie, no CSRF token: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
+}
+
+// TestCSRF_LoginAndBootstrap_ExemptEvenWithAmbientSessionCookie pins the
+// exact regression codex round 4's CI (E2E) run caught: round 2's fix
+// gated the WHOLE authCSRFExemptPaths list (not just register) on
+// currentUser(r) == nil, so a /login POST carrying a lingering session
+// cookie — e.g. the E2E harness bootstrapping the admin (which mints a
+// session cookie) and then immediately POSTing /login to re-authenticate
+// — got a spurious 403 csrf_error instead of reaching the handler. Only
+// register has a session-privileged branch that justifies the
+// currentUser(r) == nil gate; login/bootstrap have none, so an ambient
+// cookie must never cost them their exemption. This is unit-level
+// coverage for the exact case the E2E suite hit, since static review
+// alone missed the blast radius of round 2's fix.
+func TestCSRF_LoginAndBootstrap_ExemptEvenWithAmbientSessionCookie(t *testing.T) {
+	srv := testServer(t)
+
+	sessionToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	t.Run("login with ambient session cookie, no CSRF header", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(
+			`{"email":"admin@test.com","password":"correct-horse-battery-staple"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "192.0.2.1:1234"
+		req.AddCookie(&http.Cookie{Name: "pad_session", Value: sessionToken})
+		// Deliberately no CSRF cookie/header — this is exactly what the
+		// E2E harness's global-setup.ts sends after bootstrapping.
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if strings.Contains(w.Body.String(), "csrf") {
+			t.Fatalf("login with an ambient session cookie must not be blocked by CSRF, got %d: %s", w.Code, w.Body.String())
+		}
+		if w.Code != http.StatusOK {
+			t.Fatalf("login with correct credentials + ambient cookie: expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("bootstrap with ambient session cookie, no CSRF header", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/bootstrap", strings.NewReader(
+			`{"email":"second@test.com","name":"Second","password":"correct-horse-battery-staple"}`))
+		req.Header.Set("Content-Type", "application/json")
+		// handleBootstrap is also loopback-gated (separate from CSRF);
+		// use a loopback RemoteAddr so the request reaches the CSRF-
+		// irrelevant business logic this test actually cares about,
+		// same as bootstrapFirstUser's own doLoopbackRequest helper.
+		req.RemoteAddr = "127.0.0.1:1234"
+		req.AddCookie(&http.Cookie{Name: "pad_session", Value: sessionToken})
+		// Deliberately no CSRF cookie/header.
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+
+		if strings.Contains(w.Body.String(), "csrf") {
+			t.Fatalf("bootstrap with an ambient session cookie must not be blocked by CSRF, got %d: %s", w.Code, w.Body.String())
+		}
+		// A user already exists (bootstrapFirstUser above), so the
+		// handler correctly rejects this with a business-logic 409 — the
+		// point is that it's a business-logic rejection, not a CSRF one.
+		if w.Code != http.StatusConflict {
+			t.Fatalf("bootstrap on an already-initialized instance: expected 409 conflict (business logic), got %d: %s", w.Code, w.Body.String())
+		}
+	})
 }

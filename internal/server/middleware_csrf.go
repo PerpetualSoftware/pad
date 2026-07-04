@@ -13,48 +13,26 @@ const (
 	csrfTokenLen = 32 // 32 bytes = 64 hex chars
 )
 
-// authCSRFExemptPaths lists the exact /api/v1/auth/* paths that are safe to
-// exempt from the double-submit CSRF check WHEN THE REQUEST IS
-// UNAUTHENTICATED (B8, TASK-1932; tightened for a P1 in codex round 2 — see
-// below). Every other mutating /api/v1/auth/* endpoint is cookie-session-
-// gated and requires the CSRF token like any other authenticated mutation —
-// the web client's shared request() wrapper already attaches X-CSRF-Token
-// on every non-GET/HEAD call, so narrowing this list doesn't require a
-// frontend change.
+// authCSRFUnconditionalExemptPaths lists the exact /api/v1/auth/* paths
+// whose authority comes entirely from the request BODY — credentials, a
+// one-time token, or a shared secret — never from the ambient session
+// cookie (B8, TASK-1932). A cookie riding alongside one of these requests
+// doesn't escalate what the handler does, so these stay exempt from the
+// double-submit CSRF check REGARDLESS of whether SessionAuth also
+// resolved a user for the request.
 //
-// The exemption is conditioned on currentUser(r) == nil (checked at the
-// call site below), not just the path. codex round 2 caught that
-// /auth/register is genuinely anonymous MOST of the time, but
-// handleRegister also has an admin-session branch (an already-logged-in
-// admin can create a verified account with no invitation code) — a plain
-// path exemption let a cross-site POST ride the admin's cookie straight
-// into that branch with no CSRF token, the same class of hole as the
-// oauth-unlink case B8 already closed. Gating on currentUser(r) == nil
-// closes register's admin branch, and any other session-authenticated
-// branch a future handler on this list grows, without touching handler
-// code: a request that resolved to a real session via SessionAuth (which
-// runs before CSRFProtect — server.go's TokenAuth/SessionAuth/RateLimit/
-// CSRFProtect/RequireAuth ordering) falls through to the normal
-// double-submit check below instead of the early exemption. Requests
-// carrying a Bearer credential that TokenAuth actually VALIDATED (a PAT
-// or a CLI session-bearer token) are unaffected — they hit
-// isValidatedBearerAuth's unconditional exemption further down this
-// function regardless of whether a cookie is also present, because
-// TokenAuth runs first and short-circuits SessionAuth once currentUser is
-// already set. A Bearer header TokenAuth did NOT validate (garbage or
-// rejected, reaching here only via rejectInvalidBearer's public-path
-// fallthrough) is a DIFFERENT case — see the header-presence check
-// further down and its codex-round-3 fix note; it is exempt only when no
-// session was also resolved, precisely so it can't ride a victim's cookie
-// through this path exemption. The pad-cloud sidecar sends no cookies at
-// all, so oauth-login/oauth-link stay exempt (currentUser(r) is always
-// nil for them). One accepted interaction with the round-1 legacy-cookie
-// decision: a user resolved via SessionAuth's legacy pad_session cookie
-// fallback also loses this exemption and needs a real CSRF token to
-// re-hit login/register — harmless, since they're already logged in and
-// the frontend sends the header anyway; an EXPIRED or absent legacy
-// session resolves to currentUser(r) == nil and stays exempt, so there's
-// no lockout path for a genuinely anonymous visitor.
+// This isn't just a convenience: pad mints the pad_csrf cookie AT LOGIN
+// (createAuthSession), so a pre-session endpoint like /login or
+// /bootstrap categorically CANNOT require a CSRF token that doesn't exist
+// yet. And a lingering session cookie from an earlier login (an E2E test
+// harness re-bootstrapping the admin then logging in fresh, the pad CLI,
+// a browser tab that re-authenticates as a different account, or simply
+// a stale cookie sitting alongside a fresh login POST) must not turn that
+// legitimate re-login into a CSRF failure. codex round 4 (via CI's E2E
+// suite, not static review — the gap the unit suite was missing) caught
+// exactly this: gating the WHOLE list on currentUser(r) == nil (round 2's
+// fix) broke /login whenever an ambient cookie was present, because
+// login's authority is the password in the body, not the cookie.
 //
 // This is an EXACT path match (not a prefix), on purpose: a prefix match is
 // exactly the bug B8 flags. In particular:
@@ -82,9 +60,16 @@ const (
 //   - "/api/v1/auth/logout" is deliberately NOT here — it's a real,
 //     cookie-session-authenticated mutation, and the frontend already
 //     sends CSRF on it via the shared request() wrapper.
-var authCSRFExemptPaths = map[string]bool{
+//   - "/api/v1/auth/register" is deliberately NOT here — see
+//     authCSRFSessionGatedExemptPaths below.
+//
+// Requests carrying a Bearer credential that TokenAuth actually VALIDATED
+// (a PAT or a CLI session-bearer token) are unaffected by any of this —
+// they hit isValidatedBearerAuth's unconditional exemption further down
+// this function regardless of path or cookie presence; see that check's
+// comment for the codex-round-3 validated-vs-present distinction.
+var authCSRFUnconditionalExemptPaths = map[string]bool{
 	"/api/v1/auth/bootstrap":           true,
-	"/api/v1/auth/register":            true,
 	"/api/v1/auth/login":               true,
 	"/api/v1/auth/forgot-password":     true,
 	"/api/v1/auth/reset-password":      true,
@@ -95,6 +80,34 @@ var authCSRFExemptPaths = map[string]bool{
 	"/api/v1/auth/oauth-login":         true,
 	"/api/v1/auth/oauth-link":          true,
 	"/api/v1/auth/cli/sessions":        true,
+}
+
+// authCSRFSessionGatedExemptPaths lists /api/v1/auth/* paths that are
+// exempt from CSRF ONLY when the request carries no session — i.e. only
+// when currentUser(r) == nil at the call site below. Unlike the
+// unconditional set above, these handlers have an ALTERNATE authorization
+// branch that DOES read the ambient session cookie, so exempting them
+// unconditionally would let a cross-site request ride a victim's cookie
+// into that branch with no CSRF token.
+//
+// register is the only entry: handleRegister is genuinely anonymous most
+// of the time (self-serve cloud signup, invitation acceptance), but it
+// also has an admin-session branch (an already-logged-in admin can
+// create a verified account with no invitation code) — codex round 2
+// found that a plain path exemption let a cross-site POST ride the
+// admin's cookie straight into that branch with no CSRF token, the same
+// class of hole as oauth-unlink. Gating on currentUser(r) == nil closes
+// that branch (a session-authenticated register falls through to the
+// real double-submit check) while a genuinely anonymous register keeps
+// the exemption. This is deliberately its OWN map (not folded into the
+// unconditional set with a blanket currentUser guard, which is what
+// round 2 originally did and what round 4's CI-caught regression forced
+// apart): login/bootstrap/etc. have no session-privileged branch at all,
+// so gating them on currentUser(r) == nil was never a security
+// requirement — it just broke legitimate re-login-with-a-lingering-cookie
+// flows for no benefit.
+var authCSRFSessionGatedExemptPaths = map[string]bool{
+	"/api/v1/auth/register": true,
 }
 
 // CSRFProtect implements the double-submit cookie pattern for CSRF protection.
@@ -122,31 +135,25 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 			return
 		}
 
-		// Auth endpoints that need to work before a CSRF token exists
-		// (login, register, bootstrap, password reset, ...) or that don't
-		// trust the ambient session at all. See authCSRFExemptPaths for
-		// the full rationale per entry — this is an EXACT match, not a
-		// prefix, so a mutating cookie-authed endpoint elsewhere under
-		// /api/v1/auth/* (PATCH /me, tokens, 2FA management, delete-
-		// account, oauth-unlink, CLI-session approve, logout, ...) still
-		// falls through to the CSRF check below like any other
-		// authenticated mutation (B8, TASK-1932).
-		//
-		// The currentUser(r) == nil guard closes a P1 codex found in
-		// round 2: handleRegister has an admin-session branch (an
-		// already-logged-in admin can create a verified account with no
-		// invitation code), so exempting the bare path let a cross-site
-		// POST ride the admin's cookie into that branch with no CSRF
-		// token. SessionAuth runs before CSRFProtect, so currentUser(r)
-		// is already populated for any request carrying a valid session
-		// — gating on it here means a session-authenticated request to
-		// one of these paths falls through to the real double-submit
-		// check below, while a genuinely anonymous request (no session,
-		// including one that failed the round-1 legacy-cookie decision)
-		// keeps the exemption. See authCSRFExemptPaths's doc comment for
-		// the full reasoning, including why Bearer/cloud-secret callers
-		// are unaffected.
-		if authCSRFExemptPaths[r.URL.Path] && currentUser(r) == nil {
+		// Auth endpoints whose authority comes entirely from the request
+		// body (credentials, a one-time token, a shared secret) — never
+		// from the ambient session cookie — stay exempt regardless of
+		// whether SessionAuth also resolved a user for this request. See
+		// authCSRFUnconditionalExemptPaths for the full per-entry
+		// rationale and the round-4 CI regression this split fixes
+		// (B8, TASK-1932).
+		if authCSRFUnconditionalExemptPaths[r.URL.Path] {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// register is exempt ONLY when unauthenticated: handleRegister
+		// has an admin-session branch that DOES derive authority from the
+		// ambient cookie (codex round 2), so a session-authenticated
+		// request falls through to the real double-submit check below
+		// instead of this exemption, while a genuinely anonymous request
+		// keeps it. See authCSRFSessionGatedExemptPaths's doc comment.
+		if authCSRFSessionGatedExemptPaths[r.URL.Path] && currentUser(r) == nil {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -201,7 +208,7 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 		// request carrying a victim's real session cookie plus an
 		// attacker-supplied garbage Bearer header would sail past CSRF —
 		// on any /api/v1/auth/* path (isPublicAPIPath prefix-matches the
-		// whole tree, far wider than authCSRFExemptPaths above), not just
+		// whole tree, far wider than the exempt-path maps above), not just
 		// the newly-tightened B8 endpoints. Gating on currentUser(r) ==
 		// nil preserves the CLI-recovery contract this fallthrough exists
 		// for (a pure Bearer client with an expired/garbage token, no
