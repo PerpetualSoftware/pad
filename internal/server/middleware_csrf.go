@@ -142,7 +142,35 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 			return
 		}
 
-		// Cookie-based session: require CSRF token
+		// Cookie-based session: require CSRF token.
+		//
+		// Deliberately NO legacy-name fallback here, unlike SessionAuth's
+		// __Host-pad_session -> pad_session fallback (middleware_auth.go)
+		// for the session cookie. The two cookies have different trust
+		// requirements:
+		//   - Session cookie: the token VALUE is an unguessable secret: an
+		//     attacker who can only set the unprefixed name still can't
+		//     forge a value the store will accept. Accepting the legacy
+		//     name is just an upgrade-path convenience.
+		//   - CSRF cookie: double-submit's security property is "the
+		//     attacker cannot set BOTH the cookie and the header" for the
+		//     victim's browser. An unprefixed pad_csrf cookie can be set
+		//     from a sibling subdomain (no __Host- restriction), so an
+		//     attacker who controls a subdomain could plant a
+		//     matching pad_csrf cookie + forge the matching header value
+		//     themselves — defeating the whole scheme. __Host- exists
+		//     specifically to close that subdomain-cookie-injection hole,
+		//     so accepting the unprefixed name in secure mode would
+		//     silently reopen it. Do not "restore symmetry" with
+		//     SessionAuth here; the asymmetry is the point.
+		//
+		// Exposure from the lack of fallback is bounded to deployments
+		// that recently flipped PAD_SECURE_COOKIES on: an already-logged-in
+		// browser holding legacy pad_session + pad_csrf cookies still
+		// authenticates (session fallback) but 403s on CSRF-required
+		// mutations until the next login mints __Host--prefixed cookies —
+		// self-heals within the session TTL. See
+		// TestCSRF_LegacyCookieFallback_NotAcceptedWhenSecure.
 		cookie, err := r.Cookie(csrfCookieName(s.secureCookies))
 		if err != nil || cookie.Value == "" {
 			writeError(w, http.StatusForbidden, "csrf_error", "Missing CSRF token")

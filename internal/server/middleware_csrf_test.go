@@ -418,3 +418,54 @@ func TestCSRF_AllMutationMethodsBlocked(t *testing.T) {
 		}
 	}
 }
+
+// TestCSRF_LegacyCookieFallback_NotAcceptedWhenSecure pins a deliberate
+// asymmetry surfaced in codex review of TASK-1932: SessionAuth falls back
+// from the __Host--prefixed session cookie to the legacy unprefixed name
+// (upgrade-path convenience — the token VALUE is still an unguessable
+// secret either way), but the CSRF cookie lookup has NO such fallback. A
+// legacy unprefixed pad_csrf cookie is settable from a sibling subdomain,
+// which is exactly the hole __Host- exists to close for double-submit's
+// security property (attacker must not be able to set both the cookie and
+// the header). Accepting it here would silently reopen that hole for any
+// deployment that recently flipped PAD_SECURE_COOKIES on.
+//
+// This test simulates that exact deployment moment: secureCookies=true,
+// but the request still carries legacy-named session AND CSRF cookies (as
+// a browser that logged in before the flip would). The session must still
+// resolve (auth fallback intentionally works), but a CSRF-required
+// mutation must still be rejected (no CSRF fallback) until the browser
+// re-logs-in and receives __Host--prefixed cookies.
+func TestCSRF_LegacyCookieFallback_NotAcceptedWhenSecure(t *testing.T) {
+	srv := testServer(t)
+
+	// Bootstrap and log in while secureCookies is still false, so the
+	// login response mints legacy-named "pad_session" / "pad_csrf"
+	// cookies — standing in for a browser that authenticated before the
+	// deployment enabled secure cookies.
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	sessionToken := loginUser(t, srv, "admin@test.com", "correct-horse-battery-staple")
+
+	// Now simulate the deployment flipping PAD_SECURE_COOKIES on. The
+	// browser's existing legacy cookies don't change.
+	srv.secureCookies = true
+
+	csrfVal := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/auth/me", strings.NewReader(`{"name":"New Name"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrfVal)
+	req.RemoteAddr = "192.0.2.1:1234"
+	// Legacy unprefixed cookie names — no __Host- prefix, as an
+	// already-logged-in browser would still be presenting post-flip.
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: sessionToken})
+	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: csrfVal})
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("legacy pad_csrf cookie must NOT be accepted once secureCookies is true, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "csrf") {
+		t.Errorf("expected a csrf_error response, got: %s", w.Body.String())
+	}
+}
