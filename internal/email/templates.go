@@ -143,6 +143,48 @@ This link expires in 1 hour. If you didn't request a password reset, you can saf
 	return s.Send(ctx, to, name, subject, htmlBody, plainBody)
 }
 
+// SendEmailVerification sends an email-verification link to a newly
+// registered user. Mirrors SendPasswordReset (buildHTMLShell/buildPlainShell,
+// CloudMode footer) with the copy adapted to verification and the link
+// lifetime parameterized to 24 hours (matching verificationTokenTTL).
+// PLAN-1933 Wave 2 / TASK-1936.
+func (s *Sender) SendEmailVerification(ctx context.Context, to, name, verifyURL string) error {
+	subject := "Verify your Pad email address"
+	cloudMode := s.CloudMode()
+
+	body := fmt.Sprintf(`  <p style="font-size: 16px; line-height: 1.5;">
+    Hi %s, please confirm your email address to finish setting up your Pad account.
+  </p>
+  <p style="margin: 32px 0;">
+    <a href="%s" style="display: inline-block; padding: 12px 28px; background: #2563eb; color: #fff; text-decoration: none; border-radius: 6px; font-size: 15px; font-weight: 500;">
+      Verify Email
+    </a>
+  </p>
+  <p style="font-size: 13px; color: #666; line-height: 1.5;">
+    This link expires in 24 hours. If you didn't create a Pad account, you can safely ignore this email.
+  </p>
+`,
+		html.EscapeString(name),
+		verifyURL,
+	)
+
+	footerNoteHTML := "You received this because an email address was used to register a Pad account."
+
+	htmlBody := buildHTMLShell(body, footerNoteHTML, cloudMode)
+
+	plainBody := buildPlainShell(
+		fmt.Sprintf(`Hi %s, please confirm your email address to finish setting up your Pad account.
+
+Verify your email: %s
+
+This link expires in 24 hours. If you didn't create a Pad account, you can safely ignore this email.`, name, verifyURL),
+		"You received this because an email address was used to register a Pad account.",
+		cloudMode,
+	)
+
+	return s.Send(ctx, to, name, subject, htmlBody, plainBody)
+}
+
 // SendPaymentFailed notifies a user that a Stripe invoice attempt failed.
 // Called by the sidecar (via POST /api/v1/admin/payment-failed) after it
 // handles an invoice.payment_failed webhook. The email links to the
