@@ -48,13 +48,22 @@
 				setupMethod = session.setup_method;
 				status = 'setup';
 			} else {
-				// Users exist, not logged in — show login (with option to register)
-				mode = 'login';
+				// Logged out. Default to REGISTER, not login: a never-registered
+				// invitee has no account to sign into, and the register submit
+				// (below) passes the invitation code, which bypasses the normal
+				// registration gate and auto-accepts the invite in one step. The
+				// "already have an account? sign in" switch still lets a
+				// returning user flip to login. Do NOT change this default back
+				// to 'login' — that's BUG-1930 (dead-ends every fresh invitee
+				// in a login-a-nonexistent-account loop). See IDEA-1927 §B3.
+				mode = 'register';
 				status = 'login';
 			}
 		} catch {
+			// Session probe itself failed — same reasoning as above: don't
+			// assume "returning user" here either. See BUG-1930.
 			status = 'login';
-			mode = 'login';
+			mode = 'register';
 		}
 	});
 
