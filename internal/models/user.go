@@ -19,13 +19,14 @@ type User struct {
 	RecoveryCodes    string    `json:"-"`    // Never serialized
 	Plan             string    `json:"plan"` // "free", "pro", or "self-hosted"
 	PlanExpiresAt    string    `json:"plan_expires_at,omitempty"`
-	StripeCustomerID string    `json:"-"`                        // Never serialized
-	PlanOverrides    string    `json:"plan_overrides,omitempty"` // JSON overrides for per-user limits
-	OAuthProviders   string    `json:"-"`                        // JSON array of linked providers, e.g. ["github","google"]
-	PasswordSet      bool      `json:"password_set"`             // True if the user explicitly set a password (vs. OAuth placeholder hash)
-	DisabledAt       string    `json:"disabled_at,omitempty"`    // Non-empty = account disabled
-	LastActiveAt     string    `json:"last_active_at,omitempty"` // Last authenticated API request (any read or write)
-	LastWriteAt      string    `json:"last_write_at,omitempty"`  // Last mutating action (item/comment/attachment); see Store.TouchUserWrite. PLAN-1542 / TASK-1543.
+	StripeCustomerID string    `json:"-"`                           // Never serialized
+	PlanOverrides    string    `json:"plan_overrides,omitempty"`    // JSON overrides for per-user limits
+	OAuthProviders   string    `json:"-"`                           // JSON array of linked providers, e.g. ["github","google"]
+	PasswordSet      bool      `json:"password_set"`                // True if the user explicitly set a password (vs. OAuth placeholder hash)
+	DisabledAt       string    `json:"disabled_at,omitempty"`       // Non-empty = account disabled
+	EmailVerifiedAt  string    `json:"email_verified_at,omitempty"` // Non-empty = email verified (mirror DisabledAt). Empty/NULL = unverified. PLAN-1933 / TASK-1935.
+	LastActiveAt     string    `json:"last_active_at,omitempty"`    // Last authenticated API request (any read or write)
+	LastWriteAt      string    `json:"last_write_at,omitempty"`     // Last mutating action (item/comment/attachment); see Store.TouchUserWrite. PLAN-1542 / TASK-1543.
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
@@ -33,6 +34,13 @@ type User struct {
 // IsDisabled returns true if the user account has been disabled.
 func (u *User) IsDisabled() bool {
 	return u.DisabledAt != ""
+}
+
+// IsEmailVerified returns true if the user's email address has been verified.
+// Mirrors IsDisabled: a non-empty EmailVerifiedAt timestamp means verified,
+// empty (NULL in the DB) means unverified. PLAN-1933 / TASK-1935.
+func (u *User) IsEmailVerified() bool {
+	return u.EmailVerifiedAt != ""
 }
 
 // GetOAuthProviders parses the JSON oauth_providers field into a string slice.
@@ -72,6 +80,14 @@ type UserCreate struct {
 	Name     string `json:"name"`
 	Password string `json:"password"`       // Plaintext, will be hashed
 	Role     string `json:"role,omitempty"` // Defaults to "member"
+
+	// Unverified requests that the created user start with an UNVERIFIED email
+	// (email_verified_at = NULL). The zero value (false) yields a VERIFIED user,
+	// so a call site that forgets to set it fails SAFE — verified, not
+	// write-locked (DR-3). The ONLY path that sets this true is the future
+	// cloud self-serve signup branch (PLAN-1933 Wave 3), which does not exist
+	// yet. Not settable via the request body (json:"-") — the handler decides.
+	Unverified bool `json:"-"`
 }
 
 // UserUpdate is the input for updating user profile fields.

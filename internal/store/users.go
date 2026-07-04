@@ -27,7 +27,7 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 var bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, last_active_at, last_write_at, created_at, updated_at`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at`
 
 // scanUser scans a user row into a User struct.
 // Note: does NOT decrypt the TOTP secret — call store.decryptUserTOTP() after
@@ -36,16 +36,19 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 	var u models.User
 	var createdAt, updatedAt string
 
-	var disabledAt, lastActiveAt, lastWriteAt sql.NullString
+	var disabledAt, emailVerifiedAt, lastActiveAt, lastWriteAt sql.NullString
 	err := row.Scan(
 		&u.ID, &u.Email, &u.Username, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&u.TOTPSecret, &u.TOTPEnabled, &u.RecoveryCodes,
 		&u.Plan, &u.PlanExpiresAt, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
 		&u.PasswordSet,
-		&disabledAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
+		&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
 	)
 	if disabledAt.Valid {
 		u.DisabledAt = disabledAt.String
+	}
+	if emailVerifiedAt.Valid {
+		u.EmailVerifiedAt = emailVerifiedAt.String
 	}
 	if lastActiveAt.Valid {
 		u.LastActiveAt = lastActiveAt.String
@@ -93,10 +96,20 @@ func (s *Store) CreateUser(input models.UserCreate) (*models.User, error) {
 	id := newID()
 	ts := now()
 
+	// Email-verification default is SAFE = verified (DR-3). Every creation path
+	// yields a verified user unless it explicitly requests unverified via
+	// UserCreate.Unverified. Today only the future cloud self-serve signup
+	// branch (PLAN-1933 Wave 3) sets that; every current call site inherits
+	// verified. A nil interface binds as a NULL column (= unverified).
+	var emailVerifiedAt interface{}
+	if !input.Unverified {
+		emailVerifiedAt = ts
+	}
+
 	_, err = s.db.Exec(s.q(`
-		INSERT INTO users (id, email, username, name, password_hash, role, password_set, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, strings.ToLower(strings.TrimSpace(input.Email)), strings.TrimSpace(input.Username), strings.TrimSpace(input.Name), string(hash), role, true, ts, ts)
+		INSERT INTO users (id, email, username, name, password_hash, role, password_set, email_verified_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, strings.ToLower(strings.TrimSpace(input.Email)), strings.TrimSpace(input.Username), strings.TrimSpace(input.Name), string(hash), role, true, emailVerifiedAt, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert user: %w", err)
 	}
@@ -465,7 +478,7 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 	for rows.Next() {
 		var entry AdminUserListEntry
 		var createdAt, updatedAt string
-		var disabledAt, lastActiveAt, lastWriteAt sql.NullString
+		var disabledAt, emailVerifiedAt, lastActiveAt, lastWriteAt sql.NullString
 		var workspaceCount int
 		var storageBytes int64
 		if err := rows.Scan(
@@ -473,13 +486,16 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 			&entry.TOTPSecret, &entry.TOTPEnabled, &entry.RecoveryCodes,
 			&entry.Plan, &entry.PlanExpiresAt, &entry.StripeCustomerID, &entry.PlanOverrides, &entry.OAuthProviders,
 			&entry.PasswordSet,
-			&disabledAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
+			&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
 			&workspaceCount, &storageBytes,
 		); err != nil {
 			return nil, fmt.Errorf("search users scan: %w", err)
 		}
 		if disabledAt.Valid {
 			entry.DisabledAt = disabledAt.String
+		}
+		if emailVerifiedAt.Valid {
+			entry.EmailVerifiedAt = emailVerifiedAt.String
 		}
 		if lastActiveAt.Valid {
 			entry.LastActiveAt = lastActiveAt.String
@@ -648,10 +664,12 @@ func (s *Store) CreateOAuthUser(email, name, avatarURL string) (*models.User, er
 		return nil, fmt.Errorf("generate username: %w", err)
 	}
 
+	// OAuth users are always email-verified (the provider asserted the address);
+	// this matches DR-3's "OAuth = verified" and the SAFE default.
 	_, err = s.db.Exec(s.q(`
-		INSERT INTO users (id, email, username, name, password_hash, role, avatar_url, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, strings.ToLower(strings.TrimSpace(email)), username, strings.TrimSpace(name), string(hash), "member", avatarURL, ts, ts)
+		INSERT INTO users (id, email, username, name, password_hash, role, avatar_url, email_verified_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, strings.ToLower(strings.TrimSpace(email)), username, strings.TrimSpace(name), string(hash), "member", avatarURL, ts, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert oauth user: %w", err)
 	}
