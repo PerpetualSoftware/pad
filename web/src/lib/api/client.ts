@@ -423,7 +423,13 @@ export interface AuthSession {
 	// Absent on older servers and default false on fresh instances — treat
 	// absent as false.
 	webmcp_enabled?: boolean;
-	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string };
+	// email_verified is false ONLY for a Pad Cloud self-serve signup that
+	// hasn't confirmed its email yet (PLAN-1933 DR-3). OAuth / invited /
+	// admin-created / pre-existing accounts are verified, and self-hosted
+	// instances never emit an unverified user. Absent on older servers —
+	// authStore.emailVerified treats absent as TRUE so the verification
+	// banner never shows on self-host or before the field lands.
+	user?: { id: string; email: string; username: string; name: string; role: string; plan?: string; email_verified?: boolean };
 }
 
 // ── WebMCP tool-surface (PLAN-1888 / TASK-1892) ────────────────────────────
@@ -1534,7 +1540,7 @@ export const api = {
 				body: JSON.stringify({ challenge_token: challengeToken, code: code || undefined, recovery_code: recoveryCode || undefined })
 			}),
 		register: (email: string, name: string, password: string, username?: string, invitation_code?: string) =>
-			request<{ user: { id: string; email: string; username: string; name: string; role: string }; token: string }>('/auth/register', {
+			request<{ user: { id: string; email: string; username: string; name: string; role: string; email_verified?: boolean }; token: string }>('/auth/register', {
 				method: 'POST',
 				body: JSON.stringify({ email, name, password, ...(username ? { username } : {}), ...(invitation_code ? { invitation_code } : {}) })
 			}),
@@ -1570,6 +1576,17 @@ export const api = {
 		logout: () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' }),
 		forgotPassword: (email: string) =>
 			request<{ ok: boolean; message: string }>('/auth/forgot-password', {
+				method: 'POST',
+				body: JSON.stringify({ email })
+			}),
+		// Re-send the email-verification link for an unverified Pad Cloud
+		// account (PLAN-1933 DR-5 / TASK-1940). Enumeration-safe: the server
+		// always returns 200 with the same body whether or not the address
+		// maps to an unverified account, so callers should show a neutral
+		// "if your account still needs verification, a link was sent"
+		// confirmation rather than branching on the response.
+		resendVerification: (email: string) =>
+			request<{ ok: boolean; message: string }>('/auth/resend-verification', {
 				method: 'POST',
 				body: JSON.stringify({ email })
 			}),

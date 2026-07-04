@@ -13,6 +13,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { registerWorkspaceTools, type WebMcpHandle } from '$lib/webmcp/register';
 	import ConnectBanner from '$lib/components/ConnectBanner.svelte';
+	import VerifyEmailBanner from '$lib/components/VerifyEmailBanner.svelte';
 	import BottomNav from '$lib/components/layout/BottomNav.svelte';
 	import MobileContextBar from '$lib/components/layout/MobileContextBar.svelte';
 
@@ -236,6 +237,8 @@
 			.catch(() => {});
 	}
 </script>
+
+<VerifyEmailBanner />
 
 <ConnectBanner
 	{wsSlug}

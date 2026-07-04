@@ -35,6 +35,14 @@ export const authStore = {
 	// unless the server explicitly says email is off. The /forgot-password
 	// page swaps to host-recovery guidance when this is false.
 	get emailConfigured() { return session?.email_configured ?? true; },
+	// emailVerified is false ONLY for a Pad Cloud self-serve signup that hasn't
+	// confirmed its email yet (PLAN-1933 DR-3 / TASK-1940). Defaults to TRUE
+	// when the field is absent — older servers, self-hosted instances (which
+	// never mint unverified users), OAuth/invited/admin-created accounts, and
+	// the pre-load window. This default is load-bearing: the verification
+	// banner gates on `!emailVerified`, so a missing field or self-host must
+	// NEVER surface it. Mirrors the `emailConfigured ?? true` pattern.
+	get emailVerified() { return session?.user?.email_verified ?? true; },
 	get loading() { return loading; },
 
 	async load() {
