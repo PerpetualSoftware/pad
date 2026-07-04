@@ -549,3 +549,88 @@ func TestCSRF_AnonymousRegister_StillExempt(t *testing.T) {
 		t.Fatalf("anonymous register on a non-cloud instance: expected 403 forbidden (business logic), got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestCSRF_SessionCookiePlusGarbageBearer_RequiresCSRF covers the codex
+// round-3 finding: the old Bearer exemption fired on header PRESENCE, not
+// validation. TokenAuth's rejectInvalidBearer deliberately falls through
+// (rather than 401ing) on /api/v1/auth/* paths so a stale CLI token can
+// still recover — but that fallthrough let a cross-site request carrying a
+// victim's real session cookie plus an attacker-supplied garbage Bearer
+// header sail past CSRF on any newly-CSRF-required auth endpoint. A
+// session cookie plus an invalid Bearer header, with no CSRF token, must
+// now be blocked.
+func TestCSRF_SessionCookiePlusGarbageBearer_RequiresCSRF(t *testing.T) {
+	srv := testServer(t)
+
+	sessionToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/auth/me", strings.NewReader(`{"name":"New Name"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer this-is-not-a-real-token")
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: sessionToken})
+	// Deliberately no CSRF cookie/header.
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "csrf") {
+		t.Fatalf("session cookie + garbage Bearer header without CSRF token must be blocked as csrf_error, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCSRF_GarbageBearerNoCookie_StaysCLIRecoveryPath is the companion to
+// the test above: a PURE Bearer client (no session cookie at all) with an
+// invalid/expired token must keep today's behavior exactly — exempt from
+// CSRF, falling through to the normal auth check, which rejects it with
+// 401 (not a confusing 403 csrf_error). This is the CLI-recovery
+// contract rejectInvalidBearer's fallthrough exists for: a stale
+// ~/.pad/credentials.json must still reach /api/v1/auth/me (and similar)
+// to get a clear "not logged in" rather than being misdiagnosed as a CSRF
+// failure.
+func TestCSRF_GarbageBearerNoCookie_StaysCLIRecoveryPath(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/auth/me", strings.NewReader(`{"name":"New Name"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer this-is-not-a-real-token")
+	req.RemoteAddr = "192.0.2.1:1234"
+	// No cookies at all.
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if strings.Contains(w.Body.String(), "csrf") {
+		t.Fatalf("a pure garbage-Bearer client with no cookie must not be blocked by CSRF, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 (not logged in) for a garbage Bearer token with no cookie, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestCSRF_ValidBearerPlusSessionCookie_ExemptRegardless proves the third
+// required semantic from codex round 3: a request carrying a Bearer
+// credential TokenAuth actually validated (here, a CLI session-bearer
+// token) must stay CSRF-exempt even when a session cookie is ALSO
+// present — the fix must not newly break legitimate token clients that
+// happen to carry cookies. TokenAuth resolves the Bearer first and
+// short-circuits SessionAuth once currentUser is set, so the cookie's
+// value is irrelevant here; a different value would behave identically.
+func TestCSRF_ValidBearerPlusSessionCookie_ExemptRegardless(t *testing.T) {
+	srv := testServer(t)
+
+	sessionToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/v1/auth/me", strings.NewReader(`{"name":"New Name"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+sessionToken)
+	req.RemoteAddr = "192.0.2.1:1234"
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: sessionToken})
+	// Deliberately no CSRF cookie/header — the point is that a validated
+	// Bearer credential doesn't need one even with a cookie present.
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("valid Bearer + session cookie, no CSRF token: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}

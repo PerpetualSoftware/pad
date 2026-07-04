@@ -35,10 +35,18 @@ const (
 // code: a request that resolved to a real session via SessionAuth (which
 // runs before CSRFProtect — server.go's TokenAuth/SessionAuth/RateLimit/
 // CSRFProtect/RequireAuth ordering) falls through to the normal
-// double-submit check below instead of the early exemption. Bearer/PAT
-// requests are unaffected — TokenAuth also populates currentUser for
-// those, but they hit their own unconditional exemption further down
-// this function regardless. The pad-cloud sidecar sends no cookies at
+// double-submit check below instead of the early exemption. Requests
+// carrying a Bearer credential that TokenAuth actually VALIDATED (a PAT
+// or a CLI session-bearer token) are unaffected — they hit
+// isValidatedBearerAuth's unconditional exemption further down this
+// function regardless of whether a cookie is also present, because
+// TokenAuth runs first and short-circuits SessionAuth once currentUser is
+// already set. A Bearer header TokenAuth did NOT validate (garbage or
+// rejected, reaching here only via rejectInvalidBearer's public-path
+// fallthrough) is a DIFFERENT case — see the header-presence check
+// further down and its codex-round-3 fix note; it is exempt only when no
+// session was also resolved, precisely so it can't ride a victim's cookie
+// through this path exemption. The pad-cloud sidecar sends no cookies at
 // all, so oauth-login/oauth-link stay exempt (currentUser(r) is always
 // nil for them). One accepted interaction with the round-1 legacy-cookie
 // decision: a user resolved via SessionAuth's legacy pad_session cookie
@@ -147,32 +155,59 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 		// based sessions; they authenticate via X-Cloud-Secret (or legacy
 		// ?cloud_secret). Path-gate this explicitly so a stray
 		// ?cloud_secret= on any other /api/ path (trivial in a cross-site
-		// form action) cannot be used to defeat CSRF elsewhere. Admin calls
-		// over cookie sessions to the same three endpoints fall through
-		// and still require a CSRF token — that is the entire point of
-		// narrowing from a path carve-out to a credential-plus-path check.
-		if isCloudAdminPath(r.URL.Path) && hasCloudSecretMarker(r) {
+		// form action) cannot be used to defeat CSRF elsewhere.
+		//
+		// hasCloudSecretMarker only checks PRESENCE of the marker, not
+		// whether the secret is actually correct — the real check
+		// (validateCloudSecret) happens in-handler. codex round 3 caught
+		// that several of these handlers (e.g. handleSetPlan) ALSO accept
+		// an admin cookie session as an alternative to the secret
+		// (`isAdmin := user != nil && ...; if !isAdmin { validateCloudSecret(...) }`)
+		// — so a marker-presence-only exemption let a cross-site request
+		// with a garbage X-Cloud-Secret ride a logged-in admin's cookie
+		// straight past CSRF into that admin branch, the same class of
+		// hole as handleRegister's in round 2. The currentUser(r) == nil
+		// guard closes it: a request that also resolved a real session
+		// falls through to the normal double-submit check below, so the
+		// admin branch can only be reached with either the real secret or
+		// a valid CSRF token — never a forged marker riding a stolen
+		// cookie. The pad-cloud sidecar sends no cookies, so its calls are
+		// unaffected (currentUser(r) is always nil for them).
+		if isCloudAdminPath(r.URL.Path) && hasCloudSecretMarker(r) && currentUser(r) == nil {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Bearer token requests are not vulnerable to CSRF — skip.
-		// Two signals, both mean "non-cookie-authenticated":
-		//   1. Authorization: Bearer header on the live request (the
-		//      normal CLI / connector path through TokenAuth).
-		//   2. ctxIsAPIToken set on the request context — TokenAuth
-		//      sets this after a successful Bearer validation, AND
-		//      in-process callers (the MCP HTTPHandlerDispatcher in
-		//      internal/mcp/dispatch_http.go) set it via the
-		//      server.WithAPITokenAuth helper to mark a synthesized
-		//      request as having been authenticated out-of-band.
-		// Either signal lets the request through; cookie-only
-		// requests still require the double-submit token below.
-		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		// Bearer credentials TokenAuth actually validated (a PAT or a CLI
+		// session-bearer token, or a synthesized in-process MCP-dispatcher
+		// call marked via server.WithAPITokenAuth) are never vulnerable to
+		// CSRF — the browser never attaches Authorization headers
+		// automatically, and the attacker can't forge the token value.
+		// Always exempt, regardless of whether a cookie is also present:
+		// TokenAuth runs before SessionAuth and short-circuits it once
+		// currentUser is set, so a validated Bearer credential is the
+		// sole source of truth for currentUser on this request either way.
+		if isValidatedBearerAuth(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if isAPITokenAuth(r) {
+
+		// An Authorization: Bearer header TokenAuth did NOT validate
+		// (garbage token, wrong format, expired — anything that hit
+		// rejectInvalidBearer's public-API-path fallthrough instead of a
+		// hard 401) is exempt ONLY when no session was also resolved for
+		// this request. codex round 3: the old unconditional version of
+		// this check exempted on header PRESENCE alone, so a cross-site
+		// request carrying a victim's real session cookie plus an
+		// attacker-supplied garbage Bearer header would sail past CSRF —
+		// on any /api/v1/auth/* path (isPublicAPIPath prefix-matches the
+		// whole tree, far wider than authCSRFExemptPaths above), not just
+		// the newly-tightened B8 endpoints. Gating on currentUser(r) ==
+		// nil preserves the CLI-recovery contract this fallthrough exists
+		// for (a pure Bearer client with an expired/garbage token, no
+		// cookie, must still reach RequireAuth for its own 401 rather than
+		// a confusing csrf_error) while closing the cookie-riding case.
+		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") && currentUser(r) == nil {
 			next.ServeHTTP(w, r)
 			return
 		}

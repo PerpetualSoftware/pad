@@ -56,6 +56,21 @@ const (
 	// — so leaking via context is fine.
 	ctxMCPTokenKind contextKey = "mcp_token_kind"
 	ctxMCPTokenRef  contextKey = "mcp_token_ref"
+	// ctxValidatedSessionBearer is set to true when the request was
+	// authenticated via a validated CLI session-bearer token
+	// (Authorization: Bearer padsess_...), as distinct from ctxIsAPIToken
+	// (a long-lived PAT) and from a session cookie. Deliberately a
+	// separate key rather than reusing ctxIsAPIToken: ctxIsAPIToken also
+	// gates PAT-vs-interactive-session behavior elsewhere (e.g. 2FA
+	// management requires an interactive session and explicitly rejects
+	// isAPITokenAuth callers) — a CLI session-bearer token IS an
+	// interactive session and must not trip that gate the way a PAT
+	// does. CSRFProtect reads this (via isValidatedBearerAuth) to tell
+	// "TokenAuth validated this Bearer credential" apart from "the
+	// request merely carries an Authorization: Bearer header TokenAuth
+	// never checked or rejected" — see the codex-round-3 fix note there
+	// (TASK-1932).
+	ctxValidatedSessionBearer contextKey = "validated_session_bearer"
 )
 
 // TokenAuth middleware checks for an Authorization: Bearer pad_xxx header.
@@ -140,6 +155,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 				slog.Warn("session renewal failed (request allowed)", "error", err)
 			}
 			ctx := context.WithValue(r.Context(), ctxCurrentUser, session.User)
+			ctx = context.WithValue(ctx, ctxValidatedSessionBearer, true)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
@@ -423,6 +439,28 @@ func currentUser(r *http.Request) *models.User {
 func isAPITokenAuth(r *http.Request) bool {
 	v, _ := r.Context().Value(ctxIsAPIToken).(bool)
 	return v
+}
+
+// isValidatedSessionBearerAuth returns true if the request was authenticated
+// via a validated CLI session-bearer token (Authorization: Bearer
+// padsess_...) — set by TokenAuth only on successful ValidateSession, never
+// on the rejectInvalidBearer fallthrough. See ctxValidatedSessionBearer.
+func isValidatedSessionBearerAuth(r *http.Request) bool {
+	v, _ := r.Context().Value(ctxValidatedSessionBearer).(bool)
+	return v
+}
+
+// isValidatedBearerAuth reports whether the request was authenticated via a
+// Bearer credential TokenAuth actually validated — a long-lived API token
+// (isAPITokenAuth) or a CLI session-bearer token
+// (isValidatedSessionBearerAuth) — as opposed to merely carrying an
+// Authorization: Bearer header that TokenAuth never checked, or checked and
+// rejected (the rejectInvalidBearer fallthrough on public API paths). Both
+// validated forms are unguessable secrets a CSRF attacker can't forge, so
+// CSRFProtect treats them as exempt regardless of whether a session cookie
+// is also present on the same request (TASK-1932, codex round 3).
+func isValidatedBearerAuth(r *http.Request) bool {
+	return isAPITokenAuth(r) || isValidatedSessionBearerAuth(r)
 }
 
 // isBearerAuth reports whether the request was authenticated via an
