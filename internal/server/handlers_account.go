@@ -174,6 +174,32 @@ func (s *Server) handleExportAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// BUG-1945: account-export dumps full collections/items for every
+	// workspace this user owns (below), which bypasses BUG-1922's
+	// workspace-export gate — a restricted owner (collection_access=
+	// "specific") could still exfiltrate hidden collections via this
+	// endpoint. Mirror BUG-1922's outright-deny: if the caller is
+	// restricted in ANY owned workspace whose content this export would
+	// include, refuse the whole export rather than silently omitting
+	// that workspace — a partial-but-unflagged account dump would be as
+	// misleading as an unfiltered one. Must run before any header/body
+	// byte is written below, so a 403 here never follows partial output.
+	for _, ws := range workspaces {
+		if ws.OwnerID != user.ID {
+			continue
+		}
+		visibleIDs, err := s.visibleCollectionIDs(r, ws.ID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if visibleIDs != nil {
+			writeError(w, http.StatusForbidden, "forbidden",
+				"Account export is unavailable while your workspace access is restricted")
+			return
+		}
+	}
+
 	// Stream the response — once we start writing, we can't send error status codes
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", "attachment; filename=\"pad-export.json\"")
