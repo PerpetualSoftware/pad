@@ -13,6 +13,55 @@ const (
 	csrfTokenLen = 32 // 32 bytes = 64 hex chars
 )
 
+// authCSRFExemptPaths lists the exact /api/v1/auth/* paths that are safe to
+// exempt from the double-submit CSRF check (B8, TASK-1932). Every other
+// mutating /api/v1/auth/* endpoint is cookie-session-gated and requires the
+// CSRF token like any other authenticated mutation — the web client's
+// shared request() wrapper already attaches X-CSRF-Token on every
+// non-GET/HEAD call, so narrowing this list doesn't require a frontend
+// change.
+//
+// This is an EXACT path match (not a prefix), on purpose: a prefix match is
+// exactly the bug B8 flags. In particular:
+//   - "/api/v1/auth/cli/sessions" (POST, create) is here because it's
+//     genuinely pre-session (the CLI calls it before any login exists).
+//     "/api/v1/auth/cli/sessions/{code}/approve" is a DIFFERENT path
+//     string and is deliberately NOT here — it's a mutating, cookie-
+//     session-authenticated action (approving a pending CLI login) that a
+//     cross-site POST could otherwise ride the victim's session to
+//     trigger. The GET poll endpoint doesn't need an entry — safe methods
+//     are exempt above regardless of path.
+//   - "/api/v1/auth/oauth-login" and "/api/v1/auth/oauth-link" are here
+//     because they authenticate ONLY via a cloud-secret in the JSON body
+//     (the pad-cloud sidecar calling in server-to-server) and never trust
+//     a cookie at all — CSRF isn't a meaningful threat model for them, and
+//     the sidecar has no CSRF cookie to send. "/api/v1/auth/oauth-unlink"
+//     is deliberately NOT here — unlike link/login, it authenticates
+//     purely via the session cookie (currentUser(r), no secret check) and
+//     is exactly the kind of endpoint this hardening targets.
+//   - "/api/v1/auth/resend-verification" is here because the handler
+//     itself never inspects the session — it takes an explicit email and
+//     returns a uniform response regardless of auth state, so an ambient
+//     cookie carries no extra authority for it and CSRF is a no-op either
+//     way.
+//   - "/api/v1/auth/logout" is deliberately NOT here — it's a real,
+//     cookie-session-authenticated mutation, and the frontend already
+//     sends CSRF on it via the shared request() wrapper.
+var authCSRFExemptPaths = map[string]bool{
+	"/api/v1/auth/bootstrap":           true,
+	"/api/v1/auth/register":            true,
+	"/api/v1/auth/login":               true,
+	"/api/v1/auth/forgot-password":     true,
+	"/api/v1/auth/reset-password":      true,
+	"/api/v1/auth/local-reset":         true,
+	"/api/v1/auth/verify-email":        true,
+	"/api/v1/auth/resend-verification": true,
+	"/api/v1/auth/2fa/login-verify":    true,
+	"/api/v1/auth/oauth-login":         true,
+	"/api/v1/auth/oauth-link":          true,
+	"/api/v1/auth/cli/sessions":        true,
+}
+
 // CSRFProtect implements the double-submit cookie pattern for CSRF protection.
 // It validates that state-changing requests (POST, PATCH, PUT, DELETE) from
 // cookie-authenticated sessions include a matching CSRF token in both the
@@ -39,8 +88,15 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 		}
 
 		// Auth endpoints that need to work before a CSRF token exists
-		// (login, register, bootstrap, password reset).
-		if strings.HasPrefix(r.URL.Path, "/api/v1/auth/") {
+		// (login, register, bootstrap, password reset, ...) or that don't
+		// trust the ambient session at all. See authCSRFExemptPaths for
+		// the full rationale per entry — this is an EXACT match, not a
+		// prefix, so a mutating cookie-authed endpoint elsewhere under
+		// /api/v1/auth/* (PATCH /me, tokens, 2FA management, delete-
+		// account, oauth-unlink, CLI-session approve, logout, ...) still
+		// falls through to the CSRF check below like any other
+		// authenticated mutation (B8, TASK-1932).
+		if authCSRFExemptPaths[r.URL.Path] {
 			next.ServeHTTP(w, r)
 			return
 		}
