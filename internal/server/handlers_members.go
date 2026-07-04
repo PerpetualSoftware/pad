@@ -511,6 +511,10 @@ func (s *Server) handleSetMemberCollectionAccess(w http.ResponseWriter, r *http.
 		return
 	}
 
+	if !s.requireCallerCanSetCollectionAccess(w, r, workspaceID, input.Mode, input.CollectionIDs) {
+		return
+	}
+
 	if err := s.store.SetMemberCollectionAccess(workspaceID, userID, input.Mode, input.CollectionIDs); err != nil {
 		writeInternalError(w, err)
 		return
@@ -520,4 +524,70 @@ func (s *Server) handleSetMemberCollectionAccess(w http.ResponseWriter, r *http.
 		"collection_access": input.Mode,
 		"collection_ids":    input.CollectionIDs,
 	})
+}
+
+// requireCallerCanSetCollectionAccess denies a restricted caller (their own
+// collection_access is "specific") from using this endpoint to escalate
+// beyond their own visibility (BUG-1925). requireRole(r, "owner") above only
+// checks WORKSPACE ROLE; member_collection_access has no role exclusion
+// (BUG-1920), so a workspace-role "owner" can independently be restricted,
+// and without this guard they could PATCH themselves (or another member,
+// including one they can't see) to mode="all" or into a hidden collection,
+// bypassing the entire BUG-1917/1918/1920/1921 family plus the BUG-1922
+// export gate in one authenticated request. Unrestricted callers (mode
+// "all", or admin) are untouched — visibleCollectionIDs returns nil for
+// them and this is a no-op.
+//
+// A restricted caller may never grant mode="all" to ANY target (self or
+// another member) — that would hand out unrestricted access this caller
+// doesn't have themselves. For mode="specific", every requested collection
+// ID must be within the caller's own visible set, checked against
+// isCollectionVisible's semantics.
+//
+// The membership check narrows to guestResourceFilter's fullCollIDs
+// (the strict, full-access-only set) rather than the raw nav-lenient
+// visibleCollectionIDs whenever the caller holds any item-level grants —
+// mirroring requireCollectionFullyVisible (BUG-1920 codex R2). Without
+// this narrowing, a restricted caller with only an item-level grant into a
+// collection could designate that collection as a mode="specific" target,
+// minting themselves (or another member) full collection-wide
+// member_collection_access from a single-item grant.
+//
+// Hidden-collection-ID failures return 404 (not 403), matching the rest of
+// the visibility family's hidden-resource convention (e.g. share-links) so
+// the response doesn't confirm the collection's existence. The mode="all"
+// rejection returns 403 since there's no resource identity to hide.
+func (s *Server) requireCallerCanSetCollectionAccess(w http.ResponseWriter, r *http.Request, workspaceID, mode string, collectionIDs []string) bool {
+	callerVisibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	if callerVisibleIDs == nil {
+		// Unrestricted caller (mode "all", or admin) — full power, no change.
+		return true
+	}
+
+	if mode == "all" {
+		writeError(w, http.StatusForbidden, "forbidden", "Restricted members cannot grant unrestricted collection access")
+		return false
+	}
+
+	checkIDs := callerVisibleIDs
+	fullCollIDs, grantedItemIDs, gErr := s.guestResourceFilter(r, workspaceID)
+	if gErr != nil {
+		writeInternalError(w, gErr)
+		return false
+	}
+	if len(grantedItemIDs) > 0 {
+		checkIDs = fullCollIDs
+	}
+
+	for _, id := range collectionIDs {
+		if !isCollectionVisible(id, checkIDs) {
+			writeError(w, http.StatusNotFound, "not_found", "Collection not found")
+			return false
+		}
+	}
+	return true
 }
