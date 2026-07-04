@@ -143,3 +143,21 @@ func (s *Store) CleanExpiredEmailVerifications() error {
 	`), now())
 	return err
 }
+
+// SetUserEmailVerified marks a user's email as verified (email_verified_at =
+// now) WITHOUT a token — for paths that prove email control by other means,
+// e.g. accepting an email-bound workspace invitation (PLAN-1933 DR-1). This is
+// the tokenless sibling of ConsumeEmailVerification's user-update side-effect.
+//
+// Idempotent: re-verifying an already-verified user just refreshes the
+// timestamp. Callers that want to skip a redundant write can gate on
+// user.IsEmailVerified() first.
+func (s *Store) SetUserEmailVerified(userID string) error {
+	_, err := s.db.Exec(s.q(`
+		UPDATE users SET email_verified_at = ?, updated_at = ? WHERE id = ?
+	`), now(), now(), userID)
+	if err != nil {
+		return fmt.Errorf("set email verified: %w", err)
+	}
+	return nil
+}

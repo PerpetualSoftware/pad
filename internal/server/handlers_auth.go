@@ -572,10 +572,28 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 
 	// When users exist, allow registration if:
 	// 1. The requester is an admin, OR
-	// 2. A valid invitation code was provided
+	// 2. A valid invitation code was provided, OR
+	// 3. Cloud self-serve signup (PLAN-1933 DR-6): on Pad Cloud, when the
+	//    instance can actually deliver a verification email (sender wired +
+	//    usable public base URL), anyone may register. The created account
+	//    starts UNVERIFIED and must confirm via the emailed link before it
+	//    can mutate anything (RequireVerifiedEmail, Wave 3a). Self-hosted and
+	//    email-unconfigured cloud stay locked to admin/invitation only.
+	//
+	// selfServe is the ONLY path that creates an unverified user (DR-3): it
+	// flips UserCreate.Unverified below. Admin-created and invited signups
+	// leave it false, inheriting the verified default — so a missed branch
+	// fails SAFE (verified), never write-locked.
+	selfServe := false
 	if invitation == nil {
 		reqUser := currentUser(r)
-		if reqUser == nil || reqUser.Role != "admin" {
+		isAdmin := reqUser != nil && reqUser.Role == "admin"
+		switch {
+		case isAdmin:
+			// Admin-created account — stays verified.
+		case s.cloudMode && s.emailConfigured():
+			selfServe = true
+		default:
 			writeError(w, http.StatusForbidden, "forbidden", "Registration is restricted")
 			return
 		}
@@ -617,13 +635,15 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		input.Username = unique
 	}
 
-	// Create user
+	// Create user. Only the cloud self-serve branch starts UNVERIFIED (DR-3);
+	// admin-created and invited signups inherit the verified default.
 	user, err := s.store.CreateUser(models.UserCreate{
-		Email:    input.Email,
-		Username: input.Username,
-		Name:     input.Name,
-		Password: input.Password,
-		Role:     "member",
+		Email:      input.Email,
+		Username:   input.Username,
+		Name:       input.Name,
+		Password:   input.Password,
+		Role:       "member",
+		Unverified: selfServe,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to create user")
@@ -635,6 +655,35 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if invitation != nil {
 		_ = s.store.AddWorkspaceMember(invitation.WorkspaceID, user.ID, invitation.Role)
 		_ = s.store.AcceptInvitation(invitation.ID)
+	}
+
+	// Cloud self-serve signup: mint + send the email-verification link. The
+	// selfServe gate above already guaranteed emailConfigured() (sender wired
+	// + usable base URL), so the link is deliverable.
+	//
+	// Token creation is REQUIRED to complete signup (invariant: never leave a
+	// user who can't verify). If minting the token fails we roll the user back
+	// and 500 — otherwise the duplicate-email 409 would block a retry and the
+	// account would be write-locked with no link. Only the async SEND is
+	// best-effort: a send failure keeps the account (the token exists) and the
+	// user recovers via POST /auth/resend-verification.
+	if selfServe {
+		vtoken, verr := s.store.CreateEmailVerification(user.ID)
+		if verr != nil {
+			slog.Error("failed to create email verification token; rolling back signup", "error", verr, "user_id", user.ID)
+			if derr := s.store.DeleteUser(user.ID); derr != nil {
+				slog.Error("failed to roll back user after verification-token error", "error", derr, "user_id", user.ID)
+			}
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to start email verification")
+			return
+		}
+		verifyURL := s.baseURL + "/verify-email/" + vtoken
+		toEmail, toName := user.Email, user.Name
+		s.goAsync(func() {
+			if err := s.email.SendEmailVerification(context.Background(), toEmail, toName, verifyURL); err != nil {
+				slog.Error("failed to send verification email", "error", err)
+			}
+		})
 	}
 
 	token, err := s.createAuthSession(w, r, user, webSessionTTL)
@@ -1288,4 +1337,117 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		},
 		"token": sessionToken,
 	})
+}
+
+// handleVerifyEmail consumes an email-verification token and flips the owning
+// user's email_verified_at to now (PLAN-1933 DR-5). It backs the link mailed
+// by the cloud self-serve signup flow.
+//
+// Session freshness (the load-bearing invariant): currentUser is NOT cached in
+// the session row — SessionAuth/TokenAuth call Store.ValidateSession on every
+// request, which re-reads the user fresh from the DB via GetUser. So flipping
+// email_verified_at here immediately unblocks the SAME session's subsequent
+// mutating requests under RequireVerifiedEmail (Wave 3a) — no session rewrite
+// needed. We also return the freshly-verified user payload so the SPA's auth
+// store updates without a second round-trip.
+func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Token string `json:"token"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+	input.Token = strings.TrimSpace(input.Token)
+	if input.Token == "" {
+		writeError(w, http.StatusBadRequest, "validation_error", "Verification token is required")
+		return
+	}
+
+	user, err := s.store.ConsumeEmailVerification(input.Token)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to verify email")
+		return
+	}
+	if user == nil {
+		// Invalid, expired, or already-used token. This is the token secret
+		// itself (256-bit), not an account identifier, so a distinct error is
+		// not an enumeration signal.
+		writeError(w, http.StatusBadRequest, "invalid_token",
+			"This verification link is invalid or has expired. Request a new one.")
+		return
+	}
+
+	s.logAuditEventForUser(models.ActionEmailVerified, r, user.ID, auditMeta(map[string]string{"email": user.Email}))
+
+	// No session rewrite is required to unblock the user: sessions do NOT
+	// cache the user row — TokenAuth/SessionAuth call Store.ValidateSession on
+	// every request, which re-reads the user fresh via GetUser (and the
+	// pad_/padsess_ bearer paths do the same). ConsumeEmailVerification above
+	// already flipped email_verified_at in the DB, so this session's very next
+	// mutating request reads verified=true and passes RequireVerifiedEmail. We
+	// return the freshly-verified user so the SPA can update its auth store
+	// without a second round-trip.
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"ok":   true,
+		"user": sessionUserPayload(user),
+	})
+}
+
+// handleResendVerification re-sends an email-verification link for an
+// UNVERIFIED account (PLAN-1933 DR-5).
+//
+// Enumeration-safe: it ALWAYS returns 200 with the same body whether or not a
+// matching unverified account exists, so it can't be used to probe which
+// emails are registered (or which are still unverified). Minting a fresh token
+// invalidates any prior unused one (CreateEmailVerification burns previous
+// links), so only the most recent link stays live.
+func (s *Server) handleResendVerification(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		Email string `json:"email"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
+		return
+	}
+	input.Email = strings.TrimSpace(input.Email)
+
+	// Uniform response for every outcome (unknown email, already verified,
+	// send failure) — no account-existence signal leaks.
+	okResponse := map[string]interface{}{
+		"ok":      true,
+		"message": "If your account still needs verification, a new link has been sent.",
+	}
+
+	if input.Email == "" || !emailRegexp.MatchString(input.Email) {
+		writeJSON(w, http.StatusOK, okResponse)
+		return
+	}
+
+	user, err := s.store.GetUserByEmail(input.Email)
+	if err != nil || user == nil || user.IsEmailVerified() {
+		// Unknown email or an already-verified account: no-op, same response.
+		writeJSON(w, http.StatusOK, okResponse)
+		return
+	}
+
+	// Only mint + send when the instance can actually deliver the link. A
+	// self-hosted instance never creates unverified users, so in practice this
+	// is cloud-only; the emailConfigured() guard ensures we never mint a token
+	// whose link we can't send.
+	if s.emailConfigured() {
+		if vtoken, verr := s.store.CreateEmailVerification(user.ID); verr != nil {
+			slog.Error("failed to create verification token on resend", "error", verr, "user_id", user.ID)
+		} else {
+			verifyURL := s.baseURL + "/verify-email/" + vtoken
+			toEmail, toName := user.Email, user.Name
+			s.goAsync(func() {
+				if err := s.email.SendEmailVerification(context.Background(), toEmail, toName, verifyURL); err != nil {
+					slog.Error("failed to send verification email on resend", "error", err)
+				}
+			})
+		}
+	}
+
+	writeJSON(w, http.StatusOK, okResponse)
 }

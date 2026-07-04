@@ -362,7 +362,12 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 			switch {
 			case path == "/api/v1/auth/login" || path == "/api/v1/auth/bootstrap" || path == "/api/v1/auth/2fa/login-verify":
 				limiter = s.rateLimiters.Auth
-			case path == "/api/v1/auth/forgot-password" || path == "/api/v1/auth/reset-password" || path == "/api/v1/auth/local-reset":
+			case path == "/api/v1/auth/forgot-password" || path == "/api/v1/auth/reset-password" || path == "/api/v1/auth/local-reset" ||
+				path == "/api/v1/auth/verify-email" || path == "/api/v1/auth/resend-verification":
+				// Email-verification endpoints (PLAN-1933 DR-5) reuse the
+				// PasswordReset bucket — same low-frequency, enumeration-safe
+				// shape as forgot/reset-password. Without an entry here they'd
+				// fall through to the looser default API limiter.
 				limiter = s.rateLimiters.PasswordReset
 			case path == "/api/v1/auth/register":
 				limiter = s.rateLimiters.Register
