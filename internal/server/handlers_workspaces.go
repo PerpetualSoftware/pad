@@ -414,6 +414,9 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !s.requireUnrestrictedExportAccess(w, r, ws.ID) {
+		return
+	}
 	export, err := s.store.ExportWorkspace(ws.Slug)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "not_found", err.Error())
