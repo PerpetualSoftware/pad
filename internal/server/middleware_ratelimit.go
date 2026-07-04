@@ -142,6 +142,15 @@ type RateLimiters struct {
 	API *ipRateLimiter
 	// Search: per-user or per-IP
 	Search *ipRateLimiter
+	// InvitationPreview: per-IP limiter for the public, pre-auth
+	// GET /api/v1/invitations/{code}/preview endpoint (BUG-1934). The
+	// endpoint is always-200 by design, so the status code can't be used
+	// to distinguish valid from invalid codes — this limiter is the second
+	// enumeration defense, capping how fast an attacker can probe the code
+	// space. Invite codes are 128-bit random (see CreateInvitation) so brute
+	// force is already infeasible; this is defense in depth. Per-IP because
+	// the caller is unauthenticated.
+	InvitationPreview *ipRateLimiter
 	// RecoveryCode caps how many recovery codes can be tried against a
 	// single 2FA challenge token. Without it an attacker who captures a
 	// valid challenge_token can grind through the small recovery-code
@@ -222,6 +231,14 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(30.0 / 60.0),
 			Burst: 10,
 		}),
+		// InvitationPreview: 20 requests per minute per IP (= 20/60 per second,
+		// burst 20). The /join page fetches this once on mount, so the ceiling
+		// is generous enough for a shared-NAT team onboarding in a batch while
+		// still capping code-enumeration probes at 20/min/IP (BUG-1934).
+		InvitationPreview: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(20.0 / 60.0),
+			Burst: 20,
+		}),
 		// RecoveryCode: up to 6 attempts per challenge token before lockout.
 		// Challenge tokens live for 5 minutes, so we only need the limiter to
 		// remember that long — but retention defaults to 30 minutes so we
@@ -286,6 +303,7 @@ func (rls *RateLimiters) Stop() {
 		rls.CloudAdmin,
 		rls.API,
 		rls.Search,
+		rls.InvitationPreview,
 		rls.RecoveryCode,
 		rls.MCPPerToken,
 	} {
@@ -381,6 +399,23 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 				}
 			}
 			// Other admin endpoints fall through to general API limit below
+		}
+
+		// Invitation preview (BUG-1934): public, pre-auth,
+		// GET /api/v1/invitations/{code}/preview. Rate-limit per IP on a
+		// dedicated strict bucket so it can't be used to enumerate invite
+		// codes — the endpoint is always-200 so the status can't leak
+		// validity, making the rate cap the primary volume defense. Matches
+		// only the trailing /preview segment; /invitations/{code}/accept is
+		// authenticated and falls through to the general API limit.
+		if strings.HasPrefix(path, "/api/v1/invitations/") && strings.HasSuffix(path, "/preview") {
+			if !s.rateLimiters.InvitationPreview.getLimiter(ip).Allow() {
+				slog.Warn("rate limited", "ip", ip, "path", path, "limiter", "invitation_preview")
+				writeRateLimitResponse(w, s.rateLimiters.InvitationPreview.config)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
 		}
 
 		// Search endpoint

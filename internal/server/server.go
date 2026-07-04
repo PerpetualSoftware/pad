@@ -1022,6 +1022,13 @@ func (s *Server) setupRouter() {
 			// Invitations (outside workspace scope)
 			r.Post("/invitations/{code}/accept", s.handleAcceptInvitation)
 
+			// Non-consuming invitation preview (BUG-1934). Public/pre-auth
+			// (exempted in isPublicAPIPath) so the logged-out /join page can
+			// prefill the invited email read-only and pick register-vs-login
+			// mode. Always HTTP 200 + rate limited (see middleware_ratelimit.go)
+			// so it can't be used to enumerate invite codes.
+			r.Get("/invitations/{code}/preview", s.handlePreviewInvitation)
+
 			// OAuth client public-info (PLAN-943 TASK-1027 sub-PR E).
 			// Read-only consent-screen support for OAuth clients
 			// registered via /oauth/register. Auth-required (inherits

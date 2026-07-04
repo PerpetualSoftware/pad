@@ -353,6 +353,72 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// handlePreviewInvitation returns non-consuming metadata about an invitation
+// so the /join page can prefill the invited email (read-only) and pick
+// register-vs-login mode. Unlike handleAcceptInvitation it never mutates
+// state — no membership add, no accepted_at write.
+//
+// Enumeration safety: this endpoint is public (pre-auth) and reveals whether
+// a code maps to a live invitation, so it is engineered against invite-code
+// enumeration on two fronts:
+//   - Always HTTP 200. Invalid, expired, missing, or dangling-workspace codes
+//     all return the SAME {"found": false} shape — no 404/410/403 status
+//     signal to distinguish "wrong code" from "valid code" (matches the
+//     always-200 posture of the auth reset/verify endpoints). A genuine DB
+//     fault still 500s, but that outcome is code-independent (identical for
+//     every code) so it leaks nothing about which codes are valid.
+//   - Rate limited. The route is wired to a dedicated per-IP limiter in
+//     middleware_ratelimit.go so an attacker can't grind the code space.
+//     (Codes are 128-bit random anyway — see CreateInvitation — so brute
+//     force is already infeasible; the limiter is defense in depth.)
+func (s *Server) handlePreviewInvitation(w http.ResponseWriter, r *http.Request) {
+	code := chi.URLParam(r, "code")
+
+	notFound := func() {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"found": false})
+	}
+
+	inv, err := s.store.GetInvitationByCode(code)
+	if err != nil {
+		// Genuine backend fault (DB down, etc.) — not a code-validity signal.
+		writeInternalError(w, err)
+		return
+	}
+	// Treat missing and expired invitations identically to an unknown code so
+	// the response can't be used to probe which codes were ever real.
+	if inv == nil || inv.IsExpired() {
+		notFound()
+		return
+	}
+
+	// A live invitation to a since-deleted workspace has nothing to join.
+	ws, err := s.store.GetWorkspaceByID(inv.WorkspaceID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if ws == nil {
+		notFound()
+		return
+	}
+
+	// has_account: does an account already exist for the invited address?
+	// Lets the client default to login instead of register. GetUserByEmail
+	// returns (nil, nil) when no such user exists.
+	existingUser, err := s.store.GetUserByEmail(inv.Email)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"found":          true,
+		"email":          inv.Email,
+		"workspace_name": ws.Name,
+		"has_account":    existingUser != nil,
+	})
+}
+
 // handleGetMemberCollectionAccess returns a member's collection access mode and granted IDs.
 func (s *Server) handleGetMemberCollectionAccess(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)

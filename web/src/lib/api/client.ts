@@ -494,6 +494,16 @@ export interface LoginResponse {
 	challenge_token?: string;
 }
 
+// Non-consuming invitation preview (BUG-1934). `found` is false for
+// invalid/expired/missing codes (the endpoint is always-200 for enumeration
+// safety); the other fields are only present when `found` is true.
+export interface InvitationPreview {
+	found: boolean;
+	email?: string;
+	workspace_name?: string;
+	has_account?: boolean;
+}
+
 export const api = {
 	// ── Health / Version ──────────────────────────────────────────────────────
 
@@ -1438,6 +1448,11 @@ export const api = {
 			request<{ accepted: boolean; workspace_id: string; role: string }>(`/invitations/${code}/accept`, {
 				method: 'POST'
 			}),
+		// Non-consuming, public preview of an invitation (BUG-1934). Used by the
+		// /join page to prefill the invited email read-only and pick
+		// register-vs-login mode. Always resolves (HTTP 200); check `found`.
+		previewInvitation: (code: string) =>
+			request<InvitationPreview>(`/invitations/${encodeURIComponent(code)}/preview`),
 		getMemberCollectionAccess: (ws: string, userId: string) =>
 			request<{ collection_access: string; collection_ids: string[] }>(`/workspaces/${ws}/members/${userId}/collection-access`),
 		setMemberCollectionAccess: (ws: string, userId: string, mode: string, collectionIDs: string[]) =>
