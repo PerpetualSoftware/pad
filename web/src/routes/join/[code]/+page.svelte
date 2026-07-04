@@ -7,8 +7,18 @@
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
+	import AuthOAuthButtons from '$lib/components/auth/AuthOAuthButtons.svelte';
+	import { recordAuthMethod, getLastAuthMethod, type AuthMethod } from '$lib/auth/lastMethod';
+	import { validateRedirect } from '$lib/auth/redirect';
 
 	let code = $derived(page.params.code ?? '');
+	// OAuth completes outside the SPA and returns via a full-page navigation to
+	// this same /join/<code> URL, where onMount's session probe sees
+	// `authenticated` and calls acceptInvitation. Thread the code through the
+	// SSO link's ?redirect= so that round trip lands back here to finish
+	// accepting the invite (BUG-1931 / DR-8). validateRedirect keeps this to a
+	// same-origin relative path — no open redirect.
+	let oauthRedirectTarget = $derived(validateRedirect(`/join/${code}`));
 	let status = $state<'loading' | 'login' | 'register' | 'accepting' | 'error' | 'setup' | '2fa'>('loading');
 	let errorMsg = $state('');
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open' | undefined>(undefined);
@@ -31,6 +41,10 @@
 	let challengeToken = $state('');
 	let totpCode = $state('');
 
+	// Last-used auth method (github/google/password) → drives the "Last used"
+	// pill on the matching OAuth button, mirroring /login and /register.
+	let lastMethod = $state<AuthMethod | null>(null);
+
 	let usernameManuallyEdited = $state(false);
 	let usernameChecking = $state(false);
 	let usernameAvailable = $state<boolean | null>(null);
@@ -38,6 +52,11 @@
 	let checkTimeout: ReturnType<typeof setTimeout> | null = null;
 
 	onMount(async () => {
+		// Read the last-used auth method so the OAuth buttons can paint the
+		// "Last used" pill on first render. Fails silent in SSR / private mode.
+		const last = getLastAuthMethod();
+		if (last) lastMethod = last.method;
+
 		// Hydrate authStore so AuthHeader can branch on cloudMode (matching the
 		// pattern in /forgot-password and /reset-password). Fire-and-forget so
 		// it does not delay the join-flow logic below — the header just won't
@@ -91,6 +110,14 @@
 		} else {
 			mode = 'register';
 		}
+	}
+
+	// OAuth completes entirely outside the SPA (provider → pad-cloud callback →
+	// server-set session cookie → server-driven redirect back to /join/<code>),
+	// so there's no JS success callback to hang the record on. Mirror
+	// /login and /register: record speculatively on click. See lastMethod.ts.
+	function handleOAuthClick(provider: AuthMethod) {
+		recordAuthMethod(provider);
 	}
 
 	async function acceptInvitation() {
@@ -370,6 +397,13 @@
 					{/if}
 				</button>
 			</div>
+
+			<AuthOAuthButtons
+				cloudMode={authStore.cloudMode}
+				redirectTarget={oauthRedirectTarget}
+				{lastMethod}
+				onProviderClick={handleOAuthClick}
+			/>
 
 			<p class="switch-mode">
 				{#if mode === 'login'}
