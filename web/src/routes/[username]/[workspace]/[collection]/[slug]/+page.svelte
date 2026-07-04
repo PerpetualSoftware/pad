@@ -849,15 +849,61 @@
 		// active editing. collabKey just changed to this itemId, so item is
 		// the freshly-loaded item for it. Per Codex review.
 		const baseline = untrack(() => (item && item.id === itemId ? item.content ?? '' : ''));
-		// seedMd starts null and is populated (if at all) by the lazy-seed
-		// effect below, only when it actually calls setContent — see that
-		// effect's comment for why. Lives on this per-item ctx object so it
-		// resets automatically on every item load, same as `baseline`.
+		// Eager, all-tabs seedMd (BUG-1941 follow-up — codex round 2 found
+		// that only the multi-tab-election WINNER got a captured seed via
+		// the lazy-seed effect below; a second tab on the same item, or
+		// simply reopening an item that already has collab history, never
+		// lazy-seeds and was left with seedMd stuck at null). This
+		// eagerly projects `baseline` (the SAME item.content @ load that
+		// the pre-existing storage-space dedupe already trusts) into
+		// editor-markdown space via the identical transform the lazy-seed
+		// effect uses, so every tab gets a best-effort seed regardless of
+		// whether it wins any election.
+		//
+		// False-dedupe safety: if this projection doesn't match what
+		// actually ends up in the Y.Doc (index drift since load, or a
+		// concurrently-live unflushed peer edit this tab's REST fetch
+		// didn't see), the comparison in runCollabFlush just MISSES —
+		// falling through to the existing baseline compare, never masking
+		// a real edit. See flushDedupe.ts's doc comment for the full
+		// revert-safety argument, which is unchanged by this addition.
+		//
+		// MUST stay untracked, and the untrack must wrap the ENTIRE index
+		// read + transform below, not just localIndex.getAll: this effect
+		// OWNS the collab provider's construction and teardown (see the
+		// cleanup below), and localIndex.getAll reads a live reactive
+		// SvelteMap. A tracked read here would rebuild (tear down and
+		// reconnect) the provider on every index mutation elsewhere in
+		// the workspace — a title rename, an inline [[-picker create,
+		// bootstrap's reconcile loop — which would be a far worse
+		// regression than the bug this fixes. Mirrors the untracked
+		// `baseline` read directly above for the same reason.
+		const seedMd = untrack(() => {
+			const allItemsAtLoad = localIndex.getAll(wsSlug);
+			const raw =
+				allItemsAtLoad.length > 0 && baseline.includes('[[')
+					? wikiLinksToMarkdown(baseline, allItemsAtLoad, wsSlug, username)
+					: baseline;
+			return unescapeDocLinks(raw);
+		});
+		// The lazy-seed effect below OVERWRITES this with its own value
+		// when (and only when) it actually calls setContent — its capture
+		// reflects the EXACT text written into the Y.Doc at that later
+		// moment and takes precedence for the winning tab. This eager
+		// value is the fallback for every other case: a losing tab in a
+		// multi-tab race, or (more commonly) any reopen of an item whose
+		// Y.Doc already has established content, where the lazy-seed
+		// effect never fires at all. It does not cover the case where the
+		// established Y.Doc holds link text rendered under a PAST index
+		// that differs from this load's current-index projection of
+		// item.content — that falls through safely to the baseline
+		// compare, and its visible symptom (a re-float) is covered by the
+		// Manual-comparator tiebreak below.
 		const ctx: { wsSlug: string; itemId: string; baseline: string; seedMd: string | null } = {
 			wsSlug,
 			itemId,
 			baseline,
-			seedMd: null,
+			seedMd,
 		};
 		activeCollabContext = ctx;
 
@@ -1154,14 +1200,18 @@
 			const lowest2 = peerIds2.reduce((min, id) => (id < min ? id : min), peerIds2[0]);
 			if (lowest2 !== localId) return;
 			editorInstance!.commands.setContent(seedMd);
-			// Record the exact markdown that just landed in the Y.Doc, in
-			// the same normalized space runCollabFlush compares against
-			// (unescapeDocLinks — see flushDedupe.ts and the +page.svelte
-			// PR notes for the escaping-space equivalence). Guarded on
+			// Overwrite the ctx-creation effect's eager (best-effort)
+			// seedMd with the EXACT markdown that just landed in the
+			// Y.Doc, in the same normalized space runCollabFlush compares
+			// against (unescapeDocLinks — see flushDedupe.ts and the
+			// +page.svelte PR notes for the escaping-space equivalence).
+			// This is strictly more precise than the eager value (it's
+			// what was actually written, not a projection), so the
+			// winning tab always ends up with this one. Guarded on
 			// `activeCollabContext === ctx` so a losing multi-tab election
-			// peer (which never reaches this point) or a superseded
-			// item-load can't stamp a seed nobody actually wrote. Per
-			// BUG-1941.
+			// peer (which never reaches this point, and so keeps its
+			// eager value) or a superseded item-load can't stamp a seed
+			// nobody actually wrote. Per BUG-1941.
 			if (ctx && activeCollabContext === ctx) ctx.seedMd = unescapeDocLinks(seedMd);
 		});
 	});
@@ -1748,12 +1798,22 @@
 		// shouldDedupeEditorSpace scopes this to the baseline arm only
 		// (lastFlushedContent === null); see its own doc comment for the
 		// revert-safety rationale the storage-space compare below still
-		// owns. Known boundary: seedMarkdown is only ever non-null when
-		// the lazy-seed effect actually fired THIS session (first-ever
-		// collab connect for the item, or after an op-log prune) — index
-		// drift across two sessions of an already-established item, with
-		// no lazy-seed in either, still falls through to the storage-space
-		// compare unchanged. Accepted scope per BUG-1941.
+		// owns. seedMarkdown comes from one of two sources (see the
+		// ctx-creation $effect): the lazy-seed effect's exact
+		// just-written value when this tab actually seeded the Y.Doc, or
+		// — for every other tab, including a losing multi-tab peer or a
+		// plain reopen of an already-established item — an eager
+		// projection of item.content through the current-load-time index.
+		// Known boundary: that eager projection only matches what's
+		// actually in the Y.Doc when the Y.Doc's established content
+		// agrees with THIS load's index projection of item.content. If
+		// the Y.Doc holds link display text rendered under a PAST index
+		// that has since drifted (e.g. a linked item was renamed since
+		// the content was last established), the projection won't match
+		// and this check safely falls through to the storage-space
+		// compare below — never a false dedupe, just a missed one. That
+		// residual case's visible symptom (a re-float) is covered by the
+		// Manual-comparator tiebreak. Accepted scope per BUG-1941.
 		if (shouldDedupeEditorSpace(lastFlushedContent, seedMarkdown, normalizedMarkdown)) {
 			return 'deduped';
 		}
