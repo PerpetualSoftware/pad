@@ -25,6 +25,16 @@
 	let setupMethod = $state<'local_cli' | 'docker_exec' | 'cloud' | 'logs_token' | 'open' | undefined>(undefined);
 	let loading = $state(false);
 
+	// Cloud self-serve signups (PLAN-1933 DR-1 model b / TASK-1940) create an
+	// UNVERIFIED account: it can log in + read but can't create/share until the
+	// emailed link is confirmed. When that happens we swap the form for a
+	// "check your email" state instead of dropping the user into the app and
+	// implying full access. Every other path (self-host, invited, admin-created)
+	// returns a verified user and navigates straight in.
+	let registered = $state(false);
+	let registeredEmail = $state('');
+	let resendState = $state<'idle' | 'sending' | 'sent' | 'error'>('idle');
+
 	let usernameManuallyEdited = $state(false);
 	let usernameChecking = $state(false);
 	let usernameAvailable = $state<boolean | null>(null);
@@ -151,8 +161,25 @@
 
 		loading = true;
 		try {
-			await api.auth.register(email, name, password, username || undefined);
+			const res = await api.auth.register(email, name, password, username || undefined);
 			recordAuthMethod('password');
+			// Refresh the store from the freshly-set session cookie (same as
+			// /login) BEFORE navigating. navigateToRedirectTarget uses SPA
+			// goto() for workspace routes, and the root layout's one-shot auth
+			// load won't rerun — so without this authStore.user stays null and
+			// VerifyEmailBanner's `cloudMode && user && !emailVerified` gate
+			// never fires after the user continues in.
+			await authStore.load();
+			// Cloud self-serve signup landed unverified → show the "check your
+			// email" state instead of navigating in. The server only returns
+			// email_verified === false on the cloud self-serve path, but we
+			// gate on cloudMode too so the verified default can never trap a
+			// self-host/invited registration here.
+			if (authStore.cloudMode && res.user?.email_verified === false) {
+				registeredEmail = email;
+				registered = true;
+				return;
+			}
 			await navigateToRedirectTarget(redirectTarget);
 		} catch (err: unknown) {
 			if (err instanceof Error) {
@@ -163,6 +190,25 @@
 		} finally {
 			loading = false;
 		}
+	}
+
+	async function resendVerification() {
+		if (!registeredEmail || resendState === 'sending') return;
+		resendState = 'sending';
+		try {
+			// Enumeration-safe (always 200); treat any non-throw as "sent".
+			await api.auth.resendVerification(registeredEmail);
+			resendState = 'sent';
+		} catch {
+			resendState = 'error';
+		}
+	}
+
+	async function continueToPad() {
+		// The account is already signed in (register set a session cookie), so
+		// this drops the user into the app to read/look around — they just
+		// can't create or share until they verify.
+		await navigateToRedirectTarget(redirectTarget);
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
@@ -186,6 +232,36 @@
 				actionHref="/login"
 				actionLabel="Back to login"
 			/>
+		{:else if registered}
+			<div class="verify-notice">
+				<h2>Check your email</h2>
+				<p>
+					We sent a verification link to <strong>{registeredEmail}</strong>.
+					Confirm your email to start creating and sharing.
+				</p>
+				<p class="verify-hint">
+					You can look around now, but you'll need to verify before you can create or share.
+				</p>
+				{#if resendState === 'sent'}
+					<p class="verify-sent">Verification email sent.</p>
+				{:else}
+					<button
+						class="secondary"
+						type="button"
+						onclick={resendVerification}
+						disabled={resendState === 'sending'}
+					>
+						{#if resendState === 'sending'}
+							Sending...
+						{:else if resendState === 'error'}
+							Something went wrong — retry
+						{:else}
+							Didn't get it? Resend
+						{/if}
+					</button>
+				{/if}
+				<button type="button" onclick={continueToPad}>Continue to Pad</button>
+			</div>
 		{:else}
 			<p class="subtitle">Create your account</p>
 
@@ -440,5 +516,44 @@
 
 	.username-status.taken {
 		color: #ef4444;
+	}
+
+	.verify-notice {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
+		text-align: left;
+	}
+
+	.verify-notice h2 {
+		font-size: 1.2rem;
+		font-weight: 600;
+		color: var(--text-primary);
+		margin: 0;
+		text-align: center;
+	}
+
+	.verify-notice p {
+		color: var(--text-secondary);
+		font-size: 0.9rem;
+		line-height: 1.5;
+		margin: 0;
+	}
+
+	.verify-hint {
+		color: var(--text-muted) !important;
+		font-size: 0.82rem !important;
+	}
+
+	.verify-sent {
+		color: #22c55e !important;
+		font-weight: 500;
+		text-align: center;
+	}
+
+	.verify-notice button.secondary {
+		background: var(--bg-tertiary);
+		color: var(--text-primary);
+		border: 1px solid var(--border);
 	}
 </style>
