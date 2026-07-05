@@ -60,15 +60,11 @@ func (f *fakeSidecar) lastID() string {
 // Stripe customer ID on them, and returns (userID, sessionToken). Used by
 // the handleDeleteAccount cascade tests.
 //
-// Clears activities.user_id for the user after bootstrap because
-// DeleteAccountAtomic doesn't cascade through activities (a pre-existing
-// limitation unrelated to TASK-690). Without this, the FK from
-// activities.user_id → users.id blocks the final DELETE FROM users and
-// every happy-path test ends in a 500. Narrow test-only scrub — it
-// preserves the audit rows themselves (for callers that inspect them) and
-// only detaches the user reference, which mirrors the ON DELETE SET NULL
-// behaviour the production schema will get when the FK gap is fixed in a
-// follow-up migration.
+// The activities.user_id scrub this helper used to perform is gone:
+// DeleteAccountAtomic now de-identifies activities via the
+// activities.user_id ON DELETE SET NULL FK (migrations 072/050, TASK-1959),
+// so the bootstrap activity row no longer blocks the final DELETE FROM
+// users. Deleting the account exercises the real cascade end to end.
 func bootstrapAccountDeleteUser(t *testing.T, srv *Server, customerID string) (string, string) {
 	t.Helper()
 	token := bootstrapFirstUser(t, srv, "delete-me@test.com", "Delete Me")
@@ -81,22 +77,19 @@ func bootstrapAccountDeleteUser(t *testing.T, srv *Server, customerID string) (s
 			t.Fatalf("set customer id: %v", err)
 		}
 	}
-	if _, err := srv.store.DB().Exec("UPDATE activities SET user_id = NULL WHERE user_id = ?", u.ID); err != nil {
-		t.Fatalf("scrub activities.user_id for test user: %v", err)
-	}
 	return u.ID, token
 }
 
-// deleteAccountReq is a doRequestWithCookieFrom wrapper that pins the
-// RemoteAddr to 127.0.0.1 — the same loopback address bootstrap was
-// invoked from. Without this, the session-IP-change middleware writes an
-// ActionSessionIPChanged audit row at request time (user_id column,
-// FK → users.id), which then blocks the final DELETE FROM users at the
-// end of DeleteAccountAtomic. Until the account-delete cascade fix for
-// audit rows lands (pre-existing bug, tracked separately), these tests
-// keep the IP stable to sidestep the FK gap.
+// deleteAccountReq issues the delete-account request from a client IP that
+// differs from the loopback address bootstrap ran on. The session-IP-change
+// middleware (log-only mode, the default) therefore writes an
+// ActionSessionIPChanged audit row into activities (user_id → users.id) at
+// request time and lets the request through. The delete must still succeed:
+// this is the regression guard for the audit-row FK gap TASK-1959 closed —
+// previously the fresh audit row blocked the final DELETE FROM users and the
+// handler 500'd.
 func deleteAccountReq(srv *Server, body interface{}, token string) *httptest.ResponseRecorder {
-	return doRequestWithCookieFrom(srv, "POST", "/api/v1/auth/delete-account", body, token, "127.0.0.1:4321")
+	return doRequestWithCookieFrom(srv, "POST", "/api/v1/auth/delete-account", body, token, "198.51.100.7:5555")
 }
 
 // TestHandleDeleteAccount_CancelsStripeBeforeDelete is the happy-path
@@ -324,27 +317,27 @@ func TestHandleDeleteAccount_AbortsOnSidecar4xx(t *testing.T) {
 // gone; now it returns a truthful partial_delete error and logs the
 // customer ID for operator follow-up.
 //
-// The "local delete fails" condition is simulated by leaving a second
-// audit row referencing the user (activities.user_id) that we DON'T scrub
-// — that row blocks the final DELETE FROM users with a FK violation. The
-// test deliberately re-introduces the same FK that bootstrapAccountDeleteUser
-// normally scrubs.
+// The "local delete fails" condition is injected via the sidecar hook —
+// the existing seam that runs AFTER the cancel succeeds but BEFORE
+// DeleteAccountAtomic. It drops mcp_audit_log (a leaf table with no
+// inbound FKs, deleted from partway through DeleteAccountAtomic), so the
+// local delete's `DELETE FROM mcp_audit_log` errors and rolls the whole
+// transaction back. This replaces the pre-TASK-1959 mechanism, which
+// relied on an activities.user_id FK violation — no longer reproducible
+// now that FK is ON DELETE SET NULL. (Each test gets an isolated DB file
+// copy, so the drop can't leak into sibling tests.)
 func TestHandleDeleteAccount_PartialDelete_WhenLocalDeleteFailsAfterCancel(t *testing.T) {
 	srv := testServer(t)
 	fake := &fakeSidecar{}
+	fake.hook = func(string) {
+		// Sabotage the local delete AFTER the cancel has already fired.
+		if _, err := srv.store.DB().Exec("DROP TABLE mcp_audit_log"); err != nil {
+			t.Errorf("drop mcp_audit_log to force local-delete failure: %v", err)
+		}
+	}
 	srv.SetCloudSidecar(fake)
 
 	userID, token := bootstrapAccountDeleteUser(t, srv, "cus_paying_user")
-
-	// Re-attach an activity row to the user so the FK blocks the delete.
-	// This is the same FK gap the fixture normally scrubs around; we
-	// intentionally re-create it to force DeleteAccountAtomic to fail
-	// AFTER the successful Stripe cancel.
-	if _, err := srv.store.DB().Exec(
-		"UPDATE activities SET user_id = ? WHERE user_id IS NULL",
-		userID); err != nil {
-		t.Fatalf("reintroduce FK: %v", err)
-	}
 
 	rr := deleteAccountReq(srv, map[string]interface{}{"password": "correct-horse-battery-staple"}, token)
 	if rr.Code != http.StatusInternalServerError {
