@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -409,6 +410,44 @@ func TestAuthMeEndpoint(t *testing.T) {
 	}
 	if user["email"] != "me@test.com" {
 		t.Errorf("expected email 'me@test.com', got %v", user["email"])
+	}
+	// A bootstrapped user set a password, so password_set must be true. The
+	// delete-account UI keys off this to show a password prompt vs a
+	// confirm-only flow (TASK-1957).
+	if set, ok := user["password_set"].(bool); !ok || !set {
+		t.Errorf("expected password_set=true for a password user, got %v", user["password_set"])
+	}
+}
+
+// TestAuthMeReportsPasswordSetForOAuthUser pins the OAuth-only branch of
+// TASK-1957: a user created via OAuth (no password) must report
+// password_set=false so the client can offer confirm-only account deletion.
+func TestAuthMeReportsPasswordSetForOAuthUser(t *testing.T) {
+	srv := testServer(t)
+	// Bootstrap a first user so the instance is initialized and auth is enforced.
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	oauthUser, err := srv.store.CreateOAuthUser("oauth@test.com", "OAuth Only", "")
+	if err != nil {
+		t.Fatalf("CreateOAuthUser: %v", err)
+	}
+	if oauthUser.HasPassword() {
+		t.Fatal("expected freshly created OAuth user to have no password")
+	}
+	token, err := srv.store.CreateSession(oauthUser.ID, "go-test", "192.0.2.1", "", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	rr := doRequestWithCookie(srv, "GET", "/api/v1/auth/me", nil, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("me: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var user map[string]interface{}
+	parseJSON(t, rr, &user)
+	if set, ok := user["password_set"].(bool); !ok || set {
+		t.Errorf("expected password_set=false for an OAuth-only user, got %v", user["password_set"])
 	}
 }
 

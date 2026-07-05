@@ -904,6 +904,7 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 		"role":         user.Role,
 		"avatar_url":   user.AvatarURL,
 		"totp_enabled": user.TOTPEnabled,
+		"password_set": user.HasPassword(),
 		"created_at":   user.CreatedAt,
 		"updated_at":   user.UpdatedAt,
 	}
