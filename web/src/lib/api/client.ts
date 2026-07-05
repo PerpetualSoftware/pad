@@ -1618,6 +1618,46 @@ export const api = {
 				method: 'POST',
 				body: JSON.stringify({ provider })
 			}),
+		// Permanently delete the current user's account (TASK-1960). Routed
+		// through the shared request() helper so the X-CSRF-Token + credentials
+		// are attached automatically — a hand-rolled fetch would omit CSRF and
+		// 403. All fields are optional so the caller sends only what the
+		// account's auth method requires (password for email/password users,
+		// totp_code when 2FA is on, confirm as a UI guard).
+		deleteAccount: (opts: { password?: string; confirm?: boolean; totp_code?: string }) =>
+			request<{ ok: boolean }>('/auth/delete-account', {
+				method: 'POST',
+				body: JSON.stringify({ ...opts })
+			}),
+		// GET the account-export endpoint and return the JSON artifact text plus
+		// the server-suggested filename (Content-Disposition, falling back to
+		// `pad-account-export.json`). Modeled on exportItemArtifact, NOT request()
+		// — request() JSON-parses the body and force-redirects on 401, whereas
+		// here we want the raw text and a PadApiError that surfaces the
+		// restricted-owner 403 (BUG-1945). Auth is by session; 401 → /login.
+		exportAccountData: async (): Promise<{ filename: string; text: string }> => {
+			const resp = await fetch(`${BASE}/auth/export`, {
+				credentials: 'same-origin'
+			});
+			if (resp.status === 401) {
+				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+					window.location.href = '/login';
+				}
+				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+			}
+			if (!resp.ok) {
+				const body = await resp.json().catch(() => null);
+				if (body?.error) throw new PadApiError(body.error);
+				// Non-OK with no JSON error envelope: still surface a PadApiError so
+				// every failure path (incl. the restricted-owner 403) is one type for
+				// callers to catch — satisfies TASK-1960's "!ok → PadApiError".
+				throw new PadApiError({ code: 'export_failed', message: `account export failed: ${resp.status}` });
+			}
+			const text = await resp.text();
+			const disposition = resp.headers.get('Content-Disposition') ?? '';
+			const filename = parseContentDispositionFilename(disposition) ?? 'pad-account-export.json';
+			return { filename, text };
+		},
 		totp: {
 			setup: () => request<TOTPSetupResponse>('/auth/2fa/setup', { method: 'POST' }),
 			verify: (code: string, secret: string) =>

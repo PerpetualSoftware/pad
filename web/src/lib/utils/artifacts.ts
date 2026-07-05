@@ -34,6 +34,16 @@ export async function exportAndDownloadArtifact(ws: string, ref: string): Promis
 }
 
 /**
+ * Export the current user's account data as a JSON artifact and immediately
+ * download it (TASK-1960). Throws the underlying PadApiError so callers can
+ * surface `err.message` in a toast — e.g. the restricted-owner 403 (BUG-1945).
+ */
+export async function exportAndDownloadAccountData(): Promise<void> {
+	const { filename, text } = await api.auth.exportAccountData();
+	downloadTextFile(filename, text, 'application/json');
+}
+
+/**
  * Read a picked artifact File as text and POST it to the import endpoint.
  * Returns the server result (ref + slug + warnings); throws on read failure
  * or a 4xx import error (PadApiError) for the caller to surface.
