@@ -9,6 +9,7 @@ export interface User {
 	avatar_url?: string;
 	oauth_providers?: string[];
 	totp_enabled?: boolean;
+	password_set?: boolean;
 	created_at: string;
 	updated_at: string;
 }
