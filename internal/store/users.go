@@ -945,6 +945,23 @@ func (s *Store) DeleteUser(id string) error {
 // DeleteAccountAtomic deletes a user and all their owned workspaces in a single
 // transaction. If any step fails, the entire operation is rolled back and no data
 // is modified. This prevents orphaned workspaces from partial deletions.
+//
+// Every table with a foreign key to users(id) is handled here so the final
+// DELETE FROM users can't 500 on an FK constraint (TASK-1959). Three postures,
+// mirroring the FK audit:
+//
+//   - De-identify (UPDATE ... SET NULL): audit/history rows that should survive
+//     with their identity dropped — the comments.user_id posture from TASK-509.
+//     They live on in soft-deleted owned workspaces and in other workspaces the
+//     user contributed to.
+//   - Delete: rows the user solely owns or that are transient/audit and not
+//     worth de-identifying (sessions, tokens, memberships, sent invitations,
+//     issued grants, created share links, MCP audit, OAuth connections).
+//   - Cascade: rows the schema already removes/nulls at DELETE FROM users
+//     time — item_stars, user_report_layouts, {collection,item}_grants.user_id
+//     (ON DELETE CASCADE); items.assigned_user_id and activities.user_id
+//     (ON DELETE SET NULL; activities gained its FK action in migrations
+//     072/050).
 func (s *Store) DeleteAccountAtomic(userID string, ownedWorkspaceSlugs []string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -954,46 +971,73 @@ func (s *Store) DeleteAccountAtomic(userID string, ownedWorkspaceSlugs []string)
 
 	ts := now()
 
-	// 1. Soft-delete all owned workspaces
+	// 1. Soft-delete all owned workspaces. They keep their rows (and every
+	// item/activity/comment within) so the data stays recoverable; only the
+	// user identity is hard-removed below.
 	for _, slug := range ownedWorkspaceSlugs {
-		result, err := tx.Exec(s.q(`
+		if _, err := tx.Exec(s.q(`
 			UPDATE workspaces SET deleted_at = ?, updated_at = ?
 			WHERE slug = ? AND deleted_at IS NULL
-		`), ts, ts, slug)
-		if err != nil {
+		`), ts, ts, slug); err != nil {
 			return fmt.Errorf("delete account: delete workspace %s: %w", slug, err)
 		}
-		rows, _ := result.RowsAffected()
-		if rows == 0 {
-			// Workspace already deleted or not found — not an error
-			continue
+	}
+
+	// exec runs one cleanup statement keyed on userID, wrapping the error with
+	// context. Each statement clears a reference to the user so the final
+	// DELETE FROM users can't trip a foreign-key constraint.
+	exec := func(what, query string) error {
+		if _, err := tx.Exec(s.q(query), userID); err != nil {
+			return fmt.Errorf("delete account: %s: %w", what, err)
+		}
+		return nil
+	}
+
+	// 2. De-identify audit/history rows (preserve row, drop identity). These
+	// FKs are RESTRICT on SQLite and either RESTRICT (items) or absent
+	// (comments/item_links/item_versions/comment_reactions) on Postgres —
+	// nulling here keeps the delete safe and the data clean on both dialects.
+	deidentify := []struct{ what, query string }{
+		{"detach authored items", "UPDATE items SET created_by_user_id = NULL WHERE created_by_user_id = ?"},
+		{"detach modified items", "UPDATE items SET last_modified_by_user_id = NULL WHERE last_modified_by_user_id = ?"},
+		{"detach comments", "UPDATE comments SET user_id = NULL WHERE user_id = ?"},
+		{"detach comment reactions", "UPDATE comment_reactions SET user_id = NULL WHERE user_id = ?"},
+		{"detach item links", "UPDATE item_links SET user_id = NULL WHERE user_id = ?"},
+		{"detach item versions", "UPDATE item_versions SET user_id = NULL WHERE user_id = ?"},
+		{"detach share-link views", "UPDATE share_link_views SET viewer_user_id = NULL WHERE viewer_user_id = ?"},
+	}
+	for _, stmt := range deidentify {
+		if err := exec(stmt.what, stmt.query); err != nil {
+			return err
 		}
 	}
 
-	// 2. Revoke all sessions
-	if _, err := tx.Exec(s.q("DELETE FROM sessions WHERE user_id = ?"), userID); err != nil {
-		return fmt.Errorf("delete account: delete sessions: %w", err)
+	// 3. Delete rows the user owns or that are transient/audit. CASCADE cleans
+	// the dependents: member_collection_access (off workspace_members),
+	// share_link_views (off deleted share_links), oauth_connection_workspaces
+	// (off oauth_connections).
+	deletes := []struct{ what, query string }{
+		{"delete sessions", "DELETE FROM sessions WHERE user_id = ?"},
+		{"delete api tokens", "DELETE FROM api_tokens WHERE user_id = ?"},
+		{"delete workspace memberships", "DELETE FROM workspace_members WHERE user_id = ?"},
+		{"delete sent invitations", "DELETE FROM workspace_invitations WHERE invited_by = ?"},
+		{"delete password reset tokens", "DELETE FROM password_reset_tokens WHERE user_id = ?"},
+		{"delete email verification tokens", "DELETE FROM email_verification_tokens WHERE user_id = ?"},
+		{"delete issued collection grants", "DELETE FROM collection_grants WHERE granted_by = ?"},
+		{"delete issued item grants", "DELETE FROM item_grants WHERE granted_by = ?"},
+		{"delete created share links", "DELETE FROM share_links WHERE created_by = ?"},
+		{"delete mcp audit log", "DELETE FROM mcp_audit_log WHERE user_id = ?"},
+		{"delete oauth connections", "DELETE FROM oauth_connections WHERE user_id = ?"},
+	}
+	for _, stmt := range deletes {
+		if err := exec(stmt.what, stmt.query); err != nil {
+			return err
+		}
 	}
 
-	// 3. Revoke all API tokens
-	if _, err := tx.Exec(s.q("DELETE FROM api_tokens WHERE user_id = ?"), userID); err != nil {
-		return fmt.Errorf("delete account: delete api tokens: %w", err)
-	}
-
-	// 3b. Detach authored comments. comments.user_id is a FK to users(id)
-	// (TASK-1663 started populating it); the user's comments live on in
-	// soft-deleted owned workspaces and in other workspaces they're a member
-	// of, so null the reference rather than let the FK block deletion. The
-	// comments.author display name is preserved; nulling user_id just makes
-	// those comments admin-only to edit going forward, which is correct once
-	// the author's account is gone.
-	if _, err := tx.Exec(s.q("UPDATE comments SET user_id = NULL WHERE user_id = ?"), userID); err != nil {
-		return fmt.Errorf("delete account: detach comments: %w", err)
-	}
-
-	// 4. Delete the user record
-	if _, err := tx.Exec(s.q("DELETE FROM users WHERE id = ?"), userID); err != nil {
-		return fmt.Errorf("delete account: delete user: %w", err)
+	// 4. Delete the user record. Remaining references cascade (see doc comment).
+	if err := exec("delete user", "DELETE FROM users WHERE id = ?"); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {

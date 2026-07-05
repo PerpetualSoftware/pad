@@ -140,8 +140,15 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	})
 	clearCSRFCookie(w)
 
-	s.logAuditEventForUser(models.ActionAccountDeleted, r, user.ID, auditMeta(map[string]string{
-		"email": user.Email,
+	// Log the deletion with an EMPTY user_id: the user row is already gone,
+	// and activities.user_id is now an ON DELETE SET NULL FK (migrations
+	// 072/050), so an insert referencing the deleted id would fail the FK and
+	// CreateActivity's error is swallowed — the audit row would vanish. Pass
+	// "" (stored as NULL) and keep the deleted identity in metadata so the
+	// account_deleted event is actually recorded on both dialects.
+	s.logAuditEventForUser(models.ActionAccountDeleted, r, "", auditMeta(map[string]string{
+		"deleted_user_id": user.ID,
+		"email":           user.Email,
 	}))
 
 	slog.Info("account deleted", "user_id", user.ID, "email", user.Email)
