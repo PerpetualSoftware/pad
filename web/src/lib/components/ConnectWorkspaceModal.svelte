@@ -14,8 +14,10 @@
 		// Used by the CLI tab to produce a `pad init --url <serverUrl>` snippet.
 		serverUrl: string;
 		// Empty string when the deployment doesn't expose a public MCP URL
-		// (typical self-host without PAD_MCP_PUBLIC_URL). When empty, the
-		// MCP tab is hidden entirely and the default tab falls through to CLI.
+		// (typical self-host without PAD_MCP_PUBLIC_URL). When empty, both the
+		// MCP tab and the claim-code ("Connect code") tab are hidden — they
+		// depend on the remote OAuth server — leaving only CLI, which also
+		// becomes the default.
 		mcpPublicUrl?: string;
 	}
 
@@ -29,27 +31,32 @@
 
 	// --- Primary tabs --------------------------------------------------------
 	//
-	// IDEA-1517 §4 spec: three primary connection paths in one modal. Order is
-	// deliberate — claim code first because once a user has authorized any agent
-	// on any workspace via OAuth, claim-code is dramatically the lowest-friction
-	// path to add additional workspaces. MCP setup is the "fresh agent" path.
-	// CLI is the terminal-only escape hatch (and the only flow that works on
-	// self-host deployments without a public MCP URL).
+	// IDEA-1517 §4 established three connection paths; this ordering is the
+	// post-follow-up correction. MCP setup is FIRST and the default because
+	// most users landing here have never connected an agent — the "fresh
+	// agent" OAuth path is their actual first step (and a default "All my
+	// workspaces" grant then covers this workspace with no code needed at
+	// all). CLI is the terminal / self-host path — the only one that works
+	// without a public MCP URL. The claim ("Connect code") path is LAST: it
+	// does nothing until you already hold an OAuth grant and want to add THIS
+	// workspace to it — a narrow escalation, not a starting point.
 	type PrimaryTab = 'agent' | 'mcp' | 'cli';
 
 	const primaryTabs: { id: PrimaryTab; label: string; subtitle: string }[] = [
-		{ id: 'agent', label: 'Agent', subtitle: 'Claim a workspace (recommended)' },
-		{ id: 'mcp', label: 'MCP setup', subtitle: 'Authorize a new agent' },
-		{ id: 'cli', label: 'CLI', subtitle: 'Terminal access' }
+		{ id: 'mcp', label: 'Connect an agent', subtitle: 'Set up MCP (recommended)' },
+		{ id: 'cli', label: 'CLI', subtitle: 'Terminal access' },
+		{ id: 'agent', label: 'Connect code', subtitle: 'Add to an agent you already connected' }
 	];
 
 	// Default-tab logic. Two cases:
-	//   1. Deployment has a public MCP URL → claim-code is the high-value path
-	//      because users typically already have one OAuth-authorized agent and
-	//      just want this workspace added to that grant. Default to 'agent'.
-	//   2. No public MCP URL (self-host without remote MCP) → claim-code AND
-	//      the MCP tab are both meaningless (the claim flow only matters in
-	//      the context of an OAuth grant on the remote MCP). Default to 'cli'.
+	//   1. Deployment has a public MCP URL → default to 'mcp'. The visitor
+	//      most likely hasn't connected any agent yet, and authorizing one
+	//      via OAuth is the real first step. A default "All my workspaces"
+	//      grant then covers this workspace with no claim code needed at all.
+	//   2. No public MCP URL (self-host without remote MCP) → both the MCP
+	//      and the claim-code paths are meaningless (no OAuth server to
+	//      authorize against, no grant to claim into). Default to 'cli', the
+	//      only path that works there.
 	//
 	// We compute this as a $derived rather than $state because we want it to
 	// reset to the appropriate default each time `open` flips true — using
@@ -63,7 +70,7 @@
 	let lastOpen = false;
 	$effect(() => {
 		if (open && !lastOpen) {
-			activeTab = mcpPublicUrl ? 'agent' : 'cli';
+			activeTab = mcpPublicUrl ? 'mcp' : 'cli';
 		}
 		lastOpen = open;
 	});
@@ -147,6 +154,7 @@
 		| { kind: 'loading' }
 		| { kind: 'ready'; data: ClaimCodeResponse }
 		| { kind: 'suppressed'; grantName: string }
+		| { kind: 'no_connection' }
 		| { kind: 'disabled' }
 		| { kind: 'error'; message: string }
 	>({ kind: 'idle' });
@@ -208,6 +216,17 @@
 					kind: 'suppressed',
 					grantName: data.suppression_grant_name ?? ''
 				};
+				return;
+			}
+			// No grant covers this workspace. If the user has NO active
+			// connection at all, the code is inert — nothing can redeem it —
+			// so steer them to the MCP tab instead of handing over a dead
+			// code. `has_any_connection` is absent on older servers; treat
+			// absent as "has one" so we fall through to the code rather than
+			// hiding it spuriously.
+			if (data.has_any_connection === false) {
+				clearCountdown();
+				claimState = { kind: 'no_connection' };
 				return;
 			}
 			claimState = { kind: 'ready', data };
@@ -292,10 +311,15 @@
 			: 'Connect this workspace to your AI agent'
 	);
 
-	// Hide MCP tab on deployments without a public MCP URL — the tab would
-	// have nothing meaningful to show.
+	// Hide the MCP and claim-code tabs on deployments without a public MCP
+	// URL. Both depend on the remote OAuth server, which only mounts under
+	// PAD_MCP_PUBLIC_URL — without it the MCP tab has nothing to show and the
+	// claim endpoint returns claim_disabled (a dead tab). That leaves
+	// self-host with just the CLI tab, which is the only path that works
+	// there. (The 'disabled' claimState render stays as defense-in-depth in
+	// case the secret is somehow unset while a public URL is present.)
 	let visibleTabs = $derived(
-		primaryTabs.filter((t) => t.id !== 'mcp' || !!mcpPublicUrl)
+		primaryTabs.filter((t) => (t.id !== 'mcp' && t.id !== 'agent') || !!mcpPublicUrl)
 	);
 
 	const CONNECTED_APPS_HREF = '/console/connected-apps';
@@ -352,6 +376,32 @@
 								Open Connected apps &rarr;
 							</a>
 						</div>
+					{:else if claimState.kind === 'no_connection'}
+						<!--
+							The user has no active OAuth connection, so a claim
+							code has nothing to redeem it. Rather than hand over a
+							live-looking but dead code, point them at the MCP tab
+							to connect an agent first — after a default "All my
+							workspaces" authorization this workspace is covered
+							with no code needed at all.
+						-->
+						<div class="info-panel">
+							<p class="info-panel-title">Connect an agent first</p>
+							<p class="info-panel-body">
+								A connect code only works once you’ve authorized an agent. Set
+								one up on the <strong>Connect an agent</strong> tab — the default
+								“All my workspaces” option covers this workspace automatically,
+								so you won’t need a code at all. Codes are for adding a single
+								workspace to an agent you limited to specific ones.
+							</p>
+							<button
+								class="retry-btn"
+								type="button"
+								onclick={() => (activeTab = 'mcp')}
+							>
+								Go to Connect an agent &rarr;
+							</button>
+						</div>
 					{:else if claimState.kind === 'disabled'}
 						<!--
 							"claim_disabled" only fires on self-host deployments
@@ -385,6 +435,16 @@
 						</div>
 					{:else}
 						<!-- ready -->
+						<p class="intro-copy">
+							Already connected an agent through MCP? Read it this code to give it
+							access to <strong>this</strong> workspace — no re-authorization needed.
+							Haven’t connected one yet?
+							<button
+								class="inline-link-btn"
+								type="button"
+								onclick={() => (activeTab = 'mcp')}>Set one up first</button
+							>.
+						</p>
 						<section class="step">
 							<span class="section-label">Step 1 — Read your agent the code</span>
 							<div class="claim-code-row">
@@ -525,6 +585,17 @@
 								{/each}
 							</div>
 						</section>
+
+						<p class="hint">
+							Authorizing with “All my workspaces” (the default) includes this one
+							automatically. If you limit your agent to specific workspaces, use the
+							<button
+								class="inline-link-btn"
+								type="button"
+								onclick={() => (activeTab = 'agent')}>Connect code</button
+							>
+							tab to add this workspace to it.
+						</p>
 					{/if}
 				{:else}
 					<!-- CLI panel -->

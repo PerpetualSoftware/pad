@@ -214,6 +214,14 @@ export interface WorkspaceMembership {
 //     hint instead. `suppression_grant_name` is the name of the
 //     covering connection if available (may be empty).
 //
+// `has_any_connection` (present only when suppressed=false) tells the
+// modal whether the user has ANY active OAuth connection at all. A
+// claim code is inert without one — nothing can redeem it — so when
+// this is false the modal steers the user to set up an agent (MCP tab)
+// first instead of rendering a dead code. When true, the user has a
+// connection that merely doesn't reach this workspace (a scoped grant),
+// which is exactly what the code is for.
+//
 // `expires_at` is the END of the CURRENT 5-minute bucket in RFC3339;
 // verification still accepts the previous bucket for ~5 additional
 // minutes (sliding 5–10 min lifetime). UI drives a countdown from
@@ -224,6 +232,7 @@ export interface ClaimCodeResponse {
 	expires_at: string;
 	suppressed: boolean;
 	suppression_grant_name?: string;
+	has_any_connection?: boolean;
 }
 
 // ImportArtifactResult is the wire shape returned by
