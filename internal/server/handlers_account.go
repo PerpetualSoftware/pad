@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/pquerna/otp/totp"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -28,6 +30,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Password string `json:"password"`
 		Confirm  bool   `json:"confirm"`
+		TOTPCode string `json:"totp_code"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -55,6 +58,26 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	} else {
 		writeError(w, http.StatusBadRequest, "bad_request", "Password is required to delete your account")
 		return
+	}
+
+	// Second factor: an irreversible delete must clear at least the same bar
+	// as login. If the account has 2FA enabled, require and verify a current
+	// TOTP code — run AFTER the password/confirm identity check above so
+	// NEITHER path can skip it. This is the whole point: cloud confirm-only
+	// needs no password, so a hijacked live session would otherwise be enough
+	// to wipe a 2FA-protected account. Reuses the same totp.Validate path as
+	// login (handleTOTPLoginVerify) and disable (handleTOTPDisable). Placed
+	// before the Stripe cancel below so a failed code never leaks a cancel RPC.
+	if fullUser.TOTPEnabled {
+		code := strings.TrimSpace(input.TOTPCode)
+		if code == "" {
+			writeError(w, http.StatusBadRequest, "totp_required", "A 2FA code is required to delete your account")
+			return
+		}
+		if !totp.Validate(code, fullUser.TOTPSecret) {
+			writeError(w, http.StatusUnauthorized, "totp_invalid", "Invalid 2FA code")
+			return
+		}
 	}
 
 	// Delete all owned workspaces, sessions, and the user atomically.
