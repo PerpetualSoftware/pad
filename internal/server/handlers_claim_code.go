@@ -130,6 +130,21 @@ func (s *Server) handleWorkspaceClaimCode(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// Not covered by any grant. Two sub-cases the modal renders
+	// differently: the user has a connection that just doesn't reach
+	// this workspace (a scoped grant — the claim code is the right
+	// tool), versus the user has no connection at all (the code is
+	// inert — steer them to set up an agent first). Surface the flag
+	// so the client can branch without a second round-trip. Failure
+	// is a 500 for the same reason the suppression check is: a silent
+	// wrong answer here reintroduces the dead-end code path.
+	hasAnyConnection, err := s.store.HasActiveConnectionForUser(user.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	resp["has_any_connection"] = hasAnyConnection
+
 	resp["code"] = DeriveClaimCode(s.claimSecret, user.ID, ws.ID, now)
 	writeJSON(w, http.StatusOK, resp)
 }

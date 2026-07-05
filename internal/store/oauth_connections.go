@@ -505,6 +505,56 @@ func (s *Store) IsWorkspaceCoveredForUser(userID, workspaceID string) (string, b
 	return name, true, nil
 }
 
+// HasActiveConnectionForUser reports whether the user has ANY active
+// OAuth connection at all, regardless of which workspaces it covers.
+//
+// The claim-code endpoint uses this to disambiguate the two "not
+// covered" cases the modal must render differently (IDEA-1517 §4
+// follow-up):
+//
+//   - The user has a connection that just doesn't cover THIS workspace
+//     (e.g. a grant scoped to specific workspaces at consent time) →
+//     the claim code is exactly the right tool; render it.
+//   - The user has NO connection at all → the claim code is inert,
+//     because nothing exists to redeem it. Handing over a live-looking
+//     code here is the dead end this whole reshuffle set out to kill;
+//     the modal steers the user to set up an agent (MCP) first instead.
+//
+// "Active" matches IsWorkspaceCoveredForUser / ListUserOAuthConnections:
+// at least one access OR refresh token in the chain still has
+// active=TRUE. The query short-circuits at the first match (LIMIT 1) —
+// the caller only needs the boolean.
+func (s *Store) HasActiveConnectionForUser(userID string) (bool, error) {
+	if userID == "" {
+		return false, nil
+	}
+	trueVal := s.dialect.BoolToInt(true)
+	var one int
+	err := s.db.QueryRow(s.q(`
+        SELECT 1
+          FROM oauth_connections oc
+         WHERE oc.user_id = ?
+           AND (
+             EXISTS (
+               SELECT 1 FROM oauth_access_tokens t
+                WHERE t.request_id = oc.request_id AND t.active = ?
+             )
+             OR EXISTS (
+               SELECT 1 FROM oauth_refresh_tokens t
+                WHERE t.request_id = oc.request_id AND t.active = ?
+             )
+           )
+         LIMIT 1
+    `), userID, trueVal, trueVal).Scan(&one)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("oauth_connections: has-connection check: %w", err)
+	}
+	return true, nil
+}
+
 // DeleteOAuthConnection removes the row + cascades to
 // oauth_connection_workspaces. Phase D's "Revoke" handler calls this
 // after RevokeRefreshTokenFamily + RevokeAccessTokenFamily so the
