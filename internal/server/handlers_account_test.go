@@ -7,8 +7,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/billing"
+	"github.com/pquerna/otp/totp"
 )
 
 // fakeSidecar is a controllable CloudSidecar used to assert the cancel-before-
@@ -386,5 +388,168 @@ func TestHandleDeleteAccount_SkipsCancelOnWrongPassword(t *testing.T) {
 	}
 	if fake.callCount() != 0 {
 		t.Errorf("CancelCustomer must not be called on wrong-password attempts, got %d calls", fake.callCount())
+	}
+}
+
+// enableTOTPForDeleteUser turns on 2FA for a bootstrapped delete-test user
+// using a known secret, mirroring the real SetTOTPSecret → EnableTOTP flow,
+// and returns the plaintext secret so callers can mint valid codes with
+// totp.GenerateCode. The stored recovery codes are irrelevant to the delete
+// path (it accepts only a TOTP code, not a recovery code), so a placeholder
+// hashed value is fine here.
+func enableTOTPForDeleteUser(t *testing.T, srv *Server, userID string) string {
+	t.Helper()
+	const secret = "JBSWY3DPEHPK3PXP" // standard base32 test vector
+	if err := srv.store.SetTOTPSecret(userID, secret); err != nil {
+		t.Fatalf("SetTOTPSecret: %v", err)
+	}
+	if err := srv.store.EnableTOTP(userID, secret, "placeholder-hashed-recovery-code"); err != nil {
+		t.Fatalf("EnableTOTP: %v", err)
+	}
+	return secret
+}
+
+// validTOTPCode mints the current valid TOTP code for a secret, using the
+// same library the handler validates against.
+func validTOTPCode(t *testing.T, secret string) string {
+	t.Helper()
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatalf("GenerateCode: %v", err)
+	}
+	return code
+}
+
+// TestHandleDeleteAccount_TOTPEnabled_ValidCode — a 2FA-enabled account with
+// the correct password AND a valid TOTP code deletes successfully (200
+// {ok:true}) and the user row is gone.
+func TestHandleDeleteAccount_TOTPEnabled_ValidCode(t *testing.T) {
+	srv := testServer(t)
+	fake := &fakeSidecar{}
+	srv.SetCloudSidecar(fake)
+
+	userID, token := bootstrapAccountDeleteUser(t, srv, "")
+	secret := enableTOTPForDeleteUser(t, srv, userID)
+
+	rr := deleteAccountReq(srv, map[string]interface{}{
+		"password":  "correct-horse-battery-staple",
+		"totp_code": validTOTPCode(t, secret),
+	}, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid TOTP code, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var resp map[string]interface{}
+	parseJSON(t, rr, &resp)
+	if resp["ok"] != true {
+		t.Errorf("expected {ok:true} on successful delete, got %v", resp)
+	}
+
+	u, err := srv.store.GetUser(userID)
+	if err != nil {
+		t.Fatalf("get user after delete: %v", err)
+	}
+	if u != nil {
+		t.Error("expected user to be deleted after valid-TOTP delete")
+	}
+}
+
+// TestHandleDeleteAccount_TOTPEnabled_MissingCode — a 2FA-enabled account
+// with the correct password but NO totp_code is rejected with totp_required,
+// no Stripe cancel is attempted, and the user row survives.
+func TestHandleDeleteAccount_TOTPEnabled_MissingCode(t *testing.T) {
+	srv := testServer(t)
+	fake := &fakeSidecar{}
+	srv.SetCloudSidecar(fake)
+
+	userID, token := bootstrapAccountDeleteUser(t, srv, "cus_paying_user")
+	enableTOTPForDeleteUser(t, srv, userID)
+
+	rr := deleteAccountReq(srv, map[string]interface{}{
+		"password": "correct-horse-battery-staple",
+	}, token)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when TOTP code is missing, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "totp_required") {
+		t.Errorf("expected totp_required error code, got %s", rr.Body.String())
+	}
+	if fake.callCount() != 0 {
+		t.Errorf("CancelCustomer must not fire when TOTP is missing, got %d calls", fake.callCount())
+	}
+
+	u, err := srv.store.GetUser(userID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if u == nil {
+		t.Error("user row must survive a missing-TOTP delete attempt")
+	}
+}
+
+// TestHandleDeleteAccount_TOTPEnabled_InvalidCode — a 2FA-enabled account
+// with the correct password but a WRONG totp_code is rejected with
+// totp_invalid, no Stripe cancel is attempted, and the user row survives.
+func TestHandleDeleteAccount_TOTPEnabled_InvalidCode(t *testing.T) {
+	srv := testServer(t)
+	fake := &fakeSidecar{}
+	srv.SetCloudSidecar(fake)
+
+	userID, token := bootstrapAccountDeleteUser(t, srv, "cus_paying_user")
+	secret := enableTOTPForDeleteUser(t, srv, userID)
+
+	// Derive a code guaranteed to differ from the currently-valid one.
+	wrong := "000000"
+	if wrong == validTOTPCode(t, secret) {
+		wrong = "111111"
+	}
+
+	rr := deleteAccountReq(srv, map[string]interface{}{
+		"password":  "correct-horse-battery-staple",
+		"totp_code": wrong,
+	}, token)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on invalid TOTP code, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "totp_invalid") {
+		t.Errorf("expected totp_invalid error code, got %s", rr.Body.String())
+	}
+	if fake.callCount() != 0 {
+		t.Errorf("CancelCustomer must not fire on invalid TOTP, got %d calls", fake.callCount())
+	}
+
+	u, err := srv.store.GetUser(userID)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if u == nil {
+		t.Error("user row must survive an invalid-TOTP delete attempt")
+	}
+}
+
+// TestHandleDeleteAccount_NoTOTP_Unaffected — an account WITHOUT 2FA is
+// unchanged by this feature: no totp_code is required, and supplying one is
+// simply ignored. The delete succeeds exactly as before.
+func TestHandleDeleteAccount_NoTOTP_Unaffected(t *testing.T) {
+	srv := testServer(t)
+	fake := &fakeSidecar{}
+	srv.SetCloudSidecar(fake)
+
+	userID, token := bootstrapAccountDeleteUser(t, srv, "") // no TOTP enabled
+
+	// No totp_code supplied — must still delete for a non-2FA account.
+	rr := deleteAccountReq(srv, map[string]interface{}{
+		"password": "correct-horse-battery-staple",
+	}, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("non-2FA delete: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	u, err := srv.store.GetUser(userID)
+	if err != nil {
+		t.Fatalf("get user after delete: %v", err)
+	}
+	if u != nil {
+		t.Error("expected non-2FA user to be deleted without a TOTP code")
 	}
 }
