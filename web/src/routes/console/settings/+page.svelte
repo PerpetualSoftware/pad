@@ -4,6 +4,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { exportAndDownloadAccountData } from '$lib/utils/artifacts';
 	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse } from '$lib/types';
 
 	// Profile
@@ -72,6 +73,11 @@
 	let createdToken = $state<APITokenWithSecret | null>(null);
 	let tokenCreating = $state(false);
 	let tokenError = $state('');
+
+	// Danger Zone — export my data (TASK-1961)
+	let exportSaving = $state(false);
+	let exportMsg = $state('');
+	let exportError = $state('');
 
 	let loading = $state(true);
 
@@ -342,6 +348,25 @@
 			tokens = tokens.filter((t) => t.id !== tokenId);
 		} catch {
 			// Silent failure acceptable for delete
+		}
+	}
+
+	// Export the current user's account data as a single JSON download
+	// (TASK-1961). The stream runs under the server's 60s deadline, so keep
+	// exportSaving true for the whole request to hold the button disabled +
+	// in-flight. Surfaces the restricted-owner 403 (PadApiError.message) and
+	// network/timeout failures inline.
+	async function exportData() {
+		exportError = '';
+		exportMsg = '';
+		exportSaving = true;
+		try {
+			await exportAndDownloadAccountData();
+			exportMsg = 'Your data export has downloaded.';
+		} catch (err) {
+			exportError = err instanceof Error ? err.message : 'Failed to export your data. Please try again.';
+		} finally {
+			exportSaving = false;
 		}
 	}
 
@@ -645,6 +670,31 @@
 					</div>
 				{:else}
 					<p class="empty-text">No API tokens yet.</p>
+				{/if}
+			</div>
+		</section>
+
+		<!-- Danger Zone (TASK-1961) — ungated: data export works self-host too -->
+		<section class="card danger-card">
+			<h2 class="card-title danger-title">Danger Zone</h2>
+			<div class="card-body">
+				<div class="danger-row">
+					<div class="danger-info">
+						<span class="danger-heading">Export my data</span>
+						<p class="danger-desc">
+							Download all of your account data as a single JSON file. This may
+							take a moment for large accounts.
+						</p>
+					</div>
+					<button class="danger-btn" onclick={exportData} disabled={exportSaving}>
+						{exportSaving ? 'Exporting...' : 'Export my data'}
+					</button>
+				</div>
+				{#if exportMsg}
+					<p class="success" role="status" aria-live="polite">{exportMsg}</p>
+				{/if}
+				{#if exportError}
+					<p class="error" role="alert" aria-live="assertive">{exportError}</p>
 				{/if}
 			</div>
 		</section>
@@ -1068,5 +1118,40 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-3);
+	}
+
+	/* Danger Zone (TASK-1961) — red header/border per the danger palette */
+	.danger-card {
+		border-color: color-mix(in srgb, #ef4444 40%, var(--border));
+	}
+
+	.danger-title {
+		color: #ef4444;
+		border-bottom-color: color-mix(in srgb, #ef4444 40%, var(--border));
+	}
+
+	.danger-row {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: var(--space-4);
+		flex-wrap: wrap;
+	}
+
+	.danger-info {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+
+	.danger-heading {
+		font-size: 0.9rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
+	.danger-desc {
+		font-size: 0.85rem;
+		color: var(--text-muted);
 	}
 </style>
