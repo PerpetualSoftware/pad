@@ -420,6 +420,44 @@ func validTOTPCode(t *testing.T, secret string) string {
 	return code
 }
 
+// TestHandleDeleteAccount_SuccessBody pins the exact JSON envelope a UI
+// consumes on a successful delete: {"ok": true} and nothing else. The
+// cascade/skip tests above assert only the 200 status; the web Danger Zone
+// keys its "account deleted → hard-redirect to /login" transition off this
+// body (web/src/routes/console/settings/+page.svelte::deleteAccount awaits
+// api.auth.deleteAccount which types the response as {ok: boolean}). A
+// regression that renamed "ok", returned an empty 200, or leaked an extra
+// field would break that transition while still returning 200, so it needs
+// its own assertion. This is the non-2FA, non-Stripe baseline; the TOTP
+// happy-path test below covers the same envelope on the 2FA branch.
+func TestHandleDeleteAccount_SuccessBody(t *testing.T) {
+	srv := testServer(t)
+	fake := &fakeSidecar{}
+	srv.SetCloudSidecar(fake)
+
+	_, token := bootstrapAccountDeleteUser(t, srv, "") // no Stripe customer, no 2FA
+
+	rr := deleteAccountReq(srv, map[string]interface{}{"password": "correct-horse-battery-staple"}, token)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete-account: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
+		t.Errorf("expected application/json Content-Type on success, got %q", ct)
+	}
+
+	var resp map[string]interface{}
+	parseJSON(t, rr, &resp)
+	if resp["ok"] != true {
+		t.Errorf("expected {\"ok\": true}, got %v", resp)
+	}
+	// Pin the envelope: the success body carries exactly one key. A stray
+	// extra field (error echo, message, user payload) would be a silent
+	// contract widening the UI never opted into.
+	if len(resp) != 1 {
+		t.Errorf("success body must be exactly {\"ok\": true}, got %d keys: %v", len(resp), resp)
+	}
+}
+
 // TestHandleDeleteAccount_TOTPEnabled_ValidCode — a 2FA-enabled account with
 // the correct password AND a valid TOTP code deletes successfully (200
 // {ok:true}) and the user row is gone.
