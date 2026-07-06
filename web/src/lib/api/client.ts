@@ -1,5 +1,6 @@
 import type {
 	Workspace,
+	DeletedWorkspace,
 	WorkspaceCreate,
 	WorkspaceUpdate,
 	Collection,
@@ -614,6 +615,17 @@ export const api = {
 
 		delete: (slug: string) =>
 			request<void>(`/workspaces/${slug}`, { method: 'DELETE' }),
+
+		// restore un-deletes a soft-deleted workspace that's still inside the
+		// purge window, returning the restored Workspace. Mirrors
+		// POST /workspaces/{slug}/restore (TASK-1970).
+		restore: (slug: string) =>
+			request<Workspace>(`/workspaces/${slug}/restore`, { method: 'POST' }),
+
+		// listDeleted returns the caller's soft-deleted workspaces still inside
+		// the restore window, each with purge_at + days_left. Backs the
+		// restore UI (GET /workspaces/deleted, TASK-1970).
+		listDeleted: () => request<DeletedWorkspace[]>('/workspaces/deleted'),
 
 		reorder: (updates: { slug: string; sort_order: number }[]) =>
 			request<void>('/workspaces/reorder', {
