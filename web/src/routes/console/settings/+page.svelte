@@ -79,6 +79,29 @@
 	let exportMsg = $state('');
 	let exportError = $state('');
 
+	// Danger Zone — delete my account (TASK-1962). Own $state trio, distinct from
+	// the export trio above (per-action state, mirroring the file's convention).
+	let showDeleteConfirm = $state(false);
+	let deletePassword = $state('');
+	let deleteConfirmText = $state('');
+	let deleteTotpCode = $state('');
+	let deleteSaving = $state(false);
+	let deleteError = $state('');
+
+	// Which identity check the confirm block demands. Email/password accounts
+	// (and every self-host account) re-enter their password; cloud OAuth-only
+	// accounts have no password, so they type a confirmation string instead.
+	// `?? true` makes the password branch the SAFE FALLBACK while `password_set`
+	// is still loading — an unknown password state must never downgrade to the
+	// weaker typed-confirm path.
+	const usePasswordBranch = $derived(!authStore.cloudMode || (profile?.password_set ?? true));
+
+	// Focus the first confirm input the moment the block reveals (a11y). Same
+	// requestAnimationFrame action the quick-capture sheet uses.
+	function autofocus(node: HTMLElement) {
+		requestAnimationFrame(() => node.focus());
+	}
+
 	let loading = $state(true);
 
 	// Map pad-cloud's /console/settings?error= / ?linked= redirect codes to
@@ -367,6 +390,85 @@
 			exportError = err instanceof Error ? err.message : 'Failed to export your data. Please try again.';
 		} finally {
 			exportSaving = false;
+		}
+	}
+
+	// Reveal the delete confirm block. Clears the action's own stale error so a
+	// prior failed attempt doesn't linger over a fresh reveal.
+	function revealDeleteConfirm() {
+		showDeleteConfirm = true;
+		deleteError = '';
+	}
+
+	// Cancel out of the confirm block (also the Escape-key target). Wipes every
+	// secret the user may have typed so nothing lingers in memory / the DOM.
+	function cancelDelete() {
+		showDeleteConfirm = false;
+		deletePassword = '';
+		deleteConfirmText = '';
+		deleteTotpCode = '';
+		deleteError = '';
+	}
+
+	// Shared keydown for the confirm inputs: Escape cancels, Enter submits.
+	function deleteKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape') {
+			cancelDelete();
+		} else if (e.key === 'Enter') {
+			deleteAccount();
+		}
+	}
+
+	// Permanently delete the account (TASK-1962). Builds the request from the
+	// account's auth method: password for email/password + self-host users, a
+	// typed confirmation for cloud OAuth-only users, plus a TOTP code whenever
+	// 2FA is on (the server re-verifies it — TASK-1958). On success the server
+	// has already cleared the session + CSRF cookies, so we HARD-reset to /login
+	// (authStore.clear() then window.location) and make NO further API calls —
+	// a goto() to an authed route would 401 against a now-deleted account.
+	async function deleteAccount() {
+		deleteError = '';
+
+		const opts: { password?: string; confirm?: boolean; totp_code?: string } = {};
+		if (usePasswordBranch) {
+			if (!deletePassword) {
+				deleteError = 'Please enter your password to delete your account.';
+				return;
+			}
+			opts.password = deletePassword;
+		} else {
+			const typed = deleteConfirmText.trim();
+			const matchesEmail = profile?.email ? typed === profile.email : false;
+			const matchesWord = typed.toUpperCase() === 'DELETE';
+			if (!matchesEmail && !matchesWord) {
+				deleteError = `Type your email (${profile?.email ?? ''}) or the word DELETE to confirm.`;
+				return;
+			}
+			opts.confirm = true;
+		}
+
+		if (profile?.totp_enabled) {
+			const code = deleteTotpCode.trim();
+			if (!code) {
+				deleteError = 'Enter your 6-digit 2FA code to delete your account.';
+				return;
+			}
+			opts.totp_code = code;
+		}
+
+		deleteSaving = true;
+		try {
+			await api.auth.deleteAccount(opts);
+			// Success: hard reset, no further API calls.
+			authStore.clear();
+			window.location.href = '/login';
+		} catch (err) {
+			// Render the server message VERBATIM. billing_cancel_failed /
+			// partial_delete carry account-state truth ("your account was NOT
+			// deleted", "your billing was cancelled but…") that must NOT be
+			// swallowed behind a generic retry line.
+			deleteError = err instanceof Error ? err.message : 'Failed to delete your account. Please try again.';
+			deleteSaving = false;
 		}
 	}
 
@@ -695,6 +797,104 @@
 				{/if}
 				{#if exportError}
 					<p class="error" role="alert" aria-live="assertive">{exportError}</p>
+				{/if}
+
+				<hr class="danger-divider" />
+
+				<!-- Delete my account (TASK-1962) -->
+				<div class="danger-row">
+					<div class="danger-info">
+						<span class="danger-heading">Delete my account</span>
+						<p class="danger-desc">
+							Permanently delete your account and everything you own. This cannot be undone.
+						</p>
+					</div>
+					{#if !showDeleteConfirm}
+						<button class="danger-btn" onclick={revealDeleteConfirm}>Delete my account</button>
+					{/if}
+				</div>
+
+				{#if showDeleteConfirm}
+					<div class="disable-confirm">
+						<ul id="delete-warnings" class="delete-warnings">
+							<li>This is <strong>permanent and irreversible</strong>.</li>
+							<li>It cancels any active paid subscription immediately, with no refund.</li>
+							<li>
+								Any workspaces you own that are shared with others are
+								<strong>deleted</strong>, and every member loses access. There is no
+								ownership transfer.
+							</li>
+						</ul>
+						<p class="section-desc">
+							Want a copy first? Use the
+							<button type="button" class="inline-export-link" onclick={exportData} disabled={exportSaving || deleteSaving}>
+								{exportSaving ? 'exporting your data…' : 'Export my data'}
+							</button>
+							button above before you delete.
+						</p>
+
+						{#if usePasswordBranch}
+							<div class="field">
+								<label for="delete-password">Enter your password to confirm</label>
+								<input
+									id="delete-password"
+									type="password"
+									bind:value={deletePassword}
+									disabled={deleteSaving}
+									autocomplete="current-password"
+									aria-describedby="delete-warnings"
+									onkeydown={deleteKeydown}
+									use:autofocus
+								/>
+							</div>
+						{:else}
+							<div class="field">
+								<label for="delete-confirm">
+									Type your email ({profile?.email ?? ''}) or the word <strong>DELETE</strong> to confirm
+								</label>
+								<input
+									id="delete-confirm"
+									type="text"
+									placeholder="DELETE"
+									bind:value={deleteConfirmText}
+									disabled={deleteSaving}
+									autocomplete="off"
+									aria-describedby="delete-warnings"
+									onkeydown={deleteKeydown}
+									use:autofocus
+								/>
+							</div>
+						{/if}
+
+						{#if profile?.totp_enabled}
+							<div class="field">
+								<label for="delete-totp">2FA code</label>
+								<input
+									id="delete-totp"
+									type="text"
+									placeholder="6-digit code"
+									bind:value={deleteTotpCode}
+									disabled={deleteSaving}
+									autocomplete="one-time-code"
+									inputmode="numeric"
+									maxlength="6"
+									aria-describedby="delete-warnings"
+									onkeydown={deleteKeydown}
+								/>
+							</div>
+						{/if}
+
+						{#if deleteError}
+							<p class="error" role="alert" aria-live="assertive">{deleteError}</p>
+						{/if}
+
+						<div class="btn-row">
+							<button class="danger-btn" onclick={deleteAccount} disabled={deleteSaving}>
+								{deleteSaving ? 'Deleting...' : 'Permanently delete my account'}
+							</button>
+							<button class="secondary-btn" onclick={cancelDelete} disabled={deleteSaving}>Cancel</button>
+						</div>
+					</div>
 				{/if}
 			</div>
 		</section>
@@ -1153,5 +1353,43 @@
 	.danger-desc {
 		font-size: 0.85rem;
 		color: var(--text-muted);
+	}
+
+	/* Divider between the export row and the delete-account block (TASK-1962) */
+	.danger-divider {
+		border: none;
+		border-top: 1px solid var(--border);
+		margin: 0;
+	}
+
+	.delete-warnings {
+		margin: 0;
+		padding-left: var(--space-5);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		font-size: 0.85rem;
+		color: var(--text-secondary);
+		line-height: 1.4;
+	}
+
+	.delete-warnings strong {
+		color: #ef4444;
+	}
+
+	/* Inline "Export my data" link inside the delete confirm nudge (TASK-1962) */
+	.inline-export-link {
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		color: var(--accent-blue);
+		cursor: pointer;
+		text-decoration: underline;
+	}
+
+	.inline-export-link:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
 	}
 </style>

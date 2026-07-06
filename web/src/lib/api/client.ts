@@ -255,6 +255,21 @@ function getCSRFToken(): string | null {
  */
 const AUTH_FORM_401_PATHS = new Set(['/auth/login', '/auth/register', '/auth/2fa/login-verify']);
 
+/**
+ * AUTHENTICATED credential-reconfirmation endpoints (TASK-1962). Unlike the
+ * auth-form paths above, these sit BEHIND RequireAuth, so a 401 is
+ * ambiguous: it can mean either a wrong second factor (e.g.
+ * `totp_invalid` — must surface verbatim so the user can retry inline) OR
+ * a genuinely expired session (`unauthorized` — must redirect to /login
+ * like every other endpoint). We disambiguate on the error CODE below: a
+ * non-`unauthorized` 401 body is a credential failure and is thrown
+ * verbatim; an `unauthorized` (or bodyless) 401 falls through to the
+ * standard redirect. `/auth/delete-account`'s wrong-password case is a 403
+ * and its billing/partial-delete failures are 500s, so `totp_invalid` is
+ * the only 401 that needs this treatment.
+ */
+const CREDENTIAL_RECONFIRM_401_PATHS = new Set(['/auth/delete-account']);
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
@@ -276,6 +291,16 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 			const body = await resp.json().catch(() => null);
 			if (body?.error) throw new PadApiError(body.error);
 			throw new PadApiError({ code: 'unauthorized', message: 'Authentication failed' });
+		}
+		// Credential-reconfirmation endpoints: surface a wrong-second-factor
+		// 401 verbatim, but let a genuine session-expiry `unauthorized` 401
+		// fall through to the redirect below (see CREDENTIAL_RECONFIRM_401_PATHS).
+		if (CREDENTIAL_RECONFIRM_401_PATHS.has(barePath)) {
+			const body = await resp.json().catch(() => null);
+			if (body?.error && body.error.code !== 'unauthorized') {
+				throw new PadApiError(body.error);
+			}
+			// else: expired session — continue to the standard redirect.
 		}
 		// Redirect to login page (avoid infinite loop), preserving the
 		// current location as a return-to target so a genuine session
