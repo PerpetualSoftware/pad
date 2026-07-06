@@ -77,6 +77,22 @@ func (s *Server) SetWorkspacePurgeConfig(interval, retention time.Duration) {
 	}
 }
 
+// effectivePurgeRetention returns the retention window the purge sweeper
+// actually enforces: the SetWorkspacePurgeConfig override when set
+// (PAD_WORKSPACE_PURGE_RETENTION in the real bootstrap), else the package
+// default. The restore surfaces (deleted-list cutoff + purge_at/days_left)
+// read this so the "N days left" they show never drifts from the horizon
+// at which the workspace is really hard-purged. Safe to call whether or
+// not the sweeper has been started.
+func (s *Server) effectivePurgeRetention() time.Duration {
+	s.workspacePurge.mu.Lock()
+	defer s.workspacePurge.mu.Unlock()
+	if s.workspacePurge.retention > 0 {
+		return s.workspacePurge.retention
+	}
+	return workspacePurgeRetention
+}
+
 // StartWorkspacePurgeSweeper kicks off the periodic sweep loop.
 // Idempotent — calling twice is a no-op. Must be called AFTER
 // SetAttachments; the sweep no-ops (and logs) when the registry isn't
