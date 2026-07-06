@@ -2261,6 +2261,75 @@ func joinCmd() *cobra.Command {
 	}
 }
 
+// workspaceRestoreCmd un-soft-deletes a workspace by slug, provided it is
+// still inside the 30-day restore window (owner-only server-side).
+func workspaceRestoreCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "restore <slug>",
+		Short: "Restore a soft-deleted workspace within the restore window",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			slug := args[0]
+
+			ws, err := client.RestoreWorkspace(slug)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(ws)
+			}
+
+			green := color.New(color.FgGreen).SprintFunc()
+			fmt.Printf("%s Restored workspace %s (%s)\n", green("✓"), ws.Name, ws.Slug)
+			return nil
+		},
+	}
+}
+
+// workspaceDeletedCmd lists the caller's soft-deleted workspaces that are
+// still restorable — i.e. not yet past the purge window — along with the
+// days remaining before each is permanently purged.
+func workspaceDeletedCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "deleted",
+		Short: "List soft-deleted workspaces still within the restore window",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			deleted, err := client.ListDeletedWorkspaces()
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(deleted)
+			}
+
+			if len(deleted) == 0 {
+				fmt.Println("No deleted workspaces within the restore window.")
+				return nil
+			}
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "NAME\tSLUG\tDELETED\tDAYS LEFT")
+			for _, ws := range deleted {
+				deletedAt := "—"
+				if ws.DeletedAt != nil {
+					deletedAt = ws.DeletedAt.Format("Jan 2, 2006")
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%d\n", ws.Name, ws.Slug, deletedAt, ws.DaysLeft)
+			}
+			w.Flush()
+
+			fmt.Println()
+			fmt.Println("Restore one with: pad workspace restore <slug>")
+			return nil
+		},
+	}
+}
+
 // --- workspace create (non-interactive) ---
 //
 // `pad workspace init` is the interactive entry point: it ensures

@@ -51,6 +51,8 @@ func workspaceCmd() *cobra.Command {
 		membersCmd(),
 		inviteCmd(),
 		joinCmd(),
+		workspaceDeletedCmd(),
+		workspaceRestoreCmd(),
 		storageCmd(),
 		exportCmd(),
 		importCmd(),
