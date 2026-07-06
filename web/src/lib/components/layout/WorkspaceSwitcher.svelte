@@ -1,9 +1,12 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
+	import type { DeletedWorkspace } from '$lib/types';
 
 	interface Props {
 		/**
@@ -86,6 +89,72 @@
 		uiStore.onNavigate();
 		uiStore.openCreateWorkspace();
 	}
+
+	// ── Recently deleted ─────────────────────────────────────────────────
+	// Soft-deleted workspaces still inside the restore window (TASK-1974).
+	// The section only renders when the fetch returns at least one entry, so
+	// a quiet failure (or an empty list) leaves the switcher untouched.
+	let deleted = $state<DeletedWorkspace[]>([]);
+	// Collapsed by default; the header toggles it. Kept separate from `open`
+	// so the choice persists while the dropdown stays open.
+	let deletedExpanded = $state(false);
+	// Slug currently being restored — drives the per-row disabled/pending
+	// state so a double-click can't fire two restores.
+	let restoringSlug = $state<string | null>(null);
+	// Monotonic token guarding async listDeleted() responses against races —
+	// mirrors workspaceStore's membershipSeq. Each loadDeleted() call claims a
+	// token; a response only writes if its token is still current, so an older
+	// open-triggered fetch can't clobber the fresher post-restore refresh (and
+	// re-surface a just-restored workspace).
+	let deletedSeq = 0;
+
+	async function loadDeleted() {
+		const seq = ++deletedSeq;
+		try {
+			const list = await api.workspaces.listDeleted();
+			if (seq === deletedSeq) deleted = list;
+		} catch {
+			// Swallow — the restore affordance is a bonus, never a blocker for
+			// switching workspaces. Clear the list so a stale fetch doesn't
+			// linger and the section stays hidden.
+			if (seq === deletedSeq) deleted = [];
+		}
+	}
+
+	// Refresh the deleted list each time the switcher opens.
+	$effect(() => {
+		if (open) {
+			loadDeleted();
+		}
+	});
+
+	async function restore(ws: DeletedWorkspace) {
+		if (restoringSlug) return;
+		restoringSlug = ws.slug;
+		try {
+			try {
+				await api.workspaces.restore(ws.slug);
+			} catch {
+				// Only the restore call itself failing is a restore failure.
+				toastStore.show(`Couldn't restore "${ws.name}"`, 'error');
+				return;
+			}
+			// Restore succeeded — confirm before refreshing so a failing
+			// reload can't masquerade as a restore failure.
+			toastStore.show(`Restored "${ws.name}"`, 'success');
+			// Refresh both lists so the restored workspace drops out of the
+			// deleted section and reappears in the active list. loadDeleted()
+			// swallows its own errors; guard loadAll() so a reload failure
+			// stays silent — the restore already went through.
+			try {
+				await Promise.all([loadDeleted(), workspaceStore.loadAll()]);
+			} catch {
+				// Reload failure is non-fatal.
+			}
+		} finally {
+			restoringSlug = null;
+		}
+	}
 </script>
 
 {#snippet workspaceList()}
@@ -101,6 +170,46 @@
 	<button class="item create-trigger" onclick={openCreateModal}>
 		+ New Workspace
 	</button>
+{/snippet}
+
+{#snippet deletedSection()}
+	<!--
+		Recently-deleted workspaces still inside the restore window. Hidden
+		entirely when the list is empty (or the fetch failed) — no header, no
+		row — so it never adds noise to a switcher with nothing to restore.
+	-->
+	{#if deleted.length > 0}
+		<div class="deleted-section">
+			<button
+				class="item deleted-header"
+				onclick={() => (deletedExpanded = !deletedExpanded)}
+				aria-expanded={deletedExpanded}
+			>
+				<span class="deleted-caret" aria-hidden="true">{deletedExpanded ? '▾' : '▸'}</span>
+				<span class="deleted-title">Recently deleted</span>
+				<span class="deleted-count">{deleted.length}</span>
+			</button>
+			{#if deletedExpanded}
+				<div class="deleted-list">
+					{#each deleted as ws (ws.slug)}
+						<div class="deleted-item">
+							<span class="deleted-name" title={ws.name}>{ws.name}</span>
+							<span class="deleted-days">
+								{ws.days_left} {ws.days_left === 1 ? 'day' : 'days'} left
+							</span>
+							<button
+								class="restore-btn"
+								onclick={() => restore(ws)}
+								disabled={restoringSlug === ws.slug}
+							>
+								{restoringSlug === ws.slug ? 'Restoring…' : 'Restore'}
+							</button>
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</div>
+	{/if}
 {/snippet}
 
 <div class="switcher">
@@ -128,6 +237,7 @@
 		>
 			<div class="sheet-body">
 				{@render workspaceList()}
+				{@render deletedSection()}
 			</div>
 		</BottomSheet>
 	{:else if open}
@@ -136,6 +246,7 @@
 		<div class="backdrop" onclick={() => open = false}></div>
 		<div class="dropdown">
 			{@render workspaceList()}
+			{@render deletedSection()}
 		</div>
 	{/if}
 </div>
@@ -203,4 +314,63 @@
 		font-size: 1em;
 		border-radius: var(--radius-sm);
 	}
+
+	/* ── Recently deleted ─────────────────────────────────────────────── */
+	.deleted-section { border-top: 1px solid var(--border); }
+	.deleted-header {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		color: var(--text-muted);
+		font-size: 0.8em;
+		text-transform: uppercase;
+		letter-spacing: 0.03em;
+	}
+	.deleted-caret { font-size: 0.9em; flex-shrink: 0; }
+	.deleted-title { flex: 1; min-width: 0; }
+	.deleted-count {
+		flex-shrink: 0;
+		padding: 0 var(--space-2);
+		background: var(--bg-tertiary);
+		border-radius: var(--radius-sm);
+		font-size: 0.9em;
+	}
+	.deleted-list { display: flex; flex-direction: column; }
+	.deleted-item {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: var(--space-2) var(--space-4);
+		font-size: 0.9em;
+	}
+	.deleted-name {
+		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: var(--text-secondary);
+	}
+	.deleted-days {
+		flex-shrink: 0;
+		color: var(--text-muted);
+		font-size: 0.85em;
+		white-space: nowrap;
+	}
+	.restore-btn {
+		flex-shrink: 0;
+		padding: var(--space-1) var(--space-2);
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		color: var(--accent-blue);
+		cursor: pointer;
+		font-size: 0.85em;
+	}
+	.restore-btn:hover:not(:disabled) { background: var(--bg-hover); }
+	.restore-btn:disabled { opacity: 0.6; cursor: default; }
+
+	/* Inside the mobile sheet, give the deleted rows the same roomier
+	   padding as the workspace rows above. */
+	.sheet-body .deleted-item { padding: var(--space-2) var(--space-3); }
 </style>
