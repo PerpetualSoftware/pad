@@ -182,6 +182,13 @@ type Server struct {
 	// stopTokenReaper.
 	tokenReaper tokenReaperConfig
 
+	// workspacePurge holds the periodic-sweep config + lifecycle for the
+	// soft-deleted-workspace hard-purge sweeper (TASK-1966 — the 30-day
+	// GDPR erasure SLA). Mirrors orphanGC. Configured via
+	// SetWorkspacePurgeConfig + started via StartWorkspacePurgeSweeper;
+	// Stop() signals the loop via stopWorkspacePurgeSweeper.
+	workspacePurge workspacePurgeConfig
+
 	// inFlightUploadHashes tracks content_hash values for uploads
 	// that have called AttachmentStore.Put but not yet inserted the
 	// attachments row. Without this, the orphan GC could delete a
@@ -268,6 +275,9 @@ func (s *Server) Stop() {
 	// Short-lived-credential reaper (PLAN-1933 DR-5 / TASK-1936). Same
 	// lifecycle pattern; signal BEFORE Wait() so the goroutine exits.
 	s.stopTokenReaper()
+	// Soft-deleted-workspace hard-purge sweeper (TASK-1966). Same
+	// lifecycle pattern; signal BEFORE Wait() so the goroutine exits.
+	s.stopWorkspacePurgeSweeper()
 	// MCP audit writer / sweeper run on s.bg too. Signal first so
 	// the workers see the close BEFORE Wait() blocks; without the
 	// signal Wait would hang forever on the writer's blocking

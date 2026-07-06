@@ -859,6 +859,24 @@ func serveCmd() *cobra.Command {
 			}
 			srv.StartTokenReaper()
 
+			// Workspace hard-purge sweeper (TASK-1966). Periodic sweep
+			// that hard-deletes workspaces soft-deleted more than 30 days
+			// ago — cascading every child row and reclaiming attachment
+			// blobs — to honor the /privacy 30-day GDPR erasure SLA.
+			// DeleteAccountAtomic / DeleteWorkspace only soft-delete
+			// (workspaces.deleted_at); nothing else ever expunges them.
+			// Defaults: 24h interval, 30-day retention — both override-
+			// able via env (PAD_WORKSPACE_PURGE_INTERVAL=1m /
+			// PAD_WORKSPACE_PURGE_RETENTION=1s for tests/CI). Must run
+			// AFTER the attachment registry is wired (above) so blob
+			// reclamation has a backend.
+			wsPurgeInterval := parseDurationEnv("PAD_WORKSPACE_PURGE_INTERVAL", 0)
+			wsPurgeRetention := parseDurationEnv("PAD_WORKSPACE_PURGE_RETENTION", 0)
+			if wsPurgeInterval != 0 || wsPurgeRetention != 0 {
+				srv.SetWorkspacePurgeConfig(wsPurgeInterval, wsPurgeRetention)
+			}
+			srv.StartWorkspacePurgeSweeper()
+
 			// Attach webhook dispatcher for outgoing notifications
 			srv.SetWebhookDispatcher(webhooks.NewDispatcher(s))
 
