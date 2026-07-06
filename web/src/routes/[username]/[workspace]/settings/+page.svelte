@@ -352,14 +352,39 @@
 
 	async function handleDeleteWorkspace() {
 		if (deleteInput !== wsSlug) return;
+		// Capture identity before any redirect — the Undo toast fires after
+		// we've navigated away, so its callback must close over the deleted
+		// workspace's slug/name/owner rather than the reactive page params
+		// (which change once /console loads).
+		const deletedSlug = wsSlug;
+		const deletedName = wsName;
+		const owner = username;
 		deleting = true;
 		try {
-			await api.workspaces.delete(wsSlug);
-			toastStore.show(`Workspace "${wsName}" deleted`, 'success');
+			await api.workspaces.delete(deletedSlug);
+			// Longer duration + inline Undo so the user has time to reverse a
+			// mistaken delete. The toast store is global, so this survives the
+			// post-delete redirect to /console. Undo restores the soft-deleted
+			// workspace (still inside its 30-day purge window).
+			toastStore.show(`Workspace "${deletedName}" deleted`, 'success', 12000, undefined, {
+				label: 'Undo',
+				onAction: () => undoDeleteWorkspace(deletedSlug, deletedName, owner)
+			});
 			goto('/console');
 		} catch {
 			toastStore.show('Failed to delete workspace', 'error');
 			deleting = false;
+		}
+	}
+
+	async function undoDeleteWorkspace(slug: string, name: string, owner: string) {
+		try {
+			const restored = await api.workspaces.restore(slug);
+			toastStore.show(`Workspace "${restored.name || name}" restored`, 'success');
+			// Navigate back into the freshly restored workspace to confirm it.
+			goto(`/${owner}/${restored.slug || slug}`);
+		} catch {
+			toastStore.show(`Failed to restore "${name}"`, 'error');
 		}
 	}
 
@@ -761,7 +786,7 @@
 						<div class="danger-row">
 							<div class="danger-info">
 								<strong>Delete this workspace</strong>
-								<p>This immediately hides the workspace and everything in it — collections, items, documents, and attachments — and permanently deletes it 30 days later.</p>
+								<p>This immediately hides the workspace and everything in it — collections, items, documents, and attachments — and permanently deletes it 30 days later. You can restore it any time within those 30 days — you'll get an Undo prompt right after deleting.</p>
 							</div>
 							<button class="btn btn-danger" onclick={() => confirmDelete = true}>
 								Delete workspace
