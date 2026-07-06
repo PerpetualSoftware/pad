@@ -786,7 +786,7 @@
 						<div class="danger-row">
 							<div class="danger-info">
 								<strong>Delete this workspace</strong>
-								<p>This immediately hides the workspace and everything in it — collections, items, documents, and attachments — and permanently deletes it 30 days later. You can restore it any time within those 30 days — you'll get an Undo prompt right after deleting.</p>
+								<p>This immediately hides the workspace and everything in it — collections, items, documents, and attachments — and permanently deletes it 30 days later. You can restore it any time within those 30 days — from the Undo prompt right after deleting, the workspace switcher's Recently deleted section, or the Deleted workspaces page.</p>
 							</div>
 							<button class="btn btn-danger" onclick={() => confirmDelete = true}>
 								Delete workspace
