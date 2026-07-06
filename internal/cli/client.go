@@ -119,6 +119,30 @@ func (c *Client) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*mo
 	return &result, c.patch("/workspaces/"+slug, input, &result)
 }
 
+// DeletedWorkspace is one entry from GET /api/v1/workspaces/deleted — a
+// soft-deleted workspace still inside the restore window, plus the
+// purge-window fields (both derived server-side from the shared purge
+// retention constant) so callers can render "N days left".
+type DeletedWorkspace struct {
+	models.Workspace
+	PurgeAt  time.Time `json:"purge_at"`
+	DaysLeft int       `json:"days_left"`
+}
+
+// ListDeletedWorkspaces returns the soft-deleted workspaces the current
+// user owns that are still restorable (not yet past the purge window).
+func (c *Client) ListDeletedWorkspaces() ([]DeletedWorkspace, error) {
+	var result []DeletedWorkspace
+	return result, c.get("/workspaces/deleted", &result)
+}
+
+// RestoreWorkspace un-soft-deletes a workspace by slug via the restore
+// endpoint (owner-only server-side). Returns the now-live workspace.
+func (c *Client) RestoreWorkspace(slug string) (*models.Workspace, error) {
+	var result models.Workspace
+	return &result, c.post("/workspaces/"+slug+"/restore", nil, &result)
+}
+
 // ClaimWorkspaceResponse is the shape of POST /api/v1/oauth/claim.
 // `AlreadyAdded` reports whether the workspace was already in the
 // calling connection's allow-list (idempotent re-claim returns true).

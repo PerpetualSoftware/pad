@@ -4,13 +4,16 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/go-chi/chi/v5"
 )
 
 func normalizeWorkspaceInput(input *models.WorkspaceCreate) error {
@@ -394,6 +397,165 @@ func (s *Server) handleDeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// deletedWorkspaceResponse is one entry in the GET /workspaces/deleted
+// payload: the soft-deleted workspace plus purge-window fields the UI
+// renders as "N days left" before it's permanently removed. PurgeAt and
+// DaysLeft are BOTH derived from workspacePurgeRetention so restore and
+// the purge sweeper (workspace_purge.go) share exactly one window — no
+// drift.
+type deletedWorkspaceResponse struct {
+	models.Workspace
+	// PurgeAt is when the retention sweeper will hard-delete the
+	// workspace (deleted_at + workspacePurgeRetention).
+	PurgeAt time.Time `json:"purge_at"`
+	// DaysLeft is whole days remaining until PurgeAt, rounded up and
+	// clamped at 0. 0 means it's eligible for purge on the next sweep.
+	DaysLeft int `json:"days_left"`
+}
+
+// handleListDeletedWorkspaces lists the soft-deleted workspaces the
+// caller OWNS that are still restorable — i.e. not yet past the purge
+// retention window. Owner-scoped inside the store query; the cutoff is
+// derived from workspacePurgeRetention so this list and the purge
+// sweeper agree on exactly which workspaces are recoverable.
+func (s *Server) handleListDeletedWorkspaces(w http.ResponseWriter, r *http.Request) {
+	userID := currentUserID(r)
+	if userID == "" {
+		// No authenticated user (fresh install / pre-auth) has no owned
+		// workspaces to restore — return an empty list rather than 401
+		// so the switcher's "recently deleted" section just renders
+		// nothing.
+		writeJSON(w, http.StatusOK, []deletedWorkspaceResponse{})
+		return
+	}
+
+	// Use the retention the purge sweeper actually enforces (which may be
+	// overridden via SetWorkspacePurgeConfig / PAD_WORKSPACE_PURGE_RETENTION)
+	// so the restore window + purge_at/days_left never drift from the
+	// horizon at which the workspace is really hard-deleted.
+	retention := s.effectivePurgeRetention()
+	cutoff := time.Now().UTC().Add(-retention)
+	workspaces, err := s.store.ListDeletedWorkspaces(userID, cutoff)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+
+	now := time.Now().UTC()
+	out := make([]deletedWorkspaceResponse, 0, len(workspaces))
+	for _, ws := range workspaces {
+		entry := deletedWorkspaceResponse{Workspace: ws}
+		if ws.DeletedAt != nil {
+			entry.PurgeAt = ws.DeletedAt.Add(retention)
+			days := int(math.Ceil(entry.PurgeAt.Sub(now).Hours() / 24))
+			if days < 0 {
+				days = 0
+			}
+			entry.DaysLeft = days
+		}
+		out = append(out, entry)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleRestoreWorkspace un-soft-deletes a workspace, resurfacing it (and
+// everything transitively hidden underneath) intact. Owner-only, mirroring
+// the Danger-Zone gating on handleDeleteWorkspace — but it can't lean on
+// RequireWorkspaceAccess/requireMinRole because those resolve only LIVE
+// workspaces (`deleted_at IS NULL`), so a soft-deleted workspace 404s
+// before any handler runs. Instead it resolves the soft-deleted row
+// directly and checks ownership here.
+//
+// Status codes:
+//   - 404 — no restorable soft-deleted workspace with that slug (already
+//     live, unknown, or hard-purged).
+//   - 403 — the workspace exists but the caller doesn't own it.
+//   - 200 — restored; returns the now-live workspace.
+func (s *Server) handleRestoreWorkspace(w http.ResponseWriter, r *http.Request) {
+	slug := chi.URLParam(r, "slug")
+
+	ws, err := s.store.GetDeletedWorkspaceBySlug(slug)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if ws == nil {
+		// Not soft-deleted (live), unknown, or already hard-purged —
+		// nothing to restore.
+		writeError(w, http.StatusNotFound, "not_found", "No restorable workspace found")
+		return
+	}
+
+	// Owner-only, with NO fresh-install / UserCount==0 bypass. A
+	// soft-deleted workspace existing while zero users remain is precisely
+	// the account-deletion case (DeleteAccountAtomic soft-deletes the
+	// owner's workspaces, then removes the owner) — a bypass there would
+	// let an unauthenticated caller restore an account-deleted workspace by
+	// guessing its slug and resurface data whose owner is gone. On a
+	// genuine fresh install there are no soft-deleted workspaces to restore
+	// anyway, so requiring the owner unconditionally loses nothing.
+	userID := currentUserID(r)
+	if userID == "" || ws.OwnerID != userID {
+		// Not the owner. If the owner user no longer exists — the
+		// account-deletion case, where DeleteAccountAtomic soft-deleted
+		// this workspace and then removed its owner — NO live user could
+		// ever restore it, so return the same 404 as "not restorable"
+		// instead of 403. That stops a guessed slug from confirming an
+		// account-deleted workspace row still exists. A genuine non-owner
+		// attempt on a live-owned workspace still gets 403. (GetUser only
+		// runs on this rejection path, never the owner's success path.)
+		if owner, _ := s.store.GetUser(ws.OwnerID); owner == nil {
+			writeError(w, http.StatusNotFound, "not_found", "No restorable workspace found")
+			return
+		}
+		writeError(w, http.StatusForbidden, "forbidden", "Only the workspace owner can restore it")
+		return
+	}
+
+	// Enforce the SAME purge horizon the deleted-list uses so restore and
+	// the list agree: a workspace older than the retention window is
+	// already eligible for hard-purge and is hidden from the list, so it
+	// must not be restorable by slug either (the sweeper may not have run
+	// yet — no attachments registry, deferred blob, or startup lag). Checked
+	// after the owner gate so a non-owner can't probe window state.
+	cutoff := time.Now().UTC().Add(-s.effectivePurgeRetention())
+	if ws.DeletedAt == nil || !ws.DeletedAt.After(cutoff) {
+		writeError(w, http.StatusNotFound, "not_found", "No restorable workspace found")
+		return
+	}
+
+	if err := s.store.RestoreWorkspace(slug); err != nil {
+		if err == sql.ErrNoRows {
+			// Raced with a concurrent restore/purge between the lookup and
+			// the update — treat as nothing-to-restore.
+			writeError(w, http.StatusNotFound, "not_found", "No restorable workspace found")
+			return
+		}
+		writeInternalError(w, err)
+		return
+	}
+
+	// Re-fetch the now-live row so the response carries the fully hydrated,
+	// un-deleted workspace.
+	restored, err := s.store.GetWorkspaceBySlug(slug)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if restored == nil {
+		// Extremely unlikely (just restored), but don't lie about success.
+		writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+		return
+	}
+
+	// Log the restore in the (now live) workspace's activity feed, mirroring
+	// how item restore logs a "restored" action.
+	s.logActivity(restored.ID, "", "restored", r)
+	s.publishEvent(events.WorkspaceUpdated, restored.ID, "", restored.Name, "", "", "")
+
+	writeJSON(w, http.StatusOK, restored)
 }
 
 func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {

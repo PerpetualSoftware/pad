@@ -259,6 +259,23 @@ export interface Workspace {
 	context?: WorkspaceContext;
 	created_at: string;
 	updated_at: string;
+	// `deleted_at` marks a soft-deleted workspace. Present (non-null) only
+	// on soft-deleted rows — e.g. entries from GET /workspaces/deleted; the
+	// normal switcher list omits it.
+	deleted_at?: string | null;
+}
+
+// DeletedWorkspace is one entry from GET /api/v1/workspaces/deleted — a
+// soft-deleted workspace still inside the restore window, plus the
+// purge-window fields (derived server-side from the shared purge
+// retention constant) the UI renders as "N days left" before permanent
+// deletion. (Web api.workspaces methods land in TASK-1971.)
+export interface DeletedWorkspace extends Workspace {
+	// When the retention sweeper will hard-delete the workspace
+	// (deleted_at + purge retention), RFC3339.
+	purge_at: string;
+	// Whole days remaining until purge_at, rounded up and clamped at 0.
+	days_left: number;
 }
 
 export interface WorkspaceRepository {

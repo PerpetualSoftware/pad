@@ -267,3 +267,111 @@ func (s *Store) DeleteWorkspace(slug string) error {
 	}
 	return nil
 }
+
+// RestoreWorkspace un-soft-deletes a workspace: it clears deleted_at so
+// the workspace (and every item/collection/member/attachment that was
+// only transitively hidden by the `w.deleted_at IS NULL` filters)
+// re-surfaces intact. Nothing below the workspace was ever soft-deleted
+// by DeleteWorkspace, so restoring the parent row is all it takes.
+//
+// The inverse of DeleteWorkspace and modeled on its shape. Idempotent-
+// ish: returns sql.ErrNoRows (→ 404 at the handler) when no soft-deleted
+// row matched the slug — i.e. the workspace is already live, or it was
+// hard-purged by the retention sweeper (workspace_purge.go) and is gone
+// for good.
+func (s *Store) RestoreWorkspace(slug string) error {
+	ts := now()
+	result, err := s.db.Exec(s.q(`
+		UPDATE workspaces SET deleted_at = NULL, updated_at = ?
+		WHERE slug = ? AND deleted_at IS NOT NULL
+	`), ts, slug)
+	if err != nil {
+		return err
+	}
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// GetDeletedWorkspaceBySlug returns a SOFT-DELETED workspace by slug
+// (deleted_at IS NOT NULL), including its owner_id, or nil when no such
+// row exists (live workspace, unknown slug, or already hard-purged).
+//
+// The normal resolvers (GetWorkspaceBySlug / resolveWorkspace) filter
+// `deleted_at IS NULL`, so a soft-deleted workspace is invisible to
+// them — the restore handler uses this to look up the row it's about to
+// restore and check ownership BEFORE mutating (so it can tell a
+// non-owner's 403 apart from a genuine 404).
+func (s *Store) GetDeletedWorkspaceBySlug(slug string) (*models.Workspace, error) {
+	var w models.Workspace
+	var createdAt, updatedAt string
+	var deletedAt *string
+
+	err := s.db.QueryRow(s.q(`
+		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at
+		FROM workspaces w
+		LEFT JOIN users ou ON ou.id = w.owner_id
+		WHERE w.slug = ? AND w.deleted_at IS NOT NULL
+	`), slug).Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &w.Source, &createdAt, &updatedAt, &deletedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	w.CreatedAt = parseTime(createdAt)
+	w.UpdatedAt = parseTime(updatedAt)
+	w.DeletedAt = parseTimePtr(deletedAt)
+	w.HydrateDerivedFields()
+	return &w, nil
+}
+
+// ListDeletedWorkspaces returns the soft-deleted workspaces the given
+// user OWNS that are still inside the restore window — deleted_at set,
+// newer than cutoff (which the caller derives from the purge retention
+// constant so restore and purge share one horizon). Ordered
+// most-recently-deleted first.
+//
+// Owner-scoped by owner_id, the canonical "workspaces you solely own"
+// signal. Account-deleted workspaces have no live owner (the owner user
+// row was removed with the account), so their owner_id can't match any
+// live requester — they never leak into this list. That is the intended
+// behavior: only manually-deleted workspaces owned by a live user are
+// practically restorable.
+//
+// deleted_at is fixed-width RFC3339 UTC (store.now()), so the `> cutoff`
+// string comparison is a valid chronological ordering — the same
+// technique ListPurgeableWorkspaces uses for its `< cutoff` bound.
+func (s *Store) ListDeletedWorkspaces(userID string, cutoff time.Time) ([]models.Workspace, error) {
+	cutoffStr := cutoff.UTC().Format(time.RFC3339)
+	rows, err := s.db.Query(s.q(`
+		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at
+		FROM workspaces w
+		LEFT JOIN users ou ON ou.id = w.owner_id
+		WHERE w.owner_id = ? AND w.deleted_at IS NOT NULL AND w.deleted_at > ?
+		ORDER BY w.deleted_at DESC
+	`), userID, cutoffStr)
+	if err != nil {
+		return nil, fmt.Errorf("list deleted workspaces: %w", err)
+	}
+	defer rows.Close()
+
+	var result []models.Workspace
+	for rows.Next() {
+		var w models.Workspace
+		var createdAt, updatedAt string
+		var deletedAt *string
+		if err := rows.Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &w.Source, &createdAt, &updatedAt, &deletedAt); err != nil {
+			return nil, fmt.Errorf("scan deleted workspace: %w", err)
+		}
+		w.CreatedAt = parseTime(createdAt)
+		w.UpdatedAt = parseTime(updatedAt)
+		w.DeletedAt = parseTimePtr(deletedAt)
+		w.HydrateDerivedFields()
+		result = append(result, w)
+	}
+	return result, rows.Err()
+}

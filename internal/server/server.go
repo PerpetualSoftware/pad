@@ -1251,6 +1251,19 @@ func (s *Server) setupRouter() {
 				r.Post("/import", s.handleImportWorkspace)
 				r.Put("/reorder", s.handleReorderWorkspaces)
 
+				// Soft-delete recovery (PLAN-1969 / TASK-1970). Both live
+				// OUTSIDE the /{slug} RequireWorkspaceAccess subrouter
+				// because that middleware resolves only LIVE workspaces
+				// (deleted_at IS NULL) and would 404 a soft-deleted one
+				// before the handler ran. The static "/deleted" segment is
+				// registered before the /{slug} param route so chi matches
+				// it exactly (static beats param); it lists the caller's own
+				// deleted-but-restorable workspaces. "/{slug}/restore"
+				// resolves the soft-deleted row itself and enforces
+				// owner-only authz inside the handler.
+				r.Get("/deleted", s.handleListDeletedWorkspaces)
+				r.Post("/{slug}/restore", s.handleRestoreWorkspace)
+
 				r.Route("/{slug}", func(r chi.Router) {
 					r.Use(s.RequireWorkspaceAccess)
 
