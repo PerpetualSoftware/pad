@@ -386,6 +386,21 @@ func init() {
 		// /api/v1/oauth/claim with the same payload shape.
 		"workspace create": mapWorkspaceCreate,
 		"workspace claim":  mapWorkspaceClaim,
+		// TASK-1973: workspace soft-delete recovery over MCP. `deleted`
+		// GETs the caller's soft-deleted workspaces still inside the
+		// restore window (no path params — the endpoint scopes to the
+		// requesting user). `restore` POSTs to the target workspace's
+		// {slug} (the deleted workspace, passed as the `slug` input —
+		// NOT the session `workspace` param) with an empty body. Mirrors
+		// the CLI client's /workspaces/deleted + /workspaces/{slug}/restore.
+		"workspace deleted": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/deleted",
+		}.toRouteMapper(),
+		"workspace restore": routeSpec{
+			method:       http.MethodPost,
+			pathTemplate: "/api/v1/workspaces/{slug}/restore",
+		}.toRouteMapper(),
 
 		// --- TASK-968 follow-up: project intelligence + admin extras ---
 		// `project next` returns the full dashboard JSON — same shape the

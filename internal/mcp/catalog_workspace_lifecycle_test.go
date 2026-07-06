@@ -195,3 +195,67 @@ func TestRouteTable_RegistersWorkspaceLifecycle(t *testing.T) {
 		}
 	}
 }
+
+// TASK-1973: workspace soft-delete recovery route wiring. The catalog
+// advertises pad_workspace.deleted / .restore; without these route
+// entries the HTTPHandlerDispatcher (cloud MCP) would return "not yet
+// implemented over HTTP transport" for calls the tool surface promises.
+func TestRouteTable_RegistersWorkspaceRecovery(t *testing.T) {
+	for _, key := range []string{"workspace deleted", "workspace restore"} {
+		if _, ok := routeTable[key]; !ok {
+			t.Errorf("routeTable missing entry for %q — cloud MCP dispatch would fail", key)
+		}
+	}
+}
+
+func TestWorkspaceDeletedRoute_HTTPMappingShape(t *testing.T) {
+	mapper := routeTable["workspace deleted"]
+	if mapper == nil {
+		t.Fatal("routeTable['workspace deleted'] is nil")
+	}
+	method, path, body, err := mapper(map[string]any{})
+	if err != nil {
+		t.Fatalf("mapper: %v", err)
+	}
+	if method != "GET" {
+		t.Errorf("method = %q, want GET", method)
+	}
+	if path != "/api/v1/workspaces/deleted" {
+		t.Errorf("path = %q, want /api/v1/workspaces/deleted", path)
+	}
+	if body != nil {
+		t.Errorf("body = %s, want nil", body)
+	}
+}
+
+func TestWorkspaceRestoreRoute_HTTPMappingShape(t *testing.T) {
+	mapper := routeTable["workspace restore"]
+	if mapper == nil {
+		t.Fatal("routeTable['workspace restore'] is nil")
+	}
+	// The deleted workspace is identified by the `slug` positional/input —
+	// it fills the {slug} path placeholder, not the session `workspace`.
+	method, path, body, err := mapper(map[string]any{"slug": "my-old-ws"})
+	if err != nil {
+		t.Fatalf("mapper: %v", err)
+	}
+	if method != "POST" {
+		t.Errorf("method = %q, want POST", method)
+	}
+	if path != "/api/v1/workspaces/my-old-ws/restore" {
+		t.Errorf("path = %q, want /api/v1/workspaces/my-old-ws/restore", path)
+	}
+	if body != nil {
+		t.Errorf("body = %s, want nil", body)
+	}
+}
+
+func TestWorkspaceRestoreRoute_RequiresSlug(t *testing.T) {
+	mapper := routeTable["workspace restore"]
+	if mapper == nil {
+		t.Fatal("routeTable['workspace restore'] is nil")
+	}
+	if _, _, _, err := mapper(map[string]any{}); err == nil {
+		t.Error("missing slug should error (path placeholder unfilled)")
+	}
+}

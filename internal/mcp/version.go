@@ -79,7 +79,7 @@ const CmdhelpVersion = "0.1"
 //     pagination. Pure addition; existing pad_item actions unchanged.
 //     Backwards-compatible for v0.5 consumers that don't enumerate
 //     the new action.
-//   - "0.7" — current. Artifact export/import (Phase 5): adds two
+//   - "0.7" — historical. Artifact export/import (Phase 5): adds two
 //     actions to `pad_item` mirroring the CLI `pad item export` /
 //     `pad item import`. `export` (read-only) takes `ref` and returns
 //     the portable artifact TEXT (YAML frontmatter + Markdown body) —
@@ -94,6 +94,17 @@ const CmdhelpVersion = "0.1"
 //     the `artifact` param to the vocabulary. Pure addition; existing
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
+//   - "0.8" — current. TASK-1973: workspace soft-delete recovery.
+//     Adds two actions to `pad_workspace` mirroring the CLI
+//     `pad workspace deleted` / `pad workspace restore` (TASK-1972):
+//     `deleted` (read-only) lists the caller's soft-deleted workspaces
+//     still inside the 30-day restore window; `restore` (mutating, not
+//     destructive) un-soft-deletes a workspace by `slug` while it's
+//     still restorable (owner-only). Both non-interactive. Reuses the
+//     existing `slug` param (now also required for action=restore); no
+//     new params. Pure addition; existing pad_workspace actions
+//     unchanged. Backwards-compatible for v0.7 consumers that don't
+//     enumerate the new actions.
 //   - "0.4" — PLAN-1410: comprehensive bootstrap-payload
 //     trim, cutting ~40% of bytes off the AgentBootstrap response.
 //     Same tool catalog (still eight resource × action tools +
@@ -136,7 +147,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.7"
+const ToolSurfaceVersion = "0.8"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
