@@ -124,13 +124,25 @@
 		if (restoringSlug) return;
 		restoringSlug = ws.slug;
 		try {
-			await api.workspaces.restore(ws.slug);
+			try {
+				await api.workspaces.restore(ws.slug);
+			} catch {
+				// Only the restore call itself failing is a restore failure.
+				toastStore.show(`Couldn't restore "${ws.name}"`, 'error');
+				return;
+			}
+			// Restore succeeded — confirm before refreshing so a failing
+			// reload can't masquerade as a restore failure.
 			toastStore.show(`Restored "${ws.name}"`, 'success');
 			// Refresh both lists so the restored workspace drops out of the
-			// deleted section and reappears in the active list.
-			await Promise.all([loadDeleted(), workspaceStore.loadAll()]);
-		} catch {
-			toastStore.show(`Couldn't restore "${ws.name}"`, 'error');
+			// deleted section and reappears in the active list. loadDeleted()
+			// swallows its own errors; guard loadAll() so a reload failure
+			// stays silent — the restore already went through.
+			try {
+				await Promise.all([loadDeleted(), workspaceStore.loadAll()]);
+			} catch {
+				// Reload failure is non-fatal.
+			}
 		} finally {
 			restoringSlug = null;
 		}
