@@ -101,15 +101,23 @@
 	// Slug currently being restored — drives the per-row disabled/pending
 	// state so a double-click can't fire two restores.
 	let restoringSlug = $state<string | null>(null);
+	// Monotonic token guarding async listDeleted() responses against races —
+	// mirrors workspaceStore's membershipSeq. Each loadDeleted() call claims a
+	// token; a response only writes if its token is still current, so an older
+	// open-triggered fetch can't clobber the fresher post-restore refresh (and
+	// re-surface a just-restored workspace).
+	let deletedSeq = 0;
 
 	async function loadDeleted() {
+		const seq = ++deletedSeq;
 		try {
-			deleted = await api.workspaces.listDeleted();
+			const list = await api.workspaces.listDeleted();
+			if (seq === deletedSeq) deleted = list;
 		} catch {
 			// Swallow — the restore affordance is a bonus, never a blocker for
 			// switching workspaces. Clear the list so a stale fetch doesn't
 			// linger and the section stays hidden.
-			deleted = [];
+			if (seq === deletedSeq) deleted = [];
 		}
 	}
 
