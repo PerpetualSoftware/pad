@@ -7,7 +7,9 @@ import (
 )
 
 // padWorkspaceTool exposes workspace-level operations: discovery
-// (list), membership (members, invite), storage usage, and audit log.
+// (list), membership (members, invite), storage usage, audit log,
+// lifecycle (create, claim), and soft-delete recovery (deleted,
+// restore).
 //
 // All actions dispatch through the existing CLI/HTTP route table.
 // Workspace context: this tool operates ON workspaces, so the
@@ -66,7 +68,7 @@ var padWorkspaceTool = ToolDef{
 			{
 				Name:        "slug",
 				Type:        "string",
-				Description: "Workspace slug (kebab-case, globally unique). Optional for action=create; derived from name when omitted.",
+				Description: "Workspace slug (kebab-case, globally unique). Optional for action=create (derived from name when omitted); required for action=restore (names the soft-deleted workspace to restore).",
 			},
 			{
 				Name:        "template",
@@ -89,6 +91,11 @@ var padWorkspaceTool = ToolDef{
 		// PLAN-1519 / TASK-1521 / IDEA-1517 §1 + §4.
 		"create": passThrough([]string{"workspace", "create"}),
 		"claim":  passThrough([]string{"workspace", "claim"}),
+		// TASK-1973: workspace soft-delete recovery (mirrors the CLI
+		// `pad workspace deleted` / `pad workspace restore` from TASK-1972).
+		// Both non-interactive; restore is mutating but non-destructive.
+		"deleted": passThrough([]string{"workspace", "deleted"}),
+		"restore": passThrough([]string{"workspace", "restore"}),
 	},
 }
 
@@ -154,7 +161,13 @@ Actions:
                invalid_code, 404 not_found (workspace doesn't exist or you're
                not a member), 412 connection_not_persisted (pre-Phase-C grant
                — re-authorize).
+  deleted    — List the caller's soft-deleted workspaces still inside the
+               30-day restore window, with days remaining before each is
+               permanently purged. No params. Read-only.
+  restore    — Un-soft-delete a workspace by slug, provided it is still inside
+               the restore window. Owner-only. Mutating but non-destructive.
+               Required: slug.
 
 Use pad_workspace when an agent needs to discover, manage membership, audit
-workspace activity, or bring a new/additional workspace into this connection.
-For item-level operations use pad_item.`
+workspace activity, recover a soft-deleted workspace, or bring a new/additional
+workspace into this connection. For item-level operations use pad_item.`

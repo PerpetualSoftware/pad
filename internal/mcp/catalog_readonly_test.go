@@ -85,6 +85,9 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		// PLAN-1519 / TASK-1521 / IDEA-1517 §1 + §4: workspace lifecycle.
 		{"pad_workspace", "create"}: {"workspace", "create"},
 		{"pad_workspace", "claim"}:  {"workspace", "claim"},
+		// TASK-1973: workspace soft-delete recovery.
+		{"pad_workspace", "deleted"}: {"workspace", "deleted"},
+		{"pad_workspace", "restore"}: {"workspace", "restore"},
 
 		{"pad_collection", "list"}:   {"collection", "list"},
 		{"pad_collection", "create"}: {"collection", "create"},
@@ -229,6 +232,9 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		// PLAN-1519 / TASK-1521 / IDEA-1517 §1 + §4: workspace lifecycle.
 		{"pad_workspace", "create"}: {"workspace", "create"},
 		{"pad_workspace", "claim"}:  {"workspace", "claim"},
+		// TASK-1973: workspace soft-delete recovery.
+		{"pad_workspace", "deleted"}: {"workspace", "deleted"},
+		{"pad_workspace", "restore"}: {"workspace", "restore"},
 
 		{"pad_collection", "list"}:   {"collection", "list"},
 		{"pad_collection", "create"}: {"collection", "create"},
@@ -440,6 +446,12 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Summary: "claim a workspace by 6-digit code",
 				Args:    mkArgs("code"),
 				Flags:   mkFlags("workspace"),
+			},
+			// TASK-1973: workspace soft-delete recovery.
+			"workspace deleted": {Summary: "list soft-deleted workspaces"},
+			"workspace restore": {
+				Summary: "restore a soft-deleted workspace",
+				Args:    mkArgs("slug"),
 			},
 			"workspace audit-log": {
 				Summary: "audit log",

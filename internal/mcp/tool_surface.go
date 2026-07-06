@@ -57,7 +57,8 @@ type toolSurfaceToolSummary struct {
 //   - pad_item:       get/list/deps/starred/list-comments/backlinks/export read;
 //     create/update/delete/move/restore/link/unlink/star/unstar/
 //     comment/bulk-update/note/decide/import write.
-//   - pad_workspace:  list/members/storage/audit-log read; invite/create/claim write.
+//   - pad_workspace:  list/members/storage/audit-log/deleted read;
+//     invite/create/claim/restore write.
 //   - pad_collection: list read; create/update/delete write.
 //   - pad_project:    all read (dashboard/next/standup/changelog/report).
 //   - pad_role:       list read; create/update/delete write.
@@ -81,6 +82,8 @@ var readOnlyActions = map[string]map[string]bool{
 		"members":   true,
 		"storage":   true,
 		"audit-log": true,
+		// TASK-1973: restore is a write; deleted is read-only.
+		"deleted": true,
 	},
 	"pad_collection": {
 		"list": true,
