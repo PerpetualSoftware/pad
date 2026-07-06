@@ -355,10 +355,10 @@
 		deleting = true;
 		try {
 			await api.workspaces.delete(wsSlug);
-			toastStore.show(`Workspace "${wsName}" archived`, 'success');
+			toastStore.show(`Workspace "${wsName}" deleted`, 'success');
 			goto('/console');
 		} catch {
-			toastStore.show('Failed to archive workspace', 'error');
+			toastStore.show('Failed to delete workspace', 'error');
 			deleting = false;
 		}
 	}
@@ -760,16 +760,16 @@
 					{#if !confirmDelete}
 						<div class="danger-row">
 							<div class="danger-info">
-								<strong>Archive this workspace</strong>
-								<p>This will hide the workspace and all its collections, items, and documents. The data is preserved but no longer accessible.</p>
+								<strong>Delete this workspace</strong>
+								<p>This immediately hides the workspace and everything in it — collections, items, documents, and attachments — and permanently deletes it 30 days later.</p>
 							</div>
 							<button class="btn btn-danger" onclick={() => confirmDelete = true}>
-								Archive workspace
+								Delete workspace
 							</button>
 						</div>
 					{:else}
 						<div class="danger-confirm">
-							<p class="danger-warning">This will archive <strong>{wsName}</strong> and all its contents. To confirm, type the workspace slug below:</p>
+							<p class="danger-warning">This will delete <strong>{wsName}</strong> and all its contents. It becomes inaccessible immediately and is permanently erased after 30 days. To confirm, type the workspace slug below:</p>
 							<div class="danger-input-row">
 								<code class="slug-hint">{wsSlug}</code>
 								<input
@@ -782,7 +782,7 @@
 							</div>
 							<div class="danger-actions">
 								<button class="btn btn-danger" onclick={handleDeleteWorkspace} disabled={deleteInput !== wsSlug || deleting}>
-									{deleting ? 'Archiving...' : 'Archive this workspace'}
+									{deleting ? 'Deleting...' : 'Delete this workspace'}
 								</button>
 								<button class="btn" onclick={() => { confirmDelete = false; deleteInput = ''; }}>Cancel</button>
 							</div>
