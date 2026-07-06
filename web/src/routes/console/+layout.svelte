@@ -135,6 +135,15 @@
 					>
 						Settings
 					</a>
+					<a
+						href="/console/deleted-workspaces"
+						class="nav-link"
+						role="menuitem"
+						onclick={closeMobileMenu}
+						class:active={isActive('/console/deleted-workspaces')}
+					>
+						Deleted workspaces
+					</a>
 					{#if authStore.cloudMode}
 						<a
 							href="/console/connected-apps"
