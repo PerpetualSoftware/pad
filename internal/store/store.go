@@ -23,9 +23,27 @@ var migrationsFS embed.FS
 //go:embed pgmigrations/*.sql
 var pgMigrationsFS embed.FS
 
+// BinaryVersion labels the pre-migration snapshot file
+// (<db>.pre-<VERSION>). The `pad` binary sets it to its build version at
+// startup; it defaults to "dev" so tests and direct library callers still
+// produce a sensibly-named snapshot. See snapshotBeforeMigrate.
+var BinaryVersion = "dev"
+
+// AllowSchemaAhead downgrades the schema-ahead migration guard (see
+// guardSchemaAhead) from a fatal error to a logged warning. It is the
+// escape hatch for the rare operator who has knowingly downgraded the
+// binary and accepts running old code against a newer schema. The `pad`
+// binary wires it to `start --force` / PAD_ALLOW_SCHEMA_AHEAD=1; tests
+// toggle it directly.
+var AllowSchemaAhead bool
+
 type Store struct {
-	db            *sql.DB
-	dialect       Dialect
+	db      *sql.DB
+	dialect Dialect
+	// dbPath is the on-disk SQLite file path (empty for Postgres and for
+	// in-memory SQLite). Retained so the migration path can write a
+	// pre-migration snapshot next to it. See snapshotBeforeMigrate.
+	dbPath        string
 	encryptionKey []byte // 32-byte AES-256 key for encrypting sensitive fields (e.g., TOTP secrets)
 
 	// stopMaint signals the background WAL checkpointer to exit; maintDone
@@ -139,7 +157,7 @@ func New(dbPath string) (*Store, error) {
 	db.SetMaxIdleConns(sqliteMaxOpenConns)
 	db.SetConnMaxLifetime(time.Hour)
 
-	s := &Store{db: db, dialect: &sqliteDialect{}}
+	s := &Store{db: db, dialect: &sqliteDialect{}, dbPath: dbPath}
 	if err := s.migrate(); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -284,13 +302,28 @@ func (s *Store) migrate() error {
 		return err
 	}
 
+	applied, err := appliedMigrations(s.db)
+	if err != nil {
+		return err
+	}
+
+	// Refuse to run against a DB that is AHEAD of this binary — i.e. a
+	// downgrade, where old code would silently operate on a newer schema.
+	if err := guardSchemaAhead(applied, migrations); err != nil {
+		return err
+	}
+
+	// Snapshot the DB file before applying any pending migrations, so a
+	// bad upgrade can be rolled back by copying the snapshot over the DB.
+	// Only when this is an UPGRADE of an existing DB (pending migrations
+	// AND at least one already applied) — a fresh install has nothing
+	// worth snapshotting. Best-effort; a failed snapshot warns, not fatal.
+	if len(applied) > 0 && hasPending(applied, migrations) {
+		s.snapshotBeforeMigrate()
+	}
+
 	for _, name := range migrations {
-		// Check if already applied
-		var count int
-		if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE version = ?", name).Scan(&count); err != nil {
-			return fmt.Errorf("check migration %s: %w", name, err)
-		}
-		if count > 0 {
+		if applied[name] {
 			continue
 		}
 
@@ -398,12 +431,21 @@ func (s *Store) migratePostgres() error {
 		return err
 	}
 
+	applied, err := appliedMigrations(s.db)
+	if err != nil {
+		return err
+	}
+
+	// Same schema-ahead guard as SQLite (a Postgres binary downgrade is
+	// equally unsafe). No pre-migration snapshot on Postgres — backups
+	// there are the operator's DBA responsibility (pg_dump / PITR), not
+	// something we can safely fake with a file copy.
+	if err := guardSchemaAhead(applied, migrations); err != nil {
+		return err
+	}
+
 	for _, name := range migrations {
-		var count int
-		if err := s.db.QueryRow("SELECT COUNT(*) FROM schema_migrations WHERE version = $1", name).Scan(&count); err != nil {
-			return fmt.Errorf("check migration %s: %w", name, err)
-		}
-		if count > 0 {
+		if applied[name] {
 			continue
 		}
 

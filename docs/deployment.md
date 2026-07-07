@@ -261,6 +261,60 @@ curl http://localhost:7777/api/v1/health
 # {"status":"ok"}
 ```
 
+## Upgrading
+
+Pad releases a new binary roughly weekly. Migrations run automatically at
+startup — only the ones your database is missing are applied, and each one
+commits atomically, so a failed migration rolls back cleanly and is retried
+on the next boot.
+
+**Only ever move forward.** A newer binary can migrate an older database; an
+older binary cannot understand a newer schema. Pad enforces this with a
+schema-ahead guard: if the binary finds a database that carries migrations it
+doesn't ship (the signature of a downgrade — a rolled-back brew formula, an
+older Docker tag, a redeployed prior binary), it **refuses to start** instead
+of silently running old code against a newer schema and corrupting data.
+
+```
+database schema is newer than this pad binary: the database has N migration(s)
+this binary doesn't ship (...) ... This almost always means the binary was
+DOWNGRADED (e.g. brew/docker rollback) ... Upgrade pad back to a build that
+includes those migrations, or ... re-run with `pad start --force`.
+```
+
+- **Recover** by reinstalling the newer binary (`brew upgrade pad`, pull the
+  newer Docker tag, redeploy the newer image).
+- **Override** — only if you have *intentionally* downgraded and accept the
+  data-corruption risk — with `pad start --force` or `PAD_ALLOW_SCHEMA_AHEAD=1`.
+
+### Pre-migration snapshot (SQLite)
+
+When a SQLite-backed instance has pending migrations, Pad copies the database
+file to `pad.db.pre-<version>` (next to the DB) *before* applying them. If an
+upgrade goes wrong, stop the server and copy that file back over `pad.db`. It
+is a convenience net, not a substitute for backups — take a real backup first
+(see [backup.md](backup.md)). The copy is best-effort: if it can't be written
+(read-only volume, full disk) the server logs a warning and proceeds, so keep
+your own backups regardless.
+
+PostgreSQL is not snapshotted this way — take a `pg_dump` or provider snapshot
+before upgrading (see [backup.md](backup.md)).
+
+### Recommended flow
+
+```bash
+# 1. Back up (SQLite shown; pg_dump for Postgres — see backup.md)
+pad db backup -o pad-backup-$(date +%Y%m%d).db
+
+# 2. Stop, install the new binary, restart. Migrations + the pre-migration
+#    snapshot run automatically on start.
+brew upgrade pad     # or: docker pull, binary download, systemctl restart pad
+
+# 3. Verify
+pad --version
+curl -s http://localhost:7777/api/v1/health   # {"status":"ok"}
+```
+
 ## Production Checklist
 
 - [ ] **Database:** PostgreSQL configured with `PAD_DB_DRIVER=postgres`

@@ -66,6 +66,16 @@ var (
 	urlFlag       string
 )
 
+// truthyEnv reports whether an environment-variable value means "on".
+func truthyEnv(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func fullVersion() string {
 	if commit == "" {
 		return version
@@ -286,6 +296,15 @@ func serveCmd() *cobra.Command {
 			}
 			if cmd.Flags().Changed("port") {
 				cfg.Port = port
+			}
+
+			// Label pre-migration snapshots with this build's version, and
+			// honor the schema-ahead-guard escape hatch (--force or
+			// PAD_ALLOW_SCHEMA_AHEAD=1). See internal/store/migration_guard.go.
+			store.BinaryVersion = version
+			forceMigrate, _ := cmd.Flags().GetBool("force")
+			if forceMigrate || truthyEnv(os.Getenv("PAD_ALLOW_SCHEMA_AHEAD")) {
+				store.AllowSchemaAhead = true
 			}
 
 			// Open database (SQLite default, PostgreSQL via PAD_DB_DRIVER)
@@ -1026,6 +1045,7 @@ func serveCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "host address to listen on")
 	cmd.Flags().IntVar(&port, "port", 7777, "port to listen on")
+	cmd.Flags().Bool("force", false, "start even if the database schema is newer than this binary (a downgrade — risks data corruption; see the README \"Upgrading Pad\" section)")
 
 	return cmd
 }
