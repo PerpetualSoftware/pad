@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"net/url"
-	"strings"
 )
 
 // ValidateWebhookURL checks that a webhook URL is safe to call.
@@ -58,50 +57,53 @@ func ValidateWebhookURL(rawURL string) error {
 }
 
 // isPrivateIP returns true if the IP is in a private, reserved, or
-// otherwise non-routable range.
+// otherwise non-routable range. It covers loopback (127.0.0.0/8, ::1),
+// RFC1918 (10/8, 172.16/12, 192.168/16) and IPv6 unique-local (fc00::/7)
+// via the stdlib predicates, link-local (169.254.0.0/16 — which catches
+// the AWS/GCP/Azure metadata IP 169.254.169.254 — and fe80::/10), all
+// multicast (224.0.0.0/4, ff00::/8), the unspecified address, and the
+// extra reserved ranges in reservedRanges below.
 func isPrivateIP(ip net.IP) bool {
-	// Loopback (127.0.0.0/8, ::1)
-	if ip.IsLoopback() {
+	if ip.IsLoopback() ||
+		ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() ||
+		ip.IsUnspecified() ||
+		ip.IsPrivate() {
 		return true
 	}
-
-	// Link-local (169.254.0.0/16, fe80::/10)
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		return true
-	}
-
-	// Unspecified (0.0.0.0, ::)
-	if ip.IsUnspecified() {
-		return true
-	}
-
-	// RFC1918 private ranges
-	privateRanges := []struct {
-		network string
-	}{
-		{"10.0.0.0/8"},
-		{"172.16.0.0/12"},
-		{"192.168.0.0/16"},
-		// IPv6 unique local (fc00::/7)
-		{"fc00::/7"},
-		// Cloud metadata (AWS, GCP, Azure)
-		{"169.254.169.254/32"},
-	}
-
-	for _, r := range privateRanges {
-		_, cidr, err := net.ParseCIDR(r.network)
-		if err != nil {
-			continue
-		}
+	for _, cidr := range reservedRanges {
 		if cidr.Contains(ip) {
 			return true
 		}
 	}
-
-	// Also catch common cloud metadata IPv6 variants
-	if strings.EqualFold(ip.String(), "fd00::") {
-		return true
-	}
-
 	return false
+}
+
+// reservedRanges are additional blocks that are not routable on the public
+// internet but are not caught by the stdlib predicates above. Precomputed
+// at init so isPrivateIP stays allocation-free and concurrency-safe.
+var reservedRanges = mustParseCIDRs(
+	"0.0.0.0/8",          // "this network" (RFC 1122) — some stacks route it locally
+	"100.64.0.0/10",      // CGNAT (RFC 6598)
+	"192.0.0.0/24",       // IETF protocol assignments (RFC 6890)
+	"198.18.0.0/15",      // benchmarking (RFC 2544)
+	"240.0.0.0/4",        // reserved / Class E (also contains 255.255.255.255)
+	"255.255.255.255/32", // limited broadcast
+	"192.0.2.0/24",       // TEST-NET-1 documentation (RFC 5737)
+	"198.51.100.0/24",    // TEST-NET-2 documentation (RFC 5737)
+	"203.0.113.0/24",     // TEST-NET-3 documentation (RFC 5737)
+	"2001:db8::/32",      // IPv6 documentation (RFC 3849)
+)
+
+func mustParseCIDRs(networks ...string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(networks))
+	for _, n := range networks {
+		_, cidr, err := net.ParseCIDR(n)
+		if err != nil {
+			panic(fmt.Errorf("webhooks: parse reserved CIDR %q: %w", n, err))
+		}
+		out = append(out, cidr)
+	}
+	return out
 }
