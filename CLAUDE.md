@@ -331,6 +331,7 @@ Server handlers existed pre-PLAN-1496; these tasks just wired CLI subcommands an
 go test ./...              # All Go tests
 go test ./internal/store/  # Store tests only
 cd web && npm run build    # Verify frontend compiles
+cd web && npm run test     # Web unit tests (vitest, run once)
 ```
 
 ## Common Tasks
