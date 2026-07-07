@@ -806,8 +806,13 @@ type ItemListParams struct {
 	// scheduled) are handled correctly rather than against a hardcoded
 	// global status allowlist (BUG-2001).
 	NonTerminal bool
-	Limit       int
-	Offset      int
+	// NoContent omits the (potentially large) rich-text body column from
+	// the projection — callers that only count/summarize/scan structured
+	// fields (e.g. the dashboard builder) don't pay to load every item's
+	// full markdown. item.Content comes back empty when set. See BUG-2002.
+	NoContent bool
+	Limit     int
+	Offset    int
 }
 
 // TagCount is a distinct tag used within a workspace and the number of items

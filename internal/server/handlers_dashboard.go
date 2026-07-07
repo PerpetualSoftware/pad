@@ -152,60 +152,13 @@ type DashboardSuggestion struct {
 	Reason     string `json:"reason"`
 }
 
-// itemBlockedByActive returns true when the item identified by id
-// has at least one active "blocks" link with a non-done blocker.
-// Mirrors the attention-blocked logic above so the suggested_next
-// algorithm filters out the same items the dashboard's attention
-// section flags as blocked.
-//
-// Visibility filters (collection visibility + per-item guest grants)
-// apply to BLOCKERS too — a blocker the requesting user can't see
-// shouldn't influence whether the target is suggested. This matches
-// the attention block's behavior.
-//
-// Returns false on lookup errors (best-effort: better to surface a
-// suggestion than swallow the algorithm on a transient store hiccup).
-//
-// BUG-990 introduced this helper alongside the in-progress
-// surfacing change in handleDashboard's suggested_next section.
-func (s *Server) itemBlockedByActive(
-	workspaceID, itemID string,
-	ctxMap map[string]doneContext,
-	visibleIDs []string,
-	r *http.Request,
-	dashFullCollIDs, dashGrantedItemIDs []string,
-) bool {
-	links, err := s.store.GetItemLinks(itemID)
-	if err != nil {
-		return false
-	}
-	for _, link := range links {
-		if link.LinkType != "blocks" {
-			continue
-		}
-		// We care only about links where this item is the BLOCKED
-		// (target) side — `source blocks target`.
-		if link.TargetID != itemID {
-			continue
-		}
-		blocker, err := s.store.GetItem(link.SourceID)
-		if err != nil || blocker == nil {
-			continue
-		}
-		if !isCollectionVisible(blocker.CollectionID, visibleIDs) {
-			continue
-		}
-		if !s.isItemVisibleToGuest(r, workspaceID, blocker, dashFullCollIDs, dashGrantedItemIDs) {
-			continue
-		}
-		if isItemDone(blocker.Fields, blocker.CollectionID, ctxMap) {
-			continue
-		}
-		// At least one active blocker visible to this user — bail.
-		return true
-	}
-	return false
-}
+// Blocked-item resolution (both the attention-blocked section and the
+// suggested_next blocked-filter) is driven by the firstActiveBlocker map
+// computed once per dashboard build from Store.GetBlocksEdges — a single
+// query in place of the old per-item GetItemLinks + per-link GetItem N+1
+// (BUG-2002). The map's presence check is the successor to the former
+// itemBlockedByActive helper (BUG-990); its visibility + non-done blocker
+// filtering is identical.
 
 // priorityRank returns a sort rank for task priority (lower = higher priority).
 func priorityRank(priority string) int {
@@ -242,6 +195,15 @@ func isActiveStatus(status string) bool {
 type doneContext struct {
 	schema   models.CollectionSchema
 	settings models.CollectionSettings
+}
+
+// activeBlocker holds the display fields for the first visible, still-active
+// blocker of a blocked item — the blocker's title and status, used to build
+// the "Blocked by X (still Y)" attention reason. Precomputed per blocked
+// target from a single GetBlocksEdges query (BUG-2002).
+type activeBlocker struct {
+	title  string
+	status string
 }
 
 // buildDoneContextMap builds a map of collection ID → (schema, settings)
@@ -328,31 +290,24 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		dashItemIDs = dashGrantedItemIDs
 	}
 
-	// Build a schema map for terminal status lookups
-	collections, err := s.store.ListCollections(workspaceID)
+	// Build a schema map for terminal status lookups from ALL workspace
+	// collections (id + slug + schema + settings), before visibility
+	// filtering. The dashboard may surface item-level grants from
+	// collections that aren't in the user's full-visibility set (via
+	// dashItemIDs); those items still need their own collection's done
+	// rules for isItemDone, not the status-based default fallback.
+	//
+	// ListCollectionsMinimal is used deliberately over ListCollections: the
+	// dashboard never reads per-collection item counts, and ListCollections
+	// runs a COUNT query PER collection (~one N+1 per workspace). The
+	// Minimal projection is a single row-scan (BUG-2002). collections is
+	// reused below to build an ID→slug map for the recent-activity
+	// visibility filter, avoiding a GetCollection per visible ID.
+	collections, err := s.store.ListCollectionsMinimal(workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	// Build the done-context map from ALL workspace collections before
-	// visibility filtering. The dashboard may surface item-level grants
-	// from collections that aren't in the user's full-visibility set
-	// (via dashItemIDs); those items still need their own collection's
-	// done rules for isItemDone, not the status-based default fallback.
-	// ListCollectionsMinimal skips the per-collection count queries —
-	// we only need schema + settings here.
-	allCollections, mcErr := s.store.ListCollectionsMinimal(workspaceID)
-	if mcErr != nil {
-		// Non-fatal: fall back to the visibility-filtered collections.
-		allCollections = collections
-	}
-	ctxMap := buildDoneContextMap(allCollections)
-	// Note: the `collections` slice is not part of response visibility
-	// filtering. Dashboard outputs are filtered by dashCollIDs /
-	// dashItemIDs on the ListItems calls below, plus per-item
-	// isCollectionVisible / isItemVisibleToGuest checks for outputs
-	// that walk graphs (plan progress, blocked attention, suggested
-	// next). `collections` is retained only as the fallback target for
-	// `allCollections` above when ListCollectionsMinimal fails.
+	ctxMap := buildDoneContextMap(collections)
 
 	resp := DashboardResponse{
 		Summary: DashboardSummary{
@@ -404,8 +359,11 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	}
 	resp.NeedsOnboarding = !hasUserItems
 
-	// Summary: items grouped by collection slug and status field
-	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: dashCollIDs, ItemIDs: dashItemIDs})
+	// Summary: items grouped by collection slug and status field.
+	// NoContent: the dashboard only counts/summarizes/scans structured
+	// fields — it never reads item.Content — so we skip loading every
+	// item's full markdown body (BUG-2002).
+	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: dashCollIDs, ItemIDs: dashItemIDs, NoContent: true})
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +450,32 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		CollectionIDs:  dashCollIDs,
 		ItemIDs:        dashItemIDs,
 		Fields:         map[string]string{"status": "active"},
+		NoContent:      true,
 	})
+	// Batch-fetch the children of every active plan in ONE query (BUG-2002),
+	// collapsing the per-plan GetChildItems N+1 that both the progress loop
+	// below and the suggested_next section used to pay. childrenByParent is
+	// keyed by plan item ID; planIDBySlug lets suggested_next reuse it
+	// without re-resolving each plan slug.
+	childrenByParent := map[string][]models.Item{}
+	planIDBySlug := make(map[string]string, len(plans))
+	if err == nil {
+		activePlanIDs := make([]string, 0, len(plans))
+		for _, plan := range plans {
+			activePlanIDs = append(activePlanIDs, plan.ID)
+			planIDBySlug[plan.Slug] = plan.ID
+		}
+		// A batch-children failure is fatal, not best-effort: silently
+		// degrading to an empty map would globally skew active_plans
+		// progress, plan_completion attention, orphan detection, and
+		// suggested_next. Mirror the sibling batch queries (allItems,
+		// GetBlocksEdges) which also return on error (BUG-2002, Codex review).
+		kids, cbErr := s.store.GetChildItemsForParents(activePlanIDs)
+		if cbErr != nil {
+			return nil, cbErr
+		}
+		childrenByParent = kids
+	}
 	if err == nil {
 		for _, plan := range plans {
 			dp := DashboardPlan{
@@ -503,18 +486,16 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 
 			// Compute progress from visible child items only
 			total, done := 0, 0
-			if planChildren, cerr := s.store.GetChildItems(plan.ID); cerr == nil {
-				for _, child := range planChildren {
-					if !isCollectionVisible(child.CollectionID, visibleIDs) {
-						continue
-					}
-					if !s.isItemVisibleToGuest(r, workspaceID, &child, dashFullCollIDs, dashGrantedItemIDs) {
-						continue
-					}
-					total++
-					if isItemDone(child.Fields, child.CollectionID, ctxMap) {
-						done++
-					}
+			for _, child := range childrenByParent[plan.ID] {
+				if !isCollectionVisible(child.CollectionID, visibleIDs) {
+					continue
+				}
+				if !s.isItemVisibleToGuest(r, workspaceID, &child, dashFullCollIDs, dashGrantedItemIDs) {
+					continue
+				}
+				total++
+				if isItemDone(child.Fields, child.CollectionID, ctxMap) {
+					done++
 				}
 			}
 			if total > 0 {
@@ -547,6 +528,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			CollectionIDs: dashCollIDs,
 			ItemIDs:       dashItemIDs,
 			Fields:        map[string]string{"status": statusVal},
+			NoContent:     true,
 		})
 		if err != nil {
 			continue
@@ -625,6 +607,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			CollectionSlug: "tasks",
 			CollectionIDs:  dashCollIDs,
 			ItemIDs:        dashItemIDs,
+			NoContent:      true,
 		})
 		if err == nil {
 			for _, task := range allTasks {
@@ -645,51 +628,59 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 	}
 
-	// (e) Blocked: non-done items that are blocked by other non-done items
+	// (e) Blocked: non-done items that are blocked by other non-done items.
+	//
+	// firstActiveBlocker resolves, for every blocked target in the
+	// workspace, the FIRST blocker (in the same created_at DESC order
+	// GetItemLinks used) that the caller can see AND that is still non-done.
+	// It's computed once from a single GetBlocksEdges query — replacing the
+	// per-non-done-item GetItemLinks + per-link GetItem N+1 that dominated
+	// dashboard latency (BUG-2002). Presence in the map == the target has an
+	// active blocker, which also drives the suggested_next blocked-filter
+	// below.
+	blocksEdges, err := s.store.GetBlocksEdges(workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	firstActiveBlocker := make(map[string]activeBlocker)
+	for _, e := range blocksEdges {
+		if _, resolved := firstActiveBlocker[e.TargetID]; resolved {
+			continue // already picked this target's first active blocker
+		}
+		// Skip blockers from hidden collections or ungrantable items — a
+		// blocker the caller can't see must not influence the target.
+		if !isCollectionVisible(e.SourceCollectionID, visibleIDs) {
+			continue
+		}
+		if !s.isItemVisibleToGuest(r, workspaceID, &models.Item{ID: e.SourceID, CollectionID: e.SourceCollectionID}, dashFullCollIDs, dashGrantedItemIDs) {
+			continue
+		}
+		if isItemDone(e.SourceFields, e.SourceCollectionID, ctxMap) {
+			continue
+		}
+		firstActiveBlocker[e.TargetID] = activeBlocker{
+			title: e.SourceTitle,
+			// Used only in the human-readable "Reason" string — the terminal
+			// check above owns the actual done-detection.
+			status: extractFieldValue(e.SourceFields, "status"),
+		}
+	}
 	for _, item := range allItems {
 		if isItemDone(item.Fields, item.CollectionID, ctxMap) {
 			continue
 		}
-		links, err := s.store.GetItemLinks(item.ID)
-		if err != nil {
+		blk, blocked := firstActiveBlocker[item.ID]
+		if !blocked {
 			continue
 		}
-		for _, link := range links {
-			if link.LinkType != "blocks" {
-				continue
-			}
-			// We care about links where this item is the target (i.e., blocked by source)
-			if link.TargetID != item.ID {
-				continue
-			}
-			// Check if the blocking item is still not done
-			blocker, err := s.store.GetItem(link.SourceID)
-			if err != nil || blocker == nil {
-				continue
-			}
-			// Skip blockers from hidden collections or ungrantable items
-			if !isCollectionVisible(blocker.CollectionID, visibleIDs) {
-				continue
-			}
-			if !s.isItemVisibleToGuest(r, workspaceID, blocker, dashFullCollIDs, dashGrantedItemIDs) {
-				continue
-			}
-			if isItemDone(blocker.Fields, blocker.CollectionID, ctxMap) {
-				continue
-			}
-			// Used only in the human-readable "Reason" string below — the
-			// terminal check above owns the actual done-detection.
-			blockerStatus := extractFieldValue(blocker.Fields, "status")
-			resp.Attention = append(resp.Attention, DashboardAttention{
-				Type:       "blocked",
-				ItemSlug:   item.Slug,
-				ItemRef:    item.Ref,
-				ItemTitle:  item.Title,
-				Collection: item.CollectionSlug,
-				Reason:     "Blocked by " + link.SourceTitle + " (still " + blockerStatus + ")",
-			})
-			break // only report the first active blocker per item
-		}
+		resp.Attention = append(resp.Attention, DashboardAttention{
+			Type:       "blocked",
+			ItemSlug:   item.Slug,
+			ItemRef:    item.Ref,
+			ItemTitle:  item.Title,
+			Collection: item.CollectionSlug,
+			Reason:     "Blocked by " + blk.title + " (still " + blk.status + ")",
+		})
 	}
 
 	// Recent activity — enriched with item titles and user names
@@ -698,16 +689,41 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		Limit: 30,
 	})
 	if err == nil && activities != nil {
-		// Build visible slug set for filtering
+		// Build visible slug set for filtering. Resolve slugs from the
+		// already-loaded collection list (ListCollections above) rather than
+		// a GetCollection per visible ID — no extra queries (BUG-2002).
 		var visibleSlugSet map[string]bool
 		if visibleIDs != nil {
+			collSlugByID := make(map[string]string, len(collections))
+			for _, c := range collections {
+				collSlugByID[c.ID] = c.Slug
+			}
 			visibleSlugSet = make(map[string]bool)
 			for _, id := range visibleIDs {
-				coll, _ := s.store.GetCollection(id)
-				if coll != nil {
-					visibleSlugSet[coll.Slug] = true
+				if slug, ok := collSlugByID[id]; ok {
+					visibleSlugSet[slug] = true
 				}
 			}
+		}
+
+		// Batch-hydrate the items referenced by these activity rows in one
+		// include-deleted query instead of a GetItemIncludeDeleted per row
+		// (BUG-2002). Collect the distinct document IDs first.
+		activityItemIDs := make([]string, 0, len(activities))
+		seenActID := make(map[string]struct{}, len(activities))
+		for _, a := range activities {
+			if a.DocumentID == "" {
+				continue
+			}
+			if _, dup := seenActID[a.DocumentID]; dup {
+				continue
+			}
+			seenActID[a.DocumentID] = struct{}{}
+			activityItemIDs = append(activityItemIDs, a.DocumentID)
+		}
+		activityItems, aiErr := s.store.GetItemsByIDsIncludeDeleted(activityItemIDs)
+		if aiErr != nil {
+			return nil, aiErr
 		}
 
 		for _, a := range activities {
@@ -729,8 +745,8 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			// If the referenced item is gone entirely, drop the row rather
 			// than emit a blank entry.
 			if a.DocumentID != "" {
-				item, err := s.store.GetItemIncludeDeleted(a.DocumentID)
-				if err != nil || item == nil {
+				item := activityItems[a.DocumentID]
+				if item == nil {
 					continue
 				}
 				// Skip items in hidden collections
@@ -776,15 +792,13 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	var candidates []suggestion
 
 	for _, dp := range resp.ActivePlans {
-		parentItem, err := s.store.ResolveItem(workspaceID, dp.Slug)
-		if err != nil || parentItem == nil {
+		// Reuse the children batched once above (BUG-2002) instead of
+		// re-resolving the plan slug and re-querying its children per plan.
+		planID, ok := planIDBySlug[dp.Slug]
+		if !ok {
 			continue
 		}
-		tasks, err := s.store.GetChildItems(parentItem.ID)
-		if err != nil {
-			continue
-		}
-		for _, task := range tasks {
+		for _, task := range childrenByParent[planID] {
 			// Skip tasks from hidden collections
 			if !isCollectionVisible(task.CollectionID, visibleIDs) {
 				continue
@@ -799,10 +813,10 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				continue
 			}
 			// Filter blocked items: don't suggest work an agent can't
-			// actually start. Mirrors the attention-blocked logic
-			// above — `blocks` link with this item as the target,
-			// where the blocker is still non-done.
-			if s.itemBlockedByActive(workspaceID, task.ID, ctxMap, visibleIDs, r, dashFullCollIDs, dashGrantedItemIDs) {
+			// actually start. Mirrors the attention-blocked logic above —
+			// a `blocks` link with this item as the target where the
+			// blocker is still non-done (presence in firstActiveBlocker).
+			if _, blocked := firstActiveBlocker[task.ID]; blocked {
 				continue
 			}
 			pri := extractFieldValue(task.Fields, "priority")
@@ -866,7 +880,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		if !isInProgress && pri != "high" && pri != "critical" {
 			continue
 		}
-		if s.itemBlockedByActive(workspaceID, item.ID, ctxMap, visibleIDs, r, dashFullCollIDs, dashGrantedItemIDs) {
+		if _, blocked := firstActiveBlocker[item.ID]; blocked {
 			continue
 		}
 		candidates = append(candidates, suggestion{

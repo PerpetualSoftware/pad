@@ -649,6 +649,71 @@ func (s *Store) GetItemIncludeDeleted(id string) (*models.Item, error) {
 	return &item, nil
 }
 
+// GetItemsByIDsIncludeDeleted fetches items (soft-deleted included) for the
+// given IDs in ONE `WHERE id IN (...)` query, keyed by item ID. It replaces
+// the per-row GetItemIncludeDeleted N+1 the dashboard's recent-activity
+// enrichment used to run once per activity row (BUG-2002). The rich-text body
+// is omitted — the only consumers read title/slug/ref/collection + the
+// visibility inputs, never the markdown body. IDs with no matching row are
+// simply absent from the map.
+func (s *Store) GetItemsByIDsIncludeDeleted(ids []string) (map[string]*models.Item, error) {
+	result := make(map[string]*models.Item, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, '', i.fields, i.tags,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+		       i.created_by, i.last_modified_by, i.source,
+		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+		WHERE i.id IN (%s)
+	`, strings.Join(placeholders, ","))), args...)
+	if err != nil {
+		return nil, fmt.Errorf("get items by ids (include deleted): %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var item models.Item
+		var createdAt, updatedAt string
+		var deletedAt *string
+		var pinned bool
+		if err := rows.Scan(
+			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
+			&item.Content, &item.Fields, &item.Tags,
+			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
+			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
+			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
+			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
+			&item.AssignedUserName, &item.AssignedUserEmail,
+			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
+		); err != nil {
+			return nil, err
+		}
+		item.Pinned = pinned
+		item.CreatedAt = parseTime(createdAt)
+		item.UpdatedAt = parseTime(updatedAt)
+		item.DeletedAt = parseTimePtr(deletedAt)
+		hydrateItemComputedMetadata(&item)
+		itemCopy := item
+		result[item.ID] = &itemCopy
+	}
+	return result, rows.Err()
+}
+
 // GetItemBySlugIncludeDeleted finds an item by slug including soft-deleted items.
 // Used for restore operations where the item is archived.
 func (s *Store) GetItemBySlugIncludeDeleted(workspaceID, slug string) (*models.Item, error) {
@@ -711,8 +776,16 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		return s.listItemsFTS(workspaceID, params)
 	}
 
+	// NoContent swaps the rich-text body column for an empty literal so
+	// count/summary scans (e.g. the dashboard builder) don't load every
+	// item's full markdown. scanItems still scans the same column count;
+	// item.Content just comes back empty (BUG-2002).
+	contentCol := "i.content"
+	if params.NoContent {
+		contentCol = "''"
+	}
 	query := `
-		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, i.fields, i.tags,
+		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, ` + contentCol + `, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
 		       i.item_number, i.seq, i.created_at, i.updated_at,
@@ -3222,6 +3295,125 @@ func (s *Store) getChildItems(q childQueryer, parentItemID string) ([]models.Ite
 	defer rows.Close()
 
 	return scanItems(rows)
+}
+
+// GetChildItemsForParents returns the live child items for each of the given
+// parent item IDs, grouped by parent ID, in ONE query — collapsing the
+// per-parent GetChildItems N+1 the dashboard used to run once per active plan
+// (BUG-2002). The rich-text body (content) is omitted from the projection:
+// every dashboard consumer of plan children reads only structured fields
+// (status/priority) + identity, never the markdown body, so we skip the heavy
+// column.
+//
+// Ordering within each parent's slice matches GetChildItems (sort_order ASC,
+// created_at ASC). A child linked to more than one requested parent appears
+// under each. Parents with no live children are simply absent from the map.
+func (s *Store) GetChildItemsForParents(parentIDs []string) (map[string][]models.Item, error) {
+	result := make(map[string][]models.Item, len(parentIDs))
+	if len(parentIDs) == 0 {
+		return result, nil
+	}
+	placeholders := make([]string, len(parentIDs))
+	args := make([]any, len(parentIDs))
+	for i, id := range parentIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
+		SELECT DISTINCT il.target_id,
+		       i.id, i.workspace_id, i.collection_id, i.title, i.slug, '', i.fields, i.tags,
+		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
+		       i.created_by, i.last_modified_by, i.source,
+		       i.item_number, i.seq, i.created_at, i.updated_at,
+		       c.slug, c.name, c.icon, c.prefix,
+		       COALESCE(au.name, ''), COALESCE(au.email, ''),
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		JOIN item_links il ON il.source_id = i.id AND il.link_type IN (%s) AND il.target_id IN (%s)
+		LEFT JOIN users au ON au.id = i.assigned_user_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+		WHERE i.deleted_at IS NULL
+		ORDER BY i.sort_order ASC, i.created_at ASC
+	`, childLinkTypeSQL(), strings.Join(placeholders, ","))), args...)
+	if err != nil {
+		return nil, fmt.Errorf("get child items for parents: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var parentID string
+		var item models.Item
+		var createdAt, updatedAt string
+		var deletedAt *string
+		var pinned bool
+		if err := rows.Scan(
+			&parentID,
+			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
+			&item.Content, &item.Fields, &item.Tags,
+			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,
+			&item.CreatedBy, &item.LastModifiedBy, &item.Source,
+			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt,
+			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
+			&item.AssignedUserName, &item.AssignedUserEmail,
+			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
+			&deletedAt,
+		); err != nil {
+			return nil, err
+		}
+		item.Pinned = pinned
+		item.CreatedAt = parseTime(createdAt)
+		item.UpdatedAt = parseTime(updatedAt)
+		item.DeletedAt = parseTimePtr(deletedAt)
+		hydrateItemComputedMetadata(&item)
+		result[parentID] = append(result[parentID], item)
+	}
+	return result, rows.Err()
+}
+
+// BlocksEdge is a skinny projection of a `blocks` link plus the blocker
+// (source) essentials the dashboard needs to decide whether a blocked item
+// should be flagged: the blocker's visibility input (collection ID), its
+// done-state input (fields), and its title/status for the reason string.
+// Fetched for a whole workspace in one query instead of the per-item
+// GetItemLinks + per-link GetItem N+1 the dashboard used to run (BUG-2002).
+type BlocksEdge struct {
+	TargetID           string // the blocked item (the `blocks` link's target)
+	SourceID           string // the blocker (the `blocks` link's source)
+	SourceTitle        string
+	SourceCollectionID string
+	SourceFields       string
+}
+
+// GetBlocksEdges returns every `blocks` link in the workspace whose source and
+// target items are both live (non-deleted), newest link first. The
+// created_at DESC ordering matches GetItemLinks so callers replicating the
+// dashboard's "first active blocker wins" selection pick the same blocker the
+// per-item path did. Replaces the dashboard's per-non-done-item
+// GetItemLinks + per-link GetItem N+1 (BUG-2002).
+func (s *Store) GetBlocksEdges(workspaceID string) ([]BlocksEdge, error) {
+	rows, err := s.db.Query(s.q(`
+		SELECT l.target_id, l.source_id, s.title, s.collection_id, s.fields
+		FROM item_links l
+		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL
+		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL
+		WHERE l.workspace_id = ? AND l.link_type = 'blocks'
+		ORDER BY l.created_at DESC
+	`), workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("get blocks edges: %w", err)
+	}
+	defer rows.Close()
+
+	var edges []BlocksEdge
+	for rows.Next() {
+		var e BlocksEdge
+		if err := rows.Scan(&e.TargetID, &e.SourceID, &e.SourceTitle, &e.SourceCollectionID, &e.SourceFields); err != nil {
+			return nil, err
+		}
+		edges = append(edges, e)
+	}
+	return edges, rows.Err()
 }
 
 // PopulateHasChildren sets HasChildren=true on items that have at least one
