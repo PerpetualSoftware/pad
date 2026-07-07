@@ -36,6 +36,17 @@ func TestValidateWebhookURL(t *testing.T) {
 		{"link-local", "http://169.254.1.1/hook", true},
 		{"unspecified", "http://0.0.0.0/hook", true},
 
+		// Widened reserved ranges
+		{"cgnat 100.64.x", "http://100.64.1.2/hook", true},
+		{"ietf protocol 192.0.0.x", "http://192.0.0.8/hook", true},
+		{"benchmarking 198.18.x", "http://198.19.0.1/hook", true},
+		{"reserved class E 240.x", "http://240.0.0.1/hook", true},
+		{"broadcast", "http://255.255.255.255/hook", true},
+
+		// Public addresses just outside the widened ranges must still pass
+		{"public above cgnat", "http://100.128.0.1/hook", false},
+		{"public above 198.18/15", "http://198.20.0.1/hook", false},
+
 		// Hostnames resolving to private IPs
 		{"localhost", "http://localhost/hook", true},
 
@@ -69,6 +80,28 @@ func TestIsPrivateIP(t *testing.T) {
 		{"8.8.8.8", false},
 		{"1.1.1.1", false},
 		{"93.184.216.34", false},
+		// Widened reserved ranges
+		{"100.64.0.1", true},      // CGNAT lower bound
+		{"100.127.255.254", true}, // CGNAT upper bound
+		{"192.0.0.1", true},       // IETF protocol assignments
+		{"198.18.0.1", true},      // benchmarking lower bound
+		{"198.19.255.254", true},  // benchmarking upper bound
+		{"240.0.0.1", true},       // reserved / Class E
+		{"255.255.255.255", true}, // limited broadcast
+		{"0.0.0.1", true},         // "this network" (RFC 1122), not just 0.0.0.0
+		{"0.255.255.255", true},   // "this network" upper bound
+		{"224.0.0.1", true},       // IPv4 multicast
+		{"239.1.2.3", true},       // IPv4 multicast (admin-scoped)
+		{"ff02::1", true},         // IPv6 multicast
+		{"192.0.2.1", true},       // TEST-NET-1 documentation
+		{"198.51.100.1", true},    // TEST-NET-2 documentation
+		{"203.0.113.1", true},     // TEST-NET-3 documentation
+		{"2001:db8::1", true},     // IPv6 documentation
+		// Just outside the widened ranges — must stay public
+		{"100.128.0.1", false},     // above CGNAT
+		{"192.0.1.1", false},       // above 192.0.0.0/24
+		{"198.20.0.1", false},      // above 198.18.0.0/15
+		{"223.255.255.255", false}, // last public /8 below the 240/4 reserved block
 	}
 
 	for _, tt := range tests {

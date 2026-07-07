@@ -6,12 +6,23 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"syscall"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// maxWebhookRedirects caps how many HTTP redirects a delivery will follow.
+// Every hop is re-validated by checkRedirect, so this is a belt-and-braces
+// bound against redirect loops rather than the primary SSRF control.
+const maxWebhookRedirects = 5
+
+// deliveryTimeout is the total per-delivery HTTP timeout.
+const deliveryTimeout = 10 * time.Second
 
 // WebhookStore is the interface the dispatcher needs to fetch webhooks
 // and record delivery outcomes.
@@ -36,13 +47,75 @@ type Dispatcher struct {
 }
 
 // NewDispatcher creates a Dispatcher with the given store.
+//
+// The delivery client enforces the SSRF guard at connect time, not just at
+// parse time: its dialer's Control callback re-checks the ACTUAL resolved IP
+// before the socket connects (closing the DNS-rebind TOCTOU where a hostname
+// validates as public then resolves to an internal IP), and CheckRedirect
+// re-runs ValidateWebhookURL on every hop so a 302 can't bounce the request
+// to an internal target. Proxy is intentionally nil — honoring HTTP(S)_PROXY
+// would connect to the proxy host and skip our dialer's IP check entirely.
 func NewDispatcher(store WebhookStore) *Dispatcher {
-	return &Dispatcher{
-		store: store,
-		client: &http.Client{
-			Timeout: 10 * time.Second,
+	d := &Dispatcher{store: store}
+
+	dialer := &net.Dialer{
+		Timeout:   deliveryTimeout,
+		KeepAlive: 30 * time.Second,
+		Control: func(_, address string, _ syscall.RawConn) error {
+			if d.SkipSSRF {
+				return nil
+			}
+			return screenDialAddr(address)
 		},
 	}
+	d.client = &http.Client{
+		Timeout: deliveryTimeout,
+		Transport: &http.Transport{
+			Proxy:                 nil, // never route through an env proxy — see NewDispatcher docstring
+			DialContext:           dialer.DialContext,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
+		CheckRedirect: d.checkRedirect,
+	}
+	return d
+}
+
+// checkRedirect re-validates every redirect hop against the SSRF guard and
+// caps the redirect chain length. Without it, an allowed public endpoint
+// could 302 the delivery to an internal address.
+func (d *Dispatcher) checkRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= maxWebhookRedirects {
+		return fmt.Errorf("stopped after %d redirects", maxWebhookRedirects)
+	}
+	if d.SkipSSRF {
+		return nil
+	}
+	if err := ValidateWebhookURL(req.URL.String()); err != nil {
+		return fmt.Errorf("redirect to %s blocked: %w", req.URL.Redacted(), err)
+	}
+	return nil
+}
+
+// screenDialAddr rejects a dial to a private/reserved IP. The dialer calls
+// this with the resolved connection address (ip:port), so it validates the
+// exact target the socket is about to connect to — this is the dial-time
+// check that defeats DNS rebinding.
+func screenDialAddr(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return fmt.Errorf("webhook dial blocked: %q is not a resolved IP", address)
+	}
+	if isPrivateIP(ip) {
+		return fmt.Errorf("webhook dial blocked: private or reserved IP %s", ip)
+	}
+	return nil
 }
 
 // Dispatch sends the event payload to all matching active webhooks for the workspace.

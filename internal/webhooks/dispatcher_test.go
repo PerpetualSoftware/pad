@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -226,6 +227,87 @@ func TestDispatcher_FailureOnNon2xx(t *testing.T) {
 	defer store.mu.Unlock()
 	if !store.failures["hook-1"] {
 		t.Error("expected failure to be recorded for non-2xx response")
+	}
+}
+
+// stubTransport lets a test drive the delivery client's redirect handling
+// without any real network I/O.
+type stubTransport struct {
+	respond func(*http.Request) *http.Response
+}
+
+func (s *stubTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return s.respond(req), nil
+}
+
+// TestScreenDialAddr is the dial-time guard that closes the DNS-rebind
+// TOCTOU: it validates the resolved ip:port the socket is about to connect
+// to, regardless of what the parse-time URL check saw.
+func TestScreenDialAddr(t *testing.T) {
+	tests := []struct {
+		name    string
+		address string
+		wantErr bool
+	}{
+		{"public", "93.184.216.34:443", false},
+		{"public dns", "8.8.8.8:80", false},
+		{"loopback", "127.0.0.1:80", true},
+		{"rfc1918", "10.1.2.3:8080", true},
+		{"cloud metadata", "169.254.169.254:80", true},
+		{"cgnat", "100.64.0.1:443", true},
+		{"benchmarking", "198.18.0.1:80", true},
+		{"reserved class E", "240.0.0.1:80", true},
+		{"broadcast", "255.255.255.255:80", true},
+		{"not an ip", "example.com:80", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := screenDialAddr(tt.address)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("screenDialAddr(%q) error = %v, wantErr = %v", tt.address, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// TestDispatcher_RedirectToInternalBlocked proves a 302 from an allowed
+// public endpoint cannot bounce a delivery to an internal IP: the initial
+// URL is a public literal (passes parse-time validation), but the stubbed
+// transport returns a redirect to the cloud-metadata IP, which CheckRedirect
+// must reject so d.client.Do fails and the delivery is recorded as failed.
+func TestDispatcher_RedirectToInternalBlocked(t *testing.T) {
+	store := newMockStore(nil)
+	d := NewDispatcher(store)
+	d.SkipSSRF = false
+	d.client.Transport = &stubTransport{
+		respond: func(req *http.Request) *http.Response {
+			return &http.Response{
+				StatusCode: http.StatusFound,
+				Header:     http.Header{"Location": []string{"http://169.254.169.254/latest/meta-data/"}},
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    req,
+			}
+		},
+	}
+
+	hook := models.Webhook{ID: "hook-1", WorkspaceID: "ws-1", URL: "http://93.184.216.34/hook"}
+	d.deliver(hook, []byte("{}"))
+	store.waitForUpdate()
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if !store.failures["hook-1"] {
+		t.Error("expected redirect-to-internal delivery to be recorded as failed")
+	}
+}
+
+// TestDispatcher_CheckRedirectCap stops runaway redirect chains.
+func TestDispatcher_CheckRedirectCap(t *testing.T) {
+	d := NewDispatcher(newMockStore(nil))
+	req, _ := http.NewRequest(http.MethodGet, "http://93.184.216.34/", nil)
+	via := make([]*http.Request, maxWebhookRedirects)
+	if err := d.checkRedirect(req, via); err == nil {
+		t.Errorf("checkRedirect with %d prior hops: expected error, got nil", maxWebhookRedirects)
 	}
 }
 
