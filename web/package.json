@@ -15,7 +15,8 @@
 		"test:watch": "vitest",
 		"test:e2e": "playwright test",
 		"test:e2e:ui": "playwright test --ui",
-		"test:e2e:install": "playwright install --with-deps chromium"
+		"test:e2e:install": "playwright install --with-deps chromium",
+		"check:tiptap-pins": "node scripts/check-tiptap-pins.mjs"
 	},
 	"devDependencies": {
 		"@playwright/test": "^1.59.1",
@@ -41,7 +42,7 @@
 	},
 	"dependencies": {
 		"@dagrejs/dagre": "3.0.0",
-		"@tiptap/core": "^3.22.5",
+		"@tiptap/core": "3.22.5",
 		"@tiptap/extension-bubble-menu": "^3.22.5",
 		"@tiptap/extension-code-block-lowlight": "^3.22.5",
 		"@tiptap/extension-collaboration": "3.22.5",
@@ -51,10 +52,10 @@
 		"@tiptap/extension-table": "^3.22.5",
 		"@tiptap/extension-task-item": "^3.22.5",
 		"@tiptap/extension-task-list": "^3.22.5",
-		"@tiptap/pm": "^3.20.4",
+		"@tiptap/pm": "3.22.5",
 		"@tiptap/starter-kit": "^3.22.5",
 		"@tiptap/suggestion": "^3.22.5",
-		"@tiptap/y-tiptap": "^3.0.3",
+		"@tiptap/y-tiptap": "3.0.3",
 		"3d-force-graph": "1.80.0",
 		"d3-scale": "4.0.2",
 		"diff": "^9.0.0",
