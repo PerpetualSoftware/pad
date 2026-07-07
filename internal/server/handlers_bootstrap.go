@@ -21,13 +21,23 @@ import (
 // in `pad_set_workspace`'s response, and an on-demand `pad_meta.action=bootstrap`
 // refresh.
 type AgentBootstrap struct {
-	Workspace   AgentBootstrapWorkspace      `json:"workspace"`
-	User        AgentBootstrapUser           `json:"user"`
-	Collections []BootstrapCollection        `json:"collections"`
-	Conventions []AgentBootstrapConvention   `json:"conventions"`
-	Roles       []BootstrapRole              `json:"roles"`
-	Playbooks   []AgentBootstrapPlaybookMeta `json:"playbooks"`
-	Dashboard   *BootstrapDashboard          `json:"dashboard,omitempty"`
+	Workspace   AgentBootstrapWorkspace    `json:"workspace"`
+	User        AgentBootstrapUser         `json:"user"`
+	Collections []BootstrapCollection      `json:"collections"`
+	Conventions []AgentBootstrapConvention `json:"conventions"`
+	// ConventionIndex is the metadata-only catalog of EVERY active
+	// convention (all triggers, including the always-on ones whose full
+	// bodies also appear in Conventions). It carries no bodies — just
+	// ref/title/trigger/role — so an agent can see that e.g. 10
+	// `on-implement` conventions exist and fire the targeted
+	// `pad item list conventions --field trigger=on-implement` query only
+	// when that trigger is relevant, instead of loading every body up
+	// front or (as before) never learning the triggered set exists.
+	// Mirrors the Playbooks metadata pattern. TASK-2004.
+	ConventionIndex []AgentBootstrapConventionMeta `json:"convention_index"`
+	Roles           []BootstrapRole                `json:"roles"`
+	Playbooks       []AgentBootstrapPlaybookMeta   `json:"playbooks"`
+	Dashboard       *BootstrapDashboard            `json:"dashboard,omitempty"`
 	// NeedsOnboarding is true when the workspace has ZERO user-created
 	// items — i.e. nothing beyond what SeedCollectionsFromTemplate seeded
 	// at init time. The agent skill reads this on every /pad invocation
@@ -273,6 +283,31 @@ type AgentBootstrapConvention struct {
 	Trigger  string `json:"trigger,omitempty"`
 }
 
+// AgentBootstrapConventionMeta is the lightweight, body-less convention
+// projection returned in the bootstrap's convention_index. It mirrors the
+// AgentBootstrapPlaybookMeta pattern: metadata only, no content, so a
+// workspace with dozens of triggered conventions costs the agent only a
+// handful of bytes per entry (~40 bytes) at greeting time.
+//
+// The index exists so triggered (non-always) conventions are DISCOVERABLE.
+// The always-on set ships its full bodies in AgentBootstrap.Conventions,
+// but trigger-specific conventions (on-implement, on-task-complete,
+// on-pr-create, …) previously never appeared even as titles — so agents
+// never knew to fire the targeted `pad item list conventions --field
+// trigger=<t>` query. The index lists ALL active conventions (always-on
+// included, for a complete picture); the agent reads a trigger's count
+// here and pulls the bodies on demand only when that trigger fires.
+// TASK-2004.
+type AgentBootstrapConventionMeta struct {
+	Ref     string `json:"ref"`
+	Title   string `json:"title"`
+	Trigger string `json:"trigger,omitempty"`
+	// Role is the slug of the agent role this convention is scoped to,
+	// when set. Most conventions are workspace-wide (no role) so this is
+	// omitted for them.
+	Role string `json:"role,omitempty"`
+}
+
 // AgentBootstrapPlaybookMeta is the lightweight playbook projection
 // returned at bootstrap. Bodies (which can be 5-10KB each) are
 // deliberately excluded; the agent loads a body on demand via
@@ -458,8 +493,18 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 			return nil, cerr
 		}
 		out.Conventions = convs
+
+		// convention_index: metadata-only catalog of EVERY active
+		// convention (all triggers), so the triggered set is discoverable
+		// without shipping bodies. See AgentBootstrapConventionMeta.
+		idx, ierr := s.collectConventionIndex(workspaceID, subCollIDs, subItemIDs)
+		if ierr != nil {
+			return nil, ierr
+		}
+		out.ConventionIndex = idx
 	} else {
 		out.Conventions = []AgentBootstrapConvention{}
+		out.ConventionIndex = []AgentBootstrapConventionMeta{}
 	}
 
 	// Agent roles — workspace-scoped, not collection-bound. Item counts
@@ -621,6 +666,60 @@ func (s *Server) collectAlwaysOnConventions(workspaceID string, collIDs []string
 		pj := conventionPriorityRank(out[j].Priority)
 		if pi != pj {
 			return pi < pj
+		}
+		return out[i].Ref < out[j].Ref
+	})
+	return out, nil
+}
+
+// collectConventionIndex returns the metadata-only catalog of EVERY
+// active convention in the workspace (all triggers, always-on included),
+// projected into AgentBootstrapConventionMeta. Bodies are NOT loaded —
+// the query uses NoContent so the potentially-large markdown column never
+// leaves the DB. This backs AgentBootstrap.ConventionIndex; see that
+// field + AgentBootstrapConventionMeta for why a body-less index is the
+// point (triggered conventions must be discoverable without their bodies
+// flooding the bootstrap). TASK-2004.
+//
+// collIDs / itemIDs scope the underlying ListItems call the same way
+// collectAlwaysOnConventions does: nil collIDs means "no restriction"
+// (full member); non-nil collIDs + non-nil itemIDs is the
+// guest-with-item-grants shape. A guest granted one convention sees only
+// that one in the index.
+//
+// Sorted by trigger, then ref for a stable, grouped order so an agent can
+// eyeball "how many on-implement conventions exist" at a glance.
+func (s *Server) collectConventionIndex(workspaceID string, collIDs []string, itemIDs []string) ([]AgentBootstrapConventionMeta, error) {
+	items, err := s.store.ListItems(workspaceID, models.ItemListParams{
+		CollectionSlug: "conventions",
+		CollectionIDs:  collIDs,
+		ItemIDs:        itemIDs,
+		NoContent:      true,
+		Fields: map[string]string{
+			"status": "active",
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]AgentBootstrapConventionMeta, 0, len(items))
+	for _, it := range items {
+		fields := map[string]any{}
+		_ = json.Unmarshal([]byte(it.Fields), &fields)
+		trigger := ""
+		if v, ok := fields["trigger"].(string); ok {
+			trigger = v
+		}
+		out = append(out, AgentBootstrapConventionMeta{
+			Ref:     it.Ref,
+			Title:   it.Title,
+			Trigger: trigger,
+			Role:    it.AgentRoleSlug,
+		})
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Trigger != out[j].Trigger {
+			return out[i].Trigger < out[j].Trigger
 		}
 		return out[i].Ref < out[j].Ref
 	})
