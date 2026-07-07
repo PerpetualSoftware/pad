@@ -170,7 +170,7 @@ This format is database-agnostic and can be used to:
 ### Small Teams (SQLite)
 
 ```
-Daily: Copy pad.db to a backup location
+Daily: pad db backup --cron -o /backups/pad-$(date +%Y%m%d).db  (online-safe VACUUM INTO)
 Weekly: Rotate old backups (keep 4 weeks)
 ```
 

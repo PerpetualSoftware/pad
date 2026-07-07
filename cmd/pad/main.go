@@ -8826,8 +8826,14 @@ WARNING: This will overwrite the current database contents.`,
 						return fmt.Errorf("copy %s: %w", suffix, copyErr)
 					}
 				} else {
-					// No WAL/SHM in backup — remove stale ones from the target
-					os.Remove(dstPath + suffix)
+					// No WAL/SHM in backup (the VACUUM INTO path produces none):
+					// remove any stale sidecar at the target. A leftover -wal/-shm
+					// would let SQLite replay old WAL state over the freshly
+					// restored main DB on next open, so a remove failure is fatal
+					// rather than a silent success.
+					if err := os.Remove(dstPath + suffix); err != nil && !os.IsNotExist(err) {
+						return fmt.Errorf("remove stale %s: %w", suffix, err)
+					}
 				}
 			}
 
