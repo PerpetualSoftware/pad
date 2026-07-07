@@ -41,11 +41,15 @@ var padItemTool = ToolDef{
 	},
 	Actions: map[string]ActionFn{
 		// Lifecycle
-		"create":  passThrough([]string{"item", "create"}),
-		"update":  passThrough([]string{"item", "update"}),
-		"delete":  passThrough([]string{"item", "delete"}),
-		"get":     passThrough([]string{"item", "show"}),
-		"list":    passThrough([]string{"item", "list"}),
+		"create": passThrough([]string{"item", "create"}),
+		"update": passThrough([]string{"item", "update"}),
+		"delete": passThrough([]string{"item", "delete"}),
+		"get":    passThrough([]string{"item", "show"}),
+		// list is CUSTOM (not passThrough) so a bare agent list stays
+		// bounded: it injects a default limit and clamps an oversized one
+		// before dispatch, mirroring the backlinks default/max. See
+		// actionItemList. TASK-2000.
+		"list":    actionItemList,
 		"move":    passThrough([]string{"item", "move"}),
 		"restore": passThrough([]string{"item", "restore"}),
 
@@ -162,7 +166,7 @@ var padItemSchemaParams = []ParamDef{
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},
-	{Name: "limit", Type: "number", Description: "Maximum results. Optional for: list, backlinks. Backlinks defaults to 50, max 300."},
+	{Name: "limit", Type: "number", Description: "Maximum results. Optional for: list, backlinks. List defaults to 50, max 300. Backlinks defaults to 50, max 300."},
 	{Name: "offset", Type: "number", Description: "Skip the first N results (paging). Optional for: backlinks."},
 	{Name: "sort", Type: "string", Description: "Sort field. Optional for: list."},
 	{Name: "group_by", Type: "string", Description: "Group-by field. Optional for: list."},
@@ -574,6 +578,41 @@ func normalizeBulkUpdateRefs(raw any) ([]string, error) {
 // (every bulk-update entry).
 func trimSpace(s string) string {
 	return strings.TrimSpace(s)
+}
+
+// MCP list limits (TASK-2000). A bare `pad_item.list` from an agent
+// otherwise dumps the whole workspace into context (the CLI's own default
+// only kicks in via the exec path; the HTTP dispatch path bypasses it). We
+// inject a tight default and clamp an oversized one here so both dispatchers
+// stay bounded. Mirrors the backlinks default/max (50 / 300).
+const (
+	mcpItemListDefaultLimit = 50
+	mcpItemListMaxLimit     = 300
+)
+
+// actionItemList handles pad_item.action=list. It forwards to `item list`
+// but first applies a default limit (when the agent didn't ask for one) and
+// clamps an oversized one, so a bare agent list can't dump the whole
+// workspace into context. Everything else about the input passes through
+// unchanged — collection/status/priority/parent filters, all, etc. (The
+// summary vs full result shape is a CLI-side concern; MCP callers that
+// need a full body fetch it per-item via action=get.)
+func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	out := make(map[string]any, len(input)+1)
+	for k, v := range input {
+		out[k] = v
+	}
+
+	limit := mcpItemListDefaultLimit
+	if n, ok := numericInput(input["limit"]); ok && n > 0 {
+		limit = int(n)
+	}
+	if limit > mcpItemListMaxLimit {
+		limit = mcpItemListMaxLimit
+	}
+	out["limit"] = limit
+
+	return env.Dispatch(ctx, []string{"item", "list"}, out)
 }
 
 // actionItemExport handles pad_item.action=export. The CLI's

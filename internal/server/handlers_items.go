@@ -2308,6 +2308,12 @@ func autoPopulateDates(newFields map[string]any, existingFieldsJSON string, sche
 	}
 }
 
+// maxItemListQueryLimit is the hard-max clamp applied to a caller-supplied
+// `?limit=` on the item-list endpoints (TASK-2000). It matches the CLI's
+// maxItemListLimit so both layers agree on the ceiling. A zero/absent limit is
+// left unbounded — this only clamps an explicit oversized request.
+const maxItemListQueryLimit = 1000
+
 // parseItemListParams extracts item list parameters from the request query string.
 func parseItemListParams(r *http.Request) models.ItemListParams {
 	params := models.ItemListParams{
@@ -2328,6 +2334,15 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 		if l, err := strconv.Atoi(limitStr); err == nil {
 			params.Limit = l
 		}
+	}
+	// Hard-max backstop (TASK-2000): clamp an explicit oversized limit so a
+	// raw `?limit=999999` against this endpoint can't materialize the whole
+	// workspace. No default is applied here — a zero/absent limit stays
+	// unbounded so the many internal callers of store.ListItems (dashboard,
+	// bootstrap, playbooks, …) that intentionally fetch every row are
+	// untouched. The CLI applies its own default before it ever reaches here.
+	if params.Limit > maxItemListQueryLimit {
+		params.Limit = maxItemListQueryLimit
 	}
 	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
 		if o, err := strconv.Atoi(offsetStr); err == nil {

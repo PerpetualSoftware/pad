@@ -94,7 +94,26 @@ const CmdhelpVersion = "0.1"
 //     the `artifact` param to the vocabulary. Pure addition; existing
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
-//   - "0.8" — current. TASK-1973: workspace soft-delete recovery.
+//   - "0.9" — current. TASK-2000: `pad_item.list` is now summary-shaped
+//     and bounded. Two changes for agent-token thrift:
+//   - The `list` action injects a default `limit` (50) and clamps an
+//     oversized one (max 300), mirroring the backlinks default/max, so
+//     a bare agent list can't dump the whole workspace into context.
+//   - The list RESULT shape changed: `pad item list` (which the
+//     ExecDispatcher shells out to) now defaults to a token-light
+//     SUMMARY projection — the rich `content` body is replaced by a
+//     short `content_preview`, UUID plumbing (id, workspace_id,
+//     collection_id, *_user_id, parent_id, agent_role_id) and the
+//     duplicate collection/parent join fields are dropped, and
+//     `fields`/`tags` are emitted as nested JSON rather than escaped
+//     strings. This is a BREAKING result-shape change for consumers
+//     that read `content` or the dropped fields off a list row; the
+//     full former shape is available via the CLI `--full` flag (not
+//     yet surfaced as an MCP param — agents that need a full body
+//     fetch it per-item via action=get). No action-enum or param
+//     removals; `limit` semantics unchanged for callers that pass one
+//     under the max.
+//   - "0.8" — historical. TASK-1973: workspace soft-delete recovery.
 //     Adds two actions to `pad_workspace` mirroring the CLI
 //     `pad workspace deleted` / `pad workspace restore` (TASK-1972):
 //     `deleted` (read-only) lists the caller's soft-deleted workspaces
@@ -147,7 +166,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.8"
+const ToolSurfaceVersion = "0.9"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
