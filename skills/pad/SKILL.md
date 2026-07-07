@@ -33,6 +33,7 @@ The returned `AgentBootstrap` blob carries everything the skill needs to start a
 - `user { name, email, id }` — who's talking
 - `collections [...]` — schemas (drives `pad item create`/`update` field validation)
 - `conventions [...]` — full bodies of `trigger=always, status=active` items. **Must-follow project rules.**
+- `convention_index [...]` — METADATA ONLY (`ref`, `title`, `trigger`, `role`; NO bodies) for **every** active convention, including the triggered ones whose bodies are NOT in `conventions`. This is your map of what triggered rules exist — e.g. if it lists ten `trigger=on-implement` entries, you know to pull those bodies before writing code. Load bodies on demand with `pad item list conventions --field trigger=<trigger> --field status=active` only when the matching trigger fires.
 - `roles [...]` — agent roles configured in the workspace
 - `playbooks [...]` — METADATA ONLY: `ref`, `title`, `slug`, `invocation_slug`, `trigger`, `scope`, `status`, `has_arguments`, `summary`. Full bodies load on invocation via `pad playbook show <slug>`.
 - `dashboard {...}` — active items, attention, suggested next, recent activity. Five sub-arrays are capped to 5 entries each (`attention`, `recent_activity`, `active_items`, `active_plans`, `by_role`); each pairs with a `<name>_overflow_count` int field surfaced when truncation kicked in. Use `pad project dashboard` to pull the full set when any overflow > 0.
@@ -195,7 +196,7 @@ After creation, tell the user how to invoke it — by intent ("just say *run the
 
 When you are about to take action, load the relevant conventions and playbooks FIRST. The shape is always the same: match the trigger to the action you're about to take.
 
-**Bootstrap already gave you the always-on conventions and the full playbooks metadata array.** When the action you're about to take has a specific trigger (e.g. `on-implement` before writing code), pull the trigger-matched conventions on demand — those aren't in the bootstrap to keep its size tight.
+**Bootstrap already gave you the always-on conventions (full bodies), the `convention_index` (metadata for every active convention), and the full playbooks metadata array.** When the action you're about to take has a specific trigger (e.g. `on-implement` before writing code), first check `convention_index` — if it lists entries for that trigger, pull their bodies on demand with the query below; if it lists none, skip the query. The triggered bodies aren't in the bootstrap to keep its size tight, but the index tells you which ones exist so you neither miss them nor waste a query when there are none.
 
 **Trigger vocabulary is workspace-defined and differs between conventions and playbooks.** Each template ships its own set — software conventions include `on-implement`, `on-commit`, `on-pr-create`, `on-task-complete`, `on-plan`, `always`; software playbooks include those plus `on-triage`, `on-release`, `on-review`, `on-deploy`, `manual`. A hiring workspace would have triggers like `on-candidate-advance`, `on-interview-scheduled`. A research workspace would have `on-source-cited`, `on-experiment-run`. **The bootstrap's `collections` array carries each schema** — inspect the conventions/playbooks schemas there to see the available triggers for the current workspace.
 

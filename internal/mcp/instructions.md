@@ -18,7 +18,7 @@ Nine resource × action tools, plus `pad_set_workspace` (which takes a `workspac
 - `pad_search` — Full-text search across items: query.
 - `pad_playbook` — Invokable procedures: list / get / run. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free.
 - `pad_library` — Convention + playbook library (the global catalog of pre-built entries workspaces activate): list / get / activate.
-- `pad_meta` — Server introspection: server-info / version / tool-surface / bootstrap. The `bootstrap` action returns one-shot workspace context (user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity).
+- `pad_meta` — Server introspection: server-info / version / tool-surface / bootstrap. The `bootstrap` action returns one-shot workspace context (user + collections + always-on conventions + a metadata-only `convention_index` of every active convention + roles + playbook metadata + dashboard + recent activity).
 - `pad_set_workspace` — Load workspace context; response embeds the bootstrap blob so you load context in one call. On a single-user local server it also pins the workspace as the session default for subsequent calls; a multi-user/remote server does **not** persist it — pass `workspace` explicitly on each call. Takes `workspace: <slug>` only (no `action`).
 
 For the nine resource × action tools, always pass `action` as a top-level field. Per-action required parameters are documented in each tool's description.
@@ -56,13 +56,18 @@ For `pad_item.action: update`, the server merges your patch with the item's curr
 
 ## Project conventions
 
-Workspaces can declare conventions (e.g. "run `make test` before PR", "use conventional commit format"). Before performing meaningful work, you may want to read active conventions:
+Workspaces can declare conventions (e.g. "run `make test` before PR", "use conventional commit format"). The bootstrap blob gives you two views:
+
+- `conventions` — full bodies of the always-on (`trigger=always`) rules. Follow these unconditionally.
+- `convention_index` — METADATA ONLY (`ref`, `title`, `trigger`, `role`; no bodies) for **every** active convention, including the triggered ones whose bodies are NOT in `conventions`. This is your map of what triggered rules exist.
+
+Before performing meaningful work with a specific trigger (e.g. `on-implement` before writing code), consult `convention_index`: if it lists entries for that trigger, pull their bodies on demand; if it lists none, skip the query.
 
 ```
 pad_item.action: list, collection: "conventions", status: "active"
 ```
 
-Filter by trigger (`always`, `on-implement`, `on-task-complete`, etc.) when relevant.
+Filter by trigger (`always`, `on-implement`, `on-task-complete`, etc.) when relevant — the `convention_index` triggers tell you which filters are worth running.
 
 ## Adding a workspace to this connection
 

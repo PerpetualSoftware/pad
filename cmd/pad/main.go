@@ -20,6 +20,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -5293,6 +5294,8 @@ The blob carries everything the /pad skill needs to start a session:
   - The calling user (name, email, id)
   - Collections (with schemas)
   - Always-on, active conventions (full body — must-follow rules)
+  - Convention index (METADATA ONLY — every active convention by
+    trigger, so triggered rules are discoverable; bodies load on demand)
   - Agent roles
   - Playbooks (METADATA ONLY — full bodies load on invocation)
   - Dashboard (active items, attention, suggested next)
@@ -5349,6 +5352,12 @@ func printBootstrapMarkdown(raw []byte) error {
 			Slug string `json:"slug"`
 			Name string `json:"name"`
 		} `json:"roles"`
+		ConventionIndex []struct {
+			Ref     string `json:"ref"`
+			Title   string `json:"title"`
+			Trigger string `json:"trigger"`
+			Role    string `json:"role"`
+		} `json:"convention_index"`
 		Playbooks []struct {
 			Ref            string `json:"ref"`
 			Title          string `json:"title"`
@@ -5379,6 +5388,32 @@ func printBootstrapMarkdown(raw []byte) error {
 		fmt.Printf("- [%s] %s — %s\n", c.Ref, c.Title, c.Priority)
 	}
 	fmt.Println()
+
+	// convention_index: metadata-only catalog of EVERY active convention
+	// (all triggers). Grouped by trigger so the triggered set an agent
+	// would otherwise never see is legible at a glance. Bodies load on
+	// demand via `pad item list conventions --field trigger=<t>`.
+	if len(b.ConventionIndex) > 0 {
+		byTrigger := map[string]int{}
+		for _, c := range b.ConventionIndex {
+			trig := c.Trigger
+			if trig == "" {
+				trig = "(none)"
+			}
+			byTrigger[trig]++
+		}
+		triggers := make([]string, 0, len(byTrigger))
+		for trig := range byTrigger {
+			triggers = append(triggers, trig)
+		}
+		sort.Strings(triggers)
+		fmt.Printf("## Convention index (%d total)\n", len(b.ConventionIndex))
+		for _, trig := range triggers {
+			fmt.Printf("- %s: %d\n", trig, byTrigger[trig])
+		}
+		fmt.Println("Pull bodies on demand: pad item list conventions --field trigger=<trigger>")
+		fmt.Println()
+	}
 
 	fmt.Printf("## Agent roles (%d)\n", len(b.Roles))
 	for _, r := range b.Roles {

@@ -220,7 +220,7 @@ func TestBootstrapEmptyArraysNotNull(t *testing.T) {
 	// PLAN-1410 / TASK-1413: the top-level `recent_activity` key was
 	// retired (duplicate of dashboard.recent_activity). The remaining
 	// top-level array fields must still serialize as [] not null.
-	for _, key := range []string{"collections", "conventions", "roles", "playbooks"} {
+	for _, key := range []string{"collections", "conventions", "convention_index", "roles", "playbooks"} {
 		val, ok := raw[key]
 		if !ok {
 			t.Errorf("missing key %q in bootstrap response", key)
@@ -481,6 +481,95 @@ func TestBootstrapIncludesPlaybookMetadata(t *testing.T) {
 	}
 }
 
+// TestBootstrapConventionIndex verifies the convention_index (TASK-2004):
+// EVERY active convention appears as body-less metadata (ref/title/trigger),
+// including the triggered set that never surfaced before, while the
+// always-on bodies still ship in `conventions`. The load-bearing negative
+// assertion is that no index entry carries a `content` body — the whole
+// point is that triggered conventions are DISCOVERABLE without their bodies
+// flooding the bootstrap.
+func TestBootstrapConventionIndex(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// One always-on (body ships in `conventions`) + two triggered
+	// (previously invisible — only the index makes them discoverable).
+	createItem(t, srv, slug, "conventions", map[string]interface{}{
+		"title":   "Always follow this",
+		"content": "This body ships in full under bootstrap.conventions.",
+		"fields":  `{"status":"active","trigger":"always","priority":"must","scope":"all"}`,
+	})
+	createItem(t, srv, slug, "conventions", map[string]interface{}{
+		"title":   "On implement, run the suite",
+		"content": "Long triggered-convention body that must NOT leak into the index.",
+		"fields":  `{"status":"active","trigger":"on-implement","priority":"should","scope":"all"}`,
+	})
+	createItem(t, srv, slug, "conventions", map[string]interface{}{
+		"title":   "On PR create, request review",
+		"content": "Another triggered body that stays out of the index.",
+		"fields":  `{"status":"active","trigger":"on-pr-create","priority":"should","scope":"all"}`,
+	})
+	// A disabled convention must NOT appear — index is active-only.
+	createItem(t, srv, slug, "conventions", map[string]interface{}{
+		"title":   "Retired convention",
+		"content": "Disabled; should be absent from the index.",
+		"fields":  `{"status":"disabled","trigger":"on-implement","priority":"nice-to-have","scope":"all"}`,
+	})
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/agent/bootstrap", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bootstrap: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var b AgentBootstrap
+	parseJSON(t, rr, &b)
+
+	byTitle := map[string]AgentBootstrapConventionMeta{}
+	for _, m := range b.ConventionIndex {
+		byTitle[m.Title] = m
+	}
+
+	// All three active conventions (always + both triggered) present.
+	for _, want := range []struct{ title, trigger string }{
+		{"Always follow this", "always"},
+		{"On implement, run the suite", "on-implement"},
+		{"On PR create, request review", "on-pr-create"},
+	} {
+		m, ok := byTitle[want.title]
+		if !ok {
+			t.Errorf("convention_index missing %q; got %+v", want.title, b.ConventionIndex)
+			continue
+		}
+		if m.Trigger != want.trigger {
+			t.Errorf("convention_index[%q].trigger = %q, want %q", want.title, m.Trigger, want.trigger)
+		}
+		if m.Ref == "" {
+			t.Errorf("convention_index[%q].ref is empty", want.title)
+		}
+	}
+
+	// Archived convention absent.
+	if _, ok := byTitle["Retired convention"]; ok {
+		t.Error("convention_index included an archived convention; want active-only")
+	}
+
+	// Load-bearing: the index carries NO bodies. Re-marshal and assert
+	// the raw JSON of each index entry has no `content` key at all.
+	raw := struct {
+		ConventionIndex []map[string]json.RawMessage `json:"convention_index"`
+	}{}
+	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw convention_index: %v", err)
+	}
+	if len(raw.ConventionIndex) == 0 {
+		t.Fatal("convention_index serialized empty")
+	}
+	for _, entry := range raw.ConventionIndex {
+		if _, has := entry["content"]; has {
+			t.Errorf("convention_index entry carries a `content` body; index must be metadata-only: %v", entry)
+		}
+	}
+}
+
 // bootstrapSizeBudget is the maximum byte count tolerated for the bootstrap
 // JSON response against the seeded fixture in seedBootstrapSizeFixture.
 //
@@ -619,6 +708,7 @@ func bootstrapSectionBytes(b AgentBootstrap) []string {
 		fmt.Sprintf("user:        %d bytes", jsonLen(b.User)),
 		fmt.Sprintf("collections: %d bytes (%d items)", jsonLen(b.Collections), len(b.Collections)),
 		fmt.Sprintf("conventions: %d bytes (%d items)", jsonLen(b.Conventions), len(b.Conventions)),
+		fmt.Sprintf("conv_index:  %d bytes (%d items)", jsonLen(b.ConventionIndex), len(b.ConventionIndex)),
 		fmt.Sprintf("roles:       %d bytes (%d items)", jsonLen(b.Roles), len(b.Roles)),
 		fmt.Sprintf("playbooks:   %d bytes (%d items)", jsonLen(b.Playbooks), len(b.Playbooks)),
 		fmt.Sprintf("dashboard:   %d bytes", jsonLen(b.Dashboard)),
