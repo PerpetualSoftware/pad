@@ -278,17 +278,18 @@ pad mcp install claude-desktop   # or: cursor, windsurf, --all
 # Restart the client; pad shows up as the "pad" MCP server.
 ```
 
-**Tool catalog (v0.4)** — eight resource × action tools plus `pad_set_workspace` (nine total), no flat verb explosion:
+**Tool catalog (v0.8)** — nine resource × action tools plus `pad_set_workspace` (ten total), no flat verb explosion:
 
 | Tool | Actions |
 |---|---|
-| `pad_item` | `create`, `update`, `delete`, `get`, `list`, `move`, `link`, `unlink`, `deps`, `star`, `unstar`, `starred`, `comment`, `list-comments`, `bulk-update`, `note`, `decide` |
-| `pad_workspace` | `list`, `members`, `invite`, `storage`, `audit-log` |
+| `pad_item` | `create`, `update`, `delete`, `get`, `list`, `move`, `restore`, `link`, `unlink`, `deps`, `star`, `unstar`, `starred`, `comment`, `list-comments`, `backlinks`, `bulk-update`, `note`, `decide`, `export`, `import` |
+| `pad_workspace` | `list`, `members`, `invite`, `storage`, `audit-log`, `create`, `claim`, `deleted`, `restore` |
 | `pad_collection` | `list`, `create`, `update`, `delete` |
-| `pad_project` | `dashboard`, `next`, `standup`, `changelog` |
+| `pad_project` | `dashboard`, `next`, `standup`, `changelog`, `report` |
 | `pad_role` | `list`, `create`, `update`, `delete` |
 | `pad_search` | `query` |
 | `pad_playbook` | `list`, `get`, `run` |
+| `pad_library` | `list`, `get`, `activate` |
 | `pad_meta` | `server-info`, `version`, `tool-surface`, `bootstrap` |
 | `pad_set_workspace` | session-default workspace pinning (response embeds the bootstrap blob) |
 
@@ -303,7 +304,7 @@ initialize handshake under `capabilities.experimental.padCmdhelp` and
 `pad://_meta/version`):
 
 - `cmdhelp_version: "0.1"` — CLI help-tree contract (used at dispatch time)
-- `tool_surface_version: "0.4"` — MCP tool catalog contract (PLAN-1410 trimmed the bootstrap-response shape by ~40%; see `internal/mcp/version.go` for the full v0.4 changelog)
+- `tool_surface_version: "0.8"` — MCP tool catalog contract (v0.5 added `pad_library`; v0.6 `pad_item.backlinks`; v0.7 `pad_item` `export`/`import`; v0.8 `pad_workspace` `deleted`/`restore`; see `internal/mcp/version.go` for the full changelog)
 
 External agents pin against these so a future rename doesn't break them
 silently. Errors come back as structured envelopes (`{error: {code,
