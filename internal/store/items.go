@@ -2680,6 +2680,65 @@ func (s *Store) GetParentMap(workspaceID string) (map[string]string, error) {
 	return m, rows.Err()
 }
 
+// LineageRef is a skinny projection of a parent item — only the fields
+// parent-link enrichment decorates onto children (title, ref, slug, and the
+// collection info needed for the visibility filter). Fetched in one batch
+// query instead of a full-row GetItem per parent. See BUG-2003.
+type LineageRef struct {
+	ID             string
+	Title          string
+	Ref            string
+	Slug           string
+	CollectionID   string
+	CollectionSlug string
+}
+
+// GetItemLineageByIDs fetches skinny parent-lineage projections for the given
+// item IDs in a single `WHERE id IN (...)` query. Soft-deleted items are
+// excluded. IDs with no matching (or soft-deleted) row are simply absent from
+// the returned map — parent enrichment is best-effort decoration, so a missing
+// parent must not fail the caller.
+//
+// This replaces the per-parent GetItem N+1 in enrichItemsWithParent (BUG-2003):
+// callers scope the ID slice to only the parents of the returned items, then
+// hydrate all of them in one round-trip.
+func (s *Store) GetItemLineageByIDs(ids []string) (map[string]LineageRef, error) {
+	result := make(map[string]LineageRef, len(ids))
+	if len(ids) == 0 {
+		return result, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := s.db.Query(s.q(fmt.Sprintf(`
+		SELECT i.id, i.title, i.slug, i.item_number, i.collection_id, c.slug, c.prefix
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id
+		WHERE i.id IN (%s) AND i.deleted_at IS NULL
+	`, strings.Join(placeholders, ","))), args...)
+	if err != nil {
+		return nil, fmt.Errorf("get item lineage by ids: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var ref LineageRef
+		var itemNumber *int
+		var prefix string
+		if err := rows.Scan(&ref.ID, &ref.Title, &ref.Slug, &itemNumber, &ref.CollectionID, &ref.CollectionSlug, &prefix); err != nil {
+			return nil, err
+		}
+		if prefix != "" && itemNumber != nil {
+			ref.Ref = fmt.Sprintf("%s-%d", prefix, *itemNumber)
+		}
+		result[ref.ID] = ref
+	}
+	return result, rows.Err()
+}
+
 // --- Child Item Progress ---
 
 // GetItemProgress counts total and done child items linked to a parent via item_links.

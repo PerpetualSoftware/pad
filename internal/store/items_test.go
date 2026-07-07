@@ -1134,6 +1134,63 @@ func TestGetParentMap_ExcludesSoftDeletedEndpoints(t *testing.T) {
 	}
 }
 
+// TestGetItemLineageByIDs covers the skinny batch parent-lineage fetch that
+// replaced the per-parent GetItem N+1 in enrichItemsWithParent (BUG-2003):
+// a single WHERE id IN (...) query hydrates many parents at once, scopes to
+// only the requested IDs, computes refs, and drops soft-deleted parents.
+func TestGetItemLineageByIDs(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	// Create several parents. Only a subset gets requested below to prove the
+	// query is scoped to the passed IDs, not the whole workspace.
+	p1 := createTestItem(t, s, ws.ID, col.ID, "Parent One", "")
+	p2 := createTestItem(t, s, ws.ID, col.ID, "Parent Two", "")
+	p3 := createTestItem(t, s, ws.ID, col.ID, "Parent Three", "")
+	other := createTestItem(t, s, ws.ID, col.ID, "Unrequested Parent", "")
+
+	// Empty input returns an empty (non-nil) map with no query.
+	if m, err := s.GetItemLineageByIDs(nil); err != nil || m == nil || len(m) != 0 {
+		t.Fatalf("GetItemLineageByIDs(nil) = %v, %v; want empty map, nil err", m, err)
+	}
+
+	m, err := s.GetItemLineageByIDs([]string{p1.ID, p2.ID, p3.ID})
+	if err != nil {
+		t.Fatalf("GetItemLineageByIDs: %v", err)
+	}
+	if len(m) != 3 {
+		t.Fatalf("expected 3 lineage refs, got %d", len(m))
+	}
+	// Scoping: the unrequested parent must not appear even though it exists.
+	if _, ok := m[other.ID]; ok {
+		t.Errorf("unrequested parent %s leaked into result (scoping regression)", other.ID)
+	}
+	// Field projection matches the source item.
+	got := m[p1.ID]
+	if got.Title != "Parent One" || got.Slug != p1.Slug || got.CollectionSlug != col.Slug {
+		t.Errorf("lineage projection mismatch: got %+v", got)
+	}
+	if got.Ref == "" {
+		t.Errorf("expected a computed ref for %s, got empty", p1.ID)
+	}
+
+	// Soft-deleted parents drop out of the batch fetch.
+	if err := s.DeleteItem(p2.ID); err != nil {
+		t.Fatalf("DeleteItem: %v", err)
+	}
+	m, err = s.GetItemLineageByIDs([]string{p1.ID, p2.ID, p3.ID})
+	if err != nil {
+		t.Fatalf("GetItemLineageByIDs after delete: %v", err)
+	}
+	if _, ok := m[p2.ID]; ok {
+		t.Errorf("soft-deleted parent %s should be excluded", p2.ID)
+	}
+	if len(m) != 2 {
+		t.Errorf("expected 2 lineage refs after soft-deleting one parent, got %d", len(m))
+	}
+}
+
 // TestListItems_ParentFilter_FTS_RespectsSoftDeletedParent covers the
 // `parent=<UUID>&search=<q>` combination. The search path routes through
 // listItemsFTS, which the non-FTS parent filter doesn't touch; the FTS

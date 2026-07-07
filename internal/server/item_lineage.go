@@ -26,48 +26,51 @@ func (s *Server) enrichItemsWithParent(workspaceID string, items []models.Item, 
 	if err != nil || len(parentMap) == 0 {
 		return
 	}
-	// Collect unique parent IDs
-	parentIDs := make(map[string]bool)
-	for _, pid := range parentMap {
-		parentIDs[pid] = true
-	}
-	// Fetch parent item details (title, ref) in bulk
-	type parentInfo struct {
-		title          string
-		ref            string
-		slug           string
-		collectionSlug string
-	}
-	parents := make(map[string]parentInfo)
-	for pid := range parentIDs {
-		item, err := s.store.GetItem(pid)
-		if err != nil || item == nil {
-			continue
+	// Collect only the parent IDs of the items we're actually returning —
+	// not every parent link in the workspace. Scoping here keeps the batch
+	// fetch below proportional to the page size, not the whole workspace
+	// (BUG-2003).
+	parentIDSet := make(map[string]bool, len(items))
+	for i := range items {
+		if pid, ok := parentMap[items[i].ID]; ok {
+			parentIDSet[pid] = true
 		}
-		// Skip parents from hidden collections
-		if hasVis && !isCollectionVisible(item.CollectionID, vis) {
-			continue
-		}
-		ref := ""
-		if item.CollectionPrefix != "" && item.ItemNumber != nil {
-			ref = fmt.Sprintf("%s-%d", item.CollectionPrefix, *item.ItemNumber)
-		}
-		parents[pid] = parentInfo{title: item.Title, ref: ref, slug: item.Slug, collectionSlug: item.CollectionSlug}
 	}
-	// Populate items — only set parent fields when the parent passed
-	// the visibility filter (i.e. is in the parents map)
+	if len(parentIDSet) == 0 {
+		return
+	}
+	parentIDs := make([]string, 0, len(parentIDSet))
+	for pid := range parentIDSet {
+		parentIDs = append(parentIDs, pid)
+	}
+	// Fetch parent details (title, ref, slug, collection) for just those
+	// parents in one skinny WHERE id IN (...) query — replaces the former
+	// full-row GetItem per parent. Best-effort: on error, leave items
+	// undecorated rather than failing the list.
+	parents, err := s.store.GetItemLineageByIDs(parentIDs)
+	if err != nil {
+		return
+	}
+	// Populate items — only set parent fields when the parent resolved and
+	// passed the visibility filter.
 	for i := range items {
 		pid, ok := parentMap[items[i].ID]
 		if !ok {
 			continue
 		}
-		if info, ok := parents[pid]; ok {
-			items[i].ParentLinkID = pid
-			items[i].ParentTitle = info.title
-			items[i].ParentRef = info.ref
-			items[i].ParentSlug = info.slug
-			items[i].ParentCollectionSlug = info.collectionSlug
+		info, ok := parents[pid]
+		if !ok {
+			continue
 		}
+		// Skip parents from hidden collections
+		if hasVis && !isCollectionVisible(info.CollectionID, vis) {
+			continue
+		}
+		items[i].ParentLinkID = pid
+		items[i].ParentTitle = info.Title
+		items[i].ParentRef = info.Ref
+		items[i].ParentSlug = info.Slug
+		items[i].ParentCollectionSlug = info.CollectionSlug
 	}
 }
 
