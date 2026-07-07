@@ -184,6 +184,9 @@ jobs:
       - name: Type check (svelte-check)
         run: npm run check
 
+      - name: Run web unit tests (vitest)
+        run: npm run test
+
   e2e:
     name: E2E (Playwright)
     runs-on: ubuntu-latest

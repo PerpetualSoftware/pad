@@ -1,4 +1,4 @@
-.PHONY: build test test-pg test-pg-down dev clean web dev-web serve restart lint install check vuln web-check
+.PHONY: build test test-pg test-pg-down dev clean web dev-web serve restart lint install check vuln web-check web-test
 
 BINARY=pad
 BUILD_DIR=./cmd/pad
@@ -125,13 +125,20 @@ vuln:
 web-check: web
 	cd web && npm audit --audit-level=high --omit=dev && npm run check
 
+# Run the web unit-test suite (vitest, non-watch). Mirrors the "Run web unit
+# tests" step in CI's Web job. Kept separate from web-check so a contributor
+# can run just the vitest suite via `make web-test`; `check` invokes both.
+web-test:
+	cd web && npm run test
+
 # Pre-flight target that mirrors CI's Go and Web jobs. Run this before
 # pushing — if it passes, the corresponding CI checks should pass too.
 #
 # Covers: golangci-lint suite (lint), Go test suite, govulncheck, npm ci,
-# npm audit, web build, svelte-check. The race-detector + Postgres jobs
-# only run on push to main (per .github/workflows/ci.yml) and are not
-# included here; run `make test-pg` separately if you want them locally.
+# npm audit, web build, svelte-check, vitest unit tests. The race-detector +
+# Postgres jobs only run on push to main (per .github/workflows/ci.yml) and
+# are not included here; run `make test-pg` separately if you want them
+# locally.
 #
 # `make install` stays lightweight (build + restart only) so the inner
 # dev loop is fast; opt into `check` when you're ready to push.
@@ -139,3 +146,4 @@ check: lint
 	go test ./...
 	$(MAKE) vuln
 	$(MAKE) web-check
+	$(MAKE) web-test
