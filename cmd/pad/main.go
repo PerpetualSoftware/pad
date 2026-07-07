@@ -3537,6 +3537,17 @@ Run with --help-collections to see available collections and their status values
 
 // --- list ---
 
+// Default + hard-max caps on `pad item list` result size (TASK-2000).
+// The default is a safety net so a bare `pad item list` / `--all` can't dump
+// the whole workspace into an agent's context; the max clamps an explicit
+// oversized `--limit`. Both bound the JSON/table payload, never the item body
+// (that's handled by the summary projection). Generous enough that normal
+// workspaces aren't truncated; small enough that pathological ones are.
+const (
+	defaultItemListLimit = 200
+	maxItemListLimit     = 1000
+)
+
 func listCmd() *cobra.Command {
 	var (
 		statusFilter   string
@@ -3549,6 +3560,7 @@ func listCmd() *cobra.Command {
 		groupBy        string
 		limitNum       int
 		showAll        bool
+		fullOutput     bool
 		fieldFlags     []string
 	)
 
@@ -3619,9 +3631,18 @@ Examples:
 			if groupBy != "" {
 				params.Set("group_by", groupBy)
 			}
-			if limitNum > 0 {
-				params.Set("limit", fmt.Sprintf("%d", limitNum))
+			// Apply a default limit + hard-max clamp (TASK-2000). Unbounded
+			// lists (esp. --all, which spans every collection) can dump
+			// megabytes into an agent's context; cap them. An explicit
+			// oversized --limit is clamped down rather than rejected.
+			effectiveLimit := limitNum
+			if effectiveLimit <= 0 {
+				effectiveLimit = defaultItemListLimit
 			}
+			if effectiveLimit > maxItemListLimit {
+				effectiveLimit = maxItemListLimit
+			}
+			params.Set("limit", fmt.Sprintf("%d", effectiveLimit))
 
 			// Apply arbitrary --field key=value filters as query params
 			for _, kv := range fieldFlags {
@@ -3643,7 +3664,13 @@ Examples:
 			}
 
 			if formatFlag == "json" {
-				return cli.PrintJSON(items)
+				// Default to the token-light summary shape (drops the rich
+				// `content` body + UUID plumbing). --full restores the raw
+				// models.Item shape for callers that need everything.
+				if fullOutput {
+					return cli.PrintJSON(items)
+				}
+				return cli.PrintJSON(cli.ToItemSummaries(items))
 			}
 
 			if len(items) == 0 {
@@ -3657,6 +3684,14 @@ Examples:
 			} else {
 				cli.PrintItemTable(items)
 			}
+
+			// Nudge when the result was (possibly) capped by the limit so a
+			// human doesn't silently miss items. len==limit is a heuristic:
+			// it can't distinguish "exactly N" from "N and more", so the
+			// message hedges.
+			if len(items) == effectiveLimit {
+				cli.Dim.Fprintf(os.Stderr, "\n(showing %d items — capped by limit; pass --limit N to see more)\n", effectiveLimit)
+			}
 			return nil
 		},
 	}
@@ -3669,8 +3704,9 @@ Examples:
 	cmd.Flags().StringVar(&parentFilter, "parent", "", "filter by parent item (ref, slug, or ID)")
 	cmd.Flags().StringVar(&sortBy, "sort", "", "sort order (e.g. priority:desc,created_at:asc)")
 	cmd.Flags().StringVar(&groupBy, "group-by", "", "group results by field")
-	cmd.Flags().IntVar(&limitNum, "limit", 0, "max number of items to return")
+	cmd.Flags().IntVar(&limitNum, "limit", 0, fmt.Sprintf("max number of items to return (default %d, max %d)", defaultItemListLimit, maxItemListLimit))
 	cmd.Flags().BoolVar(&showAll, "all", false, "include done/completed/archived items")
+	cmd.Flags().BoolVar(&fullOutput, "full", false, "JSON output only: include full content + all fields (default: token-light summary shape)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "filter by field value (repeatable): --field key=value")
 
 	return cmd
