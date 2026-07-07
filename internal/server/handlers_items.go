@@ -2350,11 +2350,19 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 		}
 	}
 
+	// non_terminal=true restricts results to items that are NOT in their
+	// collection's terminal state, resolved per-collection from each
+	// schema's terminal_options (BUG-2001). This is the CLI/MCP default
+	// list behavior; an explicit status/field filter is applied on top.
+	if r.URL.Query().Get("non_terminal") == "true" {
+		params.NonTerminal = true
+	}
+
 	// Extract field filters: any query param that isn't a known param is a field filter.
 	knownParams := map[string]bool{
 		"sort": true, "group_by": true, "search": true, "parent_id": true,
 		"tag": true, "include_archived": true, "limit": true, "offset": true,
-		"assigned_user_id": true, "agent_role_id": true,
+		"assigned_user_id": true, "agent_role_id": true, "non_terminal": true,
 	}
 
 	fields := make(map[string]string)

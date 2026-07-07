@@ -798,8 +798,16 @@ type ItemListParams struct {
 	AgentRoleID     string // filter by agent role (ID or slug)
 	ParentLinkID    string // filter by parent link (item ID of the parent)
 	IncludeArchived bool
-	Limit           int
-	Offset          int
+	// NonTerminal, when true, restricts results to items whose resolved
+	// done-field value is NOT one of their collection's terminal options.
+	// Each collection is evaluated against its OWN terminal_options (falling
+	// back to DefaultTerminalStatuses when the schema declares none), so
+	// collections with custom status vocabularies (e.g. todo/drafting/
+	// scheduled) are handled correctly rather than against a hardcoded
+	// global status allowlist (BUG-2001).
+	NonTerminal bool
+	Limit       int
+	Offset      int
 }
 
 // TagCount is a distinct tag used within a workspace and the number of items

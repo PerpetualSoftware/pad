@@ -238,11 +238,12 @@ func TestRoute_ItemDelete(t *testing.T) {
 	}
 }
 
-func TestRoute_ItemList_AllItemsPath_AppliesDefaultActiveStatusFilter(t *testing.T) {
-	// CLI parity: bare `pad item list` hides terminal statuses by
-	// default. The HTTP mapper must apply the same broad inclusion
-	// list — Codex caught a regression where it returned no status
-	// filter and would have leaked done items to agents.
+func TestRoute_ItemList_AllItemsPath_AppliesNonTerminalFilter(t *testing.T) {
+	// CLI parity: bare `pad item list` hides terminal items by default.
+	// The HTTP mapper must send `non_terminal=true` so the server resolves
+	// "terminal" per-collection from each schema's terminal_options rather
+	// than a hardcoded status allowlist that hides custom vocabularies
+	// (BUG-2001). It must NOT send an explicit status filter.
 	m, p, _, err := routeTable["item list"](map[string]any{"workspace": "docapp"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -254,29 +255,18 @@ func TestRoute_ItemList_AllItemsPath_AppliesDefaultActiveStatusFilter(t *testing
 		t.Errorf("expected cross-collection path with query, got %q", p)
 	}
 	values := mustParseQueryFromPath(t, p)
-	got := values.Get("status")
-	if got == "" {
-		t.Errorf("default status filter missing; got query %v", values)
+	if values.Get("non_terminal") != "true" {
+		t.Errorf("expected non_terminal=true; got query %v", values)
 	}
-	// Spot-check a few well-known active statuses.
-	for _, want := range []string{"open", "in_progress", "draft", "exploring"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("default status filter missing %q; got %q", want, got)
-		}
-	}
-	// And confirm terminal statuses are NOT included.
-	for _, blocked := range []string{"done", "completed", "archived"} {
-		if strings.Contains(got, blocked) {
-			t.Errorf("default status filter incorrectly includes %q; got %q", blocked, got)
-		}
+	if values.Has("status") {
+		t.Errorf("must not send a hardcoded status filter; got %v", values)
 	}
 }
 
-func TestRoute_ItemList_AllFlagDropsDefaultStatus(t *testing.T) {
-	// `--all` overrides the active-status default. Both
-	// include_archived=true must be set AND the default status
-	// inclusion list must NOT be present (otherwise --all wouldn't
-	// actually let through done items).
+func TestRoute_ItemList_AllFlagDropsNonTerminal(t *testing.T) {
+	// `--all` overrides the non-terminal default. include_archived=true
+	// must be set AND the non_terminal filter must NOT be present
+	// (otherwise --all wouldn't actually let through terminal items).
 	_, p, _, err := routeTable["item list"](map[string]any{
 		"workspace": "docapp", "all": true,
 	})
@@ -287,8 +277,11 @@ func TestRoute_ItemList_AllFlagDropsDefaultStatus(t *testing.T) {
 	if values.Get("include_archived") != "true" {
 		t.Errorf("include_archived not set under --all; got %v", values)
 	}
+	if values.Has("non_terminal") {
+		t.Errorf("non_terminal filter must be dropped under --all; got %v", values)
+	}
 	if values.Has("status") {
-		t.Errorf("status filter must be dropped under --all; got %v", values)
+		t.Errorf("status filter must not be set under --all; got %v", values)
 	}
 }
 
@@ -314,7 +307,7 @@ func TestRoute_ItemList_CollectionScopedPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
-	// Path may carry the default-active-status query string from the
+	// Path may carry the non_terminal=true query string from the
 	// no-explicit-status branch — we only assert the path prefix here.
 	if !strings.HasPrefix(p, "/api/v1/workspaces/docapp/collections/tasks/items") {
 		t.Errorf("expected collection-scoped + normalized path, got %q", p)

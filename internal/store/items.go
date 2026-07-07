@@ -819,6 +819,15 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		}
 	}
 
+	// Non-terminal filter (BUG-2001): keep only items whose resolved done
+	// field is NOT one of their collection's terminal options. Evaluated
+	// per-collection so custom status vocabularies work.
+	if params.NonTerminal {
+		clause, ntArgs := s.nonTerminalFilter(workspaceID, "i")
+		query += " AND " + clause
+		args = append(args, ntArgs...)
+	}
+
 	// Sorting
 	query += buildItemSort(params.Sort, s.dialect)
 
@@ -1560,6 +1569,15 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			query += " AND " + jsonExpr + " = ?"
 			args = append(args, value)
 		}
+	}
+
+	// Non-terminal filter (BUG-2001) — parity with the non-FTS path so a
+	// `search + non_terminal` combination hides terminal items per each
+	// collection's own terminal_options.
+	if params.NonTerminal {
+		clause, ntArgs := s.nonTerminalFilter(workspaceID, "i")
+		query += " AND " + clause
+		args = append(args, ntArgs...)
 	}
 
 	// SQLite bm25(): more negative = more relevant → ASC (default).
@@ -2866,6 +2884,28 @@ func (s *Store) buildChildrenDoneExpr(filters []collectionDoneFilter, itemAlias 
 		))
 	}
 	return "(" + strings.Join(clauses, " OR ") + ")", args
+}
+
+// nonTerminalFilter builds a WHERE fragment (plus ordered args) that keeps
+// only items whose resolved done-field value is NOT one of their
+// collection's terminal options. It reuses the same per-collection done
+// machinery as parent-progress (doneFiltersForWorkspace +
+// buildChildrenDoneExpr): buildChildrenDoneExpr yields an expression that
+// is TRUE when an item is terminal, so negating it selects the
+// non-terminal set.
+//
+// Each collection is evaluated against its OWN terminal_options (with the
+// global DefaultTerminalStatuses fallback for schemas that declare none),
+// so collections with custom status vocabularies are handled correctly
+// rather than against a hardcoded global allowlist (BUG-2001). This is the
+// server-side default that both the CLI (`pad item list` with no --status/
+// --all) and the MCP `pad_item.action=list` inherit.
+//
+// itemAlias is the item-table alias in the outer query (e.g. "i").
+func (s *Store) nonTerminalFilter(workspaceID, itemAlias string) (string, []any) {
+	filters := s.doneFiltersForWorkspace(workspaceID)
+	doneExpr, args := s.buildChildrenDoneExpr(filters, itemAlias)
+	return "NOT " + doneExpr, args
 }
 
 // ItemProgress holds child item completion counts for a single parent item.

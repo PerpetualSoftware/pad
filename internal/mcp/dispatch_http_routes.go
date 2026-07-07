@@ -1098,17 +1098,12 @@ func mapWorkspaceInvite(input map[string]any) (string, string, []byte, error) {
 	return http.MethodPost, urlPath, body, nil
 }
 
-// defaultActiveStatusFilter mirrors the broad inclusion list the
-// CLI sets when neither --status nor --all is provided. Hides
-// terminal statuses (done / completed / archived / etc.) by default
-// without making the dispatcher have to fetch+filter, which would be
-// a behaviour divergence from `pad item list` if we simply omitted
-// the filter (Codex review on PR #344, finding 1).
-//
-// Kept as a constant — pad's status vocabulary is template-driven
-// and changes rarely; the CLI's literal list at cmd/pad/main.go
-// itemListCmd is the source of truth, mirrored here.
-const defaultActiveStatusFilter = "open,in_progress,in-progress,active,draft,raw,exploring,decided,new,triaged,fixing,planned,published,paused,proposed,researching,building,ready,in_sprint,reviewed,planning"
+// (BUG-2001) The dispatcher used to mirror the CLI's hardcoded
+// active-status allowlist here. That wrongly hid open items in
+// collections with custom status vocabularies. It now sends
+// `non_terminal=true`, which the server resolves per-collection from
+// each schema's terminal_options — identical to the CLI default. See
+// mapItemList below.
 
 // mapItemList dispatches `pad item list [collection] [filters...]`.
 //
@@ -1120,10 +1115,10 @@ const defaultActiveStatusFilter = "open,in_progress,in-progress,active,draft,raw
 // Filter parity with the CLI:
 //
 //   - `--status X` → `?status=X` directly.
-//   - Neither `--status` nor `--all` → broad active-status filter
-//     (matches the CLI's hardcoded list so done items don't leak by
-//     default — see defaultActiveStatusFilter).
-//   - `--all` → `?include_archived=true`, and the default-status
+//   - Neither `--status` nor `--all` → `?non_terminal=true`, which the
+//     server resolves per-collection from each schema's terminal_options
+//     so custom status vocabularies show their open items (BUG-2001).
+//   - `--all` → `?include_archived=true`, and the non-terminal
 //     filter is dropped so all statuses pass.
 //   - `--parent <ref>` → `?parent=<ref>`. The handler's
 //     resolveParentFilter resolves the ref via the field-filter path.
@@ -1167,8 +1162,10 @@ func mapItemList(input map[string]any) (string, string, []byte, error) {
 	if s, _ := input["status"].(string); s != "" {
 		add("status", s)
 	} else if b, _ := input["all"].(bool); !b {
-		// CLI parity: hide terminal statuses by default. --all overrides.
-		add("status", defaultActiveStatusFilter)
+		// CLI parity: hide terminal items by default. The server resolves
+		// "terminal" per-collection from each schema's terminal_options, so
+		// custom status vocabularies work (BUG-2001). --all overrides.
+		add("non_terminal", "true")
 	}
 	if s, _ := input["priority"].(string); s != "" {
 		add("priority", s)

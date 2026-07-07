@@ -3609,11 +3609,12 @@ Examples:
 			if statusFilter != "" {
 				params.Set("status", statusFilter)
 			} else if !showAll {
-				// Default: exclude terminal statuses (done, completed, archived, etc.)
-				// Rather than listing all active statuses, we fetch all items and
-				// let the server filter. We use a broad inclusion list that covers
-				// all built-in templates plus common custom statuses.
-				params.Set("status", "open,in_progress,in-progress,active,draft,raw,exploring,decided,new,triaged,fixing,planned,published,paused,proposed,researching,building,ready,in_sprint,reviewed,planning")
+				// Default: exclude terminal statuses (done, fixed, rejected, etc.).
+				// The server resolves "terminal" per-collection from each schema's
+				// terminal_options, so collections with custom status vocabularies
+				// (e.g. todo/drafting/scheduled) show their open items instead of
+				// being hidden behind a hardcoded global allowlist (BUG-2001).
+				params.Set("non_terminal", "true")
 			}
 			if priorityFilter != "" {
 				params.Set("priority", priorityFilter)
