@@ -6,7 +6,7 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.8)
+## Tool surface (v0.9)
 
 Nine resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Ten tools total.
 
