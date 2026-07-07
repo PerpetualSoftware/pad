@@ -205,6 +205,37 @@ pad init --url https://app.getpad.dev --workspace my-workspace
 
 Self-hosting stays first-class: the binary is unchanged and no features are Cloud-only.
 
+### Upgrading Pad
+
+Pad ships a new binary on a roughly weekly cadence. Upgrades are designed to be boring: install the new binary and restart. Database migrations run automatically at startup, only the ones your database is missing are applied, and each migration commits atomically (a failed migration rolls back cleanly and is retried next boot).
+
+**The one rule: only ever move forward.** Newer binaries know how to migrate an older database; older binaries do **not** understand a newer schema. Since Pad added its schema-ahead guard, a downgraded binary that finds a database newer than itself refuses to start rather than silently running old code against a newer schema (which can corrupt data):
+
+```
+database schema is newer than this pad binary: ... This almost always means the
+binary was DOWNGRADED (e.g. brew/docker rollback) ... Upgrade pad back to a build
+that includes those migrations, or re-run with `pad start --force`.
+```
+
+To recover, reinstall the newer binary (`brew upgrade pad`, pull the newer Docker tag, etc.). If you have *intentionally* downgraded and accept the risk, start with `pad start --force` (or set `PAD_ALLOW_SCHEMA_AHEAD=1`) to override the guard.
+
+**Automatic pre-migration snapshot (SQLite).** Whenever a SQLite-backed instance has pending migrations to apply, Pad first copies the database file to `pad.db.pre-<version>` next to it. If an upgrade ever goes wrong, stop the server and copy that snapshot back over `pad.db`. This is a convenience net, not a backup strategy — keep your own backups (see [docs/backup.md](docs/backup.md)). PostgreSQL instances are skipped here; use `pg_dump` or a provider snapshot before upgrading.
+
+Recommended upgrade flow:
+
+```bash
+# 1. Back up first (SQLite shown; see docs/backup.md for Postgres)
+pad db backup -o pad-backup-$(date +%Y%m%d).db
+
+# 2. Stop the server, install the new binary, restart
+#    (migrations + the pre-migration snapshot run automatically on start)
+brew upgrade pad        # or: docker pull, binary download, make install
+
+# 3. Confirm it's healthy
+pad --version
+curl -s localhost:7777/api/v1/health
+```
+
 ## Getting Started
 
 ### 1. Set up Pad
