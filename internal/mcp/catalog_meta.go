@@ -57,14 +57,14 @@ var padMetaTool = ToolDef{
 	},
 }
 
-const padMetaToolDescription = `Server introspection — version, capabilities, the v0.4 tool catalog, and the agent bootstrap blob.
+const padMetaToolDescription = `Server introspection — version, capabilities, the hand-curated tool catalog, and the agent bootstrap blob.
 
 Actions:
   server-info   — Server name + runtime version. Lightweight; no params.
   version       — Full version metadata (pad version, cmdhelp version, tool surface
                   version, MCP protocol version). Same JSON as pad://_meta/version.
-  tool-surface  — v0.4 catalog dump: every tool managed by the hand-curated
-                  catalog (the eight resource × action tools — pad_set_workspace
+  tool-surface  — catalog dump: every tool managed by the hand-curated
+                  catalog (the nine resource × action tools — pad_set_workspace
                   is registered separately and not included), its actions, and
                   its input schema. tools/list also contains pad_set_workspace
                   and matches the catalog otherwise — the historical cmdhelp
