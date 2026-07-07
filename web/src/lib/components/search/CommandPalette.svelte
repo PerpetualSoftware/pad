@@ -27,6 +27,10 @@
 	// workspaces (20 each from top 3) gives enough headroom for the
 	// merge step to keep representative coverage. PLAN-1343 / TASK-1365.
 	const LOCAL_PER_WS_LIMIT = 20;
+	// Below this many local hits, fire a supplementary server FTS query so
+	// matches that live only in the rich-text body (which the local index
+	// deliberately excludes) still surface. TASK-2008.
+	const CONTENT_SEARCH_THRESHOLD = 5;
 
 	// Augmented result — adds the source workspace so cross-workspace
 	// navigation lands on the right URL. For results returned by the
@@ -54,6 +58,20 @@
 	let loadingMore = $state(false);
 	let searchTimeout: ReturnType<typeof setTimeout>;
 	let inputEl = $state<HTMLInputElement>();
+
+	// Supplementary "Matches in content" section (TASK-2008). The local
+	// MiniSearch index covers title/ref/tags/fields but NOT the rich-text
+	// body, so on the local path a query that only matches an item's
+	// content shows nothing. When local hits are sparse we fire a
+	// debounced server FTS query (which greps content) and render the
+	// extra hits below the local results. Scoped to the current workspace
+	// only — a single network round-trip, not one-per-ready-workspace.
+	let contentResults = $state<AugmentedSearchResult[]>([]);
+	let contentLoading = $state(false);
+	let contentSearchTimeout: ReturnType<typeof setTimeout>;
+	// Monotonic token: every dispatch (or clear) bumps it so an in-flight
+	// supplementary fetch that lands after the query moved on is dropped.
+	let contentReqId = 0;
 
 	// Mobile: swipe down on the grab handle to dismiss, matching the
 	// Workspace/You docked sheets (PLAN-1694). Desktop is unaffected — the grip
@@ -104,8 +122,10 @@
 		return groups;
 	});
 
-	// Derived: flat index list for keyboard navigation
-	let flatResults = $derived(results);
+	// Derived: flat index list for keyboard navigation. Content matches
+	// are appended after the local results so Arrow/Enter can reach them
+	// (their index is `results.length + i`). TASK-2008.
+	let flatResults = $derived([...results, ...contentResults]);
 
 	$effect(() => {
 		if (uiStore.searchOpen) {
@@ -119,6 +139,16 @@
 			filterCollection = null;
 			filterStatus = null;
 			loading = false;
+			// Clear content-search state with UNCONDITIONAL writes only —
+			// this runs inside a $effect, so reading `contentResults` here
+			// (as clearContentSearch does) would register it as a tracked
+			// dependency and self-invalidate the effect (CONVE-1688). The
+			// other call sites are reached via `untrack(() => doSearch())`,
+			// where the guarded read is safe.
+			clearTimeout(contentSearchTimeout);
+			contentReqId++;
+			contentResults = [];
+			contentLoading = false;
 		}
 	});
 
@@ -222,6 +252,7 @@
 			facets = undefined;
 			selectedIdx = -1;
 			loading = false;
+			clearContentSearch();
 			return;
 		}
 
@@ -252,6 +283,10 @@
 		//     to the server so the palette still works pre-bootstrap.
 		// All three use a 200ms debounce on the network call.
 		if (parsed.body || !currentReady || ready.length === 0) {
+			// The server FTS result set already greps content, so there's
+			// no separate "Matches in content" section to render on this
+			// path — drop any stale one. TASK-2008.
+			clearContentSearch();
 			loading = true;
 			// Snapshot the FULL dispatch scope at request time
 			// (Codex rounds 4-5 P2): the response is only valid if
@@ -382,6 +417,62 @@
 		facets = undefined;
 		selectedIdx = -1;
 		loading = false;
+
+		// The local index never carries the rich-text body, so a query
+		// that only matches content wouldn't appear above. When local
+		// hits are sparse, supplement with a server FTS query. TASK-2008.
+		maybeRunContentSearch(trimmed, currentSlug);
+	}
+
+	/**
+	 * Fire a debounced, current-workspace-scoped server FTS query to
+	 * surface body-content matches the local index can't see, and stash
+	 * them in `contentResults` for the "Matches in content" section.
+	 * Only runs when the local path yielded few hits — plenty of local
+	 * matches means the body is unlikely to add signal worth a network
+	 * round-trip per keystroke. Bare-digit "go to N" queries and
+	 * single-char queries are skipped to avoid noise. TASK-2008.
+	 */
+	function maybeRunContentSearch(trimmed: string, wsSlug: string | undefined) {
+		clearTimeout(contentSearchTimeout);
+		const sparse = results.length < CONTENT_SEARCH_THRESHOLD;
+		const bareDigit = /^\d+$/.test(trimmed);
+		if (!wsSlug || !sparse || bareDigit || trimmed.length < 2) {
+			// Nothing to supplement — invalidate any in-flight fetch and
+			// drop stale content matches.
+			contentReqId++;
+			if (contentResults.length) contentResults = [];
+			contentLoading = false;
+			return;
+		}
+		const myReqId = ++contentReqId;
+		contentLoading = true;
+		contentSearchTimeout = setTimeout(async () => {
+			try {
+				const resp = await api.search(trimmed, buildFilters(0, wsSlug));
+				// Superseded by a newer dispatch, or the query moved on
+				// while the request was in flight — discard.
+				if (myReqId !== contentReqId || query.trim() !== trimmed) return;
+				// Drop items already shown in the local result set so the
+				// section is strictly additive (mostly body-only matches).
+				const seen = new Set(results.map((r) => r.item.id || r.item.slug));
+				contentResults = (resp.results ?? []).filter(
+					(r) => !seen.has(r.item.id || r.item.slug),
+				);
+			} catch {
+				if (myReqId === contentReqId) contentResults = [];
+			} finally {
+				if (myReqId === contentReqId) contentLoading = false;
+			}
+		}, 250);
+	}
+
+	/** Cancel any pending supplementary content fetch and clear its state. */
+	function clearContentSearch() {
+		clearTimeout(contentSearchTimeout);
+		contentReqId++; // invalidate any in-flight fetch
+		if (contentResults.length) contentResults = [];
+		contentLoading = false;
 	}
 
 	// Re-run the search whenever any tracked dependency changes:
@@ -874,7 +965,7 @@
 			{/if}
 
 			<!-- Results -->
-			{#if results.length > 0}
+			{#if results.length > 0 || contentResults.length > 0 || contentLoading}
 				<div class="results">
 					{#if groupedResults && !filterCollection}
 						<!-- Grouped by collection -->
@@ -986,6 +1077,75 @@
 							</button>
 						</div>
 					{/if}
+
+					<!--
+						"Matches in content" (TASK-2008). Supplementary server-FTS
+						hits that live in the rich-text body the local index can't
+						see. Deduped against the local results above, so this is
+						strictly additive. Loading spinner while the debounced
+						query is in flight; the section (and the surrounding
+						`.results` container) collapses to the honest "No results"
+						state if it resolves empty with no local hits.
+					-->
+					{#if contentLoading || contentResults.length > 0}
+						<div class="result-group content-group">
+							<div class="group-header">
+								<span class="group-icon">🔎</span>
+								<span class="group-name">Matches in content</span>
+								{#if searchAllWorkspaces && otherReadyWorkspaceCount > 0}
+									<!--
+										The local list above can span every ready workspace,
+										but the content search is a single request scoped to
+										the current workspace — say so rather than imply it
+										covers all of them. TASK-2008 / Codex review.
+									-->
+									<span class="content-scope">current workspace</span>
+								{/if}
+								{#if contentLoading}
+									<span class="content-spinner" aria-label="Searching content"></span>
+								{:else}
+									<span class="group-count">{contentResults.length}</span>
+								{/if}
+							</div>
+							{#each contentResults as r, i (r.item.id || r.item.slug)}
+								{@const idx = results.length + i}
+								{@const meta = renderResultCard(r, idx)}
+								<button
+									class="result"
+									class:selected={idx === selectedIdx}
+									onclick={() => selectResult(r)}
+								>
+									<div class="result-main">
+										<span class="result-icon">{r.item.collection_icon || '📦'}</span>
+										{#if meta.ref}
+											<span class="result-ref">{meta.ref}</span>
+										{/if}
+										<span class="result-title">{r.item.title}</span>
+										{#if meta.priority}
+											{@const dot = priorityDot(meta.priority)}
+											{#if dot}
+												<span class="result-priority" title={meta.priority}>{dot}</span>
+											{/if}
+										{/if}
+										{#if meta.status}
+											<span
+												class="result-status"
+												style="background: color-mix(in srgb, {statusColor(meta.status)} 15%, transparent); color: {statusColor(meta.status)};"
+											>
+												{meta.status.replace(/_/g, ' ')}
+											</span>
+										{/if}
+										{#if r.item.updated_at}
+											<span class="result-date">{relativeTime(r.item.updated_at)}</span>
+										{/if}
+									</div>
+									{#if r.snippet}
+										<div class="result-snippet">{stripHtml(r.snippet)}</div>
+									{/if}
+								</button>
+							{/each}
+						</div>
+					{/if}
 				</div>
 			{:else if query.trim() && !loading}
 				<div class="no-results">No results for "{query}"</div>
@@ -1023,8 +1183,10 @@
 					</div>
 				{:else}
 					<div class="search-tips">
-						<span class="tip-label">Try searching for</span>
-						<span class="tip-example">task names, ideas, docs, or any text</span>
+						<span class="tip-label">Search titles, refs, and tags</span>
+						<span class="tip-example"
+							>Start a query with <code class="tip-code">body:</code> to search inside item content</span
+						>
 					</div>
 				{/if}
 			{/if}
@@ -1256,6 +1418,32 @@
 		font-weight: 400;
 	}
 
+	/*
+		"Matches in content" section (TASK-2008). A hairline separator sets
+		the supplementary server-FTS hits apart from the local results above.
+	*/
+	.content-group {
+		border-top: 1px solid var(--border);
+		margin-top: var(--space-2);
+		padding-top: var(--space-1);
+	}
+	.content-spinner {
+		width: 12px;
+		height: 12px;
+		border: 2px solid var(--border);
+		border-top-color: var(--text-muted);
+		border-radius: 50%;
+		animation: spin 0.6s linear infinite;
+		flex-shrink: 0;
+	}
+	.content-scope {
+		font-size: 0.9em;
+		font-weight: 400;
+		color: var(--text-muted);
+		text-transform: none;
+		letter-spacing: 0;
+	}
+
 	/* Result cards */
 	.result {
 		display: block;
@@ -1361,6 +1549,15 @@
 	.tip-example {
 		font-size: 0.85em;
 		color: var(--text-secondary);
+	}
+	.tip-code {
+		font-family: var(--font-mono);
+		font-size: 0.9em;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		padding: 1px 5px;
+		color: var(--text-primary);
 	}
 
 	/* Recent searches */
