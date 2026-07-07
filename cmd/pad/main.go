@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -8536,6 +8537,56 @@ func pgDbnameFromURL(raw string) string {
 	return "unknown"
 }
 
+// resolveSQLiteDBPath returns the SQLite database path using the SAME
+// precedence the server uses (PAD_DB_PATH > PAD_DATA_DIR/pad.db > ~/.pad/pad.db),
+// via the shared config loader rather than a hardcoded HOME path. This keeps
+// the backup/restore/migrate commands in sync with wherever the server
+// actually stores its database — notably PAD_DATA_DIR=/data inside the Docker
+// image, and non-HOME layouts on Windows.
+func resolveSQLiteDBPath() (string, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "", fmt.Errorf("load config: %w", err)
+	}
+	return cfg.DBPath, nil
+}
+
+// backupSQLite writes an online-safe, self-contained copy of the SQLite
+// database at srcPath to outPath using `VACUUM INTO`. Unlike an io.Copy of the
+// pad.db/-wal/-shm trio, VACUUM INTO produces a single fully-checkpointed file
+// and is safe to run while the server is actively writing: SQLite reads a
+// consistent snapshot through the engine instead of us copying live pages out
+// from under an in-flight WAL checkpoint.
+func backupSQLite(srcPath, outPath string) error {
+	// VACUUM INTO refuses to write to an existing file; surface a clear error
+	// rather than SQLite's terse "output file already exists".
+	if _, err := os.Stat(outPath); err == nil {
+		return fmt.Errorf("output file already exists: %s (remove it or choose another -o path)", outPath)
+	}
+
+	// busy_timeout lets the read wait out a transient write lock instead of
+	// failing immediately with SQLITE_BUSY. No _txlock=immediate — VACUUM INTO
+	// only reads the source database.
+	dsn := srcPath + "?_pragma=busy_timeout(30000)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
+
+	// Resolve to an absolute path so the target doesn't depend on the SQLite
+	// engine's notion of the current directory.
+	absOut, err := filepath.Abs(outPath)
+	if err != nil {
+		return fmt.Errorf("resolve output path: %w", err)
+	}
+
+	if _, err := db.Exec("VACUUM INTO ?", absOut); err != nil {
+		return fmt.Errorf("vacuum into %s: %w", outPath, err)
+	}
+	return nil
+}
+
 func dbBackupCmd() *cobra.Command {
 	var output string
 	var cronMode bool
@@ -8546,7 +8597,9 @@ func dbBackupCmd() *cobra.Command {
 		Long: `Creates a backup of the Pad database.
 
 For PostgreSQL (PAD_DB_DRIVER=postgres): creates a SQL dump using pg_dump.
-For SQLite (default): copies the database file to a timestamped backup.`,
+For SQLite (default): writes an online-safe single-file backup via VACUUM INTO —
+safe to run while the server is live. The database path is resolved the same way
+the server resolves it (PAD_DB_PATH > PAD_DATA_DIR/pad.db > ~/.pad/pad.db).`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dbDriver := os.Getenv("PAD_DB_DRIVER")
 			dbURL := os.Getenv("PAD_DATABASE_URL")
@@ -8597,8 +8650,11 @@ For SQLite (default): copies the database file to a timestamped backup.`,
 				return nil
 			}
 
-			// SQLite backup via file copy
-			srcPath := filepath.Join(os.Getenv("HOME"), ".pad", "pad.db")
+			// SQLite backup via VACUUM INTO — online-safe single file.
+			srcPath, err := resolveSQLiteDBPath()
+			if err != nil {
+				return err
+			}
 			if _, err := os.Stat(srcPath); os.IsNotExist(err) {
 				return fmt.Errorf("SQLite database not found: %s", srcPath)
 			}
@@ -8611,42 +8667,11 @@ For SQLite (default): copies the database file to a timestamped backup.`,
 				fmt.Fprintf(os.Stderr, "Backing up SQLite database %s to %s...\n", srcPath, output)
 			}
 
-			src, err := os.Open(srcPath)
-			if err != nil {
-				return fmt.Errorf("open database: %w", err)
-			}
-			defer src.Close()
-
-			dst, err := os.Create(output)
-			if err != nil {
-				return fmt.Errorf("create backup file: %w", err)
-			}
-			defer dst.Close()
-
-			if _, err := io.Copy(dst, src); err != nil {
-				return fmt.Errorf("copy database: %w", err)
-			}
-
-			// Also copy WAL and SHM files if they exist
-			for _, suffix := range []string{"-wal", "-shm"} {
-				walPath := srcPath + suffix
-				if _, err := os.Stat(walPath); err == nil {
-					walSrc, err := os.Open(walPath)
-					if err != nil {
-						return fmt.Errorf("open %s: %w", suffix, err)
-					}
-					walDst, err := os.Create(output + suffix)
-					if err != nil {
-						walSrc.Close()
-						return fmt.Errorf("create %s backup: %w", suffix, err)
-					}
-					_, copyErr := io.Copy(walDst, walSrc)
-					walSrc.Close()
-					walDst.Close()
-					if copyErr != nil {
-						return fmt.Errorf("copy %s: %w", suffix, copyErr)
-					}
+			if err := backupSQLite(srcPath, output); err != nil {
+				if cronMode {
+					slog.Error("backup failed", "error", err, "output", output)
 				}
+				return err
 			}
 
 			if info, err := os.Stat(output); err == nil {
@@ -8677,7 +8702,11 @@ func dbRestoreCmd() *cobra.Command {
 		Long: `Restores a Pad database from a backup created by 'pad db backup'.
 
 For PostgreSQL: restores from a SQL dump using psql. Requires PAD_DATABASE_URL.
-For SQLite (default): copies the backup file over the database at ~/.pad/pad.db.
+For SQLite (default): copies the backup file over the live database, whose path
+is resolved the same way the server resolves it (PAD_DB_PATH > PAD_DATA_DIR/pad.db
+> ~/.pad/pad.db). Stop the server first — restore refuses to run while it detects
+a live server (a running WAL checkpoint could clobber the restored file); use
+--force to override.
 
 WARNING: This will overwrite the current database contents.`,
 		Args: cobra.ExactArgs(1),
@@ -8730,7 +8759,22 @@ WARNING: This will overwrite the current database contents.`,
 			}
 
 			// SQLite restore via file copy
-			dstPath := filepath.Join(os.Getenv("HOME"), ".pad", "pad.db")
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			dstPath := cfg.DBPath
+
+			// Refuse to overwrite the database out from under a running server:
+			// the server holds it open and its background WAL checkpointer could
+			// write pages back over the freshly restored file, corrupting it.
+			// Require the server to be stopped (or an explicit --force override).
+			if cli.IsServerRunning(cfg) {
+				if !force {
+					return fmt.Errorf("the Pad server appears to be running at %s:%d — stop it first ('pad server stop') so it can't overwrite the restored database, or re-run with --force to override", cfg.Host, cfg.Port)
+				}
+				fmt.Fprintln(os.Stderr, "WARNING: the Pad server appears to be running; restoring anyway because --force was given. Stop and restart the server around the restore to avoid corruption.")
+			}
 
 			if !force {
 				fmt.Fprintf(os.Stderr, "WARNING: This will overwrite the SQLite database at %s with data from %s.\n", dstPath, inputFile)
@@ -8819,7 +8863,11 @@ Steps:
   4. Run this command to migrate workspace data`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if fromPath == "" {
-				fromPath = filepath.Join(os.Getenv("HOME"), ".pad", "pad.db")
+				resolved, err := resolveSQLiteDBPath()
+				if err != nil {
+					return err
+				}
+				fromPath = resolved
 			}
 			if _, err := os.Stat(fromPath); os.IsNotExist(err) {
 				return fmt.Errorf("SQLite database not found: %s", fromPath)
@@ -8903,7 +8951,7 @@ Steps:
 		},
 	}
 
-	cmd.Flags().StringVar(&fromPath, "from", "", "SQLite database path (default: ~/.pad/pad.db)")
+	cmd.Flags().StringVar(&fromPath, "from", "", "SQLite database path (default: server-resolved — PAD_DB_PATH > PAD_DATA_DIR/pad.db > ~/.pad/pad.db)")
 	cmd.Flags().StringVar(&toURL, "to", "", "PostgreSQL connection URL (default: PAD_DATABASE_URL)")
 
 	return cmd
