@@ -71,11 +71,12 @@
 		captureOpen = next;
 	}
 
-	// Drive the .main-content reflow only while shown (mobile). app.css owns
-	// the media-gated padding rule.
+	// Drive the .main-content reflow only while the bar is actually shown —
+	// mobile AND no keyboard up. app.css owns the media-gated padding rule;
+	// dropping the class while the keyboard hides the bar avoids a dead gap.
 	$effect(() => {
 		if (typeof document === 'undefined') return;
-		document.body.classList.toggle('has-bottom-nav', uiStore.isMobile);
+		document.body.classList.toggle('has-bottom-nav', uiStore.isMobile && !uiStore.keyboardVisible);
 	});
 	onDestroy(() => {
 		if (typeof document !== 'undefined') document.body.classList.remove('has-bottom-nav');
@@ -83,6 +84,13 @@
 </script>
 
 {#if uiStore.isMobile && wsPrefix}
+	<!--
+		Hide the bar while the on-screen keyboard is up so it doesn't sit
+		stranded above the keyboard (PLAN-1694 Phase 1). The docked sheets
+		below stay mounted regardless — QuickCaptureSheet's title input
+		raises the keyboard itself, and it must survive that.
+	-->
+	{#if !uiStore.keyboardVisible}
 	<nav class="bottom-nav" aria-label="Primary">
 		<button
 			class="bn-item"
@@ -147,6 +155,7 @@
 			<span class="bn-label">You</span>
 		</button>
 	</nav>
+	{/if}
 
 	<WorkspaceSheet open={workspaceOpen} onclose={() => (workspaceOpen = false)} />
 	<YouSheet open={youOpen} onclose={() => (youOpen = false)} />
