@@ -2,6 +2,7 @@ package webhooks
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -464,5 +465,47 @@ func TestDispatcher_RetriesThenSucceeds(t *testing.T) {
 	defer store.mu.Unlock()
 	if store.failures["hook-1"] {
 		t.Error("expected success recorded after retry recovered")
+	}
+}
+
+// errRoundTripper returns a fixed error from every RoundTrip and counts calls,
+// letting a test drive attemptDeliver's error classification deterministically.
+type errRoundTripper struct {
+	err   error
+	calls int32
+}
+
+func (e *errRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	atomic.AddInt32(&e.calls, 1)
+	return nil, e.err
+}
+
+// TestDispatcher_RedirectBlockIsPermanent asserts a redirect rejected by the
+// SSRF guard (surfaced via CheckRedirect through client.Do) is classified as
+// permanent and attempted exactly once — no retries against an internal target.
+func TestDispatcher_RedirectBlockIsPermanent(t *testing.T) {
+	store := newMockStore([]models.Webhook{
+		{ID: "hook-1", WorkspaceID: "ws-1", URL: "https://example.com/hook", Events: `["*"]`, Active: true},
+	})
+
+	d := NewDispatcher(store)
+	d.SkipSSRF = true // skip the pre-flight URL check so we exercise the client.Do path
+	d.retryBackoff = 0
+	d.SetSpawn(func(fn func()) { fn() })
+
+	// Mimic what http.Client.Do surfaces when CheckRedirect blocks a hop:
+	// the checkRedirect error wrapped so errors.Is reaches errRedirectRejected.
+	rt := &errRoundTripper{err: fmt.Errorf("%w: redirect to 169.254.169.254 blocked", errRedirectRejected)}
+	d.client.Transport = rt
+
+	d.Dispatch("ws-1", "item.created", map[string]string{"title": "Test"})
+
+	if got := atomic.LoadInt32(&rt.calls); got != 1 {
+		t.Errorf("expected exactly 1 attempt for blocked redirect (permanent), got %d", got)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if !store.failures["hook-1"] {
+		t.Error("expected failure recorded for blocked redirect")
 	}
 }

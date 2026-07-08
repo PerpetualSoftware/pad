@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -20,6 +21,15 @@ import (
 // Every hop is re-validated by checkRedirect, so this is a belt-and-braces
 // bound against redirect loops rather than the primary SSRF control.
 const maxWebhookRedirects = 5
+
+// errRedirectRejected marks a delivery error that originated in checkRedirect
+// (an SSRF-blocked redirect hop or an exceeded redirect chain). http.Client.Do
+// surfaces CheckRedirect errors wrapped in a *url.Error, so attemptDeliver uses
+// errors.Is to distinguish these PERMANENT rejections from genuinely transient
+// network errors — retrying a redirect to an internal target is pointless (and
+// undesirable). The wrapping *url.Error implements Unwrap, so errors.Is reaches
+// this sentinel.
+var errRedirectRejected = errors.New("webhook redirect rejected")
 
 // deliveryTimeout is the total per-delivery HTTP timeout.
 const deliveryTimeout = 10 * time.Second
@@ -135,13 +145,13 @@ func NewDispatcher(store WebhookStore) *Dispatcher {
 // could 302 the delivery to an internal address.
 func (d *Dispatcher) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxWebhookRedirects {
-		return fmt.Errorf("stopped after %d redirects", maxWebhookRedirects)
+		return fmt.Errorf("%w: stopped after %d redirects", errRedirectRejected, maxWebhookRedirects)
 	}
 	if d.SkipSSRF {
 		return nil
 	}
 	if err := ValidateWebhookURL(req.URL.String()); err != nil {
-		return fmt.Errorf("redirect to %s blocked: %w", req.URL.Redacted(), err)
+		return fmt.Errorf("%w: redirect to %s blocked: %v", errRedirectRejected, req.URL.Redacted(), err)
 	}
 	return nil
 }
@@ -248,6 +258,12 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 
 	resp, err := d.client.Do(req)
 	if err != nil {
+		// A blocked/looping redirect is permanent — the SSRF guard won't
+		// relent on retry, so don't waste attempts on it.
+		if errors.Is(err, errRedirectRejected) {
+			slog.Warn("blocked webhook redirect", "url", hook.URL, "error", err)
+			return deliveryPermanent
+		}
 		// Network error / timeout — transient, worth retrying.
 		slog.Error("webhook delivery failed", "url", hook.URL, "error", err)
 		return deliveryTransient
@@ -257,14 +273,15 @@ func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryRe
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
 		return deliverySuccess
-	case resp.StatusCode >= 400 && resp.StatusCode < 500:
-		// Client error — permanent; the request itself is unacceptable.
-		slog.Warn("webhook 4xx response", "status", resp.StatusCode, "url", hook.URL)
-		return deliveryPermanent
-	default:
-		// 5xx (and any other non-2xx) — transient, worth retrying.
-		slog.Warn("webhook non-2xx response", "status", resp.StatusCode, "url", hook.URL)
+	case resp.StatusCode >= 500 && resp.StatusCode < 600:
+		// Server error — transient, worth retrying.
+		slog.Warn("webhook 5xx response", "status", resp.StatusCode, "url", hook.URL)
 		return deliveryTransient
+	default:
+		// 4xx and any other non-2xx (3xx with no followable Location, 1xx)
+		// — permanent; retrying won't change an unacceptable request.
+		slog.Warn("webhook non-2xx response", "status", resp.StatusCode, "url", hook.URL)
+		return deliveryPermanent
 	}
 }
 
