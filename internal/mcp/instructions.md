@@ -6,14 +6,14 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.12)
+## Tool surface (v0.13)
 
 Ten resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Eleven tools total.
 
 - `pad_item` — Items: create / update / delete / get / list / move / restore / link / unlink / deps / star / unstar / starred / comment / list-comments / backlinks / bulk-update / note / decide / export / import.
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log / create / claim / deleted / restore.
 - `pad_collection` — Collections: list / create / update / delete.
-- `pad_project` — Project intelligence: dashboard / next / standup / changelog / report / activity. Use `activity` to catch up on what other agents/users changed since you last worked (non-streaming feed with item refs + change details).
+- `pad_project` — Project intelligence: dashboard / next / ready / stale / standup / changelog / report / activity. Use `ready` for the actionable backlog and `stale` for items needing attention; `activity` to catch up on what other agents/users changed since you last worked (non-streaming feed with item refs + change details).
 - `pad_role` — Agent roles: list / create / update / delete.
 - `pad_search` — Full-text search across items: query.
 - `pad_playbook` — Invokable procedures: list / get / run. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free. `run` refuses a playbook whose status isn't `active` (a draft still being authored) with a `playbook_not_active` error — pass `allow_draft: true` to override. Both `run` and `get` echo the playbook's `status`.

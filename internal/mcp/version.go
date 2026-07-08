@@ -94,7 +94,22 @@ const CmdhelpVersion = "0.1"
 //     the `artifact` param to the vocabulary. Pure addition; existing
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
-//   - "0.12" — current. TASK-2018: agent-accessible activity feed.
+//   - "0.13" — current. TASK-2019: agent-oriented backlog queries.
+//     Adds `ready` + `stale` actions to `pad_project`, mirroring the
+//     existing CLI `pad project ready` / `pad project stale`. `ready`
+//     (read-only) returns the current actionable backlog — the
+//     query-oriented counterpart to `pad project next`, reusing the
+//     dashboard's suggested-next logic. `stale` (read-only) lists items
+//     needing attention (stalled, blocked, overdue, or otherwise out of
+//     the active workflow). Both HTTP dispatchers already existed
+//     (dispatch_http_project.go); this bump wires them onto the catalog
+//     surface. `pad project reconcile` stays CLI-only — it shells out to
+//     `gh` to compare stored PR metadata against live GitHub state, a
+//     local-git dependency an MCP agent lacks. Pure addition of two
+//     read-only actions; existing pad_project actions unchanged.
+//     Backwards-compatible for v0.12 consumers that don't enumerate the
+//     new actions.
+//   - "0.12" — TASK-2018: agent-accessible activity feed.
 //     Adds an `activity` action to `pad_project` mirroring the new CLI
 //     `pad project activity [--limit N] [--actor user|agent] [--since DATE]`.
 //     It's the non-streaming, bounded query counterpart to
@@ -210,7 +225,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.12"
+const ToolSurfaceVersion = "0.13"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
