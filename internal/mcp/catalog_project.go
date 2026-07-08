@@ -53,6 +53,8 @@ var padProjectTool = ToolDef{
 	Actions: map[string]ActionFn{
 		"dashboard": passThrough([]string{"project", "dashboard"}),
 		"next":      passThrough([]string{"project", "next"}),
+		"ready":     passThrough([]string{"project", "ready"}),
+		"stale":     passThrough([]string{"project", "stale"}),
 		"standup":   passThrough([]string{"project", "standup"}),
 		"changelog": passThrough([]string{"project", "changelog"}),
 		"report":    passThrough([]string{"project", "report"}),
@@ -67,6 +69,13 @@ Actions:
                blockers, suggested next.
                Required: workspace.
   next       — Recommended next item to work on (uses dashboard's suggestion logic).
+               Required: workspace.
+  ready      — Actionable backlog: items Pad considers ready to work on now.
+               The query-oriented counterpart to next (reuses the same
+               suggested-next logic, returns the full list).
+               Required: workspace.
+  stale      — Items needing attention — stalled, blocked, overdue, or
+               otherwise falling out of the active workflow.
                Required: workspace.
   standup    — Daily standup report (recent done, in-progress, blockers).
                Required: workspace.

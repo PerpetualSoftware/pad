@@ -60,7 +60,8 @@ type toolSurfaceToolSummary struct {
 //   - pad_workspace:  list/members/storage/audit-log/deleted read;
 //     invite/create/claim/restore write.
 //   - pad_collection: list read; create/update/delete write.
-//   - pad_project:    all read (dashboard/next/standup/changelog/report).
+//   - pad_project:    all read (dashboard/next/ready/stale/standup/
+//     changelog/report/activity).
 //   - pad_role:       list read; create/update/delete write.
 //   - pad_search:     query read.
 //   - pad_playbook:   list/get read; run is side-effect-free (returns the
@@ -92,6 +93,8 @@ var readOnlyActions = map[string]map[string]bool{
 	"pad_project": {
 		"dashboard": true,
 		"next":      true,
+		"ready":     true,
+		"stale":     true,
 		"standup":   true,
 		"changelog": true,
 		"report":    true,

@@ -98,6 +98,8 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 
 		{"pad_project", "dashboard"}: {"project", "dashboard"},
 		{"pad_project", "next"}:      {"project", "next"},
+		{"pad_project", "ready"}:     {"project", "ready"},
+		{"pad_project", "stale"}:     {"project", "stale"},
 		{"pad_project", "standup"}:   {"project", "standup"},
 		{"pad_project", "changelog"}: {"project", "changelog"},
 		{"pad_project", "report"}:    {"project", "report"},
@@ -251,6 +253,8 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 
 		{"pad_project", "dashboard"}: {"project", "dashboard"},
 		{"pad_project", "next"}:      {"project", "next"},
+		{"pad_project", "ready"}:     {"project", "ready"},
+		{"pad_project", "stale"}:     {"project", "stale"},
 		{"pad_project", "standup"}:   {"project", "standup"},
 		{"pad_project", "changelog"}: {"project", "changelog"},
 		{"pad_project", "report"}:    {"project", "report"},
@@ -503,6 +507,8 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			// Project
 			"project dashboard": {Summary: "dash", Flags: mkFlags("workspace")},
 			"project next":      {Summary: "next", Flags: mkFlags("workspace")},
+			"project ready":     {Summary: "ready", Flags: mkFlags("workspace")},
+			"project stale":     {Summary: "stale", Flags: mkFlags("workspace")},
 			"project standup": {
 				Summary: "standup",
 				Flags: map[string]cmdhelp.Flag{

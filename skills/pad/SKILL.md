@@ -101,6 +101,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Querying:**
 - "what's on my plate?" → role-filtered queue if a role is active, otherwise `pad project next`
+- "what should I work on?" / "what's ready?" → `pad project ready` (actionable backlog); "what's stuck?" / "what needs attention?" → `pad project stale`
 - "show me status" / "how are we doing?" → `pad project dashboard`
 - "show me all tasks" / "list bugs" → `pad item list <collection>`
 - "find anything about X" → `pad item search "X"`
