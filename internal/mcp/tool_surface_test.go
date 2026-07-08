@@ -98,6 +98,7 @@ func TestToolSurfaceJSON_ReadOnlyFlags(t *testing.T) {
 		{"pad_item", "backlinks"},
 		{"pad_item", "export"},
 		{"pad_project", "dashboard"},
+		{"pad_project", "activity"},
 		{"pad_search", "query"},
 		{"pad_meta", "tool-surface"},
 		{"pad_library", "get"},
