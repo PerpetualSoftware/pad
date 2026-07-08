@@ -1017,6 +1017,17 @@ export interface DashboardResponse {
 		// (untouched) status — banner shows only when this is true.
 		active: boolean;
 	};
+	// degraded is true when one or more best-effort dashboard sub-queries
+	// failed server-side (BUG-2014). The remaining sections are still
+	// returned, but a failed section is indistinguishable from a
+	// genuinely-empty one, so the UI should surface a "some data couldn't
+	// load" state rather than presenting the partial result as complete.
+	// degraded_sections names which sections failed (e.g. "recent_activity",
+	// "by_role", "active_plans"). Every failure is also logged server-side.
+	degraded: boolean;
+	// degraded_sections lists the section names whose sub-query failed.
+	// Omitted when degraded is false.
+	degraded_sections?: string[];
 }
 
 // ─── Project Intelligence: standup / changelog (PLAN-1888 / TASK-1894) ──────

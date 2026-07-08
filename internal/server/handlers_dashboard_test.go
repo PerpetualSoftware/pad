@@ -1341,3 +1341,65 @@ func TestDashboard_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
 		t.Errorf("cookie admin dashboard should be unrestricted (see hidden collection); got %+v", cookieResp.Summary.ByCollection)
 	}
 }
+
+// TestDashboardDegradedOnSubQueryFailure covers BUG-2014: a failing
+// best-effort sub-query must not render indistinguishably from a
+// genuinely-empty section. Before this fix, buildDashboardResponse
+// swallowed the error (if err == nil / continue) and returned an empty
+// by_role with no signal. Now the failure flips resp.Degraded and names
+// the affected section in resp.DegradedSections, while every other
+// section still loads (partial failure, not all-or-nothing) and the
+// endpoint still returns 200.
+func TestDashboardDegradedOnSubQueryFailure(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	// Seed real data so the healthy sections are demonstrably non-empty.
+	createItem(t, srv, slug, "tasks", map[string]interface{}{
+		"title":  "Live Task",
+		"fields": `{"status":"open","priority":"high"}`,
+	})
+
+	// Sanity: a healthy dashboard is NOT degraded.
+	healthy := getDashboard(t, srv, slug)
+	if healthy.Degraded {
+		t.Fatalf("healthy dashboard should not be degraded; got sections %v", healthy.DegradedSections)
+	}
+	if healthy.Summary.TotalItems == 0 {
+		t.Fatalf("expected the seeded task in summary; got 0 items")
+	}
+
+	// Force the recent_activity sub-query (ListWorkspaceActivity) to fail
+	// by removing the table it reads. The activities table is read only by
+	// that best-effort section — every fatal dashboard query reads other
+	// tables — so this isolates a single section's failure without 500ing
+	// the whole request.
+	if _, err := srv.store.DB().Exec("DROP TABLE activities"); err != nil {
+		t.Fatalf("drop activities: %v", err)
+	}
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/dashboard", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("degraded dashboard should still return 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp DashboardResponse
+	parseJSON(t, rr, &resp)
+
+	if !resp.Degraded {
+		t.Fatalf("expected Degraded=true after recent_activity sub-query failure; response was not flagged")
+	}
+	found := false
+	for _, s := range resp.DegradedSections {
+		if s == "recent_activity" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'recent_activity' in DegradedSections, got %v", resp.DegradedSections)
+	}
+	// Partial-failure, not all-or-nothing: the unaffected sections still load.
+	if resp.Summary.TotalItems == 0 {
+		t.Errorf("degraded dashboard dropped healthy sections too; summary is empty")
+	}
+}
