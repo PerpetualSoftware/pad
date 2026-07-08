@@ -580,7 +580,7 @@ export const api = {
 		run: (
 			ws: string,
 			ref: string,
-			body?: { args?: Record<string, unknown>; raw_args?: string[] }
+			body?: { args?: Record<string, unknown>; raw_args?: string[]; allow_draft?: boolean }
 		) =>
 			request<unknown>(`/workspaces/${ws}/playbooks/${ref}/run`, {
 				method: 'POST',
