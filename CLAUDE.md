@@ -346,8 +346,8 @@ cd web && npm run test     # Web unit tests (vitest, run once)
 7. `make install`
 
 ### Add a new CLI command
-1. Add function in `cmd/pad/main.go`
-2. Register in rootCmd.AddCommand()
+1. Add the command constructor to the matching resource file under `cmd/pad/` — `cmd_item.go`, `cmd_collection.go`, `cmd_workspace.go`, `cmd_auth.go`, `cmd_project.go`, `cmd_playbook.go`, `cmd_role.go`, `cmd_tag.go`, `cmd_github.go`, `cmd_webhook.go`, `cmd_agent.go`, `cmd_server.go`, `cmd_attachment.go`, `cmd_db.go`, `cmd_library.go`, `cmd_bootstrap.go` (all `package main`, so helpers are shared across files). Create a new `cmd_<resource>.go` if none fits. Keep `main.go` for `main()`, `newRootCmd()`, and top-level wiring only — don't grow it back into a god file.
+2. Wire it into the resource group in `cmd/pad/groups.go` (or `rootCmd.AddCommand()` in `main.go` for a new top-level group)
 3. `make install`
 
 ### Modify the database schema
