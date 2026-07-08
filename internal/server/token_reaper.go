@@ -65,6 +65,7 @@ func (s *Server) StartTokenReaper() {
 	s.bg.Add(1)
 	go func() {
 		defer s.bg.Done()
+		defer s.recoverSweeper("token-reaper") // BUG-2071
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {

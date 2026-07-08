@@ -129,6 +129,7 @@ func (s *Server) StartWorkspacePurgeSweeper() {
 	s.bg.Add(1)
 	go func() {
 		defer s.bg.Done()
+		defer s.recoverSweeper("workspace-purge") // BUG-2071
 		// One sweep on startup so a long-stopped server catches up
 		// immediately rather than waiting a full interval.
 		s.runWorkspacePurgeTick(retention)
