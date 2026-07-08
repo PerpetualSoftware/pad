@@ -92,6 +92,23 @@ func TestPromptsLockstep_CoreCommands(t *testing.T) {
 	}
 }
 
+// TestPromptsLockstep_NoBashBlocks asserts every prompt body is
+// surface-neutral (TASK-2016): no ```bash fenced code blocks, which
+// instruct shell-less MCP clients to run commands they can't. The
+// bodies name the pad_* tool + action and carry the CLI form only as
+// a parenthetical.
+func TestPromptsLockstep_NoBashBlocks(t *testing.T) {
+	for _, name := range []string{PromptPlan, PromptIdeate, PromptRetro, PromptOnboard} {
+		body, err := PromptBody(name)
+		if err != nil {
+			t.Fatalf("PromptBody(%q): %v", name, err)
+		}
+		if strings.Contains(body, "```bash") {
+			t.Errorf("%s body contains a ```bash code block; prompt bodies must be surface-neutral (name the pad_* tool + action, CLI as a parenthetical)", name)
+		}
+	}
+}
+
 // TestPromptsLockstep_SkillSourceExists is the inverse check — fail
 // if SKILL.md has been removed/renamed under our feet, so the next
 // person updating prompts notices the source moved.
