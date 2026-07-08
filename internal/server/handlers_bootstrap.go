@@ -341,6 +341,17 @@ type AgentBootstrapPlaybookMeta struct {
 // Why a wrapper rather than mutating DashboardResponse: the cap is
 // bootstrap-only — `pad project dashboard` and the web UI's dashboard
 // page consume the FULL set, unchanged. PLAN-1410 / TASK-1413.
+//
+// Because *DashboardResponse is embedded anonymously, encoding/json
+// promotes ALL of its fields into the bootstrap wire shape — including
+// `degraded` / `degraded_sections` (BUG-2014). Agents consuming the
+// bootstrap blob therefore see partial-failure state on every surface
+// (MCP `pad_meta.action: bootstrap`, the `pad://workspace/{ws}/bootstrap`
+// resource, the `pad_set_workspace` embed). If this is ever converted to
+// an explicit slim projection (like BootstrapCollection / BootstrapRole),
+// those two fields MUST be carried across or the degraded signal silently
+// disappears from the agent surfaces — TestBootstrapDashboardCarriesDegraded
+// is the guard. BUG-2072.
 type BootstrapDashboard struct {
 	*DashboardResponse
 	// AttentionOverflowCount is len(original attention) - cap, or
