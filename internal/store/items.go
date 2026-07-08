@@ -101,6 +101,52 @@ func (s *Store) acquireWorkspaceSeqLock(tx *sql.Tx, workspaceID string) error {
 	return nil
 }
 
+// acquireWorkspaceParentLinkLock takes a Postgres advisory transaction lock
+// that serializes ALL parent-edge-ADDING transactions within a workspace
+// (BUG-2074). It is the outer guard that closes the N-hop parent-cycle gap the
+// per-endpoint cycle walk cannot: BUG-2073's per-item sorted lock batch only
+// covers the two endpoints of the edge being written, so a cycle closed via an
+// edge on an item that NEITHER endpoint locks (e.g. an existing A->B and C->D
+// cross-linked concurrently by SetParentLink(B,C) + SetParentLink(D,A), whose
+// lock sets {B,C} and {D,A} are disjoint) still slips through — both cycle
+// walks run on stale snapshots and both inserts commit, forming A->B->C->D->A.
+//
+// With this lock held by every edge-adder, no two parent-edge insertions can
+// run concurrently in a workspace, so checkParentCycleQ always walks a
+// consistent, non-racing ancestor snapshot and catches arbitrary N-hop cycles.
+// Parent-link writes are rare, so serializing them per-workspace is an
+// acceptable trade-off. Only edge-ADDING paths take this lock (the paths that
+// call setParentLinkTx with a non-empty parentID); edge REMOVALS (clear /
+// detach) and plain field updates can't create a cycle, so they don't request
+// it — keeping the common UpdateItem path un-serialized.
+//
+// DISTINCT namespace from acquireWorkspaceSeqLock (bare hashtext(workspaceID))
+// and from AcquireParentChildrenLocks (per-item 'pad:parent-children:<id>') so
+// the three lock classes never alias on the same key.
+//
+// LOCK ORDERING (deadlock-freedom): callers acquire this OUTERMOST — before the
+// workspace seq lock and before the per-item parent-children batch. The global
+// order across every transaction is therefore:
+//
+//	parent-link-cycle lock  ->  workspace seq lock  ->  parent-children batch
+//
+// No transaction takes any of these in the reverse relative order, and only
+// edge-adding transactions take the cycle lock at all (a plain UpdateItem /
+// CreateItem / clear-parent never requests it), so the classic AB/BA deadlock
+// shape can't form.
+//
+// On SQLite the global BEGIN IMMEDIATE write lock already serializes every
+// writer, so this is a no-op there (the N-hop race can't manifest on SQLite).
+func (s *Store) acquireWorkspaceParentLinkLock(tx *sql.Tx, workspaceID string) error {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil
+	}
+	if _, err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext('pad:parent-link-cycle:' || $1))", workspaceID); err != nil {
+		return fmt.Errorf("acquire workspace parent-link lock: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
 	// Validate assignment scope before writing
 	if err := s.validateAssignmentScope(workspaceID, input.AssignedUserID, input.AgentRoleID); err != nil {
@@ -1775,6 +1821,21 @@ func (s *Store) updateItemWithParentLinkOnce(
 	}
 	defer tx.Rollback()
 
+	// BUG-2074: when this update ADDS a parent edge (parentLink sets a
+	// non-empty ParentID), take the workspace-scoped parent-link cycle lock
+	// FIRST — before the seq lock and the parent-children batch — so the
+	// cycle walk in setParentLinkTx (applied later in this tx) runs against a
+	// consistent, non-racing ancestor snapshot and catches N-hop cycles that
+	// the per-endpoint lock set can't cover. Acquired only for edge-ADDING
+	// updates so plain field updates / status flips / clear-parent stay off
+	// this serialization point. Outermost acquisition keeps the global order
+	// cycle -> seq -> parent-children (see acquireWorkspaceParentLinkLock).
+	if parentLink != nil && parentLink.Provided && parentLink.ParentID != "" {
+		if err := s.acquireWorkspaceParentLinkLock(tx, existing.WorkspaceID); err != nil {
+			return nil, err
+		}
+	}
+
 	// Serialize concurrent seq assignments per workspace on Postgres
 	// (no-op on SQLite). Held until COMMIT / ROLLBACK.
 	if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
@@ -2407,6 +2468,22 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 		createdBy = "user"
 	}
 
+	// BUG-2074: a `parent` link is the same graph edge SetParentLink writes and
+	// the only link_type checkParentCycleQ's ancestor walk follows. Route it
+	// through SetParentLink so it gets the FULL guarded parent-edge protocol:
+	//   - single-parent DELETE-then-INSERT (so a child can't accumulate two
+	//     `parent` rows — the append-only insert below would, and the cycle
+	//     walk only follows ONE arbitrary parent per source, so a second row
+	//     would let an N-hop cycle hide on the un-walked branch);
+	//   - the workspace-scoped cycle lock + checkParentCycleQ under lock;
+	//   - the errParentSetChanged retry wrapper.
+	// The plain append-only INSERT below is only safe for NON-parent link types
+	// (blocks / supersedes / implements / related / …), none of which the cycle
+	// walk follows.
+	if linkType == models.ItemLinkTypeParent {
+		return s.SetParentLink(workspaceID, sourceID, input.TargetID, createdBy)
+	}
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
@@ -2428,6 +2505,11 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 	// hold — otherwise a concurrent UpdateItem(sourceID) could miss this new
 	// parent on its post-lock re-read. Both keys go through the sorted helper,
 	// so the two-key grab stays deadlock-free.
+	//
+	// (The `parent` link_type never reaches here — it is routed through
+	// SetParentLink above for the full guarded parent-edge protocol; BUG-2074.
+	// The remaining child-link type that lands here is 'implements', which the
+	// cycle walk does not follow, so no cycle guard is needed.)
 	if isChildLinkType(linkType) {
 		if err := s.AcquireParentChildrenLocks(tx, sourceID, input.TargetID); err != nil {
 			return nil, err
@@ -2666,6 +2748,15 @@ func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy strin
 	}
 	defer tx.Rollback()
 
+	// BUG-2074: serialize all parent-edge additions in this workspace so the
+	// cycle walk below runs against a consistent snapshot and can't miss an
+	// N-hop cycle closed by a concurrent add on items neither endpoint locks.
+	// Acquired OUTERMOST (before setParentLinkTx's parent-children batch) to
+	// keep the global lock order cycle -> seq -> parent-children.
+	if err := s.acquireWorkspaceParentLinkLock(tx, workspaceID); err != nil {
+		return nil, err
+	}
+
 	id, err := s.setParentLinkTx(tx, workspaceID, itemID, parentID, createdBy)
 	if err != nil {
 		return nil, err
@@ -2745,9 +2836,15 @@ func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, creat
 	// each pass on a stale ancestry snapshot, block on the lock, then both insert
 	// — closing the loop (A→B→C→A). Under the lock the walk reads via the tx, so
 	// it sees the edge the just-unblocked peer committed and catches the cycle.
-	// (Residual: cycles closed via an edge on an item NEITHER endpoint locks can
-	// still slip through — a pre-existing limitation of the per-endpoint lock
-	// scheme, tracked separately.)
+	// BUG-2074: cycles closed via an edge on an item NEITHER endpoint locks
+	// (e.g. concurrent SetParentLink(B,C) + SetParentLink(D,A) completing
+	// A→B→C→D→A, whose per-endpoint lock sets {B,C} and {D,A} are disjoint)
+	// used to slip past this per-endpoint walk. The tx-owning callers now hold
+	// the workspace-scoped parent-link cycle lock (acquireWorkspaceParentLinkLock,
+	// taken outermost in setParentLinkOnce / updateItemWithParentLinkOnce), which
+	// serializes ALL parent-edge additions in the workspace — so this walk runs
+	// against a snapshot no concurrent add can mutate, catching arbitrary N-hop
+	// cycles.
 	if err := s.checkParentCycleQ(tx, itemID, parentID); err != nil {
 		return "", err
 	}
