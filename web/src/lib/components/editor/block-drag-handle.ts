@@ -22,6 +22,12 @@ import type { EditorView } from '@tiptap/pm/view';
 // starter-kit; `toggleTaskList` is contributed by extension-task-list.
 import '@tiptap/starter-kit';
 import '@tiptap/extension-task-list';
+// Side-effect import: brings the `uploadAttachments` command-type
+// augmentation (declared on `@tiptap/core`'s Commands interface in
+// attachment-upload.ts) into this file's compilation context — same
+// reason as the starter-kit imports above (TS 6 no longer propagates
+// module augmentations across non-importing files).
+import './attachment-upload';
 import { TURN_INTO_ITEMS } from './block-types';
 
 const LIST_CONTAINERS = new Set(['bulletList', 'orderedList', 'taskList']);
@@ -241,6 +247,14 @@ export const BlockDragHandle = Extension.create({
 			new Plugin({
 				key: pluginKey,
 				view(editorView) {
+					// The "Attach file" menu entry is only meaningful when the
+					// AttachmentUpload extension (which contributes the
+					// uploadAttachments command + the paste/drop pipeline) is
+					// registered on this editor. Comment editors and other
+					// lightweight mounts may omit it — gate the entry on presence.
+					const canAttach = tiptapEditor.extensionManager.extensions.some(
+						(e) => e.name === 'attachmentUpload',
+					);
 					// --- DOM: handle ---
 					const handle = document.createElement('div');
 					handle.className = 'block-drag-handle';
@@ -281,6 +295,20 @@ export const BlockDragHandle = Extension.create({
 					divider.className = 'block-menu-divider';
 					menu.appendChild(divider);
 
+					// "Attach file" — an INSERT action (not a turn-into
+					// conversion), so it lives below the divider alongside
+					// Duplicate/Delete and stays visible for atom blocks (where
+					// the turn-into section is hidden). This is the touch-
+					// reachable path to attachments: the slash menu doesn't
+					// surface on mobile, but this context menu does (TASK-2067).
+					let attachBtn: HTMLButtonElement | null = null;
+					if (canAttach) {
+						attachBtn = document.createElement('button');
+						attachBtn.className = 'block-menu-item';
+						attachBtn.innerHTML = '<span class="block-menu-icon">📎</span><span>Attach file</span>';
+						menu.appendChild(attachBtn);
+					}
+
 					const duplicateBtn = document.createElement('button');
 					duplicateBtn.className = 'block-menu-item';
 					duplicateBtn.innerHTML = '<span class="block-menu-icon">⧉</span><span>Duplicate</span>';
@@ -296,6 +324,30 @@ export const BlockDragHandle = Extension.create({
 					wrapper.appendChild(dropLine);
 					document.body.appendChild(menu);
 					document.body.appendChild(menuBackdrop);
+
+					// Hidden file <input> backing the "Attach file" menu entry.
+					// A real input is the only way to open a native file picker
+					// on touch. Appended to <body> (not a Svelte template) since
+					// this whole menu is imperative DOM; hidden via inline styles
+					// because component-scoped CSS wouldn't reach it here.
+					const attachInput = document.createElement('input');
+					attachInput.type = 'file';
+					attachInput.multiple = true;
+					attachInput.setAttribute('aria-hidden', 'true');
+					attachInput.tabIndex = -1;
+					attachInput.style.cssText =
+						'position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);border:0;';
+					if (canAttach) document.body.appendChild(attachInput);
+
+					// Atom / code-block blocks have no inline home for an
+					// attachment node, so we defer creating a host paragraph until
+					// files are actually chosen (cancelling the picker then leaves
+					// the doc untouched). This holds the doc position to create it
+					// after; null for the common path, where we instead set the
+					// editor selection at click time and let ProseMirror map it
+					// forward across any intervening edits (collab peers, in-flight
+					// uploads) — no raw position to go stale.
+					let attachPendingParagraphAfter: number | null = null;
 
 					// --- State ---
 					let activeBlock: BlockInfo | null = null;
@@ -464,6 +516,74 @@ export const BlockDragHandle = Extension.create({
 						hideMenu();
 						activeBlock = null;
 						hideHandle();
+					});
+
+					// Attach file: attachmentImage/attachmentChip are inline atoms,
+					// so they need a valid inline position inside a textblock.
+					if (attachBtn) {
+						attachBtn.addEventListener('click', (e) => {
+							e.stopPropagation();
+							if (!activeBlock) return;
+							const block = activeBlock;
+
+							// Find the last non-code textblock within the active block.
+							// blockAtPos returns the CONTAINER for list items and
+							// blockquotes (not their inner paragraph), so we can't just
+							// use block.pos + nodeSize - 1 — that's a block boundary, not
+							// an inline spot. Descending finds the real inline home:
+							// paragraph/heading match themselves; list items and
+							// blockquotes match their inner paragraph. Code blocks are
+							// excluded (their content is plain text — no inline atoms).
+							const doc = tiptapEditor.state.doc;
+							const blockEnd = block.pos + block.node.nodeSize;
+							let inlinePos: number | null = null;
+							doc.nodesBetween(block.pos, blockEnd, (node, pos) => {
+								if (node.isTextblock && !node.type.spec.code) {
+									inlinePos = pos + node.nodeSize - 1;
+								}
+							});
+
+							if (inlinePos !== null) {
+								// Set the selection NOW so ProseMirror maps it forward
+								// across any edits while the picker is open. No doc
+								// mutation → cancelling the picker changes nothing.
+								tiptapEditor.commands.setTextSelection(inlinePos);
+								attachPendingParagraphAfter = null;
+							} else {
+								// Atom (htmlBlock, hr) / code block: no inline home. Defer
+								// creating a host paragraph until files are chosen.
+								attachPendingParagraphAfter = blockEnd;
+							}
+
+							hideMenu();
+							activeBlock = null;
+							hideHandle();
+							attachInput.click();
+						});
+					}
+
+					attachInput.addEventListener('change', () => {
+						const files = attachInput.files ? Array.from(attachInput.files) : [];
+						// Reset so re-picking the same file fires 'change' again.
+						attachInput.value = '';
+						const pendingAfter = attachPendingParagraphAfter;
+						attachPendingParagraphAfter = null;
+						if (!files.length) return;
+						if (pendingAfter !== null) {
+							// Atom / code-block path: create the host paragraph now,
+							// clamped to the current doc size (it may have shrunk under
+							// concurrent edits), and put the cursor inside it.
+							const after = Math.min(pendingAfter, tiptapEditor.state.doc.content.size);
+							tiptapEditor
+								.chain()
+								.insertContentAt(after, { type: 'paragraph' })
+								.focus(after + 1)
+								.run();
+						}
+						// Common path: the selection was set (and mapped forward) at
+						// click time. uploadAttachments inserts there via the same
+						// paste/drop pipeline.
+						tiptapEditor.commands.uploadAttachments(files);
 					});
 
 					menuBackdrop.addEventListener('click', () => hideMenu());
@@ -769,6 +889,7 @@ export const BlockDragHandle = Extension.create({
 							dropLine.remove();
 							menu.remove();
 							menuBackdrop.remove();
+							attachInput.remove();
 							wrapper.removeEventListener('mousemove', onMouseMove);
 							wrapper.removeEventListener('mouseleave', onMouseLeave);
 							wrapper.removeEventListener('click', onEditorInteraction);
