@@ -32,6 +32,20 @@ import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view';
 import type { AttachmentUploadResult } from '$lib/types';
 
+declare module '@tiptap/core' {
+	interface Commands<ReturnType> {
+		attachmentUpload: {
+			/**
+			 * Upload one or more files through the same pipeline as
+			 * paste/drop, inserting each at the current selection. Backs
+			 * the toolbar / slash "Attach file" buttons — the surface a
+			 * touch device (which can't paste/drop a file) relies on.
+			 */
+			uploadAttachments: (files: File[]) => ReturnType;
+		};
+	}
+}
+
 /** Per-upload metadata stored in plugin state and rendered as a decoration. */
 interface UploadEntry {
 	pos: number;
@@ -289,5 +303,28 @@ export const AttachmentUpload = Extension.create<AttachmentUploadOptions>({
 
 	addProseMirrorPlugins() {
 		return [attachmentUploadPlugin(this.options)];
+	},
+
+	addCommands() {
+		return {
+			// Programmatic entry point for the toolbar / slash "Attach
+			// file" buttons. Routes each picked file through the exact
+			// same startUpload flow as paste/drop (placeholder → upload →
+			// replace with attachmentImage/attachmentChip), so behavior,
+			// error handling, and image-vs-chip routing stay identical
+			// across every insertion surface. Inserts at the current
+			// selection; startUpload's position mapping carries the
+			// placeholder forward across intervening edits.
+			uploadAttachments:
+				(files: File[]) =>
+				({ view }) => {
+					if (!files.length) return false;
+					const pos = view.state.selection.from;
+					for (const file of files) {
+						startUpload(view, file, pos, this.options);
+					}
+					return true;
+				},
+		};
 	},
 });
