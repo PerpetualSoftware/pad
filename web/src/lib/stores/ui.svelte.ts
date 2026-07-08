@@ -5,6 +5,14 @@ let topbarOpen = $state(browser ? localStorage.getItem('pad-topbar') !== 'closed
 let searchOpen = $state(false);
 let isMobile = $state(browser ? window.innerWidth <= 768 : false);
 let isTouch = $state(browser ? 'ontouchstart' in window : false);
+// True while the on-screen keyboard is up. Detected from the geometry of the
+// keyboard itself — visualViewport.height shrinking below the tallest height
+// we've seen (the keyboard-closed baseline). This works on iOS Safari AND
+// Android Chrome; a naive `innerHeight - visualViewport.height` does NOT,
+// because those browsers shrink window.innerHeight in lockstep with the visual
+// viewport, leaving the delta ~0. Consumers (e.g. BottomNav) hide fixed bottom
+// chrome so it doesn't sit stranded above the keyboard. PLAN-1694.
+let keyboardVisible = $state(false);
 let detailPanelOpen = $state(browser ? localStorage.getItem('pad-detail-panel') !== 'closed' && window.innerWidth > 768 : false);
 let createWorkspaceOpen = $state(false);
 let quickAddRequested = $state(false);
@@ -30,6 +38,30 @@ if (browser) {
 			}
 		}
 	});
+
+	// Track on-screen keyboard visibility from the visual viewport. Only touch
+	// devices raise a soft keyboard, so gate on isTouch — a narrow desktop
+	// window never has one and must not hide the nav.
+	if (isTouch && window.visualViewport) {
+		const vv = window.visualViewport;
+		// The tallest viewport height we've seen == keyboard closed. It grows as
+		// the URL bar collapses on scroll and resets on rotation, so the keyboard
+		// shrink is always measured against the true full-height reference.
+		let baseline = vv.height;
+		const KEYBOARD_MIN_PX = 150; // smaller shrinks are browser chrome, not a keyboard
+		const measure = () => {
+			if (vv.height > baseline) baseline = vv.height;
+			keyboardVisible = baseline - vv.height > KEYBOARD_MIN_PX;
+		};
+		vv.addEventListener('resize', measure);
+		vv.addEventListener('scroll', measure);
+		// Re-capture the baseline after an orientation change so a shorter
+		// landscape viewport isn't mistaken for an open keyboard.
+		window.addEventListener('orientationchange', () => {
+			baseline = 0;
+			setTimeout(measure, 300);
+		});
+	}
 }
 
 export const uiStore = {
@@ -38,6 +70,7 @@ export const uiStore = {
 	get searchOpen() { return searchOpen; },
 	get isMobile() { return isMobile; },
 	get isTouch() { return isTouch; },
+	get keyboardVisible() { return keyboardVisible; },
 	get detailPanelOpen() { return detailPanelOpen; },
 	get createWorkspaceOpen() { return createWorkspaceOpen; },
 
