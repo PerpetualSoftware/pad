@@ -74,6 +74,7 @@ func projectCmd() *cobra.Command {
 		standupCmd(),
 		changelogCmd(),
 		reportCmd(),
+		activityCmd(),
 		watchCmd(),
 		reconcileCmd(),
 	)

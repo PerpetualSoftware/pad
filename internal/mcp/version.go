@@ -94,7 +94,24 @@ const CmdhelpVersion = "0.1"
 //     the `artifact` param to the vocabulary. Pure addition; existing
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
-//   - "0.11" — current. TASK-2017: read-only attachments surface.
+//   - "0.12" — current. TASK-2018: agent-accessible activity feed.
+//     Adds an `activity` action to `pad_project` mirroring the new CLI
+//     `pad project activity [--limit N] [--actor user|agent] [--since DATE]`.
+//     It's the non-streaming, bounded query counterpart to
+//     `pad project watch` (the live SSE stream, which stays CLI-only):
+//     a read-only snapshot of the workspace's enriched activity feed —
+//     item refs, titles, and field-level change details — so an agent
+//     can catch up on what OTHER agents/users did since it last worked.
+//     Backed by the existing `GET /workspaces/{ws}/activity` endpoint
+//     (previously web-UI-only), extended with a server-side `since`
+//     date filter so `limit`, `actor`, and `since` behave identically
+//     across the CLI, local stdio MCP, and cloud HTTP transports. Adds
+//     `actor` + `limit` params to the pad_project vocabulary (`since`
+//     already existed for changelog). Pure addition of one action +
+//     params; existing pad_project actions unchanged. Backwards-
+//     compatible for v0.11 consumers that don't enumerate the new
+//     action.
+//   - "0.11" — TASK-2017: read-only attachments surface.
 //     Adds a new `pad_attachment` tool (the tenth resource × action
 //     tool) with two read-only actions — `list` and `show` — mirroring
 //     the CLI `pad attachment list` / `pad attachment show`. `list`
@@ -193,7 +210,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.11"
+const ToolSurfaceVersion = "0.12"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

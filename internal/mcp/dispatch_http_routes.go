@@ -250,6 +250,17 @@ func init() {
 			pathTemplate: "/api/v1/workspaces/{workspace}/dashboard",
 		}.toRouteMapper(),
 
+		// `project activity` (TASK-2018) — non-streaming, bounded
+		// snapshot of the enriched workspace activity feed. The endpoint
+		// applies the limit + actor + since filters server-side, so all
+		// three forward as query params and behave identically on the CLI,
+		// local stdio MCP, and this cloud HTTP path.
+		"project activity": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/activity",
+			queryParams:  map[string]string{"limit": "limit", "actor": "actor", "since": "since"},
+		}.toRouteMapper(),
+
 		// `pad bootstrap` shells out to `pad_meta.action=bootstrap` and
 		// to the pad://workspace/{ws}/bootstrap resource on local stdio.
 		// For pad-cloud's HTTP MCP path this maps to the canonical

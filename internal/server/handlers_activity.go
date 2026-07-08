@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -33,6 +34,17 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 		if o, err := strconv.Atoi(offsetStr); err == nil {
 			params.Offset = o
 		}
+	}
+	// since=YYYY-MM-DD restricts to activity on or after that date. Applied
+	// in the store query so LIMIT counts post-filter rows. Backs
+	// `pad project activity --since` and the pad_project.activity MCP action.
+	if sinceStr := r.URL.Query().Get("since"); sinceStr != "" {
+		parsed, err := time.Parse("2006-01-02", sinceStr)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_since", "`since` must be a date in YYYY-MM-DD format")
+			return
+		}
+		params.Since = parsed
 	}
 
 	activities, err := s.store.ListWorkspaceActivity(workspaceID, params)

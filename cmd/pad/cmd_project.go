@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -880,6 +881,108 @@ func changelogCmd() *cobra.Command {
 	cmd.Flags().IntVar(&days, "days", 7, "show items completed in last N days")
 	cmd.Flags().StringVar(&since, "since", "", "only show items completed after this date (YYYY-MM-DD)")
 	cmd.Flags().StringVar(&parentRef, "parent", "", "only show items under a specific parent (ref, slug, or title)")
+
+	return cmd
+}
+
+func activityCmd() *cobra.Command {
+	var limit int
+	var actor string
+	var since string
+
+	cmd := &cobra.Command{
+		Use:   "activity",
+		Short: "Show recent workspace activity — what agents and users changed (non-streaming)",
+		Long: `Show a bounded, non-streaming snapshot of workspace activity.
+
+Answers "what did other agents/users do since I last worked?" — the query
+counterpart to the live 'pad project watch' stream. Backed by the same
+enriched activity feed the web UI uses (item refs, titles, change details).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			params := url.Values{}
+			if limit > 0 {
+				params.Set("limit", strconv.Itoa(limit))
+			}
+			if actor != "" {
+				params.Set("actor", actor)
+			}
+			if since != "" {
+				// Validate locally for a friendly error before the round-trip;
+				// the server applies the filter (a.created_at >= since) so LIMIT
+				// counts post-filter rows.
+				if _, err := time.Parse("2006-01-02", since); err != nil {
+					return fmt.Errorf("invalid --since date (expected YYYY-MM-DD): %w", err)
+				}
+				params.Set("since", since)
+			}
+
+			activities, err := client.ListActivity(ws, params)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				if activities == nil {
+					activities = []models.Activity{}
+				}
+				return cli.PrintJSON(activities)
+			}
+
+			if len(activities) == 0 {
+				fmt.Println("No activity found.")
+				return nil
+			}
+
+			dim := color.New(color.Faint)
+			bold := color.New(color.Bold)
+			cyan := color.New(color.FgCyan)
+
+			for _, a := range activities {
+				timeStr := dim.Sprint(a.CreatedAt.Format("2006-01-02 15:04"))
+
+				actorName := a.ActorName
+				if actorName == "" {
+					actorName = a.Actor
+				}
+				if actorName == "" {
+					actorName = "unknown"
+				}
+
+				// Target: item ref + title when the activity references an item,
+				// otherwise a workspace-level (audit) event.
+				target := ""
+				if a.ItemRef != "" {
+					target = " " + cyan.Sprint(a.ItemRef)
+					if a.ItemTitle != "" {
+						target += " " + a.ItemTitle
+					}
+				} else if a.ItemTitle != "" {
+					target = " " + a.ItemTitle
+				}
+
+				fmt.Printf("%s  %s %s%s\n", timeStr, bold.Sprint(actorName), a.Action, target)
+
+				// Surface field-level change details when present.
+				if a.Metadata != "" {
+					var meta struct {
+						Changes string `json:"changes"`
+					}
+					if json.Unmarshal([]byte(a.Metadata), &meta) == nil && meta.Changes != "" {
+						fmt.Printf("       %s\n", dim.Sprint(meta.Changes))
+					}
+				}
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&limit, "limit", 20, "maximum number of activity entries to return")
+	cmd.Flags().StringVar(&actor, "actor", "", "filter by actor category: user or agent")
+	cmd.Flags().StringVar(&since, "since", "", "only show activity on or after this date (YYYY-MM-DD)")
 
 	return cmd
 }
