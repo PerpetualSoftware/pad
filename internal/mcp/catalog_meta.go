@@ -64,7 +64,7 @@ Actions:
   version       — Full version metadata (pad version, cmdhelp version, tool surface
                   version, MCP protocol version). Same JSON as pad://_meta/version.
   tool-surface  — catalog dump: every tool managed by the hand-curated
-                  catalog (the nine resource × action tools — pad_set_workspace
+                  catalog (the ten resource × action tools — pad_set_workspace
                   is registered separately and not included), its actions, and
                   its input schema. tools/list also contains pad_set_workspace
                   and matches the catalog otherwise — the historical cmdhelp

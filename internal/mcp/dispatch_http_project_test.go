@@ -464,6 +464,80 @@ func TestDispatch_ProjectStaleAndReady_RequireWorkspace(t *testing.T) {
 	}
 }
 
+// --- project activity (TASK-2018) ---
+
+// TestDispatch_ProjectActivity_ForwardsLimitActorAndWrapsArray pins the
+// cloud MCP route for `project activity`: it proxies to
+// GET /workspaces/{ws}/activity, forwards the limit + actor + since
+// filters as query params (all three are applied server-side), and —
+// because the endpoint returns a bare JSON array — the response is
+// wrapped into {items:[...]} by packageHTTPResponse (the BUG-985
+// array-wrap).
+func TestDispatch_ProjectActivity_ForwardsLimitActorAndWrapsArray(t *testing.T) {
+	var gotQuery url.Values
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/docapp/activity", func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"id":"a1","action":"updated","actor":"agent:claude","item_ref":"TASK-5","item_title":"Do the thing"},
+			{"id":"a2","action":"created","actor":"agent:claude","item_ref":"TASK-6","item_title":"Another"}
+		]`))
+	})
+	d := &HTTPHandlerDispatcher{Handler: mux, UserResolver: fixedUserResolver(&models.User{ID: "u"})}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{
+			"workspace": "docapp",
+			"limit":     float64(20),
+			"actor":     "agent",
+			"since":     "2025-01-01",
+		}),
+		[]string{"project", "activity"}, nil,
+	)
+	if err != nil || res.IsError {
+		t.Fatalf("Dispatch err=%v IsError=%v: %#v", err, res != nil && res.IsError, res)
+	}
+	if gotQuery.Get("limit") != "20" {
+		t.Errorf("limit query param = %q, want %q", gotQuery.Get("limit"), "20")
+	}
+	if gotQuery.Get("actor") != "agent" {
+		t.Errorf("actor query param = %q, want %q", gotQuery.Get("actor"), "agent")
+	}
+	if gotQuery.Get("since") != "2025-01-01" {
+		t.Errorf("since query param = %q, want %q (applied server-side)", gotQuery.Get("since"), "2025-01-01")
+	}
+	wrapped, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent = %T, want map[string]any", res.StructuredContent)
+	}
+	items, ok := wrapped["items"].([]any)
+	if !ok {
+		t.Fatalf("items field missing or wrong type: %#v", wrapped)
+	}
+	if len(items) != 2 {
+		t.Errorf("expected 2 activity entries, got %d", len(items))
+	}
+}
+
+// TestDispatch_ProjectActivity_RequiresWorkspace mirrors the other
+// project proxies: workspace is validated before the Handler is touched.
+func TestDispatch_ProjectActivity_RequiresWorkspace(t *testing.T) {
+	d := &HTTPHandlerDispatcher{
+		Handler:      errorHandler(t, "must not be called when workspace missing"),
+		UserResolver: fixedUserResolver(&models.User{ID: "u"}),
+	}
+	res, err := d.Dispatch(
+		WithDispatchInput(context.Background(), map[string]any{}),
+		[]string{"project", "activity"}, nil,
+	)
+	if err != nil {
+		t.Fatalf("Dispatch err: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("expected IsError when workspace missing")
+	}
+}
+
 // --- project reconcile (noRemoteEquivalent) ---
 
 func TestDispatch_ProjectReconcileRejectedAsCLIOnly(t *testing.T) {

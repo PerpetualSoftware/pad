@@ -570,6 +570,9 @@ const HANDLERS: Record<string, Handler> = {
 		api.playbooks.run(ws, requireRef(args), {
 			args: (args.args as Record<string, unknown> | undefined) ?? undefined,
 			raw_args: strArray(args, 'raw_args'),
+			// Draft-gate escape hatch (BUG-2020): the server refuses a
+			// non-active playbook unless allow_draft is set.
+			allow_draft: bool(args, 'allow_draft') === true ? true : undefined,
 		}),
 
 	// ── pad_library ──

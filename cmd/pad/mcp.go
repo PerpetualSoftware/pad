@@ -222,8 +222,8 @@ etc.) per its mcp.json configuration. Direct human invocation is rare;
 when running interactively you'll see an idle process waiting for the
 client's initialize message.
 
-The tool surface is the hand-curated v0.4 catalog (PLAN-1410) —
-eight resource × action tools (` + "`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook`" + `) plus ` + "`pad_set_workspace`" + ` for session-default workspace
+The tool surface is the hand-curated v0.11 catalog —
+ten resource × action tools (` + "`pad_item`, `pad_workspace`, `pad_collection`, `pad_project`, `pad_role`, `pad_search`, `pad_meta`, `pad_playbook`, `pad_library`, `pad_attachment`" + `) plus ` + "`pad_set_workspace`" + ` for session-default workspace
 pinning. cmdhelp (v0.1) still drives per-command argument
 schemas at dispatch time, but the historical leaf-walker that
 exposed every CLI verb as its own tool was retired in TASK-981

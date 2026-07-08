@@ -57,6 +57,11 @@ var padPlaybookTool = ToolDef{
 				Type:        "array<string>",
 				Description: "Raw CLI-style argument tokens (positional values, bareword flag names, key=value pairs). The server applies the strict parsing rules from `pad playbook run`. Use when the agent is forwarding user input verbatim. Optional for action=run.",
 			},
+			{
+				Name:        "allow_draft",
+				Type:        "boolean",
+				Description: "Escape hatch for the draft-playbook gate. action=run refuses a playbook whose status isn't \"active\" (e.g. one still being drafted) with a playbook_not_active error. Set true to run it anyway. Optional for action=run; default false.",
+			},
 		},
 	},
 	Actions: map[string]ActionFn{
@@ -161,6 +166,15 @@ func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv)
 		}
 	}
 
+	// Draft-gate escape hatch. The CLI parser would reject an unknown
+	// bareword, but the server strips `allow-draft` from raw_args before
+	// strict parsing, so forwarding it as a trailing token is the
+	// ExecDispatcher-safe way to carry the flag through. (The HTTP path
+	// above carries it structurally via mapPlaybookRun.)
+	if ad, ok := input["allow_draft"].(bool); ok && ad {
+		tokens = append(tokens, "allow-draft")
+	}
+
 	// Re-shape the input map so BuildCLIArgs picks up ref as the first
 	// positional and the trailing tokens as variadic-args. cmdhelp
 	// records `args[]` as the variadic slot for `playbook run`.
@@ -203,6 +217,11 @@ Actions:
           Required: workspace, ref.
           Optional: args (pre-parsed map), raw_args (CLI-style tokens).
                     Pass exactly one or merge — see the per-param docs.
+          Draft gate: run refuses a playbook whose status isn't "active"
+                    (e.g. one still being drafted), returning a
+                    playbook_not_active error. Pass allow_draft: true to
+                    override and run it anyway. The status is echoed on
+                    both the run and get responses.
 
 Use pad_playbook when an agent needs to dispatch a named procedure or read
 a playbook's declared argument contract before invoking it. For browsing

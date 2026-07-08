@@ -60,12 +60,14 @@ type toolSurfaceToolSummary struct {
 //   - pad_workspace:  list/members/storage/audit-log/deleted read;
 //     invite/create/claim/restore write.
 //   - pad_collection: list read; create/update/delete write.
-//   - pad_project:    all read (dashboard/next/standup/changelog/report).
+//   - pad_project:    all read (dashboard/next/ready/stale/standup/
+//     changelog/report/activity).
 //   - pad_role:       list read; create/update/delete write.
 //   - pad_search:     query read.
 //   - pad_playbook:   list/get read; run is side-effect-free (returns the
 //     body + bound args for the agent to execute) → read.
 //   - pad_library:    list/get read; activate mutates workspace state → write.
+//   - pad_attachment: list/show read (metadata only; no upload/download).
 //   - pad_meta:       server-info/version/tool-surface/bootstrap all read.
 var readOnlyActions = map[string]map[string]bool{
 	"pad_item": {
@@ -91,9 +93,12 @@ var readOnlyActions = map[string]map[string]bool{
 	"pad_project": {
 		"dashboard": true,
 		"next":      true,
+		"ready":     true,
+		"stale":     true,
 		"standup":   true,
 		"changelog": true,
 		"report":    true,
+		"activity":  true,
 	},
 	"pad_role": {
 		"list": true,
@@ -109,6 +114,10 @@ var readOnlyActions = map[string]map[string]bool{
 	"pad_library": {
 		"list": true,
 		"get":  true,
+	},
+	"pad_attachment": {
+		"list": true,
+		"show": true,
 	},
 	"pad_meta": {
 		"server-info":  true,

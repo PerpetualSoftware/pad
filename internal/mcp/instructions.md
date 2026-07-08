@@ -6,22 +6,23 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v1.0)
+## Tool surface (v0.14)
 
-Nine resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Ten tools total.
+Ten resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Eleven tools total.
 
-- `pad_item` — Items: create / update / delete / get / list / move / restore / link / unlink / deps / star / unstar / starred / comment / list-comments / backlinks / history / bulk-update / note / decide / export / import.
+- `pad_item` — Items: create / update / delete / get / list / move / restore / link / unlink / deps / star / unstar / starred / comment / list-comments / backlinks / bulk-update / note / decide / export / import / history. `update` field writes are a server-side field-level merge (only the keys you set change); pass `expected_updated_at` for optimistic concurrency (a stale value fails with a structured 409 `update_conflict`). `history` returns read-only item version metadata (newest-first).
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log / create / claim / deleted / restore.
 - `pad_collection` — Collections: list / create / update / delete.
-- `pad_project` — Project intelligence: dashboard / next / standup / changelog / report.
+- `pad_project` — Project intelligence: dashboard / next / ready / stale / standup / changelog / report / activity. Use `ready` for the actionable backlog and `stale` for items needing attention; `activity` to catch up on what other agents/users changed since you last worked (non-streaming feed with item refs + change details).
 - `pad_role` — Agent roles: list / create / update / delete.
 - `pad_search` — Full-text search across items: query.
-- `pad_playbook` — Invokable procedures: list / get / run. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free.
+- `pad_playbook` — Invokable procedures: list / get / run. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free. `run` refuses a playbook whose status isn't `active` (a draft still being authored) with a `playbook_not_active` error — pass `allow_draft: true` to override. Both `run` and `get` echo the playbook's `status`.
 - `pad_library` — Convention + playbook library (the global catalog of pre-built entries workspaces activate): list / get / activate.
+- `pad_attachment` — Read-only attachment metadata: list / show. `list` enumerates a workspace's attachments (filter by item / category / collection / attached / unattached); `show` returns one attachment's MIME, size, filename, and ETag via a HEAD request. Read-only — uploading / downloading / viewing raw bytes is CLI-only.
 - `pad_meta` — Server introspection: server-info / version / tool-surface / bootstrap. The `bootstrap` action returns one-shot workspace context (user + collections + always-on conventions + a metadata-only `convention_index` of every active convention + roles + playbook metadata + dashboard + recent activity).
 - `pad_set_workspace` — Load workspace context; response embeds the bootstrap blob so you load context in one call. On a single-user local server it also pins the workspace as the session default for subsequent calls; a multi-user/remote server does **not** persist it — pass `workspace` explicitly on each call. Takes `workspace: <slug>` only (no `action`).
 
-For the nine resource × action tools, always pass `action` as a top-level field. Per-action required parameters are documented in each tool's description.
+For the ten resource × action tools, always pass `action` as a top-level field. Per-action required parameters are documented in each tool's description.
 
 ## Resources are cheaper than tool calls
 

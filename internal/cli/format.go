@@ -228,10 +228,20 @@ func FormatFieldSummary(fieldsJSON string) string {
 	return strings.Join(parts, " | ")
 }
 
-// PrintJSON prints any value as formatted JSON.
+// PrintJSON prints any value as indented (human-readable) JSON.
 func PrintJSON(v interface{}) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+// PrintJSONCompact prints any value as compact (no-indent) JSON — a single
+// line plus trailing newline. Preferred for machine-consumed payloads where
+// pretty-print whitespace is pure overhead (e.g. `pad bootstrap`, whose
+// canonical consumer is the /pad agent skill). Human inspection has the
+// --format markdown variant.
+func PrintJSONCompact(v interface{}) error {
+	enc := json.NewEncoder(os.Stdout)
 	return enc.Encode(v)
 }
 

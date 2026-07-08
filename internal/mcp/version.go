@@ -94,7 +94,7 @@ const CmdhelpVersion = "0.1"
 //     the `artifact` param to the vocabulary. Pure addition; existing
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
-//   - "1.0" — current. TASK-2022: adds a `history` action to `pad_item`
+//   - "0.14" — current. TASK-2022: adds a `history` action to `pad_item`
 //     (read-only item version history — newest-first metadata: id,
 //     created_at, created_by, source, change_summary; the resolved
 //     content body is omitted for token thrift). Also adds an
@@ -108,7 +108,66 @@ const CmdhelpVersion = "0.1"
 //     path plus a new action and a new param, hence the version bump.
 //     Pure addition to the action enum + param vocabulary; existing
 //     pad_item actions/params are unchanged and backwards-compatible.
-//   - "0.9" — historical. TASK-2000: `pad_item.list` is now summary-shaped
+//   - "0.13" — TASK-2019: agent-oriented backlog queries.
+//     Adds `ready` + `stale` actions to `pad_project`, mirroring the
+//     existing CLI `pad project ready` / `pad project stale`. `ready`
+//     (read-only) returns the current actionable backlog — the
+//     query-oriented counterpart to `pad project next`, reusing the
+//     dashboard's suggested-next logic. `stale` (read-only) lists items
+//     needing attention (stalled, blocked, overdue, or otherwise out of
+//     the active workflow). Both HTTP dispatchers already existed
+//     (dispatch_http_project.go); this bump wires them onto the catalog
+//     surface. `pad project reconcile` stays CLI-only — it shells out to
+//     `gh` to compare stored PR metadata against live GitHub state, a
+//     local-git dependency an MCP agent lacks. Pure addition of two
+//     read-only actions; existing pad_project actions unchanged.
+//     Backwards-compatible for v0.12 consumers that don't enumerate the
+//     new actions.
+//   - "0.12" — TASK-2018: agent-accessible activity feed.
+//     Adds an `activity` action to `pad_project` mirroring the new CLI
+//     `pad project activity [--limit N] [--actor user|agent] [--since DATE]`.
+//     It's the non-streaming, bounded query counterpart to
+//     `pad project watch` (the live SSE stream, which stays CLI-only):
+//     a read-only snapshot of the workspace's enriched activity feed —
+//     item refs, titles, and field-level change details — so an agent
+//     can catch up on what OTHER agents/users did since it last worked.
+//     Backed by the existing `GET /workspaces/{ws}/activity` endpoint
+//     (previously web-UI-only), extended with a server-side `since`
+//     date filter so `limit`, `actor`, and `since` behave identically
+//     across the CLI, local stdio MCP, and cloud HTTP transports. Adds
+//     `actor` + `limit` params to the pad_project vocabulary (`since`
+//     already existed for changelog). Pure addition of one action +
+//     params; existing pad_project actions unchanged. Backwards-
+//     compatible for v0.11 consumers that don't enumerate the new
+//     action.
+//   - "0.11" — TASK-2017: read-only attachments surface.
+//     Adds a new `pad_attachment` tool (the tenth resource × action
+//     tool) with two read-only actions — `list` and `show` — mirroring
+//     the CLI `pad attachment list` / `pad attachment show`. `list`
+//     (read-only) enumerates a workspace's attachments with optional
+//     filters (item, category, collection, attached/unattached, sort,
+//     limit, offset); `show` (read-only) returns one attachment's
+//     metadata (MIME, size, filename, ETag, last-modified) via a HEAD
+//     request without transferring bytes. Both HTTP dispatchers already
+//     existed (dispatch_http_attachments.go, TASK-871 era); this bump
+//     just wires them onto the catalog surface. Upload / download / view
+//     stay CLI-only (filesystem-bound) and are NOT exposed. Pure
+//     addition of one tool + two read actions; existing tools/actions
+//     unchanged. Backwards-compatible for v0.10 consumers that don't
+//     enumerate the new tool. The base64 image RESOURCE for multimodal
+//     agents is tracked separately (TASK-2076), not part of this bump.
+//   - "0.10" — BUG-2020: server-side draft-playbook gate.
+//     `pad_playbook.run` now refuses a playbook whose status isn't
+//     "active" (a draft still being authored) with a structured
+//     `playbook_not_active` error, and adds an `allow_draft` boolean
+//     param (escape hatch) that runs a draft anyway. Both the `run` and
+//     `get` responses now echo the playbook's `status`. Pure addition of
+//     one param + one echoed field + a new refusal path; existing active
+//     playbooks run unchanged. Backwards-compatible for v0.9 consumers
+//     that don't set allow_draft — except that running a draft (which
+//     the skill already told agents not to do) now errors instead of
+//     silently returning the body.
+//   - "0.9" — TASK-2000: `pad_item.list` is now summary-shaped
 //     and bounded. Two changes for agent-token thrift:
 //   - The `list` action injects a default `limit` (50) and clamps an
 //     oversized one (max 300), mirroring the backlinks default/max, so
@@ -180,7 +239,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "1.0"
+const ToolSurfaceVersion = "0.14"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

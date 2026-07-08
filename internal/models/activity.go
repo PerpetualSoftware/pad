@@ -89,6 +89,11 @@ type ActivityListParams struct {
 	Action string
 	Actor  string
 	Source string
+	// Since, when non-zero, restricts results to activity created on or
+	// after this instant (a.created_at >= Since). Applied in the SQL query
+	// so LIMIT counts post-filter rows. Used by `pad project activity
+	// --since` and the pad_project.activity MCP action.
+	Since  time.Time
 	Limit  int
 	Offset int
 }

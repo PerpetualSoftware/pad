@@ -309,18 +309,19 @@ pad mcp install claude-desktop   # or: cursor, windsurf, --all
 # Restart the client; pad shows up as the "pad" MCP server.
 ```
 
-**Tool catalog (v1.0)** — nine resource × action tools plus `pad_set_workspace` (ten total), no flat verb explosion:
+**Tool catalog (v0.14)** — ten resource × action tools plus `pad_set_workspace` (eleven total), no flat verb explosion:
 
 | Tool | Actions |
 |---|---|
-| `pad_item` | `create`, `update`, `delete`, `get`, `list`, `move`, `restore`, `link`, `unlink`, `deps`, `star`, `unstar`, `starred`, `comment`, `list-comments`, `backlinks`, `history`, `bulk-update`, `note`, `decide`, `export`, `import` |
+| `pad_item` | `create`, `update`, `delete`, `get`, `list`, `move`, `restore`, `link`, `unlink`, `deps`, `star`, `unstar`, `starred`, `comment`, `list-comments`, `backlinks`, `bulk-update`, `note`, `decide`, `export`, `import`, `history` |
 | `pad_workspace` | `list`, `members`, `invite`, `storage`, `audit-log`, `create`, `claim`, `deleted`, `restore` |
 | `pad_collection` | `list`, `create`, `update`, `delete` |
-| `pad_project` | `dashboard`, `next`, `standup`, `changelog`, `report` |
+| `pad_project` | `dashboard`, `next`, `ready`, `stale`, `standup`, `changelog`, `report`, `activity` |
 | `pad_role` | `list`, `create`, `update`, `delete` |
 | `pad_search` | `query` |
 | `pad_playbook` | `list`, `get`, `run` |
 | `pad_library` | `list`, `get`, `activate` |
+| `pad_attachment` | `list`, `show` |
 | `pad_meta` | `server-info`, `version`, `tool-surface`, `bootstrap` |
 | `pad_set_workspace` | session-default workspace pinning (response embeds the bootstrap blob) |
 
@@ -335,7 +336,7 @@ initialize handshake under `capabilities.experimental.padCmdhelp` and
 `pad://_meta/version`):
 
 - `cmdhelp_version: "0.1"` — CLI help-tree contract (used at dispatch time)
-- `tool_surface_version: "1.0"` — MCP tool catalog contract (v0.5 added `pad_library`; v0.6 `pad_item.backlinks`; v0.7 `pad_item` `export`/`import`; v0.8 `pad_workspace` `deleted`/`restore`; v0.9 made `pad_item.list` summary-shaped by default with a default+max result cap; v1.0 added `pad_item.history` + `expected_updated_at` optimistic-concurrency + server-side field-level merge on `update`; see `internal/mcp/version.go` for the full changelog)
+- `tool_surface_version: "0.14"` — MCP tool catalog contract (v0.5 added `pad_library`; v0.6 `pad_item.backlinks`; v0.7 `pad_item` `export`/`import`; v0.8 `pad_workspace` `deleted`/`restore`; v0.9 made `pad_item.list` summary-shaped by default with a default+max result cap; v0.10 enforced the draft-playbook gate server-side on `pad_playbook.run` with an `allow_draft` escape hatch; v0.11 added the read-only `pad_attachment` tool (`list`/`show`); v0.12 added `pad_project.activity` (agent-accessible non-streaming activity feed); v0.13 added `pad_project` `ready`/`stale` (agent-oriented backlog + attention queries); v0.14 added `pad_item` `history` + an `expected_updated_at` optimistic-concurrency param with server-side field-level PATCH merge (TASK-2022); see `internal/mcp/version.go` for the full changelog)
 
 External agents pin against these so a future rename doesn't break them
 silently. Errors come back as structured envelopes (`{error: {code,
