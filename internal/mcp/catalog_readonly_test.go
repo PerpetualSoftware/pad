@@ -132,6 +132,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "note"}:          {"item", "note"},
 		{"pad_item", "decide"}:        {"item", "decide"},
 		{"pad_item", "backlinks"}:     {"item", "backlinks"},
+		{"pad_item", "history"}:       {"item", "history"},
 
 		// pad_playbook actions (PLAN-1377 / TASK-1381). All three
 		// passThrough to `pad playbook <subcommand>`.
@@ -678,6 +679,15 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 					"limit":     {Type: "int"},
 					"offset":    {Type: "int"},
 				},
+			},
+			"item history": {
+				Summary: "item version history",
+				Args:    mkArgs("ref"),
+				Flags: func() map[string]cmdhelp.Flag {
+					f := mkFlags("workspace")
+					f["full"] = cmdhelp.Flag{Type: "bool"}
+					return f
+				}(),
 			},
 			"item bulk-update": {
 				Summary: "bulk update",

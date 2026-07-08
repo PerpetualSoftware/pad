@@ -71,8 +71,10 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // errOpenChildrenGuard is the sentinel the precheck returns to the
@@ -303,6 +305,38 @@ func writeOpenChildrenError(w http.ResponseWriter, parentRef string, details *op
 			"details": details,
 		},
 	})
+}
+
+// writeUpdateConflictError emits the pad-structured-error/v1 conflict
+// envelope (HTTP 409, code "update_conflict") when an optimistic-concurrency
+// update loses the race (TASK-2022). `ref` is the already-formatted item ref
+// (e.g. "TASK-5"). The details carry both timestamps so a client can decide
+// whether to re-read + retry or surface the collision to the user.
+func writeUpdateConflictError(w http.ResponseWriter, ref string, conflict *store.UpdateConflictError) {
+	writeJSON(w, http.StatusConflict, map[string]any{
+		"error": map[string]any{
+			"code": "update_conflict",
+			"message": fmt.Sprintf(
+				"%s was modified by another writer since you last read it; re-read and retry.",
+				ref),
+			"details": map[string]any{
+				"ref":                 ref,
+				"expected_updated_at": conflict.ExpectedUpdatedAt,
+				"actual_updated_at":   conflict.ActualUpdatedAt.UTC().Format(time.RFC3339),
+			},
+		},
+	})
+}
+
+// asUpdateConflictError reports whether err is (or wraps) a
+// store.UpdateConflictError and returns it. Handlers use it to branch the
+// generic upstream-error path into the structured 409 above.
+func asUpdateConflictError(err error) (*store.UpdateConflictError, bool) {
+	var conflict *store.UpdateConflictError
+	if errors.As(err, &conflict) {
+		return conflict, true
+	}
+	return nil, false
 }
 
 // asOpenChildrenGuardError unwraps a store-layer error that may carry

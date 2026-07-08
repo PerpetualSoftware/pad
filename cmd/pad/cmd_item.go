@@ -708,20 +708,21 @@ func showCmd() *cobra.Command {
 
 func updateCmd() *cobra.Command {
 	var (
-		title      string
-		content    string
-		useStdin   bool
-		status     string
-		priority   string
-		assignee   string
-		roleFlag   string
-		parentFlag string
-		category   string
-		tags       string
-		fieldFlags []string
-		comment    string
-		force      bool
-		sortOrder  int
+		title             string
+		content           string
+		useStdin          bool
+		status            string
+		priority          string
+		assignee          string
+		roleFlag          string
+		parentFlag        string
+		category          string
+		tags              string
+		fieldFlags        []string
+		comment           string
+		force             bool
+		sortOrder         int
+		expectedUpdatedAt string
 	)
 
 	cmd := &cobra.Command{
@@ -786,32 +787,38 @@ Examples:
 			if force {
 				input.Force = true
 			}
+			if expectedUpdatedAt != "" {
+				input.ExpectedUpdatedAt = expectedUpdatedAt
+			}
 
-			// Merge field changes with existing fields
+			// Build a FIELD-LEVEL patch carrying ONLY the keys this command
+			// changes (TASK-2022 / IDEA-1480). The server shallow-merges it
+			// onto the item's current fields inside the write transaction, so
+			// two concurrent `pad item update` calls touching different fields
+			// no longer clobber each other — the old read-modify-write here
+			// (fetch item, merge locally, send the whole blob) lost the later
+			// writer's change on the last write.
 			parentRef := parentFlag
 
 			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0
 			if hasFieldChanges {
-				existingFields := make(map[string]interface{})
-				if item.Fields != "" && item.Fields != "{}" {
-					json.Unmarshal([]byte(item.Fields), &existingFields)
-				}
+				patch := make(map[string]interface{})
 
 				if status != "" {
-					existingFields["status"] = status
+					patch["status"] = status
 				}
 				if priority != "" {
-					existingFields["priority"] = priority
+					patch["priority"] = priority
 				}
 				if parentRef != "" {
 					parentItem, err := client.GetItem(ws, parentRef)
 					if err != nil {
 						return fmt.Errorf("parent %q not found: %w", parentRef, err)
 					}
-					existingFields["parent"] = parentItem.ID
+					patch["parent"] = parentItem.ID
 				}
 				if category != "" {
-					existingFields["category"] = category
+					patch["category"] = category
 				}
 
 				// Apply arbitrary --field key=value flags. Fetch the
@@ -827,13 +834,11 @@ Examples:
 				}
 				for _, kv := range fieldFlags {
 					if idx := strings.Index(kv, "="); idx > 0 {
-						existingFields[kv[:idx]] = parseFieldFlag(collSchema, kv[:idx], kv[idx+1:])
+						patch[kv[:idx]] = parseFieldFlag(collSchema, kv[:idx], kv[idx+1:])
 					}
 				}
 
-				fieldsJSON, _ := json.Marshal(existingFields)
-				fieldsStr := string(fieldsJSON)
-				input.Fields = &fieldsStr
+				input.FieldsPatch = patch
 			}
 
 			// Resolve --assign (user name/email → user ID)
@@ -885,6 +890,12 @@ Examples:
 						// without re-printing the (now-rendered) details.
 						return fmt.Errorf("update rejected: open children present")
 					}
+					// TASK-2022: render the optimistic-concurrency conflict
+					// from the same structured payload MCP clients consume.
+					if uc := apiErr.AsUpdateConflict(); uc != nil {
+						cli.WriteUpdateConflictError(os.Stderr, apiErr, uc)
+						return fmt.Errorf("update rejected: item was modified by another writer")
+					}
 				}
 				return err
 			}
@@ -920,8 +931,109 @@ Examples:
 	cmd.Flags().IntVar(&sortOrder, "sort-order", 0, "set the item's sort_order rank (lower appears first; used by child lists and drag-reorder)")
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
 	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")
+	cmd.Flags().StringVar(&expectedUpdatedAt, "expected-updated-at", "", "optimistic concurrency: RFC3339 updated_at you last read; the update is rejected with a conflict (exit non-zero) if the item changed since")
 
 	return cmd
+}
+
+// --- history ---
+
+// itemVersionSummary is the token-light projection `pad item history` emits
+// for `--format json` by default: version metadata WITHOUT the resolved
+// content body (which can be large and is rarely what a history listing
+// wants). Pass --full to include content. Mirrors the summary-vs-full split
+// TASK-2000 introduced for item lists.
+type itemVersionSummary struct {
+	ID            string `json:"id"`
+	CreatedAt     string `json:"created_at"`
+	CreatedBy     string `json:"created_by"`
+	Source        string `json:"source"`
+	ChangeSummary string `json:"change_summary,omitempty"`
+}
+
+func historyCmd() *cobra.Command {
+	var full bool
+
+	cmd := &cobra.Command{
+		Use:     "history <ref>",
+		Aliases: []string{"versions"},
+		Short:   "Show an item's version history (read-only)",
+		Long: `Show the recorded version history for an item, newest first.
+
+Each row is a snapshot captured when the item's content changed (edits from
+the web editor, CLI, MCP, collab flushes, and version restores). This is a
+READ-ONLY view — use the web UI to restore a specific version.
+
+Items can be referenced by issue ID (e.g. TASK-5) or slug.
+
+Examples:
+  pad item history TASK-5
+  pad item versions TASK-5 --format json
+  pad item history TASK-5 --full --format json   # include resolved content`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			slug := args[0]
+
+			versions, err := client.ListItemVersions(ws, slug)
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				if full {
+					return cli.PrintJSON(versions)
+				}
+				summaries := make([]itemVersionSummary, 0, len(versions))
+				for _, v := range versions {
+					summaries = append(summaries, itemVersionSummary{
+						ID:            v.ID,
+						CreatedAt:     v.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+						CreatedBy:     v.CreatedBy,
+						Source:        v.Source,
+						ChangeSummary: v.ChangeSummary,
+					})
+				}
+				return cli.PrintJSON(summaries)
+			}
+
+			if len(versions) == 0 {
+				fmt.Println("No version history for this item yet.")
+				return nil
+			}
+
+			fmt.Printf("%-20s  %-14s  %-16s  %s\n", "WHEN", "BY", "SOURCE", "SUMMARY")
+			for _, v := range versions {
+				summary := v.ChangeSummary
+				if summary == "" {
+					summary = "-"
+				}
+				fmt.Printf("%-20s  %-14s  %-16s  %s\n",
+					v.CreatedAt.Format("2006-01-02 15:04:05"),
+					truncateField(v.CreatedBy, 14),
+					truncateField(v.Source, 16),
+					summary,
+				)
+			}
+			fmt.Printf("\n%d version(s).\n", len(versions))
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&full, "full", false, "include each version's resolved content body (JSON output only)")
+	return cmd
+}
+
+// truncateField shortens s to fit width, appending an ellipsis when cut.
+func truncateField(s string, width int) string {
+	if len(s) <= width {
+		return s
+	}
+	if width <= 1 {
+		return s[:width]
+	}
+	return s[:width-1] + "…"
 }
 
 // --- delete ---

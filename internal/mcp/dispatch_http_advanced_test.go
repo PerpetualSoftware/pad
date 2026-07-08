@@ -223,13 +223,22 @@ func TestDispatch_PreprocessSkippedForCommandsNotInAllowlist(t *testing.T) {
 
 // --- dispatchItemUpdate ---
 
-func TestDispatchItemUpdate_MergesFieldsWithExisting(t *testing.T) {
+// TestDispatchItemUpdate_SendsFieldsPatch is the TASK-2022 update of the old
+// read-modify-write test. The HTTP dispatcher no longer merges the existing
+// fields client-side and sends a full `fields` blob — that lost concurrent
+// single-field changes (IDEA-1480). It now sends ONLY the changed keys as
+// `fields_patch`, and the SERVER merges under the write lock. So the PATCH
+// body must carry `fields_patch` with just the keys this call changed
+// (status + effort), and must NOT carry a full `fields` string or the
+// untouched existing keys (priority/category).
+func TestDispatchItemUpdate_SendsFieldsPatch(t *testing.T) {
 	captured := newRequestCapture()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
-			// Existing item with two fields set.
+			// Existing item with two fields set — the dispatcher must NOT
+			// fold these into the PATCH anymore (server-side merge does).
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{
 				"ref":"TASK-5",
@@ -248,7 +257,7 @@ func TestDispatchItemUpdate_MergesFieldsWithExisting(t *testing.T) {
 	ctx := WithDispatchInput(context.Background(), map[string]any{
 		"workspace": "docapp",
 		"ref":       "TASK-5",
-		"status":    "in-progress",     // overrides existing "open"
+		"status":    "in-progress",     // the only status change
 		"comment":   "Started work",    // top-level update
 		"field":     []any{"effort=l"}, // adds a new key
 	})
@@ -266,22 +275,28 @@ func TestDispatchItemUpdate_MergesFieldsWithExisting(t *testing.T) {
 	if body["comment"] != "Started work" {
 		t.Errorf("comment lost: %v", body)
 	}
-	fields := map[string]any{}
-	if s, ok := body["fields"].(string); ok {
-		_ = json.Unmarshal([]byte(s), &fields)
-	} else {
-		t.Fatalf("fields not a string in body: %v", body)
+	if _, present := body["fields"]; present {
+		t.Errorf("dispatcher must NOT send a full fields blob anymore; got %v", body)
+	}
+	patch, ok := body["fields_patch"].(map[string]any)
+	if !ok {
+		t.Fatalf("fields_patch not an object in body: %v", body)
 	}
 	want := map[string]string{
-		"status":   "in-progress",
-		"priority": "medium", // existing, preserved
-		"category": "infra",  // existing, preserved
-		"effort":   "l",      // newly added via --field
+		"status": "in-progress",
+		"effort": "l", // newly added via --field
+	}
+	if len(patch) != len(want) {
+		t.Errorf("fields_patch should carry ONLY changed keys; got %v", patch)
 	}
 	for k, v := range want {
-		if got := fields[k]; got != v {
-			t.Errorf("merged fields[%q] = %v, want %v", k, got, v)
+		if got := patch[k]; got != v {
+			t.Errorf("fields_patch[%q] = %v, want %v", k, got, v)
 		}
+	}
+	// Untouched existing keys must NOT be echoed back into the patch.
+	if _, present := patch["priority"]; present {
+		t.Errorf("priority should not appear in a status-only patch: %v", patch)
 	}
 }
 
@@ -371,10 +386,10 @@ func TestDispatchItemUpdate_TagsForwarding(t *testing.T) {
 
 func TestDispatchItemUpdate_NoFieldChangesSkipsFieldsMerge(t *testing.T) {
 	// Updating only top-level keys (title / content / comment)
-	// without any field-level changes must not include `fields` in
-	// the PATCH body. Sending a fields object would still go through
-	// the handler's schema validator (cheap but unnecessary), and a
-	// no-op update of fields would churn the audit log.
+	// without any field-level changes must not include `fields` or
+	// `fields_patch` in the PATCH body. Sending a fields object would
+	// still go through the handler's schema validator (cheap but
+	// unnecessary), and a no-op update would churn the audit log.
 	captured := newRequestCapture()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/docapp/items/TASK-5", func(w http.ResponseWriter, r *http.Request) {
@@ -402,6 +417,9 @@ func TestDispatchItemUpdate_NoFieldChangesSkipsFieldsMerge(t *testing.T) {
 	}
 	if _, present := body["fields"]; present {
 		t.Errorf("fields should be omitted when no field changes; got %v", body)
+	}
+	if _, present := body["fields_patch"]; present {
+		t.Errorf("fields_patch should be omitted when no field changes; got %v", body)
 	}
 }
 

@@ -91,6 +91,7 @@ func itemCmd() *cobra.Command {
 		listCmd(),
 		showCmd(),
 		updateCmd(),
+		historyCmd(),
 		deleteCmd(),
 		restoreCmd(),
 		moveCmd(),

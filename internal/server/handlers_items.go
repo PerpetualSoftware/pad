@@ -808,6 +808,27 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TASK-2022: `fields` (full replace) and `fields_patch` (field-level
+	// merge) are mutually exclusive — they'd fight over the same column with
+	// contradictory semantics. Reject up front rather than silently pick one.
+	if input.Fields != nil && input.FieldsPatch != nil {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			"cannot combine \"fields\" (full replace) and \"fields_patch\" (field-level merge) in one update")
+		return
+	}
+
+	// TASK-2022: validate the optimistic-concurrency token's format at the
+	// boundary so a malformed value is a clean 400 rather than surfacing from
+	// the store as a generic 500. The store re-parses (guaranteed to succeed)
+	// and does the actual under-lock comparison.
+	if input.ExpectedUpdatedAt != "" {
+		if _, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt); perr != nil {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"expected_updated_at must be an RFC3339 timestamp")
+			return
+		}
+	}
+
 	// IDEA-1494: precheck closure populated below when the patch
 	// includes a fields update AND --force is NOT set. Threads into
 	// the three UpdateItem call sites that follow. nil = no guard.
@@ -845,46 +866,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 
 		// Extract parent from fields — it's managed via item_links, not stored in fields JSON.
 		// Accepts both "parent" and "plan" as the field key.
-		// Skip this if the schema actually defines a field with that key.
 		// (parentValue / parentProvided are declared at outer scope so
 		// the deferred link-write block below can read them — see
-		// IDEA-1494 R4 P3.)
-		for _, key := range []string{"parent", "plan"} {
-			if schemaHasField(schema, key) {
-				continue
-			}
-			if pv, ok := fieldMap[key]; ok {
-				parentProvided = true
-				if pv != nil {
-					if pvStr, ok := pv.(string); ok && pvStr != "" {
-						var resolvedParent *models.Item
-						if !isUUID(pvStr) {
-							resolvedParent, err = s.store.ResolveItem(workspaceID, pvStr)
-							if err != nil || resolvedParent == nil {
-								writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
-								return
-							}
-							parentValue = resolvedParent.ID
-						} else {
-							resolvedParent, _ = s.store.GetItem(pvStr)
-							if resolvedParent == nil {
-								writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
-								return
-							}
-							parentValue = resolvedParent.ID
-						}
-						// Ensure parent item belongs to this workspace and is visible
-						if resolvedParent.WorkspaceID != workspaceID {
-							writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
-							return
-						}
-						if !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
-							return
-						}
-					}
-				}
-				delete(fieldMap, key)
-			}
+		// IDEA-1494 R4 P3.) Shared with the fields_patch path via
+		// extractParentLink.
+		var extractOK bool
+		parentValue, parentProvided, extractOK = s.extractParentLink(w, r, workspaceID, schema, fieldMap)
+		if !extractOK {
+			return
 		}
 
 		if err := items.ValidateFields(fieldMap, schema); err != nil {
@@ -988,6 +977,163 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// 500 with half the patch applied. BUG-2013 closes it for good by
 		// folding the link write into the update tx (see the parentLink
 		// directive built below).
+	}
+
+	// TASK-2022 field-level merge path (IDEA-1480). `fields_patch` carries
+	// ONLY the keys the caller wants to change; the store shallow-merges them
+	// onto the item's current fields INSIDE the write transaction, closing
+	// the lost-write race that the full-blob read-modify-write suffers.
+	//
+	// Validation posture differs from the full-`fields` path on purpose: we
+	// validate ONLY the supplied keys (ValidatePartialFields — no
+	// required-field enforcement, no default injection), because a partial
+	// patch means "change exactly these, leave the rest alone." The
+	// open-children guard, unique-field check, and date auto-population all
+	// need to reason about the POST-merge state, so we compute a preview
+	// merge against the handler's current read for those — the authoritative
+	// merge still happens under the store's write lock.
+	if input.FieldsPatch != nil {
+		coll, err := s.store.GetCollection(item.CollectionID)
+		if err != nil || coll == nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to load collection")
+			return
+		}
+		var schema models.CollectionSchema
+		if err := json.Unmarshal([]byte(coll.Schema), &schema); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse collection schema")
+			return
+		}
+
+		// Work on a copy so the parent/plan extraction (which deletes keys)
+		// doesn't mutate the decoded request struct in surprising ways.
+		patchMap := make(map[string]any, len(input.FieldsPatch))
+		for k, v := range input.FieldsPatch {
+			patchMap[k] = v
+		}
+
+		// Parent/plan is a pseudo-field managed via item_links, not stored in
+		// the fields JSON — pull it out of the patch and stage the link write.
+		var extractOK bool
+		parentValue, parentProvided, extractOK = s.extractParentLink(w, r, workspaceID, schema, patchMap)
+		if !extractOK {
+			return
+		}
+
+		if err := items.ValidatePartialFields(patchMap, schema); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+
+		if err := s.checkUniqueFields(workspaceID, item.CollectionID, item.ID, schema, patchMap); err != nil {
+			writeError(w, http.StatusConflict, "conflict", err.Error())
+			return
+		}
+
+		// Auto-populate start_date/end_date on a status change — but ONLY when
+		// the item's CURRENT stored value for that date is empty. A partial
+		// patch must not clobber a date the caller isn't touching (Codex
+		// round 2): running autoPopulateDates against the bare patchMap would
+		// see the date key absent and always inject today, overwriting an
+		// existing end_date on a status→done patch. So we run it against a
+		// merged view (current fields ∪ patch), then lift back only a date the
+		// helper genuinely FILLED (i.e. the current value was empty). Dates the
+		// caller set explicitly in the patch are left as-is; dates already set
+		// on the item are preserved untouched.
+		currentFields := map[string]any{}
+		if item.Fields != "" && item.Fields != "{}" {
+			_ = json.Unmarshal([]byte(item.Fields), &currentFields)
+		}
+		mergedForDates := map[string]any{}
+		for k, v := range currentFields {
+			mergedForDates[k] = v
+		}
+		for k, v := range patchMap {
+			if v == nil {
+				delete(mergedForDates, k)
+				continue
+			}
+			mergedForDates[k] = v
+		}
+		autoPopulateDates(mergedForDates, item.Fields, schema)
+		for _, dk := range []string{"start_date", "end_date"} {
+			if _, inPatch := patchMap[dk]; inPatch {
+				continue // caller set it explicitly — respect that
+			}
+			curVal, _ := currentFields[dk].(string)
+			if curVal != "" {
+				continue // already set on the item — never overwrite via auto-fill
+			}
+			if nv, ok := mergedForDates[dk]; ok {
+				if s, isStr := nv.(string); isStr && s != "" {
+					patchMap[dk] = nv // newly filled — ride along in the merge
+				}
+			}
+		}
+
+		// Open-children guard. The precheck runs IN-TX with the locked row,
+		// and — crucially for the patch path — computes the post-merge field
+		// map by applying patchMap onto the item's IN-TX current fields, not a
+		// stale pre-lock snapshot. Using a pre-computed full preview would
+		// present a done-field value even for a patch that never touches the
+		// done key, so a priority-only patch could false-fire the guard if the
+		// row's status changed concurrently between the handler read and lock
+		// acquisition (Codex review). Merging in-tx means the "to" done-field
+		// value equals the patch's value when set, else the current value —
+		// exactly the semantics the guard's trigger conditions expect.
+		if !input.Force {
+			var settings models.CollectionSettings
+			if coll.Settings != "" {
+				_ = json.Unmarshal([]byte(coll.Settings), &settings)
+			}
+			visIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+			if visErr != nil {
+				writeInternalError(w, visErr)
+				return
+			}
+			guestFull, guestGranted, gerr := s.guestResourceFilter(r, workspaceID)
+			if gerr != nil {
+				writeInternalError(w, gerr)
+				return
+			}
+			gctx := openChildrenGuardContext{
+				r:                    r,
+				workspaceID:          workspaceID,
+				itemID:               item.ID,
+				parentSchema:         schema,
+				parentSettings:       settings,
+				visibleCollectionIDs: visIDs,
+				guestFullCollIDs:     guestFull,
+				guestGrantedItemIDs:  guestGranted,
+			}
+			openChildrenPrecheck = func(tx *sql.Tx, existing *models.Item) error {
+				merged := make(map[string]any)
+				if existing.Fields != "" && existing.Fields != "{}" {
+					_ = json.Unmarshal([]byte(existing.Fields), &merged)
+				}
+				for k, v := range patchMap {
+					if v == nil {
+						delete(merged, k)
+						continue
+					}
+					merged[k] = v
+				}
+				txCtx := gctx
+				txCtx.newFieldMap = merged
+				txCtx.currentFieldsJS = existing.Fields
+				details, derr := s.runOpenChildrenGuard(tx, txCtx)
+				if derr != nil {
+					return derr
+				}
+				if details != nil {
+					return &openChildrenGuardError{details: details}
+				}
+				return nil
+			}
+		}
+
+		// Hand the validated, parent-stripped, date-augmented patch to the
+		// store, which merges it under the write lock.
+		input.FieldsPatch = patchMap
 	}
 
 	// BUG-2013: build the atomic parent-link directive. When the PATCH
@@ -1139,6 +1285,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 					"This editor's view is out of sync with the server; please reload.")
 				return
 			}
+			if conflict, ok := asUpdateConflictError(err); ok {
+				writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
+				return
+			}
 			// Mirror the main UpdateItem path: map UNIQUE constraint /
 			// duplicate key races (e.g. concurrent edits both racing the
 			// invocation_slug partial unique index) to 409 conflict so
@@ -1210,6 +1360,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			// rejection is final.
 			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
 			return
+		} else if conflict, ok := asUpdateConflictError(err); ok {
+			// TASK-2022: optimistic-concurrency conflict from inside the
+			// directWrite callback is also final — a retry would just lose
+			// the same race again.
+			writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
+			return
 		}
 		// Any other error path (e.g. ErrAllAppliersTimedOut, retry
 		// exhaustion) falls through to direct write — graceful
@@ -1231,6 +1387,11 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// when the guard ran inside the store tx.
 		if details, ok := asOpenChildrenGuardError(err); ok {
 			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+			return
+		}
+		// TASK-2022: optimistic-concurrency conflict → structured 409.
+		if conflict, ok := asUpdateConflictError(err); ok {
+			writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
 			return
 		}
 		// Map UNIQUE constraint races (e.g. concurrent updates that both
@@ -2198,6 +2359,62 @@ func schemaHasField(schema models.CollectionSchema, key string) bool {
 //
 // Only string-typed unique values are supported today (the only consumer is
 // playbooks.invocation_slug). Non-string values are skipped without error.
+// extractParentLink pulls a "parent"/"plan" pseudo-field out of fieldMap —
+// parent relationships are stored as item_links, not in the fields JSON — and
+// resolves it to a target item ID. It mutates fieldMap (deleting the key it
+// consumes) and returns (parentValue, parentProvided, ok). ok=false means an
+// error response was already written to w and the caller must return
+// immediately. Shared by the full-`fields` and `fields_patch` update paths
+// (TASK-2022) so both resolve/validate the parent identically.
+func (s *Server) extractParentLink(
+	w http.ResponseWriter,
+	r *http.Request,
+	workspaceID string,
+	schema models.CollectionSchema,
+	fieldMap map[string]any,
+) (parentValue string, parentProvided bool, ok bool) {
+	for _, key := range []string{"parent", "plan"} {
+		if schemaHasField(schema, key) {
+			continue
+		}
+		pv, exists := fieldMap[key]
+		if !exists {
+			continue
+		}
+		parentProvided = true
+		if pv != nil {
+			if pvStr, isStr := pv.(string); isStr && pvStr != "" {
+				var resolvedParent *models.Item
+				var err error
+				if !isUUID(pvStr) {
+					resolvedParent, err = s.store.ResolveItem(workspaceID, pvStr)
+					if err != nil || resolvedParent == nil {
+						writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
+						return "", false, false
+					}
+				} else {
+					resolvedParent, _ = s.store.GetItem(pvStr)
+					if resolvedParent == nil {
+						writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
+						return "", false, false
+					}
+				}
+				parentValue = resolvedParent.ID
+				// Ensure parent item belongs to this workspace and is visible.
+				if resolvedParent.WorkspaceID != workspaceID {
+					writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("parent %q not found", pvStr))
+					return "", false, false
+				}
+				if !s.requireItemVisible(w, r, workspaceID, resolvedParent) {
+					return "", false, false
+				}
+			}
+		}
+		delete(fieldMap, key)
+	}
+	return parentValue, parentProvided, true
+}
+
 func (s *Server) checkUniqueFields(workspaceID, collectionID, excludeItemID string, schema models.CollectionSchema, fieldMap map[string]any) error {
 	for _, def := range schema.Fields {
 		if def.UniqueScope != "workspace_collection" {

@@ -72,6 +72,51 @@ func ValidateFields(fields map[string]any, schema models.CollectionSchema) error
 	return nil
 }
 
+// ValidatePartialFields validates ONLY the keys present in `patch` against
+// the schema (TASK-2022, field-level PATCH / IDEA-1480). Unlike
+// ValidateFields it does NOT enforce required-field presence and does NOT
+// inject schema defaults — a partial patch is "change exactly these keys,
+// leave everything else alone," so absent keys are neither missing nor
+// candidates for default population. Keys the schema doesn't declare (orphan
+// keys) are accepted and persist unchanged, matching the full-blob path.
+//
+// A nil value marks a key for DELETION (see store.mergeFieldsPatch); those
+// are skipped here since there's no value to type-check.
+func ValidatePartialFields(patch map[string]any, schema models.CollectionSchema) error {
+	// Index declared fields by key for O(1) lookup.
+	defByKey := make(map[string]models.FieldDef, len(schema.Fields))
+	for _, def := range schema.Fields {
+		defByKey[def.Key] = def
+	}
+
+	var errs []string
+	for key, val := range patch {
+		def, hasDef := defByKey[key]
+		if val == nil {
+			// Deletion sentinel. Refuse to delete a schema-declared REQUIRED
+			// field — the full-update path (ValidateFields) would reject the
+			// resulting blob (or re-default it), so allowing a patch to strip
+			// it would persist a state the schema considers invalid. Orphan
+			// keys and optional fields delete freely.
+			if hasDef && def.Required {
+				errs = append(errs, fmt.Sprintf("field %q is required and cannot be deleted", key))
+			}
+			continue
+		}
+		if !hasDef {
+			// Orphan key (not in schema) — allowed, persists as-is.
+			continue
+		}
+		if err := validateFieldType(def, val); err != nil {
+			errs = append(errs, err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("field validation failed: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
 func validateFieldType(def models.FieldDef, val any) error {
 	switch def.Type {
 	case "text", "url":
