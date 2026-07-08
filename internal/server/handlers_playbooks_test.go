@@ -195,6 +195,83 @@ func TestPlaybookRunBindsArgs(t *testing.T) {
 	})
 }
 
+// TestPlaybookRunDraftGate verifies the server-side draft gate: a
+// playbook whose status isn't "active" is refused with a structured
+// playbook_not_active error unless the caller opts in via allow_draft
+// (JSON body field OR the `allow-draft` bareword in raw_args). The run
+// response also echoes the playbook status.
+func TestPlaybookRunDraftGate(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	createItem(t, srv, slug, "playbooks", map[string]interface{}{
+		"title":   "Draft playbook",
+		"content": "Step 1 (unfinished)",
+		"fields":  `{"status":"draft","invocation_slug":"wip"}`,
+	})
+
+	t.Run("rejected-without-allow-draft", func(t *testing.T) {
+		rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/playbooks/wip/run", map[string]any{})
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("draft run: expected 409, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var errResp struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		parseJSON(t, rr, &errResp)
+		if errResp.Error.Code != "playbook_not_active" {
+			t.Errorf("error code = %q, want playbook_not_active (body: %s)", errResp.Error.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("allowed-with-body-flag", func(t *testing.T) {
+		body := map[string]any{"allow_draft": true}
+		rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/playbooks/wip/run", body)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("draft run w/ allow_draft: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+		var resp PlaybookRunResponse
+		parseJSON(t, rr, &resp)
+		if resp.Status != "draft" {
+			t.Errorf("run response status = %q, want draft", resp.Status)
+		}
+	})
+
+	t.Run("allowed-with-raw-args-bareword", func(t *testing.T) {
+		body := map[string]any{"raw_args": []string{"allow-draft"}}
+		rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/playbooks/wip/run", body)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("draft run w/ raw allow-draft: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// TestPlaybookShowIncludesStatus verifies the get/show response hoists
+// the playbook's status (which lives inside the fields JSON) to a
+// top-level `status` key.
+func TestPlaybookShowIncludesStatus(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	createItem(t, srv, slug, "playbooks", map[string]interface{}{
+		"title":  "Statusful",
+		"fields": `{"status":"active","invocation_slug":"statusful"}`,
+	})
+
+	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/playbooks/statusful", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("show: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]any
+	parseJSON(t, rr, &resp)
+	if resp["status"] != "active" {
+		t.Errorf("top-level status = %v, want active (body: %s)", resp["status"], rr.Body.String())
+	}
+}
+
 // TestParsePlaybookCLIArgsErrors verifies the strict parser surfaces
 // the right errors for each malformed-input class. The CLI relays
 // these to the user verbatim, so the messages need to be specific.

@@ -983,6 +983,9 @@ func mapPlaybookRun(input map[string]any) (method, path string, body []byte, err
 	if len(rawArgs) > 0 {
 		payload["raw_args"] = rawArgs
 	}
+	if ad, ok := input["allow_draft"].(bool); ok && ad {
+		payload["allow_draft"] = true
+	}
 
 	enc, err := json.Marshal(payload)
 	if err != nil {

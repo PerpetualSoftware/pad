@@ -417,13 +417,16 @@ func (c *Client) ShowPlaybook(wsSlug, identifier string) (json.RawMessage, error
 // strict parsing rules to rawArgs and merges them with args. CLI
 // callers use rawArgs (no client-side spec lookup needed); MCP /
 // programmatic callers use args directly.
-func (c *Client) RunPlaybook(wsSlug, identifier string, args map[string]any, rawArgs []string) (json.RawMessage, error) {
+func (c *Client) RunPlaybook(wsSlug, identifier string, args map[string]any, rawArgs []string, allowDraft bool) (json.RawMessage, error) {
 	body := map[string]any{}
 	if len(args) > 0 {
 		body["args"] = args
 	}
 	if len(rawArgs) > 0 {
 		body["raw_args"] = rawArgs
+	}
+	if allowDraft {
+		body["allow_draft"] = true
 	}
 	var result json.RawMessage
 	return result, c.post("/workspaces/"+wsSlug+"/playbooks/"+identifier+"/run", body, &result)

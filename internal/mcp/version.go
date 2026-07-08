@@ -94,7 +94,18 @@ const CmdhelpVersion = "0.1"
 //     the `artifact` param to the vocabulary. Pure addition; existing
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
-//   - "0.9" — current. TASK-2000: `pad_item.list` is now summary-shaped
+//   - "0.10" — current. BUG-2020: server-side draft-playbook gate.
+//     `pad_playbook.run` now refuses a playbook whose status isn't
+//     "active" (a draft still being authored) with a structured
+//     `playbook_not_active` error, and adds an `allow_draft` boolean
+//     param (escape hatch) that runs a draft anyway. Both the `run` and
+//     `get` responses now echo the playbook's `status`. Pure addition of
+//     one param + one echoed field + a new refusal path; existing active
+//     playbooks run unchanged. Backwards-compatible for v0.9 consumers
+//     that don't set allow_draft — except that running a draft (which
+//     the skill already told agents not to do) now errors instead of
+//     silently returning the body.
+//   - "0.9" — TASK-2000: `pad_item.list` is now summary-shaped
 //     and bounded. Two changes for agent-token thrift:
 //   - The `list` action injects a default `limit` (50) and clamps an
 //     oversized one (max 300), mirroring the backlinks default/max, so
@@ -166,7 +177,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.9"
+const ToolSurfaceVersion = "0.10"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

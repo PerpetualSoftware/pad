@@ -565,9 +565,14 @@ export const api = {
 		list: (ws: string) =>
 			request<PlaybookMeta[]>(`/workspaces/${ws}/playbooks`),
 
-		/** Full playbook item by ref / slug / invocation_slug. */
+		/**
+		 * Full playbook item by ref / slug / invocation_slug. The server
+		 * hoists the playbook's `status` (from the fields JSON) to a
+		 * top-level key so callers can read the draft/active gate without
+		 * parsing fields (BUG-2020).
+		 */
 		get: (ws: string, ref: string) =>
-			request<Item>(`/workspaces/${ws}/playbooks/${ref}`),
+			request<Item & { status: string }>(`/workspaces/${ws}/playbooks/${ref}`),
 
 		/**
 		 * Bind args to a playbook's declared spec and return the body +
@@ -580,7 +585,7 @@ export const api = {
 		run: (
 			ws: string,
 			ref: string,
-			body?: { args?: Record<string, unknown>; raw_args?: string[] }
+			body?: { args?: Record<string, unknown>; raw_args?: string[]; allow_draft?: boolean }
 		) =>
 			request<unknown>(`/workspaces/${ws}/playbooks/${ref}/run`, {
 				method: 'POST',
