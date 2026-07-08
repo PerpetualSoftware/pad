@@ -2632,7 +2632,7 @@ func (s *Store) SetParentLink(workspaceID, itemID, parentID, createdBy string) (
 	return s.getItemLink(id)
 }
 
-// setParentLinkTx performs the cycle check, lock acquisition, and the
+// setParentLinkTx performs the lock acquisition, cycle check, and the
 // DELETE-then-INSERT of the parent link entirely within the caller's
 // transaction, returning the new link's id. It is the shared core of the
 // public SetParentLink (which opens its own tx) AND UpdateItemWithParentLink
@@ -2644,13 +2644,6 @@ func (s *Store) SetParentLink(workspaceID, itemID, parentID, createdBy string) (
 // keys the enclosing tx already holds (as UpdateItemWithParentLink does after
 // pre-locking the new parent) is an idempotent no-op rather than a deadlock.
 func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, createdBy string) (string, error) {
-	// Cycle detection: walk the ancestor chain from parentID to ensure itemID
-	// is not an ancestor. Read via the tx so the walk sees the same item_links
-	// state the DELETE/INSERT below writes against.
-	if err := s.checkParentCycleQ(tx, itemID, parentID); err != nil {
-		return "", err
-	}
-
 	// Find the existing parent (if any) so we can lock against it too.
 	// The DELETE below targets link_type='parent' specifically, which
 	// matches what the guard's children query treats as the parent
@@ -2667,6 +2660,19 @@ func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, creat
 	}
 
 	if err := s.AcquireParentChildrenLocks(tx, oldParentID.String, parentID); err != nil {
+		return "", err
+	}
+
+	// Cycle detection: walk the ancestor chain from parentID to ensure itemID
+	// is not an ancestor. Run this AFTER the parent-children locks are held (Codex
+	// review, PR #868): checking before the lock lets two concurrent reparents
+	// each pass on a stale ancestry snapshot, block on the lock, then both insert
+	// — closing the loop (A→B→C→A). Under the lock the walk reads via the tx, so
+	// it sees the edge the just-unblocked peer committed and catches the cycle.
+	// (Residual: cycles closed via an edge on an item NEITHER endpoint locks can
+	// still slip through — a pre-existing limitation of the per-endpoint lock
+	// scheme, tracked separately.)
+	if err := s.checkParentCycleQ(tx, itemID, parentID); err != nil {
 		return "", err
 	}
 
