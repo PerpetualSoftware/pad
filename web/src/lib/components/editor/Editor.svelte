@@ -735,6 +735,13 @@
 				// against the editor reference we hold in this scope.
 				importUrlModalOpen = true;
 				break;
+			case 'attachFile':
+				// The slash text was already deleted above; open the
+				// native file picker. onAttachInputChange runs
+				// uploadAttachments, which inserts at the (preserved)
+				// selection where the slash was typed.
+				triggerAttachPicker();
+				break;
 		}
 		closeSlash();
 	}
@@ -1213,6 +1220,26 @@
 		slashOpen = true;
 	}
 
+	// Hidden file <input> that backs the attach-file button (mobile
+	// toolbar) and the /attach slash command. A real input is the only
+	// way to open a file picker on touch devices, where paste/drop —
+	// the editor's only other upload path — is unavailable (TASK-2067).
+	let attachInput = $state<HTMLInputElement>();
+
+	function triggerAttachPicker() {
+		attachInput?.click();
+	}
+
+	function onAttachInputChange(event: Event) {
+		const input = event.currentTarget as HTMLInputElement;
+		const files = input.files ? Array.from(input.files) : [];
+		if (files.length && editor) {
+			editor.commands.uploadAttachments(files);
+		}
+		// Reset so re-picking the same file fires 'change' again.
+		input.value = '';
+	}
+
 	type ListItemTypeName = 'listItem' | 'taskItem';
 
 	function getActiveListItemType(): ListItemTypeName | null {
@@ -1284,10 +1311,28 @@
 		<span class="mt-sep"></span>
 		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('codeBlock')} onclick={() => editor?.chain().focus().toggleCodeBlock().run()}>&lt;&gt;</button>
 		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('blockquote')} onclick={() => editor?.chain().focus().toggleBlockquote().run()}>❝</button>
+		<span class="mt-sep"></span>
+		<button class="mt-btn" onclick={triggerAttachPicker} title="Attach file">📎</button>
 	</div>
 {/if}
 
 <div class="editor-wrapper">
+	<!--
+		Hidden file picker shared by the mobile toolbar attach button and
+		the /attach slash command. `multiple` mirrors paste/drop, which
+		can carry several files; no `accept` filter — images become inline
+		images and everything else becomes an attachment chip, same as
+		paste/drop (TASK-2067).
+	-->
+	<input
+		bind:this={attachInput}
+		type="file"
+		multiple
+		class="attach-file-input"
+		aria-hidden="true"
+		tabindex="-1"
+		onchange={onAttachInputChange}
+	/>
 	<div bind:this={element} class="editor-content prose"></div>
 	{#if editable && editor && editorTick >= 0 && editor.isActive('table')}
 		{@const tpos = getTableToolbarPos()}
@@ -1358,6 +1403,19 @@
 		outline: none;
 		/* Pad left to make room for the drag handle */
 		padding-left: 24px;
+	}
+
+	/* Visually hidden but still focusable/clickable programmatically —
+	   display:none inputs can't be .click()'d reliably on some browsers. */
+	.attach-file-input {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		border: 0;
 	}
 
 	/* Block drag handle */
