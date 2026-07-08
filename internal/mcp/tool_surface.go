@@ -95,6 +95,7 @@ var readOnlyActions = map[string]map[string]bool{
 		"standup":   true,
 		"changelog": true,
 		"report":    true,
+		"activity":  true,
 	},
 	"pad_role": {
 		"list": true,

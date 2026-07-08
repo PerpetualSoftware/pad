@@ -89,6 +89,59 @@ func TestCreateActivityDebounced_CoalescesUpdates(t *testing.T) {
 	}
 }
 
+// TestListWorkspaceActivity_SinceFilter pins TASK-2018's server-side
+// `since` filter: entries created before the cutoff are excluded, and a
+// future cutoff excludes everything. Timestamp-agnostic (uses past/future
+// relative to now) so it doesn't flake on clock skew.
+func TestListWorkspaceActivity_SinceFilter(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	doc := createTestDoc(t, s, ws.ID, "Doc", "content")
+
+	for _, action := range []string{"created", "updated"} {
+		if _, err := s.CreateActivityDebounced(models.Activity{
+			WorkspaceID: ws.ID,
+			DocumentID:  doc.ID,
+			Action:      action,
+			Actor:       "user",
+			Source:      "web",
+		}); err != nil {
+			t.Fatalf("create %s activity: %v", action, err)
+		}
+	}
+
+	// No since → both entries.
+	all, err := s.ListWorkspaceActivity(ws.ID, models.ActivityListParams{})
+	if err != nil {
+		t.Fatalf("list without since: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("expected 2 activities without since filter, got %d", len(all))
+	}
+
+	// Since in the past → both entries.
+	past, err := s.ListWorkspaceActivity(ws.ID, models.ActivityListParams{
+		Since: time.Now().Add(-1 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("list with past since: %v", err)
+	}
+	if len(past) != 2 {
+		t.Errorf("since=1h ago should include both entries, got %d", len(past))
+	}
+
+	// Since in the future → nothing.
+	future, err := s.ListWorkspaceActivity(ws.ID, models.ActivityListParams{
+		Since: time.Now().Add(1 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("list with future since: %v", err)
+	}
+	if len(future) != 0 {
+		t.Errorf("since=1h ahead should exclude all entries, got %d", len(future))
+	}
+}
+
 func TestCreateActivityDebounced_DifferentUsersDontCoalesce(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")

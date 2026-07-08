@@ -377,6 +377,12 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 		query += " AND a.source = ?"
 		args = append(args, params.Source)
 	}
+	if !params.Since.IsZero() {
+		// created_at is stored as RFC3339 text — compare against a matching
+		// string, mirroring the days-cutoff path in this file.
+		query += " AND a.created_at >= ?"
+		args = append(args, params.Since.UTC().Format(time.RFC3339))
+	}
 
 	query += " ORDER BY a.created_at DESC"
 
