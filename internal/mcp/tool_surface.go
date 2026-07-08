@@ -66,6 +66,7 @@ type toolSurfaceToolSummary struct {
 //   - pad_playbook:   list/get read; run is side-effect-free (returns the
 //     body + bound args for the agent to execute) → read.
 //   - pad_library:    list/get read; activate mutates workspace state → write.
+//   - pad_attachment: list/show read (metadata only; no upload/download).
 //   - pad_meta:       server-info/version/tool-surface/bootstrap all read.
 var readOnlyActions = map[string]map[string]bool{
 	"pad_item": {
@@ -109,6 +110,10 @@ var readOnlyActions = map[string]map[string]bool{
 	"pad_library": {
 		"list": true,
 		"get":  true,
+	},
+	"pad_attachment": {
+		"list": true,
+		"show": true,
 	},
 	"pad_meta": {
 		"server-info":  true,

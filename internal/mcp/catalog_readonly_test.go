@@ -31,6 +31,8 @@ func TestReadOnlyCatalog_AllToolsRegistered(t *testing.T) {
 		"pad_playbook":   false,
 		// pad_library — PLAN-1560 / TASK-1563. Closes IDEA-1514.
 		"pad_library": false,
+		// pad_attachment — TASK-2017. Read-only attachment metadata.
+		"pad_attachment": false,
 	}
 	for _, def := range Catalog {
 		if _, ok := want[def.Name]; ok {
@@ -143,6 +145,11 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_library", "list"}:     {"library", "list"},
 		{"pad_library", "get"}:      {"library", "get"},
 		{"pad_library", "activate"}: {"library", "activate"},
+
+		// pad_attachment actions (TASK-2017). Both passThrough to
+		// `pad attachment <subcommand>`; read-only metadata.
+		{"pad_attachment", "list"}: {"attachment", "list"},
+		{"pad_attachment", "show"}: {"attachment", "show"},
 	}
 
 	// Actions whose dispatch is too custom for the cmdPath bijection —
@@ -278,6 +285,10 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_playbook", "list"}: {"playbook", "list"},
 		{"pad_playbook", "get"}:  {"playbook", "show"},
 		{"pad_playbook", "run"}:  {"playbook", "run"},
+
+		// pad_attachment actions (TASK-2017).
+		{"pad_attachment", "list"}: {"attachment", "list"},
+		{"pad_attachment", "show"}: {"attachment", "show"},
 	}
 
 	// Required-positional fixture: every CLI command in the v0.2
@@ -299,6 +310,8 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		// PLAN-1519 / TASK-1521 — workspace.claim needs a `code` positional;
 		// `name` (above) doubles as the workspace.create positional.
 		"code": "123456",
+		// pad_attachment.show needs an attachment_id positional.
+		"attachment_id": "att-1",
 	}
 
 	for _, def := range Catalog {
@@ -768,6 +781,29 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Summary: "activate library entry",
 				Args:    mkArgs("title"),
 				Flags:   mkFlags("workspace"),
+			},
+			// pad_attachment surface (TASK-2017). list / show
+			// passThrough to `pad attachment <subcommand>`; read-only
+			// metadata. show takes an attachment-id positional
+			// (attachment_id in MCP form).
+			"attachment list": {
+				Summary: "list attachments",
+				Flags: map[string]cmdhelp.Flag{
+					"workspace":  {Type: "string"},
+					"item":       {Type: "string"},
+					"category":   {Type: "string"},
+					"collection": {Type: "string"},
+					"attached":   {Type: "bool"},
+					"unattached": {Type: "bool"},
+					"sort":       {Type: "string"},
+					"limit":      {Type: "int"},
+					"offset":     {Type: "int"},
+				},
+			},
+			"attachment show": {
+				Summary: "show attachment metadata",
+				Args:    mkArgs("attachment-id"),
+				Flags:   mkFlags("workspace", "variant"),
 			},
 		},
 	}
