@@ -1,11 +1,34 @@
 package server
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// syncBuffer is a minimal concurrency-safe io.Writer so a test can read a
+// slog buffer written from a background sweeper goroutine without racing.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 func countEmailVerificationTokens(t *testing.T, srv *Server) int {
 	t.Helper()
@@ -95,6 +118,64 @@ func TestTokenReaper_StartIsIdempotent(t *testing.T) {
 
 	// Stop is safe to call again (loop already stopped).
 	srv.stopTokenReaper()
+}
+
+// TestTokenReaper_RecoversPanic pins BUG-2071: the long-running sweeper loops
+// spawn their own s.bg-tracked goroutine (they can't route through goAsync
+// without breaking their stop-channel lifecycle), so each needs its own
+// deferred recover(). A panic inside a sweeper tick must NOT crash the whole
+// single-binary server — it must be logged with a stack, the goroutine must
+// unwind cleanly with s.bg.Done() still firing, and Stop() must still drain.
+//
+// A Server built with a nil store makes the reaper tick panic for real: the
+// first cleaner (CleanExpiredEmailVerifications) dereferences the nil
+// *store.Store. That exercises the actual token-reaper goroutine + tick + the
+// deferred recoverSweeper end-to-end, mirroring TestServer_goAsync_RecoversPanic
+// for the loop-shaped sweepers.
+func TestTokenReaper_RecoversPanic(t *testing.T) {
+	var logBuf syncBuffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(prevLogger)
+
+	// New(nil) wires rateLimiters (so Stop() is safe) but leaves store nil,
+	// so the very first reaper tick panics on the nil-pointer deref.
+	srv := New(nil)
+
+	// Tight interval so the panicking tick lands inside the test window; the
+	// production default is 1h.
+	srv.SetTokenReaperConfig(5 * time.Millisecond)
+	srv.StartTokenReaper()
+
+	// Deterministic proof the recover path executed: wait for the panic log.
+	// If recover() were missing, the re-panic would have already killed the
+	// process (and this test binary) before we could observe anything.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		logged := logBuf.String()
+		if strings.Contains(logged, "background sweeper panicked") &&
+			strings.Contains(logged, "token-reaper") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if logged := logBuf.String(); !strings.Contains(logged, "background sweeper panicked") ||
+		!strings.Contains(logged, "token-reaper") {
+		t.Fatalf("expected a recovered-panic log from the token-reaper sweeper, got: %s", logged)
+	}
+
+	// The goroutine's deferred s.bg.Done() must still fire after the recover,
+	// so Stop() drains rather than hanging.
+	stopReturned := make(chan struct{})
+	go func() {
+		srv.Stop()
+		close(stopReturned)
+	}()
+	select {
+	case <-stopReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Server.Stop() did not return within 2s after a panicking reaper tick")
+	}
 }
 
 // TestTokenReaper_NotStartedIsCleanShutdown: a server that never started the

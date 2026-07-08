@@ -274,6 +274,28 @@ func (s *Server) goAsync(fn func()) {
 	}()
 }
 
+// recoverSweeper is the panic firewall for the long-running background
+// sweeper loops (orphan GC, op-log GC, token reaper, workspace purge).
+// Each of those manages its own s.bg.Add/Done + stop-channel lifecycle,
+// so — unlike fire-and-forget work — they can't just route through
+// goAsync without breaking their shutdown handling or double-counting
+// s.bg. Instead each spawns `defer s.recoverSweeper("<name>")` as a
+// deferred call INSIDE its goroutine (BUG-2071): a panic in the loop
+// body is logged with a stack (matching goAsync's style) and unwinds
+// cleanly, the goroutine's own deferred s.bg.Done() still fires because
+// recover() stops the unwind here, and Stop() still returns. Without it a
+// panic in any sweeper takes down the whole single-binary server for
+// every tenant. Must be `defer`-called directly in the goroutine for
+// recover() to catch the panic.
+func (s *Server) recoverSweeper(name string) {
+	if r := recover(); r != nil {
+		slog.Error("background sweeper panicked",
+			"sweeper", name,
+			"panic", r,
+			"stack", string(debug.Stack()))
+	}
+}
+
 // Stop waits for all background goroutines started via goAsync to finish
 // AND drains the rate-limiter cleanup goroutines spawned at construction
 // time (BUG-851). Safe to call multiple times. Should be called before

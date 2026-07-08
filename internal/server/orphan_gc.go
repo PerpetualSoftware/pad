@@ -229,6 +229,7 @@ func (s *Server) StartOrphanGC() {
 	s.bg.Add(1)
 	go func() {
 		defer s.bg.Done()
+		defer s.recoverSweeper("orphan-gc") // BUG-2071
 		t := time.NewTicker(interval)
 		defer t.Stop()
 		for {
