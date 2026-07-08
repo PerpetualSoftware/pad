@@ -1,11 +1,27 @@
 package main
 
-import "github.com/spf13/cobra"
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+)
+
+// unknownSubcommandRun returns an error when the user passes an
+// unrecognized subcommand (e.g. a typo like `pad item
+// nonexistentsubcommand`). When called with no args the parent's help is
+// shown and nil is returned.
+func unknownSubcommandRun(cmd *cobra.Command, args []string) error {
+	if len(args) > 0 {
+		return fmt.Errorf("unknown command %q for %q", args[0], cmd.CommandPath())
+	}
+	return cmd.Help()
+}
 
 func authCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
 		Short: "Configure authentication and account access",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(
 		configureCmd(),
@@ -22,6 +38,7 @@ func serverCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "server",
 		Short: "Manage the Pad server process and web UI",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(
 		serveCmd(),
@@ -36,6 +53,7 @@ func workspaceCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "workspace",
 		Short: "Manage workspaces and workspace membership",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(
 		initCmd(),
@@ -65,6 +83,7 @@ func projectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "project",
 		Short: "Inspect project state, reports, and activity",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(
 		statusCmd(),
@@ -85,6 +104,7 @@ func itemCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "item",
 		Short: "Create, update, relate, and discuss Pad items",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(
 		createCmd(),
@@ -128,6 +148,7 @@ func collectionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "collection",
 		Short: "List, create, update, and delete collections",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(
 		collectionsCmd(),
@@ -142,6 +163,7 @@ func libraryGroupCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "library",
 		Short: "Browse and activate pre-built conventions and playbooks",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(
 		libraryCmd(),
@@ -155,6 +177,7 @@ func agentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "agent",
 		Short: "Install and manage Pad agent skills",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(
 		installCmd(),
@@ -168,6 +191,7 @@ func dbCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "db",
 		Short: "Database backup, restore, and migration tools",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(
 		dbBackupCmd(),
