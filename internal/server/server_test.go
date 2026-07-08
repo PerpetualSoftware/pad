@@ -501,3 +501,43 @@ func TestServer_Stop_DrainsBackgroundGoroutines(t *testing.T) {
 		t.Fatal("background goroutine did not run to completion before Stop returned")
 	}
 }
+
+// TestServer_goAsync_RecoversPanic pins BUG-2011: a panicking fn passed to
+// goAsync (e.g. deriveThumbnails hitting a Go image-decoder panic on a
+// crafted upload) must NOT crash the whole single-binary server, and the
+// tracked WaitGroup must still be released so Stop() can return. Without the
+// deferred recover() the goroutine unwinds all the way up and takes the
+// process down, killing every tenant.
+func TestServer_goAsync_RecoversPanic(t *testing.T) {
+	srv := testServer(t)
+
+	// Panic BEFORE any signal so the only way we learn the goroutine ran is
+	// via Stop() returning (WaitGroup released) — the process surviving this
+	// call at all is the primary assertion.
+	var ran atomic.Bool
+	srv.goAsync(func() {
+		ran.Store(true)
+		panic("boom: simulated background-task panic")
+	})
+
+	// If recover() didn't fire, Stop() would still return here because
+	// s.bg.Done() runs on unwind — but the process would already have
+	// crashed on the re-panic. Reaching this line proves survival.
+	stopReturned := make(chan struct{})
+	go func() {
+		srv.Stop()
+		close(stopReturned)
+	}()
+
+	select {
+	case <-stopReturned:
+		// Expected: the panicking goroutine was recovered, Done() fired,
+		// and Stop() drained the WaitGroup.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Server.Stop() did not return within 2s after a panicking goAsync fn")
+	}
+
+	if !ran.Load() {
+		t.Fatal("panicking background goroutine never executed")
+	}
+}

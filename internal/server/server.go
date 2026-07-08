@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -255,6 +256,20 @@ func (s *Server) goAsync(fn func()) {
 	s.bg.Add(1)
 	go func() {
 		defer s.bg.Done()
+		// Recover from panics in fn so a single bad background task
+		// (e.g. deriveThumbnails hitting a Go image-decoder panic on a
+		// crafted upload, or an email send) can't crash the whole
+		// single-binary server for every tenant. chi's Recoverer only
+		// covers request goroutines, not these detached ones. The
+		// deferred Done() above still fires because recover() keeps the
+		// goroutine from unwinding past this point.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("background task panicked",
+					"panic", r,
+					"stack", string(debug.Stack()))
+			}
+		}()
 		fn()
 	}()
 }
