@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -49,6 +50,19 @@ type DashboardResponse struct {
 	// Nil for workspaces that didn't seed an onboarding primary
 	// (empty template, hiring/interviewing example items, etc.).
 	OnboardingSeed *DashboardOnboardingSeed `json:"onboarding_seed,omitempty"`
+	// Degraded is true when one or more best-effort sub-queries failed
+	// while assembling the dashboard (BUG-2014). The remaining sections
+	// are still returned, but the client should surface a "some data
+	// couldn't load" state rather than presenting the partial result as
+	// authoritative — a failed sub-query previously rendered
+	// indistinguishably from a genuinely-empty section. DegradedSections
+	// names which sections were affected. Every failure is also logged
+	// server-side (slog.Error) with the workspace + section for triage.
+	Degraded bool `json:"degraded"`
+	// DegradedSections lists the section names whose sub-query failed
+	// (e.g. "active_plans", "recent_activity", "by_role"). Empty/omitted
+	// when Degraded is false.
+	DegradedSections []string `json:"degraded_sections,omitempty"`
 }
 
 // DashboardOnboardingSeed is the dashboard-side projection of a
@@ -320,6 +334,28 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		SuggestedNext:  []DashboardSuggestion{},
 	}
 
+	// markDegraded records a best-effort sub-query failure (BUG-2014):
+	// it logs the failure with enough context to diagnose (workspace +
+	// section) and flags the response so the client can distinguish a
+	// section that failed to load from one that is genuinely empty. Used
+	// only for the non-fatal sections below — the queries whose failure
+	// invalidates the whole dashboard still `return nil, err` above.
+	markDegraded := func(section string, err error) {
+		resp.Degraded = true
+		// Some sections query in a loop (e.g. stalled attention over
+		// several status spellings); record each section name once.
+		for _, s := range resp.DegradedSections {
+			if s == section {
+				slog.Error("dashboard sub-query failed; section returned degraded",
+					"workspace_id", workspaceID, "section", section, "error", err)
+				return
+			}
+		}
+		resp.DegradedSections = append(resp.DegradedSections, section)
+		slog.Error("dashboard sub-query failed; section returned degraded",
+			"workspace_id", workspaceID, "section", section, "error", err)
+	}
+
 	// Cheap EXISTS query — drives the connect-agent banner's auto-hide on
 	// the web side. Filtered by the same visibility set used elsewhere in
 	// this handler (dashCollIDs / dashItemIDs) so a guest can't infer the
@@ -343,6 +379,13 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	if !hasAgent {
 		if ws, wErr := s.store.GetWorkspaceByID(workspaceID); wErr == nil && ws != nil {
 			hasAgent = ws.Source == "cli" || ws.Source == "mcp"
+		} else if wErr != nil {
+			// Non-fatal: hasAgent already has a valid value from the
+			// EXISTS check above; this is only a source-signal fallback.
+			// Log it but don't degrade the response — the banner just
+			// stays visible one render longer, no section renders empty.
+			slog.Warn("dashboard: workspace source lookup failed (agent banner fallback)",
+				"workspace_id", workspaceID, "error", wErr)
 		}
 	}
 	resp.HasAgentActivity = hasAgent
@@ -475,6 +518,11 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			return nil, cbErr
 		}
 		childrenByParent = kids
+	} else {
+		// The active-plans query failed. It also feeds plan_completion
+		// attention and suggested_next, so mark the whole response
+		// degraded rather than let those render as silently empty.
+		markDegraded("active_plans", err)
 	}
 	if err == nil {
 		for _, plan := range plans {
@@ -531,6 +579,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			NoContent:     true,
 		})
 		if err != nil {
+			markDegraded("attention.stalled", err)
 			continue
 		}
 		for _, item := range items {
@@ -598,18 +647,22 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 	}
 	if hasParentWithChildren {
-		// Batch-fetch all child→parent mappings for efficiency
+		// Batch-fetch all child→parent mappings for efficiency.
+		// A GetParentMap failure must SKIP orphan detection entirely:
+		// falling back to an empty map would flag every visible non-done
+		// task as orphaned (false positives). Degrade the section and
+		// bail instead.
 		parentMap, err := s.store.GetParentMap(workspaceID)
 		if err != nil {
-			parentMap = map[string]string{}
-		}
-		allTasks, err := s.store.ListItems(workspaceID, models.ItemListParams{
+			markDegraded("attention.orphaned_tasks", err)
+		} else if allTasks, tErr := s.store.ListItems(workspaceID, models.ItemListParams{
 			CollectionSlug: "tasks",
 			CollectionIDs:  dashCollIDs,
 			ItemIDs:        dashItemIDs,
 			NoContent:      true,
-		})
-		if err == nil {
+		}); tErr != nil {
+			markDegraded("attention.orphaned_tasks", tErr)
+		} else {
 			for _, task := range allTasks {
 				if isItemDone(task.Fields, task.CollectionID, ctxMap) {
 					continue
@@ -688,7 +741,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	activities, err := s.store.ListWorkspaceActivity(workspaceID, models.ActivityListParams{
 		Limit: 30,
 	})
-	if err == nil && activities != nil {
+	if err != nil {
+		markDegraded("recent_activity", err)
+	} else if activities != nil {
 		// Build visible slug set for filtering. Resolve slugs from the
 		// already-loaded collection list (ListCollections above) rather than
 		// a GetCollection per visible ID — no extra queries (BUG-2002).
@@ -945,7 +1000,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// When visibility is restricted, recompute from visible items only.
 	if visibleIDs != nil {
 		roleBreakdown, err := s.store.GetRoleBreakdown(workspaceID)
-		if err == nil {
+		if err != nil {
+			markDegraded("by_role", err)
+		} else {
 			// Recount from visible items
 			roleCounts := make(map[string]int)
 			roleUsers := make(map[string]map[string]bool)
@@ -983,7 +1040,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 	} else {
 		roleBreakdown, err := s.store.GetRoleBreakdown(workspaceID)
-		if err == nil && len(roleBreakdown) > 0 {
+		if err != nil {
+			markDegraded("by_role", err)
+		} else if len(roleBreakdown) > 0 {
 			resp.ByRole = roleBreakdown
 		}
 	}
@@ -991,7 +1050,9 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 	// Starred items: non-terminal items starred by the current user
 	if userID := currentUserID(r); userID != "" {
 		starred, err := s.store.ListStarredItems(userID, workspaceID, false)
-		if err == nil && len(starred) > 0 {
+		if err != nil {
+			markDegraded("starred_items", err)
+		} else if len(starred) > 0 {
 			starredItems := []DashboardActiveItem{}
 			for _, item := range starred {
 				// Apply same visibility filter as the rest of the dashboard
