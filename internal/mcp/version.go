@@ -94,7 +94,23 @@ const CmdhelpVersion = "0.1"
 //     the `artifact` param to the vocabulary. Pure addition; existing
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
-//   - "0.10" — current. BUG-2020: server-side draft-playbook gate.
+//   - "0.11" — current. TASK-2017: read-only attachments surface.
+//     Adds a new `pad_attachment` tool (the tenth resource × action
+//     tool) with two read-only actions — `list` and `show` — mirroring
+//     the CLI `pad attachment list` / `pad attachment show`. `list`
+//     (read-only) enumerates a workspace's attachments with optional
+//     filters (item, category, collection, attached/unattached, sort,
+//     limit, offset); `show` (read-only) returns one attachment's
+//     metadata (MIME, size, filename, ETag, last-modified) via a HEAD
+//     request without transferring bytes. Both HTTP dispatchers already
+//     existed (dispatch_http_attachments.go, TASK-871 era); this bump
+//     just wires them onto the catalog surface. Upload / download / view
+//     stay CLI-only (filesystem-bound) and are NOT exposed. Pure
+//     addition of one tool + two read actions; existing tools/actions
+//     unchanged. Backwards-compatible for v0.10 consumers that don't
+//     enumerate the new tool. The base64 image RESOURCE for multimodal
+//     agents is tracked separately (TASK-2076), not part of this bump.
+//   - "0.10" — BUG-2020: server-side draft-playbook gate.
 //     `pad_playbook.run` now refuses a playbook whose status isn't
 //     "active" (a draft still being authored) with a structured
 //     `playbook_not_active` error, and adds an `allow_draft` boolean
@@ -177,7 +193,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.10"
+const ToolSurfaceVersion = "0.11"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
