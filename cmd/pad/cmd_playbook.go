@@ -125,7 +125,8 @@ func playbookShowCmd() *cobra.Command {
 }
 
 func playbookRunCmd() *cobra.Command {
-	return &cobra.Command{
+	var allowDraft bool
+	cmd := &cobra.Command{
 		// Plain <ref> for cmdhelp arg-name stability; trailing args
 		// (positional values, bareword flags, key=value pairs) are
 		// accepted as variadic and forwarded to the server's strict
@@ -148,7 +149,11 @@ Parsing rules:
   - Required positional args first, in declared order.
   - Flag-typed args: bareword presence (e.g. ` + "`stop-after-each`" + `).
   - Other typed args: ` + "`key=value`" + ` form (e.g. ` + "`merge-strategy=rebase`" + `).
-  - Refs accept either issue IDs (TASK-5) or item slugs.`,
+  - Refs accept either issue IDs (TASK-5) or item slugs.
+
+Draft gate: the server refuses to run a playbook whose status isn't
+"active" (e.g. one still being drafted). Pass --allow-draft to override
+and run it anyway.`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			identifier := args[0]
@@ -161,7 +166,7 @@ Parsing rules:
 			// rawArgs (handlers_playbooks.go::ParsePlaybookCLIArgs) so
 			// the CLI doesn't need to duplicate or rebuild the logic.
 			// Any parse error surfaces with a useful message.
-			raw, err := client.RunPlaybook(ws, identifier, nil, rawArgs)
+			raw, err := client.RunPlaybook(ws, identifier, nil, rawArgs, allowDraft)
 			if err != nil {
 				return err
 			}
@@ -200,6 +205,9 @@ Parsing rules:
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&allowDraft, "allow-draft", false,
+		"Run a playbook even if its status isn't \"active\" (the draft gate escape hatch)")
+	return cmd
 }
 
 // --- bootstrap ---

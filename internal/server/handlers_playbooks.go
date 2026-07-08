@@ -29,10 +29,22 @@ type PlaybookRunResponse struct {
 	Ref       string                    `json:"ref"`
 	Slug      string                    `json:"slug"`
 	Title     string                    `json:"title"`
+	Status    string                    `json:"status"`
 	Body      string                    `json:"body"`
 	Arguments []PlaybookArgumentSpec    `json:"arguments"`
 	BoundArgs map[string]any            `json:"bound_args"`
 	Unbound   []PlaybookUnboundArgument `json:"unbound,omitempty"`
+}
+
+// PlaybookShowResponse is the result of `GET /workspaces/{ws}/playbooks/{ref}`.
+// It embeds the full item and hoists the playbook's status (which lives
+// inside the item's fields JSON) to a top-level `status` key so callers
+// can read the draft/active gate without reaching into fields. Embedding
+// keeps the item's existing shape intact — models.Item has no top-level
+// `status` field, so there's no collision.
+type PlaybookShowResponse struct {
+	*models.Item
+	Status string `json:"status"`
 }
 
 // PlaybookArgumentSpec is one entry from the playbook's `arguments`
@@ -116,7 +128,10 @@ func (s *Server) handleShowPlaybook(w http.ResponseWriter, r *http.Request) {
 	if !s.requireItemVisible(w, r, workspaceID, item) {
 		return
 	}
-	writeJSON(w, http.StatusOK, item)
+	writeJSON(w, http.StatusOK, PlaybookShowResponse{
+		Item:   item,
+		Status: playbookStatus(item),
+	})
 }
 
 // handleRunPlaybook parses the caller's args against the playbook's
@@ -151,6 +166,12 @@ func (s *Server) handleRunPlaybook(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Args    map[string]any `json:"args"`
 		RawArgs []string       `json:"raw_args"`
+		// AllowDraft is the escape hatch for the draft-playbook gate.
+		// When true, a playbook whose status != "active" (e.g. a draft
+		// still being authored) may still be run. Left false, the gate
+		// below rejects non-active playbooks with a structured error so
+		// agents don't silently execute half-written procedures.
+		AllowDraft bool `json:"allow_draft"`
 	}
 	// decodeJSON wraps the underlying error as "invalid JSON: ..." so an
 	// EOF check on the wrapped message is unreliable. Use errors.Is on
@@ -160,6 +181,24 @@ func (s *Server) handleRunPlaybook(w http.ResponseWriter, r *http.Request) {
 	// io.EOF; either is fine to treat as "empty request".
 	if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+
+	// The escape hatch can also arrive as a bareword token in raw_args
+	// (the shape the ExecDispatcher-backed MCP path forwards). Pull it
+	// out BEFORE the strict parser runs so it isn't rejected as an
+	// unknown argument, and OR it into the decoded flag.
+	input.RawArgs, input.AllowDraft = extractAllowDraft(input.RawArgs, input.AllowDraft)
+
+	// Draft-playbook gate. Playbooks are meant to be executed only once
+	// they're marked active; a draft is still being authored. The gate
+	// lived only in the agent skill before (unenforced server-side) —
+	// enforce it here so any surface (CLI, MCP, direct HTTP) is covered.
+	status := playbookStatus(item)
+	if !strings.EqualFold(status, "active") && !input.AllowDraft {
+		writeError(w, http.StatusConflict, "playbook_not_active",
+			fmt.Sprintf("playbook %s has status %q, not \"active\" — refusing to run it. Pass allow_draft (CLI: --allow-draft) to run it anyway.",
+				item.Ref, defaultStatus(status)))
 		return
 	}
 
@@ -195,11 +234,61 @@ func (s *Server) handleRunPlaybook(w http.ResponseWriter, r *http.Request) {
 		Ref:       item.Ref,
 		Slug:      item.Slug,
 		Title:     item.Title,
+		Status:    status,
 		Body:      item.Content,
 		Arguments: specs,
 		BoundArgs: bound,
 		Unbound:   unbound,
 	})
+}
+
+// playbookStatus reads the `status` value out of a playbook item's
+// fields JSON. Status lives in the typed fields blob, not as a
+// top-level Item column, so callers that need the draft/active gate go
+// through here. Returns "" when the field is absent or unparseable.
+func playbookStatus(item *models.Item) string {
+	if item == nil || item.Fields == "" {
+		return ""
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(item.Fields), &fields); err != nil {
+		return ""
+	}
+	if s, ok := fields["status"].(string); ok {
+		return s
+	}
+	return ""
+}
+
+// defaultStatus renders an empty status as a readable placeholder for
+// error messages.
+func defaultStatus(status string) string {
+	if status == "" {
+		return "(unset)"
+	}
+	return status
+}
+
+// extractAllowDraft removes any `allow-draft` / `allow_draft` bareword
+// token from the raw CLI args and reports whether one was present. The
+// returned bool is ORed with the caller's existing flag so an explicit
+// allow_draft body field and a bareword token are equivalent. This lets
+// the ExecDispatcher-backed MCP path forward the escape hatch as a
+// bareword without the strict argument parser rejecting it as unknown.
+func extractAllowDraft(rawArgs []string, current bool) ([]string, bool) {
+	if len(rawArgs) == 0 {
+		return rawArgs, current
+	}
+	out := rawArgs[:0:0]
+	found := false
+	for _, tok := range rawArgs {
+		if tok == "allow-draft" || tok == "allow_draft" {
+			found = true
+			continue
+		}
+		out = append(out, tok)
+	}
+	return out, current || found
 }
 
 // resolvePlaybook finds a playbook by either its invocation_slug, its
