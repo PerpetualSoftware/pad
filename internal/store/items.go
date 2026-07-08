@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -1731,7 +1732,25 @@ func (s *Store) UpdateItemWithPreCheck(
 //
 // Pass a nil parentLink for the standard update path (equivalent to
 // UpdateItemWithPreCheck).
+//
+// BUG-2073: wrapped in retryOnParentSetChanged so that if a concurrent
+// reparent moves the item's parent set during lock acquisition, the whole
+// transaction rolls back and retries from a fresh read (the retry folds the
+// moved parent into the initial sorted lock batch, avoiding an out-of-order
+// grab). The body commits nothing before the locks are held, so a retry can't
+// leave partial state.
 func (s *Store) UpdateItemWithParentLink(
+	id string,
+	input models.ItemUpdate,
+	precheck func(tx *sql.Tx, existing *models.Item) error,
+	parentLink *ParentLinkUpdate,
+) (*models.Item, error) {
+	return retryOnParentSetChanged(func() (*models.Item, error) {
+		return s.updateItemWithParentLinkOnce(id, input, precheck, parentLink)
+	})
+}
+
+func (s *Store) updateItemWithParentLinkOnce(
 	id string,
 	input models.ItemUpdate,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
@@ -2194,6 +2213,13 @@ func (s *Store) DeleteItem(id string) error {
 // workspace-scoped seq so delta-sync clients re-materialize the row.
 // Same lock + subquery shape as DeleteItem.
 func (s *Store) RestoreItem(id string) (*models.Item, error) {
+	// BUG-2073: retry if the item's parent set moves during lock acquisition.
+	return retryOnParentSetChanged(func() (*models.Item, error) {
+		return s.restoreItemOnce(id)
+	})
+}
+
+func (s *Store) restoreItemOnce(id string) (*models.Item, error) {
 	existing, err := s.GetItemIncludeDeleted(id)
 	if err != nil {
 		return nil, err
@@ -2223,11 +2249,12 @@ func (s *Store) RestoreItem(id string) (*models.Item, error) {
 	// Pre-fix this called AcquireParentChildrenLock for a single
 	// LIMIT 1 row — a multi-parent child would have left another
 	// parent's precheck racing the resurrection.
-	parentIDs, err := s.listParentChildLockKeys(tx, id)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.AcquireParentChildrenLocks(tx, parentIDs...); err != nil {
+	//
+	// BUG-2073: route through the shared acquireParentChildrenLocksForUpdate
+	// helper (rather than an inline read-then-lock) so RestoreItem also holds
+	// the restored item's OWN (id) lock and re-reads the parent set under it —
+	// closing the read-then-lock window this path shared with UpdateItem.
+	if err := s.acquireParentChildrenLocksForUpdate(tx, id); err != nil {
 		return nil, err
 	}
 
@@ -2393,8 +2420,16 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 	// while we're about to attach a non-terminal one. Non-child link
 	// types (blocks, supersedes, …) don't affect the children-set so
 	// we skip the lock — keeps the common case lock-free.
+	//
+	// BUG-2073: ALSO lock the SOURCE item's key. Attaching sourceID as a
+	// child of target adds a parent to sourceID, so sourceID's own lock must
+	// be held for the "the child lock freezes an item's parent set" invariant
+	// that acquireParentChildrenLocksForUpdate / setParentLinkTx rely on to
+	// hold — otherwise a concurrent UpdateItem(sourceID) could miss this new
+	// parent on its post-lock re-read. Both keys go through the sorted helper,
+	// so the two-key grab stays deadlock-free.
 	if isChildLinkType(linkType) {
-		if err := s.AcquireParentChildrenLocks(tx, input.TargetID); err != nil {
+		if err := s.AcquireParentChildrenLocks(tx, sourceID, input.TargetID); err != nil {
 			return nil, err
 		}
 	}
@@ -2573,8 +2608,14 @@ func (s *Store) DeleteItemLink(id string) error {
 	// We DON'T lock for non-child link types (blocks, supersedes, …)
 	// — they don't affect the children-set, so contention there is
 	// unnecessary.
-	var linkType, targetID string
-	err = tx.QueryRow(s.q("SELECT link_type, target_id FROM item_links WHERE id = ?"), id).Scan(&linkType, &targetID)
+	//
+	// BUG-2073: lock the SOURCE key too (not just the target) for child link
+	// types — detaching sourceID from target removes a parent from sourceID,
+	// so sourceID's own lock must be held for the "child lock freezes the
+	// parent set" invariant the update paths rely on. Both keys go through the
+	// sorted helper, so the grab stays deadlock-free.
+	var linkType, sourceID, targetID string
+	err = tx.QueryRow(s.q("SELECT link_type, source_id, target_id FROM item_links WHERE id = ?"), id).Scan(&linkType, &sourceID, &targetID)
 	if err == sql.ErrNoRows {
 		return sql.ErrNoRows
 	}
@@ -2582,7 +2623,7 @@ func (s *Store) DeleteItemLink(id string) error {
 		return fmt.Errorf("peek item link for delete: %w", err)
 	}
 	if isChildLinkType(linkType) {
-		if err := s.AcquireParentChildrenLocks(tx, targetID); err != nil {
+		if err := s.AcquireParentChildrenLocks(tx, sourceID, targetID); err != nil {
 			return err
 		}
 	}
@@ -2611,6 +2652,14 @@ func (s *Store) DeleteItemLink(id string) error {
 // guard could read 0 open children while this method was about to
 // attach a non-terminal child.
 func (s *Store) SetParentLink(workspaceID, itemID, parentID, createdBy string) (*models.ItemLink, error) {
+	// BUG-2073: retry if the item's parent moved during lock acquisition
+	// (setParentLinkTx re-reads under the child lock and signals a rollback).
+	return retryOnParentSetChanged(func() (*models.ItemLink, error) {
+		return s.setParentLinkOnce(workspaceID, itemID, parentID, createdBy)
+	})
+}
+
+func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy string) (*models.ItemLink, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
@@ -2644,23 +2693,50 @@ func (s *Store) SetParentLink(workspaceID, itemID, parentID, createdBy string) (
 // keys the enclosing tx already holds (as UpdateItemWithParentLink does after
 // pre-locking the new parent) is an idempotent no-op rather than a deadlock.
 func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, createdBy string) (string, error) {
-	// Find the existing parent (if any) so we can lock against it too.
-	// The DELETE below targets link_type='parent' specifically, which
-	// matches what the guard's children query treats as the parent
+	// Find the existing parent (if any) so we can fold it into the initial
+	// lock batch. The DELETE below targets link_type='parent' specifically,
+	// which matches what the guard's children query treats as the parent
 	// edge (childLinkTypes includes 'parent'); other child-link types
 	// like 'implements' aren't displaced by this method so we don't
-	// need their old parent here.
-	var oldParentID sql.NullString
-	if err := tx.QueryRow(s.q(`
-		SELECT target_id FROM item_links
-		WHERE source_id = ? AND link_type = 'parent'
-		LIMIT 1
-	`), itemID).Scan(&oldParentID); err != nil && err != sql.ErrNoRows {
-		return "", fmt.Errorf("lookup existing parent: %w", err)
+	// need their old parent here. This read is best-effort (pre-lock); it is
+	// re-verified under the child lock below.
+	oldParentID, err := s.readParentLinkTarget(tx, itemID)
+	if err != nil {
+		return "", err
 	}
 
-	if err := s.AcquireParentChildrenLocks(tx, oldParentID.String, parentID); err != nil {
+	// BUG-2073 race 1 (cycle): acquire the CHILD's own (itemID) lock in
+	// addition to the old + new parent keys, all in ONE sorted batch. Before
+	// this fix SetParentLink locked only the old+new parents, so concurrent
+	// SetParentLink(A,B) and SetParentLink(B,A) locked disjoint keys ({B} vs
+	// {A}), both cycle walks passed on stale snapshots, and both inserts
+	// committed — forming an A↔B cycle. With itemID folded in, the two calls
+	// both contend on {A,B}, serialize, and the loser's cycle walk (run under
+	// the lock, below) observes the committed edge and rejects. Sorted
+	// acquisition keeps the multi-key grab deadlock-free.
+	if err := s.AcquireParentChildrenLocks(tx, itemID, oldParentID, parentID); err != nil {
 		return "", err
+	}
+
+	// BUG-2073 race 2 (stale old parent): oldParentID was read BEFORE the
+	// locks were held. A concurrent reparent of THIS child can commit in the
+	// window before we acquired the child's lock, moving the real old parent.
+	// Now that we hold the child (itemID) lock the parent edge is frozen, so
+	// re-read it and verify. If it moved to a parent we did NOT lock, we can't
+	// safely acquire that key now: it may sort before a key we already hold,
+	// which would violate AcquireParentChildrenLocks' canonical sorted order
+	// and could deadlock. Instead we signal errParentSetChanged so the
+	// tx-owning caller rolls back (releasing every lock) and retries from a
+	// fresh read — on the retry the moved parent is folded into the INITIAL
+	// sorted batch, keeping acquisition deadlock-free. This mismatch can only
+	// happen on the public SetParentLink path; UpdateItemWithParentLink holds
+	// the child lock from its own acquisition, so its re-read always matches.
+	reOldParentID, err := s.readParentLinkTarget(tx, itemID)
+	if err != nil {
+		return "", err
+	}
+	if reOldParentID != oldParentID {
+		return "", errParentSetChanged
 	}
 
 	// Cycle detection: walk the ancestor chain from parentID to ensure itemID
@@ -2676,7 +2752,9 @@ func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, creat
 		return "", err
 	}
 
-	// Delete existing parent link for this item (if any)
+	// Delete existing parent link for this item (if any). Targeting by
+	// source_id detaches the child from whatever parent it ACTUALLY has —
+	// whose lock we now hold via the re-read above.
 	if _, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'parent'`), itemID); err != nil {
 		return "", fmt.Errorf("delete existing parent link: %w", err)
 	}
@@ -2701,6 +2779,23 @@ func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, creat
 // it writes with).
 type rowQueryer interface {
 	QueryRow(query string, args ...any) *sql.Row
+}
+
+// readParentLinkTarget returns the target_id of an item's `parent` link, or
+// "" when it has none. Parameterized over rowQueryer so it can read either
+// unlocked or inside an in-flight transaction — the parent-link paths call it
+// twice (once best-effort before locking, once under the child lock to catch a
+// reparent that landed during the lock-acquisition window; BUG-2073).
+func (s *Store) readParentLinkTarget(q rowQueryer, itemID string) (string, error) {
+	var target sql.NullString
+	if err := q.QueryRow(s.q(`
+		SELECT target_id FROM item_links
+		WHERE source_id = ? AND link_type = 'parent'
+		LIMIT 1
+	`), itemID).Scan(&target); err != nil && err != sql.ErrNoRows {
+		return "", fmt.Errorf("lookup existing parent: %w", err)
+	}
+	return target.String, nil
 }
 
 // checkParentCycleQ walks the ancestor chain from parentID and returns an
@@ -2739,6 +2834,14 @@ func (s *Store) checkParentCycleQ(q rowQueryer, itemID, parentID string) error {
 // similar to attaching one — the parent's children-set changes either
 // way and the guard must see a consistent view.
 func (s *Store) ClearParentLink(itemID string) error {
+	// BUG-2073: retry if the item's parent moved during lock acquisition.
+	_, err := retryOnParentSetChanged(func() (struct{}, error) {
+		return struct{}{}, s.clearParentLinkOnce(itemID)
+	})
+	return err
+}
+
+func (s *Store) clearParentLinkOnce(itemID string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -2756,19 +2859,34 @@ func (s *Store) ClearParentLink(itemID string) error {
 // UpdateItemWithParentLink (item-update tx), so a cleared parent commits
 // atomically with the field write it accompanied (BUG-2013).
 func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID string) error {
-	var oldParentID sql.NullString
-	if err := tx.QueryRow(s.q(`
-		SELECT target_id FROM item_links
-		WHERE source_id = ? AND link_type = 'parent'
-		LIMIT 1
-	`), itemID).Scan(&oldParentID); err != nil && err != sql.ErrNoRows {
+	// Best-effort pre-lock read of the current parent, re-verified under lock.
+	oldParentID, err := s.readParentLinkTarget(tx, itemID)
+	if err != nil {
 		return fmt.Errorf("lookup parent for clear: %w", err)
 	}
-	if oldParentID.Valid && oldParentID.String != "" {
-		if err := s.AcquireParentChildrenLocks(tx, oldParentID.String); err != nil {
-			return err
-		}
+
+	// BUG-2073: fold the CHILD's own (itemID) lock into the batch alongside
+	// the old parent, in ONE sorted acquisition. The child lock serializes
+	// concurrent parent mutations of this item (SetParentLink/ClearParentLink/
+	// UpdateItemWithParentLink all take it), so a detach can't race a reparent.
+	if err := s.AcquireParentChildrenLocks(tx, itemID, oldParentID); err != nil {
+		return err
 	}
+
+	// Re-read the parent under the child lock (BUG-2073 race 2): a concurrent
+	// reparent may have committed in the window before we held itemID's lock.
+	// Now the parent edge is frozen; if it moved to a parent we did NOT lock,
+	// signal errParentSetChanged so the tx-owning caller rolls back and retries
+	// from a fresh read (see setParentLinkTx for the rationale — acquiring the
+	// moved key here would risk an out-of-order grab).
+	reOldParentID, err := s.readParentLinkTarget(tx, itemID)
+	if err != nil {
+		return fmt.Errorf("lookup parent for clear: %w", err)
+	}
+	if reOldParentID != oldParentID {
+		return errParentSetChanged
+	}
+
 	if _, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'parent'`), itemID); err != nil {
 		return fmt.Errorf("clear parent link: %w", err)
 	}
@@ -3274,6 +3392,16 @@ func (s *Store) GetChildItemsTx(tx *sql.Tx, parentItemID string) ([]models.Item,
 // in this initial sorted acquisition (rather than later, inside
 // setParentLinkTx) preserves the canonical lock ordering and keeps the
 // combined update deadlock-free.
+//
+// BUG-2073: the parent set is read BEFORE the locks are held, so a concurrent
+// reparent of this item can commit before we acquire the item's own (itemID)
+// key and add a parent we didn't lock. Once itemID is held the parent set is
+// frozen, so we re-read it; if a new parent appeared, we signal
+// errParentSetChanged (rather than acquiring it out of the canonical sorted
+// order) so the tx-owning caller rolls back and retries — on the retry the new
+// parent is included in the INITIAL sorted batch, keeping acquisition
+// deadlock-free. Every tx-owning caller wraps its body in
+// retryOnParentSetChanged.
 func (s *Store) acquireParentChildrenLocksForUpdate(tx *sql.Tx, itemID string, extraKeys ...string) error {
 	if s.dialect.Driver() != DriverPostgres {
 		return nil
@@ -3284,7 +3412,78 @@ func (s *Store) acquireParentChildrenLocksForUpdate(tx *sql.Tx, itemID string, e
 	}
 	keys := append(parentIDs, itemID)
 	keys = append(keys, extraKeys...)
-	return s.AcquireParentChildrenLocks(tx, keys...)
+	if err := s.AcquireParentChildrenLocks(tx, keys...); err != nil {
+		return err
+	}
+
+	// Re-read the parent set under the now-held itemID lock. Any parent that
+	// appeared during the acquisition window is not covered by the locks we
+	// took, so bail out for a retry rather than close the open-children guard
+	// serialization gap with an out-of-order grab.
+	reParentIDs, err := s.listParentChildLockKeys(tx, itemID)
+	if err != nil {
+		return err
+	}
+	if newKeys := keysNotIn(keys, reParentIDs); len(newKeys) > 0 {
+		return errParentSetChanged
+	}
+	return nil
+}
+
+// errParentSetChanged is the retry sentinel for BUG-2073: a parent-children
+// lock acquisition re-read the item's parent set under its own lock and found
+// it had moved during the acquisition window. Acquiring the newly-appeared key
+// in-place could violate AcquireParentChildrenLocks' canonical sorted order, so
+// the tx-owning caller instead rolls back (releasing every advisory lock) and
+// retries from a fresh read via retryOnParentSetChanged. Because the item's own
+// lock is always in the batch, the parent set is frozen once acquired, so a
+// retry converges in one extra attempt in the overwhelmingly common case.
+var errParentSetChanged = errors.New("parent-children lock set changed during acquisition; retry")
+
+// maxParentLockRetries bounds retryOnParentSetChanged so a pathological stream
+// of concurrent reparents of the same item can't spin forever. Reaching the
+// cap surfaces the sentinel as a real error rather than corrupting state.
+const maxParentLockRetries = 8
+
+// retryOnParentSetChanged runs fn, retrying (up to maxParentLockRetries) while
+// it returns errParentSetChanged. fn MUST open and own its own transaction and
+// roll it back on any error (the standard `defer tx.Rollback()` pattern), so
+// each attempt starts from a clean slate with all advisory locks released.
+func retryOnParentSetChanged[T any](fn func() (T, error)) (T, error) {
+	var zero T
+	for attempt := 0; attempt < maxParentLockRetries; attempt++ {
+		v, err := fn()
+		if errors.Is(err, errParentSetChanged) {
+			continue
+		}
+		return v, err
+	}
+	return zero, fmt.Errorf("parent-children lock set kept changing after %d attempts: %w", maxParentLockRetries, errParentSetChanged)
+}
+
+// keysNotIn returns the entries of want that are not already present in have.
+// Used to detect parent lock keys that appeared on a post-lock re-read
+// (BUG-2073).
+func keysNotIn(have, want []string) []string {
+	if len(want) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(have))
+	for _, k := range have {
+		seen[k] = struct{}{}
+	}
+	var out []string
+	for _, k := range want {
+		if k == "" {
+			continue
+		}
+		if _, ok := seen[k]; ok {
+			continue
+		}
+		seen[k] = struct{}{} // dedupe within want too
+		out = append(out, k)
+	}
+	return out
 }
 
 // listParentChildLockKeys returns every target_id this item is the
@@ -3608,6 +3807,16 @@ func (s *Store) MoveItem(itemID, targetCollectionID, newFieldsJSON string) (*mod
 // The precheck receives a fresh in-tx snapshot of the item, same as
 // UpdateItemWithPreCheck (the pre-tx `existing` is replaced).
 func (s *Store) MoveItemWithPreCheck(
+	itemID, targetCollectionID, newFieldsJSON string,
+	precheck func(tx *sql.Tx, existing *models.Item) error,
+) (*models.Item, error) {
+	// BUG-2073: retry if the item's parent set moves during lock acquisition.
+	return retryOnParentSetChanged(func() (*models.Item, error) {
+		return s.moveItemWithPreCheckOnce(itemID, targetCollectionID, newFieldsJSON, precheck)
+	})
+}
+
+func (s *Store) moveItemWithPreCheckOnce(
 	itemID, targetCollectionID, newFieldsJSON string,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
 ) (*models.Item, error) {
