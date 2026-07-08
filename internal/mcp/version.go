@@ -94,7 +94,21 @@ const CmdhelpVersion = "0.1"
 //     the `artifact` param to the vocabulary. Pure addition; existing
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
-//   - "0.9" — current. TASK-2000: `pad_item.list` is now summary-shaped
+//   - "1.0" — current. TASK-2022: adds a `history` action to `pad_item`
+//     (read-only item version history — newest-first metadata: id,
+//     created_at, created_by, source, change_summary; the resolved
+//     content body is omitted for token thrift). Also adds an
+//     `expected_updated_at` param to `pad_item` for optimistic-
+//     concurrency on `update`: round-trip the updated_at you last read
+//     and the update fails with a structured 409 (code=update_conflict)
+//     if the item changed since. The `update` action's field writes are
+//     now a server-side field-level MERGE (only the keys you set change)
+//     rather than a full-blob replace, closing the concurrent-update
+//     lost-write race (IDEA-1480) — a behavior change to the update
+//     path plus a new action and a new param, hence the version bump.
+//     Pure addition to the action enum + param vocabulary; existing
+//     pad_item actions/params are unchanged and backwards-compatible.
+//   - "0.9" — historical. TASK-2000: `pad_item.list` is now summary-shaped
 //     and bounded. Two changes for agent-token thrift:
 //   - The `list` action injects a default `limit` (50) and clamps an
 //     oversized one (max 300), mirroring the backlinks default/max, so
@@ -166,7 +180,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.9"
+const ToolSurfaceVersion = "1.0"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

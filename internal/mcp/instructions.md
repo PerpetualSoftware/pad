@@ -6,11 +6,11 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.9)
+## Tool surface (v1.0)
 
 Nine resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Ten tools total.
 
-- `pad_item` — Items: create / update / delete / get / list / move / restore / link / unlink / deps / star / unstar / starred / comment / list-comments / backlinks / bulk-update / note / decide / export / import.
+- `pad_item` — Items: create / update / delete / get / list / move / restore / link / unlink / deps / star / unstar / starred / comment / list-comments / backlinks / history / bulk-update / note / decide / export / import.
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log / create / claim / deleted / restore.
 - `pad_collection` — Collections: list / create / update / delete.
 - `pad_project` — Project intelligence: dashboard / next / standup / changelog / report.

@@ -149,6 +149,16 @@ const (
 	// than reporting a permission error. Details carries feature/limit/
 	// current/plan/upgrade_url from the server (TASK-788).
 	ErrPlanLimitExceeded ErrorCode = "plan_limit_exceeded"
+
+	// ErrUpdateConflict fires on HTTP 409 responses that carry
+	// error.code="update_conflict" — an optimistic-concurrency guard
+	// rejecting an item update because its `expected_updated_at` no longer
+	// matched the item's current updated_at (another writer won the race).
+	// Distinct from ErrConflict (generic uniqueness/duplicate) so a
+	// coordinating agent can re-read + retry rather than treating it as a
+	// hard duplicate. Details carries ref/expected_updated_at/
+	// actual_updated_at from the server (TASK-2022).
+	ErrUpdateConflict ErrorCode = "update_conflict"
 )
 
 // ErrorEnvelope is the wire shape returned to MCP clients on tool
@@ -359,6 +369,7 @@ const structuredErrorMarker = "pad-structured-error/v1: "
 var allowedStructuredErrorCodes = map[string]struct{}{
 	"open_children":       {}, // IDEA-1494
 	"plan_limit_exceeded": {}, // TASK-788
+	"update_conflict":     {}, // TASK-2022 (optimistic concurrency)
 }
 
 // extractStructuredCLIError scans stderr for the

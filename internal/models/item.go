@@ -536,17 +536,29 @@ type ItemCreate struct {
 }
 
 type ItemUpdate struct {
-	Title          *string `json:"title,omitempty"`
-	Content        *string `json:"content,omitempty"`
-	Fields         *string `json:"fields,omitempty"`
-	Tags           *string `json:"tags,omitempty"`
-	Pinned         *bool   `json:"pinned,omitempty"`
-	SortOrder      *int    `json:"sort_order,omitempty"`
-	ParentID       *string `json:"parent_id,omitempty"`
-	AssignedUserID *string `json:"assigned_user_id,omitempty"`
-	AgentRoleID    *string `json:"agent_role_id,omitempty"`
-	LastModifiedBy string  `json:"last_modified_by,omitempty"`
-	Source         string  `json:"source,omitempty"`
+	Title   *string `json:"title,omitempty"`
+	Content *string `json:"content,omitempty"`
+	Fields  *string `json:"fields,omitempty"`
+	// FieldsPatch, when non-nil, applies a SHALLOW field-level merge onto
+	// the item's CURRENT fields JSON instead of replacing the whole blob
+	// (IDEA-1480 / TASK-2022). Each key sets its field; a key mapped to a
+	// JSON null DELETES that field; every other stored field is left
+	// untouched. The merge runs INSIDE UpdateItem's transaction against the
+	// row read under the write lock, so two concurrent single-field patches
+	// can no longer clobber each other the way the full-blob
+	// read-modify-write does (the lost-write race IDEA-1480 describes).
+	//
+	// Mutually exclusive with Fields — the HTTP handler rejects a request
+	// carrying both. In-process callers should set exactly one.
+	FieldsPatch    map[string]interface{} `json:"fields_patch,omitempty"`
+	Tags           *string                `json:"tags,omitempty"`
+	Pinned         *bool                  `json:"pinned,omitempty"`
+	SortOrder      *int                   `json:"sort_order,omitempty"`
+	ParentID       *string                `json:"parent_id,omitempty"`
+	AssignedUserID *string                `json:"assigned_user_id,omitempty"`
+	AgentRoleID    *string                `json:"agent_role_id,omitempty"`
+	LastModifiedBy string                 `json:"last_modified_by,omitempty"`
+	Source         string                 `json:"source,omitempty"`
 	// VersionSource overrides the per-version-row Source attribution
 	// without mutating `items.source`. When unset (the common case),
 	// the version row inherits the same value as `items.source`
@@ -591,6 +603,15 @@ type ItemUpdate struct {
 	// update --force` and MCP `pad_item.action: update` with
 	// `force: true`.
 	Force bool `json:"force,omitempty"`
+
+	// ExpectedUpdatedAt, when non-empty, enables optimistic-concurrency
+	// checking (TASK-2022). UpdateItem parses it as RFC3339 and compares it
+	// against the item's current updated_at read under the write lock;
+	// on mismatch it returns *store.UpdateConflictError so the handler can
+	// surface the pad-structured-error/v1 conflict envelope (HTTP 409,
+	// code "update_conflict"). Empty = no check (last-writer-wins, the
+	// historical default). Round-trip the `updated_at` you last read.
+	ExpectedUpdatedAt string `json:"expected_updated_at,omitempty"`
 }
 
 // ErrInvalidFieldsType / ErrInvalidTagsType are returned by

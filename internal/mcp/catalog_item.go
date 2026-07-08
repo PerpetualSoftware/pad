@@ -77,6 +77,13 @@ var padItemTool = ToolDef{
 		// flags; passThrough handles both. PLAN-1593 / TASK-1596.
 		"backlinks": passThrough([]string{"item", "backlinks"}),
 
+		// Version history ("what changed, when, by whom") — TASK-2022.
+		// Read-only: returns the item's recorded content-version metadata
+		// (newest-first), a token-light summary shape (id, created_at,
+		// created_by, source, change_summary) with the resolved content
+		// body omitted. Restoring a version stays a web-UI action.
+		"history": passThrough([]string{"item", "history"}),
+
 		// Bulk + notes + decisions
 		// bulk-update is custom because the CLI takes repeatable
 		// positional refs (one or more); our uniform schema exposes
@@ -190,6 +197,13 @@ var padItemSchemaParams = []ParamDef{
 	// and MCP escape hatches are identical.
 	{Name: "force", Type: "bool", Description: "Override the open-children guard. Optional for: update, bulk-update, move. When the server returns code=open_children, details.open_children lists the blocking child refs so an agent can ship them and retry — or set force=true if the children should be intentionally orphaned."},
 
+	// ── Optimistic concurrency ── (TASK-2022)
+	// update only. Round-trip the `updated_at` a prior get returned; the
+	// server rejects the update with code=update_conflict (409) if the item
+	// changed since, so a coordinating agent can detect a lost-update race
+	// and re-read instead of silently clobbering another writer.
+	{Name: "expected_updated_at", Type: "string", Description: "Optimistic-concurrency guard for action=update. RFC3339 updated_at you last read; the update is rejected with code=update_conflict if the item changed since. Optional."},
+
 	// ── Notes / decisions ──
 	{Name: "summary", Type: "string", Description: "Short note headline. Required for: note."},
 	{Name: "details", Type: "string", Description: "Long-form note body. Optional for: note."},
@@ -212,8 +226,15 @@ Actions:
                   — NOT a comma-separated string.
   update        — Update an item by ref.
                   Required: ref. At least one mutable field.
-                  Optional: title, status, priority, content, role, assign, parent, comment, tags.
-                  Same placement rules as create.
+                  Optional: title, status, priority, content, role, assign, parent, comment, tags,
+                  expected_updated_at.
+                  Same placement rules as create. Field updates are applied as a
+                  field-level MERGE server-side (only the keys you set change; the
+                  rest are preserved), so concurrent single-field updates no longer
+                  clobber each other. Pass expected_updated_at (the updated_at you
+                  last read) to make the update fail with code=update_conflict if
+                  the item changed since — optimistic concurrency for coordinating
+                  agents.
   delete        — Archive an item.
                   Required: ref.
   restore       — Un-archive (restore) a soft-deleted item by ref.
@@ -250,6 +271,12 @@ Actions:
                   Use this when you need to answer "what other items
                   reference TASK-5?" without scanning the full content
                   corpus.
+  history       — Read an item's version history (newest-first, read-only).
+                  Required: ref.
+                  Returns a token-light summary per recorded version
+                  (id, created_at, created_by, source, change_summary);
+                  the resolved content body is omitted. Restoring a
+                  version is a web-UI action, not exposed here.
   bulk-update   — Update status/priority across multiple items.
                   Required: refs (array of refs, e.g. ["TASK-5", "TASK-8"]),
                   AND at least one of status / priority.

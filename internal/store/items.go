@@ -1729,6 +1729,57 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 	return s.UpdateItemWithPreCheck(id, input, nil)
 }
 
+// UpdateConflictError is returned by UpdateItem when the caller supplied
+// ItemUpdate.ExpectedUpdatedAt and it no longer matches the item's current
+// updated_at — another writer changed the row first (TASK-2022,
+// optimistic concurrency). The check runs under the same write lock as the
+// mutation, so a matching timestamp is a genuine guarantee that nothing
+// slipped in between. The handler maps this to a pad-structured-error/v1
+// conflict envelope (HTTP 409, code "update_conflict").
+type UpdateConflictError struct {
+	ItemID            string
+	ExpectedUpdatedAt string
+	ActualUpdatedAt   time.Time
+}
+
+func (e *UpdateConflictError) Error() string {
+	return fmt.Sprintf(
+		"item %s was modified by another writer (expected updated_at %s, actual %s)",
+		e.ItemID, e.ExpectedUpdatedAt, e.ActualUpdatedAt.UTC().Format(time.RFC3339),
+	)
+}
+
+// mergeFieldsPatch applies a shallow JSON-merge-patch (RFC 7396 semantics,
+// one level deep) of `patch` onto the item's current fields JSON (IDEA-1480
+// / TASK-2022). A key mapped to nil (JSON null) DELETES that key; any other
+// value sets it; every key absent from the patch is preserved verbatim.
+// Returns the re-marshaled fields JSON.
+//
+// Pad fields are flat scalars (select/text/date/number/checkbox), so a
+// shallow merge is the entire contract — we deliberately do NOT recurse
+// into nested objects the way full RFC 7396 would, because no Pad field is
+// itself an object whose sub-keys need independent patching.
+func mergeFieldsPatch(currentJSON string, patch map[string]interface{}) (string, error) {
+	m := map[string]interface{}{}
+	if currentJSON != "" && currentJSON != "{}" {
+		if err := json.Unmarshal([]byte(currentJSON), &m); err != nil {
+			return "", fmt.Errorf("parse current fields for merge: %w", err)
+		}
+	}
+	for k, v := range patch {
+		if v == nil {
+			delete(m, k)
+			continue
+		}
+		m[k] = v
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return "", fmt.Errorf("marshal merged fields: %w", err)
+	}
+	return string(out), nil
+}
+
 // ParentLinkUpdate describes an optional parent-link mutation to apply
 // ATOMICALLY inside UpdateItem's transaction (BUG-2013). The handler used
 // to run SetParentLink/ClearParentLink as a separate write AFTER the field
@@ -1908,6 +1959,56 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// otherwise the mutation logic below would proceed from
 		// stale data and undo the integrity gain.
 		existing = freshExisting
+	}
+
+	// TASK-2022: optimistic-concurrency check + field-level merge both need
+	// the item's state as seen UNDER the write lock. When a precheck ran,
+	// `existing` was already replaced with the in-tx snapshot above;
+	// otherwise re-read it in-tx here so the conflict check compares against
+	// (and the merge is applied on top of) the row the UPDATE will write.
+	if (input.ExpectedUpdatedAt != "" || input.FieldsPatch != nil) && precheck == nil {
+		fresh, ferr := s.getItemTx(tx, id)
+		if ferr != nil {
+			return nil, fmt.Errorf("re-read item under lock: %w", ferr)
+		}
+		if fresh == nil {
+			// Deleted between the pre-tx read and the post-lock re-read;
+			// surface as not-found (mirrors the precheck branch above).
+			return nil, nil
+		}
+		existing = fresh
+	}
+
+	// Optimistic-concurrency guard: reject the write when the caller's
+	// expected updated_at no longer matches the locked row (another writer
+	// won the race). Parsed as RFC3339 and compared with time.Equal so a
+	// round-tripped `updated_at` string matches regardless of zone/format.
+	if input.ExpectedUpdatedAt != "" {
+		expected, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt)
+		if perr != nil {
+			return nil, fmt.Errorf("invalid expected_updated_at %q: %w", input.ExpectedUpdatedAt, perr)
+		}
+		if !existing.UpdatedAt.Equal(expected) {
+			return nil, &UpdateConflictError{
+				ItemID:            id,
+				ExpectedUpdatedAt: input.ExpectedUpdatedAt,
+				ActualUpdatedAt:   existing.UpdatedAt,
+			}
+		}
+	}
+
+	// Field-level merge (IDEA-1480): fold the caller's field patch onto the
+	// locked row's current fields and hand the result to the rest of the
+	// function as if it were a full `fields` replace. Because the base is the
+	// in-tx snapshot, two concurrent single-field patches serialize behind
+	// the workspace/parent locks and can't clobber each other. The handler
+	// guarantees Fields and FieldsPatch are never both set.
+	if input.FieldsPatch != nil {
+		merged, mErr := mergeFieldsPatch(existing.Fields, input.FieldsPatch)
+		if mErr != nil {
+			return nil, mErr
+		}
+		input.Fields = &merged
 	}
 
 	ts := now()

@@ -248,6 +248,15 @@ func (c *Client) DeleteItem(wsSlug, itemSlug string) error {
 	return c.delete("/workspaces/" + wsSlug + "/items/" + itemSlug)
 }
 
+// ListItemVersions returns the item's version history (newest-first), with
+// reverse-patch diffs already resolved to full content server-side. Backs
+// `pad item history` (TASK-2022). Reuses the existing read-only
+// GET /items/{slug}/versions endpoint — no new store surface.
+func (c *Client) ListItemVersions(wsSlug, itemSlug string) ([]models.Version, error) {
+	var result []models.Version
+	return result, c.get("/workspaces/"+wsSlug+"/items/"+itemSlug+"/versions", &result)
+}
+
 // RestoreItem un-archives a soft-deleted item via the restore endpoint, which
 // resolves the ref/slug with include-deleted semantics server-side (the normal
 // resolver 404s on archived items). Returns the restored item.
@@ -1124,6 +1133,56 @@ func WriteOpenChildrenError(w io.Writer, apiErr *APIError, oc *OpenChildrenDetai
 		fmt.Fprintf(w, "  (+%d hidden %s you don't have access to)\n", oc.HiddenBlockerCount, noun)
 	}
 	fmt.Fprintln(w, "Pass --force to override.")
+}
+
+// UpdateConflictDetails is the parsed shape of APIError.Details when
+// Code == "update_conflict" (TASK-2022, optimistic concurrency). The server
+// returns it at HTTP 409 when an update carried `expected_updated_at` and it
+// no longer matched the item's current updated_at — another writer won the
+// race.
+type UpdateConflictDetails struct {
+	Ref               string `json:"ref"`
+	ExpectedUpdatedAt string `json:"expected_updated_at"`
+	ActualUpdatedAt   string `json:"actual_updated_at"`
+}
+
+// AsUpdateConflict returns the parsed conflict details when this APIError
+// carries them, or nil otherwise. Returns nil for any error other than
+// "update_conflict" so callers can branch cleanly.
+func (e *APIError) AsUpdateConflict() *UpdateConflictDetails {
+	if e == nil || e.Code != "update_conflict" || len(e.Details) == 0 {
+		return nil
+	}
+	var d UpdateConflictDetails
+	if err := json.Unmarshal(e.Details, &d); err != nil {
+		return nil
+	}
+	return &d
+}
+
+// WriteUpdateConflictError formats an optimistic-concurrency conflict to w in
+// the canonical two-track shape (TASK-2022), mirroring WriteOpenChildrenError
+// / WritePlanLimitError:
+//
+//  1. A single `pad-structured-error/v1: {json}\n` marker line — consumed by
+//     the MCP stdio classifier so it lifts the structured payload instead of
+//     falling through to a generic server_error.
+//  2. Human-readable lines: the message plus the expected/actual timestamps.
+func WriteUpdateConflictError(w io.Writer, apiErr *APIError, uc *UpdateConflictDetails) {
+	envelope := map[string]any{
+		"error": map[string]any{
+			"code":    apiErr.Code,
+			"message": apiErr.Message,
+			"details": uc,
+		},
+	}
+	if data, err := json.Marshal(envelope); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+	fmt.Fprintln(w, apiErr.Message)
+	fmt.Fprintf(w, "  expected updated_at: %s\n", uc.ExpectedUpdatedAt)
+	fmt.Fprintf(w, "  actual updated_at:   %s\n", uc.ActualUpdatedAt)
+	fmt.Fprintln(w, "Re-read the item (pad item show) and retry with the current timestamp.")
 }
 
 // PlanLimitDetails is the parsed shape of APIError.Details when
