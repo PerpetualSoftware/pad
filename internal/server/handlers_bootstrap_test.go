@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
@@ -910,6 +911,75 @@ func assertOverflow(t *testing.T, name string, got, want int) {
 	if got != want {
 		t.Errorf("%s_overflow_count = %d, want %d", name, got, want)
 	}
+}
+
+// TestBootstrapDashboardCarriesDegraded is the BUG-2072 regression guard.
+// BUG-2014 (PR #867) added Degraded + DegradedSections to DashboardResponse
+// so callers can tell a failed sub-query apart from a genuinely-empty
+// section. BootstrapDashboard embeds *DashboardResponse anonymously, so
+// encoding/json promotes both fields into the bootstrap wire shape — the
+// MCP `pad_meta.action: bootstrap`, the `pad://workspace/{ws}/bootstrap`
+// resource, and the `pad_set_workspace` embed all serialize this same
+// struct, so the partial-failure state reaches every agent surface.
+//
+// This test pins that promotion. It asserts on the MARSHALED JSON (not
+// just promoted field access) because the wire contract is what agents
+// consume: if a future refactor ever converts BootstrapDashboard to an
+// explicit slim projection (as BootstrapCollection / BootstrapRole
+// already are) and forgets to carry these two fields, the JSON assertion
+// fails even though `out.Degraded` would still compile.
+func TestBootstrapDashboardCarriesDegraded(t *testing.T) {
+	t.Run("degraded-flows-through", func(t *testing.T) {
+		d := &DashboardResponse{
+			Degraded:         true,
+			DegradedSections: []string{"recent_activity", "by_role"},
+		}
+		out := capBootstrapDashboard(d)
+
+		// Promoted field access (compile-time guarantee of the embedding).
+		if !out.Degraded {
+			t.Error("BootstrapDashboard.Degraded = false, want true")
+		}
+		if !reflect.DeepEqual(out.DegradedSections, []string{"recent_activity", "by_role"}) {
+			t.Errorf("BootstrapDashboard.DegradedSections = %v, want [recent_activity by_role]", out.DegradedSections)
+		}
+
+		// Wire contract: the fields must survive JSON marshaling with the
+		// same tag names the full /dashboard endpoint uses.
+		var wire struct {
+			Degraded         bool     `json:"degraded"`
+			DegradedSections []string `json:"degraded_sections"`
+		}
+		b, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal bootstrap dashboard: %v", err)
+		}
+		if err := json.Unmarshal(b, &wire); err != nil {
+			t.Fatalf("unmarshal bootstrap dashboard: %v", err)
+		}
+		if !wire.Degraded {
+			t.Errorf("marshaled bootstrap dashboard missing degraded=true; got %s", b)
+		}
+		if !reflect.DeepEqual(wire.DegradedSections, []string{"recent_activity", "by_role"}) {
+			t.Errorf("marshaled degraded_sections = %v, want [recent_activity by_role]; got %s", wire.DegradedSections, b)
+		}
+	})
+
+	t.Run("healthy-dashboard-not-degraded", func(t *testing.T) {
+		out := capBootstrapDashboard(&DashboardResponse{})
+		if out.Degraded {
+			t.Error("healthy dashboard should not be degraded")
+		}
+		// degraded_sections carries omitempty, so a healthy dashboard must
+		// not emit the key at all.
+		b, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal bootstrap dashboard: %v", err)
+		}
+		if got := string(b); strings.Contains(got, "degraded_sections") {
+			t.Errorf("healthy dashboard should omit degraded_sections; got %s", got)
+		}
+	})
 }
 
 // TestPlaybookSummaryPrefersFirstParagraph isolates the summary extraction
