@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -332,5 +333,136 @@ func TestMatchesEvent(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("matchesEvent(%q, %q) = %v, want %v", tt.eventsJSON, tt.event, got, tt.want)
 		}
+	}
+}
+
+// TestDispatcher_UsesInjectedSpawn verifies deliveries run on the injected
+// spawn func (the server wires Server.goAsync here so Stop() can drain them).
+func TestDispatcher_UsesInjectedSpawn(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	store := newMockStore([]models.Webhook{
+		{ID: "hook-1", WorkspaceID: "ws-1", URL: ts.URL, Events: `["*"]`, Active: true},
+	})
+
+	d := NewDispatcher(store)
+	d.SkipSSRF = true
+
+	var spawnCount int32
+	// Synchronous spawn: run inline so the test is deterministic without
+	// channels, while still proving the injected spawner is used.
+	d.SetSpawn(func(fn func()) {
+		atomic.AddInt32(&spawnCount, 1)
+		fn()
+	})
+
+	d.Dispatch("ws-1", "item.created", map[string]string{"title": "Test"})
+
+	if got := atomic.LoadInt32(&spawnCount); got != 1 {
+		t.Errorf("expected delivery to run on injected spawn once, got %d calls", got)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.failures["hook-1"] {
+		t.Error("expected success recorded, got failure")
+	}
+}
+
+// TestDispatcher_RetriesTransientFailure asserts a 5xx (transient) response
+// is retried up to maxDeliveryAttempts and the final failure is recorded.
+func TestDispatcher_RetriesTransientFailure(t *testing.T) {
+	var attempts int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+
+	store := newMockStore([]models.Webhook{
+		{ID: "hook-1", WorkspaceID: "ws-1", URL: ts.URL, Events: `["*"]`, Active: true},
+	})
+
+	d := NewDispatcher(store)
+	d.SkipSSRF = true
+	d.retryBackoff = 0 // no sleeping in tests
+	d.SetSpawn(func(fn func()) { fn() })
+
+	d.Dispatch("ws-1", "item.created", map[string]string{"title": "Test"})
+
+	if got := atomic.LoadInt32(&attempts); got != maxDeliveryAttempts {
+		t.Errorf("expected %d attempts for transient 5xx, got %d", maxDeliveryAttempts, got)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if !store.failures["hook-1"] {
+		t.Error("expected failure recorded after exhausting retries")
+	}
+}
+
+// TestDispatcher_DoesNotRetryPermanentFailure asserts a 4xx (permanent)
+// response is attempted exactly once — no retries — and recorded as a failure.
+func TestDispatcher_DoesNotRetryPermanentFailure(t *testing.T) {
+	var attempts int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer ts.Close()
+
+	store := newMockStore([]models.Webhook{
+		{ID: "hook-1", WorkspaceID: "ws-1", URL: ts.URL, Events: `["*"]`, Active: true},
+	})
+
+	d := NewDispatcher(store)
+	d.SkipSSRF = true
+	d.retryBackoff = 0
+	d.SetSpawn(func(fn func()) { fn() })
+
+	d.Dispatch("ws-1", "item.created", map[string]string{"title": "Test"})
+
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Errorf("expected exactly 1 attempt for permanent 4xx, got %d", got)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if !store.failures["hook-1"] {
+		t.Error("expected failure recorded for permanent 4xx")
+	}
+}
+
+// TestDispatcher_RetriesThenSucceeds asserts a transient failure that later
+// recovers is recorded as success (failed=false).
+func TestDispatcher_RetriesThenSucceeds(t *testing.T) {
+	var attempts int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) < 2 {
+			w.WriteHeader(http.StatusServiceUnavailable) // transient
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	store := newMockStore([]models.Webhook{
+		{ID: "hook-1", WorkspaceID: "ws-1", URL: ts.URL, Events: `["*"]`, Active: true},
+	})
+
+	d := NewDispatcher(store)
+	d.SkipSSRF = true
+	d.retryBackoff = 0
+	d.SetSpawn(func(fn func()) { fn() })
+
+	d.Dispatch("ws-1", "item.created", map[string]string{"title": "Test"})
+
+	if got := atomic.LoadInt32(&attempts); got != 2 {
+		t.Errorf("expected 2 attempts (fail then succeed), got %d", got)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.failures["hook-1"] {
+		t.Error("expected success recorded after retry recovered")
 	}
 }

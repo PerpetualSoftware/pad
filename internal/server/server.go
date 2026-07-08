@@ -642,8 +642,15 @@ func (s *Server) SetCollabRoomManager(rm *collab.RoomManager) {
 	s.collab = rm
 }
 
-// SetWebhookDispatcher attaches a webhook dispatcher for outgoing notifications.
+// SetWebhookDispatcher attaches a webhook dispatcher for outgoing
+// notifications. Delivery goroutines are routed through s.goAsync so they're
+// tracked on s.bg — Server.Stop() waits for in-flight deliveries (closing the
+// BUG-842 shutdown race where a detached delivery writes to a closed store)
+// and inherits goAsync's panic recovery (BUG-2011).
 func (s *Server) SetWebhookDispatcher(d *webhooks.Dispatcher) {
+	if d != nil {
+		d.SetSpawn(s.goAsync)
+	}
 	s.webhooks = d
 }
 
