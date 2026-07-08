@@ -2,6 +2,19 @@
 
 Thanks for your interest in contributing to Pad! This guide will help you get set up and familiar with how we work.
 
+## Where to start
+
+Pad is built with Pad — we track our own work as Pad items and mirror the newcomer-friendly ones to GitHub. If you're looking for something to pick up, start with these labels:
+
+- [`good first issue`](https://github.com/PerpetualSoftware/pad/issues?q=is%3Aissue+is%3Aopen+label%3A%22good+first+issue%22) — small, self-contained, one focused PR.
+- [`help wanted`](https://github.com/PerpetualSoftware/pad/issues?q=is%3Aissue+is%3Aopen+label%3A%22help+wanted%22) — a bit bigger, still scoped to a single PR.
+
+Each issue states the problem, the concrete fix, and pointers to the relevant files. Area labels (`area:cli`, `area:web`, `area:ci`) tell you where the code lives; `effort:S` / `effort:M` set expectations.
+
+**How PRs are triaged:** open a draft PR early and link the issue — a maintainer reviews within a few days. Small, focused PRs merge fastest: one issue, one branch. Comment on an issue to claim it before you start so we don't double up.
+
+Found a problem that isn't an issue yet? Open one describing it (and how to reproduce, for bugs) before writing code, so we can agree on the approach first.
+
 ## Getting Started
 
 ### Prerequisites
