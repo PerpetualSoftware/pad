@@ -647,22 +647,21 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 	}
 	if hasParentWithChildren {
-		// Batch-fetch all child→parent mappings for efficiency
+		// Batch-fetch all child→parent mappings for efficiency.
+		// A GetParentMap failure must SKIP orphan detection entirely:
+		// falling back to an empty map would flag every visible non-done
+		// task as orphaned (false positives). Degrade the section and
+		// bail instead.
 		parentMap, err := s.store.GetParentMap(workspaceID)
 		if err != nil {
-			// Empty parentMap would make every task look orphaned;
-			// degrade the section instead of emitting false positives.
 			markDegraded("attention.orphaned_tasks", err)
-			parentMap = map[string]string{}
-		}
-		allTasks, err := s.store.ListItems(workspaceID, models.ItemListParams{
+		} else if allTasks, tErr := s.store.ListItems(workspaceID, models.ItemListParams{
 			CollectionSlug: "tasks",
 			CollectionIDs:  dashCollIDs,
 			ItemIDs:        dashItemIDs,
 			NoContent:      true,
-		})
-		if err != nil {
-			markDegraded("attention.orphaned_tasks", err)
+		}); tErr != nil {
+			markDegraded("attention.orphaned_tasks", tErr)
 		} else {
 			for _, task := range allTasks {
 				if isItemDone(task.Fields, task.CollectionID, ctxMap) {
