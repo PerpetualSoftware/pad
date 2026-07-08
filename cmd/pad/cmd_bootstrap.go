@@ -52,8 +52,10 @@ for a readable summary.`,
 			// JSON is the canonical wire format — the /pad skill consumes
 			// it directly, and table mode for a deeply nested blob would
 			// be more confusing than helpful. Treat anything-but-markdown
-			// as JSON.
-			return cli.PrintJSON(raw)
+			// as JSON. Emit COMPACT JSON: the consumer is an agent, and
+			// pretty-print indentation was ~29% of the payload (TASK-2021).
+			// Humans wanting a readable view have --format markdown.
+			return cli.PrintJSONCompact(raw)
 		},
 	}
 }

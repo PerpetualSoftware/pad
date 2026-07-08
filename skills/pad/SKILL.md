@@ -47,59 +47,11 @@ Bootstrap replaces the four separate calls the skill used to make (`pad project 
 
 ## Role Awareness
 
-Agent roles let users organize work by **what kind of thinking it requires** — planning, implementing, reviewing, researching, etc. Each role is a named capability profile. Items can be assigned to a (user, role) pair.
+Agent roles organize work by the kind of thinking it requires (planning, implementing, reviewing, researching). Items can be assigned to a (user, role) pair. Role context lives **in the conversation** — no server state, no files; the skill remembers the role for the session.
 
-### How role context works
+**Core behavior (keep inline — this is load-bearing):** On context load, if the bootstrap's `roles` array is non-empty and the user hasn't declared a role this conversation, ask which role they're working as (list them; offer "no role" to skip). Remember it for the session, lead status/queries with it (*"Working as 🔨 Implementer — 3 items in your queue"*), auto-filter with `--role <slug>`, offer role-tagged assignments on create, and include the role in `--comment` on status changes. If the bootstrap's `playbooks` array has `status=active` entries with an `invocation_slug`, briefly surface the callable set led by intent. Never block — if the user says "no role" or no roles exist, work normally. Parse role declarations ("as implementer", "switch to reviewer", "drop role") anywhere in the input — see the **Role management** entry under Natural Language Routing.
 
-Role context lives **in the conversation**. Each agent session (Claude Code, Cursor, etc.) is its own conversation with its own role. No server state, no files — the skill simply remembers the role for the session.
-
-### Setting the role
-
-On context load, after running `pad role list --format json`:
-
-- **If roles exist and the user hasn't declared a role yet in this conversation:** Ask the user which role they're working as. Present the available roles and ask them to pick one.
-  - Example: *"This workspace has 4 roles: 🧠 Planner, 🔨 Implementer, 👁️ Reviewer, 🔍 Researcher. Which role are you working as? (Or say 'no role' to skip.)"*
-- **If no roles exist:** Skip role awareness entirely. Behave normally — everything is backward compatible.
-- **If the user says "no role" or declines:** Work without role filtering for this session.
-
-### Inline role declaration
-
-The user can declare or switch roles at any time via natural language:
-
-- `/pad as implementer` — set role, show role queue
-- `/pad what's next as reviewer` — set role + execute query
-- `/pad switch to planner` / `/pad change role to researcher` — change role mid-session
-- `/pad drop role` / `/pad no role` — clear role, return to unfiltered view
-
-Parse "as <role-slug>" anywhere in the input. Match against known role slugs from `pad role list`.
-
-### Role-aware behavior
-
-Once a role is active, adjust your behavior:
-
-**Greeting:** When presenting status or responding to queries, lead with the role context:
-- *"Working as 🔨 Implementer. You have 3 items in your queue."*
-- Mention the role board for visual overview: *"See the full role board at the web UI → Roles page, or run `pad server open`."*
-- If the bootstrap's `playbooks` array has any **`status=active`** entries with a non-empty `invocation_slug`, surface the user-callable set briefly, led by intent: *"You can run the **ship**, **release**, or **draft-tweet** playbooks — just ask, or use the shortcut for your agent (e.g. `/pad ship` in Claude Code, `$pad ship` in Codex)."* — same shape as the roles greeting, helps users discover what's invokable. Skip `status=draft` or `status=deprecated` entries even if they carry a slug.
-
-**Querying "what's on my plate" / "what should I work on":**
-```bash
-# Get the current user's name
-pad auth whoami --format json
-# Filter items by role (and optionally by assigned user)
-pad item list tasks --role <slug> --assign <user-name> --format json
-```
-Show the role-filtered queue prominently. If the queue is empty, fall back to general suggestions.
-
-**Creating items:** When creating tasks or actionable items, offer to assign to the current (user, role) pair:
-- *"Want me to assign this to you as Implementer?"*
-- If yes: `pad item create task "Title" --role <slug> --assign <user-name> --priority medium`
-
-**Updating items:** When marking items done or changing status, include the role context in the comment:
-- `pad item update TASK-5 --status done --comment "Completed (Implementer)"`
-
-**Assignment:** When the user says "assign TASK-5 to Dave as reviewer":
-- `pad item update TASK-5 --role reviewer --assign Dave`
+**Detailed role-aware patterns** (greeting phrasing, per-verb query/create/update/assign examples) load on demand — they follow directly from the core behavior above plus `pad role --help` for the commands and the web UI Roles page (`pad server open` → /{workspace}/roles) for the board.
 
 ## Parse $ARGUMENTS
 
@@ -178,19 +130,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 - "set up my workspace" / "onboard me" / "scan this codebase" → **run the onboard playbook.** Natural language is the canonical trigger and works on every surface; the slug shortcuts (`/pad onboard` in Claude Code, `$pad onboard` in Codex, the `pad_onboard` MCP prompt) are equivalent entry points into the same playbook. To run it, load the body and follow it: `pad playbook show onboard --format markdown` (CLI) or `pad_playbook` with `action: get` (MCP). Activate via library first if the bootstrap's `playbooks` array lacks `invocation_slug=onboard, status=active`. The playbook's body is the script — surface-agnostic interview, codebase scan if available, adapt seeded artifacts to the project, seed a first item.
 - "use pad to get IDEA-1" → also runs the onboard playbook. Legacy phrasing from before PLAN-1496; the IDEA-1/PLAN-2/TASK-3/DOC-4 seed-item pattern was retired. Don't try to fetch `IDEA-1` directly — newly-created workspaces don't have it.
 
-**Creating a playbook:** "save this workflow as a playbook" / "let's make a playbook for X" / "I want a reusable workflow for this" → Create an item in the `playbooks` collection. Two fields make it user-callable:
-
-1. **`invocation_slug`** (optional, kebab-case 2+ chars) — makes the playbook directly invokable by intent (and via the per-surface shortcut: `/pad <slug>` in Claude Code, `$pad <slug>` in Codex, `pad_playbook` with `action: run, ref: <slug>` via MCP). Leave blank for trigger-only playbooks that fire automatically (e.g. `trigger=on-release`).
-2. **`arguments`** (optional, JSON array) — declares the args. Types: `ref`, `string`, `flag`, `enum`, `number`. Mirror the spec in the body's `## Arguments` section so a human reading the playbook sees the same contract.
-
-**Activation matters.** New playbooks default to `status=draft`; slug routing and trigger-intent matching only dispatch `status=active` entries. ALWAYS include `--field status=active` on `pad item create playbook` (or flip the status field in the Web UI editor) when the user wants the playbook to fire — otherwise the slug shortcut will silently fall through to NL routing.
-
-Authoring options:
-
-- **CLI:** `pad item create playbook "Title" --field status=active --field trigger=... --field invocation_slug=... --field 'arguments=[...]' --stdin <<EOF ... EOF` — `--field` is schema-aware as of BUG-1125; pass the `arguments` array as a JSON literal. Run `pad item create playbook --help` for flags.
-- **Web UI:** `/{username}/{workspace}/playbooks` → "+ New Playbook" (`pad server open`). Form-based flow with kebab-case slug uniqueness check and structured arguments builder; flip status from `draft` to `active` before save.
-
-After creation, tell the user how to invoke it — by intent ("just say *run the <name> playbook*") plus the shortcut for their surface (`/pad <slug>` in Claude Code, `$pad <slug>` in Codex) — or, for trigger-only playbooks, point at the action that will auto-load it ("This will fire on the next `on-release` action").
+**Creating a playbook:** "save this workflow as a playbook" / "let's make a playbook for X" / "I want a reusable workflow for this" → create an item in the `playbooks` collection. Two fields make it user-callable: **`invocation_slug`** (optional kebab-case 2+ chars — enables intent invocation plus the `/pad <slug>` · `$pad <slug>` · `pad_playbook action=run` shortcuts; leave blank for trigger-only playbooks) and **`arguments`** (optional JSON array of `{name,type,required,default,description,enum}`; mirror it in the body's `## Arguments` section). **Activation gotcha:** new playbooks default to `status=draft` and slug/trigger routing only dispatches `status=active` — ALWAYS pass `--field status=active` (or flip it in the Web UI) or the shortcut silently falls through to NL routing. Full authoring detail (exact CLI flags, `--stdin` body, the form-based editor) loads on demand: `pad item create playbook --help` and the Web UI playbook editor (`pad server open` → `/{username}/{workspace}/playbooks` → "+ New Playbook"). After creation, tell the user how to invoke it — by intent plus their surface's shortcut, or (trigger-only) the action that auto-loads it.
 
 ## Before Performing Work
 
