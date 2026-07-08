@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -21,8 +22,38 @@ import (
 // bound against redirect loops rather than the primary SSRF control.
 const maxWebhookRedirects = 5
 
+// errRedirectRejected marks a delivery error that originated in checkRedirect
+// (an SSRF-blocked redirect hop or an exceeded redirect chain). http.Client.Do
+// surfaces CheckRedirect errors wrapped in a *url.Error, so attemptDeliver uses
+// errors.Is to distinguish these PERMANENT rejections from genuinely transient
+// network errors — retrying a redirect to an internal target is pointless (and
+// undesirable). The wrapping *url.Error implements Unwrap, so errors.Is reaches
+// this sentinel.
+var errRedirectRejected = errors.New("webhook redirect rejected")
+
 // deliveryTimeout is the total per-delivery HTTP timeout.
 const deliveryTimeout = 10 * time.Second
+
+// maxDeliveryAttempts caps how many times a single delivery is attempted
+// before giving up. Only transient failures (network errors, timeouts, 5xx)
+// consume retries; permanent failures (4xx, SSRF block) stop immediately.
+const maxDeliveryAttempts = 3
+
+// defaultRetryBackoff is the base backoff between transient-failure retries;
+// the Nth wait is defaultRetryBackoff * N (linear). Overridable via the
+// Dispatcher.retryBackoff field (set to 0 in tests to avoid sleeping).
+const defaultRetryBackoff = 500 * time.Millisecond
+
+// deliveryResult classifies the outcome of a single delivery attempt so the
+// retry loop knows whether to retry (transient), give up (permanent), or
+// stop happily (success).
+type deliveryResult int
+
+const (
+	deliverySuccess deliveryResult = iota
+	deliveryTransient
+	deliveryPermanent
+)
 
 // WebhookStore is the interface the dispatcher needs to fetch webhooks
 // and record delivery outcomes.
@@ -41,9 +72,35 @@ type WebhookPayload struct {
 
 // Dispatcher sends webhook HTTP POST notifications for workspace events.
 type Dispatcher struct {
-	store    WebhookStore
-	client   *http.Client
-	SkipSSRF bool // Skip SSRF validation (for tests only)
+	store  WebhookStore
+	client *http.Client
+	// spawn runs a delivery goroutine. When nil, deliveries run on a plain
+	// `go f()`. The server injects Server.goAsync here (via SetSpawn) so
+	// in-flight deliveries are tracked on s.bg and awaited by Server.Stop()
+	// — closing the BUG-842 shutdown race where a detached delivery writes
+	// to an already-closed store — and inherit goAsync's panic recovery.
+	spawn func(func())
+	// retryBackoff is the base wait between transient-failure retries.
+	// Defaults to defaultRetryBackoff; tests set it to 0.
+	retryBackoff time.Duration
+	SkipSSRF     bool // Skip SSRF validation (for tests only)
+}
+
+// SetSpawn injects the goroutine spawner used for deliveries. Passing the
+// server's tracked-goroutine helper (Server.goAsync) makes Server.Stop()
+// wait for in-flight deliveries. A nil spawn (the default) falls back to a
+// plain goroutine, keeping standalone Dispatcher usage working.
+func (d *Dispatcher) SetSpawn(spawn func(func())) {
+	d.spawn = spawn
+}
+
+// run executes fn on the injected spawner, or a plain goroutine if none is set.
+func (d *Dispatcher) run(fn func()) {
+	if d.spawn != nil {
+		d.spawn(fn)
+		return
+	}
+	go fn()
 }
 
 // NewDispatcher creates a Dispatcher with the given store.
@@ -56,7 +113,7 @@ type Dispatcher struct {
 // to an internal target. Proxy is intentionally nil — honoring HTTP(S)_PROXY
 // would connect to the proxy host and skip our dialer's IP check entirely.
 func NewDispatcher(store WebhookStore) *Dispatcher {
-	d := &Dispatcher{store: store}
+	d := &Dispatcher{store: store, retryBackoff: defaultRetryBackoff}
 
 	dialer := &net.Dialer{
 		Timeout:   deliveryTimeout,
@@ -88,13 +145,13 @@ func NewDispatcher(store WebhookStore) *Dispatcher {
 // could 302 the delivery to an internal address.
 func (d *Dispatcher) checkRedirect(req *http.Request, via []*http.Request) error {
 	if len(via) >= maxWebhookRedirects {
-		return fmt.Errorf("stopped after %d redirects", maxWebhookRedirects)
+		return fmt.Errorf("%w: stopped after %d redirects", errRedirectRejected, maxWebhookRedirects)
 	}
 	if d.SkipSSRF {
 		return nil
 	}
 	if err := ValidateWebhookURL(req.URL.String()); err != nil {
-		return fmt.Errorf("redirect to %s blocked: %w", req.URL.Redacted(), err)
+		return fmt.Errorf("%w: redirect to %s blocked: %v", errRedirectRejected, req.URL.Redacted(), err)
 	}
 	return nil
 }
@@ -147,26 +204,48 @@ func (d *Dispatcher) Dispatch(workspaceID, event string, data interface{}) {
 		if !matchesEvent(hook.Events, event) {
 			continue
 		}
-		go d.deliver(hook, body)
+		d.run(func() { d.deliver(hook, body) })
 	}
 }
 
-// deliver sends a single HTTP POST to the webhook URL.
+// deliver sends a webhook, retrying transient failures up to
+// maxDeliveryAttempts with linear backoff, and records the final outcome
+// once via the store. Permanent failures (4xx, SSRF block, malformed URL)
+// stop immediately without consuming retries.
 func (d *Dispatcher) deliver(hook models.Webhook, body []byte) {
-	// Defense in depth: re-validate URL before making the request
+	result := deliveryPermanent
+	for attempt := 1; attempt <= maxDeliveryAttempts; attempt++ {
+		result = d.attemptDeliver(hook, body)
+		if result != deliveryTransient {
+			break // success or permanent failure — no point retrying
+		}
+		if attempt < maxDeliveryAttempts {
+			if backoff := d.retryBackoff * time.Duration(attempt); backoff > 0 {
+				time.Sleep(backoff)
+			}
+		}
+	}
+	d.store.UpdateWebhookFailure(hook.ID, result != deliverySuccess)
+}
+
+// attemptDeliver performs a single HTTP POST to the webhook URL and
+// classifies the outcome. It does NOT record the result — deliver owns the
+// single terminal store write so the retry loop doesn't churn the store.
+func (d *Dispatcher) attemptDeliver(hook models.Webhook, body []byte) deliveryResult {
+	// Defense in depth: re-validate URL before making the request. An
+	// SSRF block is permanent — retrying won't make the target public.
 	if !d.SkipSSRF {
 		if err := ValidateWebhookURL(hook.URL); err != nil {
 			slog.Warn("blocked webhook delivery", "url", hook.URL, "error", err)
-			d.store.UpdateWebhookFailure(hook.ID, true)
-			return
+			return deliveryPermanent
 		}
 	}
 
 	req, err := http.NewRequest(http.MethodPost, hook.URL, bytes.NewReader(body))
 	if err != nil {
+		// A malformed URL/method won't fix itself on retry.
 		slog.Error("failed to create webhook request", "url", hook.URL, "error", err)
-		d.store.UpdateWebhookFailure(hook.ID, true)
-		return
+		return deliveryPermanent
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -179,17 +258,30 @@ func (d *Dispatcher) deliver(hook models.Webhook, body []byte) {
 
 	resp, err := d.client.Do(req)
 	if err != nil {
+		// A blocked/looping redirect is permanent — the SSRF guard won't
+		// relent on retry, so don't waste attempts on it.
+		if errors.Is(err, errRedirectRejected) {
+			slog.Warn("blocked webhook redirect", "url", hook.URL, "error", err)
+			return deliveryPermanent
+		}
+		// Network error / timeout — transient, worth retrying.
 		slog.Error("webhook delivery failed", "url", hook.URL, "error", err)
-		d.store.UpdateWebhookFailure(hook.ID, true)
-		return
+		return deliveryTransient
 	}
 	resp.Body.Close()
 
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		d.store.UpdateWebhookFailure(hook.ID, false)
-	} else {
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return deliverySuccess
+	case resp.StatusCode >= 500 && resp.StatusCode < 600:
+		// Server error — transient, worth retrying.
+		slog.Warn("webhook 5xx response", "status", resp.StatusCode, "url", hook.URL)
+		return deliveryTransient
+	default:
+		// 4xx and any other non-2xx (3xx with no followable Location, 1xx)
+		// — permanent; retrying won't change an unacceptable request.
 		slog.Warn("webhook non-2xx response", "status", resp.StatusCode, "url", hook.URL)
-		d.store.UpdateWebhookFailure(hook.ID, true)
+		return deliveryPermanent
 	}
 }
 
