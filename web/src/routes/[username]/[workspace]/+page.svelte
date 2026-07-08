@@ -332,6 +332,23 @@
 			</div>
 		</header>
 
+		<!-- Degraded-load banner (BUG-2014). When one or more best-effort
+			dashboard sub-queries failed server-side, the response still returns
+			200 with the sections that loaded, but `degraded` is set so the
+			affected sections aren't misread as genuinely empty. -->
+		{#if dashboard.degraded}
+			<div class="degraded-banner" role="status">
+				<span class="degraded-icon">⚠</span>
+				<span>
+					Some dashboard data couldn't be loaded and may be incomplete.
+					{#if dashboard.degraded_sections && dashboard.degraded_sections.length > 0}
+						<span class="degraded-sections">Affected: {dashboard.degraded_sections.join(', ')}.</span>
+					{/if}
+					Try refreshing.
+				</span>
+			</div>
+		{/if}
+
 		<!-- 2. Onboarding nudge (IDEA-1516 §3 / TASK-1530) -->
 		<!--
 			Single banner triggered by `dashboard.needs_onboarding`. The
@@ -790,6 +807,26 @@
 	/* ── Section headers ────────────────────────────────────────────────── */
 	.section {
 		margin-bottom: var(--space-8);
+	}
+	.degraded-banner {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-2);
+		padding: var(--space-3) var(--space-4);
+		margin-bottom: var(--space-4);
+		border: 1px solid var(--accent-amber);
+		border-radius: var(--radius);
+		background: color-mix(in srgb, var(--accent-amber) 12%, transparent);
+		color: var(--text-secondary);
+		font-size: 0.85em;
+		line-height: 1.4;
+	}
+	.degraded-icon {
+		color: var(--accent-amber);
+		flex-shrink: 0;
+	}
+	.degraded-sections {
+		color: var(--text-muted);
 	}
 	.section-header {
 		display: flex;
