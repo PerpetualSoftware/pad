@@ -91,12 +91,19 @@ func ValidatePartialFields(patch map[string]any, schema models.CollectionSchema)
 
 	var errs []string
 	for key, val := range patch {
+		def, hasDef := defByKey[key]
 		if val == nil {
-			// Deletion sentinel — nothing to type-check.
+			// Deletion sentinel. Refuse to delete a schema-declared REQUIRED
+			// field — the full-update path (ValidateFields) would reject the
+			// resulting blob (or re-default it), so allowing a patch to strip
+			// it would persist a state the schema considers invalid. Orphan
+			// keys and optional fields delete freely.
+			if hasDef && def.Required {
+				errs = append(errs, fmt.Sprintf("field %q is required and cannot be deleted", key))
+			}
 			continue
 		}
-		def, ok := defByKey[key]
-		if !ok {
+		if !hasDef {
 			// Orphan key (not in schema) — allowed, persists as-is.
 			continue
 		}

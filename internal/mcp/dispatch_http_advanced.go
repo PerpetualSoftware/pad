@@ -282,10 +282,13 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	// and is preserved as the explicit-ID escape hatch when an agent
 	// already knows the UUID and wants to skip the slug lookup.
 
-	// Step 1: GET the existing item so we can read fields for the
-	// read-modify-write merge. If the GET fails (item not found,
-	// permission error, …), surface that to the caller — there's no
-	// point trying to PATCH an item we can't read.
+	// Step 1: GET the existing item first so a not-found / permission
+	// error surfaces cleanly (mirrors the CLI's "not found" UX) before we
+	// attempt the PATCH. We NO LONGER read fields here for a client-side
+	// read-modify-write merge — TASK-2022 moved field merging server-side
+	// via `fields_patch` (see Step 2), which closes the lost-write race the
+	// old GET-merge-PATCH suffered (IDEA-1480). The prefetch remains only
+	// as an existence/permission pre-check.
 	//
 	// Goes through buildAuthedRequest so d.Apply (the OAuth-scope
 	// hook) sees this prefetch the same as a top-level dispatch.
@@ -305,12 +308,6 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// auth/token state buildHTTPRequest + d.Apply attached
 		// (Codex review #379 round 1 — same fix as executeRequest).
 		return packageHTTPResponse(prefetchReq.Context(), cmdKey, prefetchRec.Result(), d.Lister)
-	}
-	var existing struct {
-		Fields string `json:"fields"`
-	}
-	if err := json.Unmarshal(prefetchRec.Body.Bytes(), &existing); err != nil {
-		return dispatcherErrorResult(cmdKey, "parse current item", err), nil
 	}
 
 	// Step 2: Build the PATCH payload.
@@ -357,21 +354,23 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	if b, ok := input["force"].(bool); ok && b {
 		payload["force"] = true
 	}
+	// TASK-2022: forward the optimistic-concurrency token so remote MCP
+	// callers get the same 409 update_conflict guard the CLI/HTTP paths do.
+	if v, ok := input["expected_updated_at"].(string); ok && v != "" {
+		payload["expected_updated_at"] = v
+	}
 
-	// Field merging — the actual reason this command needs a custom
-	// dispatcher rather than a routeSpec entry. Match the CLI's
-	// last-write-wins precedence: existing fields, then named flags
-	// (status / priority / category / parent), then --field entries.
+	// Field-level PATCH (TASK-2022). Send ONLY the changed keys as
+	// `fields_patch`; the server shallow-merges them onto the item's current
+	// fields inside the write transaction. This replaces the old client-side
+	// GET-merge-PATCH of a full `fields` blob, which lost concurrent
+	// single-field changes (the IDEA-1480 lost-write race). Named flags
+	// (status / priority / category / parent) then --field entries.
 	if hasFieldChanges(input) {
-		merged := map[string]any{}
-		if existing.Fields != "" && existing.Fields != "{}" {
-			if err := json.Unmarshal([]byte(existing.Fields), &merged); err != nil {
-				return dispatcherErrorResult(cmdKey, "parse existing fields JSON", err), nil
-			}
-		}
+		patch := map[string]any{}
 		for _, key := range []string{"status", "priority", "category", "parent"} {
 			if v, ok := input[key].(string); ok && v != "" {
-				merged[key] = v
+				patch[key] = v
 			}
 		}
 		if rawFields, ok := input["field"]; ok {
@@ -381,21 +380,21 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 					"--field expects key=value entries (string array or single string)."), nil
 			}
 			for k, v := range extra {
-				merged[k] = v
+				patch[k] = v
 			}
 		}
 		// Lift recognized column keys (agent_role_id, assigned_user_id)
-		// out of the merged fields blob onto the top-level payload so
-		// the handler writes the column instead of stuffing the value
-		// inert in the JSON. Same shape mapItemCreate uses; matches
-		// the workaround the --role rejection points at.
-		liftFieldsToColumns(merged, payload)
-		fieldsJSON, err := json.Marshal(merged)
-		if err != nil {
-			return dispatcherErrorResult(cmdKey, "encode merged fields", err), nil
+		// out of the patch onto the top-level payload so the handler writes
+		// the column instead of stuffing the value inert in the JSON. Same
+		// shape mapItemCreate uses; matches the workaround the --role
+		// rejection points at.
+		liftFieldsToColumns(patch, payload)
+		// Only emit fields_patch when it still carries schema fields after
+		// the column lift — otherwise a role-only update would send an empty
+		// patch object (harmless, but avoids a needless fields write).
+		if len(patch) > 0 {
+			payload["fields_patch"] = patch
 		}
-		fieldsStr := string(fieldsJSON)
-		payload["fields"] = fieldsStr
 	}
 
 	body, err := json.Marshal(payload)

@@ -363,3 +363,52 @@ func TestValidateFields_DefaultsApplied(t *testing.T) {
 		t.Errorf("expected assignee 'bob', got %v", fields["assignee"])
 	}
 }
+
+// --- ValidatePartialFields (TASK-2022 field-level PATCH) ---
+
+func TestValidatePartialFields_ValidatesOnlyPresentKeys(t *testing.T) {
+	schema := taskSchema()
+	// Patch touches only priority; status (required) is absent and must NOT
+	// be flagged missing, and no defaults should be injected.
+	patch := map[string]any{"priority": "high"}
+	if err := ValidatePartialFields(patch, schema); err != nil {
+		t.Fatalf("expected no error validating a partial patch, got: %v", err)
+	}
+	if _, injected := patch["status"]; injected {
+		t.Errorf("ValidatePartialFields must NOT inject defaults for absent keys; got %v", patch)
+	}
+}
+
+func TestValidatePartialFields_RejectsBadEnum(t *testing.T) {
+	schema := taskSchema()
+	patch := map[string]any{"status": "not-a-status"}
+	if err := ValidatePartialFields(patch, schema); err == nil {
+		t.Fatal("expected an error for an out-of-enum select value in the patch")
+	}
+}
+
+func TestValidatePartialFields_AllowsOrphanKeys(t *testing.T) {
+	schema := taskSchema()
+	patch := map[string]any{"pad_source_url": "https://example.com"}
+	if err := ValidatePartialFields(patch, schema); err != nil {
+		t.Fatalf("orphan (non-schema) keys should be allowed, got: %v", err)
+	}
+}
+
+func TestValidatePartialFields_RejectsDeletingRequiredField(t *testing.T) {
+	schema := taskSchema()
+	// status is required — a null-delete of it would leave an invalid blob.
+	patch := map[string]any{"status": nil}
+	if err := ValidatePartialFields(patch, schema); err == nil {
+		t.Fatal("expected an error deleting a required field via null")
+	}
+}
+
+func TestValidatePartialFields_AllowsDeletingOptionalField(t *testing.T) {
+	schema := taskSchema()
+	// priority is optional — null-delete is fine.
+	patch := map[string]any{"priority": nil}
+	if err := ValidatePartialFields(patch, schema); err != nil {
+		t.Fatalf("deleting an optional field via null should be allowed, got: %v", err)
+	}
+}

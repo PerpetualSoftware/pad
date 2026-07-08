@@ -1029,30 +1029,58 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Auto-populate start_date/end_date on a status change. Runs against
-		// the patch map directly: autoPopulateDates reads the new status from
-		// patchMap and, when it fires, injects the date key back INTO patchMap
-		// so it rides along in the merge (it never touches keys the patch
-		// didn't already carry a status change for).
-		autoPopulateDates(patchMap, item.Fields, schema)
-
-		// Open-children guard: classify against the would-be POST-merge state.
-		// The precheck re-reads the row in-tx and re-derives the "from" side
-		// from the locked snapshot, so this preview only supplies the "to"
-		// side (the merged field values).
-		if !input.Force {
-			previewMerged := make(map[string]any)
-			if item.Fields != "" && item.Fields != "{}" {
-				_ = json.Unmarshal([]byte(item.Fields), &previewMerged)
+		// Auto-populate start_date/end_date on a status change — but ONLY when
+		// the item's CURRENT stored value for that date is empty. A partial
+		// patch must not clobber a date the caller isn't touching (Codex
+		// round 2): running autoPopulateDates against the bare patchMap would
+		// see the date key absent and always inject today, overwriting an
+		// existing end_date on a status→done patch. So we run it against a
+		// merged view (current fields ∪ patch), then lift back only a date the
+		// helper genuinely FILLED (i.e. the current value was empty). Dates the
+		// caller set explicitly in the patch are left as-is; dates already set
+		// on the item are preserved untouched.
+		currentFields := map[string]any{}
+		if item.Fields != "" && item.Fields != "{}" {
+			_ = json.Unmarshal([]byte(item.Fields), &currentFields)
+		}
+		mergedForDates := map[string]any{}
+		for k, v := range currentFields {
+			mergedForDates[k] = v
+		}
+		for k, v := range patchMap {
+			if v == nil {
+				delete(mergedForDates, k)
+				continue
 			}
-			for k, v := range patchMap {
-				if v == nil {
-					delete(previewMerged, k)
-					continue
+			mergedForDates[k] = v
+		}
+		autoPopulateDates(mergedForDates, item.Fields, schema)
+		for _, dk := range []string{"start_date", "end_date"} {
+			if _, inPatch := patchMap[dk]; inPatch {
+				continue // caller set it explicitly — respect that
+			}
+			curVal, _ := currentFields[dk].(string)
+			if curVal != "" {
+				continue // already set on the item — never overwrite via auto-fill
+			}
+			if nv, ok := mergedForDates[dk]; ok {
+				if s, isStr := nv.(string); isStr && s != "" {
+					patchMap[dk] = nv // newly filled — ride along in the merge
 				}
-				previewMerged[k] = v
 			}
+		}
 
+		// Open-children guard. The precheck runs IN-TX with the locked row,
+		// and — crucially for the patch path — computes the post-merge field
+		// map by applying patchMap onto the item's IN-TX current fields, not a
+		// stale pre-lock snapshot. Using a pre-computed full preview would
+		// present a done-field value even for a patch that never touches the
+		// done key, so a priority-only patch could false-fire the guard if the
+		// row's status changed concurrently between the handler read and lock
+		// acquisition (Codex review). Merging in-tx means the "to" done-field
+		// value equals the patch's value when set, else the current value —
+		// exactly the semantics the guard's trigger conditions expect.
+		if !input.Force {
 			var settings models.CollectionSettings
 			if coll.Settings != "" {
 				_ = json.Unmarshal([]byte(coll.Settings), &settings)
@@ -1073,13 +1101,24 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 				itemID:               item.ID,
 				parentSchema:         schema,
 				parentSettings:       settings,
-				newFieldMap:          previewMerged,
 				visibleCollectionIDs: visIDs,
 				guestFullCollIDs:     guestFull,
 				guestGrantedItemIDs:  guestGranted,
 			}
 			openChildrenPrecheck = func(tx *sql.Tx, existing *models.Item) error {
+				merged := make(map[string]any)
+				if existing.Fields != "" && existing.Fields != "{}" {
+					_ = json.Unmarshal([]byte(existing.Fields), &merged)
+				}
+				for k, v := range patchMap {
+					if v == nil {
+						delete(merged, k)
+						continue
+					}
+					merged[k] = v
+				}
 				txCtx := gctx
+				txCtx.newFieldMap = merged
 				txCtx.currentFieldsJS = existing.Fields
 				details, derr := s.runOpenChildrenGuard(tx, txCtx)
 				if derr != nil {

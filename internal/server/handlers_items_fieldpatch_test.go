@@ -115,6 +115,29 @@ func TestPatchItemFieldsPatchValidatesAgainstSchema(t *testing.T) {
 	}
 }
 
+// TestPatchItemFieldsPatchRejectsDeletingRequiredField: null-deleting a
+// required schema field (status on tasks) is a 400 — it would leave a blob
+// the full-update validator would reject.
+func TestPatchItemFieldsPatchRejectsDeletingRequiredField(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open","priority":"high"}`)
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, map[string]interface{}{
+		"fields_patch": map[string]interface{}{"status": nil},
+	})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("null-delete of required field: expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+	// The row must be untouched.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, nil)
+	var reread models.Item
+	parseJSON(t, rr, &reread)
+	if got := decodeItemFields(t, reread.Fields)["status"]; got != "open" {
+		t.Errorf("rejected patch should be a no-op; status got %v want open", got)
+	}
+}
+
 // TestPatchItemExpectedUpdatedAtConflict is the HTTP-layer conflict-envelope
 // test (TASK-2022): a stale expected_updated_at yields a 409 with the
 // pad-structured-error shape (code=update_conflict + details), and the item
@@ -233,6 +256,100 @@ func TestPatchItemFieldsPatchTriggersOpenChildrenGuard(t *testing.T) {
 	})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("fields_patch + force: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestPatchItemFieldsPatchPreservesExistingDate: a status→completed patch must
+// NOT clobber an end_date the caller isn't touching (Codex round 2). The
+// auto-populate only fills a date when the current value is empty.
+func TestPatchItemFieldsPatchPreservesExistingDate(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/plans/items", map[string]interface{}{
+		"title":  "Plan",
+		"fields": `{"status":"active","end_date":"2020-01-01"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create plan: %d: %s", rr.Code, rr.Body.String())
+	}
+	var plan models.Item
+	parseJSON(t, rr, &plan)
+
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+plan.Slug, map[string]interface{}{
+		"fields_patch": map[string]interface{}{"status": "completed"},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch status→completed: %d: %s", rr.Code, rr.Body.String())
+	}
+	var updated models.Item
+	parseJSON(t, rr, &updated)
+	fields := decodeItemFields(t, updated.Fields)
+	if fields["end_date"] != "2020-01-01" {
+		t.Errorf("existing end_date clobbered by auto-populate: got %v want 2020-01-01", fields["end_date"])
+	}
+	if fields["status"] != "completed" {
+		t.Errorf("status: got %v want completed", fields["status"])
+	}
+}
+
+// TestPatchItemFieldsPatchAutoFillsEmptyDate: when end_date is empty, a
+// status→completed patch DOES auto-fill it (the feature still works).
+func TestPatchItemFieldsPatchAutoFillsEmptyDate(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/plans/items", map[string]interface{}{
+		"title":  "Plan",
+		"fields": `{"status":"planned"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create plan: %d: %s", rr.Code, rr.Body.String())
+	}
+	var plan models.Item
+	parseJSON(t, rr, &plan)
+
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+plan.Slug, map[string]interface{}{
+		"fields_patch": map[string]interface{}{"status": "completed"},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch: %d: %s", rr.Code, rr.Body.String())
+	}
+	var updated models.Item
+	parseJSON(t, rr, &updated)
+	fields := decodeItemFields(t, updated.Fields)
+	if ed, _ := fields["end_date"].(string); ed == "" {
+		t.Errorf("empty end_date should have been auto-filled on completion; got %v", fields["end_date"])
+	}
+}
+
+// TestPatchItemConflictWinsOverOpenChildrenGuard: when a stale
+// expected_updated_at AND a guarded terminal transition both apply, the
+// optimistic-concurrency conflict must win (the caller was operating on a
+// stale view), not the open_children guard (Codex round 2 ordering fix).
+func TestPatchItemConflictWinsOverOpenChildrenGuard(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	plan, _ := seedParentAndChildren(t, srv, slug, []string{"open"})
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+plan.Ref, map[string]interface{}{
+		"expected_updated_at": "2000-01-01T00:00:00Z", // stale
+		"fields_patch":        map[string]interface{}{"status": "completed"},
+	})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Error.Code != "update_conflict" {
+		t.Errorf("error.code: got %q want update_conflict (conflict must win over open_children)", resp.Error.Code)
 	}
 }
 

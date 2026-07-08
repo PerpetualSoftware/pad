@@ -1940,49 +1940,32 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// here, which would mis-classify the transition (false-fire or
 	// false-skip). The post-lock re-read sees what the UPDATE will
 	// write against.
-	if precheck != nil {
-		freshExisting, ferr := s.getItemTx(tx, id)
-		if ferr != nil {
-			return nil, fmt.Errorf("re-read item under lock: %w", ferr)
-		}
-		if freshExisting == nil {
-			// Item was deleted between the pre-tx read and the
-			// post-lock re-read. Treat as not-found and let the
-			// handler surface a 404. Returning nil here mirrors the
-			// existing == nil branch above.
-			return nil, nil
-		}
-		if err := precheck(tx, freshExisting); err != nil {
-			return nil, err
-		}
-		// Use the fresh snapshot for the rest of the function too —
-		// otherwise the mutation logic below would proceed from
-		// stale data and undo the integrity gain.
-		existing = freshExisting
-	}
-
-	// TASK-2022: optimistic-concurrency check + field-level merge both need
-	// the item's state as seen UNDER the write lock. When a precheck ran,
-	// `existing` was already replaced with the in-tx snapshot above;
-	// otherwise re-read it in-tx here so the conflict check compares against
-	// (and the merge is applied on top of) the row the UPDATE will write.
-	if (input.ExpectedUpdatedAt != "" || input.FieldsPatch != nil) && precheck == nil {
+	// TASK-2022 / IDEA-1494: the optimistic-concurrency guard, the
+	// open-children precheck, and the field-level merge all need the item's
+	// state as seen UNDER the write lock — the pre-tx `existing` was read
+	// before the locks, so a concurrent writer could have superseded it.
+	// Re-read ONCE, in-tx, when any of those is active and reuse the snapshot
+	// for all three (plus the status-transition capture below).
+	if precheck != nil || input.ExpectedUpdatedAt != "" || input.FieldsPatch != nil {
 		fresh, ferr := s.getItemTx(tx, id)
 		if ferr != nil {
 			return nil, fmt.Errorf("re-read item under lock: %w", ferr)
 		}
 		if fresh == nil {
-			// Deleted between the pre-tx read and the post-lock re-read;
-			// surface as not-found (mirrors the precheck branch above).
+			// Item was deleted between the pre-tx read and the post-lock
+			// re-read. Treat as not-found and let the handler surface a 404.
 			return nil, nil
 		}
 		existing = fresh
 	}
 
-	// Optimistic-concurrency guard: reject the write when the caller's
-	// expected updated_at no longer matches the locked row (another writer
-	// won the race). Parsed as RFC3339 and compared with time.Equal so a
-	// round-tripped `updated_at` string matches regardless of zone/format.
+	// Optimistic-concurrency guard runs FIRST — before the open-children
+	// precheck — so a caller who lost the race gets the promised
+	// update_conflict envelope, not a semantic (e.g. open_children)
+	// rejection for a transition attempted against a row that is no longer
+	// the one they read (Codex round 2). Parsed as RFC3339 and compared with
+	// time.Equal so a round-tripped `updated_at` matches regardless of
+	// zone/format.
 	if input.ExpectedUpdatedAt != "" {
 		expected, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt)
 		if perr != nil {
@@ -1994,6 +1977,18 @@ func (s *Store) updateItemWithParentLinkOnce(
 				ExpectedUpdatedAt: input.ExpectedUpdatedAt,
 				ActualUpdatedAt:   existing.UpdatedAt,
 			}
+		}
+	}
+
+	// IDEA-1494 round 2: run the caller's invariant check (open-children
+	// guard) against the same in-tx snapshot the UPDATE will write. Closing
+	// the guard-vs-write TOCTOU window relies on this ordering — every
+	// concurrent UpdateItem on this parent (or its children) blocks on the
+	// same advisory key, so the precheck's view of `items` / `item_links`
+	// is the one the UPDATE below mutates.
+	if precheck != nil {
+		if err := precheck(tx, existing); err != nil {
+			return nil, err
 		}
 	}
 
