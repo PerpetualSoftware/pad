@@ -1072,6 +1072,106 @@ func TestGetParentForItem_HidesSoftDeletedParent(t *testing.T) {
 	}
 }
 
+// TestUpdateItemWithParentLink_AtomicRollback proves BUG-2013: a field
+// update combined with a parent-link change is atomic. When the parent-link
+// write fails (here, because it would create a cycle), the field update must
+// roll back too — no partial commit, no half-applied patch.
+func TestUpdateItemWithParentLink_AtomicRollback(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent", "")
+	child := createTestItem(t, s, ws.ID, col.ID, "Child", "")
+
+	// child's parent is parent → parent → child would be a cycle.
+	if _, err := s.SetParentLink(ws.ID, child.ID, parent.ID, "user"); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+
+	// Attempt to (a) flip parent's status to "done" AND (b) set parent's
+	// parent to child in one update. The cycle check inside the tx must
+	// reject (b), rolling back (a).
+	doneFields := `{"status":"done"}`
+	_, err := s.UpdateItemWithParentLink(
+		parent.ID,
+		models.ItemUpdate{Fields: &doneFields},
+		nil,
+		&ParentLinkUpdate{Provided: true, ParentID: child.ID, WorkspaceID: ws.ID, CreatedBy: "user"},
+	)
+	if err == nil {
+		t.Fatal("expected cycle error from combined update, got nil")
+	}
+
+	// The field write must have rolled back: parent's status is still "open".
+	got, gerr := s.GetItem(parent.ID)
+	if gerr != nil {
+		t.Fatalf("GetItem parent: %v", gerr)
+	}
+	if status := extractFieldValue(got.Fields, "status"); status != "open" {
+		t.Errorf("field update leaked despite failed parent-link write: status=%q, want %q (partial commit!)", status, "open")
+	}
+
+	// The parent-link write must also NOT have committed: parent has no parent.
+	if link, lerr := s.GetParentForItem(parent.ID); lerr != nil {
+		t.Fatalf("GetParentForItem parent: %v", lerr)
+	} else if link != nil {
+		t.Errorf("parent-link write committed despite rollback: %+v", link)
+	}
+}
+
+// TestUpdateItemWithParentLink_AtomicCommit is the happy-path counterpart:
+// when the parent-link write succeeds, BOTH the field change and the link
+// change commit together.
+func TestUpdateItemWithParentLink_AtomicCommit(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent", "")
+	child := createTestItem(t, s, ws.ID, col.ID, "Child", "")
+
+	doneFields := `{"status":"done"}`
+	updated, err := s.UpdateItemWithParentLink(
+		child.ID,
+		models.ItemUpdate{Fields: &doneFields},
+		nil,
+		&ParentLinkUpdate{Provided: true, ParentID: parent.ID, WorkspaceID: ws.ID, CreatedBy: "user"},
+	)
+	if err != nil {
+		t.Fatalf("UpdateItemWithParentLink: %v", err)
+	}
+	if status := extractFieldValue(updated.Fields, "status"); status != "done" {
+		t.Errorf("field update not committed: status=%q, want %q", status, "done")
+	}
+	if link, lerr := s.GetParentForItem(child.ID); lerr != nil {
+		t.Fatalf("GetParentForItem: %v", lerr)
+	} else if link == nil || link.TargetID != parent.ID {
+		t.Errorf("parent-link not committed: %+v", link)
+	}
+
+	// Clearing the parent alongside a field change also commits atomically.
+	openFields := `{"status":"open"}`
+	if _, err := s.UpdateItemWithParentLink(
+		child.ID,
+		models.ItemUpdate{Fields: &openFields},
+		nil,
+		&ParentLinkUpdate{Provided: true, ParentID: "", WorkspaceID: ws.ID, CreatedBy: "user"},
+	); err != nil {
+		t.Fatalf("UpdateItemWithParentLink (clear): %v", err)
+	}
+	if link, lerr := s.GetParentForItem(child.ID); lerr != nil {
+		t.Fatalf("GetParentForItem after clear: %v", lerr)
+	} else if link != nil {
+		t.Errorf("expected parent cleared, got %+v", link)
+	}
+	if got, gerr := s.GetItem(child.ID); gerr != nil {
+		t.Fatalf("GetItem: %v", gerr)
+	} else if status := extractFieldValue(got.Fields, "status"); status != "open" {
+		t.Errorf("field update on clear not committed: status=%q, want %q", status, "open")
+	}
+}
+
 // TestGetParentMap_ExcludesSoftDeletedEndpoints covers the dashboard
 // orphan-detection path: a task whose parent has been soft-deleted should
 // NOT appear in GetParentMap, so handlers_dashboard.go correctly flags the

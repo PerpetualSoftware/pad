@@ -813,11 +813,13 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// the three UpdateItem call sites that follow. nil = no guard.
 	var openChildrenPrecheck func(tx *sql.Tx, existing *models.Item) error
 
-	// IDEA-1494 R4 P3: parent-link change is captured here and
-	// applied AFTER the main UpdateItemWithPreCheck succeeds, so a
-	// guard rejection on the status field doesn't leave a committed
-	// link change behind. Hoisted out of the `if input.Fields != nil`
-	// block so the post-write step can read them.
+	// IDEA-1494 R4 P3 / BUG-2013: the parent-link change is captured
+	// here and applied INSIDE the same store transaction as the field
+	// write (see store.UpdateItemWithParentLink). A guard rejection on
+	// the status field rolls the whole tx back, and a failing link write
+	// rolls the field write back too — the caller only ever observes both
+	// writes or neither. Hoisted out of the `if input.Fields != nil`
+	// block so the parentLink directive below can read them.
 	var parentValue string
 	var parentProvided bool
 
@@ -971,25 +973,38 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		validated := string(validatedFields)
 		input.Fields = &validated
 
-		// IDEA-1494 R4 P3: parent-link mutations are DEFERRED until
-		// after the field write succeeds. Pre-fix this block ran the
-		// link update INLINE here — before the precheck even fired —
-		// so a PATCH that combined a parent change with a status flip
-		// could end up with the link committed AND the field write
-		// rejected by the guard. Caller saw 409 but the parent had
-		// already moved.
+		// IDEA-1494 R4 P3 / BUG-2013: parent-link mutations are neither
+		// run inline here nor deferred to a post-commit write. They are
+		// staged (parentValue / parentProvided, above) and handed to
+		// UpdateItemWithParentLink, which applies them INSIDE the same
+		// store transaction as the field write.
 		//
-		// Now we record the desired link change and execute it ONLY
-		// when the main UpdateItemWithPreCheck call below succeeds.
-		// A guard rejection short-circuits with the link untouched.
-		// Documented choice: "reorder, don't tx-wrap" — wrapping the
-		// link mutation in the same store tx as UpdateItem would
-		// require threading a tx through SetParentLink (which has
-		// its own tx already, and is also called from the
-		// handler_item_links path). Reordering is the smaller surgery
-		// and preserves atomicity in the failure direction — caller
-		// only sees both writes on success, or neither (with a clear
-		// 409) on rejection.
+		// History: the pre-IDEA-1494 code ran the link update inline
+		// (before the precheck), so a combined parent-change + status-flip
+		// PATCH could commit the link and then have the field write
+		// rejected by the guard. IDEA-1494 R4 P3 moved it to a post-commit
+		// write, which fixed that direction but left the OTHER partial-
+		// commit window: field write committed, then link write failed →
+		// 500 with half the patch applied. BUG-2013 closes it for good by
+		// folding the link write into the update tx (see the parentLink
+		// directive built below).
+	}
+
+	// BUG-2013: build the atomic parent-link directive. When the PATCH
+	// changed the parent (parentProvided), this is threaded through every
+	// UpdateItemWithParentLink call site below so the link write shares
+	// the field write's transaction. parentValue=="" means "clear"; a
+	// non-empty value means "set to that item ID". Nil when the PATCH
+	// didn't touch the parent, giving the plain update path.
+	var parentLink *store.ParentLinkUpdate
+	if parentProvided {
+		linkActor, _ := actorFromRequest(r)
+		parentLink = &store.ParentLinkUpdate{
+			Provided:    true,
+			ParentID:    parentValue,
+			WorkspaceID: workspaceID,
+			CreatedBy:   linkActor,
+		}
 	}
 
 	// Designated-applier routing (PLAN-1248 TASK-1257). When the
@@ -1106,7 +1121,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 					return errStaleCollabSnapshot
 				}
 			}
-			updated, uerr := s.store.UpdateItemWithPreCheck(item.ID, input, openChildrenPrecheck)
+			updated, uerr := s.store.UpdateItemWithParentLink(item.ID, input, openChildrenPrecheck, parentLink)
 			if uerr != nil {
 				return uerr
 			}
@@ -1174,7 +1189,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		// Store.UpdateItem's content-versioning peek at Title.
 		// Per Codex review round 9.
 		err := s.applyContentViaCollab(r, item.ID, *input.Content, func() error {
-			updated, uerr := s.store.UpdateItemWithPreCheck(item.ID, input, openChildrenPrecheck)
+			updated, uerr := s.store.UpdateItemWithParentLink(item.ID, input, openChildrenPrecheck, parentLink)
 			if uerr != nil {
 				return uerr
 			}
@@ -1206,7 +1221,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	if fullWriteHandled {
 		updated = fullWriteUpdated
 	} else {
-		updated, err = s.store.UpdateItemWithPreCheck(item.ID, input, openChildrenPrecheck)
+		updated, err = s.store.UpdateItemWithParentLink(item.ID, input, openChildrenPrecheck, parentLink)
 	}
 	if err != nil {
 		// IDEA-1494 R2: surface the open-children guard rejection as
@@ -1234,33 +1249,12 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// IDEA-1494 R4 P3: deferred parent-link mutation. Runs ONLY now
-	// that the main UpdateItemWithPreCheck succeeded (the precheck
-	// passed AND the field write committed). A guard rejection above
-	// `return`s before reaching here, so the link is untouched on
-	// the failure path.
-	//
-	// Failure of the link write itself after a successful field
-	// write is still possible (e.g. SetParentLink discovers a cycle
-	// the cycle-check missed, or a DB error). We surface that as a
-	// 500 with the field write already committed — same partial-
-	// success window the pre-IDEA-1494 code had in the OTHER
-	// direction, and not made worse by the reorder. A future tx-
-	// wrap fix could close this entirely; out of scope for round 4.
-	if parentProvided {
-		if parentValue != "" {
-			actor, _ := actorFromRequest(r)
-			if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
-				writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to update parent link: %v", err))
-				return
-			}
-		} else {
-			if err := s.store.ClearParentLink(item.ID); err != nil {
-				writeError(w, http.StatusInternalServerError, "internal_error", fmt.Sprintf("failed to clear parent link: %v", err))
-				return
-			}
-		}
-	}
+	// BUG-2013: the parent-link mutation is no longer a separate
+	// post-commit write here — it ran INSIDE UpdateItemWithParentLink's
+	// transaction above (via the parentLink directive). A cycle or DB
+	// error on the link write now rolls the field write back and surfaces
+	// through the shared error handling above, so there is no remaining
+	// partial-commit window and nothing to do in this post-commit stage.
 
 	// Build rich metadata describing what changed
 	var meta string

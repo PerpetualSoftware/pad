@@ -1682,6 +1682,23 @@ func (s *Store) UpdateItem(id string, input models.ItemUpdate) (*models.Item, er
 	return s.UpdateItemWithPreCheck(id, input, nil)
 }
 
+// ParentLinkUpdate describes an optional parent-link mutation to apply
+// ATOMICALLY inside UpdateItem's transaction (BUG-2013). The handler used
+// to run SetParentLink/ClearParentLink as a separate write AFTER the field
+// update committed, so a failing link write left the item half-updated and
+// returned a 500. Folding the mutation into the same tx makes the pair
+// all-or-nothing.
+//
+//   - Provided=false  → no parent-link change (the common case).
+//   - Provided=true, ParentID!="" → set the parent to ParentID.
+//   - Provided=true, ParentID=="" → clear the parent link.
+type ParentLinkUpdate struct {
+	Provided    bool
+	ParentID    string
+	WorkspaceID string
+	CreatedBy   string
+}
+
 // UpdateItemWithPreCheck is UpdateItem with an optional pre-mutation
 // hook that runs inside the same transaction (and, on Postgres, holds
 // the same workspace advisory lock) as the update itself. Callers can
@@ -1701,6 +1718,24 @@ func (s *Store) UpdateItemWithPreCheck(
 	id string,
 	input models.ItemUpdate,
 	precheck func(tx *sql.Tx, existing *models.Item) error,
+) (*models.Item, error) {
+	return s.UpdateItemWithParentLink(id, input, precheck, nil)
+}
+
+// UpdateItemWithParentLink is UpdateItemWithPreCheck plus an OPTIONAL
+// parent-link mutation applied inside the same transaction (BUG-2013).
+// When parentLink is non-nil and Provided, the SetParentLink/ClearParentLink
+// write runs after the field update but BEFORE commit — so if the link write
+// fails (cycle, DB error), the field update rolls back too. No more
+// 500-with-half-the-patch-applied.
+//
+// Pass a nil parentLink for the standard update path (equivalent to
+// UpdateItemWithPreCheck).
+func (s *Store) UpdateItemWithParentLink(
+	id string,
+	input models.ItemUpdate,
+	precheck func(tx *sql.Tx, existing *models.Item) error,
+	parentLink *ParentLinkUpdate,
 ) (*models.Item, error) {
 	existing, err := s.GetItem(id)
 	if err != nil {
@@ -1746,7 +1781,15 @@ func (s *Store) UpdateItemWithPreCheck(
 	// item's own children lock. Both lock keys are namespaced under
 	// `pad:parent-children:` so they only contend on the parent ID;
 	// acquiring two distinct keys in a fixed order can't deadlock.
-	if err := s.acquireParentChildrenLocksForUpdate(tx, id); err != nil {
+	//
+	// BUG-2013: when this update also re-parents the item, fold the NEW
+	// parent's key into this same sorted acquisition so setParentLinkTx's
+	// later (idempotent) re-lock never introduces an out-of-order grab.
+	var extraLockKeys []string
+	if parentLink != nil && parentLink.Provided && parentLink.ParentID != "" {
+		extraLockKeys = append(extraLockKeys, parentLink.ParentID)
+	}
+	if err := s.acquireParentChildrenLocksForUpdate(tx, id, extraLockKeys...); err != nil {
 		return nil, err
 	}
 
@@ -2076,6 +2119,24 @@ func (s *Store) UpdateItemWithPreCheck(
 		}
 		if err := s.replaceWikiLinks(tx, id, existing.WorkspaceID, currentContent); err != nil {
 			return nil, fmt.Errorf("index wiki links: %w", err)
+		}
+	}
+
+	// BUG-2013: apply the parent-link mutation INSIDE this tx, after the
+	// field write. A failure here (cycle detected, DB error) rolls the
+	// whole transaction back, so the caller can never observe the field
+	// update committed while the parent link write failed. The new
+	// parent's advisory lock was already folded into the acquisition
+	// above, so setParentLinkTx's re-lock is a no-op.
+	if parentLink != nil && parentLink.Provided {
+		if parentLink.ParentID != "" {
+			if _, err := s.setParentLinkTx(tx, parentLink.WorkspaceID, id, parentLink.ParentID, parentLink.CreatedBy); err != nil {
+				return nil, err
+			}
+		} else {
+			if err := s.clearParentLinkTx(tx, id); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -2550,49 +2611,15 @@ func (s *Store) DeleteItemLink(id string) error {
 // guard could read 0 open children while this method was about to
 // attach a non-terminal child.
 func (s *Store) SetParentLink(workspaceID, itemID, parentID, createdBy string) (*models.ItemLink, error) {
-	// Cycle detection: walk the ancestor chain from parentID to ensure itemID is not an ancestor.
-	if err := s.checkParentCycle(itemID, parentID); err != nil {
-		return nil, err
-	}
-
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	// Find the existing parent (if any) so we can lock against it too.
-	// The DELETE below targets link_type='parent' specifically, which
-	// matches what the guard's children query treats as the parent
-	// edge (childLinkTypes includes 'parent'); other child-link types
-	// like 'implements' aren't displaced by this method so we don't
-	// need their old parent here.
-	var oldParentID sql.NullString
-	if err := tx.QueryRow(s.q(`
-		SELECT target_id FROM item_links
-		WHERE source_id = ? AND link_type = 'parent'
-		LIMIT 1
-	`), itemID).Scan(&oldParentID); err != nil && err != sql.ErrNoRows {
-		return nil, fmt.Errorf("lookup existing parent: %w", err)
-	}
-
-	if err := s.AcquireParentChildrenLocks(tx, oldParentID.String, parentID); err != nil {
+	id, err := s.setParentLinkTx(tx, workspaceID, itemID, parentID, createdBy)
+	if err != nil {
 		return nil, err
-	}
-
-	// Delete existing parent link for this item (if any)
-	if _, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'parent'`), itemID); err != nil {
-		return nil, fmt.Errorf("delete existing parent link: %w", err)
-	}
-
-	// Insert new parent link
-	id := newID()
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := tx.Exec(s.q(`
-		INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
-		VALUES (?, ?, ?, ?, 'parent', ?, ?)
-	`), id, workspaceID, itemID, parentID, createdBy, now); err != nil {
-		return nil, fmt.Errorf("insert parent link: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -2605,9 +2632,83 @@ func (s *Store) SetParentLink(workspaceID, itemID, parentID, createdBy string) (
 	return s.getItemLink(id)
 }
 
-// checkParentCycle walks the ancestor chain from parentID and returns an error
-// if itemID is found (which would create a cycle).
-func (s *Store) checkParentCycle(itemID, parentID string) error {
+// setParentLinkTx performs the lock acquisition, cycle check, and the
+// DELETE-then-INSERT of the parent link entirely within the caller's
+// transaction, returning the new link's id. It is the shared core of the
+// public SetParentLink (which opens its own tx) AND UpdateItemWithParentLink
+// (which reuses the item-update tx so the field write and the link write
+// commit or roll back together — closing the partial-commit window from
+// BUG-2013).
+//
+// Lock acquisition routes through AcquireParentChildrenLocks, so re-acquiring
+// keys the enclosing tx already holds (as UpdateItemWithParentLink does after
+// pre-locking the new parent) is an idempotent no-op rather than a deadlock.
+func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, createdBy string) (string, error) {
+	// Find the existing parent (if any) so we can lock against it too.
+	// The DELETE below targets link_type='parent' specifically, which
+	// matches what the guard's children query treats as the parent
+	// edge (childLinkTypes includes 'parent'); other child-link types
+	// like 'implements' aren't displaced by this method so we don't
+	// need their old parent here.
+	var oldParentID sql.NullString
+	if err := tx.QueryRow(s.q(`
+		SELECT target_id FROM item_links
+		WHERE source_id = ? AND link_type = 'parent'
+		LIMIT 1
+	`), itemID).Scan(&oldParentID); err != nil && err != sql.ErrNoRows {
+		return "", fmt.Errorf("lookup existing parent: %w", err)
+	}
+
+	if err := s.AcquireParentChildrenLocks(tx, oldParentID.String, parentID); err != nil {
+		return "", err
+	}
+
+	// Cycle detection: walk the ancestor chain from parentID to ensure itemID
+	// is not an ancestor. Run this AFTER the parent-children locks are held (Codex
+	// review, PR #868): checking before the lock lets two concurrent reparents
+	// each pass on a stale ancestry snapshot, block on the lock, then both insert
+	// — closing the loop (A→B→C→A). Under the lock the walk reads via the tx, so
+	// it sees the edge the just-unblocked peer committed and catches the cycle.
+	// (Residual: cycles closed via an edge on an item NEITHER endpoint locks can
+	// still slip through — a pre-existing limitation of the per-endpoint lock
+	// scheme, tracked separately.)
+	if err := s.checkParentCycleQ(tx, itemID, parentID); err != nil {
+		return "", err
+	}
+
+	// Delete existing parent link for this item (if any)
+	if _, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'parent'`), itemID); err != nil {
+		return "", fmt.Errorf("delete existing parent link: %w", err)
+	}
+
+	// Insert new parent link
+	id := newID()
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := tx.Exec(s.q(`
+		INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
+		VALUES (?, ?, ?, ?, 'parent', ?, ?)
+	`), id, workspaceID, itemID, parentID, createdBy, now); err != nil {
+		return "", fmt.Errorf("insert parent link: %w", err)
+	}
+
+	return id, nil
+}
+
+// rowQueryer is the minimal surface checkParentCycleQ needs from either
+// *sql.DB or *sql.Tx, so the cycle walk can run either unlocked (public
+// SetParentLink) or inside an in-flight transaction (UpdateItem's atomic
+// parent-link path, which must read item_links under the same tx/locks
+// it writes with).
+type rowQueryer interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// checkParentCycleQ walks the ancestor chain from parentID and returns an
+// error if itemID is found (which would create a cycle). Parameterized over
+// the queryer so the walk can execute inside a transaction: reading via the
+// same tx that holds the parent-children locks keeps the cycle decision
+// consistent with the DELETE/INSERT that follows it.
+func (s *Store) checkParentCycleQ(q rowQueryer, itemID, parentID string) error {
 	visited := map[string]bool{itemID: true}
 	current := parentID
 	for {
@@ -2618,7 +2719,7 @@ func (s *Store) checkParentCycle(itemID, parentID string) error {
 
 		// Look up the parent of current
 		var targetID sql.NullString
-		err := s.db.QueryRow(s.q(`
+		err := q.QueryRow(s.q(`
 			SELECT target_id FROM item_links
 			WHERE source_id = ? AND link_type = 'parent'
 		`), current).Scan(&targetID)
@@ -2644,6 +2745,17 @@ func (s *Store) ClearParentLink(itemID string) error {
 	}
 	defer tx.Rollback()
 
+	if err := s.clearParentLinkTx(tx, itemID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// clearParentLinkTx removes the item's parent link within the caller's
+// transaction. Shared by the public ClearParentLink (own tx) and
+// UpdateItemWithParentLink (item-update tx), so a cleared parent commits
+// atomically with the field write it accompanied (BUG-2013).
+func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID string) error {
 	var oldParentID sql.NullString
 	if err := tx.QueryRow(s.q(`
 		SELECT target_id FROM item_links
@@ -2660,7 +2772,7 @@ func (s *Store) ClearParentLink(itemID string) error {
 	if _, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'parent'`), itemID); err != nil {
 		return fmt.Errorf("clear parent link: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 // GetParentForItem returns the parent link for an item, or nil if it has no parent.
@@ -3155,7 +3267,14 @@ func (s *Store) GetChildItemsTx(tx *sql.Tx, parentItemID string) ([]models.Item,
 // canonical sorted order — round-4 P2's deadlock-avoidance contract.
 // No call site outside this helper takes pad:parent-children:* locks
 // in any other order.
-func (s *Store) acquireParentChildrenLocksForUpdate(tx *sql.Tx, itemID string) error {
+//
+// extraKeys lets a caller fold additional parent IDs into the SAME sorted
+// batch — UpdateItemWithParentLink passes the NEW parent when an atomic
+// parent-link change accompanies the field write. Acquiring the new parent
+// in this initial sorted acquisition (rather than later, inside
+// setParentLinkTx) preserves the canonical lock ordering and keeps the
+// combined update deadlock-free.
+func (s *Store) acquireParentChildrenLocksForUpdate(tx *sql.Tx, itemID string, extraKeys ...string) error {
 	if s.dialect.Driver() != DriverPostgres {
 		return nil
 	}
@@ -3164,6 +3283,7 @@ func (s *Store) acquireParentChildrenLocksForUpdate(tx *sql.Tx, itemID string) e
 		return err
 	}
 	keys := append(parentIDs, itemID)
+	keys = append(keys, extraKeys...)
 	return s.AcquireParentChildrenLocks(tx, keys...)
 }
 
