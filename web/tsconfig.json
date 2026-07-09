@@ -11,7 +11,15 @@
 		"sourceMap": true,
 		"strict": true,
 		"moduleResolution": "bundler"
-	}
+	},
+	// `exclude` fully REPLACES the generated .svelte-kit/tsconfig exclude (which
+	// only lists node_modules + service-worker), so node_modules is re-listed.
+	// The jsdom-only test harness (`*.svelte.test.ts` + `src/test/**`) imports
+	// dev deps (`@testing-library/*`, jsdom) that live in package.json but may
+	// be absent from the shared worktree node_modules until `npm install` runs;
+	// excluding them keeps `svelte-check` clean. vitest compiles these files via
+	// its own config, so they're still type-aware at test time (TASK-2081).
+	"exclude": ["node_modules/**", "src/test/**", "src/**/*.svelte.test.ts"]
 	// Path aliases are handled by https://svelte.dev/docs/kit/configuration#alias
 	// except $lib which is handled by https://svelte.dev/docs/kit/configuration#files
 	//
