@@ -36,6 +36,7 @@ func githubCmd() *cobra.Command {
 		Use:     "github",
 		Short:   "Link GitHub pull requests to Pad items",
 		Aliases: []string{"gh"},
+		RunE:    unknownSubcommandRun,
 		Long: `Link GitHub pull requests to Pad items and view their status.
 
 Requires the GitHub CLI (gh) to be installed: https://cli.github.com/

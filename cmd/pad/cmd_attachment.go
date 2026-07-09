@@ -27,6 +27,7 @@ func attachmentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "attachment",
 		Short: "Upload, download, view, and list item attachments",
+		RunE:  unknownSubcommandRun,
 		Long: `Upload, download, view, and list attachments (images, files) on items.
 
 Examples:

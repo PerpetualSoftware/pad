@@ -15,6 +15,7 @@ func tagCmd() *cobra.Command {
 		Use:   "tag",
 		Short: "Inspect tags used across the workspace",
 		Long:  "Tags are free-form labels on items. They span collections, so a single tag groups items of any type (an Idea and a Bug can share one tag).",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(tagListCmd())
 	return cmd

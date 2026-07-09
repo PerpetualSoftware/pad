@@ -21,6 +21,7 @@ func mcpCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mcp",
 		Short: "Run pad as a Model Context Protocol server",
+		RunE:  unknownSubcommandRun,
 		Long: `Run pad as an MCP server so AI agents (Claude Desktop, Cursor, Windsurf, etc.)
 can call pad commands as tools and read pad data as resources.
 
