@@ -164,6 +164,32 @@ describe('api client 429 handling (TASK-2026)', () => {
 		vi.unstubAllGlobals();
 	});
 
+	it('arms a global cooldown so a follow-up GET waits out the last Retry-After instead of bursting (Codex P1)', async () => {
+		vi.useFakeTimers();
+		try {
+			// First chain: a GET that 429s on both the original and its one
+			// retry (Retry-After: 1s), exhausting the retry and arming the
+			// cooldown ~1s out.
+			mockFetchSequence([
+				{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '1' },
+			]);
+			const p1 = api.workspaces.list().catch((e) => e);
+			await vi.advanceTimersByTimeAsync(1000); // resolve the internal retry sleep
+			expect(isRateLimitError(await p1)).toBe(true);
+
+			// Second chain: an INDEPENDENT follow-up GET. It must sit in the
+			// cooldown sleep — no network call — until the window elapses.
+			const fetchMock2 = mockFetchSequence([{ status: 200, body: [] }]);
+			const p2 = api.workspaces.list();
+			expect(fetchMock2).toHaveBeenCalledTimes(0);
+			await vi.advanceTimersByTimeAsync(1000);
+			await p2;
+			expect(fetchMock2).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('retries an idempotent GET exactly once after a 429, then returns the retry payload', async () => {
 		const fetchMock = mockFetchSequence([
 			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },

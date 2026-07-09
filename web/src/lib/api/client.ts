@@ -118,6 +118,16 @@ const MAX_RETRY_AFTER_MS = 5_000;
 // header, so the one automatic GET retry still spaces itself out.
 const DEFAULT_RETRY_BACKOFF_MS = 750;
 
+// Global soft cooldown (epoch ms). When a request exhausts its retry and
+// still gets a 429, we record `now + Retry-After` here. Subsequent
+// idempotent GET/HEAD requests wait out the remaining window (bounded by
+// MAX_RETRY_AFTER_MS) before firing, so INDEPENDENT call sites don't burst
+// a busy server — e.g. localIndex.bootstrap's reconcile 429s, then the
+// collection page immediately fires a follow-up deltaSync (Codex P1 on the
+// first cut of TASK-2026). Cleared on the next successful response so a
+// recovered server stops the cooldown early. Zero = no cooldown active.
+let rateLimitedUntil = 0;
+
 function clampRetryMs(ms: number): number {
 	if (!Number.isFinite(ms) || ms < 0) return 0;
 	return Math.min(ms, MAX_RETRY_AFTER_MS);
@@ -348,9 +358,22 @@ async function request<T>(
 
 	// Attach CSRF token for state-changing requests
 	const method = options?.method?.toUpperCase();
+	const isIdempotent = method === undefined || method === 'GET' || method === 'HEAD';
 	if (method && method !== 'GET' && method !== 'HEAD') {
 		const csrf = getCSRFToken();
 		if (csrf) headers['X-CSRF-Token'] = csrf;
+	}
+
+	// Rate-limit cooldown (TASK-2026). If a recent 429 asked us to back
+	// off, wait out the remaining window before firing another idempotent
+	// request so independent call sites don't hammer a busy server. The
+	// internal single-retry (`rateLimitRetried`) already slept, so it
+	// skips this. Bounded by MAX_RETRY_AFTER_MS. Non-idempotent writes are
+	// never delayed here — they don't auto-retry and shouldn't be silently
+	// stalled by an unrelated GET's cooldown.
+	if (isIdempotent && !rateLimitRetried) {
+		const wait = rateLimitedUntil - Date.now();
+		if (wait > 0) await sleep(Math.min(wait, MAX_RETRY_AFTER_MS));
 	}
 
 	const resp = await fetch(BASE + path, {
@@ -413,13 +436,17 @@ async function request<T>(
 		// `rate_limited` error so callers can show "server busy" rather
 		// than a generic failure.
 		const retryAfterMs = parseRetryAfterMs(resp.headers?.get('Retry-After'));
-		const isIdempotent = method === undefined || method === 'GET' || method === 'HEAD';
+		const backoffMs = retryAfterMs ?? DEFAULT_RETRY_BACKOFF_MS;
 		// Only GET/HEAD auto-retry — retrying a POST/PATCH/DELETE could
 		// duplicate a write the server may have already partially applied.
 		if (isIdempotent && !rateLimitRetried) {
-			await sleep(retryAfterMs ?? DEFAULT_RETRY_BACKOFF_MS);
+			await sleep(backoffMs);
 			return request<T>(path, options, true);
 		}
+		// Retry exhausted (or non-idempotent): arm the global cooldown so
+		// other/subsequent idempotent calls back off for the same window
+		// instead of immediately re-hitting the busy server.
+		rateLimitedUntil = Date.now() + backoffMs;
 		// Prefer the server's structured error envelope if present, but
 		// force the distinct `rate_limited` code + a clear message so UI
 		// can branch on it regardless of what the proxy/server sent.
@@ -437,6 +464,9 @@ async function request<T>(
 		if (body?.error) throw new PadApiError(body.error);
 		throw new Error(`API error: ${resp.status}`);
 	}
+	// A successful response means the server is serving again — drop any
+	// active rate-limit cooldown so we don't keep delaying GETs (TASK-2026).
+	rateLimitedUntil = 0;
 	if (resp.status === 204) return undefined as T;
 	return resp.json();
 }
