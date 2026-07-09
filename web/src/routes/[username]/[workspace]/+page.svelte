@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { browser } from '$app/environment';
-	import { api } from '$lib/api/client';
+	import { api, PadApiError } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
@@ -21,6 +21,16 @@
 
 	let loading = $state(true);
 	let dashboard = $state<DashboardResponse | null>(null);
+	// `dashError` captures a dashboard LOAD failure (network / 5xx /
+	// 429) so the template can render an error + Retry state instead of
+	// the flat "No dashboard data available." message, which used to
+	// show on ANY transient failure and read as "this workspace is
+	// empty" (BUG-2025). A dashboard is a computed aggregate that never
+	// legitimately 404s, so any thrown error is treated as transient.
+	// Only shown when there's no `dashboard` to fall back to — a failed
+	// silent poll never clobbers an already-rendered board. Cleared on
+	// every successful load.
+	let dashError = $state<Error | null>(null);
 	// The workspace slug the current `dashboard` data was fetched for. A silent
 	// reload leaves stale `dashboard` in place while `wsSlug` already changed on
 	// a workspace switch, so route-param-keyed logic can read mismatched state.
@@ -184,7 +194,16 @@
 		unsubscribeSync?.();
 	});
 
+	// Monotonic load token (plain, non-reactive) guarding against a
+	// superseded dashboard fetch committing out of order. Concurrent
+	// navigation / 30s poll / sync / retry loads can resolve in any
+	// order; only the latest may write `dashboard` / `dashboardSlug` /
+	// `dashError` / `loading` (Codex race finding). Mirrors the
+	// collection page's `loadSeq`.
+	let dashLoadSeq = 0;
+
 	async function load(slug: string, silent = false) {
+		const seq = ++dashLoadSeq;
 		if (!silent) loading = true;
 		try {
 			await workspaceStore.setCurrent(slug);
@@ -192,13 +211,43 @@
 				api.dashboard.get(slug),
 				api.collections.list(slug)
 			]);
+			// Superseded by a newer load — drop this result.
+			if (seq !== dashLoadSeq) return;
 			dashboard = dash;
 			dashboardSlug = slug;
 			collections = colls;
-		} catch {
-			// allow partial render
+			// A clean load clears any prior transient error so a recovered
+			// dashboard renders normally rather than pinning the retry state.
+			dashError = null;
+		} catch (err) {
+			// Superseded by a newer load — don't commit this stale outcome.
+			if (seq !== dashLoadSeq) return;
+			// A genuine not-found (nonexistent workspace → 404 `not_found`
+			// from the workspace-access middleware) is terminal, not
+			// transient — fall through to the "No dashboard data available."
+			// empty state rather than a Retry loop that can never succeed
+			// (BUG-2025). Any OTHER thrown error (network / 5xx / 429) is
+			// transient: surface an error + Retry state instead of the flat
+			// empty state. A silent poll that fails while `dashboard`
+			// already holds data for the CURRENT workspace leaves it in
+			// place — the error branch is gated on `dashboardSlug === wsSlug`
+			// in the template, so a background poll blip never clobbers the
+			// live board (and stale data from a previous workspace never
+			// masks a failed load of the new one).
+			if (err instanceof PadApiError && err.code === 'not_found') {
+				// Terminal: drop any stale dashboard for this route so the
+				// "No dashboard data available." empty state shows instead
+				// of a workspace that's since been deleted/revoked lingering
+				// on screen (Codex P2).
+				dashboard = null;
+				dashboardSlug = null;
+				dashError = null;
+			} else {
+				dashError = err instanceof Error ? err : new Error('Failed to load dashboard');
+			}
 		} finally {
-			loading = false;
+			// Only the latest load owns the loading flag.
+			if (seq === dashLoadSeq) loading = false;
 		}
 	}
 
@@ -299,7 +348,7 @@
 				{/each}
 			</div>
 		</div>
-	{:else if dashboard}
+	{:else if dashboard && dashboardSlug === wsSlug}
 		{#if needsOnboarding && !onboardingDismissed}
 			<!--
 				Launchpad render-mode (PLAN-1847 Phase 2 / TASK-1852). While
@@ -622,6 +671,17 @@
 			</section>
 		{/if}
 		{/if}
+	{:else if dashError}
+		<!-- Transient dashboard load failure (network / 5xx / 429) —
+		     NOT an empty workspace (BUG-2025). Offer a Retry instead of
+		     the flat "No dashboard data available." message that reads
+		     as "nothing here". -->
+		<div class="dash-error">
+			<div class="dash-error-icon">⚠️</div>
+			<h2>Couldn't load the dashboard</h2>
+			<p>Something went wrong while loading. It may be a temporary network or server issue.</p>
+			<button class="btn btn-primary" onclick={() => { if (wsSlug) load(wsSlug); }}>Retry</button>
+		</div>
 	{:else}
 		<div class="loading">No dashboard data available.</div>
 	{/if}
@@ -676,6 +736,32 @@
 		text-align: center;
 		padding-top: 20vh;
 		color: var(--text-muted);
+	}
+	/* Transient dashboard load failure state (BUG-2025). */
+	.dash-error {
+		text-align: center;
+		padding-top: 15vh;
+		color: var(--text-secondary);
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: var(--space-3);
+	}
+	.dash-error-icon {
+		font-size: 2em;
+	}
+	.dash-error h2 {
+		font-size: 1.2em;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+	.dash-error p {
+		color: var(--text-muted);
+		max-width: 32em;
+	}
+	.dash-error .btn {
+		cursor: pointer;
+		border: none;
 	}
 
 	/* ── Header ─────────────────────────────────────────────────────────── */

@@ -39,6 +39,16 @@
 	// case where filteredItems is briefly empty.
 	let metaLoading = $state(true);
 	let collection = $state<Collection | null>(null);
+	// `metaError` distinguishes a TRANSIENT collection-metadata load
+	// failure (network blip / 5xx / 429) from a genuine not-found
+	// (BUG-2025). A genuine 404 (`PadApiError.code === 'not_found'`)
+	// leaves `collection` null and `metaError` null so the template
+	// renders the terminal "Collection not found" empty state. Any
+	// other thrown error sets `metaError`, which the template renders
+	// as an error + Retry state — mirroring the items branch's
+	// `indexError`/`deltaSyncFailed` retry box — instead of masking a
+	// live collection as deleted. Cleared at the top of every load.
+	let metaError = $state<Error | null>(null);
 	let viewMode = $state<ViewMode>('list');
 	// Page-wide within-group sort (TASK-1670 / IDEA-1648). 'manual' is the
 	// stored sort_order (drag order). Persisted per collection.
@@ -140,7 +150,7 @@
 	// deltaSync.
 	let deltaSyncFailed = $state(false);
 	let loading = $derived(
-		metaLoading || (!indexReady && !indexError && !deltaSyncFailed),
+		!metaError && (metaLoading || (!indexReady && !indexError && !deltaSyncFailed)),
 	);
 
 	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
@@ -500,8 +510,18 @@
 		}
 	}
 
+	// Monotonic load token (plain, non-reactive) guarding against a
+	// superseded fetch committing stale state. A slow load for
+	// collection A that resolves AFTER the route already switched to B
+	// must not overwrite B's `collection` / `metaError` / `metaLoading`
+	// (Codex race finding). Every entry bumps the token; each awaited
+	// result checks it's still the latest before writing.
+	let loadSeq = 0;
+
 	async function loadCollection(ws: string, coll: string, includeArchived = false) {
+		const seq = ++loadSeq;
 		metaLoading = true;
+		metaError = null;
 		try {
 			// Items now flow through localIndex (the `items` $derived
 			// above reads `getByCollection`). We still fetch the
@@ -514,6 +534,9 @@
 				api.views.list(ws, coll).catch(() => [] as View[]),
 				api.members.list(ws).catch(() => ({ members: [], invitations: [] })),
 			]);
+			// A newer load started while this one was in flight — drop
+			// this result so it can't overwrite the current route's state.
+			if (seq !== loadSeq) return;
 			collection = collData;
 			savedViews = viewsData;
 			workspaceMembers = membersData.members ?? [];
@@ -523,6 +546,7 @@
 			if (coll === 'plans') {
 				try {
 					const progress = await api.items.plansProgress(ws);
+					if (seq !== loadSeq) return;
 					const map: Record<string, { total: number; done: number; label?: string }> = {};
 					for (const p of progress) {
 						map[p.item_id] = { total: p.total, done: p.done };
@@ -530,6 +554,9 @@
 					itemProgress = map;
 					progressLabel = 'tasks';
 				} catch {
+					// Don't clear a newer load's progress badges if this
+					// stale load's progress fetch rejected (Codex round 5).
+					if (seq !== loadSeq) return;
 					itemProgress = {};
 				}
 			} else {
@@ -549,6 +576,7 @@
 						api.items.collectionChildProgress(ws, coll, { includeArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
 						api.items.collectionCheckboxProgress(ws, coll, { includeArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
 					]);
+					if (seq !== loadSeq) return;
 
 					const checkboxMap: Record<string, { total: number; done: number }> = {};
 					for (const p of checkboxRows) {
@@ -572,6 +600,9 @@
 					itemProgress = map;
 					progressLabel = 'done';
 				} catch {
+					// Don't clear a newer load's progress badges if this
+					// stale load's progress fetch rejected (Codex round 5).
+					if (seq !== loadSeq) return;
 					itemProgress = {};
 				}
 			}
@@ -581,6 +612,10 @@
 			// fetch; now plans flow into the local store and the
 			// derived map below picks them up as they hydrate.)
 
+			// A newer load may have started during the progress awaits —
+			// don't apply this (stale) collection's view/sort/filter state
+			// over the current route's (Codex round 4).
+			if (seq !== loadSeq) return;
 			// Set view mode: URL param > localStorage > collection default
 			const settings = parseSettings(collData);
 			const defaultMode = (['board', 'list', 'table'].includes(settings.default_view))
@@ -590,13 +625,29 @@
 
 			// Override with URL params if present
 			loadUrlFilters();
-		} catch {
-			collection = null;
-			// `items` is derived from localIndex; nothing to clear here.
-			// A missing collection shows the empty / not-found state via
-			// the `collection` null branch in the template.
+		} catch (err) {
+			// Superseded by a newer load — don't clobber the current
+			// route's state with this stale failure.
+			if (seq !== loadSeq) return;
+			// Distinguish a genuine not-found from a transient failure
+			// (BUG-2025). Only a real 404 (`not_found`) collapses to the
+			// terminal "Collection not found" empty state; a network
+			// blip / 5xx / 429 sets `metaError` so the template shows an
+			// error + Retry affordance instead of masking a live
+			// collection as deleted.
+			if (err instanceof PadApiError && err.code === 'not_found') {
+				collection = null;
+				metaError = null;
+				// `items` is derived from localIndex; nothing to clear here.
+				// A missing collection shows the empty / not-found state via
+				// the `collection` null branch in the template.
+			} else {
+				metaError = err instanceof Error ? err : new Error('Failed to load collection');
+			}
 		} finally {
-			metaLoading = false;
+			// Only the latest load owns the loading flag — a superseded
+			// load must not flip it false out from under the current one.
+			if (seq === loadSeq) metaLoading = false;
 		}
 	}
 
@@ -1739,6 +1790,24 @@
 <div class="collection-page" class:board-active={viewMode === 'board'}>
 	{#if loading}
 		<div class="loading">Loading...</div>
+	{:else if metaError}
+		<!-- Transient collection-metadata load failure (network / 5xx /
+		     429) — NOT a genuine 404 (BUG-2025). Show an error + Retry
+		     path instead of the misleading "Collection not found" empty
+		     state, mirroring the items branch's retry box. -->
+		<div class="empty-state-box">
+			<div class="empty-icon">⚠️</div>
+			<h2>Couldn't load this collection</h2>
+			<p>Something went wrong while loading. It may be a temporary network or server issue.</p>
+			<button
+				class="empty-cta"
+				onclick={() => {
+					if (wsSlug && collSlug) loadCollection(wsSlug, collSlug, showArchived);
+				}}
+			>
+				Retry
+			</button>
+		</div>
 	{:else if !collection}
 		<div class="empty-state">Collection not found</div>
 	{:else}
