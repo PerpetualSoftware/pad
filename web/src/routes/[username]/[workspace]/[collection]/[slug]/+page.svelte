@@ -17,6 +17,7 @@
 	import { CollabProvider, type CollabConnectionState } from '$lib/collab/wsProvider.svelte';
 	import { userColor } from '$lib/collab/cursorColor';
 	import { shouldDedupeEditorSpace } from '$lib/collab/flushDedupe';
+	import { createContentSaver } from '$lib/items/contentSaver.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import TagInput from '$lib/components/fields/TagInput.svelte';
@@ -530,7 +531,10 @@
 		clearTimeout(collabFlushTimer);
 		collabFlushTimer = undefined;
 		rawSeedMarkdown = null;
-		rawPendingMarkdown = null;
+		// Cancel the raw saver's debounce and drop its pending edit so a
+		// stale queued markdown from item A can't PATCH into item B.
+		rawContentSaver.cancel();
+		rawContentSaver.clearPending();
 		// lastFlushedContent is per-item; resetting prevents the
 		// dedupe from incorrectly suppressing the first flush on
 		// the next item (which happens to share the same markdown
@@ -1110,39 +1114,17 @@
 			const ctx = activeCollabContext;
 			if (ctx) flushCollabNow(ctx, true);
 
-			// Raw-markdown path (BUG-2024). rawPendingMarkdown holds the
-			// exact debounced-but-unsaved markdown; when non-null there
-			// is up to ~1.2s of typing the collab flush above never
-			// sees. Only when actually dirty — never warn on a clean page.
-			const pendingRaw = rawPendingMarkdown;
-			if (pendingRaw !== null && item) {
-				const reqItemId = item.id;
-				// Cancel any queued debounce so it can't fire a second,
-				// older-content PATCH racing the keepalive one below —
-				// the keepalive request already carries the latest
-				// markdown. (An already-in-flight debounced PATCH would
-				// carry older content, but the debounce spacing makes
-				// one being airborne at unload vanishingly narrow, and
-				// the server's un-versioned content PATCH has never
-				// guarded that ordering; this is strictly better than
-				// the pre-fix total loss of the debounced edit.)
-				clearTimeout(contentDebounceTimer);
-				contentDebounceTimer = undefined;
-				// Fire an immediate keepalive PATCH so the edit survives
-				// page teardown (keepalive holds the request open past
-				// unload — that's the point). If the user cancels the
-				// navigation ("Stay"), clear the dirty state once it
-				// lands so a later unload doesn't re-prompt / re-PATCH
-				// already-saved content.
-				void api.items
-					.update(wsSlug, reqItemId, { content: pendingRaw }, { keepalive: true })
-					.then(() => {
-						if (item && item.id === reqItemId && rawPendingMarkdown === pendingRaw) {
-							rawPendingMarkdown = null;
-							editorStore.setDirty(false);
-						}
-					})
-					.catch(() => {});
+			// Raw-markdown path (BUG-2024). The saver's pending markdown is
+			// the exact debounced-but-unsaved edit; when dirty there is up
+			// to ~1.2s of typing the collab flush above never sees. Only
+			// when actually dirty — never warn on a clean page. flushNow
+			// cancels the queued debounce (so it can't fire a second,
+			// older-content PATCH) and fires an immediate keepalive PATCH
+			// that survives page teardown. The saver's `save` callback
+			// clears the dirty state once it lands (covers the user
+			// cancelling the navigation via "Stay"). See rawContentSaver.
+			if (rawContentSaver.dirty && item) {
+				rawContentSaver.flushNow({ keepalive: true });
 				// Native "unsaved changes" prompt.
 				event.preventDefault();
 				event.returnValue = '';
@@ -1731,6 +1713,11 @@
 			return;
 		}
 		clearTimeout(contentDebounceTimer);
+		// Cancel any pending RAW-mode saver debounce too — this legacy
+		// non-collab path and the raw saver shared one timer before
+		// TASK-2029 split them; cancelling both preserves the mode-toggle
+		// non-trample the single shared timer guaranteed.
+		rawContentSaver.cancel();
 		editorStore.setDirty(true);
 		contentDebounceTimer = setTimeout(() => {
 			if (!item) return;
@@ -1977,41 +1964,48 @@
 		return true;
 	}
 
-	// Latest raw markdown that hasn't yet been PATCHed. Tracked
-	// alongside contentDebounceTimer so toggling out of raw mode
-	// (via flushRawIfPending below) can synchronously land the
-	// pending edit BEFORE the collab provider mints — otherwise the
-	// debounced PATCH fires after the provider is up, gets routed
-	// through the applier path, and races peer state. Per Codex
-	// review round 5.
-	let rawPendingMarkdown: string | null = null;
-
-	// One-shot seed for the raw editor when toggling from rich+collab.
-	// items.content stays stale under collab (handleContentUpdate is
-	// suppressed when the provider is active); without this seed,
-	// RawMarkdownEditor would mount with the pre-collab markdown and
-	// any subsequent save would silently lose the live Y.Doc state.
-	// Reset to null on rich-mode toggle and on item swap. Per Codex
-	// review round 9.
-	let rawSeedMarkdown = $state<string | null>(null);
-
-	function handleRawContentUpdate(markdown: string) {
-		clearTimeout(contentDebounceTimer);
-		editorStore.setDirty(true);
-		rawPendingMarkdown = markdown;
-		contentDebounceTimer = setTimeout(() => {
+	// The raw-markdown content saver (TASK-2029, extracted from this page).
+	// Owns the 1.2s debounce, the "pending markdown" dirty tracker (was
+	// `rawPendingMarkdown`), and flush-now for the keepalive-on-unload
+	// (BUG-2024) + rich↔raw toggle-drain paths. `saver.pending` is tracked
+	// alongside contentDebounceTimer so toggling out of raw mode (via
+	// flushRawIfPending below) can synchronously land the pending edit
+	// BEFORE the collab provider mints — otherwise the debounced PATCH
+	// fires after the provider is up, gets routed through the applier path,
+	// and races peer state. Per Codex review round 5. The PATCH + all
+	// reactive bookkeeping stays here as the injected `save`.
+	const rawContentSaver = createContentSaver({
+		debounceMs: 1200,
+		save: (markdown, { keepalive }) => {
 			if (!item) return;
-			saveStatus = 'saving';
-			editorStore.setLastSaveTime(Date.now());
 			// Capture the item id this PATCH was scoped to so a
 			// late-arriving response after navigation to a new item
-			// can't apply the old item's snapshot to the new
-			// page state (cross-item bleed). Per Codex review round
-			// 11.
+			// can't apply the old item's snapshot to the new page
+			// state (cross-item bleed). Per Codex review round 11.
 			const reqItemId = item.id;
+			if (keepalive) {
+				// BUG-2024 keepalive-on-unload path. Fire an immediate
+				// keepalive PATCH so the edit survives page teardown
+				// (keepalive holds the request open past unload). If the
+				// user cancels the navigation ("Stay"), clear the dirty
+				// state once it lands so a later unload doesn't re-prompt
+				// / re-PATCH already-saved content.
+				return api.items
+					.update(wsSlug, reqItemId, { content: markdown }, { keepalive: true })
+					.then(() => {
+						if (item && item.id === reqItemId && rawContentSaver.pending === markdown) {
+							rawContentSaver.clearPending();
+							editorStore.setDirty(false);
+						}
+					})
+					.catch(() => {});
+			}
+			// Debounced raw save.
+			saveStatus = 'saving';
+			editorStore.setLastSaveTime(Date.now());
 			// Raw mode: content is already in storage format (with [[wiki links]])
 			const toSave = markdown;
-			api.items.update(wsSlug, reqItemId, { content: toSave }).then((updated) => {
+			return api.items.update(wsSlug, reqItemId, { content: toSave }).then((updated) => {
 				if (!item || item.id !== reqItemId) return;
 				editorStore.setLastSaveTime(Date.now());
 				// Raw saves change items.content via a path the
@@ -2028,9 +2022,9 @@
 				// mirror would reset the textarea mid-keystroke and
 				// drop the queued edit. Mirrors the Round 8 fix in
 				// flushRawIfPending. Per Codex review round 9.
-				if (rawPendingMarkdown === toSave) {
+				if (rawContentSaver.pending === toSave) {
 					item = withInflightTags(updated);
-					rawPendingMarkdown = null;
+					rawContentSaver.clearPending();
 					editorStore.setDirty(false);
 					showSaved();
 				} else {
@@ -2044,7 +2038,26 @@
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
 			});
-		}, 1200);
+		},
+	});
+
+	// One-shot seed for the raw editor when toggling from rich+collab.
+	// items.content stays stale under collab (handleContentUpdate is
+	// suppressed when the provider is active); without this seed,
+	// RawMarkdownEditor would mount with the pre-collab markdown and
+	// any subsequent save would silently lose the live Y.Doc state.
+	// Reset to null on rich-mode toggle and on item swap. Per Codex
+	// review round 9.
+	let rawSeedMarkdown = $state<string | null>(null);
+
+	function handleRawContentUpdate(markdown: string) {
+		// Cancel any pending LEGACY (non-collab rich) debounce so it can't
+		// fire a stale save over this raw edit — preserves the shared-timer
+		// non-trample the two paths had before TASK-2029 split the raw
+		// debounce into the saver.
+		clearTimeout(contentDebounceTimer);
+		editorStore.setDirty(true);
+		rawContentSaver.queue(markdown);
 	}
 
 	// True while flushRawIfPending is awaiting a PATCH response.
@@ -2053,21 +2066,21 @@
 	let rawFlushInFlight = false;
 
 	// Cap on flushRawIfPending's drain loop. If the user is typing
-	// fast enough to keep rawPendingMarkdown non-null across this
-	// many PATCH round-trips, return false and force them to click
+	// fast enough to keep the saver's pending markdown non-null across
+	// this many PATCH round-trips, return false and force them to click
 	// again — better than spinning indefinitely.
 	const RAW_FLUSH_DRAIN_CAP = 5;
 
 	// flushRawIfPending drains every queued raw edit SYNCHRONOUSLY
 	// (one PATCH per drained snapshot, awaited) and returns true
-	// only when rawPendingMarkdown is null on exit. Callers are
-	// expected to gate state transitions (e.g. enabling collab) on
-	// the return value — a stale rawPendingMarkdown left over from
-	// a fast typist or a failed PATCH would otherwise re-introduce
-	// the "collab active with unsaved raw edit" race the guard is
-	// meant to prevent. Per Codex review round 7.
+	// only when the saver's pending markdown is null on exit. Callers
+	// are expected to gate state transitions (e.g. enabling collab) on
+	// the return value — a stale pending edit left over from a fast
+	// typist or a failed PATCH would otherwise re-introduce the
+	// "collab active with unsaved raw edit" race the guard is meant to
+	// prevent. Per Codex review round 7.
 	async function flushRawIfPending(): Promise<boolean> {
-		if (!item) return rawPendingMarkdown === null;
+		if (!item) return rawContentSaver.pending === null;
 
 		// Re-entrancy: another flush is already running. Wait for
 		// it to settle, then re-evaluate from scratch.
@@ -2075,10 +2088,10 @@
 			while (rawFlushInFlight) {
 				await new Promise((r) => setTimeout(r, 50));
 			}
-			return rawPendingMarkdown === null;
+			return rawContentSaver.pending === null;
 		}
 
-		if (rawPendingMarkdown === null) return true;
+		if (rawContentSaver.pending === null) return true;
 
 		rawFlushInFlight = true;
 		// Capture the item id once for the entire drain. If the user
@@ -2089,10 +2102,9 @@
 		let lastError = false;
 		try {
 			for (let i = 0; i < RAW_FLUSH_DRAIN_CAP; i++) {
-				const markdown: string | null = rawPendingMarkdown;
+				const markdown: string | null = rawContentSaver.pending;
 				if (markdown === null) break;
-				clearTimeout(contentDebounceTimer);
-				contentDebounceTimer = undefined;
+				rawContentSaver.cancel();
 				try {
 					saveStatus = 'saving';
 					editorStore.setLastSaveTime(Date.now());
@@ -2117,9 +2129,9 @@
 					// stale snapshot here would reset the textarea
 					// from under the user's keystrokes and lose the
 					// queued edit. Per Codex review round 8.
-					if (rawPendingMarkdown === markdown) {
+					if (rawContentSaver.pending === markdown) {
 						item = withInflightTags(updated);
-						rawPendingMarkdown = null;
+						rawContentSaver.clearPending();
 					} else {
 						// Newer edit pending — keep our local
 						// content but adopt server-side metadata
@@ -2133,7 +2145,7 @@
 					break;
 				}
 			}
-			if (!lastError && rawPendingMarkdown === null) {
+			if (!lastError && rawContentSaver.pending === null) {
 				editorStore.setDirty(false);
 				showSaved();
 				return true;
