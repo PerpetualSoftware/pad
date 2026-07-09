@@ -546,6 +546,7 @@
 			if (coll === 'plans') {
 				try {
 					const progress = await api.items.plansProgress(ws);
+					if (seq !== loadSeq) return;
 					const map: Record<string, { total: number; done: number; label?: string }> = {};
 					for (const p of progress) {
 						map[p.item_id] = { total: p.total, done: p.done };
@@ -572,6 +573,7 @@
 						api.items.collectionChildProgress(ws, coll, { includeArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
 						api.items.collectionCheckboxProgress(ws, coll, { includeArchived }).catch(() => [] as {item_id: string; total: number; done: number}[]),
 					]);
+					if (seq !== loadSeq) return;
 
 					const checkboxMap: Record<string, { total: number; done: number }> = {};
 					for (const p of checkboxRows) {
@@ -604,6 +606,10 @@
 			// fetch; now plans flow into the local store and the
 			// derived map below picks them up as they hydrate.)
 
+			// A newer load may have started during the progress awaits —
+			// don't apply this (stale) collection's view/sort/filter state
+			// over the current route's (Codex round 4).
+			if (seq !== loadSeq) return;
 			// Set view mode: URL param > localStorage > collection default
 			const settings = parseSettings(collData);
 			const defaultMode = (['board', 'list', 'table'].includes(settings.default_view))
