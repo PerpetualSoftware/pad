@@ -155,6 +155,15 @@
 		box-shadow: var(--modal-shadow, 0 20px 60px rgba(0, 0, 0, 0.5));
 	}
 
+	/* The dialog is always mounted (visibility driven by showModal()/close()).
+	   Our `display: flex` above ties the UA `dialog:not([open]) { display: none }`
+	   rule on specificity and would win by source order, leaving a CLOSED dialog
+	   rendered as an empty bordered/shadowed box that can intercept clicks. This
+	   higher-specificity rule restores the hidden-when-closed behavior. */
+	dialog.modal:not([open]) {
+		display: none;
+	}
+
 	/* Sit near the top (the dominant idiom across the app's modals) rather than
 	   dead-center. margin-inline stays `auto` from the rule above, so horizontal
 	   centering is preserved. */
