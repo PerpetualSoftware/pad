@@ -32,6 +32,7 @@
 	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import ContentSkeleton from '$lib/components/common/ContentSkeleton.svelte';
 	import ContentError from '$lib/components/common/ContentError.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
@@ -226,21 +227,9 @@
 	// notifies us and the badge hides.
 	let backlinksCount = $state(0);
 
-	// ── Viewport detection ───────────────────────────────────────────────
-	// Drives BottomSheet vs popover branching for mobile-only surfaces on
-	// this page (currently the "Move to…" menu). Matches the reference
-	// pattern from QuickActionsMenu / EmojiPickerButton / ReactionPicker.
-	let isMobile = $state(false);
-	$effect(() => {
-		if (typeof window === 'undefined') return;
-		const mq = window.matchMedia('(max-width: 639.98px)');
-		isMobile = mq.matches;
-		const onChange = (e: MediaQueryListEvent) => {
-			isMobile = e.matches;
-		};
-		mq.addEventListener('change', onChange);
-		return () => mq.removeEventListener('change', onChange);
-	});
+	// Drives BottomSheet vs popover branching for mobile-only surfaces on this
+	// page (currently the "Move to…" menu) via the shared breakpoint store
+	// (TASK-2028).
 
 	async function handleCopyRef() {
 		const ref = formatItemRef(item!);
@@ -2742,7 +2731,7 @@
 							</button>
 						{/each}
 					{/snippet}
-					{#if isMobile && showMoveMenu}
+					{#if viewport.isMobile && showMoveMenu}
 						<!--
 							Gate the mobile sheet on `showMoveMenu` so BottomSheet (and
 							its global keydown listener) isn't mounted when the menu is

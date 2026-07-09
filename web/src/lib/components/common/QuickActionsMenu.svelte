@@ -4,6 +4,7 @@
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
 
 	interface Props {
@@ -43,20 +44,8 @@
 
 	let filtered = $derived(actions.filter((a) => a.scope === scope));
 
-	// ── Viewport detection ────────────────────────────────────────────────
-	// Track mobile viewport so we can swap the absolute-positioned popover
-	// for a BottomSheet that never clips off-screen.
-	let isMobile = $state(false);
-	$effect(() => {
-		if (typeof window === 'undefined') return;
-		const mq = window.matchMedia('(max-width: 639.98px)');
-		isMobile = mq.matches;
-		const onChange = (e: MediaQueryListEvent) => {
-			isMobile = e.matches;
-		};
-		mq.addEventListener('change', onChange);
-		return () => mq.removeEventListener('change', onChange);
-	});
+	// Mobile viewport swaps the absolute-positioned popover for a BottomSheet
+	// that never clips off-screen. Uses the shared breakpoint store (TASK-2028).
 
 	function resolvePrompt(action: QuickAction): string {
 		let prompt = action.prompt;
@@ -173,7 +162,7 @@
 		const nextOpen = !open;
 		// Only compute alignment when opening on desktop; the mobile branch
 		// renders a BottomSheet which doesn't need trigger-relative positioning.
-		if (nextOpen && !isMobile && triggerEl) {
+		if (nextOpen && !viewport.isMobile && triggerEl) {
 			const rect = triggerEl.getBoundingClientRect();
 			// If the trigger is too close to the left edge, the default
 			// right-anchored 200px dropdown would clip — switch to left-anchored.
@@ -190,7 +179,7 @@
 	function handleWindowClick(e: MouseEvent) {
 		// On mobile the BottomSheet owns dismissal (backdrop tap, Escape,
 		// swipe-down) — skip the outside-click handler so it doesn't race.
-		if (isMobile) return;
+		if (viewport.isMobile) return;
 		const target = e.target as HTMLElement;
 		if (!target) return;
 		// The EmojiPickerButton portals its dropdown to document.body (or the
@@ -287,7 +276,7 @@
 			&#9889;
 		</button>
 
-		{#if isMobile}
+		{#if viewport.isMobile}
 			<BottomSheet {open} onclose={handleBottomSheetClose} title="Quick actions">
 				{@render actionList()}
 			</BottomSheet>

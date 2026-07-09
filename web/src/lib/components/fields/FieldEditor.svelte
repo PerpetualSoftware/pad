@@ -17,6 +17,7 @@ handlers — onchange is never called.
 <script lang="ts">
 	import type { FieldDef } from '$lib/types';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 
 	interface Props {
 		field: FieldDef;
@@ -29,23 +30,15 @@ handlers — onchange is never called.
 
 	// ── Viewport detection ───────────────────────────────────────────────
 	// On mobile the absolute-positioned select dropdown can clip at the
-	// edge of the properties panel; swap it for a BottomSheet of options.
-	// Desktop keeps the inline dropdown with keyboard nav unchanged.
-	let isMobile = $state(false);
+	// edge of the properties panel; swap it for a BottomSheet of options
+	// (gated on `viewport.isMobile`, TASK-2028). Desktop keeps the inline
+	// dropdown with keyboard nav unchanged.
+	//
+	// If the viewport crosses above mobile while the sheet is open (e.g.
+	// rotation), close it so it doesn't spring back on return. Reads the shared
+	// breakpoint flag; writes only `dropdownOpen`, so no self-invalidation.
 	$effect(() => {
-		if (typeof window === 'undefined') return;
-		const mq = window.matchMedia('(max-width: 639.98px)');
-		isMobile = mq.matches;
-		const onChange = (e: MediaQueryListEvent) => {
-			isMobile = e.matches;
-			// If the viewport crosses above mobile while the sheet is open
-			// (e.g. rotation), close it so it doesn't spring back on return.
-			if (!e.matches) {
-				dropdownOpen = false;
-			}
-		};
-		mq.addEventListener('change', onChange);
-		return () => mq.removeEventListener('change', onChange);
+		if (!viewport.isMobile) dropdownOpen = false;
 	});
 
 	// ── Date input state ──────────────────────────────────────────────────
@@ -135,7 +128,7 @@ handlers — onchange is never called.
 	function handleWindowClick(e: MouseEvent) {
 		// On mobile the BottomSheet owns dismissal (backdrop tap + Escape +
 		// close button) — skip this handler so it doesn't race the sheet.
-		if (isMobile) return;
+		if (viewport.isMobile) return;
 		if (
 			dropdownOpen &&
 			triggerEl &&
@@ -402,7 +395,7 @@ handlers — onchange is never called.
 			</svg>
 		</button>
 
-		{#if isMobile && dropdownOpen}
+		{#if viewport.isMobile && dropdownOpen}
 			<!--
 				Mobile: full-width BottomSheet of options, titled with the
 				field label (e.g. "Set status"). Gated on `dropdownOpen`

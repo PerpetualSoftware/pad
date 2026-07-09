@@ -1,5 +1,6 @@
 <script lang="ts">
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 
 	interface Props {
 		onSelect: (emoji: string) => void;
@@ -12,21 +13,9 @@
 	let open = $state(false);
 	let pickerEl: HTMLDivElement | undefined = $state();
 
-	// ── Viewport detection ───────────────────────────────────────────────
-	// Track mobile viewport so we can swap the absolute-positioned popover
-	// for a BottomSheet that never clips off-screen at the edge of narrow
-	// comment cards. Mirrors the QuickActionsMenu reference pattern.
-	let isMobile = $state(false);
-	$effect(() => {
-		if (typeof window === 'undefined') return;
-		const mq = window.matchMedia('(max-width: 639.98px)');
-		isMobile = mq.matches;
-		const onChange = (e: MediaQueryListEvent) => {
-			isMobile = e.matches;
-		};
-		mq.addEventListener('change', onChange);
-		return () => mq.removeEventListener('change', onChange);
-	});
+	// Mobile viewport swaps the absolute-positioned popover for a BottomSheet
+	// that never clips off-screen at the edge of narrow comment cards. Uses the
+	// shared breakpoint store (TASK-2028).
 
 	function toggle() {
 		open = !open;
@@ -46,7 +35,7 @@
 	$effect(() => {
 		// On mobile the BottomSheet owns dismissal (backdrop tap + Escape +
 		// close button) — skip the outside-click listener so it doesn't race.
-		if (open && !isMobile) {
+		if (open && !viewport.isMobile) {
 			document.addEventListener('click', handleClickOutside, true);
 			return () => {
 				document.removeEventListener('click', handleClickOutside, true);
@@ -80,7 +69,7 @@
 		<span class="plus">+</span>
 	</button>
 
-	{#if isMobile && open}
+	{#if viewport.isMobile && open}
 		<!--
 			Gate the mobile sheet on `open` so the component (and its global
 			`<svelte:window onkeydown>` listener inside BottomSheet) isn't

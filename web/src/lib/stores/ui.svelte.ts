@@ -1,9 +1,9 @@
 import { browser } from '$app/environment';
+import { viewport, MOBILE_MEDIA_QUERY } from '$lib/stores/breakpoint.svelte';
 
-let sidebarOpen = $state(browser ? window.innerWidth > 768 : true);
+let sidebarOpen = $state(browser ? !viewport.isMobile : true);
 let topbarOpen = $state(browser ? localStorage.getItem('pad-topbar') !== 'closed' : true);
 let searchOpen = $state(false);
-let isMobile = $state(browser ? window.innerWidth <= 768 : false);
 let isTouch = $state(browser ? 'ontouchstart' in window : false);
 // True while the on-screen keyboard is up. Detected from the geometry of the
 // keyboard itself — visualViewport.height shrinking below the tallest height
@@ -13,7 +13,7 @@ let isTouch = $state(browser ? 'ontouchstart' in window : false);
 // viewport, leaving the delta ~0. Consumers (e.g. BottomNav) hide fixed bottom
 // chrome so it doesn't sit stranded above the keyboard. PLAN-1694.
 let keyboardVisible = $state(false);
-let detailPanelOpen = $state(browser ? localStorage.getItem('pad-detail-panel') !== 'closed' && window.innerWidth > 768 : false);
+let detailPanelOpen = $state(browser ? localStorage.getItem('pad-detail-panel') !== 'closed' && !viewport.isMobile : false);
 let createWorkspaceOpen = $state(false);
 let quickAddRequested = $state(false);
 let quickAddTargetSlug = $state<string | null>(null);
@@ -26,16 +26,17 @@ let collectionSearchHandler = $state<(() => void) | null>(null);
 let connectAfterNavigateSlug = $state<string | null>(null);
 
 if (browser) {
-	window.addEventListener('resize', () => {
-		const mobile = window.innerWidth <= 768;
-		if (mobile !== isMobile) {
-			isMobile = mobile;
-			if (mobile) {
-				sidebarOpen = false;
-				detailPanelOpen = false;
-			} else {
-				sidebarOpen = true;
-			}
+	// `isMobile` itself is owned by the shared breakpoint store (one app-wide
+	// listener). Here we only run the layout side effects that must fire when
+	// the viewport crosses the mobile breakpoint: collapse the sidebar/detail
+	// panel entering mobile, restore the sidebar leaving it. `change` fires only
+	// on a crossing, so no manual before/after comparison is needed.
+	window.matchMedia(MOBILE_MEDIA_QUERY).addEventListener('change', (e) => {
+		if (e.matches) {
+			sidebarOpen = false;
+			detailPanelOpen = false;
+		} else {
+			sidebarOpen = true;
 		}
 	});
 
@@ -68,7 +69,7 @@ export const uiStore = {
 	get sidebarOpen() { return sidebarOpen; },
 	get topbarOpen() { return topbarOpen; },
 	get searchOpen() { return searchOpen; },
-	get isMobile() { return isMobile; },
+	get isMobile() { return viewport.isMobile; },
 	get isTouch() { return isTouch; },
 	get keyboardVisible() { return keyboardVisible; },
 	get detailPanelOpen() { return detailPanelOpen; },
@@ -142,6 +143,6 @@ export const uiStore = {
 
 	/** Close sidebar on mobile after navigation */
 	onNavigate() {
-		if (isMobile) sidebarOpen = false;
+		if (viewport.isMobile) sidebarOpen = false;
 	},
 };

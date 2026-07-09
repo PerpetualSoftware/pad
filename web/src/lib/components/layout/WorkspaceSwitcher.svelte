@@ -5,17 +5,18 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 	import type { DeletedWorkspace } from '$lib/types';
 
 	interface Props {
 		/**
-		 * Force the mobile (BottomSheet) branch regardless of the internal
-		 * viewport detection. Use this when an ancestor component already
-		 * owns the mobile/desktop decision (e.g. TopBar branches on
-		 * `uiStore.isMobile` at ≤768px but this component's own breakpoint
-		 * is ≤639.98px — without the override, 640–768px would show the
-		 * desktop dropdown inside a mobile layout).
+		 * Force the mobile (BottomSheet) branch regardless of the shared
+		 * viewport flag. Callers that live only inside mobile chrome (TopBar's
+		 * mobile slot, MobileContextBar) pass `mobile={true}` so the switcher
+		 * always renders as a sheet there. Left unset elsewhere, the switcher
+		 * follows the shared breakpoint (now unified with the app chrome at
+		 * ≤768px — TASK-2028).
 		 */
 		mobile?: boolean;
 	}
@@ -24,39 +25,18 @@
 
 	let open = $state(false);
 
-	// ── Viewport detection ───────────────────────────────────────────────
-	// Track mobile viewport so we can swap the absolute-positioned dropdown
-	// for a full-width BottomSheet that reads better when workspace names
-	// are long or the list is deep. Skipped when the caller passes an
-	// explicit `mobile` prop.
-	let detectedMobile = $state(false);
-	$effect(() => {
-		if (mobile !== undefined) return;
-		if (typeof window === 'undefined') return;
-		const mq = window.matchMedia('(max-width: 639.98px)');
-		detectedMobile = mq.matches;
-		const onChange = (e: MediaQueryListEvent) => {
-			detectedMobile = e.matches;
-			// Close the sheet if the viewport crosses above mobile while it's
-			// open (e.g. rotation) so returning to mobile doesn't reopen it.
-			if (!e.matches) {
-				open = false;
-			}
-		};
-		mq.addEventListener('change', onChange);
-		return () => mq.removeEventListener('change', onChange);
-	});
+	// On mobile the absolute-positioned dropdown is swapped for a full-width
+	// BottomSheet that reads better when workspace names are long or the list is
+	// deep. Follows the shared breakpoint store unless the caller forces the
+	// branch via the `mobile` prop.
+	let isMobile = $derived(mobile ?? viewport.isMobile);
 
-	// Also close the sheet if an ancestor-driven `mobile` prop flips off
-	// while the sheet is open — same rotation-reopen guard as the internal
-	// detection path.
+	// Close the sheet if the viewport (or an ancestor-driven `mobile` prop)
+	// crosses above mobile while it's open (e.g. rotation) so returning to
+	// mobile doesn't reopen it. Reads `isMobile`; writes only `open`.
 	$effect(() => {
-		if (mobile === false) {
-			open = false;
-		}
+		if (!isMobile) open = false;
 	});
-
-	let isMobile = $derived(mobile ?? detectedMobile);
 
 	function select(ws: { slug: string; owner_username?: string }) {
 		open = false;
