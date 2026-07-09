@@ -10,6 +10,7 @@
 	import FilterBar from '$lib/components/collections/FilterBar.svelte';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import SSEStatusIndicator from '$lib/components/SSEStatusIndicator.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
@@ -1744,11 +1745,18 @@
 		<!-- Header -->
 		<div class="page-header">
 			<div class="title-row">
-				<h1>
-					{#if collection.icon}<span class="collection-icon">{collection.icon}</span>{/if}
-					{collection.name}
-					<span class="item-count">{items.length}</span>
-				</h1>
+				<div class="title-group">
+					<h1>
+						{#if collection.icon}<span class="collection-icon">{collection.icon}</span>{/if}
+						{collection.name}
+						<span class="item-count">{items.length}</span>
+					</h1>
+
+					<!-- Realtime stream status (PLAN-1984 / TASK-2027): surfaces the
+					     already-computed SSE connection state so a stale board hints
+					     when live updates are down or unauthorized. -->
+					<SSEStatusIndicator />
+				</div>
 
 				<div class="header-actions">
 					{#if isMobile}
@@ -2360,6 +2368,14 @@
 		gap: var(--space-4);
 		margin-bottom: var(--space-3);
 		flex-wrap: wrap;
+	}
+
+	.title-group {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		flex-wrap: wrap;
+		min-width: 0;
 	}
 
 	h1 {
