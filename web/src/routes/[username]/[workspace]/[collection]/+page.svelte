@@ -554,6 +554,9 @@
 					itemProgress = map;
 					progressLabel = 'tasks';
 				} catch {
+					// Don't clear a newer load's progress badges if this
+					// stale load's progress fetch rejected (Codex round 5).
+					if (seq !== loadSeq) return;
 					itemProgress = {};
 				}
 			} else {
@@ -597,6 +600,9 @@
 					itemProgress = map;
 					progressLabel = 'done';
 				} catch {
+					// Don't clear a newer load's progress badges if this
+					// stale load's progress fetch rejected (Codex round 5).
+					if (seq !== loadSeq) return;
 					itemProgress = {};
 				}
 			}
