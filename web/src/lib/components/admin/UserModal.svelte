@@ -15,9 +15,8 @@
   PLAN-1542 / TASK-1550.
 -->
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { tick } from 'svelte';
 	import type { AdminUser } from '$lib/stores/admin.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
 	import UserSettingsForm from './UserSettingsForm.svelte';
 	import UserWorkspacesTab from './UserWorkspacesTab.svelte';
 	import UserOverviewTab from './UserOverviewTab.svelte';
@@ -43,11 +42,6 @@
 	// initialTab prop only captures the initial value via $effect (not
 	// at first render, which would lock it).
 	let activeTab = $state<UserModalTab>('overview');
-
-	// Element refs for focus management.
-	let modalEl = $state<HTMLDivElement | null>(null);
-	let closeBtnEl = $state<HTMLButtonElement | null>(null);
-	let previousFocus: HTMLElement | null = null;
 
 	const TABS: { key: UserModalTab; label: string }[] = [
 		{ key: 'overview', label: 'Overview' },
@@ -84,64 +78,23 @@
 		writeHashTab(t);
 	}
 
-	// Open transition tracker — Svelte 5 $effect re-runs on any read
-	// dependency change. We only want to capture previousFocus / hydrate
-	// the tab on the open=false → true transition, not whenever
-	// initialTab or any other reactive value changes mid-open (Codex
-	// review on PR #605).
+	// Open transition tracker — hydrate the active tab on the open=false → true
+	// transition only, not whenever initialTab or any other reactive value
+	// changes mid-open (Codex review on PR #605). Focus save/restore, Escape,
+	// and the Tab focus-trap are now handled by the native <dialog> in <Modal>.
+	// `wasOpen` is a plain let (not $state) — edge-detection only — and this
+	// effect writes `activeTab` without reading it, so it can't self-invalidate
+	// (CONVE-1688).
 	let wasOpen = false;
 	$effect(() => {
 		if (open && !wasOpen) {
-			previousFocus = (document.activeElement as HTMLElement) ?? null;
 			const fromHash = parseHashTab();
 			activeTab = fromHash ?? initialTab ?? 'overview';
-			tick().then(() => closeBtnEl?.focus());
 			wasOpen = true;
 		} else if (!open && wasOpen) {
-			if (previousFocus && document.contains(previousFocus)) {
-				previousFocus.focus();
-			}
-			previousFocus = null;
 			wasOpen = false;
 		}
 	});
-
-	// Keyboard handling — ESC closes; Tab is trapped within the modal so
-	// focus can't escape into the table behind it.
-	function handleKeydown(e: KeyboardEvent) {
-		if (!open) return;
-		if (e.key === 'Escape') {
-			e.preventDefault();
-			closeModal();
-			return;
-		}
-		if (e.key === 'Tab' && modalEl) {
-			// Filter out elements inside hidden tabpanels — otherwise the
-			// modal's three off-screen panels (tabindex=0) make `last`
-			// point at the wrong element and Tab can escape the trap on
-			// non-Settings tabs (Codex review on PR #605).
-			const all = modalEl.querySelectorAll<HTMLElement>(
-				'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-			);
-			const focusables: HTMLElement[] = [];
-			for (const el of all) {
-				if (el.closest('[hidden]')) continue;
-				if (el.offsetParent === null && el !== modalEl) continue;
-				focusables.push(el);
-			}
-			if (focusables.length === 0) return;
-			const first = focusables[0];
-			const last = focusables[focusables.length - 1];
-			const active = document.activeElement as HTMLElement | null;
-			if (e.shiftKey && active === first) {
-				e.preventDefault();
-				last.focus();
-			} else if (!e.shiftKey && active === last) {
-				e.preventDefault();
-				first.focus();
-			}
-		}
-	}
 
 	function closeModal() {
 		open = false;
@@ -161,32 +114,26 @@
 		}
 	});
 
-	onMount(() => {});
-	onDestroy(() => {});
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
-{#if open && user}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="user-modal-backdrop" onclick={closeModal}>
-		<div
-			class="user-modal"
-			bind:this={modalEl}
-			role="dialog"
-			tabindex="-1"
-			aria-modal="true"
-			aria-labelledby="user-modal-title"
-			onclick={(e) => e.stopPropagation()}
-		>
+<Modal
+	open={open && !!user}
+	onclose={closeModal}
+	labelledby="user-modal-title"
+	placement="center"
+	maxWidth="720px"
+	--modal-bg="var(--bg-primary)"
+	--modal-radius="var(--radius)"
+	--modal-shadow="0 8px 32px rgba(0, 0, 0, 0.4)"
+>
+	{#if user}
+		<div class="user-modal">
 			<header class="user-modal-header">
 				<h2 id="user-modal-title">
 					{user.name || user.username || user.email}
 					{#if user.disabled_at}<span class="badge disabled">disabled</span>{/if}
 				</h2>
 				<button
-					bind:this={closeBtnEl}
 					type="button"
 					class="user-modal-close"
 					aria-label="Close"
@@ -239,35 +186,18 @@
 				</div>
 			</div>
 		</div>
-	</div>
-{/if}
+	{/if}
+</Modal>
 
 <style>
-	.user-modal-backdrop {
-		position: fixed;
-		inset: 0;
-		background: color-mix(in srgb, #000 50%, transparent);
-		z-index: 1000;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: var(--space-4, 16px);
-	}
-
-	/* Modal width is a CSS variable so the Workspaces tab (T1552) can
-	   widen to 960px once it has real per-workspace data without forking
-	   the layout for every tab. */
+	/* Fills the <Modal> dialog box (which owns the surface chrome / max-height).
+	   Kept as a flex column so the header/tabs pin and the body scrolls. */
 	.user-modal {
-		--user-modal-width: 720px;
 		width: 100%;
-		max-width: var(--user-modal-width);
-		max-height: 90vh;
+		flex: 1;
+		min-height: 0;
 		display: flex;
 		flex-direction: column;
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
 	}
 
 	.user-modal-header {

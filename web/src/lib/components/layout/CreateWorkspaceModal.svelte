@@ -6,6 +6,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { Workspace, WorkspaceTemplate } from '$lib/types';
 	import { groupTemplatesByCategory } from '$lib/utils/templates';
+	import Modal from '$lib/components/common/Modal.svelte';
 
 	interface Props {
 		/**
@@ -198,15 +199,17 @@
 	}
 </script>
 
-{#if uiStore.createWorkspaceOpen}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="modal-backdrop" onclick={close}></div>
-	<div class="modal" role="dialog">
-		<div class="modal-header">
-			<h2>New Workspace</h2>
-			<button class="modal-close" onclick={close}>✕</button>
-		</div>
+<Modal
+	open={uiStore.createWorkspaceOpen}
+	onclose={close}
+	labelledby="create-workspace-title"
+	placement="center"
+	maxWidth="480px"
+>
+	<div class="modal-header">
+		<h2 id="create-workspace-title">New Workspace</h2>
+		<button class="modal-close" onclick={close}>✕</button>
+	</div>
 
 		<div class="modal-tabs">
 			<button class="tab" class:active={mode === 'create'} onclick={() => mode = 'create'}>Create</button>
@@ -362,38 +365,9 @@
 				</button>
 			{/if}
 		</div>
-	</div>
-{/if}
+</Modal>
 
 <style>
-	.modal-backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		z-index: 200;
-	}
-	.modal {
-		position: fixed;
-		top: 50%;
-		left: 50%;
-		transform: translate(-50%, -50%);
-		width: 90%;
-		max-width: 480px;
-		max-height: 85vh;
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
-		z-index: 201;
-		display: flex;
-		flex-direction: column;
-		overflow: hidden;
-		animation: modal-in 0.15s ease-out;
-	}
-	@keyframes modal-in {
-		from { opacity: 0; transform: translate(-50%, -48%); }
-		to { opacity: 1; transform: translate(-50%, -50%); }
-	}
 	.modal-header {
 		display: flex;
 		align-items: center;

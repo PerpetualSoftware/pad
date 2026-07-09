@@ -714,12 +714,15 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 	.overlay,
 	.palette,
 	.modal,
-	.modal-backdrop {
+	.modal-backdrop,
+	dialog[open] {
 		display: none !important;
 	}
 
 	/* Modals / dialogs / tooltips. Most KeyboardShortcuts-style overlays
-	   carry role="dialog" on the backdrop. */
+	   carry role="dialog" on the backdrop. The shared Modal primitive uses a
+	   native <dialog> (implicit dialog role, no literal role attribute), so it
+	   is covered by the `dialog[open]` selector above. */
 	[role="dialog"],
 	[role="tooltip"],
 	[role="menu"] {

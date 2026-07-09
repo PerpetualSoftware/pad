@@ -3,6 +3,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { defaultInstallTab, type InstallTab } from '$lib/utils/platform';
 	import { api, PadApiError } from '$lib/api/client';
+	import Modal from '$lib/components/common/Modal.svelte';
 	import type { ClaimCodeResponse } from '$lib/types';
 
 	interface Props {
@@ -297,12 +298,6 @@
 		toastStore.show(success ? label : 'Failed to copy', success ? 'success' : 'error');
 	}
 
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape' && open) {
-			open = false;
-		}
-	}
-
 	// --- Display helpers -----------------------------------------------------
 
 	let title = $derived(
@@ -325,19 +320,13 @@
 	const CONNECTED_APPS_HREF = '/console/connected-apps';
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<Modal open={open} onclose={() => (open = false)} labelledby="connect-ws-title" maxWidth="560px">
+	<div class="modal-header">
+		<h2 id="connect-ws-title">{title}</h2>
+		<button class="close-btn" type="button" onclick={() => (open = false)}>&#10005;</button>
+	</div>
 
-{#if open}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="overlay" onclick={() => (open = false)}>
-		<div class="modal" onclick={(e) => e.stopPropagation()}>
-			<div class="modal-header">
-				<h2>{title}</h2>
-				<button class="close-btn" type="button" onclick={() => (open = false)}>&#10005;</button>
-			</div>
-
-			<div class="modal-body">
+	<div class="modal-body">
 				<!-- Primary tab strip -->
 				<div class="primary-tabs" role="tablist">
 					{#each visibleTabs as tab (tab.id)}
@@ -719,36 +708,10 @@
 						<a href={CONNECTED_APPS_HREF}>Connected agents &rarr;</a>
 					{/if}
 				</div>
-			</div>
-		</div>
 	</div>
-{/if}
+</Modal>
 
 <style>
-	.overlay {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		z-index: 50;
-		display: flex;
-		justify-content: center;
-		align-items: flex-start;
-		padding-top: 10vh;
-	}
-
-	.modal {
-		width: 100%;
-		max-width: 560px;
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-		overflow: hidden;
-		max-height: 85vh;
-		display: flex;
-		flex-direction: column;
-	}
-
 	.modal-header {
 		display: flex;
 		align-items: center;

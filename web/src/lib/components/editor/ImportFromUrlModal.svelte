@@ -3,6 +3,7 @@
 	import { marked } from 'marked';
 	import { api, type ImportURLResponse } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
 
 	// Context the modal observes about the editor at the moment of
 	// insert. `wasEmpty` mirrors editor.isEmpty BEFORE we splice in
@@ -47,12 +48,6 @@
 			requestGen += 1;
 		}
 	});
-
-	function handleKeydown(e: KeyboardEvent) {
-		if (open && e.key === 'Escape') {
-			open = false;
-		}
-	}
 
 	async function handleFetch() {
 		errorMessage = '';
@@ -123,19 +118,22 @@
 	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<Modal
+	open={open}
+	onclose={handleCancel}
+	labelledby="import-url-title"
+	placement="center"
+	maxWidth="720px"
+	--modal-bg="var(--bg-primary)"
+	--modal-radius="var(--radius)"
+	--modal-shadow="0 16px 48px rgba(0, 0, 0, 0.4)"
+>
+	<div class="modal-header">
+		<h2 id="import-url-title">Insert from URL</h2>
+		<button class="close-btn" type="button" onclick={handleCancel}>&#10005;</button>
+	</div>
 
-{#if open}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="overlay" onclick={handleCancel}>
-		<div class="modal" onclick={(e) => e.stopPropagation()}>
-			<div class="modal-header">
-				<h2>Insert from URL</h2>
-				<button class="close-btn" type="button" onclick={handleCancel}>&#10005;</button>
-			</div>
-
-			<div class="modal-body">
+	<div class="modal-body">
 				<p class="intro-copy">
 					Paste a URL. Pad fetches the page server-side and converts the readable
 					content (or OpenAPI spec) to markdown. Nothing is saved until you click
@@ -198,29 +196,9 @@
 					Insert at cursor
 				</button>
 			</div>
-		</div>
-	</div>
-{/if}
+</Modal>
 
 <style>
-	.overlay {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		z-index: 1000;
-	}
-	.modal {
-		background: var(--bg-primary);
-		border-radius: var(--radius);
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
-		width: min(720px, 95vw);
-		max-height: 90vh;
-		display: flex;
-		flex-direction: column;
-	}
 	.modal-header {
 		display: flex;
 		align-items: center;

@@ -17,6 +17,7 @@
 	import QuickActionsEditor, { type EditableQuickAction } from './QuickActionsEditor.svelte';
 	import { placeholderContext, type PreviewContext } from '$lib/utils/quick-action-preview';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
 
 	interface Props {
 		open: boolean;
@@ -395,32 +396,22 @@
 	}
 </script>
 
-<svelte:window
-	onkeydown={(e) => {
-		if (e.key === 'Escape' && open) onclose();
-	}}
-/>
-
-{#if open}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="overlay" onclick={onclose}>
-		<div class="modal" onclick={(e) => e.stopPropagation()}>
-			<div class="modal-header">
-				{#if step === 'editor'}
-					<div class="header-left">
-						<button class="back-btn" type="button" onclick={goBack} aria-label="Back to templates">
-							<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-								<path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-							</svg>
-						</button>
-						<h2>New Collection</h2>
-					</div>
-				{:else}
-					<h2>New Collection</h2>
-				{/if}
-				<button class="close-btn" type="button" onclick={onclose}>&#10005;</button>
+<Modal {open} {onclose} labelledby="create-collection-title" maxWidth="520px">
+	<div class="modal-header">
+		{#if step === 'editor'}
+			<div class="header-left">
+				<button class="back-btn" type="button" onclick={goBack} aria-label="Back to templates">
+					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+						<path d="M10 12L6 8L10 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+					</svg>
+				</button>
+				<h2 id="create-collection-title">New Collection</h2>
 			</div>
+		{:else}
+			<h2 id="create-collection-title">New Collection</h2>
+		{/if}
+		<button class="close-btn" type="button" onclick={onclose}>&#10005;</button>
+	</div>
 
 			{#if step === 'templates'}
 				<div class="modal-body">
@@ -567,51 +558,9 @@
 					</button>
 				</div>
 			{/if}
-		</div>
-	</div>
-{/if}
+</Modal>
 
 <style>
-	.overlay {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		z-index: 50;
-		display: flex;
-		justify-content: center;
-		align-items: flex-start;
-		padding: 10vh var(--space-4) var(--space-4);
-		animation: overlay-in 140ms ease-out;
-	}
-
-	.modal {
-		width: 100%;
-		max-width: 520px;
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-		overflow: hidden;
-		max-height: 80vh;
-		overflow-y: auto;
-		animation: modal-in 160ms ease-out;
-	}
-
-	@keyframes overlay-in {
-		from { opacity: 0; }
-		to { opacity: 1; }
-	}
-
-	@keyframes modal-in {
-		from { opacity: 0; transform: translateY(-4px) scale(0.98); }
-		to { opacity: 1; transform: translateY(0) scale(1); }
-	}
-
-	/* Honor prefers-reduced-motion */
-	@media (prefers-reduced-motion: reduce) {
-		.overlay, .modal { animation: none; }
-	}
-
 	/* -- Header ------------------------------------------------------------ */
 
 	.modal-header {
@@ -677,6 +626,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-4);
+		/* The Modal primitive is a fixed-height flex column; the body scrolls
+		   within it (header/footer stay pinned) rather than the whole modal
+		   scrolling as it did before the native-<dialog> migration. */
+		overflow-y: auto;
+		min-height: 0;
 	}
 
 	.error-banner {
@@ -975,16 +929,6 @@
 	/* ── Responsive ────────────────────────────────────────────────────────── */
 
 	@media (max-width: 640px) {
-		.overlay {
-			padding: var(--space-3);
-			align-items: stretch;
-		}
-
-		.modal {
-			max-width: 100%;
-			max-height: calc(100vh - var(--space-6));
-		}
-
 		.template-grid {
 			grid-template-columns: 1fr;
 		}
