@@ -1105,9 +1105,29 @@
 	// ~64KB body which dwarfs typical markdown items.
 	$effect(() => {
 		if (typeof window === 'undefined') return;
-		const onBeforeUnload = () => {
+		const onBeforeUnload = (event: BeforeUnloadEvent) => {
+			// Collab path: flush the live Y.Doc snapshot (unchanged).
 			const ctx = activeCollabContext;
 			if (ctx) flushCollabNow(ctx, true);
+
+			// Raw-markdown path (BUG-2024). rawPendingMarkdown holds the
+			// exact debounced-but-unsaved markdown; when non-null there
+			// is up to ~1.2s of typing the collab flush above never
+			// sees. Fire an immediate keepalive PATCH so it survives the
+			// page teardown, and set returnValue so the browser shows
+			// its native "unsaved changes" prompt. Only when actually
+			// dirty — never warn on a clean page.
+			const pendingRaw = rawPendingMarkdown;
+			if (pendingRaw !== null && item) {
+				void api.items.update(
+					wsSlug,
+					item.id,
+					{ content: pendingRaw },
+					{ keepalive: true }
+				);
+				event.preventDefault();
+				event.returnValue = '';
+			}
 		};
 		window.addEventListener('beforeunload', onBeforeUnload);
 		return () => window.removeEventListener('beforeunload', onBeforeUnload);

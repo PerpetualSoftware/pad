@@ -1039,10 +1039,18 @@ export const api = {
 		get: (ws: string, slug: string) =>
 			request<Item>(`/workspaces/${ws}/items/${slug}`),
 
-		update: (ws: string, slug: string, data: ItemUpdate) =>
+		/**
+		 * `opts.keepalive` is passed straight to fetch so the
+		 * beforeunload / unmount flush path can outlive the page
+		 * lifecycle (browser holds the request open until it completes
+		 * or hits the ~64KB body cap). Used to land pending raw-markdown
+		 * edits on tab close/reload (BUG-2024).
+		 */
+		update: (ws: string, slug: string, data: ItemUpdate, opts?: { keepalive?: boolean }) =>
 			request<Item>(`/workspaces/${ws}/items/${slug}`, {
 				method: 'PATCH',
-				body: JSON.stringify(data)
+				body: JSON.stringify(data),
+				keepalive: opts?.keepalive
 			}),
 
 		/**
