@@ -118,15 +118,29 @@ const MAX_RETRY_AFTER_MS = 5_000;
 // header, so the one automatic GET retry still spaces itself out.
 const DEFAULT_RETRY_BACKOFF_MS = 750;
 
-// Global soft cooldown (epoch ms). When a request exhausts its retry and
-// still gets a 429, we record `now + Retry-After` here. Subsequent
-// idempotent GET/HEAD requests wait out the remaining window (bounded by
-// MAX_RETRY_AFTER_MS) before firing, so INDEPENDENT call sites don't burst
-// a busy server — e.g. localIndex.bootstrap's reconcile 429s, then the
+// Global soft cooldown (epoch ms). Every observed 429 pushes this forward
+// to `now + Retry-After` (never backward — see `armRateLimitCooldown`).
+// Before firing an idempotent GET/HEAD we wait out the remaining window
+// (bounded by MAX_RETRY_AFTER_MS) so INDEPENDENT call sites don't burst a
+// busy server — e.g. localIndex.bootstrap's reconcile 429s, then the
 // collection page immediately fires a follow-up deltaSync (Codex P1 on the
-// first cut of TASK-2026). Cleared on the next successful response so a
-// recovered server stops the cooldown early. Zero = no cooldown active.
+// first cut of TASK-2026). We deliberately do NOT clear this on a
+// successful response: a success from an unrelated request that was already
+// in flight when the 429 landed is not evidence the rate limit lifted
+// (Codex round 2). The cooldown simply expires by wall-clock. Zero = no
+// cooldown active.
 let rateLimitedUntil = 0;
+
+/**
+ * Push the global rate-limit cooldown out to `now + backoffMs`, never
+ * pulling it in. Called on EVERY 429 (including the one that then triggers
+ * the single automatic retry) so a concurrent request started during the
+ * retry's own backoff sleep still sees the cooldown. TASK-2026.
+ */
+function armRateLimitCooldown(backoffMs: number): void {
+	const until = Date.now() + backoffMs;
+	if (until > rateLimitedUntil) rateLimitedUntil = until;
+}
 
 function clampRetryMs(ms: number): number {
 	if (!Number.isFinite(ms) || ms < 0) return 0;
@@ -368,12 +382,19 @@ async function request<T>(
 	// off, wait out the remaining window before firing another idempotent
 	// request so independent call sites don't hammer a busy server. The
 	// internal single-retry (`rateLimitRetried`) already slept, so it
-	// skips this. Bounded by MAX_RETRY_AFTER_MS. Non-idempotent writes are
-	// never delayed here — they don't auto-retry and shouldn't be silently
-	// stalled by an unrelated GET's cooldown.
+	// skips this. Non-idempotent writes are never delayed here — they
+	// don't auto-retry and shouldn't be silently stalled by an unrelated
+	// GET's cooldown. The loop re-reads the deadline after each nap so a
+	// cooldown EXTENDED by another 429 mid-sleep is honored (Codex round
+	// 2 P2), but the total wait is capped at MAX_RETRY_AFTER_MS so a
+	// sustained 429 storm can't stall a single request indefinitely.
 	if (isIdempotent && !rateLimitRetried) {
-		const wait = rateLimitedUntil - Date.now();
-		if (wait > 0) await sleep(Math.min(wait, MAX_RETRY_AFTER_MS));
+		const waitStart = Date.now();
+		let remaining = rateLimitedUntil - Date.now();
+		while (remaining > 0 && Date.now() - waitStart < MAX_RETRY_AFTER_MS) {
+			await sleep(Math.min(remaining, MAX_RETRY_AFTER_MS - (Date.now() - waitStart)));
+			remaining = rateLimitedUntil - Date.now();
+		}
 	}
 
 	const resp = await fetch(BASE + path, {
@@ -437,16 +458,17 @@ async function request<T>(
 		// than a generic failure.
 		const retryAfterMs = parseRetryAfterMs(resp.headers?.get('Retry-After'));
 		const backoffMs = retryAfterMs ?? DEFAULT_RETRY_BACKOFF_MS;
+		// Arm the global cooldown on EVERY 429 — including this one that we
+		// may be about to retry — so a concurrent idempotent request that
+		// started during the retry's own backoff sleep also backs off
+		// instead of immediately re-hitting the busy server (Codex round 2 P1).
+		armRateLimitCooldown(backoffMs);
 		// Only GET/HEAD auto-retry — retrying a POST/PATCH/DELETE could
 		// duplicate a write the server may have already partially applied.
 		if (isIdempotent && !rateLimitRetried) {
 			await sleep(backoffMs);
 			return request<T>(path, options, true);
 		}
-		// Retry exhausted (or non-idempotent): arm the global cooldown so
-		// other/subsequent idempotent calls back off for the same window
-		// instead of immediately re-hitting the busy server.
-		rateLimitedUntil = Date.now() + backoffMs;
 		// Prefer the server's structured error envelope if present, but
 		// force the distinct `rate_limited` code + a clear message so UI
 		// can branch on it regardless of what the proxy/server sent.
@@ -464,9 +486,6 @@ async function request<T>(
 		if (body?.error) throw new PadApiError(body.error);
 		throw new Error(`API error: ${resp.status}`);
 	}
-	// A successful response means the server is serving again — drop any
-	// active rate-limit cooldown so we don't keep delaying GETs (TASK-2026).
-	rateLimitedUntil = 0;
 	if (resp.status === 204) return undefined as T;
 	return resp.json();
 }

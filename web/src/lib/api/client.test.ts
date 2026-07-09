@@ -166,6 +166,10 @@ describe('api client 429 handling (TASK-2026)', () => {
 
 	it('arms a global cooldown so a follow-up GET waits out the last Retry-After instead of bursting (Codex P1)', async () => {
 		vi.useFakeTimers();
+		// Anchor the clock at epoch 0 so the cooldown this test arms is a
+		// small number that is safely in the past once real timers resume —
+		// no module-level cooldown leaks into later tests.
+		vi.setSystemTime(0);
 		try {
 			// First chain: a GET that 429s on both the original and its one
 			// retry (Retry-After: 1s), exhausting the retry and arming the
