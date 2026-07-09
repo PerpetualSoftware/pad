@@ -8,6 +8,7 @@
 	import ItemCard from './ItemCard.svelte';
 	import EmptyState from '../common/EmptyState.svelte';
 	import LaneActionsMenu from './LaneActionsMenu.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 
 
 	interface Props {
@@ -87,7 +88,6 @@
 	// Which lane's ⋯ menu is open (null = none). One menu open at a time;
 	// the LaneActionsMenu component owns the drill-down + confirm state.
 	let openMenuColumn = $state<string | null>(null);
-	let isMobile = $state(false);
 
 	function toggleMenu(colValue: string) {
 		openMenuColumn = openMenuColumn === colValue ? null : colValue;
@@ -172,18 +172,6 @@
 
 	$effect(() => {
 		columnOrder = [...columns];
-	});
-
-	$effect(() => {
-		const mql = window.matchMedia('(max-width: 768px)');
-		isMobile = mql.matches;
-		function onChange(e: MediaQueryListEvent) {
-			isMobile = e.matches;
-		}
-		mql.addEventListener('change', onChange);
-		return () => {
-			mql.removeEventListener('change', onChange);
-		};
 	});
 
 	// Native HTML5 drag-and-drop for column reordering
@@ -563,14 +551,14 @@
 					// under any non-manual page sort (TASK-1670): the
 					// lane is comparator-ordered, so a drag couldn't
 					// stick anyway.
-					dragDisabled: isMobile || !canEdit || preserveOrder || laneSortFor(colValue) !== 'manual'
+					dragDisabled: viewport.isMobile || !canEdit || preserveOrder || laneSortFor(colValue) !== 'manual'
 				}}
 				onconsider={(e) => handleConsider(colValue, e)}
 				onfinalize={(e) => handleFinalize(colValue, e)}
 				oncontextmenu={(e) => e.preventDefault()}
 			>
 				{#each colItems as item, i (item.id)}
-					<div class="card-wrapper" class:no-drag={isMobile}>
+					<div class="card-wrapper" class:no-drag={viewport.isMobile}>
 						<ItemCard
 							{item}
 							{collection}

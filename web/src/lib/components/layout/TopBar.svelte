@@ -943,10 +943,9 @@
 		</div>
 		<div class="mobile-switcher-slot">
 			<!--
-				Force the mobile branch. TopBar's mobile/desktop decision uses
-				`uiStore.isMobile` (≤768px) but WorkspaceSwitcher's own query
-				is ≤639.98px — without this prop, 640–768px viewports would
-				render the desktop dropdown inside a mobile layout.
+				This slot only renders inside the mobile TopBar, so force the
+				mobile (BottomSheet) branch unconditionally rather than
+				re-deriving it from the viewport.
 			-->
 			<WorkspaceSwitcher mobile={true} />
 		</div>

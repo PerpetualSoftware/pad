@@ -11,6 +11,7 @@
 	import FilterBar from '$lib/components/collections/FilterBar.svelte';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import SSEStatusIndicator from '$lib/components/SSEStatusIndicator.svelte';
 	import { onDestroy, onMount } from 'svelte';
 	import { sseService } from '$lib/services/sse.svelte';
@@ -716,26 +717,17 @@
 	// On mobile the 3-icon view toggle (list/board/table) is swapped for a
 	// chip trigger that opens a BottomSheet with labeled options — the raw
 	// icon glyphs are ambiguous on touch and a labeled sheet is clearer.
-	// Desktop keeps the segmented toggle unchanged.
-	let isMobile = $state(false);
-	$effect(() => {
-		if (typeof window === 'undefined') return;
-		const mq = window.matchMedia('(max-width: 639.98px)');
-		isMobile = mq.matches;
-		const onChange = (e: MediaQueryListEvent) => {
-			isMobile = e.matches;
-			// If the viewport crosses above the mobile breakpoint while the
-			// sheet is open (e.g. rotation), close it so a return to mobile
-			// doesn't immediately re-mount the open sheet.
-			if (!e.matches) {
-				viewSheetOpen = false;
-			}
-		};
-		mq.addEventListener('change', onChange);
-		return () => mq.removeEventListener('change', onChange);
-	});
-
+	// Desktop keeps the segmented toggle unchanged. Uses the shared breakpoint
+	// store (TASK-2028).
 	let viewSheetOpen = $state(false);
+
+	// If the viewport crosses above the mobile breakpoint while the sheet is
+	// open (e.g. rotation), close it so a return to mobile doesn't immediately
+	// re-mount the open sheet. Reads the shared breakpoint flag; writes only
+	// `viewSheetOpen`, so no self-invalidation.
+	$effect(() => {
+		if (!viewport.isMobile) viewSheetOpen = false;
+	});
 	let viewModeLabel = $derived(
 		viewMode === 'list' ? 'List' : viewMode === 'board' ? 'Board' : 'Table'
 	);
@@ -1762,7 +1754,7 @@
 				</div>
 
 				<div class="header-actions">
-					{#if isMobile}
+					{#if viewport.isMobile}
 						<!--
 							Mobile: labeled chip + BottomSheet picker. Icon-only
 							segmented buttons are hard to decode on touch, and the

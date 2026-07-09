@@ -1,6 +1,7 @@
 <script lang="ts">
 	import EmojiPicker from '$lib/components/common/EmojiPicker.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 
 	interface Props {
 		value: string;
@@ -15,21 +16,9 @@
 	let dropdownX = $state(0);
 	let dropdownY = $state(0);
 
-	// ── Viewport detection ───────────────────────────────────────────────
-	// Track mobile viewport so we can swap the absolute-positioned portal
-	// dropdown for a BottomSheet that never clips off-screen. Mirrors the
-	// reference pattern from QuickActionsMenu.
-	let isMobile = $state(false);
-	$effect(() => {
-		if (typeof window === 'undefined') return;
-		const mq = window.matchMedia('(max-width: 639.98px)');
-		isMobile = mq.matches;
-		const onChange = (e: MediaQueryListEvent) => {
-			isMobile = e.matches;
-		};
-		mq.addEventListener('change', onChange);
-		return () => mq.removeEventListener('change', onChange);
-	});
+	// Mobile viewport swaps the absolute-positioned portal dropdown for a
+	// BottomSheet that never clips off-screen. Uses the shared breakpoint store
+	// (TASK-2028).
 
 	/**
 	 * Portal into the nearest <dialog> (stays in top-layer, escapes overflow
@@ -59,7 +48,7 @@
 	function handleWindowClick(e: MouseEvent) {
 		// On mobile the BottomSheet owns dismissal (backdrop tap + Escape +
 		// close button) — skip the outside-click handler so it doesn't race.
-		if (isMobile) return;
+		if (viewport.isMobile) return;
 		if (open) {
 			const target = e.target as HTMLElement;
 			if (!target?.closest('.emoji-picker-button') && !target?.closest('.epb-dropdown')) {
@@ -71,7 +60,7 @@
 	function toggleOpen() {
 		// Mobile branch skips the positioning math — BottomSheet docks to
 		// the viewport edge and doesn't need trigger-relative coordinates.
-		if (!open && !isMobile && triggerEl) {
+		if (!open && !viewport.isMobile && triggerEl) {
 			const triggerRect = triggerEl.getBoundingClientRect();
 			const dialog = triggerEl.closest('dialog');
 			if (dialog) {
@@ -108,7 +97,7 @@
 		{value || placeholder}
 	</button>
 
-	{#if isMobile}
+	{#if viewport.isMobile}
 		<BottomSheet {open} onclose={() => (open = false)} title="Pick an emoji">
 			<div class="epb-sheet-body">
 				<EmojiPicker selected={value} onselect={handleSelect} />

@@ -2,6 +2,7 @@
 	import type { Collection } from '$lib/types';
 	import { parseSchema } from '$lib/types';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import TagFilter from '$lib/components/collections/TagFilter.svelte';
 
 	interface Props {
@@ -81,25 +82,15 @@
 	// On mobile the parent filter is rendered as a chip that opens a
 	// BottomSheet of options; on desktop the native <select> is kept
 	// because it's compact inside the toolbar and familiar.
-	let isMobile = $state(false);
-	$effect(() => {
-		if (typeof window === 'undefined') return;
-		const mq = window.matchMedia('(max-width: 639.98px)');
-		isMobile = mq.matches;
-		const onChange = (e: MediaQueryListEvent) => {
-			isMobile = e.matches;
-			// If the viewport crosses above the mobile breakpoint while the
-			// sheet is open (e.g. device rotation), close it so it doesn't
-			// spring back open as soon as the viewport returns to mobile.
-			if (!e.matches) {
-				parentSheetOpen = false;
-			}
-		};
-		mq.addEventListener('change', onChange);
-		return () => mq.removeEventListener('change', onChange);
-	});
-
 	let parentSheetOpen = $state(false);
+
+	// If the viewport crosses above the mobile breakpoint while the sheet is
+	// open (e.g. device rotation), close it so it doesn't spring back open as
+	// soon as the viewport returns to mobile. Reads the shared breakpoint flag
+	// (TASK-2028); writes only `parentSheetOpen`, so no self-invalidation.
+	$effect(() => {
+		if (!viewport.isMobile) parentSheetOpen = false;
+	});
 
 	function openParentSheet() {
 		parentSheetOpen = true;
@@ -130,7 +121,7 @@
 	{/if}
 
 	{#if hasParentFilter}
-		{#if isMobile}
+		{#if viewport.isMobile}
 			<!--
 				Mobile: render the parent filter as a chip + BottomSheet to keep
 				option labels readable full-width and avoid the native <select>'s

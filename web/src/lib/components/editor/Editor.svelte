@@ -570,6 +570,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { api } from '$lib/api/client';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
@@ -658,7 +659,6 @@
 	let editor = $state<Editor | null>(null);
 	let editorFocused = $state(false);
 	let editorTick = $state(0);
-	let isMobile = $state(typeof window !== 'undefined' && window.innerWidth <= 768);
 	let toolbarBottom = $state(0);
 	let keyboardVisible = $state(false);
 	let suppressUpdate = false;
@@ -867,7 +867,7 @@
 				HTMLAttributes: { class: 'editor-link', target: null, rel: null },
 			}),
 			Placeholder.configure({
-				placeholder: isMobile ? 'Start writing...' : 'Type / for commands...',
+				placeholder: viewport.isMobile ? 'Start writing...' : 'Type / for commands...',
 			}),
 			Markdown.configure({
 				html: true,
@@ -1106,7 +1106,7 @@
 		});
 
 		// Prevent mobile keyboard from opening when tapping task list checkboxes
-		if (isMobile) {
+		if (viewport.isMobile) {
 			editor.view.dom.addEventListener('touchend', (e) => {
 				const target = e.target as HTMLElement;
 				if (target.tagName === 'INPUT' && target.getAttribute('type') === 'checkbox' && target.closest('[data-type="taskItem"]')) {
@@ -1288,7 +1288,7 @@
 	lines 658-659) — this just makes the toolbar visibility actually
 	consult it.
 -->
-{#if editable && isMobile && keyboardVisible && editor && editorFocused}
+{#if editable && viewport.isMobile && keyboardVisible && editor && editorFocused}
 	{@const _tick = editorTick}
 	{@const listItemType = getActiveListItemType()}
 	{@const canIndent = canIndentListItem(listItemType)}
