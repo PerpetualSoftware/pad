@@ -46,7 +46,14 @@ const ITEM_EVENTS = [
 type BCEnvelope =
 	| { type: 'item_event'; event: ItemEvent }
 	| { type: 'sync_required' }
-	| { type: 'status'; status: SSEStatus };
+	| { type: 'status'; status: SSEStatus }
+	// A newly-joined tab asks the current leader for its live status.
+	// BroadcastChannel doesn't replay the leader's earlier `status`
+	// message, so without this handshake a follower that opens after
+	// the leader already connected would sit on its initial
+	// `disconnected` value forever — surfacing as a bogus "Offline"
+	// indicator while it's actually receiving live updates (TASK-2027).
+	| { type: 'status_request' };
 
 function createSSEService() {
 	let status = $state<SSEStatus>('disconnected');
@@ -129,8 +136,22 @@ function createSSEService() {
 				// indicators don't show "disconnected" while the
 				// leader is happily streaming.
 				status = env.status;
+			} else if (env.type === 'status_request') {
+				// A tab just joined and asked for the current status.
+				// Only the leader holds the authoritative EventSource
+				// status, so only the leader answers — reply with our
+				// live value so the follower initializes correctly
+				// instead of sitting on its stale `disconnected`
+				// default (TASK-2027).
+				if (isLeader) {
+					broadcast({ type: 'status', status });
+				}
 			}
 		};
+		// Ask any existing leader for its current status. If we're the
+		// first/only tab (no leader yet) nobody answers and our own
+		// EventSource's `onopen` will set the status shortly — no harm.
+		broadcast({ type: 'status_request' });
 	}
 
 	// `pendingSyncOnConnect` defers a `sync_required` dispatch until
