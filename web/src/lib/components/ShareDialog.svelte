@@ -2,6 +2,7 @@
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import Modal from '$lib/components/common/Modal.svelte';
 	import type { CollectionGrant, ItemGrant, ShareLink } from '$lib/types';
 
 	interface Props {
@@ -183,12 +184,6 @@
 		}
 	}
 
-	function handleKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape' && open) {
-			open = false;
-		}
-	}
-
 	function handleShareKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && email.trim()) {
 			e.preventDefault();
@@ -216,19 +211,13 @@
 	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<Modal open={open} onclose={() => (open = false)} labelledby="share-dialog-title" maxWidth="480px">
+	<div class="modal-header">
+		<h2 id="share-dialog-title">Share {targetName}</h2>
+		<button class="close-btn" type="button" onclick={() => (open = false)}>&#10005;</button>
+	</div>
 
-{#if open}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="overlay" onclick={() => (open = false)}>
-		<div class="modal" onclick={(e) => e.stopPropagation()}>
-			<div class="modal-header">
-				<h2>Share {targetName}</h2>
-				<button class="close-btn" type="button" onclick={() => (open = false)}>&#10005;</button>
-			</div>
-
-			<div class="modal-body">
+	<div class="modal-body">
 				<!-- Add people section -->
 				<div class="add-section">
 					<span class="section-label">Add people</span>
@@ -388,36 +377,10 @@
 						</div>
 					{/if}
 				</div>
-			</div>
-		</div>
 	</div>
-{/if}
+</Modal>
 
 <style>
-	.overlay {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		z-index: 50;
-		display: flex;
-		justify-content: center;
-		align-items: flex-start;
-		padding-top: 10vh;
-	}
-
-	.modal {
-		width: 100%;
-		max-width: 480px;
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-		overflow: hidden;
-		max-height: 80vh;
-		display: flex;
-		flex-direction: column;
-	}
-
 	.modal-header {
 		display: flex;
 		align-items: center;

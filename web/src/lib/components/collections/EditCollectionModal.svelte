@@ -21,6 +21,7 @@
 		type PreviewContext
 	} from '$lib/utils/quick-action-preview';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
 
 	interface Props {
 		open: boolean;
@@ -519,21 +520,11 @@
 	}
 </script>
 
-<svelte:window
-	onkeydown={(e) => {
-		if (e.key === 'Escape' && open) onclose();
-	}}
-/>
-
-{#if open}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<div class="overlay" onclick={onclose}>
-		<div class="modal" onclick={(e) => e.stopPropagation()}>
-			<div class="modal-header">
-				<h2>Edit Collection</h2>
-				<button class="close-btn" type="button" onclick={onclose}>&#10005;</button>
-			</div>
+<Modal {open} {onclose} labelledby="edit-collection-title" maxWidth="680px">
+	<div class="modal-header">
+		<h2 id="edit-collection-title">Edit Collection</h2>
+		<button class="close-btn" type="button" onclick={onclose}>&#10005;</button>
+	</div>
 
 			<div class="tab-bar">
 				<button
@@ -726,50 +717,9 @@
 					{saving ? 'Saving...' : 'Save Changes'}
 				</button>
 			</div>
-		</div>
-	</div>
-{/if}
+</Modal>
 
 <style>
-	.overlay {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		z-index: 50;
-		display: flex;
-		justify-content: center;
-		align-items: flex-start;
-		padding: 8vh var(--space-4) var(--space-4);
-		animation: overlay-in 140ms ease-out;
-	}
-
-	.modal {
-		width: 100%;
-		max-width: 680px;
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-		display: flex;
-		flex-direction: column;
-		max-height: 82vh;
-		animation: modal-in 160ms ease-out;
-	}
-
-	@keyframes overlay-in {
-		from { opacity: 0; }
-		to { opacity: 1; }
-	}
-
-	@keyframes modal-in {
-		from { opacity: 0; transform: translateY(-4px) scale(0.98); }
-		to { opacity: 1; transform: translateY(0) scale(1); }
-	}
-
-	@media (prefers-reduced-motion: reduce) {
-		.overlay, .modal { animation: none; }
-	}
-
 	/* ── Header ─────────────────────────────────────────────────────────────── */
 
 	.modal-header {
@@ -1159,16 +1109,6 @@
 	/* ── Responsive ────────────────────────────────────────────────────────── */
 
 	@media (max-width: 640px) {
-		.overlay {
-			padding: var(--space-3);
-			align-items: stretch;
-		}
-
-		.modal {
-			max-width: 100%;
-			max-height: calc(100vh - var(--space-6));
-		}
-
 		.modal-header,
 		.tab-content,
 		.modal-footer {
