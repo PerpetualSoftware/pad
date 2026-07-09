@@ -89,9 +89,10 @@ func handleCmdhelpCapabilitiesFallback(args []string, w io.Writer) bool {
 // tests as long as they don't run concurrently with the real CLI flow.
 func newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:     "pad",
-		Short:   "Pad — project management for developers and AI agents",
-		Version: fullVersion(),
+		Use:          "pad",
+		Short:        "Pad — project management for developers and AI agents",
+		Version:      fullVersion(),
+		SilenceUsage: true,
 	}
 
 	rootCmd.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace slug override")
