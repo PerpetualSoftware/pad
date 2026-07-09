@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { browser } from '$app/environment';
-	import { api } from '$lib/api/client';
+	import { api, PadApiError } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
@@ -209,13 +209,23 @@
 			// dashboard renders normally rather than pinning the retry state.
 			dashError = null;
 		} catch (err) {
-			// Transient failure (network / 5xx / 429) — surface an error +
-			// Retry state instead of the flat "No dashboard data available."
-			// empty state (BUG-2025). A silent poll that fails while
-			// `dashboard` already holds data leaves that data in place; the
-			// error branch is gated on `!dashboard` in the template, so the
-			// live board is never clobbered by a background poll blip.
-			dashError = err instanceof Error ? err : new Error('Failed to load dashboard');
+			// A genuine not-found (nonexistent workspace → 404 `not_found`
+			// from the workspace-access middleware) is terminal, not
+			// transient — fall through to the "No dashboard data available."
+			// empty state rather than a Retry loop that can never succeed
+			// (BUG-2025). Any OTHER thrown error (network / 5xx / 429) is
+			// transient: surface an error + Retry state instead of the flat
+			// empty state. A silent poll that fails while `dashboard`
+			// already holds data for the CURRENT workspace leaves it in
+			// place — the error branch is gated on `dashboardSlug === wsSlug`
+			// in the template, so a background poll blip never clobbers the
+			// live board (and stale data from a previous workspace never
+			// masks a failed load of the new one).
+			if (err instanceof PadApiError && err.code === 'not_found') {
+				dashError = null;
+			} else {
+				dashError = err instanceof Error ? err : new Error('Failed to load dashboard');
+			}
 		} finally {
 			loading = false;
 		}
@@ -318,7 +328,7 @@
 				{/each}
 			</div>
 		</div>
-	{:else if dashboard}
+	{:else if dashboard && dashboardSlug === wsSlug}
 		{#if needsOnboarding && !onboardingDismissed}
 			<!--
 				Launchpad render-mode (PLAN-1847 Phase 2 / TASK-1852). While

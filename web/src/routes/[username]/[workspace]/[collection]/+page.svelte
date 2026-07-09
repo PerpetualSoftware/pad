@@ -510,7 +510,16 @@
 		}
 	}
 
+	// Monotonic load token (plain, non-reactive) guarding against a
+	// superseded fetch committing stale state. A slow load for
+	// collection A that resolves AFTER the route already switched to B
+	// must not overwrite B's `collection` / `metaError` / `metaLoading`
+	// (Codex race finding). Every entry bumps the token; each awaited
+	// result checks it's still the latest before writing.
+	let loadSeq = 0;
+
 	async function loadCollection(ws: string, coll: string, includeArchived = false) {
+		const seq = ++loadSeq;
 		metaLoading = true;
 		metaError = null;
 		try {
@@ -525,6 +534,9 @@
 				api.views.list(ws, coll).catch(() => [] as View[]),
 				api.members.list(ws).catch(() => ({ members: [], invitations: [] })),
 			]);
+			// A newer load started while this one was in flight — drop
+			// this result so it can't overwrite the current route's state.
+			if (seq !== loadSeq) return;
 			collection = collData;
 			savedViews = viewsData;
 			workspaceMembers = membersData.members ?? [];
@@ -602,6 +614,9 @@
 			// Override with URL params if present
 			loadUrlFilters();
 		} catch (err) {
+			// Superseded by a newer load — don't clobber the current
+			// route's state with this stale failure.
+			if (seq !== loadSeq) return;
 			// Distinguish a genuine not-found from a transient failure
 			// (BUG-2025). Only a real 404 (`not_found`) collapses to the
 			// terminal "Collection not found" empty state; a network
@@ -618,7 +633,9 @@
 				metaError = err instanceof Error ? err : new Error('Failed to load collection');
 			}
 		} finally {
-			metaLoading = false;
+			// Only the latest load owns the loading flag — a superseded
+			// load must not flip it false out from under the current one.
+			if (seq === loadSeq) metaLoading = false;
 		}
 	}
 
