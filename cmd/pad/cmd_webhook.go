@@ -17,6 +17,7 @@ func webhooksCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "webhook",
 		Short: "Manage workspace webhooks",
+		RunE:  unknownSubcommandRun,
 		Long: `Manage webhooks that receive POST notifications when events occur.
 
 Examples:

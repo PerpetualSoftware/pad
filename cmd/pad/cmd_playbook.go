@@ -24,6 +24,7 @@ func playbookCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "playbook",
 		Short: "Work with playbooks — first-class invokable procedures",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(playbookListCmd())
 	cmd.AddCommand(playbookShowCmd())

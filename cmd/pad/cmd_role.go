@@ -17,6 +17,7 @@ func roleCmd() *cobra.Command {
 		Use:   "role",
 		Short: "Manage agent roles",
 		Long:  "Agent roles define capability specializations (e.g. Planner, Implementer, Reviewer) for human-agent work assignment.",
+		RunE:  unknownSubcommandRun,
 	}
 	cmd.AddCommand(roleListCmd(), roleCreateCmd(), roleUpdateCmd(), roleDeleteCmd())
 	return cmd
