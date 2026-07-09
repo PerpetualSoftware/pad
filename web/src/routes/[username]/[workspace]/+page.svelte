@@ -194,7 +194,16 @@
 		unsubscribeSync?.();
 	});
 
+	// Monotonic load token (plain, non-reactive) guarding against a
+	// superseded dashboard fetch committing out of order. Concurrent
+	// navigation / 30s poll / sync / retry loads can resolve in any
+	// order; only the latest may write `dashboard` / `dashboardSlug` /
+	// `dashError` / `loading` (Codex race finding). Mirrors the
+	// collection page's `loadSeq`.
+	let dashLoadSeq = 0;
+
 	async function load(slug: string, silent = false) {
+		const seq = ++dashLoadSeq;
 		if (!silent) loading = true;
 		try {
 			await workspaceStore.setCurrent(slug);
@@ -202,6 +211,8 @@
 				api.dashboard.get(slug),
 				api.collections.list(slug)
 			]);
+			// Superseded by a newer load — drop this result.
+			if (seq !== dashLoadSeq) return;
 			dashboard = dash;
 			dashboardSlug = slug;
 			collections = colls;
@@ -209,6 +220,8 @@
 			// dashboard renders normally rather than pinning the retry state.
 			dashError = null;
 		} catch (err) {
+			// Superseded by a newer load — don't commit this stale outcome.
+			if (seq !== dashLoadSeq) return;
 			// A genuine not-found (nonexistent workspace → 404 `not_found`
 			// from the workspace-access middleware) is terminal, not
 			// transient — fall through to the "No dashboard data available."
@@ -222,12 +235,19 @@
 			// live board (and stale data from a previous workspace never
 			// masks a failed load of the new one).
 			if (err instanceof PadApiError && err.code === 'not_found') {
+				// Terminal: drop any stale dashboard for this route so the
+				// "No dashboard data available." empty state shows instead
+				// of a workspace that's since been deleted/revoked lingering
+				// on screen (Codex P2).
+				dashboard = null;
+				dashboardSlug = null;
 				dashError = null;
 			} else {
 				dashError = err instanceof Error ? err : new Error('Failed to load dashboard');
 			}
 		} finally {
-			loading = false;
+			// Only the latest load owns the loading flag.
+			if (seq === dashLoadSeq) loading = false;
 		}
 	}
 
