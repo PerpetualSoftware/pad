@@ -394,6 +394,14 @@ export const localIndex = {
 						// row data is NOT covered here — TASK-1360 and
 						// DOC-1342 decision #3 explicitly punt that in
 						// favor of the 403-on-click purge path.
+						//
+						// A `rate_limited` (429) error lands here too and is
+						// intentionally treated as transient: the per-request
+						// Retry-After backoff already ran centrally in
+						// api/client.ts's request wrapper (TASK-2026), and a
+						// thrown `rate_limited` breaks out of the reconcile loop
+						// so we never hammer a busy server page-after-page. The
+						// next bootstrap() retries the resync later.
 					}
 				} else {
 					// Stage 2: cold path. /items-index full snapshot.

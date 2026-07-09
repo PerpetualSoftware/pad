@@ -88,11 +88,76 @@ class PadApiError extends Error {
 	 *   { feature: string, limit: number, current: number, plan: string, upgrade_url: string }
 	 */
 	details?: Record<string, unknown>;
+	/**
+	 * Milliseconds the client waited (or would have waited) before a
+	 * retry, derived from the 429 `Retry-After` header. Only set on
+	 * `code === 'rate_limited'` errors (TASK-2026); undefined otherwise.
+	 * Lets a caller/UI say "try again in ~Ns" instead of a bare toast.
+	 */
+	retryAfterMs?: number;
 	constructor(err: ApiError) {
 		super(err.message);
 		this.code = err.code;
 		this.details = err.details;
 	}
+}
+
+/**
+ * Server-busy / rate-limit handling (TASK-2026). When the server returns
+ * 429 we honor `Retry-After` for a SINGLE delayed retry of idempotent
+ * GET/HEAD requests, then (if it still 429s) surface a distinct
+ * `rate_limited` PadApiError so the UI can show a "server busy" message
+ * rather than a generic failure. This is the client half of the rate-limit
+ * story; the server-side raise lives separately (IDEA-1842).
+ */
+// Absolute ceiling on how long a single Retry-After delay may block the
+// UI. A hostile or misconfigured `Retry-After: 86400` must not hang the
+// app for a day — clamp to a few seconds and let the user retry by hand.
+const MAX_RETRY_AFTER_MS = 5_000;
+// Backoff used when a 429 arrives with no (or an unparseable) Retry-After
+// header, so the one automatic GET retry still spaces itself out.
+const DEFAULT_RETRY_BACKOFF_MS = 750;
+
+function clampRetryMs(ms: number): number {
+	if (!Number.isFinite(ms) || ms < 0) return 0;
+	return Math.min(ms, MAX_RETRY_AFTER_MS);
+}
+
+/**
+ * Parse an HTTP `Retry-After` header into a clamped millisecond delay.
+ * Supports both wire forms: delta-seconds (`Retry-After: 3`) and an
+ * HTTP-date (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`). Returns null
+ * when the header is absent or unparseable so the caller can fall back to
+ * `DEFAULT_RETRY_BACKOFF_MS`. All results are clamped to
+ * `MAX_RETRY_AFTER_MS`. TASK-2026.
+ */
+export function parseRetryAfterMs(header: string | null | undefined): number | null {
+	if (!header) return null;
+	const trimmed = header.trim();
+	if (trimmed === '') return null;
+	// Delta-seconds form: a bare non-negative integer.
+	if (/^\d+$/.test(trimmed)) {
+		return clampRetryMs(Number(trimmed) * 1000);
+	}
+	// HTTP-date form. Date.parse returns NaN for garbage.
+	const when = Date.parse(trimmed);
+	if (Number.isNaN(when)) return null;
+	const delta = when - Date.now();
+	return clampRetryMs(delta <= 0 ? 0 : delta);
+}
+
+function sleep(ms: number): Promise<void> {
+	if (ms <= 0) return Promise.resolve();
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Returns true when `err` is the distinct 429 server-busy error. Mirrors
+ * the `isPlanLimitError` idiom so call sites can branch on rate limiting
+ * and show a "Server busy, try again shortly" message. TASK-2026.
+ */
+function isRateLimitError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'rate_limited';
 }
 
 /**
@@ -271,7 +336,14 @@ const AUTH_FORM_401_PATHS = new Set(['/auth/login', '/auth/register', '/auth/2fa
  */
 const CREDENTIAL_RECONFIRM_401_PATHS = new Set(['/auth/delete-account']);
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+async function request<T>(
+	path: string,
+	options?: RequestInit,
+	// Internal flag: true on the single automatic re-invocation after a
+	// 429. Prevents an infinite retry loop if the retried request also
+	// 429s. Never passed by external callers. TASK-2026.
+	rateLimitRetried = false,
+): Promise<T> {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
 	// Attach CSRF token for state-changing requests
@@ -334,6 +406,31 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 		if (method === undefined || method === 'GET' || method === 'HEAD') {
 			notifyAccessRevoked(path);
 		}
+	}
+	if (resp.status === 429) {
+		// Rate limited (TASK-2026). Honor Retry-After for ONE delayed
+		// retry of idempotent requests; then surface a distinct
+		// `rate_limited` error so callers can show "server busy" rather
+		// than a generic failure.
+		const retryAfterMs = parseRetryAfterMs(resp.headers?.get('Retry-After'));
+		const isIdempotent = method === undefined || method === 'GET' || method === 'HEAD';
+		// Only GET/HEAD auto-retry — retrying a POST/PATCH/DELETE could
+		// duplicate a write the server may have already partially applied.
+		if (isIdempotent && !rateLimitRetried) {
+			await sleep(retryAfterMs ?? DEFAULT_RETRY_BACKOFF_MS);
+			return request<T>(path, options, true);
+		}
+		// Prefer the server's structured error envelope if present, but
+		// force the distinct `rate_limited` code + a clear message so UI
+		// can branch on it regardless of what the proxy/server sent.
+		const body = await resp.json().catch(() => null);
+		const err = new PadApiError({
+			code: 'rate_limited',
+			message: body?.error?.message || 'Server busy — please try again in a moment.',
+			details: body?.error?.details,
+		});
+		if (retryAfterMs != null) err.retryAfterMs = retryAfterMs;
+		throw err;
 	}
 	if (!resp.ok) {
 		const body = await resp.json().catch(() => null);
@@ -2147,4 +2244,4 @@ export const api = {
 	}
 };
 
-export { PadApiError, isPlanLimitError, planLimitMessage };
+export { PadApiError, isPlanLimitError, planLimitMessage, isRateLimitError };

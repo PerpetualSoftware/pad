@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { api } from './client';
+import { api, parseRetryAfterMs, isRateLimitError, PadApiError } from './client';
 
 // The 401 interceptor branches on `typeof window !== 'undefined'`. The
 // vitest environment here is 'node' (see vitest.config.ts), so `window` is
@@ -93,5 +93,125 @@ describe('api client 401 handling (BUG-1929)', () => {
 			message: 'Authentication required',
 		});
 		expect(win.location.href).toBe('');
+	});
+});
+
+// ── 429 / Retry-After handling (TASK-2026) ──────────────────────────────────
+
+/**
+ * Fetch mock that returns a scripted sequence of responses. Each entry is
+ * `{ status, body, retryAfter? }`; the last entry repeats for any calls
+ * beyond the script length. Responses carry a minimal `headers.get` so the
+ * client's `Retry-After` lookup works.
+ */
+function mockFetchSequence(responses: { status: number; body: unknown; retryAfter?: string }[]) {
+	let i = 0;
+	const fetchMock = vi.fn(async () => {
+		const r = responses[Math.min(i, responses.length - 1)];
+		i += 1;
+		return {
+			status: r.status,
+			ok: r.status >= 200 && r.status < 300,
+			headers: {
+				get: (name: string) =>
+					name.toLowerCase() === 'retry-after' ? (r.retryAfter ?? null) : null,
+			},
+			json: async () => r.body,
+		};
+	});
+	vi.stubGlobal('fetch', fetchMock);
+	return fetchMock;
+}
+
+describe('parseRetryAfterMs (TASK-2026)', () => {
+	it('parses the delta-seconds form to milliseconds', () => {
+		expect(parseRetryAfterMs('3')).toBe(3000);
+		expect(parseRetryAfterMs('0')).toBe(0);
+	});
+
+	it('clamps a huge Retry-After to the 5s ceiling so the UI cannot hang', () => {
+		expect(parseRetryAfterMs('86400')).toBe(5000);
+	});
+
+	it('parses the HTTP-date form as a clamped future delta', () => {
+		const future = new Date(Date.now() + 2000).toUTCString();
+		const ms = parseRetryAfterMs(future);
+		expect(ms).not.toBeNull();
+		// ~2s out, clamped to <= 5s; allow scheduling slack.
+		expect(ms!).toBeGreaterThan(500);
+		expect(ms!).toBeLessThanOrEqual(5000);
+	});
+
+	it('returns 0 for a past HTTP-date', () => {
+		const past = new Date(Date.now() - 60_000).toUTCString();
+		expect(parseRetryAfterMs(past)).toBe(0);
+	});
+
+	it('returns null for a missing / empty / garbage header', () => {
+		expect(parseRetryAfterMs(null)).toBeNull();
+		expect(parseRetryAfterMs(undefined)).toBeNull();
+		expect(parseRetryAfterMs('')).toBeNull();
+		expect(parseRetryAfterMs('   ')).toBeNull();
+		expect(parseRetryAfterMs('soon')).toBeNull();
+	});
+});
+
+describe('api client 429 handling (TASK-2026)', () => {
+	beforeEach(() => {
+		vi.unstubAllGlobals();
+	});
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('retries an idempotent GET exactly once after a 429, then returns the retry payload', async () => {
+		const fetchMock = mockFetchSequence([
+			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },
+			{ status: 200, body: [{ id: 'w1' }] },
+		]);
+
+		const result = await api.workspaces.list();
+		expect(result).toEqual([{ id: 'w1' }]);
+		// One original call + one retry.
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('surfaces a distinct rate_limited error when the GET retry also 429s', async () => {
+		const fetchMock = mockFetchSequence([
+			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },
+			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },
+		]);
+
+		const err = await api.workspaces.list().catch((e) => e);
+		expect(isRateLimitError(err)).toBe(true);
+		expect(err).toBeInstanceOf(PadApiError);
+		expect((err as PadApiError).code).toBe('rate_limited');
+		// Original + a single retry — never more.
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('does NOT retry a non-idempotent POST on 429 (avoids duplicate writes)', async () => {
+		const fetchMock = mockFetchSequence([
+			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },
+			{ status: 200, body: { id: 'w2' } },
+		]);
+
+		const err = await api.workspaces
+			.create({ name: 'X' } as unknown as Parameters<typeof api.workspaces.create>[0])
+			.catch((e) => e);
+		expect(isRateLimitError(err)).toBe(true);
+		// Exactly one call: the POST was never retried.
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('carries the parsed Retry-After delay on the rate_limited error', async () => {
+		mockFetchSequence([
+			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },
+			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '2' },
+		]);
+
+		const err = (await api.workspaces.list().catch((e) => e)) as PadApiError;
+		expect(err.code).toBe('rate_limited');
+		expect(err.retryAfterMs).toBe(2000);
 	});
 });
