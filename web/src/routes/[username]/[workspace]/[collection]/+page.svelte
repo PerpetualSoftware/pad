@@ -39,6 +39,16 @@
 	// case where filteredItems is briefly empty.
 	let metaLoading = $state(true);
 	let collection = $state<Collection | null>(null);
+	// `metaError` distinguishes a TRANSIENT collection-metadata load
+	// failure (network blip / 5xx / 429) from a genuine not-found
+	// (BUG-2025). A genuine 404 (`PadApiError.code === 'not_found'`)
+	// leaves `collection` null and `metaError` null so the template
+	// renders the terminal "Collection not found" empty state. Any
+	// other thrown error sets `metaError`, which the template renders
+	// as an error + Retry state — mirroring the items branch's
+	// `indexError`/`deltaSyncFailed` retry box — instead of masking a
+	// live collection as deleted. Cleared at the top of every load.
+	let metaError = $state<Error | null>(null);
 	let viewMode = $state<ViewMode>('list');
 	// Page-wide within-group sort (TASK-1670 / IDEA-1648). 'manual' is the
 	// stored sort_order (drag order). Persisted per collection.
@@ -140,7 +150,7 @@
 	// deltaSync.
 	let deltaSyncFailed = $state(false);
 	let loading = $derived(
-		metaLoading || (!indexReady && !indexError && !deltaSyncFailed),
+		!metaError && (metaLoading || (!indexReady && !indexError && !deltaSyncFailed)),
 	);
 
 	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
@@ -502,6 +512,7 @@
 
 	async function loadCollection(ws: string, coll: string, includeArchived = false) {
 		metaLoading = true;
+		metaError = null;
 		try {
 			// Items now flow through localIndex (the `items` $derived
 			// above reads `getByCollection`). We still fetch the
@@ -590,11 +601,22 @@
 
 			// Override with URL params if present
 			loadUrlFilters();
-		} catch {
-			collection = null;
-			// `items` is derived from localIndex; nothing to clear here.
-			// A missing collection shows the empty / not-found state via
-			// the `collection` null branch in the template.
+		} catch (err) {
+			// Distinguish a genuine not-found from a transient failure
+			// (BUG-2025). Only a real 404 (`not_found`) collapses to the
+			// terminal "Collection not found" empty state; a network
+			// blip / 5xx / 429 sets `metaError` so the template shows an
+			// error + Retry affordance instead of masking a live
+			// collection as deleted.
+			if (err instanceof PadApiError && err.code === 'not_found') {
+				collection = null;
+				metaError = null;
+				// `items` is derived from localIndex; nothing to clear here.
+				// A missing collection shows the empty / not-found state via
+				// the `collection` null branch in the template.
+			} else {
+				metaError = err instanceof Error ? err : new Error('Failed to load collection');
+			}
 		} finally {
 			metaLoading = false;
 		}
@@ -1739,6 +1761,24 @@
 <div class="collection-page" class:board-active={viewMode === 'board'}>
 	{#if loading}
 		<div class="loading">Loading...</div>
+	{:else if metaError}
+		<!-- Transient collection-metadata load failure (network / 5xx /
+		     429) — NOT a genuine 404 (BUG-2025). Show an error + Retry
+		     path instead of the misleading "Collection not found" empty
+		     state, mirroring the items branch's retry box. -->
+		<div class="empty-state-box">
+			<div class="empty-icon">⚠️</div>
+			<h2>Couldn't load this collection</h2>
+			<p>Something went wrong while loading. It may be a temporary network or server issue.</p>
+			<button
+				class="empty-cta"
+				onclick={() => {
+					if (wsSlug && collSlug) loadCollection(wsSlug, collSlug, showArchived);
+				}}
+			>
+				Retry
+			</button>
+		</div>
 	{:else if !collection}
 		<div class="empty-state">Collection not found</div>
 	{:else}
