@@ -1,4 +1,6 @@
 <script lang="ts">
+	import Modal from './Modal.svelte';
+
 	interface Props {
 		visible: boolean;
 		onclose: () => void;
@@ -20,17 +22,17 @@
 		{
 			title: 'Global',
 			shortcuts: [
-				{ key: '\u2318K', description: 'Search / Command palette' },
-				{ key: '\u2318N', description: 'New item' },
-				{ key: '\u2318\\', description: 'Toggle sidebar' },
+				{ key: '⌘K', description: 'Search / Command palette' },
+				{ key: '⌘N', description: 'New item' },
+				{ key: '⌘\\', description: 'Toggle sidebar' },
 				{ key: '?', description: 'Show keyboard shortcuts' }
 			]
 		},
 		{
 			title: 'Navigation',
 			shortcuts: [
-				{ key: 'j / \u2193', description: 'Move down' },
-				{ key: 'k / \u2191', description: 'Move up' },
+				{ key: 'j / ↓', description: 'Move down' },
+				{ key: 'k / ↑', description: 'Move up' },
 				{ key: 'Enter', description: 'Open selected item' },
 				{ key: 'Esc', description: 'Go back / Close' }
 			]
@@ -38,82 +40,51 @@
 		{
 			title: 'Item Detail',
 			shortcuts: [
-				{ key: '\u2318Enter', description: 'Save' },
+				{ key: '⌘Enter', description: 'Save' },
 				{ key: 'Esc', description: 'Cancel editing' }
 			]
 		}
 	];
-
-	function handleKeydown(e: KeyboardEvent) {
-		if (!visible) return;
-		if (e.key === 'Escape') {
-			e.preventDefault();
-			onclose();
-		}
-	}
-
-	function handleBackdropClick(e: MouseEvent) {
-		if (e.target === e.currentTarget) {
-			onclose();
-		}
-	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
-{#if visible}
-	<!-- svelte-ignore a11y_click_events_have_key_events -->
-	<div class="backdrop" onclick={handleBackdropClick} role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1">
-		<div class="modal">
-			<div class="header">
-				<h2 class="title">Keyboard Shortcuts</h2>
-				<button class="close-btn" onclick={onclose} aria-label="Close">
-					<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-						<path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-					</svg>
-				</button>
-			</div>
-			<div class="body">
-				{#each groups as group (group.title)}
-					<div class="group">
-						<h3 class="group-title">{group.title}</h3>
-						<div class="shortcut-list">
-							{#each group.shortcuts as shortcut (shortcut.key)}
-								<div class="shortcut-row">
-									<kbd class="key">{shortcut.key}</kbd>
-									<span class="description">{shortcut.description}</span>
-								</div>
-							{/each}
-						</div>
-					</div>
-				{/each}
-			</div>
-		</div>
+<!-- The native <dialog> (via <Modal>) owns Escape, backdrop dismiss, the focus
+     trap, and focus save/restore — the hand-rolled listeners this component
+     used to carry are gone. placement/shadow overrides keep the original
+     centered look (the pre-migration backdrop was flex-centered). -->
+<Modal
+	open={visible}
+	{onclose}
+	labelledby="keyboard-shortcuts-title"
+	maxWidth="500px"
+	placement="center"
+	--modal-shadow="0 8px 32px rgba(0, 0, 0, 0.3)"
+>
+	<div class="header">
+		<h2 class="title" id="keyboard-shortcuts-title">Keyboard Shortcuts</h2>
+		<button class="close-btn" onclick={onclose} aria-label="Close">
+			<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+				<path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+			</svg>
+		</button>
 	</div>
-{/if}
+	<div class="body">
+		{#each groups as group (group.title)}
+			<div class="group">
+				<h3 class="group-title">{group.title}</h3>
+				<div class="shortcut-list">
+					{#each group.shortcuts as shortcut (shortcut.key)}
+						<div class="shortcut-row">
+							<kbd class="key">{shortcut.key}</kbd>
+							<span class="description">{shortcut.description}</span>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{/each}
+	</div>
+</Modal>
 
 <style>
-	.backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		z-index: 100;
-	}
-
-	.modal {
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		max-width: 500px;
-		width: 90%;
-		max-height: 80vh;
-		overflow-y: auto;
-		box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-	}
-
 	.header {
 		display: flex;
 		align-items: center;
@@ -145,11 +116,13 @@
 		color: var(--text-primary);
 	}
 
+	/* The Modal box is overflow:hidden flex-column; the body is the scroll area. */
 	.body {
 		padding: var(--space-4) var(--space-5);
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-5);
+		overflow-y: auto;
 	}
 
 	.group-title {
