@@ -255,32 +255,24 @@ func (c *Client) DeleteItem(wsSlug, itemSlug string) error {
 	return wrapItemNotFound(c.delete("/workspaces/"+wsSlug+"/items/"+itemSlug), itemSlug, wsSlug)
 }
 
-// itemNotFoundError decorates a "not_found" APIError with a message that echoes
-// the failing ref and workspace, while still unwrapping to the original
-// *APIError so errors.As / structured callers keep seeing the Code and Details.
-type itemNotFoundError struct {
-	msg string
-	err error
-}
-
-func (e *itemNotFoundError) Error() string { return e.msg }
-func (e *itemNotFoundError) Unwrap() error { return e.err }
-
 // wrapItemNotFound rewrites a bare "not_found" APIError from the item-by-ref
 // endpoints into a message that echoes the failing ref and workspace, so
 // `pad item show TASK-999999` reads "item TASK-999999 not found in workspace
-// docapp" instead of a context-free "Item not found". The original *APIError
-// stays reachable via errors.As. Any other error (or nil) passes through
-// unchanged.
+// docapp" instead of a context-free "Item not found". It returns a fresh
+// *APIError (same Code/Details, enriched Message) rather than a wrapper type,
+// so the concrete type stays *APIError — both errors.As AND direct
+// err.(*APIError) assertions (e.g. bulk-update's per-row code capture) keep
+// matching. Any other error (or nil) passes through unchanged.
 func wrapItemNotFound(err error, itemSlug, wsSlug string) error {
 	if err == nil {
 		return nil
 	}
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Code == "not_found" {
-		return &itemNotFoundError{
-			msg: fmt.Sprintf("item %s not found in workspace %s", itemSlug, wsSlug),
-			err: err,
+		return &APIError{
+			Code:    apiErr.Code,
+			Message: fmt.Sprintf("item %s not found in workspace %s", itemSlug, wsSlug),
+			Details: apiErr.Details,
 		}
 	}
 	return err

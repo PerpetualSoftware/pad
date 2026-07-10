@@ -41,11 +41,22 @@ func TestGetItemWrapsNotFound(t *testing.T) {
 	if _, err := client.GetItem("docapp", "TASK-999999"); err == nil || err.Error() != want {
 		t.Errorf("GetItem: got %v, want %q", err, want)
 	} else {
-		// The friendly message must still unwrap to the original *APIError so
-		// structured callers keep seeing the not_found code (Codex round 1).
-		var apiErr *APIError
-		if !errors.As(err, &apiErr) || apiErr.Code != "not_found" {
-			t.Errorf("GetItem error should unwrap to *APIError{Code:\"not_found\"}, got %#v", err)
+		// The enriched error must stay a *concrete* *APIError so BOTH
+		// errors.As and — critically — direct `err.(*APIError)` assertions
+		// keep matching. bulk-update's per-row code capture (cmd_item.go)
+		// uses a non-unwrapping direct assertion; a wrapper type would
+		// silently drop the not_found code there (team-lead P2 review).
+		apiErr, ok := err.(*APIError)
+		if !ok {
+			t.Fatalf("GetItem error must be a concrete *APIError (direct assertion), got %T", err)
+		}
+		if apiErr.Code != "not_found" {
+			t.Errorf("GetItem *APIError.Code = %q, want %q", apiErr.Code, "not_found")
+		}
+		// errors.As must also still reach it.
+		var viaAs *APIError
+		if !errors.As(err, &viaAs) || viaAs.Code != "not_found" {
+			t.Errorf("errors.As should reach *APIError{Code:not_found}, got %#v", err)
 		}
 	}
 	if _, err := client.UpdateItem("docapp", "TASK-999999", models.ItemUpdate{}); err == nil || err.Error() != want {
@@ -53,6 +64,32 @@ func TestGetItemWrapsNotFound(t *testing.T) {
 	}
 	if err := client.DeleteItem("docapp", "TASK-999999"); err == nil || err.Error() != want {
 		t.Errorf("DeleteItem: got %v, want %q", err, want)
+	}
+}
+
+// TestNotFoundPreservesDetails confirms the enriched *APIError carries the
+// server's original Details verbatim, so structured consumers (JSON envelopes,
+// MCP agents) lose nothing when the message is rewritten.
+func TestNotFoundPreservesDetails(t *testing.T) {
+	rawDetails := `{"hint":"check the ref"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"Item not found","details":` + rawDetails + `}}`))
+	}))
+	t.Cleanup(srv.Close)
+	client := NewClientFromURL(srv.URL)
+
+	_, err := client.GetItem("docapp", "TASK-999999")
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("expected concrete *APIError, got %T", err)
+	}
+	if apiErr.Code != "not_found" {
+		t.Errorf("Code = %q, want not_found", apiErr.Code)
+	}
+	if got := string(apiErr.Details); got != rawDetails {
+		t.Errorf("Details = %q, want %q (should pass through verbatim)", got, rawDetails)
 	}
 }
 
