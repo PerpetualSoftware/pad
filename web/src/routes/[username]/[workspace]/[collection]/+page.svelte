@@ -19,6 +19,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
@@ -2182,16 +2183,20 @@
 	/>
 {/if}
 
-{#if showLeaveDialog}
-	<!-- Leave guard (TASK-1676): an in-app navigation was intercepted
-	     because a lane has an unsaved draft card. -->
-	<div
-		class="leave-overlay"
-		role="presentation"
-		onclick={(e) => { if (e.target === e.currentTarget) leaveStay(); }}
-		onkeydown={(e) => { if (e.key === 'Escape') leaveStay(); }}
-	>
-		<div class="leave-dialog" role="dialog" aria-modal="true" aria-label="Unsaved card" tabindex="-1">
+<!-- Leave guard (TASK-1676): an in-app navigation was intercepted because a lane
+     has an unsaved draft card. Backdrop/Escape dismiss maps to "Stay" (the safe,
+     non-destructive default) via the shared Modal primitive (TASK-2083). -->
+<Modal
+	open={showLeaveDialog}
+	onclose={leaveStay}
+	ariaLabel="Unsaved card"
+	maxWidth="360px"
+	placement="center"
+	--modal-bg="var(--bg-primary)"
+	--modal-shadow="var(--shadow-lg, 0 10px 30px rgba(0, 0, 0, 0.3))"
+>
+	{#if showLeaveDialog}
+		<div class="leave-dialog">
 			<h3 class="leave-title">Unsaved card</h3>
 			<p class="leave-body">You have an unsaved card. Save it before leaving?</p>
 			<div class="leave-actions">
@@ -2200,28 +2205,14 @@
 				<button class="leave-save" disabled={savingDrafts} onclick={leaveSaveAll}>Save</button>
 			</div>
 		</div>
-	</div>
-{/if}
+	{/if}
+</Modal>
 
 <style>
-	.leave-overlay {
-		position: fixed;
-		inset: 0;
-		z-index: 1000;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		background: rgba(0, 0, 0, 0.45);
-		padding: var(--space-4);
-	}
+	/* Surface/backdrop/Escape come from the shared <Modal> primitive (TASK-2083);
+	   this wrapper just restores the inner padding. */
 	.leave-dialog {
-		width: 100%;
-		max-width: 360px;
 		padding: var(--space-4);
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		box-shadow: var(--shadow-lg, 0 10px 30px rgba(0, 0, 0, 0.3));
 	}
 	.leave-title {
 		margin: 0 0 var(--space-2);

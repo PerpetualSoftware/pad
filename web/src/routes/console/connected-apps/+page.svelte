@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
+	import Modal from '$lib/components/common/Modal.svelte';
 	import type { ConnectedApp, Workspace } from '$lib/types';
 
 	// Connected Apps page (TASK-954). Lists every active OAuth grant
@@ -257,19 +258,6 @@
 			revoking = false;
 		}
 	}
-
-	function onBackdropClick(e: MouseEvent) {
-		if (e.target === e.currentTarget) closeConfirm();
-	}
-
-	$effect(() => {
-		if (!confirmTarget) return;
-		function onKey(e: KeyboardEvent) {
-			if (e.key === 'Escape') closeConfirm();
-		}
-		window.addEventListener('keydown', onKey);
-		return () => window.removeEventListener('keydown', onKey);
-	});
 
 	onMount(() => {
 		loadApps();
@@ -588,13 +576,18 @@
 	{/if}
 </div>
 
-{#if confirmTarget}
-	<div
-		class="modal-backdrop"
-		role="presentation"
-		onclick={onBackdropClick}
-	>
-		<div class="modal" role="dialog" aria-modal="true" aria-labelledby="revoke-title">
+<Modal
+	open={!!confirmTarget}
+	onclose={closeConfirm}
+	labelledby="revoke-title"
+	maxWidth="420px"
+	placement="center"
+	--modal-bg="var(--bg-primary)"
+	--modal-radius="var(--radius)"
+	--modal-shadow="0 20px 60px rgba(0, 0, 0, 0.3)"
+>
+	{#if confirmTarget}
+		<div class="revoke-modal">
 			<h3 id="revoke-title" class="modal-title">Revoke {confirmTarget.client_name}?</h3>
 			<p class="modal-body">
 				The app will lose access immediately. This can&rsquo;t be undone.
@@ -609,8 +602,8 @@
 				</button>
 			</div>
 		</div>
-	</div>
-{/if}
+	{/if}
+</Modal>
 
 <style>
 	.page {
@@ -933,29 +926,13 @@
 		border-color: #ef4444;
 	}
 
-	/* Modal */
-	.modal-backdrop {
-		position: fixed;
-		inset: 0;
-		background: rgba(0, 0, 0, 0.5);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		padding: var(--space-4);
-		z-index: 100;
-	}
-
-	.modal {
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
+	/* Modal — surface/backdrop/Escape come from the shared <Modal> primitive
+	   (TASK-2083); this wrapper just restores the inner padding + column layout. */
+	.revoke-modal {
 		padding: var(--space-5);
-		max-width: 420px;
-		width: 100%;
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-3);
-		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
 	}
 
 	.modal-title {
