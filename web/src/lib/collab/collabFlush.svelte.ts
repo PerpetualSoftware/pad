@@ -137,6 +137,15 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 	// session for the active item. Coalesces redundant multi-tab PATCHes and,
 	// combined with `ctx.baseline`, suppresses the no-edit VIEW flush (BUG-1899).
 	let lastFlushedContent: string | null = null;
+	// Monotonic reset counter. Every resetDedup() (item swap, out-of-band raw
+	// save) bumps it. A flush captures it before awaiting the PATCH and refuses
+	// to record `lastFlushedContent` if it changed while the PATCH was in flight
+	// — a reset during the flush means the snapshot we were about to commit is
+	// now stale relative to whatever triggered the reset, so committing it would
+	// re-pollute the dedupe baseline the reset just cleared. Guards the extra
+	// promise turn `await config.save()` introduces over the page's original
+	// inline await. Per Codex review (TASK-2082).
+	let resetGeneration = 0;
 
 	function cancel(): void {
 		if (timer !== undefined) {
@@ -196,18 +205,26 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		const serverContent = lastFlushedContent ?? ctx.baseline;
 		if (serverContent === toSave) return 'deduped';
 
+		// Snapshot the reset generation across the PATCH so a resetDedup() that
+		// lands while it's in flight invalidates the record below.
+		const gen = resetGeneration;
 		const result = await config.save({
 			ws: ctx.wsSlug,
 			itemId: ctx.itemId,
 			toSave,
 			keepalive,
 		});
-		// lastFlushedContent is per-item; only seed it if the item we just
-		// flushed is still the active one. Otherwise a stale flush could pollute
-		// the new page's dedupe state. (The injected save() already returns
-		// 'skipped' when a force_refresh landed while the PATCH was in flight, so
-		// we never record a known-stale base.)
-		if (result === 'flushed' && config.isActiveItem(ctx.itemId)) {
+		// lastFlushedContent is per-item; only seed it if:
+		//   - the PATCH actually flushed (save() returns 'skipped' when a
+		//     force_refresh landed mid-flight, so we never record a stale base),
+		//   - no resetDedup() ran during the PATCH (item swap / raw save would
+		//     otherwise be re-polluted by this now-stale snapshot), AND
+		//   - the item we just flushed is still the active one.
+		if (
+			result === 'flushed' &&
+			resetGeneration === gen &&
+			config.isActiveItem(ctx.itemId)
+		) {
 			lastFlushedContent = toSave;
 		}
 		return result;
@@ -226,6 +243,8 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 
 	function resetDedup(): void {
 		lastFlushedContent = null;
+		// Invalidate any in-flight flush's pending record (see `gen` in flush()).
+		resetGeneration++;
 	}
 
 	return {

@@ -181,6 +181,32 @@ describe('createCollabFlusher — flushNow (teardown / beforeunload)', () => {
 	});
 });
 
+describe('createCollabFlusher — reset during an in-flight flush', () => {
+	it('does NOT record lastFlushed if resetDedup() lands while the PATCH is in flight (no stale re-pollution)', async () => {
+		// A deferred save so we can interleave a reset before it resolves.
+		let resolveSave!: (v: 'flushed') => void;
+		const save = vi.fn(
+			() =>
+				new Promise<'flushed'>((res) => {
+					resolveSave = res;
+				}),
+		);
+		const { flusher } = makeFlusher({ save });
+
+		const flushPromise = flusher.flush(ctx({ baseline: 'old' }), 'edited', false);
+		expect(save).toHaveBeenCalledTimes(1);
+		// An out-of-band raw save / item swap resets the dedupe baseline WHILE the
+		// collab PATCH is still awaiting.
+		flusher.resetDedup();
+		expect(flusher.lastFlushed).toBeNull();
+		// Now the collab PATCH resolves — its stale snapshot must NOT re-seed.
+		resolveSave('flushed');
+		const result = await flushPromise;
+		expect(result).toBe('flushed');
+		expect(flusher.lastFlushed).toBeNull();
+	});
+});
+
 describe('createCollabFlusher — resetDedup', () => {
 	it('clears the recorded baseline so an identical content flushes again (post raw-save)', async () => {
 		const { flusher, save } = makeFlusher();
