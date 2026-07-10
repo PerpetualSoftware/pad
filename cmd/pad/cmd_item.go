@@ -1205,8 +1205,11 @@ func itemExportCmd() *cobra.Command {
 		Long: `Export a single playbook or convention item to a portable artifact
 (Markdown body + YAML frontmatter) that can be imported into another workspace.
 
-Only playbooks and conventions are exportable as artifacts; any other item
-type is rejected by the server.
+Only playbooks and conventions can be exported. They are Pad's two "library"
+item types — the ones designed to move between workspaces. Every other item
+type is workspace-local and has no portable-artifact form, so the server
+rejects it. To pull data out of a task, idea, doc, or any other item, use
+"pad item show <ref> --format json" instead.
 
 Items can be referenced by issue ID (e.g. PLAYB-3) or slug.
 
@@ -1299,6 +1302,10 @@ func itemImportCmd() *cobra.Command {
 		Short: "Import a playbook or convention artifact into the workspace",
 		Long: `Import a portable artifact (Markdown body + YAML frontmatter) as a new
 playbook or convention in the current workspace.
+
+Only playbooks and conventions have a portable-artifact form, so an import
+only ever creates one of those two "library" item types. No other item type
+can be created this way.
 
 The item is always imported as a draft — review and activate it afterward.
 The server may emit warnings (e.g. a foreign select value cleared, or an
