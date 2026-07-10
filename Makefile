@@ -109,13 +109,34 @@ lint:
 	fi
 	$(GOLANGCI_LINT) run --timeout=5m ./...
 
-# Run govulncheck against the call graph. Mirrors the "Run govulncheck"
-# step in CI's Go job verbatim. `go install foo@vX.Y.Z` is idempotent
-# and rebuilds quickly when the pinned version is already in the module
-# cache, so we don't need a version-check shim like lint has.
+# Run govulncheck in BINARY mode against a freshly-built pad binary, NOT
+# source mode (`govulncheck ./...`). Source mode builds an SSA call-graph
+# over the entire dependency tree (BigQuery / OTel / gRPC / Google Cloud),
+# which balloons to multiple GB of RAM and can lock up a memory-constrained
+# host (BUG-2084). Binary mode reads the compiled binary's symbol table
+# instead: a fraction of the memory, still call-graph-precise (it walks the
+# binary's symbol graph), and it detects stdlib vulns from the Go version
+# stamped in the binary. Because `pad` is a single binary containing the
+# whole codebase (server + CLI), scanning it covers everything; not-called
+# module vulns are naturally suppressed since their symbols aren't linked in.
+# Mirrors the "Run govulncheck" step in CI's Go job — keep the two in sync.
+#
+# The build needs web/build to exist for the //go:embed directive. Locally
+# `make web` / `make install` provides the real assets; the guard below
+# drops a placeholder when it's absent (e.g. a fresh clone) so a standalone
+# `make vuln` never fails on the embed. `go install foo@vX.Y.Z` is idempotent
+# and rebuilds quickly when the pinned version is already cached.
+#
+# The scan binary is written to the repo root (real disk), NOT /tmp: some
+# hosts mount /tmp as a small tmpfs (RAM-backed), where a large embedded
+# binary can hit "no space left" and, worse, consume the very RAM we're
+# trying not to exhaust (BUG-2084). It's removed on completion and
+# .gitignore'd so an interrupted run can't leave a tracked artifact.
 vuln:
 	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
-	$(GOVULNCHECK) ./...
+	@[ -n "$$(ls -A web/build 2>/dev/null)" ] || { mkdir -p web/build && echo placeholder > web/build/.gitkeep; }
+	go build -o pad-vulnscan ./cmd/pad
+	$(GOVULNCHECK) -mode binary pad-vulnscan; status=$$?; rm -f pad-vulnscan; exit $$status
 
 # Web pre-flight that mirrors CI's Web job beyond the build step:
 # `npm audit` (production dependencies, high severity+) and svelte-check

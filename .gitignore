@@ -2,6 +2,7 @@
 /pad
 /pad.exe
 /loadtest-collab
+/pad-vulnscan
 
 # Web build output
 web/build/
