@@ -92,10 +92,39 @@ func newRootCmd() *cobra.Command {
 		Use:     "pad",
 		Short:   "Pad — project management for developers and AI agents",
 		Version: fullVersion(),
+		// Runtime errors (item not found, network failures) print a clean
+		// one-line message; the full usage block is noise there. Flag-parse
+		// errors DO want usage, so the FlagErrorFunc below reprints it for
+		// that path only.
+		SilenceUsage: true,
+		// Validate the persistent --format value up front so a bogus value
+		// fails loudly instead of silently rendering a table. Runs for every
+		// subcommand (cobra invokes the nearest PersistentPreRunE, and no
+		// subcommand defines its own). The help command binds its own local
+		// --format, which shadows this persistent flag, so `pad help … --format md`
+		// leaves formatFlag at its "table" default and still passes.
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			switch formatFlag {
+			case "table", "json", "markdown":
+				return nil
+			default:
+				return fmt.Errorf("invalid --format %q: must be one of table, json, markdown", formatFlag)
+			}
+		},
 	}
 
+	// SilenceUsage (above) suppresses usage for flag-parse errors too, but
+	// those genuinely benefit from it. Reprint usage on the flag-error path
+	// only — a typo'd flag stays helpful while runtime errors stay terse.
+	// We print only the usage block here and let cobra print the "Error: …"
+	// line (SilenceErrors stays off), so the message isn't duplicated.
+	rootCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		cmd.PrintErrln(cmd.UsageString())
+		return err
+	})
+
 	rootCmd.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace slug override")
-	rootCmd.PersistentFlags().StringVar(&formatFlag, "format", "table", "output format: table, json, markdown")
+	rootCmd.PersistentFlags().StringVar(&formatFlag, "format", "table", "output format: table, json (markdown on select commands, e.g. item show, project changelog)")
 	rootCmd.PersistentFlags().StringVar(&urlFlag, "url", "", "server URL override (e.g., https://app.getpad.dev)")
 
 	rootCmd.AddCommand(

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -236,16 +237,53 @@ func (c *Client) CreateItem(wsSlug, collSlug string, input models.ItemCreate) (*
 
 func (c *Client) GetItem(wsSlug, itemSlug string) (*models.Item, error) {
 	var result models.Item
-	return &result, c.get("/workspaces/"+wsSlug+"/items/"+itemSlug, &result)
+	if err := c.get("/workspaces/"+wsSlug+"/items/"+itemSlug, &result); err != nil {
+		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
+	}
+	return &result, nil
 }
 
 func (c *Client) UpdateItem(wsSlug, itemSlug string, input models.ItemUpdate) (*models.Item, error) {
 	var result models.Item
-	return &result, c.patch("/workspaces/"+wsSlug+"/items/"+itemSlug, input, &result)
+	if err := c.patch("/workspaces/"+wsSlug+"/items/"+itemSlug, input, &result); err != nil {
+		return nil, wrapItemNotFound(err, itemSlug, wsSlug)
+	}
+	return &result, nil
 }
 
 func (c *Client) DeleteItem(wsSlug, itemSlug string) error {
-	return c.delete("/workspaces/" + wsSlug + "/items/" + itemSlug)
+	return wrapItemNotFound(c.delete("/workspaces/"+wsSlug+"/items/"+itemSlug), itemSlug, wsSlug)
+}
+
+// itemNotFoundError decorates a "not_found" APIError with a message that echoes
+// the failing ref and workspace, while still unwrapping to the original
+// *APIError so errors.As / structured callers keep seeing the Code and Details.
+type itemNotFoundError struct {
+	msg string
+	err error
+}
+
+func (e *itemNotFoundError) Error() string { return e.msg }
+func (e *itemNotFoundError) Unwrap() error { return e.err }
+
+// wrapItemNotFound rewrites a bare "not_found" APIError from the item-by-ref
+// endpoints into a message that echoes the failing ref and workspace, so
+// `pad item show TASK-999999` reads "item TASK-999999 not found in workspace
+// docapp" instead of a context-free "Item not found". The original *APIError
+// stays reachable via errors.As. Any other error (or nil) passes through
+// unchanged.
+func wrapItemNotFound(err error, itemSlug, wsSlug string) error {
+	if err == nil {
+		return nil
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Code == "not_found" {
+		return &itemNotFoundError{
+			msg: fmt.Sprintf("item %s not found in workspace %s", itemSlug, wsSlug),
+			err: err,
+		}
+	}
+	return err
 }
 
 // ListItemVersions returns the item's version history (newest-first), with
