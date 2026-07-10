@@ -768,6 +768,10 @@
 	   (TASK-2023); this modal keeps only its inner content styling. */
 	.new-item-content {
 		padding: var(--space-5);
+		/* The shared <Modal> caps height (max-height: 85vh) with overflow: hidden;
+		   scroll the picker content itself so a long collection list / short
+		   viewport can't clip the lower buttons. */
+		overflow-y: auto;
 	}
 	.new-item-content .dialog-header {
 		display: flex;
