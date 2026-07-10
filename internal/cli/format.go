@@ -3,14 +3,18 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode/utf8"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/fatih/color"
+	"golang.org/x/term"
 )
 
 // Color definitions for reuse across the CLI.
@@ -129,48 +133,232 @@ func RelativeTime(t time.Time) string {
 	}
 }
 
-// PrintItemTable prints items in a formatted table.
+// sgrPattern matches ANSI SGR (Select Graphic Rendition) escape sequences —
+// the color/reset codes fatih/color emits on a TTY. Compiled once and reused
+// to measure the visible width of a colorized string. Declared at package
+// scope so the compile cost is paid a single time.
+var sgrPattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+// displayWidth returns the visible column width of s: ANSI SGR escape
+// sequences are stripped, then the remaining runes are counted. Every rune is
+// approximated as one column — emoji and other wide runes therefore
+// under-count. That is a pre-existing limitation of the CLI's table rendering
+// (matching the old tabwriter behavior) and is intentionally out of scope; the
+// alternative is a new go-runewidth dependency we don't want to add.
+func displayWidth(s string) int {
+	return utf8.RuneCountInString(sgrPattern.ReplaceAllString(s, ""))
+}
+
+// padCell left-aligns s in a column of the given visible width by appending
+// spaces. If s is already at least that wide the string is returned unchanged
+// (never panics on a negative repeat count).
+func padCell(s string, width int) string {
+	gap := width - displayWidth(s)
+	if gap <= 0 {
+		return s
+	}
+	return s + strings.Repeat(" ", gap)
+}
+
+// truncateTitle limits an uncolorized, SGR-free title to maxRunes visible
+// columns, appending an ellipsis when it had to cut. Callers strip SGR escapes
+// first (see the row-build loop), so every rune counts as exactly one column —
+// matching displayWidth — and slicing by runes can never cut mid-escape.
+func truncateTitle(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	if maxRunes == 1 {
+		return "…"
+	}
+	return string(runes[:maxRunes-1]) + "…"
+}
+
+// itemStatusPriority pulls the "status" and "priority" string values out of an
+// item's fields JSON blob. Missing keys, non-string values, or malformed JSON
+// yield empty strings.
+func itemStatusPriority(fieldsJSON string) (status, priority string) {
+	if fieldsJSON == "" || fieldsJSON == "{}" || fieldsJSON == "null" {
+		return "", ""
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+		return "", ""
+	}
+	if s, ok := fields["status"].(string); ok {
+		status = s
+	}
+	if p, ok := fields["priority"].(string); ok {
+		priority = p
+	}
+	return status, priority
+}
+
+// PrintItemTable prints items in a width-aware, ANSI-safe table. It probes the
+// terminal width (falling back to 120 columns when stdout is piped or the size
+// is unavailable) and delegates layout to renderItemTable.
 func PrintItemTable(items []models.Item) {
+	maxWidth := 120
+	if w, _, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 {
+		maxWidth = w
+	}
+	renderItemTable(os.Stdout, items, maxWidth)
+}
+
+// renderItemTable is the testable core of PrintItemTable: it lays the item
+// list out into maxWidth columns and writes to w. Columns are
+// REF/TITLE · STATUS · PRIORITY · COLLECTION · UPDATED. The four short columns
+// are sized to their widest cell; the flexible REF/TITLE column absorbs the
+// remaining width, truncating ONLY the title (never the ref) so each row fits.
+//
+// tabwriter is deliberately not used here: it counts ANSI color escape bytes
+// as visible width and so misaligns colorized output on a TTY. All width math
+// goes through displayWidth, which strips those escapes.
+func renderItemTable(w io.Writer, items []models.Item, maxWidth int) {
 	if len(items) == 0 {
-		fmt.Println("No items found.")
+		fmt.Fprintln(w, "No items found.")
 		return
 	}
 
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	headerColor := color.New(color.Faint)
-	fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-		headerColor.Sprint("TITLE"),
-		headerColor.Sprint("COLLECTION"),
-		headerColor.Sprint("UPDATED"),
-		headerColor.Sprint("BY"),
-	)
+
+	// Pre-render every cell so we can measure visible widths before laying
+	// out. The REF/TITLE cell is assembled later (it depends on the computed
+	// title budget), so we stash its raw pieces.
+	type row struct {
+		pin        string // rendered pin marker ("" or "* " in yellow)
+		ref        string // raw ref, e.g. "TASK-5" — never truncated
+		title      string // raw title — the only thing we truncate
+		archived   bool
+		status     string // rendered short-column cells
+		priority   string
+		collection string
+		updated    string
+	}
+
+	rows := make([]row, 0, len(items))
 	for _, item := range items {
-		pin := ""
+		var r row
 		if item.Pinned {
-			pin = color.YellowString("* ")
+			r.pin = color.YellowString("* ")
 		}
-		ref := ItemRef(item)
-		var titlePart string
-		if ref != "" {
-			titlePart = BoldCyan.Sprint(ref) + "  " + Bold.Sprint(item.Title)
+		r.ref = ItemRef(item)
+		// Strip any SGR escapes a title might carry (we apply our own Bold
+		// styling). This keeps displayWidth == rune count for the title, so
+		// truncateTitle can slice by runes without ever cutting mid-escape or
+		// mis-accounting the width budget.
+		r.title = sgrPattern.ReplaceAllString(item.Title, "")
+		r.archived = item.DeletedAt != nil
+
+		status, priority := itemStatusPriority(item.Fields)
+		if status != "" {
+			r.status = ColorizedStatus(status)
 		} else {
-			titlePart = Bold.Sprint(item.Title)
+			r.status = Dim.Sprint("—")
 		}
-		if item.DeletedAt != nil {
-			titlePart += "  " + Dim.Sprint("(archived)")
+		if priority != "" {
+			r.priority = PriorityColor(priority).Sprint(priority)
+		} else {
+			r.priority = Dim.Sprint("—")
 		}
+
 		collLabel := item.CollectionName
 		if item.CollectionIcon != "" {
 			collLabel = item.CollectionIcon + " " + collLabel
 		}
-		fmt.Fprintf(w, "%s%s\t%s\t%s\t%s\n",
-			pin, titlePart,
-			collLabel,
-			Dim.Sprint(RelativeTime(item.UpdatedAt)),
-			Dim.Sprint(item.LastModifiedBy),
+		r.collection = collLabel
+		r.updated = Dim.Sprint(RelativeTime(item.UpdatedAt))
+		rows = append(rows, r)
+	}
+
+	// Short-column widths: max visible width over the header + every row.
+	statusW := displayWidth(headerColor.Sprint("STATUS"))
+	priorityW := displayWidth(headerColor.Sprint("PRIORITY"))
+	collectionW := displayWidth(headerColor.Sprint("COLLECTION"))
+	updatedW := displayWidth(headerColor.Sprint("UPDATED"))
+	for _, r := range rows {
+		statusW = max(statusW, displayWidth(r.status))
+		priorityW = max(priorityW, displayWidth(r.priority))
+		collectionW = max(collectionW, displayWidth(r.collection))
+		updatedW = max(updatedW, displayWidth(r.updated))
+	}
+
+	const sep = 2 // spaces between columns; 4 gaps between the 5 columns.
+	titleBudget := maxWidth - statusW - priorityW - collectionW - updatedW - sep*4
+	// Clamp to a non-negative floor: on a genuinely narrow terminal the four
+	// fixed columns alone can exceed maxWidth, driving titleBudget negative.
+	// Per DR-1 the ref and the short columns are never truncated, so such a
+	// terminal necessarily overflows — we degrade to "ref + as much title as
+	// fits (often none)" rather than mangle the ref or slice an ANSI escape.
+	// The floor just keeps the width arithmetic well-defined (padCell already
+	// tolerates over-wide cells).
+	if titleBudget < 0 {
+		titleBudget = 0
+	}
+	gap := strings.Repeat(" ", sep)
+
+	// The final column is never padded (avoids trailing whitespace); every
+	// earlier cell is padded to its column width so the columns line up.
+	writeRow := func(refCell, status, priority, collection, updated string) {
+		fmt.Fprintln(w, strings.Join([]string{
+			padCell(refCell, titleBudget),
+			padCell(status, statusW),
+			padCell(priority, priorityW),
+			padCell(collection, collectionW),
+			updated,
+		}, gap))
+	}
+
+	// The flexible-column header obeys the same title budget as the data rows
+	// (a no-op at normal widths where "TITLE" easily fits) so the header can't
+	// overflow past the data cells in the degraded narrow-terminal regime.
+	writeRow(
+		headerColor.Sprint(truncateTitle("TITLE", titleBudget)),
+		headerColor.Sprint("STATUS"),
+		headerColor.Sprint("PRIORITY"),
+		headerColor.Sprint("COLLECTION"),
+		headerColor.Sprint("UPDATED"),
+	)
+
+	for _, r := range rows {
+		writeRow(
+			buildRefCell(r.pin, r.ref, r.title, r.archived, titleBudget),
+			r.status, r.priority, r.collection, r.updated,
 		)
 	}
-	w.Flush()
+}
+
+// buildRefCell assembles the flexible REF/TITLE cell within a visible budget.
+// Only the title is truncated — the pin marker, ref, and "(archived)" suffix
+// are always shown in full — so a narrow terminal degrades to ref + as much
+// title as fits (possibly none) rather than ever hiding or slicing the ref.
+// Truncation happens on the raw title before colorizing, so an ANSI escape is
+// never cut mid-sequence.
+func buildRefCell(pin, ref, title string, archived bool, budget int) string {
+	// Visible width consumed by everything except the title text.
+	fixed := displayWidth(pin)
+	refPrefix := ""
+	if ref != "" {
+		refPrefix = BoldCyan.Sprint(ref) + "  "
+		fixed += displayWidth(ref) + 2
+	}
+	archivedSuffix := ""
+	if archived {
+		archivedSuffix = "  " + Dim.Sprint("(archived)")
+		fixed += 2 + len("(archived)")
+	}
+
+	shown := truncateTitle(title, budget-fixed)
+
+	cell := pin + refPrefix
+	if shown != "" {
+		cell += Bold.Sprint(shown)
+	}
+	return cell + archivedSuffix
 }
 
 // PrintItemTitles prints just item titles.
