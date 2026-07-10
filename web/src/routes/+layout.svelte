@@ -7,7 +7,8 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
-	import { setAccessRevokedHandler } from '$lib/api/client';
+	import { setAccessRevokedHandler, setRateLimitHandler } from '$lib/api/client';
+	import { notifyServerBusy } from '$lib/api/serverBusyToast';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
@@ -61,6 +62,15 @@
 	// import that would create a circular dep.
 	setAccessRevokedHandler((scope) => {
 		localIndex.reset(scope.workspace);
+	});
+
+	// Register the "server busy" toast for surfaced 429s (TASK-2080 /
+	// PLAN-1984). The API client fires this seam once per surfaced 429;
+	// `notifyServerBusy` dedupes a burst down to a single non-alarming toast.
+	// Wired here (not inside client.ts) so client.ts stays free of a
+	// toast-store import, matching the access-revoked split above.
+	setRateLimitHandler((retryAfterMs) => {
+		notifyServerBusy(retryAfterMs);
 	});
 
 	onMount(async () => {

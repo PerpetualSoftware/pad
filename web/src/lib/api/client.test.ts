@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { api, parseRetryAfterMs, isRateLimitError, PadApiError } from './client';
+import { api, parseRetryAfterMs, isRateLimitError, PadApiError, setRateLimitHandler } from './client';
 
 // The 401 interceptor branches on `typeof window !== 'undefined'`. The
 // vitest environment here is 'node' (see vitest.config.ts), so `window` is
@@ -243,5 +243,40 @@ describe('api client 429 handling (TASK-2026)', () => {
 		const err = (await api.workspaces.list().catch((e) => e)) as PadApiError;
 		expect(err.code).toBe('rate_limited');
 		expect(err.retryAfterMs).toBe(2000);
+	});
+});
+
+describe('rate-limit UI seam / setRateLimitHandler (TASK-2080)', () => {
+	beforeEach(() => {
+		vi.unstubAllGlobals();
+	});
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		setRateLimitHandler(null);
+	});
+
+	it('fires the registered handler once (with the Retry-After delay) when a 429 surfaces', async () => {
+		const handler = vi.fn();
+		setRateLimitHandler(handler);
+		mockFetchSequence([
+			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '0' },
+			{ status: 429, body: { error: { code: 'rate_limited' } }, retryAfter: '2' },
+		]);
+
+		const err = await api.workspaces.list().catch((e) => e);
+		expect(isRateLimitError(err)).toBe(true);
+		// The surfaced 429 is the single chokepoint — handler fires exactly once,
+		// receiving the parsed Retry-After so the toast can name the wait.
+		expect(handler).toHaveBeenCalledTimes(1);
+		expect(handler).toHaveBeenCalledWith(2000);
+	});
+
+	it('does NOT fire the handler for a non-429 error', async () => {
+		const handler = vi.fn();
+		setRateLimitHandler(handler);
+		mockFetchOnce(500, { error: { code: 'internal', message: 'boom' } });
+
+		await expect(api.workspaces.list()).rejects.toBeTruthy();
+		expect(handler).not.toHaveBeenCalled();
 	});
 });
