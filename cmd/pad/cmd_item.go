@@ -759,7 +759,7 @@ Examples:
 			// First get the current item to merge fields
 			item, err := client.GetItem(ws, slug)
 			if err != nil {
-				return err
+				return wrapNotFound(err, slug, ws)
 			}
 
 			input := models.ItemUpdate{}
