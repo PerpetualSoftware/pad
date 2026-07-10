@@ -49,6 +49,13 @@ jobs:
         with:
           go-version: "1.26"
 
+      - name: Allow Go to fetch the toolchain go.mod pins
+        # actions/setup-go pins GOTOOLCHAIN=local, which blocks the toolchain
+        # go.mod requires (`go 1.26.5`) from being fetched. `auto`, written
+        # after setup-go so it wins the $GITHUB_ENV last-write, lets Go pull
+        # it on demand. Mirrors the CI workflow; see #896.
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "24"
