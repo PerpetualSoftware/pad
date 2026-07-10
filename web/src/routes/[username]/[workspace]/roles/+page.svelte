@@ -11,6 +11,7 @@
 	import type { Item, Collection, RoleBoardLane, AgentRole } from '$lib/types';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
+	import Modal from '$lib/components/common/Modal.svelte';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 
@@ -64,7 +65,8 @@
 	let highlightMine = $state(false);
 
 	// New item modal state
-	let newItemDialogEl = $state<HTMLDialogElement | null>(null);
+	let newItemOpen = $state(false);
+	let newItemTitleInput = $state<HTMLInputElement | null>(null);
 	let newItemCollectionSlug = $state('');
 	let newItemTitle = $state('');
 	let newItemSaving = $state(false);
@@ -83,21 +85,20 @@
 	function openNewItem() {
 		newItemCollectionSlug = '';
 		newItemTitle = '';
-		newItemDialogEl?.showModal();
+		newItemOpen = true;
 	}
 
 	function closeNewItem() {
-		newItemDialogEl?.close();
+		newItemOpen = false;
 		newItemCollectionSlug = '';
 		newItemTitle = '';
 	}
 
 	function selectCollection(slug: string) {
 		newItemCollectionSlug = slug;
-		// Focus the title input after selection
+		// Focus the title input after selection (it renders once a collection is picked)
 		requestAnimationFrame(() => {
-			const input = newItemDialogEl?.querySelector<HTMLInputElement>('.new-item-title-input');
-			input?.focus();
+			newItemTitleInput?.focus();
 		});
 	}
 
@@ -129,7 +130,7 @@
 	}
 
 	// Role editing modal state
-	let dialogEl = $state<HTMLDialogElement | null>(null);
+	let roleDialogOpen = $state(false);
 	let dialogMode = $state<'edit' | 'create'>('create');
 	let editingRoleId = $state<string | null>(null);
 	let editName = $state('');
@@ -144,7 +145,7 @@
 		editDescription = role.description;
 		editIcon = role.icon;
 		editTools = role.tools;
-		dialogEl?.showModal();
+		roleDialogOpen = true;
 	}
 
 	function openCreateModal() {
@@ -154,11 +155,11 @@
 		editDescription = '';
 		editIcon = '';
 		editTools = '';
-		dialogEl?.showModal();
+		roleDialogOpen = true;
 	}
 
 	function closeModal() {
-		dialogEl?.close();
+		roleDialogOpen = false;
 	}
 	let currentUserId = $state('');
 
@@ -452,11 +453,19 @@
 
 	<!-- Role edit/create modal -->
 <!-- New Item Modal -->
-<dialog class="new-item-dialog" bind:this={newItemDialogEl} onclick={(e) => { if (e.target === newItemDialogEl) closeNewItem(); }}>
+<Modal
+	open={newItemOpen}
+	onclose={closeNewItem}
+	placement="center"
+	maxWidth="400px"
+	labelledby="new-item-dialog-title"
+	--modal-border="none"
+	--modal-shadow="0 16px 48px rgba(0, 0, 0, 0.3)"
+>
 	<div class="dialog-content new-item-content">
 		{#if !newItemCollectionSlug}
 			<div class="dialog-header">
-				<h2>New Item</h2>
+				<h2 id="new-item-dialog-title">New Item</h2>
 				<button class="dialog-close" onclick={closeNewItem}>✕</button>
 			</div>
 			<div class="collection-grid">
@@ -471,11 +480,12 @@
 			{@const selectedColl = eligibleCollections.find(c => c.slug === newItemCollectionSlug)}
 			<div class="dialog-header">
 				<button class="back-btn" onclick={() => { newItemCollectionSlug = ''; newItemTitle = ''; }} title="Back">←</button>
-				<h2>New {selectedColl?.icon} {selectedColl?.name?.replace(/s$/, '') ?? 'Item'}</h2>
+				<h2 id="new-item-dialog-title">New {selectedColl?.icon} {selectedColl?.name?.replace(/s$/, '') ?? 'Item'}</h2>
 				<button class="dialog-close" onclick={closeNewItem}>✕</button>
 			</div>
 			<div class="new-item-form">
 				<input
+					bind:this={newItemTitleInput}
 					class="new-item-title-input"
 					type="text"
 					placeholder="Title…"
@@ -492,12 +502,21 @@
 			</div>
 		{/if}
 	</div>
-</dialog>
+</Modal>
 
-<dialog class="roles-dialog" bind:this={dialogEl} onclick={(e) => { if (e.target === dialogEl) closeModal(); }}>
+<Modal
+	open={roleDialogOpen}
+	onclose={closeModal}
+	placement="center"
+	maxWidth="520px"
+	labelledby="roles-dialog-title"
+	--modal-bg="var(--bg-primary)"
+	--modal-border="none"
+	--modal-shadow="0 20px 60px rgba(0, 0, 0, 0.3)"
+>
 	<div class="dialog-content">
 		<div class="dialog-header">
-			<h2>{dialogMode === 'edit' ? 'Edit Role' : 'New Role'}</h2>
+			<h2 id="roles-dialog-title">{dialogMode === 'edit' ? 'Edit Role' : 'New Role'}</h2>
 			<button class="dialog-close" onclick={closeModal}>✕</button>
 		</div>
 
@@ -537,7 +556,7 @@
 			{/if}
 		</div>
 	</div>
-</dialog>
+</Modal>
 
 	{#if loading}
 		<div class="skeleton-board">
@@ -745,26 +764,14 @@
 	}
 
 	/* ── New Item Modal ──────────────────────────────────────────────── */
-	.new-item-dialog {
-		border: none;
-		border-radius: var(--radius-lg);
-		padding: 0;
-		background: var(--bg-secondary);
-		color: var(--text-primary);
-		max-width: 400px;
-		width: 90vw;
-		box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
-		position: fixed;
-		top: 50%;
-		left: 50%;
-		transform: translate(-50%, -50%);
-		margin: 0;
-	}
-	.new-item-dialog::backdrop {
-		background: rgba(0, 0, 0, 0.5);
-	}
+	/* Surface + backdrop + centering are owned by the shared <Modal> primitive
+	   (TASK-2023); this modal keeps only its inner content styling. */
 	.new-item-content {
 		padding: var(--space-5);
+		/* The shared <Modal> caps height (max-height: 85vh) with overflow: hidden;
+		   scroll the picker content itself so a long collection list / short
+		   viewport can't clip the lower buttons. */
+		overflow-y: auto;
 	}
 	.new-item-content .dialog-header {
 		display: flex;
@@ -1163,25 +1170,8 @@
 	}
 
 	/* ── Roles Dialog ─────────────────────────────────── */
-	.roles-dialog {
-		border: none;
-		border-radius: var(--radius-lg);
-		padding: 0;
-		max-width: 520px;
-		width: 90vw;
-		max-height: 80vh;
-		background: var(--bg-primary);
-		color: var(--text-primary);
-		box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-		position: fixed;
-		top: 50%;
-		left: 50%;
-		transform: translate(-50%, -50%);
-		margin: 0;
-	}
-	.roles-dialog::backdrop {
-		background: rgba(0, 0, 0, 0.5);
-	}
+	/* Surface + backdrop + centering are owned by the shared <Modal> primitive
+	   (TASK-2023); this modal keeps only its inner content styling. */
 	.dialog-content {
 		display: flex;
 		flex-direction: column;
