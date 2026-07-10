@@ -19,6 +19,19 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
+// wrapNotFound converts a not-found APIError into a message that includes the
+// failing ref and workspace, e.g. "item TASK-999999 not found in workspace docapp".
+// All other errors pass through unchanged.
+func wrapNotFound(err error, ref, ws string) error {
+	if err == nil {
+		return nil
+	}
+	if apiErr, ok := err.(*cli.APIError); ok && apiErr.Code == "not_found" {
+		return fmt.Errorf("item %s not found in workspace %s", ref, ws)
+	}
+	return err
+}
+
 // parseFieldFlag parses a --field key=value flag value according to the
 // field's declared schema type. JSON-typed and multi_select fields receive
 // parsed JSON values, number-typed fields receive numbers, and checkbox
@@ -502,7 +515,7 @@ func showCmd() *cobra.Command {
 
 			item, err := client.GetItem(ws, args[0])
 			if err != nil {
-				return err
+				return wrapNotFound(err, args[0], ws)
 			}
 
 			// PLAN-1593 / TASK-1596: fetch the top 5 backlinks
@@ -897,7 +910,7 @@ Examples:
 						return fmt.Errorf("update rejected: item was modified by another writer")
 					}
 				}
-				return err
+				return wrapNotFound(err, slug, ws)
 			}
 
 			if formatFlag == "json" {
@@ -1362,7 +1375,7 @@ func commentCmd() *cobra.Command {
 
 			comment, err := client.CreateComment(ws, args[0], input)
 			if err != nil {
-				return err
+				return wrapNotFound(err, args[0], ws)
 			}
 
 			if formatFlag == "json" {
