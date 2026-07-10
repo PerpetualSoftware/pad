@@ -247,6 +247,48 @@ export function setAccessRevokedHandler(handler: AccessRevokedHandler | null): v
 }
 
 /**
+ * Fired once per surfaced 429 so the UI can show a distinct "server busy"
+ * notification instead of a generic failure (TASK-2080). The optional
+ * `retryAfterMs` is the parsed `Retry-After` delay (present only when the
+ * server sent a usable header) so the handler can say "try again in ~Ns".
+ *
+ * This is the client → UI seam that keeps client.ts free of a toast-store
+ * (Svelte) import, mirroring `setAccessRevokedHandler`. The chokepoint is
+ * the single `throw err` in the 429 branch of `request()`, so EVERY 429 that
+ * actually surfaces (auto-retry exhausted, or a non-idempotent write) calls
+ * this exactly once. Burst DEDUPE is the handler's job, not the client's —
+ * the client stays a dumb signal source.
+ */
+type RateLimitHandler = (retryAfterMs?: number) => void;
+
+let rateLimitHandler: RateLimitHandler | null = null;
+
+/**
+ * Register a single callback fired when the API client surfaces a 429
+ * `rate_limited` error. The app wires this once at startup (from
+ * +layout.svelte) to a deduped "server busy" toast. Calling this again
+ * replaces the previous handler; pass null to clear. Handler failures are
+ * swallowed so the 429 still propagates cleanly. TASK-2080.
+ */
+export function setRateLimitHandler(handler: RateLimitHandler | null): void {
+	rateLimitHandler = handler;
+}
+
+/**
+ * Best-effort fire of the registered rate-limit handler. Swallows handler
+ * failures so a broken UI hook can't corrupt the API error path. TASK-2080.
+ */
+function notifyRateLimited(retryAfterMs?: number): void {
+	if (!rateLimitHandler) return;
+	try {
+		rateLimitHandler(retryAfterMs);
+	} catch (err) {
+		// eslint-disable-next-line no-console
+		console.warn('rate-limit handler threw', err);
+	}
+}
+
+/**
  * Parse a URL path and decide whether a 403 on it indicates that the
  * caller's READ access to the workspace's item set has been revoked.
  * Returns null for any path that doesn't qualify — auth, admin,
@@ -479,6 +521,11 @@ async function request<T>(
 			details: body?.error?.details,
 		});
 		if (retryAfterMs != null) err.retryAfterMs = retryAfterMs;
+		// Single UI seam for the "server busy" notification (TASK-2080).
+		// Every 429 that actually surfaces funnels through this throw, so
+		// the registered handler fires exactly once per surfaced 429; the
+		// handler owns burst dedupe so a storm doesn't stack toasts.
+		notifyRateLimited(err.retryAfterMs);
 		throw err;
 	}
 	if (!resp.ok) {
