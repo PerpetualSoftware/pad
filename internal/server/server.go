@@ -55,7 +55,7 @@ type Server struct {
 	metrics               *metrics.Metrics     // Prometheus metrics (optional)
 	metricsToken          string               // shared bearer token for /metrics scrapes ("" = loopback-only)
 	trustedProxyCIDRs     []*net.IPNet         // CIDRs allowed to set X-Forwarded-For (nil = proxy headers untrusted)
-	ipChangeEnforceStrict bool                 // when true, reject sessions whose client IP differs from the one recorded at session creation
+	ipChangeEnforceStrict bool                 // when true, revoke+reject sessions whose client IP OR User-Agent hash differs from the one recorded at session creation
 	sseMaxConnections     int                  // global SSE connection limit (0 = unlimited)
 	sseMaxPerWorkspace    int                  // per-workspace SSE connection limit (0 = unlimited)
 	cloudMode             bool                 // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
@@ -887,12 +887,16 @@ func (s *Server) SetTrustedProxies(spec string) {
 }
 
 // SetIPChangeEnforce controls how the auth middleware reacts when a
-// session's client IP changes mid-lifetime:
-//   - mode == "strict": reject the request (session treated as possibly stolen)
+// session's binding (client IP OR User-Agent hash) changes mid-lifetime:
+//   - mode == "strict": revoke the session and reject the request (the token
+//     is treated as possibly stolen). Covers BOTH the IP and the UA signal —
+//     one flag arms the whole session-binding enforcement.
 //   - anything else (default): log to the audit log, update the stored IP,
 //     and let the request through. Strict mode breaks legitimate mobility
-//     (mobile roaming, VPN toggles) so it is opt-in for high-sensitivity
-//     deployments via the PAD_IP_CHANGE_ENFORCE env var.
+//     (mobile roaming, VPN toggles for IP; browser/WebView updates for UA) so
+//     it is opt-in for high-sensitivity deployments via the
+//     PAD_IP_CHANGE_ENFORCE env var. See handleSessionIPChange /
+//     handleSessionUAChange for the per-signal semantics.
 func (s *Server) SetIPChangeEnforce(mode string) {
 	s.ipChangeEnforceStrict = strings.EqualFold(strings.TrimSpace(mode), "strict")
 }
