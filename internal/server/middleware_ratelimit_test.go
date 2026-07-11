@@ -45,6 +45,33 @@ func TestRateLimit_AuthEndpointLimited(t *testing.T) {
 	}
 }
 
+// TestRateLimit_DisabledByEnv pins BUG-2089: PAD_DISABLE_RATE_LIMITS=1
+// makes the server skip all rate limiting (nil rateLimiters → RateLimit
+// is a pass-through), so the E2E harness — where every test shares one
+// loopback IP — doesn't trip the auth limiter. Without the env the same
+// burst returns 429 (see TestRateLimit_AuthEndpointLimited).
+func TestRateLimit_DisabledByEnv(t *testing.T) {
+	t.Setenv("PAD_DISABLE_RATE_LIMITS", "1")
+	srv := testServer(t)
+	if srv.rateLimiters != nil {
+		t.Fatal("PAD_DISABLE_RATE_LIMITS=1 must leave rateLimiters nil")
+	}
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	// Well past the burst of 5 — none may be rate-limited.
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
+			strings.NewReader(`{"email":"wrong@test.com","password":"wrong"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "10.0.0.1:1234"
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		if w.Code == http.StatusTooManyRequests {
+			t.Fatalf("request %d hit 429 with rate limiting disabled", i+1)
+		}
+	}
+}
+
 func TestRateLimit_DifferentIPsNotAffected(t *testing.T) {
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")

@@ -98,7 +98,13 @@ export default defineConfig({
 			PAD_HOST: E2E_HOST,
 			PAD_PORT: String(E2E_PORT),
 			PAD_DATA_DIR: DATA_DIR,
-			PAD_LOG_LEVEL: 'warn'
+			PAD_LOG_LEVEL: 'warn',
+			// Every E2E test shares one loopback IP, so the auth limiter
+			// (5 logins/min/IP) trips as soon as a spec logs in a couple of
+			// browser clients (BUG-2089). Disable rate limiting for the E2E
+			// server only — never in prod/self-host. run-pad.mjs spawns the
+			// binary with inherited env, so this reaches the pad process.
+			PAD_DISABLE_RATE_LIMITS: '1'
 		}
 	}
 });
