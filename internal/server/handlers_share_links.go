@@ -1,10 +1,13 @@
 package server
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -421,6 +424,45 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 				"message":          "Password required to view this content",
 			})
 			return
+		}
+		// Brute-force defense, two limiters charged BEFORE the bcrypt compare so
+		// no keying trades one failure mode for another:
+		//
+		//   1. Per-share+IP bucket. Rejects a single grinder's flood cheaply
+		//      (protecting bcrypt CPU) and turns the offline-fast attack into an
+		//      online crawl. Keyed on SHA-256(share ID)+client IP so the map
+		//      holds no secret; clientIP reads the trusted-proxy value, so it
+		//      can't be spoofed. Because it caps each address at a small burst,
+		//      one caller can't drain the link-wide bucket below.
+		//   2. Per-share AGGREGATE bucket (all IPs), keyed on SHA-256(share ID),
+		//      charged only after the per-IP gate passes. A botnet rotating
+		//      addresses gets a fresh per-IP burst from each, so the per-IP
+		//      layer alone can't cap link-wide guessing — this does, capping the
+		//      guess rate (and bcrypt CPU) at the bucket's rate across all IPs.
+		//      Charging it before the compare (like login's per-email AuthEmail
+		//      gate) means an exhausted link blocks even a would-be-correct
+		//      guess, so there's no password oracle. Its burst is sized so
+		//      ordinary multi-viewer traffic never trips it, and the per-IP gate
+		//      ahead of it means exhausting it takes a genuine botnet, not one
+		//      caller — the residual lockout is a self-healing botnet-only case,
+		//      the same bounded tradeoff AuthEmail accepts.
+		shareKeyHash := sha256.Sum256([]byte(link.ID))
+		shareKeyHex := hex.EncodeToString(shareKeyHash[:])
+		if s.rateLimiters != nil && s.rateLimiters.SharePasswordIP != nil {
+			key := "sp:" + shareKeyHex + ":" + clientIP(r)
+			if !s.rateLimiters.SharePasswordIP.getLimiter(key).Allow() {
+				slog.Warn("rate limited", "share_link_id", link.ID, "limiter", "share_password_ip")
+				writeRateLimitResponse(w, s.rateLimiters.SharePasswordIP.config)
+				return
+			}
+		}
+		if s.rateLimiters != nil && s.rateLimiters.SharePasswordShare != nil {
+			key := "sps:" + shareKeyHex
+			if !s.rateLimiters.SharePasswordShare.getLimiter(key).Allow() {
+				slog.Warn("rate limited", "share_link_id", link.ID, "limiter", "share_password_share")
+				writeRateLimitResponse(w, s.rateLimiters.SharePasswordShare.config)
+				return
+			}
 		}
 		if !s.store.ValidateShareLinkPassword(link, password) {
 			writeError(w, http.StatusForbidden, "forbidden", "Incorrect password")

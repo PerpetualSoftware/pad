@@ -156,6 +156,29 @@ type RateLimiters struct {
 	// valid challenge_token can grind through the small recovery-code
 	// space before the 5-minute challenge expires.
 	RecoveryCode *ipRateLimiter
+	// SharePasswordIP throttles password guesses on a single share link from a
+	// single source IP. Keyed on SHA-256(share ID)+client IP and charged on
+	// every attempt BEFORE the bcrypt compare, so a single grinder is capped
+	// (defeating the offline-fast attack) and can't burn server bcrypt CPU.
+	// Per-IP (not link-wide) so one caller exhausting their own bucket can't
+	// lock every legitimate viewer out. See handleResolveShareLink.
+	SharePasswordIP *ipRateLimiter
+	// SharePasswordShare caps the AGGREGATE guess rate against a single share
+	// link across all source IPs — the defense the per-IP bucket alone can't
+	// provide, since a botnet rotating addresses gets a fresh per-IP burst
+	// from each. Keyed on SHA-256(share ID) only and charged BEFORE the bcrypt
+	// compare (like the per-email AuthEmail gate on login), so it caps both
+	// distributed guessing AND bcrypt CPU, and once exhausted it blocks even a
+	// would-be-correct guess (no password oracle). It's charged only AFTER the
+	// per-IP gate passes, so a single IP — capped at its own small burst —
+	// contributes just a few tokens and can't drain the link-wide bucket on
+	// its own; exhausting this requires a genuine botnet, and the burst is
+	// sized so ordinary multi-viewer traffic never trips it. This is the same
+	// bounded-lockout tradeoff AuthEmail accepts: for an unauthenticated
+	// shared-secret URL a hard link-wide cap and zero DoS exposure can't
+	// coexist, so we cap the guess rate and keep the residual lockout to a
+	// self-healing botnet-only case. See handleResolveShareLink.
+	SharePasswordShare *ipRateLimiter
 	// MCPPerToken caps requests per individual bearer token on /mcp.
 	// PLAN-943 / TASK-959: per-token (not per-IP) buckets so that
 	// office-NAT-shared users don't share a quota, and a runaway
@@ -249,6 +272,42 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(6.0 / 3600.0),
 			Burst: 6,
 		}),
+		// SharePasswordIP: up to 5 guesses per share+IP, refilling at 10/hour. A
+		// share password is entered by people who already know it, so a
+		// legitimate viewer needs only a try or two — burst 5 leaves slop for
+		// a mistype. The burst is tighter than the login limiter's (5/min,
+		// which refills to full in a minute) and the slow 10/hour refill makes
+		// the sustained budget far tighter still: it turns a would-be
+		// offline-fast grind into a handful of guesses an hour, which no
+		// non-trivial password survives being cracked at.
+		//
+		// Retention must be ≥ the refill window (burst / rate = 5 ÷ (10/hour)
+		// = 30 min); otherwise cleanup could evict the bucket between guesses,
+		// letting an attacker pace their probes to dodge the cap. 1 hour gives
+		// margin.
+		SharePasswordIP: newIPRateLimiter(rateLimitConfig{
+			Rate:      rate.Limit(10.0 / 3600.0),
+			Burst:     5,
+			Retention: time.Hour,
+		}),
+		// SharePasswordShare: up to 60 guesses per link aggregated over all IPs,
+		// refilling at 60/hour. This is the anti-botnet ceiling — a distributed
+		// attacker rotating source addresses gets a fresh per-IP burst from
+		// each, so without a link-wide cap they could still grind the password
+		// fast. Charged before the compare (after the per-IP gate), so it caps
+		// bcrypt CPU and the guess rate at 60/hour link-wide — no real password
+		// survives that. Burst 60 is generous enough that ordinary multi-viewer
+		// traffic (a team all opening a link after an announcement) never trips
+		// it, and because the per-IP gate caps each address at 5 first, ~12
+		// distinct IPs are needed to exhaust this — a single IP can't DoS the
+		// link, and a botnet lockout self-heals at 1/min.
+		//
+		// Retention ≥ refill window (60 ÷ (60/hour) = 1 h); 2 h gives margin.
+		SharePasswordShare: newIPRateLimiter(rateLimitConfig{
+			Rate:      rate.Limit(60.0 / 3600.0),
+			Burst:     60,
+			Retention: 2 * time.Hour,
+		}),
 		// MCP per-token: 60 req/min sustained, burst 60. PLAN-943
 		// TASK-959, bumped under BUG-1430. 60/60 = 1 req/sec —
 		// written with explicit math rather than `rate.Limit(1)`
@@ -305,6 +364,8 @@ func (rls *RateLimiters) Stop() {
 		rls.Search,
 		rls.InvitationPreview,
 		rls.RecoveryCode,
+		rls.SharePasswordIP,
+		rls.SharePasswordShare,
 		rls.MCPPerToken,
 	} {
 		rl.Stop() // nil-safe via the receiver guard in (*ipRateLimiter).Stop
