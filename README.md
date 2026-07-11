@@ -101,7 +101,7 @@ pad server info                         # How this client is connected to Pad
 pad agent install        # Auto-detects your tools and installs the skill
 ```
 
-Works with **Claude Code**, **Cursor**, **Windsurf**, **Codex**, **GitHub Copilot**, **Amazon Q**, and **JetBrains Junie**.
+Works with **Claude Code**, **Cursor**, **Windsurf**, **Codex**, **OpenCode**, **GitHub Copilot**, **Amazon Q**, and **JetBrains Junie**.
 
 Then just talk to your project:
 

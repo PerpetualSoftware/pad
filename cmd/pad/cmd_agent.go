@@ -22,9 +22,10 @@ Specify a tool name to install for that tool directly.
 
 Supported tools:
   claude       Claude Code (.claude/skills/)
-  cursor       Cursor (.agents/skills/) — also covers Codex & Windsurf
+  cursor       Cursor (.agents/skills/) — also covers Codex, Windsurf & OpenCode
   codex        OpenAI Codex (.agents/skills/)
   windsurf     Windsurf (.agents/skills/)
+  opencode     OpenCode (.agents/skills/)
   copilot      GitHub Copilot (.github/instructions/)
   amazon-q     Amazon Q Developer (.amazonq/rules/)
   junie        JetBrains Junie (.junie/guidelines/)
@@ -32,7 +33,8 @@ Supported tools:
 Examples:
   pad agent install              # Auto-detect and install
   pad agent install claude       # Install for Claude Code
-  pad agent install cursor       # Install for Cursor/Codex/Windsurf
+  pad agent install cursor       # Install for Cursor/Codex/Windsurf/OpenCode
+  pad agent install opencode     # Install for OpenCode
   pad agent install --all        # Install for all detected tools
   pad agent status               # Show supported tools and status`,
 		ValidArgs: cli.AllToolNames(),

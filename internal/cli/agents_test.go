@@ -17,6 +17,7 @@ func TestResolveTool(t *testing.T) {
 		{"cursor", "agents", false},
 		{"codex", "agents", false},
 		{"windsurf", "agents", false},
+		{"opencode", "agents", false},
 		{"agents", "agents", false},
 		{"copilot", "copilot", false},
 		{"amazon-q", "amazon-q", false},
@@ -216,6 +217,20 @@ func TestDetectTools(t *testing.T) {
 		}
 	})
 
+	t.Run("home dir hit for agents via ~/.opencode", func(t *testing.T) {
+		home, _ := isolateEnv(t)
+		if err := os.Mkdir(filepath.Join(home, ".opencode"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		names := detectedNames(DetectTools())
+		if !names["agents"] {
+			t.Errorf("expected agents detected via ~/.opencode, got %v", names)
+		}
+		if names["claude"] {
+			t.Errorf("claude should not be detected, got %v", names)
+		}
+	})
+
 	t.Run("home dir hit for claude via ~/.claude", func(t *testing.T) {
 		home, _ := isolateEnv(t)
 		if err := os.Mkdir(filepath.Join(home, ".claude"), 0o755); err != nil {
@@ -236,6 +251,15 @@ func TestDetectTools(t *testing.T) {
 		names := detectedNames(DetectTools())
 		if !names["agents"] {
 			t.Errorf("expected agents detected via codex binary, got %v", names)
+		}
+	})
+
+	t.Run("binary hit for agents via opencode on PATH", func(t *testing.T) {
+		_, bin := isolateEnv(t)
+		writeStubBinary(t, bin, "opencode")
+		names := detectedNames(DetectTools())
+		if !names["agents"] {
+			t.Errorf("expected agents detected via opencode binary, got %v", names)
 		}
 	})
 
@@ -295,12 +319,13 @@ func TestAllToolNames(t *testing.T) {
 	names := AllToolNames()
 	// Should include both canonical names and aliases
 	expected := map[string]bool{
-		"claude":  true,
-		"agents":  true,
-		"cursor":  true,
-		"codex":   true,
-		"copilot": true,
-		"junie":   true,
+		"claude":   true,
+		"agents":   true,
+		"cursor":   true,
+		"codex":    true,
+		"opencode": true,
+		"copilot":  true,
+		"junie":    true,
 	}
 	nameMap := map[string]bool{}
 	for _, n := range names {

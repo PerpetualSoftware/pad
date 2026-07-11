@@ -34,7 +34,7 @@ type AgentTool struct {
 }
 
 // SupportedTools lists all supported agent tools.
-// The "agents" target covers Codex, Cursor, and Windsurf via the shared .agents/skills/ directory.
+// The "agents" target covers Codex, Cursor, Windsurf, and OpenCode via the shared .agents/skills/ directory.
 var SupportedTools = []AgentTool{
 	{
 		Name:           "claude",
@@ -48,11 +48,11 @@ var SupportedTools = []AgentTool{
 	},
 	{
 		Name:           "agents",
-		Label:          "Codex / Cursor / Windsurf",
-		Aliases:        []string{"codex", "cursor", "windsurf"},
-		DetectDirs:     []string{".cursor", ".windsurf", ".codex", ".agents"},
-		DetectHomeDirs: []string{".cursor", ".windsurf", ".codex", ".agents"},
-		DetectBinaries: []string{"codex", "cursor", "windsurf"},
+		Label:          "Codex / Cursor / Windsurf / OpenCode",
+		Aliases:        []string{"codex", "cursor", "windsurf", "opencode"},
+		DetectDirs:     []string{".cursor", ".windsurf", ".codex", ".opencode", ".agents"},
+		DetectHomeDirs: []string{".cursor", ".windsurf", ".codex", ".opencode", ".agents"},
+		DetectBinaries: []string{"codex", "cursor", "windsurf", "opencode"},
 		SkillDir:       filepath.Join(".agents", "skills", "pad"),
 		SkillFile:      "SKILL.md",
 	},
@@ -206,7 +206,7 @@ func FormatForTool(tool AgentTool, embeddedContent []byte) []byte {
 		return embeddedContent
 
 	case "agents":
-		// Codex/Cursor/Windsurf use name + description frontmatter
+		// Codex/Cursor/Windsurf/OpenCode use name + description frontmatter
 		body := StripFrontmatter(embeddedContent)
 		fm := `---
 name: pad
