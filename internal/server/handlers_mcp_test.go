@@ -16,6 +16,7 @@ import (
 // 404. This is the self-hosted contract — the binary stays free of
 // MCP-server overhead unless an operator explicitly opts in.
 func TestMCP_CloudModeOff_RoutesAbsent(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Cloud mode deliberately not set; SetMCPTransport never called.
 
@@ -40,6 +41,7 @@ func TestMCP_CloudModeOff_RoutesAbsent(t *testing.T) {
 // SetMCPTransport. The route group is gated on BOTH conditions; this
 // pins the AND.
 func TestMCP_CloudModeOnButTransportNotWired_RoutesAbsent(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-secret")
 	// Note: SetMCPTransport NOT called.
@@ -56,6 +58,7 @@ func TestMCP_CloudModeOnButTransportNotWired_RoutesAbsent(t *testing.T) {
 // where a config change makes the doc emit fallback values that don't
 // match the cert in production.
 func TestMCP_DiscoveryDoc_PopulatedFromConfig(t *testing.T) {
+	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-protected-resource", nil)
@@ -100,6 +103,7 @@ func TestMCP_DiscoveryDoc_PopulatedFromConfig(t *testing.T) {
 // shape assertions live in TestOAuth_AuthorizationServerMetadata_PopulatedShape
 // (which uses oauthEnabledTestServer).
 func TestMCP_AuthServerMetadata_MountedAndGated(t *testing.T) {
+	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
@@ -114,6 +118,7 @@ func TestMCP_AuthServerMetadata_MountedAndGated(t *testing.T) {
 // them at the discovery doc. Without this, Claude Desktop refuses to
 // proceed past the first request.
 func TestMCP_NoToken_Returns401WithWWWAuthenticate(t *testing.T) {
+	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 
 	rr := doRequest(srv, "POST", "/mcp", map[string]any{
@@ -138,6 +143,7 @@ func TestMCP_NoToken_Returns401WithWWWAuthenticate(t *testing.T) {
 // same envelope shape for a bearer that isn't even shaped like a pad
 // PAT. Format-rejection happens before the DB lookup.
 func TestMCP_BadTokenFormat_Returns401WithWWWAuthenticate(t *testing.T) {
+	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 
 	req := httptest.NewRequest("POST", "/mcp", strings.NewReader(`{}`))
@@ -164,6 +170,7 @@ func TestMCP_BadTokenFormat_Returns401WithWWWAuthenticate(t *testing.T) {
 // transport with the right user," not "the streamable transport
 // works" (mcp-go's own tests cover that).
 func TestMCP_ValidPAT_ReachesTransport(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	user, err := srv.store.CreateUser(models.UserCreate{
@@ -247,6 +254,7 @@ func TestMCP_ValidPAT_ReachesTransport(t *testing.T) {
 // deploys that hadn't configured the public URL yet. The fallback
 // derives "https://" + r.Host so the discovery handshake completes.
 func TestMCP_NoToken_FallsBackToHostWhenPublicURLUnset(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-secret")
 	stub := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -287,6 +295,7 @@ func TestMCP_NoToken_FallsBackToHostWhenPublicURLUnset(t *testing.T) {
 // MCPBearerAuth-side stash; the dispatcher enforcement is unit-
 // tested in internal/mcp/dispatch_http_test.go.
 func TestMCP_ReadScopedPAT_StashesScopesInContext(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	user, err := srv.store.CreateUser(models.UserCreate{
@@ -338,6 +347,7 @@ func TestMCP_ReadScopedPAT_StashesScopesInContext(t *testing.T) {
 // Specifically pins the read-vs-write decision the security finding
 // cared about.
 func TestTokenScopeAllows_PublicWrapper(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name           string
 		scopes, method string
@@ -441,6 +451,7 @@ func (t *mcpStubTransport) serve(w http.ResponseWriter, r *http.Request) {
 // context, and stashes scopes via WithTokenScopes so the in-process
 // dispatcher can enforce per-tool checks.
 func TestMCP_OAuthAccessToken_Authenticates(t *testing.T) {
+	t.Parallel()
 	srv, transport := mcpAndOAuthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -498,6 +509,7 @@ func TestMCP_OAuthAccessToken_Authenticates(t *testing.T) {
 // here defends against scenarios where the auth server is
 // compromised, misconfigured, or shared across multiple resources.
 func TestMCP_OAuthAccessToken_AudienceMismatch_Rejected(t *testing.T) {
+	t.Parallel()
 	// Step 1: build a normal MCP+OAuth server matched to
 	// testCanonicalAudience and mint a token through the standard
 	// helper.
@@ -551,6 +563,7 @@ func TestMCP_OAuthAccessToken_AudienceMismatch_Rejected(t *testing.T) {
 // accidentally puts the refresh token in the Authorization header
 // must NOT authenticate.
 func TestMCP_OAuthRefreshToken_RejectedAtMCP(t *testing.T) {
+	t.Parallel()
 	srv, _ := mcpAndOAuthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -582,6 +595,7 @@ func TestMCP_OAuthRefreshToken_RejectedAtMCP(t *testing.T) {
 // flow that sub-PRs A + D wired: a revoke call must invalidate
 // every bearer in the chain.
 func TestMCP_RevokedOAuthToken_Rejected(t *testing.T) {
+	t.Parallel()
 	srv, _ := mcpAndOAuthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -621,6 +635,7 @@ func TestMCP_RevokedOAuthToken_Rejected(t *testing.T) {
 // keep working unchanged so existing CLI / Claude-Code-on-self-host
 // users don't see a regression.
 func TestMCP_PATPath_StillWorks(t *testing.T) {
+	t.Parallel()
 	srv, transport := mcpAndOAuthEnabledTestServer(t)
 
 	user, err := srv.store.CreateUser(models.UserCreate{
@@ -667,6 +682,7 @@ func TestMCP_PATPath_StillWorks(t *testing.T) {
 // dispatcher-side enforcement is covered by
 // TestTokenScopeAllows_PublicWrapper / token_scopes_test.go.
 func TestMCP_OAuthScopeReadOnly_StashesPadReadScope(t *testing.T) {
+	t.Parallel()
 	srv, transport := mcpAndOAuthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -705,6 +721,7 @@ func TestMCP_OAuthScopeReadOnly_StashesPadReadScope(t *testing.T) {
 // the contract: oauthScopesToJSON produces null, and tokenScopeAllows
 // then denies for every method.
 func TestOAuthScopesToJSON_FailClosedOnEmpty(t *testing.T) {
+	t.Parallel()
 	got := oauthScopesToJSON(nil)
 	if got != "null" {
 		t.Errorf("nil scopes: got %q, want %q", got, "null")
@@ -740,6 +757,7 @@ func TestOAuthScopesToJSON_FailClosedOnEmpty(t *testing.T) {
 // support endpoint returns the four whitelisted fields and matches
 // what was registered.
 func TestOAuthClientPublicInfo_HappyPath(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 
@@ -797,6 +815,7 @@ func TestOAuthClientPublicInfo_HappyPath(t *testing.T) {
 // client ID gets 404, not 401 (caller IS authenticated; the resource
 // just doesn't exist).
 func TestOAuthClientPublicInfo_UnknownClient_404(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 
@@ -816,6 +835,7 @@ func TestOAuthClientPublicInfo_UnknownClient_404(t *testing.T) {
 // have to seed a user so the system is past setup, even though we
 // don't use that user's session in the actual request.
 func TestOAuthClientPublicInfo_Unauthenticated_401(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	// Seed a user so the system isn't in setup_required mode (which
 	// auto-allows everything). Discard the session — we want this
@@ -834,6 +854,7 @@ func TestOAuthClientPublicInfo_Unauthenticated_401(t *testing.T) {
 // cloud-mode gate covers the endpoint — self-hosted deployments
 // without the OAuth surface don't expose it.
 func TestOAuthClientPublicInfo_NotMountedOutsideCloudMode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 
@@ -871,6 +892,7 @@ func TestOAuthClientPublicInfo_NotMountedOutsideCloudMode(t *testing.T) {
 // hop breaks, the whole connector experience breaks for every
 // MCP-aware client. Worth one slow integration test.
 func TestE2E_ClaudeDesktopFlow(t *testing.T) {
+	t.Parallel()
 	srv, transport := mcpAndOAuthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 
@@ -948,6 +970,7 @@ func TestE2E_ClaudeDesktopFlow(t *testing.T) {
 // AFTER ValidateToken — Codex review #378 round 1 — to bound the
 // limiter map to valid-token hashes only).
 func TestMCPRateLimit_PerToken_BucketEnforced(t *testing.T) {
+	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 	pat := mustCreatePATForTest(t, srv, "rate-limit-bucket")
 
@@ -986,6 +1009,7 @@ func TestMCPRateLimit_PerToken_BucketEnforced(t *testing.T) {
 // Strategy: drain token1 to 429, then verify token2 still gets
 // through. Two real PATs so the rate-limit check fires for both.
 func TestMCPRateLimit_PerToken_TwoTokensIndependent(t *testing.T) {
+	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 	pat1 := mustCreatePATForTest(t, srv, "rate-limit-pat-1")
 	pat2 := mustCreatePATForTest(t, srv, "rate-limit-pat-2")
@@ -1037,6 +1061,7 @@ func TestMCPRateLimit_PerToken_TwoTokensIndependent(t *testing.T) {
 // 50 invalid bearers in a row — each one should 401 cleanly, none
 // should 429 (because validation rejected before the limiter runs).
 func TestMCPRateLimit_InvalidBearerNotRateLimited(t *testing.T) {
+	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 
 	// Shape-valid but unknown PAT — passes the prefix+length check,
@@ -1071,6 +1096,7 @@ func TestMCPRateLimit_InvalidBearerNotRateLimited(t *testing.T) {
 // hammer /mcp with it 50 times, assert every response is 401 (not
 // 429) AND the limiter map size is unchanged.
 func TestMCPRateLimit_OAuthRefreshTokenNotCounted(t *testing.T) {
+	t.Parallel()
 	srv, _ := mcpAndOAuthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -1120,6 +1146,7 @@ func TestMCPRateLimit_OAuthRefreshTokenNotCounted(t *testing.T) {
 // a new entry in the map, growing it unbounded under random-bearer
 // spam.
 func TestMCPRateLimit_LimiterMapBoundedByValidTokensOnly(t *testing.T) {
+	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 
 	if srv.rateLimiters == nil || srv.rateLimiters.MCPPerToken == nil {
@@ -1158,6 +1185,7 @@ func TestMCPRateLimit_LimiterMapBoundedByValidTokensOnly(t *testing.T) {
 // which only runs on /mcp — so by construction the discovery
 // routes never hit it. This test pins that wiring.
 func TestMCPRateLimit_DiscoveryDocsExempt(t *testing.T) {
+	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 
 	// Hammer the protected-resource discovery doc 50 times; expect
@@ -1185,6 +1213,7 @@ func TestMCPRateLimit_DiscoveryDocsExempt(t *testing.T) {
 //
 // Concretely: 50 no-bearer requests should all 401, never 429.
 func TestMCPRateLimit_NoBearer_NotCounted(t *testing.T) {
+	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 
 	for i := 0; i < 50; i++ {
@@ -1208,6 +1237,7 @@ func TestMCPRateLimit_NoBearer_NotCounted(t *testing.T) {
 // the message; without the envelope they'd render a raw 429 with
 // no actionable text.
 func TestMCPRateLimit_429EnvelopeShape(t *testing.T) {
+	t.Parallel()
 	srv := mcpEnabledTestServer(t)
 	pat := mustCreatePATForTest(t, srv, "rate-limit-envelope")
 
@@ -1259,6 +1289,7 @@ func TestMCPRateLimit_429EnvelopeShape(t *testing.T) {
 // hash (caller is expected to skip empty bearers, but the helper
 // itself must not panic).
 func TestHashTokenForLimiter(t *testing.T) {
+	t.Parallel()
 	a := hashTokenForLimiter("token-a")
 	b := hashTokenForLimiter("token-b")
 	a2 := hashTokenForLimiter("token-a")
@@ -1293,6 +1324,7 @@ func TestHashTokenForLimiter(t *testing.T) {
 // inherits it; RequireWorkspaceAccess reads it; the workspace
 // resolves; the gate matches; the standard membership check runs.
 func TestWorkspaceAllowList_AllowsListedSlug(t *testing.T) {
+	t.Parallel()
 	srv, _ := mcpAndOAuthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -1336,6 +1368,7 @@ func TestWorkspaceAllowList_AllowsListedSlug(t *testing.T) {
 // rejected with 403 even when the user is a member of it. The
 // user's choice at consent time is binding.
 func TestWorkspaceAllowList_DeniesUnlistedSlug(t *testing.T) {
+	t.Parallel()
 	srv, _ := mcpAndOAuthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -1377,6 +1410,7 @@ func TestWorkspaceAllowList_DeniesUnlistedSlug(t *testing.T) {
 // user is a member of, no per-slug gate. Standard membership is
 // still the boundary.
 func TestWorkspaceAllowList_WildcardAllowsAnyMembership(t *testing.T) {
+	t.Parallel()
 	srv, _ := mcpAndOAuthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -1423,6 +1457,7 @@ func TestWorkspaceAllowList_WildcardAllowsAnyMembership(t *testing.T) {
 // permissions change immediately" property from the PLAN-943 design
 // (TASK-952's consent-screen footer references this).
 func TestWorkspaceAllowList_LiveMembershipRevocation(t *testing.T) {
+	t.Parallel()
 	srv, _ := mcpAndOAuthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -1484,6 +1519,7 @@ func TestWorkspaceAllowList_LiveMembershipRevocation(t *testing.T) {
 // hit the gate. PATs that hit /api/v1/workspaces/<slug>/* should
 // continue to work the same as they did pre-TASK-953.
 func TestWorkspaceAllowList_PATPathUnaffected(t *testing.T) {
+	t.Parallel()
 	srv, _ := mcpAndOAuthEnabledTestServer(t)
 	user := mustCreateUserForTest(t, srv, "pat-no-gate@example.com")
 	mustSeedWorkspaceWithRole(t, srv, user.ID, "Alpha", "alpha", "owner")
@@ -1526,6 +1562,7 @@ func TestWorkspaceAllowList_PATPathUnaffected(t *testing.T) {
 // "pad:write action + Viewer → 403 (capability allows but role
 // doesn't)."
 func TestWorkspaceAllowList_TierTimesRole_WriteByViewer(t *testing.T) {
+	t.Parallel()
 	srv, _ := mcpAndOAuthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
