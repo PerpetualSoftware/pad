@@ -704,6 +704,42 @@ func showCmd() *cobra.Command {
 	}
 }
 
+// --- open ---
+
+func itemOpenCmd() *cobra.Command {
+	return itemOpenCmdWithOpener(openBrowser)
+}
+
+func itemOpenCmdWithOpener(opener func(string) error) *cobra.Command {
+	return &cobra.Command{
+		Use:   "open <ref>",
+		Short: "Open an item in the Pad web UI",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, cfg := getClient()
+			ws := getWorkspace()
+
+			item, err := client.GetItem(ws, args[0])
+			if err != nil {
+				return err
+			}
+
+			ref := cli.ItemRef(*item)
+			if ref == "" {
+				return fmt.Errorf("item %q has no canonical reference", args[0])
+			}
+
+			target := fmt.Sprintf("%s/-/r/%s/%s",
+				cfg.BrowserURL(),
+				url.PathEscape(ws),
+				url.PathEscape(ref),
+			)
+			fmt.Printf("Opening %s\n", target)
+			return opener(target)
+		},
+	}
+}
+
 // --- update ---
 
 func updateCmd() *cobra.Command {
