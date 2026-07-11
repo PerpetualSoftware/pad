@@ -87,6 +87,7 @@ func bytes32ForTest() []byte {
 // =====================================================================
 
 func TestOAuth_AuthorizationServerMetadata_PopulatedShape(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
@@ -149,6 +150,7 @@ func sliceContainsString(v any, want string) bool {
 // =====================================================================
 
 func TestOAuth_Register_HappyPath(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 
 	rr := doRequest(srv, "POST", "/oauth/register", map[string]any{
@@ -181,6 +183,7 @@ func TestOAuth_Register_HappyPath(t *testing.T) {
 }
 
 func TestOAuth_Register_RejectsMissingRedirectURIs(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	rr := doRequest(srv, "POST", "/oauth/register", map[string]any{
 		"client_name": "No URIs",
@@ -196,6 +199,7 @@ func TestOAuth_Register_RejectsMissingRedirectURIs(t *testing.T) {
 }
 
 func TestOAuth_Register_RejectsBadRedirectURIShapes(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	cases := map[string]string{
 		"relative":          "/oauth/cb",
@@ -216,6 +220,7 @@ func TestOAuth_Register_RejectsBadRedirectURIShapes(t *testing.T) {
 }
 
 func TestOAuth_Register_RejectsNonPublicClientAuth(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	rr := doRequest(srv, "POST", "/oauth/register", map[string]any{
 		"redirect_uris":              []string{"https://app.test/cb"},
@@ -227,6 +232,7 @@ func TestOAuth_Register_RejectsNonPublicClientAuth(t *testing.T) {
 }
 
 func TestOAuth_Register_RejectsUnknownGrantType(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	rr := doRequest(srv, "POST", "/oauth/register", map[string]any{
 		"redirect_uris": []string{"https://app.test/cb"},
@@ -238,6 +244,7 @@ func TestOAuth_Register_RejectsUnknownGrantType(t *testing.T) {
 }
 
 func TestOAuth_Register_NotMountedOutsideCloudMode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t) // no SetCloudMode, no SetOAuthServer
 	rr := doRequest(srv, "POST", "/oauth/register", map[string]any{
 		"redirect_uris": []string{"https://app.test/cb"},
@@ -255,6 +262,7 @@ func TestOAuth_Register_NotMountedOutsideCloudMode(t *testing.T) {
 // =====================================================================
 
 func TestOAuth_Authorize_RedirectsToLoginWhenNoSession(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	// Register a client to make the request well-formed.
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -288,6 +296,7 @@ func TestOAuth_Authorize_RedirectsToLoginWhenNoSession(t *testing.T) {
 }
 
 func TestOAuth_Authorize_RendersConsentWhenLoggedIn(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 	user, sessionToken := loginTestUser(t, srv)
@@ -353,6 +362,7 @@ func TestOAuth_Authorize_RendersConsentWhenLoggedIn(t *testing.T) {
 }
 
 func TestOAuth_Authorize_RejectsAudienceMismatch(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 	_, sessionToken := loginTestUser(t, srv)
@@ -394,6 +404,7 @@ func TestOAuth_Authorize_RejectsAudienceMismatch(t *testing.T) {
 // =====================================================================
 
 func TestOAuth_AuthorizeDecide_RejectsMissingCSRFToken(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -425,6 +436,7 @@ func TestOAuth_AuthorizeDecide_RejectsMissingCSRFToken(t *testing.T) {
 }
 
 func TestOAuth_AuthorizeDecide_DenyRedirectsAccessDenied(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -458,6 +470,7 @@ func TestOAuth_AuthorizeDecide_DenyRedirectsAccessDenied(t *testing.T) {
 // =====================================================================
 
 func TestOAuth_FullAuthCodeFlow_PKCE(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -544,6 +557,7 @@ func TestOAuth_FullAuthCodeFlow_PKCE(t *testing.T) {
 // the request reaches the consent stub successfully — i.e.
 // translateResourceToAudience populated fosite's expected key.
 func TestOAuth_Authorize_AcceptsResourceOnly(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 	_, sessionToken := loginTestUser(t, srv)
@@ -593,6 +607,7 @@ func TestOAuth_Authorize_AcceptsResourceOnly(t *testing.T) {
 // audience-mismatch tests (the wrong-audience path) to lock in the
 // full matrix of what /authorize accepts for the audience parameter.
 func TestOAuth_Authorize_AcceptsNoResource_DefaultsToCanonical(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 	_, sessionToken := loginTestUser(t, srv)
@@ -641,6 +656,7 @@ func TestOAuth_Authorize_AcceptsNoResource_DefaultsToCanonical(t *testing.T) {
 // Without (1), the browser blocks. Without (2), the browser blocks
 // even WITH the CSP override. Both are necessary.
 func TestOAuth_ConsentScreen_NonceCSPLetsInlineScriptRun(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 	_, sessionToken := loginTestUser(t, srv)
@@ -722,6 +738,7 @@ func snippetAround(body, marker string, n int) string {
 // the previous OmitsUnimplementedEndpoints test asserted those were
 // also absent — those assertions moved to AdvertisesRevokeIntrospect.)
 func TestOAuth_AuthorizationServerMetadata_OmitsRFC9207IssFlag(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
@@ -754,6 +771,7 @@ func TestOAuth_AuthorizationServerMetadata_OmitsRFC9207IssFlag(t *testing.T) {
 // will dial a 404 and surface "auth server appears broken" to the
 // user with no clean recovery. Pin the wire shape.
 func TestOAuth_AuthorizationServerMetadata_AdvertisesRevokeIntrospect(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 
 	rr := doRequest(srv, "GET", "/.well-known/oauth-authorization-server", nil)
@@ -799,6 +817,7 @@ func TestOAuth_AuthorizationServerMetadata_AdvertisesRevokeIntrospect(t *testing
 //
 // Fail-loud 503 lets ops detect the misconfiguration immediately.
 func TestOAuth_AuthorizationServerMetadata_503WhenOAuthDisabled(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-secret")
 	// Mount MCP transport (so the discovery route is registered)
@@ -825,6 +844,7 @@ func TestOAuth_AuthorizationServerMetadata_503WhenOAuthDisabled(t *testing.T) {
 // fresh Server has fresh limiters, so other tests don't leak
 // budget across.
 func TestOAuth_Register_RateLimited(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 
 	body := map[string]any{
@@ -847,6 +867,7 @@ func TestOAuth_Register_RateLimited(t *testing.T) {
 }
 
 func TestOAuth_Token_RejectsMissingPKCEVerifier(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -903,6 +924,7 @@ func TestOAuth_Token_RejectsMissingPKCEVerifier(t *testing.T) {
 // role shown next to each. Multi-workspace coverage — the single-
 // workspace case is covered implicitly by the basic render test.
 func TestConsent_RendersUserWorkspaces(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -966,6 +988,7 @@ func TestConsent_RendersUserWorkspaces(t *testing.T) {
 // (e.g. autoCreateWorkspace failing silently) doesn't leave users
 // with a broken consent screen.
 func TestConsent_NoWorkspaces_ShowsEmptyState(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -999,6 +1022,7 @@ func TestConsent_NoWorkspaces_ShowsEmptyState(t *testing.T) {
 // subset check (RFC 6749 §3.3) would reject granting a tier the
 // client didn't request, so the UI must never offer it.
 func TestConsent_TierRadios_OnlyRequestedScopes(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -1037,6 +1061,7 @@ func TestConsent_TierRadios_OnlyRequestedScopes(t *testing.T) {
 // workspace allow-list in session.Extra (where TASK-953 will read
 // it for live role enforcement).
 func TestConsent_ApproveWithSpecificWorkspaces(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -1163,6 +1188,7 @@ func TestConsent_ApproveWithSpecificWorkspaces(t *testing.T) {
 // ["*"] which TASK-953 will translate to "no workspace gating
 // beyond live membership" at enforcement time.
 func TestConsent_ApproveWithWildcard(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -1256,6 +1282,7 @@ func TestConsent_ApproveWithWildcard(t *testing.T) {
 // may_create_workspaces checkbox. Verifies the parsed values land on
 // the oauth_connections row exactly as the user picked them.
 func TestConsent_ApproveWithNewShape(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -1342,6 +1369,7 @@ func TestConsent_ApproveWithNewShape(t *testing.T) {
 // screen (IDEA-1517 §2a — clients can suggest a default name to help
 // users tell their connections apart later).
 func TestConsent_SuggestedNamePrefill(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 	user, sessionToken := loginTestUser(t, srv)
@@ -1400,6 +1428,7 @@ func extractAroundSubstring(body, substr string, radius int) string {
 // a tampered POST that sends decision=approve with no
 // allowed_workspaces must still be rejected.
 func TestConsent_ApproveWithoutWorkspaceSelection_Rejected(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -1433,6 +1462,7 @@ func TestConsent_ApproveWithoutWorkspaceSelection_Rejected(t *testing.T) {
 // stored on the token (where TASK-953 would also reject, but with
 // a misleading "you don't have access" error far downstream).
 func TestConsent_ApproveWithUntrustedSlug_Rejected(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -1470,6 +1500,7 @@ func TestConsent_ApproveWithUntrustedSlug_Rejected(t *testing.T) {
 // fosite's grant-time check would also catch this with a less-
 // readable error, so the parse-time check produces a cleaner UX.
 func TestConsent_ApproveWithUnrequestedTier_Rejected(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -1508,6 +1539,7 @@ func TestConsent_ApproveWithUnrequestedTier_Rejected(t *testing.T) {
 // here — the read-vs-write distinction is the same selective-consent
 // property either way.
 func TestConsent_TokenScopeMatchesTierChoice_Read(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -1575,6 +1607,7 @@ func TestConsent_TokenScopeMatchesTierChoice_Read(t *testing.T) {
 // user's actual selection produces a token matching the user's
 // choice (not the attacker's URL params).
 func TestConsent_URLPollution_DoesNotOverrideUserSelection(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
@@ -1716,6 +1749,7 @@ func mustSeedWorkspaceWithRole(t *testing.T, srv *Server, userID, name, slug, ro
 // Mints two grants on the same client + user, uses tokens2.access
 // to verify tokens1.access went inactive after revoke.
 func TestOAuth_Revoke_AccessToken_MarksInactive(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -1769,6 +1803,7 @@ func TestOAuth_Revoke_AccessToken_MarksInactive(t *testing.T) {
 // returning ErrInvalidRequest for unknown tokens) gets caught here
 // instead of in production with a confused-client report.
 func TestOAuth_Revoke_UnknownToken_Returns200(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 
@@ -1800,6 +1835,7 @@ func TestOAuth_Revoke_UnknownToken_Returns200(t *testing.T) {
 //
 // Sending client_id but no token must remain 400 invalid_request.
 func TestOAuth_Revoke_MissingToken_Returns400(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	clientID := registerTestClient(t, srv, "https://app.test/cb")
 
@@ -1820,6 +1856,7 @@ func TestOAuth_Revoke_MissingToken_Returns400(t *testing.T) {
 // (set on malformed cases via WithHint*, absent on the !found path);
 // isRevocationUnknownToken only matches the latter.
 func TestOAuth_Revoke_MalformedRequest_Returns400(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 
 	// Empty form body — fosite rejects with ErrInvalidRequest
@@ -1849,6 +1886,7 @@ func TestOAuth_Revoke_MalformedRequest_Returns400(t *testing.T) {
 // store.Revoke*Family, which marks every chain member inactive in
 // one statement. This test validates the wiring end-to-end.
 func TestOAuth_Revoke_RefreshToken_RevokesFamily(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -1907,6 +1945,7 @@ func TestOAuth_Revoke_RefreshToken_RevokesFamily(t *testing.T) {
 // (single-use refresh tokens, OAuth 2.1 §6.1). This is the normal
 // happy path before any replay-detection logic kicks in.
 func TestOAuth_Refresh_RotatesAndOldBecomesInactive(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -1989,6 +2028,7 @@ func TestOAuth_Refresh_RotatesAndOldBecomesInactive(t *testing.T) {
 // client indefinitely. With it, the entire chain dies on the
 // first replay attempt.
 func TestOAuth_Refresh_ReplayDetection_RevokesFamily(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -2058,6 +2098,7 @@ func TestOAuth_Refresh_ReplayDetection_RevokesFamily(t *testing.T) {
 // presence here catches a future fosite version-bump that drops
 // or renames a field before the integration breaks.
 func TestOAuth_Introspect_ActiveToken_ReturnsClaims(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	user, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -2120,6 +2161,7 @@ func TestOAuth_Introspect_ActiveToken_ReturnsClaims(t *testing.T) {
 // for valid token shapes by introspecting random strings and
 // reading the response body for hints.
 func TestOAuth_Introspect_UnknownToken_ReturnsActiveFalse(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
 	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
@@ -2158,6 +2200,7 @@ func TestOAuth_Introspect_UnknownToken_ReturnsActiveFalse(t *testing.T) {
 // Bearer auth (public clients, no Basic auth path); a request with
 // no Authorization header MUST be rejected.
 func TestOAuth_Introspect_RejectsMissingBearer(t *testing.T) {
+	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	rr := postOAuthForm(srv, "/oauth/introspect", url.Values{
 		"token": {"any-token-here"},
@@ -2172,6 +2215,7 @@ func TestOAuth_Introspect_RejectsMissingBearer(t *testing.T) {
 // confirm the cloud-mode gate covers the new endpoints (mirrors
 // TestOAuth_Register_NotMountedOutsideCloudMode for sub-PR C).
 func TestOAuth_RevokeAndIntrospect_NotMountedOutsideCloudMode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t) // no SetCloudMode
 	for _, path := range []string{"/oauth/revoke", "/oauth/introspect"} {
 		rr := postOAuthForm(srv, path, url.Values{"token": {"x"}, "client_id": {"y"}})

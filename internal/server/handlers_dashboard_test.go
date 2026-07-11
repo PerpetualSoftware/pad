@@ -55,6 +55,7 @@ func createBlocksLink(t *testing.T, srv *Server, wsSlug, sourceSlug, targetID st
 // workspace created via the web (cookie session, no Authorization header)
 // still reports false until an agent actually creates an item.
 func TestDashboardHasAgentActivityFromWorkspaceSource(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 
@@ -141,6 +142,7 @@ func TestDashboardHasAgentActivityFromWorkspaceSource(t *testing.T) {
 }
 
 func TestDashboardEmpty(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -201,6 +203,7 @@ func TestDashboardEmpty(t *testing.T) {
 // item_number=1), this test can be deleted along with the handler
 // branch.
 func TestDashboardOnboardingSeed_NilForAllTemplates(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{"startup", "scrum", "product"} {
 		t.Run(name, func(t *testing.T) {
 			srv := testServer(t)
@@ -228,6 +231,7 @@ func TestDashboardOnboardingSeed_NilForAllTemplates(t *testing.T) {
 // agent-onboarding script (see PLAN-1140 paused). Banner should
 // stay hidden for these workspaces.
 func TestDashboardOnboardingSeed_HiringTemplate(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{
 		"name":     "Onboarding Seed Hiring",
@@ -248,6 +252,7 @@ func TestDashboardOnboardingSeed_HiringTemplate(t *testing.T) {
 // TestDashboardOnboardingSeed_EmptyWorkspace verifies that a workspace
 // without a template (no SeedItems) reports no onboarding seed.
 func TestDashboardOnboardingSeed_EmptyWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv) // empty template path
 
@@ -258,6 +263,7 @@ func TestDashboardOnboardingSeed_EmptyWorkspace(t *testing.T) {
 }
 
 func TestDashboardSummary(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -335,6 +341,7 @@ func TestDashboardSummary(t *testing.T) {
 }
 
 func TestDashboardActiveItems(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -398,6 +405,7 @@ func TestDashboardActiveItems(t *testing.T) {
 }
 
 func TestDashboardActiveItemsSorting(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -442,6 +450,7 @@ func TestDashboardActiveItemsSorting(t *testing.T) {
 }
 
 func TestDashboardActiveItemsExcludesPlans(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -469,6 +478,7 @@ func TestDashboardActiveItemsExcludesPlans(t *testing.T) {
 }
 
 func TestDashboardActivePlans(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -525,6 +535,7 @@ func TestDashboardActivePlans(t *testing.T) {
 }
 
 func TestDashboardAttentionOverdue(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -565,6 +576,7 @@ func TestDashboardAttentionOverdue(t *testing.T) {
 }
 
 func TestDashboardAttentionOverdueEndDate(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -587,6 +599,7 @@ func TestDashboardAttentionOverdueEndDate(t *testing.T) {
 }
 
 func TestDashboardAttentionBlocked(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -621,6 +634,7 @@ func TestDashboardAttentionBlocked(t *testing.T) {
 }
 
 func TestDashboardAttentionBlockedNotFlaggedWhenBlockerDone(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -647,6 +661,7 @@ func TestDashboardAttentionBlockedNotFlaggedWhenBlockerDone(t *testing.T) {
 }
 
 func TestDashboardAttentionBlockedNotFlaggedWhenTargetDone(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -673,6 +688,7 @@ func TestDashboardAttentionBlockedNotFlaggedWhenTargetDone(t *testing.T) {
 }
 
 func TestDashboardSuggestedNext(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -755,6 +771,7 @@ func TestDashboardSuggestedNext(t *testing.T) {
 // can't actually start. Verifies that an explicit blocker results
 // in the otherwise-eligible task being skipped.
 func TestDashboardSuggestedNext_FiltersBlockedItems(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -816,6 +833,7 @@ func TestDashboardSuggestedNext_FiltersBlockedItems(t *testing.T) {
 // task existed. Post-fix the orphan branch surfaces high-priority
 // open items even outside any plan.
 func TestDashboardSuggestedNextNoPlans(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -844,6 +862,7 @@ func TestDashboardSuggestedNextNoPlans(t *testing.T) {
 // plan rank as orphans (since their plan parent doesn't trigger the
 // active-plan loop). Pre-BUG-1082 they were invisible.
 func TestDashboardSuggestedNextFromPlannedPlan(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -877,6 +896,7 @@ func TestDashboardSuggestedNextFromPlannedPlan(t *testing.T) {
 // critical to surface (avoids flooding suggestions with low-priority
 // open work). The "continue what's in flight" signal beats priority.
 func TestDashboardSuggestedNextOrphan_InProgressBeatsPriority(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -907,6 +927,7 @@ func TestDashboardSuggestedNextOrphan_InProgressBeatsPriority(t *testing.T) {
 // candidate exist at the same in-progress / priority bucket, the
 // active-plan one comes first (more contextful).
 func TestDashboardSuggestedNextOrphan_RanksBelowActivePlan(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -936,6 +957,7 @@ func TestDashboardSuggestedNextOrphan_RanksBelowActivePlan(t *testing.T) {
 }
 
 func TestDashboardIsDoneStatus(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -976,6 +998,7 @@ func TestDashboardIsDoneStatus(t *testing.T) {
 }
 
 func TestDashboardPlanCompletion(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1011,6 +1034,7 @@ func TestDashboardPlanCompletion(t *testing.T) {
 }
 
 func TestDashboardPlanCompletionNotTriggeredWithOpenTasks(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1038,6 +1062,7 @@ func TestDashboardPlanCompletionNotTriggeredWithOpenTasks(t *testing.T) {
 }
 
 func TestDashboardRecentActivity(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1064,6 +1089,7 @@ func TestDashboardRecentActivity(t *testing.T) {
 }
 
 func TestDashboardActiveItemsItemRef(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1088,6 +1114,7 @@ func TestDashboardActiveItemsItemRef(t *testing.T) {
 }
 
 func TestDashboardNonexistentWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := doRequest(srv, "GET", "/api/v1/workspaces/nonexistent-ws/dashboard", nil)
@@ -1097,6 +1124,7 @@ func TestDashboardNonexistentWorkspace(t *testing.T) {
 }
 
 func TestDashboardMultipleActivePlans(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1161,6 +1189,7 @@ func TestDashboardMultipleActivePlans(t *testing.T) {
 }
 
 func TestDashboardActiveItemsCappedAt10(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1180,6 +1209,7 @@ func TestDashboardActiveItemsCappedAt10(t *testing.T) {
 }
 
 func TestDashboardOrphanedTasks(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1217,6 +1247,7 @@ func TestDashboardOrphanedTasks(t *testing.T) {
 }
 
 func TestDashboardOrphanedTasksNotFlaggedWithoutPlanLinks(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1262,6 +1293,7 @@ func filterAttention(items []DashboardAttention, typ string) []DashboardAttentio
 // called the ungated visibleCollectionIDs and leaked the hidden collection's
 // items to a bearer-authed admin.
 func TestDashboard_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -1351,6 +1383,7 @@ func TestDashboard_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
 // section still loads (partial failure, not all-or-nothing) and the
 // endpoint still returns 200.
 func TestDashboardDegradedOnSubQueryFailure(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

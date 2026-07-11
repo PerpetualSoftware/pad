@@ -44,6 +44,7 @@ func createWSWithCollections(t *testing.T, srv *Server) string {
 }
 
 func TestCollectionCRUD(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -125,6 +126,7 @@ func TestCollectionCRUD(t *testing.T) {
 }
 
 func TestCollectionCreateValidation(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -136,6 +138,7 @@ func TestCollectionCreateValidation(t *testing.T) {
 }
 
 func TestItemCRUD(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -258,6 +261,7 @@ func TestItemCRUD(t *testing.T) {
 }
 
 func TestListCollectionItemsResolvesRelationFieldFilterRefs(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -307,6 +311,7 @@ func TestListCollectionItemsResolvesRelationFieldFilterRefs(t *testing.T) {
 }
 
 func TestListItemsResolvesRelationFieldFilterRefsAcrossCollections(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -353,6 +358,7 @@ func TestListItemsResolvesRelationFieldFilterRefsAcrossCollections(t *testing.T)
 }
 
 func TestItemCreateValidation(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -396,6 +402,7 @@ func TestItemCreateValidation(t *testing.T) {
 }
 
 func TestItemFieldDefaults(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -423,6 +430,7 @@ func TestItemFieldDefaults(t *testing.T) {
 }
 
 func TestItemListWithFilters(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -476,6 +484,7 @@ func TestItemListWithFilters(t *testing.T) {
 }
 
 func TestItemSearch(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -506,6 +515,7 @@ func TestItemSearch(t *testing.T) {
 }
 
 func TestItemLinks(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -597,6 +607,7 @@ func TestItemLinks(t *testing.T) {
 }
 
 func TestGetItemIncludesDerivedClosureForSupersededItems(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -647,6 +658,7 @@ func TestGetItemIncludesDerivedClosureForSupersededItems(t *testing.T) {
 }
 
 func TestGetItemIncludesDerivedClosureWhenSplitChildrenAreDone(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -700,6 +712,7 @@ func TestGetItemIncludesDerivedClosureWhenSplitChildrenAreDone(t *testing.T) {
 }
 
 func TestGetItemIncludesDerivedClosureForImplementedItems(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -747,6 +760,7 @@ func TestGetItemIncludesDerivedClosureForImplementedItems(t *testing.T) {
 }
 
 func TestGetItemIncludesCodeContext(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -782,6 +796,7 @@ func TestGetItemIncludesCodeContext(t *testing.T) {
 }
 
 func TestGetItemIncludesStructuredNotes(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -820,6 +835,7 @@ func TestGetItemIncludesStructuredNotes(t *testing.T) {
 }
 
 func TestGetItemIncludesConventionMetadata(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -858,6 +874,7 @@ func TestGetItemIncludesConventionMetadata(t *testing.T) {
 }
 
 func TestItemVersions(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -888,6 +905,7 @@ func TestItemVersions(t *testing.T) {
 }
 
 func TestDashboard(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -953,6 +971,7 @@ func TestDashboard(t *testing.T) {
 }
 
 func TestDashboardEmptyWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -970,6 +989,7 @@ func TestDashboardEmptyWorkspace(t *testing.T) {
 }
 
 func TestItemUpdateFieldValidation(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -991,6 +1011,7 @@ func TestItemUpdateFieldValidation(t *testing.T) {
 }
 
 func TestItemCrossCollectionListing(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1046,6 +1067,7 @@ func TestItemCrossCollectionListing(t *testing.T) {
 // the auth middleware validates token format (rejects "pad_anything"
 // shapes with 401 before the handler ever runs).
 func TestCreateItemSourcePersistedFromAuth(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	sessionToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 
@@ -1131,6 +1153,7 @@ func TestCreateItemSourcePersistedFromAuth(t *testing.T) {
 // the historical JSON-encoded-string shape. Wrong shapes return a
 // clean domain-level error instead of leaked Go unmarshal internals.
 func TestPatchItem_FlexibleFieldsShape(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1265,6 +1288,7 @@ type itemsIndexBody struct {
 // resolution, so two creates inside the same second tie on updated_at
 // and the ID tiebreaker (not creation order) decides the row order.
 func TestListItemsIndex_SkinnyProjectionAndShape(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1339,6 +1363,7 @@ func TestListItemsIndex_SkinnyProjectionAndShape(t *testing.T) {
 // testing a sort whose tiebreaker (id ASC) would otherwise win — see
 // the comment on TestListItemsIndex_SkinnyProjectionAndShape.
 func TestListItemsIndex_SortByUpdatedAt(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1376,6 +1401,7 @@ func TestListItemsIndex_SortByUpdatedAt(t *testing.T) {
 // TestListItemsIndex_EmptyWorkspace covers the edge case the cursor
 // is documented to handle: no items → cursor "0".
 func TestListItemsIndex_EmptyWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1410,6 +1436,7 @@ func TestListItemsIndex_EmptyWorkspace(t *testing.T) {
 // /items-changes?since=cursor poll starts at the right floor rather
 // than replaying every prior mutation from 0.
 func TestListItemsIndex_EmptyResultFallsBackToWorkspaceMax(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1460,6 +1487,7 @@ func TestListItemsIndex_EmptyResultFallsBackToWorkspaceMax(t *testing.T) {
 // `since` parameter on a follow-up /items-changes call (cursor contract
 // for PLAN-1343 Phase 2).
 func TestListItemsIndex_CursorMonotonicAcrossMutations(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1492,6 +1520,7 @@ func TestListItemsIndex_CursorMonotonicAcrossMutations(t *testing.T) {
 
 // TestListItemsIndex_CollectionFilter covers ?collection=<slug>.
 func TestListItemsIndex_CollectionFilter(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1524,6 +1553,7 @@ func TestListItemsIndex_CollectionFilter(t *testing.T) {
 // are populated for child items (same enrichment path the existing items
 // list uses).
 func TestListItemsIndex_ParentEnrichment(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1560,6 +1590,7 @@ func TestListItemsIndex_ParentEnrichment(t *testing.T) {
 // TestListItemsIndex_ExcludesArchivedByDefault confirms the IncludeArchived
 // gate matches handleListItems' default behavior.
 func TestListItemsIndex_ExcludesArchivedByDefault(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1619,6 +1650,7 @@ type itemsChangesBody struct {
 // `?since=0`, all three returned in ascending seq order, every row
 // `deleted:false`, cursor = max seq.
 func TestListItemsChanges_FullDeltaFromZero(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1665,6 +1697,7 @@ func TestListItemsChanges_FullDeltaFromZero(t *testing.T) {
 // one. A poll at the snapshot cursor returns exactly those two rows
 // with `deleted` set correctly.
 func TestListItemsChanges_IncrementalUpdateAndDelete(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1731,6 +1764,7 @@ func TestListItemsChanges_IncrementalUpdateAndDelete(t *testing.T) {
 // gap": after running the delta once, re-polling with the returned
 // cursor as `since` returns zero rows.
 func TestListItemsChanges_CursorRoundtripsCleanly(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1760,6 +1794,7 @@ func TestListItemsChanges_CursorRoundtripsCleanly(t *testing.T) {
 // equals seq of the last returned row so the client can resume with
 // no overlap or gap.
 func TestListItemsChanges_LimitTruncatesAndCursorResumes(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1806,6 +1841,7 @@ func TestListItemsChanges_LimitTruncatesAndCursorResumes(t *testing.T) {
 // TestListItemsChanges_InvalidParams rejects bad `since` / `limit`
 // values with 400 instead of silently returning the entire workspace.
 func TestListItemsChanges_InvalidParams(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1830,6 +1866,7 @@ func TestListItemsChanges_InvalidParams(t *testing.T) {
 // TestListItemsChanges_EmptyWorkspace returns no rows and preserves
 // the caller's cursor.
 func TestListItemsChanges_EmptyWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1861,6 +1898,7 @@ func TestListItemsChanges_EmptyWorkspace(t *testing.T) {
 // the endpoint outside the /items/{itemSlug} subtree means no item slug
 // can ever shadow it (or vice versa). See Codex round 1 [P2] on PR #486.
 func TestListItemsIndex_DoesNotShadowItemSlug(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -1899,6 +1937,7 @@ func TestListItemsIndex_DoesNotShadowItemSlug(t *testing.T) {
 // client used to compute from item.content before /items-index made
 // content unavailable in list view.
 func TestCollectionCheckboxProgress(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -2017,6 +2056,7 @@ func firstID(items []models.Item) string {
 //   - Visibility gate: a restricted member without access to the collection
 //     receives an empty response (not child counts for a hidden collection).
 func TestCollectionChildProgress(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -2321,6 +2361,7 @@ func TestCollectionChildProgress(t *testing.T) {
 // token (PAT/CLI/OAuth). Mirrors handlers_admin_bearer_gate_test.go's
 // fixture idiom.
 func TestListItems_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -2409,6 +2450,7 @@ func TestListItems_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
 // creating in their visible collection still succeeds. A cookie session
 // keeps the pre-existing unrestricted admin affordance on both collections.
 func TestCreateItem_AdminBearer_RestrictedMemberIsScoped(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -2590,6 +2632,7 @@ func (f *bearerGateItemFixture) bearerHeaders() map[string]string {
 // member_collection_access — bypassing BUG-1917's list-level scoping
 // entirely for anyone who can guess (or enumerate) a ref.
 func TestGetItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection(t *testing.T) {
+	t.Parallel()
 	f := newBearerGateItemFixture(t)
 
 	rr := doRequestWithHeaders(f.srv, "GET", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.hiddenItem.Slug, nil, f.bearerHeaders())
@@ -2620,6 +2663,7 @@ func TestGetItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection(t *testin
 // ever runs — the hidden-collection item must be indistinguishable from
 // a genuinely nonexistent one.
 func TestUpdateItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection(t *testing.T) {
+	t.Parallel()
 	f := newBearerGateItemFixture(t)
 
 	rr := doRequestWithHeaders(f.srv, "PATCH", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.hiddenItem.Slug,
@@ -2647,6 +2691,7 @@ func TestUpdateItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection(t *tes
 // TestDeleteItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection
 // completes the write-path sweep for BUG-1918 (DELETE).
 func TestDeleteItem_AdminBearer_RestrictedMemberBlockedOnHiddenCollection(t *testing.T) {
+	t.Parallel()
 	f := newBearerGateItemFixture(t)
 
 	rr := doRequestWithHeaders(f.srv, "DELETE", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.hiddenItem.Slug, nil, f.bearerHeaders())
