@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -10,6 +11,15 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
 )
+
+// maskWebhookSecret blanks the plaintext HMAC secret before a webhook is
+// returned in a list/get response, so the raw signing secret is never echoed
+// after creation (BUG-2057). The has_secret flag still signals whether one is
+// configured. Returns a copy — the caller's slice/model is left untouched.
+func maskWebhookSecret(hook models.Webhook) models.Webhook {
+	hook.Secret = ""
+	return hook
+}
 
 // dispatchWebhook fires a webhook event if a dispatcher is configured.
 func (s *Server) dispatchWebhook(workspaceID, event string, data interface{}) {
@@ -45,6 +55,16 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// "enc:" is the reserved marker the store uses to tag encrypted secrets at
+	// rest (see internal/store/encryption.go::encryptedPrefix). Reject a raw
+	// secret that starts with it so a user-supplied plaintext can never be
+	// mistaken for ciphertext on read (which would break signing/dispatch,
+	// including on keyless self-host instances).
+	if strings.HasPrefix(input.Secret, "enc:") {
+		writeError(w, http.StatusBadRequest, "bad_request", "secret must not start with the reserved prefix \"enc:\"")
+		return
+	}
+
 	// Validate URL to prevent SSRF attacks
 	if err := webhooks.ValidateWebhookURL(input.URL); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid webhook URL: "+err.Error())
@@ -57,6 +77,9 @@ func (s *Server) handleCreateWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The creation response is the ONLY place the raw secret is returned, so
+	// the caller can record it for HMAC verification. It is masked everywhere
+	// else (BUG-2057).
 	writeJSON(w, http.StatusCreated, hook)
 }
 
@@ -80,7 +103,13 @@ func (s *Server) handleListWebhooks(w http.ResponseWriter, r *http.Request) {
 		hooks = []models.Webhook{}
 	}
 
-	writeJSON(w, http.StatusOK, hooks)
+	// Never echo the raw signing secret in a list response (BUG-2057).
+	masked := make([]models.Webhook, len(hooks))
+	for i, hook := range hooks {
+		masked[i] = maskWebhookSecret(hook)
+	}
+
+	writeJSON(w, http.StatusOK, masked)
 }
 
 // handleDeleteWebhook removes a webhook by ID.

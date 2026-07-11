@@ -147,6 +147,13 @@ func serveCmd() *cobra.Command {
 				slog.Info("Encrypted plaintext TOTP secrets", "count", n)
 			}
 
+			// Backfill: encrypt any plaintext webhook HMAC secrets (BUG-2057).
+			if n, err := s.EncryptWebhookSecretsAtRest(); err != nil {
+				return fmt.Errorf("encrypt webhook secrets at rest: %w", err)
+			} else if n > 0 {
+				slog.Info("Encrypted plaintext webhook secrets", "count", n)
+			}
+
 			// Backfill: populate item_wiki_links from existing item bodies
 			// (PLAN-1593 / TASK-1594). Idempotent — items already indexed
 			// at write time get a cheap EXISTS-skip; only newly-introduced

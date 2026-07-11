@@ -17,10 +17,18 @@ func (s *Store) CreateWebhook(workspaceID string, input models.WebhookCreate) (*
 		evts = `["*"]`
 	}
 
-	_, err := s.db.Exec(s.q(`
+	// Encrypt the HMAC secret at rest. With no encryption key configured
+	// (common on self-host) encrypt() returns the plaintext unchanged, so
+	// this stays a no-op fallback rather than a hard requirement.
+	encSecret, err := s.encrypt(input.Secret)
+	if err != nil {
+		return nil, fmt.Errorf("encrypt webhook secret: %w", err)
+	}
+
+	_, err = s.db.Exec(s.q(`
 		INSERT INTO webhooks (id, workspace_id, url, secret, events, active, created_at, updated_at, failure_count)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
-	`), id, workspaceID, input.URL, input.Secret, evts, s.dialect.BoolToInt(true), ts, ts)
+	`), id, workspaceID, input.URL, encSecret, evts, s.dialect.BoolToInt(true), ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert webhook: %w", err)
 	}
@@ -50,6 +58,13 @@ func (s *Store) GetWebhook(id string) (*models.Webhook, error) {
 		return nil, fmt.Errorf("get webhook: %w", err)
 	}
 
+	// Decrypt the secret for internal use (the dispatcher signs with the
+	// plaintext). Pre-encryption rows lack the "enc:" prefix and pass through
+	// unchanged, so existing plaintext secrets keep working.
+	if wh.Secret, err = s.decrypt(wh.Secret); err != nil {
+		return nil, fmt.Errorf("decrypt webhook secret: %w", err)
+	}
+	wh.HasSecret = wh.Secret != ""
 	wh.Active = active
 	wh.CreatedAt = parseTime(createdAt)
 	wh.UpdatedAt = parseTime(updatedAt)
@@ -83,6 +98,10 @@ func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 		); err != nil {
 			return nil, fmt.Errorf("scan webhook: %w", err)
 		}
+		if wh.Secret, err = s.decrypt(wh.Secret); err != nil {
+			return nil, fmt.Errorf("decrypt webhook secret: %w", err)
+		}
+		wh.HasSecret = wh.Secret != ""
 		wh.Active = active
 		wh.CreatedAt = parseTime(createdAt)
 		wh.UpdatedAt = parseTime(updatedAt)

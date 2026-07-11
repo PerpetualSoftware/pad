@@ -142,3 +142,113 @@ func (s *Store) BackfillEncryptTOTPSecrets() (int, error) {
 
 	return len(toEncrypt), nil
 }
+
+// webhookSecretsEncryptedFlag marks that the one-time legacy migration of
+// pre-encryption webhook secrets has run. Stored in platform_settings.
+const webhookSecretsEncryptedFlag = "webhook_secrets_encrypted_v1"
+
+// EncryptWebhookSecretsAtRest encrypts plaintext webhook HMAC secrets (BUG-2057).
+// Called on startup when an encryption key is configured. It handles two
+// populations without ever corrupting genuine ciphertext:
+//
+//   - First run (flag unset): webhook-secret encryption is new in this release,
+//     so every existing secret in the DB is plaintext — even one that
+//     coincidentally starts with the reserved "enc:" marker. Encrypt them ALL,
+//     then persist the flag. Because this runs exactly once, ciphertext written
+//     by later encrypted creates is never re-wrapped under a rotated key.
+//   - Steady state (flag set): only unprefixed plaintext is encrypted (a
+//     webhook created while the instance was keyless). "enc:" values are always
+//     genuine ciphertext now — handleCreateWebhook rejects "enc:"-prefixed
+//     secrets — so they are left alone and a bad key fails loud via decrypt().
+//
+// Idempotent and safe to run on every boot.
+func (s *Store) EncryptWebhookSecretsAtRest() (int, error) {
+	if !s.HasEncryptionKey() {
+		// Keyless: nothing to encrypt, and the flag stays unset so the full
+		// legacy migration still runs if a key is configured later.
+		return 0, nil
+	}
+
+	migrated, err := s.GetPlatformSetting(webhookSecretsEncryptedFlag)
+	if err != nil {
+		return 0, fmt.Errorf("read webhook-secret migration flag: %w", err)
+	}
+	firstRun := migrated != "1"
+
+	query := `SELECT id, secret FROM webhooks WHERE secret != '' AND secret NOT LIKE 'enc:%'`
+	if firstRun {
+		// Every pre-migration secret is plaintext — include "enc:"-prefixed ones.
+		query = `SELECT id, secret FROM webhooks WHERE secret != ''`
+	}
+
+	rows, err := s.db.Query(s.q(query))
+	if err != nil {
+		return 0, fmt.Errorf("query webhook secrets: %w", err)
+	}
+	defer rows.Close()
+
+	type row struct {
+		id, secret string
+	}
+	var toEncrypt []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.secret); err != nil {
+			return 0, fmt.Errorf("scan row: %w", err)
+		}
+		// First-run only: an "enc:" value that already decrypts under the
+		// current key is genuine ciphertext — skip it so it isn't double-
+		// encrypted. A decrypt failure means legacy plaintext that merely looks
+		// prefixed (no ciphertext under a different key can exist before the
+		// migration has ever run), so fall through and encrypt it.
+		if firstRun && strings.HasPrefix(r.secret, encryptedPrefix) {
+			if _, derr := s.decrypt(r.secret); derr == nil {
+				continue
+			}
+		}
+		toEncrypt = append(toEncrypt, r)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	rows.Close() // release the read before opening the write transaction (SQLite)
+
+	if len(toEncrypt) == 0 && !firstRun {
+		return 0, nil
+	}
+
+	// Apply every row update AND the completion flag in one transaction. A crash
+	// mid-migration must not leave some rows encrypted while the flag is unset —
+	// otherwise a later key change would mis-read those rows as legacy plaintext
+	// and double-encrypt them into nested ciphertext (BUG-2057 review follow-up).
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin webhook-secret migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, r := range toEncrypt {
+		encrypted, err := s.encrypt(r.secret)
+		if err != nil {
+			return 0, fmt.Errorf("encrypt secret for webhook %s: %w", r.id, err)
+		}
+		if _, err := tx.Exec(s.q(`UPDATE webhooks SET secret = ? WHERE id = ?`), encrypted, r.id); err != nil {
+			return 0, fmt.Errorf("update secret for webhook %s: %w", r.id, err)
+		}
+	}
+
+	if firstRun {
+		if _, err := tx.Exec(s.q(`
+			INSERT INTO platform_settings (key, value, updated_at) VALUES (?, ?, ?)
+			ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+		`), webhookSecretsEncryptedFlag, "1", now()); err != nil {
+			return 0, fmt.Errorf("persist webhook-secret migration flag: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit webhook-secret migration: %w", err)
+	}
+
+	return len(toEncrypt), nil
+}
