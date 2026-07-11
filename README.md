@@ -310,14 +310,22 @@ pad library list --type playbooks    # Pre-built multi-step workflows
 
 ### 4. Optional — connect a desktop AI app via MCP
 
-Pad ships an MCP (Model Context Protocol) server so Claude Desktop, Cursor, or
-Windsurf can manage items, plans, ideas, and dependencies as native tools, read
-workspace state by URL, and load multi-step workflows as prompts.
+Pad ships an MCP (Model Context Protocol) server so Claude Desktop, Cursor,
+Windsurf, Claude Code, or Codex can manage items, plans, ideas, and dependencies
+as native tools, read workspace state by URL, and load multi-step workflows as
+prompts.
 
 ```bash
-pad mcp install claude-desktop   # or: cursor, windsurf, --all
+pad mcp install claude-desktop   # or: cursor, windsurf, claude-code, codex, --all
 # Restart the client; pad shows up as the "pad" MCP server.
 ```
+
+`pad mcp install` writes each client's native config: JSON `mcpServers` for
+Claude Desktop / Cursor / Windsurf, a **project-local `.mcp.json`** in the current
+directory for `claude-code`, and an `[mcp_servers.pad]` table in
+`~/.codex/config.toml` (TOML) for `codex`. Because Claude Code's config is
+project-scoped, it's install-on-request only — `--all` and `pad mcp status` cover
+the per-user clients (including Codex) and skip it.
 
 **Tool catalog (v0.14)** — ten resource × action tools plus `pad_set_workspace` (eleven total), no flat verb explosion:
 

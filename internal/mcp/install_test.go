@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 func TestFindAgent_NameAndAliases(t *testing.T) {
@@ -20,8 +22,13 @@ func TestFindAgent_NameAndAliases(t *testing.T) {
 		{"anthropic", "claude-desktop", false},
 		{"cursor", "cursor", false},
 		{"windsurf", "windsurf", false},
-		{"vscode", "", true}, // unsupported
-		{"", "", true},       // empty
+		{"claude-code", "claude-code", false},
+		{"claudecode", "claude-code", false},  // alias
+		{"Claude-Code", "claude-code", false}, // case-insensitive
+		{"codex", "codex", false},
+		{"CODEX", "codex", false}, // case-insensitive
+		{"vscode", "", true},      // unsupported
+		{"", "", true},            // empty
 	}
 	for _, c := range cases {
 		got, err := FindAgent(c.input)
@@ -55,6 +62,13 @@ func TestPathResolvers_LinuxAndDarwin(t *testing.T) {
 		{"cursor", "linux", "/h/.cursor/mcp.json"},
 		{"cursor", "darwin", "/h/.cursor/mcp.json"},
 		{"windsurf", "linux", "/h/.codeium/windsurf/mcp_config.json"},
+		{"codex", "linux", "/h/.codex/config.toml"},
+		{"codex", "darwin", "/h/.codex/config.toml"},
+		// claude-code's base is the working directory, not home — but the
+		// PathFor contract is the same (join base + relative path), so we
+		// pass "/h" as the base here and get the project-local file back.
+		{"claude-code", "linux", "/h/.mcp.json"},
+		{"claude-code", "darwin", "/h/.mcp.json"},
 	}
 	for _, c := range cases {
 		agent, _ := FindAgent(c.agentName)
@@ -325,10 +339,15 @@ func TestInstaller_Status_ReportsAllAgents(t *testing.T) {
 		t.Fatalf("install cursor: %v", err)
 	}
 	status := inst.Status()
-	if len(status) != len(SupportedAgents) {
-		t.Fatalf("status returned %d rows, want %d", len(status), len(SupportedAgents))
+	// Status reports only global (per-user) agents; CWDBased agents like
+	// claude-code are install-on-request and omitted from the sweep.
+	if len(status) != len(globalAgents()) {
+		t.Fatalf("status returned %d rows, want %d", len(status), len(globalAgents()))
 	}
 	for _, row := range status {
+		if row.Name == "claude-code" {
+			t.Errorf("claude-code (CWDBased) must not appear in Status()")
+		}
 		switch row.Name {
 		case "cursor":
 			if !row.Installed {
@@ -429,7 +448,359 @@ func TestAddPadEntry_RejectsCorruptJSON(t *testing.T) {
 	}
 }
 
+// --- Codex (TOML) ---------------------------------------------------------
+
+func TestAddPadEntryTOML_NewConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	modified, err := addPadEntryTOML(path, "/usr/local/bin/pad")
+	if err != nil {
+		t.Fatalf("addPadEntryTOML: %v", err)
+	}
+	if !modified {
+		t.Errorf("expected modified=true on fresh install")
+	}
+
+	cfg := readTOML(t, path)
+	servers := cfg[codexServersKey].(map[string]any)
+	pad := servers[MCPServerKey].(map[string]any)
+	if pad["command"] != "/usr/local/bin/pad" {
+		t.Errorf("command = %v, want /usr/local/bin/pad", pad["command"])
+	}
+	args := pad["args"].([]any)
+	if len(args) != 2 || args[0] != "mcp" || args[1] != "serve" {
+		t.Errorf("args = %v, want [mcp serve]", args)
+	}
+
+	// Sanity: the file is valid TOML with the expected table header.
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), "[mcp_servers.pad]") {
+		t.Errorf("expected [mcp_servers.pad] table, got:\n%s", raw)
+	}
+}
+
+func TestAddPadEntryTOML_PreservesUnrelatedKeys(t *testing.T) {
+	// A real Codex config has top-level keys (model, approval policy) and
+	// possibly other mcp_servers. Install must merge, not clobber.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	existing := `model = "gpt-5"
+approval_policy = "on-request"
+
+[mcp_servers.other]
+command = "/usr/local/bin/other-mcp"
+args = ["run"]
+`
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := addPadEntryTOML(path, "/usr/bin/pad"); err != nil {
+		t.Fatalf("addPadEntryTOML: %v", err)
+	}
+
+	cfg := readTOML(t, path)
+	if cfg["model"] != "gpt-5" {
+		t.Errorf("unrelated top-level key 'model' lost: %v", cfg["model"])
+	}
+	if cfg["approval_policy"] != "on-request" {
+		t.Errorf("unrelated top-level key 'approval_policy' lost: %v", cfg["approval_policy"])
+	}
+	servers := cfg[codexServersKey].(map[string]any)
+	if _, ok := servers["other"]; !ok {
+		t.Errorf("preserved 'other' mcp server was removed; servers=%v", servers)
+	}
+	if _, ok := servers["pad"]; !ok {
+		t.Errorf("pad entry not added; servers=%v", servers)
+	}
+}
+
+func TestAddPadEntryTOML_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if _, err := addPadEntryTOML(path, "/usr/bin/pad"); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+	modified, err := addPadEntryTOML(path, "/usr/bin/pad")
+	if err != nil {
+		t.Fatalf("second install: %v", err)
+	}
+	if modified {
+		t.Errorf("re-install with identical config should report modified=false")
+	}
+}
+
+func TestAddPadEntryTOML_BinaryChangeMarksModified(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	if _, err := addPadEntryTOML(path, "/old/pad"); err != nil {
+		t.Fatalf("initial: %v", err)
+	}
+	modified, err := addPadEntryTOML(path, "/new/pad")
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if !modified {
+		t.Errorf("binary path change should mark modified=true")
+	}
+	cfg := readTOML(t, path)
+	pad := cfg[codexServersKey].(map[string]any)[MCPServerKey].(map[string]any)
+	if pad["command"] != "/new/pad" {
+		t.Errorf("expected updated command, got %v", pad["command"])
+	}
+}
+
+func TestAddPadEntryTOML_RequiresBinary(t *testing.T) {
+	if _, err := addPadEntryTOML("/tmp/x.toml", ""); err == nil {
+		t.Errorf("expected error when binary path empty")
+	}
+}
+
+func TestAddPadEntryTOML_RejectsCorruptTOML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "broken.toml")
+	if err := os.WriteFile(path, []byte("this is = not [valid toml"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := addPadEntryTOML(path, "/p"); err == nil {
+		t.Errorf("expected error on malformed TOML; we should NOT silently overwrite")
+	}
+}
+
+func TestAddPadEntryTOML_RejectsNonTableServers(t *testing.T) {
+	// mcp_servers present but a scalar — refuse rather than clobber a
+	// config we can't reconcile.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("mcp_servers = \"legacy\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := addPadEntryTOML(path, "/p"); err == nil {
+		t.Errorf("expected error when mcp_servers is not a table; must not clobber")
+	}
+	// Original content untouched.
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), `mcp_servers = "legacy"`) {
+		t.Errorf("config was modified despite rejection:\n%s", b)
+	}
+}
+
+func TestAddPadEntryTOML_TightensPerms(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	// Pre-create loose (Codex configs can hold other servers' secrets).
+	if err := os.WriteFile(path, []byte("model = \"x\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := addPadEntryTOML(path, "/p"); err != nil {
+		t.Fatalf("addPadEntryTOML: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("expected 0600 after install, got %#o", mode)
+	}
+}
+
+func TestRemovePadEntryTOML_RemovesOnlyPad(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	existing := `[mcp_servers.pad]
+command = "/usr/bin/pad"
+
+[mcp_servers.other]
+command = "/usr/bin/other"
+`
+	if err := os.WriteFile(path, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := removePadEntryTOML(path)
+	if err != nil {
+		t.Fatalf("removePadEntryTOML: %v", err)
+	}
+	if !removed {
+		t.Errorf("expected removed=true")
+	}
+	cfg := readTOML(t, path)
+	servers := cfg[codexServersKey].(map[string]any)
+	if _, ok := servers["pad"]; ok {
+		t.Errorf("pad entry not removed")
+	}
+	if _, ok := servers["other"]; !ok {
+		t.Errorf("other entry should be preserved")
+	}
+}
+
+func TestRemovePadEntryTOML_MissingIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	// missing file
+	removed, err := removePadEntryTOML(filepath.Join(dir, "nope.toml"))
+	if err != nil || removed {
+		t.Errorf("missing file: removed=%v err=%v, want (false, nil)", removed, err)
+	}
+	// present file, no pad entry
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("[mcp_servers.other]\ncommand = \"/x\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err = removePadEntryTOML(path)
+	if err != nil || removed {
+		t.Errorf("no pad entry: removed=%v err=%v, want (false, nil)", removed, err)
+	}
+}
+
+func TestHasPadEntryTOML_AllPaths(t *testing.T) {
+	dir := t.TempDir()
+
+	installed, _, err := hasPadEntryTOML(filepath.Join(dir, "missing.toml"))
+	if err != nil || installed {
+		t.Errorf("missing file: installed=%v err=%v, want (false, nil)", installed, err)
+	}
+
+	bare := filepath.Join(dir, "bare.toml")
+	if err := os.WriteFile(bare, []byte("model = \"x\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installed, _, err = hasPadEntryTOML(bare)
+	if err != nil || installed {
+		t.Errorf("bare config: installed=%v err=%v, want (false, nil)", installed, err)
+	}
+
+	full := filepath.Join(dir, "full.toml")
+	if err := os.WriteFile(full, []byte("[mcp_servers.pad]\ncommand = \"/p\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installed, cmd, err := hasPadEntryTOML(full)
+	if err != nil {
+		t.Fatalf("full config: %v", err)
+	}
+	if !installed || cmd != "/p" {
+		t.Errorf("full config: installed=%v cmd=%q, want (true, /p)", installed, cmd)
+	}
+}
+
+func TestInstaller_Codex_InstallUninstallStatus(t *testing.T) {
+	tmpHome := t.TempDir()
+	inst := &Installer{Binary: "/usr/local/bin/pad", Home: tmpHome, GOOS: "linux"}
+
+	path, modified, err := inst.Install("codex")
+	if err != nil {
+		t.Fatalf("Install codex: %v", err)
+	}
+	if !modified {
+		t.Errorf("first install should modify=true")
+	}
+	wantPath := filepath.Join(tmpHome, ".codex", "config.toml")
+	if path != wantPath {
+		t.Errorf("path = %q, want %q", path, wantPath)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("expected config written at %s, got: %v", path, err)
+	}
+
+	// codex is a global agent, so Status reports it.
+	var seen bool
+	for _, row := range inst.Status() {
+		if row.Name == "codex" {
+			seen = true
+			if !row.Installed || row.Command != "/usr/local/bin/pad" {
+				t.Errorf("codex status = {installed:%v cmd:%q}, want {true /usr/local/bin/pad}", row.Installed, row.Command)
+			}
+		}
+	}
+	if !seen {
+		t.Errorf("codex missing from Status()")
+	}
+
+	_, removed, err := inst.Uninstall("codex")
+	if err != nil {
+		t.Fatalf("uninstall codex: %v", err)
+	}
+	if !removed {
+		t.Errorf("expected removed=true after install")
+	}
+}
+
+// --- Claude Code (cwd-based .mcp.json) ------------------------------------
+
+func TestInstaller_ClaudeCode_UsesCWDNotHome(t *testing.T) {
+	tmpHome := t.TempDir()
+	tmpCWD := t.TempDir()
+	inst := &Installer{Binary: "/usr/local/bin/pad", Home: tmpHome, CWD: tmpCWD, GOOS: "linux"}
+
+	path, modified, err := inst.Install("claude-code")
+	if err != nil {
+		t.Fatalf("Install claude-code: %v", err)
+	}
+	if !modified {
+		t.Errorf("first install should modify=true")
+	}
+	wantPath := filepath.Join(tmpCWD, ".mcp.json")
+	if path != wantPath {
+		t.Errorf("path = %q, want %q (must resolve against CWD, not home)", path, wantPath)
+	}
+	// Nothing should have been written under home.
+	if _, err := os.Stat(filepath.Join(tmpHome, ".mcp.json")); err == nil {
+		t.Errorf("claude-code wrote under home; should be cwd-only")
+	}
+
+	// Same JSON shape as the other JSON clients.
+	cfg := readConfig(t, path)
+	pad := cfg["mcpServers"].(map[string]any)[MCPServerKey].(map[string]any)
+	if pad["command"] != "/usr/local/bin/pad" {
+		t.Errorf("command = %v, want /usr/local/bin/pad", pad["command"])
+	}
+
+	_, removed, err := inst.Uninstall("claude-code")
+	if err != nil {
+		t.Fatalf("uninstall claude-code: %v", err)
+	}
+	if !removed {
+		t.Errorf("expected removed=true after install")
+	}
+}
+
+func TestGlobalAgents_ExcludesCWDBased(t *testing.T) {
+	for _, a := range globalAgents() {
+		if a.CWDBased {
+			t.Errorf("globalAgents() included CWDBased agent %q", a.Name)
+		}
+		if a.Name == "claude-code" {
+			t.Errorf("claude-code must not be a global agent")
+		}
+	}
+	// codex is global; make sure it's present.
+	var hasCodex bool
+	for _, a := range globalAgents() {
+		if a.Name == "codex" {
+			hasCodex = true
+		}
+	}
+	if !hasCodex {
+		t.Errorf("codex should be a global agent")
+	}
+}
+
 // Helpers ------------------------------------------------------------------
+
+func readTOML(t *testing.T, path string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var raw map[string]any
+	if err := toml.Unmarshal(b, &raw); err != nil {
+		t.Fatalf("parse %s: %v\n%s", path, err, b)
+	}
+	return raw
+}
 
 func writeConfig(t *testing.T, path string, data map[string]any) {
 	t.Helper()
