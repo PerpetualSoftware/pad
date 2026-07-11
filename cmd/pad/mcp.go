@@ -14,7 +14,7 @@ import (
 //
 //   - `pad mcp serve` — run the stdio MCP server.
 //   - `pad mcp install [agent]` — write a "pad" entry into a client's
-//     MCP config (Claude Desktop / Cursor / Windsurf).
+//     MCP config (Claude Desktop / Cursor / Windsurf / Claude Code / Codex).
 //   - `pad mcp uninstall <agent>` — remove the entry.
 //   - `pad mcp status` — show install state across all supported clients.
 func mcpCmd() *cobra.Command {
@@ -22,8 +22,9 @@ func mcpCmd() *cobra.Command {
 		Use:   "mcp",
 		Short: "Run pad as a Model Context Protocol server",
 		RunE:  unknownSubcommandRun,
-		Long: `Run pad as an MCP server so AI agents (Claude Desktop, Cursor, Windsurf, etc.)
-can call pad commands as tools and read pad data as resources.
+		Long: `Run pad as an MCP server so AI agents (Claude Desktop, Cursor, Windsurf,
+Claude Code, Codex, etc.) can call pad commands as tools and read pad data
+as resources.
 
 Use ` + "`pad mcp serve`" + ` to start the server over stdio.
 Use ` + "`pad mcp install`" + ` to register pad with a client app.
@@ -52,13 +53,19 @@ func mcpInstallCmd() *cobra.Command {
 		Long: `Write a "pad" entry into the named agent's MCP server config.
 
 Supported agents:
-  claude-desktop   Claude Desktop
-  cursor           Cursor
-  windsurf         Windsurf
+  claude-desktop   Claude Desktop        (~/.../Claude/claude_desktop_config.json)
+  cursor           Cursor                (~/.cursor/mcp.json)
+  windsurf         Windsurf              (~/.codeium/windsurf/mcp_config.json)
+  claude-code      Claude Code           (project-local ./.mcp.json)
+  codex            Codex                 (~/.codex/config.toml)
+
+claude-code writes a project-local .mcp.json in the current directory,
+so it's install-on-request only — ` + "`--all`" + ` and ` + "`pad mcp status`" + ` skip it
+(they cover the per-user configs). codex writes TOML; the rest write JSON.
 
 With no arguments, lists current install status across supported
 agents (run ` + "`pad mcp status`" + ` for the same view). With
---all, installs for every supported agent, creating config files
+--all, installs for every per-user agent, creating config files
 on demand.
 
 Existing MCP server entries (other servers configured by the user)
@@ -168,7 +175,7 @@ func runMCPStatus(cmd *cobra.Command, inst *mcpserver.Installer) error {
 		}
 	}
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Install: pad mcp install <agent>   (or --all for every supported)")
+	fmt.Fprintln(w, "Install: pad mcp install <agent>   (or --all for every per-user client above)")
 	return nil
 }
 
@@ -190,6 +197,12 @@ func runMCPInstallOne(cmd *cobra.Command, inst *mcpserver.Installer, agent strin
 func runMCPInstallAll(cmd *cobra.Command, inst *mcpserver.Installer) error {
 	w := cmd.OutOrStdout()
 	for _, a := range mcpserver.SupportedAgents {
+		// CWDBased agents (Claude Code) write a project-local config in
+		// the current directory — not a stable global target, so --all
+		// skips them. Install them explicitly: `pad mcp install claude-code`.
+		if a.CWDBased {
+			continue
+		}
 		path, modified, err := inst.Install(a.Name)
 		if err != nil {
 			fmt.Fprintf(w, "  ✗ %s — skipped: %v\n", a.Label, err)

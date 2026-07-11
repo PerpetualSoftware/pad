@@ -7,12 +7,31 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // MCPServerKey is the canonical name pad registers itself under in
 // each agent's `mcpServers` map. Stable across versions; renaming
 // would orphan every existing install.
 const MCPServerKey = "pad"
+
+// codexServersKey is the table key Codex nests its MCP servers under
+// in ~/.codex/config.toml — `[mcp_servers.pad]`, snake_case, distinct
+// from the JSON clients' camelCase `mcpServers`.
+const codexServersKey = "mcp_servers"
+
+// configFormat selects how an agent's config file is encoded. The JSON
+// clients (Claude Desktop, Cursor, Windsurf, Claude Code) share one
+// reader/writer; Codex uses TOML, which needs its own load/merge/write
+// path (a JSON writer would corrupt a TOML file).
+type configFormat int
+
+const (
+	formatJSON configFormat = iota
+	formatTOML
+)
 
 // Agent describes a known MCP-compatible client and how to find its
 // per-user config file.
@@ -24,11 +43,24 @@ type Agent struct {
 	Label string
 	// Aliases match alternate user inputs.
 	Aliases []string
-	// PathFor resolves the config path given a user's home directory
-	// and runtime.GOOS. Pure function — no I/O — so tests override
-	// `home` and `goos` to verify path logic without touching the
-	// real filesystem.
-	PathFor func(home, goos string) (string, error)
+	// Format selects the config file encoding (JSON vs TOML). Defaults
+	// to formatJSON (the zero value) for the JSON clients.
+	Format configFormat
+	// CWDBased marks agents whose config lives in the current working
+	// directory rather than under $HOME — Claude Code's project-local
+	// `.mcp.json`. These are install-on-request only: they're excluded
+	// from `--all` and from Status(), because "the current directory"
+	// isn't a stable global target the way a per-user config file is
+	// (sweeping a project-local file into whatever directory `--all`
+	// happens to run from would scatter stray configs). See globalAgents.
+	CWDBased bool
+	// PathFor resolves the config path given a base directory and
+	// runtime.GOOS. The base is the user's home directory for normal
+	// agents, or the current working directory for CWDBased agents
+	// (Installer.ResolvePath picks which). Pure function — no I/O — so
+	// tests override `base` and `goos` to verify path logic without
+	// touching the real filesystem.
+	PathFor func(base, goos string) (string, error)
 }
 
 // SupportedAgents is the canonical list of MCP-aware clients pad
@@ -51,6 +83,34 @@ var SupportedAgents = []Agent{
 		Label:   "Windsurf",
 		PathFor: windsurfPathFor,
 	},
+	{
+		Name:     "claude-code",
+		Label:    "Claude Code",
+		Aliases:  []string{"claudecode"},
+		CWDBased: true, // project-local .mcp.json in the current directory
+		PathFor:  claudeCodePathFor,
+	},
+	{
+		Name:    "codex",
+		Label:   "Codex",
+		Format:  formatTOML,
+		PathFor: codexPathFor,
+	},
+}
+
+// globalAgents returns the agents that target a stable per-user config
+// file — i.e. everything except CWDBased (project-local) agents. It's
+// the iteration set for `--all` and Status(); CWDBased agents like
+// Claude Code are install-on-request only (see Agent.CWDBased).
+func globalAgents() []*Agent {
+	out := make([]*Agent, 0, len(SupportedAgents))
+	for i := range SupportedAgents {
+		if SupportedAgents[i].CWDBased {
+			continue
+		}
+		out = append(out, &SupportedAgents[i])
+	}
+	return out
 }
 
 // FindAgent returns the matching Agent for a name or alias. Names are
@@ -67,7 +127,11 @@ func FindAgent(name string) (*Agent, error) {
 			}
 		}
 	}
-	return nil, fmt.Errorf("unknown agent %q (supported: claude-desktop, cursor, windsurf)", name)
+	names := make([]string, 0, len(SupportedAgents))
+	for i := range SupportedAgents {
+		names = append(names, SupportedAgents[i].Name)
+	}
+	return nil, fmt.Errorf("unknown agent %q (supported: %s)", name, strings.Join(names, ", "))
 }
 
 // equalFold is a tiny case-insensitive string compare without
@@ -121,6 +185,21 @@ func windsurfPathFor(home, goos string) (string, error) {
 		return filepath.Join(appData, "Codeium", "windsurf", "mcp_config.json"), nil
 	}
 	return filepath.Join(home, ".codeium", "windsurf", "mcp_config.json"), nil
+}
+
+// claudeCodePathFor resolves Claude Code's project-local `.mcp.json`.
+// `base` is the current working directory (Installer.ResolvePath passes
+// cwd for CWDBased agents, not home) — Claude Code reads `.mcp.json`
+// from the project root it's launched in, same file shape as the other
+// JSON clients but scoped to a directory rather than a user.
+func claudeCodePathFor(base, _ string) (string, error) {
+	return filepath.Join(base, ".mcp.json"), nil
+}
+
+// codexPathFor resolves Codex's `~/.codex/config.toml` (same location on
+// every platform — Codex is a CLI tool with a Unix-style dotdir).
+func codexPathFor(home, _ string) (string, error) {
+	return filepath.Join(home, ".codex", "config.toml"), nil
 }
 
 // AddPadEntry reads (or creates) the JSON config at path, ensures
@@ -312,6 +391,179 @@ func jsonEqual(a, b map[string]any) bool {
 	return string(ab) == string(bb)
 }
 
+// --- TOML config path (Codex) --------------------------------------------
+//
+// Codex nests its MCP servers in a TOML `[mcp_servers.pad]` table, so the
+// JSON reader/writer above won't do. These mirror the JSON functions'
+// behaviour (merge, don't clobber; idempotent; 0600 perms) against a
+// map[string]any decoded from / encoded to TOML.
+
+// addPadEntryTOML reads (or creates) the TOML config at path, ensures
+// mcp_servers.pad points to `binary`, and writes the file back. Existing
+// unrelated keys and other mcp_servers entries are preserved. Returns
+// (modified=true, nil) only when the on-disk content actually changed.
+func addPadEntryTOML(path, binary string) (bool, error) {
+	if binary == "" {
+		return false, errors.New("addPadEntryTOML: binary path is required")
+	}
+	cfg, err := loadTOMLConfig(path)
+	if err != nil {
+		return false, err
+	}
+	wantedEntry := map[string]any{
+		"command": binary,
+		"args":    []any{"mcp", "serve"},
+	}
+	// If mcp_servers exists but isn't a table (e.g. a scalar left by a
+	// hand-edit or an incompatible tool), refuse rather than silently
+	// clobbering it — same "never overwrite a config we can't reconcile"
+	// posture as loadTOMLConfig's parse-error path.
+	rawServers, hasServers := cfg[codexServersKey]
+	servers, ok := rawServers.(map[string]any)
+	if hasServers && !ok {
+		return false, fmt.Errorf("%s: %q exists but is not a table; refusing to overwrite", path, codexServersKey)
+	}
+	if servers == nil {
+		servers = map[string]any{}
+	}
+	current, hadPad := servers[MCPServerKey].(map[string]any)
+	if hadPad && jsonEqual(current, wantedEntry) {
+		// Idempotent path: content already correct. Still tighten perms
+		// (mirrors AddPadEntry) — a hand-edited config may be 0644.
+		tightenPerms(path)
+		return false, nil
+	}
+	servers[MCPServerKey] = wantedEntry
+	cfg[codexServersKey] = servers
+	if err := writeTOMLConfig(path, cfg); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// removePadEntryTOML deletes mcp_servers.pad while leaving other servers
+// and top-level keys intact. Returns (true, nil) when an entry was
+// removed, (false, nil) when there was nothing to do.
+func removePadEntryTOML(path string) (bool, error) {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	cfg, err := loadTOMLConfig(path)
+	if err != nil {
+		return false, err
+	}
+	servers, ok := cfg[codexServersKey].(map[string]any)
+	if !ok {
+		return false, nil
+	}
+	if _, exists := servers[MCPServerKey]; !exists {
+		return false, nil
+	}
+	delete(servers, MCPServerKey)
+	cfg[codexServersKey] = servers
+	if err := writeTOMLConfig(path, cfg); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// hasPadEntryTOML reports whether mcp_servers.pad is present plus its
+// current `command` value. Missing files are "not installed", no error.
+func hasPadEntryTOML(path string) (installed bool, command string, err error) {
+	if _, statErr := os.Stat(path); statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			return false, "", nil
+		}
+		return false, "", fmt.Errorf("stat %s: %w", path, statErr)
+	}
+	cfg, err := loadTOMLConfig(path)
+	if err != nil {
+		return false, "", err
+	}
+	servers, _ := cfg[codexServersKey].(map[string]any)
+	if servers == nil {
+		return false, "", nil
+	}
+	entry, ok := servers[MCPServerKey].(map[string]any)
+	if !ok {
+		return false, "", nil
+	}
+	cmd, _ := entry["command"].(string)
+	return true, cmd, nil
+}
+
+// loadTOMLConfig reads path as a TOML document into a map. A missing or
+// whitespace-only file is an empty config. Parse errors on a non-empty
+// file propagate — we never silently overwrite a config we can't read.
+func loadTOMLConfig(path string) (map[string]any, error) {
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]any{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	if isAllWhitespace(b) {
+		return map[string]any{}, nil
+	}
+	var raw map[string]any
+	if err := toml.Unmarshal(b, &raw); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if raw == nil {
+		raw = map[string]any{}
+	}
+	return raw, nil
+}
+
+func writeTOMLConfig(path string, cfg map[string]any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", filepath.Dir(path), err)
+	}
+	b, err := toml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal toml config: %w", err)
+	}
+	// 0o600 — like the JSON path, Codex configs can hold credentials for
+	// other MCP servers. os.WriteFile only honors mode on create, so we
+	// Chmod after (tightenPerms) to catch a pre-existing 0644 file.
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	tightenPerms(path)
+	return nil
+}
+
+// --- format dispatch ------------------------------------------------------
+//
+// Install/Uninstall/Status route through these so each agent's config is
+// read and written in its native format. JSON is the default; TOML is
+// Codex-only for now.
+
+func addEntry(agent *Agent, path, binary string) (bool, error) {
+	if agent.Format == formatTOML {
+		return addPadEntryTOML(path, binary)
+	}
+	return AddPadEntry(path, binary)
+}
+
+func removeEntry(agent *Agent, path string) (bool, error) {
+	if agent.Format == formatTOML {
+		return removePadEntryTOML(path)
+	}
+	return RemovePadEntry(path)
+}
+
+func hasEntry(agent *Agent, path string) (bool, string, error) {
+	if agent.Format == formatTOML {
+		return hasPadEntryTOML(path)
+	}
+	return HasPadEntry(path)
+}
+
 // Installer is the high-level façade over AddPadEntry / RemovePadEntry,
 // resolving config paths from per-agent rules and the user's home dir.
 //
@@ -322,6 +574,9 @@ type Installer struct {
 	Binary string
 	// Home overrides os.UserHomeDir when non-empty (test-only).
 	Home string
+	// CWD overrides os.Getwd when non-empty (test-only). Used to resolve
+	// CWDBased agents' project-local config (Claude Code's .mcp.json).
+	CWD string
 	// GOOS overrides runtime.GOOS when non-empty (test-only).
 	GOOS string
 }
@@ -353,17 +608,29 @@ func (i *Installer) goos() string {
 	return runtime.GOOS
 }
 
-// ResolvePath returns the absolute config path for the given agent
-// using the installer's home + goos overrides.
-func (i *Installer) ResolvePath(agent *Agent) (string, error) {
-	home, err := i.home()
-	if err != nil {
-		return "", err
+func (i *Installer) cwd() (string, error) {
+	if i.CWD != "" {
+		return i.CWD, nil
 	}
+	return os.Getwd()
+}
+
+// ResolvePath returns the config path for the given agent using the
+// installer's home/cwd + goos overrides. CWDBased agents (Claude Code)
+// resolve against the current working directory; all others resolve
+// against the user's home directory.
+func (i *Installer) ResolvePath(agent *Agent) (string, error) {
 	if agent.PathFor == nil {
 		return "", fmt.Errorf("agent %q has no PathFor resolver", agent.Name)
 	}
-	return agent.PathFor(home, i.goos())
+	base, err := i.home()
+	if agent.CWDBased {
+		base, err = i.cwd()
+	}
+	if err != nil {
+		return "", err
+	}
+	return agent.PathFor(base, i.goos())
 }
 
 // Install adds (or refreshes) the pad entry in the named agent's
@@ -381,7 +648,7 @@ func (i *Installer) Install(agentName string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	modified, err := AddPadEntry(path, i.Binary)
+	modified, err := addEntry(agent, path, i.Binary)
 	return path, modified, err
 }
 
@@ -397,17 +664,20 @@ func (i *Installer) Uninstall(agentName string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	removed, err := RemovePadEntry(path)
+	removed, err := removeEntry(agent, path)
 	return path, removed, err
 }
 
-// Status walks every supported agent and reports installation state.
-// Per-agent failures are captured in AgentStatus.Error rather than
+// Status walks every global (per-user) agent and reports installation
+// state. CWDBased agents (Claude Code) are omitted — their config is
+// project-local, so a global status table can't meaningfully represent
+// them; they're install-on-request only (see Agent.CWDBased). Per-agent
+// failures are captured in AgentStatus.Error rather than
 // short-circuiting the whole report.
 func (i *Installer) Status() []AgentStatus {
-	out := make([]AgentStatus, 0, len(SupportedAgents))
-	for idx := range SupportedAgents {
-		agent := &SupportedAgents[idx]
+	agents := globalAgents()
+	out := make([]AgentStatus, 0, len(agents))
+	for _, agent := range agents {
 		row := AgentStatus{Name: agent.Name, Label: agent.Label}
 		path, err := i.ResolvePath(agent)
 		if err != nil {
@@ -416,7 +686,7 @@ func (i *Installer) Status() []AgentStatus {
 			continue
 		}
 		row.ConfigPath = path
-		installed, cmd, err := HasPadEntry(path)
+		installed, cmd, err := hasEntry(agent, path)
 		if err != nil {
 			row.Error = err.Error()
 		}
