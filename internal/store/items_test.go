@@ -2329,6 +2329,26 @@ func TestOldRefResolvesAfterMove(t *testing.T) {
 	if found == nil || found.ID != item.ID {
 		t.Fatal("new ref TASK-N should resolve after move")
 	}
+
+	oldRef := fmt.Sprintf("PLAN-%d", originalNumber)
+	found, err = s.ResolveItemIncludeDeleted(ws.ID, oldRef)
+	if err != nil {
+		t.Fatalf("ResolveItemIncludeDeleted (old ref) error: %v", err)
+	}
+	if found == nil || found.ID != item.ID || found.Ref != moved.Ref || found.DeletedAt != nil {
+		t.Fatalf("active old ref resolved incorrectly: %+v", found)
+	}
+
+	if err := s.DeleteItem(item.ID); err != nil {
+		t.Fatalf("DeleteItem error: %v", err)
+	}
+	found, err = s.ResolveItemIncludeDeleted(ws.ID, oldRef)
+	if err != nil {
+		t.Fatalf("ResolveItemIncludeDeleted (archived old ref) error: %v", err)
+	}
+	if found == nil || found.ID != item.ID || found.Ref != moved.Ref || found.DeletedAt == nil {
+		t.Fatalf("archived old ref resolved incorrectly: %+v", found)
+	}
 }
 
 func TestWorkspaceNumberingIsolation(t *testing.T) {

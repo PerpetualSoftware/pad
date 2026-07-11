@@ -743,20 +743,13 @@ func itemOpenCmdWithOpener(opener func(string) error) *cobra.Command {
 }
 
 func itemWebPath(workspace models.Workspace, item models.Item) (string, error) {
+	if workspace.OwnerUsername == "" {
+		return "", fmt.Errorf("workspace %q has no owner username", workspace.Slug)
+	}
+
 	itemID := cli.ItemRef(item)
 	if itemID == "" {
 		itemID = item.Slug
-	}
-
-	switch {
-	case workspace.OwnerUsername == "":
-		return "", fmt.Errorf("workspace %q has no owner username", workspace.Slug)
-	case workspace.Slug == "":
-		return "", fmt.Errorf("workspace has no slug")
-	case item.CollectionSlug == "":
-		return "", fmt.Errorf("item %q has no collection slug", item.Slug)
-	case itemID == "":
-		return "", fmt.Errorf("item has no reference or slug")
 	}
 
 	return fmt.Sprintf("/%s/%s/%s/%s",

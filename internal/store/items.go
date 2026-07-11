@@ -540,7 +540,7 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 			return item, nil
 		}
 	}
-	if prefix, number, ok := parseItemRef(slugOrRef); ok {
+	if _, number, ok := parseItemRef(slugOrRef); ok {
 		var item models.Item
 		var createdAt, updatedAt string
 		var deletedAt *string
@@ -558,8 +558,8 @@ func (s *Store) ResolveItemIncludeDeleted(workspaceID, slugOrRef string) (*model
 			JOIN collections c ON c.id = i.collection_id
 			LEFT JOIN users au ON au.id = i.assigned_user_id
 			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
-			WHERE i.workspace_id = ? AND c.prefix = ? AND i.item_number = ?
-		`), workspaceID, prefix, number).Scan(
+			WHERE i.workspace_id = ? AND i.item_number = ?
+		`), workspaceID, number).Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
 			&item.Content, &item.Fields, &item.Tags,
 			&pinned, &item.SortOrder, &item.ParentID, &item.AssignedUserID, &item.AgentRoleID, &item.RoleSortOrder,

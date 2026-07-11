@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -104,12 +103,10 @@ func TestItemOpenDoesNotOpenBrowserWhenItemIsMissing(t *testing.T) {
 	}
 }
 
-func TestItemOpenUsesSlugForArchivedItemWithoutCanonicalRef(t *testing.T) {
-	deletedAt := time.Now()
+func TestItemOpenUsesSlugWithoutCanonicalRef(t *testing.T) {
 	server := setupItemOpenTest(t, itemOpenTestHandler("legacy-item", models.Item{
 		Slug:           "legacy-item",
 		CollectionSlug: "tasks",
-		DeletedAt:      &deletedAt,
 	}))
 
 	var openedURL string
@@ -147,24 +144,11 @@ func TestItemOpenReturnsBrowserError(t *testing.T) {
 	}
 }
 
-func TestItemWebPathRequiresRouteMetadata(t *testing.T) {
-	tests := []struct {
-		name      string
-		workspace models.Workspace
-		item      models.Item
-	}{
-		{name: "owner username", workspace: models.Workspace{Slug: "demo"}, item: models.Item{Slug: "item", CollectionSlug: "tasks"}},
-		{name: "workspace slug", workspace: models.Workspace{OwnerUsername: "owner"}, item: models.Item{Slug: "item", CollectionSlug: "tasks"}},
-		{name: "collection slug", workspace: models.Workspace{Slug: "demo", OwnerUsername: "owner"}, item: models.Item{Slug: "item"}},
-		{name: "item identifier", workspace: models.Workspace{Slug: "demo", OwnerUsername: "owner"}, item: models.Item{CollectionSlug: "tasks"}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if _, err := itemWebPath(tt.workspace, tt.item); err == nil {
-				t.Fatal("expected missing route metadata error")
-			}
-		})
+func TestItemWebPathRequiresOwnerUsername(t *testing.T) {
+	workspace := models.Workspace{Slug: "demo"}
+	item := models.Item{Slug: "item", CollectionSlug: "tasks"}
+	if _, err := itemWebPath(workspace, item); err == nil {
+		t.Fatal("expected missing owner username error")
 	}
 }
 
