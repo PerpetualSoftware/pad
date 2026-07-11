@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"os"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -342,9 +343,22 @@ func (s *Server) Stop() {
 }
 
 func New(s *store.Store) *Server {
+	rl := NewRateLimiters()
+	// PAD_DISABLE_RATE_LIMITS turns off ALL HTTP rate limiting when set to a
+	// truthy value. It exists ONLY for the E2E harness (BUG-2089): every
+	// Playwright test shares one loopback IP (127.0.0.1), so the auth limiter
+	// (5 logins/min/IP) trips the moment a spec logs in a couple of browser
+	// clients — collab-persistence.spec.ts logs in two per test. A nil
+	// rateLimiters makes RateLimit() a pass-through (see middleware_ratelimit.go
+	// line 379), and Stop() + the MCP path are already nil-safe. Never set this
+	// in production or self-host; it's an explicit opt-in so it can't flip on
+	// by accident.
+	if disabled, _ := strconv.ParseBool(os.Getenv("PAD_DISABLE_RATE_LIMITS")); disabled {
+		rl = nil
+	}
 	return &Server{
 		store:            s,
-		rateLimiters:     NewRateLimiters(),
+		rateLimiters:     rl,
 		storageInfoCache: newStorageInfoCache(storageInfoTTL),
 	}
 }
