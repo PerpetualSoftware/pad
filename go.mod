@@ -13,7 +13,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.9.2
-	github.com/mark3labs/mcp-go v0.52.0
+	github.com/mark3labs/mcp-go v0.56.0
 	github.com/ory/fosite v0.49.0
 	github.com/pb33f/libopenapi v0.36.3
 	github.com/pquerna/otp v1.5.0
@@ -25,7 +25,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/trustelem/zxcvbn v1.0.1
-	go.yaml.in/yaml/v4 v4.0.0-rc.4
+	go.yaml.in/yaml/v4 v4.0.0-rc.6
 	golang.org/x/crypto v0.52.0
 	golang.org/x/image v0.43.0
 	golang.org/x/term v0.43.0
