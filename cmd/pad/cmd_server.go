@@ -357,6 +357,17 @@ func serveCmd() *cobra.Command {
 					mcpSrv.MCP(),
 					mcptransport.WithEndpointPath("/mcp"),
 					mcptransport.WithSessionIdManager(&padMCPGenerateOnlySessionIDManager{}),
+					// mcp-go v0.56 turns on DNS-rebinding protection by
+					// default: a request whose accept socket is loopback but
+					// whose Host header is non-loopback gets a 403. pad-cloud's
+					// mcp.getpad.dev vhost sits behind a reverse proxy that
+					// forwards to this process over 127.0.0.1 while preserving
+					// the original Host, so the default would reject every real
+					// request. Disable it to keep the pre-v0.56 behaviour — the
+					// browser-driven rebinding threat it guards against doesn't
+					// apply here: this transport only mounts in cloud mode and
+					// every request is Bearer/OAuth-authenticated.
+					mcptransport.WithDisableLocalhostProtection(true),
 				)
 				// TASK-1120: optional env-driven overrides for the
 				// mcp-active-sessions tracker. Both default to the
