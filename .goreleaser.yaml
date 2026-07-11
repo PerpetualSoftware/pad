@@ -51,19 +51,20 @@ sboms:
 
 # Keyless cosign signing for checksums.txt. Uses Sigstore's public Fulcio
 # CA + Rekor transparency log via GitHub Actions OIDC — no long-lived keys
-# to store. Verify with:
+# to store. cosign v3 emits a single Sigstore bundle (cert + signature +
+# Rekor entry) as checksums.txt.sigstore.json — the separate .pem/.sig
+# outputs are gone as of the v2→v3 bump. Verify with:
 #   cosign verify-blob --certificate-identity-regexp \
 #     "^https://github.com/PerpetualSoftware/pad/.github/workflows/release.yml@.*" \
 #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-#     --bundle checksums.txt.cosign.bundle checksums.txt
+#     --bundle checksums.txt.sigstore.json checksums.txt
 signs:
   - cmd: cosign
-    certificate: "${artifact}.pem"
+    signature: "${artifact}.sigstore.json"
     args:
       - "sign-blob"
       - "--yes"
-      - "--output-certificate=${certificate}"
-      - "--output-signature=${signature}"
+      - "--bundle=${signature}"
       - "${artifact}"
     artifacts: checksum
     output: true
