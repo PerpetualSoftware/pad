@@ -724,20 +724,47 @@ func itemOpenCmdWithOpener(opener func(string) error) *cobra.Command {
 				return err
 			}
 
-			ref := cli.ItemRef(*item)
-			if ref == "" {
-				return fmt.Errorf("item %q has no canonical reference", args[0])
+			workspace, err := client.GetWorkspace(ws)
+			if err != nil {
+				return err
 			}
 
-			target := fmt.Sprintf("%s/-/r/%s/%s",
-				cfg.BrowserURL(),
-				url.PathEscape(ws),
-				url.PathEscape(ref),
-			)
-			fmt.Printf("Opening %s\n", target)
-			return opener(target)
+			itemPath, err := itemWebPath(*workspace, *item)
+			if err != nil {
+				return err
+			}
+
+			baseURL := cfg.BrowserURL()
+			fmt.Printf("Opening %s%s\n", baseURL, itemPath)
+			loginURL := baseURL + "/login?" + url.Values{"redirect": []string{itemPath}}.Encode()
+			return opener(loginURL)
 		},
 	}
+}
+
+func itemWebPath(workspace models.Workspace, item models.Item) (string, error) {
+	itemID := cli.ItemRef(item)
+	if itemID == "" {
+		itemID = item.Slug
+	}
+
+	switch {
+	case workspace.OwnerUsername == "":
+		return "", fmt.Errorf("workspace %q has no owner username", workspace.Slug)
+	case workspace.Slug == "":
+		return "", fmt.Errorf("workspace has no slug")
+	case item.CollectionSlug == "":
+		return "", fmt.Errorf("item %q has no collection slug", item.Slug)
+	case itemID == "":
+		return "", fmt.Errorf("item has no reference or slug")
+	}
+
+	return fmt.Sprintf("/%s/%s/%s/%s",
+		url.PathEscape(workspace.OwnerUsername),
+		url.PathEscape(workspace.Slug),
+		url.PathEscape(item.CollectionSlug),
+		url.PathEscape(itemID),
+	), nil
 }
 
 // --- update ---
