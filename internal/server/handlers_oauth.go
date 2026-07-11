@@ -568,6 +568,37 @@ func (s *Server) handleOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	translateResourceToAudience(r, s.oauthServer.AllowedAudience())
 
+	// BUG-2088: `scope` is optional (RFC 6749 §3.1.2) and our advertised
+	// scopes_supported is only advisory, so a client (e.g. Claude Code)
+	// may legally omit it. When it does, ar.GetRequestedScopes() is empty,
+	// renderConsent shows zero capability-tier radios, and the consent
+	// POST dead-ends in parseConsentPayload with "capability_tier must be
+	// 'read', 'write', or 'admin'". Default an absent scope to the
+	// requesting client's registered scopes (DCR seeds those to
+	// pad:read/pad:write), falling back to pad:read pad:write. A missing
+	// or unknown client_id is left untouched so fosite emits its normal
+	// invalid_client error below.
+	if strings.TrimSpace(r.Form.Get("scope")) == "" {
+		defaultScope := "pad:read pad:write"
+		if clientID := r.Form.Get("client_id"); clientID != "" {
+			if client, err := s.store.GetOAuthClient(clientID); err == nil && len(client.Scopes) > 0 {
+				defaultScope = strings.Join(client.Scopes, " ")
+			}
+		}
+		// Set the default on BOTH r.Form (what fosite's NewAuthorizeRequest
+		// reads to populate ar's requested scopes → the consent tier radios)
+		// AND r.URL's query. renderConsent round-trips the authorize params
+		// into the consent form's hidden fields from r.URL.Query()
+		// (allowlistedAuthorizeParams), and /authorize/decide rebuilds the
+		// AuthorizeRequest from those hidden fields — so without the URL
+		// update the decide POST would reconstruct a scope-less request and
+		// reject the chosen tier, dead-ending the flow one step later.
+		r.Form.Set("scope", defaultScope)
+		q := r.URL.Query()
+		q.Set("scope", defaultScope)
+		r.URL.RawQuery = q.Encode()
+	}
+
 	ar, err := s.oauthServer.Provider().NewAuthorizeRequest(ctx, r)
 	if err != nil {
 		// TASK-961: malformed authorize request (bad client_id, missing
