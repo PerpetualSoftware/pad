@@ -79,7 +79,7 @@ type Config struct {
 	SecureCookies   bool   `toml:"secure_cookies"`    // Set Secure flag on cookies (requires TLS)
 	TrustedProxies  string `toml:"trusted_proxies"`   // Comma-separated CIDRs whose X-Forwarded-For is trusted. Empty = ignore proxy headers.
 	MetricsToken    string `toml:"metrics_token"`     // Shared Bearer token required to scrape /metrics. Empty = loopback-only.
-	IPChangeEnforce string `toml:"ip_change_enforce"` // "" (log only) or "strict" (reject session when client IP differs from the one recorded at session creation).
+	IPChangeEnforce string `toml:"ip_change_enforce"` // "" (log only) or "strict" (revoke+reject session when client IP OR User-Agent hash differs from the one recorded at session creation).
 
 	// SSE limits
 	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max SSE connections (0 = unlimited)

@@ -51,6 +51,18 @@ const (
 	// deployments configured with PAD_IP_CHANGE_ENFORCE=strict the middleware
 	// additionally rejects the request.
 	ActionSessionIPChanged = "session_ip_changed"
+	// ActionSessionUAChanged is logged when a session presents a different
+	// User-Agent hash than the one recorded at creation. Like the IP signal
+	// this is surfaced to the audit log for detection; in deployments
+	// configured with PAD_IP_CHANGE_ENFORCE=strict the middleware additionally
+	// revokes the session and rejects the request. The UA hash is stable for
+	// the life of a real session (a browser doesn't rewrite its own UA mid-
+	// session), so a mismatch is a stronger theft signal than an IP change —
+	// which is precisely why UA enforcement carries fewer false positives than
+	// IP enforcement. This audit row is only emitted in strict mode; log-only
+	// mode keeps the historical slog-only behavior to avoid changing the audit
+	// feed for existing self-host users.
+	ActionSessionUAChanged = "session_ua_changed"
 	// ActionStripeEventUnmarked is logged when /admin/stripe-event-unmark
 	// rolls back a row from stripe_processed_events (TASK-736). The
 	// endpoint intentionally reopens Stripe retry windows, so a persisted

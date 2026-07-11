@@ -114,18 +114,26 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 				rejectInvalidBearer(w, r, next, "unauthorized", "Invalid or expired session")
 				return
 			}
-			// Session binding: log a User-Agent change for visibility but do
-			// NOT reject. The UA is client-supplied and trivially replayed by
-			// anyone who already stole the token, so hard-enforcing it adds
-			// little security while breaking legitimate clients (browser/WebView
-			// updates, DevTools device emulation, mobile-app rebuilds). This
-			// mirrors the default IP-change handling (logged, request allowed);
-			// strict rejection on IP change is still available via
-			// PAD_IP_CHANGE_ENFORCE=strict.
-			if session.UAHash != "" && sha256hex(r.UserAgent()) != session.UAHash {
-				slog.Warn("session binding mismatch: User-Agent changed (logged, request allowed)",
-					"session_ip", session.IPAddress,
-					"client_ip", clientIP(r))
+			// Session binding: detect a User-Agent change. Logged in all
+			// modes; the session is revoked + the request rejected only when
+			// PAD_IP_CHANGE_ENFORCE=strict. The UA is client-supplied and
+			// trivially replayed by anyone who already stole the token, so it
+			// stays log-only by default (breaking browser/WebView updates,
+			// DevTools device emulation, and mobile-app rebuilds would hurt
+			// more than it helps). Checked BEFORE the IP change so a stolen
+			// token replayed from a fresh client is killed on the more stable
+			// of the two signals first.
+			switch s.handleSessionUAChange(w, r, session, token) {
+			case sessionIPChangeTerminated:
+				return
+			case sessionIPChangeRevoked:
+				if isPublicAPIPath(r.URL.Path) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				writeError(w, http.StatusUnauthorized, "session_ua_changed",
+					"Session client changed — please log in again.")
+				return
 			}
 			// Session binding: detect IP changes. Log to audit log in all modes;
 			// reject only when PAD_IP_CHANGE_ENFORCE=strict.
@@ -235,15 +243,20 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		// Session binding: log a User-Agent change for visibility but do NOT
-		// de-authenticate. See the matching note in TokenAuth above — UA is
-		// client-supplied, weak as a binding, and false-positives on routine
-		// client churn (browser/WebView updates, DevTools device emulation,
-		// mobile-app rebuilds). Logged-but-allowed, like the default IP path.
-		if session.UAHash != "" && sha256hex(r.UserAgent()) != session.UAHash {
-			slog.Warn("session binding mismatch: User-Agent changed (logged, request allowed)",
-				"session_ip", session.IPAddress,
-				"client_ip", clientIP(r))
+		// Session binding: detect a User-Agent change. Logged in all modes;
+		// the session is revoked only when PAD_IP_CHANGE_ENFORCE=strict. See
+		// the matching note in TokenAuth above — UA is client-supplied, weak
+		// as a binding, and false-positives on routine client churn
+		// (browser/WebView updates, DevTools device emulation, mobile-app
+		// rebuilds), so it stays log-only by default.
+		switch s.handleSessionUAChange(w, r, session, cookie.Value) {
+		case sessionIPChangeTerminated:
+			return
+		case sessionIPChangeRevoked:
+			// Browser path: let the request through unauthenticated so
+			// the SPA renders its login flow instead of a JSON error.
+			next.ServeHTTP(w, r)
+			return
 		}
 
 		// Session binding: detect IP changes. Log to audit log in all modes;
@@ -938,6 +951,98 @@ func (s *Server) handleSessionIPChange(w http.ResponseWriter, r *http.Request, s
 			"user_id", userID)
 	}
 	return sessionIPChangeAllowedLogged
+}
+
+// handleSessionUAChange compares the User-Agent hash on this request to the
+// hash recorded when the session was created, and enforces the same opt-in
+// policy as handleSessionIPChange (governed by the single
+// PAD_IP_CHANGE_ENFORCE toggle, so operators arm both signals at once).
+//
+// Behavior:
+//   - Session has no recorded UA hash (legacy pre-binding row) or the hash
+//     matches: continue.
+//   - Log-only mode (default): emit exactly the historical slog line and let
+//     the request through. Deliberately NO audit row and NO rotation — this
+//     preserves today's behavior byte-for-byte for existing self-host users,
+//     who would otherwise see new audit noise on routine client churn.
+//   - Strict mode (PAD_IP_CHANGE_ENFORCE=strict): destroy the session via
+//     DeleteSessionIfExists (the same CAS primitive the IP path uses), log a
+//     single ActionSessionUAChanged audit row on the winning delete, and
+//     reject the request (401 for API, revoked-passthrough for public/browser
+//     paths). A failed delete fails closed with a 500 so a still-valid stolen
+//     session can't slip through.
+//
+// Unlike an IP, a real client does not rewrite its own User-Agent mid-session,
+// so a UA mismatch is a stronger theft signal and carries far fewer
+// false-positive lockouts than IP enforcement (which trips on mobile roaming,
+// VPN toggles, and carrier NAT). Both remain opt-in behind the same flag
+// because the UA is still client-supplied — an attacker who stole the token
+// can replay the victim's UA header — so this is a defense-in-depth speed bump,
+// not a hard identity binding.
+//
+// Returns the shared sessionIPChangeOutcome vocabulary so callers can reuse the
+// same switch they use for handleSessionIPChange.
+func (s *Server) handleSessionUAChange(w http.ResponseWriter, r *http.Request, session *store.SessionInfo, plainToken string) sessionIPChangeOutcome {
+	if session.UAHash == "" || sha256hex(r.UserAgent()) == session.UAHash {
+		return sessionIPChangeContinue
+	}
+
+	userID := ""
+	if session.User != nil {
+		userID = session.User.ID
+	}
+
+	if !s.ipChangeEnforceStrict {
+		// Log-only mode (default): unchanged from the pre-enforce behavior —
+		// warn and allow. No audit row so the audit feed is untouched.
+		slog.Warn("session binding mismatch: User-Agent changed (logged, request allowed)",
+			"session_ip", session.IPAddress,
+			"client_ip", clientIP(r))
+		return sessionIPChangeContinue
+	}
+
+	// Strict mode: destroy the session atomically. Only the caller whose
+	// DELETE affected a row logs + issues the response. A failed delete leaves
+	// the session valid, so a follow-up request from the same mismatching UA
+	// hits this path again — safe (mirrors handleSessionIPChange).
+	deleted, err := s.store.DeleteSessionIfExists(plainToken)
+	if err != nil {
+		slog.Error("failed to destroy session on UA-change in strict mode; failing closed",
+			"session_ip", session.IPAddress,
+			"client_ip", clientIP(r),
+			"user_id", userID,
+			"error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error",
+			"Unable to validate session. Please try again.")
+		return sessionIPChangeTerminated
+	}
+	if deleted {
+		s.logAuditEventForUser(models.ActionSessionUAChanged, r, userID, auditMeta(map[string]string{
+			"session_ip": session.IPAddress,
+			"client_ip":  clientIP(r),
+		}))
+		slog.Warn("session destroyed: User-Agent changed (strict enforcement)",
+			"session_ip", session.IPAddress,
+			"client_ip", clientIP(r),
+			"user_id", userID)
+	}
+	// Clear client-side cookies regardless — even if another request already
+	// deleted the row, this client is still holding the now-invalid token.
+	clearSessionCookie(w, s.secureCookies)
+	clearCSRFCookie(w)
+	// Public API paths (login/register/password-reset, health, share links,
+	// plan-limits) must still work after revocation so the user can recover.
+	if isPublicAPIPath(r.URL.Path) {
+		return sessionIPChangeRevoked
+	}
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		writeError(w, http.StatusUnauthorized, "session_ua_changed",
+			"Session client changed — please log in again.")
+		return sessionIPChangeTerminated
+	}
+	// Non-API (browser) path: caller must not install the destroyed session's
+	// user; the SPA renders its unauth state.
+	return sessionIPChangeRevoked
 }
 
 // clearSessionCookie expires the session cookie on the client so a
