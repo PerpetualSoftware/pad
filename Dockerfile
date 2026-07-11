@@ -41,7 +41,7 @@ RUN CGO_ENABLED=0 go build \
     -o pad ./cmd/pad
 
 # Stage 3: Runtime
-FROM alpine:3.23
+FROM alpine:3.24
 # ca-certificates: TLS roots for outbound HTTPS (e.g. Maileroo email).
 # tzdata: timezone names for Go's time package.
 # shadow: provides usermod / groupmod (BusyBox's adduser/addgroup don't
