@@ -361,6 +361,105 @@ func TestOAuth_Authorize_RendersConsentWhenLoggedIn(t *testing.T) {
 	}
 }
 
+// BUG-2088: `scope` is optional (RFC 6749 §3.1.2), so a client (e.g.
+// Claude Code) may omit it. Without a server-side default the consent
+// UI rendered zero tier radios and the decide POST dead-ended with
+// "capability_tier must be 'read', 'write', or 'admin'". The authorize
+// handler now defaults an absent scope to the client's registered
+// scopes (DCR seeds pad:read/pad:write) so the tier radios render AND
+// the scope round-trips through the consent form's hidden fields into
+// the /authorize/decide POST (Codex review: the default must live on
+// r.URL.Query() too, not just r.Form, or the decide step rebuilds a
+// scope-less request and rejects the chosen tier). This test drives
+// the full GET-consent → POST-decide → code flow to pin both halves.
+func TestOAuth_Authorize_DefaultsScopeWhenOmitted(t *testing.T) {
+	t.Parallel()
+	srv, _ := oauthEnabledTestServer(t)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	user, sessionToken := loginTestUser(t, srv)
+	mustSeedWorkspaceWithRole(t, srv, user.ID, "Render Project", "render-project", "owner")
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+
+	verifier := "code-verifier-abc123-must-be-43-to-128-chars-long"
+	challenge := s256Challenge(verifier)
+
+	// Deliberately omit `scope` — mirrors the Claude Code authorize URL
+	// from the bug report.
+	q := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"resource":              {testCanonicalAudience},
+		"audience":              {testCanonicalAudience},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"state":                 {"client-state"},
+	}
+
+	rr := doAuthedRequest(srv, "GET", "/oauth/authorize?"+q.Encode(), nil, sessionToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 with consent HTML, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	// registerTestClient registers with pad:read + pad:write, so both
+	// radios must render even though the authorize URL sent no scope.
+	if !strings.Contains(body, `value="read"`) {
+		t.Error("consent UI must render the pad:read tier radio from the client's registered scopes")
+	}
+	if !strings.Contains(body, `value="write"`) {
+		t.Error("consent UI must render the pad:write tier radio from the client's registered scopes")
+	}
+
+	// The defaulted scope MUST round-trip into the consent form's hidden
+	// `scope` field — this is the half Codex caught: rendering radios
+	// isn't enough if the decide POST rebuilds a scope-less request.
+	// Extract exactly what the browser would submit rather than
+	// hardcoding it, so the test fails if the hidden field goes missing.
+	hiddenScope := extractHiddenFormValue(t, body, "scope")
+	if !strings.Contains(hiddenScope, "pad:read") || !strings.Contains(hiddenScope, "pad:write") {
+		t.Fatalf("consent form hidden scope field must carry the defaulted scope; got %q", hiddenScope)
+	}
+
+	// Drive the decide POST with the scope the rendered form actually
+	// carries. Before the fix this scope was empty and the POST failed
+	// with the capability_tier error instead of issuing a code.
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {hiddenScope},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"client-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"write"},
+		"allowed_workspaces":    {"*"},
+	}
+	rrDecide := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rrDecide.Code != http.StatusSeeOther && rrDecide.Code != http.StatusFound {
+		t.Fatalf("decide: expected 303/302 redirect with code, got %d (body: %s)", rrDecide.Code, rrDecide.Body.String())
+	}
+	cbURL, _ := url.Parse(rrDecide.Header().Get("Location"))
+	if code := cbURL.Query().Get("code"); code == "" {
+		t.Fatalf("decide must issue an authorization code; got callback %q", rrDecide.Header().Get("Location"))
+	}
+}
+
+// extractHiddenFormValue pulls the value of a hidden <input name="..."> out
+// of rendered consent HTML, mirroring what a browser would submit. Values
+// are HTML-escaped in the template, so unescape before returning.
+func extractHiddenFormValue(t *testing.T, htmlBody, name string) string {
+	t.Helper()
+	re := regexp.MustCompile(`<input type="hidden" name="` + regexp.QuoteMeta(name) + `" value="([^"]*)">`)
+	m := re.FindStringSubmatch(htmlBody)
+	if m == nil {
+		return ""
+	}
+	return html.UnescapeString(m[1])
+}
+
 func TestOAuth_Authorize_RejectsAudienceMismatch(t *testing.T) {
 	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
