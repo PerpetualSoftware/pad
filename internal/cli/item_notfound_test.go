@@ -65,6 +65,9 @@ func TestGetItemWrapsNotFound(t *testing.T) {
 	if err := client.DeleteItem("docapp", "TASK-999999"); err == nil || err.Error() != want {
 		t.Errorf("DeleteItem: got %v, want %q", err, want)
 	}
+	if _, err := client.CreateComment("docapp", "TASK-999999", models.CommentCreate{Body: "test"}); err == nil || err.Error() != want {
+		t.Errorf("CreateComment: got %v, want %q", err, want)
+	}
 }
 
 // TestNotFoundPreservesDetails confirms the enriched *APIError carries the

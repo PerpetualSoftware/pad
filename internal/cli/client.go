@@ -383,7 +383,8 @@ func (c *Client) ListComments(wsSlug, itemSlug string) ([]models.Comment, error)
 
 func (c *Client) CreateComment(wsSlug, itemSlug string, input models.CommentCreate) (*models.Comment, error) {
 	var result models.Comment
-	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/comments", input, &result)
+	err := c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/comments", input, &result)
+	return &result, wrapItemNotFound(err, itemSlug, wsSlug)
 }
 
 func (c *Client) DeleteComment(wsSlug, commentID string) error {
