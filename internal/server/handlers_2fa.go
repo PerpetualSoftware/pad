@@ -3,6 +3,7 @@ package server
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base32"
 	"encoding/hex"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pquerna/otp"
 	"github.com/pquerna/otp/totp"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -22,7 +24,36 @@ const (
 
 	// recoveryCodeCount is the number of recovery codes generated.
 	recoveryCodeCount = 8
+
+	// totpPeriod is the TOTP time-step length in seconds. Matches the period
+	// baked into totp.Validate (Google-Authenticator compatible) and is used
+	// to derive the step a code matched for single-use enforcement (BUG-2054).
+	totpPeriod = 30
 )
+
+// deriveTOTPStep returns the TOTP time-step whose generated code equals
+// passcode, searching the same ±1 skew window totp.Validate accepts (in the
+// library's search order: current, +1, -1). The bool is false if no step in
+// the window matches — which shouldn't happen once totp.Validate has already
+// returned true, but if it does the caller MUST refuse rather than risk
+// accepting a replay it can't pin to a step. See BUG-2054.
+func deriveTOTPStep(passcode, secret string, t time.Time) (int64, bool) {
+	current := t.Unix() / totpPeriod
+	for _, step := range []int64{current, current + 1, current - 1} {
+		code, err := totp.GenerateCodeCustom(secret, time.Unix(step*totpPeriod, 0).UTC(), totp.ValidateOpts{
+			Period:    totpPeriod,
+			Digits:    otp.DigitsSix,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+		if err != nil {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(code), []byte(passcode)) == 1 {
+			return step, true
+		}
+	}
+	return 0, false
+}
 
 // handleTOTPSetup generates a TOTP secret and returns the provisioning URI
 // for the user to scan with their authenticator app. The secret is stored
@@ -253,8 +284,48 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 
 	// Try TOTP code first
 	if input.Code != "" {
-		if totp.Validate(input.Code, user.TOTPSecret) {
-			verified = true
+		// Per-challenge attempt cap on the TOTP branch, mirroring the
+		// recovery-code branch below: a captured challenge token shouldn't be
+		// a license to grind the 6-digit space before it expires. Reuses the
+		// existing RecoveryCode limiter (keyed on a SHA-256 of the challenge
+		// token, distinct "totp:" prefix) rather than adding a new limiter.
+		if s.rateLimiters != nil && s.rateLimiters.RecoveryCode != nil {
+			h := sha256.Sum256([]byte(input.ChallengeToken))
+			key := "totp:" + hex.EncodeToString(h[:])
+			if !s.rateLimiters.RecoveryCode.getLimiter(key).Allow() {
+				slog.Warn("rate limited", "user_id", user.ID, "limiter", "totp")
+				writeRateLimitResponse(w, s.rateLimiters.RecoveryCode.config)
+				return
+			}
+		}
+		// Capture the clock ONCE so validation and step derivation agree on the
+		// window. totp.Validate reads its own time.Now(); if a boundary crosses
+		// between it and deriveTOTPStep, a code valid under one clock could
+		// derive to a step outside the other's ±1 window and be spuriously
+		// rejected. ValidateCustom with the same `now` + the opts Validate bakes
+		// in (period 30, skew 1, SHA1, 6 digits) closes that race.
+		now := time.Now().UTC()
+		valid, _ := totp.ValidateCustom(input.Code, user.TOTPSecret, now, totp.ValidateOpts{
+			Period:    totpPeriod,
+			Skew:      1,
+			Digits:    otp.DigitsSix,
+			Algorithm: otp.AlgorithmSHA1,
+		})
+		if valid {
+			// Single-use enforcement (BUG-2054): a valid TOTP code is otherwise
+			// replayable within its ~30s window (plus skew). Derive the step
+			// the code actually matched and atomically claim it; a step already
+			// consumed means this is a replay, so leave verified=false and let
+			// it fall through to the same invalid-code response (no replay
+			// signal is leaked to the caller).
+			if step, ok := deriveTOTPStep(input.Code, user.TOTPSecret, now); ok {
+				consumed, err := s.store.ConsumeTOTPStep(user.ID, user.TOTPSecret, step)
+				if err != nil {
+					writeInternalError(w, err)
+					return
+				}
+				verified = consumed
+			}
 		}
 	}
 

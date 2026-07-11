@@ -1174,12 +1174,18 @@ func (s *Store) backfillUsernames() error {
 
 // SetTOTPSecret stores the TOTP secret for a user (before 2FA is verified).
 // The secret is encrypted at rest if an encryption key is configured.
+//
+// It also clears totp_last_step: that single-use watermark (BUG-2054) is a
+// time-step counter that belongs to the OLD secret, so a fresh secret must
+// start with a clean slate — otherwise a re-enrolled authenticator's
+// current-window code could be spuriously rejected until time advances past
+// the stale watermark.
 func (s *Store) SetTOTPSecret(userID, secret string) error {
 	encrypted, err := s.encrypt(secret)
 	if err != nil {
 		return fmt.Errorf("encrypt totp secret: %w", err)
 	}
-	_, err = s.db.Exec(s.q(`UPDATE users SET totp_secret = ?, updated_at = ? WHERE id = ?`), encrypted, now(), userID)
+	_, err = s.db.Exec(s.q(`UPDATE users SET totp_secret = ?, totp_last_step = NULL, updated_at = ? WHERE id = ?`), encrypted, now(), userID)
 	if err != nil {
 		return fmt.Errorf("set totp secret: %w", err)
 	}
@@ -1222,14 +1228,86 @@ func (s *Store) EnableTOTP(userID, expectedSecret, hashedRecoveryCodes string) e
 	return nil
 }
 
-// DisableTOTP disables 2FA and clears the secret and recovery codes.
+// DisableTOTP disables 2FA and clears the secret and recovery codes. It also
+// clears the totp_last_step single-use watermark (BUG-2054) so it doesn't
+// outlive the secret it belonged to and reject a future re-enrollment's codes.
 func (s *Store) DisableTOTP(userID string) error {
-	_, err := s.db.Exec(s.q(`UPDATE users SET totp_enabled = ?, totp_secret = '', recovery_codes = '', updated_at = ? WHERE id = ?`),
+	_, err := s.db.Exec(s.q(`UPDATE users SET totp_enabled = ?, totp_secret = '', recovery_codes = '', totp_last_step = NULL, updated_at = ? WHERE id = ?`),
 		s.dialect.BoolToInt(false), now(), userID)
 	if err != nil {
 		return fmt.Errorf("disable totp: %w", err)
 	}
 	return nil
+}
+
+// ConsumeTOTPStep atomically records a TOTP time-step as consumed, enforcing
+// single-use semantics for login codes (BUG-2054). It succeeds only if step is
+// strictly greater than the user's stored totp_last_step (or none is stored
+// yet), persisting the new value in the SAME guarded UPDATE. Two concurrent
+// verifications for the same step therefore can't both win: the first advances
+// totp_last_step and the second's WHERE clause no longer matches. Mirrors the
+// compare-and-set pattern in UpdateSessionIPIfEquals.
+//
+// expectedSecret is the (decrypted) secret the caller validated the code
+// against; the update is additionally gated on the stored secret STILL being
+// that one. This closes a TOCTOU where a login validates, then the user
+// disables / re-enrolls 2FA (clearing the watermark, migration 074), and this
+// write would otherwise stamp the OLD secret's step back over the fresh secret
+// — spuriously rejecting the new authenticator's next code. If the secret
+// changed underfoot the login is refused (it validated against a secret that
+// no longer exists), which is the correct outcome.
+//
+// Returns true if this call claimed the step (caller may proceed), false if the
+// step was already consumed (a replay) or the secret changed — either way the
+// caller must reject as an invalid code.
+func (s *Store) ConsumeTOTPStep(userID, expectedSecret string, step int64) (bool, error) {
+	// BEGIN IMMEDIATE (the store's _txlock) serializes this read-then-write
+	// against a concurrent DisableTOTP/SetTOTPSecret on SQLite; on Postgres the
+	// secret-equality guard in the UPDATE's WHERE provides the same protection.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("consume totp step: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var storedSecret string
+	err = tx.QueryRow(s.q(`SELECT totp_secret FROM users WHERE id = ?`), userID).Scan(&storedSecret)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("consume totp step: read secret: %w", err)
+	}
+	decrypted, err := s.decrypt(storedSecret)
+	if err != nil {
+		return false, fmt.Errorf("consume totp step: decrypt secret: %w", err)
+	}
+	if decrypted != expectedSecret {
+		// Secret rotated out from under this login between validation and now.
+		return false, nil
+	}
+
+	// Guard on the exact stored (possibly encrypted) ciphertext for atomicity,
+	// the same technique EnableTOTP uses, so a secret change racing between the
+	// SELECT and the UPDATE also fails the CAS instead of stamping a stale step.
+	res, err := tx.Exec(s.q(`
+		UPDATE users
+		SET totp_last_step = ?
+		WHERE id = ? AND totp_secret = ? AND (totp_last_step IS NULL OR totp_last_step < ?)
+	`), step, userID, storedSecret, step)
+	if err != nil {
+		return false, fmt.Errorf("consume totp step: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		// Some drivers don't report RowsAffected reliably. Err on the safe
+		// side: treat as "not the winner" so a replay is never accepted.
+		return false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("consume totp step: commit: %w", err)
+	}
+	return n > 0, nil
 }
 
 // ConsumeRecoveryCode validates and removes a single recovery code.

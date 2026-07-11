@@ -1,0 +1,12 @@
+-- Add totp_last_step for single-use TOTP enforcement (BUG-2054).
+-- Records the highest TOTP time-step (unix_time / 30) a user has already
+-- consumed on the 2FA login-verify path. Without it a valid TOTP code is
+-- replayable within its ~30s window (plus skew): the verify handler now
+-- derives the step a code matched and rejects any step <= this value,
+-- advancing the column via a compare-and-set UPDATE on each success.
+--
+-- NOTE: no `IF NOT EXISTS` — SQLite's ALTER TABLE ADD COLUMN rejects it.
+-- Nullable with no default; the SAFE default (never-consumed) is NULL, so no
+-- backfill is needed — every existing user can still log in with their next
+-- code, and the first successful verification seeds the column.
+ALTER TABLE users ADD COLUMN totp_last_step INTEGER;
