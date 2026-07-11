@@ -735,9 +735,9 @@ func itemOpenCmdWithOpener(opener func(string) error) *cobra.Command {
 			}
 
 			baseURL := cfg.BrowserURL()
-			fmt.Printf("Opening %s%s\n", baseURL, itemPath)
-			loginURL := baseURL + "/login?" + url.Values{"redirect": []string{itemPath}}.Encode()
-			return opener(loginURL)
+			itemURL := baseURL + itemPath
+			cmd.Printf("Opening %s\n", itemURL)
+			return opener(itemURL)
 		},
 	}
 }

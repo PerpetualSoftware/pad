@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -22,7 +23,7 @@ func setupItemOpenTest(t *testing.T, handler http.Handler) *httptest.Server {
 	previousWorkspace := workspaceFlag
 	previousURL := urlFlag
 	workspaceFlag = "demo"
-	urlFlag = server.URL
+	urlFlag = server.URL + "/"
 	t.Cleanup(func() {
 		workspaceFlag = previousWorkspace
 		urlFlag = previousURL
@@ -57,19 +58,24 @@ func TestItemOpenResolvesRefAndOpensBrowser(t *testing.T) {
 	}))
 
 	var openedURL string
+	var output bytes.Buffer
 	cmd := itemOpenCmdWithOpener(func(target string) error {
 		openedURL = target
 		return nil
 	})
+	cmd.SetOut(&output)
 	cmd.SetArgs([]string{"task-5"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute item open: %v", err)
 	}
 
-	want := server.URL + "/login?redirect=%2Fowner%2Fdemo%2Ftasks%2FTASK-5"
+	want := server.URL + "/owner/demo/tasks/TASK-5"
 	if openedURL != want {
 		t.Fatalf("opened URL = %q, want %q", openedURL, want)
+	}
+	if got := output.String(); got != "Opening "+want+"\n" {
+		t.Fatalf("command output = %q, want %q", got, "Opening "+want+"\n")
 	}
 }
 
@@ -120,7 +126,7 @@ func TestItemOpenUsesSlugWithoutCanonicalRef(t *testing.T) {
 		t.Fatalf("execute item open: %v", err)
 	}
 
-	want := server.URL + "/login?redirect=%2Fowner%2Fdemo%2Ftasks%2Flegacy-item"
+	want := server.URL + "/owner/demo/tasks/legacy-item"
 	if openedURL != want {
 		t.Fatalf("opened URL = %q, want %q", openedURL, want)
 	}
