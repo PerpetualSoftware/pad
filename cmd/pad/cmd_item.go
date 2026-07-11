@@ -704,6 +704,62 @@ func showCmd() *cobra.Command {
 	}
 }
 
+// --- open ---
+
+func itemOpenCmd() *cobra.Command {
+	return itemOpenCmdWithOpener(openBrowser)
+}
+
+func itemOpenCmdWithOpener(opener func(string) error) *cobra.Command {
+	return &cobra.Command{
+		Use:   "open <ref>",
+		Short: "Open an item in the Pad web UI",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, cfg := getClient()
+			ws := getWorkspace()
+
+			item, err := client.GetItem(ws, args[0])
+			if err != nil {
+				return err
+			}
+
+			workspace, err := client.GetWorkspace(ws)
+			if err != nil {
+				return err
+			}
+
+			itemPath, err := itemWebPath(*workspace, *item)
+			if err != nil {
+				return err
+			}
+
+			baseURL := cfg.BrowserURL()
+			itemURL := baseURL + itemPath
+			cmd.Printf("Opening %s\n", itemURL)
+			return opener(itemURL)
+		},
+	}
+}
+
+func itemWebPath(workspace models.Workspace, item models.Item) (string, error) {
+	if workspace.OwnerUsername == "" {
+		return "", fmt.Errorf("workspace %q has no owner username", workspace.Slug)
+	}
+
+	itemID := cli.ItemRef(item)
+	if itemID == "" {
+		itemID = item.Slug
+	}
+
+	return fmt.Sprintf("/%s/%s/%s/%s",
+		url.PathEscape(workspace.OwnerUsername),
+		url.PathEscape(workspace.Slug),
+		url.PathEscape(item.CollectionSlug),
+		url.PathEscape(itemID),
+	), nil
+}
+
 // --- update ---
 
 func updateCmd() *cobra.Command {

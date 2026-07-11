@@ -407,6 +407,7 @@ pad project reconcile                 Reconcile item and PR state
 pad item create <coll> "title"        Create item (task, idea, plan, doc, ...)
 pad item list [collection]            List items (filters: --status, --priority, --all)
 pad item show <ref>                   Show item detail
+pad item open <ref>                   Open item in web UI
 pad item update <ref>                 Update item fields
 pad item delete <ref>                 Delete item
 pad item move <ref> <collection>      Move item between collections
