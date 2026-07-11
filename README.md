@@ -183,6 +183,15 @@ docker run -p 127.0.0.1:7777:7777 -v pad-data:/data ghcr.io/perpetualsoftware/pa
 
 This publishes Pad to `localhost:7777` on the host machine, which is the recommended default for local use.
 
+**First run — create the first admin.** Open `http://localhost:7777` and you'll hit a setup page asking for a bootstrap token. On first start with no users, Pad logs a one-time setup URL to stderr (captured by `docker logs`) — grep it and open the printed link:
+
+```bash
+docker logs <container> 2>&1 | grep -A6 'Pad first-run setup'
+# → http://<your-host>:7777/setup#token=<one-time-token>
+```
+
+Open that URL, create your admin account, and the token is consumed (the banner stops appearing). If you'd rather stay on the CLI, `docker exec -it <container> pad auth setup` works too — running inside the container counts as loopback, which the bootstrap gate allows. On a network you already trust, set `PAD_BYPASS_SETUP_TOKEN=true` to skip the token and create the admin straight from `http://<your-host>:7777/setup` (only safe when the port isn't reachable from the open internet).
+
 **Single user, more than one device?** Publish to all interfaces so you can reach Pad from your phone, tablet, or another machine on the same LAN, Tailscale network, or home VPN:
 
 ```bash
