@@ -264,9 +264,10 @@ pad init "My App" --template scrum                    # Scrum-style with sprints
 pad init "My App" --template product                  # Product management focused
 pad init "My Hiring" --template hiring                # Company-side: requisitions, candidates, interview loops, feedback
 pad init "Job Search" --template interviewing         # Candidate-side: applications, interviews, companies, contacts
+pad init "My App" --template blank                    # Custom: system collections only — let /pad onboard build the rest
 ```
 
-Pad ships templates for software (startup / scrum / product), people workflows (hiring, interviewing), and has reserved categories for research, content, operations, and personal use so the same project-management primitives fit well beyond code projects.
+Pad ships templates for software (startup / scrum / product), people workflows (hiring, interviewing), and a custom `blank` template — system collections (Conventions, Playbooks) only, with the `/pad onboard` playbook as its sole seeded content. `blank` is the entry point for the agent-driven `/pad onboard` flow: it walks you through shaping collections, conventions, and roles to match your actual project. Reserved categories for research, content, operations, and personal use await their first templates, so the same project-management primitives fit well beyond code projects. There's also a hidden `demo` template — the `startup` layout pre-loaded with realistic sample data — that's kept out of the picker but can be built explicitly with `--template demo`.
 
 ### 2. Start working
 
