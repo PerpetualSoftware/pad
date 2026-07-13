@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -24,6 +25,18 @@ func (f *fakeFetcher) Fetch(ctx context.Context, args []string) (string, error) 
 	return f.stdout, f.err
 }
 
+type fakeBinaryFetcher struct {
+	*fakeFetcher
+	gotBinaryArgs []string
+	bytes         []byte
+	binaryErr     error
+}
+
+func (f *fakeBinaryFetcher) FetchBytes(ctx context.Context, args []string) ([]byte, error) {
+	f.gotBinaryArgs = append([]string(nil), args...)
+	return f.bytes, f.binaryErr
+}
+
 func TestParsePadURI_Forms(t *testing.T) {
 	cases := []struct {
 		uri     string
@@ -36,6 +49,7 @@ func TestParsePadURI_Forms(t *testing.T) {
 		{"pad://workspace/docapp/items", "docapp", "items", "", false},
 		{"pad://workspace/docapp/dashboard", "docapp", "dashboard", "", false},
 		{"pad://workspace/docapp/collections", "docapp", "collections", "", false},
+		{"pad://workspace/docapp/attachments/att-1", "docapp", "attachments", "att-1", false},
 		{"pad://workspace/x/items/y/extra", "x", "items", "y/extra", false}, // trailing path packed into arg
 		// Malformed:
 		{"http://example.com/foo", "", "", "", true},
@@ -399,6 +413,172 @@ func TestReadCollections_DispatchesCollectionList(t *testing.T) {
 	}
 }
 
+func TestReadAttachment_ReturnsBoundedThumbBlob(t *testing.T) {
+	imageBytes := []byte("small-png")
+	f := &fakeBinaryFetcher{
+		fakeFetcher: &fakeFetcher{stdout: `{"id":"att-1","mime":"image/png","size":9}`},
+		bytes:       imageBytes,
+	}
+	r := &resources{fetcher: f, binaryFetcher: f}
+	req := mcp.ReadResourceRequest{}
+	req.Params.URI = "pad://workspace/docapp/attachments/att-1"
+
+	contents, err := r.readAttachment(context.Background(), req)
+	if err != nil {
+		t.Fatalf("readAttachment: %v", err)
+	}
+	if len(contents) != 1 {
+		t.Fatalf("contents = %d, want 1", len(contents))
+	}
+	blob, ok := contents[0].(mcp.BlobResourceContents)
+	if !ok {
+		t.Fatalf("content type = %T, want BlobResourceContents", contents[0])
+	}
+	if blob.URI != req.Params.URI {
+		t.Errorf("URI = %q, want %q", blob.URI, req.Params.URI)
+	}
+	if blob.MIMEType != "image/png" {
+		t.Errorf("MIMEType = %q, want image/png", blob.MIMEType)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(blob.Blob)
+	if err != nil {
+		t.Fatalf("decode blob: %v", err)
+	}
+	if string(decoded) != string(imageBytes) {
+		t.Errorf("decoded blob = %q, want %q", decoded, imageBytes)
+	}
+
+	wantShow := []string{"attachment", "show", "att-1", "--workspace", "docapp", "--variant", "thumb-md", "--format", "json"}
+	if !equalSlice(f.gotArgs, wantShow) {
+		t.Errorf("metadata args = %v, want %v", f.gotArgs, wantShow)
+	}
+	wantDownload := []string{"attachment", "download", "att-1", "-", "--workspace", "docapp", "--variant", "thumb-md"}
+	if !equalSlice(f.gotBinaryArgs, wantDownload) {
+		t.Errorf("download args = %v, want %v", f.gotBinaryArgs, wantDownload)
+	}
+}
+
+func TestRegisterResources_AttachmentTemplateRoundTrip(t *testing.T) {
+	f := &fakeBinaryFetcher{
+		fakeFetcher: &fakeFetcher{stdout: `{"id":"att-1","mime":"image/jpeg","size":4}`},
+		bytes:       []byte{0xff, 0xd8, 0xff, 0xd9},
+	}
+	srv := server.NewMCPServer("t", "1", server.WithResourceCapabilities(false, false))
+	RegisterResources(srv, f, nil)
+
+	reqJSON := []byte(`{
+		"jsonrpc": "2.0",
+		"id": 1,
+		"method": "resources/read",
+		"params": {"uri": "pad://workspace/docapp/attachments/att-1"}
+	}`)
+	resp := srv.HandleMessage(context.Background(), reqJSON)
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	for _, want := range []string{`"mimeType":"image/jpeg"`, `"blob":"/9j/2Q=="`} {
+		if !strings.Contains(string(encoded), want) {
+			t.Errorf("registered resource response missing %s: %s", want, encoded)
+		}
+	}
+}
+
+func TestReadAttachment_RejectsNonImageBeforeDownload(t *testing.T) {
+	f := &fakeBinaryFetcher{
+		fakeFetcher: &fakeFetcher{stdout: `{"id":"att-1","mime":"application/pdf","size":20}`},
+		bytes:       []byte("must not be fetched"),
+	}
+	r := &resources{fetcher: f, binaryFetcher: f}
+	req := mcp.ReadResourceRequest{}
+	req.Params.URI = "pad://workspace/docapp/attachments/att-1"
+
+	_, err := r.readAttachment(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "not an image") {
+		t.Fatalf("error = %v, want non-image rejection", err)
+	}
+	if len(f.gotBinaryArgs) != 0 {
+		t.Errorf("download should not run for non-image metadata; got %v", f.gotBinaryArgs)
+	}
+}
+
+func TestReadAttachment_EnforcesMetadataSizeBoundary(t *testing.T) {
+	tests := []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{name: "exact limit", size: attachmentResourceMaxBytes},
+		{name: "over limit", size: attachmentResourceMaxBytes + 1, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeBinaryFetcher{
+				fakeFetcher: &fakeFetcher{stdout: `{"id":"att-1","mime":"image/png","size":` + jsonNumber(tt.size) + `}`},
+				bytes:       make([]byte, tt.size),
+			}
+			r := &resources{fetcher: f, binaryFetcher: f}
+			req := mcp.ReadResourceRequest{}
+			req.Params.URI = "pad://workspace/docapp/attachments/att-1"
+
+			_, err := r.readAttachment(context.Background(), req)
+			if tt.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "exceeds") {
+					t.Fatalf("error = %v, want size rejection", err)
+				}
+				if len(f.gotBinaryArgs) != 0 {
+					t.Errorf("oversized metadata must prevent download; got %v", f.gotBinaryArgs)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("exact boundary rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestReadAttachment_RejectsOversizedDownloadedBody(t *testing.T) {
+	f := &fakeBinaryFetcher{
+		fakeFetcher: &fakeFetcher{stdout: `{"id":"att-1","mime":"image/png","size":1}`},
+		bytes:       make([]byte, attachmentResourceMaxBytes+1),
+	}
+	r := &resources{fetcher: f, binaryFetcher: f}
+	req := mcp.ReadResourceRequest{}
+	req.Params.URI = "pad://workspace/docapp/attachments/att-1"
+
+	_, err := r.readAttachment(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error = %v, want downloaded-size rejection", err)
+	}
+}
+
+func TestReadAttachment_PropagatesLookupError(t *testing.T) {
+	f := &fakeBinaryFetcher{fakeFetcher: &fakeFetcher{err: errors.New("attachment not found")}}
+	r := &resources{fetcher: f, binaryFetcher: f}
+	req := mcp.ReadResourceRequest{}
+	req.Params.URI = "pad://workspace/ghost/attachments/missing"
+
+	_, err := r.readAttachment(context.Background(), req)
+	if err == nil || !strings.Contains(err.Error(), "attachment not found") {
+		t.Fatalf("error = %v, want lookup error", err)
+	}
+}
+
+func TestReadAttachment_RejectsMalformedURI(t *testing.T) {
+	r := &resources{fetcher: &fakeFetcher{}}
+	req := mcp.ReadResourceRequest{}
+	req.Params.URI = "pad://workspace/docapp/attachments"
+	if _, err := r.readAttachment(context.Background(), req); err == nil {
+		t.Fatal("expected missing attachment id to fail")
+	}
+}
+
+func jsonNumber(n int) string {
+	b, _ := json.Marshal(n)
+	return string(b)
+}
+
 func TestReadItem_RejectsMismatchedURI(t *testing.T) {
 	// readItem is registered against the items/{ref} template, but
 	// guards against being invoked with a mismatched URI (defensive —
@@ -480,6 +660,18 @@ func TestExecResourceFetcher_RunsBinaryAndReturnsStdout(t *testing.T) {
 	}
 	if !strings.Contains(out, "hello") {
 		t.Errorf("expected 'hello' in stdout, got: %q", out)
+	}
+}
+
+func TestExecResourceFetcher_FetchBytesPreservesBinaryStdout(t *testing.T) {
+	f := &ExecResourceFetcher{Binary: "/bin/sh"}
+	out, err := f.FetchBytes(t.Context(), []string{"-c", `printf '\000\377\001'`})
+	if err != nil {
+		t.Fatalf("FetchBytes: %v", err)
+	}
+	want := []byte{0x00, 0xff, 0x01}
+	if string(out) != string(want) {
+		t.Errorf("FetchBytes = %v, want %v", out, want)
 	}
 }
 

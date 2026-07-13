@@ -345,7 +345,9 @@ the per-user clients (including Codex) and skip it.
 
 Plus resources at `pad://workspaces`, `pad://workspace/{ws}/dashboard`,
 `pad://workspace/{ws}/items`, `pad://workspace/{ws}/items/{ref}`,
-`pad://workspace/{ws}/collections`, `pad://workspace/{ws}/bootstrap`,
+`pad://workspace/{ws}/collections`,
+`pad://workspace/{ws}/attachments/{id}` (bounded image bytes),
+`pad://workspace/{ws}/bootstrap`,
 and `pad://_meta/version`.
 
 **Stability contract** — two version constants, both advertised in the
