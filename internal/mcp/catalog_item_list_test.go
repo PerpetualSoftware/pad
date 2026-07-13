@@ -84,3 +84,36 @@ func TestPadItemList_RespectsInRangeLimit(t *testing.T) {
 		t.Errorf("cliArgs %q should honor an in-range limit of 25", joined)
 	}
 }
+
+func TestPadItemList_RejectsParentWithUnparented(t *testing.T) {
+	disp := &fakeDispatcher{}
+	env := ActionEnv{Doc: liveCmdhelpDoc(t), Workspace: NewWorkspaceState("docapp"), Dispatcher: disp}
+	res, err := actionItemList(context.Background(), map[string]any{
+		"parent": "PLAN-3", "unparented": true,
+	}, env)
+	if err != nil {
+		t.Fatalf("actionItemList error: %v", err)
+	}
+	if res == nil || !res.IsError || !strings.Contains(textOf(res), "mutually exclusive") {
+		t.Fatalf("expected structured mutual-exclusion error, got %#v", res)
+	}
+	if len(disp.gotPath) != 0 {
+		t.Fatalf("invalid input reached dispatcher: %v", disp.gotPath)
+	}
+}
+
+func TestPadItemList_ForwardsUnparentedToLocalCLI(t *testing.T) {
+	disp := &fakeDispatcher{}
+	env := ActionEnv{Doc: liveCmdhelpDoc(t), Workspace: NewWorkspaceState("docapp"), Dispatcher: disp}
+	res, err := actionItemList(context.Background(), map[string]any{"unparented": true}, env)
+	if err != nil {
+		t.Fatalf("actionItemList error: %v", err)
+	}
+	if res != nil && res.IsError {
+		t.Fatalf("error result: %s", textOf(res))
+	}
+	joined := strings.Join(disp.gotArgs, " ")
+	if !strings.Contains(joined, "--unparented") {
+		t.Fatalf("local CLI args %q omit --unparented", joined)
+	}
+}

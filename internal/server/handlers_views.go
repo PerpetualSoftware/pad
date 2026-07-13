@@ -2,6 +2,7 @@ package server
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -46,6 +47,9 @@ func (s *Server) handleListViews(w http.ResponseWriter, r *http.Request) {
 	}
 	if views == nil {
 		views = []models.View{}
+	}
+	if visibleIDs != nil {
+		stripReservedUnparentedFromViews(views)
 	}
 
 	writeJSON(w, http.StatusOK, views)
@@ -103,6 +107,9 @@ func (s *Server) handleCreateView(w http.ResponseWriter, r *http.Request) {
 	if input.Name == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "Name is required")
 		return
+	}
+	if visibleIDs != nil {
+		input.Config = stripReservedUnparentedViewFilter(input.Config)
 	}
 
 	input.CollectionID = &coll.ID
@@ -179,6 +186,15 @@ func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	visibleIDs, visErr := s.visibleCollectionIDs(r, workspaceID)
+	if visErr != nil {
+		writeInternalError(w, visErr)
+		return
+	}
+	if visibleIDs != nil && input.Config != nil {
+		config := stripReservedUnparentedViewFilter(*input.Config)
+		input.Config = &config
+	}
 
 	view, err := s.store.UpdateView(viewID, input)
 	if err != nil {
@@ -188,6 +204,9 @@ func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 		}
 		writeInternalError(w, err)
 		return
+	}
+	if visibleIDs != nil {
+		view.Config = stripReservedUnparentedViewFilter(view.Config)
 	}
 
 	writeJSON(w, http.StatusOK, view)
@@ -215,4 +234,62 @@ func (s *Server) handleDeleteView(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// reservedUnparentedViewField is the saved-view pseudo-field the web phase
+// uses to persist the structural filter. It is not a collection-schema field.
+// Restricted and public consumers must never receive it because evaluating it
+// would expose whether hidden structural relationships exist.
+const reservedUnparentedViewField = "$unparented"
+
+func stripReservedUnparentedFromViews(views []models.View) {
+	for i := range views {
+		views[i].Config = stripReservedUnparentedViewFilter(views[i].Config)
+	}
+}
+
+func stripReservedUnparentedViewFilter(config string) string {
+	if config == "" {
+		return config
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(config), &doc); err != nil {
+		return config
+	}
+	rawFiltersValue, hasFilters := doc["filters"]
+	if !hasFilters {
+		return config
+	}
+	rawFilters, ok := rawFiltersValue.([]any)
+	if !ok {
+		// View config is intentionally flexible, but the filter evaluator only
+		// accepts arrays. Drop malformed shapes rather than returning their raw
+		// contents to restricted/public callers, where a nested reserved field
+		// could otherwise bypass the element-wise sanitizer below.
+		delete(doc, "filters")
+		b, err := json.Marshal(doc)
+		if err != nil {
+			return "{}"
+		}
+		return string(b)
+	}
+	filtered := make([]any, 0, len(rawFilters))
+	changed := false
+	for _, raw := range rawFilters {
+		filter, ok := raw.(map[string]any)
+		if ok && filter["field"] == reservedUnparentedViewField {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, raw)
+	}
+	if !changed {
+		return config
+	}
+	doc["filters"] = filtered
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return config
+	}
+	return string(b)
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -152,6 +153,7 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
+		s.publishStructuralLinkSourceEvent(r, workspaceID, item.ID)
 		writeJSON(w, http.StatusCreated, link)
 		return
 	}
@@ -168,6 +170,9 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 		}
 		writeInternalError(w, err)
 		return
+	}
+	if input.LinkType == models.ItemLinkTypeImplements {
+		s.publishStructuralLinkSourceEvent(r, workspaceID, item.ID)
 	}
 
 	writeJSON(w, http.StatusCreated, link)
@@ -231,6 +236,25 @@ func (s *Server) handleDeleteItemLink(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	if link.LinkType == models.ItemLinkTypeParent || link.LinkType == models.ItemLinkTypeImplements {
+		s.publishStructuralLinkSourceEvent(r, workspaceID, link.SourceID)
+	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// publishStructuralLinkSourceEvent runs only after the link transaction has
+// committed. It refetches the source so the SSE seq matches the row clients
+// will receive from /items-changes. A concurrent archive may make the source
+// disappear; in that case the archive event/delta is already authoritative.
+func (s *Server) publishStructuralLinkSourceEvent(r *http.Request, workspaceID, sourceID string) {
+	item, err := s.store.GetItem(sourceID)
+	if err != nil {
+		return
+	}
+	if item == nil {
+		return
+	}
+	actor, source := actorFromRequest(r)
+	s.publishItemEventWithName(events.ItemUpdated, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, item.Seq)
 }

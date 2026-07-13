@@ -36,6 +36,10 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := parseItemListParams(r)
+	if err := validateUnparentedListRequest(r, params); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 	if err := s.resolveParentFilter(r, workspaceID, &params); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -48,6 +52,10 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	params.CollectionIDs = visibleIDs
+	if params.Unparented && visibleIDs != nil {
+		writeError(w, http.StatusForbidden, "forbidden", "unparented filtering requires unrestricted workspace access")
+		return
+	}
 
 	// Apply item-level filtering for users with item grants (guests or
 	// restricted members) so item grants don't leak entire collections.
@@ -160,6 +168,7 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	params.CollectionIDs = visibleIDs
+	params.IncludeUnparentedMetadata = visibleIDs == nil
 
 	// Item-level grants for guests / restricted members.
 	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
@@ -311,9 +320,10 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	params := store.ItemChangesParams{
-		CollectionIDs: visibleIDs,
-		Since:         since,
-		Limit:         limit,
+		CollectionIDs:             visibleIDs,
+		Since:                     since,
+		Limit:                     limit,
+		IncludeUnparentedMetadata: visibleIDs == nil,
 	}
 
 	// Item-level grants for guests / restricted members. Delta sync
@@ -442,6 +452,14 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 	params := parseItemListParams(r)
 	params.CollectionSlug = collSlug
+	if err := validateUnparentedListRequest(r, params); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if params.Unparented && visibleIDs != nil {
+		writeError(w, http.StatusForbidden, "forbidden", "unparented filtering requires unrestricted workspace access")
+		return
+	}
 
 	// For users with item-level grants, if this collection's visibility comes
 	// from item-level grants (not a full collection grant), restrict to only
@@ -708,6 +726,13 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		actor, _ := actorFromRequest(r)
 		if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
 			return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", fmt.Sprintf("item created but parent link failed: %v", err)}
+		}
+		// SetParentLink advances the source seq because it changes the
+		// local-first is_unparented bit. Re-read before publishing/returning
+		// so a create-with-parent event never advertises the stale create seq.
+		item, err = s.store.GetItem(item.ID)
+		if err != nil || item == nil {
+			return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "item created with parent but freshness readback failed"}
 		}
 	}
 
@@ -2532,6 +2557,7 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 		GroupBy:        r.URL.Query().Get("group_by"),
 		Search:         r.URL.Query().Get("search"),
 		ParentID:       r.URL.Query().Get("parent_id"),
+		Unparented:     r.URL.Query().Get("unparented") == "true",
 		Tag:            r.URL.Query().Get("tag"),
 		AssignedUserID: r.URL.Query().Get("assigned_user_id"),
 		AgentRoleID:    r.URL.Query().Get("agent_role_id"),
@@ -2571,7 +2597,7 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 
 	// Extract field filters: any query param that isn't a known param is a field filter.
 	knownParams := map[string]bool{
-		"sort": true, "group_by": true, "search": true, "parent_id": true,
+		"sort": true, "group_by": true, "search": true, "parent_id": true, "unparented": true,
 		"tag": true, "include_archived": true, "limit": true, "offset": true,
 		"assigned_user_id": true, "agent_role_id": true, "non_terminal": true,
 	}
@@ -2590,6 +2616,22 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 	}
 
 	return params
+}
+
+// validateUnparentedListRequest keeps the boolean structural filter distinct
+// from every supported parent alias. Checking the raw query makes the rule
+// consistent even on a collection whose schema happens to define a real
+// `parent` or `plan` field.
+func validateUnparentedListRequest(r *http.Request, params models.ItemListParams) error {
+	if !params.Unparented {
+		return nil
+	}
+	for _, key := range []string{"parent_id", "parent", "plan"} {
+		if strings.TrimSpace(r.URL.Query().Get(key)) != "" {
+			return fmt.Errorf("unparented cannot be combined with %s", key)
+		}
+	}
+	return nil
 }
 
 // handleListItemActivity returns the activity feed for a specific item.

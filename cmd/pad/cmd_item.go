@@ -274,6 +274,7 @@ func listCmd() *cobra.Command {
 		roleFilter     string
 		tagFilter      string
 		parentFilter   string
+		unparented     bool
 		sortBy         string
 		groupBy        string
 		limitNum       int
@@ -343,6 +344,9 @@ Examples:
 			}
 			if parentFilter != "" {
 				params.Set("parent", parentFilter)
+			}
+			if unparented {
+				params.Set("unparented", "true")
 			}
 			if sortBy != "" {
 				params.Set("sort", sortBy)
@@ -421,6 +425,8 @@ Examples:
 	cmd.Flags().StringVar(&roleFilter, "role", "", "filter by agent role (slug)")
 	cmd.Flags().StringVar(&tagFilter, "tag", "", "filter by tag (exact match; spans collections)")
 	cmd.Flags().StringVar(&parentFilter, "parent", "", "filter by parent item (ref, slug, or ID)")
+	cmd.Flags().BoolVar(&unparented, "unparented", false, "filter to items with no parent or implements relationship")
+	cmd.MarkFlagsMutuallyExclusive("parent", "unparented")
 	cmd.Flags().StringVar(&sortBy, "sort", "", "sort order (e.g. priority:desc,created_at:asc)")
 	cmd.Flags().StringVar(&groupBy, "group-by", "", "group results by field")
 	cmd.Flags().IntVar(&limitNum, "limit", 0, fmt.Sprintf("max number of items to return (default %d, max %d)", defaultItemListLimit, maxItemListLimit))

@@ -77,6 +77,12 @@ const maxItemNumberRetries = 10
 // writes can't both read the same MAX(seq) and produce duplicates.
 const nextWorkspaceSeqSubquery = "(SELECT COALESCE(MAX(seq), 0) + 1 FROM items WHERE workspace_id = ?)"
 
+// unparentedItemPredicate is the canonical structural definition used by
+// list filtering and local-first metadata. Archived/hidden targets still
+// count because the relationship itself is what parents the source item;
+// consequently the subquery intentionally does not join items.
+const unparentedItemPredicate = "i.parent_id IS NULL AND NOT EXISTS (SELECT 1 FROM item_links unp WHERE unp.source_id = i.id AND unp.link_type IN ('parent', 'implements'))"
+
 // nextTransitionSeqSubquery assigns a monotonic, insertion-ordered seq to each
 // status_transitions row (global MAX+1 — cross-row dupes across items/workspaces
 // are harmless since the ordering is only used WITHIN a single item's history).
@@ -898,6 +904,10 @@ func (s *Store) ListItems(workspaceID string, params models.ItemListParams) ([]m
 		args = append(args, params.ParentID)
 	}
 
+	if params.Unparented {
+		query += " AND " + unparentedItemPredicate
+	}
+
 	if params.AssignedUserID != "" {
 		query += " AND i.assigned_user_id = ?"
 		args = append(args, params.AssignedUserID)
@@ -1060,6 +1070,9 @@ type ItemIndexParams struct {
 	ItemIDs []string
 	// IncludeArchived returns soft-deleted items when true.
 	IncludeArchived bool
+	// IncludeUnparentedMetadata projects the structural is_unparented bit.
+	// Server handlers set this only for unrestricted callers.
+	IncludeUnparentedMetadata bool
 }
 
 // ListItemsIndex returns the skinny-projection of items in a workspace —
@@ -1083,6 +1096,10 @@ func (s *Store) ListItemsIndex(workspaceID string, params ItemIndexParams) ([]mo
 	// true, the field is populated for the soft-deleted subset and
 	// nil for live rows. Mirrors the projection of
 	// ListItemsChangesSince which has always carried this column.
+	unparentedCol := "NULL"
+	if params.IncludeUnparentedMetadata {
+		unparentedCol = "(" + unparentedItemPredicate + ")"
+	}
 	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
@@ -1090,7 +1107,7 @@ func (s *Store) ListItemsIndex(workspaceID string, params ItemIndexParams) ([]mo
 		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
-		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), ` + unparentedCol + `
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		LEFT JOIN users au ON au.id = i.assigned_user_id
@@ -1169,6 +1186,9 @@ type ItemChangesParams struct {
 	// (DefaultItemChangesLimit); values above MaxItemChangesLimit
 	// are clamped.
 	Limit int
+	// IncludeUnparentedMetadata mirrors ItemIndexParams. Restricted callers
+	// leave it false so the optional bit is omitted from every delta row.
+	IncludeUnparentedMetadata bool
 }
 
 // DefaultItemChangesLimit is the default cap on /items-changes
@@ -1215,6 +1235,10 @@ func (s *Store) ListItemsChangesSince(workspaceID string, params ItemChangesPara
 	// `i.deleted_at IS NULL` filter here — that's the whole point of
 	// the delta: soft-deleted rows propagate so clients can remove
 	// them from their local index.
+	unparentedCol := "NULL"
+	if params.IncludeUnparentedMetadata {
+		unparentedCol = "(" + unparentedItemPredicate + ")"
+	}
 	query := `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
@@ -1222,7 +1246,7 @@ func (s *Store) ListItemsChangesSince(workspaceID string, params ItemChangesPara
 		       i.item_number, i.seq, i.created_at, i.updated_at, i.deleted_at,
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
-		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, '')
+		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), ` + unparentedCol + `
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id
 		LEFT JOIN users au ON au.id = i.assigned_user_id
@@ -1284,6 +1308,7 @@ func scanItemsChanges(rows *sql.Rows) ([]models.Item, error) {
 		var item models.Item
 		var createdAt, updatedAt string
 		var deletedAt *string
+		var isUnparented sql.NullBool
 		var pinned bool
 		if err := rows.Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
@@ -1293,7 +1318,7 @@ func scanItemsChanges(rows *sql.Rows) ([]models.Item, error) {
 			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
 			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
 			&item.AssignedUserName, &item.AssignedUserEmail,
-			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
+			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon, &isUnparented,
 		); err != nil {
 			return nil, err
 		}
@@ -1301,6 +1326,10 @@ func scanItemsChanges(rows *sql.Rows) ([]models.Item, error) {
 		item.CreatedAt = parseTime(createdAt)
 		item.UpdatedAt = parseTime(updatedAt)
 		item.DeletedAt = parseTimePtr(deletedAt)
+		if isUnparented.Valid {
+			v := isUnparented.Bool
+			item.IsUnparented = &v
+		}
 		hydrateItemComputedMetadata(&item)
 		items = append(items, item)
 	}
@@ -1518,6 +1547,7 @@ func scanItemsIndex(rows *sql.Rows) ([]models.Item, error) {
 		var item models.Item
 		var createdAt, updatedAt string
 		var deletedAt *string
+		var isUnparented sql.NullBool
 		var pinned bool
 		if err := rows.Scan(
 			&item.ID, &item.WorkspaceID, &item.CollectionID, &item.Title, &item.Slug,
@@ -1527,7 +1557,7 @@ func scanItemsIndex(rows *sql.Rows) ([]models.Item, error) {
 			&item.ItemNumber, &item.Seq, &createdAt, &updatedAt, &deletedAt,
 			&item.CollectionSlug, &item.CollectionName, &item.CollectionIcon, &item.CollectionPrefix,
 			&item.AssignedUserName, &item.AssignedUserEmail,
-			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon,
+			&item.AgentRoleName, &item.AgentRoleSlug, &item.AgentRoleIcon, &isUnparented,
 		); err != nil {
 			return nil, err
 		}
@@ -1537,6 +1567,10 @@ func scanItemsIndex(rows *sql.Rows) ([]models.Item, error) {
 		if deletedAt != nil {
 			t := parseTime(*deletedAt)
 			item.DeletedAt = &t
+		}
+		if isUnparented.Valid {
+			v := isUnparented.Bool
+			item.IsUnparented = &v
 		}
 		hydrateItemComputedMetadata(&item)
 		items = append(items, item)
@@ -1658,6 +1692,10 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	if params.ParentID != "" {
 		query += " AND i.parent_id = ?"
 		args = append(args, params.ParentID)
+	}
+
+	if params.Unparented {
+		query += " AND " + unparentedItemPredicate
 	}
 
 	if params.AssignedUserID != "" {
@@ -2310,7 +2348,7 @@ func (s *Store) updateItemWithParentLinkOnce(
 				return nil, err
 			}
 		} else {
-			if err := s.clearParentLinkTx(tx, id); err != nil {
+			if err := s.clearParentLinkTx(tx, id, existing.WorkspaceID); err != nil {
 				return nil, err
 			}
 		}
@@ -2586,6 +2624,16 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 	}
 	defer tx.Rollback()
 
+	// Structural relationships change the source item's local-first
+	// is_unparented metadata. Take the seq lock before the per-item child
+	// locks (the repository-wide lock order) so the link insert and source
+	// seq bump commit atomically without duplicate Postgres cursors.
+	if linkType == models.ItemLinkTypeImplements {
+		if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+			return nil, err
+		}
+	}
+
 	// Codex round-3 P1: when this link puts `sourceID` into the
 	// children-set of `target` (i.e. linkType ∈ childLinkTypes), lock
 	// the target's parent-children key so a concurrent
@@ -2617,6 +2665,11 @@ func (s *Store) CreateItemLink(workspaceID string, input models.ItemLinkCreate, 
 		VALUES (?, ?, ?, ?, ?, ?, ?)
 	`), id, workspaceID, sourceID, input.TargetID, linkType, createdBy, ts); err != nil {
 		return nil, fmt.Errorf("create item link: %w", err)
+	}
+	if linkType == models.ItemLinkTypeImplements {
+		if err := s.bumpStructuralLinkSourceTx(tx, workspaceID, sourceID); err != nil {
+			return nil, err
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -2792,13 +2845,18 @@ func (s *Store) DeleteItemLink(id string) error {
 	// so sourceID's own lock must be held for the "child lock freezes the
 	// parent set" invariant the update paths rely on. Both keys go through the
 	// sorted helper, so the grab stays deadlock-free.
-	var linkType, sourceID, targetID string
-	err = tx.QueryRow(s.q("SELECT link_type, source_id, target_id FROM item_links WHERE id = ?"), id).Scan(&linkType, &sourceID, &targetID)
+	var linkType, sourceID, targetID, workspaceID string
+	err = tx.QueryRow(s.q("SELECT link_type, source_id, target_id, workspace_id FROM item_links WHERE id = ?"), id).Scan(&linkType, &sourceID, &targetID, &workspaceID)
 	if err == sql.ErrNoRows {
 		return sql.ErrNoRows
 	}
 	if err != nil {
 		return fmt.Errorf("peek item link for delete: %w", err)
+	}
+	if linkType == models.ItemLinkTypeParent || linkType == models.ItemLinkTypeImplements {
+		if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+			return err
+		}
 	}
 	if isChildLinkType(linkType) {
 		if err := s.AcquireParentChildrenLocks(tx, sourceID, targetID); err != nil {
@@ -2813,6 +2871,11 @@ func (s *Store) DeleteItemLink(id string) error {
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return sql.ErrNoRows
+	}
+	if linkType == models.ItemLinkTypeParent || linkType == models.ItemLinkTypeImplements {
+		if err := s.bumpStructuralLinkSourceTx(tx, workspaceID, sourceID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }
@@ -2850,6 +2913,9 @@ func (s *Store) setParentLinkOnce(workspaceID, itemID, parentID, createdBy strin
 	// Acquired OUTERMOST (before setParentLinkTx's parent-children batch) to
 	// keep the global lock order cycle -> seq -> parent-children.
 	if err := s.acquireWorkspaceParentLinkLock(tx, workspaceID); err != nil {
+		return nil, err
+	}
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
 		return nil, err
 	}
 
@@ -2961,6 +3027,9 @@ func (s *Store) setParentLinkTx(tx *sql.Tx, workspaceID, itemID, parentID, creat
 	`), id, workspaceID, itemID, parentID, createdBy, now); err != nil {
 		return "", fmt.Errorf("insert parent link: %w", err)
 	}
+	if err := s.bumpStructuralLinkSourceTx(tx, workspaceID, itemID); err != nil {
+		return "", err
+	}
 
 	return id, nil
 }
@@ -3040,8 +3109,15 @@ func (s *Store) clearParentLinkOnce(itemID string) error {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
+	workspaceID, err := s.itemWorkspaceIDTx(tx, itemID)
+	if err != nil {
+		return err
+	}
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+		return err
+	}
 
-	if err := s.clearParentLinkTx(tx, itemID); err != nil {
+	if err := s.clearParentLinkTx(tx, itemID, workspaceID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -3051,7 +3127,7 @@ func (s *Store) clearParentLinkOnce(itemID string) error {
 // transaction. Shared by the public ClearParentLink (own tx) and
 // UpdateItemWithParentLink (item-update tx), so a cleared parent commits
 // atomically with the field write it accompanied (BUG-2013).
-func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID string) error {
+func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID, workspaceID string) error {
 	// Best-effort pre-lock read of the current parent, re-verified under lock.
 	oldParentID, err := s.readParentLinkTarget(tx, itemID)
 	if err != nil {
@@ -3080,10 +3156,51 @@ func (s *Store) clearParentLinkTx(tx *sql.Tx, itemID string) error {
 		return errParentSetChanged
 	}
 
-	if _, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'parent'`), itemID); err != nil {
+	result, err := tx.Exec(s.q(`DELETE FROM item_links WHERE source_id = ? AND link_type = 'parent'`), itemID)
+	if err != nil {
 		return fmt.Errorf("clear parent link: %w", err)
 	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("clear parent link rows affected: %w", err)
+	}
+	if rows > 0 {
+		if err := s.bumpStructuralLinkSourceTx(tx, workspaceID, itemID); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// bumpStructuralLinkSourceTx advances the source row whenever a parent or
+// implements edge changes. Callers must already hold the workspace seq lock
+// on Postgres. Keeping the bump in the link transaction makes index/delta
+// metadata and the committed relationship indivisible.
+func (s *Store) bumpStructuralLinkSourceTx(tx *sql.Tx, workspaceID, sourceID string) error {
+	result, err := tx.Exec(s.q(`
+		UPDATE items
+		SET updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`
+		WHERE id = ? AND workspace_id = ?
+	`), now(), workspaceID, sourceID, workspaceID)
+	if err != nil {
+		return fmt.Errorf("bump structural link source seq: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("bump structural link source seq rows affected: %w", err)
+	}
+	if rows == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) itemWorkspaceIDTx(tx *sql.Tx, itemID string) (string, error) {
+	var workspaceID string
+	if err := tx.QueryRow(s.q(`SELECT workspace_id FROM items WHERE id = ?`), itemID).Scan(&workspaceID); err != nil {
+		return "", fmt.Errorf("lookup item workspace: %w", err)
+	}
+	return workspaceID, nil
 }
 
 // GetParentForItem returns the parent link for an item, or nil if it has no parent.
