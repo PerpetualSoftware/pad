@@ -139,6 +139,31 @@ function toSkinny(row: ItemIndexRow | Item): ItemIndexRow {
 	return row;
 }
 
+// Full mutation responses intentionally omit local-first-only projections.
+// Carry the existing value across optimistic replacements until the
+// authoritative index/delta row for that seq arrives.
+function preserveProjectionMetadata(
+	existing: ItemIndexRow | undefined,
+	next: ItemIndexRow,
+): ItemIndexRow {
+	if (existing && !('is_unparented' in next) && 'is_unparented' in existing) {
+		return { ...next, is_unparented: existing.is_unparented };
+	}
+	return next;
+}
+
+// An index/delta row with the same seq as an optimistic mutation response is
+// not stale when it contributes projection metadata that response omitted.
+function mergeEqualSeqProjection(
+	existing: ItemIndexRow,
+	incoming: ItemIndexRow,
+): ItemIndexRow | null {
+	if ('is_unparented' in incoming && incoming.is_unparented !== existing.is_unparented) {
+		return { ...existing, is_unparented: incoming.is_unparented };
+	}
+	return null;
+}
+
 /**
  * Cursors are decimal-encoded `seq` values as opaque strings — but
  * "monotonic forward" needs a numeric compare, not lexicographic.
@@ -158,14 +183,21 @@ function cursorAsNum(c: string): number {
  * stale.
  */
 function mergeRow(state: WorkspaceState, row: ItemIndexRow | Item): boolean {
-	const next = toSkinny(row);
+	let next = toSkinny(row);
 	const existing = state.items.get(next.id);
+	next = preserveProjectionMetadata(existing, next);
 	if (
 		existing?.seq !== undefined &&
 		next.seq !== undefined &&
-		next.seq <= existing.seq
+		next.seq < existing.seq
 	) {
 		return false;
+	}
+	if (existing?.seq !== undefined && next.seq === existing.seq) {
+		const merged = mergeEqualSeqProjection(existing, next);
+		if (!merged) return false;
+		state.items.set(next.id, merged);
+		return true;
 	}
 	state.items.set(next.id, next);
 	return true;
@@ -587,7 +619,7 @@ export const localIndex = {
 				const existing = state.items.get(change.id);
 				if (
 					existing?.seq !== undefined &&
-					change.seq <= existing.seq &&
+					change.seq < existing.seq &&
 					!change.moved_out
 				) {
 					// Existing wins in RAM. Include it in the
@@ -600,6 +632,18 @@ export const localIndex = {
 					// (A moved-out eviction is unconditional — it
 					// removes the row regardless of stored seq.)
 					toPersist.push(existing);
+					continue;
+				}
+				if (existing?.seq !== undefined && change.seq === existing.seq && !change.moved_out) {
+					const { deleted: _deleted, ...incoming } = change;
+					const merged = mergeEqualSeqProjection(existing, incoming as ItemIndexRow);
+					if (merged) {
+						state.items.set(change.id, merged);
+						localSearch.upsert(ws, merged);
+						toPersist.push(merged);
+					} else {
+						toPersist.push(existing);
+					}
 					continue;
 				}
 			}
@@ -698,8 +742,9 @@ export const localIndex = {
 	 */
 	upsert(ws: string, row: ItemIndexRow | Item): void {
 		const state = ensureState(ws);
-		const next = toSkinny(row);
+		let next = toSkinny(row);
 		const existing = state.items.get(row.id);
+		next = preserveProjectionMetadata(existing, next);
 		if (
 			existing?.seq !== undefined &&
 			next.seq !== undefined &&

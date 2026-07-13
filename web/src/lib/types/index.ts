@@ -587,6 +587,9 @@ export interface Item {
 	parent_slug?: string;
 	parent_collection_slug?: string;
 	has_children?: boolean;
+	// Structural local-first projection. Unrestricted index/delta responses
+	// always include it; restricted callers omit it entirely.
+	is_unparented?: boolean;
 	derived_closure?: ItemDerivedClosure;
 	code_context?: ItemCodeContext;
 	convention?: ItemConventionMetadata;

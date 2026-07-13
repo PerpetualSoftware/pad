@@ -169,7 +169,8 @@ func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 	}
 
 	viewID := chi.URLParam(r, "viewID")
-	if s.requireViewEditable(w, r, workspaceID, viewID) == nil {
+	existingView := s.requireViewEditable(w, r, workspaceID, viewID)
+	if existingView == nil {
 		return
 	}
 
@@ -192,7 +193,11 @@ func (s *Server) handleUpdateView(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if visibleIDs != nil && input.Config != nil {
-		config := stripReservedUnparentedViewFilter(*input.Config)
+		config, err := preserveReservedUnparentedViewFilter(existingView.Config, *input.Config)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request", "Config must be valid JSON")
+			return
+		}
 		input.Config = &config
 	}
 
@@ -292,4 +297,48 @@ func stripReservedUnparentedViewFilter(config string) string {
 		return config
 	}
 	return string(b)
+}
+
+// preserveReservedUnparentedViewFilter applies a restricted caller's visible
+// config replacement without letting that round-trip delete an unrestricted
+// $unparented filter which the caller was never allowed to see. New reserved
+// filters from the submitted config are stripped first; only entries already
+// present in the stored config are restored.
+func preserveReservedUnparentedViewFilter(existingConfig, submittedConfig string) (string, error) {
+	reserved := reservedUnparentedFilters(existingConfig)
+	sanitized := stripReservedUnparentedViewFilter(submittedConfig)
+	if len(reserved) == 0 {
+		return sanitized, nil
+	}
+
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(sanitized), &doc); err != nil {
+		return "", err
+	}
+	filters, _ := doc["filters"].([]any)
+	doc["filters"] = append(filters, reserved...)
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+func reservedUnparentedFilters(config string) []any {
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(config), &doc); err != nil {
+		return nil
+	}
+	filters, ok := doc["filters"].([]any)
+	if !ok {
+		return nil
+	}
+	reserved := make([]any, 0, 1)
+	for _, raw := range filters {
+		filter, ok := raw.(map[string]any)
+		if ok && filter["field"] == reservedUnparentedViewField {
+			reserved = append(reserved, raw)
+		}
+	}
+	return reserved
 }

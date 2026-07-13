@@ -44,7 +44,7 @@ import type { ItemIndexRow } from '$lib/types';
  * `/items-index`. Server truth (items.content) is never persisted
  * here, so a cache wipe loses nothing.
  */
-export const LOCAL_INDEX_SCHEMA_VERSION = 1;
+export const LOCAL_INDEX_SCHEMA_VERSION = 2;
 
 /** Result of a `hydrate()` call. Empty payload when there's no cache yet. */
 export interface HydrateResult {
