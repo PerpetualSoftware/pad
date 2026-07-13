@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { api } from '$lib/api/client';
 import type { Item, ItemChangeRow, ItemIndexRow } from '$lib/types';
 import { localIndex } from './localIndex.svelte';
 import { LOCAL_INDEX_SCHEMA_VERSION } from './localIndexPersistence';
@@ -17,7 +18,10 @@ function row(id: string, seq: number, isUnparented?: boolean): ItemIndexRow {
 	return value;
 }
 
-afterEach(() => localIndex.reset(ws));
+afterEach(() => {
+	vi.restoreAllMocks();
+	localIndex.reset(ws);
+});
 
 describe('localIndex unparented projection compatibility', () => {
 	it('preserves the projection through an optimistic mutation and accepts authoritative metadata at equal seq', () => {
@@ -30,6 +34,7 @@ describe('localIndex unparented projection compatibility', () => {
 			ws,
 			[{ ...row('existing', 2, false), deleted: false } as ItemChangeRow],
 			'2',
+			true,
 		);
 		expect(localIndex.cursorFor(ws)).toBe('2');
 		expect(localIndex.findByIdOrSlug(ws, 'existing')?.is_unparented).toBe(false);
@@ -44,12 +49,37 @@ describe('localIndex unparented projection compatibility', () => {
 			ws,
 			[{ ...row('created', 3, true), deleted: false } as ItemChangeRow],
 			'3',
+			true,
 		);
 		expect(localIndex.cursorFor(ws)).toBe('3');
 		expect(localIndex.findByIdOrSlug(ws, 'created')?.is_unparented).toBe(true);
 	});
 
 	it('bumps the persistent cache contract so version-1 rows are fully resynced', () => {
-		expect(LOCAL_INDEX_SCHEMA_VERSION).toBe(2);
+		expect(LOCAL_INDEX_SCHEMA_VERSION).toBe(3);
+	});
+
+	it('fully resyncs when projection permission is downgraded or upgraded', async () => {
+		localIndex.upsert(ws, row('scoped', 1, true));
+		localIndex.applyDelta(ws, [], '1', true);
+
+		const listIndex = vi.spyOn(api.items, 'listIndex');
+		listIndex.mockResolvedValueOnce({
+			items: [row('scoped', 1)],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+		});
+		expect(await localIndex.ensureProjectionScope(ws, false)).toBe(true);
+		expect(localIndex.findByIdOrSlug(ws, 'scoped')?.is_unparented).toBeUndefined();
+
+		listIndex.mockResolvedValueOnce({
+			items: [row('scoped', 1, true)],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: true,
+		});
+		expect(await localIndex.ensureProjectionScope(ws, true)).toBe(true);
+		expect(localIndex.findByIdOrSlug(ws, 'scoped')?.is_unparented).toBe(true);
 	});
 });

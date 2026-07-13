@@ -104,6 +104,10 @@ class WorkspaceState {
 	// `bootstrap()` call will retry the delta sync instead of
 	// no-opping. Cleared on successful sync. Codex P2 round 5.
 	pendingResync = $state(false);
+	// Mirrors the explicit capability bit on index/delta responses. It is
+	// persisted with the cursor because the same user/workspace cache can
+	// outlive a permission upgrade or downgrade.
+	includesUnparentedMetadata = $state<boolean | null>(null);
 }
 
 // Outer map: reactive (SvelteMap) so consumers re-render when a fresh
@@ -115,6 +119,7 @@ const workspaces = new SvelteMap<string, WorkspaceState>();
 // is no reason to proxy a Promise, and keeping it separate makes the
 // reactive-vs-internal split explicit.
 const inflight = new Map<string, Promise<void>>();
+const projectionResyncs = new Map<string, Promise<void>>();
 
 function ensureState(ws: string): WorkspaceState {
 	let state = workspaces.get(ws);
@@ -218,6 +223,44 @@ function rebuildSearchIndex(ws: string, state: WorkspaceState): void {
 	localSearch.rebuild(ws, state.items.values());
 }
 
+async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise<void> {
+	const pending = projectionResyncs.get(ws);
+	if (pending) return pending;
+	const generation = state.generation;
+	const userId = state.userId;
+	const promise = (async () => {
+		// Clear immediately so a permission downgrade cannot expose stale
+		// projection bits while the authoritative snapshot is in flight.
+		state.items.clear();
+		state.cursor = '0';
+		localSearch.reset(ws);
+		await persistWipe(userId, ws);
+
+		const resp = await api.items.listIndex(ws, { includeArchived: true });
+		if (state.generation !== generation) return;
+		state.includesUnparentedMetadata = resp.includes_unparented_metadata;
+		for (const row of resp.items) mergeRow(state, row);
+		state.cursor = resp.cursor;
+		state.bootstrapState = 'ready';
+		state.pendingResync = false;
+		rebuildSearchIndex(ws, state);
+		const snapshot = [...state.items.values()];
+		await persistDelta(
+			userId,
+			ws,
+			snapshot,
+			state.cursor,
+			resp.includes_unparented_metadata,
+		);
+	})();
+	projectionResyncs.set(ws, promise);
+	try {
+		await promise;
+	} finally {
+		if (projectionResyncs.get(ws) === promise) projectionResyncs.delete(ws);
+	}
+}
+
 export const localIndex = {
 	/**
 	 * Hydrate a workspace. Idempotent: returns the same in-flight
@@ -312,7 +355,11 @@ export const localIndex = {
 				// the in-RAM state is already authoritative for this
 				// session; we just need to redo the reconcile.
 				const cached = reentry
-					? { items: [], cursor: state.cursor }
+					? {
+							items: [],
+							cursor: state.cursor,
+							includesUnparentedMetadata: state.includesUnparentedMetadata,
+						}
 					: await persistHydrate(userId, ws);
 				if (isStale()) return;
 				// A populated cache is one we've successfully synced
@@ -322,9 +369,11 @@ export const localIndex = {
 				// zero rows but a real cursor). Both deserve the
 				// warm-path fast boot. Codex P2 round 8.
 				const cacheIsPopulated =
-					cached.items.length > 0 || cursorAsNum(cached.cursor) > 0;
+					cached.includesUnparentedMetadata !== null &&
+					(cached.items.length > 0 || cursorAsNum(cached.cursor) > 0);
 				const hasCache = reentry || cacheIsPopulated;
 				if (!reentry && cacheIsPopulated) {
+					state.includesUnparentedMetadata = cached.includesUnparentedMetadata;
 					for (const row of cached.items) {
 						mergeRow(state, row);
 					}
@@ -371,13 +420,27 @@ export const localIndex = {
 							const since = state.cursor;
 							const delta = await api.items.changes(ws, since);
 							if (isStale()) return;
+							if (
+								state.includesUnparentedMetadata !== null &&
+								state.includesUnparentedMetadata !== delta.includes_unparented_metadata
+							) {
+								await resyncProjectionScope(ws, state);
+								caughtUp = true;
+								break;
+							}
+							state.includesUnparentedMetadata = delta.includes_unparented_metadata;
 							if (delta.changes.length === 0 || delta.cursor === since) {
 								// Server returned no new rows AND no
 								// cursor advance — we're caught up.
 								caughtUp = true;
 								break;
 							}
-							localIndex.applyDelta(ws, delta.changes, delta.cursor);
+							localIndex.applyDelta(
+								ws,
+								delta.changes,
+								delta.cursor,
+								delta.includes_unparented_metadata,
+							);
 							if (delta.cursor === since) {
 								caughtUp = true;
 								break;
@@ -441,6 +504,7 @@ export const localIndex = {
 						includeArchived: true,
 					});
 					if (isStale()) return;
+					state.includesUnparentedMetadata = resp.includes_unparented_metadata;
 					for (const row of resp.items) {
 						mergeRow(state, row);
 					}
@@ -467,7 +531,13 @@ export const localIndex = {
 					// yields exactly the merged, winning rows.
 					const snapshot: ItemIndexRow[] = [];
 					for (const row of state.items.values()) snapshot.push(row);
-					persistDelta(userId, ws, snapshot, state.cursor).catch(
+					persistDelta(
+						userId,
+						ws,
+						snapshot,
+						state.cursor,
+						resp.includes_unparented_metadata,
+					).catch(
 						() => undefined,
 					);
 				}
@@ -601,8 +671,14 @@ export const localIndex = {
 	 * cursor only advances forward, so a backslide can never lose
 	 * progress.
 	 */
-	applyDelta(ws: string, changes: ItemChangeRow[], newCursor: string): void {
+	applyDelta(
+		ws: string,
+		changes: ItemChangeRow[],
+		newCursor: string,
+		includesUnparentedMetadata: boolean,
+	): void {
 		const state = ensureState(ws);
+		state.includesUnparentedMetadata = includesUnparentedMetadata;
 		const startCursorNum = cursorAsNum(state.cursor);
 		const newCursorNum = cursorAsNum(newCursor);
 
@@ -684,9 +760,32 @@ export const localIndex = {
 		// in-memory only and never break the read path. Routed
 		// through the workspace's captured `userId` so a different
 		// user signing into the same browser sees their own cache.
-		persistDelta(state.userId, ws, toPersist, newCursor, toRemove).catch(
+		persistDelta(
+			state.userId,
+			ws,
+			toPersist,
+			newCursor,
+			includesUnparentedMetadata,
+			toRemove,
+		).catch(
 			() => undefined,
 		);
+	},
+
+	/** Force a full snapshot when the server's projection capability changes. */
+	async ensureProjectionScope(ws: string, includesUnparentedMetadata: boolean): Promise<boolean> {
+		const state = ensureState(ws);
+		if (state.includesUnparentedMetadata === null) {
+			if (state.items.size > 0 || cursorAsNum(state.cursor) > 0) {
+				await resyncProjectionScope(ws, state);
+				return true;
+			}
+			state.includesUnparentedMetadata = includesUnparentedMetadata;
+			return false;
+		}
+		if (state.includesUnparentedMetadata === includesUnparentedMetadata) return false;
+		await resyncProjectionScope(ws, state);
+		return true;
 	},
 
 	/**
@@ -864,6 +963,7 @@ export const localIndex = {
 
 		workspaces.delete(ws);
 		inflight.delete(ws);
+		projectionResyncs.delete(ws);
 
 		// Drop the MiniSearch index for the workspace too. A fresh
 		// bootstrap will rebuild it from the new owner's snapshot —

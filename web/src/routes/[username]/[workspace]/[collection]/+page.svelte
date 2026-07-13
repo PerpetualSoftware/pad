@@ -429,11 +429,20 @@
 			for (let i = 0; i < 50; i++) {
 				const since = localIndex.cursorFor(ws);
 				const delta = await api.items.changes(ws, since);
+				if (await localIndex.ensureProjectionScope(ws, delta.includes_unparented_metadata)) {
+					deltaSyncFailed = false;
+					return true;
+				}
 				if (delta.changes.length === 0 || delta.cursor === since) {
 					deltaSyncFailed = false;
 					return true;
 				}
-				localIndex.applyDelta(ws, delta.changes, delta.cursor);
+				localIndex.applyDelta(
+					ws,
+					delta.changes,
+					delta.cursor,
+					delta.includes_unparented_metadata,
+				);
 				if (delta.cursor === since) {
 					deltaSyncFailed = false;
 					return true;

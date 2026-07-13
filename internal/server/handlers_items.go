@@ -133,9 +133,10 @@ func (s *Server) handleListTags(w http.ResponseWriter, r *http.Request) {
 //     starts from the right floor on the next poll instead of replaying
 //     every prior mutation. Empty workspaces return "0".
 type itemsIndexResponse struct {
-	Items  []models.Item `json:"items"`
-	Total  int           `json:"total"`
-	Cursor string        `json:"cursor"`
+	Items                      []models.Item `json:"items"`
+	Total                      int           `json:"total"`
+	Cursor                     string        `json:"cursor"`
+	IncludesUnparentedMetadata bool          `json:"includes_unparented_metadata"`
 }
 
 // handleListItemsIndex returns the skinny-projection of every item in a
@@ -229,9 +230,10 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	cursor := strconv.FormatInt(cursorSeq, 10)
 
 	writeJSON(w, http.StatusOK, itemsIndexResponse{
-		Items:  result,
-		Total:  len(result),
-		Cursor: cursor,
+		Items:                      result,
+		Total:                      len(result),
+		Cursor:                     cursor,
+		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
 	})
 }
 
@@ -264,8 +266,9 @@ type itemChangeRow struct {
 //     the value as opaque (re-pass as `?since=<cursor>` on the next
 //     poll).
 type itemsChangesResponse struct {
-	Changes []itemChangeRow `json:"changes"`
-	Cursor  string          `json:"cursor"`
+	Changes                    []itemChangeRow `json:"changes"`
+	Cursor                     string          `json:"cursor"`
+	IncludesUnparentedMetadata bool            `json:"includes_unparented_metadata"`
 }
 
 // handleListItemsChanges is the delta-fetch sibling of
@@ -416,8 +419,9 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, itemsChangesResponse{
-		Changes: changes,
-		Cursor:  strconv.FormatInt(cursorSeq, 10),
+		Changes:                    changes,
+		Cursor:                     strconv.FormatInt(cursorSeq, 10),
+		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
 	})
 }
 

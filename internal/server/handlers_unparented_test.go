@@ -61,6 +61,9 @@ func TestUnparentedRestrictedGateAndMetadataOmission(t *testing.T) {
 	}
 	var restricted itemsIndexBody
 	parseJSON(t, rr, &restricted)
+	if restricted.IncludesUnparentedMetadata {
+		t.Fatal("restricted index advertised unparented metadata")
+	}
 	for _, item := range restricted.Items {
 		if item.IsUnparented != nil {
 			t.Fatalf("restricted index leaked is_unparented for %s", item.Ref)
@@ -73,6 +76,9 @@ func TestUnparentedRestrictedGateAndMetadataOmission(t *testing.T) {
 	}
 	var unrestricted itemsIndexBody
 	parseJSON(t, rr, &unrestricted)
+	if !unrestricted.IncludesUnparentedMetadata {
+		t.Fatal("unrestricted index omitted unparented metadata capability")
+	}
 	for _, item := range unrestricted.Items {
 		if item.IsUnparented == nil {
 			t.Fatalf("unrestricted index omitted is_unparented for %s", item.Ref)
@@ -85,6 +91,9 @@ func TestUnparentedRestrictedGateAndMetadataOmission(t *testing.T) {
 	}
 	var delta itemsChangesBody
 	parseJSON(t, rr, &delta)
+	if delta.IncludesUnparentedMetadata {
+		t.Fatal("restricted delta advertised unparented metadata")
+	}
 	for _, change := range delta.Changes {
 		if change.IsUnparented != nil {
 			t.Fatalf("restricted delta leaked is_unparented for %s", change.Ref)

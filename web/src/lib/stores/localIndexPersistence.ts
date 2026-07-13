@@ -44,12 +44,13 @@ import type { ItemIndexRow } from '$lib/types';
  * `/items-index`. Server truth (items.content) is never persisted
  * here, so a cache wipe loses nothing.
  */
-export const LOCAL_INDEX_SCHEMA_VERSION = 2;
+export const LOCAL_INDEX_SCHEMA_VERSION = 3;
 
 /** Result of a `hydrate()` call. Empty payload when there's no cache yet. */
 export interface HydrateResult {
 	items: ItemIndexRow[];
 	cursor: string;
+	includesUnparentedMetadata: boolean | null;
 }
 
 /** Shape of the single row stored in the `meta` store. */
@@ -57,6 +58,7 @@ interface MetaRow {
 	key: 'sync';
 	cursor: string;
 	schemaVersion: number;
+	includesUnparentedMetadata: boolean;
 }
 
 // Open IDB connections are cached per (user, workspace) pair. The
@@ -140,7 +142,7 @@ export async function hydrate(
 	userId: string | null,
 	ws: string,
 ): Promise<HydrateResult> {
-	const empty: HydrateResult = { items: [], cursor: '0' };
+	const empty: HydrateResult = { items: [], cursor: '0', includesUnparentedMetadata: null };
 	if (!isSupported()) return empty;
 
 	const db = await open(userId, ws);
@@ -166,6 +168,7 @@ export async function hydrate(
 		return {
 			items: items ?? [],
 			cursor: meta?.cursor ?? '0',
+			includesUnparentedMetadata: meta?.includesUnparentedMetadata ?? null,
 		};
 	} catch {
 		return empty;
@@ -183,6 +186,7 @@ export async function persistCursor(
 	userId: string | null,
 	ws: string,
 	cursor: string,
+	includesUnparentedMetadata: boolean,
 ): Promise<void> {
 	if (!isSupported()) return;
 	const db = await open(userId, ws);
@@ -192,6 +196,7 @@ export async function persistCursor(
 			key: 'sync',
 			cursor,
 			schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
+			includesUnparentedMetadata,
 		} satisfies MetaRow);
 	} catch {
 		/* swallow — best-effort cache */
@@ -245,6 +250,7 @@ export async function persistDelta(
 	ws: string,
 	rows: ItemIndexRow[],
 	cursor: string,
+	includesUnparentedMetadata: boolean,
 	removeIds: string[] = [],
 ): Promise<void> {
 	if (!isSupported()) return;
@@ -264,6 +270,7 @@ export async function persistDelta(
 				key: 'sync',
 				cursor,
 				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
+				includesUnparentedMetadata,
 			} satisfies MetaRow)
 			.catch(() => undefined);
 		await tx.done;
