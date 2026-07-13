@@ -62,3 +62,15 @@ func TestPreserveReservedUnparentedViewFilter(t *testing.T) {
 		t.Fatalf("merged filters = %#v", filters)
 	}
 }
+
+func TestPreserveReservedUnparentedViewFilter_EmptyReset(t *testing.T) {
+	t.Parallel()
+	existing := `{"filters":[{"field":"$unparented","op":"eq","value":true},{"field":"status","op":"eq","value":"open"}]}`
+	got, err := preserveReservedUnparentedViewFilter(existing, "")
+	if err != nil {
+		t.Fatalf("empty reset: %v", err)
+	}
+	if got != `{"filters":[{"field":"$unparented","op":"eq","value":true}]}` {
+		t.Fatalf("empty reset = %s", got)
+	}
+}

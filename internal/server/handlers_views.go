@@ -306,6 +306,12 @@ func stripReservedUnparentedViewFilter(config string) string {
 // present in the stored config are restored.
 func preserveReservedUnparentedViewFilter(existingConfig, submittedConfig string) (string, error) {
 	reserved := reservedUnparentedFilters(existingConfig)
+	// Match Store.UpdateView's valid reset sentinel. Normalizing before the
+	// merge keeps restricted behavior identical whether or not the stored
+	// config contains a hidden reserved filter.
+	if submittedConfig == "" {
+		submittedConfig = "{}"
+	}
 	sanitized := stripReservedUnparentedViewFilter(submittedConfig)
 	if len(reserved) == 0 {
 		return sanitized, nil

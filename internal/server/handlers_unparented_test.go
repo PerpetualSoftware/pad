@@ -149,6 +149,24 @@ func TestUnparentedRestrictedGateAndMetadataOmission(t *testing.T) {
 	if err != nil || storedView == nil || !strings.Contains(storedView.Config, reservedUnparentedViewField) || !strings.Contains(storedView.Config, `"field":"status"`) {
 		t.Fatalf("restricted config update did not preserve hidden filter: view=%+v err=%v", storedView, err)
 	}
+
+	// The empty-string config reset sentinel must behave the same regardless
+	// of hidden reserved state: clear visible config, preserve only the hidden
+	// filter, and never reveal it in the response.
+	rr = doRequestWithHeaders(f.srv, "PATCH", "/api/v1/workspaces/"+f.ws.Slug+"/collections/visible/views/"+savedView.ID, map[string]any{
+		"config": "",
+	}, f.bearerHeaders())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restricted config reset: %d: %s", rr.Code, rr.Body.String())
+	}
+	parseJSON(t, rr, &restrictedUpdate)
+	if strings.Contains(restrictedUpdate.Config, reservedUnparentedViewField) || strings.Contains(restrictedUpdate.Config, `"field":"status"`) {
+		t.Fatalf("restricted config reset response = %s", restrictedUpdate.Config)
+	}
+	storedView, err = f.srv.store.GetView(savedView.ID)
+	if err != nil || storedView == nil || !strings.Contains(storedView.Config, reservedUnparentedViewField) || strings.Contains(storedView.Config, `"field":"status"`) {
+		t.Fatalf("restricted config reset did not preserve only hidden filter: view=%+v err=%v", storedView, err)
+	}
 }
 
 func TestCreateWithParentPublishesFreshSequence(t *testing.T) {
