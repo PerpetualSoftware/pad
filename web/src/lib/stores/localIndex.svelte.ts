@@ -1127,16 +1127,48 @@ export const localIndex = {
 	 * resolving" direction (e.g. permanently discarding a URL/saved-view
 	 * intent) — combine it with a CONFIRMED `includesUnparentedMetadataFor`
 	 * value (`=== true` or `=== false`, not just "unavailable"), not used
-	 * as a blanket gate on ordinary rendering/filtering. `pendingResync` is
-	 * cleared only by `bootstrap()`'s own reconcile loop, never by a
-	 * standalone `deltaSync`-triggered resync, so gating routine
-	 * availability on this being `false` can wedge a UI element hidden
-	 * indefinitely after a live permission upgrade (Codex review round 3,
-	 * P1/P2 — TASK-2099 / PLAN-2095 DR-2). Returns `false` for an
-	 * unhydrated workspace (nothing pending because nothing has started).
+	 * as a blanket gate on ordinary rendering/filtering. `bootstrap()`'s
+	 * own reconcile loop clears this on catch-up for the cold/warm-boot
+	 * path; a caller with an independent reconcile loop (e.g. the
+	 * collection page's SSE/periodic-sync-driven `deltaSync`) MUST call
+	 * `markCaughtUp` itself on ITS catch-up, or gating routine availability
+	 * on this being `false` can wedge a UI element hidden indefinitely
+	 * after a live permission upgrade (Codex review round 3 P1/P2, round 4
+	 * — TASK-2099 / PLAN-2095 DR-2). Returns `false` for an unhydrated
+	 * workspace (nothing pending because nothing has started).
 	 */
 	pendingResyncFor(ws: string): boolean {
 		return workspaces.get(ws)?.pendingResync ?? false;
+	},
+
+	/**
+	 * Mark a workspace's resync as caught up — clears `pendingResync`.
+	 *
+	 * `bootstrap()`'s own internal reconcile loop already does this
+	 * (`if (caughtUp) state.pendingResync = false`), but that loop only
+	 * runs for the initial cold/warm-boot path. A resync triggered mid-
+	 * session (`resyncProjectionScope`, e.g. because the collection page's
+	 * OWN `deltaSync` loop — driven by SSE events / periodic sync, not
+	 * `bootstrap()` — detected a projection-scope change) has no such
+	 * owner: nothing else ever flips `pendingResync` back to `false` for
+	 * it, so it would stay stuck `true` for the rest of the session. That
+	 * wedges any consumer gating a destructive decision on
+	 * `pendingResyncFor` (TASK-2099 / PLAN-2095 DR-2's
+	 * `unparentedConfirmedRestricted`, Codex review round 4) — a caller
+	 * downgraded and later re-upgraded within the same session would never
+	 * see the "confirmed restricted" transition fire, so a stuck
+	 * unparented-filter intent from before the downgrade would silently
+	 * reactivate on the upgrade instead of staying cleared.
+	 *
+	 * Callers should invoke this once THEIR OWN independent reconcile loop
+	 * confirms it has caught up (the same predicate `bootstrap()` uses:
+	 * an empty delta batch, or the response cursor not advancing past
+	 * `since`) — mirroring exactly what `bootstrap()`'s loop already does
+	 * for the path it owns. No-op for an unhydrated workspace.
+	 */
+	markCaughtUp(ws: string): void {
+		const state = workspaces.get(ws);
+		if (state) state.pendingResync = false;
 	},
 
 	/**

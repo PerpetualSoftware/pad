@@ -597,6 +597,15 @@
 				}
 				if (delta.changes.length === 0 || delta.cursor === since) {
 					deltaSyncFailed = false;
+					// This loop is an independent reconcile path from
+					// `bootstrap()`'s internal one (driven by SSE/periodic
+					// sync, not the initial cold/warm boot) — it's the only
+					// owner of `pendingResync` for a resync IT triggered.
+					// Mark caught up so a mid-session projection-scope
+					// change doesn't leave `pendingResyncFor` stuck `true`
+					// for the rest of the session (TASK-2099 / PLAN-2095
+					// DR-2, Codex review round 4).
+					localIndex.markCaughtUp(ws);
 					return true;
 				}
 				localIndex.applyDelta(
@@ -607,6 +616,7 @@
 				);
 				if (delta.cursor === since) {
 					deltaSyncFailed = false;
+					localIndex.markCaughtUp(ws);
 					return true;
 				}
 			}

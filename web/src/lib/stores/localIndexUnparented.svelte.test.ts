@@ -185,7 +185,7 @@ describe('localIndex.pendingResyncFor', () => {
 		expect(localIndex.pendingResyncFor(ws)).toBe(false);
 	});
 
-	it('stays true after a projection resync — only a caught-up bootstrap reconcile loop clears it', async () => {
+	it('stays true after a projection resync until an owning reconcile loop clears it', async () => {
 		localIndex.upsert(ws, row('scoped', 1, true));
 		localIndex.applyDelta(ws, [], '1', true);
 		expect(localIndex.pendingResyncFor(ws)).toBe(false);
@@ -198,9 +198,41 @@ describe('localIndex.pendingResyncFor', () => {
 		});
 		await localIndex.ensureProjectionScope(ws, false);
 		// resyncProjectionScope intentionally leaves pendingResync=true —
-		// it only installs the authoritative snapshot; the bootstrap
-		// reconcile loop (not exercised by ensureProjectionScope alone) is
-		// what clears it once post-snapshot mutations are caught up.
+		// it only installs the authoritative snapshot; catch-up is the
+		// reconcile loop's job (bootstrap()'s own loop for the cold/warm
+		// boot path, or a caller's independent loop via `markCaughtUp` —
+		// neither is exercised by `ensureProjectionScope` alone).
 		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+	});
+});
+
+// TASK-2099 Codex review round 4: a resync triggered mid-session (e.g. the
+// collection page's SSE/periodic-sync-driven `deltaSync`, not
+// `bootstrap()`) has no owner for clearing `pendingResync` unless the
+// caller explicitly marks its own catch-up. Without `markCaughtUp`, a
+// caller downgraded and later re-upgraded within the same session would
+// never see the "confirmed restricted" transition — DR-2's clearing
+// wouldn't fire, and a stuck pre-downgrade intent could silently
+// reactivate on the upgrade instead of staying cleared.
+describe('localIndex.markCaughtUp', () => {
+	it('clears a pending resync', async () => {
+		localIndex.upsert(ws, row('scoped', 1, true));
+		localIndex.applyDelta(ws, [], '1', true);
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [row('scoped', 1)],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+		});
+		await localIndex.ensureProjectionScope(ws, false);
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+
+		localIndex.markCaughtUp(ws);
+		expect(localIndex.pendingResyncFor(ws)).toBe(false);
+	});
+
+	it('is a no-op for an unhydrated workspace', () => {
+		expect(() => localIndex.markCaughtUp('never-bootstrapped-ws-3')).not.toThrow();
+		expect(localIndex.pendingResyncFor('never-bootstrapped-ws-3')).toBe(false);
 	});
 });
