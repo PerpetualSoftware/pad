@@ -230,6 +230,17 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 	const generation = state.generation;
 	const userId = state.userId;
 	const promise = (async () => {
+		// Mark the workspace as needing catch-up the instant a resync begins,
+		// regardless of caller. A resync installs the snapshot and pins the
+		// cursor, but the post-snapshot mutations aren't caught up until a
+		// reconcile loop drains from that cursor. The bootstrap reconcile loop
+		// clears this only on caughtUp; a page-driven resync (deltaSync) leaves
+		// it set, so a replay that fails or hits the 50-page cap keeps
+		// pendingResync=true and the next bootstrap() resumes instead of
+		// no-opping with racing mutations still missing. (A page resync that DOES
+		// catch up leaves it set too — the next bootstrap runs one harmless,
+		// idempotent reconcile pass and clears it.)
+		state.pendingResync = true;
 		// Fetch the authoritative snapshot BEFORE touching any state. The
 		// previous ordering cleared the in-RAM store, cursor, search index,
 		// and IDB cache up front so a permission downgrade couldn't flash
