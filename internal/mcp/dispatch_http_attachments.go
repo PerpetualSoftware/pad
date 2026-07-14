@@ -148,9 +148,18 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentShow(
 			rec.Code, rec.Body.Bytes(), d.Lister, ResourceAttachment, attachmentID), nil
 	}
 
-	headers := rec.Result().Header
+	return packageStructuredResponse(cmdKey, synthesizeAttachmentMetadata(rec.Result().Header, attachmentID))
+}
+
+// synthesizeAttachmentMetadata maps an attachment HEAD response's headers
+// into the `{id, mime, size, filename?, etag?, last_modified?}` JSON shape
+// that `pad attachment show --format json` emits. Shared by the pad_attachment
+// tool (dispatchAttachmentShow) and the attachment resource fetcher
+// (HTTPResourceFetcher.fetchAttachmentMetadata) so the two surfaces for the
+// same HEAD-derived shape can't drift.
+func synthesizeAttachmentMetadata(headers http.Header, id string) map[string]any {
 	out := map[string]any{
-		"id":   attachmentID,
+		"id":   id,
 		"mime": headers.Get("Content-Type"),
 	}
 	if cl := headers.Get("Content-Length"); cl != "" {
@@ -167,7 +176,7 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentShow(
 	if lm := headers.Get("Last-Modified"); lm != "" {
 		out["last_modified"] = lm
 	}
-	return packageStructuredResponse(cmdKey, out)
+	return out
 }
 
 // parseAttachmentFilename extracts the filename from a
