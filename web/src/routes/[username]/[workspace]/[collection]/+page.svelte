@@ -907,14 +907,23 @@
 		const ws = wsSlug;
 		const parentRef = formatItemRef(item) ?? item.slug;
 
-		const doUpdate = (force: boolean) =>
-			api.items.update(ws, item.id, { fields: fieldsPayload, ...(force ? { force: true } : {}) });
+		// Record the scope epoch at each request's issue time (BUG-2098). The
+		// force-retry below can fire seconds later, after a user confirmation —
+		// long enough for a projection resync to bump the epoch — so it must
+		// capture its OWN epoch, not reuse the first request's. Setting it inside
+		// doUpdate, right before the network call, gives each attempt the epoch
+		// that was live when it was issued; a stale one makes upsert() refuse it.
+		let epoch = localIndex.scopeEpochFor(ws);
+		const doUpdate = (force: boolean) => {
+			epoch = localIndex.scopeEpochFor(ws);
+			return api.items.update(ws, item.id, { fields: fieldsPayload, ...(force ? { force: true } : {}) });
+		};
 
 		try {
 			const updated = await doUpdate(false);
 			// Push the canonical post-update row into the local index;
 			// the `items` derived view re-renders automatically.
-			localIndex.upsert(ws, updated);
+			localIndex.upsert(ws, updated, epoch);
 			toastStore.show(`Moved to ${formatLabel(newValue)}`, 'success');
 		} catch (e) {
 			// BUG-1538 / TASK-1539: the server's open-children guard
@@ -937,7 +946,7 @@
 					throw retryErr;
 				}
 				if (forced) {
-					localIndex.upsert(ws, forced);
+					localIndex.upsert(ws, forced, epoch);
 					toastStore.show(`Moved to ${formatLabel(newValue)}`, 'success');
 					return;
 				}
@@ -986,8 +995,15 @@
 		// settles back to the canonical server seq.
 		try {
 			for (const { id, sort_order } of dirty) {
+				// Per-iteration epoch: a resync mid-loop must only reject the
+				// settle-upserts for PATCHes issued before it, not later ones
+				// issued under the new scope (BUG-2098). Capturing outside the
+				// loop would wrongly reject every post-resync iteration. The
+				// optimistic pre-writes above are synchronous (no await gap) so
+				// they need no guard.
+				const epoch = localIndex.scopeEpochFor(wsSlug);
 				const updated = await api.items.update(wsSlug, id, { sort_order });
-				localIndex.upsert(wsSlug, updated);
+				localIndex.upsert(wsSlug, updated, epoch);
 			}
 		} catch (e) {
 			console.error('Failed to persist sort order:', e);
@@ -1069,6 +1085,9 @@
 			// Pre-fill the lane's group field (status, or a custom
 			// board_group_by select) so the item opens in this lane.
 			defaultFields[groupField] = groupValue;
+			// Epoch before create: a brand-new id is never in the fence set,
+			// so this is the case the epoch guard exists for (BUG-2098).
+			const epoch = localIndex.scopeEpochFor(wsSlug);
 			const item = await api.items.create(wsSlug, collSlug, {
 				title: trimmed,
 				content: '',
@@ -1078,7 +1097,7 @@
 			if (navigate) {
 				goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
 			} else {
-				localIndex.upsert(wsSlug, item);
+				localIndex.upsert(wsSlug, item, epoch);
 			}
 			return item;
 		} catch (err: any) {
@@ -1194,13 +1213,15 @@
 			if (statusField?.options?.length) {
 				defaultFields.status = statusField.options[0];
 			}
+			// Epoch before create: brand-new id, never fenced (BUG-2098).
+			const epoch = localIndex.scopeEpochFor(wsSlug);
 			const item = await api.items.create(wsSlug, collSlug, {
 				title,
 				content: '',
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			localIndex.upsert(wsSlug, item);
+			localIndex.upsert(wsSlug, item, epoch);
 			quickCreateTitle = '';
 			toastStore.show(`Created "${title}"`, 'success');
 		} catch (err: any) {
@@ -1441,9 +1462,10 @@
 
 	async function handleRestore(item: Item) {
 		if (!wsSlug) return;
+		const epoch = localIndex.scopeEpochFor(wsSlug);
 		try {
 			const restored = await api.items.restore(wsSlug, item.id);
-			localIndex.upsert(wsSlug, restored);
+			localIndex.upsert(wsSlug, restored, epoch);
 			toastStore.show(`Restored "${item.title}"`, 'success');
 		} catch {
 			toastStore.show('Failed to restore item', 'error');

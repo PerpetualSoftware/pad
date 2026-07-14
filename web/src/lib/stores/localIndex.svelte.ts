@@ -981,10 +981,25 @@ export const localIndex = {
 	 * landed. Rows or peers missing `seq` (legacy snapshots before
 	 * TASK-1352) overwrite unconditionally — there's no basis to
 	 * compare.
+	 *
+	 * `sinceEpoch` (BUG-2098): pass the `scopeEpochFor(ws)` captured
+	 * *before* issuing the create/update whose response you're upserting.
+	 * If a projection resync bumped the epoch while that request was in
+	 * flight, the response was authorized under the now-superseded scope
+	 * and is refused. This closes the gap the fence alone can't cover: a
+	 * brand-new create id was never in the map to be dropped, so it's
+	 * never in `fencedIds` — without the epoch check a stale old-scope
+	 * create would resurrect a row no new-scope delta will ever evict.
+	 * Omit it (SSE / authoritative paths) to skip the check entirely.
 	 */
-	upsert(ws: string, row: ItemIndexRow | Item): void {
+	upsert(ws: string, row: ItemIndexRow | Item, sinceEpoch?: number): void {
 		const state = ensureState(ws);
 		let next = toSkinny(row);
+		// Epoch guard (BUG-2098): a resync between request-issue and this
+		// response means the row may belong to the old scope. Reject it —
+		// the fence below only catches ids the resync explicitly dropped,
+		// not a fresh create whose id was never in the map.
+		if (sinceEpoch !== undefined && sinceEpoch < state.scopeEpoch) return;
 		// Fence guard (Codex P1 round 8): a projection resync records the ids it
 		// dropped as hidden under the new scope. This is the untrusted optimistic
 		// path — a create/update response authorized under the OLD scope can

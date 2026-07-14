@@ -4,6 +4,7 @@
 	import { parseSchema } from '$lib/types';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
 
 	const AGENT_SLUGS = ['conventions', 'playbooks'];
 
@@ -16,7 +17,7 @@
 		editor: Editor | null;
 		wsSlug: string;
 		collections: Collection[];
-		onItemCreated?: (item: Item, ws: string) => void;
+		onItemCreated?: (item: Item, ws: string, sinceEpoch?: number) => void;
 	} = $props();
 
 	let visible = $state(false);
@@ -145,6 +146,10 @@
 		// navigated to another workspace mid-create. Per Codex review (round 2).
 		const ws = wsSlug;
 
+		// Scope epoch before the create so the parent's optimistic upsert can be
+		// refused if a projection resync lands mid-create (BUG-2098).
+		const sinceEpoch = localIndex.scopeEpochFor(ws);
+
 		const coll = collections.find((c) => c.slug === selectedCollectionSlug);
 		if (!coll) {
 			errorMsg = 'Collection not found';
@@ -174,7 +179,7 @@
 				.insertContentAt(selFrom, wikiLink)
 				.run();
 
-			onItemCreated?.(item, ws);
+			onItemCreated?.(item, ws, sinceEpoch);
 			toastStore.show(`Created "${item.title}"`, 'success');
 			hide();
 		} catch (err: any) {
