@@ -62,6 +62,7 @@ import {
 	hydrate as persistHydrate,
 	persistDelta,
 	persistRemovals,
+	persistReplace,
 	persistUpserts,
 	wipe as persistWipe,
 } from './localIndexPersistence';
@@ -312,18 +313,18 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 		state.pendingResync = false;
 		rebuildSearchIndex(ws, state);
 
-		// Reconcile the persisted cache only after the successful fetch. Wipe
-		// first so rows the resync dropped (e.g. after a downgrade) can't
-		// resurrect on the next warm hydrate, then write the authoritative
-		// snapshot + cursor. Recheck generation after the awaited wipe: a
-		// sign-out / 403 purge (reset()) during the wipe bumps generation and
-		// clears the store, and without this guard the persistDelta below would
-		// write the pre-reset snapshot back to IDB and resurrect purged rows on
-		// the next warm hydrate.
-		await persistWipe(userId, ws);
+		// Reconcile the persisted cache after the successful fetch via a single
+		// transactional clear-and-replace: rows the resync dropped (e.g. after a
+		// downgrade) must not survive in the cache, and persistReplace commits
+		// the clear + the new snapshot atomically without the deleteDatabase()
+		// cross-tab hang that a wipe()+persistDelta() pair risks. Recheck
+		// generation first: a sign-out / 403 purge (reset()) after the fetch
+		// bumps generation and clears the store, and without this guard the
+		// write below would resurrect the pre-reset snapshot on the next warm
+		// hydrate.
 		if (state.generation !== generation) return;
 		const snapshot = [...state.items.values()];
-		await persistDelta(
+		await persistReplace(
 			userId,
 			ws,
 			snapshot,

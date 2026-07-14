@@ -252,6 +252,51 @@ export async function persistDelta(
 }
 
 /**
+ * Atomically REPLACE the persisted snapshot — clear the items store and
+ * write the given rows + cursor in a single readwrite transaction. Used by
+ * the projection-scope resync, which needs the persisted cache to exactly
+ * mirror an authoritative re-fetch (rows dropped by a permission downgrade
+ * must not survive) without the cross-tab hazard of `wipe()`: a
+ * `deleteDatabase()` resolves on `onblocked` while another tab holds the DB
+ * open, leaving the delete pending so a following reopen+write can queue
+ * behind it indefinitely. A single transaction over the still-open
+ * connection sidesteps that — the clear and the puts commit together (or not
+ * at all), and no connection is ever torn down.
+ */
+export async function persistReplace(
+	userId: string | null,
+	ws: string,
+	rows: ItemIndexRow[],
+	cursor: string,
+	includesUnparentedMetadata: boolean,
+): Promise<void> {
+	if (!isSupported()) return;
+	const db = await open(userId, ws);
+	if (!db) return;
+	try {
+		const tx = db.transaction(['items', 'meta'], 'readwrite');
+		const itemsStore = tx.objectStore('items');
+		// Queued before the puts; IDB executes requests against a store in
+		// issue order, so the clear always lands first.
+		itemsStore.clear().catch(() => undefined);
+		for (const row of rows) {
+			itemsStore.put(row).catch(() => undefined);
+		}
+		tx.objectStore('meta')
+			.put({
+				key: 'sync',
+				cursor,
+				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
+				includesUnparentedMetadata,
+			} satisfies MetaRow)
+			.catch(() => undefined);
+		await tx.done;
+	} catch {
+		/* swallow — best-effort cache */
+	}
+}
+
+/**
  * Delete rows by id (hard remove). Used by `localIndex.remove` for
  * 403 purge (TASK-1360) and any other hard-delete path. Soft deletes
  * stay in the cache as upserts with `deleted_at` populated — they
