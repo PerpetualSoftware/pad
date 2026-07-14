@@ -5,6 +5,7 @@ import {
 	clearParentFilter,
 	filtersSetParent,
 	readUnparentedParam,
+	resolveParentUnparentedMutex,
 	unparentedEffective,
 	viewHasUnparentedFilter,
 	writeUnparentedParam,
@@ -15,9 +16,16 @@ describe('filtersSetParent', () => {
 		expect(filtersSetParent({ parent: 'plan-1' })).toBe(true);
 	});
 
-	it('is false when parent is absent or empty', () => {
+	// The legacy `phase` key is a backward-compat alias for `parent` that
+	// `filteredItems` resolves identically (both hit `parent_link_id`).
+	it('is true for the legacy phase alias too', () => {
+		expect(filtersSetParent({ phase: 'plan-1' })).toBe(true);
+	});
+
+	it('is false when parent/phase are absent or empty', () => {
 		expect(filtersSetParent({})).toBe(false);
 		expect(filtersSetParent({ parent: '' })).toBe(false);
+		expect(filtersSetParent({ phase: '' })).toBe(false);
 		expect(filtersSetParent({ status: 'open' })).toBe(false);
 	});
 });
@@ -28,9 +36,37 @@ describe('clearParentFilter', () => {
 		expect(result).toEqual({ status: 'open' });
 	});
 
+	it('drops the legacy phase alias too', () => {
+		const result = clearParentFilter({ phase: 'plan-1', status: 'open' });
+		expect(result).toEqual({ status: 'open' });
+	});
+
+	it('drops both when a filter set somehow carries both aliases', () => {
+		const result = clearParentFilter({ parent: 'a', phase: 'b', status: 'open' });
+		expect(result).toEqual({ status: 'open' });
+	});
+
 	it('returns the same reference when there is nothing to clear (no-op)', () => {
 		const filters = { status: 'open' };
 		expect(clearParentFilter(filters)).toBe(filters);
+	});
+});
+
+describe('resolveParentUnparentedMutex', () => {
+	it('is a no-op when unparented is false', () => {
+		const filters = { parent: 'plan-1' };
+		expect(resolveParentUnparentedMutex(filters, false)).toEqual({ filters, unparented: false });
+	});
+
+	it('drops parent/phase when unparented is true (unparented wins)', () => {
+		expect(resolveParentUnparentedMutex({ parent: 'plan-1', status: 'open' }, true)).toEqual({
+			filters: { status: 'open' },
+			unparented: true,
+		});
+		expect(resolveParentUnparentedMutex({ phase: 'plan-1' }, true)).toEqual({
+			filters: {},
+			unparented: true,
+		});
 	});
 });
 
@@ -93,22 +129,38 @@ describe('viewHasUnparentedFilter', () => {
 });
 
 describe('URL round-trip', () => {
-	it('reads unparented=true from search params', () => {
-		expect(readUnparentedParam(new URLSearchParams('unparented=true'))).toBe(true);
+	it('reads $unparented=true from search params', () => {
+		const params = new URLSearchParams();
+		params.set(UNPARENTED_FILTER_FIELD, 'true');
+		expect(readUnparentedParam(params)).toBe(true);
 	});
 
 	it('treats any other value (or absence) as false', () => {
 		expect(readUnparentedParam(new URLSearchParams(''))).toBe(false);
-		expect(readUnparentedParam(new URLSearchParams('unparented=false'))).toBe(false);
-		expect(readUnparentedParam(new URLSearchParams('unparented=1'))).toBe(false);
+		const falseParams = new URLSearchParams();
+		falseParams.set(UNPARENTED_FILTER_FIELD, 'false');
+		expect(readUnparentedParam(falseParams)).toBe(false);
 	});
 
-	it('writes the param when active and removes it when not', () => {
+	it('writes the reserved param when active and removes it when not', () => {
 		const params = new URLSearchParams();
 		writeUnparentedParam(params, true);
-		expect(params.get('unparented')).toBe('true');
+		expect(params.get(UNPARENTED_FILTER_FIELD)).toBe('true');
 
 		writeUnparentedParam(params, false);
-		expect(params.has('unparented')).toBe(false);
+		expect(params.has(UNPARENTED_FILTER_FIELD)).toBe(false);
+	});
+
+	// Collision guard (Codex review round 1): a real field literally named
+	// `unparented` (no `$`) round-trips through the plain `unparented`
+	// query param independently — untouched by the reserved-param helpers.
+	it('does not read/write the plain "unparented" param (real-field collision guard)', () => {
+		const params = new URLSearchParams('unparented=some-real-field-value');
+		expect(readUnparentedParam(params)).toBe(false);
+		writeUnparentedParam(params, true);
+		// The reserved param is added under its own (distinct) key; the
+		// pre-existing plain `unparented` param is untouched.
+		expect(params.get('unparented')).toBe('some-real-field-value');
+		expect(params.get(UNPARENTED_FILTER_FIELD)).toBe('true');
 	});
 });

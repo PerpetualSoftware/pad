@@ -31,10 +31,12 @@
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { SORT_OPTIONS, priorityField, type SortMode } from '$lib/collections/itemSort';
 	import {
+		UNPARENTED_FILTER_FIELD,
 		buildUnparentedViewFilter,
 		clearParentFilter,
 		filtersSetParent,
 		readUnparentedParam,
+		resolveParentUnparentedMutex,
 		unparentedEffective,
 		viewHasUnparentedFilter,
 		writeUnparentedParam,
@@ -190,17 +192,38 @@
 	// filter (DR-2).
 	let unparentedApplied = $derived(unparentedEffective(unparentedFilter, unparentedMetadataAvailable));
 
-	// Restricted clearing (DR-2): once the workspace's projection scope is
-	// confirmed and it does NOT include unparented metadata, physically
-	// clear a stuck intent flag (from a URL or saved view carrying the
-	// pseudo-filter) instead of leaving it dangling. Without this, the flag
-	// would silently no-op (via `unparentedApplied`) but could still get
-	// re-persisted into the URL/a new saved view the moment the user
-	// interacts with something else that calls `updateUrlFilters()`.
+	// Restricted clearing (DR-2) AND URL honesty as the projection scope
+	// resolves. Two things this effect keeps correct once `indexReady`:
+	//
+	//   1. Once the scope is confirmed and does NOT include unparented
+	//      metadata, physically clear a stuck intent flag (from a URL or
+	//      saved view carrying the pseudo-filter) instead of leaving it
+	//      dangling — otherwise it would silently no-op (via
+	//      `unparentedApplied`) but could still get re-persisted into the
+	//      URL/a new saved view the moment something else calls
+	//      `updateUrlFilters()`.
+	//   2. Re-sync the URL whenever `unparentedApplied` (the EFFECTIVE
+	//      state) actually changes value, in EITHER direction. This covers
+	//      not just the clear-on-downgrade case above but also: a default
+	//      saved view applied before local-index hydration (gated only on
+	//      `!metaLoading`, not `indexReady` — see `applyViewConfig`'s
+	//      caller) writes the URL with `unparentedApplied` still false
+	//      (metadata unknown); once metadata resolves `true` afterward,
+	//      the on-screen list becomes correctly filtered but nothing had
+	//      re-written the address bar to match — a copied/reloaded URL
+	//      would silently drop the filter (Codex review round 1).
+	// Plain (non-reactive) memo, not `$derived` — we only need last-observed
+	// bookkeeping inside the effect below, not a tracked value. `false`
+	// matches `unparentedApplied`'s guaranteed value at this point (intent
+	// is only ever set after mount, via URL/view load or user interaction).
+	let lastSyncedUnparented = false;
 	$effect(() => {
 		if (!wsSlug || !indexReady) return;
 		if (unparentedFilter && !unparentedMetadataAvailable) {
 			unparentedFilter = false;
+		}
+		if (unparentedApplied !== lastSyncedUnparented) {
+			lastSyncedUnparented = unparentedApplied;
 			updateUrlFilters();
 		}
 	});
@@ -330,7 +353,7 @@
 		const url = new URL(page.url);
 		const filters: Record<string, string> = {};
 		// Reset tags (and the unparented intent) up-front so navigating to a
-		// collection whose URL has no `tags`/`unparented` param clears any
+		// collection whose URL has no `tags`/`$unparented` param clears any
 		// selection carried over from the previous collection (absent =
 		// cleared). The unparented intent is read here optimistically — a
 		// restricted caller's URL carrying it gets corrected by the
@@ -338,8 +361,8 @@
 		// resolves (DR-2); nothing in this function's synchronous read can
 		// know that yet.
 		selectedTags = [];
-		unparentedFilter = readUnparentedParam(url.searchParams);
-		const knownParams = new Set(['view', 'q', 'tags', 'unparented']);
+		const unparentedIntent = readUnparentedParam(url.searchParams);
+		const knownParams = new Set(['view', 'q', 'tags', UNPARENTED_FILTER_FIELD]);
 		for (const [k, v] of url.searchParams.entries()) {
 			if (k === 'view' && (v === 'list' || v === 'board')) {
 				viewMode = v;
@@ -351,7 +374,14 @@
 				filters[k] = v;
 			}
 		}
-		if (Object.keys(filters).length > 0) activeFilters = filters;
+		// Mutual exclusivity (PLAN-2095 DR-3): a hand-crafted or legacy URL
+		// could carry both a specific-parent filter (`parent`/`phase`) AND
+		// the unparented pseudo-param at once. Resolve it the same way the
+		// interactive chip toggle does — unparented wins (Codex review
+		// round 1).
+		const resolved = resolveParentUnparentedMutex(filters, unparentedIntent);
+		unparentedFilter = resolved.unparented;
+		if (Object.keys(filters).length > 0) activeFilters = resolved.filters;
 	}
 
 	$effect(() => {
@@ -1709,7 +1739,15 @@
 
 	function buildViewConfig(): ViewConfig {
 		const config: ViewConfig = {};
-		const filterEntries = Object.entries(activeFilters);
+		// Defensive mutex enforcement (PLAN-2095 DR-3): the interactive
+		// handlers already keep `activeFilters.parent`/`phase` and
+		// `unparentedFilter` mutually exclusive, but a saved view should
+		// never persist a contradictory combination even if some other
+		// path (a stale prop, a future call site) let both linger.
+		const effectiveFilters = unparentedEffective(unparentedFilter, unparentedMetadataAvailable)
+			? clearParentFilter(activeFilters)
+			: activeFilters;
+		const filterEntries = Object.entries(effectiveFilters);
 		const filters: NonNullable<ViewConfig['filters']> = filterEntries.map(
 			([field, value]) => ({ field, op: 'eq', value }),
 		);
@@ -1770,14 +1808,19 @@
 		// incorrectly drop the filter for a legitimate unrestricted caller
 		// on a cold load.
 		const newUnparented = viewHasUnparentedFilter(config.filters);
-		activeFilters = newFilters;
+		// Mutual exclusivity (PLAN-2095 DR-3): a legacy/hand-authored saved
+		// view could carry both a specific-parent filter and the
+		// unparented pseudo-filter at once — resolve it the same way the
+		// interactive chip toggle does (Codex review round 1).
+		const resolved = resolveParentUnparentedMutex(newFilters, newUnparented);
+		activeFilters = resolved.filters;
 		selectedTags = newTags;
-		unparentedFilter = newUnparented;
+		unparentedFilter = resolved.unparented;
 		searchQuery = '';
 		searchResultRank = null;
 
 		// Open filters panel if the view has filters
-		if (Object.keys(newFilters).length > 0 || newTags.length > 0 || newUnparented) {
+		if (Object.keys(resolved.filters).length > 0 || newTags.length > 0 || resolved.unparented) {
 			filtersOpen = true;
 		}
 
