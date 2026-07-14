@@ -18,6 +18,16 @@
 		selectedTags?: string[];
 		onTagFilterChange?: (tags: string[]) => void;
 		searchInputEl?: HTMLInputElement | undefined;
+		/**
+		 * Whether the "Unparented only" chip should render at all (TASK-2099 /
+		 * PLAN-2095 DR-2). Driven by the caller's projection-scope state
+		 * (`localIndex.includesUnparentedMetadataFor`) — `false` for
+		 * restricted callers, who must never see this filter exists.
+		 */
+		unparentedAvailable?: boolean;
+		/** Current effective state of the unparented chip. */
+		unparentedActive?: boolean;
+		onUnparentedChange?: (value: boolean) => void;
 	}
 
 	let {
@@ -31,6 +41,9 @@
 		selectedTags = [],
 		onTagFilterChange = () => {},
 		searchInputEl = $bindable(),
+		unparentedAvailable = false,
+		unparentedActive = false,
+		onUnparentedChange = () => {},
 	}: Props = $props();
 
 	let schema = $derived(parseSchema(collection));
@@ -168,6 +181,24 @@
 				{/each}
 			</select>
 		{/if}
+	{/if}
+
+	{#if unparentedAvailable}
+		<!--
+			"Unparented only" chip (TASK-2099 / PLAN-2095). Rendered only when
+			the caller's projection scope confirms `is_unparented` metadata is
+			present — restricted callers never see this exists (DR-2). Mutually
+			exclusive with the parent filter; the page component owns that
+			mutex, not this component (it doesn't know about `unparented` as a
+			field in `activeFilters` — the flag lives outside it).
+		-->
+		<button
+			type="button"
+			class="unparented-chip"
+			class:active={unparentedActive}
+			aria-pressed={unparentedActive}
+			onclick={() => onUnparentedChange(!unparentedActive)}
+		>Unparented only</button>
 	{/if}
 
 	{#if tagCounts.length > 0}
@@ -312,6 +343,27 @@
 
 	.parent-sheet-option.active {
 		background: var(--bg-tertiary);
+		font-weight: 600;
+	}
+
+	.unparented-chip {
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-1) var(--space-3);
+		font-size: 0.82em;
+		color: var(--text-primary);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.unparented-chip:hover:not(.active) {
+		border-color: var(--accent-blue);
+	}
+
+	.unparented-chip.active {
+		background: var(--bg-tertiary);
+		border-color: var(--accent-blue);
 		font-weight: 600;
 	}
 

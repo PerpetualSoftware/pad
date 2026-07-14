@@ -30,6 +30,18 @@
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { SORT_OPTIONS, priorityField, type SortMode } from '$lib/collections/itemSort';
+	import {
+		UNPARENTED_FILTER_FIELD,
+		buildUnparentedViewFilter,
+		clearParentFilter,
+		filtersSetParent,
+		readUnparentedParam,
+		resolveParentUnparentedMutex,
+		unparentedConfirmedRestricted,
+		unparentedEffective,
+		viewHasUnparentedFilter,
+		writeUnparentedParam,
+	} from '$lib/collections/unparentedFilter';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -61,6 +73,15 @@
 	// `tags` column, not in `fields` JSON, so they're tracked separately
 	// from `activeFilters` and applied in their own `filteredItems` branch.
 	let selectedTags = $state<string[]>([]);
+	// "Unparented only" chip state (TASK-2099 / PLAN-2095). Tracked separately
+	// from `activeFilters` — it isn't a schema field filter, it's a structural
+	// predicate over the local-first projection's `is_unparented` bit, and it
+	// requires the caller to be unrestricted (DR-2). This is raw user/URL/
+	// saved-view INTENT; whether it actually takes effect always routes
+	// through `unparentedEffective` against `unparentedMetadataAvailable`
+	// below, so a restricted caller's carried-over intent never filters
+	// anything or renders the chip.
+	let unparentedFilter = $state(false);
 	let searchQuery = $state('');
 	let showArchived = $state(false);
 	let itemProgress = $state<Record<string, { total: number; done: number; label?: string }>>({});
@@ -155,6 +176,153 @@
 	let loading = $derived(
 		!metaError && (metaLoading || (!indexReady && !indexError && !deltaSyncFailed)),
 	);
+
+	// Unparented-filter projection scope (TASK-2099 / PLAN-2095 DR-2). `true`
+	// only once the local index has confirmed (via `includes_unparented_
+	// metadata` on an index/delta response) that THIS caller is unrestricted.
+	// `null` (unknown, pre-bootstrap) and `false` (restricted) both read as
+	// unavailable — the chip stays hidden and the filter never applies until
+	// this is a confirmed `true`.
+	//
+	// Deliberately NOT gated on `pendingResyncFor`: a warm-cache boot's
+	// PERSISTED capability bit can be momentarily stale (e.g. an offline
+	// permission downgrade not yet reconciled), but that's the SAME
+	// staleness window every other locally-cached field on `Item` already
+	// has under the local-first model (PLAN-1343) — nothing else on this
+	// page blocks rendering on `pendingResync`, and any client-side
+	// filtering during that window only ever operates on data this caller
+	// was already shown before the (possible) downgrade, so it isn't a NEW
+	// disclosure. `includesUnparentedMetadataFor` self-corrects reactively
+	// the moment a resync installs a fresh value — see the effect below.
+	// (Codex review round 2 gated this on `pendingResyncFor`; round 3 P1/P2
+	// showed that blunt gate both destroyed legitimate intent mid-resync
+	// and could wedge the chip hidden forever after a live permission
+	// upgrade, since `pendingResync` is cleared only by `bootstrap()`'s own
+	// reconcile loop — never by the page's separate `deltaSync()` calls
+	// that also trigger a resync during a live session.)
+	let unparentedMetadataAvailable = $derived(
+		wsSlug ? localIndex.includesUnparentedMetadataFor(wsSlug) === true : false,
+	);
+	// The chip's EFFECTIVE state — intent AND availability. Everything that
+	// actually filters/badges/persists reads this, not the raw intent flag,
+	// so a restricted caller's carried-over `unparentedFilter=true` (from a
+	// URL or saved view) never filters anything or counts as an active
+	// filter (DR-2).
+	let unparentedApplied = $derived(unparentedEffective(unparentedFilter, unparentedMetadataAvailable));
+	// A NARROWER signal than `!unparentedMetadataAvailable`, used ONLY to
+	// gate the destructive "physically clear a stuck intent" action below.
+	// Requires a CONFIRMED restriction (`includesUnparentedMetadataFor ===
+	// false`, not just "unavailable" — which also covers `null`/unknown and
+	// a mid-resync window where the true answer just hasn't landed yet) AND
+	// `!pendingResyncFor` (no resync in flight that could still flip the
+	// answer). Without this narrower gate, clearing on mere unavailability
+	// would permanently discard a legitimate URL/saved-view intent the
+	// instant it loaded during ANY in-flight resync — even one that was
+	// about to confirm the caller unrestricted a moment later (Codex review
+	// round 3, P1).
+	let isUnparentedConfirmedRestricted = $derived(
+		wsSlug
+			? unparentedConfirmedRestricted(
+					localIndex.includesUnparentedMetadataFor(wsSlug) === false,
+					localIndex.pendingResyncFor(wsSlug),
+				)
+			: false,
+	);
+
+	// True once `loadUrlFilters()` has actually run for the CURRENT route
+	// (`loadCollection` flips it `true` right after that call, on the
+	// success path only; see `loadCollection`). Reset by the route-change
+	// effect immediately below. `$state`, not plain — the URL-sync effect
+	// below must reactively re-run once this flips, since the load itself
+	// is asynchronous and happens well after the route-change flush that
+	// resets it.
+	let urlFiltersLoaded = $state(false);
+
+	// Reset per-route bookkeeping whenever wsSlug/collSlug change. This
+	// effect is declared BEFORE the URL-sync effect below on purpose:
+	// Svelte runs effects with no parent/child relationship in declaration
+	// order when a shared dependency invalidates them in the same flush, so
+	// placing the reset first guarantees it always lands before the sync
+	// effect could read a stale value in that same tick (Codex review round
+	// 6 — relying on `metaLoading` transitioning was an ordering-fragile
+	// proxy for "this is a new route" and also missed the case where a
+	// route's `loadCollection` call fails, so `loadUrlFilters()` never ran
+	// but `metaLoading` still flips back to `false` in the `finally`).
+	//
+	//   - `lastSyncedUnparented`: a value carried over from a PREVIOUS
+	//     collection could otherwise mask a genuine transition in the new
+	//     one (Codex review round 5, P2) — see the sync effect's comment.
+	//   - `urlFiltersLoaded`: starts `false` for every new route; only
+	//     `loadCollection`'s own `loadUrlFilters()` call (async, run later)
+	//     flips it back, which is what actually gates the sync effect below
+	//     — not `metaLoading`.
+	// Mirrors the existing `defaultViewApplied` reset effect further down.
+	$effect(() => {
+		void wsSlug;
+		void collSlug;
+		lastSyncedUnparented = false;
+		urlFiltersLoaded = false;
+	});
+
+	// Restricted clearing (DR-2) AND URL honesty as the projection scope
+	// resolves. Two things this effect keeps correct once `indexReady`:
+	//
+	//   1. Once restriction is CONFIRMED (`isUnparentedConfirmedRestricted`),
+	//      physically clear a stuck intent flag (from a URL or saved view
+	//      carrying the pseudo-filter) instead of leaving it dangling —
+	//      otherwise it would silently no-op (via `unparentedApplied`) but
+	//      could still get re-persisted into the URL/a new saved view the
+	//      moment something else calls `updateUrlFilters()`.
+	//   2. Re-sync the URL whenever `unparentedApplied` (the EFFECTIVE
+	//      state) actually changes value, in EITHER direction. This covers
+	//      not just the clear-on-downgrade case above but also: a default
+	//      saved view applied before local-index hydration (gated only on
+	//      `!metaLoading`, not `indexReady` — see `applyViewConfig`'s
+	//      caller) writes the URL with `unparentedApplied` still false
+	//      (metadata unknown); once metadata resolves `true` afterward,
+	//      the on-screen list becomes correctly filtered but nothing had
+	//      re-written the address bar to match — a copied/reloaded URL
+	//      would silently drop the filter (Codex review round 1).
+	//
+	//   Note the two conditions are independent, NOT merged into one
+	//   `unparentedApplied !== lastSyncedUnparented` check (Codex review
+	//   round 2, P2): a restricted caller loading a URL that carries the
+	//   pseudo-filter has `unparentedApplied === false` BOTH before and
+	//   after clearing the stuck raw intent (it was never effective to
+	//   begin with), so that diff alone would never fire — leaving the
+	//   literal `$unparented=true` sitting in the address bar even though
+	//   internal state is correctly clean. So: sync whenever we just
+	//   cleared a confirmed-restricted stuck intent, in addition to syncing
+	//   on an effective-value transition.
+	// Plain (non-reactive) memo, not `$derived` — we only need last-observed
+	// bookkeeping inside the effect below, not a tracked value. `false`
+	// matches `unparentedApplied`'s guaranteed value at this point (intent
+	// is only ever set after mount, via URL/view load or user interaction).
+	let lastSyncedUnparented = false;
+	$effect(() => {
+		// Gate on `urlFiltersLoaded`, not `metaLoading` (Codex review round
+		// 6): `metaLoading` flips back to `false` on BOTH a successful load
+		// (after `loadUrlFilters()` ran) AND a failed one (where it never
+		// ran) — and relying on it also implicitly assumed this effect
+		// re-runs strictly after the load-triggering effect's synchronous
+		// reset, which isn't a documented guarantee across effects declared
+		// with a dependency this indirect. `urlFiltersLoaded` is the
+		// precise, explicit signal for "this route's URL-derived filter
+		// state is real," reset synchronously by the effect declared right
+		// above (guaranteed to run first) and only set `true` by
+		// `loadCollection` itself once `loadUrlFilters()` has genuinely run.
+		if (!wsSlug || !indexReady || !urlFiltersLoaded) return;
+		let needsUrlSync = false;
+		if (unparentedFilter && isUnparentedConfirmedRestricted) {
+			unparentedFilter = false;
+			needsUrlSync = true;
+		}
+		if (unparentedApplied !== lastSyncedUnparented) {
+			needsUrlSync = true;
+		}
+		lastSyncedUnparented = unparentedApplied;
+		if (needsUrlSync) updateUrlFilters();
+	});
 
 	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
 	// (and no pendingResync), this is a no-op; if 'cold', it kicks off
@@ -267,6 +435,9 @@
 		// uses comma as its add-delimiter, so tag values never contain
 		// commas — round-tripping through a comma-joined string is safe.
 		if (selectedTags.length > 0) params.set('tags', selectedTags.join(','));
+		// Write the EFFECTIVE state, not raw intent — a restricted caller's
+		// URL never even transiently carries `unparented=true` (DR-2).
+		writeUnparentedParam(params, unparentedApplied);
 		if (searchQuery) params.set('q', searchQuery);
 		const qs = params.toString();
 		const newUrl = `/${username}/${wsSlug}/${collSlug}${qs ? '?' + qs : ''}`;
@@ -277,11 +448,17 @@
 	function loadUrlFilters() {
 		const url = new URL(page.url);
 		const filters: Record<string, string> = {};
-		// Reset tags up-front so navigating to a collection whose URL has no
-		// `tags` param clears any selection carried over from the previous
-		// collection (absent = cleared).
+		// Reset tags (and the unparented intent) up-front so navigating to a
+		// collection whose URL has no `tags`/`$unparented` param clears any
+		// selection carried over from the previous collection (absent =
+		// cleared). The unparented intent is read here optimistically — a
+		// restricted caller's URL carrying it gets corrected by the
+		// restricted-clearing effect once `unparentedMetadataAvailable`
+		// resolves (DR-2); nothing in this function's synchronous read can
+		// know that yet.
 		selectedTags = [];
-		const knownParams = new Set(['view', 'q', 'tags']);
+		const unparentedIntent = readUnparentedParam(url.searchParams);
+		const knownParams = new Set(['view', 'q', 'tags', UNPARENTED_FILTER_FIELD]);
 		for (const [k, v] of url.searchParams.entries()) {
 			if (k === 'view' && (v === 'list' || v === 'board')) {
 				viewMode = v;
@@ -293,7 +470,25 @@
 				filters[k] = v;
 			}
 		}
-		if (Object.keys(filters).length > 0) activeFilters = filters;
+		// Mutual exclusivity (PLAN-2095 DR-3): a hand-crafted or legacy URL
+		// could carry both a specific-parent filter (`parent`/`phase`) AND
+		// the unparented pseudo-param at once. Resolve it the same way the
+		// interactive chip toggle does — unparented wins (Codex review
+		// round 1).
+		const resolved = resolveParentUnparentedMutex(filters, unparentedIntent);
+		unparentedFilter = resolved.unparented;
+		// Assign `activeFilters` whenever the URL expressed EITHER kind of
+		// filter intent — plain field params OR the unparented pseudo-param
+		// on its own. Gating on `filters` alone (Codex review round 2, P2)
+		// missed the "URL carries only `$unparented=true`, no field params"
+		// case: `filters` is empty there, so the old guard left a STALE
+		// `activeFilters.parent` from a previous navigation in place
+		// alongside the freshly-applied unparented intent — breaking the
+		// mutex and producing a silently-empty result instead of the
+		// mutex-resolved `{}` this URL actually describes.
+		if (Object.keys(filters).length > 0 || unparentedIntent) {
+			activeFilters = resolved.filters;
+		}
 	}
 
 	$effect(() => {
@@ -448,6 +643,19 @@
 				}
 				if (delta.changes.length === 0 || delta.cursor === since) {
 					deltaSyncFailed = false;
+					// This loop is an independent reconcile path from
+					// `bootstrap()`'s internal one (driven by SSE/periodic
+					// sync, not the initial cold/warm boot) — it's the only
+					// owner of `pendingResync` for a resync IT triggered.
+					// Mark caught up so a mid-session projection-scope
+					// change doesn't leave `pendingResyncFor` stuck `true`
+					// for the rest of the session (TASK-2099 / PLAN-2095
+					// DR-2, Codex review round 4). Pass `epochBefore` — this
+					// iteration already confirmed it still matches the live
+					// epoch above — so a differently-scoped resync that
+					// lands concurrently after this point isn't silently
+					// stomped (Codex review round 5).
+					localIndex.markCaughtUp(ws, epochBefore);
 					return true;
 				}
 				localIndex.applyDelta(
@@ -458,6 +666,7 @@
 				);
 				if (delta.cursor === since) {
 					deltaSyncFailed = false;
+					localIndex.markCaughtUp(ws, epochBefore);
 					return true;
 				}
 			}
@@ -511,6 +720,17 @@
 		const seq = ++loadSeq;
 		metaLoading = true;
 		metaError = null;
+		// Reset for the new route; only flips back to `true` once
+		// `loadUrlFilters()` below has actually run for THIS load (guarded
+		// by the same `seq !== loadSeq` supersede-check). Deliberately NOT
+		// derived from `metaLoading` alone (Codex review round 6): on a
+		// failed load (a genuine 404, or a transient error), `metaLoading`
+		// still flips back to `false` in the `finally` block below even
+		// though `loadUrlFilters()` never ran — `urlFiltersLoaded` stays
+		// `false` through that path, correctly keeping the unparented
+		// URL-sync effect from firing with stale filter state while this
+		// route is erroring.
+		urlFiltersLoaded = false;
 		try {
 			// Items now flow through localIndex (the `items` $derived
 			// above reads `getByCollection`). We still fetch the
@@ -583,6 +803,7 @@
 
 			// Override with URL params if present
 			loadUrlFilters();
+			urlFiltersLoaded = true;
 		} catch (err) {
 			// Superseded by a newer load — don't clobber the current
 			// route's state with this stale failure.
@@ -646,6 +867,29 @@
 			result = result.filter((item) =>
 				parseTags(item).some((t) => wanted.has(t)),
 			);
+		}
+
+		// Apply the "Unparented only" chip (TASK-2099 / PLAN-2095): keep
+		// items the local-first projection marked structurally loose. Gated
+		// on `unparentedApplied` (intent AND confirmed unrestricted scope —
+		// DR-2), not raw `unparentedFilter`, so a restricted caller's
+		// carried-over intent never filters anything.
+		//
+		// `!== false` (optimistic-inclusive), not `=== true`: a full
+		// mutation response (create/update) intentionally omits local-
+		// first-only projections (see `localIndex.svelte.ts::toSkinny` /
+		// `preserveProjectionMetadata`), so a just-created item's optimistic
+		// row carries `is_unparented: undefined` until the authoritative
+		// index/delta row lands and merges it in. Requiring strict `true`
+		// made a brand-new loose item — the exact case a user creating
+		// while this filter is active most wants to see — flash out of the
+		// list immediately after creation (Codex review round 2). Every
+		// AUTHORITATIVE row for an unrestricted caller always carries the
+		// bit (Phase 1 / TASK-2096), so `undefined` here is bounded to that
+		// narrow optimistic window, not a permanent unknown; an item that
+		// turns out to be parented is corrected out on the next delta.
+		if (unparentedApplied) {
+			result = result.filter((item) => item.is_unparented !== false);
 		}
 
 		// Apply search query. PLAN-1343 Phase 3b: the local path
@@ -734,7 +978,7 @@
 	let emptyHint = $derived(emptyHintMap[collSlug] ?? null);
 
 	let filtersOpen = $state(false);
-	let hasActiveFilters = $derived(searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0 || selectedTags.length > 0);
+	let hasActiveFilters = $derived(searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0 || selectedTags.length > 0 || unparentedApplied);
 
 	// ── Viewport detection ───────────────────────────────────────────────
 	// On mobile the 3-icon view toggle (list/board/table) is swapped for a
@@ -773,6 +1017,21 @@
 
 	function handleFilterChange(filters: Record<string, string>) {
 		activeFilters = filters;
+		// Mutual exclusivity with the unparented chip (PLAN-2095 DR-3):
+		// setting a specific-parent filter clears "Unparented only".
+		if (filtersSetParent(filters) && unparentedFilter) {
+			unparentedFilter = false;
+		}
+		updateUrlFilters();
+	}
+
+	// Mutual exclusivity in the other direction: switching the "Unparented
+	// only" chip on clears any specific-parent filter (PLAN-2095 DR-3).
+	function handleUnparentedChange(value: boolean) {
+		unparentedFilter = value;
+		if (value) {
+			activeFilters = clearParentFilter(activeFilters);
+		}
 		updateUrlFilters();
 	}
 
@@ -1627,7 +1886,15 @@
 
 	function buildViewConfig(): ViewConfig {
 		const config: ViewConfig = {};
-		const filterEntries = Object.entries(activeFilters);
+		// Defensive mutex enforcement (PLAN-2095 DR-3): the interactive
+		// handlers already keep `activeFilters.parent`/`phase` and
+		// `unparentedFilter` mutually exclusive, but a saved view should
+		// never persist a contradictory combination even if some other
+		// path (a stale prop, a future call site) let both linger.
+		const effectiveFilters = unparentedEffective(unparentedFilter, unparentedMetadataAvailable)
+			? clearParentFilter(activeFilters)
+			: activeFilters;
+		const filterEntries = Object.entries(effectiveFilters);
 		const filters: NonNullable<ViewConfig['filters']> = filterEntries.map(
 			([field, value]) => ({ field, op: 'eq', value }),
 		);
@@ -1636,6 +1903,13 @@
 		// + an array `value`.
 		if (selectedTags.length > 0) {
 			filters.push({ field: 'tags', op: 'in', value: [...selectedTags] });
+		}
+		// "Unparented only" persists as the reserved `$unparented` condition
+		// (PLAN-2095 DR-5). Gated on `unparentedMetadataAvailable` (not just
+		// intent) so a restricted caller can never save it into a view.
+		const unparentedEntry = buildUnparentedViewFilter(unparentedFilter, unparentedMetadataAvailable);
+		if (unparentedEntry) {
+			filters.push(unparentedEntry);
 		}
 		if (filters.length > 0) {
 			config.filters = filters;
@@ -1665,15 +1939,35 @@
 				} else if (f.op === 'eq' && typeof f.value === 'string') {
 					newFilters[f.field] = f.value;
 				}
+				// The reserved `$unparented` condition (`value: true`, a
+				// boolean) never matches the `typeof f.value === 'string'`
+				// branch above, so it's naturally skipped here — recovered
+				// separately below via `viewHasUnparentedFilter`.
 			}
 		}
-		activeFilters = newFilters;
+		// Recover "Unparented only" intent from the saved view (PLAN-2095
+		// DR-5). Applied as raw intent — same as the URL path — and left to
+		// `unparentedApplied` / the restricted-clearing effect to enforce
+		// DR-2 once the projection scope is known. This does NOT check
+		// `unparentedMetadataAvailable` here because `applyViewConfig` can
+		// run before the local index has hydrated (the default-view-on-
+		// mount effect gates only on `!metaLoading`); gating here would
+		// incorrectly drop the filter for a legitimate unrestricted caller
+		// on a cold load.
+		const newUnparented = viewHasUnparentedFilter(config.filters);
+		// Mutual exclusivity (PLAN-2095 DR-3): a legacy/hand-authored saved
+		// view could carry both a specific-parent filter and the
+		// unparented pseudo-filter at once — resolve it the same way the
+		// interactive chip toggle does (Codex review round 1).
+		const resolved = resolveParentUnparentedMutex(newFilters, newUnparented);
+		activeFilters = resolved.filters;
 		selectedTags = newTags;
+		unparentedFilter = resolved.unparented;
 		searchQuery = '';
 		searchResultRank = null;
 
 		// Open filters panel if the view has filters
-		if (Object.keys(newFilters).length > 0 || newTags.length > 0) {
+		if (Object.keys(resolved.filters).length > 0 || newTags.length > 0 || resolved.unparented) {
 			filtersOpen = true;
 		}
 
@@ -1685,6 +1979,7 @@
 		activeViewId = null;
 		activeFilters = {};
 		selectedTags = [];
+		unparentedFilter = false;
 		searchQuery = '';
 		searchResultRank = null;
 		filtersOpen = false;
@@ -1993,6 +2288,9 @@
 						{selectedTags}
 						onTagFilterChange={handleTagFilterChange}
 						bind:searchInputEl
+						unparentedAvailable={unparentedMetadataAvailable}
+						unparentedActive={unparentedApplied}
+						onUnparentedChange={handleUnparentedChange}
 					/>
 				</div>
 			{/if}
@@ -2122,12 +2420,12 @@
 					<p>This collection is empty.</p>
 				{/if}
 			</div>
-		{:else if filteredItems.length === 0 && (searchQuery || Object.keys(activeFilters).length > 0)}
+		{:else if filteredItems.length === 0 && (searchQuery || Object.keys(activeFilters).length > 0 || unparentedApplied)}
 			<div class="empty-state-box">
 				<div class="empty-icon">🔍</div>
 				<h2>No matches</h2>
 				<p>No items match your current filters.
-					<button class="clear-link" onclick={() => { activeFilters = {}; searchQuery = ''; searchResultRank = null; }}>Clear filters</button>
+					<button class="clear-link" onclick={() => { activeFilters = {}; searchQuery = ''; searchResultRank = null; unparentedFilter = false; updateUrlFilters(); }}>Clear filters</button>
 				</p>
 			</div>
 		{:else if viewMode === 'board'}

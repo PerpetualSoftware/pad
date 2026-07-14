@@ -1099,6 +1099,97 @@ export const localIndex = {
 	},
 
 	/**
+	 * Whether the workspace's current projection includes the `is_unparented`
+	 * bit — `true` for unrestricted callers, `false` for restricted ones,
+	 * `null` when the workspace hasn't resolved a snapshot/delta yet
+	 * (unknown). Consumers gating unparented-filter UI (TASK-2099 / PLAN-2095
+	 * DR-2) must treat `null` the same as `false` — never show or apply the
+	 * chip until this is confirmed `true`, so a restricted caller (or one
+	 * whose scope hasn't resolved) never sees a side channel into structural
+	 * parent state.
+	 */
+	includesUnparentedMetadataFor(ws: string): boolean | null {
+		return workspaces.get(ws)?.includesUnparentedMetadata ?? null;
+	},
+
+	/**
+	 * Whether a workspace's warm-cache snapshot has landed but the
+	 * follow-up `/items-changes` reconcile hasn't confirmed it yet (see
+	 * `bootstrap`'s warm-path doc comment) — OR a live-session resync
+	 * (`resyncProjectionScope`, e.g. triggered mid-session by a permission
+	 * change `deltaSync` detects) is still replaying post-snapshot
+	 * mutations under the new scope. `includesUnparentedMetadataFor` can
+	 * reflect a value that hasn't survived a full reconcile pass yet during
+	 * either window.
+	 *
+	 * Consumers should use this ONLY to gate a DESTRUCTIVE decision that
+	 * would be expensive/user-visible to get wrong in the "unknown, still
+	 * resolving" direction (e.g. permanently discarding a URL/saved-view
+	 * intent) — combine it with a CONFIRMED `includesUnparentedMetadataFor`
+	 * value (`=== true` or `=== false`, not just "unavailable"), not used
+	 * as a blanket gate on ordinary rendering/filtering. `bootstrap()`'s
+	 * own reconcile loop clears this on catch-up for the cold/warm-boot
+	 * path; a caller with an independent reconcile loop (e.g. the
+	 * collection page's SSE/periodic-sync-driven `deltaSync`) MUST call
+	 * `markCaughtUp` itself on ITS catch-up, or gating routine availability
+	 * on this being `false` can wedge a UI element hidden indefinitely
+	 * after a live permission upgrade (Codex review round 3 P1/P2, round 4
+	 * — TASK-2099 / PLAN-2095 DR-2). Returns `false` for an unhydrated
+	 * workspace (nothing pending because nothing has started).
+	 */
+	pendingResyncFor(ws: string): boolean {
+		return workspaces.get(ws)?.pendingResync ?? false;
+	},
+
+	/**
+	 * Mark a workspace's resync as caught up — clears `pendingResync`.
+	 *
+	 * `bootstrap()`'s own internal reconcile loop already does this
+	 * (`if (caughtUp) state.pendingResync = false`), but that loop only
+	 * runs for the initial cold/warm-boot path. A resync triggered mid-
+	 * session (`resyncProjectionScope`, e.g. because the collection page's
+	 * OWN `deltaSync` loop — driven by SSE events / periodic sync, not
+	 * `bootstrap()` — detected a projection-scope change) has no such
+	 * owner: nothing else ever flips `pendingResync` back to `false` for
+	 * it, so it would stay stuck `true` for the rest of the session. That
+	 * wedges any consumer gating a destructive decision on
+	 * `pendingResyncFor` (TASK-2099 / PLAN-2095 DR-2's
+	 * `unparentedConfirmedRestricted`, Codex review round 4) — a caller
+	 * downgraded and later re-upgraded within the same session would never
+	 * see the "confirmed restricted" transition fire, so a stuck
+	 * unparented-filter intent from before the downgrade would silently
+	 * reactivate on the upgrade instead of staying cleared.
+	 *
+	 * Callers should invoke this once THEIR OWN independent reconcile loop
+	 * confirms it has caught up (the same predicate `bootstrap()` uses:
+	 * an empty delta batch, or the response cursor not advancing past
+	 * `since`) — mirroring exactly what `bootstrap()`'s loop already does
+	 * for the path it owns.
+	 *
+	 * `epoch` MUST be the `scopeEpochFor(ws)` the caller captured at (or
+	 * reconfirmed immediately before) the point it decided "caught up" —
+	 * the same value already threaded through these reconcile loops as
+	 * `epochBefore`. SSE, periodic sync, and `bootstrap()` can all trigger
+	 * reconciliations concurrently; without this check, one caller's stale
+	 * catch-up confirmation could unconditionally clear `pendingResync`
+	 * out from under a DIFFERENT, still-in-progress (or just-restarted)
+	 * resync that landed after this caller's own epoch check — silencing
+	 * `bootstrap()`'s retry of a resync/replay that hasn't actually
+	 * finished (Codex review round 5). A mismatched epoch means a resync
+	 * has landed since this caller confirmed catch-up, so the clear is
+	 * skipped — whichever loop eventually catches up under the NEW epoch
+	 * will clear it.
+	 *
+	 * No-op for an unhydrated workspace.
+	 */
+	markCaughtUp(ws: string, epoch: number): void {
+		const state = workspaces.get(ws);
+		if (!state) return;
+		if (state.scopeEpoch !== epoch) return;
+		state.pendingResync = false;
+	},
+
+	/**
 	 * Current projection-scope epoch — bumped each time a resync installs a
 	 * new authoritative snapshot. A reconcile loop captures it before an
 	 * `/items-changes` request and, if it differs when the request returns, a

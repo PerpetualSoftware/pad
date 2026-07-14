@@ -8,6 +8,8 @@
 	import {
 		parsePublicCollection,
 		parsePublicItems,
+		filterEvaluable,
+		matchesFilter,
 		type PublicCollection,
 		type PublicItem
 	} from '$lib/components/share/shareView';
@@ -148,37 +150,10 @@
 		return items.filter((item) => applicable.every((f) => matchesFilter(item, f)));
 	});
 
-	// True when the filter targets a field present in the public collection
-	// schema, so it's meaningful against the shared payload. Malformed/fieldless
-	// filters are treated as evaluable so matchesFilter can no-op them.
-	function filterEvaluable(schemaKeys: Set<string>, filter: unknown): boolean {
-		if (!filter || typeof filter !== 'object') return true;
-		const field = (filter as { field?: unknown }).field;
-		if (typeof field !== 'string') return true;
-		return schemaKeys.has(field);
-	}
-
-	// Read-only filter evaluation mirroring the logged-in collection page's
-	// `eq` / `in` handling (the only ops saved-view configs emit). Unknown ops
-	// pass through (don't hide items we can't reason about).
-	function matchesFilter(item: PublicItem, filter: unknown): boolean {
-		if (!filter || typeof filter !== 'object') return true;
-		const f = filter as { field?: unknown; op?: unknown; value?: unknown };
-		if (typeof f.field !== 'string') return true;
-		const fieldVal = item.fields[f.field];
-		if (f.op === 'eq') {
-			return String(fieldVal ?? '') === String(f.value ?? '');
-		}
-		if (f.op === 'in') {
-			const wanted = Array.isArray(f.value) ? f.value.map((v) => String(v)) : [String(f.value)];
-			// Tags-style array fields: match if any item value is wanted.
-			if (Array.isArray(fieldVal)) {
-				return fieldVal.some((v) => wanted.includes(String(v)));
-			}
-			return wanted.includes(String(fieldVal ?? ''));
-		}
-		return true;
-	}
+	// `filterEvaluable` / `matchesFilter` now live in `shareView.ts` — the
+	// single evaluation choke-point shared by every public-share renderer,
+	// and the place the `$unparented` skip (PLAN-2095 DR-5 / TASK-2099) is
+	// enforced + pure-tested (see `shareView.test.ts`).
 
 	function coerceBaseView(value: unknown): BaseView | null {
 		if (value === 'list' || value === 'board' || value === 'table') return value;

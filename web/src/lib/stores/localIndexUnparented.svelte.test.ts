@@ -153,3 +153,113 @@ describe('localIndex unparented projection compatibility', () => {
 		expect(localIndex.findByIdOrSlug(ws, 'created')?.seq).toBe(6);
 	});
 });
+
+// TASK-2099 / PLAN-2095 Phase 2: the collection page's "Unparented only"
+// chip gates its visibility off this accessor (not the internal `$state`
+// field directly, which isn't exported). Covers the three states a
+// consumer must be able to distinguish: unknown, restricted, unrestricted.
+describe('localIndex.includesUnparentedMetadataFor', () => {
+	it('is null for a workspace that has never resolved a snapshot/delta', () => {
+		expect(localIndex.includesUnparentedMetadataFor('never-bootstrapped-ws')).toBeNull();
+	});
+
+	it('reflects true after an unrestricted delta and false after a restricted one', () => {
+		localIndex.applyDelta(ws, [], '1', true);
+		expect(localIndex.includesUnparentedMetadataFor(ws)).toBe(true);
+
+		localIndex.applyDelta(ws, [], '2', false);
+		expect(localIndex.includesUnparentedMetadataFor(ws)).toBe(false);
+	});
+});
+
+// TASK-2099 Codex review round 2 (P1): the collection page must not trust
+// `includesUnparentedMetadataFor` while a resync is still in flight — the
+// warm-cache boot path can serve a persisted (possibly stale) capability
+// bit before its follow-up reconcile confirms it. `pendingResyncFor` is the
+// signal the page gates on to treat capability as unknown during that
+// window.
+describe('localIndex.pendingResyncFor', () => {
+	it('is false for an unhydrated workspace and after ordinary delta application', () => {
+		expect(localIndex.pendingResyncFor('never-bootstrapped-ws-2')).toBe(false);
+		localIndex.applyDelta(ws, [], '1', true);
+		expect(localIndex.pendingResyncFor(ws)).toBe(false);
+	});
+
+	it('stays true after a projection resync until an owning reconcile loop clears it', async () => {
+		localIndex.upsert(ws, row('scoped', 1, true));
+		localIndex.applyDelta(ws, [], '1', true);
+		expect(localIndex.pendingResyncFor(ws)).toBe(false);
+
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [row('scoped', 1)],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+		});
+		await localIndex.ensureProjectionScope(ws, false);
+		// resyncProjectionScope intentionally leaves pendingResync=true —
+		// it only installs the authoritative snapshot; catch-up is the
+		// reconcile loop's job (bootstrap()'s own loop for the cold/warm
+		// boot path, or a caller's independent loop via `markCaughtUp` —
+		// neither is exercised by `ensureProjectionScope` alone).
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+	});
+});
+
+// TASK-2099 Codex review round 4: a resync triggered mid-session (e.g. the
+// collection page's SSE/periodic-sync-driven `deltaSync`, not
+// `bootstrap()`) has no owner for clearing `pendingResync` unless the
+// caller explicitly marks its own catch-up. Without `markCaughtUp`, a
+// caller downgraded and later re-upgraded within the same session would
+// never see the "confirmed restricted" transition — DR-2's clearing
+// wouldn't fire, and a stuck pre-downgrade intent could silently
+// reactivate on the upgrade instead of staying cleared.
+describe('localIndex.markCaughtUp', () => {
+	it('clears a pending resync when the epoch still matches', async () => {
+		localIndex.upsert(ws, row('scoped', 1, true));
+		localIndex.applyDelta(ws, [], '1', true);
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [row('scoped', 1)],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+		});
+		await localIndex.ensureProjectionScope(ws, false);
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+
+		localIndex.markCaughtUp(ws, localIndex.scopeEpochFor(ws));
+		expect(localIndex.pendingResyncFor(ws)).toBe(false);
+	});
+
+	// Codex review round 5: a caller's catch-up confirmation must not clear
+	// `pendingResync` out from under a DIFFERENT, concurrently-landed resync
+	// (SSE/periodic-sync/bootstrap can all trigger one). A stale epoch means
+	// exactly that raced — skip the clear so the newer resync's own
+	// catch-up (under its own epoch) is what eventually clears the flag.
+	it('does NOT clear a pending resync when a newer resync has landed under a different epoch', async () => {
+		localIndex.upsert(ws, row('scoped', 1, true));
+		localIndex.applyDelta(ws, [], '1', true);
+		const staleEpoch = localIndex.scopeEpochFor(ws);
+
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [row('scoped', 1)],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+		});
+		await localIndex.ensureProjectionScope(ws, false);
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+		expect(localIndex.scopeEpochFor(ws)).toBeGreaterThan(staleEpoch);
+
+		// A caller that captured the epoch BEFORE this resync landed tries
+		// to confirm catch-up — its confirmation predates the newer resync
+		// and must not silence it.
+		localIndex.markCaughtUp(ws, staleEpoch);
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+	});
+
+	it('is a no-op for an unhydrated workspace', () => {
+		expect(() => localIndex.markCaughtUp('never-bootstrapped-ws-3', 0)).not.toThrow();
+		expect(localIndex.pendingResyncFor('never-bootstrapped-ws-3')).toBe(false);
+	});
+});
