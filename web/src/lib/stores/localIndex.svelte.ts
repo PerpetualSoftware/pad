@@ -244,14 +244,53 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 		const resp = await api.items.listIndex(ws, { includeArchived: true });
 		if (state.generation !== generation) return;
 
-		// Swap the snapshot in place. clear() + the repopulation loop run
-		// synchronously (no await between them), so the reactive SvelteMap
-		// never emits an intermediate empty state to subscribers.
-		state.items.clear();
-		localSearch.reset(ws);
+		// Reconcile the authoritative snapshot into the live store by MERGE,
+		// not a blunt clear(). A clear() would erase any higher-seq upsert or
+		// delta that raced in during the fetch await and regress the cursor
+		// below it; because the resync dedups via projectionResyncs, that
+		// racing mutation would never be reapplied. Instead:
+		//   1. drop rows absent from the snapshot ONLY when they aren't newer
+		//      than the snapshot cursor — a row with seq > cursor is a
+		//      post-snapshot mutation to preserve; anything older the snapshot
+		//      omitted was dropped by the projection scope (e.g. a permission
+		//      downgrade) and must go so it can't linger or resurrect;
+		//   2. merge each snapshot row via mergeRow, whose per-row seq guard
+		//      keeps a fresher racing row over the older snapshot copy.
+		// This never empties the map, so subscribers never see a blank list.
+		const snapshotCursor = cursorAsNum(resp.cursor);
+		const snapshotIds = new Set<string>();
+		for (const row of resp.items) snapshotIds.add(row.id);
+		const toDrop: string[] = [];
+		for (const [id, row] of state.items) {
+			if (snapshotIds.has(id)) continue;
+			if (row.seq !== undefined && row.seq > snapshotCursor) continue;
+			toDrop.push(id);
+		}
+		for (const id of toDrop) {
+			state.items.delete(id);
+			localSearch.remove(ws, id);
+		}
 		state.includesUnparentedMetadata = resp.includes_unparented_metadata;
-		for (const row of resp.items) mergeRow(state, row);
-		state.cursor = resp.cursor;
+		for (const row of resp.items) {
+			const next = toSkinny(row);
+			const existing = state.items.get(next.id);
+			// Keep a racing post-snapshot mutation (strictly higher seq).
+			// Otherwise the authoritative snapshot row REPLACES the local copy
+			// outright — including dropping an is_unparented bit the downgraded
+			// scope no longer grants. mergeRow is deliberately NOT used here:
+			// its projection-preservation is for the optimistic equal-seq case
+			// and would wrongly carry a stale projection bit across a downgrade.
+			if (
+				existing?.seq !== undefined &&
+				next.seq !== undefined &&
+				existing.seq > next.seq
+			) {
+				continue;
+			}
+			state.items.set(next.id, next);
+		}
+		// Never regress the cursor below a delta that advanced it mid-fetch.
+		if (snapshotCursor > cursorAsNum(state.cursor)) state.cursor = resp.cursor;
 		state.bootstrapState = 'ready';
 		state.pendingResync = false;
 		rebuildSearchIndex(ws, state);
@@ -259,8 +298,13 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 		// Reconcile the persisted cache only after the successful fetch. Wipe
 		// first so rows the resync dropped (e.g. after a downgrade) can't
 		// resurrect on the next warm hydrate, then write the authoritative
-		// snapshot + cursor.
+		// snapshot + cursor. Recheck generation after the awaited wipe: a
+		// sign-out / 403 purge (reset()) during the wipe bumps generation and
+		// clears the store, and without this guard the persistDelta below would
+		// write the pre-reset snapshot back to IDB and resurrect purged rows on
+		// the next warm hydrate.
 		await persistWipe(userId, ws);
+		if (state.generation !== generation) return;
 		const snapshot = [...state.items.values()];
 		await persistDelta(
 			userId,
