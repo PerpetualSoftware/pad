@@ -303,7 +303,14 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 		}
 		state.cursor = resp.cursor;
 		state.bootstrapState = 'ready';
-		state.pendingResync = false;
+		// NOTE: deliberately do NOT clear pendingResync here. This resync only
+		// installs the authoritative snapshot and pins the cursor for replay;
+		// the post-snapshot mutations aren't caught up until the caller's delta
+		// loop drains from the pinned cursor. The bootstrap reconcile loop owns
+		// the flag — it clears pendingResync only once `caughtUp` is true, so a
+		// replay that later fails transiently or hits the 50-page cap leaves
+		// pendingResync=true and the next bootstrap() resumes instead of
+		// no-opping with racing mutations still missing.
 		rebuildSearchIndex(ws, state);
 
 		// Reconcile the persisted cache after the successful fetch via a single
