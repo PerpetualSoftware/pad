@@ -182,8 +182,21 @@
 	// `null` (unknown, pre-bootstrap) and `false` (restricted) both read as
 	// unavailable — the chip stays hidden and the filter never applies until
 	// this is a confirmed `true`.
+	//
+	// ALSO gated on `!pendingResyncFor` (Codex review round 2, P1): the
+	// warm-cache boot path serves a PERSISTED capability bit before its
+	// follow-up `/items-changes` reconcile confirms it's still current. A
+	// permission change that happened while this client was offline (either
+	// direction) is invisible until that reconcile completes — trusting the
+	// cached bit during that window could expose the chip / apply
+	// client-side structural filtering to a now-restricted caller, or
+	// silently drop a now-legitimate caller's intent. Treat capability as
+	// unknown (unavailable) for the whole pending-resync window rather than
+	// act on a possibly-stale value either way.
 	let unparentedMetadataAvailable = $derived(
-		wsSlug ? localIndex.includesUnparentedMetadataFor(wsSlug) === true : false,
+		wsSlug
+			? !localIndex.pendingResyncFor(wsSlug) && localIndex.includesUnparentedMetadataFor(wsSlug) === true
+			: false,
 	);
 	// The chip's EFFECTIVE state — intent AND availability. Everything that
 	// actually filters/badges/persists reads this, not the raw intent flag,
@@ -212,6 +225,21 @@
 	//      the on-screen list becomes correctly filtered but nothing had
 	//      re-written the address bar to match — a copied/reloaded URL
 	//      would silently drop the filter (Codex review round 1).
+	//
+	//   Note the two conditions are independent, NOT merged into one
+	//   `unparentedApplied !== lastSyncedUnparented` check (Codex review
+	//   round 2, P2): a restricted caller loading a URL that carries the
+	//   pseudo-filter has `unparentedApplied === false` BOTH before and
+	//   after clearing the stuck raw intent (it was never effective to
+	//   begin with), so that diff alone would never fire — leaving the
+	//   literal `$unparented=true` sitting in the address bar even though
+	//   internal state is correctly clean. That stale param is not just
+	//   cosmetic: `defaultViewApplied`'s "don't override URL-driven state"
+	//   check treats ANY search param as explicit user intent and skips
+	//   applying the user's stored default view — a restricted caller
+	//   opening a shared unparented-filter link would silently lose their
+	//   default view too. So: sync whenever we just cleared a stuck intent,
+	//   in addition to syncing on an effective-value transition.
 	// Plain (non-reactive) memo, not `$derived` — we only need last-observed
 	// bookkeeping inside the effect below, not a tracked value. `false`
 	// matches `unparentedApplied`'s guaranteed value at this point (intent
@@ -219,13 +247,16 @@
 	let lastSyncedUnparented = false;
 	$effect(() => {
 		if (!wsSlug || !indexReady) return;
+		let needsUrlSync = false;
 		if (unparentedFilter && !unparentedMetadataAvailable) {
 			unparentedFilter = false;
+			needsUrlSync = true;
 		}
 		if (unparentedApplied !== lastSyncedUnparented) {
-			lastSyncedUnparented = unparentedApplied;
-			updateUrlFilters();
+			needsUrlSync = true;
 		}
+		lastSyncedUnparented = unparentedApplied;
+		if (needsUrlSync) updateUrlFilters();
 	});
 
 	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
@@ -381,7 +412,18 @@
 		// round 1).
 		const resolved = resolveParentUnparentedMutex(filters, unparentedIntent);
 		unparentedFilter = resolved.unparented;
-		if (Object.keys(filters).length > 0) activeFilters = resolved.filters;
+		// Assign `activeFilters` whenever the URL expressed EITHER kind of
+		// filter intent — plain field params OR the unparented pseudo-param
+		// on its own. Gating on `filters` alone (Codex review round 2, P2)
+		// missed the "URL carries only `$unparented=true`, no field params"
+		// case: `filters` is empty there, so the old guard left a STALE
+		// `activeFilters.parent` from a previous navigation in place
+		// alongside the freshly-applied unparented intent — breaking the
+		// mutex and producing a silently-empty result instead of the
+		// mutex-resolved `{}` this URL actually describes.
+		if (Object.keys(filters).length > 0 || unparentedIntent) {
+			activeFilters = resolved.filters;
+		}
 	}
 
 	$effect(() => {
@@ -741,8 +783,22 @@
 		// on `unparentedApplied` (intent AND confirmed unrestricted scope —
 		// DR-2), not raw `unparentedFilter`, so a restricted caller's
 		// carried-over intent never filters anything.
+		//
+		// `!== false` (optimistic-inclusive), not `=== true`: a full
+		// mutation response (create/update) intentionally omits local-
+		// first-only projections (see `localIndex.svelte.ts::toSkinny` /
+		// `preserveProjectionMetadata`), so a just-created item's optimistic
+		// row carries `is_unparented: undefined` until the authoritative
+		// index/delta row lands and merges it in. Requiring strict `true`
+		// made a brand-new loose item — the exact case a user creating
+		// while this filter is active most wants to see — flash out of the
+		// list immediately after creation (Codex review round 2). Every
+		// AUTHORITATIVE row for an unrestricted caller always carries the
+		// bit (Phase 1 / TASK-2096), so `undefined` here is bounded to that
+		// narrow optimistic window, not a permanent unknown; an item that
+		// turns out to be parented is corrected out on the next delta.
 		if (unparentedApplied) {
-			result = result.filter((item) => item.is_unparented === true);
+			result = result.filter((item) => item.is_unparented !== false);
 		}
 
 		// Apply search query. PLAN-1343 Phase 3b: the local path

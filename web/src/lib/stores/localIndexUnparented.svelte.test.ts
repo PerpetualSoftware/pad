@@ -171,3 +171,36 @@ describe('localIndex.includesUnparentedMetadataFor', () => {
 		expect(localIndex.includesUnparentedMetadataFor(ws)).toBe(false);
 	});
 });
+
+// TASK-2099 Codex review round 2 (P1): the collection page must not trust
+// `includesUnparentedMetadataFor` while a resync is still in flight — the
+// warm-cache boot path can serve a persisted (possibly stale) capability
+// bit before its follow-up reconcile confirms it. `pendingResyncFor` is the
+// signal the page gates on to treat capability as unknown during that
+// window.
+describe('localIndex.pendingResyncFor', () => {
+	it('is false for an unhydrated workspace and after ordinary delta application', () => {
+		expect(localIndex.pendingResyncFor('never-bootstrapped-ws-2')).toBe(false);
+		localIndex.applyDelta(ws, [], '1', true);
+		expect(localIndex.pendingResyncFor(ws)).toBe(false);
+	});
+
+	it('stays true after a projection resync — only a caught-up bootstrap reconcile loop clears it', async () => {
+		localIndex.upsert(ws, row('scoped', 1, true));
+		localIndex.applyDelta(ws, [], '1', true);
+		expect(localIndex.pendingResyncFor(ws)).toBe(false);
+
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [row('scoped', 1)],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+		});
+		await localIndex.ensureProjectionScope(ws, false);
+		// resyncProjectionScope intentionally leaves pendingResync=true —
+		// it only installs the authoritative snapshot; the bootstrap
+		// reconcile loop (not exercised by ensureProjectionScope alone) is
+		// what clears it once post-snapshot mutations are caught up.
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+	});
+});

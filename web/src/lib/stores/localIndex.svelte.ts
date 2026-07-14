@@ -1113,6 +1113,23 @@ export const localIndex = {
 	},
 
 	/**
+	 * Whether a workspace's warm-cache snapshot has landed but the
+	 * follow-up `/items-changes` reconcile hasn't confirmed it yet (see
+	 * `bootstrap`'s warm-path doc comment). `includesUnparentedMetadataFor`
+	 * can reflect a STALE cached capability bit during this window — e.g. a
+	 * permission downgrade that happened while offline hasn't been detected
+	 * yet, so the persisted `true` from before the downgrade is still what
+	 * warm-boot serves. Consumers gating unparented-filter UI/filtering
+	 * (TASK-2099 / PLAN-2095 DR-2, Codex review round 2) must treat
+	 * capability as unknown while this is `true`, not act on the
+	 * possibly-stale cached value. Returns `false` for an unhydrated
+	 * workspace (nothing pending because nothing has started).
+	 */
+	pendingResyncFor(ws: string): boolean {
+		return workspaces.get(ws)?.pendingResync ?? false;
+	},
+
+	/**
 	 * Current projection-scope epoch — bumped each time a resync installs a
 	 * new authoritative snapshot. A reconcile loop captures it before an
 	 * `/items-changes` request and, if it differs when the request returns, a
