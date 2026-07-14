@@ -259,6 +259,13 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 		// catch up leaves it set too — the next bootstrap runs one harmless,
 		// idempotent reconcile pass and clears it.)
 		state.pendingResync = true;
+		// Advance the scope epoch NOW — before the network await, not after the
+		// snapshot installs. A reconcile response that races this fetch must see
+		// the epoch already changed so it can't declare catch-up and clear the
+		// pendingResync we just set (Codex P2 round 9). The bump is monotonic and
+		// side-effect-free: even if this resync later bails on a generation
+		// mismatch, a spurious bump just makes in-flight loops re-poll once.
+		state.scopeEpoch += 1;
 		// Fetch the authoritative snapshot BEFORE touching any state. The
 		// previous ordering cleared the in-RAM store, cursor, search index,
 		// and IDB cache up front so a permission downgrade couldn't flash
@@ -310,12 +317,10 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 			state.items.delete(id);
 			localSearch.remove(ws, id);
 		}
-		// A new authoritative scope is now in force: bump the epoch (so reconcile
-		// loops can detect a response that raced this resync) and FENCE the
-		// dropped ids (so a stale old-scope optimistic upsert can't resurrect a
-		// row this snapshot just hid). Replace, don't union: a later re-upgrade
-		// snapshot won't list these ids in toDrop, clearing the fence for them.
-		state.scopeEpoch += 1;
+		// FENCE the dropped ids so a stale old-scope optimistic upsert can't
+		// resurrect a row this snapshot just hid. Replace, don't union: a later
+		// re-upgrade snapshot won't list these ids in toDrop, clearing the fence
+		// for them. (The scope epoch was already bumped before the fetch above.)
 		state.fencedIds = new Set(toDrop);
 		state.includesUnparentedMetadata = resp.includes_unparented_metadata;
 		for (const row of resp.items) {
