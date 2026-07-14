@@ -6,6 +6,7 @@ import {
 	filtersSetParent,
 	readUnparentedParam,
 	resolveParentUnparentedMutex,
+	unparentedConfirmedRestricted,
 	unparentedEffective,
 	viewHasUnparentedFilter,
 	writeUnparentedParam,
@@ -67,6 +68,25 @@ describe('resolveParentUnparentedMutex', () => {
 			filters: {},
 			unparented: true,
 		});
+	});
+});
+
+describe('unparentedConfirmedRestricted', () => {
+	it('is true only when metadata is confirmed false AND no resync is in flight', () => {
+		expect(unparentedConfirmedRestricted(true, false)).toBe(true);
+	});
+
+	// Codex review round 3, P1: mere "unavailable" (metadata unknown/pending)
+	// must NOT be treated as confirmed restriction — that would destroy a
+	// legitimate intent that loaded mid-resync, moments before the resync
+	// confirms the caller unrestricted.
+	it('is false while a resync is in flight, even if metadata currently reads false', () => {
+		expect(unparentedConfirmedRestricted(true, true)).toBe(false);
+	});
+
+	it('is false when metadata is not confirmed false (unknown/true)', () => {
+		expect(unparentedConfirmedRestricted(false, false)).toBe(false);
+		expect(unparentedConfirmedRestricted(false, true)).toBe(false);
 	});
 });
 

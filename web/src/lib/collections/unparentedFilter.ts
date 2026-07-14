@@ -73,6 +73,25 @@ export function resolveParentUnparentedMutex(
 }
 
 /**
+ * Whether a workspace's projection scope is CONFIRMED restricted — used
+ * ONLY to gate destructively clearing a stuck unparented-filter intent
+ * (from a URL/saved view). Deliberately narrower than
+ * `!unparentedEffective(...)`: that also covers "unknown" (pre-bootstrap)
+ * and "a resync is currently deciding", and destructively clearing intent
+ * on mere unavailability would permanently discard a legitimate caller's
+ * intent the instant it loaded mid-resync — even one about to resolve
+ * unrestricted a moment later (PLAN-2095 DR-2, Codex review round 3, P1).
+ *
+ * `metadataKnownFalse` should be `localIndex.includesUnparentedMetadataFor(ws)
+ * === false` (a CONFIRMED negative, not just "not true") and `pendingResync`
+ * should be `localIndex.pendingResyncFor(ws)` (no resync in flight that
+ * could still flip the answer).
+ */
+export function unparentedConfirmedRestricted(metadataKnownFalse: boolean, pendingResync: boolean): boolean {
+	return metadataKnownFalse && !pendingResync;
+}
+
+/**
  * Whether the unparented chip's filter should actually apply to the item
  * list. Requires BOTH the user's toggle intent AND confirmed unrestricted
  * metadata availability (PLAN-2095 DR-2) — a restricted caller's intent

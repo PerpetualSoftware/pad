@@ -1115,15 +1115,25 @@ export const localIndex = {
 	/**
 	 * Whether a workspace's warm-cache snapshot has landed but the
 	 * follow-up `/items-changes` reconcile hasn't confirmed it yet (see
-	 * `bootstrap`'s warm-path doc comment). `includesUnparentedMetadataFor`
-	 * can reflect a STALE cached capability bit during this window — e.g. a
-	 * permission downgrade that happened while offline hasn't been detected
-	 * yet, so the persisted `true` from before the downgrade is still what
-	 * warm-boot serves. Consumers gating unparented-filter UI/filtering
-	 * (TASK-2099 / PLAN-2095 DR-2, Codex review round 2) must treat
-	 * capability as unknown while this is `true`, not act on the
-	 * possibly-stale cached value. Returns `false` for an unhydrated
-	 * workspace (nothing pending because nothing has started).
+	 * `bootstrap`'s warm-path doc comment) — OR a live-session resync
+	 * (`resyncProjectionScope`, e.g. triggered mid-session by a permission
+	 * change `deltaSync` detects) is still replaying post-snapshot
+	 * mutations under the new scope. `includesUnparentedMetadataFor` can
+	 * reflect a value that hasn't survived a full reconcile pass yet during
+	 * either window.
+	 *
+	 * Consumers should use this ONLY to gate a DESTRUCTIVE decision that
+	 * would be expensive/user-visible to get wrong in the "unknown, still
+	 * resolving" direction (e.g. permanently discarding a URL/saved-view
+	 * intent) — combine it with a CONFIRMED `includesUnparentedMetadataFor`
+	 * value (`=== true` or `=== false`, not just "unavailable"), not used
+	 * as a blanket gate on ordinary rendering/filtering. `pendingResync` is
+	 * cleared only by `bootstrap()`'s own reconcile loop, never by a
+	 * standalone `deltaSync`-triggered resync, so gating routine
+	 * availability on this being `false` can wedge a UI element hidden
+	 * indefinitely after a live permission upgrade (Codex review round 3,
+	 * P1/P2 — TASK-2099 / PLAN-2095 DR-2). Returns `false` for an
+	 * unhydrated workspace (nothing pending because nothing has started).
 	 */
 	pendingResyncFor(ws: string): boolean {
 		return workspaces.get(ws)?.pendingResync ?? false;

@@ -37,6 +37,7 @@
 		filtersSetParent,
 		readUnparentedParam,
 		resolveParentUnparentedMutex,
+		unparentedConfirmedRestricted,
 		unparentedEffective,
 		viewHasUnparentedFilter,
 		writeUnparentedParam,
@@ -183,20 +184,24 @@
 	// unavailable — the chip stays hidden and the filter never applies until
 	// this is a confirmed `true`.
 	//
-	// ALSO gated on `!pendingResyncFor` (Codex review round 2, P1): the
-	// warm-cache boot path serves a PERSISTED capability bit before its
-	// follow-up `/items-changes` reconcile confirms it's still current. A
-	// permission change that happened while this client was offline (either
-	// direction) is invisible until that reconcile completes — trusting the
-	// cached bit during that window could expose the chip / apply
-	// client-side structural filtering to a now-restricted caller, or
-	// silently drop a now-legitimate caller's intent. Treat capability as
-	// unknown (unavailable) for the whole pending-resync window rather than
-	// act on a possibly-stale value either way.
+	// Deliberately NOT gated on `pendingResyncFor`: a warm-cache boot's
+	// PERSISTED capability bit can be momentarily stale (e.g. an offline
+	// permission downgrade not yet reconciled), but that's the SAME
+	// staleness window every other locally-cached field on `Item` already
+	// has under the local-first model (PLAN-1343) — nothing else on this
+	// page blocks rendering on `pendingResync`, and any client-side
+	// filtering during that window only ever operates on data this caller
+	// was already shown before the (possible) downgrade, so it isn't a NEW
+	// disclosure. `includesUnparentedMetadataFor` self-corrects reactively
+	// the moment a resync installs a fresh value — see the effect below.
+	// (Codex review round 2 gated this on `pendingResyncFor`; round 3 P1/P2
+	// showed that blunt gate both destroyed legitimate intent mid-resync
+	// and could wedge the chip hidden forever after a live permission
+	// upgrade, since `pendingResync` is cleared only by `bootstrap()`'s own
+	// reconcile loop — never by the page's separate `deltaSync()` calls
+	// that also trigger a resync during a live session.)
 	let unparentedMetadataAvailable = $derived(
-		wsSlug
-			? !localIndex.pendingResyncFor(wsSlug) && localIndex.includesUnparentedMetadataFor(wsSlug) === true
-			: false,
+		wsSlug ? localIndex.includesUnparentedMetadataFor(wsSlug) === true : false,
 	);
 	// The chip's EFFECTIVE state — intent AND availability. Everything that
 	// actually filters/badges/persists reads this, not the raw intent flag,
@@ -204,17 +209,35 @@
 	// URL or saved view) never filters anything or counts as an active
 	// filter (DR-2).
 	let unparentedApplied = $derived(unparentedEffective(unparentedFilter, unparentedMetadataAvailable));
+	// A NARROWER signal than `!unparentedMetadataAvailable`, used ONLY to
+	// gate the destructive "physically clear a stuck intent" action below.
+	// Requires a CONFIRMED restriction (`includesUnparentedMetadataFor ===
+	// false`, not just "unavailable" — which also covers `null`/unknown and
+	// a mid-resync window where the true answer just hasn't landed yet) AND
+	// `!pendingResyncFor` (no resync in flight that could still flip the
+	// answer). Without this narrower gate, clearing on mere unavailability
+	// would permanently discard a legitimate URL/saved-view intent the
+	// instant it loaded during ANY in-flight resync — even one that was
+	// about to confirm the caller unrestricted a moment later (Codex review
+	// round 3, P1).
+	let isUnparentedConfirmedRestricted = $derived(
+		wsSlug
+			? unparentedConfirmedRestricted(
+					localIndex.includesUnparentedMetadataFor(wsSlug) === false,
+					localIndex.pendingResyncFor(wsSlug),
+				)
+			: false,
+	);
 
 	// Restricted clearing (DR-2) AND URL honesty as the projection scope
 	// resolves. Two things this effect keeps correct once `indexReady`:
 	//
-	//   1. Once the scope is confirmed and does NOT include unparented
-	//      metadata, physically clear a stuck intent flag (from a URL or
-	//      saved view carrying the pseudo-filter) instead of leaving it
-	//      dangling — otherwise it would silently no-op (via
-	//      `unparentedApplied`) but could still get re-persisted into the
-	//      URL/a new saved view the moment something else calls
-	//      `updateUrlFilters()`.
+	//   1. Once restriction is CONFIRMED (`isUnparentedConfirmedRestricted`),
+	//      physically clear a stuck intent flag (from a URL or saved view
+	//      carrying the pseudo-filter) instead of leaving it dangling —
+	//      otherwise it would silently no-op (via `unparentedApplied`) but
+	//      could still get re-persisted into the URL/a new saved view the
+	//      moment something else calls `updateUrlFilters()`.
 	//   2. Re-sync the URL whenever `unparentedApplied` (the EFFECTIVE
 	//      state) actually changes value, in EITHER direction. This covers
 	//      not just the clear-on-downgrade case above but also: a default
@@ -233,13 +256,9 @@
 	//   after clearing the stuck raw intent (it was never effective to
 	//   begin with), so that diff alone would never fire — leaving the
 	//   literal `$unparented=true` sitting in the address bar even though
-	//   internal state is correctly clean. That stale param is not just
-	//   cosmetic: `defaultViewApplied`'s "don't override URL-driven state"
-	//   check treats ANY search param as explicit user intent and skips
-	//   applying the user's stored default view — a restricted caller
-	//   opening a shared unparented-filter link would silently lose their
-	//   default view too. So: sync whenever we just cleared a stuck intent,
-	//   in addition to syncing on an effective-value transition.
+	//   internal state is correctly clean. So: sync whenever we just
+	//   cleared a confirmed-restricted stuck intent, in addition to syncing
+	//   on an effective-value transition.
 	// Plain (non-reactive) memo, not `$derived` — we only need last-observed
 	// bookkeeping inside the effect below, not a tracked value. `false`
 	// matches `unparentedApplied`'s guaranteed value at this point (intent
@@ -248,7 +267,7 @@
 	$effect(() => {
 		if (!wsSlug || !indexReady) return;
 		let needsUrlSync = false;
-		if (unparentedFilter && !unparentedMetadataAvailable) {
+		if (unparentedFilter && isUnparentedConfirmedRestricted) {
 			unparentedFilter = false;
 			needsUrlSync = true;
 		}
