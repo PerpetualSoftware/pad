@@ -1270,9 +1270,10 @@ func TestPatchItem_FlexibleFieldsShape(t *testing.T) {
 // itemsIndexBody mirrors the server-side response wrapper for /items-index.
 // Kept local to the test file so the public handler doesn't need to export it.
 type itemsIndexBody struct {
-	Items  []models.Item `json:"items"`
-	Total  int           `json:"total"`
-	Cursor string        `json:"cursor"`
+	Items                      []models.Item `json:"items"`
+	Total                      int           `json:"total"`
+	Cursor                     string        `json:"cursor"`
+	IncludesUnparentedMetadata bool          `json:"includes_unparented_metadata"`
 }
 
 // TestListItemsIndex_SkinnyProjectionAndShape covers the foundational
@@ -1642,7 +1643,8 @@ type itemsChangesBody struct {
 		models.Item
 		Deleted bool `json:"deleted"`
 	} `json:"changes"`
-	Cursor string `json:"cursor"`
+	Cursor                     string `json:"cursor"`
+	IncludesUnparentedMetadata bool   `json:"includes_unparented_metadata"`
 }
 
 // TestListItemsChanges_FullDeltaFromZero covers the foundational

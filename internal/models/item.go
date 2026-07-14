@@ -75,6 +75,12 @@ type Item struct {
 	// Populated by enrichment, not stored in the DB.
 	HasChildren bool `json:"has_children,omitempty"`
 
+	// IsUnparented is populated only on unrestricted local-first index and
+	// delta responses. A pointer preserves the distinction between a
+	// structurally-parented item (false) and metadata that was deliberately
+	// omitted for a restricted caller (nil).
+	IsUnparented *bool `json:"is_unparented,omitempty"`
+
 	DerivedClosure      *ItemDerivedClosure      `json:"derived_closure,omitempty"`
 	CodeContext         *ItemCodeContext         `json:"code_context,omitempty"`
 	Convention          *ItemConventionMetadata  `json:"convention,omitempty"`
@@ -806,18 +812,21 @@ func flexJSONToString(raw json.RawMessage, expectedStart byte, errInvalid error)
 }
 
 type ItemListParams struct {
-	CollectionSlug  string
-	CollectionIDs   []string          // permission filter: restrict to these collection IDs (nil = no filter)
-	ItemIDs         []string          // permission filter: additionally restrict to these item IDs (for item-level grants)
-	Fields          map[string]string // field filters: key=value
-	Sort            string            // e.g. "priority:desc,created_at:asc"
-	GroupBy         string
-	Search          string // FTS query
-	ParentID        string
-	Tag             string
-	AssignedUserID  string // filter by assigned user
-	AgentRoleID     string // filter by agent role (ID or slug)
-	ParentLinkID    string // filter by parent link (item ID of the parent)
+	CollectionSlug string
+	CollectionIDs  []string          // permission filter: restrict to these collection IDs (nil = no filter)
+	ItemIDs        []string          // permission filter: additionally restrict to these item IDs (for item-level grants)
+	Fields         map[string]string // field filters: key=value
+	Sort           string            // e.g. "priority:desc,created_at:asc"
+	GroupBy        string
+	Search         string // FTS query
+	ParentID       string
+	Tag            string
+	AssignedUserID string // filter by assigned user
+	AgentRoleID    string // filter by agent role (ID or slug)
+	ParentLinkID   string // filter by parent link (item ID of the parent)
+	// Unparented keeps only items with neither the legacy parent_id column nor
+	// an outgoing parent/implements item_link. Incoming links do not count.
+	Unparented      bool
 	IncludeArchived bool
 	// NonTerminal, when true, restricts results to items whose resolved
 	// done-field value is NOT one of their collection's terminal options.

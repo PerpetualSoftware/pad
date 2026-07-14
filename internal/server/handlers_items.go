@@ -36,6 +36,10 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := parseItemListParams(r)
+	if err := validateUnparentedListRequest(r, params); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 	if err := s.resolveParentFilter(r, workspaceID, &params); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -48,6 +52,10 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	params.CollectionIDs = visibleIDs
+	if params.Unparented && visibleIDs != nil {
+		writeError(w, http.StatusForbidden, "forbidden", "unparented filtering requires unrestricted workspace access")
+		return
+	}
 
 	// Apply item-level filtering for users with item grants (guests or
 	// restricted members) so item grants don't leak entire collections.
@@ -125,9 +133,10 @@ func (s *Server) handleListTags(w http.ResponseWriter, r *http.Request) {
 //     starts from the right floor on the next poll instead of replaying
 //     every prior mutation. Empty workspaces return "0".
 type itemsIndexResponse struct {
-	Items  []models.Item `json:"items"`
-	Total  int           `json:"total"`
-	Cursor string        `json:"cursor"`
+	Items                      []models.Item `json:"items"`
+	Total                      int           `json:"total"`
+	Cursor                     string        `json:"cursor"`
+	IncludesUnparentedMetadata bool          `json:"includes_unparented_metadata"`
 }
 
 // handleListItemsIndex returns the skinny-projection of every item in a
@@ -160,6 +169,7 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	params.CollectionIDs = visibleIDs
+	params.IncludeUnparentedMetadata = visibleIDs == nil
 
 	// Item-level grants for guests / restricted members.
 	fullCollIDs, grantedItemIDs, grantErr := s.guestResourceFilter(r, workspaceID)
@@ -220,9 +230,10 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	cursor := strconv.FormatInt(cursorSeq, 10)
 
 	writeJSON(w, http.StatusOK, itemsIndexResponse{
-		Items:  result,
-		Total:  len(result),
-		Cursor: cursor,
+		Items:                      result,
+		Total:                      len(result),
+		Cursor:                     cursor,
+		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
 	})
 }
 
@@ -255,8 +266,9 @@ type itemChangeRow struct {
 //     the value as opaque (re-pass as `?since=<cursor>` on the next
 //     poll).
 type itemsChangesResponse struct {
-	Changes []itemChangeRow `json:"changes"`
-	Cursor  string          `json:"cursor"`
+	Changes                    []itemChangeRow `json:"changes"`
+	Cursor                     string          `json:"cursor"`
+	IncludesUnparentedMetadata bool            `json:"includes_unparented_metadata"`
 }
 
 // handleListItemsChanges is the delta-fetch sibling of
@@ -311,9 +323,10 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	params := store.ItemChangesParams{
-		CollectionIDs: visibleIDs,
-		Since:         since,
-		Limit:         limit,
+		CollectionIDs:             visibleIDs,
+		Since:                     since,
+		Limit:                     limit,
+		IncludeUnparentedMetadata: visibleIDs == nil,
 	}
 
 	// Item-level grants for guests / restricted members. Delta sync
@@ -406,8 +419,9 @@ func (s *Server) handleListItemsChanges(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, itemsChangesResponse{
-		Changes: changes,
-		Cursor:  strconv.FormatInt(cursorSeq, 10),
+		Changes:                    changes,
+		Cursor:                     strconv.FormatInt(cursorSeq, 10),
+		IncludesUnparentedMetadata: params.IncludeUnparentedMetadata,
 	})
 }
 
@@ -442,6 +456,14 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 
 	params := parseItemListParams(r)
 	params.CollectionSlug = collSlug
+	if err := validateUnparentedListRequest(r, params); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if params.Unparented && visibleIDs != nil {
+		writeError(w, http.StatusForbidden, "forbidden", "unparented filtering requires unrestricted workspace access")
+		return
+	}
 
 	// For users with item-level grants, if this collection's visibility comes
 	// from item-level grants (not a full collection grant), restrict to only
@@ -708,6 +730,20 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		actor, _ := actorFromRequest(r)
 		if _, err := s.store.SetParentLink(workspaceID, item.ID, parentValue, actor); err != nil {
 			return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", fmt.Sprintf("item created but parent link failed: %v", err)}
+		}
+		// SetParentLink advances the source seq because it changes the
+		// local-first is_unparented bit. Re-read before publishing/returning
+		// so a create-with-parent event never advertises the stale create seq.
+		// The item and its parent link are already committed at this point, so
+		// a failed readback must NOT fail the create — that would return a 500
+		// for an item that exists and invite a duplicate-creating retry. Degrade
+		// to the item we already hold; the only cost is an event advertising the
+		// pre-link seq, which the next delta poll reconciles.
+		if fresh, rerr := s.store.GetItem(item.ID); rerr == nil && fresh != nil {
+			item = fresh
+		} else {
+			slog.Warn("createItemChecked: post-parent-link readback failed; returning pre-link snapshot",
+				"item_id", item.ID, "error", rerr)
 		}
 	}
 
@@ -2532,6 +2568,7 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 		GroupBy:        r.URL.Query().Get("group_by"),
 		Search:         r.URL.Query().Get("search"),
 		ParentID:       r.URL.Query().Get("parent_id"),
+		Unparented:     r.URL.Query().Get("unparented") == "true",
 		Tag:            r.URL.Query().Get("tag"),
 		AssignedUserID: r.URL.Query().Get("assigned_user_id"),
 		AgentRoleID:    r.URL.Query().Get("agent_role_id"),
@@ -2581,6 +2618,14 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 		if knownParams[key] {
 			continue
 		}
+		// `unparented` is consumed as the structural boolean above only when its
+		// value is exactly "true" (see params.Unparented). Any other value —
+		// and, on a collection whose schema literally defines an `unparented`
+		// field, that's a legitimate field filter — falls through here so the
+		// structural keyword never silently shadows a real schema field.
+		if key == "unparented" && params.Unparented {
+			continue
+		}
 		if len(values) > 0 {
 			fields[key] = values[0]
 		}
@@ -2590,6 +2635,32 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 	}
 
 	return params
+}
+
+// validateUnparentedListRequest keeps the boolean structural filter distinct
+// from every supported parent alias. Checking the raw query makes the rule
+// consistent even on a collection whose schema happens to define a real
+// `parent` or `plan` field.
+//
+// This is the CANONICAL, load-bearing enforcement of parent/unparented mutual
+// exclusivity — it guards every surface (CLI, MCP-exec, MCP-HTTP, direct API)
+// because they all land here. The upstream copies are early-feedback only and
+// intentionally redundant: cmd/pad/cmd_item.go's MarkFlagsMutuallyExclusive,
+// internal/mcp/catalog_item.go::actionItemList, and
+// internal/mcp/dispatch_http_routes.go::mapItemList. If this rule changes
+// (e.g. a new parent alias), update this function first; keep the others in
+// sync or drop them, but never let a caller reach the store without passing
+// through here.
+func validateUnparentedListRequest(r *http.Request, params models.ItemListParams) error {
+	if !params.Unparented {
+		return nil
+	}
+	for _, key := range []string{"parent_id", "parent", "plan"} {
+		if strings.TrimSpace(r.URL.Query().Get(key)) != "" {
+			return fmt.Errorf("unparented cannot be combined with %s", key)
+		}
+	}
+	return nil
 }
 
 // handleListItemActivity returns the activity feed for a specific item.

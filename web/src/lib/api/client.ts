@@ -1011,6 +1011,7 @@ export const api = {
 				items: (ItemIndexRow & { content?: string })[];
 				total: number;
 				cursor: string;
+				includes_unparented_metadata: boolean;
 			}>(
 				`/workspaces/${ws}/items-index${qs({
 					collection: opts?.collection,
@@ -1026,7 +1027,12 @@ export const api = {
 				const { content: _ignored, ...rest } = row;
 				return rest;
 			});
-			return { items, total: raw.total, cursor: raw.cursor };
+			return {
+				items,
+				total: raw.total,
+				cursor: raw.cursor,
+				includes_unparented_metadata: raw.includes_unparented_metadata === true,
+			};
 		},
 
 		/**
@@ -1058,6 +1064,7 @@ export const api = {
 			const raw = await request<{
 				changes: (ItemChangeRow & { content?: string })[];
 				cursor: string;
+				includes_unparented_metadata: boolean;
 			}>(
 				`/workspaces/${ws}/items-changes${qs({
 					since: sinceCursor,
@@ -1074,7 +1081,11 @@ export const api = {
 				const { content: _ignored, ...rest } = row;
 				return rest;
 			});
-			return { changes, cursor: raw.cursor };
+			return {
+				changes,
+				cursor: raw.cursor,
+				includes_unparented_metadata: raw.includes_unparented_metadata === true,
+			};
 		},
 
 		create: (ws: string, coll: string, data: ItemCreate) =>

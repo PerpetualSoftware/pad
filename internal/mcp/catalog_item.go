@@ -143,6 +143,7 @@ var padItemSchemaParams = []ParamDef{
 
 	// ── Hierarchy / assignment ──
 	{Name: "parent", Type: "string", Description: "Parent item ref (e.g. PLAN-3). Optional for: create, update, list filter."},
+	{Name: "unparented", Type: "bool", Description: "For action=list, keep only items with no parent or implements relationship. Mutually exclusive with parent."},
 	{Name: "role", Type: "string", Description: "Agent role slug to assign (e.g. implementer). Optional for: create, update, list filter."},
 	{Name: "assign", Type: "string", Description: "User name or email to assign. Optional for: create, update, list filter."},
 
@@ -242,7 +243,8 @@ Actions:
   get           — Read an item.
                   Required: ref.
   list          — List items, optionally filtered.
-                  Optional: collection, status, priority, parent, role, assign, all, limit.
+                  Optional: collection, status, priority, parent, unparented, role, assign, all, limit.
+                  parent and unparented are mutually exclusive.
   move          — Move an item to a different collection.
                   Required: ref, target_collection.
   link          — Create a relationship between two items.
@@ -625,6 +627,14 @@ const (
 // summary vs full result shape is a CLI-side concern; MCP callers that
 // need a full body fetch it per-item via action=get.)
 func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	// Early MCP-side feedback for the parent/unparented conflict; canonical
+	// enforcement lives in validateUnparentedListRequest
+	// (internal/server/handlers_items.go). Keep the two in sync.
+	if unparented, _ := input["unparented"].(bool); unparented {
+		if parent, _ := input["parent"].(string); strings.TrimSpace(parent) != "" {
+			return errStructured("pad_item.list", fmt.Errorf("parent and unparented are mutually exclusive")), nil
+		}
+	}
 	out := make(map[string]any, len(input)+1)
 	for k, v := range input {
 		out[k] = v

@@ -6,11 +6,11 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.14)
+## Tool surface (v0.15)
 
 Ten resource × action tools, plus `pad_set_workspace` (which takes a `workspace` slug only — no action enum). Eleven tools total.
 
-- `pad_item` — Items: create / update / delete / get / list / move / restore / link / unlink / deps / star / unstar / starred / comment / list-comments / backlinks / bulk-update / note / decide / export / import / history. `update` field writes are a server-side field-level merge (only the keys you set change); pass `expected_updated_at` for optimistic concurrency (a stale value fails with a structured 409 `update_conflict`). `history` returns read-only item version metadata (newest-first).
+- `pad_item` — Items: create / update / delete / get / list / move / restore / link / unlink / deps / star / unstar / starred / comment / list-comments / backlinks / bulk-update / note / decide / export / import / history. `list` accepts `unparented: true` to keep items with no parent or implements relationship (mutually exclusive with `parent`). `update` field writes are a server-side field-level merge (only the keys you set change); pass `expected_updated_at` for optimistic concurrency (a stale value fails with a structured 409 `update_conflict`). `history` returns read-only item version metadata (newest-first).
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log / create / claim / deleted / restore.
 - `pad_collection` — Collections: list / create / update / delete.
 - `pad_project` — Project intelligence: dashboard / next / ready / stale / standup / changelog / report / activity. Use `ready` for the actionable backlog and `stale` for items needing attention; `activity` to catch up on what other agents/users changed since you last worked (non-streaming feed with item refs + change details).

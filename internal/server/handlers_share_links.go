@@ -583,7 +583,8 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		publicViews := make([]publicShareView, 0, len(views))
 		for _, v := range views {
 			config := json.RawMessage("{}")
-			if c := strings.TrimSpace(v.Config); c != "" && json.Valid([]byte(c)) {
+			publicConfig := stripReservedUnparentedViewFilter(v.Config)
+			if c := strings.TrimSpace(publicConfig); c != "" && json.Valid([]byte(c)) {
 				config = json.RawMessage(c)
 			}
 			publicViews = append(publicViews, publicShareView{

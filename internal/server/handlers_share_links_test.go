@@ -16,6 +16,7 @@ import (
 // NOT leak internal IDs, creator, timestamps, or authoring-only settings
 // (quick_actions / content_template).
 func TestResolveCollectionShareLink_EnrichedPayload(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSForTest(t, srv)
 
@@ -70,7 +71,7 @@ func TestResolveCollectionShareLink_EnrichedPayload(t *testing.T) {
 		CollectionID: &coll.ID,
 		Name:         "Board",
 		ViewType:     "board",
-		Config:       `{"group_by":"status"}`,
+		Config:       `{"group_by":"status","filters":[{"field":"$unparented","op":"eq","value":true},{"field":"status","op":"eq","value":"open"}]}`,
 	})
 	if err != nil {
 		t.Fatalf("create board view: %v", err)
@@ -221,6 +222,14 @@ func TestResolveCollectionShareLink_EnrichedPayload(t *testing.T) {
 	}
 	if got, _ := board.Config["group_by"].(string); got != "status" {
 		t.Errorf("expected board config group_by 'status', got %#v", board.Config)
+	}
+	filters, ok := board.Config["filters"].([]any)
+	if !ok || len(filters) != 1 {
+		t.Fatalf("public view should strip only $unparented, got %#v", board.Config["filters"])
+	}
+	filter, _ := filters[0].(map[string]any)
+	if filter["field"] != "status" {
+		t.Fatalf("public view retained wrong filter after stripping reserved field: %#v", filter)
 	}
 	if table := resp.Collection.Views[1]; table.ViewType != "table" || table.SortOrder != 1 {
 		t.Errorf("expected second view to be table at sort_order 1, got %#v", table)

@@ -62,6 +62,7 @@ import {
 	hydrate as persistHydrate,
 	persistDelta,
 	persistRemovals,
+	persistReplace,
 	persistUpserts,
 	wipe as persistWipe,
 } from './localIndexPersistence';
@@ -104,6 +105,28 @@ class WorkspaceState {
 	// `bootstrap()` call will retry the delta sync instead of
 	// no-opping. Cleared on successful sync. Codex P2 round 5.
 	pendingResync = $state(false);
+	// Mirrors the explicit capability bit on index/delta responses. It is
+	// persisted with the cursor because the same user/workspace cache can
+	// outlive a permission upgrade or downgrade.
+	includesUnparentedMetadata = $state<boolean | null>(null);
+
+	// `scopeEpoch` bumps every time a projection resync installs a new
+	// authoritative snapshot (i.e. the scope changed). Reconcile loops capture
+	// it before each `/items-changes` request and refuse to treat a response
+	// that raced a concurrent resync as caught-up — otherwise a stale in-flight
+	// delta could clear `pendingResync` without validating the pinned cursor
+	// (Codex P2 round 8). Not persisted; a session-local ordering token.
+	scopeEpoch = 0;
+
+	// `fencedIds` holds item ids the most recent resync DROPPED (absent from the
+	// authoritative snapshot — hidden by a downgrade or deleted). `upsert`
+	// refuses to write a fenced id, so a stale old-scope optimistic
+	// create/update response resolving after the resync can't resurrect a
+	// now-hidden row (Codex P1 round 8). An authoritative new-scope `applyDelta`
+	// un-fences an id (the server says it's visible again); the next resync
+	// recomputes the set from scratch, so a re-upgrade clears it. Not persisted;
+	// the race it guards is within a single session.
+	fencedIds = new Set<string>();
 }
 
 // Outer map: reactive (SvelteMap) so consumers re-render when a fresh
@@ -115,6 +138,7 @@ const workspaces = new SvelteMap<string, WorkspaceState>();
 // is no reason to proxy a Promise, and keeping it separate makes the
 // reactive-vs-internal split explicit.
 const inflight = new Map<string, Promise<void>>();
+const projectionResyncs = new Map<string, Promise<void>>();
 
 function ensureState(ws: string): WorkspaceState {
 	let state = workspaces.get(ws);
@@ -139,6 +163,31 @@ function toSkinny(row: ItemIndexRow | Item): ItemIndexRow {
 	return row;
 }
 
+// Full mutation responses intentionally omit local-first-only projections.
+// Carry the existing value across optimistic replacements until the
+// authoritative index/delta row for that seq arrives.
+function preserveProjectionMetadata(
+	existing: ItemIndexRow | undefined,
+	next: ItemIndexRow,
+): ItemIndexRow {
+	if (existing && !('is_unparented' in next) && 'is_unparented' in existing) {
+		return { ...next, is_unparented: existing.is_unparented };
+	}
+	return next;
+}
+
+// An index/delta row with the same seq as an optimistic mutation response is
+// not stale when it contributes projection metadata that response omitted.
+function mergeEqualSeqProjection(
+	existing: ItemIndexRow,
+	incoming: ItemIndexRow,
+): ItemIndexRow | null {
+	if ('is_unparented' in incoming && incoming.is_unparented !== existing.is_unparented) {
+		return { ...existing, is_unparented: incoming.is_unparented };
+	}
+	return null;
+}
+
 /**
  * Cursors are decimal-encoded `seq` values as opaque strings — but
  * "monotonic forward" needs a numeric compare, not lexicographic.
@@ -158,14 +207,21 @@ function cursorAsNum(c: string): number {
  * stale.
  */
 function mergeRow(state: WorkspaceState, row: ItemIndexRow | Item): boolean {
-	const next = toSkinny(row);
+	let next = toSkinny(row);
 	const existing = state.items.get(next.id);
+	next = preserveProjectionMetadata(existing, next);
 	if (
 		existing?.seq !== undefined &&
 		next.seq !== undefined &&
-		next.seq <= existing.seq
+		next.seq < existing.seq
 	) {
 		return false;
+	}
+	if (existing?.seq !== undefined && next.seq === existing.seq) {
+		const merged = mergeEqualSeqProjection(existing, next);
+		if (!merged) return false;
+		state.items.set(next.id, merged);
+		return true;
 	}
 	state.items.set(next.id, next);
 	return true;
@@ -184,6 +240,145 @@ function mergeRow(state: WorkspaceState, row: ItemIndexRow | Item): boolean {
  */
 function rebuildSearchIndex(ws: string, state: WorkspaceState): void {
 	localSearch.rebuild(ws, state.items.values());
+}
+
+async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise<void> {
+	const pending = projectionResyncs.get(ws);
+	if (pending) return pending;
+	const generation = state.generation;
+	const userId = state.userId;
+	const promise = (async () => {
+		// Mark the workspace as needing catch-up the instant a resync begins,
+		// regardless of caller. A resync installs the snapshot and pins the
+		// cursor, but the post-snapshot mutations aren't caught up until a
+		// reconcile loop drains from that cursor. The bootstrap reconcile loop
+		// clears this only on caughtUp; a page-driven resync (deltaSync) leaves
+		// it set, so a replay that fails or hits the 50-page cap keeps
+		// pendingResync=true and the next bootstrap() resumes instead of
+		// no-opping with racing mutations still missing. (A page resync that DOES
+		// catch up leaves it set too — the next bootstrap runs one harmless,
+		// idempotent reconcile pass and clears it.)
+		state.pendingResync = true;
+		// Advance the scope epoch NOW — before the network await, not after the
+		// snapshot installs. A reconcile response that races this fetch must see
+		// the epoch already changed so it can't declare catch-up and clear the
+		// pendingResync we just set (Codex P2 round 9). The bump is monotonic and
+		// side-effect-free: even if this resync later bails on a generation
+		// mismatch, a spurious bump just makes in-flight loops re-poll once.
+		state.scopeEpoch += 1;
+		// Fetch the authoritative snapshot BEFORE touching any state. The
+		// previous ordering cleared the in-RAM store, cursor, search index,
+		// and IDB cache up front so a permission downgrade couldn't flash
+		// stale projection bits during the in-flight fetch — but a transient
+		// fetch failure then left the store permanently empty with no
+		// rollback, blanking the user's entire item list until the next
+		// re-bootstrap (looked like data loss). The stale rows were already
+		// on screen before the resync triggered, and the server enforces the
+		// actual access control (a restricted caller gets 403 on the
+		// unparented filter regardless of these cosmetic bits), so deferring
+		// the clear until the snapshot lands closes the data-loss hole
+		// without widening any real exposure.
+		const resp = await api.items.listIndex(ws, { includeArchived: true });
+		if (state.generation !== generation) return;
+
+		// Reconcile the authoritative snapshot into the live store, then let the
+		// delta stream heal anything that raced the fetch — "drop absent, replay
+		// under the new scope":
+		//
+		//   1. DROP every row absent from the snapshot. The snapshot IS the
+		//      authoritative view under the (possibly downgraded) new scope, so a
+		//      row it omits must not linger — otherwise an old-scope delta that
+		//      raced the fetch could keep a now-hidden row alive, and no
+		//      new-scope delta would ever evict it (the server no longer sends
+		//      it). We deliberately do NOT preserve seq > snapshotCursor rows
+		//      here: a post-snapshot mutation the client can still see is
+		//      re-fetched by the very next `/items-changes?since=cursor` below,
+		//      now filtered by the new scope, so visible rows return and hidden
+		//      rows stay gone. Nothing is permanently lost.
+		//   2. For rows PRESENT in the snapshot, keep a strictly-higher local seq
+		//      (a still-visible racing edit) over the older snapshot copy;
+		//      otherwise the snapshot row REPLACES the local copy outright,
+		//      including dropping an is_unparented bit the new scope no longer
+		//      grants. mergeRow is deliberately NOT used — its projection
+		//      preservation is for the optimistic equal-seq case and would carry
+		//      a stale projection bit across a downgrade.
+		//   3. Set the cursor to the snapshot cursor (never advance past it) so
+		//      step 1's replay actually re-fetches post-snapshot mutations.
+		//
+		// The map never empties — the full snapshot lands before any await — so
+		// subscribers never see a blank list.
+		const snapshotIds = new Set<string>();
+		for (const row of resp.items) snapshotIds.add(row.id);
+		const toDrop: string[] = [];
+		for (const id of state.items.keys()) {
+			if (!snapshotIds.has(id)) toDrop.push(id);
+		}
+		for (const id of toDrop) {
+			state.items.delete(id);
+			localSearch.remove(ws, id);
+		}
+		// FENCE the dropped ids so a stale old-scope optimistic upsert can't
+		// resurrect a row this snapshot just hid. Replace, don't union: a later
+		// re-upgrade snapshot won't list these ids in toDrop, clearing the fence
+		// for them. (The scope epoch was already bumped before the fetch above.)
+		state.fencedIds = new Set(toDrop);
+		state.includesUnparentedMetadata = resp.includes_unparented_metadata;
+		for (const row of resp.items) {
+			const next = toSkinny(row);
+			const existing = state.items.get(next.id);
+			if (
+				existing?.seq !== undefined &&
+				next.seq !== undefined &&
+				existing.seq > next.seq
+			) {
+				// Still-visible racing edit — keep it, but strip a projection bit
+				// the restricted new scope no longer grants (the snapshot copy
+				// wouldn't carry it).
+				if (!resp.includes_unparented_metadata && 'is_unparented' in existing) {
+					const { is_unparented: _dropped, ...stripped } = existing;
+					state.items.set(next.id, stripped);
+				}
+				continue;
+			}
+			state.items.set(next.id, next);
+		}
+		state.cursor = resp.cursor;
+		state.bootstrapState = 'ready';
+		// NOTE: deliberately do NOT clear pendingResync here. This resync only
+		// installs the authoritative snapshot and pins the cursor for replay;
+		// the post-snapshot mutations aren't caught up until the caller's delta
+		// loop drains from the pinned cursor. The bootstrap reconcile loop owns
+		// the flag — it clears pendingResync only once `caughtUp` is true, so a
+		// replay that later fails transiently or hits the 50-page cap leaves
+		// pendingResync=true and the next bootstrap() resumes instead of
+		// no-opping with racing mutations still missing.
+		rebuildSearchIndex(ws, state);
+
+		// Reconcile the persisted cache after the successful fetch via a single
+		// transactional clear-and-replace: rows the resync dropped (e.g. after a
+		// downgrade) must not survive in the cache, and persistReplace commits
+		// the clear + the new snapshot atomically without the deleteDatabase()
+		// cross-tab hang that a wipe()+persistDelta() pair risks. Recheck
+		// generation first: a sign-out / 403 purge (reset()) after the fetch
+		// bumps generation and clears the store, and without this guard the
+		// write below would resurrect the pre-reset snapshot on the next warm
+		// hydrate.
+		if (state.generation !== generation) return;
+		const snapshot = [...state.items.values()];
+		await persistReplace(
+			userId,
+			ws,
+			snapshot,
+			state.cursor,
+			resp.includes_unparented_metadata,
+		);
+	})();
+	projectionResyncs.set(ws, promise);
+	try {
+		await promise;
+	} finally {
+		if (projectionResyncs.get(ws) === promise) projectionResyncs.delete(ws);
+	}
 }
 
 export const localIndex = {
@@ -280,7 +475,11 @@ export const localIndex = {
 				// the in-RAM state is already authoritative for this
 				// session; we just need to redo the reconcile.
 				const cached = reentry
-					? { items: [], cursor: state.cursor }
+					? {
+							items: [],
+							cursor: state.cursor,
+							includesUnparentedMetadata: state.includesUnparentedMetadata,
+						}
 					: await persistHydrate(userId, ws);
 				if (isStale()) return;
 				// A populated cache is one we've successfully synced
@@ -290,9 +489,11 @@ export const localIndex = {
 				// zero rows but a real cursor). Both deserve the
 				// warm-path fast boot. Codex P2 round 8.
 				const cacheIsPopulated =
-					cached.items.length > 0 || cursorAsNum(cached.cursor) > 0;
+					cached.includesUnparentedMetadata !== null &&
+					(cached.items.length > 0 || cursorAsNum(cached.cursor) > 0);
 				const hasCache = reentry || cacheIsPopulated;
 				if (!reentry && cacheIsPopulated) {
+					state.includesUnparentedMetadata = cached.includesUnparentedMetadata;
 					for (const row of cached.items) {
 						mergeRow(state, row);
 					}
@@ -336,16 +537,48 @@ export const localIndex = {
 						// next visit retry.
 						let caughtUp = false;
 						for (let i = 0; i < 50; i++) {
+							const epochBefore = state.scopeEpoch;
 							const since = state.cursor;
 							const delta = await api.items.changes(ws, since);
 							if (isStale()) return;
+							if (state.scopeEpoch !== epochBefore) {
+								// A concurrent resync (another caller) installed a
+								// new snapshot + pinned cursor while this request
+								// was in flight. This response predates it, so it
+								// can't confirm catch-up — re-poll from the new
+								// cursor instead of clearing pendingResync on stale
+								// data (Codex P2 round 8).
+								continue;
+							}
+							if (
+								state.includesUnparentedMetadata !== null &&
+								state.includesUnparentedMetadata !== delta.includes_unparented_metadata
+							) {
+								// resyncProjectionScope pins the cursor to the
+								// snapshot cursor precisely so post-snapshot
+								// mutations replay under the new scope. DON'T break
+								// here — continue the loop so the next
+								// `/items-changes?since=<pinned cursor>` actually
+								// fetches them (visible rows return, hidden stay
+								// gone). resync set includesUnparentedMetadata to
+								// the new scope, so this branch can't re-fire and
+								// loop; the 50-page cap bounds it regardless.
+								await resyncProjectionScope(ws, state);
+								continue;
+							}
+							state.includesUnparentedMetadata = delta.includes_unparented_metadata;
 							if (delta.changes.length === 0 || delta.cursor === since) {
 								// Server returned no new rows AND no
 								// cursor advance — we're caught up.
 								caughtUp = true;
 								break;
 							}
-							localIndex.applyDelta(ws, delta.changes, delta.cursor);
+							localIndex.applyDelta(
+								ws,
+								delta.changes,
+								delta.cursor,
+								delta.includes_unparented_metadata,
+							);
 							if (delta.cursor === since) {
 								caughtUp = true;
 								break;
@@ -409,6 +642,7 @@ export const localIndex = {
 						includeArchived: true,
 					});
 					if (isStale()) return;
+					state.includesUnparentedMetadata = resp.includes_unparented_metadata;
 					for (const row of resp.items) {
 						mergeRow(state, row);
 					}
@@ -435,7 +669,13 @@ export const localIndex = {
 					// yields exactly the merged, winning rows.
 					const snapshot: ItemIndexRow[] = [];
 					for (const row of state.items.values()) snapshot.push(row);
-					persistDelta(userId, ws, snapshot, state.cursor).catch(
+					persistDelta(
+						userId,
+						ws,
+						snapshot,
+						state.cursor,
+						resp.includes_unparented_metadata,
+					).catch(
 						() => undefined,
 					);
 				}
@@ -569,8 +809,14 @@ export const localIndex = {
 	 * cursor only advances forward, so a backslide can never lose
 	 * progress.
 	 */
-	applyDelta(ws: string, changes: ItemChangeRow[], newCursor: string): void {
+	applyDelta(
+		ws: string,
+		changes: ItemChangeRow[],
+		newCursor: string,
+		includesUnparentedMetadata: boolean,
+	): void {
 		const state = ensureState(ws);
+		state.includesUnparentedMetadata = includesUnparentedMetadata;
 		const startCursorNum = cursorAsNum(state.cursor);
 		const newCursorNum = cursorAsNum(newCursor);
 
@@ -587,7 +833,7 @@ export const localIndex = {
 				const existing = state.items.get(change.id);
 				if (
 					existing?.seq !== undefined &&
-					change.seq <= existing.seq &&
+					change.seq < existing.seq &&
 					!change.moved_out
 				) {
 					// Existing wins in RAM. Include it in the
@@ -600,6 +846,21 @@ export const localIndex = {
 					// (A moved-out eviction is unconditional — it
 					// removes the row regardless of stored seq.)
 					toPersist.push(existing);
+					continue;
+				}
+				if (existing?.seq !== undefined && change.seq === existing.seq && !change.moved_out) {
+					const { deleted: _deleted, ...incoming } = change;
+					const merged = mergeEqualSeqProjection(existing, incoming as ItemIndexRow);
+					if (merged) {
+						state.items.set(change.id, merged);
+						localSearch.upsert(ws, merged);
+						toPersist.push(merged);
+						// Authoritative re-add — the row is visible again, so
+						// lift any fence so its optimistic edits aren't dropped.
+						state.fencedIds.delete(change.id);
+					} else {
+						toPersist.push(existing);
+					}
 					continue;
 				}
 			}
@@ -626,6 +887,8 @@ export const localIndex = {
 			const skinny = toSkinny(rest as ItemIndexRow);
 			state.items.set(change.id, skinny);
 			toPersist.push(skinny);
+			// Authoritative re-add under the current scope — lift any fence.
+			state.fencedIds.delete(change.id);
 			// Keep the search index in lockstep with the canonical
 			// store — TASK-1363. Soft-deleted rows still index (the
 			// `_deleted` flag gates them out at search time) so a
@@ -640,9 +903,32 @@ export const localIndex = {
 		// in-memory only and never break the read path. Routed
 		// through the workspace's captured `userId` so a different
 		// user signing into the same browser sees their own cache.
-		persistDelta(state.userId, ws, toPersist, newCursor, toRemove).catch(
+		persistDelta(
+			state.userId,
+			ws,
+			toPersist,
+			newCursor,
+			includesUnparentedMetadata,
+			toRemove,
+		).catch(
 			() => undefined,
 		);
+	},
+
+	/** Force a full snapshot when the server's projection capability changes. */
+	async ensureProjectionScope(ws: string, includesUnparentedMetadata: boolean): Promise<boolean> {
+		const state = ensureState(ws);
+		if (state.includesUnparentedMetadata === null) {
+			if (state.items.size > 0 || cursorAsNum(state.cursor) > 0) {
+				await resyncProjectionScope(ws, state);
+				return true;
+			}
+			state.includesUnparentedMetadata = includesUnparentedMetadata;
+			return false;
+		}
+		if (state.includesUnparentedMetadata === includesUnparentedMetadata) return false;
+		await resyncProjectionScope(ws, state);
+		return true;
 	},
 
 	/**
@@ -698,8 +984,17 @@ export const localIndex = {
 	 */
 	upsert(ws: string, row: ItemIndexRow | Item): void {
 		const state = ensureState(ws);
-		const next = toSkinny(row);
+		let next = toSkinny(row);
+		// Fence guard (Codex P1 round 8): a projection resync records the ids it
+		// dropped as hidden under the new scope. This is the untrusted optimistic
+		// path — a create/update response authorized under the OLD scope can
+		// resolve here after the resync and would otherwise resurrect and persist
+		// a now-hidden row that no new-scope delta will ever evict. Refuse it. The
+		// fence lifts only via an authoritative applyDelta re-add or the next
+		// resync recomputing the set.
+		if (state.fencedIds.has(next.id)) return;
 		const existing = state.items.get(row.id);
+		next = preserveProjectionMetadata(existing, next);
 		if (
 			existing?.seq !== undefined &&
 			next.seq !== undefined &&
@@ -789,6 +1084,18 @@ export const localIndex = {
 	},
 
 	/**
+	 * Current projection-scope epoch — bumped each time a resync installs a
+	 * new authoritative snapshot. A reconcile loop captures it before an
+	 * `/items-changes` request and, if it differs when the request returns, a
+	 * concurrent resync landed: the response predates the new pinned cursor and
+	 * must not be treated as a clean catch-up (Codex P2 round 8). Returns 0 for
+	 * an unhydrated workspace.
+	 */
+	scopeEpochFor(ws: string): number {
+		return workspaces.get(ws)?.scopeEpoch ?? 0;
+	},
+
+	/**
 	 * Current bootstrap state. Used by route loaders to decide whether
 	 * to render a spinner, the items, or an error. Returns `'cold'`
 	 * for unknown workspaces so first-visit consumers see a sane
@@ -819,6 +1126,7 @@ export const localIndex = {
 
 		workspaces.delete(ws);
 		inflight.delete(ws);
+		projectionResyncs.delete(ws);
 
 		// Drop the MiniSearch index for the workspace too. A fresh
 		// bootstrap will rebuild it from the new owner's snapshot —

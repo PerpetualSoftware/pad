@@ -427,13 +427,35 @@
 	async function deltaSync(ws: string): Promise<boolean> {
 		try {
 			for (let i = 0; i < 50; i++) {
+				const epochBefore = localIndex.scopeEpochFor(ws);
 				const since = localIndex.cursorFor(ws);
 				const delta = await api.items.changes(ws, since);
+				if (localIndex.scopeEpochFor(ws) !== epochBefore) {
+					// A concurrent resync installed a new snapshot + pinned
+					// cursor while this request was in flight; the response
+					// predates it. Re-poll from the new cursor rather than
+					// reporting catch-up on stale data (Codex P2 round 8).
+					continue;
+				}
+				if (await localIndex.ensureProjectionScope(ws, delta.includes_unparented_metadata)) {
+					// A resync just pinned the cursor to the snapshot cursor to
+					// replay post-snapshot mutations under the new scope. Keep
+					// looping so the next `/items-changes` actually fetches them
+					// instead of reporting caught-up prematurely. The resync
+					// already aligned the scope, so ensureProjectionScope won't
+					// re-fire; the 50-iteration cap bounds the loop.
+					continue;
+				}
 				if (delta.changes.length === 0 || delta.cursor === since) {
 					deltaSyncFailed = false;
 					return true;
 				}
-				localIndex.applyDelta(ws, delta.changes, delta.cursor);
+				localIndex.applyDelta(
+					ws,
+					delta.changes,
+					delta.cursor,
+					delta.includes_unparented_metadata,
+				);
 				if (delta.cursor === since) {
 					deltaSyncFailed = false;
 					return true;

@@ -94,7 +94,12 @@ const CmdhelpVersion = "0.1"
 //     the `artifact` param to the vocabulary. Pure addition; existing
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
-//   - "0.14" — current. TASK-2022: adds a `history` action to `pad_item`
+//   - "0.15" — current. TASK-2096: adds the `unparented` boolean parameter
+//     to `pad_item.list`, mutually exclusive with `parent`, and forwards it
+//     through both local exec and remote HTTP dispatchers. The parameter
+//     selects items with neither the legacy parent_id column nor an outgoing
+//     parent/implements relationship.
+//   - "0.14" — historical. TASK-2022: adds a `history` action to `pad_item`
 //     (read-only item version history — newest-first metadata: id,
 //     created_at, created_by, source, change_summary; the resolved
 //     content body is omitted for token thrift). Also adds an
@@ -239,7 +244,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.14"
+const ToolSurfaceVersion = "0.15"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

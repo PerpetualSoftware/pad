@@ -349,6 +349,23 @@ func TestRoute_ItemList_FiltersAsQuery(t *testing.T) {
 	}
 }
 
+func TestRoute_ItemList_Unparented(t *testing.T) {
+	_, p, _, err := routeTable["item list"](map[string]any{
+		"workspace": "docapp", "unparented": true,
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got := mustParseQueryFromPath(t, p).Get("unparented"); got != "true" {
+		t.Fatalf("unparented query = %q, want true (path %s)", got, p)
+	}
+	if _, _, _, err := routeTable["item list"](map[string]any{
+		"workspace": "docapp", "parent": "PLAN-3", "unparented": true,
+	}); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("expected parent/unparented conflict, got %v", err)
+	}
+}
+
 func TestRoute_ItemList_PassesThroughAssignedUserID(t *testing.T) {
 	// TASK-967: --assign is preprocessed at the dispatcher level
 	// (resolveAssignName) before the mapper runs. By the time

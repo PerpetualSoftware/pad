@@ -36,6 +36,140 @@ func createTestItem(t *testing.T, s *Store, workspaceID, collectionID, title, co
 	return item
 }
 
+func TestListItems_UnparentedStructuralParity(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Unparented")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	parent := createTestItem(t, s, ws.ID, col.ID, "Parent target", "")
+	orphan := createTestItem(t, s, ws.ID, col.ID, "Unparentedneedle orphan", "")
+	parentLinked := createTestItem(t, s, ws.ID, col.ID, "Unparentedneedle parent linked", "")
+	implementsLinked := createTestItem(t, s, ws.ID, col.ID, "Unparentedneedle implements linked", "")
+	incomingOnly := createTestItem(t, s, ws.ID, col.ID, "Unparentedneedle incoming only", "")
+	legacyParentID := parent.ID
+	legacy, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title: "Unparentedneedle legacy column", Fields: `{"status":"open"}`, ParentID: &legacyParentID,
+	})
+	if err != nil {
+		t.Fatalf("create legacy parent_id item: %v", err)
+	}
+	if _, err := s.SetParentLink(ws.ID, parentLinked.ID, parent.ID, "user"); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+	impl, err := s.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: incomingOnly.ID, LinkType: models.ItemLinkTypeImplements}, implementsLinked.ID)
+	if err != nil {
+		t.Fatalf("CreateItemLink implements: %v", err)
+	}
+	if impl == nil {
+		t.Fatal("expected implements link")
+	}
+	// The relationship remains structural after its target is archived.
+	if err := s.DeleteItem(parent.ID); err != nil {
+		t.Fatalf("archive parent target: %v", err)
+	}
+
+	assertResult := func(label string, got []models.Item) {
+		t.Helper()
+		ids := make(map[string]bool, len(got))
+		for _, item := range got {
+			ids[item.ID] = true
+		}
+		if !ids[orphan.ID] || !ids[incomingOnly.ID] {
+			t.Fatalf("%s: expected orphan + incoming-only item, got %+v", label, ids)
+		}
+		for _, excluded := range []*models.Item{parentLinked, implementsLinked, legacy} {
+			if ids[excluded.ID] {
+				t.Errorf("%s: structurally parented item %s was returned", label, excluded.Title)
+			}
+		}
+	}
+
+	normal, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: col.Slug, Unparented: true})
+	if err != nil {
+		t.Fatalf("ListItems unparented: %v", err)
+	}
+	assertResult("normal", normal)
+
+	fts, err := s.ListItems(ws.ID, models.ItemListParams{CollectionSlug: col.Slug, Search: "Unparentedneedle", Unparented: true})
+	if err != nil {
+		t.Fatalf("ListItems FTS unparented: %v", err)
+	}
+	assertResult("fts", fts)
+}
+
+func TestStructuralItemLinksAdvanceSourceSeqAndMetadata(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Unparented metadata")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	source := createTestItem(t, s, ws.ID, col.ID, "Source", "")
+	target := createTestItem(t, s, ws.ID, col.ID, "Target", "")
+
+	index, err := s.ListItemsIndex(ws.ID, ItemIndexParams{IncludeUnparentedMetadata: true})
+	if err != nil {
+		t.Fatalf("ListItemsIndex: %v", err)
+	}
+	byID := func(items []models.Item, id string) models.Item {
+		t.Helper()
+		for _, item := range items {
+			if item.ID == id {
+				return item
+			}
+		}
+		t.Fatalf("item %s missing", id)
+		return models.Item{}
+	}
+	before := byID(index, source.ID)
+	if before.IsUnparented == nil || !*before.IsUnparented {
+		t.Fatalf("initial metadata = %v, want true", before.IsUnparented)
+	}
+
+	link, err := s.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: target.ID, LinkType: models.ItemLinkTypeImplements}, source.ID)
+	if err != nil {
+		t.Fatalf("create implements: %v", err)
+	}
+	afterCreate, err := s.GetItem(source.ID)
+	if err != nil || afterCreate == nil {
+		t.Fatalf("source after link: item=%v err=%v", afterCreate, err)
+	}
+	if afterCreate.Seq <= before.Seq {
+		t.Fatalf("implements create did not advance seq: before=%d after=%d", before.Seq, afterCreate.Seq)
+	}
+	delta, err := s.ListItemsChangesSince(ws.ID, ItemChangesParams{Since: before.Seq, IncludeUnparentedMetadata: true})
+	if err != nil {
+		t.Fatalf("delta after link: %v", err)
+	}
+	changed := byID(delta, source.ID)
+	if changed.IsUnparented == nil || *changed.IsUnparented {
+		t.Fatalf("linked delta metadata = %v, want false", changed.IsUnparented)
+	}
+
+	if err := s.DeleteItemLink(link.ID); err != nil {
+		t.Fatalf("delete implements: %v", err)
+	}
+	afterDelete, err := s.GetItem(source.ID)
+	if err != nil || afterDelete == nil {
+		t.Fatalf("source after unlink: item=%v err=%v", afterDelete, err)
+	}
+	if afterDelete.Seq <= afterCreate.Seq {
+		t.Fatalf("implements delete did not advance seq: create=%d delete=%d", afterCreate.Seq, afterDelete.Seq)
+	}
+
+	if _, err := s.SetParentLink(ws.ID, source.ID, target.ID, "user"); err != nil {
+		t.Fatalf("set parent: %v", err)
+	}
+	afterParent, err := s.GetItem(source.ID)
+	if err != nil || afterParent == nil || afterParent.Seq <= afterDelete.Seq {
+		t.Fatalf("parent set did not advance source seq: item=%v err=%v", afterParent, err)
+	}
+	if err := s.ClearParentLink(source.ID); err != nil {
+		t.Fatalf("clear parent: %v", err)
+	}
+	afterClear, err := s.GetItem(source.ID)
+	if err != nil || afterClear == nil || afterClear.Seq <= afterParent.Seq {
+		t.Fatalf("parent clear did not advance source seq: item=%v err=%v", afterClear, err)
+	}
+}
+
 // --- Collection Tests ---
 
 func TestCollectionCRUD(t *testing.T) {

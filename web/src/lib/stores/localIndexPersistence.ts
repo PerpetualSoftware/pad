@@ -44,12 +44,13 @@ import type { ItemIndexRow } from '$lib/types';
  * `/items-index`. Server truth (items.content) is never persisted
  * here, so a cache wipe loses nothing.
  */
-export const LOCAL_INDEX_SCHEMA_VERSION = 1;
+export const LOCAL_INDEX_SCHEMA_VERSION = 3;
 
 /** Result of a `hydrate()` call. Empty payload when there's no cache yet. */
 export interface HydrateResult {
 	items: ItemIndexRow[];
 	cursor: string;
+	includesUnparentedMetadata: boolean | null;
 }
 
 /** Shape of the single row stored in the `meta` store. */
@@ -57,6 +58,7 @@ interface MetaRow {
 	key: 'sync';
 	cursor: string;
 	schemaVersion: number;
+	includesUnparentedMetadata: boolean;
 }
 
 // Open IDB connections are cached per (user, workspace) pair. The
@@ -140,7 +142,7 @@ export async function hydrate(
 	userId: string | null,
 	ws: string,
 ): Promise<HydrateResult> {
-	const empty: HydrateResult = { items: [], cursor: '0' };
+	const empty: HydrateResult = { items: [], cursor: '0', includesUnparentedMetadata: null };
 	if (!isSupported()) return empty;
 
 	const db = await open(userId, ws);
@@ -166,35 +168,10 @@ export async function hydrate(
 		return {
 			items: items ?? [],
 			cursor: meta?.cursor ?? '0',
+			includesUnparentedMetadata: meta?.includesUnparentedMetadata ?? null,
 		};
 	} catch {
 		return empty;
-	}
-}
-
-/**
- * Replace the cursor + schemaVersion meta row. Standalone variant
- * used by the cold-path bootstrap when no row writes are happening
- * alongside (the snapshot is persisted via `persistUpserts` and the
- * cursor lands after). For per-delta writes prefer
- * `persistDelta` which advances rows + cursor atomically.
- */
-export async function persistCursor(
-	userId: string | null,
-	ws: string,
-	cursor: string,
-): Promise<void> {
-	if (!isSupported()) return;
-	const db = await open(userId, ws);
-	if (!db) return;
-	try {
-		await db.put('meta', {
-			key: 'sync',
-			cursor,
-			schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
-		} satisfies MetaRow);
-	} catch {
-		/* swallow — best-effort cache */
 	}
 }
 
@@ -245,6 +222,7 @@ export async function persistDelta(
 	ws: string,
 	rows: ItemIndexRow[],
 	cursor: string,
+	includesUnparentedMetadata: boolean,
 	removeIds: string[] = [],
 ): Promise<void> {
 	if (!isSupported()) return;
@@ -264,6 +242,52 @@ export async function persistDelta(
 				key: 'sync',
 				cursor,
 				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
+				includesUnparentedMetadata,
+			} satisfies MetaRow)
+			.catch(() => undefined);
+		await tx.done;
+	} catch {
+		/* swallow — best-effort cache */
+	}
+}
+
+/**
+ * Atomically REPLACE the persisted snapshot — clear the items store and
+ * write the given rows + cursor in a single readwrite transaction. Used by
+ * the projection-scope resync, which needs the persisted cache to exactly
+ * mirror an authoritative re-fetch (rows dropped by a permission downgrade
+ * must not survive) without the cross-tab hazard of `wipe()`: a
+ * `deleteDatabase()` resolves on `onblocked` while another tab holds the DB
+ * open, leaving the delete pending so a following reopen+write can queue
+ * behind it indefinitely. A single transaction over the still-open
+ * connection sidesteps that — the clear and the puts commit together (or not
+ * at all), and no connection is ever torn down.
+ */
+export async function persistReplace(
+	userId: string | null,
+	ws: string,
+	rows: ItemIndexRow[],
+	cursor: string,
+	includesUnparentedMetadata: boolean,
+): Promise<void> {
+	if (!isSupported()) return;
+	const db = await open(userId, ws);
+	if (!db) return;
+	try {
+		const tx = db.transaction(['items', 'meta'], 'readwrite');
+		const itemsStore = tx.objectStore('items');
+		// Queued before the puts; IDB executes requests against a store in
+		// issue order, so the clear always lands first.
+		itemsStore.clear().catch(() => undefined);
+		for (const row of rows) {
+			itemsStore.put(row).catch(() => undefined);
+		}
+		tx.objectStore('meta')
+			.put({
+				key: 'sync',
+				cursor,
+				schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
+				includesUnparentedMetadata,
 			} satisfies MetaRow)
 			.catch(() => undefined);
 		await tx.done;

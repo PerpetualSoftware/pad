@@ -587,6 +587,9 @@ export interface Item {
 	parent_slug?: string;
 	parent_collection_slug?: string;
 	has_children?: boolean;
+	// Structural local-first projection. Unrestricted index/delta responses
+	// always include it; restricted callers omit it entirely.
+	is_unparented?: boolean;
 	derived_closure?: ItemDerivedClosure;
 	code_context?: ItemCodeContext;
 	convention?: ItemConventionMetadata;
@@ -607,6 +610,7 @@ export type ItemIndexRow = Omit<Item, 'content'>;
 export interface ItemIndexResponse {
 	items: ItemIndexRow[];
 	total: number;
+	includes_unparented_metadata: boolean;
 	// `cursor` is the workspace-scoped monotonic `seq` cursor (TASK-1353).
 	// Holds MAX(seq) across the requested scope as a decimal-encoded
 	// string. When the result set is empty but the workspace has items,
@@ -649,6 +653,7 @@ export type ItemChangeRow = ItemIndexRow & {
 export interface ItemChangesResponse {
 	changes: ItemChangeRow[];
 	cursor: string;
+	includes_unparented_metadata: boolean;
 }
 
 export interface ItemCreate {
