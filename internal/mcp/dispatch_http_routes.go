@@ -1149,6 +1149,9 @@ func mapItemList(input map[string]any) (string, string, []byte, error) {
 	if workspace == "" {
 		return "", "", nil, fmt.Errorf("workspace is required")
 	}
+	// Early MCP-HTTP-side feedback for the parent/unparented conflict; canonical
+	// enforcement lives in validateUnparentedListRequest
+	// (internal/server/handlers_items.go). Keep the two in sync.
 	if unparented, _ := input["unparented"].(bool); unparented {
 		if parent, _ := input["parent"].(string); strings.TrimSpace(parent) != "" {
 			return "", "", nil, fmt.Errorf("parent and unparented are mutually exclusive")

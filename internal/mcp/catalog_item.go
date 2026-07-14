@@ -627,6 +627,9 @@ const (
 // summary vs full result shape is a CLI-side concern; MCP callers that
 // need a full body fetch it per-item via action=get.)
 func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	// Early MCP-side feedback for the parent/unparented conflict; canonical
+	// enforcement lives in validateUnparentedListRequest
+	// (internal/server/handlers_items.go). Keep the two in sync.
 	if unparented, _ := input["unparented"].(bool); unparented {
 		if parent, _ := input["parent"].(string); strings.TrimSpace(parent) != "" {
 			return errStructured("pad_item.list", fmt.Errorf("parent and unparented are mutually exclusive")), nil

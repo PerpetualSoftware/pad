@@ -426,6 +426,9 @@ Examples:
 	cmd.Flags().StringVar(&tagFilter, "tag", "", "filter by tag (exact match; spans collections)")
 	cmd.Flags().StringVar(&parentFilter, "parent", "", "filter by parent item (ref, slug, or ID)")
 	cmd.Flags().BoolVar(&unparented, "unparented", false, "filter to items with no parent or implements relationship")
+	// Early CLI-side feedback for the parent/unparented conflict. The canonical
+	// enforcement is server-side in validateUnparentedListRequest
+	// (internal/server/handlers_items.go); keep this in sync with it.
 	cmd.MarkFlagsMutuallyExclusive("parent", "unparented")
 	cmd.Flags().StringVar(&sortBy, "sort", "", "sort order (e.g. priority:desc,created_at:asc)")
 	cmd.Flags().StringVar(&groupBy, "group-by", "", "group results by field")

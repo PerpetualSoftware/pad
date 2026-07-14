@@ -229,21 +229,38 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 	const generation = state.generation;
 	const userId = state.userId;
 	const promise = (async () => {
-		// Clear immediately so a permission downgrade cannot expose stale
-		// projection bits while the authoritative snapshot is in flight.
-		state.items.clear();
-		state.cursor = '0';
-		localSearch.reset(ws);
-		await persistWipe(userId, ws);
-
+		// Fetch the authoritative snapshot BEFORE touching any state. The
+		// previous ordering cleared the in-RAM store, cursor, search index,
+		// and IDB cache up front so a permission downgrade couldn't flash
+		// stale projection bits during the in-flight fetch — but a transient
+		// fetch failure then left the store permanently empty with no
+		// rollback, blanking the user's entire item list until the next
+		// re-bootstrap (looked like data loss). The stale rows were already
+		// on screen before the resync triggered, and the server enforces the
+		// actual access control (a restricted caller gets 403 on the
+		// unparented filter regardless of these cosmetic bits), so deferring
+		// the clear until the snapshot lands closes the data-loss hole
+		// without widening any real exposure.
 		const resp = await api.items.listIndex(ws, { includeArchived: true });
 		if (state.generation !== generation) return;
+
+		// Swap the snapshot in place. clear() + the repopulation loop run
+		// synchronously (no await between them), so the reactive SvelteMap
+		// never emits an intermediate empty state to subscribers.
+		state.items.clear();
+		localSearch.reset(ws);
 		state.includesUnparentedMetadata = resp.includes_unparented_metadata;
 		for (const row of resp.items) mergeRow(state, row);
 		state.cursor = resp.cursor;
 		state.bootstrapState = 'ready';
 		state.pendingResync = false;
 		rebuildSearchIndex(ws, state);
+
+		// Reconcile the persisted cache only after the successful fetch. Wipe
+		// first so rows the resync dropped (e.g. after a downgrade) can't
+		// resurrect on the next warm hydrate, then write the authoritative
+		// snapshot + cursor.
+		await persistWipe(userId, ws);
 		const snapshot = [...state.items.values()];
 		await persistDelta(
 			userId,

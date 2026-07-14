@@ -176,34 +176,6 @@ export async function hydrate(
 }
 
 /**
- * Replace the cursor + schemaVersion meta row. Standalone variant
- * used by the cold-path bootstrap when no row writes are happening
- * alongside (the snapshot is persisted via `persistUpserts` and the
- * cursor lands after). For per-delta writes prefer
- * `persistDelta` which advances rows + cursor atomically.
- */
-export async function persistCursor(
-	userId: string | null,
-	ws: string,
-	cursor: string,
-	includesUnparentedMetadata: boolean,
-): Promise<void> {
-	if (!isSupported()) return;
-	const db = await open(userId, ws);
-	if (!db) return;
-	try {
-		await db.put('meta', {
-			key: 'sync',
-			cursor,
-			schemaVersion: LOCAL_INDEX_SCHEMA_VERSION,
-			includesUnparentedMetadata,
-		} satisfies MetaRow);
-	} catch {
-		/* swallow — best-effort cache */
-	}
-}
-
-/**
  * Upsert a batch of rows in a single transaction. Used by
  * `applyDelta`/`bootstrap` write-through. Batching matters when an
  * SSE flurry arrives — a single tx is much cheaper than N

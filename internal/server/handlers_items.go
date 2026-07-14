@@ -734,9 +734,16 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		// SetParentLink advances the source seq because it changes the
 		// local-first is_unparented bit. Re-read before publishing/returning
 		// so a create-with-parent event never advertises the stale create seq.
-		item, err = s.store.GetItem(item.ID)
-		if err != nil || item == nil {
-			return nil, &itemCreateError{http.StatusInternalServerError, "internal_error", "item created with parent but freshness readback failed"}
+		// The item and its parent link are already committed at this point, so
+		// a failed readback must NOT fail the create — that would return a 500
+		// for an item that exists and invite a duplicate-creating retry. Degrade
+		// to the item we already hold; the only cost is an event advertising the
+		// pre-link seq, which the next delta poll reconciles.
+		if fresh, rerr := s.store.GetItem(item.ID); rerr == nil && fresh != nil {
+			item = fresh
+		} else {
+			slog.Warn("createItemChecked: post-parent-link readback failed; returning pre-link snapshot",
+				"item_id", item.ID, "error", rerr)
 		}
 	}
 
@@ -2601,7 +2608,7 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 
 	// Extract field filters: any query param that isn't a known param is a field filter.
 	knownParams := map[string]bool{
-		"sort": true, "group_by": true, "search": true, "parent_id": true, "unparented": true,
+		"sort": true, "group_by": true, "search": true, "parent_id": true,
 		"tag": true, "include_archived": true, "limit": true, "offset": true,
 		"assigned_user_id": true, "agent_role_id": true, "non_terminal": true,
 	}
@@ -2609,6 +2616,14 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 	fields := make(map[string]string)
 	for key, values := range r.URL.Query() {
 		if knownParams[key] {
+			continue
+		}
+		// `unparented` is consumed as the structural boolean above only when its
+		// value is exactly "true" (see params.Unparented). Any other value —
+		// and, on a collection whose schema literally defines an `unparented`
+		// field, that's a legitimate field filter — falls through here so the
+		// structural keyword never silently shadows a real schema field.
+		if key == "unparented" && params.Unparented {
 			continue
 		}
 		if len(values) > 0 {
@@ -2626,6 +2641,16 @@ func parseItemListParams(r *http.Request) models.ItemListParams {
 // from every supported parent alias. Checking the raw query makes the rule
 // consistent even on a collection whose schema happens to define a real
 // `parent` or `plan` field.
+//
+// This is the CANONICAL, load-bearing enforcement of parent/unparented mutual
+// exclusivity — it guards every surface (CLI, MCP-exec, MCP-HTTP, direct API)
+// because they all land here. The upstream copies are early-feedback only and
+// intentionally redundant: cmd/pad/cmd_item.go's MarkFlagsMutuallyExclusive,
+// internal/mcp/catalog_item.go::actionItemList, and
+// internal/mcp/dispatch_http_routes.go::mapItemList. If this rule changes
+// (e.g. a new parent alias), update this function first; keep the others in
+// sync or drop them, but never let a caller reach the store without passing
+// through here.
 func validateUnparentedListRequest(r *http.Request, params models.ItemListParams) error {
 	if !params.Unparented {
 		return nil
