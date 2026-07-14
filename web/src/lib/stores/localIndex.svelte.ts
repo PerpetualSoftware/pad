@@ -109,6 +109,24 @@ class WorkspaceState {
 	// persisted with the cursor because the same user/workspace cache can
 	// outlive a permission upgrade or downgrade.
 	includesUnparentedMetadata = $state<boolean | null>(null);
+
+	// `scopeEpoch` bumps every time a projection resync installs a new
+	// authoritative snapshot (i.e. the scope changed). Reconcile loops capture
+	// it before each `/items-changes` request and refuse to treat a response
+	// that raced a concurrent resync as caught-up — otherwise a stale in-flight
+	// delta could clear `pendingResync` without validating the pinned cursor
+	// (Codex P2 round 8). Not persisted; a session-local ordering token.
+	scopeEpoch = 0;
+
+	// `fencedIds` holds item ids the most recent resync DROPPED (absent from the
+	// authoritative snapshot — hidden by a downgrade or deleted). `upsert`
+	// refuses to write a fenced id, so a stale old-scope optimistic
+	// create/update response resolving after the resync can't resurrect a
+	// now-hidden row (Codex P1 round 8). An authoritative new-scope `applyDelta`
+	// un-fences an id (the server says it's visible again); the next resync
+	// recomputes the set from scratch, so a re-upgrade clears it. Not persisted;
+	// the race it guards is within a single session.
+	fencedIds = new Set<string>();
 }
 
 // Outer map: reactive (SvelteMap) so consumers re-render when a fresh
@@ -292,6 +310,13 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 			state.items.delete(id);
 			localSearch.remove(ws, id);
 		}
+		// A new authoritative scope is now in force: bump the epoch (so reconcile
+		// loops can detect a response that raced this resync) and FENCE the
+		// dropped ids (so a stale old-scope optimistic upsert can't resurrect a
+		// row this snapshot just hid). Replace, don't union: a later re-upgrade
+		// snapshot won't list these ids in toDrop, clearing the fence for them.
+		state.scopeEpoch += 1;
+		state.fencedIds = new Set(toDrop);
 		state.includesUnparentedMetadata = resp.includes_unparented_metadata;
 		for (const row of resp.items) {
 			const next = toSkinny(row);
@@ -507,9 +532,19 @@ export const localIndex = {
 						// next visit retry.
 						let caughtUp = false;
 						for (let i = 0; i < 50; i++) {
+							const epochBefore = state.scopeEpoch;
 							const since = state.cursor;
 							const delta = await api.items.changes(ws, since);
 							if (isStale()) return;
+							if (state.scopeEpoch !== epochBefore) {
+								// A concurrent resync (another caller) installed a
+								// new snapshot + pinned cursor while this request
+								// was in flight. This response predates it, so it
+								// can't confirm catch-up — re-poll from the new
+								// cursor instead of clearing pendingResync on stale
+								// data (Codex P2 round 8).
+								continue;
+							}
 							if (
 								state.includesUnparentedMetadata !== null &&
 								state.includesUnparentedMetadata !== delta.includes_unparented_metadata
@@ -815,6 +850,9 @@ export const localIndex = {
 						state.items.set(change.id, merged);
 						localSearch.upsert(ws, merged);
 						toPersist.push(merged);
+						// Authoritative re-add — the row is visible again, so
+						// lift any fence so its optimistic edits aren't dropped.
+						state.fencedIds.delete(change.id);
 					} else {
 						toPersist.push(existing);
 					}
@@ -844,6 +882,8 @@ export const localIndex = {
 			const skinny = toSkinny(rest as ItemIndexRow);
 			state.items.set(change.id, skinny);
 			toPersist.push(skinny);
+			// Authoritative re-add under the current scope — lift any fence.
+			state.fencedIds.delete(change.id);
 			// Keep the search index in lockstep with the canonical
 			// store — TASK-1363. Soft-deleted rows still index (the
 			// `_deleted` flag gates them out at search time) so a
@@ -940,6 +980,14 @@ export const localIndex = {
 	upsert(ws: string, row: ItemIndexRow | Item): void {
 		const state = ensureState(ws);
 		let next = toSkinny(row);
+		// Fence guard (Codex P1 round 8): a projection resync records the ids it
+		// dropped as hidden under the new scope. This is the untrusted optimistic
+		// path — a create/update response authorized under the OLD scope can
+		// resolve here after the resync and would otherwise resurrect and persist
+		// a now-hidden row that no new-scope delta will ever evict. Refuse it. The
+		// fence lifts only via an authoritative applyDelta re-add or the next
+		// resync recomputing the set.
+		if (state.fencedIds.has(next.id)) return;
 		const existing = state.items.get(row.id);
 		next = preserveProjectionMetadata(existing, next);
 		if (
@@ -1028,6 +1076,18 @@ export const localIndex = {
 	/** Current cursor for a workspace, or "0" if unhydrated. */
 	cursorFor(ws: string): string {
 		return workspaces.get(ws)?.cursor ?? '0';
+	},
+
+	/**
+	 * Current projection-scope epoch — bumped each time a resync installs a
+	 * new authoritative snapshot. A reconcile loop captures it before an
+	 * `/items-changes` request and, if it differs when the request returns, a
+	 * concurrent resync landed: the response predates the new pinned cursor and
+	 * must not be treated as a clean catch-up (Codex P2 round 8). Returns 0 for
+	 * an unhydrated workspace.
+	 */
+	scopeEpochFor(ws: string): number {
+		return workspaces.get(ws)?.scopeEpoch ?? 0;
 	},
 
 	/**

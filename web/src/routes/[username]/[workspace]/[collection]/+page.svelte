@@ -427,8 +427,16 @@
 	async function deltaSync(ws: string): Promise<boolean> {
 		try {
 			for (let i = 0; i < 50; i++) {
+				const epochBefore = localIndex.scopeEpochFor(ws);
 				const since = localIndex.cursorFor(ws);
 				const delta = await api.items.changes(ws, since);
+				if (localIndex.scopeEpochFor(ws) !== epochBefore) {
+					// A concurrent resync installed a new snapshot + pinned
+					// cursor while this request was in flight; the response
+					// predates it. Re-poll from the new cursor rather than
+					// reporting catch-up on stale data (Codex P2 round 8).
+					continue;
+				}
 				if (await localIndex.ensureProjectionScope(ws, delta.includes_unparented_metadata)) {
 					// A resync just pinned the cursor to the snapshot cursor to
 					// replay post-snapshot mutations under the new scope. Keep
