@@ -18,7 +18,7 @@ Ten resource × action tools, plus `pad_set_workspace` (which takes a `workspace
 - `pad_search` — Full-text search across items: query.
 - `pad_playbook` — Invokable procedures: list / get / run. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free. `run` refuses a playbook whose status isn't `active` (a draft still being authored) with a `playbook_not_active` error — pass `allow_draft: true` to override. Both `run` and `get` echo the playbook's `status`.
 - `pad_library` — Convention + playbook library (the global catalog of pre-built entries workspaces activate): list / get / activate.
-- `pad_attachment` — Read-only attachment metadata: list / show. `list` enumerates a workspace's attachments (filter by item / category / collection / attached / unattached); `show` returns one attachment's MIME, size, filename, and ETag via a HEAD request. Read-only — uploading / downloading / viewing raw bytes is CLI-only.
+- `pad_attachment` — Read-only attachment metadata: list / show. `list` enumerates a workspace's attachments (filter by item / category / collection / attached / unattached); `show` returns one attachment's MIME, size, filename, and ETag via a HEAD request. Uploading and general file downloads stay CLI-only; bounded image bytes are available through the attachment resource below.
 - `pad_meta` — Server introspection: server-info / version / tool-surface / bootstrap. The `bootstrap` action returns one-shot workspace context (user + collections + always-on conventions + a metadata-only `convention_index` of every active convention + roles + playbook metadata + dashboard + recent activity).
 - `pad_set_workspace` — Load workspace context; response embeds the bootstrap blob so you load context in one call. On a single-user local server it also pins the workspace as the session default for subsequent calls; a multi-user/remote server does **not** persist it — pass `workspace` explicitly on each call. Takes `workspace: <slug>` only (no `action`).
 
@@ -32,6 +32,7 @@ Read these directly when you need workspace state:
 - `pad://workspace/{ws}/collections` — collection types + schemas.
 - `pad://workspace/{ws}/items` — list of all items (use `pad_item.action: list` for filtering).
 - `pad://workspace/{ws}/items/{ref}` — single item rendered as markdown.
+- `pad://workspace/{ws}/attachments/{id}` — image attachment as a bounded base64 `thumb-md` resource; rejects non-images and responses over 1 MiB.
 - `pad://workspace/{ws}/bootstrap` — one-shot workspace context (same payload as `pad_meta.action: bootstrap` and `pad_set_workspace`'s embedded response).
 - `pad://_meta/version` — server version + stability tiers.
 

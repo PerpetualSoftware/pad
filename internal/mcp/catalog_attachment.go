@@ -15,8 +15,9 @@ package mcp
 // Deliberately read-only: upload / download / view are CLI-only
 // (filesystem-bound) and excluded from the MCP surface per the catalog's
 // exclusion rules — same rationale HTTPHandlerDispatcher's
-// noRemoteEquivalent table encodes. The base64 image RESOURCE for
-// multimodal agents is tracked separately (TASK-2076).
+// noRemoteEquivalent table encodes. Multimodal agents read bounded image
+// bytes through the separate pad://workspace/{ws}/attachments/{id}
+// resource; it does not add a mutating or filesystem-bound tool action.
 
 func init() {
 	appendToCatalog(padAttachmentTool)

@@ -1,7 +1,9 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -23,6 +25,10 @@ const (
 	resourceKindDash     = "dashboard"
 	resourceKindCollect  = "collections"
 	resourceKindBootstrp = "bootstrap"
+	resourceKindAttach   = "attachments"
+
+	attachmentResourceVariant  = "thumb-md"
+	attachmentResourceMaxBytes = 1 << 20 // 1 MiB before base64 encoding
 )
 
 // WorkspacesURI is the canonical URI of the top-level workspace list
@@ -40,6 +46,13 @@ type ResourceFetcher interface {
 	Fetch(ctx context.Context, args []string) (string, error)
 }
 
+// BinaryResourceFetcher is the byte-preserving counterpart to
+// ResourceFetcher. Attachment resources use it because image stdout
+// cannot safely pass through the text-oriented Fetch contract.
+type BinaryResourceFetcher interface {
+	FetchBytes(ctx context.Context, args []string) ([]byte, error)
+}
+
 // ExecResourceFetcher shells out to the pad binary at Binary. Stderr
 // is folded into the returned error on non-zero exit so MCP clients
 // see the underlying CLI message.
@@ -50,11 +63,23 @@ type ExecResourceFetcher struct {
 
 // Fetch runs `<Binary> <args...>` and returns stdout on success.
 func (f *ExecResourceFetcher) Fetch(ctx context.Context, args []string) (string, error) {
+	out, err := f.run(ctx, args)
+	return string(out), err
+}
+
+// FetchBytes runs the same pad subprocess as Fetch but preserves stdout
+// as bytes for binary MCP resources.
+func (f *ExecResourceFetcher) FetchBytes(ctx context.Context, args []string) ([]byte, error) {
+	return f.run(ctx, args)
+}
+
+func (f *ExecResourceFetcher) run(ctx context.Context, args []string) ([]byte, error) {
 	if f.Binary == "" {
-		return "", fmt.Errorf("resource fetcher: binary path not configured")
+		return nil, fmt.Errorf("resource fetcher: binary path not configured")
 	}
 	cmd := exec.CommandContext(ctx, f.Binary, args...)
-	var stdout, stderr strings.Builder
+	var stdout bytes.Buffer
+	var stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
@@ -62,9 +87,9 @@ func (f *ExecResourceFetcher) Fetch(ctx context.Context, args []string) (string,
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", fmt.Errorf("pad %s: %s", strings.Join(args, " "), msg)
+		return nil, fmt.Errorf("pad %s: %s", strings.Join(args, " "), msg)
 	}
-	return stdout.String(), nil
+	return stdout.Bytes(), nil
 }
 
 // ExecBootstrapFetcher shells out to `pad bootstrap --workspace <ws>
@@ -108,27 +133,31 @@ func (f *ExecBootstrapFetcher) Bootstrap(ctx context.Context, workspace string) 
 	return []byte(stdout.String()), nil
 }
 
-// resources owns the four resource handlers and their shared state.
+// resources owns the workspace resource handlers and their shared state.
 type resources struct {
-	fetcher  ResourceFetcher
-	rootArgs []string // pre-formatted root-flag tokens (e.g. ["--url", "X"])
+	fetcher       ResourceFetcher
+	binaryFetcher BinaryResourceFetcher
+	rootArgs      []string // pre-formatted root-flag tokens (e.g. ["--url", "X"])
 }
 
-// RegisterResources installs the four read-only MCP resource
+// RegisterResources installs the read-only MCP resource
 // templates on srv:
 //
 //   - pad://workspace/{ws}/items/{ref} — single item markdown
 //   - pad://workspace/{ws}/items       — list of items in workspace
 //   - pad://workspace/{ws}/dashboard   — project dashboard JSON
 //   - pad://workspace/{ws}/collections — collections list JSON
+//   - pad://workspace/{ws}/attachments/{id} — bounded image bytes
+//   - pad://workspace/{ws}/bootstrap   — consolidated workspace context
 //
 // rootFlags carries any startup-captured persistent flags (e.g. --url)
 // to forward to every shell-out — same shape as RegistryOptions.RootFlags.
 // Empty values are skipped.
 func RegisterResources(srv *server.MCPServer, fetcher ResourceFetcher, rootFlags map[string]string) {
 	r := &resources{
-		fetcher:  fetcher,
-		rootArgs: rootFlagsToArgs(rootFlags),
+		fetcher:       fetcher,
+		binaryFetcher: binaryFetcherFor(fetcher),
+		rootArgs:      rootFlagsToArgs(rootFlags),
 	}
 
 	srv.AddResourceTemplate(
@@ -180,6 +209,18 @@ func RegisterResources(srv *server.MCPServer, fetcher ResourceFetcher, rootFlags
 	)
 	srv.AddResourceTemplate(
 		mcp.NewResourceTemplate(
+			"pad://workspace/{workspace}/attachments/{id}",
+			"pad attachment image",
+			mcp.WithTemplateDescription(
+				"Bounded image bytes for an attachment, returned as base64 through "+
+					"the existing thumb-md variant pipeline. Non-image and oversized "+
+					"attachments are rejected.",
+			),
+		),
+		r.readAttachment,
+	)
+	srv.AddResourceTemplate(
+		mcp.NewResourceTemplate(
 			"pad://workspace/{workspace}/bootstrap",
 			"pad bootstrap",
 			mcp.WithTemplateDescription(
@@ -218,6 +259,11 @@ func RegisterResources(srv *server.MCPServer, fetcher ResourceFetcher, rootFlags
 		),
 		r.readWorkspaces,
 	)
+}
+
+func binaryFetcherFor(fetcher ResourceFetcher) BinaryResourceFetcher {
+	binaryFetcher, _ := fetcher.(BinaryResourceFetcher)
+	return binaryFetcher
 }
 
 // readItem handles pad://workspace/{ws}/items/{ref}.
@@ -369,6 +415,75 @@ func (r *resources) readCollections(ctx context.Context, req mcp.ReadResourceReq
 	}
 	return r.fetchAsResource(ctx, req.Params.URI, jsonMIMEType,
 		[]string{"collection", "list", "--workspace", ws, "--format", "json"})
+}
+
+type attachmentResourceMetadata struct {
+	MIME string `json:"mime"`
+	Size int64  `json:"size"`
+}
+
+// readAttachment handles pad://workspace/{ws}/attachments/{id}. It
+// requests the existing thumb-md path so authorization, workspace
+// isolation, image processing, and small-image fallback stay owned by
+// the canonical attachment HTTP endpoint.
+func (r *resources) readAttachment(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+	ws, kind, id, err := parsePadURI(req.Params.URI)
+	if err != nil {
+		return nil, err
+	}
+	if kind != resourceKindAttach || id == "" || strings.Contains(id, "/") {
+		return nil, fmt.Errorf("resource %q is not an attachment URI", req.Params.URI)
+	}
+	if r.binaryFetcher == nil {
+		return nil, fmt.Errorf("read %s: binary resource fetcher not configured", req.Params.URI)
+	}
+
+	showArgs := []string{
+		"attachment", "show", id,
+		"--workspace", ws,
+		"--variant", attachmentResourceVariant,
+		"--format", "json",
+	}
+	metadataJSON, err := r.fetcher.Fetch(ctx, append(showArgs, r.rootArgs...))
+	if err != nil {
+		return nil, fmt.Errorf("read %s metadata: %w", req.Params.URI, err)
+	}
+	var metadata attachmentResourceMetadata
+	if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
+		return nil, fmt.Errorf("read %s metadata: parse JSON: %w", req.Params.URI, err)
+	}
+	if !strings.HasPrefix(strings.ToLower(metadata.MIME), "image/") {
+		return nil, fmt.Errorf("read %s: attachment MIME %q is not an image", req.Params.URI, metadata.MIME)
+	}
+	if metadata.Size < 0 {
+		return nil, fmt.Errorf("read %s: attachment metadata has invalid size %d", req.Params.URI, metadata.Size)
+	}
+	if metadata.Size > attachmentResourceMaxBytes {
+		return nil, fmt.Errorf("read %s: attachment size %d exceeds %d-byte resource limit",
+			req.Params.URI, metadata.Size, attachmentResourceMaxBytes)
+	}
+
+	downloadArgs := []string{
+		"attachment", "download", id, "-",
+		"--workspace", ws,
+		"--variant", attachmentResourceVariant,
+	}
+	body, err := r.binaryFetcher.FetchBytes(ctx, append(downloadArgs, r.rootArgs...))
+	if err != nil {
+		return nil, fmt.Errorf("read %s bytes: %w", req.Params.URI, err)
+	}
+	if len(body) > attachmentResourceMaxBytes {
+		return nil, fmt.Errorf("read %s: downloaded attachment size %d exceeds %d-byte resource limit",
+			req.Params.URI, len(body), attachmentResourceMaxBytes)
+	}
+
+	return []mcp.ResourceContents{
+		mcp.BlobResourceContents{
+			URI:      req.Params.URI,
+			MIMEType: metadata.MIME,
+			Blob:     base64.StdEncoding.EncodeToString(body),
+		},
+	}, nil
 }
 
 // readBootstrap handles pad://workspace/{ws}/bootstrap. Shells out to
