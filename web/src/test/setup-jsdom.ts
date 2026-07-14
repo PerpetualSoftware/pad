@@ -22,3 +22,30 @@ if (typeof HTMLDialogElement !== 'undefined') {
 		this.dispatchEvent(new Event('close'));
 	};
 }
+
+// jsdom does not implement `window.matchMedia`. Several client-only stores
+// (`breakpoint.svelte.ts`, `ui.svelte.ts`) call it at MODULE-LOAD time,
+// guarded behind SvelteKit's `browser` flag — which the jsdom test project
+// forces `true` (see `src/test/mocks/app-environment.ts`). That means any
+// jsdom test whose component tree transitively imports one of those stores
+// (e.g. FilterBar.svelte → breakpoint.svelte.ts) needs `matchMedia` to exist
+// before its top-level `import` runs; a per-test `vi.stubGlobal` (as
+// `breakpoint.svelte.test.ts` uses for a controllable result) is too late
+// for a static import. This default polyfill (match-nothing / desktop
+// viewport) covers everyone else; tests that need a specific result install
+// their own `vi.stubGlobal('matchMedia', ...)`, which layers over — and
+// `vi.unstubAllGlobals()` cleanly restores — this default.
+if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
+	window.matchMedia = function matchMedia(query: string): MediaQueryList {
+		return {
+			matches: false,
+			media: query,
+			onchange: null,
+			addEventListener: () => {},
+			removeEventListener: () => {},
+			addListener: () => {},
+			removeListener: () => {},
+			dispatchEvent: () => false,
+		} as MediaQueryList;
+	};
+}

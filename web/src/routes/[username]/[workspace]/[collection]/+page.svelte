@@ -30,6 +30,15 @@
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { SORT_OPTIONS, priorityField, type SortMode } from '$lib/collections/itemSort';
+	import {
+		buildUnparentedViewFilter,
+		clearParentFilter,
+		filtersSetParent,
+		readUnparentedParam,
+		unparentedEffective,
+		viewHasUnparentedFilter,
+		writeUnparentedParam,
+	} from '$lib/collections/unparentedFilter';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -61,6 +70,15 @@
 	// `tags` column, not in `fields` JSON, so they're tracked separately
 	// from `activeFilters` and applied in their own `filteredItems` branch.
 	let selectedTags = $state<string[]>([]);
+	// "Unparented only" chip state (TASK-2099 / PLAN-2095). Tracked separately
+	// from `activeFilters` — it isn't a schema field filter, it's a structural
+	// predicate over the local-first projection's `is_unparented` bit, and it
+	// requires the caller to be unrestricted (DR-2). This is raw user/URL/
+	// saved-view INTENT; whether it actually takes effect always routes
+	// through `unparentedEffective` against `unparentedMetadataAvailable`
+	// below, so a restricted caller's carried-over intent never filters
+	// anything or renders the chip.
+	let unparentedFilter = $state(false);
 	let searchQuery = $state('');
 	let showArchived = $state(false);
 	let itemProgress = $state<Record<string, { total: number; done: number; label?: string }>>({});
@@ -155,6 +173,37 @@
 	let loading = $derived(
 		!metaError && (metaLoading || (!indexReady && !indexError && !deltaSyncFailed)),
 	);
+
+	// Unparented-filter projection scope (TASK-2099 / PLAN-2095 DR-2). `true`
+	// only once the local index has confirmed (via `includes_unparented_
+	// metadata` on an index/delta response) that THIS caller is unrestricted.
+	// `null` (unknown, pre-bootstrap) and `false` (restricted) both read as
+	// unavailable — the chip stays hidden and the filter never applies until
+	// this is a confirmed `true`.
+	let unparentedMetadataAvailable = $derived(
+		wsSlug ? localIndex.includesUnparentedMetadataFor(wsSlug) === true : false,
+	);
+	// The chip's EFFECTIVE state — intent AND availability. Everything that
+	// actually filters/badges/persists reads this, not the raw intent flag,
+	// so a restricted caller's carried-over `unparentedFilter=true` (from a
+	// URL or saved view) never filters anything or counts as an active
+	// filter (DR-2).
+	let unparentedApplied = $derived(unparentedEffective(unparentedFilter, unparentedMetadataAvailable));
+
+	// Restricted clearing (DR-2): once the workspace's projection scope is
+	// confirmed and it does NOT include unparented metadata, physically
+	// clear a stuck intent flag (from a URL or saved view carrying the
+	// pseudo-filter) instead of leaving it dangling. Without this, the flag
+	// would silently no-op (via `unparentedApplied`) but could still get
+	// re-persisted into the URL/a new saved view the moment the user
+	// interacts with something else that calls `updateUrlFilters()`.
+	$effect(() => {
+		if (!wsSlug || !indexReady) return;
+		if (unparentedFilter && !unparentedMetadataAvailable) {
+			unparentedFilter = false;
+			updateUrlFilters();
+		}
+	});
 
 	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
 	// (and no pendingResync), this is a no-op; if 'cold', it kicks off
@@ -267,6 +316,9 @@
 		// uses comma as its add-delimiter, so tag values never contain
 		// commas — round-tripping through a comma-joined string is safe.
 		if (selectedTags.length > 0) params.set('tags', selectedTags.join(','));
+		// Write the EFFECTIVE state, not raw intent — a restricted caller's
+		// URL never even transiently carries `unparented=true` (DR-2).
+		writeUnparentedParam(params, unparentedApplied);
 		if (searchQuery) params.set('q', searchQuery);
 		const qs = params.toString();
 		const newUrl = `/${username}/${wsSlug}/${collSlug}${qs ? '?' + qs : ''}`;
@@ -277,11 +329,17 @@
 	function loadUrlFilters() {
 		const url = new URL(page.url);
 		const filters: Record<string, string> = {};
-		// Reset tags up-front so navigating to a collection whose URL has no
-		// `tags` param clears any selection carried over from the previous
-		// collection (absent = cleared).
+		// Reset tags (and the unparented intent) up-front so navigating to a
+		// collection whose URL has no `tags`/`unparented` param clears any
+		// selection carried over from the previous collection (absent =
+		// cleared). The unparented intent is read here optimistically — a
+		// restricted caller's URL carrying it gets corrected by the
+		// restricted-clearing effect once `unparentedMetadataAvailable`
+		// resolves (DR-2); nothing in this function's synchronous read can
+		// know that yet.
 		selectedTags = [];
-		const knownParams = new Set(['view', 'q', 'tags']);
+		unparentedFilter = readUnparentedParam(url.searchParams);
+		const knownParams = new Set(['view', 'q', 'tags', 'unparented']);
 		for (const [k, v] of url.searchParams.entries()) {
 			if (k === 'view' && (v === 'list' || v === 'board')) {
 				viewMode = v;
@@ -648,6 +706,15 @@
 			);
 		}
 
+		// Apply the "Unparented only" chip (TASK-2099 / PLAN-2095): keep
+		// items the local-first projection marked structurally loose. Gated
+		// on `unparentedApplied` (intent AND confirmed unrestricted scope —
+		// DR-2), not raw `unparentedFilter`, so a restricted caller's
+		// carried-over intent never filters anything.
+		if (unparentedApplied) {
+			result = result.filter((item) => item.is_unparented === true);
+		}
+
 		// Apply search query. PLAN-1343 Phase 3b: the local path
 		// populates `searchResultRank` synchronously (sub-ms) so the
 		// filter just intersects. The substring fallback below covers
@@ -734,7 +801,7 @@
 	let emptyHint = $derived(emptyHintMap[collSlug] ?? null);
 
 	let filtersOpen = $state(false);
-	let hasActiveFilters = $derived(searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0 || selectedTags.length > 0);
+	let hasActiveFilters = $derived(searchQuery.trim() !== '' || Object.keys(activeFilters).length > 0 || selectedTags.length > 0 || unparentedApplied);
 
 	// ── Viewport detection ───────────────────────────────────────────────
 	// On mobile the 3-icon view toggle (list/board/table) is swapped for a
@@ -773,6 +840,21 @@
 
 	function handleFilterChange(filters: Record<string, string>) {
 		activeFilters = filters;
+		// Mutual exclusivity with the unparented chip (PLAN-2095 DR-3):
+		// setting a specific-parent filter clears "Unparented only".
+		if (filtersSetParent(filters) && unparentedFilter) {
+			unparentedFilter = false;
+		}
+		updateUrlFilters();
+	}
+
+	// Mutual exclusivity in the other direction: switching the "Unparented
+	// only" chip on clears any specific-parent filter (PLAN-2095 DR-3).
+	function handleUnparentedChange(value: boolean) {
+		unparentedFilter = value;
+		if (value) {
+			activeFilters = clearParentFilter(activeFilters);
+		}
 		updateUrlFilters();
 	}
 
@@ -1637,6 +1719,13 @@
 		if (selectedTags.length > 0) {
 			filters.push({ field: 'tags', op: 'in', value: [...selectedTags] });
 		}
+		// "Unparented only" persists as the reserved `$unparented` condition
+		// (PLAN-2095 DR-5). Gated on `unparentedMetadataAvailable` (not just
+		// intent) so a restricted caller can never save it into a view.
+		const unparentedEntry = buildUnparentedViewFilter(unparentedFilter, unparentedMetadataAvailable);
+		if (unparentedEntry) {
+			filters.push(unparentedEntry);
+		}
 		if (filters.length > 0) {
 			config.filters = filters;
 		}
@@ -1665,15 +1754,30 @@
 				} else if (f.op === 'eq' && typeof f.value === 'string') {
 					newFilters[f.field] = f.value;
 				}
+				// The reserved `$unparented` condition (`value: true`, a
+				// boolean) never matches the `typeof f.value === 'string'`
+				// branch above, so it's naturally skipped here — recovered
+				// separately below via `viewHasUnparentedFilter`.
 			}
 		}
+		// Recover "Unparented only" intent from the saved view (PLAN-2095
+		// DR-5). Applied as raw intent — same as the URL path — and left to
+		// `unparentedApplied` / the restricted-clearing effect to enforce
+		// DR-2 once the projection scope is known. This does NOT check
+		// `unparentedMetadataAvailable` here because `applyViewConfig` can
+		// run before the local index has hydrated (the default-view-on-
+		// mount effect gates only on `!metaLoading`); gating here would
+		// incorrectly drop the filter for a legitimate unrestricted caller
+		// on a cold load.
+		const newUnparented = viewHasUnparentedFilter(config.filters);
 		activeFilters = newFilters;
 		selectedTags = newTags;
+		unparentedFilter = newUnparented;
 		searchQuery = '';
 		searchResultRank = null;
 
 		// Open filters panel if the view has filters
-		if (Object.keys(newFilters).length > 0 || newTags.length > 0) {
+		if (Object.keys(newFilters).length > 0 || newTags.length > 0 || newUnparented) {
 			filtersOpen = true;
 		}
 
@@ -1685,6 +1789,7 @@
 		activeViewId = null;
 		activeFilters = {};
 		selectedTags = [];
+		unparentedFilter = false;
 		searchQuery = '';
 		searchResultRank = null;
 		filtersOpen = false;
@@ -1993,6 +2098,9 @@
 						{selectedTags}
 						onTagFilterChange={handleTagFilterChange}
 						bind:searchInputEl
+						unparentedAvailable={unparentedMetadataAvailable}
+						unparentedActive={unparentedApplied}
+						onUnparentedChange={handleUnparentedChange}
 					/>
 				</div>
 			{/if}
@@ -2122,12 +2230,12 @@
 					<p>This collection is empty.</p>
 				{/if}
 			</div>
-		{:else if filteredItems.length === 0 && (searchQuery || Object.keys(activeFilters).length > 0)}
+		{:else if filteredItems.length === 0 && (searchQuery || Object.keys(activeFilters).length > 0 || unparentedApplied)}
 			<div class="empty-state-box">
 				<div class="empty-icon">🔍</div>
 				<h2>No matches</h2>
 				<p>No items match your current filters.
-					<button class="clear-link" onclick={() => { activeFilters = {}; searchQuery = ''; searchResultRank = null; }}>Clear filters</button>
+					<button class="clear-link" onclick={() => { activeFilters = {}; searchQuery = ''; searchResultRank = null; unparentedFilter = false; updateUrlFilters(); }}>Clear filters</button>
 				</p>
 			</div>
 		{:else if viewMode === 'board'}

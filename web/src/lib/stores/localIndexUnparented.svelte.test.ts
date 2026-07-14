@@ -153,3 +153,21 @@ describe('localIndex unparented projection compatibility', () => {
 		expect(localIndex.findByIdOrSlug(ws, 'created')?.seq).toBe(6);
 	});
 });
+
+// TASK-2099 / PLAN-2095 Phase 2: the collection page's "Unparented only"
+// chip gates its visibility off this accessor (not the internal `$state`
+// field directly, which isn't exported). Covers the three states a
+// consumer must be able to distinguish: unknown, restricted, unrestricted.
+describe('localIndex.includesUnparentedMetadataFor', () => {
+	it('is null for a workspace that has never resolved a snapshot/delta', () => {
+		expect(localIndex.includesUnparentedMetadataFor('never-bootstrapped-ws')).toBeNull();
+	});
+
+	it('reflects true after an unrestricted delta and false after a restricted one', () => {
+		localIndex.applyDelta(ws, [], '1', true);
+		expect(localIndex.includesUnparentedMetadataFor(ws)).toBe(true);
+
+		localIndex.applyDelta(ws, [], '2', false);
+		expect(localIndex.includesUnparentedMetadataFor(ws)).toBe(false);
+	});
+});

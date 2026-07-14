@@ -15,6 +15,14 @@
 // mirror the in-app helpers so a shared kanban looks like the owner's kanban.
 
 import type { FieldDef } from '$lib/types';
+import { UNPARENTED_FILTER_FIELD } from '$lib/collections/unparentedFilter';
+
+// Re-exported so existing/future imports of `UNPARENTED_FILTER_FIELD` from
+// this module keep working — the canonical definition lives in
+// `$lib/collections/unparentedFilter` (shared with the interactive
+// collection page) so the reserved field name can't drift between the two
+// evaluation paths.
+export { UNPARENTED_FILTER_FIELD };
 
 /** Collection settings as understood by the public renderers. View-type +
  *  grouping/sort knobs only — interactive-only settings are ignored. */
@@ -185,6 +193,68 @@ export function capItems(items: PublicItem[]): CappedItems {
 		return { items, total: items.length, capped: false };
 	}
 	return { items: items.slice(0, PUBLIC_ITEM_CAP), total: items.length, capped: true };
+}
+
+// ── Saved-view filter evaluation (public shares) ────────────────────────────
+//
+// `/s/[token]/+page.svelte` overlays an active saved view's `config.filters`
+// onto the shared item set (read-only, no server round-trip). These two
+// functions are the single evaluation choke-point for that — pulled out of
+// the route so the `$unparented` skip (PLAN-2095 DR-5 / TASK-2099) is a
+// pure, independently-testable rule rather than logic embedded in a page
+// component.
+
+/**
+ * True when the filter targets a field present in the public collection
+ * schema, so it's meaningful against the shared payload. Malformed/fieldless
+ * filters are treated as evaluable so `matchesFilter` can no-op them.
+ *
+ * The reserved `$unparented` pseudo-filter is ALWAYS excluded here —
+ * explicitly, not incidentally. Public shares never carry the structural
+ * `is_unparented` projection bit (Phase 1 / TASK-2096 gates it to
+ * unrestricted API/local-index callers only, and the share payload doesn't
+ * include it at all), so this condition must never filter a public share —
+ * including on a grandfathered schema that happens to have a REAL field
+ * literally named `unparented` (no `$`), which is a different string and
+ * evaluated normally.
+ */
+export function filterEvaluable(schemaKeys: Set<string>, filter: unknown): boolean {
+	if (!filter || typeof filter !== 'object') return true;
+	const field = (filter as { field?: unknown }).field;
+	if (typeof field !== 'string') return true;
+	if (field === UNPARENTED_FILTER_FIELD) return false;
+	return schemaKeys.has(field);
+}
+
+/**
+ * Read-only filter evaluation mirroring the logged-in collection page's
+ * `eq` / `in` handling (the only ops saved-view configs emit). Unknown ops
+ * pass through (don't hide items we can't reason about).
+ *
+ * Callers should route filters through `filterEvaluable` first — that's
+ * where `$unparented` is actually excluded from the applied set — but this
+ * function also refuses to evaluate it directly, so a caller that skips the
+ * `filterEvaluable` gate can't accidentally apply it either (defense in
+ * depth for DR-5).
+ */
+export function matchesFilter(item: PublicItem, filter: unknown): boolean {
+	if (!filter || typeof filter !== 'object') return true;
+	const f = filter as { field?: unknown; op?: unknown; value?: unknown };
+	if (typeof f.field !== 'string') return true;
+	if (f.field === UNPARENTED_FILTER_FIELD) return true;
+	const fieldVal = item.fields[f.field];
+	if (f.op === 'eq') {
+		return String(fieldVal ?? '') === String(f.value ?? '');
+	}
+	if (f.op === 'in') {
+		const wanted = Array.isArray(f.value) ? f.value.map((v) => String(v)) : [String(f.value)];
+		// Tags-style array fields: match if any item value is wanted.
+		if (Array.isArray(fieldVal)) {
+			return fieldVal.some((v) => wanted.includes(String(v)));
+		}
+		return wanted.includes(String(fieldVal ?? ''));
+	}
+	return true;
 }
 
 // ── Field lookup ──────────────────────────────────────────────────────────

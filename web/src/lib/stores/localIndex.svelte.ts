@@ -1099,6 +1099,20 @@ export const localIndex = {
 	},
 
 	/**
+	 * Whether the workspace's current projection includes the `is_unparented`
+	 * bit — `true` for unrestricted callers, `false` for restricted ones,
+	 * `null` when the workspace hasn't resolved a snapshot/delta yet
+	 * (unknown). Consumers gating unparented-filter UI (TASK-2099 / PLAN-2095
+	 * DR-2) must treat `null` the same as `false` — never show or apply the
+	 * chip until this is confirmed `true`, so a restricted caller (or one
+	 * whose scope hasn't resolved) never sees a side channel into structural
+	 * parent state.
+	 */
+	includesUnparentedMetadataFor(ws: string): boolean | null {
+		return workspaces.get(ws)?.includesUnparentedMetadata ?? null;
+	},
+
+	/**
 	 * Current projection-scope epoch — bumped each time a resync installs a
 	 * new authoritative snapshot. A reconcile loop captures it before an
 	 * `/items-changes` request and, if it differs when the request returns, a
