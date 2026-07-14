@@ -235,6 +235,47 @@ func TestHTTPResourceFetcher_WorkspaceList_Projects(t *testing.T) {
 	}
 }
 
+func TestHTTPResourceFetcher_WorkspaceList_FiltersByConsentAllowList(t *testing.T) {
+	t.Parallel()
+	// The /api/v1/workspaces endpoint returns every membership with no
+	// allow-list scoping, so the resource must filter by the OAuth token's
+	// consented workspaces or it leaks slugs of unconsented ones.
+	wss := []models.Workspace{{Slug: "alpha", Name: "Alpha"}, {Slug: "beta", Name: "Beta"}}
+	raw, _ := json.Marshal(wss)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(raw)
+	})
+	f := newHTTPResourceFetcher(mux)
+
+	// Token consented only for alpha: beta must be dropped.
+	ctx := server.WithTokenAllowedWorkspaces(context.Background(), []string{"alpha"})
+	got, err := f.Fetch(ctx, []string{"workspace", "list", "--format", "json"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal([]byte(got), &entries); err != nil {
+		t.Fatalf("decode: %v (body=%s)", err, got)
+	}
+	if len(entries) != 1 || entries[0]["slug"] != "alpha" {
+		t.Fatalf("entries = %v, want only [alpha] (beta is unconsented)", entries)
+	}
+
+	// No allow-list (PAT / stdio): both workspaces returned (no filter).
+	got2, err := f.Fetch(context.Background(), []string{"workspace", "list", "--format", "json"})
+	if err != nil {
+		t.Fatalf("Fetch (no allow-list): %v", err)
+	}
+	var all []map[string]any
+	if err := json.Unmarshal([]byte(got2), &all); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("without allow-list want both workspaces, got %d", len(all))
+	}
+}
+
 func TestHTTPResourceFetcher_AttachmentShow_SynthesizesFromHeaders(t *testing.T) {
 	t.Parallel()
 	mux := http.NewServeMux()

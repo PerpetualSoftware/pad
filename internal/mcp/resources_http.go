@@ -14,6 +14,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/server"
 )
 
 // itemListResourceLimit mirrors the pad CLI's default `item list` cap
@@ -192,8 +193,21 @@ func (f *HTTPResourceFetcher) fetchWorkspaceList(ctx context.Context, user *mode
 	if err := json.Unmarshal(body, &wss); err != nil {
 		return "", fmt.Errorf("workspace list: decode workspaces: %w", err)
 	}
+	// Honor the OAuth token's consent allow-list: the /api/v1/workspaces
+	// handler returns every membership, so — unlike per-workspace routes —
+	// nothing scopes it to the workspaces the token was granted. Filter here
+	// with the same rule the error-hint lister uses (nil/wildcard → no
+	// filter, so PAT auth and local stdio are unaffected; a specific
+	// allow-list → intersect) so this resource can't enumerate the slugs of
+	// workspaces the user never consented to expose.
+	allowSet := buildAllowSet(server.TokenAllowedWorkspacesFromContext(ctx))
 	entries := make([]workspaceListEntry, 0, len(wss))
 	for _, ws := range wss {
+		if allowSet != nil {
+			if _, ok := allowSet[ws.Slug]; !ok {
+				continue
+			}
+		}
 		// Always emit updated_at (RFC3339) — the CLI's `pad workspace list`
 		// does the same, even for a zero timestamp — so a consumer that
 		// sorts on the field sees it on both transports.
