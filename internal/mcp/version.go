@@ -160,7 +160,8 @@ const CmdhelpVersion = "0.1"
 //     addition of one tool + two read actions; existing tools/actions
 //     unchanged. Backwards-compatible for v0.10 consumers that don't
 //     enumerate the new tool. The base64 image RESOURCE for multimodal
-//     agents is tracked separately (TASK-2076), not part of this bump.
+//     agents was tracked separately (TASK-2076/2077) and shipped later
+//     in PR #930; it was not part of this bump.
 //   - "0.10" — BUG-2020: server-side draft-playbook gate.
 //     `pad_playbook.run` now refuses a playbook whose status isn't
 //     "active" (a draft still being authored) with a structured

@@ -32,7 +32,7 @@ Read these directly when you need workspace state:
 - `pad://workspace/{ws}/collections` — collection types + schemas.
 - `pad://workspace/{ws}/items` — list of all items (use `pad_item.action: list` for filtering).
 - `pad://workspace/{ws}/items/{ref}` — single item rendered as markdown.
-- `pad://workspace/{ws}/attachments/{id}` — image attachment as a bounded base64 `thumb-md` resource; rejects non-images and responses over 1 MiB.
+- `pad://workspace/{ws}/attachments/{id}` — image attachment as a bounded base64 `thumb-md` resource; rejects non-images and image bytes over 1 MiB (pre-base64).
 - `pad://workspace/{ws}/bootstrap` — one-shot workspace context (same payload as `pad_meta.action: bootstrap` and `pad_set_workspace`'s embedded response).
 - `pad://_meta/version` — server version + stability tiers.
 

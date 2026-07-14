@@ -579,6 +579,33 @@ func jsonNumber(n int) string {
 	return string(b)
 }
 
+func TestReadAttachment_LabelsBlobFromBytesNotMetadata(t *testing.T) {
+	// TOCTOU guard: `show` metadata claims the original's MIME (image/gif)
+	// during the async-thumbnail window, but `download` returns the freshly
+	// generated JPEG thumbnail. The blob must be labeled from the bytes it
+	// carries (image/jpeg), not the stale metadata call.
+	jpeg := []byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 'J', 'F', 'I', 'F'}
+	f := &fakeBinaryFetcher{
+		fakeFetcher: &fakeFetcher{stdout: `{"id":"att-1","mime":"image/gif","size":10}`},
+		bytes:       jpeg,
+	}
+	r := &resources{fetcher: f, binaryFetcher: f}
+	req := mcp.ReadResourceRequest{}
+	req.Params.URI = "pad://workspace/docapp/attachments/att-1"
+
+	contents, err := r.readAttachment(context.Background(), req)
+	if err != nil {
+		t.Fatalf("readAttachment: %v", err)
+	}
+	blob, ok := contents[0].(mcp.BlobResourceContents)
+	if !ok {
+		t.Fatalf("content type = %T, want BlobResourceContents", contents[0])
+	}
+	if blob.MIMEType != "image/jpeg" {
+		t.Errorf("MIMEType = %q, want image/jpeg (sniffed from bytes, not metadata image/gif)", blob.MIMEType)
+	}
+}
+
 func TestReadItem_RejectsMismatchedURI(t *testing.T) {
 	// readItem is registered against the items/{ref} template, but
 	// guards against being invoked with a mismatched URI (defensive —
@@ -672,6 +699,17 @@ func TestExecResourceFetcher_FetchBytesPreservesBinaryStdout(t *testing.T) {
 	want := []byte{0x00, 0xff, 0x01}
 	if string(out) != string(want) {
 		t.Errorf("FetchBytes = %v, want %v", out, want)
+	}
+}
+
+func TestExecResourceFetcher_FetchBytesCapsOversizedOutput(t *testing.T) {
+	f := &ExecResourceFetcher{Binary: "/bin/sh"}
+	// Emit more bytes than FetchBytes retains; it must reject (bounding
+	// memory) rather than buffer the whole stream.
+	arg := "head -c " + jsonNumber(attachmentResourceMaxBytes+100) + " /dev/zero"
+	if _, err := f.FetchBytes(t.Context(), []string{"-c", arg}); err == nil ||
+		!strings.Contains(err.Error(), "cap") {
+		t.Fatalf("err = %v, want byte-cap rejection", err)
 	}
 }
 

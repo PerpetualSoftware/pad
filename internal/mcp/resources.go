@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"sort"
 	"strings"
@@ -63,24 +64,37 @@ type ExecResourceFetcher struct {
 
 // Fetch runs `<Binary> <args...>` and returns stdout on success.
 func (f *ExecResourceFetcher) Fetch(ctx context.Context, args []string) (string, error) {
-	out, err := f.run(ctx, args)
+	out, err := f.run(ctx, args, 0)
 	return string(out), err
 }
 
 // FetchBytes runs the same pad subprocess as Fetch but preserves stdout
-// as bytes for binary MCP resources.
+// as bytes for binary MCP resources. It caps how much output it retains
+// so a missing or dishonest Content-Length on the metadata pre-check
+// can't make us buffer an unbounded body before the size gate runs;
+// retaining one byte past the limit is enough for the caller to reject.
 func (f *ExecResourceFetcher) FetchBytes(ctx context.Context, args []string) ([]byte, error) {
-	return f.run(ctx, args)
+	return f.run(ctx, args, attachmentResourceMaxBytes+1)
 }
 
-func (f *ExecResourceFetcher) run(ctx context.Context, args []string) ([]byte, error) {
+// run executes the pad subprocess. When limit > 0 it retains at most
+// limit bytes of stdout (draining and discarding the rest so the child
+// never blocks on a full pipe) and reports an error if the output would
+// have exceeded it. limit <= 0 buffers stdout in full (the text path).
+func (f *ExecResourceFetcher) run(ctx context.Context, args []string, limit int64) ([]byte, error) {
 	if f.Binary == "" {
 		return nil, fmt.Errorf("resource fetcher: binary path not configured")
 	}
 	cmd := exec.CommandContext(ctx, f.Binary, args...)
 	var stdout bytes.Buffer
 	var stderr strings.Builder
-	cmd.Stdout = &stdout
+	var capped *cappedWriter
+	if limit > 0 {
+		capped = &cappedWriter{buf: &stdout, limit: limit}
+		cmd.Stdout = capped
+	} else {
+		cmd.Stdout = &stdout
+	}
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
@@ -89,7 +103,31 @@ func (f *ExecResourceFetcher) run(ctx context.Context, args []string) ([]byte, e
 		}
 		return nil, fmt.Errorf("pad %s: %s", strings.Join(args, " "), msg)
 	}
+	if capped != nil && capped.exceeded {
+		return nil, fmt.Errorf("pad %s: output exceeded %d-byte cap", strings.Join(args, " "), limit)
+	}
 	return stdout.Bytes(), nil
+}
+
+// cappedWriter buffers into buf until limit bytes, then keeps accepting
+// (and silently discarding) further writes so io.Copy keeps draining the
+// subprocess pipe — the child can't wedge on a full pipe — while memory
+// stays bounded at limit. exceeded records whether anything was dropped.
+type cappedWriter struct {
+	buf      *bytes.Buffer
+	limit    int64
+	exceeded bool
+}
+
+func (c *cappedWriter) Write(p []byte) (int, error) {
+	if room := c.limit - int64(c.buf.Len()); room < int64(len(p)) {
+		c.exceeded = true
+		if room > 0 {
+			c.buf.Write(p[:room])
+		}
+		return len(p), nil
+	}
+	return c.buf.Write(p)
 }
 
 // ExecBootstrapFetcher shells out to `pad bootstrap --workspace <ws>
@@ -477,10 +515,21 @@ func (r *resources) readAttachment(ctx context.Context, req mcp.ReadResourceRequ
 			req.Params.URI, len(body), attachmentResourceMaxBytes)
 	}
 
+	// Label the blob from the bytes we actually return, not the separate
+	// `show` metadata call. Thumbnail generation is async, so in the window
+	// before the thumb-md row exists `show` can describe the original
+	// (e.g. image/gif) while `download` returns a freshly generated JPEG
+	// thumbnail — sniffing keeps the MIME label consistent with the
+	// payload. Fall back to the metadata MIME when the sniff is unsure.
+	mimeType := metadata.MIME
+	if sniffed := http.DetectContentType(body); strings.HasPrefix(sniffed, "image/") {
+		mimeType = sniffed
+	}
+
 	return []mcp.ResourceContents{
 		mcp.BlobResourceContents{
 			URI:      req.Params.URI,
-			MIMEType: metadata.MIME,
+			MIMEType: mimeType,
 			Blob:     base64.StdEncoding.EncodeToString(body),
 		},
 	}, nil
