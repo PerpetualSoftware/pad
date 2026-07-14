@@ -1164,11 +1164,29 @@ export const localIndex = {
 	 * confirms it has caught up (the same predicate `bootstrap()` uses:
 	 * an empty delta batch, or the response cursor not advancing past
 	 * `since`) — mirroring exactly what `bootstrap()`'s loop already does
-	 * for the path it owns. No-op for an unhydrated workspace.
+	 * for the path it owns.
+	 *
+	 * `epoch` MUST be the `scopeEpochFor(ws)` the caller captured at (or
+	 * reconfirmed immediately before) the point it decided "caught up" —
+	 * the same value already threaded through these reconcile loops as
+	 * `epochBefore`. SSE, periodic sync, and `bootstrap()` can all trigger
+	 * reconciliations concurrently; without this check, one caller's stale
+	 * catch-up confirmation could unconditionally clear `pendingResync`
+	 * out from under a DIFFERENT, still-in-progress (or just-restarted)
+	 * resync that landed after this caller's own epoch check — silencing
+	 * `bootstrap()`'s retry of a resync/replay that hasn't actually
+	 * finished (Codex review round 5). A mismatched epoch means a resync
+	 * has landed since this caller confirmed catch-up, so the clear is
+	 * skipped — whichever loop eventually catches up under the NEW epoch
+	 * will clear it.
+	 *
+	 * No-op for an unhydrated workspace.
 	 */
-	markCaughtUp(ws: string): void {
+	markCaughtUp(ws: string, epoch: number): void {
 		const state = workspaces.get(ws);
-		if (state) state.pendingResync = false;
+		if (!state) return;
+		if (state.scopeEpoch !== epoch) return;
+		state.pendingResync = false;
 	},
 
 	/**

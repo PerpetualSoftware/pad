@@ -215,7 +215,7 @@ describe('localIndex.pendingResyncFor', () => {
 // wouldn't fire, and a stuck pre-downgrade intent could silently
 // reactivate on the upgrade instead of staying cleared.
 describe('localIndex.markCaughtUp', () => {
-	it('clears a pending resync', async () => {
+	it('clears a pending resync when the epoch still matches', async () => {
 		localIndex.upsert(ws, row('scoped', 1, true));
 		localIndex.applyDelta(ws, [], '1', true);
 		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
@@ -227,12 +227,39 @@ describe('localIndex.markCaughtUp', () => {
 		await localIndex.ensureProjectionScope(ws, false);
 		expect(localIndex.pendingResyncFor(ws)).toBe(true);
 
-		localIndex.markCaughtUp(ws);
+		localIndex.markCaughtUp(ws, localIndex.scopeEpochFor(ws));
 		expect(localIndex.pendingResyncFor(ws)).toBe(false);
 	});
 
+	// Codex review round 5: a caller's catch-up confirmation must not clear
+	// `pendingResync` out from under a DIFFERENT, concurrently-landed resync
+	// (SSE/periodic-sync/bootstrap can all trigger one). A stale epoch means
+	// exactly that raced — skip the clear so the newer resync's own
+	// catch-up (under its own epoch) is what eventually clears the flag.
+	it('does NOT clear a pending resync when a newer resync has landed under a different epoch', async () => {
+		localIndex.upsert(ws, row('scoped', 1, true));
+		localIndex.applyDelta(ws, [], '1', true);
+		const staleEpoch = localIndex.scopeEpochFor(ws);
+
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [row('scoped', 1)],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+		});
+		await localIndex.ensureProjectionScope(ws, false);
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+		expect(localIndex.scopeEpochFor(ws)).toBeGreaterThan(staleEpoch);
+
+		// A caller that captured the epoch BEFORE this resync landed tries
+		// to confirm catch-up — its confirmation predates the newer resync
+		// and must not silence it.
+		localIndex.markCaughtUp(ws, staleEpoch);
+		expect(localIndex.pendingResyncFor(ws)).toBe(true);
+	});
+
 	it('is a no-op for an unhydrated workspace', () => {
-		expect(() => localIndex.markCaughtUp('never-bootstrapped-ws-3')).not.toThrow();
+		expect(() => localIndex.markCaughtUp('never-bootstrapped-ws-3', 0)).not.toThrow();
 		expect(localIndex.pendingResyncFor('never-bootstrapped-ws-3')).toBe(false);
 	});
 });

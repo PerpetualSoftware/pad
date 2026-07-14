@@ -265,7 +265,17 @@
 	// is only ever set after mount, via URL/view load or user interaction).
 	let lastSyncedUnparented = false;
 	$effect(() => {
-		if (!wsSlug || !indexReady) return;
+		// Gate on `!metaLoading`, not just `indexReady` (Codex review round
+		// 5, P2): `metaLoading` only flips false once `loadCollection` has
+		// fully settled for the CURRENT `collSlug` — including its trailing
+		// `loadUrlFilters()` call — mirroring exactly the guard
+		// `defaultViewApplied` already uses for the identical race. Without
+		// it, navigating collection A → B (same still-`indexReady`
+		// workspace) could fire this effect using A's stale
+		// `unparentedFilter`/`activeFilters` before B's `loadUrlFilters()`
+		// has run, rebuilding B's URL with A's filter state and dropping
+		// whatever B's URL actually asked for.
+		if (!wsSlug || !indexReady || metaLoading) return;
 		let needsUrlSync = false;
 		if (unparentedFilter && isUnparentedConfirmedRestricted) {
 			unparentedFilter = false;
@@ -276,6 +286,22 @@
 		}
 		lastSyncedUnparented = unparentedApplied;
 		if (needsUrlSync) updateUrlFilters();
+	});
+
+	// Reset the transition-detection memo whenever the route changes so a
+	// value carried over from a PREVIOUS collection can't mask a genuine
+	// transition in the new one (Codex review round 5, P2): e.g. route A
+	// last synced `true`; a cold route B applies a default view carrying
+	// the pseudo-filter before metadata resolves (so its own URL write
+	// correctly omits the param); once metadata resolves `true` for route
+	// B, `unparentedApplied` transitions `false → true` — but if the memo
+	// still held route A's stale `true`, the diff check above would see
+	// `true !== true` as no change and skip the corrective URL write.
+	// Mirrors the existing `defaultViewApplied` reset effect below.
+	$effect(() => {
+		void wsSlug;
+		void collSlug;
+		lastSyncedUnparented = false;
 	});
 
 	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
@@ -604,8 +630,12 @@
 					// Mark caught up so a mid-session projection-scope
 					// change doesn't leave `pendingResyncFor` stuck `true`
 					// for the rest of the session (TASK-2099 / PLAN-2095
-					// DR-2, Codex review round 4).
-					localIndex.markCaughtUp(ws);
+					// DR-2, Codex review round 4). Pass `epochBefore` — this
+					// iteration already confirmed it still matches the live
+					// epoch above — so a differently-scoped resync that
+					// lands concurrently after this point isn't silently
+					// stomped (Codex review round 5).
+					localIndex.markCaughtUp(ws, epochBefore);
 					return true;
 				}
 				localIndex.applyDelta(
@@ -616,7 +646,7 @@
 				);
 				if (delta.cursor === since) {
 					deltaSyncFailed = false;
-					localIndex.markCaughtUp(ws);
+					localIndex.markCaughtUp(ws, epochBefore);
 					return true;
 				}
 			}
