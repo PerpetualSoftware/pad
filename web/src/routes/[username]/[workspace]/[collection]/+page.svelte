@@ -430,8 +430,13 @@
 				const since = localIndex.cursorFor(ws);
 				const delta = await api.items.changes(ws, since);
 				if (await localIndex.ensureProjectionScope(ws, delta.includes_unparented_metadata)) {
-					deltaSyncFailed = false;
-					return true;
+					// A resync just pinned the cursor to the snapshot cursor to
+					// replay post-snapshot mutations under the new scope. Keep
+					// looping so the next `/items-changes` actually fetches them
+					// instead of reporting caught-up prematurely. The resync
+					// already aligned the scope, so ensureProjectionScope won't
+					// re-fire; the 50-iteration cap bounds the loop.
+					continue;
 				}
 				if (delta.changes.length === 0 || delta.cursor === since) {
 					deltaSyncFailed = false;

@@ -496,9 +496,17 @@ export const localIndex = {
 								state.includesUnparentedMetadata !== null &&
 								state.includesUnparentedMetadata !== delta.includes_unparented_metadata
 							) {
+								// resyncProjectionScope pins the cursor to the
+								// snapshot cursor precisely so post-snapshot
+								// mutations replay under the new scope. DON'T break
+								// here — continue the loop so the next
+								// `/items-changes?since=<pinned cursor>` actually
+								// fetches them (visible rows return, hidden stay
+								// gone). resync set includesUnparentedMetadata to
+								// the new scope, so this branch can't re-fire and
+								// loop; the 50-page cap bounds it regardless.
 								await resyncProjectionScope(ws, state);
-								caughtUp = true;
-								break;
+								continue;
 							}
 							state.includesUnparentedMetadata = delta.includes_unparented_metadata;
 							if (delta.changes.length === 0 || delta.cursor === since) {
