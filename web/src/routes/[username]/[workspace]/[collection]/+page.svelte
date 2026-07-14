@@ -229,6 +229,41 @@
 			: false,
 	);
 
+	// True once `loadUrlFilters()` has actually run for the CURRENT route
+	// (`loadCollection` flips it `true` right after that call, on the
+	// success path only; see `loadCollection`). Reset by the route-change
+	// effect immediately below. `$state`, not plain — the URL-sync effect
+	// below must reactively re-run once this flips, since the load itself
+	// is asynchronous and happens well after the route-change flush that
+	// resets it.
+	let urlFiltersLoaded = $state(false);
+
+	// Reset per-route bookkeeping whenever wsSlug/collSlug change. This
+	// effect is declared BEFORE the URL-sync effect below on purpose:
+	// Svelte runs effects with no parent/child relationship in declaration
+	// order when a shared dependency invalidates them in the same flush, so
+	// placing the reset first guarantees it always lands before the sync
+	// effect could read a stale value in that same tick (Codex review round
+	// 6 — relying on `metaLoading` transitioning was an ordering-fragile
+	// proxy for "this is a new route" and also missed the case where a
+	// route's `loadCollection` call fails, so `loadUrlFilters()` never ran
+	// but `metaLoading` still flips back to `false` in the `finally`).
+	//
+	//   - `lastSyncedUnparented`: a value carried over from a PREVIOUS
+	//     collection could otherwise mask a genuine transition in the new
+	//     one (Codex review round 5, P2) — see the sync effect's comment.
+	//   - `urlFiltersLoaded`: starts `false` for every new route; only
+	//     `loadCollection`'s own `loadUrlFilters()` call (async, run later)
+	//     flips it back, which is what actually gates the sync effect below
+	//     — not `metaLoading`.
+	// Mirrors the existing `defaultViewApplied` reset effect further down.
+	$effect(() => {
+		void wsSlug;
+		void collSlug;
+		lastSyncedUnparented = false;
+		urlFiltersLoaded = false;
+	});
+
 	// Restricted clearing (DR-2) AND URL honesty as the projection scope
 	// resolves. Two things this effect keeps correct once `indexReady`:
 	//
@@ -265,17 +300,18 @@
 	// is only ever set after mount, via URL/view load or user interaction).
 	let lastSyncedUnparented = false;
 	$effect(() => {
-		// Gate on `!metaLoading`, not just `indexReady` (Codex review round
-		// 5, P2): `metaLoading` only flips false once `loadCollection` has
-		// fully settled for the CURRENT `collSlug` — including its trailing
-		// `loadUrlFilters()` call — mirroring exactly the guard
-		// `defaultViewApplied` already uses for the identical race. Without
-		// it, navigating collection A → B (same still-`indexReady`
-		// workspace) could fire this effect using A's stale
-		// `unparentedFilter`/`activeFilters` before B's `loadUrlFilters()`
-		// has run, rebuilding B's URL with A's filter state and dropping
-		// whatever B's URL actually asked for.
-		if (!wsSlug || !indexReady || metaLoading) return;
+		// Gate on `urlFiltersLoaded`, not `metaLoading` (Codex review round
+		// 6): `metaLoading` flips back to `false` on BOTH a successful load
+		// (after `loadUrlFilters()` ran) AND a failed one (where it never
+		// ran) — and relying on it also implicitly assumed this effect
+		// re-runs strictly after the load-triggering effect's synchronous
+		// reset, which isn't a documented guarantee across effects declared
+		// with a dependency this indirect. `urlFiltersLoaded` is the
+		// precise, explicit signal for "this route's URL-derived filter
+		// state is real," reset synchronously by the effect declared right
+		// above (guaranteed to run first) and only set `true` by
+		// `loadCollection` itself once `loadUrlFilters()` has genuinely run.
+		if (!wsSlug || !indexReady || !urlFiltersLoaded) return;
 		let needsUrlSync = false;
 		if (unparentedFilter && isUnparentedConfirmedRestricted) {
 			unparentedFilter = false;
@@ -286,22 +322,6 @@
 		}
 		lastSyncedUnparented = unparentedApplied;
 		if (needsUrlSync) updateUrlFilters();
-	});
-
-	// Reset the transition-detection memo whenever the route changes so a
-	// value carried over from a PREVIOUS collection can't mask a genuine
-	// transition in the new one (Codex review round 5, P2): e.g. route A
-	// last synced `true`; a cold route B applies a default view carrying
-	// the pseudo-filter before metadata resolves (so its own URL write
-	// correctly omits the param); once metadata resolves `true` for route
-	// B, `unparentedApplied` transitions `false → true` — but if the memo
-	// still held route A's stale `true`, the diff check above would see
-	// `true !== true` as no change and skip the corrective URL write.
-	// Mirrors the existing `defaultViewApplied` reset effect below.
-	$effect(() => {
-		void wsSlug;
-		void collSlug;
-		lastSyncedUnparented = false;
 	});
 
 	// Bootstrap the workspace on entry. Idempotent: if already 'ready'
@@ -700,6 +720,17 @@
 		const seq = ++loadSeq;
 		metaLoading = true;
 		metaError = null;
+		// Reset for the new route; only flips back to `true` once
+		// `loadUrlFilters()` below has actually run for THIS load (guarded
+		// by the same `seq !== loadSeq` supersede-check). Deliberately NOT
+		// derived from `metaLoading` alone (Codex review round 6): on a
+		// failed load (a genuine 404, or a transient error), `metaLoading`
+		// still flips back to `false` in the `finally` block below even
+		// though `loadUrlFilters()` never ran — `urlFiltersLoaded` stays
+		// `false` through that path, correctly keeping the unparented
+		// URL-sync effect from firing with stale filter state while this
+		// route is erroring.
+		urlFiltersLoaded = false;
 		try {
 			// Items now flow through localIndex (the `items` $derived
 			// above reads `getByCollection`). We still fetch the
@@ -772,6 +803,7 @@
 
 			// Override with URL params if present
 			loadUrlFilters();
+			urlFiltersLoaded = true;
 		} catch (err) {
 			// Superseded by a newer load — don't clobber the current
 			// route's state with this stale failure.
