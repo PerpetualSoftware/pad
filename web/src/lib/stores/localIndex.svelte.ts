@@ -289,6 +289,23 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 			}
 			state.items.set(next.id, next);
 		}
+		// Sanitize the projection bit on any preserved racing row against the
+		// NEW scope. A mutation that raced the fetch (kept above by the seq
+		// guards, in either the drop loop or the replace loop) was authorized
+		// under the OLD scope and may still carry is_unparented. When the
+		// authoritative snapshot is restricted, no row may advertise that bit,
+		// so strip it — but keep the row itself: a seq > snapshotCursor row is
+		// indistinguishable from a legitimately just-created item, and dropping
+		// it would reintroduce the racing-mutation data loss (the server
+		// enforces real visibility via 403 regardless of this cosmetic bit).
+		if (!resp.includes_unparented_metadata) {
+			for (const [id, row] of state.items) {
+				if ('is_unparented' in row) {
+					const { is_unparented: _dropped, ...stripped } = row;
+					state.items.set(id, stripped);
+				}
+			}
+		}
 		// Never regress the cursor below a delta that advanced it mid-fetch.
 		if (snapshotCursor > cursorAsNum(state.cursor)) state.cursor = resp.cursor;
 		state.bootstrapState = 'ready';
