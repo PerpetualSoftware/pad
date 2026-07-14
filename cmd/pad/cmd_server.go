@@ -264,13 +264,13 @@ func serveCmd() *cobra.Command {
 				//
 				// Construction shape mirrors `pad mcp serve` (cmd/pad/mcp.go)
 				// minus the stdio runtime: cmdhelp.Doc → MCPServer →
-				// catalog/prompts/meta registration → wrap in Streamable
-				// HTTP transport → hand to *server.Server. Resources
-				// are intentionally skipped for v1 of TASK-950 — the
-				// existing ExecResourceFetcher shells out to the pad
-				// binary, which doesn't carry a per-OAuth-user
-				// credential context. An HTTPResourceFetcher equivalent
-				// is its own follow-up task.
+				// catalog/prompts/meta/resources registration → wrap in
+				// Streamable HTTP transport → hand to *server.Server.
+				// Resources are wired below via HTTPResourceFetcher
+				// (TASK-2101) — the in-process equivalent of the stdio
+				// ExecResourceFetcher that the original TASK-950 deferred
+				// because shelling out to the pad binary carries no
+				// per-OAuth-user credential context.
 				root := cmd.Root()
 				mcpDoc := cmdhelp.Build(root, root, cmdhelp.Options{
 					Binary:   "pad",
@@ -336,6 +336,23 @@ func serveCmd() *cobra.Command {
 				}
 				mcpserver.RegisterPrompts(mcpSrv.MCP())
 				mcpserver.RegisterMeta(mcpSrv.MCP(), fullVersion())
+
+				// Read-only resource templates (TASK-2101). Parity with
+				// `pad mcp serve` (cmd/pad/mcp.go), which registers them via
+				// an ExecResourceFetcher. That fetcher shells out to the pad
+				// binary, inheriting one user's ~/.pad credentials — unusable
+				// in this shared multi-OAuth-user process. HTTPResourceFetcher
+				// is the in-process equivalent the original TASK-950 comment
+				// deferred: it dispatches each resource read through the same
+				// handler chain (reusing the dispatcher's user resolution +
+				// auth/consent perimeter), so the full resource set — including
+				// the bounded attachment image resource from PR #930 — is now
+				// available over remote /mcp.
+				mcpserver.RegisterResources(
+					mcpSrv.MCP(),
+					mcpserver.NewHTTPResourceFetcher(dispatcher),
+					nil, // no root flags on the remote transport (no --url)
+				)
 				// Stateless mode: every Streamable HTTP request stands
 				// alone, Bearer is the auth, no session resumption to
 				// manage. Matches the spike's verified shape.
@@ -382,7 +399,7 @@ func serveCmd() *cobra.Command {
 				slog.Info("MCP /mcp transport mounted",
 					"public_url", cfg.MCPPublicURL,
 					"auth_server", cfg.AuthServerURL,
-					"resources_wired", false,
+					"resources_wired", true,
 				)
 
 				// OAuth 2.1 authorization server (PLAN-943 TASK-1024
