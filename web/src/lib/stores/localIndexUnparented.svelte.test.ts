@@ -118,4 +118,38 @@ describe('localIndex unparented projection compatibility', () => {
 		localIndex.upsert(ws, { ...row('hidden', 4), content: 'fresh' } as Item);
 		expect(localIndex.findByIdOrSlug(ws, 'hidden')?.seq).toBe(4);
 	});
+
+	it('rejects a stale-epoch brand-new create the fence cannot catch (BUG-2098)', async () => {
+		localIndex.upsert(ws, row('visible', 1, true));
+		localIndex.applyDelta(ws, [], '1', true); // cursor=1, scope=unrestricted
+
+		// A create is issued under the current (unrestricted) scope. The call
+		// site captures the epoch BEFORE awaiting the create response.
+		const staleEpoch = localIndex.scopeEpochFor(ws);
+
+		// Before the create resolves, a downgrade resync installs the
+		// authoritative snapshot and bumps the scope epoch. The brand-new id is
+		// NOT in the snapshot — but it was never in the map either, so it can't
+		// be fenced the way a dropped row is; only the epoch guard covers it.
+		vi.spyOn(api.items, 'listIndex').mockResolvedValueOnce({
+			items: [row('visible', 1)],
+			total: 1,
+			cursor: '1',
+			includes_unparented_metadata: false,
+		});
+		expect(await localIndex.ensureProjectionScope(ws, false)).toBe(true);
+		expect(localIndex.scopeEpochFor(ws)).toBeGreaterThan(staleEpoch);
+
+		// The stale old-scope create response now resolves. Its id was never
+		// dropped, so the fence set is empty for it — the epoch guard is the
+		// only thing that refuses it.
+		localIndex.upsert(ws, { ...row('created', 5), content: 'stale' } as Item, staleEpoch);
+		expect(localIndex.findByIdOrSlug(ws, 'created')).toBeNull();
+
+		// A create issued under the CURRENT scope (epoch not behind) is accepted —
+		// the guard rejects only responses that predate the resync, not all writes.
+		const freshEpoch = localIndex.scopeEpochFor(ws);
+		localIndex.upsert(ws, { ...row('created', 6), content: 'fresh' } as Item, freshEpoch);
+		expect(localIndex.findByIdOrSlug(ws, 'created')?.seq).toBe(6);
+	});
 });

@@ -3060,7 +3060,7 @@
 							editor={editorInstance}
 							{wsSlug}
 							collections={collectionStore.collections}
-							onItemCreated={(item, ws) => localIndex.upsert(ws, item)}
+							onItemCreated={(item, ws, epoch) => localIndex.upsert(ws, item, epoch)}
 						/>
 						<EditorLinkPopover editor={editorInstance} />
 					{/if}
