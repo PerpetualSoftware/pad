@@ -898,6 +898,29 @@ func TestAuthorizeCollabAccessCanWrite(t *testing.T) {
 	check("viewer", viewer, false)
 	check("editor+incidental view grant", editorWithViewGrant, true)
 	check("viewer+edit grant override", viewerWithEditGrant, true)
+
+	// Token write-scope gate (mirror REST): the collab upgrade is a GET,
+	// so a read-scoped bearer token would otherwise ride the user's
+	// editor role to canWrite=true and persist Yjs mutations. A
+	// read-scoped PAT owned by an editor must be admitted read-only; a
+	// write-scoped PAT owned by an editor keeps write.
+	checkScoped := func(name string, u *models.User, scopesJSON string, wantWrite bool) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/collab/"+item.ID, nil)
+		ctx := WithCurrentUser(req.Context(), u)
+		ctx = WithTokenScopes(ctx, scopesJSON)
+		req = req.WithContext(ctx)
+		access, err := srv.authorizeCollabAccess(req, item)
+		if err != nil {
+			t.Fatalf("%s: authorizeCollabAccess returned error (should be admitted): %v", name, err)
+		}
+		if access.canWrite != wantWrite {
+			t.Fatalf("%s: canWrite = %v, want %v", name, access.canWrite, wantWrite)
+		}
+	}
+	checkScoped("editor + read-scoped PAT", editor, `["read"]`, false)
+	checkScoped("editor + pad:read OAuth token", editor, `["pad:read"]`, false)
+	checkScoped("editor + write-scoped PAT", editor, `["write"]`, true)
+	checkScoped("editor + wildcard PAT", editor, `["*"]`, true)
 }
 
 // TestCollabDemotionMakesConnReadOnly exercises the mid-session

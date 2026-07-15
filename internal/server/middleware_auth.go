@@ -194,6 +194,14 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 		setTokenExpiryWarning(w, apiToken)
 
 		ctx := context.WithValue(r.Context(), ctxIsAPIToken, true)
+		// Stash the token's scopes so downstream handlers can enforce
+		// write-scope on paths where the method gate above isn't
+		// sufficient. The chain-level tokenScopeAllows check keys on the
+		// HTTP method, which is right for ordinary REST verbs; but the
+		// collab WebSocket upgrade is a GET that goes on to PERSIST Yjs
+		// mutations, so its handler re-checks write capability from these
+		// scopes (mirrors what MCPBearerAuth already stashes). Per TASK-265.
+		ctx = WithTokenScopes(ctx, apiToken.Scopes)
 
 		// Resolve user from token's user_id (new user-owned tokens)
 		if apiToken.UserID != "" {

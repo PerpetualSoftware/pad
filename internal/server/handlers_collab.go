@@ -555,6 +555,20 @@ type collabAccess struct {
 	canWrite bool
 }
 
+// collabTokenWriteScopeAllowed reports whether the request's auth
+// principal is permitted to WRITE, mirroring REST's per-method token
+// scope gate (TokenAuth → tokenScopeAllows). The collab upgrade is a
+// GET, so a read-scoped bearer token passes that method check; this
+// re-applies the write-capability half so such a token can't persist
+// Yjs mutations over the socket. Cookie / CLI-session and fresh-install
+// principals carry no token scopes; tokenScopeAllows treats an empty
+// scope string as unrestricted, so they are always allowed. Uses
+// http.MethodPost as the representative mutating verb (tokenScopeAllows
+// only distinguishes read verbs from write verbs). Per TASK-265.
+func (s *Server) collabTokenWriteScopeAllowed(r *http.Request) bool {
+	return tokenScopeAllows(TokenScopesFromContext(r.Context()), http.MethodPost, r.URL.Path)
+}
+
 // authorizeCollabAccess mirrors RequireWorkspaceAccess but keyed on
 // the item's workspace ID (the WS URL path doesn't carry a workspace
 // slug). It checks:
@@ -604,10 +618,11 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 
 	// Legacy API token (workspace-scoped, no user context). The REST
 	// middleware maps a matching workspace-scoped token to the editor
-	// role, so it may write.
+	// role, so it may write — but only if the token's SCOPE permits
+	// writes (a read-scoped token is admitted read-only, mirroring REST).
 	if tokenWsID := tokenWorkspaceID(r); tokenWsID != "" && currentUser(r) == nil {
 		if tokenWsID == wsID {
-			return collabAccess{canWrite: true}, nil
+			return collabAccess{canWrite: s.collabTokenWriteScopeAllowed(r)}, nil
 		}
 		return collabAccess{}, newStatusError(http.StatusForbidden, "forbidden",
 			"Token not authorized for this workspace")
@@ -706,6 +721,16 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 			return collabAccess{}, err
 		}
 		canWrite = permissionLevel(perm) >= permissionLevel("edit")
+	}
+	// Token write-scope gate (mirror REST): the collab upgrade is a GET,
+	// so a read-scoped bearer token (PAT / OAuth) sails past the
+	// method-keyed tokenScopeAllows check in TokenAuth — but it must not
+	// be able to PERSIST Yjs mutations over the socket. Downgrade to
+	// read-only when the caller's token scope doesn't permit writes.
+	// Non-token principals (cookie / CLI session) have empty scopes,
+	// which map to "unrestricted" → no downgrade. Per TASK-265.
+	if canWrite {
+		canWrite = s.collabTokenWriteScopeAllowed(r)
 	}
 
 	// Item-level visibility check. Mirrors requireItemVisible +

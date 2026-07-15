@@ -748,23 +748,41 @@ func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 	lock.Lock()
 	defer lock.Unlock()
 
+	m.mu.Lock()
+	room := m.rooms[itemID]
+	m.mu.Unlock()
+
+	if room == nil {
+		// No room / no peers — nothing can race the prune + write.
+		return applyFn()
+	}
+
+	// Hold appendMu across the writer-scan AND applyFn so the
+	// classification and the prune+write are atomic w.r.t. a concurrent
+	// viewer→editor promotion. appendMu is the same lock readLoop takes
+	// across its canWrite-check+persist and SetConnWritable takes when
+	// flipping canWrite; without holding it here a viewer promoted right
+	// after the scan could append a stale frame while the op-log is
+	// pruned and content is written (a persist/prune ordering data
+	// race). No socket I/O happens under this lock, and applyFn is a
+	// pure store op (prune + UpdateItem) that never re-enters itemLock /
+	// appendMu / room.mu, so there's no inversion or re-entrant
+	// deadlock. Lock order: itemLock → appendMu → room.mu. Per TASK-265.
+	room.appendMu.Lock()
+	defer room.appendMu.Unlock()
+
 	// Re-verify under the lock: only a live WRITER conn blocks the
 	// prune (its Y.Doc would diverge from the emptied op-log) — route
 	// through the applier protocol instead. A read-only conn can't
 	// persist, so it does NOT block (see the accepted residual above).
-	m.mu.Lock()
-	room := m.rooms[itemID]
-	m.mu.Unlock()
-	if room != nil {
-		room.mu.Lock()
-		for _, rc := range room.conns {
-			if rc.canWrite.Load() {
-				room.mu.Unlock()
-				return ErrRoomActiveDuringPrune
-			}
+	room.mu.Lock()
+	for _, rc := range room.conns {
+		if rc.canWrite.Load() {
+			room.mu.Unlock()
+			return ErrRoomActiveDuringPrune
 		}
-		room.mu.Unlock()
 	}
+	room.mu.Unlock()
 
 	return applyFn()
 }
