@@ -161,10 +161,17 @@ var ErrForceRefreshSent = errors.New("collab: client cursor below op-log MIN; fo
 // discard local Y.Doc state and reconnect with `?since=0`. Per
 // TASK-1319.
 //
+// `canWrite` reports whether this connection may PERSIST inbound sync
+// frames. A read-only participant (workspace viewer / view-only guest,
+// TASK-265) is admitted for live view + presence but its inbound sync
+// frames are dropped in readLoop rather than persisted/rebroadcast.
+// The handler's periodic revalidation can update this mid-session via
+// SetConnWritable (editor⇄viewer role change).
+//
 // Returns whatever error caused the WebSocket to close, or nil on a
 // normal close. The handler typically logs but doesn't act on the
 // return value: the connection is gone either way.
-func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64) error {
+func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, canWrite bool) error {
 	// Gate Add on the closed flag under m.mu so a late Join (e.g. a
 	// hijacked WS handler that didn't enter Join until AFTER Close
 	// returned) can't sneak past the drain barrier.
@@ -252,6 +259,7 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64) err
 			bus:         m.bus.Subscribe(itemID),
 			connectedAt: time.Now(),
 		}
+		rc.canWrite.Store(canWrite)
 
 		if err := room.addConn(rc); err != nil {
 			itemLock.Unlock()
@@ -770,6 +778,37 @@ func (m *RoomManager) CloseConn(itemID string, conn *websocket.Conn, code int, r
 	)
 	_ = conn.Close()
 	_ = itemID // reserved for future per-room metrics; see doc above
+}
+
+// SetConnWritable updates the write permission of a single live
+// connection mid-session. Called by the collab handler's periodic
+// authorization revalidation when a still-authorized peer's edit
+// permission changed — e.g. a workspace editor demoted to viewer (or
+// a viewer promoted to editor) — so readLoop's per-frame gate
+// reflects the current role without waiting for a reconnect. This is
+// the write-side complement of CloseConn: a demotion that keeps SOME
+// access downgrades the conn to read-only rather than evicting it.
+//
+// No-op when the conn is nil or the room / conn has already been torn
+// down (a disconnect that raced the reval tick). The flag is an
+// atomic.Bool so this write is safe against readLoop's concurrent
+// read. Per TASK-265.
+func (m *RoomManager) SetConnWritable(itemID string, conn *websocket.Conn, canWrite bool) {
+	if conn == nil {
+		return
+	}
+	m.mu.Lock()
+	room := m.rooms[itemID]
+	m.mu.Unlock()
+	if room == nil {
+		return
+	}
+	room.mu.Lock()
+	rc := room.conns[conn]
+	room.mu.Unlock()
+	if rc != nil {
+		rc.canWrite.Store(canWrite)
+	}
 }
 
 // Close stops every active room AND blocks until every in-flight

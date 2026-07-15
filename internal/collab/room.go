@@ -78,6 +78,18 @@ type roomConn struct {
 	// force_refresh path on empty-replay sessions and discard
 	// buffered pre-anchor edits. Per Codex round 21 [P1] of TASK-1319.
 	maxLiveOpLogIDDuringReplay atomic.Int64
+	// canWrite reports whether this connection may PERSIST inbound
+	// sync frames. Non-editor participants (workspace viewers,
+	// view-only guests) are admitted read-only — they still receive
+	// live broadcasts + presence, but readLoop drops their inbound
+	// sync frames (not persisted, not rebroadcast). Set at Join time
+	// from the collab authorization decision and flipped live by the
+	// manager's mid-session revalidation when the peer's edit
+	// permission changes (editor⇄viewer). atomic.Bool so the
+	// revalidation goroutine's write can't race readLoop's read.
+	// Server-side mirror of the REST requireEditPermission gate
+	// (TASK-265).
+	canWrite atomic.Bool
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -310,6 +322,21 @@ func (r *Room) readLoop(rc *roomConn) error {
 
 		switch data[0] {
 		case yMessageSync:
+			// Read-only participants (workspace viewers / view-only
+			// guests, TASK-265) are admitted for live view + presence
+			// but MUST NOT mutate content. Drop their inbound sync
+			// frames here — these are the frames that would otherwise
+			// persist to item_yjs_updates and get canonicalized into
+			// items.content by a co-present editor's authorized flush.
+			// Awareness (presence) frames below are still relayed so
+			// the viewer's cursor stays visible to editors. This is
+			// the collab-side mirror of the REST requireEditPermission
+			// gate; the flag is re-evaluated by the handler's periodic
+			// revalidation so a mid-session demotion takes effect
+			// without a reconnect.
+			if !rc.canWrite.Load() {
+				continue
+			}
 			// Hold appendMu across the persist+publish sequence so we
 			// uphold TASK-1252's single-writer-per-item contract. The
 			// dumb-relay design intends one writer per Room, but each

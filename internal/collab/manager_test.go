@@ -257,7 +257,7 @@ func newCollabTestServer(t *testing.T, mgr *RoomManager) *httptest.Server {
 				since = v
 			}
 		}
-		_ = mgr.Join(itemID, conn, since)
+		_ = mgr.Join(itemID, conn, since, true)
 	})
 	return httptest.NewServer(mux)
 }
@@ -702,7 +702,7 @@ func TestRoomManagerJoinAfterCloseFailsFast(t *testing.T) {
 
 	// Direct Join — bypass the WS plumbing since we want to exercise
 	// the closed-flag short-circuit in isolation.
-	err := mgr.Join("item-a", nil, 0) // conn is irrelevant; we never reach the WS path
+	err := mgr.Join("item-a", nil, 0, true) // conn is irrelevant; we never reach the WS path
 	if !errors.Is(err, errManagerClosed) {
 		t.Fatalf("want errManagerClosed, got %v", err)
 	}
