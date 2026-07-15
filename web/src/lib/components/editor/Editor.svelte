@@ -663,6 +663,9 @@
 	let keyboardVisible = $state(false);
 	let suppressUpdate = false;
 	let lastMarkdown = '';
+	// visualViewport 'resize'/'scroll' handler ref, so onDestroy can remove
+	// the exact listeners registered in onMount (TASK-2109).
+	let visualViewportHandler: (() => void) | null = null;
 
 	// Slash command state
 	let slashOpen = $state(false);
@@ -1127,6 +1130,7 @@
 				// Hide toolbar when keyboard is dismissed (viewport matches window)
 				keyboardVisible = kbHeight > 50;
 			};
+			visualViewportHandler = updateToolbarPos;
 			window.visualViewport.addEventListener('resize', updateToolbarPos);
 			window.visualViewport.addEventListener('scroll', updateToolbarPos);
 		}
@@ -1134,6 +1138,12 @@
 
 	onDestroy(() => {
 		editor?.destroy();
+		// onDestroy (unlike onMount) also runs during SSR, where `window` is
+		// undefined — guard with typeof before touching it (TASK-2109).
+		if (typeof window !== 'undefined' && window.visualViewport && visualViewportHandler) {
+			window.visualViewport.removeEventListener('resize', visualViewportHandler);
+			window.visualViewport.removeEventListener('scroll', visualViewportHandler);
+		}
 	});
 
 	$effect(() => {
