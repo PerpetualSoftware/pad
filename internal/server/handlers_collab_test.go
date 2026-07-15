@@ -864,6 +864,23 @@ func TestAuthorizeCollabAccessCanWrite(t *testing.T) {
 	editor := mkUser("editor2@test.com", "editor")
 	viewer := mkUser("viewer2@test.com", "viewer")
 
+	// Editor member who ALSO holds an incidental item-level `view`
+	// grant. ResolveUserPermission resolves the item grant ("view")
+	// BEFORE membership role, so computing canWrite purely from it
+	// would wrongly demote this legitimate editor to read-only. The
+	// role short-circuit (mirroring requireEditPermission) must win.
+	editorWithViewGrant := mkUser("editorgrant@test.com", "editor")
+	if _, err := srv.store.CreateItemGrant(ws.ID, item.ID, editorWithViewGrant.ID, "view", editorWithViewGrant.ID); err != nil {
+		t.Fatalf("CreateItemGrant (editor view): %v", err)
+	}
+
+	// Viewer member who holds an item-level `edit` grant — the grant
+	// must OVERRIDE the insufficient base role (also mirrors REST).
+	viewerWithEditGrant := mkUser("viewergrant@test.com", "viewer")
+	if _, err := srv.store.CreateItemGrant(ws.ID, item.ID, viewerWithEditGrant.ID, "edit", viewerWithEditGrant.ID); err != nil {
+		t.Fatalf("CreateItemGrant (viewer edit): %v", err)
+	}
+
 	check := func(name string, u *models.User, wantWrite bool) {
 		// Cookie-session-shaped request (no bearer header) so the
 		// caller is treated as an interactive session, not a token.
@@ -879,4 +896,107 @@ func TestAuthorizeCollabAccessCanWrite(t *testing.T) {
 	}
 	check("editor", editor, true)
 	check("viewer", viewer, false)
+	check("editor+incidental view grant", editorWithViewGrant, true)
+	check("viewer+edit grant override", viewerWithEditGrant, true)
+}
+
+// TestCollabDemotionMakesConnReadOnly exercises the mid-session
+// demotion path (TASK-265): an editor connected to a collab room who
+// is demoted to viewer must become read-only WITHOUT a reconnect —
+// the periodic revalidation recomputes canWrite and pushes it via
+// SetConnWritable, and the room's readLoop then drops the (now
+// read-only) conn's inbound sync frames. Also implicitly covers the
+// startup-ordering fix: revalidation only starts after registration,
+// so the SetConnWritable can find the conn.
+func TestCollabDemotionMakesConnReadOnly(t *testing.T) {
+	origInterval := collabMembershipRevalInterval
+	collabMembershipRevalInterval = 25 * time.Millisecond
+	defer func() { collabMembershipRevalInterval = origInterval }()
+
+	srv := testServerWithCollab(t)
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Demotion"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "Doc", Fields: `{}`})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	u, err := srv.store.CreateUser(models.UserCreate{
+		Email: "demote@test.com", Name: "Demote", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, u.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	token, err := srv.store.CreateSession(u.ID, "go-test", "127.0.0.1", "go-test", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	cookies := []*http.Cookie{{Name: "pad_session", Value: token}}
+
+	conn, resp, err := dialCollab(t, ts.URL, item.ID, cookies, "go-test")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101, got %d", resp.StatusCode)
+	}
+
+	// While an editor: a sync frame persists.
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte{0x00, 0xE1}); err != nil {
+		t.Fatalf("editor write: %v", err)
+	}
+	waitForOpLogRows(t, srv, item.ID, 1, 3*time.Second)
+
+	// Demote to viewer. The revalidation loop (25ms cadence) recomputes
+	// canWrite=false and pushes it via SetConnWritable.
+	if err := srv.store.UpdateWorkspaceMemberRole(ws.ID, u.ID, "viewer"); err != nil {
+		t.Fatalf("UpdateWorkspaceMemberRole: %v", err)
+	}
+
+	// Let the demotion propagate: several reval cadences (25ms) is
+	// ample for the loop to observe the viewer role and apply
+	// canWrite=false to the live conn. 500ms = ~20 ticks.
+	time.Sleep(500 * time.Millisecond)
+
+	// A post-demotion sync frame must now be dropped, not persisted.
+	// Send it, then watch the op-log for a further window: if the gate
+	// leaked, the frame would persist (in-process, sub-ms) and push the
+	// count to 2 well within the window.
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte{0x00, 0x22}); err != nil {
+		t.Fatalf("post-demotion write: %v", err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rows, err := srv.store.LoadYjsUpdatesSince(item.ID, 0)
+		if err != nil {
+			t.Fatalf("LoadYjsUpdatesSince: %v", err)
+		}
+		if len(rows) > 1 {
+			t.Fatalf("post-demotion frame persisted (%d rows) — demoted editor still writable", len(rows))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// Final confirmation: still exactly the single editor-era row.
+	rows, err := srv.store.LoadYjsUpdatesSince(item.ID, 0)
+	if err != nil {
+		t.Fatalf("LoadYjsUpdatesSince: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("op-log has %d rows, want 1 (only the pre-demotion editor frame)", len(rows))
+	}
 }

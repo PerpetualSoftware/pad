@@ -204,9 +204,24 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 	// pattern but routed through the room manager so the close
 	// frame goes out under writeMu (no concurrent-write panics
 	// against the room's writeLoop / replay path).
+	//
+	// The loop is gated on `registered` — closed by Join once the conn
+	// is in the room's conn map — so the first tick's SetConnWritable
+	// can't race Join's setup and no-op against an unregistered conn,
+	// which would strand a startup-window demotion (a viewer able to
+	// write) until a later tick. If Join bails before registering
+	// (schema/force-refresh/closed), revalDone unblocks the wait so the
+	// goroutine exits without leaking. Per TASK-265.
 	revalDone := make(chan struct{})
 	defer close(revalDone)
-	go s.collabRevalidationLoop(r, item, conn, itemID, userID, revalDone)
+	registered := make(chan struct{})
+	go func() {
+		select {
+		case <-registered:
+			s.collabRevalidationLoop(r, item, conn, itemID, userID, revalDone)
+		case <-revalDone:
+		}
+	}()
 
 	// Hand the connection to the RoomManager. It owns the
 	// op-log replay, fan-out, and lifecycle bookkeeping (lazy create
@@ -214,8 +229,11 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 	// access.canWrite gates whether the room persists+rebroadcasts
 	// this peer's inbound sync frames — a read-only participant
 	// (viewer / view-only guest) still receives broadcasts but its
-	// own frames are dropped (TASK-265).
-	if err := s.collab.Join(itemID, conn, sinceID, access.canWrite); err != nil {
+	// own frames are dropped (TASK-265). The onRegistered callback
+	// (closes `registered`) fires once the conn is in the room, so
+	// revalidation only starts after SetConnWritable can find it.
+	onRegistered := func() { close(registered) }
+	if err := s.collab.Join(itemID, conn, sinceID, access.canWrite, onRegistered); err != nil {
 		// ErrForceRefreshSent is the protocol's normal close-after-
 		// notify path — the JSON frame is already on the wire and
 		// the client knows what to do. Don't warn.
@@ -664,20 +682,31 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 			"You are not a member of this workspace")
 	}
 
-	// Compute the write decision ONCE, up front, using the same
-	// predicate the REST edit path falls back to
-	// (requireEditPermission → ResolveUserPermission): owner/editor
-	// membership grants edit; a viewer or guest gets edit only via a
-	// collection/item edit grant. The visibility checks below decide
-	// READ admission to the room; canWrite decides whether the
-	// admitted conn may persist inbound frames. Resolving it here
-	// (rather than at each grant-return) keeps the write predicate in
-	// one place; the read-only paths below discard it. Per TASK-265.
-	perm, err := s.store.ResolveUserPermission(wsID, fresh.ID, item.ID, item.CollectionID)
-	if err != nil {
-		return collabAccess{}, err
+	// Compute the write decision ONCE, up front, mirroring the REST
+	// edit path (requireEditPermission) EXACTLY. requireEditPermission
+	// grants an editor/owner MEMBER by role FIRST — short-circuiting
+	// before any grant lookup — and only falls back to
+	// ResolveUserPermission for viewers/guests, so that grants can
+	// OVERRIDE an insufficient base role. We must preserve that order:
+	// ResolveUserPermission resolves item/collection grants BEFORE
+	// membership role, so computing canWrite purely from it would let
+	// an incidental `view` grant on this item/collection wrongly demote
+	// a legitimate editor/owner to read-only. Members are never role
+	// "guest" (guests are non-members with grants), so the role check
+	// here is the analogue of requireEditPermission's
+	// `role != "guest" && requireRole(r, "editor")`. The visibility
+	// checks below decide READ admission to the room; canWrite decides
+	// whether the admitted conn may persist inbound frames. Per TASK-265.
+	var canWrite bool
+	if member != nil && roleLevel(member.Role) >= roleLevel("editor") {
+		canWrite = true
+	} else {
+		perm, err := s.store.ResolveUserPermission(wsID, fresh.ID, item.ID, item.CollectionID)
+		if err != nil {
+			return collabAccess{}, err
+		}
+		canWrite = permissionLevel(perm) >= permissionLevel("edit")
 	}
-	canWrite := permissionLevel(perm) >= permissionLevel("edit")
 
 	// Item-level visibility check. Mirrors requireItemVisible +
 	// guestResourceFilter without depending on middleware-set request

@@ -301,6 +301,18 @@ func (r *Room) pickApplier(tried map[*websocket.Conn]struct{}) *roomConn {
 		if _, skip := tried[rc.conn]; skip {
 			continue
 		}
+		// Read-only participants (workspace viewers / view-only guests,
+		// TASK-265) are never eligible appliers: the applier applies the
+		// external markdown by producing Y.Doc sync frames, which the
+		// read-only gate drops, so an elected viewer would ack a
+		// no-op and make ApplyExternalContent falsely report success —
+		// the PATCH handler would then skip its direct-write fallback
+		// and the edit would be silently lost. Skip them so election
+		// only ever lands on a writer (or returns nil → the caller's
+		// direct-write fallback fires).
+		if !rc.canWrite.Load() {
+			continue
+		}
 		candidates = append(candidates, rc)
 	}
 	r.mu.Unlock()
