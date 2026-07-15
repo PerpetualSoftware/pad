@@ -96,13 +96,17 @@ func (s *Server) handleDeleteToken(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
-	_, ok := s.getWorkspaceID(w, r)
+	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
+	// Scope the revoke to the URL's workspace. requireMinRole("owner") only
+	// proves the caller owns THIS workspace, not that {tokenID} belongs to it,
+	// so an unscoped delete-by-id is a cross-workspace IDOR (TASK-266). Mirrors
+	// DeleteUserAPIToken's user-scoped guard.
 	tokenID := chi.URLParam(r, "tokenID")
-	if err := s.store.DeleteAPIToken(tokenID); err != nil {
+	if err := s.store.DeleteAPITokenScoped(tokenID, workspaceID); err != nil {
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Token not found")
 			return

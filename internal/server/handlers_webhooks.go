@@ -117,13 +117,18 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
-	_, ok := s.getWorkspaceID(w, r)
+	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
+	// Scope the delete to the URL's workspace. requireMinRole("owner") only
+	// proves the caller owns THIS workspace, not that {webhookID} belongs to
+	// it, so an unscoped delete-by-id is a cross-workspace IDOR (TASK-266). An
+	// atomic scoped DELETE also avoids decrypting the secret just to delete —
+	// a rotated/missing key would otherwise make a broken webhook undeletable.
 	webhookID := chi.URLParam(r, "webhookID")
-	if err := s.store.DeleteWebhook(webhookID); err != nil {
+	if err := s.store.DeleteWebhookScoped(webhookID, workspaceID); err != nil {
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Webhook not found")
 			return
@@ -140,13 +145,18 @@ func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
-	_, ok := s.getWorkspaceID(w, r)
+	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
+	// Scope the lookup to the URL's workspace in SQL, before the secret is
+	// decrypted. A foreign (or missing) webhook ID returns no row → 404, so an
+	// owner of any workspace can neither fire a test delivery to another
+	// workspace's endpoint nor use 200-vs-404 (or a decrypt-failure 500) as a
+	// cross-workspace existence oracle (TASK-266).
 	webhookID := chi.URLParam(r, "webhookID")
-	hook, err := s.store.GetWebhook(webhookID)
+	hook, err := s.store.GetWebhookScoped(webhookID, workspaceID)
 	if err != nil {
 		writeInternalError(w, err)
 		return

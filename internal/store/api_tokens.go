@@ -187,9 +187,12 @@ func (s *Store) ListUserAPITokens(userID string) ([]models.APIToken, error) {
 	return result, rows.Err()
 }
 
-// DeleteAPIToken removes an API token by ID.
-func (s *Store) DeleteAPIToken(id string) error {
-	result, err := s.db.Exec(s.q("DELETE FROM api_tokens WHERE id = ?"), id)
+// DeleteAPITokenScoped removes a workspace-scoped API token by ID, verifying it
+// belongs to the given workspace. Prevents cross-workspace revocation (TASK-266):
+// an owner of one workspace must not be able to revoke another workspace's token
+// by ID. Returns sql.ErrNoRows when no token matches both id and workspace.
+func (s *Store) DeleteAPITokenScoped(id, workspaceID string) error {
+	result, err := s.db.Exec(s.q("DELETE FROM api_tokens WHERE id = ? AND workspace_id = ?"), id, workspaceID)
 	if err != nil {
 		return fmt.Errorf("delete api token: %w", err)
 	}

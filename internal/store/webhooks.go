@@ -72,6 +72,44 @@ func (s *Store) GetWebhook(id string) (*models.Webhook, error) {
 	return &wh, nil
 }
 
+// GetWebhookScoped retrieves a single webhook by ID, but only if it belongs to
+// the given workspace. The workspace_id predicate is applied in SQL BEFORE the
+// secret is decrypted, so a foreign (or nonexistent) ID returns (nil, nil)
+// without touching the ciphertext — this both closes the cross-workspace
+// existence oracle (TASK-266) and avoids a decrypt-failure 500 leaking that a
+// foreign webhook exists. Returns (nil, nil) when no webhook matches both.
+func (s *Store) GetWebhookScoped(id, workspaceID string) (*models.Webhook, error) {
+	var wh models.Webhook
+	var active bool
+	var createdAt, updatedAt string
+	var lastTriggeredAt *string
+
+	err := s.db.QueryRow(s.q(`
+		SELECT id, workspace_id, url, secret, events, active, created_at, updated_at, last_triggered_at, failure_count
+		FROM webhooks
+		WHERE id = ? AND workspace_id = ?
+	`), id, workspaceID).Scan(
+		&wh.ID, &wh.WorkspaceID, &wh.URL, &wh.Secret, &wh.Events,
+		&active, &createdAt, &updatedAt, &lastTriggeredAt, &wh.FailureCount,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get webhook: %w", err)
+	}
+
+	if wh.Secret, err = s.decrypt(wh.Secret); err != nil {
+		return nil, fmt.Errorf("decrypt webhook secret: %w", err)
+	}
+	wh.HasSecret = wh.Secret != ""
+	wh.Active = active
+	wh.CreatedAt = parseTime(createdAt)
+	wh.UpdatedAt = parseTime(updatedAt)
+	wh.LastTriggeredAt = parseTimePtr(lastTriggeredAt)
+	return &wh, nil
+}
+
 // ListWebhooks returns all webhooks for a workspace.
 func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 	rows, err := s.db.Query(s.q(`
@@ -111,9 +149,14 @@ func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 	return result, rows.Err()
 }
 
-// DeleteWebhook removes a webhook by ID.
-func (s *Store) DeleteWebhook(id string) error {
-	result, err := s.db.Exec(s.q("DELETE FROM webhooks WHERE id = ?"), id)
+// DeleteWebhookScoped removes a webhook by ID, verifying it belongs to the given
+// workspace. Prevents cross-workspace deletion (TASK-266): an owner of one
+// workspace must not be able to delete another workspace's webhook by ID. The
+// scoped DELETE is also atomic and avoids decrypting the secret just to delete —
+// a rotated/missing encryption key would otherwise leave a broken webhook
+// undeletable. Returns sql.ErrNoRows when no webhook matches both id and workspace.
+func (s *Store) DeleteWebhookScoped(id, workspaceID string) error {
+	result, err := s.db.Exec(s.q("DELETE FROM webhooks WHERE id = ? AND workspace_id = ?"), id, workspaceID)
 	if err != nil {
 		return fmt.Errorf("delete webhook: %w", err)
 	}
