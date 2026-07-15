@@ -56,9 +56,11 @@ func TestWebhookTokenCrossWorkspaceIDOR(t *testing.T) {
 	attackerToken := loginUser(t, srv, "attacker@test.com", "correct-horse-battery-staple")
 
 	// Victim webhook in workspace A. 8.8.8.8 is a public, non-reserved literal
-	// IP so ValidateWebhookURL passes without a DNS lookup.
+	// IP so ValidateWebhookURL passes without a DNS lookup. A non-empty secret
+	// ensures the cross-workspace test-delivery probe would have to decrypt if
+	// it fetched by ID — the scoped lookup must filter it out before then.
 	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+wsA.Slug+"/webhooks",
-		map[string]interface{}{"url": "https://8.8.8.8/hook"}, adminToken)
+		map[string]interface{}{"url": "https://8.8.8.8/hook", "secret": "victim-hmac-secret"}, adminToken)
 	if rr.Code != http.StatusCreated {
 		t.Fatalf("create victim webhook: %d %s", rr.Code, rr.Body.String())
 	}
