@@ -117,12 +117,27 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
-	_, ok := s.getWorkspaceID(w, r)
+	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
 
+	// Verify the webhook belongs to the URL's workspace before deleting.
+	// requireMinRole("owner") only proves the caller owns THIS workspace —
+	// not that {webhookID} lives in it — so without this check an owner of
+	// any workspace could delete another workspace's webhook by ID
+	// (cross-workspace IDOR, TASK-266). Mirrors handleDeleteWorkspaceAttachment.
 	webhookID := chi.URLParam(r, "webhookID")
+	hook, err := s.store.GetWebhook(webhookID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if hook == nil || hook.WorkspaceID != workspaceID {
+		writeError(w, http.StatusNotFound, "not_found", "Webhook not found")
+		return
+	}
+
 	if err := s.store.DeleteWebhook(webhookID); err != nil {
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Webhook not found")
@@ -140,7 +155,7 @@ func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
-	_, ok := s.getWorkspaceID(w, r)
+	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
@@ -151,7 +166,11 @@ func (s *Server) handleTestWebhook(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	if hook == nil {
+	// Scope to the URL's workspace: without the WorkspaceID match, an owner of
+	// any workspace could fire a test delivery to another workspace's endpoint
+	// and use the 200-vs-404 result as a cross-workspace existence oracle
+	// (TASK-266).
+	if hook == nil || hook.WorkspaceID != workspaceID {
 		writeError(w, http.StatusNotFound, "not_found", "Webhook not found")
 		return
 	}
