@@ -161,10 +161,25 @@ var ErrForceRefreshSent = errors.New("collab: client cursor below op-log MIN; fo
 // discard local Y.Doc state and reconnect with `?since=0`. Per
 // TASK-1319.
 //
+// `canWrite` reports whether this connection may PERSIST inbound sync
+// frames. A read-only participant (workspace viewer / view-only guest,
+// TASK-265) is admitted for live view + presence but its inbound sync
+// frames are dropped in readLoop rather than persisted/rebroadcast.
+// The handler's periodic revalidation can update this mid-session via
+// SetConnWritable (editor⇄viewer role change).
+//
+// `onRegistered`, when non-nil, is invoked exactly once immediately
+// after the conn has been added to the room's conn map (so a
+// concurrent SetConnWritable can find it). The handler uses it to gate
+// the start of its revalidation loop, closing the startup-window race
+// where a demotion observed before registration would no-op. It is NOT
+// called on the bail-out paths (schema rebuild, force_refresh, manager
+// closed, retries) that return before addConn succeeds. Per TASK-265.
+//
 // Returns whatever error caused the WebSocket to close, or nil on a
 // normal close. The handler typically logs but doesn't act on the
 // return value: the connection is gone either way.
-func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64) error {
+func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, canWrite bool, onRegistered func()) error {
 	// Gate Add on the closed flag under m.mu so a late Join (e.g. a
 	// hijacked WS handler that didn't enter Join until AFTER Close
 	// returned) can't sneak past the drain barrier.
@@ -252,6 +267,7 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64) err
 			bus:         m.bus.Subscribe(itemID),
 			connectedAt: time.Now(),
 		}
+		rc.canWrite.Store(canWrite)
 
 		if err := room.addConn(rc); err != nil {
 			itemLock.Unlock()
@@ -266,6 +282,13 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64) err
 				continue
 			}
 			return err
+		}
+
+		// Conn is now registered in the room's conn map (SetConnWritable
+		// can find it). Signal the handler so it can start revalidation
+		// without racing this setup. Per TASK-265.
+		if onRegistered != nil {
+			onRegistered()
 		}
 
 		return m.runConn(room, rc, itemLock, since)
@@ -689,8 +712,8 @@ func (m *RoomManager) UnderItemLock(itemID string, fn func() error) error {
 // classifies the request as "no live editors" (ErrNoActiveRoom or
 // ErrNoApplierAvailable).
 //
-// Returns ErrRoomActiveDuringPrune if a room with live conns has
-// appeared since the caller's classification check; otherwise the
+// Returns ErrRoomActiveDuringPrune if a room with a live WRITER conn
+// has appeared since the caller's classification check; otherwise the
 // error from applyFn (if any). The caller is expected to fall
 // through to a plain direct write in the active-room case so the
 // PATCH still completes.
@@ -701,25 +724,65 @@ func (m *RoomManager) UnderItemLock(itemID string, fn func() error) error {
 // soon-to-be-pruned op-log into a new client, and end up with stale
 // Y.Doc state that later overwrites the freshly-written
 // items.content on the next idle flush. Per Codex review round 5.
+//
+// Only a live WRITER peer blocks the prune (TASK-265). A read-only
+// peer (workspace viewer / view-only guest) can never persist — its
+// sync frames are dropped and it can't be an applier — so its presence
+// does NOT force the caller onto the unsafe direct-write-without-prune
+// fallback: the op-log is safely pruned even while viewers are
+// attached, so a later editor lazy-seeds from the fresh items.content
+// instead of replaying stale ops.
+//
+// ACCEPTED RESIDUAL (TASK-265 / BUG-2103): connected read-only peers
+// keep a possibly-stale in-memory Y.Doc after this direct write until
+// their next reconnect/refresh (their resume cursor now sits below the
+// pruned op-log's MIN, so a reconnect force_refreshes and re-seeds). A
+// viewer promoted to editor BEFORE re-syncing could push that stale
+// content — a lost-update edge, not a security hole (a promoted viewer
+// is a legitimate editor). This is best-effort degradation consistent
+// with the pre-existing direct-write contract (see applier.go); a
+// proactive re-seed/refresh to remaining read-only peers is tracked in
+// BUG-2103.
 func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 	lock := m.itemLock(itemID)
 	lock.Lock()
 	defer lock.Unlock()
 
-	// Re-verify under the lock: if a room with live conns has
-	// appeared, refuse to prune (peers' Y.Doc would diverge from
-	// an empty op-log).
 	m.mu.Lock()
-	hasLivePeers := false
-	if r, ok := m.rooms[itemID]; ok {
-		r.mu.Lock()
-		hasLivePeers = len(r.conns) > 0
-		r.mu.Unlock()
-	}
+	room := m.rooms[itemID]
 	m.mu.Unlock()
-	if hasLivePeers {
-		return ErrRoomActiveDuringPrune
+
+	if room == nil {
+		// No room / no peers — nothing can race the prune + write.
+		return applyFn()
 	}
+
+	// Hold appendMu across the writer-scan AND applyFn so the
+	// classification and the prune+write are atomic w.r.t. a concurrent
+	// viewer→editor promotion. appendMu is the same lock readLoop takes
+	// across its canWrite-check+persist and SetConnWritable takes when
+	// flipping canWrite; without holding it here a viewer promoted right
+	// after the scan could append a stale frame while the op-log is
+	// pruned and content is written (a persist/prune ordering data
+	// race). No socket I/O happens under this lock, and applyFn is a
+	// pure store op (prune + UpdateItem) that never re-enters itemLock /
+	// appendMu / room.mu, so there's no inversion or re-entrant
+	// deadlock. Lock order: itemLock → appendMu → room.mu. Per TASK-265.
+	room.appendMu.Lock()
+	defer room.appendMu.Unlock()
+
+	// Re-verify under the lock: only a live WRITER conn blocks the
+	// prune (its Y.Doc would diverge from the emptied op-log) — route
+	// through the applier protocol instead. A read-only conn can't
+	// persist, so it does NOT block (see the accepted residual above).
+	room.mu.Lock()
+	for _, rc := range room.conns {
+		if rc.canWrite.Load() {
+			room.mu.Unlock()
+			return ErrRoomActiveDuringPrune
+		}
+	}
+	room.mu.Unlock()
 
 	return applyFn()
 }
@@ -770,6 +833,47 @@ func (m *RoomManager) CloseConn(itemID string, conn *websocket.Conn, code int, r
 	)
 	_ = conn.Close()
 	_ = itemID // reserved for future per-room metrics; see doc above
+}
+
+// SetConnWritable updates the write permission of a single live
+// connection mid-session. Called by the collab handler's periodic
+// authorization revalidation when a still-authorized peer's edit
+// permission changed — e.g. a workspace editor demoted to viewer (or
+// a viewer promoted to editor) — so readLoop's per-frame gate
+// reflects the current role without waiting for a reconnect. This is
+// the write-side complement of CloseConn: a demotion that keeps SOME
+// access downgrades the conn to read-only rather than evicting it.
+//
+// No-op when the conn is nil or the room / conn has already been torn
+// down (a disconnect that raced the reval tick).
+//
+// The flag is an atomic.Bool AND the store happens under the room's
+// appendMu — the same lock readLoop holds across its (now
+// under-appendMu) canWrite check + persist. That fencing means a
+// demotion can't interleave with an in-flight frame: readLoop either
+// runs the whole check+persist before this store, or observes the new
+// value and drops the frame. Room lookup (m.mu) and conn lookup
+// (room.mu) are released before appendMu is taken, so no lock nesting
+// is introduced. Per TASK-265.
+func (m *RoomManager) SetConnWritable(itemID string, conn *websocket.Conn, canWrite bool) {
+	if conn == nil {
+		return
+	}
+	m.mu.Lock()
+	room := m.rooms[itemID]
+	m.mu.Unlock()
+	if room == nil {
+		return
+	}
+	room.mu.Lock()
+	rc := room.conns[conn]
+	room.mu.Unlock()
+	if rc == nil {
+		return
+	}
+	room.appendMu.Lock()
+	rc.canWrite.Store(canWrite)
+	room.appendMu.Unlock()
 }
 
 // Close stops every active room AND blocks until every in-flight

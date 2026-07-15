@@ -78,6 +78,18 @@ type roomConn struct {
 	// force_refresh path on empty-replay sessions and discard
 	// buffered pre-anchor edits. Per Codex round 21 [P1] of TASK-1319.
 	maxLiveOpLogIDDuringReplay atomic.Int64
+	// canWrite reports whether this connection may PERSIST inbound
+	// sync frames. Non-editor participants (workspace viewers,
+	// view-only guests) are admitted read-only — they still receive
+	// live broadcasts + presence, but readLoop drops their inbound
+	// sync frames (not persisted, not rebroadcast). Set at Join time
+	// from the collab authorization decision and flipped live by the
+	// manager's mid-session revalidation when the peer's edit
+	// permission changes (editor⇄viewer). atomic.Bool so the
+	// revalidation goroutine's write can't race readLoop's read.
+	// Server-side mirror of the REST requireEditPermission gate
+	// (TASK-265).
+	canWrite atomic.Bool
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -319,6 +331,28 @@ func (r *Room) readLoop(rc *roomConn) error {
 			// commit order). awareness frames and OTHER rooms are
 			// unaffected by this lock.
 			r.appendMu.Lock()
+			// Read-only participants (workspace viewers / view-only
+			// guests, TASK-265) are admitted for live view + presence
+			// but MUST NOT mutate content. Drop their inbound sync
+			// frames — these are the frames that would otherwise persist
+			// to item_yjs_updates and get canonicalized into
+			// items.content by a co-present editor's authorized flush.
+			// Awareness (presence) frames below are still relayed so the
+			// viewer's cursor stays visible to editors. This is the
+			// collab-side mirror of the REST requireEditPermission gate.
+			//
+			// The canWrite check is INSIDE appendMu and SetConnWritable
+			// takes appendMu when flipping the flag, so a demotion that
+			// races an in-flight frame can't slip between the check and
+			// the persist: either the frame's whole persist runs before
+			// the demotion, or the demotion is observed and the frame is
+			// dropped. Without this fencing a reader could read
+			// canWrite=true, block on appendMu, and persist AFTER
+			// SetConnWritable(false) returned (TOCTOU).
+			if !rc.canWrite.Load() {
+				r.appendMu.Unlock()
+				continue
+			}
 			// Persist before broadcast so a server crash between
 			// persist and broadcast loses at most a live keystroke
 			// that the originating peer will replay on reconnect
@@ -462,6 +496,21 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 	switch ctl.Type {
 	case ControlMessageApplierAck:
 		if ctl.RequestID == "" {
+			return
+		}
+		// A read-only participant can never be a legitimate applier —
+		// pickApplier excludes non-writers — so an applier_ack from a
+		// conn whose canWrite is false MUST be ignored (TASK-265).
+		// Otherwise a viewer (or an editor demoted mid-apply) could
+		// report a phantom success while its resulting sync frames were
+		// dropped by the read-only gate, making ApplyExternalContent
+		// return nil, skip the PATCH handler's direct-write fallback,
+		// and silently lose the external edit.
+		if !rc.canWrite.Load() {
+			slog.Warn("collab: applier_ack from read-only conn; ignoring",
+				"item_id", r.itemID,
+				"client_id", rc.id,
+			)
 			return
 		}
 		r.routeApplierAck(ctl.RequestID, rc.conn)

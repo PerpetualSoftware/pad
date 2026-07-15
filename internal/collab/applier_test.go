@@ -431,6 +431,147 @@ func TestApplyExternalContentRejectsAckFromUnexpectedConn(t *testing.T) {
 	}
 }
 
+// TestApplyExternalContentSkipsReadOnlyApplier is a TASK-265
+// regression: a read-only participant must NEVER be elected applier.
+// If it were, it would ack a no-op — its resulting Y.Doc sync frames
+// are dropped by the read-only gate — and ApplyExternalContent would
+// falsely return nil, making the PATCH handler skip its direct-write
+// fallback and silently lose the external edit. With the only conn
+// read-only, pickApplier finds no candidate → ErrNoApplierAvailable,
+// so the caller falls back to a direct write (no loss). The conn even
+// runs an honest ack-echo to prove that a *willing* but unauthorized
+// applier is still never asked.
+func TestApplyExternalContentSkipsReadOnlyApplier(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	defer mgr.Close()
+
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	conn := dialWSReadOnly(t, srv, "item-a")
+	stop := runApplierEcho(t, conn)
+	defer stop()
+
+	// Wait for the room to register the read-only conn.
+	for i := 0; i < 200; i++ {
+		if mgr.RoomCount() == 1 && bus.SubscriberCount("item-a") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	err := mgr.ApplyExternalContent("item-a", "# new content")
+	if !errors.Is(err, ErrNoApplierAvailable) {
+		t.Fatalf("read-only-only room: want ErrNoApplierAvailable (so the caller direct-writes), got %v", err)
+	}
+}
+
+// TestHandleControlMessageIgnoresAckFromReadOnlyConn is the
+// defence-in-depth half of the TASK-265 applier fix: even if a
+// read-only conn somehow holds a pending-ack slot (e.g. an editor
+// demoted after being elected), an applier_ack from it must be
+// ignored so ApplyExternalContent doesn't report a phantom success.
+func TestHandleControlMessageIgnoresAckFromReadOnlyConn(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	defer mgr.Close()
+
+	room := mgr.getOrCreate("item-a")
+
+	// Read-only conn: canWrite defaults to false. The conn pointer is
+	// only used for identity (pending-ack expectedConn match); no I/O
+	// happens on it because the ack is rejected before routeApplierAck.
+	rc := &roomConn{id: 1, conn: &websocket.Conn{}}
+
+	reqID := "req-readonly"
+	ch, err := room.registerPendingAck(reqID, rc.conn)
+	if err != nil {
+		t.Fatalf("registerPendingAck: %v", err)
+	}
+
+	payload, _ := json.Marshal(ControlMessage{Type: ControlMessageApplierAck, RequestID: reqID})
+	room.handleControlMessage(rc, payload)
+
+	select {
+	case <-ch:
+		t.Fatal("applier_ack from a read-only conn must be ignored, but it signaled the pending ack")
+	case <-time.After(50 * time.Millisecond):
+		// Correct: the ack was dropped before routeApplierAck.
+	}
+}
+
+// TestPruneAndApplyAllowsReadOnlyRoom verifies the load-bearing
+// writer-aware guard (TASK-265): a room whose only peers are read-only
+// must NOT block the no-applier direct write. PruneAndApply runs applyFn
+// (prune + write) rather than returning ErrRoomActiveDuringPrune, so the
+// op-log is safely pruned even with viewers attached and a later editor
+// lazy-seeds from the fresh items.content. (Read-only peers keep a
+// possibly-stale Y.Doc until they reconnect/refresh — an accepted
+// best-effort residual tracked in BUG-2103.)
+func TestPruneAndApplyAllowsReadOnlyRoom(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	defer mgr.Close()
+
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	conn := dialWSReadOnly(t, srv, "item-a")
+	defer conn.Close()
+
+	for i := 0; i < 200; i++ {
+		if mgr.RoomCount() == 1 && bus.SubscriberCount("item-a") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	ran := false
+	if err := mgr.PruneAndApply("item-a", func() error { ran = true; return nil }); err != nil {
+		t.Fatalf("read-only-only room: want nil (prune allowed), got %v", err)
+	}
+	if !ran {
+		t.Fatal("applyFn did not run — a read-only peer wrongly blocked the prune")
+	}
+}
+
+// TestPruneAndApplyBlockedByLiveWriter confirms the complementary
+// invariant: a live WRITER still blocks the prune (ErrRoomActiveDuringPrune)
+// so the caller routes the external update through the applier protocol
+// rather than clobbering the writer's in-memory Y.Doc.
+func TestPruneAndApplyBlockedByLiveWriter(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	defer mgr.Close()
+
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "item-a") // writer (canWrite=true)
+	defer conn.Close()
+
+	for i := 0; i < 200; i++ {
+		if bus.SubscriberCount("item-a") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	ran := false
+	err := mgr.PruneAndApply("item-a", func() error { ran = true; return nil })
+	if !errors.Is(err, ErrRoomActiveDuringPrune) {
+		t.Fatalf("want ErrRoomActiveDuringPrune with a live writer, got %v", err)
+	}
+	if ran {
+		t.Fatal("applyFn must not run while a live writer is present")
+	}
+}
+
 // swapApplierTimeouts is a small test-only mutator. The package
 // constants are *not* exported as vars so the swap goes through a
 // dedicated helper that lives only in test builds. We accept a

@@ -257,7 +257,10 @@ func newCollabTestServer(t *testing.T, mgr *RoomManager) *httptest.Server {
 				since = v
 			}
 		}
-		_ = mgr.Join(itemID, conn, since)
+		// `?readonly=1` joins as a read-only participant (canWrite=false)
+		// so tests can exercise the TASK-265 gate. Default is writable.
+		canWrite := r.URL.Query().Get("readonly") != "1"
+		_ = mgr.Join(itemID, conn, since, canWrite, nil)
 	})
 	return httptest.NewServer(mux)
 }
@@ -279,6 +282,19 @@ func dialWSSince(t *testing.T, server *httptest.Server, itemID string, since int
 	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
+	}
+	return c
+}
+
+// dialWSReadOnly joins as a read-only participant (canWrite=false) via
+// the harness's `?readonly=1` switch — for TASK-265 tests.
+func dialWSReadOnly(t *testing.T, server *httptest.Server, itemID string) *websocket.Conn {
+	t.Helper()
+	u, _ := url.Parse(server.URL)
+	wsURL := "ws://" + u.Host + "/ws/" + itemID + "?readonly=1"
+	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial readonly: %v", err)
 	}
 	return c
 }
@@ -702,7 +718,7 @@ func TestRoomManagerJoinAfterCloseFailsFast(t *testing.T) {
 
 	// Direct Join — bypass the WS plumbing since we want to exercise
 	// the closed-flag short-circuit in isolation.
-	err := mgr.Join("item-a", nil, 0) // conn is irrelevant; we never reach the WS path
+	err := mgr.Join("item-a", nil, 0, true, nil) // conn is irrelevant; we never reach the WS path
 	if !errors.Is(err, errManagerClosed) {
 		t.Fatalf("want errManagerClosed, got %v", err)
 	}

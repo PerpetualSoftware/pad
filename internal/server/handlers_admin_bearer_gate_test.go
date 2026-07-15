@@ -226,15 +226,19 @@ func TestAuthorizeCollabAccess_AdminBearer_DeniedOnNonMember(t *testing.T) {
 		t.Fatalf("create item: %v", err)
 	}
 
-	// Cookie-session admin — bypass fires, access allowed.
-	if err := srv.authorizeCollabAccess(
+	// Cookie-session admin — bypass fires, access allowed with write.
+	access, err := srv.authorizeCollabAccess(
 		mkAdminCookieReq(t, "/api/v1/collab/"+item.ID, admin), item,
-	); err != nil {
+	)
+	if err != nil {
 		t.Fatalf("cookie admin should be allowed on collab WS; got error %v", err)
+	}
+	if !access.canWrite {
+		t.Error("cookie-session admin should be admitted with write access (canWrite=true)")
 	}
 
 	// Bearer admin — bypass suppressed, no membership → 403.
-	err = srv.authorizeCollabAccess(
+	_, err = srv.authorizeCollabAccess(
 		mkAdminBearerReq(t, "/api/v1/collab/"+item.ID, admin), item,
 	)
 	if err == nil {

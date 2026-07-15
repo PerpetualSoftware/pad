@@ -95,7 +95,8 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.authorizeCollabAccess(r, item); err != nil {
+	access, err := s.authorizeCollabAccess(r, item)
+	if err != nil {
 		var sErr *statusError
 		if errors.As(err, &sErr) {
 			writeError(w, sErr.code, sErr.kind, sErr.message)
@@ -203,14 +204,36 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 	// pattern but routed through the room manager so the close
 	// frame goes out under writeMu (no concurrent-write panics
 	// against the room's writeLoop / replay path).
+	//
+	// The loop is gated on `registered` — closed by Join once the conn
+	// is in the room's conn map — so the first tick's SetConnWritable
+	// can't race Join's setup and no-op against an unregistered conn,
+	// which would strand a startup-window demotion (a viewer able to
+	// write) until a later tick. If Join bails before registering
+	// (schema/force-refresh/closed), revalDone unblocks the wait so the
+	// goroutine exits without leaking. Per TASK-265.
 	revalDone := make(chan struct{})
 	defer close(revalDone)
-	go s.collabRevalidationLoop(r, item, conn, itemID, userID, revalDone)
+	registered := make(chan struct{})
+	go func() {
+		select {
+		case <-registered:
+			s.collabRevalidationLoop(r, item, conn, itemID, userID, revalDone)
+		case <-revalDone:
+		}
+	}()
 
 	// Hand the connection to the RoomManager. It owns the
 	// op-log replay, fan-out, and lifecycle bookkeeping (lazy create
 	// + grace-TTL reclaim). Returns when the WS closes for any reason.
-	if err := s.collab.Join(itemID, conn, sinceID); err != nil {
+	// access.canWrite gates whether the room persists+rebroadcasts
+	// this peer's inbound sync frames — a read-only participant
+	// (viewer / view-only guest) still receives broadcasts but its
+	// own frames are dropped (TASK-265). The onRegistered callback
+	// (closes `registered`) fires once the conn is in the room, so
+	// revalidation only starts after SetConnWritable can find it.
+	onRegistered := func() { close(registered) }
+	if err := s.collab.Join(itemID, conn, sinceID, access.canWrite, onRegistered); err != nil {
 		// ErrForceRefreshSent is the protocol's normal close-after-
 		// notify path — the JSON frame is already on the wire and
 		// the client knows what to do. Don't warn.
@@ -295,12 +318,20 @@ func (s *Server) collabRevalidationLoop(
 				return
 			}
 
-			err := s.authorizeCollabAccess(r, fresh)
+			access, err := s.authorizeCollabAccess(r, fresh)
 			switch {
 			case err == nil:
-				// Still authorised. Re-arm at the regular cadence;
-				// the connect-time jitter has already spread the
-				// fleet so subsequent fires can be evenly spaced.
+				// Still authorised. Push any write-permission change
+				// to the live connection so the room's per-frame gate
+				// reflects the current role without a reconnect — e.g.
+				// an editor demoted to viewer becomes read-only
+				// (TASK-265), or a viewer promoted to editor gains
+				// write. This complements the CloseConn path below,
+				// which only fires when access is lost entirely.
+				s.collab.SetConnWritable(itemID, conn, access.canWrite)
+				// Re-arm at the regular cadence; the connect-time
+				// jitter has already spread the fleet so subsequent
+				// fires can be evenly spaced.
 				timer.Reset(interval)
 
 			case isAccessDenial(err):
@@ -512,6 +543,32 @@ func newStatusError(code int, kind, message string) *statusError {
 	return &statusError{code: code, kind: kind, message: message}
 }
 
+// collabAccess is the positive outcome of authorizeCollabAccess: the
+// caller is admitted to the collab room (read / live-view). canWrite
+// reports whether the caller may additionally PERSIST inbound Yjs
+// frames — false for a workspace viewer or view-only guest, who is
+// admitted as a read-only participant (keeps presence + live view,
+// but the room drops its inbound sync frames). Threaded into
+// RoomManager.Join and refreshed by the periodic revalidation. Per
+// TASK-265.
+type collabAccess struct {
+	canWrite bool
+}
+
+// collabTokenWriteScopeAllowed reports whether the request's auth
+// principal is permitted to WRITE, mirroring REST's per-method token
+// scope gate (TokenAuth → tokenScopeAllows). The collab upgrade is a
+// GET, so a read-scoped bearer token passes that method check; this
+// re-applies the write-capability half so such a token can't persist
+// Yjs mutations over the socket. Cookie / CLI-session and fresh-install
+// principals carry no token scopes; tokenScopeAllows treats an empty
+// scope string as unrestricted, so they are always allowed. Uses
+// http.MethodPost as the representative mutating verb (tokenScopeAllows
+// only distinguishes read verbs from write verbs). Per TASK-265.
+func (s *Server) collabTokenWriteScopeAllowed(r *http.Request) bool {
+	return tokenScopeAllows(TokenScopesFromContext(r.Context()), http.MethodPost, r.URL.Path)
+}
+
 // authorizeCollabAccess mirrors RequireWorkspaceAccess but keyed on
 // the item's workspace ID (the WS URL path doesn't carry a workspace
 // slug). It checks:
@@ -524,9 +581,15 @@ func newStatusError(code int, kind, message string) *statusError {
 //   - Authenticated user → admin OR member OR has guest grants.
 //   - Anything else → 403 / 401 as appropriate.
 //
-// Returns nil on success, a *statusError on a known denial, or a
-// non-statusError for store errors.
-func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error {
+// On success it returns a collabAccess describing the admission —
+// including canWrite, which reports whether the caller may PERSIST
+// inbound Yjs frames (mirrors the REST requireEditPermission
+// predicate). A non-editor (workspace viewer / view-only guest) is
+// admitted read-only (canWrite=false): it keeps live view + presence
+// but its sync frames are dropped by the room. On a known denial it
+// returns a zero collabAccess + *statusError; store errors surface as
+// a non-statusError. TASK-265.
+func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (collabAccess, error) {
 	wsID := item.WorkspaceID
 
 	// Workspace lookup is needed for the OAuth-allow-list slug compare
@@ -534,36 +597,44 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	// than a confusing 403.
 	ws, err := s.store.GetWorkspaceByID(wsID)
 	if err != nil {
-		return err
+		return collabAccess{}, err
 	}
 	if ws == nil {
-		return newStatusError(http.StatusNotFound, "not_found", "Workspace not found")
+		return collabAccess{}, newStatusError(http.StatusNotFound, "not_found", "Workspace not found")
 	}
 
 	// OAuth token allow-list gate.
 	if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
 		s.recordMCPAuthzDenial(r, "workspace_not_in_allowlist")
-		return newStatusError(http.StatusForbidden, "permission_denied",
+		return collabAccess{}, newStatusError(http.StatusForbidden, "permission_denied",
 			"Token is not authorized for this workspace")
 	}
 
-	// Fresh-install escape hatch.
+	// Fresh-install escape hatch. No users yet → no auth at all, so
+	// the REST surface treats the caller as owner; grant write too —
+	// EXCEPT a legacy workspace token still carries a scope even on a
+	// zero-user instance, so a read-scoped token stays read-only here
+	// too (collabTokenWriteScopeAllowed returns true for the no-token
+	// anonymous setup caller, whose scopes are empty = unrestricted).
 	if count, _ := s.store.UserCount(); count == 0 {
-		return nil
+		return collabAccess{canWrite: s.collabTokenWriteScopeAllowed(r)}, nil
 	}
 
-	// Legacy API token (workspace-scoped, no user context).
+	// Legacy API token (workspace-scoped, no user context). The REST
+	// middleware maps a matching workspace-scoped token to the editor
+	// role, so it may write — but only if the token's SCOPE permits
+	// writes (a read-scoped token is admitted read-only, mirroring REST).
 	if tokenWsID := tokenWorkspaceID(r); tokenWsID != "" && currentUser(r) == nil {
 		if tokenWsID == wsID {
-			return nil
+			return collabAccess{canWrite: s.collabTokenWriteScopeAllowed(r)}, nil
 		}
-		return newStatusError(http.StatusForbidden, "forbidden",
+		return collabAccess{}, newStatusError(http.StatusForbidden, "forbidden",
 			"Token not authorized for this workspace")
 	}
 
 	user := currentUser(r)
 	if user == nil {
-		return newStatusError(http.StatusUnauthorized, "unauthorized",
+		return collabAccess{}, newStatusError(http.StatusUnauthorized, "unauthorized",
 			"Authentication required")
 	}
 
@@ -571,13 +642,13 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	// reflected immediately. Mirrors sseSubscriberStillHasAccess.
 	fresh, err := s.store.GetUser(user.ID)
 	if err != nil {
-		return err
+		return collabAccess{}, err
 	}
 	if fresh == nil {
-		return newStatusError(http.StatusForbidden, "forbidden", "User not found")
+		return collabAccess{}, newStatusError(http.StatusForbidden, "forbidden", "User not found")
 	}
 	if fresh.IsDisabled() {
-		return newStatusError(http.StatusForbidden, "forbidden", "User is disabled")
+		return collabAccess{}, newStatusError(http.StatusForbidden, "forbidden", "User is disabled")
 	}
 	// PLAN-1933 DR-4: the collab upgrade authorizes then persists
 	// incoming Yjs frames to item_yjs_updates (room.go) — a content
@@ -588,15 +659,16 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	// for verified users via emailUnverifiedBlocked. Uses the freshly
 	// re-fetched user so an admin force-verify mid-session is honoured.
 	if s.emailUnverifiedBlocked(fresh) {
-		return newStatusError(http.StatusForbidden, "email_not_verified",
+		return collabAccess{}, newStatusError(http.StatusForbidden, "email_not_verified",
 			"Verify your email address to edit content.")
 	}
 	// Admin platform-role bypass — cookie session auth only (BUG-1616).
 	// Bearer-borne admin (CLI / PAT / MCP) falls through to the
-	// membership-only check below. Mirrors RequireWorkspaceAccess.
+	// membership-only check below. Mirrors RequireWorkspaceAccess,
+	// which maps a cookie-session admin to the owner role → write.
 	isBearer := isBearerAuth(r)
 	if fresh.Role == "admin" && !isBearer {
-		return nil
+		return collabAccess{canWrite: true}, nil
 	}
 
 	// Workspace-level gate: any access at all? Membership OR guest grants.
@@ -606,7 +678,7 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	// 403 first so non-members see the same shape they always have.
 	member, err := s.store.GetWorkspaceMember(wsID, fresh.ID)
 	if err != nil {
-		return err
+		return collabAccess{}, err
 	}
 	hasWorkspaceLevelAccess := member != nil
 	if !hasWorkspaceLevelAccess {
@@ -614,19 +686,55 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 		// guest-grants fallback exactly like RequireWorkspaceAccess.
 		if fresh.Role == "admin" && isBearer {
 			s.recordMCPAuthzDenial(r, "not_a_member")
-			return newStatusError(http.StatusForbidden, "forbidden",
+			return collabAccess{}, newStatusError(http.StatusForbidden, "forbidden",
 				"You are not a member of this workspace")
 		}
 		hasGrants, err := s.store.UserHasGrantsInWorkspace(wsID, fresh.ID)
 		if err != nil {
-			return err
+			return collabAccess{}, err
 		}
 		hasWorkspaceLevelAccess = hasGrants
 	}
 	if !hasWorkspaceLevelAccess {
 		s.recordMCPAuthzDenial(r, "not_a_member")
-		return newStatusError(http.StatusForbidden, "forbidden",
+		return collabAccess{}, newStatusError(http.StatusForbidden, "forbidden",
 			"You are not a member of this workspace")
+	}
+
+	// Compute the write decision ONCE, up front, mirroring the REST
+	// edit path (requireEditPermission) EXACTLY. requireEditPermission
+	// grants an editor/owner MEMBER by role FIRST — short-circuiting
+	// before any grant lookup — and only falls back to
+	// ResolveUserPermission for viewers/guests, so that grants can
+	// OVERRIDE an insufficient base role. We must preserve that order:
+	// ResolveUserPermission resolves item/collection grants BEFORE
+	// membership role, so computing canWrite purely from it would let
+	// an incidental `view` grant on this item/collection wrongly demote
+	// a legitimate editor/owner to read-only. Members are never role
+	// "guest" (guests are non-members with grants), so the role check
+	// here is the analogue of requireEditPermission's
+	// `role != "guest" && requireRole(r, "editor")`. The visibility
+	// checks below decide READ admission to the room; canWrite decides
+	// whether the admitted conn may persist inbound frames. Per TASK-265.
+	var canWrite bool
+	if member != nil && roleLevel(member.Role) >= roleLevel("editor") {
+		canWrite = true
+	} else {
+		perm, err := s.store.ResolveUserPermission(wsID, fresh.ID, item.ID, item.CollectionID)
+		if err != nil {
+			return collabAccess{}, err
+		}
+		canWrite = permissionLevel(perm) >= permissionLevel("edit")
+	}
+	// Token write-scope gate (mirror REST): the collab upgrade is a GET,
+	// so a read-scoped bearer token (PAT / OAuth) sails past the
+	// method-keyed tokenScopeAllows check in TokenAuth — but it must not
+	// be able to PERSIST Yjs mutations over the socket. Downgrade to
+	// read-only when the caller's token scope doesn't permit writes.
+	// Non-token principals (cookie / CLI session) have empty scopes,
+	// which map to "unrestricted" → no downgrade. Per TASK-265.
+	if canWrite {
+		canWrite = s.collabTokenWriteScopeAllowed(r)
 	}
 
 	// Item-level visibility check. Mirrors requireItemVisible +
@@ -652,10 +760,10 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	// collection — the bug Codex found in round 3.
 	visibleIDs, err := s.store.VisibleCollectionIDs(wsID, fresh.ID)
 	if err != nil {
-		return err
+		return collabAccess{}, err
 	}
 	if visibleIDs == nil {
-		return nil // "all" access
+		return collabAccess{canWrite: canWrite}, nil // "all" access
 	}
 	collectionIsVisible := false
 	for _, id := range visibleIDs {
@@ -665,7 +773,7 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 		}
 	}
 	if !collectionIsVisible {
-		return newStatusError(http.StatusNotFound, "not_found", "Item not found")
+		return collabAccess{}, newStatusError(http.StatusNotFound, "not_found", "Item not found")
 	}
 
 	// Visible-set hit. If the user has NO item-level grants, the
@@ -674,10 +782,10 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	// item in the collection.
 	collGrants, itemGrants, err := s.store.ListUserGrants(wsID, fresh.ID)
 	if err != nil {
-		return err
+		return collabAccess{}, err
 	}
 	if len(itemGrants) == 0 {
-		return nil
+		return collabAccess{canWrite: canWrite}, nil
 	}
 
 	// User has item grants. The visible-set hit may have been anchored
@@ -686,7 +794,7 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	// (a) Full collection grant on this collection.
 	for _, g := range collGrants {
 		if g.CollectionID == item.CollectionID {
-			return nil
+			return collabAccess{canWrite: canWrite}, nil
 		}
 	}
 
@@ -695,11 +803,11 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	if member != nil {
 		memberColls, err := s.store.GetMemberCollectionAccess(wsID, fresh.ID)
 		if err != nil {
-			return err
+			return collabAccess{}, err
 		}
 		for _, id := range memberColls {
 			if id == item.CollectionID {
-				return nil
+				return collabAccess{canWrite: canWrite}, nil
 			}
 		}
 	}
@@ -707,11 +815,11 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) error
 	// (c) Item-level grant on this exact item.
 	for _, g := range itemGrants {
 		if g.ItemID == item.ID {
-			return nil
+			return collabAccess{canWrite: canWrite}, nil
 		}
 	}
 
 	// Visibility was anchored by a sibling grant — 404, mirroring
 	// requireItemVisible's "don't leak existence" pattern.
-	return newStatusError(http.StatusNotFound, "not_found", "Item not found")
+	return collabAccess{}, newStatusError(http.StatusNotFound, "not_found", "Item not found")
 }

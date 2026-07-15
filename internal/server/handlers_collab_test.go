@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -625,5 +626,442 @@ func TestCollabUpgradeMissingItemIDBadRequest(t *testing.T) {
 	// the route doesn't accidentally match an empty itemID.
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		t.Fatalf("expected non-success on missing item segment, got %d", resp.StatusCode)
+	}
+}
+
+// readNextBinaryFrame reads WebSocket frames from conn, skipping any
+// TextMessage control frames (op_log_cursor, force_refresh), until it
+// gets a BinaryMessage or the deadline passes. Returns (data, true)
+// on a binary frame and (nil, false) on timeout / connection error.
+func readNextBinaryFrame(t *testing.T, conn *websocket.Conn, within time.Duration) ([]byte, bool) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(within))
+	for {
+		mt, data, err := conn.ReadMessage()
+		if err != nil {
+			return nil, false
+		}
+		if mt == websocket.BinaryMessage {
+			return data, true
+		}
+		// Text control frame — skip and keep reading until the deadline.
+	}
+}
+
+// waitForOpLogRows polls the item's op-log until it holds exactly want
+// rows or the deadline passes. Fails immediately if the count exceeds
+// want (an unexpected extra persist — e.g. a read-only frame leaking
+// through). Returns the final snapshot.
+func waitForOpLogRows(t *testing.T, srv *Server, itemID string, want int, within time.Duration) []models.YjsUpdate {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		rows, err := srv.store.LoadYjsUpdatesSince(itemID, 0)
+		if err != nil {
+			t.Fatalf("LoadYjsUpdatesSince: %v", err)
+		}
+		if len(rows) > want {
+			t.Fatalf("op-log has %d rows, want %d (unexpected extra persist)", len(rows), want)
+		}
+		if len(rows) == want {
+			return rows
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d op-log row(s); have %d", want, len(rows))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestCollabViewerIsReadOnly is the TASK-265 regression: a workspace
+// VIEWER admitted to a collab room is a READ-ONLY participant. It
+// keeps live view + presence (still receives broadcasts) but its
+// inbound Yjs sync frames are dropped — never persisted to
+// item_yjs_updates, never rebroadcast — while a co-present EDITOR's
+// frames ARE persisted and broadcast. This closes the viewer-write
+// bypass: the collab WS GET is mounted outside RequireWorkspaceAccess,
+// so before this fix a viewer's frames persisted and got canonicalized
+// into items.content on a co-present editor's authorized flush.
+func TestCollabViewerIsReadOnly(t *testing.T) {
+	srv := testServerWithCollab(t)
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "ViewerReadOnly"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Tasks", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title: "Shared doc", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	// Two members: one editor (may write), one viewer (read-only).
+	mkMember := func(email, role string) []*http.Cookie {
+		u, err := srv.store.CreateUser(models.UserCreate{
+			Email: email, Name: role, Password: "correct-horse-battery-staple", Role: "member",
+		})
+		if err != nil {
+			t.Fatalf("CreateUser %s: %v", email, err)
+		}
+		if err := srv.store.AddWorkspaceMember(ws.ID, u.ID, role); err != nil {
+			t.Fatalf("AddWorkspaceMember %s: %v", role, err)
+		}
+		token, err := srv.store.CreateSession(u.ID, "go-test", "127.0.0.1", "go-test", 24*time.Hour)
+		if err != nil {
+			t.Fatalf("CreateSession %s: %v", email, err)
+		}
+		return []*http.Cookie{{Name: "pad_session", Value: token}}
+	}
+	editorCookies := mkMember("editor@test.com", "editor")
+	viewerCookies := mkMember("viewer@test.com", "viewer")
+
+	// Both members upgrade successfully — the viewer is admitted as a
+	// read-only participant, NOT rejected (live-view must stay intact).
+	editorConn, resp, err := dialCollab(t, ts.URL, item.ID, editorCookies, "go-test")
+	if err != nil {
+		body := ""
+		if resp != nil {
+			body = "status=" + resp.Status
+		}
+		t.Fatalf("editor dial: %v (%s)", err, body)
+	}
+	defer editorConn.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("editor: expected 101, got %d", resp.StatusCode)
+	}
+	// Drain the editor's initial post-replay op_log_cursor so we know
+	// its Join has completed (subscribed + readLoop running) before we
+	// send. At connect time nothing else writes, so the first frame is
+	// the text cursor.
+	if _, _, derr := editorConn.ReadMessage(); derr != nil {
+		t.Fatalf("editor initial frame: %v", derr)
+	}
+
+	viewerConn, resp, err := dialCollab(t, ts.URL, item.ID, viewerCookies, "go-test")
+	if err != nil {
+		body := ""
+		if resp != nil {
+			body = "status=" + resp.Status
+		}
+		t.Fatalf("viewer dial (should be admitted read-only, not rejected): %v (%s)", err, body)
+	}
+	defer viewerConn.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("viewer: expected 101 (read-only admission), got %d", resp.StatusCode)
+	}
+
+	// (c) EDITOR frame IS persisted + broadcast. Yjs sync frame: first
+	// byte 0 = sync (the dumb relay keys on data[0]; the remaining
+	// bytes needn't be a real Y update for the relay path).
+	editorFrame := []byte{0x00, 0xE1, 0xE2}
+	if err := editorConn.WriteMessage(websocket.BinaryMessage, editorFrame); err != nil {
+		t.Fatalf("editor write: %v", err)
+	}
+	rows := waitForOpLogRows(t, srv, item.ID, 1, 3*time.Second)
+	if !bytes.Equal(rows[0].UpdateData, editorFrame) {
+		t.Fatalf("persisted row = %x, want editor frame %x", rows[0].UpdateData, editorFrame)
+	}
+
+	// (b) The VIEWER receives the editor's broadcast — read-only
+	// participant, live view intact.
+	got, ok := readNextBinaryFrame(t, viewerConn, 3*time.Second)
+	if !ok {
+		t.Fatal("viewer did not receive the editor's broadcast frame (live view broken)")
+	}
+	if !bytes.Equal(got, editorFrame) {
+		t.Fatalf("viewer received %x, want editor frame %x", got, editorFrame)
+	}
+
+	// (a) VIEWER sync frame is dropped: not broadcast, not persisted.
+	// The viewer sends a sync frame V (must be dropped) then an
+	// awareness frame A (presence — still relayed). The viewer's
+	// readLoop is single-threaded and the bus is FIFO, so if the
+	// editor receives A we KNOW V was already processed (and dropped).
+	viewerSync := []byte{0x00, 0x11, 0x12}      // sync — must be dropped
+	viewerAwareness := []byte{0x01, 0xAA, 0xBB} // awareness — must relay
+	if err := viewerConn.WriteMessage(websocket.BinaryMessage, viewerSync); err != nil {
+		t.Fatalf("viewer sync write: %v", err)
+	}
+	if err := viewerConn.WriteMessage(websocket.BinaryMessage, viewerAwareness); err != nil {
+		t.Fatalf("viewer awareness write: %v", err)
+	}
+
+	// The next binary the editor receives must be the awareness frame,
+	// NOT the viewer's dropped sync frame.
+	edGot, ok := readNextBinaryFrame(t, editorConn, 3*time.Second)
+	if !ok {
+		t.Fatal("editor did not receive the viewer's awareness (presence) frame")
+	}
+	if bytes.Equal(edGot, viewerSync) || edGot[0] == 0x00 {
+		t.Fatalf("editor received the viewer's dropped SYNC frame %x — read-only gate leaked", edGot)
+	}
+	if !bytes.Equal(edGot, viewerAwareness) {
+		t.Fatalf("editor received unexpected frame %x, want awareness %x", edGot, viewerAwareness)
+	}
+
+	// Op-log still holds exactly the editor's single row: the viewer's
+	// sync frame was NOT persisted (barrier reached above).
+	final, err := srv.store.LoadYjsUpdatesSince(item.ID, 0)
+	if err != nil {
+		t.Fatalf("LoadYjsUpdatesSince: %v", err)
+	}
+	if len(final) != 1 {
+		t.Fatalf("op-log has %d rows after viewer write, want 1 (viewer frame must not persist)", len(final))
+	}
+	if !bytes.Equal(final[0].UpdateData, editorFrame) {
+		t.Fatalf("op-log row = %x, want only the editor frame %x", final[0].UpdateData, editorFrame)
+	}
+}
+
+// TestAuthorizeCollabAccessCanWrite unit-tests the write-permission
+// half of the collab authorization decision (TASK-265): a workspace
+// editor resolves canWrite=true, a viewer canWrite=false — both are
+// admitted (no error), mirroring requireEditPermission on the REST
+// path.
+func TestAuthorizeCollabAccessCanWrite(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "CanWrite"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Tasks", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title: "Item", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	mkUser := func(email, role string) *models.User {
+		u, err := srv.store.CreateUser(models.UserCreate{
+			Email: email, Name: role, Password: "correct-horse-battery-staple", Role: "member",
+		})
+		if err != nil {
+			t.Fatalf("CreateUser %s: %v", email, err)
+		}
+		if err := srv.store.AddWorkspaceMember(ws.ID, u.ID, role); err != nil {
+			t.Fatalf("AddWorkspaceMember %s: %v", role, err)
+		}
+		return u
+	}
+	editor := mkUser("editor2@test.com", "editor")
+	viewer := mkUser("viewer2@test.com", "viewer")
+
+	// Editor member who ALSO holds an incidental item-level `view`
+	// grant. ResolveUserPermission resolves the item grant ("view")
+	// BEFORE membership role, so computing canWrite purely from it
+	// would wrongly demote this legitimate editor to read-only. The
+	// role short-circuit (mirroring requireEditPermission) must win.
+	editorWithViewGrant := mkUser("editorgrant@test.com", "editor")
+	if _, err := srv.store.CreateItemGrant(ws.ID, item.ID, editorWithViewGrant.ID, "view", editorWithViewGrant.ID); err != nil {
+		t.Fatalf("CreateItemGrant (editor view): %v", err)
+	}
+
+	// Viewer member who holds an item-level `edit` grant — the grant
+	// must OVERRIDE the insufficient base role (also mirrors REST).
+	viewerWithEditGrant := mkUser("viewergrant@test.com", "viewer")
+	if _, err := srv.store.CreateItemGrant(ws.ID, item.ID, viewerWithEditGrant.ID, "edit", viewerWithEditGrant.ID); err != nil {
+		t.Fatalf("CreateItemGrant (viewer edit): %v", err)
+	}
+
+	check := func(name string, u *models.User, wantWrite bool) {
+		// Cookie-session-shaped request (no bearer header) so the
+		// caller is treated as an interactive session, not a token.
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/collab/"+item.ID, nil)
+		req = req.WithContext(WithCurrentUser(req.Context(), u))
+		access, err := srv.authorizeCollabAccess(req, item)
+		if err != nil {
+			t.Fatalf("%s: authorizeCollabAccess returned error (should be admitted): %v", name, err)
+		}
+		if access.canWrite != wantWrite {
+			t.Fatalf("%s: canWrite = %v, want %v", name, access.canWrite, wantWrite)
+		}
+	}
+	check("editor", editor, true)
+	check("viewer", viewer, false)
+	check("editor+incidental view grant", editorWithViewGrant, true)
+	check("viewer+edit grant override", viewerWithEditGrant, true)
+
+	// Token write-scope gate (mirror REST): the collab upgrade is a GET,
+	// so a read-scoped bearer token would otherwise ride the user's
+	// editor role to canWrite=true and persist Yjs mutations. A
+	// read-scoped PAT owned by an editor must be admitted read-only; a
+	// write-scoped PAT owned by an editor keeps write.
+	checkScoped := func(name string, u *models.User, scopesJSON string, wantWrite bool) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/collab/"+item.ID, nil)
+		ctx := WithCurrentUser(req.Context(), u)
+		ctx = WithTokenScopes(ctx, scopesJSON)
+		req = req.WithContext(ctx)
+		access, err := srv.authorizeCollabAccess(req, item)
+		if err != nil {
+			t.Fatalf("%s: authorizeCollabAccess returned error (should be admitted): %v", name, err)
+		}
+		if access.canWrite != wantWrite {
+			t.Fatalf("%s: canWrite = %v, want %v", name, access.canWrite, wantWrite)
+		}
+	}
+	checkScoped("editor + read-scoped PAT", editor, `["read"]`, false)
+	checkScoped("editor + pad:read OAuth token", editor, `["pad:read"]`, false)
+	checkScoped("editor + write-scoped PAT", editor, `["write"]`, true)
+	checkScoped("editor + wildcard PAT", editor, `["*"]`, true)
+}
+
+// TestAuthorizeCollabAccessFreshInstallTokenScope covers the zero-user
+// (pre-bootstrap) branch: the anonymous setup caller keeps write, but a
+// legacy workspace token still carries a scope even on a fresh instance,
+// so a read-scoped token stays read-only here too — matching REST, where
+// the method gate would block a read token's mutation.
+func TestAuthorizeCollabAccessFreshInstallTokenScope(t *testing.T) {
+	srv := testServer(t)
+	// NO bootstrapFirstUser → UserCount == 0 (fresh install).
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Fresh"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "Item", Fields: `{}`})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	if n, _ := srv.store.UserCount(); n != 0 {
+		t.Fatalf("fresh-install precondition: expected 0 users, got %d", n)
+	}
+
+	check := func(name, scopesJSON string, wantWrite bool) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/collab/"+item.ID, nil)
+		if scopesJSON != "" {
+			req = req.WithContext(WithTokenScopes(req.Context(), scopesJSON))
+		}
+		access, err := srv.authorizeCollabAccess(req, item)
+		if err != nil {
+			t.Fatalf("%s: authorizeCollabAccess error (should be admitted): %v", name, err)
+		}
+		if access.canWrite != wantWrite {
+			t.Fatalf("%s: canWrite = %v, want %v", name, access.canWrite, wantWrite)
+		}
+	}
+	check("fresh install, no token (anonymous setup)", "", true)
+	check("fresh install + read-scoped token", `["read"]`, false)
+	check("fresh install + write-scoped token", `["write"]`, true)
+}
+
+// TestCollabDemotionMakesConnReadOnly exercises the mid-session
+// demotion path (TASK-265): an editor connected to a collab room who
+// is demoted to viewer must become read-only WITHOUT a reconnect —
+// the periodic revalidation recomputes canWrite and pushes it via
+// SetConnWritable, and the room's readLoop then drops the (now
+// read-only) conn's inbound sync frames. Also implicitly covers the
+// startup-ordering fix: revalidation only starts after registration,
+// so the SetConnWritable can find the conn.
+func TestCollabDemotionMakesConnReadOnly(t *testing.T) {
+	origInterval := collabMembershipRevalInterval
+	collabMembershipRevalInterval = 25 * time.Millisecond
+	defer func() { collabMembershipRevalInterval = origInterval }()
+
+	srv := testServerWithCollab(t)
+	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Demotion"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "Doc", Fields: `{}`})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	u, err := srv.store.CreateUser(models.UserCreate{
+		Email: "demote@test.com", Name: "Demote", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, u.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember: %v", err)
+	}
+	token, err := srv.store.CreateSession(u.ID, "go-test", "127.0.0.1", "go-test", 24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	cookies := []*http.Cookie{{Name: "pad_session", Value: token}}
+
+	conn, resp, err := dialCollab(t, ts.URL, item.ID, cookies, "go-test")
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("expected 101, got %d", resp.StatusCode)
+	}
+
+	// While an editor: a sync frame persists.
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte{0x00, 0xE1}); err != nil {
+		t.Fatalf("editor write: %v", err)
+	}
+	waitForOpLogRows(t, srv, item.ID, 1, 3*time.Second)
+
+	// Demote to viewer. The revalidation loop (25ms cadence) recomputes
+	// canWrite=false and pushes it via SetConnWritable.
+	if err := srv.store.UpdateWorkspaceMemberRole(ws.ID, u.ID, "viewer"); err != nil {
+		t.Fatalf("UpdateWorkspaceMemberRole: %v", err)
+	}
+
+	// Let the demotion propagate: several reval cadences (25ms) is
+	// ample for the loop to observe the viewer role and apply
+	// canWrite=false to the live conn. 500ms = ~20 ticks.
+	time.Sleep(500 * time.Millisecond)
+
+	// A post-demotion sync frame must now be dropped, not persisted.
+	// Send it, then watch the op-log for a further window: if the gate
+	// leaked, the frame would persist (in-process, sub-ms) and push the
+	// count to 2 well within the window.
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte{0x00, 0x22}); err != nil {
+		t.Fatalf("post-demotion write: %v", err)
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		rows, err := srv.store.LoadYjsUpdatesSince(item.ID, 0)
+		if err != nil {
+			t.Fatalf("LoadYjsUpdatesSince: %v", err)
+		}
+		if len(rows) > 1 {
+			t.Fatalf("post-demotion frame persisted (%d rows) — demoted editor still writable", len(rows))
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	// Final confirmation: still exactly the single editor-era row.
+	rows, err := srv.store.LoadYjsUpdatesSince(item.ID, 0)
+	if err != nil {
+		t.Fatalf("LoadYjsUpdatesSince: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("op-log has %d rows, want 1 (only the pre-demotion editor frame)", len(rows))
 	}
 }
