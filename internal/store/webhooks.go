@@ -111,9 +111,14 @@ func (s *Store) ListWebhooks(workspaceID string) ([]models.Webhook, error) {
 	return result, rows.Err()
 }
 
-// DeleteWebhook removes a webhook by ID.
-func (s *Store) DeleteWebhook(id string) error {
-	result, err := s.db.Exec(s.q("DELETE FROM webhooks WHERE id = ?"), id)
+// DeleteWebhookScoped removes a webhook by ID, verifying it belongs to the given
+// workspace. Prevents cross-workspace deletion (TASK-266): an owner of one
+// workspace must not be able to delete another workspace's webhook by ID. The
+// scoped DELETE is also atomic and avoids decrypting the secret just to delete —
+// a rotated/missing encryption key would otherwise leave a broken webhook
+// undeletable. Returns sql.ErrNoRows when no webhook matches both id and workspace.
+func (s *Store) DeleteWebhookScoped(id, workspaceID string) error {
+	result, err := s.db.Exec(s.q("DELETE FROM webhooks WHERE id = ? AND workspace_id = ?"), id, workspaceID)
 	if err != nil {
 		return fmt.Errorf("delete webhook: %w", err)
 	}

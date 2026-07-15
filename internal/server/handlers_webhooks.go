@@ -122,23 +122,13 @@ func (s *Server) handleDeleteWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the webhook belongs to the URL's workspace before deleting.
-	// requireMinRole("owner") only proves the caller owns THIS workspace —
-	// not that {webhookID} lives in it — so without this check an owner of
-	// any workspace could delete another workspace's webhook by ID
-	// (cross-workspace IDOR, TASK-266). Mirrors handleDeleteWorkspaceAttachment.
+	// Scope the delete to the URL's workspace. requireMinRole("owner") only
+	// proves the caller owns THIS workspace, not that {webhookID} belongs to
+	// it, so an unscoped delete-by-id is a cross-workspace IDOR (TASK-266). An
+	// atomic scoped DELETE also avoids decrypting the secret just to delete —
+	// a rotated/missing key would otherwise make a broken webhook undeletable.
 	webhookID := chi.URLParam(r, "webhookID")
-	hook, err := s.store.GetWebhook(webhookID)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if hook == nil || hook.WorkspaceID != workspaceID {
-		writeError(w, http.StatusNotFound, "not_found", "Webhook not found")
-		return
-	}
-
-	if err := s.store.DeleteWebhook(webhookID); err != nil {
+	if err := s.store.DeleteWebhookScoped(webhookID, workspaceID); err != nil {
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Webhook not found")
 			return
