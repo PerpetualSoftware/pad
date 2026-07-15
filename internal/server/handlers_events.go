@@ -100,6 +100,50 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Entry membership/grant gate for regular (non-admin) users (TASK-264).
+	// resolveWorkspace resolves a UUID ?workspace= param via the GLOBAL,
+	// unscoped GetWorkspaceByID lookup (server.go), so an authenticated
+	// non-member passing another workspace's UUID reaches this point with a
+	// fully-resolved ws — even though the slug form is membership-scoped
+	// (GetWorkspacesBySlugForUser → nil → the 404 above). Events are still
+	// fail-closed filtered by computeSSEVisibility and the stream is torn
+	// down within ~60s by the revalidation tick, so this is not a data leak,
+	// but the open connection is a connection-slot DoS and a
+	// workspace-existence oracle (200+connected vs 404). Gate the entry
+	// exactly like RequireWorkspaceAccess / authorizeCollabAccess: admit
+	// only direct members or guest-grant holders.
+	//
+	// Scope of this branch:
+	//   - admin-via-cookie (web UI) keeps its platform-wide bypass, matching
+	//     resolveWorkspace's global admin slug lookup and BUG-1616's carve-out;
+	//   - admin-via-bearer (CLI / PAT / MCP) was already gated by the branch
+	//     above (membership-only), so we skip it here to avoid a redundant query;
+	//   - the legacy workspace-scoped token (no user context) was gated by the
+	//     branch above that;
+	//   - the fresh-install / no-auth path has currentUser(r) == nil, so it
+	//     falls through untouched.
+	// On failure return 404 (not 403) so the stream reveals nothing about the
+	// workspace's existence — matching the slug path and the not-found branch above.
+	if u := currentUser(r); u != nil && u.Role != "admin" {
+		member, err := s.store.GetWorkspaceMember(ws.ID, u.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
+			return
+		}
+		if member == nil {
+			hasGrants, grantErr := s.store.UserHasGrantsInWorkspace(ws.ID, u.ID)
+			if grantErr != nil {
+				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to check workspace access")
+				return
+			}
+			if !hasGrants {
+				s.recordMCPAuthzDenial(r, "not_a_member")
+				writeError(w, http.StatusNotFound, "not_found", "Workspace not found")
+				return
+			}
+		}
+	}
+
 	// Verify streaming support
 	flusher, ok := w.(http.Flusher)
 	if !ok {
