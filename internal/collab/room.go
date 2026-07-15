@@ -90,6 +90,15 @@ type roomConn struct {
 	// Server-side mirror of the REST requireEditPermission gate
 	// (TASK-265).
 	canWrite atomic.Bool
+	// evicted is set (once, terminally) by closeReadOnlyConns when a
+	// no-applier direct write prunes the op-log out from under this
+	// read-only conn. readLoop's persist gate checks it IN ADDITION to
+	// canWrite so that a frame already read into the reader — and
+	// blocked on appendMu when the eviction ran — can't be persisted
+	// after the prune even if a racing revalidation promotes the conn
+	// to writer in the same instant. Set under appendMu (via
+	// PruneAndApply) so the gate observes it. Per TASK-265 (Codex round 3).
+	evicted atomic.Bool
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -349,7 +358,13 @@ func (r *Room) readLoop(rc *roomConn) error {
 			// dropped. Without this fencing a reader could read
 			// canWrite=true, block on appendMu, and persist AFTER
 			// SetConnWritable(false) returned (TOCTOU).
-			if !rc.canWrite.Load() {
+			//
+			// `evicted` is the same fence for the no-applier prune path
+			// (PruneAndApply → closeReadOnlyConns, also under appendMu):
+			// once this read-only conn's op-log has been pruned out from
+			// under it, its frames MUST NOT persist even if a racing
+			// revalidation promotes it to writer in the same instant.
+			if rc.evicted.Load() || !rc.canWrite.Load() {
 				r.appendMu.Unlock()
 				continue
 			}
@@ -559,11 +574,19 @@ func (r *Room) closeAll() {
 // the conn was already going away. removeConn fires from each closed
 // conn's readLoop asynchronously; we deliberately don't wait for the
 // drain (this runs under the per-item setup lock).
+//
+// MUST be called with the room's appendMu held (PruneAndApply does).
+// Setting rc.evicted under appendMu — the same lock readLoop's persist
+// gate holds — guarantees any frame already read but blocked on
+// appendMu observes the eviction and is dropped, so a stale frame
+// can't slip into the freshly-pruned op-log even under a racing
+// promotion. Per TASK-265 (Codex round 3).
 func (r *Room) closeReadOnlyConns() {
 	r.mu.Lock()
 	targets := make([]*websocket.Conn, 0, len(r.conns))
 	for c, rc := range r.conns {
 		if !rc.canWrite.Load() {
+			rc.evicted.Store(true)
 			targets = append(targets, c)
 		}
 	}

@@ -741,33 +741,50 @@ func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 	lock.Lock()
 	defer lock.Unlock()
 
-	// Re-verify under the lock: if a room with a live WRITER conn has
-	// appeared, refuse to prune (that peer's Y.Doc would diverge from
-	// an empty op-log). Read-only conns don't block — see below.
 	m.mu.Lock()
 	room := m.rooms[itemID]
 	m.mu.Unlock()
-	if room != nil {
-		room.mu.Lock()
-		for _, rc := range room.conns {
-			if rc.canWrite.Load() {
-				room.mu.Unlock()
-				return ErrRoomActiveDuringPrune
-			}
-		}
-		room.mu.Unlock()
+
+	if room == nil {
+		// No room / no peers — nothing can race the prune + write.
+		return applyFn()
 	}
+
+	// Hold appendMu across the ENTIRE sequence — writer classification,
+	// applyFn (prune + write), and read-only eviction. appendMu is the
+	// same lock readLoop takes across its canWrite-check + persist and
+	// SetConnWritable takes when flipping canWrite, so holding it makes
+	// this whole operation atomic w.r.t. both. Without it, a concurrent
+	// viewer→editor revalidation could set canWrite=true AFTER the
+	// writer check, append a stale frame during the prune/write, and —
+	// being a writer now — evade closeReadOnlyConns, racing the prune
+	// and leaving a live stale Y.Doc. Per TASK-265 (Codex round 3).
+	room.appendMu.Lock()
+	defer room.appendMu.Unlock()
+
+	// Re-verify: if a live WRITER conn is present, refuse to prune
+	// (that peer's Y.Doc would diverge from the emptied op-log) — route
+	// through the applier protocol instead. Read-only conns don't block
+	// (they can't persist) but are evicted after the write, below.
+	room.mu.Lock()
+	for _, rc := range room.conns {
+		if rc.canWrite.Load() {
+			room.mu.Unlock()
+			return ErrRoomActiveDuringPrune
+		}
+	}
+	room.mu.Unlock()
 
 	if err := applyFn(); err != nil {
 		return err
 	}
 
-	// Prune + write succeeded. Evict any read-only peers so they
+	// Prune + write succeeded. Evict the read-only peers so they
 	// re-seed from the fresh items.content (their stale Y.Doc is now
 	// inert but would otherwise survive a later promotion-to-editor).
-	if room != nil {
-		room.closeReadOnlyConns()
-	}
+	// Still under appendMu, so the eviction (which marks each conn
+	// terminally read-only) can't race a post-check promotion.
+	room.closeReadOnlyConns()
 	return nil
 }
 
