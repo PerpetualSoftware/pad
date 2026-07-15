@@ -106,3 +106,53 @@ func TestTokenAllowedWorkspacesFromContext_ReturnsCopy(t *testing.T) {
 		t.Errorf("returned slice should be a copy; got2[0] = %q after caller mutation", got2[0])
 	}
 }
+
+// TestTokenAllowedWorkspaceSet covers the multi-slug companion to
+// tokenAllowedWorkspaceMatches, promoted from internal/mcp's buildAllowSet in
+// BUG-2102. Same three-shape contract, but returns a slug-set for filtering a
+// list rather than gating one slug: nil/wildcard → nil (no filter); explicit
+// list → a set; empty (non-nil) list → empty set (fail closed).
+func TestTokenAllowedWorkspaceSet(t *testing.T) {
+	set := func(slugs []string) map[string]struct{} {
+		ctx := context.Background()
+		if slugs != nil {
+			ctx = WithTokenAllowedWorkspaces(ctx, slugs)
+		}
+		return TokenAllowedWorkspaceSet(ctx)
+	}
+
+	if got := set(nil); got != nil {
+		t.Errorf("nil allow-list should yield nil (no filter); got %v", got)
+	}
+	if got := set([]string{"*"}); got != nil {
+		t.Errorf("wildcard should yield nil (no filter); got %v", got)
+	}
+	// Defense-in-depth: wildcard mixed with a specific slug still collapses to
+	// "no filter" — the safer read, matching tokenAllowedWorkspaceMatches.
+	if got := set([]string{"alpha", "*"}); got != nil {
+		t.Errorf("wildcard + specific should yield nil (no filter); got %v", got)
+	}
+
+	got := set([]string{"alpha", "beta"})
+	if got == nil {
+		t.Fatal("specific list should yield a non-nil set")
+	}
+	if _, ok := got["alpha"]; !ok {
+		t.Error("expected alpha in set")
+	}
+	if _, ok := got["beta"]; !ok {
+		t.Error("expected beta in set")
+	}
+	if _, ok := got["gamma"]; ok {
+		t.Error("gamma must not be in set")
+	}
+
+	// Empty (non-nil) allow-list fails closed: an empty set drops everything.
+	empty := TokenAllowedWorkspaceSet(WithTokenAllowedWorkspaces(context.Background(), []string{}))
+	if empty == nil {
+		t.Fatal("empty (non-nil) allow-list should yield an empty non-nil set (fail closed), not nil")
+	}
+	if len(empty) != 0 {
+		t.Errorf("empty allow-list set should have no entries; got %v", empty)
+	}
+}

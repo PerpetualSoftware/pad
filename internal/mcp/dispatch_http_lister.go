@@ -106,8 +106,11 @@ func (l *oauthWorkspaceLister) ListWorkspaces(ctx context.Context) ([]WorkspaceH
 	if err != nil {
 		return nil, err
 	}
-	allowed := server.TokenAllowedWorkspacesFromContext(ctx)
-	if allowList := buildAllowSet(allowed); allowList != nil {
+	// server.TokenAllowedWorkspaceSet is the canonical allow-set builder
+	// (BUG-2102 moved it into internal/server so the workspace-global
+	// handlers and these MCP filters share one implementation): nil for the
+	// no-filter cases (nil allow-list / wildcard), a slug-set otherwise.
+	if allowList := server.TokenAllowedWorkspaceSet(ctx); allowList != nil {
 		filtered := make([]WorkspaceHint, 0, len(all))
 		for _, ws := range all {
 			if _, ok := allowList[ws.Slug]; ok {
@@ -117,23 +120,4 @@ func (l *oauthWorkspaceLister) ListWorkspaces(ctx context.Context) ([]WorkspaceH
 		return filtered, nil
 	}
 	return all, nil
-}
-
-// buildAllowSet returns nil for the "no token-level filter" cases
-// (nil allow-list, or wildcard) and a slug-set otherwise. Matches
-// the three return-shape contract of TokenAllowedWorkspacesFromContext.
-func buildAllowSet(allowed []string) map[string]struct{} {
-	if allowed == nil {
-		return nil
-	}
-	for _, entry := range allowed {
-		if entry == "*" {
-			return nil
-		}
-	}
-	out := make(map[string]struct{}, len(allowed))
-	for _, slug := range allowed {
-		out[slug] = struct{}{}
-	}
-	return out
 }

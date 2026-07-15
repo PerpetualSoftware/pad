@@ -76,6 +76,13 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusInternalServerError, "internal_error", "Failed to resolve user workspaces")
 				return
 			}
+			// OAuth consent scoping (BUG-2102): /search is workspace-global
+			// when no workspace is given — it fans out over EVERY membership.
+			// RequireWorkspaceAccess never runs here, so a consent-scoped
+			// token would otherwise get item titles + content across
+			// workspaces it wasn't granted. Restrict the fan-out to the
+			// allow-list. No-op for PAT / web session (nil allow-list).
+			workspaces = filterWorkspacesByTokenAllowlist(r.Context(), workspaces)
 			for _, ws := range workspaces {
 				params.WorkspaceIDs = append(params.WorkspaceIDs, ws.ID)
 			}
@@ -160,6 +167,18 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if params.Workspace != "" {
 		ws, _ := s.store.GetWorkspaceBySlug(params.Workspace)
 		if ws != nil {
+			// OAuth consent scoping (BUG-2102): a token consented to specific
+			// workspaces must not read another one's item content by naming it
+			// here, even a co-membership. Return empty (not 403) so the token
+			// can't confirm the workspace exists. No-op for PAT / web session.
+			if !tokenAllowedWorkspaceMatches(r.Context(), ws.Slug) {
+				writeJSON(w, http.StatusOK, &store.SearchResponse{
+					Results: []store.SearchResult{},
+					Limit:   params.Limit,
+					Offset:  params.Offset,
+				})
+				return
+			}
 			user := currentUser(r)
 			visibleIDs, visErr := s.visibleCollectionIDs(r, ws.ID)
 			if visErr != nil {

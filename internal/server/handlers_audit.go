@@ -16,6 +16,18 @@ func (s *Server) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// OAuth consent scoping (BUG-2102): the audit log is a platform-wide,
+	// cross-workspace admin surface with no per-workspace routing, so a
+	// consent-scoped OAuth token (specific allow-list) must not receive it —
+	// it would leak audit entries for every workspace and user, well outside
+	// the token's granted scope. nil/wildcard allow-list (PAT / web session /
+	// broad consent) is unaffected.
+	if TokenAllowedWorkspaceSet(r.Context()) != nil {
+		writeError(w, http.StatusForbidden, "forbidden",
+			"The platform audit log is not available to workspace-scoped tokens")
+		return
+	}
+
 	// Accept both "user" and "actor" query params for filtering by user ID.
 	actorFilter := r.URL.Query().Get("user")
 	if actorFilter == "" {

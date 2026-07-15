@@ -207,3 +207,36 @@ func TokenAllowedWorkspacesFromContext(ctx context.Context) []string {
 	copy(out, v)
 	return out
 }
+
+// TokenAllowedWorkspaceSet returns the token's allow-list as a slug-set for
+// filtering a multi-workspace result, or nil when no per-slug gate applies.
+// It is the multi-slug companion to tokenAllowedWorkspaceMatches (single
+// slug, hot path): use the matcher to gate one resolved workspace, use this
+// to filter a list.
+//
+// Return contract mirrors TokenAllowedWorkspacesFromContext:
+//
+//   - nil allow-list (PAT / pre-consent / local stdio) → nil set → NO filter.
+//   - wildcard ["*"] → nil set → NO filter.
+//   - explicit ["a","b"] → set{a,b}; caller MUST drop any workspace whose
+//     slug is not a key, even one the user is a member of.
+//
+// An empty (non-nil) allow-list yields an empty (non-nil) set — fail closed,
+// every workspace dropped — matching tokenAllowedWorkspaceMatches. The consent
+// flow rejects empty lists, so this shouldn't occur in practice.
+func TokenAllowedWorkspaceSet(ctx context.Context) map[string]struct{} {
+	allowed := TokenAllowedWorkspacesFromContext(ctx)
+	if allowed == nil {
+		return nil
+	}
+	for _, entry := range allowed {
+		if entry == "*" {
+			return nil
+		}
+	}
+	set := make(map[string]struct{}, len(allowed))
+	for _, slug := range allowed {
+		set[slug] = struct{}{}
+	}
+	return set
+}
