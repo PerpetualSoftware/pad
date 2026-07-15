@@ -1138,7 +1138,9 @@
 
 	onDestroy(() => {
 		editor?.destroy();
-		if (window.visualViewport && visualViewportHandler) {
+		// onDestroy (unlike onMount) also runs during SSR, where `window` is
+		// undefined — guard with typeof before touching it (TASK-2109).
+		if (typeof window !== 'undefined' && window.visualViewport && visualViewportHandler) {
 			window.visualViewport.removeEventListener('resize', visualViewportHandler);
 			window.visualViewport.removeEventListener('scroll', visualViewportHandler);
 		}
