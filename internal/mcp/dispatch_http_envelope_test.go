@@ -312,46 +312,11 @@ func TestUnknownWorkspace_StoreError_EmptyHints(t *testing.T) {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// buildAllowSet unit tests — the shared helper between lister + gate.
-// ─────────────────────────────────────────────────────────────────────
-
-func TestBuildAllowSet_NilReturnsNilNoFilter(t *testing.T) {
-	if got := buildAllowSet(nil); got != nil {
-		t.Errorf("nil input should yield nil (no filter); got %v", got)
-	}
-}
-
-func TestBuildAllowSet_WildcardReturnsNilNoFilter(t *testing.T) {
-	if got := buildAllowSet([]string{"*"}); got != nil {
-		t.Errorf("wildcard should yield nil (no filter); got %v", got)
-	}
-}
-
-func TestBuildAllowSet_WildcardWinsOverSpecific(t *testing.T) {
-	// Defense-in-depth: a tampered allow-list with both a slug AND
-	// the wildcard collapses to "no filter" — the safer
-	// interpretation, matching what RequireWorkspaceAccess does.
-	if got := buildAllowSet([]string{"alpha", "*"}); got != nil {
-		t.Errorf("wildcard + specific should yield nil (no filter); got %v", got)
-	}
-}
-
-func TestBuildAllowSet_SpecificListBuildsSet(t *testing.T) {
-	got := buildAllowSet([]string{"alpha", "beta"})
-	if got == nil {
-		t.Fatal("specific list should yield non-nil set")
-	}
-	if _, ok := got["alpha"]; !ok {
-		t.Error("expected alpha in set")
-	}
-	if _, ok := got["beta"]; !ok {
-		t.Error("expected beta in set")
-	}
-	if _, ok := got["gamma"]; ok {
-		t.Error("gamma must not be in set")
-	}
-}
+// The allow-set builder these listers rely on now lives in internal/server
+// as server.TokenAllowedWorkspaceSet (promoted from mcp's buildAllowSet in
+// BUG-2102 so the workspace-global handlers and these MCP filters share one
+// implementation). Its unit tests moved with it — see
+// internal/server/token_workspace_allowlist_test.go.
 
 // ─────────────────────────────────────────────────────────────────────
 // End-to-end through packageHTTPResponse (the dispatcher's actual
