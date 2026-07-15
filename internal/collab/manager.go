@@ -725,67 +725,48 @@ func (m *RoomManager) UnderItemLock(itemID string, fn func() error) error {
 // Y.Doc state that later overwrites the freshly-written
 // items.content on the next idle flush. Per Codex review round 5.
 //
-// Only a live WRITER peer blocks the prune (TASK-265, Codex round 2).
-// A read-only peer (workspace viewer / view-only guest) can never
-// persist — its sync frames are dropped and it can't be an applier —
-// so its presence does NOT force the caller onto the unsafe
-// direct-write-without-prune fallback. Instead, after the prune +
-// write, read-only peers are EVICTED (closeReadOnlyConns) so their
-// now-stale in-memory Y.Doc can't linger: without eviction a viewer
-// later promoted to editor would flush that stale state over the
-// external update, and a fresh editor would replay the un-pruned stale
-// op-log. Evicted viewers reconnect and lazy-seed from the fresh
-// items.content.
+// Only a live WRITER peer blocks the prune (TASK-265). A read-only
+// peer (workspace viewer / view-only guest) can never persist — its
+// sync frames are dropped and it can't be an applier — so its presence
+// does NOT force the caller onto the unsafe direct-write-without-prune
+// fallback: the op-log is safely pruned even while viewers are
+// attached, so a later editor lazy-seeds from the fresh items.content
+// instead of replaying stale ops.
+//
+// ACCEPTED RESIDUAL (TASK-265 / BUG-2103): connected read-only peers
+// keep a possibly-stale in-memory Y.Doc after this direct write until
+// their next reconnect/refresh (their resume cursor now sits below the
+// pruned op-log's MIN, so a reconnect force_refreshes and re-seeds). A
+// viewer promoted to editor BEFORE re-syncing could push that stale
+// content — a lost-update edge, not a security hole (a promoted viewer
+// is a legitimate editor). This is best-effort degradation consistent
+// with the pre-existing direct-write contract (see applier.go); a
+// proactive re-seed/refresh to remaining read-only peers is tracked in
+// BUG-2103.
 func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 	lock := m.itemLock(itemID)
 	lock.Lock()
 	defer lock.Unlock()
 
+	// Re-verify under the lock: only a live WRITER conn blocks the
+	// prune (its Y.Doc would diverge from the emptied op-log) — route
+	// through the applier protocol instead. A read-only conn can't
+	// persist, so it does NOT block (see the accepted residual above).
 	m.mu.Lock()
 	room := m.rooms[itemID]
 	m.mu.Unlock()
-
-	if room == nil {
-		// No room / no peers — nothing can race the prune + write.
-		return applyFn()
-	}
-
-	// Hold appendMu across the ENTIRE sequence — writer classification,
-	// applyFn (prune + write), and read-only eviction. appendMu is the
-	// same lock readLoop takes across its canWrite-check + persist and
-	// SetConnWritable takes when flipping canWrite, so holding it makes
-	// this whole operation atomic w.r.t. both. Without it, a concurrent
-	// viewer→editor revalidation could set canWrite=true AFTER the
-	// writer check, append a stale frame during the prune/write, and —
-	// being a writer now — evade closeReadOnlyConns, racing the prune
-	// and leaving a live stale Y.Doc. Per TASK-265 (Codex round 3).
-	room.appendMu.Lock()
-	defer room.appendMu.Unlock()
-
-	// Re-verify: if a live WRITER conn is present, refuse to prune
-	// (that peer's Y.Doc would diverge from the emptied op-log) — route
-	// through the applier protocol instead. Read-only conns don't block
-	// (they can't persist) but are evicted after the write, below.
-	room.mu.Lock()
-	for _, rc := range room.conns {
-		if rc.canWrite.Load() {
-			room.mu.Unlock()
-			return ErrRoomActiveDuringPrune
+	if room != nil {
+		room.mu.Lock()
+		for _, rc := range room.conns {
+			if rc.canWrite.Load() {
+				room.mu.Unlock()
+				return ErrRoomActiveDuringPrune
+			}
 		}
-	}
-	room.mu.Unlock()
-
-	if err := applyFn(); err != nil {
-		return err
+		room.mu.Unlock()
 	}
 
-	// Prune + write succeeded. Evict the read-only peers so they
-	// re-seed from the fresh items.content (their stale Y.Doc is now
-	// inert but would otherwise survive a later promotion-to-editor).
-	// Still under appendMu, so the eviction (which marks each conn
-	// terminally read-only) can't race a post-check promotion.
-	room.closeReadOnlyConns()
-	return nil
+	return applyFn()
 }
 
 // closeFrameDeadline is the absolute time budget for sending a

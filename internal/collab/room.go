@@ -90,15 +90,6 @@ type roomConn struct {
 	// Server-side mirror of the REST requireEditPermission gate
 	// (TASK-265).
 	canWrite atomic.Bool
-	// evicted is set (once, terminally) by closeReadOnlyConns when a
-	// no-applier direct write prunes the op-log out from under this
-	// read-only conn. readLoop's persist gate checks it IN ADDITION to
-	// canWrite so that a frame already read into the reader — and
-	// blocked on appendMu when the eviction ran — can't be persisted
-	// after the prune even if a racing revalidation promotes the conn
-	// to writer in the same instant. Set under appendMu (via
-	// PruneAndApply) so the gate observes it. Per TASK-265 (Codex round 3).
-	evicted atomic.Bool
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -358,13 +349,7 @@ func (r *Room) readLoop(rc *roomConn) error {
 			// dropped. Without this fencing a reader could read
 			// canWrite=true, block on appendMu, and persist AFTER
 			// SetConnWritable(false) returned (TOCTOU).
-			//
-			// `evicted` is the same fence for the no-applier prune path
-			// (PruneAndApply → closeReadOnlyConns, also under appendMu):
-			// once this read-only conn's op-log has been pruned out from
-			// under it, its frames MUST NOT persist even if a racing
-			// revalidation promotes it to writer in the same instant.
-			if rc.evicted.Load() || !rc.canWrite.Load() {
+			if !rc.canWrite.Load() {
 				r.appendMu.Unlock()
 				continue
 			}
@@ -553,52 +538,6 @@ func (r *Room) closeAll() {
 	r.mu.Unlock()
 
 	for _, c := range conns {
-		_ = c.Close()
-	}
-}
-
-// closeReadOnlyConns force-closes every read-only connection currently
-// in the room. Called by RoomManager.PruneAndApply after a no-applier
-// direct write has pruned the op-log and written items.content: a
-// read-only peer's in-memory Y.Doc is now stale, and leaving it
-// connected would let a later promotion-to-editor flush that stale
-// state over the external update (TASK-265, Codex round 2). Read-only
-// peers never persisted anything, so eviction loses no edits — they
-// reconnect and lazy-seed from the fresh items.content (their old
-// resume cursor is now below the pruned op-log's MIN, so the reconnect
-// force_refreshes).
-//
-// The close frame goes out via WriteControl, which gorilla documents
-// as concurrency-safe with the room's writeLoop (a normal WriteMessage
-// would race it). Best-effort: a WriteControl / Close error just means
-// the conn was already going away. removeConn fires from each closed
-// conn's readLoop asynchronously; we deliberately don't wait for the
-// drain (this runs under the per-item setup lock).
-//
-// MUST be called with the room's appendMu held (PruneAndApply does).
-// Setting rc.evicted under appendMu — the same lock readLoop's persist
-// gate holds — guarantees any frame already read but blocked on
-// appendMu observes the eviction and is dropped, so a stale frame
-// can't slip into the freshly-pruned op-log even under a racing
-// promotion. Per TASK-265 (Codex round 3).
-func (r *Room) closeReadOnlyConns() {
-	r.mu.Lock()
-	targets := make([]*websocket.Conn, 0, len(r.conns))
-	for c, rc := range r.conns {
-		if !rc.canWrite.Load() {
-			rc.evicted.Store(true)
-			targets = append(targets, c)
-		}
-	}
-	r.mu.Unlock()
-
-	for _, c := range targets {
-		_ = c.WriteControl(
-			websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseServiceRestart,
-				"Content updated externally; reconnect to refresh."),
-			time.Now().Add(closeFrameDeadline),
-		)
 		_ = c.Close()
 	}
 }

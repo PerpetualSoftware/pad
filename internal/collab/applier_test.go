@@ -503,15 +503,15 @@ func TestHandleControlMessageIgnoresAckFromReadOnlyConn(t *testing.T) {
 	}
 }
 
-// TestPruneAndApplyEvictsReadOnlyRoom is the TASK-265 / Codex-round-2
-// regression: a room whose only peers are read-only must NOT block the
-// no-applier direct write. PruneAndApply runs applyFn (prune + write)
-// and then evicts the read-only peers so their stale in-memory Y.Doc
-// can't survive into a later promotion-to-editor and clobber the
-// external update. Before the fix, live viewers made PruneAndApply
-// return ErrRoomActiveDuringPrune, forcing the caller onto an
-// unlocked, un-pruned direct write that a fresh editor would overwrite.
-func TestPruneAndApplyEvictsReadOnlyRoom(t *testing.T) {
+// TestPruneAndApplyAllowsReadOnlyRoom verifies the load-bearing
+// writer-aware guard (TASK-265): a room whose only peers are read-only
+// must NOT block the no-applier direct write. PruneAndApply runs applyFn
+// (prune + write) rather than returning ErrRoomActiveDuringPrune, so the
+// op-log is safely pruned even with viewers attached and a later editor
+// lazy-seeds from the fresh items.content. (Read-only peers keep a
+// possibly-stale Y.Doc until they reconnect/refresh — an accepted
+// best-effort residual tracked in BUG-2103.)
+func TestPruneAndApplyAllowsReadOnlyRoom(t *testing.T) {
 	bus := NewMemoryOpBus()
 	defer bus.Close()
 	mgr := NewRoomManager(&fakeOpLog{}, bus)
@@ -536,20 +536,6 @@ func TestPruneAndApplyEvictsReadOnlyRoom(t *testing.T) {
 	}
 	if !ran {
 		t.Fatal("applyFn did not run — a read-only peer wrongly blocked the prune")
-	}
-
-	// The read-only conn must be evicted: its bus subscription drops
-	// once its server-side readLoop unwinds after the close.
-	evicted := false
-	for i := 0; i < 200; i++ {
-		if bus.SubscriberCount("item-a") == 0 {
-			evicted = true
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !evicted {
-		t.Fatal("read-only conn was not evicted after the no-applier prune")
 	}
 }
 
