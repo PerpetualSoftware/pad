@@ -542,6 +542,44 @@ func (r *Room) closeAll() {
 	}
 }
 
+// closeReadOnlyConns force-closes every read-only connection currently
+// in the room. Called by RoomManager.PruneAndApply after a no-applier
+// direct write has pruned the op-log and written items.content: a
+// read-only peer's in-memory Y.Doc is now stale, and leaving it
+// connected would let a later promotion-to-editor flush that stale
+// state over the external update (TASK-265, Codex round 2). Read-only
+// peers never persisted anything, so eviction loses no edits — they
+// reconnect and lazy-seed from the fresh items.content (their old
+// resume cursor is now below the pruned op-log's MIN, so the reconnect
+// force_refreshes).
+//
+// The close frame goes out via WriteControl, which gorilla documents
+// as concurrency-safe with the room's writeLoop (a normal WriteMessage
+// would race it). Best-effort: a WriteControl / Close error just means
+// the conn was already going away. removeConn fires from each closed
+// conn's readLoop asynchronously; we deliberately don't wait for the
+// drain (this runs under the per-item setup lock).
+func (r *Room) closeReadOnlyConns() {
+	r.mu.Lock()
+	targets := make([]*websocket.Conn, 0, len(r.conns))
+	for c, rc := range r.conns {
+		if !rc.canWrite.Load() {
+			targets = append(targets, c)
+		}
+	}
+	r.mu.Unlock()
+
+	for _, c := range targets {
+		_ = c.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseServiceRestart,
+				"Content updated externally; reconnect to refresh."),
+			time.Now().Add(closeFrameDeadline),
+		)
+		_ = c.Close()
+	}
+}
+
 // connIDCounter is package-scoped so multiple RoomManagers in the
 // same process never hand out colliding ids. Atomic Add returns a
 // fresh value per call; we never reset.

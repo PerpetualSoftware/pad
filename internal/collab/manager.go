@@ -712,8 +712,8 @@ func (m *RoomManager) UnderItemLock(itemID string, fn func() error) error {
 // classifies the request as "no live editors" (ErrNoActiveRoom or
 // ErrNoApplierAvailable).
 //
-// Returns ErrRoomActiveDuringPrune if a room with live conns has
-// appeared since the caller's classification check; otherwise the
+// Returns ErrRoomActiveDuringPrune if a room with a live WRITER conn
+// has appeared since the caller's classification check; otherwise the
 // error from applyFn (if any). The caller is expected to fall
 // through to a plain direct write in the active-room case so the
 // PATCH still completes.
@@ -724,27 +724,51 @@ func (m *RoomManager) UnderItemLock(itemID string, fn func() error) error {
 // soon-to-be-pruned op-log into a new client, and end up with stale
 // Y.Doc state that later overwrites the freshly-written
 // items.content on the next idle flush. Per Codex review round 5.
+//
+// Only a live WRITER peer blocks the prune (TASK-265, Codex round 2).
+// A read-only peer (workspace viewer / view-only guest) can never
+// persist — its sync frames are dropped and it can't be an applier —
+// so its presence does NOT force the caller onto the unsafe
+// direct-write-without-prune fallback. Instead, after the prune +
+// write, read-only peers are EVICTED (closeReadOnlyConns) so their
+// now-stale in-memory Y.Doc can't linger: without eviction a viewer
+// later promoted to editor would flush that stale state over the
+// external update, and a fresh editor would replay the un-pruned stale
+// op-log. Evicted viewers reconnect and lazy-seed from the fresh
+// items.content.
 func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 	lock := m.itemLock(itemID)
 	lock.Lock()
 	defer lock.Unlock()
 
-	// Re-verify under the lock: if a room with live conns has
-	// appeared, refuse to prune (peers' Y.Doc would diverge from
-	// an empty op-log).
+	// Re-verify under the lock: if a room with a live WRITER conn has
+	// appeared, refuse to prune (that peer's Y.Doc would diverge from
+	// an empty op-log). Read-only conns don't block — see below.
 	m.mu.Lock()
-	hasLivePeers := false
-	if r, ok := m.rooms[itemID]; ok {
-		r.mu.Lock()
-		hasLivePeers = len(r.conns) > 0
-		r.mu.Unlock()
-	}
+	room := m.rooms[itemID]
 	m.mu.Unlock()
-	if hasLivePeers {
-		return ErrRoomActiveDuringPrune
+	if room != nil {
+		room.mu.Lock()
+		for _, rc := range room.conns {
+			if rc.canWrite.Load() {
+				room.mu.Unlock()
+				return ErrRoomActiveDuringPrune
+			}
+		}
+		room.mu.Unlock()
 	}
 
-	return applyFn()
+	if err := applyFn(); err != nil {
+		return err
+	}
+
+	// Prune + write succeeded. Evict any read-only peers so they
+	// re-seed from the fresh items.content (their stale Y.Doc is now
+	// inert but would otherwise survive a later promotion-to-editor).
+	if room != nil {
+		room.closeReadOnlyConns()
+	}
+	return nil
 }
 
 // closeFrameDeadline is the absolute time budget for sending a

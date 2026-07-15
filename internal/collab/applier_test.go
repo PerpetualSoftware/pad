@@ -503,6 +503,89 @@ func TestHandleControlMessageIgnoresAckFromReadOnlyConn(t *testing.T) {
 	}
 }
 
+// TestPruneAndApplyEvictsReadOnlyRoom is the TASK-265 / Codex-round-2
+// regression: a room whose only peers are read-only must NOT block the
+// no-applier direct write. PruneAndApply runs applyFn (prune + write)
+// and then evicts the read-only peers so their stale in-memory Y.Doc
+// can't survive into a later promotion-to-editor and clobber the
+// external update. Before the fix, live viewers made PruneAndApply
+// return ErrRoomActiveDuringPrune, forcing the caller onto an
+// unlocked, un-pruned direct write that a fresh editor would overwrite.
+func TestPruneAndApplyEvictsReadOnlyRoom(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	defer mgr.Close()
+
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	conn := dialWSReadOnly(t, srv, "item-a")
+	defer conn.Close()
+
+	for i := 0; i < 200; i++ {
+		if mgr.RoomCount() == 1 && bus.SubscriberCount("item-a") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	ran := false
+	if err := mgr.PruneAndApply("item-a", func() error { ran = true; return nil }); err != nil {
+		t.Fatalf("read-only-only room: want nil (prune allowed), got %v", err)
+	}
+	if !ran {
+		t.Fatal("applyFn did not run — a read-only peer wrongly blocked the prune")
+	}
+
+	// The read-only conn must be evicted: its bus subscription drops
+	// once its server-side readLoop unwinds after the close.
+	evicted := false
+	for i := 0; i < 200; i++ {
+		if bus.SubscriberCount("item-a") == 0 {
+			evicted = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !evicted {
+		t.Fatal("read-only conn was not evicted after the no-applier prune")
+	}
+}
+
+// TestPruneAndApplyBlockedByLiveWriter confirms the complementary
+// invariant: a live WRITER still blocks the prune (ErrRoomActiveDuringPrune)
+// so the caller routes the external update through the applier protocol
+// rather than clobbering the writer's in-memory Y.Doc.
+func TestPruneAndApplyBlockedByLiveWriter(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	defer mgr.Close()
+
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "item-a") // writer (canWrite=true)
+	defer conn.Close()
+
+	for i := 0; i < 200; i++ {
+		if bus.SubscriberCount("item-a") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	ran := false
+	err := mgr.PruneAndApply("item-a", func() error { ran = true; return nil })
+	if !errors.Is(err, ErrRoomActiveDuringPrune) {
+		t.Fatalf("want ErrRoomActiveDuringPrune with a live writer, got %v", err)
+	}
+	if ran {
+		t.Fatal("applyFn must not run while a live writer is present")
+	}
+}
+
 // swapApplierTimeouts is a small test-only mutator. The package
 // constants are *not* exported as vars so the swap goes through a
 // dedicated helper that lives only in test builds. We accept a
