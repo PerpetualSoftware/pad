@@ -611,9 +611,13 @@ func (s *Server) authorizeCollabAccess(r *http.Request, item *models.Item) (coll
 	}
 
 	// Fresh-install escape hatch. No users yet → no auth at all, so
-	// the REST surface treats the caller as owner; grant write too.
+	// the REST surface treats the caller as owner; grant write too —
+	// EXCEPT a legacy workspace token still carries a scope even on a
+	// zero-user instance, so a read-scoped token stays read-only here
+	// too (collabTokenWriteScopeAllowed returns true for the no-token
+	// anonymous setup caller, whose scopes are empty = unrestricted).
 	if count, _ := s.store.UserCount(); count == 0 {
-		return collabAccess{canWrite: true}, nil
+		return collabAccess{canWrite: s.collabTokenWriteScopeAllowed(r)}, nil
 	}
 
 	// Legacy API token (workspace-scoped, no user context). The REST

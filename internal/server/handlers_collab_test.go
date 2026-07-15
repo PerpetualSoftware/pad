@@ -923,6 +923,48 @@ func TestAuthorizeCollabAccessCanWrite(t *testing.T) {
 	checkScoped("editor + wildcard PAT", editor, `["*"]`, true)
 }
 
+// TestAuthorizeCollabAccessFreshInstallTokenScope covers the zero-user
+// (pre-bootstrap) branch: the anonymous setup caller keeps write, but a
+// legacy workspace token still carries a scope even on a fresh instance,
+// so a read-scoped token stays read-only here too — matching REST, where
+// the method gate would block a read token's mutation.
+func TestAuthorizeCollabAccessFreshInstallTokenScope(t *testing.T) {
+	srv := testServer(t)
+	// NO bootstrapFirstUser → UserCount == 0 (fresh install).
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Fresh"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "Item", Fields: `{}`})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	if n, _ := srv.store.UserCount(); n != 0 {
+		t.Fatalf("fresh-install precondition: expected 0 users, got %d", n)
+	}
+
+	check := func(name, scopesJSON string, wantWrite bool) {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/collab/"+item.ID, nil)
+		if scopesJSON != "" {
+			req = req.WithContext(WithTokenScopes(req.Context(), scopesJSON))
+		}
+		access, err := srv.authorizeCollabAccess(req, item)
+		if err != nil {
+			t.Fatalf("%s: authorizeCollabAccess error (should be admitted): %v", name, err)
+		}
+		if access.canWrite != wantWrite {
+			t.Fatalf("%s: canWrite = %v, want %v", name, access.canWrite, wantWrite)
+		}
+	}
+	check("fresh install, no token (anonymous setup)", "", true)
+	check("fresh install + read-scoped token", `["read"]`, false)
+	check("fresh install + write-scoped token", `["write"]`, true)
+}
+
 // TestCollabDemotionMakesConnReadOnly exercises the mid-session
 // demotion path (TASK-265): an editor connected to a collab room who
 // is demoted to viewer must become read-only WITHOUT a reconnect —
