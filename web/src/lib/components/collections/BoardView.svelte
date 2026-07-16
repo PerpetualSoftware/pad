@@ -623,6 +623,15 @@
 		flex: 1;
 		min-height: 0;
 		overflow-x: auto;
+		/* Only the horizontal axis scrolls at this level — each .column-cards
+		   owns its own vertical scroll. Without this, per CSS spec setting
+		   overflow-x to a non-visible value promotes the visible overflow-y to
+		   `auto`, so a 1px/scrollbar-height overflow of the stretched columns
+		   spawns an unwanted vertical scrollbar and pushes the horizontal
+		   scroll track below an empty band (the "oversized/detached" bottom
+		   scrollbar in BUG-2127). Clipping any vertical overflow keeps the
+		   horizontal scrollbar snug at the bottom of the columns. */
+		overflow-y: hidden;
 	}
 
 	.kanban-column {

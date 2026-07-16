@@ -2554,7 +2554,7 @@
 	is the ONLY thing that mounts/unmounts on open/close — see the NO-{#key}
 	note on the ItemDetail mount below.
 -->
-<div class="collection-page" class:board-active={viewMode === 'board'} class:pane-open={!!openItemRef}>
+<div class="collection-page" class:board-active={viewMode === 'board'} class:pane-open={!!openItemRef} class:sidebar-open={uiStore.sidebarOpen}>
 	<div class="list-column">
 	{#if loading}
 		<div class="loading">Loading...</div>
@@ -3170,7 +3170,12 @@
 
 	.collection-page.board-active {
 		max-width: none;
-		padding: var(--space-6) var(--space-6);
+		/* Top/left/right space-6; bottom tightened to space-3 so the board
+		   sits closer to the bottom edge (BUG-2127). Right gutter keeps the
+		   last column off the window edge when the sidebar is hidden; the
+		   sidebar-open rule below collapses it when the sidebar takes that
+		   horizontal space. */
+		padding: var(--space-6) var(--space-6) var(--space-3);
 		/*
 			Fill the scrollable .main-content region, NOT the viewport.
 			.main-content (root +layout) already sizes itself below the
@@ -3184,6 +3189,16 @@
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
+	}
+	/* Sidebar-aware right gutter (BUG-2127). When the sidebar is shown,
+	   horizontal space is at a premium, so collapse the board's right
+	   padding and let the columns use the full remaining width. When it's
+	   hidden, the base rule's space-6 right gutter keeps the last column
+	   off the window edge. Board view only — list/table layouts are
+	   unaffected. (When a pane is open the .pane-open rules zero the page
+	   padding regardless, so this doesn't fight them.) */
+	.collection-page.board-active.sidebar-open {
+		padding-right: 0;
 	}
 	.board-active .page-header {
 		flex-shrink: 0;
