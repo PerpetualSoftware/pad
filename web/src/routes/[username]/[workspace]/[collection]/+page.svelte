@@ -43,6 +43,7 @@
 		viewHasUnparentedFilter,
 		writeUnparentedParam,
 	} from '$lib/collections/unparentedFilter';
+	import { KNOWN_COLLECTION_URL_PARAMS, preservePaneItemParam } from '$lib/collections/paneUrlParams';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -455,10 +456,11 @@
 		// changes. This function rebuilds the query from scratch (the fresh
 		// `new URLSearchParams()` above), so without re-emitting the current
 		// `?item=` the next filter change would silently drop the open pane
-		// (PLAN-2105). Read the live value off `page.url` — it's the same
-		// source `openItemRef` derives from, so this stays in sync.
-		const openItem = page.url.searchParams.get('item');
-		if (openItem) params.set('item', openItem);
+		// (PLAN-2105). Reads the live value off `page.url` — it's the same
+		// source `openItemRef` derives from, so this stays in sync. Factored
+		// into `preservePaneItemParam` (TASK-2116) so the round-trip is
+		// unit-testable without mounting this route.
+		preservePaneItemParam(params, page.url);
 		const qs = params.toString();
 		const newUrl = `/${username}/${wsSlug}/${collSlug}${qs ? '?' + qs : ''}`;
 		goto(newUrl, { replaceState: true, noScroll: true, keepFocus: true });
@@ -518,11 +520,12 @@
 		// know that yet.
 		selectedTags = [];
 		const unparentedIntent = readUnparentedParam(url.searchParams);
-		// `item` is the split-pane param (PLAN-2105) — whitelist it so it's
-		// not misread as a schema-field filter and absorbed into
-		// activeFilters. It's consumed by the `openItemRef` derived, not by
-		// the filter load cycle.
-		const knownParams = new Set(['view', 'q', 'tags', 'item', UNPARENTED_FILTER_FIELD]);
+		// `item` is the split-pane param (PLAN-2105) — whitelist it (via the
+		// shared `KNOWN_COLLECTION_URL_PARAMS`, TASK-2116) so it's not
+		// misread as a schema-field filter and absorbed into activeFilters.
+		// It's consumed by the `openItemRef` derived, not by the filter load
+		// cycle.
+		const knownParams = new Set([...KNOWN_COLLECTION_URL_PARAMS, UNPARENTED_FILTER_FIELD]);
 		for (const [k, v] of url.searchParams.entries()) {
 			if (k === 'view' && (v === 'list' || v === 'board')) {
 				viewMode = v;
