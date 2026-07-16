@@ -29,7 +29,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
 	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
-	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, getTerminalOptions } from '$lib/types';
+	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
@@ -316,6 +316,44 @@
 		if (!showGraph) return;
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === 'Escape') closeGraph();
+		};
+		window.addEventListener('keydown', onKey);
+		return () => window.removeEventListener('keydown', onKey);
+	});
+
+	// ── Embedded pane chrome (PLAN-2105 / TASK-2113) ───────────────────
+	// The embedded pane hides the full-page breadcrumb, so ItemDetail
+	// renders its own compact header (expand ⤢ / popout ↗ / collapse ✕).
+	// The expand + popout targets are built from the LOADED item's OWN
+	// collection (effectiveCollSlug — cross-collection-safe) so a stale or
+	// hand-crafted ?item= pointing at a different collection still resolves
+	// to the correct full-page route. itemUrlId() is the SAME vocabulary the
+	// full-page [slug] route resolves, so ?item= and the full-page URL share
+	// one ref (PLAN-2105).
+	let fullPageUrl = $derived(
+		item ? `/${username}/${wsSlug}/${effectiveCollSlug}/${itemUrlId(item)}` : '',
+	);
+	// Expand ⤢ — leave the pane for the full-page route (a real navigation;
+	// the pane unmounts as ?item= drops out of the URL).
+	function expandToFullPage() {
+		if (!item) return;
+		goto(fullPageUrl);
+	}
+	// Scoped ESC-to-close — active ONLY while embedded (the pane is mounted
+	// only when ?item= is set). Bails when the graph drawer is open (its own
+	// ESC listener above closes it first) or focus is in a text-editing
+	// control (ESC there dismisses that control — e.g. cancels a title edit —
+	// not the whole pane). Final multi-layer ESC precedence with the graph
+	// drawer + list focus is TASK-2118; this scoped listener is the pane's
+	// own layer.
+	$effect(() => {
+		if (!embedded) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== 'Escape') return;
+			if (showGraph) return;
+			const t = e.target as HTMLElement | null;
+			if (t?.closest('input, textarea, select, [contenteditable="true"]')) return;
+			onClose?.();
 		};
 		window.addEventListener('keydown', onKey);
 		return () => window.removeEventListener('keydown', onKey);
@@ -2814,6 +2852,26 @@
 	}
 </script>
 
+<!-- Embedded pane, whenever the full header can't render: a minimal header so
+     the pane stays closable during a slow or failed deep link — including an
+     A→B switch, where `loading` is true while `item` still holds the previous
+     item (the skeleton renders, not the full header), and ESC isn't reachable
+     on touch (PLAN-2105 / TASK-2113; Codex rounds 2-3). This condition is the
+     exact negation of the loaded branch's `!loading && !error && item &&
+     collection`, so it never double-renders with the full header. -->
+{#if embedded && (loading || error || !item || !collection)}
+	<header class="pane-header pane-header--minimal" aria-label="Item pane">
+		<div class="pane-header-actions">
+			<button
+				type="button"
+				class="pane-header-btn"
+				onclick={() => onClose?.()}
+				title="Close pane"
+				aria-label="Close pane"
+			>✕</button>
+		</div>
+	</header>
+{/if}
 {#if loading}
 	<ContentSkeleton variant="page" />
 {:else if error}
@@ -2867,6 +2925,51 @@
 					{/if}
 				</nav>
 			</div>
+		{:else}
+			<!-- Pane chrome (PLAN-2105 / TASK-2113). Replaces the full-page
+			     breadcrumb (hidden above) inside the narrow docked pane: expand
+			     to the full page, pop out to a new tab, or collapse the pane.
+			     The ref label + copy button mirror the full-page identity; the
+			     three controls are the pane's route-owner chrome. -->
+			<header class="pane-header" aria-label="Item pane">
+				<div class="pane-header-ref">
+					<span class="pane-header-ref-text">{formatItemRef(item) || item.title}</span>
+					{#if formatItemRef(item)}
+						<button class="copy-ref-btn" onclick={handleCopyRef} title="Copy item ID" aria-label="Copy item ID">
+							{#if copied}
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+								<span class="copied-tooltip">Copied!</span>
+							{:else}
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+							{/if}
+						</button>
+					{/if}
+				</div>
+				<div class="pane-header-actions">
+					<button
+						type="button"
+						class="pane-header-btn"
+						onclick={expandToFullPage}
+						title="Expand to full page"
+						aria-label="Expand to full page"
+					>⤢</button>
+					<a
+						class="pane-header-btn"
+						href={fullPageUrl}
+						target="_blank"
+						rel="noopener"
+						title="Open in a new tab"
+						aria-label="Open in a new tab"
+					>↗</a>
+					<button
+						type="button"
+						class="pane-header-btn"
+						onclick={() => onClose?.()}
+						title="Close pane"
+						aria-label="Close pane"
+					>✕</button>
+				</div>
+			</header>
 		{/if}
 
 		<!-- Archived banner (TASK-1829) — read-only notice shown above the
@@ -3849,6 +3952,64 @@
 		surfaces now — the override is removed to close the gap that the
 		stale 45px offset was producing.
 	*/
+
+	/* Pane chrome (PLAN-2105 / TASK-2113) — embedded-only header docked at
+	   the top of the split pane, replacing the full-page breadcrumb. */
+	.pane-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-3);
+		margin-bottom: var(--space-3);
+	}
+	/* Loading / error variant: only the close button, right-aligned, with its
+	   own padding since it renders outside the padded `.item-page` wrapper. */
+	.pane-header--minimal {
+		justify-content: flex-end;
+		padding: var(--space-4) var(--space-4) 0;
+		margin-bottom: 0;
+	}
+	.pane-header-ref {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		min-width: 0;
+	}
+	.pane-header-ref-text {
+		font-size: 0.85em;
+		font-weight: 600;
+		color: var(--text-secondary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.pane-header-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		flex-shrink: 0;
+	}
+	.pane-header-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 28px;
+		height: 28px;
+		padding: 0;
+		border-radius: var(--radius-sm);
+		border: 1px solid transparent;
+		background: transparent;
+		color: var(--text-secondary);
+		font-size: 0.95rem;
+		line-height: 1;
+		cursor: pointer;
+		text-decoration: none;
+		transition: background 0.12s, color 0.12s;
+	}
+	.pane-header-btn:hover {
+		background: var(--bg-hover);
+		color: var(--text-primary);
+	}
 
 	/* Breadcrumb */
 	.breadcrumb {

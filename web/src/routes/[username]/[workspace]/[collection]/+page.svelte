@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { browser } from '$app/environment';
 	import { goto, beforeNavigate } from '$app/navigation';
 	import { api, PadApiError, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import type { BulkItemsRequest, Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
@@ -14,7 +15,7 @@
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import SSEStatusIndicator from '$lib/components/SSEStatusIndicator.svelte';
-	import { onDestroy, onMount } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -490,6 +491,250 @@
 			noScroll: true,
 			keepFocus: true,
 		});
+	}
+
+	// ── Resizable detail pane + persisted width (PLAN-2105 / TASK-2114) ─
+	// No resize primitive existed in the repo, so this is built from
+	// scratch: a draggable divider between the list column and the pane,
+	// pointer-captured so the drag can't select text or fall through to a
+	// row-click. The width persists to localStorage under a GLOBAL key that
+	// deliberately does NOT collide with the vestigial `pad-detail-panel`
+	// key in ui.svelte.ts, reusing the read-on-init / write-on-change idiom
+	// from that store (the `pad-topbar` pattern).
+	const PANE_WIDTH_KEY = 'pad-pane-width';
+	const PANE_WIDTH_MIN = 360; // mirrors the CSS clamp() floor
+	const PANE_WIDTH_MAX = 720; // generous ceiling (CSS clamp maxed at 640)
+	const PANE_WIDTH_DEFAULT = 460;
+	const PANE_DIVIDER_WIDTH = 6; // keep in sync with .pane-divider flex-basis
+	// Keep at least this much room for the list column so a wide drag (or a
+	// stored width carried over from a bigger screen) can never crush the
+	// list to nothing.
+	const LIST_MIN_WIDTH = 360;
+
+	// Min/max pane width for the CURRENT container. Measures the ACTUAL
+	// flex-row container (`.collection-page` — which spans `.main-content`,
+	// i.e. EXCLUDES the sidebar + page chrome) once the pane is mounted, so
+	// the clamp reflects real available space and a drag can never crush the
+	// list. Before the pane mounts (init / keyboard) it falls back to the
+	// viewport as a loose upper bound; the ResizeObserver below refits once
+	// the real container is measurable (Codex round 1 P2).
+	//
+	// When the container is too narrow to honor BOTH the pane floor and the
+	// list floor (e.g. a ~800px viewport with the sidebar expanded), the fixed
+	// 360px floors would force the list down to ~140px. In that regime both
+	// floors relax to 40% of the usable width so neither column is crushed —
+	// the pane can shrink below PANE_WIDTH_MIN and the list keeps ≥40% (Codex
+	// round 2 P2).
+	function paneBounds(): { min: number; max: number } {
+		let containerW = 0;
+		const container = paneEl?.parentElement ?? null;
+		if (container) containerW = container.getBoundingClientRect().width;
+		else if (browser) containerW = window.innerWidth;
+		if (containerW <= 0) return { min: PANE_WIDTH_MIN, max: PANE_WIDTH_MAX };
+		const usable = containerW - PANE_DIVIDER_WIDTH;
+		const listFloor = Math.min(LIST_MIN_WIDTH, usable * 0.4);
+		const paneFloor = Math.min(PANE_WIDTH_MIN, usable * 0.4);
+		const max = Math.max(paneFloor, Math.min(PANE_WIDTH_MAX, usable - listFloor));
+		return { min: paneFloor, max };
+	}
+	function clampPaneWidth(px: number): number {
+		const { min, max } = paneBounds();
+		return Math.max(min, Math.min(max, px));
+	}
+
+	// The RAW persisted preference (unclamped) — the width the user last
+	// chose. Kept separate from the APPLIED width so a temporarily narrow
+	// container (small window / open sidebar) refits the pane down without
+	// destroying the preference, and widening restores it.
+	function readStoredPaneWidth(): number | null {
+		if (!browser) return null;
+		try {
+			const raw = localStorage.getItem(PANE_WIDTH_KEY);
+			if (!raw) return null;
+			const n = Number(raw);
+			return Number.isFinite(n) ? n : null;
+		} catch {
+			return null;
+		}
+	}
+
+	// storedPaneWidth = the raw preference; paneWidth = that preference
+	// clamped to what currently fits. BOTH read synchronously from
+	// localStorage on the first client tick. These authenticated routes are
+	// CSR-only (adapter-static `fallback` ⇒ no runtime SSR), so the
+	// `!browser` → null branch only runs at build-time fallback generation,
+	// never for a real user: the persisted width is present on the very first
+	// client paint and a direct `?item=REF` landing shows no jump from the
+	// CSS default to the stored width (PLAN-2105 reflow mitigation). Applied
+	// as the `--pane-width` CSS var on the pane below; `null` → the CSS
+	// clamp() default.
+	let paneEl = $state<HTMLElement | null>(null);
+	let resizingPane = $state(false);
+	// Read once into a plain const so neither $state initializer references the
+	// other reactive value (which would only capture its initial value anyway).
+	const initialStoredWidth = readStoredPaneWidth();
+	let storedPaneWidth = $state<number | null>(initialStoredWidth);
+	let paneWidth = $state<number | null>(
+		initialStoredWidth != null ? clampPaneWidth(initialStoredWidth) : null,
+	);
+	// The pane's real rendered width, tracked by the ResizeObserver below.
+	// Fallback for `aria-valuenow` in the brief window before the observer
+	// first fires and sets `paneWidth`.
+	let measuredPaneWidth = $state<number | null>(null);
+	// The current bounds, mirrored into state so the divider's ARIA range
+	// tracks the relaxed floors on a cramped container (Codex round 3 P3).
+	let ariaMin = $state(PANE_WIDTH_MIN);
+	let ariaMax = $state(PANE_WIDTH_MAX);
+
+	// Commit a new user-chosen width: clamp, apply, persist the preference.
+	function setPaneWidth(px: number) {
+		const clamped = clampPaneWidth(px);
+		storedPaneWidth = clamped;
+		paneWidth = clamped;
+		if (browser) {
+			try {
+				localStorage.setItem(PANE_WIDTH_KEY, String(clamped));
+			} catch {}
+		}
+	}
+
+	// The width to APPLY for the current container: the user's saved
+	// preference if set, otherwise the CSS `clamp(360px, 38%, 640px)` default
+	// computed in JS — both clamped to what currently fits. Mirroring the CSS
+	// default means applying it as `--pane-width` matches what CSS renders on
+	// roomy layouts (so the observer's first run causes no reflow) while a
+	// cramped container gets a fitted width that doesn't crush the list, even
+	// with NO saved preference (Codex round 3 P2).
+	function fittedPaneWidth(): number {
+		const { min, max } = paneBounds();
+		let containerW = 0;
+		const container = paneEl?.parentElement ?? null;
+		if (container) containerW = container.getBoundingClientRect().width;
+		else if (browser) containerW = window.innerWidth;
+		const cssDefault = Math.min(640, Math.max(360, containerW * 0.38));
+		return Math.max(min, Math.min(max, storedPaneWidth ?? cssDefault));
+	}
+
+	// Re-fit the applied width + ARIA bounds to the current container. Called
+	// from the ResizeObserver on mount, window resize, and sidebar toggle.
+	function refitPaneWidth() {
+		paneWidth = fittedPaneWidth();
+		const b = paneBounds();
+		ariaMin = Math.round(b.min);
+		ariaMax = Math.round(b.max);
+	}
+
+	// Fit the pane to its real container: once synchronously before paint (so a
+	// direct `?item=` load never flashes an over-wide width) and then on every
+	// container resize via a ResizeObserver. Also samples the rendered width for
+	// ARIA. Effect re-runs when the pane mounts (paneEl binds).
+	$effect(() => {
+		if (!browser || !openItemRef || !paneEl) return;
+		const el = paneEl;
+		const container = el.parentElement;
+		if (!container) return;
+		// Synchronous FIRST fit against the real container, BEFORE the browser
+		// paints. This effect runs after the pane is in the DOM but within the
+		// same update cycle (pre-paint), so on a direct `/{ws}/{coll}?item=REF`
+		// load it corrects the init clamp — which used `window.innerWidth` and
+		// therefore over-counted by the ~260px sidebar — against the true
+		// flex-row width with NO visible jump. Waiting for the observer's first
+		// (async, post-paint) callback is what let an over-wide stored width
+		// flash before snapping (TASK-2114 hydration-reflow criterion; coord P2).
+		// Runs regardless of ResizeObserver support (needs only
+		// getBoundingClientRect). `untrack` so reading storedPaneWidth/paneEl
+		// inside the fit doesn't add them as deps of this observer effect (which
+		// would re-create the observer on every drag).
+		untrack(() => {
+			refitPaneWidth();
+			measuredPaneWidth = el.getBoundingClientRect().width;
+		});
+		// Observe the flex-row container so pane width refits on window resize
+		// AND sidebar toggles (which resize the container without a window
+		// `resize` event). Resizing the pane itself doesn't change the container
+		// width, so this can't loop.
+		if (typeof ResizeObserver === 'undefined') return;
+		const ro = new ResizeObserver(() => {
+			refitPaneWidth();
+			measuredPaneWidth = el.getBoundingClientRect().width;
+		});
+		ro.observe(container);
+		return () => ro.disconnect();
+	});
+
+	// Safety net for an interrupted drag: if the pane closes (ESC / Back /
+	// nav removes the divider) mid-drag, pointerup/lostpointercapture may
+	// never fire, leaving text selection disabled and the col-resize cursor
+	// stuck across the whole app. When `?item=` clears, reset the flag and
+	// restore the global drag chrome the pointer handlers would have (Codex
+	// round 2 P2).
+	$effect(() => {
+		if (openItemRef) return;
+		if (resizingPane) {
+			resizingPane = false;
+			if (browser) {
+				document.body.style.userSelect = '';
+				document.body.style.cursor = '';
+			}
+		}
+	});
+
+	function onDividerPointerDown(e: PointerEvent) {
+		// Left button / touch / pen only; ignore right-click etc.
+		if (e.button !== 0) return;
+		// Stop the browser from starting a text selection or handing the
+		// gesture to the list (row-click nav) mid-drag.
+		e.preventDefault();
+		resizingPane = true;
+		const divider = e.currentTarget as HTMLElement;
+		divider.setPointerCapture(e.pointerId);
+		document.body.style.userSelect = 'none';
+		document.body.style.cursor = 'col-resize';
+	}
+
+	function onDividerPointerMove(e: PointerEvent) {
+		if (!resizingPane || !paneEl) return;
+		// The pane is right-docked, so its width is (its right edge − pointer
+		// x). Reading the live rect keeps this correct regardless of page
+		// padding or the pane's current size.
+		const rect = paneEl.getBoundingClientRect();
+		setPaneWidth(rect.right - e.clientX);
+	}
+
+	function endPaneResize(e: PointerEvent) {
+		if (!resizingPane) return;
+		resizingPane = false;
+		const divider = e.currentTarget as HTMLElement;
+		try {
+			divider.releasePointerCapture(e.pointerId);
+		} catch {}
+		document.body.style.userSelect = '';
+		document.body.style.cursor = '';
+	}
+
+	// The pane's actual current width — the applied width if set, else the
+	// real rendered size (the CSS clamp() default), so the FIRST keyboard
+	// nudge moves from where the pane visibly is rather than an assumed
+	// default that could be on the wrong side of it (Codex round 1 P2).
+	function currentPaneWidth(): number {
+		if (paneWidth != null) return paneWidth;
+		if (browser && paneEl) return paneEl.getBoundingClientRect().width;
+		return PANE_WIDTH_DEFAULT;
+	}
+
+	// Keyboard resize for the focusable separator (arrows nudge the width).
+	// ArrowLeft grows the pane (divider moves left), ArrowRight shrinks it,
+	// matching the drag direction.
+	function onDividerKeydown(e: KeyboardEvent) {
+		const step = e.shiftKey ? 32 : 16;
+		const current = currentPaneWidth();
+		if (e.key === 'ArrowLeft') {
+			e.preventDefault();
+			setPaneWidth(current + step);
+		} else if (e.key === 'ArrowRight') {
+			e.preventDefault();
+			setPaneWidth(current - step);
+		}
 	}
 
 	// Read filters from URL on load
@@ -2591,6 +2836,31 @@
 	{/if}
 	</div>
 	{#if openItemRef}
+		<!-- Draggable divider (PLAN-2105 / TASK-2114). Pointer-captured so a
+		     drag stays on the handle (never selects text or fires a row-click)
+		     and also keyboard-adjustable via the arrow keys. This is the ARIA
+		     "window splitter" pattern — a focusable separator IS interactive,
+		     but Svelte's a11y heuristic treats every separator as
+		     non-interactive, so the tabindex + pointer/key handlers are
+		     legitimately ignored here. -->
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+		<div
+			class="pane-divider"
+			class:resizing={resizingPane}
+			role="separator"
+			tabindex="0"
+			aria-orientation="vertical"
+			aria-label="Resize detail pane"
+			aria-valuemin={ariaMin}
+			aria-valuemax={ariaMax}
+			aria-valuenow={Math.min(ariaMax, Math.max(ariaMin, Math.round(paneWidth ?? measuredPaneWidth ?? PANE_WIDTH_DEFAULT)))}
+			onpointerdown={onDividerPointerDown}
+			onpointermove={onDividerPointerMove}
+			onpointerup={endPaneResize}
+			onlostpointercapture={endPaneResize}
+			onkeydown={onDividerKeydown}
+		></div>
 		<!--
 			The detail pane. CRITICAL (PLAN-2105 / TASK-2112): NO {#key} wrapper.
 			A→B item switch must be a PROP UPDATE (`ref` change re-drives
@@ -2600,8 +2870,16 @@
 			whole design. Open/close (this {#if}) is the ONLY mount/unmount.
 			`onNavigateAway` handles the collection-rename case; onClose/onGone
 			clear only `?item=`, preserving view/sort/filter/tags/search.
+
+			`--pane-width` carries the persisted width (TASK-2114); undefined
+			until localStorage is read so the CSS clamp() default applies on
+			first paint when there's no stored value.
 		-->
-		<aside class="item-pane">
+		<aside
+			class="item-pane"
+			bind:this={paneEl}
+			style={paneWidth != null ? `--pane-width: ${paneWidth}px` : undefined}
+		>
 			<ItemDetail
 				ref={openItemRef}
 				embedded
@@ -2791,11 +3069,50 @@
 		padding: var(--space-6);
 	}
 	.item-pane {
-		flex: 0 0 clamp(360px, 38%, 640px);
+		/* Width comes from the persisted `--pane-width` CSS var (TASK-2114);
+		   the clamp() is the fallback before localStorage is read / when no
+		   width was ever stored. The .pane-divider (not this border) is the
+		   resting separator on desktop. */
+		flex: 0 0 var(--pane-width, clamp(360px, 38%, 640px));
 		min-width: 0;
 		overflow-y: auto;
-		border-left: 1px solid var(--border);
 		background: var(--bg-primary);
+	}
+
+	/* Draggable resize handle between the list column and the pane
+	   (PLAN-2105 / TASK-2114). The 6px-wide element is the grab target; a
+	   centered pseudo-element draws the resting 1px separator (replacing the
+	   pane's old border-left) and thickens to an accent line on hover, focus,
+	   or active drag. */
+	.pane-divider {
+		flex: 0 0 6px;
+		align-self: stretch;
+		position: relative;
+		background: transparent;
+		cursor: col-resize;
+		/* No native text selection or touch scroll/gesture while dragging. */
+		user-select: none;
+		touch-action: none;
+	}
+	.pane-divider:focus-visible {
+		outline: none;
+	}
+	.pane-divider::after {
+		content: '';
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: 50%;
+		width: 1px;
+		transform: translateX(-50%);
+		background: var(--border);
+		transition: background 0.12s, width 0.12s;
+	}
+	.pane-divider:hover::after,
+	.pane-divider:focus-visible::after,
+	.pane-divider.resizing::after {
+		background: var(--accent-blue);
+		width: 2px;
 	}
 
 	@media (max-width: 768px) {
@@ -2808,9 +3125,12 @@
 		.collection-page.pane-open .list-column {
 			overflow-y: visible;
 		}
+		/* The vertical resize handle is meaningless in the stacked layout. */
+		.pane-divider {
+			display: none;
+		}
 		.item-pane {
 			flex: 1 1 auto;
-			border-left: none;
 			border-top: 1px solid var(--border);
 		}
 	}
