@@ -7,6 +7,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import ItemActionsMenu from './ItemActionsMenu.svelte';
 	import type { ReorderDirection } from '$lib/collections/reorder';
+	import { shouldOpenInPane } from './itemCardClick';
 
 	interface Props {
 		item: Item;
@@ -165,13 +166,13 @@
 	// native <a href> (cmd/middle-click = full-page popout in a new tab,
 	// right-click-copy / SSR target the full page). Sub-controls (star / PR /
 	// status / tags / reorder) already stopPropagation, so their clicks never
-	// reach this handler; `defaultPrevented` is a defensive backstop.
+	// reach this handler; `defaultPrevented` is a defensive backstop. The
+	// bail-out predicate is factored into `shouldOpenInPane` (TASK-2116) so
+	// it's unit-testable without mounting this component.
 	function handleCardClick(e: MouseEvent) {
-		if (!onItemOpen) return;
-		if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-		if (e.defaultPrevented) return;
+		if (!shouldOpenInPane(e, !!onItemOpen)) return;
 		e.preventDefault();
-		onItemOpen(item);
+		onItemOpen?.(item);
 	}
 </script>
 
