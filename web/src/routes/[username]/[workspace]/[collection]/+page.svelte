@@ -44,6 +44,7 @@
 		viewHasUnparentedFilter,
 	} from '$lib/collections/unparentedFilter';
 	import { KNOWN_COLLECTION_URL_PARAMS, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
+	import { pushEscapeHandler, runTopEscape, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -484,6 +485,9 @@
 	}
 
 	function closeItemPane() {
+		// A pending j/k pane-follow must not re-open the pane after an explicit
+		// close (e.g. ESC while a follow debounce is in flight).
+		cancelPaneFollow();
 		const url = new URL(page.url);
 		url.searchParams.delete('item');
 		goto(`${url.pathname}${url.search}`, {
@@ -903,6 +907,9 @@
 	onDestroy(() => {
 		unsubscribeSSE?.();
 		unsubscribeSync?.();
+		// Drop any pending j/k pane-follow so a late timer can't call goto on
+		// the unmounted page (PLAN-2105 / TASK-2119).
+		cancelPaneFollow();
 		// Scroll save/restore cleanup is owned by createScrollRestoration
 		// (snapshot.capture fires on navigate-away; the helper's $effect
 		// teardown cancels any in-flight RAF).
@@ -1853,6 +1860,20 @@
 		if (idx >= 0) focusedIndex = idx;
 	});
 
+	// Lowest-priority ESC layer: clear the list keyboard-focus marker
+	// (PLAN-2105 / TASK-2118). Registered for the page's lifetime, but the
+	// handler DECLINES (returns false) when no row is focused, so ESC falls
+	// through to nothing rather than being spuriously swallowed. The pane +
+	// graph-drawer layers register at higher priority when open, so a single
+	// ESC closes those first; only once they're gone does ESC clear the row.
+	$effect(() => {
+		return pushEscapeHandler(() => {
+			if (focusedIndex < 0) return false;
+			focusedIndex = -1;
+			return true;
+		}, ESCAPE_PRIORITY.listFocus);
+	});
+
 	// Register a Cmd+F handler with the layout while this page is mounted.
 	// The layout only intercepts Cmd+F when a handler is registered, so on
 	// pages without one (e.g. item view) it falls through to browser-native
@@ -1867,13 +1888,68 @@
 		return () => uiStore.unregisterCollectionSearch();
 	});
 
+	// j/k pane-follow (PLAN-2105 / TASK-2119). While the pane is OPEN, moving
+	// the list cursor with j/k/arrows re-targets `?item=` to the newly focused
+	// row so the pane follows the selection. Debounced (~PANE_FOLLOW_DEBOUNCE_MS)
+	// so HOLDING a key settles on the FINAL row instead of firing a
+	// loadData / collab-provider churn per intermediate row. `openItemPane`
+	// re-targets via `replaceState` when a pane is already open, so paging
+	// through N rows never pushes N history entries — a single Back still just
+	// closes the pane. No-op when the pane is CLOSED: j/k moves the cursor only,
+	// exactly as before.
+	const PANE_FOLLOW_DEBOUNCE_MS = 140;
+	let paneFollowTimer: ReturnType<typeof setTimeout> | null = null;
+	function cancelPaneFollow() {
+		if (paneFollowTimer) {
+			clearTimeout(paneFollowTimer);
+			paneFollowTimer = null;
+		}
+	}
+	function schedulePaneFollow() {
+		if (!browser) return;
+		if (!openItemRef) return; // pane closed → keyboard nav moves focus only
+		cancelPaneFollow();
+		paneFollowTimer = setTimeout(() => {
+			paneFollowTimer = null;
+			// Re-check: the pane may have closed during the debounce window.
+			if (!openItemRef) return;
+			if (focusedIndex < 0 || focusedIndex >= filteredItems.length) return;
+			const item = filteredItems[focusedIndex];
+			// Skip if the focused row is already the paned item — avoids a
+			// redundant replaceState navigation on a same-item settle.
+			if (itemUrlId(item) === openItemRef || item.slug === openItemRef) return;
+			// Pane is open → openItemPane re-targets via replaceState (no push).
+			openItemPane(item);
+		}, PANE_FOLLOW_DEBOUNCE_MS);
+	}
+
 	function handlePageKeydown(e: KeyboardEvent) {
 		// Don't capture when typing in inputs/textareas or when quick-create is open
 		const tag = (e.target as HTMLElement)?.tagName;
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+		// ESC precedence chain (PLAN-2105 / TASK-2118). Handled here for the
+		// WHOLE collection route — including an open pane — so it must run
+		// BEFORE the `.item-pane` guard below (that guard correctly stops
+		// j/k/Enter typed in the pane from driving the list, but must NOT
+		// swallow the pane's own ESC). The shared escape stack closes exactly
+		// ONE layer, innermost-first (graph drawer → pane → clear list focus);
+		// each layer registers its own handler. Still bail when focus is inside
+		// the Tiptap editor (contenteditable) — ESC there is the editor's to
+		// handle, not a layer-close.
+		if (e.key === 'Escape') {
+			if ((e.target as HTMLElement)?.closest?.('[contenteditable="true"]')) return;
+			// A modal (native <dialog>, focus-trapped) owns its own ESC — don't
+			// also pop a pane/graph/list layer underneath it. The pane and graph
+			// drawer aren't dialogs, so this never blocks the chain.
+			if ((e.target as HTMLElement)?.closest?.('dialog')) return;
+			if (runTopEscape()) e.preventDefault();
+			return;
+		}
+
 		// Also bail when typing inside a contenteditable (the Tiptap editor is
 		// a contenteditable DIV) or anywhere inside the detail pane — otherwise
-		// j/k/arrows/Enter/Escape typed in the open pane's editor would drive
+		// j/k/arrows/Enter typed in the open pane's editor would drive
 		// list navigation instead of editing (PLAN-2105 / TASK-2111).
 		if ((e.target as HTMLElement)?.closest?.('[contenteditable="true"], .item-pane')) return;
 		if (quickCreateOpen || saveViewOpen) return;
@@ -1885,6 +1961,7 @@
 				if (filteredItems.length > 0) {
 					focusedIndex = Math.min(focusedIndex + 1, filteredItems.length - 1);
 					scrollFocusedIntoView();
+					schedulePaneFollow();
 				}
 				break;
 			case 'k':
@@ -1893,6 +1970,7 @@
 				if (filteredItems.length > 0) {
 					focusedIndex = Math.max(focusedIndex - 1, 0);
 					scrollFocusedIntoView();
+					schedulePaneFollow();
 				}
 				break;
 			case 'Enter':
@@ -1904,9 +1982,7 @@
 					openItemPane(item);
 				}
 				break;
-			case 'Escape':
-				focusedIndex = -1;
-				break;
+			// Escape is handled above (before the `.item-pane` guard).
 		}
 	}
 

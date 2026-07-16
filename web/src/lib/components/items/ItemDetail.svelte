@@ -5,6 +5,7 @@
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { marked } from 'marked';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
@@ -312,13 +313,30 @@
 		return `/${username}/${wsSlug}/${collection ?? effectiveCollSlug}/${ref}`;
 	}
 	// ESC closes the graph drawer (only while open — no global listener otherwise).
+	// FULL-PAGE only: there's no pane/list contention on the full-page route, so
+	// it keeps its own window listener. The EMBEDDED graph drawer routes ESC
+	// through the shared escape stack instead (see below) so it composes with
+	// the pane + list-focus layers — one ESC closes exactly one layer
+	// (PLAN-2105 / TASK-2118).
 	$effect(() => {
+		if (embedded) return;
 		if (!showGraph) return;
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === 'Escape') closeGraph();
 		};
 		window.addEventListener('keydown', onKey);
 		return () => window.removeEventListener('keydown', onKey);
+	});
+	// EMBEDDED graph drawer — highest-priority ESC layer (innermost). Registered
+	// into the shared escape stack while open; the single top-level listener on
+	// the collection page invokes only the top handler, so one ESC closes the
+	// drawer and leaves the pane open (PLAN-2105 / TASK-2118).
+	$effect(() => {
+		if (!embedded || !showGraph) return;
+		return pushEscapeHandler(() => {
+			closeGraph();
+			return true;
+		}, ESCAPE_PRIORITY.graphDrawer);
 	});
 
 	// ── Embedded pane chrome (PLAN-2105 / TASK-2113) ───────────────────
@@ -339,24 +357,21 @@
 		if (!item) return;
 		goto(fullPageUrl);
 	}
-	// Scoped ESC-to-close — active ONLY while embedded (the pane is mounted
-	// only when ?item= is set). Bails when the graph drawer is open (its own
-	// ESC listener above closes it first) or focus is in a text-editing
-	// control (ESC there dismisses that control — e.g. cancels a title edit —
-	// not the whole pane). Final multi-layer ESC precedence with the graph
-	// drawer + list focus is TASK-2118; this scoped listener is the pane's
-	// own layer.
+	// Pane-close — the middle ESC layer, between the graph drawer (higher) and
+	// the collection list-focus marker (lower). Registered into the shared
+	// escape stack while embedded (the pane is mounted only when ?item= is set).
+	// Priority — not a per-handler `showGraph` guard — decides graph-vs-pane
+	// precedence now: while the drawer is open its higher-priority handler wins,
+	// so one ESC closes the drawer and a second closes the pane. The
+	// text-editing-control bail (ESC cancels a title edit / editor selection,
+	// not the pane) lives in the single top-level listener on the collection
+	// page, so it isn't repeated here (PLAN-2105 / TASK-2118).
 	$effect(() => {
 		if (!embedded) return;
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key !== 'Escape') return;
-			if (showGraph) return;
-			const t = e.target as HTMLElement | null;
-			if (t?.closest('input, textarea, select, [contenteditable="true"]')) return;
+		return pushEscapeHandler(() => {
 			onClose?.();
-		};
-		window.addEventListener('keydown', onKey);
-		return () => window.removeEventListener('keydown', onKey);
+			return true;
+		}, ESCAPE_PRIORITY.pane);
 	});
 	let editCollectionSection = $state<'general' | 'fields' | 'display' | 'actions' | undefined>(undefined);
 	let agentRoles = $state<AgentRole[]>([]);
