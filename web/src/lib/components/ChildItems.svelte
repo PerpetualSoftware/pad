@@ -160,16 +160,26 @@
 	// ── Data loading ─────────────────────────────────────────────────────────
 
 	async function loadChildren() {
+		// Capture the request identity (item + workspace) BEFORE the await.
+		// ItemDetail reuses this panel across a no-{#key} item switch (its
+		// `itemSlug` prop just changes), so a slower A load must NOT overwrite
+		// B's children — nor fire onChildrenChange with A's data into the
+		// parent's childItemIds / progress overrides (PLAN-2105 / TASK-2112).
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		loading = true;
 		error = '';
 		try {
-			children = await api.items.children(wsSlug, itemSlug);
+			const loaded = await api.items.children(reqWs, reqSlug);
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			children = loaded;
 			onChildrenChange?.(children);
 		} catch (err) {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err instanceof Error ? err.message : 'Failed to load children';
 			onChildrenChange?.([]);
 		} finally {
-			loading = false;
+			if (reqSlug === itemSlug && reqWs === wsSlug) loading = false;
 		}
 	}
 

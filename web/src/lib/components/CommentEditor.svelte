@@ -85,12 +85,22 @@
 		if (busy || !editor) return;
 		const md = currentMarkdown();
 		if (md === '') return;
+		// Capture the composer's item identity BEFORE the await. This composer
+		// is REUSED across a no-{#key} item switch in the timeline (its `itemId`
+		// prop just changes), so if the user switches A→B while A's submit is in
+		// flight, clearing on completion would ERASE B's freshly-typed draft
+		// (PLAN-2105 / TASK-2112; Codex). Only clear when the composer is still
+		// on the same item and its editor is still alive.
+		const reqWs = wsSlug;
+		const reqItem = itemId;
 		saving = true;
 		try {
 			await onSubmit(md);
 			// Composer behaviour: clear on success. In edit/reply mode the host
 			// unmounts this component, so the clear is harmless there.
-			editor.commands.clearContent();
+			if (editor && !editor.isDestroyed && reqWs === wsSlug && reqItem === itemId) {
+				editor.commands.clearContent();
+			}
 		} catch {
 			// Keep the draft so the user can retry.
 		} finally {

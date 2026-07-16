@@ -29,12 +29,21 @@
 
 	async function ensureResolved() {
 		if (!version.is_diff || fetchedContent !== null || resolving) return;
+		// Capture the item identity before the await. This card lives in the
+		// timeline panel that ItemDetail reuses across a no-{#key} item switch
+		// (its itemSlug/wsSlug props change under it), so a lazy version-content
+		// resolve landing after a switch must not write into a stale card
+		// (TASK-2112). `resolving` is a local spinner flag, always cleared.
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		resolving = true;
 		resolveError = false;
 		try {
-			const full = await api.versions.get(wsSlug, itemSlug, version.id);
+			const full = await api.versions.get(reqWs, reqSlug, version.id);
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			fetchedContent = full.content;
 		} catch {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			resolveError = true;
 		} finally {
 			resolving = false;
@@ -59,9 +68,17 @@
 	}
 
 	async function confirmRestore() {
+		// Capture the item identity before the await so a mid-flight item switch
+		// (rapid j/k / row-click in the split pane) can't fire onRestore with
+		// A's restored item into a parent now showing B — nor flip this card's
+		// confirm state after it's been repurposed (TASK-2112). `restoring` is a
+		// local button flag, always cleared.
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		restoring = true;
 		try {
-			const updatedItem = await api.versions.restore(wsSlug, itemSlug, version.id);
+			const updatedItem = await api.versions.restore(reqWs, reqSlug, version.id);
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			confirming = false;
 			onRestore?.(updatedItem);
 		} finally {

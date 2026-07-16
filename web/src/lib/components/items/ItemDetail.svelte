@@ -2127,16 +2127,22 @@
 		// post-await force_refresh check (returns 'skipped' when it fires so
 		// the module doesn't record a known-stale base as lastFlushedContent).
 		save: async ({ ws, itemId, toSave, keepalive }) => {
+			// Snapshot the load generation at flush-start so the UI-feedback
+			// gate below also closes the A→B→A gap (id re-matches but a newer
+			// load replaced the item) — Codex. The PATCH itself still targets
+			// the captured `itemId`/`ws` (never-cross-write, unchanged).
+			const genAtFlush = loadGeneration;
 			// UI mutations only fire when:
 			//   - This is a foreground (user-driven) flush (!keepalive), AND
-			//   - The user is still looking at the item we're flushing.
+			//   - The user is still looking at the item we're flushing, AND
+			//   - No newer load has superseded this generation.
 			// Background (keepalive=true) cleanup flushes after navigation MUST
 			// NOT touch saveStatus / lastSaveTime — those slots belong to
 			// whatever item the user is now on, and stamping them from a stale
 			// flush leaves the new page pinned in 'Saving...' indefinitely.
 			// Per Codex review round 2.
 			const isForegroundCurrent = (): boolean =>
-				!keepalive && !!item && item.id === itemId;
+				!keepalive && !!item && item.id === itemId && genAtFlush === loadGeneration;
 
 			if (isForegroundCurrent()) {
 				saveStatus = 'saving';
@@ -2535,6 +2541,14 @@
 	}
 
 	function handleVersionRestore(updatedItem: Item) {
+		// The restore's await lives in the descendant TimelineVersionCard, which
+		// can resolve + invoke this callback AFTER a no-{#key} switch to another
+		// item (the destroyed card still fires its parent callback). Fence in
+		// the parent: only adopt the restored version if it's for the item
+		// currently shown — otherwise A's restore would render permanently under
+		// ?item=B (PLAN-2105 / TASK-2112; coordinator). The descendant also
+		// fences its own onRestore by itemSlug (belt-and-suspenders).
+		if (!item || item.id !== updatedItem.id) return;
 		item = withInflightTags(updatedItem);
 	}
 
@@ -2726,7 +2740,9 @@
 		// (Codex review round 3 P1). Stale resolutions complete
 		// silently rather than yanking the user back.
 		const navIfStillCurrent = (toSlug: string) => {
-			const itemStillCurrent = item && item.id === sourceItem.id;
+			// stillOnSource() folds in the load-generation check, so an A→B→A
+			// that re-matches the id can't let a superseded move navigate.
+			const itemStillCurrent = stillOnSource();
 			const routeStillCurrent =
 				wsSlug === sourceWs &&
 				username === sourceUsername &&

@@ -38,39 +38,51 @@
 	});
 
 	async function loadFirstPage() {
+		// Capture the request identity BEFORE the await. ItemDetail reuses this
+		// panel across a no-{#key} item switch (props just change), so a slower
+		// A load must NOT overwrite B's backlinks or push A's count into the
+		// parent's `backlinksCount` badge (PLAN-2105 / TASK-2112).
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		loading = true;
 		error = '';
 		try {
-			const rows = await api.items.backlinks(wsSlug, itemSlug, { limit: PAGE_LIMIT });
+			const rows = await api.items.backlinks(reqWs, reqSlug, { limit: PAGE_LIMIT });
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			backlinks = rows;
 			hasMore = rows.length === PAGE_LIMIT;
 			onCountChange?.(rows.length);
 		} catch (err) {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err instanceof Error ? err.message : 'Failed to load backlinks';
 			backlinks = [];
 			hasMore = false;
 			// Empty contract: signal zero so the badge stays hidden on error.
 			onCountChange?.(0);
 		} finally {
-			loading = false;
+			if (reqSlug === itemSlug && reqWs === wsSlug) loading = false;
 		}
 	}
 
 	async function loadMore() {
 		if (loadingMore || !hasMore) return;
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		loadingMore = true;
 		try {
-			const rows = await api.items.backlinks(wsSlug, itemSlug, {
+			const rows = await api.items.backlinks(reqWs, reqSlug, {
 				limit: PAGE_LIMIT,
 				offset: backlinks.length
 			});
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			backlinks = [...backlinks, ...rows];
 			hasMore = rows.length === PAGE_LIMIT;
 			onCountChange?.(backlinks.length);
 		} catch (err) {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err instanceof Error ? err.message : 'Failed to load more backlinks';
 		} finally {
-			loadingMore = false;
+			if (reqSlug === itemSlug && reqWs === wsSlug) loadingMore = false;
 		}
 	}
 
