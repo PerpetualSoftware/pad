@@ -3000,21 +3000,28 @@
 				{starredStore.isStarred(item.id) ? '★' : '☆'}
 			</button>
 			{#if collection && (quickActions.length > 0 || isOwner)}
-				<QuickActionsMenu
-					actions={quickActions}
-					{item}
-					{collection}
-					scope="item"
-					{wsSlug}
-					canEdit={isOwner}
-					onmanage={() => {
-						editCollectionSection = 'actions';
-						editCollectionOpen = true;
-					}}
-					oncollectionupdated={(updated) => {
-						collection = updated;
-					}}
-				/>
+				<!-- {#key itemSlug}: structural containment (PLAN-2105 / TASK-2112).
+				     Remount this item-scoped menu on every item switch so any
+				     in-flight quick-action continuation is discarded. Keyed on
+				     itemSlug (the URL/ref identity), NOT item.id, so it resets the
+				     instant the ref changes rather than waiting for B to load. -->
+				{#key itemSlug}
+					<QuickActionsMenu
+						actions={quickActions}
+						{item}
+						{collection}
+						scope="item"
+						{wsSlug}
+						canEdit={isOwner}
+						onmanage={() => {
+							editCollectionSection = 'actions';
+							editCollectionOpen = true;
+						}}
+						oncollectionupdated={(updated) => {
+							collection = updated;
+						}}
+					/>
+				{/key}
 			{/if}
 			<button
 				class="action-btn"
@@ -3141,7 +3148,14 @@
 
 		<!-- Layout wrapper -->
 		<div class="item-body layout-{layout}">
-			<!-- Fields -->
+			<!-- Fields — {#key itemSlug}: structural containment (PLAN-2105 /
+			     TASK-2112). The fields sidebar (FieldEditor debounces, assignment
+			     selects) remounts on every item switch so a stale field
+			     continuation is discarded. The SIBLING .content-panel (the collab
+			     Editor) is deliberately OUTSIDE this key so it never remounts.
+			     Keyed on itemSlug (URL/ref identity), not item.id, so it resets
+			     the instant the ref changes. -->
+			{#key itemSlug}
 			<div class="fields-panel">
 				<div class="fields-header">Properties</div>
 				{#each schema.fields as field (field.key)}
@@ -3269,8 +3283,11 @@
 					</div>
 				{/if}
 			</div>
+			{/key}
 
-			<!-- Content editor -->
+			<!-- Content editor — OUTSIDE the {#key itemSlug} above: the collab
+			     Editor, EditorBubbleMenu, provider, collabKey and SSE stay
+			     persistent across an A→B item switch (the no-{#key} perf premise). -->
 			<div class="content-panel">
 				<div class="editor-mode-toggle">
 					<button
@@ -3284,7 +3301,17 @@
 							// Stay in raw mode if the flush failed — the
 							// user retains their unsaved edits to retry
 							// or copy out. Per Codex review round 6.
+							//
+							// Editor-write residue (this button writes rawMode
+							// on the PERSISTENT editor subtree — NOT inside the
+							// {#key}). Capture item+generation before the await:
+							// flushRawIfPending's re-entrancy waiter can resolve
+							// `true` AFTER a switch, and flipping rawMode then
+							// would apply to the WRONG item (PLAN-2105 / TASK-2112).
+							const startItemId = item?.id;
+							const startGen = loadGeneration;
 							const ok = await flushRawIfPending();
+							if (startGen !== loadGeneration || item?.id !== startItemId) return;
 							if (ok) {
 								rawSeedMarkdown = null;
 								rawMode = false;
@@ -3342,6 +3369,13 @@
 											md,
 											false,
 										);
+										// Fence IMMEDIATELY after the awaited flush,
+										// before inspecting `result`: if the pane
+										// switched items during this iteration, don't
+										// show B a recovery toast, keep looping, or
+										// fall through to rawMode=true for the wrong
+										// item (PLAN-2105 / TASK-2112; coordinator).
+										if (!item || item.id !== itemId || genAtToggle !== loadGeneration) return;
 										if (result === 'failed' || result === 'skipped') {
 											// 'failed' — PATCH errored;
 											//   runCollabFlush already
@@ -3509,6 +3543,14 @@
 			</div>
 		</div>
 
+		<!-- {#key itemSlug}: structural containment (PLAN-2105 / TASK-2112).
+		     Remounts the item-scoped data panels below (relationships, add-link
+		     form, ChildItems, BacklinksPanel, ItemTimeline incl. its comment
+		     composer + version cards) on every item switch, structurally
+		     cancelling their in-flight async loads/continuations. Keyed on
+		     itemSlug (URL/ref identity) so they reset — showing loading/empty —
+		     the instant the ref changes, before B's data resolves. -->
+		{#key itemSlug}
 		{#if relationshipGroups.length > 0}
 			<div class="relationships-section">
 				<h3 class="section-title">Relationships</h3>
@@ -3635,17 +3677,21 @@
 				collectionId={item.collection_id}
 			/>
 		</div>
+		{/key}
 
 	</div>
 
 	{#if isOwner && item}
-		<ShareDialog
-			{wsSlug}
-			type="item"
-			targetSlug={item.slug}
-			targetName={formatItemRef(item) || item.title}
-			bind:open={shareDialogOpen}
-		/>
+		<!-- {#key itemSlug}: remount the item-scoped share dialog on switch. -->
+		{#key itemSlug}
+			<ShareDialog
+				{wsSlug}
+				type="item"
+				targetSlug={item.slug}
+				targetName={formatItemRef(item) || item.title}
+				bind:open={shareDialogOpen}
+			/>
+		{/key}
 	{/if}
 
 	{#if showGraph && item && graphFocusRef}
@@ -3682,6 +3728,9 @@
 	{/if}
 
 	{#if isOwner && collection}
+		<!-- {#key itemSlug}: remount the owner collection-editor modal on item
+		     switch (it's closed on switch anyway; keeps its async loads scoped). -->
+		{#key itemSlug}
 		<EditCollectionModal
 			bind:open={editCollectionOpen}
 			{collection}
@@ -3736,6 +3785,7 @@
 				editCollectionSection = undefined;
 			}}
 		/>
+		{/key}
 	{/if}
 {/if}
 
