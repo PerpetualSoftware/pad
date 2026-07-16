@@ -1980,6 +1980,14 @@
 	function handlePageKeydown(e: KeyboardEvent) {
 		const target = e.target as HTMLElement | null;
 
+		// General backstop: a focused control that ALREADY handled this key
+		// (called preventDefault) owns it — don't double-process. Chiefly the
+		// resizable pane divider (role="separator", TASK-2114), which nudges its
+		// width on ArrowLeft/ArrowRight and preventDefaults; without this those
+		// arrows would ALSO drive board column-switching + pane-follow mid-resize
+		// (PLAN-2105 / TASK-2119). Runs before ESC + nav handling alike.
+		if (e.defaultPrevented) return;
+
 		// ESC precedence chain (PLAN-2105 / TASK-2118). Handled FIRST — before
 		// the generic form-control guard below — because ESC is a dismiss key
 		// that must reach the escape stack even from a NON-text control inside
@@ -2005,10 +2013,11 @@
 		const tag = target?.tagName;
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 		// Also bail when typing inside a contenteditable (the Tiptap editor is
-		// a contenteditable DIV) or anywhere inside the detail pane — otherwise
-		// j/k/arrows/Enter typed in the open pane's editor would drive
-		// list navigation instead of editing (PLAN-2105 / TASK-2111).
-		if (target?.closest?.('[contenteditable="true"], .item-pane')) return;
+		// a contenteditable DIV), anywhere inside the detail pane, or on the
+		// resizable pane divider — otherwise j/k/arrows/Enter typed there (the
+		// divider owns ArrowLeft/ArrowRight for width nudging, TASK-2114) would
+		// drive list/board navigation instead (PLAN-2105 / TASK-2111 / -2119).
+		if (target?.closest?.('[contenteditable="true"], .item-pane, .pane-divider')) return;
 		if (quickCreateOpen || saveViewOpen) return;
 
 		switch (e.key) {
