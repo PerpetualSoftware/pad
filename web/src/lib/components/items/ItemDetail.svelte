@@ -118,6 +118,27 @@
 	let loading = $state(true);
 	let error = $state('');
 
+	// Monotonic load generation. The split pane re-drives loadData on every
+	// `ref` change (rapid j/k A→B→C paging), so overlapping loads can resolve
+	// out of order — a slower A response must NOT clobber B's item/collection/
+	// links/error/loading after `ref` moved on. Each load captures its
+	// generation and bails at every await-resume once a newer load has
+	// started; onDestroy also bumps it so an in-flight load can't write global
+	// stores after unmount (PLAN-2105 / TASK-2112; Codex rounds 1-2 P1). Plain
+	// counter — not reactive; it only fences async writes.
+	let loadGeneration = 0;
+
+	// Cross-collection `?item=` safety (PLAN-2105 / TASK-2112). A stale /
+	// shared / hand-crafted `?item=REF` in the split pane could reference an
+	// item that lives in a DIFFERENT collection than the route's `collSlug`
+	// prop. When embedded, trust the LOADED item's `collection_slug` for
+	// schema selection (loadData refetches the right collection below) and
+	// for building any collection-scoped URL — never the possibly-wrong
+	// route prop. Full-page keeps `collSlug` (the route is authoritative).
+	let effectiveCollSlug = $derived(
+		embedded && item?.collection_slug ? item.collection_slug : collSlug,
+	);
+
 	// ── Scroll position restoration readiness (BUG-1425) ───────────────
 	// The route wrapper (`[slug]/+page.svelte`) owns `createScrollRestoration`
 	// + `export const snapshot` — a SvelteKit route-module concern that can't
@@ -270,7 +291,7 @@
 	// SvelteKit navigation, and the new route (no ?graph) closes the drawer via
 	// the URL-watching effect.
 	function graphItemHref(ref: string, collection?: string): string {
-		return `/${username}/${wsSlug}/${collection ?? collSlug}/${ref}`;
+		return `/${username}/${wsSlug}/${collection ?? effectiveCollSlug}/${ref}`;
 	}
 	// ESC closes the graph drawer (only while open — no global listener otherwise).
 	$effect(() => {
@@ -336,12 +357,14 @@
 	// Surface the item's ref (e.g. IDEA-592) in the browser tab title.
 	// Clear the section so the format reads "{REF} · {Workspace} · Pad".
 	//
-	// The tab title is a route-owner concern. Full-page owns it. When
-	// embedded in the collection page's pane, defer to the collection page
-	// (Phase 2 / TASK-2112 finalizes title precedence — paned item vs list)
-	// so the two ItemDetail/collection title writers don't race.
+	// Title precedence (PLAN-2105 / TASK-2112): the paned item's title WINS
+	// the tab title while a pane is open. This effect owns the title whenever
+	// ItemDetail is mounted — full-page (the only writer) and embedded alike.
+	// The collection page gates its OWN title writer on `!openItemRef`, so it
+	// yields while the pane is mounted and reclaims the tab title the instant
+	// the pane closes and this component unmounts. (Embedded ItemDetail is
+	// only ever mounted when `?item=` is set, so the two never write at once.)
 	$effect(() => {
-		if (embedded) return;
 		titleStore.setPageTitle({
 			section: null,
 			item: item ? (formatItemRef(item) || null) : null,
@@ -575,11 +598,20 @@
 		unsubscribeSync?.();
 		unsubscribeSSE?.();
 		unsubscribeBeforePrint?.();
+		// Invalidate any in-flight loadData so a request that resolves AFTER
+		// this instance is torn down (pane closed mid-load) can't reach its
+		// global-store writes — collectionStore.setActiveItem / editorStore —
+		// and clobber the next view's state. Bumping the generation makes the
+		// pending load bail at its next await-resume guard, before those calls
+		// (PLAN-2105 / TASK-2112; Codex round 2 P1). onDestroy runs
+		// synchronously on unmount, before the awaited fetch continuations.
+		loadGeneration++;
 		editorStore.resetForDoc();
 		collectionStore.setActiveItem(null);
 	});
 
 	async function loadData() {
+		const myGen = ++loadGeneration;
 		loading = true;
 		error = '';
 		// Clear per-item state that must NOT leak across navigation.
@@ -645,17 +677,47 @@
 				api.collections.get(wsSlug, collSlug),
 				itemsPromise
 			]);
+			// A newer load superseded this one while awaiting (fast A→B pane
+			// switch) — bail before clobbering the current item/collection.
+			if (myGen !== loadGeneration) return;
 			// Overlay any in-flight optimistic tag edit so navigating away and
 			// back mid-save can't show (and then let a follow-up edit overwrite
 			// with) stale server tags. See withInflightTags. Per Codex PR #659.
 			item = withInflightTags(itemData);
-			collection = collData;
+			// Cross-collection `?item=` safety (PLAN-2105 / TASK-2112). The
+			// Promise.all above optimistically fetched the collection by the
+			// route's `collSlug` — correct for the common (row-click) case,
+			// which is always same-collection. But an embedded pane can be
+			// driven by a stale / hand-crafted `?item=REF` whose item actually
+			// lives in a DIFFERENT collection; rendering its fields against the
+			// route collection's schema would be wrong. Refetch the item's
+			// real collection so `schema`/`settings` match the loaded item.
+			// Only pays the extra request on an actual mismatch.
+			if (embedded && itemData.collection_slug && itemData.collection_slug !== collSlug) {
+				try {
+					const realColl = await api.collections.get(wsSlug, itemData.collection_slug);
+					if (myGen !== loadGeneration) return;
+					collection = realColl;
+				} catch {
+					if (myGen !== loadGeneration) return;
+					// Can't resolve the item's REAL collection. Surface the
+					// failure instead of falling back to the route collection's
+					// schema — rendering another collection's fields is exactly
+					// the mismatch the cross-collection guard exists to prevent
+					// (Codex round 1 P2).
+					error = 'Failed to load this item’s collection';
+					return;
+				}
+			} else {
+				collection = collData;
+			}
 			collectionStore.setActiveItem(itemData);
 			editorStore.resetForDoc();
 
 			// Fetch child item progress for any item (generalized parent/child)
 			try {
 				const progress = await api.items.progress(wsSlug, itemData.slug);
+				if (myGen !== loadGeneration) return;
 				if (progress.total > 0) {
 					hasChildren = true;
 					computedOverrides = { progress: progress.percentage, _progressDone: progress.done, _progressTotal: progress.total };
@@ -664,6 +726,7 @@
 					computedOverrides = {};
 				}
 			} catch {
+				if (myGen !== loadGeneration) return;
 				hasChildren = false;
 				computedOverrides = {};
 			}
@@ -675,18 +738,26 @@
 
 			// Load links for this item
 			try {
-				itemLinks = await api.links.list(wsSlug, itemData.slug);
-			} catch { itemLinks = []; }
+				const links = await api.links.list(wsSlug, itemData.slug);
+				if (myGen !== loadGeneration) return;
+				itemLinks = links;
+			} catch { if (myGen !== loadGeneration) return; itemLinks = []; }
 
 			// Load workspace members and agent roles for assignment picker
 			try {
 				const membersData = await api.members.list(wsSlug);
+				if (myGen !== loadGeneration) return;
 				workspaceMembers = membersData.members ?? [];
-			} catch { workspaceMembers = []; }
+			} catch { if (myGen !== loadGeneration) return; workspaceMembers = []; }
 			try {
-				agentRoles = await api.agentRoles.list(wsSlug);
-			} catch { agentRoles = []; }
+				const roles = await api.agentRoles.list(wsSlug);
+				if (myGen !== loadGeneration) return;
+				agentRoles = roles;
+			} catch { if (myGen !== loadGeneration) return; agentRoles = []; }
 		} catch (e: any) {
+			// A newer load owns the state — don't overwrite it with this
+			// superseded load's error.
+			if (myGen !== loadGeneration) return;
 			error = e.message ?? 'Failed to load item';
 			// Clear the workspace's last-route cache so the workspace
 			// switcher (TASK-754) doesn't keep restoring this dead item
@@ -705,17 +776,23 @@
 				}
 			} catch {}
 		} finally {
-			loading = false;
+			// Only the CURRENT (newest) load owns the shared loading / pending
+			// flags — a superseded load's finally (it early-returned above)
+			// must not clear the newer load's skeleton or fire its ?new intent
+			// (PLAN-2105 / TASK-2112).
+			if (myGen === loadGeneration) {
+				loading = false;
 
-			// Capture the auto-edit intent — actual trigger lives in the
-			// $effect below so it can fire even if /me (which feeds canEdit)
-			// resolves AFTER loadData() finishes. One-shot. Always reassign
-			// (true OR false) so a stale flag from a previous ?new=1 load
-			// can't fire on a subsequent non-new item load — Codex round 6.
-			// `?new=1` create-intent is a full-page-only flow (create stays
-			// full-page for v1 — PLAN-2105). When embedded, `page.url` is the
-			// COLLECTION route, so never read it there.
-			pendingNewItemEdit = !embedded && page.url.searchParams.get('new') === '1';
+				// Capture the auto-edit intent — actual trigger lives in the
+				// $effect below so it can fire even if /me (which feeds canEdit)
+				// resolves AFTER loadData() finishes. One-shot. Always reassign
+				// (true OR false) so a stale flag from a previous ?new=1 load
+				// can't fire on a subsequent non-new item load — Codex round 6.
+				// `?new=1` create-intent is a full-page-only flow (create stays
+				// full-page for v1 — PLAN-2105). When embedded, `page.url` is the
+				// COLLECTION route, so never read it there.
+				pendingNewItemEdit = !embedded && page.url.searchParams.get('new') === '1';
+			}
 		}
 	}
 
@@ -2312,7 +2389,10 @@
 	}
 
 	let allCollections = $derived(collectionStore.collections ?? []);
-	let moveTargets = $derived(allCollections.filter(c => c.slug !== collSlug));
+	// Exclude the item's ACTUAL collection (effectiveCollSlug), not the route
+	// prop — a cross-collection `?item=` in the pane could otherwise offer a
+	// no-op "move" to the item's own collection (PLAN-2105 / TASK-2112).
+	let moveTargets = $derived(allCollections.filter(c => c.slug !== effectiveCollSlug));
 
 	async function handleDeleteLink(linkId?: string) {
 		if (!linkId || !item) return;
@@ -3332,8 +3412,16 @@
 					// Archive case — the collection is gone. Navigate away from
 					// this now-invalid item route rather than leaving the user
 					// with stale state that would hit deleted resources.
+					// Route-away is parameterized (PLAN-2105 / TASK-2112): an
+					// embedded pane closes in place (the collection page
+					// reconciles the archive itself) instead of hard-navigating
+					// the whole page; full-page returns to the workspace root.
 					collectionStore.loadCollections(wsSlug);
-					void goto(`/${username}/${wsSlug}`);
+					if (embedded) {
+						handleGone();
+					} else {
+						void goto(`/${username}/${wsSlug}`);
+					}
 					return;
 				}
 				collection = updated;
@@ -3342,11 +3430,18 @@
 				// changed. The current `/[collection]/[slug]` URL still
 				// points at the old slug and subsequent loadData() calls
 				// (which fetch by collSlug) would 404. Navigate to the
-				// new slug while preserving the item slug. The new route
-				// will trigger its own loadData() via the $effect on
-				// wsSlug/collSlug/itemSlug, so no explicit refresh here.
+				// new slug while preserving the item slug — routed through
+				// handleNavigateAway (PLAN-2105 / TASK-2112) so an embedded
+				// pane re-targets its host collection page (keeping the pane
+				// open via `?item=`) instead of hard-navigating to the
+				// full-page item route. The destination triggers a fresh
+				// loadData() on arrival, so no explicit refresh here.
 				if (updated.slug !== collSlug && itemSlug) {
-					void goto(`/${username}/${wsSlug}/${updated.slug}/${itemSlug}`);
+					handleNavigateAway(
+						embedded
+							? `/${username}/${wsSlug}/${updated.slug}?item=${encodeURIComponent(itemSlug)}`
+							: `/${username}/${wsSlug}/${updated.slug}/${itemSlug}`,
+					);
 					return;
 				}
 				// Non-navigating update: schema or field mappings may have

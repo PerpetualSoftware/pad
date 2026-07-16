@@ -55,6 +55,12 @@
 		 * group would be meaningless.
 		 */
 		sortMode?: SortMode;
+		/**
+		 * Opt-in split-pane open (PLAN-2105 / TASK-2111). Threaded straight
+		 * through to each ItemCard; omitted everywhere except the collection
+		 * page, so other surfaces keep full-page anchor navigation.
+		 */
+		onItemOpen?: (item: Item) => void;
 	}
 
 	let {
@@ -73,7 +79,8 @@
 		progressLabel = 'tasks',
 		canEdit = true,
 		preserveOrder = false,
-		sortMode = 'manual'
+		sortMode = 'manual',
+		onItemOpen
 	}: Props = $props();
 
 	let confirmArchiveGroup = $state<string | null>(null);
@@ -360,6 +367,7 @@
 									{progressLabel}
 									onReorderItem={canReorderItems ? (it, dir) => reorderItem(groupName, it, dir) : undefined}
 									reorderDisabledDirs={canReorderItems ? disabledDirections(i, grpItems.length) : undefined}
+									{onItemOpen}
 								/>
 							</div>
 						{/each}

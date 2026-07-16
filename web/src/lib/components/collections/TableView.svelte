@@ -26,6 +26,19 @@
 		canEdit?: boolean;
 		preserveOrder?: boolean;
 		sortMode?: SortMode;
+		/**
+		 * Opt-in split-pane open (PLAN-2105 / TASK-2111). When set, a plain
+		 * left-click on the title link opens the item in the collection page's
+		 * detail pane; modifier/middle clicks fall through to the `href`
+		 * (full-page popout). Omitted everywhere except the collection page.
+		 */
+		onItemOpen?: (item: Item) => void;
+		/**
+		 * Highlights the row whose detail pane is open (PLAN-2105 / TASK-2112),
+		 * mirroring the focused-row marker List/Board already show. Null =
+		 * nothing highlighted.
+		 */
+		focusedItemId?: string | null;
 	}
 
 	let {
@@ -39,8 +52,22 @@
 		onReorder,
 		canEdit = true,
 		preserveOrder = false,
-		sortMode = 'manual'
+		sortMode = 'manual',
+		onItemOpen,
+		focusedItemId = null
 	}: Props = $props();
+
+	// Split-pane row-click interception (PLAN-2105 / TASK-2111). Mirrors
+	// ItemCard: only a plain left-click opens the pane; modifier/middle
+	// clicks fall through to the native <a href> (full-page popout / SSR /
+	// right-click-copy).
+	function handleTitleClick(e: MouseEvent, item: Item) {
+		if (!onItemOpen) return;
+		if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+		if (e.defaultPrevented) return;
+		e.preventDefault();
+		onItemOpen(item);
+	}
 
 	let resolvedWsSlug = $derived(wsSlug || page.params.workspace || '');
 	let resolvedUsername = $derived(page.params.username || '');
@@ -200,10 +227,10 @@
 		</div>
 		{#each sortedItems as item, i (item.id)}
 			{@const fields = parseFields(item)}
-			<div class="table-row" role="row">
+			<div class="table-row" class:focused={focusedItemId === item.id} role="row">
 				<div class="table-cell col-ref" role="cell"><span class="ref">{formatItemRef(item) ?? ''}</span></div>
 				<div class="table-cell col-title" role="cell">
-					<a href="/{resolvedUsername}/{resolvedWsSlug}/{collection.slug}/{itemUrlId(item)}" class="title-link">{item.title}</a>
+					<a href="/{resolvedUsername}/{resolvedWsSlug}/{collection.slug}/{itemUrlId(item)}" class="title-link" onclick={(e) => handleTitleClick(e, item)}>{item.title}</a>
 					{#if itemProgress?.[item.id]}
 						{@const p = itemProgress[item.id]}
 						<div class="cell-progress">
@@ -305,6 +332,12 @@
 
 	.table-row:not(.table-header):hover {
 		background: var(--bg-hover);
+	}
+
+	/* Highlight the row whose detail pane is open (PLAN-2105 / TASK-2112). */
+	.table-row:not(.table-header).focused {
+		background: var(--bg-hover);
+		box-shadow: inset 2px 0 0 var(--accent-blue);
 	}
 
 	.table-cell {
