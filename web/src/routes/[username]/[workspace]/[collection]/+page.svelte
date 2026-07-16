@@ -3193,10 +3193,10 @@
 	/* Sidebar-aware right gutter (BUG-2127). When the sidebar is shown,
 	   horizontal space is at a premium, so collapse the board's right
 	   padding and let the columns use the full remaining width. When it's
-	   hidden, the base rule's space-6 right gutter keeps the last column
+	   hidden, the base rule's space-4 right gutter keeps the last column
 	   off the window edge. Board view only — list/table layouts are
-	   unaffected. (When a pane is open the .pane-open rules zero the page
-	   padding regardless, so this doesn't fight them.) */
+	   unaffected. When a pane is open the page padding moves onto
+	   .list-column, so the pane-open board rules below mirror this. */
 	.collection-page.board-active.sidebar-open {
 		padding-right: 0;
 	}
@@ -3243,10 +3243,17 @@
 		padding: var(--space-8) var(--space-6);
 	}
 	/* Board manages its own internal height + horizontal scroll, so keep
-	   the column clipped and let the board fill it. */
+	   the column clipped and let the board fill it. Padding: space-4 top/left,
+	   NO bottom (scrollbar sits flush), right gutter that collapses when the
+	   sidebar is shown (rule below) — same treatment as the non-pane board
+	   above, but applied to .list-column since .pane-open zeroes the page
+	   padding (BUG-2127). */
 	.collection-page.pane-open.board-active .list-column {
 		overflow: hidden;
-		padding: var(--space-6);
+		padding: var(--space-4) var(--space-4) 0;
+	}
+	.collection-page.pane-open.board-active.sidebar-open .list-column {
+		padding-right: 0;
 	}
 	.item-pane {
 		/* Width comes from the persisted `--pane-width` CSS var (TASK-2114);
