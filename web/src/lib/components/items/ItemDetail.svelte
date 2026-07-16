@@ -3006,6 +3006,13 @@
 				     itemSlug (the URL/ref identity), NOT item.id, so it resets the
 				     instant the ref changes rather than waiting for B to load. -->
 				{#key itemSlug}
+					<!-- Capture the item identity at THIS render (frozen for this
+					     {#key} instance). A destroyed instance's in-flight async
+					     still fires its callback into the PERSISTENT parent, and
+					     its OWN prop check passes (frozen at its item) — so the
+					     PARENT-side guard below drops the write when the pane has
+					     since moved on (PLAN-2105 / TASK-2112; coordinator). -->
+					{@const keyedSlug = itemSlug}
 					<QuickActionsMenu
 						actions={quickActions}
 						{item}
@@ -3018,6 +3025,7 @@
 							editCollectionOpen = true;
 						}}
 						oncollectionupdated={(updated) => {
+							if (keyedSlug !== itemSlug) return;
 							collection = updated;
 						}}
 					/>
@@ -3551,6 +3559,13 @@
 		     itemSlug (URL/ref identity) so they reset — showing loading/empty —
 		     the instant the ref changes, before B's data resolves. -->
 		{#key itemSlug}
+		<!-- Capture the item identity at THIS render (frozen for this {#key}
+		     instance) so the PARENT-side guards on ChildItems.onChildrenChange
+		     and BacklinksPanel.onCountChange below drop a callback that a
+		     destroyed A-instance's in-flight load fires after the pane switched
+		     to B — the child's OWN prop check can't catch it (its prop is frozen
+		     at A). PLAN-2105 / TASK-2112; coordinator. -->
+		{@const keyedSlug = itemSlug}
 		{#if relationshipGroups.length > 0}
 			<div class="relationships-section">
 				<h3 class="section-title">Relationships</h3>
@@ -3639,7 +3654,7 @@
 
 		<!-- Child Items: always mounted so SSE subscriptions stay active even when starting with 0 children -->
 		{#if item}
-			<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={handleChildrenChange} {canEdit} />
+			<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} />
 		{/if}
 
 		<!--
@@ -3659,7 +3674,7 @@
 					{username}
 					{itemSlug}
 					itemId={item.id}
-					onCountChange={(n) => { backlinksCount = n; }}
+					onCountChange={(n) => { if (keyedSlug !== itemSlug) return; backlinksCount = n; }}
 				/>
 			</div>
 		{/if}
@@ -3731,12 +3746,19 @@
 		<!-- {#key itemSlug}: remount the owner collection-editor modal on item
 		     switch (it's closed on switch anyway; keeps its async loads scoped). -->
 		{#key itemSlug}
+		<!-- Capture item identity at THIS render so a destroyed A-instance's
+		     completed save/archive can't reload / navigate / close B's pane
+		     after the switch (PLAN-2105 / TASK-2112; coordinator). -->
+		{@const keyedSlug = itemSlug}
 		<EditCollectionModal
 			bind:open={editCollectionOpen}
 			{collection}
 			{wsSlug}
 			initialSection={editCollectionSection}
 			onupdated={(updated) => {
+				// Parent-side switch fence: drop a callback from a superseded
+				// item's modal instance (don't reload/navigate/close B's pane).
+				if (keyedSlug !== itemSlug) return;
 				if (!updated) {
 					// Archive case — the collection is gone. Navigate away from
 					// this now-invalid item route rather than leaving the user
