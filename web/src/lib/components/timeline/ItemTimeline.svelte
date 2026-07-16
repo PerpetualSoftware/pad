@@ -68,10 +68,17 @@
 	function probeAttachment(uuid: string) {
 		if (probed.has(uuid)) return;
 		probed.add(uuid);
+		// Capture the workspace identity before the HEAD probe. `attMeta` is a
+		// workspace-scoped attachment cache; ItemDetail reuses this panel across
+		// a no-{#key} item switch (its wsSlug/itemSlug props just change), so a
+		// probe resolving after a workspace switch must NOT write the old
+		// workspace's attachment metadata into the new item's cache (TASK-2112).
+		const reqWs = wsSlug;
 		fetchAttachmentMetadata(wsSlug, uuid, (id, variant) =>
 			attachmentDownloadUrl(wsSlug, id, variant)
 		).then((m) => {
 			if (!m) return;
+			if (reqWs !== wsSlug) return;
 			const next = new Map(attMeta);
 			// filename is left empty — the markdown alt text is the chip/img
 			// label, and renderAttachmentImage only falls back to filename
@@ -175,38 +182,52 @@
 	let firstPageIds = $state<Set<string>>(new Set());
 
 	async function loadTimeline() {
+		// Capture the request identity (item + workspace) BEFORE the await.
+		// ItemDetail reuses this panel across a no-{#key} item switch (its
+		// itemSlug/wsSlug props just change), so a slower A load must NOT
+		// overwrite B's entries / error / spinner (TASK-2112).
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		loading = true;
 		error = '';
 		try {
-			const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug);
+			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			entries = resp.entries;
 			hasMore = resp.has_more;
 			firstPageIds = new Set(resp.entries.map((e) => e.id));
 		} catch (err: any) {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err?.message ?? 'Failed to load timeline';
 		} finally {
-			loading = false;
+			if (reqSlug === itemSlug && reqWs === wsSlug) loading = false;
 		}
 	}
 
 	async function loadMore() {
 		if (loadingMore || entries.length === 0) return;
+		// Capture identity before the await so a switch mid-flight can't append
+		// A's older page onto B's entries (TASK-2112).
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		const oldest = entries[entries.length - 1];
 		loadingMore = true;
 		try {
-			const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug, {
+			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug, {
 				before: oldest.created_at,
 				before_id: oldest.id
 			});
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			// Deduplicate by ID to handle boundary overlap from <= queries.
 			const existingIds = new Set(entries.map((e) => e.id));
 			const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
 			entries = [...entries, ...newEntries];
 			hasMore = resp.has_more;
 		} catch (err: any) {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err?.message ?? 'Failed to load more';
 		} finally {
-			loadingMore = false;
+			if (reqSlug === itemSlug && reqWs === wsSlug) loadingMore = false;
 		}
 	}
 
@@ -236,8 +257,14 @@
 		if (relevantEvents.has(event.type)) {
 			clearTimeout(sseRefreshTimer);
 			sseRefreshTimer = setTimeout(async () => {
+				// Capture identity before the await — this same panel instance
+				// serves the next item after a no-{#key} switch, so a debounced
+				// refresh resolving late must not merge A's entries into B (TASK-2112).
+				const reqSlug = itemSlug;
+				const reqWs = wsSlug;
 				try {
-					const resp: TimelineResponse = await api.timeline.list(wsSlug, itemSlug);
+					const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
+					if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 					const freshIds = new Set(resp.entries.map((e) => e.id));
 					const existingIds = new Set(entries.map((e) => e.id));
 
@@ -273,16 +300,25 @@
 	// Posts a new comment. Throws on failure so CommentEditor preserves the
 	// draft; clears itself on success.
 	async function submitComment(body: string) {
+		// Capture identity before the await so a mid-flight item switch can't
+		// leak A's error into B's view or refresh B off A's mutation (TASK-2112).
+		// `submitting` is a composer busy flag (not item-scoped load state), so
+		// it's always cleared in finally — the switched-to composer must not
+		// stay stuck spinning.
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		submitting = true;
 		error = '';
 		try {
-			await api.comments.create(wsSlug, itemSlug, {
+			await api.comments.create(reqWs, reqSlug, {
 				body,
 				created_by: 'user',
 				source: 'web'
 			});
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			await loadTimeline();
 		} catch (err: any) {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err?.message ?? 'Failed to post comment';
 			throw err;
 		} finally {
@@ -291,14 +327,18 @@
 	}
 
 	async function handleReply(commentId: string, body: string) {
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		try {
-			await api.comments.reply(wsSlug, commentId, {
+			await api.comments.reply(reqWs, commentId, {
 				body,
 				created_by: 'user',
 				source: 'web'
 			});
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			await loadTimeline();
 		} catch (err: any) {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err?.message ?? 'Failed to post reply';
 			throw err; // let CommentEditor keep the draft
 		}
@@ -307,10 +347,14 @@
 	// Edits a comment or reply (author/admin enforced server-side). Throws on
 	// failure so the inline CommentEditor preserves the draft.
 	async function handleEdit(commentId: string, body: string) {
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		try {
-			await api.comments.update(wsSlug, commentId, { body });
+			await api.comments.update(reqWs, commentId, { body });
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			await loadTimeline();
 		} catch (err: any) {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err?.message ?? 'Failed to edit comment';
 			throw err;
 		}
@@ -318,28 +362,40 @@
 
 	async function handleDelete(commentId: string) {
 		if (!confirm('Delete this comment?')) return;
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		try {
-			await api.comments.delete(wsSlug, commentId);
+			await api.comments.delete(reqWs, commentId);
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			await loadTimeline();
 		} catch (err: any) {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err?.message ?? 'Failed to delete comment';
 		}
 	}
 
 	async function handleReaction(commentId: string, emoji: string) {
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		try {
-			await api.comments.addReaction(wsSlug, commentId, emoji);
+			await api.comments.addReaction(reqWs, commentId, emoji);
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			await loadTimeline();
 		} catch (err: any) {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err?.message ?? 'Failed to add reaction';
 		}
 	}
 
 	async function handleRemoveReaction(commentId: string, emoji: string) {
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
 		try {
-			await api.comments.removeReaction(wsSlug, commentId, emoji);
+			await api.comments.removeReaction(reqWs, commentId, emoji);
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			await loadTimeline();
 		} catch (err: any) {
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			error = err?.message ?? 'Failed to remove reaction';
 		}
 	}

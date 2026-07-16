@@ -37,9 +37,20 @@
 		onMoveItem?: (item: Item, dir: 'left' | 'right') => void;
 		/** Render the Move left / Move right menu entries (BoardView only). */
 		horizontal?: boolean;
+		/**
+		 * Opt-in split-pane open (PLAN-2105 / TASK-2111). When set, a plain
+		 * left-click on the card opens the item in the collection page's
+		 * detail pane instead of navigating; modifier/middle clicks still
+		 * fall through to the `href` so cmd/middle-click opens the full page
+		 * in a new tab (the "popout" state) and right-click-copy / SSR still
+		 * target the full page. Omitted everywhere except the collection page,
+		 * so all other surfaces (starred / tags / roles) keep full-page
+		 * anchor navigation.
+		 */
+		onItemOpen?: (item: Item) => void;
 	}
 
-	let { item, collection, compact = false, focused = false, showCollection = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks', onReorderItem, reorderDisabledDirs, onMoveItem, horizontal = false }: Props = $props();
+	let { item, collection, compact = false, focused = false, showCollection = false, statusOptions, onStatusClick, progress = null, progressLabel = 'tasks', onReorderItem, reorderDisabledDirs, onMoveItem, horizontal = false, onItemOpen }: Props = $props();
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
@@ -148,9 +159,23 @@
 			setTimeout(() => { copied = false; }, 1500);
 		}
 	}
+
+	// Split-pane row-click interception (PLAN-2105 / TASK-2111). Only a plain
+	// left-click opens the pane; modifier/middle clicks fall through to the
+	// native <a href> (cmd/middle-click = full-page popout in a new tab,
+	// right-click-copy / SSR target the full page). Sub-controls (star / PR /
+	// status / tags / reorder) already stopPropagation, so their clicks never
+	// reach this handler; `defaultPrevented` is a defensive backstop.
+	function handleCardClick(e: MouseEvent) {
+		if (!onItemOpen) return;
+		if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+		if (e.defaultPrevented) return;
+		e.preventDefault();
+		onItemOpen(item);
+	}
 </script>
 
-<a href={itemUrl} class="item-card" class:compact class:focused class:has-pr={!!pullRequest}>
+<a href={itemUrl} class="item-card" class:compact class:focused class:has-pr={!!pullRequest} onclick={handleCardClick}>
 	{#if pullRequest}
 		<button
 			type="button"

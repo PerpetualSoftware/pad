@@ -118,6 +118,36 @@
 	let loading = $state(true);
 	let error = $state('');
 
+	// Monotonic load generation. The split pane re-drives loadData on every
+	// `ref` change (rapid j/k A→B→C paging), so overlapping loads can resolve
+	// out of order — a slower A response must NOT clobber B's item/collection/
+	// links/error/loading after `ref` moved on. Each load captures its
+	// generation and bails at every await-resume once a newer load has
+	// started; onDestroy also bumps it so an in-flight load can't write global
+	// stores after unmount (PLAN-2105 / TASK-2112; Codex rounds 1-2 P1). Plain
+	// counter — not reactive; it only fences async writes.
+	let loadGeneration = 0;
+
+	// True when a captured (item, generation) snapshot is no longer the one on
+	// screen — the uniform fence for DROPPING a post-await write/feedback after
+	// a no-{#key} pane switch (PLAN-2105 / TASK-2112; Codex). Checks BOTH the
+	// item id (cheap) AND the load generation, which closes the A→B→A gap where
+	// the returning id matches but a newer load replaced the item in between.
+	function switchedAway(targetItem: Item, gen: number): boolean {
+		return gen !== loadGeneration || item?.id !== targetItem.id;
+	}
+
+	// Cross-collection `?item=` safety (PLAN-2105 / TASK-2112). A stale /
+	// shared / hand-crafted `?item=REF` in the split pane could reference an
+	// item that lives in a DIFFERENT collection than the route's `collSlug`
+	// prop. When embedded, trust the LOADED item's `collection_slug` for
+	// schema selection (loadData refetches the right collection below) and
+	// for building any collection-scoped URL — never the possibly-wrong
+	// route prop. Full-page keeps `collSlug` (the route is authoritative).
+	let effectiveCollSlug = $derived(
+		embedded && item?.collection_slug ? item.collection_slug : collSlug,
+	);
+
 	// ── Scroll position restoration readiness (BUG-1425) ───────────────
 	// The route wrapper (`[slug]/+page.svelte`) owns `createScrollRestoration`
 	// + `export const snapshot` — a SvelteKit route-module concern that can't
@@ -135,12 +165,21 @@
 	//
 	// Embedded panes don't pass `onReady` — they manage their own scroll
 	// container (TASK-2112), not the route-level snapshot.
-	let scrollReady = $derived(
-		!loading &&
-			item !== null &&
+	//
+	// itemMatchesRef is true once the LOADED item's identity matches the
+	// requested ref/slug — i.e. loadData for the current `itemSlug` has
+	// resolved and we're not still rendering the PREVIOUS item mid-switch.
+	// It's the switch boundary for the no-{#key} prop update: reused by
+	// scrollReady AND by the collab lifecycle gate (collabKey below), so a
+	// stale provider for the previous item tears down the instant `ref`
+	// changes — before the new fetch resolves — instead of lingering with a
+	// destroyed editor (PLAN-2105 / TASK-2112 switch-safety; Codex).
+	let itemMatchesRef = $derived(
+		item !== null &&
 			(item.slug === itemSlug ||
 				`${item.collection_prefix}-${item.item_number}` === itemSlug),
 	);
+	let scrollReady = $derived(!loading && itemMatchesRef);
 	$effect(() => {
 		onReady?.(scrollReady);
 	});
@@ -270,7 +309,7 @@
 	// SvelteKit navigation, and the new route (no ?graph) closes the drawer via
 	// the URL-watching effect.
 	function graphItemHref(ref: string, collection?: string): string {
-		return `/${username}/${wsSlug}/${collection ?? collSlug}/${ref}`;
+		return `/${username}/${wsSlug}/${collection ?? effectiveCollSlug}/${ref}`;
 	}
 	// ESC closes the graph drawer (only while open — no global listener otherwise).
 	$effect(() => {
@@ -299,12 +338,19 @@
 	// (TASK-2028).
 
 	async function handleCopyRef() {
-		const ref = formatItemRef(item!);
+		if (!item) return;
+		const targetItem = item;
+		const gen = loadGeneration;
+		const ref = formatItemRef(targetItem);
 		if (!ref) return;
 		const success = await copyToClipboard(ref);
-		if (success) {
+		// Don't flip the "Copied!" checkmark on a different item if the pane
+		// switched during the async clipboard write (Codex).
+		if (success && !switchedAway(targetItem, gen)) {
 			copied = true;
-			setTimeout(() => { copied = false; }, 1500);
+			setTimeout(() => {
+				if (!switchedAway(targetItem, gen)) copied = false;
+			}, 1500);
 		}
 	}
 	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks, childItemIds) : []);
@@ -336,12 +382,14 @@
 	// Surface the item's ref (e.g. IDEA-592) in the browser tab title.
 	// Clear the section so the format reads "{REF} · {Workspace} · Pad".
 	//
-	// The tab title is a route-owner concern. Full-page owns it. When
-	// embedded in the collection page's pane, defer to the collection page
-	// (Phase 2 / TASK-2112 finalizes title precedence — paned item vs list)
-	// so the two ItemDetail/collection title writers don't race.
+	// Title precedence (PLAN-2105 / TASK-2112): the paned item's title WINS
+	// the tab title while a pane is open. This effect owns the title whenever
+	// ItemDetail is mounted — full-page (the only writer) and embedded alike.
+	// The collection page gates its OWN title writer on `!openItemRef`, so it
+	// yields while the pane is mounted and reclaims the tab title the instant
+	// the pane closes and this component unmounts. (Embedded ItemDetail is
+	// only ever mounted when `?item=` is set, so the two never write at once.)
 	$effect(() => {
-		if (embedded) return;
 		titleStore.setPageTitle({
 			section: null,
 			item: item ? (formatItemRef(item) || null) : null,
@@ -395,6 +443,17 @@
 		// state integration; tracked separately.
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
 			if (!item || event.item_id !== item.id) return;
+			// Ignore events while mid-switch: during A→B the loaded `item` is
+			// still A but the requested ref is already B, so a stale archive/
+			// delete event for A would otherwise call handleGone() and close
+			// B's just-opening pane. The new item's loadData refetches fresh
+			// state anyway (PLAN-2105 / TASK-2112; Codex).
+			if (!itemMatchesRef) return;
+			// Capture the generation at accept-time; every post-await guard
+			// below also checks it so a switch DURING an in-flight refetch (or
+			// an A→B→A that re-matches the id) can't apply a stale write or fire
+			// handleGone() against the wrong item.
+			const sseGen = loadGeneration;
 
 			// Archive is destructive and must NOT be gated by the
 			// edit-conflict guard below — a user editing a since-archived
@@ -424,10 +483,10 @@
 				const archItemSlug = itemSlug;
 				try {
 					const archived = await api.items.get(archWsSlug, archItemSlug);
-					if (!item || item.id !== archItemId) return;
+					if (!item || item.id !== archItemId || sseGen !== loadGeneration) return;
 					item = withInflightTags(archived);
 				} catch {
-					if (!item || item.id !== archItemId) return;
+					if (!item || item.id !== archItemId || sseGen !== loadGeneration) return;
 					handleGone();
 				}
 				return;
@@ -452,7 +511,7 @@
 					try {
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
 						// Bail if the user navigated away before this resolved.
-						if (!item || item.id !== reqItemId) return;
+						if (!item || item.id !== reqItemId || sseGen !== loadGeneration) return;
 						// Drop TASK-1243's conservative content-skip
 						// when collab is active (TASK-1262). Under
 						// collab the editor reads from Y.Doc, NOT
@@ -471,7 +530,7 @@
 						// still lose chars without this branch.
 						item = adoptServerItem(updated);
 						const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
-						if (!item || item.id !== reqItemId) return;
+						if (!item || item.id !== reqItemId || sseGen !== loadGeneration) return;
 						itemLinks = links;
 					} catch {
 						// Ignore — will catch up on next event
@@ -481,7 +540,7 @@
 				case 'item_restored': {
 					try {
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
-						if (!item || item.id !== reqItemId) return;
+						if (!item || item.id !== reqItemId || sseGen !== loadGeneration) return;
 						item = adoptServerItem(updated);
 					} catch {
 						// Ignore — will catch up on next event
@@ -493,6 +552,15 @@
 
 		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !itemSlug || !item) return;
+			// Ignore sync results while mid-switch (loaded item still A, ref
+			// already B) so a stale delete/refresh can't close B's pane or
+			// clobber it — the new item's loadData refetches fresh state
+			// (PLAN-2105 / TASK-2112; Codex).
+			if (!itemMatchesRef) return;
+			// Generation captured at accept-time; every post-await guard below
+			// also checks it so a switch during an in-flight refetch (or an
+			// A→B→A id re-match) can't clobber the wrong item or fire handleGone.
+			const syncGen = loadGeneration;
 
 			if (result.type === 'caught_up') return;
 
@@ -520,10 +588,10 @@
 				const delItemSlug = itemSlug;
 				try {
 					const refreshed = await api.items.get(delWsSlug, delItemSlug);
-					if (!item || item.id !== delItemId) return;
+					if (!item || item.id !== delItemId || syncGen !== loadGeneration) return;
 					item = withInflightTags(refreshed);
 				} catch {
-					if (!item || item.id !== delItemId) return;
+					if (!item || item.id !== delItemId || syncGen !== loadGeneration) return;
 					handleGone();
 				}
 				return;
@@ -547,10 +615,10 @@
 					// Merge server state without disrupting the editor.
 					// Same collab-aware adoption rule as the SSE
 					// handler above (TASK-1262).
-					if (!item || item.id !== reqItemId) return;
+					if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
 					item = adoptServerItem(updated);
 					const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
-					if (!item || item.id !== reqItemId) return;
+					if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
 					itemLinks = links;
 				}
 				return;
@@ -559,10 +627,10 @@
 			// Full refresh fallback
 			try {
 				const updated = await api.items.get(reqWsSlug, reqItemSlug);
-				if (!item || item.id !== reqItemId) return;
+				if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
 				item = adoptServerItem(updated);
 				const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
-				if (!item || item.id !== reqItemId) return;
+				if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
 				itemLinks = links;
 				syncService.markSynced(); // Advance cursor now that reload succeeded
 			} catch {
@@ -575,11 +643,20 @@
 		unsubscribeSync?.();
 		unsubscribeSSE?.();
 		unsubscribeBeforePrint?.();
+		// Invalidate any in-flight loadData so a request that resolves AFTER
+		// this instance is torn down (pane closed mid-load) can't reach its
+		// global-store writes — collectionStore.setActiveItem / editorStore —
+		// and clobber the next view's state. Bumping the generation makes the
+		// pending load bail at its next await-resume guard, before those calls
+		// (PLAN-2105 / TASK-2112; Codex round 2 P1). onDestroy runs
+		// synchronously on unmount, before the awaited fetch continuations.
+		loadGeneration++;
 		editorStore.resetForDoc();
 		collectionStore.setActiveItem(null);
 	});
 
 	async function loadData() {
+		const myGen = ++loadGeneration;
 		loading = true;
 		error = '';
 		// Clear per-item state that must NOT leak across navigation.
@@ -592,10 +669,57 @@
 		contentDebounceTimer = undefined;
 		collabFlusher.cancel();
 		rawSeedMarkdown = null;
+		// Raw-mode data-loss guard (PLAN-2105 / TASK-2112; coordinator P1).
+		// In raw mode there is NO collab cleanup flush, so switching A→B within
+		// the 1.2s debounce would silently DROP A's pending markdown at
+		// clearPending() below. `item` still holds the OLD item here (B's fetch
+		// hasn't resolved — this runs at the top of loadData, before Promise.all),
+		// so flush the pending edit with keepalive (fire-and-forget, survives the
+		// swap) FIRST. The saver's `save` callback captures the live item.id (the
+		// old item) internally, so the PATCH targets the right item.
+		//
+		// UNTRACK is load-bearing (Codex): loadData runs inside the route
+		// $effect's tracking scope, and flushNow synchronously invokes the save
+		// callback which reads `item`. A tracked read here would make `item` a
+		// dependency of the route effect → loadData would re-fire on every item
+		// mutation (SSE / field edit), a duplicate-load loop. untrack keeps
+		// loadData's dependency set unchanged.
+		untrack(() => {
+			if (rawContentSaver.dirty && item) {
+				rawContentSaver.flushNow({ keepalive: true });
+			}
+		});
 		// Cancel the raw saver's debounce and drop its pending edit so a
 		// stale queued markdown from item A can't PATCH into item B.
 		rawContentSaver.cancel();
 		rawContentSaver.clearPending();
+		// Reset item-scoped ephemeral UI so an armed / open control from the
+		// PREVIOUS item can't act on the newly-loaded one across the no-{#key}
+		// prop-update switch (PLAN-2105 / TASK-2112; coordinator P2).
+		// confirmDelete is the dangerous one — armed on A, switch to B, and a
+		// confirming click would delete B — but every open menu / dialog / drawer,
+		// the in-place title edit, and the add-relationship search box are
+		// item-scoped and must not survive the swap. The in-flight operation
+		// flags (deleting / moving / restoring) are cleared too: they gate the
+		// CURRENTLY-shown item's buttons, so B must start clean — the previous
+		// item's op continues under its own switch-fenced handler, whose finally
+		// settles the flag again harmlessly.
+		confirmDelete = false;
+		deleting = false;
+		moving = false;
+		restoring = false;
+		refreshing = false;
+		copied = false;
+		editingTitle = false;
+		showMoveMenu = false;
+		showAddLink = false;
+		addLinkSearch = '';
+		addLinkResults = [];
+		addLinkLoading = false;
+		shareDialogOpen = false;
+		editCollectionOpen = false;
+		showGraph = false;
+		backlinksCount = 0;
 		// lastFlushedContent is per-item; resetting prevents the
 		// dedupe from incorrectly suppressing the first flush on
 		// the next item (which happens to share the same markdown
@@ -645,17 +769,47 @@
 				api.collections.get(wsSlug, collSlug),
 				itemsPromise
 			]);
+			// A newer load superseded this one while awaiting (fast A→B pane
+			// switch) — bail before clobbering the current item/collection.
+			if (myGen !== loadGeneration) return;
 			// Overlay any in-flight optimistic tag edit so navigating away and
 			// back mid-save can't show (and then let a follow-up edit overwrite
 			// with) stale server tags. See withInflightTags. Per Codex PR #659.
 			item = withInflightTags(itemData);
-			collection = collData;
+			// Cross-collection `?item=` safety (PLAN-2105 / TASK-2112). The
+			// Promise.all above optimistically fetched the collection by the
+			// route's `collSlug` — correct for the common (row-click) case,
+			// which is always same-collection. But an embedded pane can be
+			// driven by a stale / hand-crafted `?item=REF` whose item actually
+			// lives in a DIFFERENT collection; rendering its fields against the
+			// route collection's schema would be wrong. Refetch the item's
+			// real collection so `schema`/`settings` match the loaded item.
+			// Only pays the extra request on an actual mismatch.
+			if (embedded && itemData.collection_slug && itemData.collection_slug !== collSlug) {
+				try {
+					const realColl = await api.collections.get(wsSlug, itemData.collection_slug);
+					if (myGen !== loadGeneration) return;
+					collection = realColl;
+				} catch {
+					if (myGen !== loadGeneration) return;
+					// Can't resolve the item's REAL collection. Surface the
+					// failure instead of falling back to the route collection's
+					// schema — rendering another collection's fields is exactly
+					// the mismatch the cross-collection guard exists to prevent
+					// (Codex round 1 P2).
+					error = 'Failed to load this item’s collection';
+					return;
+				}
+			} else {
+				collection = collData;
+			}
 			collectionStore.setActiveItem(itemData);
 			editorStore.resetForDoc();
 
 			// Fetch child item progress for any item (generalized parent/child)
 			try {
 				const progress = await api.items.progress(wsSlug, itemData.slug);
+				if (myGen !== loadGeneration) return;
 				if (progress.total > 0) {
 					hasChildren = true;
 					computedOverrides = { progress: progress.percentage, _progressDone: progress.done, _progressTotal: progress.total };
@@ -664,6 +818,7 @@
 					computedOverrides = {};
 				}
 			} catch {
+				if (myGen !== loadGeneration) return;
 				hasChildren = false;
 				computedOverrides = {};
 			}
@@ -675,18 +830,26 @@
 
 			// Load links for this item
 			try {
-				itemLinks = await api.links.list(wsSlug, itemData.slug);
-			} catch { itemLinks = []; }
+				const links = await api.links.list(wsSlug, itemData.slug);
+				if (myGen !== loadGeneration) return;
+				itemLinks = links;
+			} catch { if (myGen !== loadGeneration) return; itemLinks = []; }
 
 			// Load workspace members and agent roles for assignment picker
 			try {
 				const membersData = await api.members.list(wsSlug);
+				if (myGen !== loadGeneration) return;
 				workspaceMembers = membersData.members ?? [];
-			} catch { workspaceMembers = []; }
+			} catch { if (myGen !== loadGeneration) return; workspaceMembers = []; }
 			try {
-				agentRoles = await api.agentRoles.list(wsSlug);
-			} catch { agentRoles = []; }
+				const roles = await api.agentRoles.list(wsSlug);
+				if (myGen !== loadGeneration) return;
+				agentRoles = roles;
+			} catch { if (myGen !== loadGeneration) return; agentRoles = []; }
 		} catch (e: any) {
+			// A newer load owns the state — don't overwrite it with this
+			// superseded load's error.
+			if (myGen !== loadGeneration) return;
 			error = e.message ?? 'Failed to load item';
 			// Clear the workspace's last-route cache so the workspace
 			// switcher (TASK-754) doesn't keep restoring this dead item
@@ -705,17 +868,23 @@
 				}
 			} catch {}
 		} finally {
-			loading = false;
+			// Only the CURRENT (newest) load owns the shared loading / pending
+			// flags — a superseded load's finally (it early-returned above)
+			// must not clear the newer load's skeleton or fire its ?new intent
+			// (PLAN-2105 / TASK-2112).
+			if (myGen === loadGeneration) {
+				loading = false;
 
-			// Capture the auto-edit intent — actual trigger lives in the
-			// $effect below so it can fire even if /me (which feeds canEdit)
-			// resolves AFTER loadData() finishes. One-shot. Always reassign
-			// (true OR false) so a stale flag from a previous ?new=1 load
-			// can't fire on a subsequent non-new item load — Codex round 6.
-			// `?new=1` create-intent is a full-page-only flow (create stays
-			// full-page for v1 — PLAN-2105). When embedded, `page.url` is the
-			// COLLECTION route, so never read it there.
-			pendingNewItemEdit = !embedded && page.url.searchParams.get('new') === '1';
+				// Capture the auto-edit intent — actual trigger lives in the
+				// $effect below so it can fire even if /me (which feeds canEdit)
+				// resolves AFTER loadData() finishes. One-shot. Always reassign
+				// (true OR false) so a stale flag from a previous ?new=1 load
+				// can't fire on a subsequent non-new item load — Codex round 6.
+				// `?new=1` create-intent is a full-page-only flow (create stays
+				// full-page for v1 — PLAN-2105). When embedded, `page.url` is the
+				// COLLECTION route, so never read it there.
+				pendingNewItemEdit = !embedded && page.url.searchParams.get('new') === '1';
+			}
 		}
 	}
 
@@ -774,7 +943,15 @@
 	// the new collab $effect run (after rebuild completes). Per
 	// Codex round 7 [P1] of TASK-1319.
 	let forceRefreshInFlight = false;
-	const collabKey = $derived(item && canEdit && !rawMode ? item.id : null);
+	// Gated on `itemMatchesRef` (PLAN-2105 / TASK-2112 switch-safety): the
+	// instant `ref` changes, `item` still holds the PREVIOUS item until the
+	// new fetch resolves, so without this gate collabKey would stay the old
+	// item id — leaving the old provider connected while its editor is
+	// unmounted (a stale applier would then ACK success against a destroyed
+	// editor). Going null tears the old provider down (its $effect cleanup
+	// still flushes the Y.Doc) until the new item loads. Same-item reloads
+	// keep the provider (item.slug still matches itemSlug). Codex.
+	const collabKey = $derived(item && itemMatchesRef && canEdit && !rawMode ? item.id : null);
 
 	// Local user identity broadcast over awareness for the
 	// CollaborationCaret extension (TASK-1263). Colour is a
@@ -989,7 +1166,17 @@
 			// items.content directly. The full ExpiresAtMillis-driven
 			// late-apply guard is TASK-1262's concern.
 			onApplierRequest: async (markdown, _requestID, expiresAtMillis) => {
-				if (!editorInstance) return false;
+				// Reject unless we can apply into the LIVE editor for THIS
+				// provider's item. The no-{#key} pane switch can leave
+				// editorInstance pointing at a destroyed editor, or this
+				// provider stale (superseded / item moved on), in which case
+				// setContent would silently ACK success while applying no
+				// Yjs transaction. Falling through to `false` lets the
+				// server's direct-write fallback own the PATCH instead
+				// (PLAN-2105 / TASK-2112; Codex).
+				if (!editorInstance || editorInstance.isDestroyed) return false;
+				if (collabProvider !== provider) return false;
+				if (!item || item.id !== itemId) return false;
 				// Pre-mutation late-apply guard. The provider already
 				// gates the ack on expiry but the actual setContent
 				// is owned here; gating the mutation itself is the
@@ -1068,12 +1255,16 @@
 				// the user is already showing the toast about a
 				// refresh. Per Codex round 4 [P1].
 				const refreshCtx = ctx;
+				const refreshGen = loadGeneration;
 				void api.items
 					.get(refreshCtx.wsSlug, refreshCtx.itemId)
 					.then((fresh) => {
-						// Apply only if the user is still on this
-						// item; a navigation away should not stamp
-						// fresh content into the OTHER item's slot.
+						// Only act if THIS provider is still the active one and
+						// we haven't switched items. A pane switch already tore
+						// this provider down; bumping the nonce would rebuild the
+						// NEW item's provider needlessly and stamp A's content
+						// into the wrong slot (PLAN-2105 / TASK-2112; Codex).
+						if (collabProvider !== provider || refreshGen !== loadGeneration) return;
 						if (item && item.id === refreshCtx.itemId) {
 							item = withInflightTags(fresh);
 						}
@@ -1081,6 +1272,9 @@
 						forceRefreshNonce += 1;
 					})
 					.catch((err) => {
+						// Suppress the error toast for a superseded provider —
+						// the switch already replaced this editor session.
+						if (collabProvider !== provider || refreshGen !== loadGeneration) return;
 						// Refetch failed — we cannot guarantee the
 						// cached `item.content` reflects canonical
 						// server state. Rebuilding here would
@@ -1340,11 +1534,21 @@
 	async function saveTitle() {
 		editingTitle = false;
 		if (!item || titleDraft.trim() === item.title) return;
+		// Capture the target item + generation BEFORE the await. A blur-fired
+		// saveTitle can resolve AFTER the pane switched to another item (click
+		// row B while editing A's title); dropping the write then keeps the
+		// pane from showing A under ?item=B (PLAN-2105 / TASK-2112; coordinator
+		// P1). The PATCH itself targets `targetItem.id` (captured, = A).
+		const targetItem = item;
+		const gen = loadGeneration;
 		saveStatus = 'saving';
 		try {
-			item = withInflightTags(await api.items.update(wsSlug, item.id, { title: titleDraft.trim() }));
+			const updated = await api.items.update(wsSlug, targetItem.id, { title: titleDraft.trim() });
+			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
+			item = withInflightTags(updated);
 			showSaved();
 		} catch {
+			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
 			saveStatus = 'idle';
 			toastStore.show('Failed to update title', 'error');
 		}
@@ -1367,6 +1571,14 @@
 		const payload = JSON.stringify(updated);
 		const targetItem = item;
 		const targetWs = wsSlug;
+		// Generation + id fence (Codex). A plain id check has an A→B→A gap (the
+		// returning id matches but the response is stale) and would also leak
+		// A's save/error feedback (showSaved / saveStatus / toasts) onto B.
+		// `stillCurrent()` gates EVERY post-await branch — success, the
+		// open-children force-retry, the decline, and the error paths — so a
+		// switch mid-request completes silently.
+		const gen = loadGeneration;
+		const stillCurrent = () => gen === loadGeneration && item?.id === targetItem.id;
 		saveStatus = 'saving';
 
 		const doUpdate = (force: boolean) =>
@@ -1377,7 +1589,8 @@
 
 		try {
 			const fresh = await doUpdate(false);
-			if (item && item.id === targetItem.id) item = withInflightTags(fresh);
+			if (!stillCurrent()) return;
+			item = withInflightTags(fresh);
 			showSaved();
 		} catch (e) {
 			// BUG-1538 / TASK-1539: same open-children-guard recovery
@@ -1387,21 +1600,33 @@
 			// force-override instead of toasting a vague "Failed to
 			// save".
 			if (isOpenChildrenError(e)) {
+				// Don't even OPEN the confirm dialog if the pane already switched
+				// items while the 409 was in flight — A's dialog must not appear
+				// over B. The retry callback is likewise fenced so a force-PATCH
+				// can't fire for a no-longer-shown item (Codex).
+				if (!stillCurrent()) return;
 				const parentRef = formatItemRef(targetItem) ?? targetItem.slug;
 				let forced;
 				try {
-					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => doUpdate(true));
+					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => {
+						if (!stillCurrent()) throw new Error('switched away');
+						return doUpdate(true);
+					});
 				} catch (retryErr) {
 					// The force retry itself failed (network / 500 /
 					// fresh validation error after the override).
+					if (!stillCurrent()) return;
 					saveStatus = 'idle';
 					const msg = retryErr instanceof Error ? retryErr.message : 'Failed to save';
 					console.error('Forced field update failed:', retryErr);
 					toastStore.show(msg, 'error');
 					return;
 				}
+				// Switched items while the confirm modal was up — complete
+				// silently rather than stamping A's result onto B.
+				if (!stillCurrent() || !item) return;
 				if (forced) {
-					if (item && item.id === targetItem.id) item = withInflightTags(forced);
+					item = withInflightTags(forced);
 					showSaved();
 					return;
 				}
@@ -1412,11 +1637,12 @@
 				// reference so child components re-prop unambiguously
 				// even if they cache by identity.
 				saveStatus = 'idle';
-				if (item && item.id === targetItem.id) item = { ...item };
+				item = { ...item };
 				toastStore.show('Status change cancelled', 'info');
 				return;
 			}
 			// Any other failure mode — network, validation, 500, etc.
+			if (!stillCurrent()) return;
 			saveStatus = 'idle';
 			console.error('Failed to save field:', e);
 			toastStore.show('Failed to save', 'error');
@@ -1593,12 +1819,16 @@
 		if (!item) return;
 		const targetItem = item;
 		const targetWs = wsSlug;
+		// Generation fence closes the A→B→A gap the id-only check missed — a
+		// stale GET could otherwise issue a full-fields PATCH against a
+		// re-shown item (Codex).
+		const gen = loadGeneration;
 		try {
 			// Re-fetch to get the latest fields snapshot from the server,
 			// then merge our two keys. This narrows but does not fully
 			// close the race against concurrent field edits.
 			const latest = await api.items.get(targetWs, targetItem.id);
-			if (!item || item.id !== targetItem.id) return;
+			if (switchedAway(targetItem, gen)) return;
 			const latestFields = parseFields(latest);
 			const merged = {
 				...latestFields,
@@ -1608,20 +1838,18 @@
 			const fresh = await api.items.update(targetWs, targetItem.id, {
 				fields: JSON.stringify(merged)
 			});
-			if (item && item.id === targetItem.id) {
-				item = withInflightTags(fresh);
-			}
+			if (switchedAway(targetItem, gen)) return;
+			item = withInflightTags(fresh);
 		} catch (err) {
 			// Non-fatal: the content was inserted regardless of whether
 			// the stamping succeeded. Toast so the user knows the
 			// "Refresh from source" affordance won't be available.
 			console.warn('failed to stamp source_url', err);
-			if (item && item.id === targetItem.id) {
-				toastStore.show(
-					'Imported, but source_url not saved — refresh affordance disabled',
-					'error'
-				);
-			}
+			if (switchedAway(targetItem, gen)) return;
+			toastStore.show(
+				'Imported, but source_url not saved — refresh affordance disabled',
+				'error'
+			);
 		}
 	}
 
@@ -1662,6 +1890,9 @@
 		// and bail if not. (Per Codex review round 2.)
 		const targetItem = item;
 		const targetEditor = editorInstance;
+		// Generation fence (Codex) alongside the item/editor identity checks —
+		// closes the A→B→A gap and keeps A's spinner/toast off B.
+		const gen = loadGeneration;
 		const ok = typeof window !== 'undefined' &&
 			window.confirm(
 				`Replace the current content with a fresh fetch from:\n${url}\n\n` +
@@ -1674,7 +1905,7 @@
 			// Bail if the user navigated to a different item — applying
 			// the refresh now would target the wrong document AND stamp
 			// the wrong source URL.
-			if (!item || item.id !== targetItem.id || editorInstance !== targetEditor) {
+			if (switchedAway(targetItem, gen) || editorInstance !== targetEditor) {
 				return;
 			}
 			const html = marked.parse(resp.markdown, { async: false }) as string;
@@ -1692,28 +1923,29 @@
 			// resolved through a different final URL on this fetch.
 			// stampSourceUrl's own guard re-checks identity.
 			await stampSourceUrl(resp);
-			if (item && item.id === targetItem.id) {
+			if (!switchedAway(targetItem, gen)) {
 				toastStore.show('Refreshed from source', 'success');
 			}
 		} catch (err) {
-			if (item && item.id === targetItem.id) {
+			if (!switchedAway(targetItem, gen)) {
 				toastStore.show(err instanceof Error ? err.message : 'Refresh failed', 'error');
 			}
 		} finally {
-			// Always clear the spinner. The page component is reused
-			// across item navigation, so leaving `refreshing = true`
-			// when the user navigates away would re-emerge as a stuck
-			// "Refreshing…" label the next time they open ANY item
-			// with a source_url. The visual feedback is per-item only
-			// while the user stays on the originating item; that's
-			// acceptable — a successful navigation already signals
-			// "user moved on". (Per Codex review round 3.)
-			refreshing = false;
+			// Clear the spinner for the originating item only. loadData resets
+			// `refreshing` on a switch so B always starts clean; guarding here
+			// stops a superseded refresh from clearing a NEWER item's spinner
+			// (Codex). Navigating away already signals "user moved on".
+			if (!switchedAway(targetItem, gen)) refreshing = false;
 		}
 	}
 
 	async function updateAssignedUser(userId: string | null) {
 		if (!item) return;
+		// Capture target + generation before the await; drop the post-await
+		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112;
+		// coordinator P1).
+		const targetItem = item;
+		const gen = loadGeneration;
 		saveStatus = 'saving';
 		try {
 			const update: Record<string, any> = {};
@@ -1722,9 +1954,12 @@
 			} else {
 				update.clear_assigned_user = true;
 			}
-			item = withInflightTags(await api.items.update(wsSlug, item.id, update));
+			const updated = await api.items.update(wsSlug, targetItem.id, update);
+			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
+			item = withInflightTags(updated);
 			showSaved();
 		} catch {
+			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
 			saveStatus = 'idle';
 			toastStore.show('Failed to update assignment', 'error');
 		}
@@ -1732,6 +1967,11 @@
 
 	async function updateAgentRole(roleId: string | null) {
 		if (!item) return;
+		// Capture target + generation before the await; drop the post-await
+		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112;
+		// coordinator P1).
+		const targetItem = item;
+		const gen = loadGeneration;
 		saveStatus = 'saving';
 		try {
 			const update: Record<string, any> = {};
@@ -1740,9 +1980,12 @@
 			} else {
 				update.clear_agent_role = true;
 			}
-			item = withInflightTags(await api.items.update(wsSlug, item.id, update));
+			const updated = await api.items.update(wsSlug, targetItem.id, update);
+			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
+			item = withInflightTags(updated);
 			showSaved();
 		} catch {
+			if (gen !== loadGeneration || item?.id !== targetItem.id) return;
 			saveStatus = 'idle';
 			toastStore.show('Failed to update role', 'error');
 		}
@@ -1776,6 +2019,12 @@
 		editorStore.setDirty(true);
 		contentDebounceTimer = setTimeout(() => {
 			if (!item) return;
+			// Capture identity at fire time. loadData cancels this timer on a
+			// switch, so it normally can't fire for a stale item — but an
+			// already-dispatched PATCH resolving late must not leak its
+			// saved/error feedback onto a switched-in item (Codex).
+			const reqItem = item;
+			const gen = loadGeneration;
 			saveStatus = 'saving';
 			// Set lastSaveTime BEFORE the API call so the SSE guard works
 			// even if the SSE event arrives before the response.
@@ -1786,13 +2035,15 @@
 				toSave = markdownToWikiLinks(toSave, allItems);
 			}
 			toSave = cleanBrokenLinks(toSave);
-			api.items.update(wsSlug, item.id, { content: toSave }).then(() => {
+			api.items.update(wsSlug, reqItem.id, { content: toSave }).then(() => {
+				if (switchedAway(reqItem, gen)) return;
 				// Don't overwrite item -- resetting editorContent would
 				// clobber anything typed since the debounce started.
 				editorStore.setLastSaveTime(Date.now());
 				editorStore.setDirty(false);
 				showSaved();
 			}).catch(() => {
+				if (switchedAway(reqItem, gen)) return;
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
 			});
@@ -1876,16 +2127,22 @@
 		// post-await force_refresh check (returns 'skipped' when it fires so
 		// the module doesn't record a known-stale base as lastFlushedContent).
 		save: async ({ ws, itemId, toSave, keepalive }) => {
+			// Snapshot the load generation at flush-start so the UI-feedback
+			// gate below also closes the A→B→A gap (id re-matches but a newer
+			// load replaced the item) — Codex. The PATCH itself still targets
+			// the captured `itemId`/`ws` (never-cross-write, unchanged).
+			const genAtFlush = loadGeneration;
 			// UI mutations only fire when:
 			//   - This is a foreground (user-driven) flush (!keepalive), AND
-			//   - The user is still looking at the item we're flushing.
+			//   - The user is still looking at the item we're flushing, AND
+			//   - No newer load has superseded this generation.
 			// Background (keepalive=true) cleanup flushes after navigation MUST
 			// NOT touch saveStatus / lastSaveTime — those slots belong to
 			// whatever item the user is now on, and stamping them from a stale
 			// flush leaves the new page pinned in 'Saving...' indefinitely.
 			// Per Codex review round 2.
 			const isForegroundCurrent = (): boolean =>
-				!keepalive && !!item && item.id === itemId;
+				!keepalive && !!item && item.id === itemId && genAtFlush === loadGeneration;
 
 			if (isForegroundCurrent()) {
 				saveStatus = 'saving';
@@ -1953,7 +2210,11 @@
 			// late-arriving response after navigation to a new item
 			// can't apply the old item's snapshot to the new page
 			// state (cross-item bleed). Per Codex review round 11.
+			// The load generation is captured alongside it to close the
+			// A→B→A gap the id-only check missed — a returning id can match a
+			// re-shown item that a newer load already replaced (Codex).
 			const reqItemId = item.id;
+			const genAtSave = loadGeneration;
 			if (keepalive) {
 				// BUG-2024 keepalive-on-unload path. Fire an immediate
 				// keepalive PATCH so the edit survives page teardown
@@ -1964,7 +2225,7 @@
 				return api.items
 					.update(wsSlug, reqItemId, { content: markdown }, { keepalive: true })
 					.then(() => {
-						if (item && item.id === reqItemId && rawContentSaver.pending === markdown) {
+						if (item && item.id === reqItemId && genAtSave === loadGeneration && rawContentSaver.pending === markdown) {
 							rawContentSaver.clearPending();
 							editorStore.setDirty(false);
 						}
@@ -1977,7 +2238,7 @@
 			// Raw mode: content is already in storage format (with [[wiki links]])
 			const toSave = markdown;
 			return api.items.update(wsSlug, reqItemId, { content: toSave }).then((updated) => {
-				if (!item || item.id !== reqItemId) return;
+				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
 				editorStore.setLastSaveTime(Date.now());
 				// Raw saves change items.content via a path the
 				// collab dedupe doesn't see. Without resetting the
@@ -2005,7 +2266,7 @@
 					item = withInflightTags({ ...updated, content: item.content });
 				}
 			}).catch(() => {
-				if (!item || item.id !== reqItemId) return;
+				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
 				saveStatus = 'idle';
 				toastStore.show('Failed to save content', 'error');
 			});
@@ -2065,11 +2326,14 @@
 		if (rawContentSaver.pending === null) return true;
 
 		rawFlushInFlight = true;
-		// Capture the item id once for the entire drain. If the user
-		// navigates away mid-flush, every iteration's stale response
-		// (including the in-flight one) is discarded so it can't
-		// clobber the newly-loaded item. Per Codex review round 11.
+		// Capture the item id + load generation once for the entire drain. If
+		// the user navigates away mid-flush, every iteration's stale response
+		// (including the in-flight one) is discarded so it can't clobber the
+		// newly-loaded item. The generation closes the A→B→A id-reuse gap the
+		// id-only check missed. Per Codex review round 11 + PLAN-2105 switch-
+		// safety.
 		const reqItemId = item.id;
+		const genAtFlush = loadGeneration;
 		let lastError = false;
 		try {
 			for (let i = 0; i < RAW_FLUSH_DRAIN_CAP; i++) {
@@ -2080,7 +2344,7 @@
 					saveStatus = 'saving';
 					editorStore.setLastSaveTime(Date.now());
 					const updated = await api.items.update(wsSlug, reqItemId, { content: markdown });
-					if (!item || item.id !== reqItemId) {
+					if (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) {
 						// Navigation completed during the await;
 						// abort and let the new item's state take
 						// over.
@@ -2110,6 +2374,10 @@
 						item = withInflightTags({ ...updated, content: item.content });
 					}
 				} catch {
+					// Don't surface A's save failure over B (a superseded
+					// drain must not reset the current item's saveStatus /
+					// toast) — Codex.
+					if (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) return false;
 					saveStatus = 'idle';
 					toastStore.show('Failed to save content', 'error');
 					lastError = true;
@@ -2273,17 +2541,35 @@
 	}
 
 	function handleVersionRestore(updatedItem: Item) {
+		// The restore's await lives in the descendant TimelineVersionCard, which
+		// can resolve + invoke this callback AFTER a no-{#key} switch to another
+		// item (the destroyed card still fires its parent callback). Fence in
+		// the parent: only adopt the restored version if it's for the item
+		// currently shown — otherwise A's restore would render permanently under
+		// ?item=B (PLAN-2105 / TASK-2112; coordinator). The descendant also
+		// fences its own onRestore by itemSlug (belt-and-suspenders).
+		if (!item || item.id !== updatedItem.id) return;
 		item = withInflightTags(updatedItem);
 	}
 
 	async function handleDelete() {
 		if (!item) return;
+		// Capture identity before the await. The DELETE targets `targetItem.id`
+		// (= A), but the post-await feedback must be fenced: if the pane
+		// switched to B while A's delete was in flight, calling handleGone()
+		// would close B's pane (embedded onGone = closeItemPane) and the toast
+		// would show over B. A was deleted regardless — the list reflects it via
+		// SSE (PLAN-2105 / TASK-2112; Codex).
+		const targetItem = item;
+		const gen = loadGeneration;
 		deleting = true;
 		try {
-			await api.items.delete(wsSlug, item.id);
+			await api.items.delete(wsSlug, targetItem.id);
+			if (switchedAway(targetItem, gen)) return;
 			toastStore.show('Item deleted', 'success');
 			handleGone();
 		} catch {
+			if (switchedAway(targetItem, gen)) return;
 			toastStore.show('Failed to delete item', 'error');
 			deleting = false;
 			confirmDelete = false;
@@ -2298,32 +2584,58 @@
 	// archived — surface that message the same way other handlers do. TASK-1829.
 	async function handleRestore() {
 		if (!item || restoring) return;
+		// Capture target + generation before the awaits; drop the post-await
+		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112;
+		// coordinator "gate all post-await writes").
+		const targetItem = item;
+		const targetSlug = itemSlug;
+		const gen = loadGeneration;
 		restoring = true;
 		try {
-			await api.items.restore(wsSlug, itemSlug);
-			const refreshed = await api.items.get(wsSlug, itemSlug);
+			await api.items.restore(wsSlug, targetSlug);
+			const refreshed = await api.items.get(wsSlug, targetSlug);
+			if (switchedAway(targetItem, gen)) return;
 			item = withInflightTags(refreshed);
 			toastStore.show('Item restored', 'success');
 		} catch (e: any) {
+			if (switchedAway(targetItem, gen)) return;
 			toastStore.show(e.message ?? 'Failed to restore item', 'error');
 		} finally {
-			restoring = false;
+			// Don't clobber a NEWER item's restore flag: loadData already reset
+			// `restoring` for the new item on switch, so a superseded restore's
+			// finally must leave it alone.
+			if (!switchedAway(targetItem, gen)) restoring = false;
 		}
 	}
 
 	let allCollections = $derived(collectionStore.collections ?? []);
-	let moveTargets = $derived(allCollections.filter(c => c.slug !== collSlug));
+	// Exclude the item's ACTUAL collection (effectiveCollSlug), not the route
+	// prop — a cross-collection `?item=` in the pane could otherwise offer a
+	// no-op "move" to the item's own collection (PLAN-2105 / TASK-2112).
+	let moveTargets = $derived(allCollections.filter(c => c.slug !== effectiveCollSlug));
 
 	async function handleDeleteLink(linkId?: string) {
 		if (!linkId || !item) return;
+		// Capture identity BEFORE the awaits. The refresh GET must use the
+		// captured slug (not the live `itemSlug`, which an A→B→C switch would
+		// have advanced) and the result must be dropped if we switched away —
+		// otherwise B's refresh could land under C's ref, carrying the current
+		// item's content (Codex).
+		const targetItem = item;
+		const targetSlug = itemSlug;
+		const targetWs = wsSlug;
+		const gen = loadGeneration;
 		try {
-			await api.links.delete(wsSlug, linkId);
+			await api.links.delete(targetWs, linkId);
+			if (switchedAway(targetItem, gen)) return;
 			itemLinks = itemLinks.filter(l => l.id !== linkId);
 			// Refresh item to update parent info
-			const refreshed = await api.items.get(wsSlug, itemSlug);
+			const refreshed = await api.items.get(targetWs, targetSlug);
+			if (switchedAway(targetItem, gen) || !item) return;
 			item = withInflightTags({ ...refreshed, content: item.content });
 			toastStore.show('Relationship removed', 'success');
 		} catch (e: any) {
+			if (switchedAway(targetItem, gen)) return;
 			toastStore.show(e.message ?? 'Failed to remove relationship', 'error');
 		}
 	}
@@ -2340,9 +2652,13 @@
 			addLinkResults = [];
 			return;
 		}
+		// Fence the async search so results from item A's add-link box can't
+		// repopulate the panel after switching to item B (Codex).
+		const gen = loadGeneration;
 		addLinkLoading = true;
 		try {
 			const results = await api.search(addLinkSearch, { workspace: wsSlug });
+			if (gen !== loadGeneration) return;
 			// Filter out self and items already linked
 			const linkedIds = new Set(itemLinks.flatMap(l => [l.source_id, l.target_id]));
 			addLinkResults = (results.results || [])
@@ -2350,28 +2666,41 @@
 				.filter((i: Item) => i.id !== item?.id && !linkedIds.has(i.id))
 				.slice(0, 10);
 		} catch {
+			if (gen !== loadGeneration) return;
 			addLinkResults = [];
 		} finally {
-			addLinkLoading = false;
+			if (gen === loadGeneration) addLinkLoading = false;
 		}
 	}
 
-	async function handleCreateLink(targetItem: Item) {
+	async function handleCreateLink(target: Item) {
 		if (!item) return;
+		// Capture the SOURCE item (the one being edited) + generation before the
+		// awaits. `target` is the link target chosen from search; `sourceItem`
+		// is the current item. Use the captured slug for the refresh GET and
+		// drop the result if we switched away (Codex).
+		const sourceItem = item;
+		const sourceSlug = item.slug;
+		const targetSlug = itemSlug;
+		const targetWs = wsSlug;
+		const gen = loadGeneration;
 		try {
-			const newLink = await api.links.create(wsSlug, item.slug, {
-				target_id: targetItem.id,
+			const newLink = await api.links.create(targetWs, sourceSlug, {
+				target_id: target.id,
 				link_type: addLinkType
 			});
+			if (switchedAway(sourceItem, gen)) return;
 			itemLinks = [...itemLinks, newLink];
 			showAddLink = false;
 			addLinkSearch = '';
 			addLinkResults = [];
 			// Refresh item to update parent info
-			const refreshed = await api.items.get(wsSlug, itemSlug);
+			const refreshed = await api.items.get(targetWs, targetSlug);
+			if (switchedAway(sourceItem, gen) || !item) return;
 			item = withInflightTags({ ...refreshed, content: item.content });
 			toastStore.show('Relationship added', 'success');
 		} catch (e: any) {
+			if (switchedAway(sourceItem, gen)) return;
 			toastStore.show(e.message ?? 'Failed to add relationship', 'error');
 		}
 	}
@@ -2393,6 +2722,12 @@
 		const sourceCollSlug = collSlug;
 		const sourceItemSlug = itemSlug;
 		const parentRef = formatItemRef(sourceItem) ?? sourceItem.slug;
+		// Generation fence for the toasts (the nav is separately guarded by
+		// navIfStillCurrent below). If the pane switched to another item while
+		// the move was in flight, A's move feedback must not surface over B
+		// (Codex). `stillOnSource()` also implicitly guarantees item !== null.
+		const gen = loadGeneration;
+		const stillOnSource = () => !switchedAway(sourceItem, gen);
 		const doMove = (force: boolean) =>
 			api.items.move(sourceWs, sourceSlug, targetSlug, undefined, force ? { force: true } : undefined);
 		// After the modal resolves, only honor the success path's
@@ -2405,7 +2740,9 @@
 		// (Codex review round 3 P1). Stale resolutions complete
 		// silently rather than yanking the user back.
 		const navIfStillCurrent = (toSlug: string) => {
-			const itemStillCurrent = item && item.id === sourceItem.id;
+			// stillOnSource() folds in the load-generation check, so an A→B→A
+			// that re-matches the id can't let a superseded move navigate.
+			const itemStillCurrent = stillOnSource();
 			const routeStillCurrent =
 				wsSlug === sourceWs &&
 				username === sourceUsername &&
@@ -2417,7 +2754,7 @@
 		};
 		try {
 			const moved = await doMove(false);
-			toastStore.show(`Moved to ${targetSlug}`, 'success');
+			if (stillOnSource()) toastStore.show(`Moved to ${targetSlug}`, 'success');
 			navIfStillCurrent(moved.slug);
 		} catch (e: any) {
 			// BUG-1538 / Codex review round 1: the server's
@@ -2426,25 +2763,33 @@
 			// collection. Wire the same modal + ?force=true override
 			// path used for PATCH status changes.
 			if (isOpenChildrenError(e)) {
+				// Don't open the confirm dialog (or fire its forced retry) if the
+				// pane already switched away from the source item.
+				if (!stillOnSource()) return;
 				let forced;
 				try {
-					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => doMove(true));
+					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => {
+						if (!stillOnSource()) throw new Error('switched away');
+						return doMove(true);
+					});
 				} catch (retryErr: any) {
 					console.error('Forced move failed:', retryErr);
-					toastStore.show(retryErr?.message ?? 'Failed to move item', 'error');
+					if (stillOnSource()) toastStore.show(retryErr?.message ?? 'Failed to move item', 'error');
 					return; // outer finally still resets `moving`
 				}
 				if (forced) {
-					toastStore.show(`Moved to ${targetSlug}`, 'success');
+					if (stillOnSource()) toastStore.show(`Moved to ${targetSlug}`, 'success');
 					navIfStillCurrent(forced.slug);
-				} else {
+				} else if (stillOnSource()) {
 					toastStore.show('Move cancelled', 'info');
 				}
 				return;
 			}
-			toastStore.show(e.message ?? 'Failed to move item', 'error');
+			if (stillOnSource()) toastStore.show(e.message ?? 'Failed to move item', 'error');
 		} finally {
-			moving = false;
+			// Guard against clobbering a NEWER item's move: a superseded move's
+			// finally must not clear the flag the current item's handler set.
+			if (!switchedAway(sourceItem, gen)) moving = false;
 		}
 	}
 
@@ -2655,21 +3000,36 @@
 				{starredStore.isStarred(item.id) ? '★' : '☆'}
 			</button>
 			{#if collection && (quickActions.length > 0 || isOwner)}
-				<QuickActionsMenu
-					actions={quickActions}
-					{item}
-					{collection}
-					scope="item"
-					{wsSlug}
-					canEdit={isOwner}
-					onmanage={() => {
-						editCollectionSection = 'actions';
-						editCollectionOpen = true;
-					}}
-					oncollectionupdated={(updated) => {
-						collection = updated;
-					}}
-				/>
+				<!-- {#key itemSlug}: structural containment (PLAN-2105 / TASK-2112).
+				     Remount this item-scoped menu on every item switch so any
+				     in-flight quick-action continuation is discarded. Keyed on
+				     itemSlug (the URL/ref identity), NOT item.id, so it resets the
+				     instant the ref changes rather than waiting for B to load. -->
+				{#key itemSlug}
+					<!-- Capture the item identity at THIS render (frozen for this
+					     {#key} instance). A destroyed instance's in-flight async
+					     still fires its callback into the PERSISTENT parent, and
+					     its OWN prop check passes (frozen at its item) — so the
+					     PARENT-side guard below drops the write when the pane has
+					     since moved on (PLAN-2105 / TASK-2112; coordinator). -->
+					{@const keyedSlug = itemSlug}
+					<QuickActionsMenu
+						actions={quickActions}
+						{item}
+						{collection}
+						scope="item"
+						{wsSlug}
+						canEdit={isOwner}
+						onmanage={() => {
+							editCollectionSection = 'actions';
+							editCollectionOpen = true;
+						}}
+						oncollectionupdated={(updated) => {
+							if (keyedSlug !== itemSlug) return;
+							collection = updated;
+						}}
+					/>
+				{/key}
 			{/if}
 			<button
 				class="action-btn"
@@ -2796,7 +3156,14 @@
 
 		<!-- Layout wrapper -->
 		<div class="item-body layout-{layout}">
-			<!-- Fields -->
+			<!-- Fields — {#key itemSlug}: structural containment (PLAN-2105 /
+			     TASK-2112). The fields sidebar (FieldEditor debounces, assignment
+			     selects) remounts on every item switch so a stale field
+			     continuation is discarded. The SIBLING .content-panel (the collab
+			     Editor) is deliberately OUTSIDE this key so it never remounts.
+			     Keyed on itemSlug (URL/ref identity), not item.id, so it resets
+			     the instant the ref changes. -->
+			{#key itemSlug}
 			<div class="fields-panel">
 				<div class="fields-header">Properties</div>
 				{#each schema.fields as field (field.key)}
@@ -2924,8 +3291,11 @@
 					</div>
 				{/if}
 			</div>
+			{/key}
 
-			<!-- Content editor -->
+			<!-- Content editor — OUTSIDE the {#key itemSlug} above: the collab
+			     Editor, EditorBubbleMenu, provider, collabKey and SSE stay
+			     persistent across an A→B item switch (the no-{#key} perf premise). -->
 			<div class="content-panel">
 				<div class="editor-mode-toggle">
 					<button
@@ -2939,7 +3309,17 @@
 							// Stay in raw mode if the flush failed — the
 							// user retains their unsaved edits to retry
 							// or copy out. Per Codex review round 6.
+							//
+							// Editor-write residue (this button writes rawMode
+							// on the PERSISTENT editor subtree — NOT inside the
+							// {#key}). Capture item+generation before the await:
+							// flushRawIfPending's re-entrancy waiter can resolve
+							// `true` AFTER a switch, and flipping rawMode then
+							// would apply to the WRONG item (PLAN-2105 / TASK-2112).
+							const startItemId = item?.id;
+							const startGen = loadGeneration;
 							const ok = await flushRawIfPending();
+							if (startGen !== loadGeneration || item?.id !== startItemId) return;
 							if (ok) {
 								rawSeedMarkdown = null;
 								rawMode = false;
@@ -2971,6 +3351,7 @@
 							if (collabProvider && editorInstance && item) {
 								const ws = wsSlug;
 								const itemId = item.id;
+								const genAtToggle = loadGeneration;
 								const baseline = item.content ?? '';
 								const ed = editorInstance;
 								try {
@@ -2996,6 +3377,13 @@
 											md,
 											false,
 										);
+										// Fence IMMEDIATELY after the awaited flush,
+										// before inspecting `result`: if the pane
+										// switched items during this iteration, don't
+										// show B a recovery toast, keep looping, or
+										// fall through to rawMode=true for the wrong
+										// item (PLAN-2105 / TASK-2112; coordinator).
+										if (!item || item.id !== itemId || genAtToggle !== loadGeneration) return;
 										if (result === 'failed' || result === 'skipped') {
 											// 'failed' — PATCH errored;
 											//   runCollabFlush already
@@ -3037,11 +3425,25 @@
 									// rawMode + rawSeedMarkdown to
 									// the new page would be wrong.
 									// Per Codex review round 7.
-									if (!item || item.id !== itemId) return;
+									// The load-generation check closes BOTH the
+									// mid-switch A→B gap (loaded item still A but
+									// ref already B) AND the A→B→A gap the id-only
+									// check missed (id matches again but a newer
+									// load replaced the item) — without it B would
+									// mount in rawMode seeded with A's content and
+									// the new flusher would be cancelled
+									// (PLAN-2105 / TASK-2112; Codex).
+									if (!item || item.id !== itemId || genAtToggle !== loadGeneration) return;
 									if (lastFlushed !== null) rawSeedMarkdown = lastFlushed;
 								} catch {
-									// Fall through; RawMarkdownEditor
-									// will seed from item.content.
+									// Fall through so RawMarkdownEditor
+									// seeds from item.content — BUT still
+									// bail on a switch: an exception here
+									// must not let the trailing
+									// collabFlusher.cancel() + rawMode=true
+									// apply to a DIFFERENT item (incl.
+									// A→B→A). Per Codex.
+									if (!item || item.id !== itemId || genAtToggle !== loadGeneration) return;
 								}
 							}
 							// Cancel any pending timer-driven flush
@@ -3149,6 +3551,21 @@
 			</div>
 		</div>
 
+		<!-- {#key itemSlug}: structural containment (PLAN-2105 / TASK-2112).
+		     Remounts the item-scoped data panels below (relationships, add-link
+		     form, ChildItems, BacklinksPanel, ItemTimeline incl. its comment
+		     composer + version cards) on every item switch, structurally
+		     cancelling their in-flight async loads/continuations. Keyed on
+		     itemSlug (URL/ref identity) so they reset — showing loading/empty —
+		     the instant the ref changes, before B's data resolves. -->
+		{#key itemSlug}
+		<!-- Capture the item identity at THIS render (frozen for this {#key}
+		     instance) so the PARENT-side guards on ChildItems.onChildrenChange
+		     and BacklinksPanel.onCountChange below drop a callback that a
+		     destroyed A-instance's in-flight load fires after the pane switched
+		     to B — the child's OWN prop check can't catch it (its prop is frozen
+		     at A). PLAN-2105 / TASK-2112; coordinator. -->
+		{@const keyedSlug = itemSlug}
 		{#if relationshipGroups.length > 0}
 			<div class="relationships-section">
 				<h3 class="section-title">Relationships</h3>
@@ -3237,7 +3654,7 @@
 
 		<!-- Child Items: always mounted so SSE subscriptions stay active even when starting with 0 children -->
 		{#if item}
-			<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={handleChildrenChange} {canEdit} />
+			<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} />
 		{/if}
 
 		<!--
@@ -3257,7 +3674,7 @@
 					{username}
 					{itemSlug}
 					itemId={item.id}
-					onCountChange={(n) => { backlinksCount = n; }}
+					onCountChange={(n) => { if (keyedSlug !== itemSlug) return; backlinksCount = n; }}
 				/>
 			</div>
 		{/if}
@@ -3275,17 +3692,21 @@
 				collectionId={item.collection_id}
 			/>
 		</div>
+		{/key}
 
 	</div>
 
 	{#if isOwner && item}
-		<ShareDialog
-			{wsSlug}
-			type="item"
-			targetSlug={item.slug}
-			targetName={formatItemRef(item) || item.title}
-			bind:open={shareDialogOpen}
-		/>
+		<!-- {#key itemSlug}: remount the item-scoped share dialog on switch. -->
+		{#key itemSlug}
+			<ShareDialog
+				{wsSlug}
+				type="item"
+				targetSlug={item.slug}
+				targetName={formatItemRef(item) || item.title}
+				bind:open={shareDialogOpen}
+			/>
+		{/key}
 	{/if}
 
 	{#if showGraph && item && graphFocusRef}
@@ -3322,18 +3743,36 @@
 	{/if}
 
 	{#if isOwner && collection}
+		<!-- {#key itemSlug}: remount the owner collection-editor modal on item
+		     switch (it's closed on switch anyway; keeps its async loads scoped). -->
+		{#key itemSlug}
+		<!-- Capture item identity at THIS render so a destroyed A-instance's
+		     completed save/archive can't reload / navigate / close B's pane
+		     after the switch (PLAN-2105 / TASK-2112; coordinator). -->
+		{@const keyedSlug = itemSlug}
 		<EditCollectionModal
 			bind:open={editCollectionOpen}
 			{collection}
 			{wsSlug}
 			initialSection={editCollectionSection}
 			onupdated={(updated) => {
+				// Parent-side switch fence: drop a callback from a superseded
+				// item's modal instance (don't reload/navigate/close B's pane).
+				if (keyedSlug !== itemSlug) return;
 				if (!updated) {
 					// Archive case — the collection is gone. Navigate away from
 					// this now-invalid item route rather than leaving the user
 					// with stale state that would hit deleted resources.
+					// Route-away is parameterized (PLAN-2105 / TASK-2112): an
+					// embedded pane closes in place (the collection page
+					// reconciles the archive itself) instead of hard-navigating
+					// the whole page; full-page returns to the workspace root.
 					collectionStore.loadCollections(wsSlug);
-					void goto(`/${username}/${wsSlug}`);
+					if (embedded) {
+						handleGone();
+					} else {
+						void goto(`/${username}/${wsSlug}`);
+					}
 					return;
 				}
 				collection = updated;
@@ -3342,11 +3781,18 @@
 				// changed. The current `/[collection]/[slug]` URL still
 				// points at the old slug and subsequent loadData() calls
 				// (which fetch by collSlug) would 404. Navigate to the
-				// new slug while preserving the item slug. The new route
-				// will trigger its own loadData() via the $effect on
-				// wsSlug/collSlug/itemSlug, so no explicit refresh here.
+				// new slug while preserving the item slug — routed through
+				// handleNavigateAway (PLAN-2105 / TASK-2112) so an embedded
+				// pane re-targets its host collection page (keeping the pane
+				// open via `?item=`) instead of hard-navigating to the
+				// full-page item route. The destination triggers a fresh
+				// loadData() on arrival, so no explicit refresh here.
 				if (updated.slug !== collSlug && itemSlug) {
-					void goto(`/${username}/${wsSlug}/${updated.slug}/${itemSlug}`);
+					handleNavigateAway(
+						embedded
+							? `/${username}/${wsSlug}/${updated.slug}?item=${encodeURIComponent(itemSlug)}`
+							: `/${username}/${wsSlug}/${updated.slug}/${itemSlug}`,
+					);
 					return;
 				}
 				// Non-navigating update: schema or field mappings may have
@@ -3361,6 +3807,7 @@
 				editCollectionSection = undefined;
 			}}
 		/>
+		{/key}
 	{/if}
 {/if}
 

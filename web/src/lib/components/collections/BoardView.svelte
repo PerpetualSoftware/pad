@@ -78,9 +78,15 @@
 		 * lane would be meaningless (the comparator would re-sort it).
 		 */
 		sortMode?: SortMode;
+		/**
+		 * Opt-in split-pane open (PLAN-2105 / TASK-2111). Threaded straight
+		 * through to each ItemCard; omitted everywhere except the collection
+		 * page, so other surfaces keep full-page anchor navigation.
+		 */
+		onItemOpen?: (item: Item) => void;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}) }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}), onItemOpen }: Props = $props();
 
 	// Local — disables the draft card while its Enter-create is in flight.
 	let savingDraft = $state(false);
@@ -572,6 +578,7 @@
 							onMoveItem={canReorderLane(colValue) ? (it, dir) => moveItem(colValue, it, dir) : undefined}
 							horizontal={canReorderLane(colValue)}
 							reorderDisabledDirs={canReorderLane(colValue) ? moveDisabledDirs(colValue, i, colItems.length) : undefined}
+							{onItemOpen}
 						/>
 					</div>
 				{/each}

@@ -146,6 +146,15 @@
 		// navigated to another workspace mid-create. Per Codex review (round 2).
 		const ws = wsSlug;
 
+		// Capture the ORIGINATING editor instance too. This bubble menu is
+		// bound to the PERSISTENT editor (outside the split pane's {#key}),
+		// which the host remounts per-item. If the item switches A→B during the
+		// create await, the live `editor` prop now points at B's document —
+		// inserting A's wiki-link at A's stale selection coords would corrupt B.
+		// Require the SAME, undestroyed editor before the post-await insert /
+		// callback / toast (PLAN-2105 / TASK-2112; coordinator).
+		const originEditor = editor;
+
 		// Scope epoch before the create so the parent's optimistic upsert can be
 		// refused if a projection resync lands mid-create (BUG-2098).
 		const sinceEpoch = localIndex.scopeEpochFor(ws);
@@ -170,9 +179,25 @@
 				source: 'web',
 			});
 
+			// The editor was swapped out (item switch) during the create — the
+			// item WAS created (SSE/reconcile will index it), but do NOT insert
+			// its wiki-link into the now-different document, nor fire the
+			// callback/toast for it. Reset the persistent menu's form directly:
+			// hide() early-returns while `creating` is still true (the normal
+			// path hides via the post-insert selectionUpdate, which never fires
+			// here), so A's create form/selection would otherwise linger over B
+			// (Codex).
+			if (originEditor.isDestroyed || editor !== originEditor) {
+				visible = false;
+				showForm = false;
+				title = '';
+				errorMsg = '';
+				return;
+			}
+
 			// Replace the selection with a wiki-link
 			const wikiLink = `[[${item.title}]]`;
-			editor
+			originEditor
 				.chain()
 				.focus()
 				.deleteRange({ from: selFrom, to: selTo })

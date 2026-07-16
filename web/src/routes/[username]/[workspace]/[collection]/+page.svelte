@@ -8,6 +8,7 @@
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
+	import ItemDetail from '$lib/components/items/ItemDetail.svelte';
 	import FilterBar from '$lib/components/collections/FilterBar.svelte';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -471,20 +472,23 @@
 	// `{ noScroll, keepFocus }` goto options as `updateUrlFilters`.
 	//
 	// History policy (deliberate split):
-	//  • openItemPane PUSHES a history entry (replaceState:false) so a
+	//  • The INITIAL open PUSHES a history entry (replaceState:false) so a
 	//    single Back closes the pane — matching "back/forward work
 	//    naturally".
-	//  • closeItemPane REPLACES (replaceState:true) and clears ONLY the
-	//    `item` param, so closing (and future j/k re-targets, TASK-2111)
-	//    don't push a trail of entries that Back must unwind.
-	//
-	// Not wired to row-click yet (TASK-2111) and no pane is rendered yet
-	// (TASK-2112) — this is the URL-state plumbing those tasks build on.
+	//  • RE-TARGETING an already-open pane (row-click / Enter / j-k moving
+	//    A→B→C) REPLACES, so paging through N rows doesn't stack N history
+	//    entries that Back must unwind before it can close the pane
+	//    (PLAN-2105 history policy; Codex round 2 P2). `closeItemPane`
+	//    likewise REPLACES.
 	function openItemPane(item: Item) {
 		const url = new URL(page.url);
+		// Whether a pane is ALREADY open decides push (first open) vs replace
+		// (re-target). Read off the live URL — the same source openItemRef
+		// derives from.
+		const alreadyOpen = url.searchParams.has('item');
 		url.searchParams.set('item', itemUrlId(item));
 		goto(`${url.pathname}${url.search}`, {
-			replaceState: false,
+			replaceState: alreadyOpen,
 			noScroll: true,
 			keepFocus: true,
 		});
@@ -594,7 +598,14 @@
 	export const snapshot = scrollRestoration.snapshot;
 
 	// Reflect the collection name in the browser tab; clear any stale item ref.
+	//
+	// Title precedence (PLAN-2105 / TASK-2112): when a detail pane is open the
+	// paned item's title WINS the tab title, so yield here while `?item=` is
+	// set. The embedded ItemDetail owns the title whenever it's mounted; this
+	// effect depends on `openItemRef`, so it re-runs and reclaims the tab
+	// title the instant the pane closes.
 	$effect(() => {
+		if (openItemRef) return;
 		titleStore.setPageTitle({
 			section: collection?.name ?? null,
 			item: null,
@@ -1591,6 +1602,23 @@
 		focusedIndex = -1;
 	});
 
+	// Keep the row highlight on the OPEN pane's item (PLAN-2105 / TASK-2112).
+	// `focusedItemId` (the marker List/Board/Table read) is otherwise driven
+	// only by the keyboard cursor, so a click- / back-forward- / refresh-
+	// opened pane wouldn't highlight its row. Snap the cursor to the paned
+	// item whenever `?item=` (or the hydrated list) changes. Defined AFTER the
+	// reset effect above so, when both fire on a filteredItems change, this one
+	// wins and restores the paned row. j/k between openItemRef changes still
+	// moves the cursor freely (this effect only re-runs on openItemRef /
+	// filteredItems changes, not on focusedIndex).
+	$effect(() => {
+		if (!openItemRef) return;
+		const idx = filteredItems.findIndex(
+			(i) => itemUrlId(i) === openItemRef || i.slug === openItemRef,
+		);
+		if (idx >= 0) focusedIndex = idx;
+	});
+
 	// Register a Cmd+F handler with the layout while this page is mounted.
 	// The layout only intercepts Cmd+F when a handler is registered, so on
 	// pages without one (e.g. item view) it falls through to browser-native
@@ -1609,6 +1637,11 @@
 		// Don't capture when typing in inputs/textareas or when quick-create is open
 		const tag = (e.target as HTMLElement)?.tagName;
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+		// Also bail when typing inside a contenteditable (the Tiptap editor is
+		// a contenteditable DIV) or anywhere inside the detail pane — otherwise
+		// j/k/arrows/Enter/Escape typed in the open pane's editor would drive
+		// list navigation instead of editing (PLAN-2105 / TASK-2111).
+		if ((e.target as HTMLElement)?.closest?.('[contenteditable="true"], .item-pane')) return;
 		if (quickCreateOpen || saveViewOpen) return;
 
 		switch (e.key) {
@@ -1632,7 +1665,9 @@
 				if (focusedIndex >= 0 && focusedIndex < filteredItems.length) {
 					e.preventDefault();
 					const item = filteredItems[focusedIndex];
-					goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}`);
+					// Enter opens the focused row in the split pane (PLAN-2105 /
+					// TASK-2111) rather than navigating full-page.
+					openItemPane(item);
 				}
 				break;
 			case 'Escape':
@@ -2113,7 +2148,16 @@
 
 <svelte:window onkeydown={handlePageKeydown} />
 
-<div class="collection-page" class:board-active={viewMode === 'board'}>
+<!--
+	Split-pane layout (PLAN-2105 / TASK-2112). When `?item=` is set the page
+	becomes a flex row: the list column (flex:1, always mounted) + a right-
+	docked <ItemDetail embedded> pane. The list content is always wrapped in
+	.list-column so opening/closing the pane never remounts the list. The pane
+	is the ONLY thing that mounts/unmounts on open/close — see the NO-{#key}
+	note on the ItemDetail mount below.
+-->
+<div class="collection-page" class:board-active={viewMode === 'board'} class:pane-open={!!openItemRef}>
+	<div class="list-column">
 	{#if loading}
 		<div class="loading">Loading...</div>
 	{:else if metaError}
@@ -2516,12 +2560,14 @@
 				canEdit={canEditThisCollection}
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
+				onItemOpen={openItemPane}
 			/>
 		{:else if viewMode === 'table'}
 			<TableView
 				items={filteredItems}
 				{collection}
 				{wsSlug}
+				{focusedItemId}
 				onStatusChange={handleStatusChange}
 				onReorder={handleReorder}
 				oncreate={canEditThisCollection ? openQuickCreate : undefined}
@@ -2530,6 +2576,7 @@
 				canEdit={canEditThisCollection}
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
+				onItemOpen={openItemPane}
 			/>
 		{:else}
 			<ListView
@@ -2549,8 +2596,34 @@
 				canEdit={canEditThisCollection}
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
+				onItemOpen={openItemPane}
 			/>
 		{/if}
+	{/if}
+	</div>
+	{#if openItemRef}
+		<!--
+			The detail pane. CRITICAL (PLAN-2105 / TASK-2112): NO {#key} wrapper.
+			A→B item switch must be a PROP UPDATE (`ref` change re-drives
+			ItemDetail's loadData + collabKey via its own reactive effects,
+			reusing the mounted instance + its single SSE subscription). A
+			{#key} would silently full-remount on every switch and defeat the
+			whole design. Open/close (this {#if}) is the ONLY mount/unmount.
+			`onNavigateAway` handles the collection-rename case; onClose/onGone
+			clear only `?item=`, preserving view/sort/filter/tags/search.
+		-->
+		<aside class="item-pane">
+			<ItemDetail
+				ref={openItemRef}
+				embedded
+				{username}
+				{wsSlug}
+				{collSlug}
+				onClose={closeItemPane}
+				onGone={closeItemPane}
+				onNavigateAway={(url) => goto(url)}
+			/>
+		</aside>
 	{/if}
 </div>
 
@@ -2682,6 +2755,75 @@
 	}
 	.board-active .page-header {
 		flex-shrink: 0;
+	}
+
+	/* ── Split-pane layout (PLAN-2105 / TASK-2112) ──────────────────────
+	   The list content is always wrapped in .list-column so the detail
+	   pane can mount/unmount without remounting the list. In the default
+	   (no-pane, non-board) layout .list-column is a transparent block, so
+	   no styles are needed there. Board view is a fixed-height flex column
+	   though, so the wrapper must fill it: the board's own `flex:1;
+	   min-height:0` expects its parent to be a constrained flex column,
+	   which .list-column now sits in place of. */
+	.collection-page.board-active .list-column {
+		flex: 1;
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+	}
+
+	/* When a detail pane is open the page becomes a flex row: list column
+	   (flex:1) + a right-docked pane. Break out of the max-width constraint
+	   (mirroring board-active) and fill .main-content so the pane docks
+	   full-height and scrolls independently of the list. These rules follow
+	   .board-active in source order so, for a board+pane combination (equal
+	   specificity), the row layout wins the shared props. */
+	.collection-page.pane-open {
+		max-width: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		flex-direction: row;
+		align-items: stretch;
+		height: 100%;
+		overflow: hidden;
+	}
+	.collection-page.pane-open .list-column {
+		flex: 1 1 0;
+		min-width: 0;
+		overflow-y: auto;
+		padding: var(--space-8) var(--space-6);
+	}
+	/* Board manages its own internal height + horizontal scroll, so keep
+	   the column clipped and let the board fill it. */
+	.collection-page.pane-open.board-active .list-column {
+		overflow: hidden;
+		padding: var(--space-6);
+	}
+	.item-pane {
+		flex: 0 0 clamp(360px, 38%, 640px);
+		min-width: 0;
+		overflow-y: auto;
+		border-left: 1px solid var(--border);
+		background: var(--bg-primary);
+	}
+
+	@media (max-width: 768px) {
+		/* Mobile full-screen overlay is Phase 4 (PLAN-2105); until then the
+		   pane stacks below the list so neither column gets crushed. */
+		.collection-page.pane-open {
+			flex-direction: column;
+			overflow-y: auto;
+		}
+		.collection-page.pane-open .list-column {
+			overflow-y: visible;
+		}
+		.item-pane {
+			flex: 1 1 auto;
+			border-left: none;
+			border-top: 1px solid var(--border);
+		}
 	}
 
 	.loading {
