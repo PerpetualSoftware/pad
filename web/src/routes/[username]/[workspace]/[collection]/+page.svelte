@@ -3170,12 +3170,12 @@
 
 	.collection-page.board-active {
 		max-width: none;
-		/* Top/left/right space-6; bottom tightened to space-3 so the board
-		   sits closer to the bottom edge (BUG-2127). Right gutter keeps the
-		   last column off the window edge when the sidebar is hidden; the
-		   sidebar-open rule below collapses it when the sidebar takes that
-		   horizontal space. */
-		padding: var(--space-6) var(--space-6) var(--space-3);
+		/* Top/left/right space-4; NO bottom padding so the horizontal scrollbar
+		   sits flush at the bottom of the columns with no empty band (BUG-2127).
+		   Right gutter keeps the last column off the window edge when the sidebar
+		   is hidden; the sidebar-open rule below collapses it when the sidebar
+		   takes that horizontal space. */
+		padding: var(--space-4) var(--space-4) 0;
 		/*
 			Fill the scrollable .main-content region, NOT the viewport.
 			.main-content (root +layout) already sizes itself below the
