@@ -44,6 +44,8 @@
 		viewHasUnparentedFilter,
 	} from '$lib/collections/unparentedFilter';
 	import { KNOWN_COLLECTION_URL_PARAMS, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
+	import { pushEscapeHandler, runTopEscape, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
+	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -484,6 +486,9 @@
 	}
 
 	function closeItemPane() {
+		// A pending j/k pane-follow must not re-open the pane after an explicit
+		// close (e.g. ESC while a follow debounce is in flight).
+		cancelPaneFollow();
 		const url = new URL(page.url);
 		url.searchParams.delete('item');
 		goto(`${url.pathname}${url.search}`, {
@@ -903,6 +908,9 @@
 	onDestroy(() => {
 		unsubscribeSSE?.();
 		unsubscribeSync?.();
+		// Drop any pending j/k pane-follow so a late timer can't call goto on
+		// the unmounted page (PLAN-2105 / TASK-2119).
+		cancelPaneFollow();
 		// Scroll save/restore cleanup is owned by createScrollRestoration
 		// (snapshot.capture fires on navigate-away; the helper's $effect
 		// teardown cancels any in-flight RAF).
@@ -1830,6 +1838,19 @@
 			: null
 	);
 
+	// Board (kanban) render structure, reported up by BoardView (PLAN-2105 /
+	// TASK-2119). `focusedIndex` over `filteredItems` stays the canonical focus
+	// pointer for every view (so focusedItemId / pane-follow / the openItemRef
+	// sync all keep working); on the board, keyboard nav walks THIS structure
+	// (columns × in-column order) to pick the next item, then maps it back to a
+	// `filteredItems` index. Empty (`[]`) when not in board view.
+	let boardColumns = $state<BoardNavColumn<Item>[]>([]);
+	// Stable identity (not an inline arrow) so BoardView's reporting effect
+	// depends only on its rendered structure, not on a churning callback ref.
+	function handleBoardColumnsRendered(cols: BoardNavColumn<Item>[]) {
+		boardColumns = cols;
+	}
+
 	// Reset focus when items or filters change
 	$effect(() => {
 		filteredItems;
@@ -1853,6 +1874,20 @@
 		if (idx >= 0) focusedIndex = idx;
 	});
 
+	// Lowest-priority ESC layer: clear the list keyboard-focus marker
+	// (PLAN-2105 / TASK-2118). Registered for the page's lifetime, but the
+	// handler DECLINES (returns false) when no row is focused, so ESC falls
+	// through to nothing rather than being spuriously swallowed. The pane +
+	// graph-drawer layers register at higher priority when open, so a single
+	// ESC closes those first; only once they're gone does ESC clear the row.
+	$effect(() => {
+		return pushEscapeHandler(() => {
+			if (focusedIndex < 0) return false;
+			focusedIndex = -1;
+			return true;
+		}, ESCAPE_PRIORITY.listFocus);
+	});
+
 	// Register a Cmd+F handler with the layout while this page is mounted.
 	// The layout only intercepts Cmd+F when a handler is registered, so on
 	// pages without one (e.g. item view) it falls through to browser-native
@@ -1867,32 +1902,163 @@
 		return () => uiStore.unregisterCollectionSearch();
 	});
 
+	// j/k pane-follow (PLAN-2105 / TASK-2119). While the pane is OPEN, moving
+	// the list cursor with j/k/arrows re-targets `?item=` to the newly focused
+	// row so the pane follows the selection. Debounced (~PANE_FOLLOW_DEBOUNCE_MS)
+	// so HOLDING a key settles on the FINAL row instead of firing a
+	// loadData / collab-provider churn per intermediate row. `openItemPane`
+	// re-targets via `replaceState` when a pane is already open, so paging
+	// through N rows never pushes N history entries — a single Back still just
+	// closes the pane. No-op when the pane is CLOSED: j/k moves the cursor only,
+	// exactly as before.
+	const PANE_FOLLOW_DEBOUNCE_MS = 140;
+	let paneFollowTimer: ReturnType<typeof setTimeout> | null = null;
+	function cancelPaneFollow() {
+		if (paneFollowTimer) {
+			clearTimeout(paneFollowTimer);
+			paneFollowTimer = null;
+		}
+	}
+	function schedulePaneFollow() {
+		if (!browser) return;
+		if (!openItemRef) return; // pane closed → keyboard nav moves focus only
+		cancelPaneFollow();
+		paneFollowTimer = setTimeout(() => {
+			paneFollowTimer = null;
+			// Re-check: the pane may have closed during the debounce window.
+			if (!openItemRef) return;
+			if (focusedIndex < 0 || focusedIndex >= filteredItems.length) return;
+			const item = filteredItems[focusedIndex];
+			// Skip if the focused row is already the paned item — avoids a
+			// redundant replaceState navigation on a same-item settle.
+			if (itemUrlId(item) === openItemRef || item.slug === openItemRef) return;
+			// Pane is open → openItemPane re-targets via replaceState (no push).
+			openItemPane(item);
+		}, PANE_FOLLOW_DEBOUNCE_MS);
+	}
+
+	// Is the focused target a text-editing context where ESC has LOCAL meaning
+	// (cancel a title edit, dismiss a tag-input dropdown, the Tiptap editor)?
+	// The escape stack must NOT hijack ESC away from these. NON-text form
+	// controls (SELECT, checkbox, radio, button, range, …) have no local ESC
+	// semantics, so ESC from them is free to dismiss an overlay via the stack —
+	// e.g. the graph drawer's depth <select> / "include terminal" checkbox
+	// (PLAN-2105 / TASK-2118). Unknown input types default to "text" (treated
+	// as text-editing) so we err toward preserving local handling.
+	const NON_TEXT_INPUT_TYPES = new Set([
+		'checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image',
+	]);
+	function isTextEntryTarget(el: HTMLElement | null | undefined): boolean {
+		if (!el) return false;
+		if (el.isContentEditable) return true;
+		const tag = el.tagName;
+		if (tag === 'TEXTAREA') return true;
+		if (tag === 'INPUT') return !NON_TEXT_INPUT_TYPES.has((el as HTMLInputElement).type);
+		return false;
+	}
+
+	// Board keyboard nav (PLAN-2105 / TASK-2119): step the focus over the
+	// board's ACTUAL rendered structure (from BoardView) so j/k stay within a
+	// column and h/l switch columns, instead of stepping the flat sorted list
+	// (which jumps across columns). Maps the chosen board item back to its
+	// `filteredItems` index so the shared focus pointer / pane-follow / row
+	// highlight keep working. No-op when the board reports no items.
+	function moveBoardFocus(direction: BoardNavDirection) {
+		const focusedId =
+			focusedIndex >= 0 && focusedIndex < filteredItems.length
+				? filteredItems[focusedIndex].id
+				: null;
+		const nextId = boardKeyNav(boardColumns, focusedId, direction);
+		if (nextId == null) return;
+		const idx = filteredItems.findIndex((i) => i.id === nextId);
+		if (idx < 0) return;
+		focusedIndex = idx;
+		scrollFocusedIntoView();
+		schedulePaneFollow();
+	}
+
 	function handlePageKeydown(e: KeyboardEvent) {
-		// Don't capture when typing in inputs/textareas or when quick-create is open
-		const tag = (e.target as HTMLElement)?.tagName;
+		const target = e.target as HTMLElement | null;
+
+		// General backstop: a focused control that ALREADY handled this key
+		// (called preventDefault) owns it — don't double-process. Chiefly the
+		// resizable pane divider (role="separator", TASK-2114), which nudges its
+		// width on ArrowLeft/ArrowRight and preventDefaults; without this those
+		// arrows would ALSO drive board column-switching + pane-follow mid-resize
+		// (PLAN-2105 / TASK-2119). Runs before ESC + nav handling alike.
+		if (e.defaultPrevented) return;
+
+		// ESC precedence chain (PLAN-2105 / TASK-2118). Handled FIRST — before
+		// the generic form-control guard below — because ESC is a dismiss key
+		// that must reach the escape stack even from a NON-text control inside
+		// an overlay (the graph drawer's depth <select> / checkbox), which the
+		// generic INPUT/SELECT guard would otherwise swallow. It also runs
+		// BEFORE the `.item-pane` guard so an open pane's own ESC isn't
+		// swallowed. The stack closes exactly ONE layer, innermost-first
+		// (graph drawer → pane → clear list focus).
+		if (e.key === 'Escape') {
+			// Text-editing targets (title edit, tag input, the Tiptap editor)
+			// own ESC locally (cancel/blur) — don't hijack it into a layer-close.
+			if (isTextEntryTarget(target)) return;
+			// A modal (native <dialog>, focus-trapped) owns its own ESC — don't
+			// also pop a pane/graph/list layer underneath it. The pane and graph
+			// drawer aren't dialogs, so this never blocks the chain.
+			if (target?.closest?.('dialog')) return;
+			if (runTopEscape()) e.preventDefault();
+			return;
+		}
+
+		// Navigation keys (j/k/arrows/Enter): don't capture when focus is in an
+		// input/textarea/select or when quick-create is open.
+		const tag = target?.tagName;
 		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 		// Also bail when typing inside a contenteditable (the Tiptap editor is
-		// a contenteditable DIV) or anywhere inside the detail pane — otherwise
-		// j/k/arrows/Enter/Escape typed in the open pane's editor would drive
-		// list navigation instead of editing (PLAN-2105 / TASK-2111).
-		if ((e.target as HTMLElement)?.closest?.('[contenteditable="true"], .item-pane')) return;
+		// a contenteditable DIV), anywhere inside the detail pane, or on the
+		// resizable pane divider — otherwise j/k/arrows/Enter typed there (the
+		// divider owns ArrowLeft/ArrowRight for width nudging, TASK-2114) would
+		// drive list/board navigation instead (PLAN-2105 / TASK-2111 / -2119).
+		if (target?.closest?.('[contenteditable="true"], .item-pane, .pane-divider')) return;
 		if (quickCreateOpen || saveViewOpen) return;
 
 		switch (e.key) {
 			case 'j':
 			case 'ArrowDown':
 				e.preventDefault();
-				if (filteredItems.length > 0) {
+				// Board: move down WITHIN the focused column (rendered order).
+				// List/table: step the flat list, exactly as before.
+				if (viewMode === 'board') {
+					moveBoardFocus('down');
+				} else if (filteredItems.length > 0) {
 					focusedIndex = Math.min(focusedIndex + 1, filteredItems.length - 1);
 					scrollFocusedIntoView();
+					schedulePaneFollow();
 				}
 				break;
 			case 'k':
 			case 'ArrowUp':
 				e.preventDefault();
-				if (filteredItems.length > 0) {
+				if (viewMode === 'board') {
+					moveBoardFocus('up');
+				} else if (filteredItems.length > 0) {
 					focusedIndex = Math.max(focusedIndex - 1, 0);
 					scrollFocusedIntoView();
+					schedulePaneFollow();
+				}
+				break;
+			case 'h':
+			case 'ArrowLeft':
+				// Column switching is board-only (h/l are vim aliases); in
+				// list/table these keys keep their default behavior.
+				if (viewMode === 'board') {
+					e.preventDefault();
+					moveBoardFocus('left');
+				}
+				break;
+			case 'l':
+			case 'ArrowRight':
+				if (viewMode === 'board') {
+					e.preventDefault();
+					moveBoardFocus('right');
 				}
 				break;
 			case 'Enter':
@@ -1904,9 +2070,7 @@
 					openItemPane(item);
 				}
 				break;
-			case 'Escape':
-				focusedIndex = -1;
-				break;
+			// Escape is handled above (before the `.item-pane` guard).
 		}
 	}
 
@@ -2795,6 +2959,7 @@
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
 				onItemOpen={openItemPane}
+				onColumnsRendered={handleBoardColumnsRendered}
 			/>
 		{:else if viewMode === 'table'}
 			<TableView
