@@ -3170,7 +3170,10 @@
 
 	.collection-page.board-active {
 		max-width: none;
-		padding: var(--space-6) var(--space-6);
+		/* Top/left space-4; very thin (space-2) right + bottom (BUG-2127). The
+		   thin bottom sits just under the scrollbar; the thin right gutter keeps
+		   the last column off the window edge. Order: top right bottom left. */
+		padding: var(--space-4) var(--space-2) var(--space-2) var(--space-4);
 		/*
 			Fill the scrollable .main-content region, NOT the viewport.
 			.main-content (root +layout) already sizes itself below the
@@ -3228,10 +3231,13 @@
 		padding: var(--space-8) var(--space-6);
 	}
 	/* Board manages its own internal height + horizontal scroll, so keep
-	   the column clipped and let the board fill it. */
+	   the column clipped and let the board fill it. Padding: space-4 top/left,
+	   very thin (space-2) right + bottom — same treatment as the non-pane board
+	   above, but applied to .list-column since .pane-open zeroes the page
+	   padding (BUG-2127). Order: top right bottom left. */
 	.collection-page.pane-open.board-active .list-column {
 		overflow: hidden;
-		padding: var(--space-6);
+		padding: var(--space-4) var(--space-2) var(--space-2) var(--space-4);
 	}
 	.item-pane {
 		/* Width comes from the persisted `--pane-width` CSS var (TASK-2114);

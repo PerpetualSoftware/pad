@@ -623,13 +623,29 @@
 		flex: 1;
 		min-height: 0;
 		overflow-x: auto;
+		/* Only the horizontal axis scrolls at this level — each .column-cards
+		   owns its own vertical scroll. Without this, per CSS spec setting
+		   overflow-x to a non-visible value promotes the visible overflow-y to
+		   `auto`, so a 1px/scrollbar-height overflow of the stretched columns
+		   spawns an unwanted vertical scrollbar and pushes the horizontal
+		   scroll track below an empty band (the "oversized/detached" bottom
+		   scrollbar in BUG-2127). Clipping any vertical overflow keeps the
+		   horizontal scrollbar snug at the bottom of the columns. */
+		overflow-y: hidden;
 	}
 
 	.kanban-column {
 		display: flex;
 		flex-direction: column;
-		flex: 1 0 0;
-		min-width: 220px;
+		/* 220px is the PREFERRED lane width, not a hard floor: flex-shrink 1 +
+		   min-width 0 lets the lanes shrink to fill a narrow board (pane open)
+		   instead of overflowing at a fixed 220px. That keeps scrollWidth ==
+		   clientWidth and a constant right gutter in every sidebar/pane state,
+		   rather than the scrollport cutting the fixed 928px track at a
+		   different point as the sidebar resizes the board (BUG-2127). The
+		   mobile @media below restores fixed 75vw lanes + horizontal scroll. */
+		flex: 1 1 220px;
+		min-width: 0;
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-lg);
@@ -663,6 +679,7 @@
 
 	.column-actions {
 		display: flex;
+		flex: 0 0 auto;
 		align-items: center;
 		gap: var(--space-1);
 	}
@@ -701,6 +718,10 @@
 	.column-name {
 		color: var(--text-primary);
 		flex: 1;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 		text-align: left;
 	}
 
