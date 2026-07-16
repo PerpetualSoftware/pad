@@ -45,6 +45,7 @@
 	} from '$lib/collections/unparentedFilter';
 	import { KNOWN_COLLECTION_URL_PARAMS, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
 	import { pushEscapeHandler, runTopEscape, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
+	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
 
 	type ViewMode = 'list' | 'board' | 'table';
 
@@ -1837,6 +1838,19 @@
 			: null
 	);
 
+	// Board (kanban) render structure, reported up by BoardView (PLAN-2105 /
+	// TASK-2119). `focusedIndex` over `filteredItems` stays the canonical focus
+	// pointer for every view (so focusedItemId / pane-follow / the openItemRef
+	// sync all keep working); on the board, keyboard nav walks THIS structure
+	// (columns × in-column order) to pick the next item, then maps it back to a
+	// `filteredItems` index. Empty (`[]`) when not in board view.
+	let boardColumns = $state<BoardNavColumn<Item>[]>([]);
+	// Stable identity (not an inline arrow) so BoardView's reporting effect
+	// depends only on its rendered structure, not on a churning callback ref.
+	function handleBoardColumnsRendered(cols: BoardNavColumn<Item>[]) {
+		boardColumns = cols;
+	}
+
 	// Reset focus when items or filters change
 	$effect(() => {
 		filteredItems;
@@ -1943,6 +1957,26 @@
 		return false;
 	}
 
+	// Board keyboard nav (PLAN-2105 / TASK-2119): step the focus over the
+	// board's ACTUAL rendered structure (from BoardView) so j/k stay within a
+	// column and h/l switch columns, instead of stepping the flat sorted list
+	// (which jumps across columns). Maps the chosen board item back to its
+	// `filteredItems` index so the shared focus pointer / pane-follow / row
+	// highlight keep working. No-op when the board reports no items.
+	function moveBoardFocus(direction: BoardNavDirection) {
+		const focusedId =
+			focusedIndex >= 0 && focusedIndex < filteredItems.length
+				? filteredItems[focusedIndex].id
+				: null;
+		const nextId = boardKeyNav(boardColumns, focusedId, direction);
+		if (nextId == null) return;
+		const idx = filteredItems.findIndex((i) => i.id === nextId);
+		if (idx < 0) return;
+		focusedIndex = idx;
+		scrollFocusedIntoView();
+		schedulePaneFollow();
+	}
+
 	function handlePageKeydown(e: KeyboardEvent) {
 		const target = e.target as HTMLElement | null;
 
@@ -1981,7 +2015,11 @@
 			case 'j':
 			case 'ArrowDown':
 				e.preventDefault();
-				if (filteredItems.length > 0) {
+				// Board: move down WITHIN the focused column (rendered order).
+				// List/table: step the flat list, exactly as before.
+				if (viewMode === 'board') {
+					moveBoardFocus('down');
+				} else if (filteredItems.length > 0) {
 					focusedIndex = Math.min(focusedIndex + 1, filteredItems.length - 1);
 					scrollFocusedIntoView();
 					schedulePaneFollow();
@@ -1990,10 +2028,28 @@
 			case 'k':
 			case 'ArrowUp':
 				e.preventDefault();
-				if (filteredItems.length > 0) {
+				if (viewMode === 'board') {
+					moveBoardFocus('up');
+				} else if (filteredItems.length > 0) {
 					focusedIndex = Math.max(focusedIndex - 1, 0);
 					scrollFocusedIntoView();
 					schedulePaneFollow();
+				}
+				break;
+			case 'h':
+			case 'ArrowLeft':
+				// Column switching is board-only (h/l are vim aliases); in
+				// list/table these keys keep their default behavior.
+				if (viewMode === 'board') {
+					e.preventDefault();
+					moveBoardFocus('left');
+				}
+				break;
+			case 'l':
+			case 'ArrowRight':
+				if (viewMode === 'board') {
+					e.preventDefault();
+					moveBoardFocus('right');
 				}
 				break;
 			case 'Enter':
@@ -2894,6 +2950,7 @@
 				preserveOrder={searchQuery.trim() !== ''}
 				{sortMode}
 				onItemOpen={openItemPane}
+				onColumnsRendered={handleBoardColumnsRendered}
 			/>
 		{:else if viewMode === 'table'}
 			<TableView

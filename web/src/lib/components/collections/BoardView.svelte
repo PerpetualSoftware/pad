@@ -84,9 +84,17 @@
 		 * page, so other surfaces keep full-page anchor navigation.
 		 */
 		onItemOpen?: (item: Item) => void;
+		/**
+		 * Report the board's rendered column structure (visual column order +
+		 * within-column sort, as actually rendered) up to the parent so its
+		 * keyboard navigation follows the real render order rather than a
+		 * re-derived grouping that could drift from it (PLAN-2105 / TASK-2119).
+		 * The parent (collection page) is the only caller.
+		 */
+		onColumnsRendered?: (columns: { value: string; items: Item[] }[]) => void;
 	}
 
-	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}), onItemOpen }: Props = $props();
+	let { items, collection, wsSlug = '', groupField = 'status', focusedItemId = null, onStatusChange, onReorder, onArchiveColumn, onGroupReorder, oncreate, onCreateInColumn, onMoveColumn, onTagColumn, onUntagColumn, onSetPriorityColumn, onAssignColumn, members = [], tagSuggestions = [], filtered = false, itemProgress, progressLabel = 'tasks', canEdit = true, preserveOrder = false, sortMode = 'manual', draftText = $bindable({}), draftOpen = $bindable({}), onItemOpen, onColumnsRendered }: Props = $props();
 
 	// Local — disables the draft card while its Enter-create is in flight.
 	let savingDraft = $state(false);
@@ -265,6 +273,23 @@
 		if (!isDragging && !dropCooldown) {
 			columnData = data;
 		}
+	});
+
+	// Surface the board's rendered column structure to the parent for keyboard
+	// navigation (PLAN-2105 / TASK-2119). Visual column order (`columnOrder`,
+	// which reflects any local column-drag) × each lane's rendered item order
+	// (`columnData`, which reflects per-lane sort overrides), with DnD shadow
+	// placeholders filtered so mid-drag nav never targets a phantom card. This
+	// is the single source of truth — the parent navigates THIS, never a
+	// re-derived grouping that could disagree with what's on screen.
+	let navColumns = $derived(
+		columnOrder.map((col) => ({
+			value: col,
+			items: (columnData[col] ?? []).filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]),
+		}))
+	);
+	$effect(() => {
+		onColumnsRendered?.(navColumns);
 	});
 
 	function handleConsider(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
