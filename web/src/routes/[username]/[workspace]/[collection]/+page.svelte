@@ -2554,7 +2554,7 @@
 	is the ONLY thing that mounts/unmounts on open/close — see the NO-{#key}
 	note on the ItemDetail mount below.
 -->
-<div class="collection-page" class:board-active={viewMode === 'board'} class:pane-open={!!openItemRef} class:sidebar-open={uiStore.sidebarOpen}>
+<div class="collection-page" class:board-active={viewMode === 'board'} class:pane-open={!!openItemRef}>
 	<div class="list-column">
 	{#if loading}
 		<div class="loading">Loading...</div>
@@ -3172,9 +3172,7 @@
 		max-width: none;
 		/* Top/left space-4; very thin (space-2) right + bottom (BUG-2127). The
 		   thin bottom sits just under the scrollbar; the thin right gutter keeps
-		   the last column off the window edge when the sidebar is hidden, and the
-		   sidebar-open rule below collapses it to 0 when the sidebar takes that
-		   horizontal space. Order: top right bottom left. */
+		   the last column off the window edge. Order: top right bottom left. */
 		padding: var(--space-4) var(--space-2) var(--space-2) var(--space-4);
 		/*
 			Fill the scrollable .main-content region, NOT the viewport.
@@ -3189,16 +3187,6 @@
 		display: flex;
 		flex-direction: column;
 		overflow: hidden;
-	}
-	/* Sidebar-aware right gutter (BUG-2127). When the sidebar is shown,
-	   horizontal space is at a premium, so collapse the board's right
-	   padding and let the columns use the full remaining width. When it's
-	   hidden, the base rule's space-4 right gutter keeps the last column
-	   off the window edge. Board view only — list/table layouts are
-	   unaffected. When a pane is open the page padding moves onto
-	   .list-column, so the pane-open board rules below mirror this. */
-	.collection-page.board-active.sidebar-open {
-		padding-right: 0;
 	}
 	.board-active .page-header {
 		flex-shrink: 0;
@@ -3244,16 +3232,12 @@
 	}
 	/* Board manages its own internal height + horizontal scroll, so keep
 	   the column clipped and let the board fill it. Padding: space-4 top/left,
-	   very thin (space-2) right + bottom; the sidebar-open rule below collapses
-	   the right to 0 when the sidebar is shown — same treatment as the non-pane
-	   board above, but applied to .list-column since .pane-open zeroes the page
+	   very thin (space-2) right + bottom — same treatment as the non-pane board
+	   above, but applied to .list-column since .pane-open zeroes the page
 	   padding (BUG-2127). Order: top right bottom left. */
 	.collection-page.pane-open.board-active .list-column {
 		overflow: hidden;
 		padding: var(--space-4) var(--space-2) var(--space-2) var(--space-4);
-	}
-	.collection-page.pane-open.board-active.sidebar-open .list-column {
-		padding-right: 0;
 	}
 	.item-pane {
 		/* Width comes from the persisted `--pane-width` CSS var (TASK-2114);
