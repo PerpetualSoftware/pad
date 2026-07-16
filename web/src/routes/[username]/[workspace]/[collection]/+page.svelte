@@ -1923,35 +1923,58 @@
 		}, PANE_FOLLOW_DEBOUNCE_MS);
 	}
 
-	function handlePageKeydown(e: KeyboardEvent) {
-		// Don't capture when typing in inputs/textareas or when quick-create is open
-		const tag = (e.target as HTMLElement)?.tagName;
-		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+	// Is the focused target a text-editing context where ESC has LOCAL meaning
+	// (cancel a title edit, dismiss a tag-input dropdown, the Tiptap editor)?
+	// The escape stack must NOT hijack ESC away from these. NON-text form
+	// controls (SELECT, checkbox, radio, button, range, …) have no local ESC
+	// semantics, so ESC from them is free to dismiss an overlay via the stack —
+	// e.g. the graph drawer's depth <select> / "include terminal" checkbox
+	// (PLAN-2105 / TASK-2118). Unknown input types default to "text" (treated
+	// as text-editing) so we err toward preserving local handling.
+	const NON_TEXT_INPUT_TYPES = new Set([
+		'checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image',
+	]);
+	function isTextEntryTarget(el: HTMLElement | null | undefined): boolean {
+		if (!el) return false;
+		if (el.isContentEditable) return true;
+		const tag = el.tagName;
+		if (tag === 'TEXTAREA') return true;
+		if (tag === 'INPUT') return !NON_TEXT_INPUT_TYPES.has((el as HTMLInputElement).type);
+		return false;
+	}
 
-		// ESC precedence chain (PLAN-2105 / TASK-2118). Handled here for the
-		// WHOLE collection route — including an open pane — so it must run
-		// BEFORE the `.item-pane` guard below (that guard correctly stops
-		// j/k/Enter typed in the pane from driving the list, but must NOT
-		// swallow the pane's own ESC). The shared escape stack closes exactly
-		// ONE layer, innermost-first (graph drawer → pane → clear list focus);
-		// each layer registers its own handler. Still bail when focus is inside
-		// the Tiptap editor (contenteditable) — ESC there is the editor's to
-		// handle, not a layer-close.
+	function handlePageKeydown(e: KeyboardEvent) {
+		const target = e.target as HTMLElement | null;
+
+		// ESC precedence chain (PLAN-2105 / TASK-2118). Handled FIRST — before
+		// the generic form-control guard below — because ESC is a dismiss key
+		// that must reach the escape stack even from a NON-text control inside
+		// an overlay (the graph drawer's depth <select> / checkbox), which the
+		// generic INPUT/SELECT guard would otherwise swallow. It also runs
+		// BEFORE the `.item-pane` guard so an open pane's own ESC isn't
+		// swallowed. The stack closes exactly ONE layer, innermost-first
+		// (graph drawer → pane → clear list focus).
 		if (e.key === 'Escape') {
-			if ((e.target as HTMLElement)?.closest?.('[contenteditable="true"]')) return;
+			// Text-editing targets (title edit, tag input, the Tiptap editor)
+			// own ESC locally (cancel/blur) — don't hijack it into a layer-close.
+			if (isTextEntryTarget(target)) return;
 			// A modal (native <dialog>, focus-trapped) owns its own ESC — don't
 			// also pop a pane/graph/list layer underneath it. The pane and graph
 			// drawer aren't dialogs, so this never blocks the chain.
-			if ((e.target as HTMLElement)?.closest?.('dialog')) return;
+			if (target?.closest?.('dialog')) return;
 			if (runTopEscape()) e.preventDefault();
 			return;
 		}
 
+		// Navigation keys (j/k/arrows/Enter): don't capture when focus is in an
+		// input/textarea/select or when quick-create is open.
+		const tag = target?.tagName;
+		if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 		// Also bail when typing inside a contenteditable (the Tiptap editor is
 		// a contenteditable DIV) or anywhere inside the detail pane — otherwise
 		// j/k/arrows/Enter typed in the open pane's editor would drive
 		// list navigation instead of editing (PLAN-2105 / TASK-2111).
-		if ((e.target as HTMLElement)?.closest?.('[contenteditable="true"], .item-pane')) return;
+		if (target?.closest?.('[contenteditable="true"], .item-pane')) return;
 		if (quickCreateOpen || saveViewOpen) return;
 
 		switch (e.key) {
