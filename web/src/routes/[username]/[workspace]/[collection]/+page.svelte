@@ -3170,12 +3170,12 @@
 
 	.collection-page.board-active {
 		max-width: none;
-		/* Top/left/right space-4; NO bottom padding so the horizontal scrollbar
-		   sits flush at the bottom of the columns with no empty band (BUG-2127).
-		   Right gutter keeps the last column off the window edge when the sidebar
-		   is hidden; the sidebar-open rule below collapses it when the sidebar
-		   takes that horizontal space. */
-		padding: var(--space-4) var(--space-4) 0;
+		/* Top/left space-4; very thin (space-2) right + bottom (BUG-2127). The
+		   thin bottom sits just under the scrollbar; the thin right gutter keeps
+		   the last column off the window edge when the sidebar is hidden, and the
+		   sidebar-open rule below collapses it to 0 when the sidebar takes that
+		   horizontal space. Order: top right bottom left. */
+		padding: var(--space-4) var(--space-2) var(--space-2) var(--space-4);
 		/*
 			Fill the scrollable .main-content region, NOT the viewport.
 			.main-content (root +layout) already sizes itself below the
@@ -3244,13 +3244,13 @@
 	}
 	/* Board manages its own internal height + horizontal scroll, so keep
 	   the column clipped and let the board fill it. Padding: space-4 top/left,
-	   NO bottom (scrollbar sits flush), right gutter that collapses when the
-	   sidebar is shown (rule below) — same treatment as the non-pane board
-	   above, but applied to .list-column since .pane-open zeroes the page
-	   padding (BUG-2127). */
+	   very thin (space-2) right + bottom; the sidebar-open rule below collapses
+	   the right to 0 when the sidebar is shown — same treatment as the non-pane
+	   board above, but applied to .list-column since .pane-open zeroes the page
+	   padding (BUG-2127). Order: top right bottom left. */
 	.collection-page.pane-open.board-active .list-column {
 		overflow: hidden;
-		padding: var(--space-4) var(--space-4) 0;
+		padding: var(--space-4) var(--space-2) var(--space-2) var(--space-4);
 	}
 	.collection-page.pane-open.board-active.sidebar-open .list-column {
 		padding-right: 0;
