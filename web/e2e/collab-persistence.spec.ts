@@ -1,6 +1,6 @@
 import { test, expect, type SuiteFixture } from './fixtures';
-import { ADMIN_EMAIL, ADMIN_PASSWORD } from './global-setup';
 import type { Browser, Page } from '@playwright/test';
+import { browserLogin, seedDoc } from './lib/collab-helpers';
 
 /**
  * Editor / collab persistence e2e (TASK-2058 under TASK-733).
@@ -37,43 +37,6 @@ import type { Browser, Page } from '@playwright/test';
  * UA-bound session survives the WS upgrade (unlike a node-minted
  * session; see fixtures.ts).
  */
-
-async function browserLogin(page: Page) {
-	// Land on a same-origin page first so the fetch + Set-Cookie land in
-	// the browser's cookie jar (and under the browser's UA).
-	await page.goto('/login');
-	const status = await page.evaluate(
-		async ({ email, password }) => {
-			const r = await fetch('/api/v1/auth/login', {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ email, password })
-			});
-			return r.status;
-		},
-		{ email: ADMIN_EMAIL, password: ADMIN_PASSWORD }
-	);
-	if (status !== 200) throw new Error(`in-page login failed with status ${status}`);
-}
-
-const enc = (obj: Record<string, unknown>) => JSON.stringify(obj);
-
-async function seedDoc(
-	fixture: SuiteFixture,
-	request: { post: (url: string, o: unknown) => Promise<{ ok(): boolean; status(): number; text(): Promise<string>; json(): Promise<unknown> }> }
-): Promise<{ slug: string }> {
-	const ws = fixture.workspaceSlug;
-	const headers = { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' };
-	// Empty content: the editor starts on a single empty paragraph, so
-	// the text we type becomes the item's entire body — a clean anchor
-	// for the post-reload assertion.
-	const resp = await request.post(`/api/v1/workspaces/${ws}/collections/docs/items`, {
-		headers,
-		data: { title: `Collab persistence ${Date.now()}`, fields: enc({}), content: '' }
-	});
-	if (!resp.ok()) throw new Error(`doc create failed (${resp.status()}): ${await resp.text()}`);
-	return (await resp.json()) as { slug: string };
-}
 
 test('typed editor content survives a reload via the collab op-log', async ({
 	page,

@@ -187,6 +187,23 @@
 
 	let editorInstance = $state<EditorType | null>(null);
 
+	// Shadow of the live rich editor's markdown, captured on every edit
+	// (handleContentUpdate). The teardown flush (readEditorMarkdown, below)
+	// falls back to this when it can't read the live editor — which is the
+	// COMMON case on unmount: Svelte destroys the child <Editor> BEFORE this
+	// component's top-level collab $effect cleanup runs (top-level $effects
+	// are deferred to component pop(), so they sit AFTER the template render
+	// effect in teardown order — confirmed by
+	// src/lib/collab/teardownOrder/order.svelte.test.ts, and by TASK-2117's
+	// e2e). Reading `editorInstance.storage` after `editor.destroy()` happens
+	// to still return cached markdown in the current Tiptap, but that's an
+	// implementation detail we must not depend on. Capturing at edit time
+	// makes the flush correct-by-construction regardless of destroy order or
+	// Tiptap's post-destroy behavior. Plain var, NOT $state (CONVE-1688): it's
+	// a handler-only tracker; a $state written in a handler that an $effect
+	// also read would wedge the effect scheduler in prod.
+	let lastEditorMarkdown: string | null = null;
+
 	let editingTitle = $state(false);
 	let titleDraft = $state('');
 	let titleInputEl = $state<HTMLTextAreaElement>();
@@ -1062,6 +1079,15 @@
 		void collabProvider;
 		hasEverSynced = false;
 		editorInstance = null;
+		// Reset the markdown shadow alongside editorInstance: a new provider
+		// means a new editor session, so any prior shadow belongs to a
+		// now-gone editor (item swap, raw↔rich, force_refresh). This runs
+		// AFTER the outgoing provider's collab $effect cleanup (which sets
+		// collabProvider, triggering this), so the outgoing teardown flush
+		// still reads the outgoing item's shadow before it's cleared — and a
+		// fresh item can never fall back to the previous item's markdown
+		// (which would be a cross-write in the readEditorMarkdown fallback).
+		lastEditorMarkdown = null;
 	});
 
 	// Flip the latch on the live provider's first sync.
@@ -2052,6 +2078,11 @@
 	// each other on rapid mode toggles.
 
 	function handleContentUpdate(markdown: string) {
+		// Capture the latest editor markdown for the teardown-flush fallback
+		// (readEditorMarkdown). onUpdate fires on every transaction, so this
+		// shadow always holds the newest edit — captured while the editor is
+		// live, before any unmount tears it down (TASK-2117).
+		lastEditorMarkdown = markdown;
 		// Collab-active path: 5s idle flush of items.content via the
 		// `?source=collab-snapshot` bypass (server skips the applier
 		// loop, writes items.content directly). Y.Doc op-log is
@@ -2157,19 +2188,42 @@
 			}
 			return cleanBrokenLinks(toSave);
 		},
-		// Read the live editor markdown for a flush-now. Reading
-		// editorInstance.storage at cleanup/beforeunload time is correct
-		// because Svelte runs parent $effect cleanups BEFORE child
-		// {#key}-driven unmounts, so the OLD editor is still mounted. Returns
-		// null when the editor is unavailable or its storage read throws, so
-		// flushNow no-ops.
+		// Markdown for a flush-now (editor teardown + beforeunload). Prefer
+		// the LIVE editor's storage, but fall back to `lastEditorMarkdown`
+		// (the shadow captured on every edit) when the editor can't be read.
+		//
+		// The fallback is load-bearing, NOT belt-and-suspenders. On BOTH
+		// teardown paths — item switch (the {#key `${item.id}...`} re-key)
+		// and full pane-close (<ItemDetail> unmount) — Svelte destroys the
+		// child <Editor> BEFORE this component's top-level collab $effect
+		// cleanup runs: top-level $effects are deferred to component pop(),
+		// so in teardown order they sit AFTER the template render effect that
+		// owns the <Editor> branch (confirmed by
+		// src/lib/collab/teardownOrder/order.svelte.test.ts). So at flush time
+		// `editorInstance` points at an already-destroyed Tiptap. It happens
+		// to still return cached markdown today, but that's a Tiptap
+		// implementation detail; the shadow makes the flush correct even if a
+		// Tiptap upgrade clears storage on destroy. Both paths are locked by
+		// e2e/pane-collab-teardown.spec.ts (type + close/switch within the
+		// idle window → the edit reaches items.content). Returns null only
+		// when the editor is unreadable AND no edit was ever captured, so
+		// flushNow no-ops (nothing to lose).
 		readEditorMarkdown: () => {
-			if (!editorInstance) return null;
-			try {
-				return (editorInstance.storage as any).markdown?.getMarkdown?.() ?? '';
-			} catch {
-				return null;
+			// Only read live storage while the editor is genuinely alive. On
+			// the teardown paths the <Editor> is already destroyed by the time
+			// this runs (see the shadow comment above), so we take the shadow —
+			// which is why the shadow, not Tiptap's post-destroy cache, is the
+			// tested teardown path. `beforeunload` fires while the editor is
+			// still alive, so it reads live storage.
+			if (editorInstance && !editorInstance.isDestroyed) {
+				try {
+					const md = (editorInstance.storage as any).markdown?.getMarkdown?.();
+					if (md != null) return md;
+				} catch {
+					// Live read failed — fall through to the shadow.
+				}
 			}
+			return lastEditorMarkdown;
 		},
 		// Gate per-item lastFlushedContent seeding: only record the flush if
 		// the item we flushed is still active, else a stale flush pollutes the
