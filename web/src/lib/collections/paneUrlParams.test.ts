@@ -1,5 +1,24 @@
 import { describe, it, expect } from 'vitest';
-import { KNOWN_COLLECTION_URL_PARAMS, PANE_ITEM_PARAM, preservePaneItemParam } from './paneUrlParams';
+import {
+	KNOWN_COLLECTION_URL_PARAMS,
+	PANE_ITEM_PARAM,
+	buildCollectionUrlParams,
+	preservePaneItemParam,
+	type CollectionUrlFilterState,
+} from './paneUrlParams';
+
+// Baseline "nothing changed" state — each `buildCollectionUrlParams` spec
+// below overrides only the field(s) it's exercising.
+function state(overrides: Partial<CollectionUrlFilterState> = {}): CollectionUrlFilterState {
+	return {
+		viewMode: 'list',
+		activeFilters: {},
+		selectedTags: [],
+		unparentedApplied: false,
+		searchQuery: '',
+		...overrides,
+	};
+}
 
 describe('preservePaneItemParam', () => {
 	it('re-emits the currently-open pane ref onto a freshly rebuilt params object', () => {
@@ -37,6 +56,45 @@ describe('preservePaneItemParam', () => {
 		params.set('item', 'TASK-1'); // some stale/pre-existing value on the rebuilt params
 		preservePaneItemParam(params, currentUrl);
 		expect(params.get('item')).toBe('TASK-9');
+	});
+});
+
+// `buildCollectionUrlParams` is the exact function `+page.svelte`'s
+// `updateUrlFilters` calls in production (no inline duplicate logic left in
+// the route) — so these specs exercise the real `?item=` round-trip, not a
+// parallel reimplementation. Removing the `preservePaneItemParam` call
+// inside `buildCollectionUrlParams`, or reverting `updateUrlFilters` to
+// build params without delegating to it, breaks these specs.
+describe('buildCollectionUrlParams', () => {
+	it('preserves an existing ?item= across a filter change — the updateUrlFilters call path', () => {
+		const currentUrl = new URL('https://pad.test/alice/ws/tasks?item=BUG-12&status=open');
+		const params = buildCollectionUrlParams(state({ activeFilters: { status: 'closed' } }), currentUrl);
+		expect(params.get('item')).toBe('BUG-12');
+		expect(params.get('status')).toBe('closed');
+	});
+
+	it('preserves an existing ?item= across a view-mode change', () => {
+		const currentUrl = new URL('https://pad.test/alice/ws/tasks?item=TASK-5');
+		const params = buildCollectionUrlParams(state({ viewMode: 'board' }), currentUrl);
+		expect(params.get('view')).toBe('board');
+		expect(params.get('item')).toBe('TASK-5');
+	});
+
+	it('preserves an existing ?item= across a tag/search change', () => {
+		const currentUrl = new URL('https://pad.test/alice/ws/tasks?item=DOC-2');
+		const params = buildCollectionUrlParams(
+			state({ selectedTags: ['a', 'b'], searchQuery: 'hello' }),
+			currentUrl
+		);
+		expect(params.get('tags')).toBe('a,b');
+		expect(params.get('q')).toBe('hello');
+		expect(params.get('item')).toBe('DOC-2');
+	});
+
+	it('omits ?item= entirely when no pane is open', () => {
+		const currentUrl = new URL('https://pad.test/alice/ws/tasks');
+		const params = buildCollectionUrlParams(state({ activeFilters: { status: 'open' } }), currentUrl);
+		expect(params.has('item')).toBe(false);
 	});
 });
 
