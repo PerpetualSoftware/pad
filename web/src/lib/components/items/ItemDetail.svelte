@@ -986,21 +986,30 @@
 			// closed / in another tab) is cleaned on the NEXT visit instead: the
 			// switcher restores it, this pane reloads it, that load fails as the
 			// current load, and lands right here. Self-healing and instance-safe.
-			try {
-				const cacheKey = `pad-last-route-${reqWsSlug}`;
-				const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
-					username: reqUsername,
-					wsSlug: reqWsSlug,
-					collSlug: reqCollSlug,
-					itemSlug: reqItemSlug,
-					embedded: reqEmbedded,
-				});
-				if (repaired === null) {
-					localStorage.removeItem(cacheKey);
-				} else if (repaired !== undefined) {
-					localStorage.setItem(cacheKey, repaired);
-				}
-			} catch {}
+			//
+			// Gate on a genuine not-found (the item — or its collection — is
+			// really gone) so a TRANSIENT failure (offline, 429 rate-limit, 5xx,
+			// auth) never strips a still-valid cached pane, including one another
+			// live tab wrote to the shared localStorage (Codex round 5 P2). Non-
+			// not_found errors still surface via `error` above; they just don't
+			// touch the cache.
+			if (e instanceof PadApiError && e.code === 'not_found') {
+				try {
+					const cacheKey = `pad-last-route-${reqWsSlug}`;
+					const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
+						username: reqUsername,
+						wsSlug: reqWsSlug,
+						collSlug: reqCollSlug,
+						itemSlug: reqItemSlug,
+						embedded: reqEmbedded,
+					});
+					if (repaired === null) {
+						localStorage.removeItem(cacheKey);
+					} else if (repaired !== undefined) {
+						localStorage.setItem(cacheKey, repaired);
+					}
+				} catch {}
+			}
 		} finally {
 			// Only the CURRENT (newest) load owns the shared loading / pending
 			// flags — a superseded load's finally (it early-returned above)
