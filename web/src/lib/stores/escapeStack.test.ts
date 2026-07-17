@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
 	pushEscapeHandler,
 	runTopEscape,
+	topEscapePriority,
 	ESCAPE_PRIORITY,
 	_resetEscapeStackForTests,
 } from './escapeStack';
@@ -93,6 +94,27 @@ describe('escapeStack', () => {
 		off();
 		expect(runTopEscape()).toBe(false);
 		expect(calls).toEqual([]);
+	});
+
+	it('topEscapePriority reports the frontmost registered layer (or null when empty)', () => {
+		expect(topEscapePriority()).toBeNull();
+
+		const offPane = pushEscapeHandler(() => true, ESCAPE_PRIORITY.pane);
+		pushEscapeHandler(() => true, ESCAPE_PRIORITY.listFocus);
+		// Pane (20) outranks list-focus (10) → pane is frontmost.
+		expect(topEscapePriority()).toBe(ESCAPE_PRIORITY.pane);
+
+		// Opening the graph drawer (30) makes IT frontmost — the pane's two-level
+		// ESC must defer while this is true (TASK-2122 Codex P2).
+		const offGraph = pushEscapeHandler(() => true, ESCAPE_PRIORITY.graphDrawer);
+		expect(topEscapePriority()).toBe(ESCAPE_PRIORITY.graphDrawer);
+
+		// Closing the graph returns the pane to the front.
+		offGraph();
+		expect(topEscapePriority()).toBe(ESCAPE_PRIORITY.pane);
+
+		offPane();
+		expect(topEscapePriority()).toBe(ESCAPE_PRIORITY.listFocus);
 	});
 
 	it('breaks priority ties toward the most-recently registered handler', () => {

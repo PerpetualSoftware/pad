@@ -44,7 +44,8 @@
 		viewHasUnparentedFilter,
 	} from '$lib/collections/unparentedFilter';
 	import { KNOWN_COLLECTION_URL_PARAMS, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
-	import { pushEscapeHandler, runTopEscape, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
+	import { paneFocusables, nextTrapTarget, resolvePaneReturnTarget } from '$lib/collections/paneFocus';
+	import { pushEscapeHandler, runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
 
 	type ViewMode = 'list' | 'board' | 'table';
@@ -471,12 +472,25 @@
 	//    entries that Back must unwind before it can close the pane
 	//    (PLAN-2105 history policy; Codex round 2 P2). `closeItemPane`
 	//    likewise REPLACES.
+	// The element that opened the pane, captured so closing can return focus to
+	// it (TASK-2122). A plain ref (not $state) — it never drives the UI. The
+	// live `.focused` row is the primary return target; this is the fallback for
+	// a deep-linked item that isn't in the current filtered list.
+	let paneReturnFocusEl: HTMLElement | null = null;
+
 	function openItemPane(item: Item) {
 		const url = new URL(page.url);
 		// Whether a pane is ALREADY open decides push (first open) vs replace
 		// (re-target). Read off the live URL — the same source openItemRef
 		// derives from.
 		const alreadyOpen = url.searchParams.has('item');
+		// Capture the trigger on the FIRST open only — re-targeting (j/k follow /
+		// row re-click on an open pane) keeps the ORIGINAL trigger as the
+		// fallback return target (TASK-2122).
+		if (!alreadyOpen && browser) {
+			const active = document.activeElement as HTMLElement | null;
+			paneReturnFocusEl = active && active !== document.body ? active : null;
+		}
 		url.searchParams.set('item', itemUrlId(item));
 		goto(`${url.pathname}${url.search}`, {
 			replaceState: alreadyOpen,
@@ -491,11 +505,27 @@
 		cancelPaneFollow();
 		const url = new URL(page.url);
 		url.searchParams.delete('item');
+		// Focus return to the originating row is handled by the close-detection
+		// effect below (keyed off `openItemRef` going truthy→null), so it covers
+		// browser Back / delete alike — not just this imperative close path.
 		goto(`${url.pathname}${url.search}`, {
 			replaceState: true,
 			noScroll: true,
 			keepFocus: true,
 		});
+	}
+
+	// Move keyboard focus back to the paned row in the list (TASK-2122). Backs
+	// the desktop ESC "back to the list" step — the pane stays OPEN, this only
+	// relocates focus. Returns false when there's no focused row to land on (e.g.
+	// a deep-linked item filtered out of the list) so the ESC handler can fall
+	// through to the escape stack (which closes the pane).
+	function returnFocusToList(): boolean {
+		if (!browser) return false;
+		const target = resolvePaneReturnTarget(document, null);
+		if (!target) return false;
+		target.focus();
+		return true;
 	}
 
 	// ── Resizable detail pane + persisted width (PLAN-2105 / TASK-2114) ─
@@ -665,6 +695,134 @@
 		});
 		ro.observe(container);
 		return () => ro.disconnect();
+	});
+
+	// Move focus INTO the pane on open — MOBILE ONLY (PLAN-2105 / TASK-2122).
+	// The mobile overlay is a modal, so focus enters it (and the trap below keeps
+	// it there). On the DESKTOP split we deliberately do NOT move focus: it stays
+	// on the list so arrow/j-k navigation (with the pane following) is
+	// uninterrupted; the user bridges INTO the pane with Tab and back with ESC
+	// (handled in the keydown handler). Focus lands on the `<aside>` region
+	// itself (tabindex=-1) — a screen reader announces the aria-labeled region
+	// and Tab proceeds into its controls. Re-runs on mount/unmount and on a
+	// breakpoint crossing (desktop→mobile enters the modal); `preventScroll`
+	// avoids a jump on a direct `?item=` deep-link; skips if focus is already
+	// inside.
+	$effect(() => {
+		if (!browser) return;
+		const el = paneEl;
+		if (!el || !viewport.isMobile) return;
+		if (!el.contains(document.activeElement)) {
+			el.focus({ preventScroll: true });
+		}
+	});
+
+	// Mobile focus trap (PLAN-2105 / TASK-2122). At ≤768px the pane is a
+	// full-screen overlay (modal semantics), so focus must stay WITHIN it. On the
+	// desktop split we deliberately do NOT trap — the list must stay reachable
+	// (Tab-out + j/k depend on it). Re-runs when the pane mounts/unmounts OR the
+	// viewport crosses the breakpoint, engaging/releasing the trap accordingly.
+	//
+	// Two backstops, both WINDOW/DOCUMENT-level (not pane-scoped) so they still
+	// fire after focus has already escaped the pane:
+	//  • Tab keydown — cycles focus within the pane's tabbables (smooth, no
+	//    flicker) via `nextTrapTarget`.
+	//  • focusin — the catch-all: ANY programmatic focus escape (Cmd+F focusing
+	//    the search box behind the overlay, a removed control dropping focus to
+	//    <body>) is pulled straight back into the pane (Codex P1 — Tab alone
+	//    can't see these).
+	// Both DEFER to a native modal <dialog> (Share / Edit Collection / the
+	// Open-Children confirm — `Modal.svelte` uses `showModal()`), which renders
+	// in the top layer above the overlay and owns its own focus cycle. `<aside>`
+	// isn't a dialog, so this never exempts the pane itself; role="dialog" sheets
+	// (BottomSheet) sit BELOW the pane and stay behind it, so focus belongs on
+	// the pane, not them.
+	$effect(() => {
+		if (!browser) return;
+		if (!paneEl || !viewport.isMobile) return;
+		// Bind the narrowed, non-null element so the nested handlers capture
+		// `HTMLElement` (TS re-widens a `$state` read back to `| null` across a
+		// closure boundary otherwise).
+		const region = paneEl;
+		// Surfaces that OWN their own focus/keyboard and legitimately overlay the
+		// pane — exempt from the trap so it neither hijacks their Tab nor yanks
+		// focus off them the instant they open. Recognised by role/tag rather than
+		// per-component class, so PANE-OWNED popups that portal out to <body>
+		// (outside `.item-pane` in the DOM) are all covered without whack-a-mole:
+		//  • native modal <dialog> (Share / Edit Collection / Open-Children
+		//    confirm) — top layer, self-trapping.
+		//  • [role="dialog"] — BottomSheets opened FROM WITHIN the pane (field
+		//    selects, Quick Actions, Move To); they render in the pane's own
+		//    stacking context, ABOVE its content, and own their Escape (Codex P1).
+		//  • [role="menu"] / [role="listbox"] — the item-actions reorder menu, the
+		//    editor slash/turn-into menus, select dropdowns, etc. (Codex P2).
+		//  • the editor block context menu — imperative, no ARIA role, so matched
+		//    by class (block-drag-handle.ts).
+		// (Focus already inside `.item-pane` is handled by the `region.contains`
+		// check at each call site.)
+		const inExemptSurface = (el: Element | null | undefined): boolean =>
+			!!el?.closest?.('dialog, [role="dialog"], [role="menu"], [role="listbox"], .block-context-menu');
+		function onTrapKeydown(e: KeyboardEvent) {
+			if (e.key !== 'Tab' || e.defaultPrevented) return;
+			if (inExemptSurface(e.target as Element | null)) return;
+			const target = nextTrapTarget(
+				paneFocusables(region),
+				document.activeElement,
+				e.shiftKey,
+				region,
+			);
+			if (target) {
+				e.preventDefault();
+				target.focus({ preventScroll: true });
+			}
+		}
+		function onFocusIn(e: FocusEvent) {
+			const t = e.target as Element | null;
+			if (!t || region.contains(t) || inExemptSurface(t)) return;
+			region.focus({ preventScroll: true });
+		}
+		window.addEventListener('keydown', onTrapKeydown);
+		document.addEventListener('focusin', onFocusIn);
+		return () => {
+			window.removeEventListener('keydown', onTrapKeydown);
+			document.removeEventListener('focusin', onFocusIn);
+		};
+	});
+
+	// Return focus to the originating row whenever the pane CLOSES while this
+	// page stays mounted (PLAN-2105 / TASK-2122). Keyed off `openItemRef` going
+	// truthy→null, so it covers EVERY close path uniformly — ESC, the ✕ button,
+	// item-deleted, AND browser Back (which drops `?item=` straight from the URL
+	// without calling `closeItemPane`, Codex P2). Navigating AWAY (expand to full
+	// page / collection rename) unmounts this whole page, so the effect never
+	// runs a truthy→null transition for those — and `resolvePaneReturnTarget`
+	// returns null once the list is gone, a second guard against stealing focus
+	// mid-navigation.
+	let prevOpenItemRef: string | null = null;
+	let prevRouteKey: string | null = null;
+	$effect(() => {
+		const current = openItemRef;
+		// SvelteKit REUSES this component across collections/workspaces (same
+		// `[username]/[workspace]/[collection]` route), so navigating from
+		// `/ws/tasks?item=X` to `/ws/ideas` also flips openItemRef truthy→null.
+		// That's a NAVIGATION, not a pane close — don't steal focus for it (Codex
+		// P2). Only treat truthy→null as a close when the route identity is
+		// unchanged (same collection page, only `?item=` dropped).
+		const routeKey = `${username}/${wsSlug}/${collSlug}`;
+		const sameRoute = prevRouteKey === null || prevRouteKey === routeKey;
+		const justClosed = !!prevOpenItemRef && !current && sameRoute;
+		prevOpenItemRef = current;
+		prevRouteKey = routeKey;
+		if (!justClosed || !browser) return;
+		// Prefer the originating row; fall back to the list container (a stable
+		// tabindex=-1 landmark) so a deep-linked / filtered-out / cross-collection
+		// item — which has no `.focused` row and no captured trigger — still lands
+		// focus somewhere in the list instead of dropping it to <body> (Codex P2).
+		const target =
+			resolvePaneReturnTarget(document, paneReturnFocusEl) ??
+			document.querySelector<HTMLElement>('.list-column');
+		paneReturnFocusEl = null;
+		target?.focus();
 	});
 
 	// Safety net for an interrupted drag: if the pane closes (ESC / Back /
@@ -2000,10 +2158,33 @@
 			// Text-editing targets (title edit, tag input, the Tiptap editor)
 			// own ESC locally (cancel/blur) — don't hijack it into a layer-close.
 			if (isTextEntryTarget(target)) return;
-			// A modal (native <dialog>, focus-trapped) owns its own ESC — don't
-			// also pop a pane/graph/list layer underneath it. The pane and graph
-			// drawer aren't dialogs, so this never blocks the chain.
-			if (target?.closest?.('dialog')) return;
+			// A modal (native <dialog>, or a role="dialog" BottomSheet opened from
+			// within the pane — field selects / Quick Actions / Move To) owns its
+			// own ESC — don't also pop the pane/graph/list layer underneath it
+			// (Codex P1). The pane (<aside>) and graph drawer aren't dialogs, so
+			// this never blocks the chain.
+			if (target?.closest?.('dialog, [role="dialog"]')) return;
+			// Desktop two-level ESC (TASK-2122): from INSIDE the open pane (a
+			// non-text target), ESC returns focus to the list — the master/detail
+			// "back to the list" step — and the pane STAYS open so the user can
+			// keep navigating with j/k (which the pane follows). A SECOND ESC, now
+			// on the list, falls through to the escape stack below and closes the
+			// pane ("ESC-to-close"). Skipped on the mobile overlay: it's a
+			// focus-trapped modal, so ESC there closes it via the stack. Gated on
+			// the pane being the FRONTMOST escape layer: a higher-priority layer
+			// stacked over it (e.g. the dependency-graph drawer) must own ESC
+			// first, so we defer to the stack when one is open (Codex P2). Only
+			// fires when there's a focused list row to land on.
+			if (
+				openItemRef &&
+				!viewport.isMobile &&
+				topEscapePriority() === ESCAPE_PRIORITY.pane &&
+				target?.closest?.('.item-pane') &&
+				returnFocusToList()
+			) {
+				e.preventDefault();
+				return;
+			}
 			if (runTopEscape()) e.preventDefault();
 			return;
 		}
@@ -2019,6 +2200,12 @@
 		// drive list/board navigation instead (PLAN-2105 / TASK-2111 / -2119).
 		if (target?.closest?.('[contenteditable="true"], .item-pane, .pane-divider')) return;
 		if (quickCreateOpen || saveViewOpen) return;
+		// On the MOBILE overlay the list is hidden behind the full-screen pane, so
+		// list nav is meaningless — bail even if focus has escaped to <body> (e.g.
+		// a focused pane control was removed with no focusin to re-trap it). Without
+		// this, j/k would silently navigate the hidden list and re-target the pane
+		// (Codex P1). Desktop split is unaffected; ESC (handled above) still closes.
+		if (viewport.isMobile && openItemRef) return;
 
 		switch (e.key) {
 			case 'j':
@@ -2068,6 +2255,35 @@
 					// Enter opens the focused row in the split pane (PLAN-2105 /
 					// TASK-2111) rather than navigating full-page.
 					openItemPane(item);
+				}
+				break;
+			case 'Tab':
+				// Bridge focus from the LIST into the open pane (desktop keyboard
+				// nav, TASK-2122). Forward Tab only — Shift+Tab keeps native order
+				// so the user can step back out of the pane. Gated to the list
+				// KEYBOARD-NAV context only: the pane is open, we're on the desktop
+				// split (mobile focus is already trapped in the overlay), the list
+				// cursor is active, and focus is on <body> (the state right after a
+				// j/k step, which doesn't move DOM focus) OR ON A ROW ANCHOR. We
+				// match the row ANCHOR (`a.item-card` / `a.title-link`), NOT the
+				// `.focused` marker — a click focuses row A, then j/k moves the
+				// marker to B without moving DOM focus, so the focused-marker check
+				// would wrongly reject the still-focused A (Codex P1). Matching the
+				// anchor also EXCLUDES toolbar buttons, saved-view tabs, and in-row
+				// sub-controls, whose native Tab order must be untouched. ESC brings
+				// focus back to the list (handled above); focus lands on the
+				// aria-labeled `<aside>` region, and Tab again steps into its
+				// controls.
+				if (
+					openItemRef &&
+					!e.shiftKey &&
+					!viewport.isMobile &&
+					focusedIndex >= 0 &&
+					paneEl &&
+					(target === document.body || !!target?.matches?.('a.item-card, a.title-link'))
+				) {
+					e.preventDefault();
+					paneEl.focus();
 				}
 				break;
 			// Escape is handled above (before the `.item-pane` guard).
@@ -2555,7 +2771,15 @@
 	note on the ItemDetail mount below.
 -->
 <div class="collection-page" class:board-active={viewMode === 'board'} class:pane-open={!!openItemRef}>
-	<div class="list-column">
+	<!-- tabindex=-1: a programmatic focus landmark (not a Tab stop) so closing
+	     the pane can return focus here when there's no originating row to land on
+	     (deep-linked / filtered-out item — TASK-2122).
+	     inert on the MOBILE overlay: the list is fully hidden behind the
+	     full-screen pane, so isolate it from BOTH the focus order AND the
+	     screen-reader accessibility tree — a JS focus trap alone can't constrain
+	     an SR virtual cursor, and inert also blocks Cmd+F from focusing the
+	     hidden search box. Desktop split leaves the list fully interactive. -->
+	<div class="list-column" tabindex="-1" inert={viewport.isMobile && !!openItemRef}>
 	{#if loading}
 		<div class="loading">Loading...</div>
 	{:else if metaError}
@@ -3040,9 +3264,22 @@
 			until localStorage is read so the CSS clamp() default applies on
 			first paint when there's no stored value.
 		-->
+		<!--
+			`aside` gives the pane complementary-landmark semantics; `aria-label`
+			names it so a screen reader announces the region on entry (TASK-2122).
+			`tabindex="-1"` makes it a programmatic focus target (not a Tab stop):
+			Tab from the list moves focus here, and the mobile overlay moves focus
+			here on open (then traps it). Desktop keeps focus on the list so j/k
+			navigation is uninterrupted. Focus-in (mobile), the Tab bridge, ESC
+			return-to-list, and the mobile focus trap are wired in the effects +
+			keydown handler above.
+		-->
+		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 		<aside
 			class="item-pane"
 			bind:this={paneEl}
+			tabindex="-1"
+			aria-label="Item detail"
 			style={paneWidth != null ? `--pane-width: ${paneWidth}px` : undefined}
 		>
 			<ItemDetail

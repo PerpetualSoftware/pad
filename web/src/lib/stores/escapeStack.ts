@@ -49,6 +49,16 @@ export function pushEscapeHandler(handler: EscapeHandler, priority: number): () 
 	};
 }
 
+// The priority of the currently-frontmost registered layer (the highest
+// priority among all registered handlers), or `null` when the stack is empty.
+// Lets a caller decide whether ITS layer is the one ESC would act on before
+// running the stack — e.g. the pane's two-level ESC must defer to a
+// higher-priority graph drawer stacked above it (TASK-2122).
+export function topEscapePriority(): number | null {
+	if (entries.length === 0) return null;
+	return entries.reduce((max, e) => (e.priority > max ? e.priority : max), -Infinity);
+}
+
 // Invoke the highest-priority handler that consumes the ESC. Returns true if
 // some handler consumed it (the caller should then `preventDefault`), false if
 // every handler declined or the stack is empty (leave native ESC untouched).
