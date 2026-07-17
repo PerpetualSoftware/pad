@@ -130,6 +130,15 @@
 	// counter — not reactive; it only fences async writes.
 	let loadGeneration = 0;
 
+	// Set once in onDestroy so a load that rejects AFTER this instance is torn
+	// down (pane closed / workspace switched away) can still tell "I'm abandoned"
+	// from "a newer mounted load superseded me". The dead-item last-route cleanup
+	// (loadData's catch) needs this: a superseded-but-mounted failure must NOT
+	// scrub the cache (a newer load may have re-loaded the same ref successfully —
+	// A→B→A), but an abandoned failure MUST, or a workspace switched-away-from
+	// keeps its dead `?item=` (TASK-2123; Codex round 2 P2).
+	let destroyed = false;
+
 	// Per-switch fetch memoization (TASK-2120). The workspace's members and
 	// agent roles are workspace-invariant, yet loadData re-fetched them on
 	// every row-click and every j/k keystroke. Cache them on this persistent
@@ -736,6 +745,7 @@
 	});
 
 	onDestroy(() => {
+		destroyed = true;
 		unsubscribeSync?.();
 		unsubscribeSSE?.();
 		unsubscribeBeforePrint?.();
@@ -968,30 +978,33 @@
 			// handles both shapes: strip only the dead `?item=` param (keeping the
 			// collection's view/sort/filter state) for a pane, or drop the whole
 			// entry for a full page — and returns `undefined` (no write) when the
-			// entry no longer points at this failed URL, so we never clobber a
-			// newer one (TASK-2123 / TASK-754).
+			// entry no longer points at this failed URL (TASK-2123 / TASK-754).
 			//
-			// This runs BEFORE the generation guard on purpose: it's keyed to the
-			// captured request snapshot and self-protects via that `undefined`
-			// state, so it's safe even for a superseded load. Running it here
-			// cleans the entry when the user switched workspace / closed the pane
-			// (bumping loadGeneration) before this failed request settled —
-			// otherwise that workspace keeps its dead `?item=` (Codex P2).
-			try {
-				const cacheKey = `pad-last-route-${reqWsSlug}`;
-				const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
-					username: reqUsername,
-					wsSlug: reqWsSlug,
-					collSlug: reqCollSlug,
-					itemSlug: reqItemSlug,
-					embedded: reqEmbedded,
-				});
-				if (repaired === null) {
-					localStorage.removeItem(cacheKey);
-				} else if (repaired !== undefined) {
-					localStorage.setItem(cacheKey, repaired);
-				}
-			} catch {}
+			// Run it only when THIS is the live load (`myGen === loadGeneration`)
+			// or the instance was torn down (`destroyed`). We must NOT scrub for a
+			// superseded-but-still-mounted failure: an A→B→A re-load may have
+			// fetched the SAME ref successfully after this stale request was fired,
+			// and route identity can't tell that live entry from a dead one — the
+			// current load owns the outcome and its own catch will scrub if it too
+			// failed (Codex round 2 P2). The `destroyed` case still self-protects
+			// via the `undefined` (cache-no-longer-matches) return.
+			if (myGen === loadGeneration || destroyed) {
+				try {
+					const cacheKey = `pad-last-route-${reqWsSlug}`;
+					const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
+						username: reqUsername,
+						wsSlug: reqWsSlug,
+						collSlug: reqCollSlug,
+						itemSlug: reqItemSlug,
+						embedded: reqEmbedded,
+					});
+					if (repaired === null) {
+						localStorage.removeItem(cacheKey);
+					} else if (repaired !== undefined) {
+						localStorage.setItem(cacheKey, repaired);
+					}
+				} catch {}
+			}
 			// A newer load owns the on-screen state — don't overwrite it with
 			// this superseded load's error.
 			if (myGen !== loadGeneration) return;
