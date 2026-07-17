@@ -789,6 +789,41 @@
 		// stale queued markdown from item A can't PATCH into item B.
 		rawContentSaver.cancel();
 		rawContentSaver.clearPending();
+		// Reset raw mode on an actual item-switch (TASK-2124 decision #1). rawMode
+		// is a per-item view choice, not a session-wide one: without this,
+		// switching A→B while A is in raw-markdown mode carries raw into B. Two
+		// reasons to reset it:
+		//   1. Correctness of the raw-flush safety net. Raw mode has NO collab
+		//      teardown flush (the $effect cleanup skips flush when rawMode is
+		//      true) — its only cross-switch data-loss guard is the keepalive
+		//      flush a few lines above. Carrying raw into B *amplifies* that
+		//      exposure: every subsequent switch stays on the thinner raw guard
+		//      instead of the robust rich/collab path (5s idle + teardown +
+		//      beforeunload flushes). Resetting confines raw-mode exposure to the
+		//      single item the user explicitly toggled.
+		//   2. Expected default. Opening B fresh should render its content, not
+		//      inherit A's editing mode.
+		// GATE on a real switch (Codex P1). loadData() also runs for SAME-item
+		// reloads — the edit-collection handler's `void loadData()` after a schema
+		// change. There `item` still matches `itemSlug` (itemMatchesRef stays
+		// true), so flipping rawMode→false would SYNCHRONOUSLY flip collabKey from
+		// null to item.id and mount a collab provider against possibly-stale
+		// item.content WHILE the keepalive raw PATCH above is still in flight —
+		// the lazy-seed / 5s flush could then clobber the pending raw edit.
+		//
+		// Key the gate off `itemMatchesRef` (the TASK-2112 switch boundary) — the
+		// SAME predicate that gates collabKey. Reusing it (not a private copy of
+		// the slug/ref compare) guarantees the reset can never disagree with the
+		// provider-mount gate: on any load where itemMatchesRef is still false
+		// (genuine A→B switch, or a differently-addressed reload), collabKey is
+		// ALSO null, so resetting rawMode mounts nothing to race — B just opens in
+		// rich/collab mode once it resolves. On a true same-item reload
+		// itemMatchesRef stays true and we preserve raw mode. untrack so reading
+		// the derived here doesn't enter the route $effect's dep set (would cause
+		// the duplicate-load loop the keepalive flush above is untracked to avoid).
+		untrack(() => {
+			if (!itemMatchesRef) rawMode = false;
+		});
 		// Reset item-scoped ephemeral UI so an armed / open control from the
 		// PREVIOUS item can't act on the newly-loaded one across the no-{#key}
 		// prop-update switch (PLAN-2105 / TASK-2112; coordinator P2).
@@ -1498,6 +1533,28 @@
 			// doesn't mis-route this flush to a different item.
 			// keepalive=true lets the request outlive the page
 			// lifecycle. Per TASK-1260.
+			//
+			// FLUSH-ON-PANE-CLOSE POLICY (TASK-2124 decision #2). Closing
+			// the split pane unmounts this embedded ItemDetail, firing this
+			// same cleanup. The question was whether pane-close needs a
+			// FOREGROUND-AWAITED flush (so items.content is guaranteed fresh
+			// the instant the pane vanishes) or whether this keepalive,
+			// fire-and-forget flush suffices. Decision: keepalive suffices —
+			// no foreground await added. Rationale: a foreground flush only
+			// earns its latency if something the user is about to look at
+			// reads items.content synchronously on close. The collection list
+			// behind the pane does NOT: its rows come from localIndex, which
+			// carries content='' by design (see the collection +page.svelte
+			// `items` derived — rows are widened to Item with an empty body),
+			// and none of the list/board/table views render a content-derived
+			// preview. So there is no on-close consumer racing this flush. The
+			// deferred readers that DO use items.content (search index,
+			// share-page, exports, REST/MCP API, the full-page item route,
+			// which rehydrates content on open) all tolerate the sub-second
+			// keepalive settle. If a future change adds a content-derived
+			// snippet to the list rows, revisit: route pane-close through a
+			// foreground `await collabFlusher.flushNow(ctx, false)` before
+			// clearing `?item=`.
 			//
 			// EXCEPTION: skip the flush if the cleanup is firing
 			// because the user just toggled INTO raw mode. The
