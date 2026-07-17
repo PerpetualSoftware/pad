@@ -3286,23 +3286,39 @@
 		width: 2px;
 	}
 
+	/* ── Mobile: full-screen overlay (PLAN-2105 Phase 4 / TASK-2121) ──────
+	   At ≤768px (the app-wide mobile breakpoint from breakpoint.svelte.ts,
+	   kept in lockstep with this media query) there is no room to split, so
+	   the detail pane covers the viewport as a full-screen overlay with the
+	   list column left mounted BEHIND it — its state + scroll position are
+	   preserved (the PLAN-2105 no-remount invariant), it's just hidden by
+	   the opaque overlay. Mirrors the graph drawer's mobile pattern
+	   (ItemDetail `.graph-drawer`: fixed, `width: 100vw`, no border).
+
+	   Pane visibility stays URL-derived (`?item=`); this overlay is pure
+	   presentation keyed off the viewport, NOT the vestigial
+	   `uiStore.detailPanelOpen` boolean — whose mobile-entry force-close
+	   must never reach `?item=` (see the reconciliation note in
+	   ui.svelte.ts). So crossing the 768px boundary only swaps
+	   split ⇄ overlay; it never closes the pane or drops the open item.
+
+	   `position: fixed` is viewport-relative here because no ancestor
+	   (.collection-page / .main-content / .app-shell) establishes a
+	   containing block via transform/filter/contain. z-index sits above
+	   the mobile chrome (BottomNav + MobileContextBar at 40) and below app
+	   modals / toasts / lightbox (99–100) so their global feedback still
+	   stacks over the item view. */
 	@media (max-width: 768px) {
-		/* Mobile full-screen overlay is Phase 4 (PLAN-2105); until then the
-		   pane stacks below the list so neither column gets crushed. */
-		.collection-page.pane-open {
-			flex-direction: column;
-			overflow-y: auto;
+		.item-pane {
+			position: fixed;
+			inset: 0;
+			width: 100vw;
+			z-index: 60;
+			border-left: 0;
 		}
-		.collection-page.pane-open .list-column {
-			overflow-y: visible;
-		}
-		/* The vertical resize handle is meaningless in the stacked layout. */
+		/* The vertical resize handle can't split a full-screen overlay. */
 		.pane-divider {
 			display: none;
-		}
-		.item-pane {
-			flex: 1 1 auto;
-			border-top: 1px solid var(--border);
 		}
 	}
 
