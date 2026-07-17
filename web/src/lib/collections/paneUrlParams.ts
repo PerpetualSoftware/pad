@@ -84,3 +84,76 @@ export function buildCollectionUrlParams(state: CollectionUrlFilterState, curren
 	preservePaneItemParam(params, currentUrl);
 	return params;
 }
+
+/** The dead item whose failed load should be scrubbed from the persisted
+ *  `pad-last-route-{ws}` entry. `itemSlug` is the ref/slug that failed to
+ *  load — for an embedded pane it equals the `?item=` value verbatim, since
+ *  the collection page threads `openItemRef` → ItemDetail's `ref` prop →
+ *  `itemSlug` unchanged. */
+export interface DeadItemRoute {
+	username: string;
+	wsSlug: string;
+	collSlug: string;
+	itemSlug: string;
+	/** True when the failed load was an embedded split pane (persisted route
+	 *  shape `/{user}/{ws}/{coll}?item=<ref>`); false for a full-page item
+	 *  route (`/{user}/{ws}/{coll}/<ref>`). */
+	embedded: boolean;
+}
+
+// `pad-last-route-{ws}` stores `pathname + search` (a root-relative URL). A
+// throwaway base lets us parse it with the `URL` API in any environment (no
+// `window`); only the pathname + query are ever read back out.
+const RELATIVE_URL_BASE = 'http://pad.invalid';
+
+/**
+ * Repair a persisted `pad-last-route-{ws}` value after the item it points at
+ * fails to load (hard-deleted / dead ref). The workspace switcher restores
+ * this route on re-entry (TASK-754), so a dead entry would keep re-opening a
+ * broken view. Returns one of:
+ *
+ *  - a CLEANED route string to persist — an embedded pane whose only dead
+ *    part was `?item=` but which still carries view/sort/filter/search state
+ *    (strip just the param, keep the collection route);
+ *  - `null` to REMOVE the entry entirely — a full-page dead item, or an
+ *    embedded pane whose `?item=` was its only URL state;
+ *  - `undefined` to LEAVE the entry untouched — it no longer points at THIS
+ *    failed URL, so a navigate-away already wrote a newer entry we must not
+ *    clobber (PLAN-2105 / TASK-754 in-flight race guard).
+ *
+ * The embedded branch is the TASK-2123 fix: the old code only ever built a
+ * full-page `failedPath`, which never matches the `?item=` pane shape, so the
+ * dead pane re-restored on every workspace re-entry.
+ */
+export function repairDeadItemLastRoute(
+	cached: string | null,
+	failed: DeadItemRoute,
+): string | null | undefined {
+	if (!cached) return undefined;
+	const root = `/${failed.username}/${failed.wsSlug}/${failed.collSlug}`;
+
+	if (failed.embedded) {
+		let url: URL;
+		try {
+			url = new URL(cached, RELATIVE_URL_BASE);
+		} catch {
+			return undefined;
+		}
+		// Only scrub if the stored route is still THIS collection page with
+		// THIS dead pane ref — otherwise a newer navigate-away entry owns it.
+		if (
+			url.pathname !== root ||
+			url.searchParams.get(PANE_ITEM_PARAM) !== failed.itemSlug
+		) {
+			return undefined;
+		}
+		url.searchParams.delete(PANE_ITEM_PARAM);
+		return url.search ? url.pathname + url.search : null;
+	}
+
+	// Full page: the whole URL is the dead item path. Remove the entry, but
+	// only if it still points at this failed item (ignore any query/hash).
+	const failedPath = `${root}/${failed.itemSlug}`;
+	const cachedPath = cached.split('?')[0].split('#')[0];
+	return cachedPath === failedPath ? null : undefined;
+}

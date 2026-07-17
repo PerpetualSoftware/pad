@@ -39,6 +39,7 @@
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -963,20 +964,28 @@
 			// superseded load's error.
 			if (myGen !== loadGeneration) return;
 			error = e.message ?? 'Failed to load item';
-			// Clear the workspace's last-route cache so the workspace
-			// switcher (TASK-754) doesn't keep restoring this dead item
-			// URL on subsequent re-entries — but only if the stored value
-			// still points at THIS failed URL. If the user navigated away
-			// while the request was in flight, the +layout effect has
-			// already written a newer entry and we must not clobber it.
+			// Scrub the dead item from the workspace's last-route cache so the
+			// workspace switcher (TASK-754) doesn't keep restoring it on re-entry.
+			// An embedded pane persists the collection route with `?item=<ref>`;
+			// a full page persists the item's own path. `repairDeadItemLastRoute`
+			// handles both shapes: strip only the dead `?item=` param (keeping the
+			// collection's view/sort/filter state) for a pane, or drop the whole
+			// entry for a full page — and returns `undefined` (no write) when a
+			// navigate-away already replaced the entry, so we never clobber it
+			// (TASK-2123 / TASK-754).
 			try {
-				const failedPath = `/${reqUsername}/${reqWsSlug}/${reqCollSlug}/${reqItemSlug}`;
-				const cached = localStorage.getItem(`pad-last-route-${reqWsSlug}`);
-				if (cached) {
-					const cachedPath = cached.split('?')[0].split('#')[0];
-					if (cachedPath === failedPath) {
-						localStorage.removeItem(`pad-last-route-${reqWsSlug}`);
-					}
+				const cacheKey = `pad-last-route-${reqWsSlug}`;
+				const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
+					username: reqUsername,
+					wsSlug: reqWsSlug,
+					collSlug: reqCollSlug,
+					itemSlug: reqItemSlug,
+					embedded,
+				});
+				if (repaired === null) {
+					localStorage.removeItem(cacheKey);
+				} else if (repaired !== undefined) {
+					localStorage.setItem(cacheKey, repaired);
 				}
 			} catch {}
 		} finally {
