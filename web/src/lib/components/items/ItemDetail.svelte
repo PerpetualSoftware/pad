@@ -2659,6 +2659,18 @@
 	let computedOverrides = $state<Record<string, any>>({});
 	let childTerminalStatuses = $state<string[] | undefined>(undefined);
 
+	// IDEA-2133: child completion count surfaced as a "🌳 done/total" jump
+	// badge in the action bar (mirrors the "📎 N" backlinks badge). Derived
+	// from computedOverrides — the same source that feeds the Properties
+	// progress bar and is kept in sync with the ChildItems section header
+	// (via handleChildrenChange below) — so the badge always matches the
+	// section it scrolls to. No dedicated state / switch-reset is needed:
+	// the whole action bar is replaced by <ContentSkeleton> while loading
+	// and computedOverrides is refreshed before loading clears, so a pane
+	// item-switch never flashes the previous item's count.
+	let childDone = $derived<number>(computedOverrides._progressDone ?? 0);
+	let childTotal = $derived<number>(computedOverrides._progressTotal ?? 0);
+
 	function handleChildrenChange(items: Item[]) {
 		// Track child IDs for deduplication in the relationships section
 		childItemIds = new Set(items.map(i => i.id));
@@ -3372,6 +3384,26 @@
 					🕸 Graph
 				</button>
 			{/if}
+			{#if childTotal > 0}
+				<!--
+					Children jump badge (IDEA-2133). Mirrors the "📎 N" backlinks
+					badge below: surfaces the child completion count (done/total)
+					in the action bar and smooth-scrolls to the Children section.
+					Placed before the backlinks badge so the two jump affordances
+					match the page's reading order (children → backlinks →
+					timeline). Hidden when the item has no children. The count is
+					derived from computedOverrides — the same source the ChildItems
+					section header renders — so badge and section always agree.
+				-->
+				<button
+					class="action-btn"
+					title="{childTotal} child item{childTotal === 1 ? '' : 's'}, {childDone} done"
+					aria-label="Jump to Children — {childDone} of {childTotal} done"
+					onclick={() => { document.getElementById('item-children')?.scrollIntoView({ behavior: 'smooth' }); }}
+				>
+					🌳 {childDone}/{childTotal}
+				</button>
+			{/if}
 			{#if backlinksCount > 0}
 				<!--
 					Mention badge (PLAN-1593 / TASK-1596). Surfaces the inbound
@@ -3979,8 +4011,14 @@
 		{/if}
 
 		<!-- Child Items: always mounted so SSE subscriptions stay active even when starting with 0 children -->
+		<!-- Wrapper carries the #item-children scroll target for the "🌳 N/M"
+		     action-bar jump badge (IDEA-2133); scroll-margin-top clears the
+		     sticky page/pane header. Plain wrapper — does not affect the
+		     always-mounted SSE guarantee below. -->
 		{#if item}
-			<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} />
+			<div id="item-children" class="children-anchor">
+				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} />
+			</div>
 		{/if}
 
 		<!--
@@ -4161,6 +4199,13 @@
 		padding: var(--space-2) var(--space-6);
 		border-bottom: 1px solid transparent;
 		transition: border-color 0.15s ease;
+	}
+
+	/* IDEA-2133: the "🌳 N/M" action-bar badge scrolls here. Offset the
+	   scroll target so the Children heading lands clear of the sticky
+	   page/pane header (both docked at top: 0) instead of underneath it. */
+	.children-anchor {
+		scroll-margin-top: calc(var(--space-10) + var(--space-2));
 	}
 	/*
 		Historical note (TASK-1124): there used to be a `@media (max-width:
