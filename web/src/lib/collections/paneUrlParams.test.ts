@@ -4,7 +4,9 @@ import {
 	PANE_ITEM_PARAM,
 	buildCollectionUrlParams,
 	preservePaneItemParam,
+	repairDeadItemLastRoute,
 	type CollectionUrlFilterState,
+	type DeadItemRoute,
 } from './paneUrlParams';
 
 // Baseline "nothing changed" state — each `buildCollectionUrlParams` spec
@@ -95,6 +97,95 @@ describe('buildCollectionUrlParams', () => {
 		const currentUrl = new URL('https://pad.test/alice/ws/tasks');
 		const params = buildCollectionUrlParams(state({ activeFilters: { status: 'open' } }), currentUrl);
 		expect(params.has('item')).toBe(false);
+	});
+});
+
+// TASK-2123: after a paned item is hard-deleted, its dead `?item=` ref must
+// be scrubbed from `pad-last-route-{ws}` so the workspace switcher doesn't
+// re-restore a broken split on re-entry. The pre-fix code only ever built a
+// full-page `failedPath` (`/{user}/{ws}/{coll}/<ref>`), which never matches
+// the embedded pane shape (`/{user}/{ws}/{coll}?item=<ref>`), so the dead
+// pane persisted. These specs pin both shapes plus the navigate-away guard.
+describe('repairDeadItemLastRoute', () => {
+	function dead(overrides: Partial<DeadItemRoute> = {}): DeadItemRoute {
+		return {
+			username: 'alice',
+			wsSlug: 'ws',
+			collSlug: 'tasks',
+			itemSlug: 'TASK-5',
+			embedded: true,
+			...overrides,
+		};
+	}
+
+	describe('embedded pane', () => {
+		it('drops the whole entry when the dead pane ref was its only URL state', () => {
+			// The core TASK-2123 scenario: `/alice/ws/tasks?item=TASK-5` with a
+			// now-dead TASK-5. The old full-page compare missed this shape.
+			expect(repairDeadItemLastRoute('/alice/ws/tasks?item=TASK-5', dead())).toBeNull();
+		});
+
+		it('strips only ?item= and keeps the collection view/sort/filter state', () => {
+			const cached = '/alice/ws/tasks?view=board&status=open&item=TASK-5';
+			const repaired = repairDeadItemLastRoute(cached, dead());
+			// Cleaned route restores the board view minus the dead pane.
+			expect(repaired).toBe('/alice/ws/tasks?view=board&status=open');
+			expect(repaired).not.toContain('item=');
+		});
+
+		it('leaves the entry untouched when it now points at a DIFFERENT open ref (navigate-away)', () => {
+			// The user opened TASK-9 while TASK-5's load was still failing; the
+			// +layout effect already persisted the newer pane. Must not clobber.
+			expect(
+				repairDeadItemLastRoute('/alice/ws/tasks?item=TASK-9', dead({ itemSlug: 'TASK-5' })),
+			).toBeUndefined();
+		});
+
+		it('leaves the entry untouched when it now points at a different collection page', () => {
+			expect(
+				repairDeadItemLastRoute('/alice/ws/ideas?item=TASK-5', dead()),
+			).toBeUndefined();
+		});
+
+		it('handles a slug-form ?item= value the same as a ref', () => {
+			// itemUrlId falls back to the slug when an item has no ref, so the
+			// pane param — and thus `itemSlug` — can be a slug.
+			expect(
+				repairDeadItemLastRoute('/alice/ws/tasks?item=my-dead-task', dead({ itemSlug: 'my-dead-task' })),
+			).toBeNull();
+		});
+
+		it('is a no-op on a missing cache entry', () => {
+			expect(repairDeadItemLastRoute(null, dead())).toBeUndefined();
+		});
+	});
+
+	describe('full page', () => {
+		it('removes the entry when the whole URL is the dead item path', () => {
+			expect(
+				repairDeadItemLastRoute('/alice/ws/tasks/TASK-5', dead({ embedded: false })),
+			).toBeNull();
+		});
+
+		it('removes the entry even when the dead item path carries a query/hash', () => {
+			expect(
+				repairDeadItemLastRoute('/alice/ws/tasks/TASK-5?foo=1#frag', dead({ embedded: false })),
+			).toBeNull();
+		});
+
+		it('leaves the entry untouched when it points elsewhere (navigate-away)', () => {
+			expect(
+				repairDeadItemLastRoute('/alice/ws/tasks/TASK-99', dead({ embedded: false })),
+			).toBeUndefined();
+		});
+
+		// A full-page dead item never matches the pane shape and vice-versa —
+		// the branch is chosen by `embedded`, not by sniffing the stored URL.
+		it('does not treat a full-page dead path as an embedded pane match', () => {
+			expect(
+				repairDeadItemLastRoute('/alice/ws/tasks/TASK-5', dead({ embedded: true })),
+			).toBeUndefined();
+		});
 	});
 });
 

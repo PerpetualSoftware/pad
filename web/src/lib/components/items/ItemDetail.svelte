@@ -39,6 +39,7 @@
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -839,6 +840,16 @@
 		const reqWsSlug = wsSlug;
 		const reqCollSlug = collSlug;
 		const reqItemSlug = itemSlug;
+		const reqEmbedded = embedded;
+		// Set by the item GET's OWN rejection handler (below) so the catch can
+		// tell an item-not-found — the item is genuinely gone, so its dead route
+		// should be scrubbed — from a collection/index failure or any transient
+		// error that merely rejected the shared Promise.all first. `Promise.all`
+		// surfaces only the first rejection, so keying the scrub off the outer
+		// error's code would (a) scrub a VALID item's route on a collection
+		// `not_found` and (b) miss a dead item when the collection/index errors
+		// first. Classifying the item request separately fixes both (Codex).
+		let itemFetchNotFound = false;
 		try {
 			// The workspace item index is needed for wiki-link resolution
 			// at Y.Doc seed time (the $effect ~line 904 below) and for the
@@ -860,7 +871,14 @@
 				userId: authStore.userId || null,
 			});
 			const [itemData, collData] = await Promise.all([
-				api.items.get(wsSlug, itemSlug),
+				api.items.get(wsSlug, itemSlug).catch((err) => {
+					// Tag an item-specific not-found for the catch's cache scrub,
+					// then re-throw so the load still fails as before.
+					if (err instanceof PadApiError && err.code === 'not_found') {
+						itemFetchNotFound = true;
+					}
+					throw err;
+				}),
 				api.collections.get(wsSlug, collSlug),
 				itemsPromise
 			]);
@@ -959,26 +977,63 @@
 				} catch { if (myGen !== loadGeneration) return; agentRoles = []; }
 			}
 		} catch (e: any) {
-			// A newer load owns the state — don't overwrite it with this
-			// superseded load's error.
+			// A newer load (or an onDestroy teardown bump) owns the state — don't
+			// let this superseded/abandoned load overwrite it. This guard also
+			// fences the last-route scrub below: ONLY the current live load may
+			// touch the cache. A superseded or torn-down load can't tell a dead
+			// route from one another load — even a later component instance
+			// (workspace re-entry) — just revived, so scrubbing on its stale
+			// rejection risks clobbering a valid cached pane. The current live
+			// load has no such ambiguity: it is failing right now, so its route
+			// is dead right now (TASK-2123; Codex rounds 1-4 converged here).
 			if (myGen !== loadGeneration) return;
 			error = e.message ?? 'Failed to load item';
-			// Clear the workspace's last-route cache so the workspace
-			// switcher (TASK-754) doesn't keep restoring this dead item
-			// URL on subsequent re-entries — but only if the stored value
-			// still points at THIS failed URL. If the user navigated away
-			// while the request was in flight, the +layout effect has
-			// already written a newer entry and we must not clobber it.
-			try {
-				const failedPath = `/${reqUsername}/${reqWsSlug}/${reqCollSlug}/${reqItemSlug}`;
-				const cached = localStorage.getItem(`pad-last-route-${reqWsSlug}`);
-				if (cached) {
-					const cachedPath = cached.split('?')[0].split('#')[0];
-					if (cachedPath === failedPath) {
-						localStorage.removeItem(`pad-last-route-${reqWsSlug}`);
+			// Scrub the dead item from the workspace's last-route cache so the
+			// workspace switcher (TASK-754) doesn't keep restoring it on re-entry.
+			// An embedded pane persists the collection route with `?item=<ref>`;
+			// a full page persists the item's own path. `repairDeadItemLastRoute`
+			// handles both shapes: strip only the dead `?item=` param (keeping the
+			// collection's view/sort/filter state) for a pane, or drop the whole
+			// entry for a full page — and returns `undefined` (no write) when the
+			// entry no longer points at this failed URL, so we never clobber a
+			// route a concurrent navigation just wrote (TASK-2123 / TASK-754).
+			//
+			// A dead route abandoned by a switch-away (deleted while the pane was
+			// closed / in another tab) is cleaned on the NEXT visit instead: the
+			// switcher restores it, this pane reloads it, that load fails as the
+			// current load, and lands right here. Self-healing and instance-safe.
+			//
+			// Gate on the ITEM GET's own not-found (`itemFetchNotFound`, set in
+			// the Promise.all above) — the item is genuinely gone. A TRANSIENT
+			// failure (offline, 429 rate-limit, 5xx, auth), a collection/index
+			// error, or a first-to-reject sibling in the Promise.all never strips
+			// a still-valid cached pane (incl. one another live tab wrote to the
+			// shared localStorage). Those errors still surface via `error` above;
+			// they just don't touch the cache (Codex).
+			if (itemFetchNotFound) {
+				// The read + write below is one synchronous block, so no same-tab
+				// interleaving is possible. Across tabs, `pad-last-route-{ws}` is
+				// best-effort (last-writer-wins, no CAS — as the +layout writer
+				// that owns this key already is): a concurrent write in another
+				// tab could momentarily win or lose one update, self-healed by the
+				// next navigation. Accepted, pre-existing property — not worth
+				// cross-tab coordination for a convenience restore cache.
+				try {
+					const cacheKey = `pad-last-route-${reqWsSlug}`;
+					const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
+						username: reqUsername,
+						wsSlug: reqWsSlug,
+						collSlug: reqCollSlug,
+						itemSlug: reqItemSlug,
+						embedded: reqEmbedded,
+					});
+					if (repaired === null) {
+						localStorage.removeItem(cacheKey);
+					} else if (repaired !== undefined) {
+						localStorage.setItem(cacheKey, repaired);
 					}
-				}
-			} catch {}
+				} catch {}
+			}
 		} finally {
 			// Only the CURRENT (newest) load owns the shared loading / pending
 			// flags — a superseded load's finally (it early-returned above)
