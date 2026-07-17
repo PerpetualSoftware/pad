@@ -637,15 +637,18 @@
 	.kanban-column {
 		display: flex;
 		flex-direction: column;
-		/* 220px is the PREFERRED lane width, not a hard floor: flex-shrink 1 +
-		   min-width 0 lets the lanes shrink to fill a narrow board (pane open)
-		   instead of overflowing at a fixed 220px. That keeps scrollWidth ==
-		   clientWidth and a constant right gutter in every sidebar/pane state,
-		   rather than the scrollport cutting the fixed 928px track at a
-		   different point as the sidebar resizes the board (BUG-2127). The
-		   mobile @media below restores fixed 75vw lanes + horizontal scroll. */
-		flex: 1 1 220px;
-		min-width: 0;
+		/* Lanes have a fixed 220px FLOOR and do NOT shrink (flex-shrink 0).
+		   flex-grow 1 + basis 0 lets a few lanes GROW to fill a wide board, but
+		   when the lanes don't all fit — many statuses, a narrow window, or the
+		   detail pane open — they hold 220px each and the board SCROLLS
+		   HORIZONTALLY (.board-view overflow-x: auto). That horizontal scroll is
+		   the INTENDED behavior of a kanban board, NOT a bug.
+		   DO NOT change this to flex-shrink 1 / min-width 0 to make the lanes
+		   "fill" a narrow board — that removes the scroll and crams the lanes
+		   (PR #946 / BUG-2127 did exactly that and it was reverted at the
+		   owner's request). The mobile @media below uses fixed 75vw lanes. */
+		flex: 1 0 0;
+		min-width: 220px;
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-lg);
