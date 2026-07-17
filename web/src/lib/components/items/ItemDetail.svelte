@@ -1011,6 +1011,13 @@
 			// shared localStorage). Those errors still surface via `error` above;
 			// they just don't touch the cache (Codex).
 			if (itemFetchNotFound) {
+				// The read + write below is one synchronous block, so no same-tab
+				// interleaving is possible. Across tabs, `pad-last-route-{ws}` is
+				// best-effort (last-writer-wins, no CAS — as the +layout writer
+				// that owns this key already is): a concurrent write in another
+				// tab could momentarily win or lose one update, self-healed by the
+				// next navigation. Accepted, pre-existing property — not worth
+				// cross-tab coordination for a convenience restore cache.
 				try {
 					const cacheKey = `pad-last-route-${reqWsSlug}`;
 					const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
