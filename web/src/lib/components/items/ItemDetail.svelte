@@ -130,17 +130,6 @@
 	// counter — not reactive; it only fences async writes.
 	let loadGeneration = 0;
 
-	// The load generation that was live when this instance was torn down (pane
-	// closed / workspace switched away); -1 while mounted. onDestroy records it
-	// just before bumping `loadGeneration`. The dead-item last-route cleanup
-	// (loadData's catch) uses it to tell the ONE abandoned load that owned the
-	// cached route at teardown from earlier superseded loads: only that load —
-	// or the current live load — may scrub the cache. A blanket "destroyed"
-	// boolean would wrongly let a very-late superseded A₁ rejection scrub a
-	// route a newer A₂ re-loaded successfully (A→B→A) (TASK-2123; Codex rounds
-	// 2-3 P2).
-	let abandonedGen = -1;
-
 	// Per-switch fetch memoization (TASK-2120). The workspace's members and
 	// agent roles are workspace-invariant, yet loadData re-fetched them on
 	// every row-click and every j/k keystroke. Cache them on this persistent
@@ -757,10 +746,6 @@
 		// pending load bail at its next await-resume guard, before those calls
 		// (PLAN-2105 / TASK-2112; Codex round 2 P1). onDestroy runs
 		// synchronously on unmount, before the awaited fetch continuations.
-		// Record the generation live at teardown (before the bump) so a load
-		// that rejects post-teardown can tell it was the abandoned owner of the
-		// cached route vs. a stale superseded load (TASK-2123 last-route repair).
-		abandonedGen = loadGeneration;
 		loadGeneration++;
 		editorStore.resetForDoc();
 		collectionStore.setActiveItem(null);
@@ -976,6 +961,17 @@
 				} catch { if (myGen !== loadGeneration) return; agentRoles = []; }
 			}
 		} catch (e: any) {
+			// A newer load (or an onDestroy teardown bump) owns the state — don't
+			// let this superseded/abandoned load overwrite it. This guard also
+			// fences the last-route scrub below: ONLY the current live load may
+			// touch the cache. A superseded or torn-down load can't tell a dead
+			// route from one another load — even a later component instance
+			// (workspace re-entry) — just revived, so scrubbing on its stale
+			// rejection risks clobbering a valid cached pane. The current live
+			// load has no such ambiguity: it is failing right now, so its route
+			// is dead right now (TASK-2123; Codex rounds 1-4 converged here).
+			if (myGen !== loadGeneration) return;
+			error = e.message ?? 'Failed to load item';
 			// Scrub the dead item from the workspace's last-route cache so the
 			// workspace switcher (TASK-754) doesn't keep restoring it on re-entry.
 			// An embedded pane persists the collection route with `?item=<ref>`;
@@ -983,43 +979,28 @@
 			// handles both shapes: strip only the dead `?item=` param (keeping the
 			// collection's view/sort/filter state) for a pane, or drop the whole
 			// entry for a full page — and returns `undefined` (no write) when the
-			// entry no longer points at this failed URL (TASK-2123 / TASK-754).
+			// entry no longer points at this failed URL, so we never clobber a
+			// route a concurrent navigation just wrote (TASK-2123 / TASK-754).
 			//
-			// Scrub only when THIS is the live load (`myGen === loadGeneration`)
-			// or THIS was the exact load that owned the cached route at teardown
-			// (`myGen === abandonedGen`). We must NOT scrub for a superseded load:
-			// an A→B→A re-load may have fetched the SAME ref successfully after
-			// this stale request was fired, and route identity can't tell that
-			// live entry from a dead one — the current/abandoned-owner load owns
-			// the outcome, and its own catch scrubs if it too failed (Codex rounds
-			// 2-3 P2). Both allowed cases additionally self-protect via
-			// repairDeadItemLastRoute's `undefined` (cache-no-longer-matches)
-			// return. Residual (benign, self-healing): a direct switch between two
-			// collection routes reuses this component (no teardown, so no
-			// abandonedGen), leaving the departed workspace's dead `?item=`
-			// uncleaned until its next visit re-loads it and the then-current load
-			// scrubs it.
-			if (myGen === loadGeneration || myGen === abandonedGen) {
-				try {
-					const cacheKey = `pad-last-route-${reqWsSlug}`;
-					const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
-						username: reqUsername,
-						wsSlug: reqWsSlug,
-						collSlug: reqCollSlug,
-						itemSlug: reqItemSlug,
-						embedded: reqEmbedded,
-					});
-					if (repaired === null) {
-						localStorage.removeItem(cacheKey);
-					} else if (repaired !== undefined) {
-						localStorage.setItem(cacheKey, repaired);
-					}
-				} catch {}
-			}
-			// A newer load owns the on-screen state — don't overwrite it with
-			// this superseded load's error.
-			if (myGen !== loadGeneration) return;
-			error = e.message ?? 'Failed to load item';
+			// A dead route abandoned by a switch-away (deleted while the pane was
+			// closed / in another tab) is cleaned on the NEXT visit instead: the
+			// switcher restores it, this pane reloads it, that load fails as the
+			// current load, and lands right here. Self-healing and instance-safe.
+			try {
+				const cacheKey = `pad-last-route-${reqWsSlug}`;
+				const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
+					username: reqUsername,
+					wsSlug: reqWsSlug,
+					collSlug: reqCollSlug,
+					itemSlug: reqItemSlug,
+					embedded: reqEmbedded,
+				});
+				if (repaired === null) {
+					localStorage.removeItem(cacheKey);
+				} else if (repaired !== undefined) {
+					localStorage.setItem(cacheKey, repaired);
+				}
+			} catch {}
 		} finally {
 			// Only the CURRENT (newest) load owns the shared loading / pending
 			// flags — a superseded load's finally (it early-returned above)
