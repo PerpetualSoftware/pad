@@ -4177,20 +4177,35 @@
 	*/
 
 	/* Pane chrome (PLAN-2105 / TASK-2113) — embedded-only header docked at
-	   the top of the split pane, replacing the full-page breadcrumb. */
+	   the top of the split pane, replacing the full-page breadcrumb.
+
+	   Sticky (IDEA-2134): the header stays pinned to the top of the pane's
+	   scroll container (`.item-pane` — `overflow-y: auto` on desktop, the
+	   fixed full-screen overlay on mobile) so the item ref + expand / popout /
+	   close controls remain visible while the body scrolls. The negative side
+	   margins bleed the opaque background out over `.item-page`'s horizontal
+	   padding so scrolling content is covered edge-to-edge, mirroring the
+	   full-page `.sticky-header` pattern above. */
 	.pane-header {
+		position: sticky;
+		top: 0;
+		z-index: 10;
+		background: var(--bg-primary);
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--space-3);
-		margin-bottom: var(--space-3);
+		margin: 0 calc(-1 * var(--space-6)) var(--space-3);
+		padding: var(--space-2) var(--space-6);
 	}
-	/* Loading / error variant: only the close button, right-aligned, with its
-	   own padding since it renders outside the padded `.item-page` wrapper. */
+	/* Loading / error variant: only the close button, right-aligned. Renders
+	   OUTSIDE the padded `.item-page` wrapper, so it drops the negative bleed
+	   and keeps its own edge padding — but stays sticky so the close control
+	   survives a tall loading skeleton. */
 	.pane-header--minimal {
 		justify-content: flex-end;
+		margin: 0;
 		padding: var(--space-4) var(--space-4) 0;
-		margin-bottom: 0;
 	}
 	.pane-header-ref {
 		display: flex;
@@ -5170,6 +5185,7 @@
 
 		/* Hide interactive / screen-only chrome inside the item page. */
 		.sticky-header,
+		.pane-header,
 		.meta-actions,
 		.editor-mode-toggle,
 		.add-relationship-section,
