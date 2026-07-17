@@ -841,6 +841,15 @@
 		const reqCollSlug = collSlug;
 		const reqItemSlug = itemSlug;
 		const reqEmbedded = embedded;
+		// Set by the item GET's OWN rejection handler (below) so the catch can
+		// tell an item-not-found — the item is genuinely gone, so its dead route
+		// should be scrubbed — from a collection/index failure or any transient
+		// error that merely rejected the shared Promise.all first. `Promise.all`
+		// surfaces only the first rejection, so keying the scrub off the outer
+		// error's code would (a) scrub a VALID item's route on a collection
+		// `not_found` and (b) miss a dead item when the collection/index errors
+		// first. Classifying the item request separately fixes both (Codex).
+		let itemFetchNotFound = false;
 		try {
 			// The workspace item index is needed for wiki-link resolution
 			// at Y.Doc seed time (the $effect ~line 904 below) and for the
@@ -862,7 +871,14 @@
 				userId: authStore.userId || null,
 			});
 			const [itemData, collData] = await Promise.all([
-				api.items.get(wsSlug, itemSlug),
+				api.items.get(wsSlug, itemSlug).catch((err) => {
+					// Tag an item-specific not-found for the catch's cache scrub,
+					// then re-throw so the load still fails as before.
+					if (err instanceof PadApiError && err.code === 'not_found') {
+						itemFetchNotFound = true;
+					}
+					throw err;
+				}),
 				api.collections.get(wsSlug, collSlug),
 				itemsPromise
 			]);
@@ -987,13 +1003,14 @@
 			// switcher restores it, this pane reloads it, that load fails as the
 			// current load, and lands right here. Self-healing and instance-safe.
 			//
-			// Gate on a genuine not-found (the item — or its collection — is
-			// really gone) so a TRANSIENT failure (offline, 429 rate-limit, 5xx,
-			// auth) never strips a still-valid cached pane, including one another
-			// live tab wrote to the shared localStorage (Codex round 5 P2). Non-
-			// not_found errors still surface via `error` above; they just don't
-			// touch the cache.
-			if (e instanceof PadApiError && e.code === 'not_found') {
+			// Gate on the ITEM GET's own not-found (`itemFetchNotFound`, set in
+			// the Promise.all above) — the item is genuinely gone. A TRANSIENT
+			// failure (offline, 429 rate-limit, 5xx, auth), a collection/index
+			// error, or a first-to-reject sibling in the Promise.all never strips
+			// a still-valid cached pane (incl. one another live tab wrote to the
+			// shared localStorage). Those errors still surface via `error` above;
+			// they just don't touch the cache (Codex).
+			if (itemFetchNotFound) {
 				try {
 					const cacheKey = `pad-last-route-${reqWsSlug}`;
 					const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
