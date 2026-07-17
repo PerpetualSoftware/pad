@@ -31,6 +31,18 @@ if (browser) {
 	// the viewport crosses the mobile breakpoint: collapse the sidebar/detail
 	// panel entering mobile, restore the sidebar leaving it. `change` fires only
 	// on a crossing, so no manual before/after comparison is needed.
+	//
+	// `detailPanelOpen` is the pre-PLAN-2105 legacy panel boolean — it is
+	// mutated here but no component reads it to render anything anymore, so
+	// this force-close is inert. The collection page's split-pane detail view
+	// (PLAN-2105 / TASK-2121) is deliberately NOT wired to it: pane state is
+	// URL-derived (`?item=`), and on mobile the pane simply restyles to a
+	// full-screen overlay via CSS (see the `@media (max-width: 768px)` block
+	// in the collection +page.svelte). Routing pane visibility through this
+	// boolean would silently drop `?item=` on every mobile-entry crossing —
+	// the exact bug TASK-2121 must avoid. If a future consumer starts reading
+	// `detailPanelOpen`, keep this handler's reach limited to that legacy
+	// panel and off the URL-derived pane.
 	window.matchMedia(MOBILE_MEDIA_QUERY).addEventListener('change', (e) => {
 		if (e.matches) {
 			sidebarOpen = false;
