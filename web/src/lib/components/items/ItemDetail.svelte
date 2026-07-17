@@ -130,14 +130,16 @@
 	// counter — not reactive; it only fences async writes.
 	let loadGeneration = 0;
 
-	// Set once in onDestroy so a load that rejects AFTER this instance is torn
-	// down (pane closed / workspace switched away) can still tell "I'm abandoned"
-	// from "a newer mounted load superseded me". The dead-item last-route cleanup
-	// (loadData's catch) needs this: a superseded-but-mounted failure must NOT
-	// scrub the cache (a newer load may have re-loaded the same ref successfully —
-	// A→B→A), but an abandoned failure MUST, or a workspace switched-away-from
-	// keeps its dead `?item=` (TASK-2123; Codex round 2 P2).
-	let destroyed = false;
+	// The load generation that was live when this instance was torn down (pane
+	// closed / workspace switched away); -1 while mounted. onDestroy records it
+	// just before bumping `loadGeneration`. The dead-item last-route cleanup
+	// (loadData's catch) uses it to tell the ONE abandoned load that owned the
+	// cached route at teardown from earlier superseded loads: only that load —
+	// or the current live load — may scrub the cache. A blanket "destroyed"
+	// boolean would wrongly let a very-late superseded A₁ rejection scrub a
+	// route a newer A₂ re-loaded successfully (A→B→A) (TASK-2123; Codex rounds
+	// 2-3 P2).
+	let abandonedGen = -1;
 
 	// Per-switch fetch memoization (TASK-2120). The workspace's members and
 	// agent roles are workspace-invariant, yet loadData re-fetched them on
@@ -745,7 +747,6 @@
 	});
 
 	onDestroy(() => {
-		destroyed = true;
 		unsubscribeSync?.();
 		unsubscribeSSE?.();
 		unsubscribeBeforePrint?.();
@@ -756,6 +757,10 @@
 		// pending load bail at its next await-resume guard, before those calls
 		// (PLAN-2105 / TASK-2112; Codex round 2 P1). onDestroy runs
 		// synchronously on unmount, before the awaited fetch continuations.
+		// Record the generation live at teardown (before the bump) so a load
+		// that rejects post-teardown can tell it was the abandoned owner of the
+		// cached route vs. a stale superseded load (TASK-2123 last-route repair).
+		abandonedGen = loadGeneration;
 		loadGeneration++;
 		editorStore.resetForDoc();
 		collectionStore.setActiveItem(null);
@@ -980,15 +985,21 @@
 			// entry for a full page — and returns `undefined` (no write) when the
 			// entry no longer points at this failed URL (TASK-2123 / TASK-754).
 			//
-			// Run it only when THIS is the live load (`myGen === loadGeneration`)
-			// or the instance was torn down (`destroyed`). We must NOT scrub for a
-			// superseded-but-still-mounted failure: an A→B→A re-load may have
-			// fetched the SAME ref successfully after this stale request was fired,
-			// and route identity can't tell that live entry from a dead one — the
-			// current load owns the outcome and its own catch will scrub if it too
-			// failed (Codex round 2 P2). The `destroyed` case still self-protects
-			// via the `undefined` (cache-no-longer-matches) return.
-			if (myGen === loadGeneration || destroyed) {
+			// Scrub only when THIS is the live load (`myGen === loadGeneration`)
+			// or THIS was the exact load that owned the cached route at teardown
+			// (`myGen === abandonedGen`). We must NOT scrub for a superseded load:
+			// an A→B→A re-load may have fetched the SAME ref successfully after
+			// this stale request was fired, and route identity can't tell that
+			// live entry from a dead one — the current/abandoned-owner load owns
+			// the outcome, and its own catch scrubs if it too failed (Codex rounds
+			// 2-3 P2). Both allowed cases additionally self-protect via
+			// repairDeadItemLastRoute's `undefined` (cache-no-longer-matches)
+			// return. Residual (benign, self-healing): a direct switch between two
+			// collection routes reuses this component (no teardown, so no
+			// abandonedGen), leaving the departed workspace's dead `?item=`
+			// uncleaned until its next visit re-loads it and the then-current load
+			// scrubs it.
+			if (myGen === loadGeneration || myGen === abandonedGen) {
 				try {
 					const cacheKey = `pad-last-route-${reqWsSlug}`;
 					const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
