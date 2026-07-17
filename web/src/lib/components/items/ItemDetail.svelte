@@ -129,6 +129,31 @@
 	// counter — not reactive; it only fences async writes.
 	let loadGeneration = 0;
 
+	// Per-switch fetch memoization (TASK-2120). The workspace's members and
+	// agent roles are workspace-invariant, yet loadData re-fetched them on
+	// every row-click and every j/k keystroke. Cache them on this persistent
+	// (no-{#key}) pane instance, keyed by wsSlug, and reuse on a cache-key hit
+	// so a switch only pays for the genuinely per-item reads (item / progress /
+	// links) plus the collection. Plain `let` — not reactive; they seed the
+	// reactive `workspaceMembers` / `agentRoles` state below.
+	//
+	// The collection schema is DELIBERATELY NOT cached here. Unlike members /
+	// roles, it has a live mutation surface — the in-pane edit modal + quick-
+	// actions menu, the host collection page's own edit controls, and cross-tab
+	// edits — and none of those reliably reach a pane-local cache (the in-pane
+	// callbacks are switch-fenced and can be dropped mid-PATCH; the host edits
+	// never touch the pane at all). A stale schema is not cosmetic: a later
+	// updateField() would write field JSON against the wrong shape and clobber
+	// migrated values. Refetching it per switch keeps it self-healing and cheap
+	// (one request), which is the correct trade for a schema that can change out
+	// from under the pane (Codex review).
+	let cachedMembers:
+		| { user_id: string; user_name: string; user_email: string; role: string }[]
+		| null = null;
+	let cachedMembersWs: string | null = null;
+	let cachedRoles: AgentRole[] | null = null;
+	let cachedRolesWs: string | null = null;
+
 	// True when a captured (item, generation) snapshot is no longer the one on
 	// screen — the uniform fence for DROPPING a post-await write/feedback after
 	// a no-{#key} pane switch (PLAN-2105 / TASK-2112; Codex). Checks BOTH the
@@ -905,17 +930,34 @@
 				itemLinks = links;
 			} catch { if (myGen !== loadGeneration) return; itemLinks = []; }
 
-			// Load workspace members and agent roles for assignment picker
-			try {
-				const membersData = await api.members.list(wsSlug);
-				if (myGen !== loadGeneration) return;
-				workspaceMembers = membersData.members ?? [];
-			} catch { if (myGen !== loadGeneration) return; workspaceMembers = []; }
-			try {
-				const roles = await api.agentRoles.list(wsSlug);
-				if (myGen !== loadGeneration) return;
-				agentRoles = roles;
-			} catch { if (myGen !== loadGeneration) return; agentRoles = []; }
+			// Load workspace members and agent roles for the assignment picker.
+			// Both are workspace-invariant, so reuse the cached copy on a
+			// same-workspace switch and only fetch on a cache miss (TASK-2120).
+			// A cache hit is a synchronous assignment (no await), so it needs no
+			// generation fence — the last per-item await above already bailed if
+			// a newer load started.
+			if (cachedMembersWs === wsSlug && cachedMembers) {
+				workspaceMembers = cachedMembers;
+			} else {
+				try {
+					const membersData = await api.members.list(wsSlug);
+					if (myGen !== loadGeneration) return;
+					workspaceMembers = membersData.members ?? [];
+					cachedMembers = workspaceMembers;
+					cachedMembersWs = wsSlug;
+				} catch { if (myGen !== loadGeneration) return; workspaceMembers = []; }
+			}
+			if (cachedRolesWs === wsSlug && cachedRoles) {
+				agentRoles = cachedRoles;
+			} else {
+				try {
+					const roles = await api.agentRoles.list(wsSlug);
+					if (myGen !== loadGeneration) return;
+					agentRoles = roles;
+					cachedRoles = roles;
+					cachedRolesWs = wsSlug;
+				} catch { if (myGen !== loadGeneration) return; agentRoles = []; }
+			}
 		} catch (e: any) {
 			// A newer load owns the state — don't overwrite it with this
 			// superseded load's error.

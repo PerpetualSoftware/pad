@@ -280,3 +280,59 @@ describe('rate-limit UI seam / setRateLimitHandler (TASK-2080)', () => {
 		expect(handler).not.toHaveBeenCalled();
 	});
 });
+
+// TASK-2120 — /server/capabilities is static for the binary's lifetime, so the
+// client memoizes it at module scope. This locks in the two properties the
+// Editor-remount hot path relies on: repeat callers share one fetch, and a
+// failed fetch is NOT cached (a later call retries). NOTE: the cache is a
+// module singleton, so these tests must be the file's only capabilities()
+// callers and must run in order — the failure test runs first (cold cache),
+// leaving it cold for the dedupe test that follows.
+describe('server.capabilities() caching (TASK-2120)', () => {
+	beforeEach(() => {
+		vi.unstubAllGlobals();
+	});
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('does NOT cache a failed capabilities fetch — a later call retries', async () => {
+		const failing = vi.fn(async () => ({
+			status: 500,
+			ok: false,
+			json: async () => ({ error: { code: 'internal', message: 'boom' } }),
+		}));
+		vi.stubGlobal('fetch', failing);
+		await expect(api.server.capabilities()).rejects.toBeTruthy();
+		expect(failing).toHaveBeenCalledTimes(1);
+
+		// The rejected promise was dropped from the cache, so a retry re-fetches.
+		const ok = vi.fn(async () => ({
+			status: 200,
+			ok: true,
+			json: async () => ({ image: { image_formats: ['png'], transcode: false, max_pixels: 1 } }),
+		}));
+		vi.stubGlobal('fetch', ok);
+		await expect(api.server.capabilities()).resolves.toMatchObject({
+			image: { image_formats: ['png'] },
+		});
+		expect(ok).toHaveBeenCalledTimes(1);
+	});
+
+	it('fetches /server/capabilities at most once across repeat callers', async () => {
+		// The success above warmed the cache, so no further fetch should fire —
+		// both callers resolve from the shared cached promise (same reference).
+		const fetchMock = vi.fn(async () => ({
+			status: 200,
+			ok: true,
+			json: async () => ({ image: { image_formats: ['jpeg'], transcode: true, max_pixels: 2 } }),
+		}));
+		vi.stubGlobal('fetch', fetchMock);
+		const a = await api.server.capabilities();
+		const b = await api.server.capabilities();
+		expect(a).toBe(b);
+		expect(fetchMock).not.toHaveBeenCalled();
+		// Still the warmed 'png' value, proving the cache served it (not 'jpeg').
+		expect(a.image.image_formats).toEqual(['png']);
+	});
+});
