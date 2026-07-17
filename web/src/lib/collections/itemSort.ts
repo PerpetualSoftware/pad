@@ -70,16 +70,23 @@ export function itemComparator(
 				});
 		case 'manual':
 		default:
-			// Deterministic tiebreak on equal sort_order (created_at asc,
-			// then id) so a stray updated_at bump — e.g. a spurious
-			// collab-flush PATCH, BUG-1941 — can't reorder cards that were
-			// never actually dragged. Every un-dragged card in a lane
-			// shares sort_order = 0, so without this the comparator was a
-			// no-op there and silently inherited whatever order the input
+			// Deterministic tiebreak on equal sort_order (created_at DESC —
+			// newest first — then id) so a stray updated_at bump (e.g. a
+			// spurious collab-flush PATCH, BUG-1941) can't reorder cards that
+			// were never actually dragged. Every un-dragged card in a lane
+			// shares sort_order = 0, so without a tiebreak the comparator was
+			// a no-op there and silently inherited whatever order the input
 			// array arrived in (updated_at DESC from the API).
+			//
+			// The direction is DESC (newest first) so a freshly-created item —
+			// which lands with sort_order = 0, tying the top of a manually
+			// sorted lane and tying the whole of an un-dragged lane — floats to
+			// the TOP of its lane/group instead of the bottom. That is the
+			// "new items sort to the top under manual order" behaviour; the
+			// value is still independent of updated_at, so BUG-1941 holds.
 			return (a, b) =>
 				a.sort_order - b.sort_order ||
-				timeValue(a.created_at) - timeValue(b.created_at) ||
+				timeValue(b.created_at) - timeValue(a.created_at) ||
 				a.id.localeCompare(b.id);
 	}
 }
