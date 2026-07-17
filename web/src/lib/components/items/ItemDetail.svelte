@@ -840,6 +840,7 @@
 		const reqWsSlug = wsSlug;
 		const reqCollSlug = collSlug;
 		const reqItemSlug = itemSlug;
+		const reqEmbedded = embedded;
 		try {
 			// The workspace item index is needed for wiki-link resolution
 			// at Y.Doc seed time (the $effect ~line 904 below) and for the
@@ -960,19 +961,22 @@
 				} catch { if (myGen !== loadGeneration) return; agentRoles = []; }
 			}
 		} catch (e: any) {
-			// A newer load owns the state — don't overwrite it with this
-			// superseded load's error.
-			if (myGen !== loadGeneration) return;
-			error = e.message ?? 'Failed to load item';
 			// Scrub the dead item from the workspace's last-route cache so the
 			// workspace switcher (TASK-754) doesn't keep restoring it on re-entry.
 			// An embedded pane persists the collection route with `?item=<ref>`;
 			// a full page persists the item's own path. `repairDeadItemLastRoute`
 			// handles both shapes: strip only the dead `?item=` param (keeping the
 			// collection's view/sort/filter state) for a pane, or drop the whole
-			// entry for a full page — and returns `undefined` (no write) when a
-			// navigate-away already replaced the entry, so we never clobber it
-			// (TASK-2123 / TASK-754).
+			// entry for a full page — and returns `undefined` (no write) when the
+			// entry no longer points at this failed URL, so we never clobber a
+			// newer one (TASK-2123 / TASK-754).
+			//
+			// This runs BEFORE the generation guard on purpose: it's keyed to the
+			// captured request snapshot and self-protects via that `undefined`
+			// state, so it's safe even for a superseded load. Running it here
+			// cleans the entry when the user switched workspace / closed the pane
+			// (bumping loadGeneration) before this failed request settled —
+			// otherwise that workspace keeps its dead `?item=` (Codex P2).
 			try {
 				const cacheKey = `pad-last-route-${reqWsSlug}`;
 				const repaired = repairDeadItemLastRoute(localStorage.getItem(cacheKey), {
@@ -980,7 +984,7 @@
 					wsSlug: reqWsSlug,
 					collSlug: reqCollSlug,
 					itemSlug: reqItemSlug,
-					embedded,
+					embedded: reqEmbedded,
 				});
 				if (repaired === null) {
 					localStorage.removeItem(cacheKey);
@@ -988,6 +992,10 @@
 					localStorage.setItem(cacheKey, repaired);
 				}
 			} catch {}
+			// A newer load owns the on-screen state — don't overwrite it with
+			// this superseded load's error.
+			if (myGen !== loadGeneration) return;
+			error = e.message ?? 'Failed to load item';
 		} finally {
 			// Only the CURRENT (newest) load owns the shared loading / pending
 			// flags — a superseded load's finally (it early-returned above)
