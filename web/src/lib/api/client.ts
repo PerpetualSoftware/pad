@@ -729,6 +729,17 @@ export interface InvitationPreview {
 	has_account?: boolean;
 }
 
+// Module-scope cache for GET /server/capabilities. The response is static
+// for the lifetime of the binary (image-processor formats / limits), so every
+// caller can share one fetch. The Editor remounts on each item switch (its
+// `{#key}` rebuilds ~20 Tiptap extensions for Y.Doc safety) and each remount
+// fired this request; caching makes every remount past the first a warm no-op
+// (TASK-2120). We memoize the PROMISE (not just the value) so concurrent
+// callers dedupe onto one in-flight request, and we clear the slot on failure
+// so a transient network blip / pre-login rejection can't poison capabilities
+// for the rest of the session — a later call retries.
+let serverCapabilitiesCache: Promise<ServerCapabilities> | null = null;
+
 export const api = {
 	// ── Health / Version ──────────────────────────────────────────────────────
 
@@ -2154,7 +2165,18 @@ export const api = {
 	// can cache freely.
 
 	server: {
-		capabilities: () => request<ServerCapabilities>('/server/capabilities')
+		capabilities: () => {
+			if (!serverCapabilitiesCache) {
+				serverCapabilitiesCache = request<ServerCapabilities>('/server/capabilities').catch(
+					(err) => {
+						// Don't cache failures — drop the slot so the next call retries.
+						serverCapabilitiesCache = null;
+						throw err;
+					}
+				);
+			}
+			return serverCapabilitiesCache;
+		}
 	},
 
 	// ── Connected apps (TASK-954) ────────────────────────────────────────────
