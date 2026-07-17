@@ -98,9 +98,14 @@ input:focus, textarea:focus {
 	border-color: var(--accent-blue);
 }
 
-/* Scrollbar */
+/* Scrollbar. `width` styles the VERTICAL scrollbar; `height` styles the
+   HORIZONTAL one. Both are needed — without `height` a horizontal scrollbar
+   (e.g. the board-view lane track) falls back to the chunky ~15px browser
+   default while every vertical scrollbar is a thin 6px, which reads as a
+   "weirdly large" scrollbar (BUG-2127 follow-up). Keep them equal. */
 ::-webkit-scrollbar {
 	width: 6px;
+	height: 6px;
 }
 ::-webkit-scrollbar-track {
 	background: transparent;
