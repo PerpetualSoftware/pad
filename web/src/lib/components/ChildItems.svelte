@@ -7,7 +7,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import type { Item, Collection } from '$lib/types';
+	import type { Item, Collection, PaneTarget } from '$lib/types';
 	import { parseFields, parseSchema, formatItemRef } from '$lib/types';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
@@ -17,6 +17,7 @@
 		disabledDirections,
 		type ReorderDirection
 	} from '$lib/collections/reorder';
+	import { shouldOpenInPane } from './collections/itemCardClick';
 	import ItemActionsMenu from './collections/ItemActionsMenu.svelte';
 	import ChildChart from './ChildChart.svelte';
 	import NestedChildren from './NestedChildren.svelte';
@@ -49,9 +50,17 @@
 		 */
 		selfDirty?: boolean;
 		selfLastSaveTime?: number;
+		/**
+		 * In-pane drill interceptor (PLAN-2154 Architecture B.2 / TASK-2159).
+		 * Threaded down from `ItemDetail`'s `fireOpenTarget` — `undefined` when
+		 * no host wired a pane (e.g. the full-page route), in which case the
+		 * child row's `<a href>` falls through to plain navigation. Forwarded
+		 * recursively into `NestedChildren`.
+		 */
+		onOpenTarget?: (target: PaneTarget) => void;
 	}
 
-	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange, canEdit = true, selfDirty = false, selfLastSaveTime = 0 }: Props = $props();
+	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange, canEdit = true, selfDirty = false, selfLastSaveTime = 0, onOpenTarget }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
@@ -261,6 +270,16 @@
 
 	function formatLabel(value: string): string {
 		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+	}
+
+	// In-pane drill interception for a `.child-row` anchor (TASK-2159 /
+	// PLAN-2154 Architecture B.2). Mirrors `ItemCard.handleCardClick`'s
+	// bail-out order via the shared `shouldOpenInPane` predicate — modifier/
+	// middle-click still falls through to the plain `<a href>` popout.
+	function handleChildClick(e: MouseEvent, child: Item) {
+		if (!shouldOpenInPane(e, !!onOpenTarget)) return;
+		e.preventDefault();
+		onOpenTarget?.({ ref: formatItemRef(child) ?? undefined, slug: child.slug, collectionSlug: child.collection_slug });
 	}
 
 	// ── Add child (PLAN-2140) ─────────────────────────────────────────────────
@@ -774,7 +793,7 @@
 										<span class="expand-icon" class:expanded={isExpanded}>▸</span>
 									</button>
 								{/if}
-								<a href="/{username}/{wsSlug}/{child.collection_slug}/{child.slug}" class="child-row" class:has-toggle={canExpand}>
+								<a href="/{username}/{wsSlug}/{child.collection_slug}/{child.slug}" class="child-row" class:has-toggle={canExpand} onclick={(e) => handleChildClick(e, child)}>
 									<span class="child-ref">{formatItemRef(child) ?? ''}</span>
 									<span class="child-title" class:done={isDone}>{child.title}</span>
 									{#if fields.priority}
@@ -797,7 +816,7 @@
 								{/if}
 							</div>
 							{#if canExpand && isExpanded}
-								<NestedChildren {wsSlug} {username} parentSlug={child.slug} depth={1} maxDepth={3} {terminalStatuses} />
+								<NestedChildren {wsSlug} {username} parentSlug={child.slug} depth={1} maxDepth={3} {terminalStatuses} {onOpenTarget} />
 							{/if}
 						</div>
 					{/each}
