@@ -57,6 +57,35 @@ describe('resolvePaneTarget — candidate extraction (no current item)', () => {
 		// instead (Codex review).
 		expect(resolvePaneTarget({ href: '/-/r/other-workspace/TASK-9' })).toBeNull();
 	});
+
+	it('refuses an ABSOLUTE cross-workspace resolver href too', () => {
+		// HTMLAnchorElement.href always returns the fully-resolved absolute
+		// URL, not the raw attribute — a future click-interceptor reading it
+		// off a live DOM anchor must still be caught (Codex review).
+		expect(
+			resolvePaneTarget({ href: 'http://localhost:5173/-/r/other-workspace/TASK-9' }),
+		).toBeNull();
+		expect(resolvePaneTarget({ href: 'https://mypad.example.com/-/r/other/TASK-9' })).toBeNull();
+	});
+
+	it('distrusts the WHOLE target (including ref/slug) when href signals cross-workspace', () => {
+		// A target that carries both a `ref` and a cross-workspace `href`
+		// contradicts this type's own contract — the href is unambiguous
+		// evidence of non-locality, so it wins rather than risk opening
+		// whatever local item `ref` happens to name (Codex review).
+		expect(
+			resolvePaneTarget({ ref: 'TASK-9', href: '/-/r/other-workspace/TASK-9' }),
+		).toBeNull();
+		expect(
+			resolvePaneTarget({ slug: 'some-slug', href: '/-/r/other-workspace/TASK-9' }),
+		).toBeNull();
+	});
+
+	it('still resolves a same-workspace ABSOLUTE href normally', () => {
+		expect(resolvePaneTarget({ href: 'http://localhost:5173/alice/myws/tasks/TASK-9' })).toBe(
+			'TASK-9',
+		);
+	});
 });
 
 describe('isSamePaneTarget — same-item guard', () => {

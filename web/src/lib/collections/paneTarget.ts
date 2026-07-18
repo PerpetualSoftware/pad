@@ -24,22 +24,37 @@ import type { Item, PaneTarget } from '$lib/types';
 // when the numbers happen to coincide. The `/-/r/` sentinel can't appear in
 // a same-workspace item URL (those are always `/{username}/{workspace}/...`,
 // and usernames are letter-led — see `markdownToWikiLinks`), so it's an
-// unambiguous signal to treat the href as NOT pane-resolvable.
+// unambiguous signal to treat the WHOLE target as not pane-resolvable.
 const CROSS_WORKSPACE_HREF_PREFIX = '/-/r/';
+
+// A throwaway base so `href` can be parsed with the `URL` API regardless of
+// shape — root-relative ("/-/r/…", what every href BUILDER in this codebase
+// emits) or absolute ("http://host/-/r/…", what `HTMLAnchorElement.href`
+// ALWAYS returns when a future click-interceptor reads it off a live DOM
+// anchor rather than its raw attribute). Comparing `.pathname` after parsing
+// catches both uniformly; a raw `string.startsWith` on the href only catches
+// the root-relative case (Codex review).
+const HREF_PARSE_BASE = 'http://pad.invalid';
+
+/** True when `href` is (or resolves to) the cross-workspace resolver route. */
+function isCrossWorkspaceHref(href: string): boolean {
+	try {
+		return new URL(href, HREF_PARSE_BASE).pathname.startsWith(CROSS_WORKSPACE_HREF_PREFIX);
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Extract the trailing path segment of a SAME-WORKSPACE internal item href,
  * e.g. "/alice/myws/tasks/TASK-5" -> "TASK-5", "/alice/myws/tasks/TASK-5/"
  * -> "TASK-5". Query string / hash are stripped first. Null for an href
- * with no non-empty segment (e.g. "", "/") or for a cross-workspace
- * resolver href (`/-/r/{workspace}/{ref}` — see
- * `CROSS_WORKSPACE_HREF_PREFIX`), which this deliberately refuses to
- * resolve rather than risk opening the wrong item (PLAN-2154 / TASK-2158;
- * Codex review).
+ * with no non-empty segment (e.g. "", "/"). Callers must check
+ * `isCrossWorkspaceHref` first — this function only strips the path, it
+ * doesn't re-validate workspace locality.
  */
 function lastHrefSegment(href: string): string | null {
 	const path = href.split(/[?#]/)[0];
-	if (path.startsWith(CROSS_WORKSPACE_HREF_PREFIX)) return null;
 	const segments = path.split('/').filter(Boolean);
 	return segments.length > 0 ? segments[segments.length - 1] : null;
 }
@@ -64,8 +79,18 @@ function parseRefNumber(candidate: string): number | null {
  * same-item normalization — `ref` preferred over `slug` over an `href`'s
  * trailing segment (mirrors `itemUrlId`/`formatItemRef`'s ref-over-slug
  * preference). Null when the target carries nothing resolvable.
+ *
+ * A cross-workspace `href` (`isCrossWorkspaceHref`) makes the WHOLE target
+ * untrustworthy, not just the href field: it's unambiguous evidence the
+ * link doesn't point at a same-workspace item, so a `ref`/`slug` set
+ * alongside it is more likely mis-derived than an intentional override —
+ * trusting it anyway risks silently opening the wrong local item (Codex
+ * review). By this type's own contract (`$lib/types`), a genuinely
+ * same-workspace target never carries a cross-workspace href in the first
+ * place.
  */
 function rawPaneTargetCandidate(target: PaneTarget): string | null {
+	if (target.href && isCrossWorkspaceHref(target.href)) return null;
 	if (target.ref) return target.ref;
 	if (target.slug) return target.slug;
 	if (target.href) return lastHrefSegment(target.href);
