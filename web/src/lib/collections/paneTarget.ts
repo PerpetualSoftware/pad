@@ -16,14 +16,30 @@
 
 import type { Item, PaneTarget } from '$lib/types';
 
+// The cross-workspace wiki-link resolver route, `/-/r/{workspace}/{ref}`
+// (`wikiLinksToMarkdown`/`renderMarkdown` in `$lib/utils/markdown`). Its
+// trailing segment IS a ref, but for a possibly-DIFFERENT workspace — taking
+// it at face value would drill the CURRENT workspace's pane to a same-
+// numbered local item (wrong item), or false-positive the same-item guard
+// when the numbers happen to coincide. The `/-/r/` sentinel can't appear in
+// a same-workspace item URL (those are always `/{username}/{workspace}/...`,
+// and usernames are letter-led — see `markdownToWikiLinks`), so it's an
+// unambiguous signal to treat the href as NOT pane-resolvable.
+const CROSS_WORKSPACE_HREF_PREFIX = '/-/r/';
+
 /**
- * Extract the trailing path segment of an internal item href, e.g.
- * "/alice/myws/tasks/TASK-5" -> "TASK-5", "/alice/myws/tasks/TASK-5/" ->
- * "TASK-5". Query string / hash are stripped first. Null for an href with
- * no non-empty segment (e.g. "", "/").
+ * Extract the trailing path segment of a SAME-WORKSPACE internal item href,
+ * e.g. "/alice/myws/tasks/TASK-5" -> "TASK-5", "/alice/myws/tasks/TASK-5/"
+ * -> "TASK-5". Query string / hash are stripped first. Null for an href
+ * with no non-empty segment (e.g. "", "/") or for a cross-workspace
+ * resolver href (`/-/r/{workspace}/{ref}` — see
+ * `CROSS_WORKSPACE_HREF_PREFIX`), which this deliberately refuses to
+ * resolve rather than risk opening the wrong item (PLAN-2154 / TASK-2158;
+ * Codex review).
  */
 function lastHrefSegment(href: string): string | null {
 	const path = href.split(/[?#]/)[0];
+	if (path.startsWith(CROSS_WORKSPACE_HREF_PREFIX)) return null;
 	const segments = path.split('/').filter(Boolean);
 	return segments.length > 0 ? segments[segments.length - 1] : null;
 }

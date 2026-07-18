@@ -48,6 +48,15 @@ describe('resolvePaneTarget — candidate extraction (no current item)', () => {
 		expect(resolvePaneTarget({ href: '' })).toBeNull();
 		expect(resolvePaneTarget({ href: '/' })).toBeNull();
 	});
+
+	it('refuses a cross-workspace resolver href (/-/r/{workspace}/{ref}) rather than misreading its trailing ref as local', () => {
+		// wikiLinksToMarkdown/renderMarkdown emit this shape for [[otherWs::REF]]
+		// links. Taking the trailing segment at face value would drill the
+		// CURRENT workspace's pane to a same-numbered local item — the wrong
+		// item. This link shape must fall through to a normal navigation
+		// instead (Codex review).
+		expect(resolvePaneTarget({ href: '/-/r/other-workspace/TASK-9' })).toBeNull();
+	});
 });
 
 describe('isSamePaneTarget — same-item guard', () => {
@@ -108,6 +117,12 @@ describe('isSamePaneTarget — same-item guard', () => {
 
 	it('a ref-shaped candidate with the right prefix but wrong number is a different item', () => {
 		expect(isSamePaneTarget({ ref: 'TASK-6' }, task5)).toBe(false);
+	});
+
+	it('a cross-workspace resolver href never false-positives, even when the numbers coincide', () => {
+		// A different workspace's TASK-5 is NOT this workspace's task5, even
+		// though the trailing ref segment is identical.
+		expect(isSamePaneTarget({ href: '/-/r/other-workspace/TASK-5' }, task5)).toBe(false);
 	});
 });
 

@@ -1697,8 +1697,12 @@ export interface PaneTarget {
 	ref?: string;
 	/** Item slug, used when no `ref` is available. */
 	slug?: string;
-	/** An internal item URL, e.g. "/alice/myws/tasks/TASK-5". Only its
-	 *  trailing path segment (the ref-or-slug) is used. */
+	/** A SAME-WORKSPACE internal item URL, e.g. "/alice/myws/tasks/TASK-5"
+	 *  (only its trailing path segment — the ref-or-slug — is used). A
+	 *  cross-workspace resolver URL (`/-/r/{workspace}/{ref}`) is NOT
+	 *  resolvable through this field — `resolvePaneTarget` refuses it rather
+	 *  than risk opening the wrong item; that link shape should bypass pane
+	 *  interception and navigate normally. */
 	href?: string;
 	/** The target item's collection slug, if known. */
 	collectionSlug?: string;
