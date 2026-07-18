@@ -764,4 +764,153 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => openItemParam(page)).toBe(b.slug);
 		await expect(pane).toBeVisible();
 	});
+
+	// ── In-pane Back chevron (PLAN-2154 Architecture C, TASK-2164) ──────────
+	// The pane chrome (⤢/↗/✕ today) grows a fourth control — a Back chevron —
+	// shown ONLY once the pane has drilled past its base (depth>0), wired to
+	// the same fenced `paneHistoryGo(-1)`/`paneNavInFlight()` traversal the
+	// depth-aware ESC handler above uses (R14). Depth is read reactively off
+	// SvelteKit `page.state` inside `ItemDetail` itself (never raw
+	// `history.state`), so the chevron's visibility always matches the
+	// controller's own `paneState()` read back through the test hook.
+
+	test('Back chevron: hidden at depth 0, visible once drilled, one press pops exactly one level', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl back alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		const refA = openItemParam(page);
+
+		const backBtn = pane.locator('button[aria-label="Back"]');
+		// Depth 0 (first-open) — the chevron is not rendered at all.
+		await expect(backBtn).toHaveCount(0);
+
+		// Drill A→B → depth 1 — the chevron appears.
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect(backBtn).toBeVisible();
+
+		// One press pops exactly one level: back to A at depth 0, and the pane
+		// stays open (this is a drill-stack pop, not a close).
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(refA);
+		await expect(pane).toBeVisible();
+		// Back at the base — the chevron is gone again.
+		await expect(pane.locator('button[aria-label="Back"]')).toHaveCount(0);
+	});
+
+	test('Back chevron: pops one level per press across a multi-hop drill', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl back-multi alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back-multi bravo');
+		const c = await seedDoc(fixture, request, 'Ctrl back-multi charlie');
+		const d = await seedDoc(fixture, request, 'Ctrl back-multi delta');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back-multi alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+
+		// Drill to depth 3: A(0) → B(1) → C(2) → D(3).
+		await drillTo(page, b.slug);
+		await drillTo(page, c.slug);
+		await drillTo(page, d.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 3, paneOwned: true });
+		expect(openItemParam(page)).toBe(d.slug);
+
+		const backBtn = pane.locator('button[aria-label="Back"]');
+
+		// Press 1: D(3) → C(2).
+		await expect(backBtn).toBeVisible();
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(c.slug);
+
+		// Press 2: C(2) → B(1).
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+
+		// Press 3: B(1) → A(0), the base — chevron disappears, pane stays open.
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect(pane).toBeVisible();
+		await expect(pane.locator('button[aria-label="Back"]')).toHaveCount(0);
+	});
+
+	test('Back chevron: a cold-loaded shared ?item= starts at depth 0 and stays hidden; browser Back still exits the pane', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		const a = await seedDoc(fixture, request, 'Ctrl back-cold alpha');
+
+		// COLD LOAD straight into an open pane — no history stamp, so the
+		// controller normalizes to depth 0 / unowned (readPaneState's base
+		// default). The chevron must NOT render here.
+		await page.goto(docsUrl(fixture, `?item=${a.slug}`));
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: false });
+		await expect(pane.locator('button[aria-label="Back"]')).toHaveCount(0);
+
+		// Browser Back at the cold base behaves exactly as before this task —
+		// it leaves the page entirely (there was no pre-pane entry to unwind
+		// to within this tab's history), unaffected by the chevron addition.
+		await page.goBack();
+		await expect.poll(() => page.url()).not.toContain(`item=${a.slug}`);
+	});
+
+	test('Back chevron: works from the mobile full-screen overlay too', async ({
+		page,
+		fixture,
+		request,
+	}, testInfo) => {
+		test.skip(
+			testInfo.project.name !== 'desktop-chromium',
+			'mobile viewport is driven explicitly; one project is enough',
+		);
+		await page.setViewportSize(MOBILE);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl back-mobile alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back-mobile bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back-mobile alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		const backBtn = pane.locator('button[aria-label="Back"]');
+		await expect(backBtn).toHaveCount(0);
+
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect(backBtn).toBeVisible();
+
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect(pane).toBeVisible();
+		await expect(pane.locator('button[aria-label="Back"]')).toHaveCount(0);
+	});
 });

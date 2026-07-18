@@ -41,6 +41,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
 	import { isSamePaneTarget } from '$lib/collections/paneTarget';
+	import { readPaneState } from '$lib/collections/paneController';
 	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
@@ -90,6 +91,7 @@
 		onNavigateAway,
 		onReady,
 		onOpenTarget,
+		onBack,
 	}: {
 		username: string;
 		wsSlug: string;
@@ -113,7 +115,23 @@
 		// through. Relationships/breadcrumb/graph land separately
 		// (TASK-2159/2161ff).
 		onOpenTarget?: (target: PaneTarget) => void;
+		// PLAN-2154 Architecture C / TASK-2164: fired by the pane chrome's Back
+		// chevron (rendered only at depth>0 — see `paneDepth` below). The host
+		// owns the actual traversal (its fenced `paneHistoryGo`/`paneNavInFlight`
+		// — R14), so this stays a plain notify, mirroring `onClose`/`onOpenTarget`.
+		onBack?: () => void;
 	} = $props();
+
+	// PLAN-2154 Architecture C / TASK-2164: in-pane drill depth, read
+	// reactively from SvelteKit's `page.state` accessor (never raw
+	// `history.state` — Kit nests app state under `sveltekit:states`). Depth
+	// is the single source of truth for the pane chrome's Back chevron —
+	// hidden at depth 0 (first-open, or a cold-loaded shared `?item=` that
+	// starts at depth 0 by construction, `readPaneState`'s base default),
+	// shown once a drill (`navigatePaneTo`) has pushed depth>0. Shared with
+	// the collection host's own `currentPaneState()` via the same
+	// `$lib/collections/paneController` module.
+	let paneDepth = $derived(readPaneState(page.state).paneDepth);
 
 	// itemSlug is the identity that drives loadData + the whole collabKey
 	// chain. It derives from the `ref` prop (NOT page.params) so a `?item=`
@@ -3355,11 +3373,28 @@
 		{:else}
 			<!-- Pane chrome (PLAN-2105 / TASK-2113). Replaces the full-page
 			     breadcrumb (hidden above) inside the narrow docked pane: expand
-			     to the full page, pop out to a new tab, or collapse the pane.
-			     The ref label + copy button mirror the full-page identity; the
-			     three controls are the pane's route-owner chrome. -->
+			     to the full page, pop out to a new tab, or collapse the pane —
+			     plus, once drilled (PLAN-2154 / TASK-2164), a Back chevron to pop
+			     one level. The ref label + copy button mirror the full-page
+			     identity; these controls are the pane's route-owner chrome. -->
 			<header class="pane-header" aria-label="Item pane">
 				<div class="pane-header-ref">
+					<!-- Back chevron (PLAN-2154 Architecture C / TASK-2164) — shown
+					     only once the pane has drilled past its base (depth>0).
+					     Pops exactly one level per press; the host owns the actual
+					     traversal (fenced `paneHistoryGo`/`paneNavInFlight`, mirroring
+					     the depth-aware ESC handler) so this is a plain notify. Desktop
+					     and mobile share this markup — the pane header is identical in
+					     both (mobile's is the fixed full-screen overlay's header). -->
+					{#if paneDepth > 0}
+						<button
+							type="button"
+							class="pane-header-btn pane-back-btn"
+							onclick={() => onBack?.()}
+							title="Back"
+							aria-label="Back"
+						>‹</button>
+					{/if}
 					<span class="pane-header-ref-text">{formatItemRef(item) || item.title}</span>
 					{#if formatItemRef(item)}
 						<button class="copy-ref-btn" onclick={handleCopyRef} title="Copy item ID" aria-label="Copy item ID">
@@ -4560,6 +4595,14 @@
 	.pane-header-btn:hover {
 		background: var(--bg-hover);
 		color: var(--text-primary);
+	}
+	/* Back chevron (PLAN-2154 / TASK-2164) — sits inside `.pane-header-ref`
+	   alongside the ref label, so it needs a touch more breathing room than
+	   the trailing action icons, and the glyph itself renders small at the
+	   shared 0.95rem size. */
+	.pane-back-btn {
+		flex-shrink: 0;
+		font-size: 1.25rem;
 	}
 
 	/* Breadcrumb */
