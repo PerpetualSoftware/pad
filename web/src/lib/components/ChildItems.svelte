@@ -4,7 +4,6 @@
 	import { api } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
-	import { editorStore } from '$lib/stores/editor.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -37,9 +36,22 @@
 		 * proxy gate (svelte-dnd-action limitation, same as TASK-1106).
 		 */
 		canEdit?: boolean;
+		/**
+		 * Instance-scoped shadow of the OWNING ItemDetail's own dirty/
+		 * lastSaveTime (PLAN-2154 Phase 0 / R4, TASK-2156). ChildItems used to
+		 * read the global `editorStore.dirty`/`lastSaveTime` singleton directly
+		 * to skip reloading on a self-triggered content-save echo. With a
+		 * second concurrently-mounted ItemDetail (the future full-page-host +
+		 * pane, D2), that singleton is shared — one instance's save could
+		 * suppress a DIFFERENT instance's ChildItems reload. Defaults preserve
+		 * today's single-instance behavior for the (nonexistent) caller that
+		 * doesn't pass them.
+		 */
+		selfDirty?: boolean;
+		selfLastSaveTime?: number;
 	}
 
-	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange, canEdit = true }: Props = $props();
+	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange, canEdit = true, selfDirty = false, selfLastSaveTime = 0 }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
@@ -222,8 +234,13 @@
 
 		unsubscribeSSE = sseService.onItemEvent((event) => {
 			if (!['item_created', 'item_updated', 'item_archived', 'item_restored'].includes(event.type)) return;
-			// Skip self-triggered content saves — they don't affect children
-			if (event.type === 'item_updated' && (editorStore.dirty || Date.now() - editorStore.lastSaveTime < 5000)) return;
+			// Skip self-triggered content saves — they don't affect children.
+			// Reads the OWNING ItemDetail's per-instance selfDirty/
+			// selfLastSaveTime props (TASK-2156), not the global
+			// editorStore.dirty/lastSaveTime singleton — a concurrently-
+			// mounted second ItemDetail's save must not suppress THIS
+			// instance's reload (PLAN-2154 D2 / R4).
+			if (event.type === 'item_updated' && (selfDirty || Date.now() - selfLastSaveTime < 5000)) return;
 			loadChildren();
 		});
 	});
