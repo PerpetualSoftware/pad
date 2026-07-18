@@ -1,6 +1,6 @@
 import { test, expect } from './fixtures';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
-import type { Page } from '@playwright/test';
+import type { APIRequestContext, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
 
 /**
@@ -84,6 +84,43 @@ async function enableHook(page: Page): Promise<void> {
 			/* private mode / disabled storage — hook simply won't install */
 		}
 	});
+}
+
+function authHeaders(fixture: SuiteFixture) {
+	return { Authorization: `Bearer ${fixture.apiToken}`, 'Content-Type': 'application/json' };
+}
+
+/** Create a fresh, test-scoped renamable collection (letters-only prefix, name
+ *  unique — see pane-collection-migration-race.spec.ts for the slug/prefix
+ *  gotchas). */
+async function seedCollection(
+	fixture: SuiteFixture,
+	request: APIRequestContext,
+	namePrefix: string,
+	itemPrefix: string,
+): Promise<{ id: string; slug: string; name: string }> {
+	const name = `${namePrefix} ${Date.now()}`;
+	const schema = JSON.stringify({ fields: [{ key: 'note', label: 'Note', type: 'text' }] });
+	const resp = await request.post(`/api/v1/workspaces/${fixture.workspaceSlug}/collections`, {
+		headers: authHeaders(fixture),
+		data: { name, prefix: itemPrefix, schema },
+	});
+	if (!resp.ok()) throw new Error(`collection create failed (${resp.status()}): ${await resp.text()}`);
+	return (await resp.json()) as { id: string; slug: string; name: string };
+}
+
+async function seedItemIn(
+	fixture: SuiteFixture,
+	request: APIRequestContext,
+	collSlug: string,
+	title: string,
+): Promise<{ id: string; slug: string }> {
+	const resp = await request.post(
+		`/api/v1/workspaces/${fixture.workspaceSlug}/collections/${collSlug}/items`,
+		{ headers: authHeaders(fixture), data: { title, fields: JSON.stringify({}), content: '' } },
+	);
+	if (!resp.ok()) throw new Error(`item create failed (${resp.status()}): ${await resp.text()}`);
+	return (await resp.json()) as { id: string; slug: string };
 }
 
 test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-2157)', () => {
@@ -280,5 +317,64 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await pane.locator('button[aria-label="Close pane"]').click();
 		await expect.poll(() => openItemParam(page)).toBeNull();
 		await expect.poll(() => page.url()).toBe(prePaneUrl);
+	});
+
+	test('collection rename keeps the pane on the NEW slug and closes cleanly (ownership rebased, not 404)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		const coll = await seedCollection(fixture, request, 'Ctrl rename', 'CTRN');
+		await seedItemIn(fixture, request, coll.slug, 'Rename target item');
+
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/${coll.slug}`);
+		await page.locator('.item-card', { hasText: 'Rename target item' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		// Owned first-open at depth 0.
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		// The `?item=` value (canonical ref or slug) that must survive the rename.
+		const itemParam = openItemParam(page);
+		expect(itemParam).not.toBeNull();
+
+		// Rename the collection via the pane's Quick Actions → Manage actions →
+		// Edit Collection modal (General tab). The rename changes the pathname
+		// (old→new slug) while preserving `?item=` — routed through
+		// onNavigateAway (must replaceState + rebase ownership).
+		await pane.locator('button.trigger-btn[title="Quick actions"]').click();
+		await pane.locator('button.action-item.footer-row', { hasText: 'Manage actions' }).click();
+		await expect(page.locator('#edit-collection-title')).toBeVisible();
+		// "Manage actions" opens the modal on the Actions tab — switch to General
+		// to reach the collection-name field.
+		await page.locator('button.tab', { hasText: 'General' }).click();
+		const newName = `Ctrl renamed ${Date.now()}`;
+		await page.locator('input.name-input').fill(newName);
+		await page.locator('button.btn-save', { hasText: 'Save Changes' }).click();
+
+		// The pane survives on the NEW slug with `?item=` intact and the pane not
+		// remounted away.
+		await expect.poll(() => new URL(page.url()).pathname).not.toContain(`/${coll.slug}`);
+		const newPath = new URL(page.url()).pathname;
+		expect(newPath).toMatch(new RegExp(`/${fixture.workspaceSlug}/[^/]+$`));
+		expect(openItemParam(page)).toBe(itemParam);
+		await expect(pane).toBeVisible();
+		// Ownership REBASED to a fresh unowned depth-0 base on the new slug (the
+		// pre-pane entry now points at the dead old slug).
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: false });
+
+		// Closing must drop `?item=` IN PLACE (staying on the valid new slug),
+		// never `history.go` back onto the now-404 old slug.
+		await pane.locator('button[aria-label="Close pane"]').click();
+		await expect.poll(() => openItemParam(page)).toBeNull();
+		await expect(pane).toBeHidden();
+		expect(new URL(page.url()).pathname).toBe(newPath);
+		// Still a LIVE collection page — the renamed collection renders its own
+		// heading, not a "Collection not found" error. (The item list re-hydrates
+		// the renamed collection asynchronously via the local index, so we assert
+		// page liveness via the heading rather than a specific row.)
+		await expect(page.getByRole('heading', { level: 1, name: new RegExp(newName) })).toBeVisible();
 	});
 });

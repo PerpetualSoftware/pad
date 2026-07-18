@@ -546,13 +546,16 @@
 		return pendingPaneLatch !== null;
 	}
 
-	// Consume the pending latch on navigation settle. The `history.go` that
-	// armed it lands here as the next client navigation (popstate → Kit →
-	// afterNavigate); the seq fence drops it if a newer controller action
-	// intervened, and each `run()` re-checks live state before it writes (R14).
-	afterNavigate(() => {
+	// Consume the pending latch on navigation settle. Its `history.go` lands
+	// here as a POPSTATE — so we gate on `nav.type === 'popstate'` and leave the
+	// latch ARMED for any other navigation (a competing `goto`/link/form must
+	// not consume it against the wrong entry; it stays armed until its own
+	// `history.go` settles). The seq fence drops a superseded latch, and each
+	// `run()` re-checks live state before it writes (R14; Codex review P2).
+	afterNavigate((nav) => {
 		const latch = pendingPaneLatch;
 		if (!latch) return;
+		if (nav.type !== 'popstate') return; // not our history.go yet — stay armed
 		pendingPaneLatch = null;
 		if (latch.seq !== controllerActionSeq) return; // superseded → discard
 		latch.run();
@@ -653,7 +656,14 @@
 		}
 		if (plan.kind === 'owned-go') {
 			// Owned: unwind the pushed base + every drill back to the pre-pane URL
-			// (which carries no `?item=`, so the pane closes on arrival).
+			// (which carries no `?item=`, so the pane closes on arrival). This is
+			// PLAN-2154 R8's mandated close — and it makes an explicit ✕/ESC close
+			// IDENTICAL to the browser Back that already closed the pane in
+			// PLAN-2105 (a single Back pops the first-open push). Consequence: a
+			// list filter/view/search change made WHILE the pane was open — which
+			// `updateUrlFilters` replaceState'd onto the pane entry — is not
+			// carried to the pre-pane URL, exactly as browser Back already
+			// behaves. (The cold-loaded / unowned branches below stay in place.)
 			history.go(plan.goDelta);
 			return;
 		}
@@ -3556,7 +3566,18 @@
 						replaceState: true,
 						noScroll: true,
 						keepFocus: true,
-						state: currentPaneState(),
+						// A collection RENAME changes the pathname (old→new slug) while
+						// keeping `?item=`. replaceState (not push) keeps the history
+						// entry COUNT stable, but we must NOT carry the old
+						// depth/ownership stamp forward: every predecessor entry (the
+						// pre-pane base + any drills) still points at the now-dead OLD
+						// slug, so an owned close would `history.go` back onto a 404
+						// ("Collection not found"). Ownership means "a live pre-pane
+						// entry exists to unwind to" — after a rename that's false. Stamp
+						// a fresh UNOWNED depth-0 base on the new slug so close drops
+						// `?item=` in place (staying on the valid new route) instead of
+						// navigating off it (PLAN-2154 R8; Codex review).
+						state: { paneDepth: 0, paneOwned: false },
 					})}
 			/>
 		</aside>
