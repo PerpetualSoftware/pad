@@ -518,79 +518,77 @@
 		return readPaneState(page.state);
 	}
 
-	// R14 fence: a monotonically-increasing sequence bumped at the START of
-	// every controller action (open/drill/close). Any two-phase `history.go`
-	// continuation captures this seq and BAILS if a newer action superseded it
-	// before its `afterNavigate` latch fired — `history.go` has no completion
-	// promise, so these continuations resume AFTER the user may have
-	// re-targeted, drilled, or closed (the documented late-async-clobber class).
+	// R14 fence: a monotonically-increasing sequence bumped at the START of every
+	// controller action (open/drill/close). A two-phase `history.go` continuation
+	// captures it and BAILS if a newer action superseded it (belt-and-suspenders
+	// now that `paneNavInFlight()` blocks a fresh gesture mid-traversal).
 	let controllerActionSeq = 0;
-	// A one-shot continuation to run once its `history.go` has actually landed at
-	// the intended destination — the second phase of a `history.go`-then-write
-	// staged navigation (cold-base close / detached-open reset). `run()` RETURNS
-	// whether it fired: false means "not at the destination yet" (a competing
-	// traversal landed us elsewhere first), so the latch stays armed for this
-	// go's own popstate rather than being dropped against the wrong entry.
+	// EVERY controller `history.go` (owned close, cold-base close, detached-open
+	// reset) marks navigation in-flight from the moment it's issued until its
+	// traversal settles (its own popstate) or a bounded fallback. `history.go`
+	// has no completion promise, so without this a duplicate gesture — a
+	// double-click ✕, an ESC racing a click-away — could stack a SECOND traversal
+	// before the first's popstate lands and OVERSHOOT the intended entry. Blocks
+	// re-entrancy; bounded so it can never stick (a stuck flag would freeze every
+	// pane gesture). Steady-state depth-0 opens/re-targets issue no `history.go`,
+	// so this only arms on a close/reset (R14; Codex review).
+	const PANE_GO_SETTLE_MS = 500;
+	let paneGoInFlight = false;
+	let paneGoTimer: ReturnType<typeof setTimeout> | null = null;
+	// The "then write" continuation of a STAGED go (cold-base close / reset).
+	// `run()` RETURNS whether it fired: false means "not at the destination yet"
+	// (a competing traversal landed us elsewhere), so it stays armed for this
+	// go's own popstate rather than firing against the wrong entry. Null for a
+	// one-phase owned close (nothing to write after the traversal).
 	let pendingPaneLatch: { seq: number; run: () => boolean } | null = null;
-	// Bounded safety net: even if the arming `history.go` is superseded and its
-	// own popstate never lands at the destination, force-resolve the latch after
-	// this window so `paneNavInFlight()` can NEVER stick (a stuck latch would
-	// freeze every pane gesture). The go's popstate normally settles within a
-	// frame, so this only fires in the aborted-navigation case (R14; Codex).
-	const PANE_LATCH_FALLBACK_MS = 500;
-	let paneLatchTimer: ReturnType<typeof setTimeout> | null = null;
 
-	function clearPaneLatch() {
-		pendingPaneLatch = null;
-		if (paneLatchTimer) {
-			clearTimeout(paneLatchTimer);
-			paneLatchTimer = null;
-		}
-	}
-
-	function armPaneLatch(run: () => boolean) {
-		pendingPaneLatch = { seq: controllerActionSeq, run };
-		if (paneLatchTimer) clearTimeout(paneLatchTimer);
-		paneLatchTimer = setTimeout(() => {
-			paneLatchTimer = null;
-			const latch = pendingPaneLatch;
-			if (!latch) return;
-			// Give up waiting for a matching popstate: best-effort fire (its own
-			// preconditions no-op it if we're not at the destination), then clear
-			// UNCONDITIONALLY so the in-flight guard releases.
-			latch.run();
-			pendingPaneLatch = null;
-		}, PANE_LATCH_FALLBACK_MS);
-	}
-
-	// True while a two-phase `history.go`-then-write is mid-flight (cold-base
-	// close / detached-open reset). During that window the URL + state are
-	// transitional, so a fresh controller gesture is ignored rather than allowed
-	// to stack a SECOND `history.go` (which would over-unwind). Bounded by the
-	// fallback timer above, so it can never stick. Steady-state depth-0 flow
-	// never arms a latch, so this is inert in production and only serializes the
-	// rare depth>0 (drill-driven) two-phase races.
 	function paneNavInFlight(): boolean {
-		return pendingPaneLatch !== null;
+		return paneGoInFlight;
 	}
 
-	// Consume the pending latch on navigation settle. Its `history.go` lands
-	// here as a POPSTATE — but `popstate` also covers an unrelated browser
-	// Back/Forward, so we do NOT clear the latch eagerly: `run()` verifies it has
-	// actually reached its intended destination (the pane base — depth 0 with
-	// `?item=` present) and only THEN performs the write and reports true. A
-	// competing traversal that lands elsewhere leaves `run()` returning false and
-	// the latch armed for this go's own popstate (bounded by the fallback timer)
-	// — it can't be dropped or fired against the wrong entry (Codex review).
-	afterNavigate((nav) => {
-		const latch = pendingPaneLatch;
-		if (!latch) return;
-		if (nav.type !== 'popstate') return; // not a history traversal — stay armed
-		if (latch.seq !== controllerActionSeq) {
-			clearPaneLatch(); // superseded → discard
-			return;
+	function clearPaneGo() {
+		paneGoInFlight = false;
+		pendingPaneLatch = null;
+		if (paneGoTimer) {
+			clearTimeout(paneGoTimer);
+			paneGoTimer = null;
 		}
-		if (latch.run()) clearPaneLatch(); // consume only once it fires
+	}
+
+	// Issue a controller traversal, fencing against a duplicate gesture stacking
+	// a second one. `latch` is the optional post-traversal write (cold-base /
+	// reset), fired from the settling popstate.
+	function paneHistoryGo(delta: number, latch?: () => boolean) {
+		paneGoInFlight = true;
+		pendingPaneLatch = latch ? { seq: controllerActionSeq, run: latch } : null;
+		if (paneGoTimer) clearTimeout(paneGoTimer);
+		paneGoTimer = setTimeout(() => {
+			paneGoTimer = null;
+			// Gave up waiting for the settling popstate (the traversal was
+			// superseded): best-effort fire the latch (its own preconditions no-op
+			// it off-target), then release the guard UNCONDITIONALLY so gestures
+			// can't stay blocked.
+			const l = pendingPaneLatch;
+			paneGoInFlight = false;
+			pendingPaneLatch = null;
+			l?.run();
+		}, PANE_GO_SETTLE_MS);
+		history.go(delta);
+	}
+
+	// Settle the in-flight traversal on its own POPSTATE. `popstate` also covers
+	// an unrelated browser Back/Forward, so a STAGED latch is not consumed
+	// eagerly: `run()` verifies it reached its destination (the pane base — depth
+	// 0 with `?item=` present) and reports whether it fired; if not, we stay
+	// in-flight for this go's own popstate (bounded by the fallback timer). A
+	// one-phase owned close has no latch and simply releases the guard.
+	afterNavigate((nav) => {
+		if (!paneGoInFlight) return;
+		if (nav.type !== 'popstate') return; // wait for the traversal's own popstate
+		const latch = pendingPaneLatch;
+		// Staged latch not yet at its destination → stay in-flight.
+		if (latch && latch.seq === controllerActionSeq && !latch.run()) return;
+		clearPaneGo();
 	});
 
 	function openItemPane(item: Item) {
@@ -615,14 +613,14 @@
 			// correctly. A pending j/k follow must not fire mid-reset.
 			cancelPaneFollow();
 			const resetState = plan.resetState;
-			armPaneLatch(() => {
+			paneHistoryGo(plan.goDelta, () => {
 				if (!browser) return false;
 				// Only re-target once the stack has actually collapsed to the pane
 				// BASE — a depth-0 entry that still carries `?item=`. Requiring
 				// `?item=` (not just depth 0) rejects a competing browser Back that
 				// landed on the pre-pane entry (which has no `?item=`), so the reset
-				// can't be written onto the wrong entry; the latch stays armed for
-				// this go's own popstate (Codex review).
+				// can't be written onto the wrong entry; it stays armed for this go's
+				// own popstate (Codex review).
 				if (!page.url.searchParams.has('item')) return false;
 				if (currentPaneState().paneDepth !== 0) return false;
 				const u = new URL(page.url);
@@ -635,7 +633,6 @@
 				});
 				return true;
 			});
-			history.go(plan.goDelta);
 			return;
 		}
 		url.searchParams.set('item', targetRef);
@@ -669,28 +666,46 @@
 		});
 	}
 
-	// A collection RENAME (fired from the pane's ItemDetail when the owner
-	// renames the collection) changes the pathname (old→new slug) while keeping
-	// `?item=`. It must:
-	//  • replaceState (not push) so it adds no uncounted history entry that
-	//    would desync the close-depth arithmetic (PLAN-2154 R8);
-	//  • stamp a FRESH UNOWNED depth-0 base on the new slug — NOT carry the old
-	//    ownership forward. Every predecessor entry (pre-pane base + any drills)
-	//    still points at the now-dead OLD slug, so an owned close would
-	//    `history.go` back onto a 404. Ownership means "a live pre-pane entry
-	//    exists to unwind to", which is false after a rename; an unowned base
-	//    closes by dropping `?item=` in place, staying on the valid new route.
-	//  • bypass the unsaved-draft `beforeNavigate` guard: the server-side
-	//    rename already committed, and this route component is REUSED across the
-	//    same-route pathname change (its quick-create drafts survive), so a
-	//    "Stay" prompt would strand the user on the now-dead old slug with the
-	//    stale owned stamp (Codex review).
-	// This fixes the IMPERATIVE close (✕/ESC). Browser Back after a rename still
-	// traverses to the predecessor entry that sits on the now-dead old slug — an
-	// inherent consequence of renaming a collection that's already in history
-	// (past entries can't be rewritten), independent of the pane and unchanged by
-	// this controller.
-	function navigatePaneAfterRename(url: string) {
+	// The pane's ItemDetail fires `onNavigateAway` for TWO distinct cases, which
+	// we tell apart by whether the target URL still carries `?item=` (i.e. keeps
+	// the pane open):
+	//
+	//  • COLLECTION RENAME (`/user/ws/NEWSLUG?item=X`) — the pathname changed
+	//    (old→new slug) but the pane stays open. This needs the rename-specific
+	//    handling: replaceState (not push) so it adds no uncounted history entry
+	//    that would desync the close-depth arithmetic (R8); a FRESH UNOWNED
+	//    depth-0 stamp (every predecessor entry — pre-pane base + any drills —
+	//    still points at the now-dead OLD slug, so carrying ownership forward
+	//    would make an owned close `history.go` onto a 404; an unowned base
+	//    closes by dropping `?item=` in place on the valid new route); and a
+	//    bypass of the unsaved-draft guard (the rename already committed
+	//    server-side and this route component is REUSED across the same-route
+	//    pathname change, so its quick-create drafts survive — a "Stay" prompt
+	//    would only strand the user on the dead old slug). This fixes the
+	//    IMPERATIVE close; browser Back still traverses to the old-slug
+	//    predecessor (an inherent rename-in-history limitation — past entries
+	//    can't be rewritten — outside the controller's reach).
+	//
+	//  • ITEM MOVE to a different collection (`/user/ws/COLL/SLUG`, a full-page
+	//    item route with NO `?item=`) — this leaves the collection page entirely
+	//    (the pane closes, the component unmounts, its drafts WOULD be lost), so
+	//    it must retain the ORIGINAL guarded push: the unsaved-draft prompt has
+	//    to fire, and there is no pane to stamp (Codex review).
+	function handlePaneNavigateAway(url: string) {
+		let keepsPane = false;
+		try {
+			keepsPane = new URL(url, 'http://pad.invalid').searchParams.has('item');
+		} catch {
+			keepsPane = false;
+		}
+		if (!keepsPane) {
+			// Item move (or any away-nav that drops the pane) — original behavior:
+			// a guarded navigation so the unsaved-draft prompt still fires.
+			void goto(url);
+			return;
+		}
+		// Collection rename — rebase ownership + bypass the (now-spurious) draft
+		// guard for the committed, component-reusing pathname change.
 		bypassNavGuard = true;
 		void goto(url, {
 			replaceState: true,
@@ -733,17 +748,18 @@
 			// list filter/view/search change made WHILE the pane was open — which
 			// `updateUrlFilters` replaceState'd onto the pane entry — is not
 			// carried to the pre-pane URL, exactly as browser Back already
-			// behaves. (The cold-loaded / unowned branches below stay in place.)
-			history.go(plan.goDelta);
+			// behaves. A one-phase traversal (no latch); the in-flight fence stops
+			// a duplicate ✕/ESC from stacking a second go(-1) that would overshoot.
+			paneHistoryGo(plan.goDelta);
 			return;
 		}
 		// cold-base-go: go back to the cold base (still carries `?item=`), then
-		// delete it from a one-shot latch (`history.go` can't be awaited).
-		armPaneLatch(() => {
+		// delete it from a latch fired on the settling popstate.
+		paneHistoryGo(plan.goDelta, () => {
 			if (!browser) return false;
 			// Only delete once we've reached the cold base that still shows the
 			// pane (depth 0, `?item=` present); a competing traversal landing
-			// elsewhere leaves the latch armed (R14 fence-on-continuation).
+			// elsewhere leaves it armed (R14 fence-on-continuation).
 			if (!page.url.searchParams.has('item')) return false;
 			if (currentPaneState().paneDepth !== 0) return false;
 			const u = new URL(page.url);
@@ -755,7 +771,6 @@
 			});
 			return true;
 		});
-		history.go(plan.goDelta);
 	}
 
 	// Click-outside-to-collapse the split pane (IDEA-2148). While the pane is
@@ -1389,9 +1404,9 @@
 		// Drop any pending j/k pane-follow so a late timer can't call goto on
 		// the unmounted page (PLAN-2105 / TASK-2119).
 		cancelPaneFollow();
-		// Drop any pending two-phase `history.go` continuation (and its fallback
-		// timer) so a late afterNavigate latch can't write to the unmounted page.
-		clearPaneLatch();
+		// Drop any in-flight `history.go` continuation (and its fallback timer) so
+		// a late afterNavigate latch can't write to the unmounted page.
+		clearPaneGo();
 		// Scroll save/restore cleanup is owned by createScrollRestoration
 		// (snapshot.capture fires on navigate-away; the helper's $effect
 		// teardown cancels any in-flight RAF).
@@ -3633,7 +3648,7 @@
 				{collSlug}
 				onClose={closeItemPane}
 				onGone={closeItemPane}
-				onNavigateAway={navigatePaneAfterRename}
+				onNavigateAway={handlePaneNavigateAway}
 			/>
 		</aside>
 	{/if}

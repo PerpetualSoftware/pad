@@ -174,6 +174,43 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => page.url()).toBe(prePaneUrl);
 	});
 
+	test('a duplicate close gesture cannot stack a second history.go and overshoot the pre-pane URL', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl dblclose alpha');
+		await page.goto(docsUrl(fixture));
+
+		const prePaneUrl = page.url();
+		await page.locator('.item-card', { hasText: 'Ctrl dblclose alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+
+		// Fire closeItemPane TWICE synchronously (a double-click ✕ / ESC+click
+		// race). The owned close is a one-phase history.go(-1); without the
+		// in-flight fence the second call would read the still-stale state and
+		// stack a SECOND go(-1), overshooting PAST the pre-pane entry (here, back
+		// to /login). The fence must make the second call a no-op.
+		await page.evaluate(() => {
+			const c = (
+				window as unknown as { __padPaneController?: { closeItemPane(): void } }
+			).__padPaneController;
+			c?.closeItemPane();
+			c?.closeItemPane();
+		});
+
+		await expect.poll(() => openItemParam(page)).toBeNull();
+		await expect(pane).toBeHidden();
+		// Landed EXACTLY on the pre-pane URL — not overshot to /login.
+		await expect.poll(() => page.url()).toBe(prePaneUrl);
+		expect(page.url()).not.toContain('/login');
+	});
+
 	test('drill A→B pushes a depth-1 owned entry; browser Back returns to A at depth 0', async ({
 		page,
 		fixture,
