@@ -2,16 +2,20 @@
 // Architecture B / TASK-2158). This is the seam future content-link
 // surfaces (relationships, breadcrumb, editor wiki-links, the graph drawer —
 // TASK-2159/2160) thread `onOpenTarget` calls through: they hand up a
-// `PaneTarget` (ref/slug/href/collectionSlug — never a full `Item`), and
-// this module turns it into whatever `navigatePaneTo` (the pane's DRILL
-// entry point in `paneController.ts`) expects.
+// `PaneTarget` (ref/slug/href/collectionSlug — never a full `Item`).
+// `isSamePaneTarget` is called INSIDE `ItemDetail` (via its `fireOpenTarget`
+// wrapper), where the loaded `item` is on hand, to drop a self-referential
+// target before it ever reaches the host. `resolvePaneTarget` is called at
+// the collection host to turn whatever survives into the canonical string
+// `navigatePaneTo` (the pane's DRILL entry point in `paneController.ts`)
+// expects.
 //
 // Kept framework-agnostic (no `$state`/`page`) and free of any `Item`
 // FETCH — resolution only reads fields already present on the caller's
 // hands, so it's exhaustively unit-testable without mounting a route.
 
 import type { Item, PaneTarget } from '$lib/types';
-import { formatItemRef, itemUrlId } from '$lib/types';
+import { formatItemRef } from '$lib/types';
 
 /**
  * Extract the trailing path segment of an internal item href, e.g.
@@ -70,22 +74,22 @@ export function isSamePaneTarget(target: PaneTarget, current: Item | null | unde
  * ref > slug > an href's trailing path segment, mirroring
  * `itemUrlId`/`formatItemRef`.
  *
- * When `current` (the item already loaded where this target was clicked)
- * is supplied and the target resolves to THAT item — by id, or by either
- * its ref or slug even when the target names it differently than however
- * it's currently open — this returns `current`'s OWN canonical ref instead
- * of the target's raw candidate. That normalization is the same-item guard:
- * handing the exact currently-open ref back to `navigatePaneTo` lets its
- * existing same-ref no-op check (`planPaneDrill`) catch the alias and skip
- * a redundant re-target onto the identical item, rather than requiring
- * every caller to duplicate the id/ref/slug comparison.
+ * When `current` (the item already loaded where this target was clicked) is
+ * supplied and the target resolves to THAT item — by id, or by either its
+ * ref or slug even when the target names it differently than however it's
+ * currently open (`isSamePaneTarget`) — this returns `null` rather than any
+ * ref/slug string. That's the same-item guard: null is `navigatePaneTo`'s
+ * caller's uniform "nothing to do" signal (mirrors "target carries nothing
+ * resolvable" below), so a self-referential alias — e.g. the pane is open
+ * via `?item=my-slug` and a link names the same item by its `TASK-5` ref —
+ * is a clean no-op. Deliberately NOT the item's own canonical ref: that
+ * could itself mismatch the pane's actual (possibly slug-shaped) open `?item=`
+ * value and cause `planPaneDrill`'s same-ref check to wrongly treat it as a
+ * new target (Codex review).
  *
  * Returns null when the target carries nothing resolvable.
  */
 export function resolvePaneTarget(target: PaneTarget, current?: Item | null): string | null {
-	if (isSamePaneTarget(target, current)) {
-		// isSamePaneTarget only returns true when `current` is present.
-		return itemUrlId(current as Item);
-	}
+	if (isSamePaneTarget(target, current)) return null;
 	return rawPaneTargetCandidate(target);
 }

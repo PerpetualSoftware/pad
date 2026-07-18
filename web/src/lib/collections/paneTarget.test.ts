@@ -92,16 +92,24 @@ describe('isSamePaneTarget — same-item guard', () => {
 	});
 });
 
-describe('resolvePaneTarget — same-item normalization', () => {
-	it('normalizes a slug-alias of the current item to its own canonical ref', () => {
+describe('resolvePaneTarget — same-item guard short-circuits to null', () => {
+	it('a slug-alias of the current item resolves to null (no-op), not a ref/slug string', () => {
 		// target names task5 by slug; task5 is showing under its ref form.
+		// Returning task5's own ref here (rather than null) could itself
+		// mismatch the pane's actual open `?item=` value if that happens to be
+		// slug-shaped (e.g. a shared/deep-linked URL) — see paneTarget.ts.
 		const target: PaneTarget = { slug: 'task-5-slug' };
-		expect(resolvePaneTarget(target, task5)).toBe('TASK-5');
+		expect(resolvePaneTarget(target, task5)).toBeNull();
 	});
 
-	it('normalizes a ref-alias of the current item to its own canonical ref', () => {
+	it('a ref-alias of the current item resolves to null (no-op)', () => {
 		const target: PaneTarget = { ref: 'TASK-5' };
-		expect(resolvePaneTarget(target, task5)).toBe('TASK-5');
+		expect(resolvePaneTarget(target, task5)).toBeNull();
+	});
+
+	it('an id-alias of the current item resolves to null (no-op)', () => {
+		const target: PaneTarget = { ref: task5.id };
+		expect(resolvePaneTarget(target, task5)).toBeNull();
 	});
 
 	it('falls back to the raw candidate for a different item even with a current item present', () => {
@@ -109,8 +117,8 @@ describe('resolvePaneTarget — same-item normalization', () => {
 		expect(resolvePaneTarget(target, task5)).toBe('TASK-9');
 	});
 
-	it('normalizes to the slug when the current item has no ref', () => {
+	it('resolves normally (no guard) when current has no matching id/ref/slug', () => {
 		const target: PaneTarget = { slug: 'legacy-item' };
-		expect(resolvePaneTarget(target, noRefItem)).toBe('legacy-item');
+		expect(resolvePaneTarget(target, task5)).toBe('legacy-item');
 	});
 });
