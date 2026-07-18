@@ -299,13 +299,18 @@ test('a collection migration completing after a rapid A->B pane switch refreshes
 	const categoryInput = categoryRow.locator('input.field-input');
 	await expect(categoryInput).toHaveValue('pre-migration');
 
-	const fieldPatch = page.waitForRequest(
-		(r) => r.url().endsWith(`/items/${b.id}`) && r.method() === 'PATCH',
+	// waitForResponse (not waitForRequest) — we need the PATCH to actually
+	// COMMIT server-side before the belt-and-suspenders readback below,
+	// not just be dispatched, or that GET can race an in-flight write and
+	// intermittently observe pre-PATCH data (Codex round 2).
+	const fieldPatch = page.waitForResponse(
+		(r) => r.url().endsWith(`/items/${b.id}`) && r.request().method() === 'PATCH',
 	);
 	await categoryInput.fill('post-migration-edit');
 	await categoryInput.blur();
-	const patchReq = await fieldPatch;
-	const patchBody = JSON.parse(patchReq.postData() ?? '{}');
+	const patchRes = await fieldPatch;
+	expect(patchRes.ok()).toBe(true);
+	const patchBody = JSON.parse(patchRes.request().postData() ?? '{}');
 	const patchFields = JSON.parse(patchBody.fields ?? '{}');
 	expect(
 		patchFields.status,

@@ -4173,6 +4173,21 @@
 			{wsSlug}
 			initialSection={editCollectionSection}
 			onupdated={(updated, editedCollectionId) => {
+				// Route/load-identity guard (Codex round 2). `itemMatchesRef`
+				// is the SAME "has loadData() caught up with the current
+				// route" invariant that gates collabKey and the SSE handlers
+				// elsewhere in this file. Between a route change (collSlug/
+				// itemSlug updating) and loadData()'s async resolution,
+				// `item`/`collection` can transiently still hold the
+				// PREVIOUS item's data while collSlug/itemSlug already
+				// reflect the new one — a mixed read across that window
+				// could pass the collection-id check below using the stale
+				// `item` but then build a navigation URL from the ALREADY-
+				// updated `collSlug`/`itemSlug`, hijacking to a broken
+				// mismatched URL. Bailing here is always safe: the route's
+				// own in-flight loadData() will fetch fresh state for
+				// wherever the user has actually landed.
+				if (!itemMatchesRef) return;
 				// Fence (BUG-2129): only act if the item CURRENTLY shown is
 				// still in the collection this save/archive targeted. Covers
 				// both directions —
