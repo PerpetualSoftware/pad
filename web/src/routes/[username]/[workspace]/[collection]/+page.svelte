@@ -2550,6 +2550,30 @@
 			// (Codex P1). The pane (<aside>) and graph drawer aren't dialogs, so
 			// this never blocks the chain.
 			if (target?.closest?.('dialog, [role="dialog"]')) return;
+			// Depth-aware ESC (PLAN-2154 Architecture C / R2, TASK-2163): once the
+			// pane has drilled to depth>0, ESC pops exactly ONE level via
+			// `history.back()` and CONSUMES the key — on desktop AND mobile alike —
+			// instead of either the two-level list-focus step below or a full
+			// close. It must NOT route through `returnFocusToList` /
+			// `resolvePaneReturnTarget` (list-row helpers, meaningless once
+			// detached — R2) or through the escape stack's `onClose` (a full
+			// close), so it's handled here, before both. Not gated on
+			// `target?.closest('.item-pane')` — a detached pane owns ESC
+			// regardless of exactly where focus landed, mirroring the depth-0
+			// fallback below. Gated on the pane still being the FRONTMOST escape
+			// layer so a stacked graph drawer still wins first. Fenced on
+			// `paneNavInFlight()` like every other controller `history.go` (R14)
+			// so a double ESC can't race an in-flight close/reset traversal —
+			// still consumes the key either way.
+			if (
+				openItemRef &&
+				topEscapePriority() === ESCAPE_PRIORITY.pane &&
+				currentPaneState().paneDepth > 0
+			) {
+				e.preventDefault();
+				if (!paneNavInFlight()) history.back();
+				return;
+			}
 			// Desktop two-level ESC (TASK-2122): from INSIDE the open pane (a
 			// non-text target), ESC returns focus to the list — the master/detail
 			// "back to the list" step — and the pane STAYS open so the user can
@@ -2560,7 +2584,8 @@
 			// the pane being the FRONTMOST escape layer: a higher-priority layer
 			// stacked over it (e.g. the dependency-graph drawer) must own ESC
 			// first, so we defer to the stack when one is open (Codex P2). Only
-			// fires when there's a focused list row to land on.
+			// fires when there's a focused list row to land on. Depth is always 0
+			// here — the depth>0 branch above returned first.
 			if (
 				openItemRef &&
 				!viewport.isMobile &&

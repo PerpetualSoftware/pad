@@ -514,4 +514,112 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		expect(openItemParam(page)).toBe(b.slug);
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 	});
+
+	// ── Depth-aware ESC (PLAN-2154 Architecture C / R2, TASK-2163) ──────────
+	// Once the pane has drilled past its base (depth>0), ESC pops exactly ONE
+	// level via `history.back()` and consumes the key — it must NOT route
+	// through the two-level list-focus step or the list-row helpers
+	// (`returnFocusToList` / `resolvePaneReturnTarget`), which are meaningless
+	// once detached. Only at depth 0 does ESC fall through to the existing
+	// two-level return-focus-to-list-then-close behavior (TASK-2122,
+	// exhaustively covered by pane-a11y-focus.spec.ts — unaffected by this
+	// change, since the new depth>0 branch returns before reaching it).
+
+	test('depth-aware ESC: pops one level per press at depth>0 (pane stays open, ?item= stays truthy)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl esc alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl esc bravo');
+		const c = await seedDoc(fixture, request, 'Ctrl esc charlie');
+		const d = await seedDoc(fixture, request, 'Ctrl esc delta');
+		await page.goto(docsUrl(fixture));
+
+		const prePaneUrl = page.url();
+		await page.locator('.item-card', { hasText: 'Ctrl esc alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+
+		// Drill to depth 3: A(0) → B(1) → C(2) → D(3).
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await drillTo(page, c.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+		await drillTo(page, d.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 3, paneOwned: true });
+		expect(openItemParam(page)).toBe(d.slug);
+
+		// ESC at depth 3 pops exactly ONE level — the pane stays open, `?item=`
+		// stays truthy (now C), and no list row is even focused, so the
+		// two-level list-focus step never fires.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(c.slug);
+		await expect(pane).toBeVisible();
+
+		// A second press pops again, to depth 1 (B) — one level per press, never
+		// a jump straight to the base or a close.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+		await expect(pane).toBeVisible();
+
+		// A third press reaches the base (depth 0, back on A) — still open.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).not.toBeNull();
+		await expect(pane).toBeVisible();
+
+		// At depth 0, ESC falls through to today's behavior: no row is focused,
+		// so the two-level "return focus to list" step is skipped and the
+		// escape stack's pane handler closes it directly — unchanged from
+		// before TASK-2163.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => openItemParam(page)).toBeNull();
+		await expect(pane).toBeHidden();
+		await expect.poll(() => page.url()).toBe(prePaneUrl);
+	});
+
+	test('depth-aware ESC: at depth 0 the two-level return-focus-to-list-then-close behavior is unchanged', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl esc0 alpha');
+		await seedDoc(fixture, request, 'Ctrl esc0 bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl esc0 alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+
+		// Bridge focus into the pane (as a real user would via Tab, TASK-2122).
+		await page.keyboard.press('Tab');
+		await expect
+			.poll(() => page.evaluate(() => !!document.activeElement?.closest('.item-pane')))
+			.toBe(true);
+
+		// First ESC at depth 0, focused inside the pane: returns focus to the
+		// list — the pane STAYS open, depth stays 0.
+		await page.keyboard.press('Escape');
+		await expect
+			.poll(() => page.evaluate(() => !!document.activeElement?.closest('.item-pane')))
+			.toBe(false);
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+
+		// Second ESC, now from the list: closes the pane.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => openItemParam(page)).toBeNull();
+		await expect(pane).toBeHidden();
+	});
 });
