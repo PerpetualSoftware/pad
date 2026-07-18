@@ -2550,6 +2550,19 @@
 			// (Codex P1). The pane (<aside>) and graph drawer aren't dialogs, so
 			// this never blocks the chain.
 			if (target?.closest?.('dialog, [role="dialog"]')) return;
+			// A HELD key fires many auto-repeat keydowns (`e.repeat === true`).
+			// Consumed here, BEFORE any layer-close/pop decision, so a hold can
+			// never cascade through the chain — only the initial physical press
+			// acts. Checked ahead of (not inside) the depth-aware branch below:
+			// gating only that branch would let repeats that arrive AFTER a
+			// depth>0→0 pop fall through to the two-level/close branches and
+			// close the pane within the same held press (Codex review,
+			// TASK-2163) — this bails the whole ESC chain for every repeat,
+			// regardless of what the initial press already changed.
+			if (e.repeat) {
+				e.preventDefault();
+				return;
+			}
 			// Depth-aware ESC (PLAN-2154 Architecture C / R2, TASK-2163): once the
 			// pane has drilled to depth>0, ESC pops exactly ONE level via
 			// `history.back()` (delta -1) and CONSUMES the key — on desktop AND
@@ -2566,21 +2579,16 @@
 			// on `paneNavInFlight()` like every other controller entry point
 			// (openItemPane / navigatePaneTo / closeItemPane) — a rapid double ESC,
 			// or an ESC racing a close/reset click, can't queue a second traversal
-			// against stale depth and overshoot (R14). Also gated on `!e.repeat` —
-			// a HELD key fires many auto-repeat keydowns, and each one settles the
-			// in-flight fence before the next arrives, so without this a single
-			// held press would unwind several levels (and could close the pane
-			// entirely), violating "pop exactly one level per press" (Codex
-			// review). A no-op (repeat, or a traversal already armed) STILL
-			// consumes the key (falls through neither to the two-level step nor a
-			// full close).
+			// against stale depth and overshoot (R14). A no-op while a traversal
+			// is already armed STILL consumes the key (falls through neither to
+			// the two-level step nor a full close).
 			if (
 				openItemRef &&
 				topEscapePriority() === ESCAPE_PRIORITY.pane &&
 				currentPaneState().paneDepth > 0
 			) {
 				e.preventDefault();
-				if (!e.repeat && !paneNavInFlight()) paneHistoryGo(-1);
+				if (!paneNavInFlight()) paneHistoryGo(-1);
 				return;
 			}
 			// Desktop two-level ESC (TASK-2122): from INSIDE the open pane (a

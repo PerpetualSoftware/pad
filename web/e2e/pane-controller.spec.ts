@@ -672,4 +672,53 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => openItemParam(page)).toBe(b.slug);
 		await expect(pane).toBeVisible();
 	});
+
+	test('depth-aware ESC: a HELD key that pops depth 1→0 does not also close the pane in the same press', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl esc-boundary alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl esc-boundary bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl esc-boundary alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+
+		// The initial (non-repeat) physical keydown pops depth 1 → 0, back at
+		// the base (A). This is the exact boundary Codex round 3 flagged: a
+		// naive `!e.repeat` guard scoped only to the depth>0 branch would let
+		// the FOLLOWING repeat events (now depth 0, no `.item-pane` focus) fall
+		// through to `runTopEscape()` and close the pane — all within the same
+		// physical key hold.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).not.toBeNull();
+		await expect(pane).toBeVisible();
+
+		// A burst of auto-repeat keydowns from the same continued hold must be
+		// fully inert — no fall-through to the two-level step or a close.
+		await page.evaluate(() => {
+			for (let i = 0; i < 5; i++) {
+				window.dispatchEvent(
+					new KeyboardEvent('keydown', {
+						key: 'Escape',
+						bubbles: true,
+						cancelable: true,
+						repeat: true,
+					}),
+				);
+			}
+		});
+		await page.waitForTimeout(100);
+		await expect(pane).toBeVisible();
+		await expect.poll(() => openItemParam(page)).not.toBeNull();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+	});
 });
