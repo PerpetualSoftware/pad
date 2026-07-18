@@ -2544,12 +2544,24 @@
 			// Text-editing targets (title edit, tag input, the Tiptap editor)
 			// own ESC locally (cancel/blur) — don't hijack it into a layer-close.
 			if (isTextEntryTarget(target)) return;
-			// A modal (native <dialog>, or a role="dialog" BottomSheet opened from
-			// within the pane — field selects / Quick Actions / Move To) owns its
-			// own ESC — don't also pop the pane/graph/list layer underneath it
-			// (Codex P1). The pane (<aside>) and graph drawer aren't dialogs, so
-			// this never blocks the chain.
-			if (target?.closest?.('dialog, [role="dialog"]')) return;
+			// A modal (native <dialog>, or a role="dialog" BottomSheet/DockedSheet
+			// opened from within the pane — field selects / Quick Actions / Move
+			// To) owns its own ESC — don't also pop the pane/graph/list layer
+			// underneath it (Codex P1). EXISTENCE-based, not target-based:
+			// `BottomSheet`/`DockedSheet` (both `{#if open}`-gated, so `[role=
+			// "dialog"]` only ever matches while genuinely open) don't move focus
+			// into themselves on open, so `document.activeElement` can still be
+			// the trigger button back inside `.item-pane` while the sheet is up —
+			// a target-based `closest()` check misses that and would let this ESC
+			// fall through to pop/close the pane underneath the still-open sheet,
+			// which ALSO closes from its own independent window listener: two
+			// layers from one press (Codex review, TASK-2163). `dialog[open]`
+			// (not bare `dialog`) because `Modal.svelte`'s native <dialog> is
+			// ALWAYS mounted and toggled via `showModal()`/`close()` — an
+			// existence check without `[open]` would false-positive on every page
+			// that merely HAS a Modal instance, open or not. The pane (<aside>)
+			// and graph drawer aren't dialogs, so this never blocks the chain.
+			if (document.querySelector('dialog[open], [role="dialog"]')) return;
 			// A HELD key fires many auto-repeat keydowns (`e.repeat === true`).
 			// Consumed here, BEFORE any layer-close/pop decision, so a hold can
 			// never cascade through the chain — only the initial physical press

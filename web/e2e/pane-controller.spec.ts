@@ -26,6 +26,7 @@ import type { SuiteFixture } from './fixtures';
  */
 
 const DESKTOP = { width: 1200, height: 900 };
+const MOBILE = { width: 768, height: 1024 }; // == breakpoint (inclusive) → overlay + BottomSheet
 
 function docsUrl(fixture: SuiteFixture, query = ''): string {
 	return `/${fixture.adminUsername}/${fixture.workspaceSlug}/docs${query}`;
@@ -720,5 +721,47 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect(pane).toBeVisible();
 		await expect.poll(() => openItemParam(page)).not.toBeNull();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+	});
+
+	test('depth-aware ESC: an open BottomSheet owns ESC — the pane underneath must not also pop', async ({
+		page,
+		fixture,
+		request,
+	}, testInfo) => {
+		test.skip(
+			testInfo.project.name !== 'desktop-chromium',
+			'mobile viewport is driven explicitly; one project is enough',
+		);
+		await page.setViewportSize(MOBILE);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl esc-sheet alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl esc-sheet bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl esc-sheet alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+
+		// Open the mobile Quick Actions BottomSheet from within the pane.
+		// `BottomSheet.svelte` has no focus trap — it never moves focus into
+		// itself on open — so `document.activeElement` stays on the trigger
+		// button back inside `.item-pane` while the sheet is showing.
+		await pane.locator('button.trigger-btn[title="Quick actions"]').click();
+		const sheet = page.locator('[role="dialog"]', { hasText: 'Quick actions' });
+		await expect(sheet).toBeVisible();
+
+		// ESC must be owned entirely by the sheet (it has its own window
+		// keydown listener, outside the shared escape stack): the sheet
+		// closes, and the pane beneath it must NOT also pop a drill level —
+		// a target-based dialog guard would miss this because focus never
+		// moved into the sheet (Codex review, TASK-2163).
+		await page.keyboard.press('Escape');
+		await expect(sheet).toBeHidden();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+		await expect(pane).toBeVisible();
 	});
 });
