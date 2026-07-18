@@ -2544,12 +2544,65 @@
 			// Text-editing targets (title edit, tag input, the Tiptap editor)
 			// own ESC locally (cancel/blur) — don't hijack it into a layer-close.
 			if (isTextEntryTarget(target)) return;
-			// A modal (native <dialog>, or a role="dialog" BottomSheet opened from
-			// within the pane — field selects / Quick Actions / Move To) owns its
-			// own ESC — don't also pop the pane/graph/list layer underneath it
-			// (Codex P1). The pane (<aside>) and graph drawer aren't dialogs, so
-			// this never blocks the chain.
-			if (target?.closest?.('dialog, [role="dialog"]')) return;
+			// A modal (native <dialog>, or a role="dialog" BottomSheet/DockedSheet
+			// opened from within the pane — field selects / Quick Actions / Move
+			// To) owns its own ESC — don't also pop the pane/graph/list layer
+			// underneath it (Codex P1). EXISTENCE-based, not target-based:
+			// `BottomSheet`/`DockedSheet` (both `{#if open}`-gated, so `[role=
+			// "dialog"]` only ever matches while genuinely open) don't move focus
+			// into themselves on open, so `document.activeElement` can still be
+			// the trigger button back inside `.item-pane` while the sheet is up —
+			// a target-based `closest()` check misses that and would let this ESC
+			// fall through to pop/close the pane underneath the still-open sheet,
+			// which ALSO closes from its own independent window listener: two
+			// layers from one press (Codex review, TASK-2163). `dialog[open]`
+			// (not bare `dialog`) because `Modal.svelte`'s native <dialog> is
+			// ALWAYS mounted and toggled via `showModal()`/`close()` — an
+			// existence check without `[open]` would false-positive on every page
+			// that merely HAS a Modal instance, open or not. The pane (<aside>)
+			// and graph drawer aren't dialogs, so this never blocks the chain.
+			if (document.querySelector('dialog[open], [role="dialog"]')) return;
+			// A HELD key fires many auto-repeat keydowns (`e.repeat === true`).
+			// Consumed here, BEFORE any layer-close/pop decision, so a hold can
+			// never cascade through the chain — only the initial physical press
+			// acts. Checked ahead of (not inside) the depth-aware branch below:
+			// gating only that branch would let repeats that arrive AFTER a
+			// depth>0→0 pop fall through to the two-level/close branches and
+			// close the pane within the same held press (Codex review,
+			// TASK-2163) — this bails the whole ESC chain for every repeat,
+			// regardless of what the initial press already changed.
+			if (e.repeat) {
+				e.preventDefault();
+				return;
+			}
+			// Depth-aware ESC (PLAN-2154 Architecture C / R2, TASK-2163): once the
+			// pane has drilled to depth>0, ESC pops exactly ONE level via
+			// `history.back()` (delta -1) and CONSUMES the key — on desktop AND
+			// mobile alike — instead of either the two-level list-focus step below
+			// or a full close. It must NOT route through `returnFocusToList` /
+			// `resolvePaneReturnTarget` (list-row helpers, meaningless once
+			// detached — R2) or through the escape stack's `onClose` (a full
+			// close), so it's handled here, before both. Not gated on
+			// `target?.closest('.item-pane')` — a detached pane owns ESC
+			// regardless of exactly where focus landed, mirroring the depth-0
+			// fallback below. Gated on the pane still being the FRONTMOST escape
+			// layer so a stacked graph drawer still wins first. Routed through the
+			// existing FENCED `paneHistoryGo` (not a bare `history.back()`), gated
+			// on `paneNavInFlight()` like every other controller entry point
+			// (openItemPane / navigatePaneTo / closeItemPane) — a rapid double ESC,
+			// or an ESC racing a close/reset click, can't queue a second traversal
+			// against stale depth and overshoot (R14). A no-op while a traversal
+			// is already armed STILL consumes the key (falls through neither to
+			// the two-level step nor a full close).
+			if (
+				openItemRef &&
+				topEscapePriority() === ESCAPE_PRIORITY.pane &&
+				currentPaneState().paneDepth > 0
+			) {
+				e.preventDefault();
+				if (!paneNavInFlight()) paneHistoryGo(-1);
+				return;
+			}
 			// Desktop two-level ESC (TASK-2122): from INSIDE the open pane (a
 			// non-text target), ESC returns focus to the list — the master/detail
 			// "back to the list" step — and the pane STAYS open so the user can
@@ -2560,7 +2613,8 @@
 			// the pane being the FRONTMOST escape layer: a higher-priority layer
 			// stacked over it (e.g. the dependency-graph drawer) must own ESC
 			// first, so we defer to the stack when one is open (Codex P2). Only
-			// fires when there's a focused list row to land on.
+			// fires when there's a focused list row to land on. Depth is always 0
+			// here — the depth>0 branch above returned first.
 			if (
 				openItemRef &&
 				!viewport.isMobile &&

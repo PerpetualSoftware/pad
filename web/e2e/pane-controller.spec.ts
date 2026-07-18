@@ -26,6 +26,7 @@ import type { SuiteFixture } from './fixtures';
  */
 
 const DESKTOP = { width: 1200, height: 900 };
+const MOBILE = { width: 768, height: 1024 }; // == breakpoint (inclusive) → overlay + BottomSheet
 
 function docsUrl(fixture: SuiteFixture, query = ''): string {
 	return `/${fixture.adminUsername}/${fixture.workspaceSlug}/docs${query}`;
@@ -513,5 +514,254 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await page.waitForTimeout(250); // > PANE_FOLLOW_DEBOUNCE_MS (140ms)
 		expect(openItemParam(page)).toBe(b.slug);
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+	});
+
+	// ── Depth-aware ESC (PLAN-2154 Architecture C / R2, TASK-2163) ──────────
+	// Once the pane has drilled past its base (depth>0), ESC pops exactly ONE
+	// level via `history.back()` and consumes the key — it must NOT route
+	// through the two-level list-focus step or the list-row helpers
+	// (`returnFocusToList` / `resolvePaneReturnTarget`), which are meaningless
+	// once detached. Only at depth 0 does ESC fall through to the existing
+	// two-level return-focus-to-list-then-close behavior (TASK-2122,
+	// exhaustively covered by pane-a11y-focus.spec.ts — unaffected by this
+	// change, since the new depth>0 branch returns before reaching it).
+
+	test('depth-aware ESC: pops one level per press at depth>0 (pane stays open, ?item= stays truthy)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl esc alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl esc bravo');
+		const c = await seedDoc(fixture, request, 'Ctrl esc charlie');
+		const d = await seedDoc(fixture, request, 'Ctrl esc delta');
+		await page.goto(docsUrl(fixture));
+
+		const prePaneUrl = page.url();
+		await page.locator('.item-card', { hasText: 'Ctrl esc alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+
+		// Drill to depth 3: A(0) → B(1) → C(2) → D(3).
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await drillTo(page, c.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+		await drillTo(page, d.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 3, paneOwned: true });
+		expect(openItemParam(page)).toBe(d.slug);
+
+		// ESC at depth 3 pops exactly ONE level — the pane stays open, `?item=`
+		// stays truthy (now C), and no list row is even focused, so the
+		// two-level list-focus step never fires.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(c.slug);
+		await expect(pane).toBeVisible();
+
+		// A second press pops again, to depth 1 (B) — one level per press, never
+		// a jump straight to the base or a close.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+		await expect(pane).toBeVisible();
+
+		// A third press reaches the base (depth 0, back on A) — still open.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).not.toBeNull();
+		await expect(pane).toBeVisible();
+
+		// At depth 0, ESC falls through to today's behavior: no row is focused,
+		// so the two-level "return focus to list" step is skipped and the
+		// escape stack's pane handler closes it directly — unchanged from
+		// before TASK-2163.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => openItemParam(page)).toBeNull();
+		await expect(pane).toBeHidden();
+		await expect.poll(() => page.url()).toBe(prePaneUrl);
+	});
+
+	test('depth-aware ESC: at depth 0 the two-level return-focus-to-list-then-close behavior is unchanged', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl esc0 alpha');
+		await seedDoc(fixture, request, 'Ctrl esc0 bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl esc0 alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+
+		// Bridge focus into the pane (as a real user would via Tab, TASK-2122).
+		await page.keyboard.press('Tab');
+		await expect
+			.poll(() => page.evaluate(() => !!document.activeElement?.closest('.item-pane')))
+			.toBe(true);
+
+		// First ESC at depth 0, focused inside the pane: returns focus to the
+		// list — the pane STAYS open, depth stays 0.
+		await page.keyboard.press('Escape');
+		await expect
+			.poll(() => page.evaluate(() => !!document.activeElement?.closest('.item-pane')))
+			.toBe(false);
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+
+		// Second ESC, now from the list: closes the pane.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => openItemParam(page)).toBeNull();
+		await expect(pane).toBeHidden();
+	});
+
+	test('depth-aware ESC: a HELD key (auto-repeat keydowns) still pops only one level', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl esc-repeat alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl esc-repeat bravo');
+		const c = await seedDoc(fixture, request, 'Ctrl esc-repeat charlie');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl esc-repeat alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await drillTo(page, c.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+
+		// The initial (non-repeat) physical keydown pops one level, to depth 1.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+
+		// A held key then fires a burst of AUTO-REPEAT keydowns
+		// (`KeyboardEvent.repeat === true`) — dispatched here after the first
+		// pop's traversal has already settled, so `paneNavInFlight()` alone
+		// would no longer block them; only the `!e.repeat` guard does. None of
+		// them may pop a further level — "one level per press", not per
+		// keydown.
+		await page.evaluate(() => {
+			for (let i = 0; i < 5; i++) {
+				window.dispatchEvent(
+					new KeyboardEvent('keydown', {
+						key: 'Escape',
+						bubbles: true,
+						cancelable: true,
+						repeat: true,
+					}),
+				);
+			}
+		});
+		await page.waitForTimeout(100);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+		await expect(pane).toBeVisible();
+	});
+
+	test('depth-aware ESC: a HELD key that pops depth 1→0 does not also close the pane in the same press', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl esc-boundary alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl esc-boundary bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl esc-boundary alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+
+		// The initial (non-repeat) physical keydown pops depth 1 → 0, back at
+		// the base (A). This is the exact boundary Codex round 3 flagged: a
+		// naive `!e.repeat` guard scoped only to the depth>0 branch would let
+		// the FOLLOWING repeat events (now depth 0, no `.item-pane` focus) fall
+		// through to `runTopEscape()` and close the pane — all within the same
+		// physical key hold.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).not.toBeNull();
+		await expect(pane).toBeVisible();
+
+		// A burst of auto-repeat keydowns from the same continued hold must be
+		// fully inert — no fall-through to the two-level step or a close.
+		await page.evaluate(() => {
+			for (let i = 0; i < 5; i++) {
+				window.dispatchEvent(
+					new KeyboardEvent('keydown', {
+						key: 'Escape',
+						bubbles: true,
+						cancelable: true,
+						repeat: true,
+					}),
+				);
+			}
+		});
+		await page.waitForTimeout(100);
+		await expect(pane).toBeVisible();
+		await expect.poll(() => openItemParam(page)).not.toBeNull();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+	});
+
+	test('depth-aware ESC: an open BottomSheet owns ESC — the pane underneath must not also pop', async ({
+		page,
+		fixture,
+		request,
+	}, testInfo) => {
+		test.skip(
+			testInfo.project.name !== 'desktop-chromium',
+			'mobile viewport is driven explicitly; one project is enough',
+		);
+		await page.setViewportSize(MOBILE);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl esc-sheet alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl esc-sheet bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl esc-sheet alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+
+		// Open the mobile Quick Actions BottomSheet from within the pane.
+		// `BottomSheet.svelte` has no focus trap — it never moves focus into
+		// itself on open — so `document.activeElement` stays on the trigger
+		// button back inside `.item-pane` while the sheet is showing.
+		await pane.locator('button.trigger-btn[title="Quick actions"]').click();
+		const sheet = page.locator('[role="dialog"]', { hasText: 'Quick actions' });
+		await expect(sheet).toBeVisible();
+
+		// ESC must be owned entirely by the sheet (it has its own window
+		// keydown listener, outside the shared escape stack): the sheet
+		// closes, and the pane beneath it must NOT also pop a drill level —
+		// a target-based dialog guard would miss this because focus never
+		// moved into the sheet (Codex review, TASK-2163).
+		await page.keyboard.press('Escape');
+		await expect(sheet).toBeHidden();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+		await expect(pane).toBeVisible();
 	});
 });
