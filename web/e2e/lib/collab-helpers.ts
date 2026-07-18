@@ -36,15 +36,20 @@ export async function browserLogin(page: Page): Promise<void> {
 const enc = (obj: Record<string, unknown>) => JSON.stringify(obj);
 
 /**
- * Seed an empty doc item and return its slug. Empty content means the
+ * Seed an empty doc item and return its identity. Empty content means the
  * editor starts on a single empty paragraph, so text we later type
  * becomes the item's entire body — a clean anchor for content assertions.
+ *
+ * `fields` seeds the item's structured `fields` JSON (e.g. `{ status:
+ * 'draft', category: 'general' }`) — defaults to `{}` (schema defaults
+ * apply server-side) for every pre-existing caller.
  */
 export async function seedDoc(
 	fixture: SuiteFixture,
 	request: APIRequestContext,
 	titlePrefix = 'Collab persistence',
-): Promise<{ slug: string }> {
+	fields: Record<string, unknown> = {},
+): Promise<{ id: string; slug: string }> {
 	const ws = fixture.workspaceSlug;
 	const headers = {
 		Authorization: `Bearer ${fixture.apiToken}`,
@@ -52,10 +57,10 @@ export async function seedDoc(
 	};
 	const resp = await request.post(`/api/v1/workspaces/${ws}/collections/docs/items`, {
 		headers,
-		data: { title: `${titlePrefix} ${Date.now()}`, fields: enc({}), content: '' },
+		data: { title: `${titlePrefix} ${Date.now()}`, fields: enc(fields), content: '' },
 	});
 	if (!resp.ok()) throw new Error(`doc create failed (${resp.status()}): ${await resp.text()}`);
-	return (await resp.json()) as { slug: string };
+	return (await resp.json()) as { id: string; slug: string };
 }
 
 /** The live-editor ProseMirror surface — shared selector across specs. */
