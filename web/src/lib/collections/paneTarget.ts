@@ -15,7 +15,6 @@
 // hands, so it's exhaustively unit-testable without mounting a route.
 
 import type { Item, PaneTarget } from '$lib/types';
-import { formatItemRef } from '$lib/types';
 
 /**
  * Extract the trailing path segment of an internal item href, e.g.
@@ -27,6 +26,21 @@ function lastHrefSegment(href: string): string | null {
 	const path = href.split(/[?#]/)[0];
 	const segments = path.split('/').filter(Boolean);
 	return segments.length > 0 ? segments[segments.length - 1] : null;
+}
+
+// Ref-shaped candidate: PREFIX-NUMBER. Mirrors `internal/store/items.go`'s
+// `parseItemRef` closely enough for guard purposes — case-insensitive
+// letter/digit prefix, a hyphen, then a positive integer suffix.
+const REF_SHAPE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
+
+/** Parse a ref-shaped candidate's item NUMBER (case-insensitive; prefix is
+ *  discarded — see `isSamePaneTarget`). Null for a non-ref-shaped string or
+ *  a zero/non-finite number. */
+function parseRefNumber(candidate: string): number | null {
+	const m = REF_SHAPE.exec(candidate);
+	if (!m) return null;
+	const number = Number(m[2]);
+	return Number.isFinite(number) && number > 0 ? number : null;
 }
 
 /**
@@ -45,12 +59,22 @@ function rawPaneTargetCandidate(target: PaneTarget): string | null {
 /**
  * True when `target` refers to the SAME item as `current` — the item
  * presently loaded (e.g. `ItemDetail`'s own `item` state for the pane
- * showing it). Compares `current`'s stable `id` and BOTH its ref and slug
- * forms against the target's candidate, so a target that names the current
- * item by slug while it's open under its ref (or vice versa, or via an
- * href built from either) is still caught — a bare
- * `itemUrlId(current) === candidate` string compare misses that alias
- * (PLAN-2154 / TASK-2158).
+ * showing it). Compares `current`'s stable `id` and slug, plus a
+ * ref-shaped candidate's item NUMBER (not the literal ref string), against
+ * the target's candidate:
+ *
+ *  - a target that names the current item by slug while it's open under its
+ *    ref (or vice versa, or via an href built from either) is caught — a
+ *    bare `itemUrlId(current) === candidate` string compare misses that
+ *    alias;
+ *  - a ref-shaped candidate is compared case-insensitively BY NUMBER ONLY,
+ *    ignoring its prefix, mirroring the server's `GetItemByRef` (item
+ *    numbers are workspace-unique, so it falls back to a number-only match
+ *    when the prefix is stale — the same case a wiki-link written before an
+ *    item moved collections, e.g. "[[PLAN-42]]" for an item now filed as
+ *    TASK-42, would still present). Matching by number alone reproduces
+ *    that same-item outcome instead of pushing a redundant re-target
+ *    (PLAN-2154 / TASK-2158; Codex review).
  *
  * `current` is optional/nullable so callers that don't have a loaded item
  * in hand (e.g. the collection host, which only sees the target) can call
@@ -62,9 +86,12 @@ export function isSamePaneTarget(target: PaneTarget, current: Item | null | unde
 	const candidate = rawPaneTargetCandidate(target);
 	if (!candidate) return false;
 	if (candidate === current.id) return true;
-	const currentRef = formatItemRef(current);
-	if (currentRef && candidate === currentRef) return true;
-	return candidate === current.slug;
+	if (candidate === current.slug) return true;
+	if (current.item_number) {
+		const number = parseRefNumber(candidate);
+		if (number !== null && number === current.item_number) return true;
+	}
+	return false;
 }
 
 /**

@@ -90,6 +90,25 @@ describe('isSamePaneTarget — same-item guard', () => {
 	it('is false when the target resolves to nothing', () => {
 		expect(isSamePaneTarget({}, task5)).toBe(false);
 	});
+
+	it('matches a ref case-insensitively', () => {
+		expect(isSamePaneTarget({ ref: 'task-5' }, task5)).toBe(true);
+		expect(isSamePaneTarget({ ref: 'Task-5' }, task5)).toBe(true);
+	});
+
+	it('STALE-PREFIX alias: a ref-shaped candidate matches by item NUMBER alone, ignoring a stale prefix from before a collection move', () => {
+		// Mirrors the server's GetItemByRef fallback (item numbers are
+		// workspace-unique): a wiki-link written as "[[PLAN-5]]" before the
+		// item moved to the Tasks collection (now TASK-5, item_number 5) still
+		// names the same item — the guard must catch it, not push a redundant
+		// re-target (Codex review).
+		expect(isSamePaneTarget({ ref: 'PLAN-5' }, task5)).toBe(true);
+		expect(isSamePaneTarget({ ref: 'plan-5' }, task5)).toBe(true);
+	});
+
+	it('a ref-shaped candidate with the right prefix but wrong number is a different item', () => {
+		expect(isSamePaneTarget({ ref: 'TASK-6' }, task5)).toBe(false);
+	});
 });
 
 describe('resolvePaneTarget — same-item guard short-circuits to null', () => {
