@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
-	import { goto, beforeNavigate } from '$app/navigation';
+	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
 	import { api, PadApiError, isPlanLimitError, planLimitMessage } from '$lib/api/client';
 	import type { BulkItemsRequest, Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
@@ -44,6 +44,13 @@
 		viewHasUnparentedFilter,
 	} from '$lib/collections/unparentedFilter';
 	import { KNOWN_COLLECTION_URL_PARAMS, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
+	import {
+		readPaneState,
+		planPaneDrill,
+		planLateralOpen,
+		planPaneClose,
+		type ResolvedPaneState,
+	} from '$lib/collections/paneController';
 	import { paneFocusables, nextTrapTarget, resolvePaneReturnTarget } from '$lib/collections/paneFocus';
 	import { pushEscapeHandler, runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
@@ -453,7 +460,17 @@
 		);
 		const qs = params.toString();
 		const newUrl = `/${username}/${wsSlug}/${collSlug}${qs ? '?' + qs : ''}`;
-		goto(newUrl, { replaceState: true, noScroll: true, keepFocus: true });
+		// This same-page `goto` PRESERVES `?item=` (via buildCollectionUrlParams),
+		// so it MUST re-emit the pane depth+ownership stamp too — a bare
+		// replaceState would blank `page.state` and desync the close arithmetic
+		// (an owned pane would lose ownership and close via replaceState-delete
+		// instead of go(-1)). PLAN-2154 R13. Harmless no-op when no pane is open.
+		goto(newUrl, {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true,
+			state: currentPaneState(),
+		});
 	}
 
 	// ── Split-pane open/close (PLAN-2105 Phase 2) ──────────────────────
@@ -478,11 +495,74 @@
 	// a deep-linked item that isn't in the current filtered list.
 	let paneReturnFocusEl: HTMLElement | null = null;
 
+	// ── Pane-navigation controller: depth/ownership state machine ──────────
+	// (PLAN-2154 Architecture A / TASK-2157). The pane is a navigable
+	// mini-browser: `openItemPane` handles lateral/list opens (first-open + at-
+	// depth-0 re-target + at-depth>0 stack RESET) and `navigatePaneTo` handles
+	// in-pane DRILLS. Depth + ownership live in SvelteKit `page.state` (NOT raw
+	// `history.state` — Kit nests app state under `sveltekit:states`), so they
+	// follow opaque Back/Forward, survive `history.go`, and reconstruct on
+	// cold-load. The pure decision logic is in `$lib/collections/paneController`
+	// (unit-tested); this wiring EXECUTES the returned plans.
+	//
+	// NOTE (TASK-2157 scope): `navigatePaneTo` has no in-pane content-link
+	// caller yet — those land in TASK-2158/2159/2160, which resolve a
+	// `PaneTarget` (ref/slug/href/collection) to a canonical `?item=` value and
+	// then call `navigatePaneTo(resolvedRef)`. It's exported onto the pane's
+	// ItemDetail seam below and reachable now only via the depth>0 test hook
+	// (`__padPaneController`) so the controller's drill/reset/close arithmetic
+	// is exercisable end-to-end before the UI callers exist.
+
+	/** Current pane depth+ownership, read from SvelteKit `page.state`. */
+	function currentPaneState(): ResolvedPaneState {
+		return readPaneState(page.state);
+	}
+
+	// R14 fence: a monotonically-increasing sequence bumped at the START of
+	// every controller action (open/drill/close). Any two-phase `history.go`
+	// continuation captures this seq and BAILS if a newer action superseded it
+	// before its `afterNavigate` latch fired — `history.go` has no completion
+	// promise, so these continuations resume AFTER the user may have
+	// re-targeted, drilled, or closed (the documented late-async-clobber class).
+	let controllerActionSeq = 0;
+	// A one-shot continuation to run on the next `afterNavigate` — the second
+	// phase of a `history.go`-then-write staged navigation (cold-base close /
+	// detached-open reset). Last write wins; a superseding action overwrites it.
+	let pendingPaneLatch: { seq: number; run: () => void } | null = null;
+
+	function armPaneLatch(run: () => void) {
+		pendingPaneLatch = { seq: controllerActionSeq, run };
+	}
+
+	// True while a two-phase `history.go`-then-write is mid-flight (cold-base
+	// close / detached-open reset). During that ~1-frame window the URL + state
+	// are transitional and unreliable to read, so a fresh controller gesture is
+	// ignored rather than allowed to stack a SECOND `history.go` on top (which
+	// would over-unwind). The latch self-clears on the very next `afterNavigate`
+	// (the `history.go`'s own popstate), so this can never lock up. Steady-state
+	// depth-0 flow never arms a latch, so this is inert in production and only
+	// serializes the rare depth>0 (test-driven) two-phase races.
+	function paneNavInFlight(): boolean {
+		return pendingPaneLatch !== null;
+	}
+
+	// Consume the pending latch on navigation settle. The `history.go` that
+	// armed it lands here as the next client navigation (popstate → Kit →
+	// afterNavigate); the seq fence drops it if a newer controller action
+	// intervened, and each `run()` re-checks live state before it writes (R14).
+	afterNavigate(() => {
+		const latch = pendingPaneLatch;
+		if (!latch) return;
+		pendingPaneLatch = null;
+		if (latch.seq !== controllerActionSeq) return; // superseded → discard
+		latch.run();
+	});
+
 	function openItemPane(item: Item) {
+		if (paneNavInFlight()) return;
+		controllerActionSeq++;
+		const targetRef = itemUrlId(item);
 		const url = new URL(page.url);
-		// Whether a pane is ALREADY open decides push (first open) vs replace
-		// (re-target). Read off the live URL — the same source openItemRef
-		// derives from.
 		const alreadyOpen = url.searchParams.has('item');
 		// Capture the trigger on the FIRST open only — re-targeting (j/k follow /
 		// row re-click on an open pane) keeps the ORIGINAL trigger as the
@@ -491,28 +571,109 @@
 			const active = document.activeElement as HTMLElement | null;
 			paneReturnFocusEl = active && active !== document.body ? active : null;
 		}
-		url.searchParams.set('item', itemUrlId(item));
+		const plan = planLateralOpen(alreadyOpen, currentPaneState());
+		if (plan.kind === 'reset') {
+			// Detached (depth>0) direct row click → NEW top-level open: collapse
+			// the drill stack back to the base, then re-target the base to this
+			// item from a one-shot latch (`history.go` can't be awaited). Base
+			// ownership is preserved so the subsequent close still unwinds
+			// correctly. A pending j/k follow must not fire mid-reset.
+			cancelPaneFollow();
+			const resetState = plan.resetState;
+			armPaneLatch(() => {
+				if (!browser) return;
+				const landed = currentPaneState();
+				// Only re-target once the stack has actually collapsed to the base
+				// (defensive against a premature latch fire).
+				if (landed.paneDepth !== 0) return;
+				const u = new URL(page.url);
+				u.searchParams.set('item', targetRef);
+				goto(`${u.pathname}${u.search}`, {
+					replaceState: true,
+					noScroll: true,
+					keepFocus: true,
+					state: resetState,
+				});
+			});
+			history.go(plan.goDelta);
+			return;
+		}
+		url.searchParams.set('item', targetRef);
 		goto(`${url.pathname}${url.search}`, {
-			replaceState: alreadyOpen,
+			replaceState: plan.kind === 'replace',
 			noScroll: true,
 			keepFocus: true,
+			state: plan.state,
+		});
+	}
+
+	// In-pane DRILL (Architecture A). `target` is an already-resolved canonical
+	// `?item=` ref (TASK-2158 supplies the PaneTarget→ref resolution in front of
+	// this). Same-ref guard + soft depth cap + ownership INHERITED from the
+	// current entry, all decided by `planPaneDrill`.
+	function navigatePaneTo(target: string) {
+		if (paneNavInFlight()) return;
+		controllerActionSeq++;
+		// A pending j/k follow scheduled at a shallower depth must not fire after
+		// this drill and clobber it (R3 / R14).
+		cancelPaneFollow();
+		const plan = planPaneDrill(openItemRef, target, currentPaneState());
+		if (plan.kind === 'noop') return;
+		const url = new URL(page.url);
+		url.searchParams.set('item', target);
+		goto(`${url.pathname}${url.search}`, {
+			replaceState: plan.kind === 'replace',
+			noScroll: true,
+			keepFocus: true,
+			state: plan.state,
 		});
 	}
 
 	function closeItemPane() {
+		if (paneNavInFlight()) return;
+		controllerActionSeq++;
 		// A pending j/k pane-follow must not re-open the pane after an explicit
 		// close (e.g. ESC while a follow debounce is in flight).
 		cancelPaneFollow();
-		const url = new URL(page.url);
-		url.searchParams.delete('item');
 		// Focus return to the originating row is handled by the close-detection
 		// effect below (keyed off `openItemRef` going truthy→null), so it covers
 		// browser Back / delete alike — not just this imperative close path.
-		goto(`${url.pathname}${url.search}`, {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
+		const plan = planPaneClose(currentPaneState());
+		if (plan.kind === 'replace-delete') {
+			// Cold-loaded base with no drills: drop `?item=` in place. No pre-pane
+			// history entry to unwind to.
+			const url = new URL(page.url);
+			url.searchParams.delete('item');
+			goto(`${url.pathname}${url.search}`, {
+				replaceState: true,
+				noScroll: true,
+				keepFocus: true,
+			});
+			return;
+		}
+		if (plan.kind === 'owned-go') {
+			// Owned: unwind the pushed base + every drill back to the pre-pane URL
+			// (which carries no `?item=`, so the pane closes on arrival).
+			history.go(plan.goDelta);
+			return;
+		}
+		// cold-base-go: go back to the cold base (still carries `?item=`), then
+		// delete it from a one-shot latch (`history.go` can't be awaited).
+		armPaneLatch(() => {
+			if (!browser) return;
+			// Re-check: only delete if we've reached a base that still shows the
+			// pane (R14 fence-on-continuation).
+			if (!page.url.searchParams.has('item')) return;
+			if (currentPaneState().paneDepth !== 0) return;
+			const u = new URL(page.url);
+			u.searchParams.delete('item');
+			goto(`${u.pathname}${u.search}`, {
+				replaceState: true,
+				noScroll: true,
+				keepFocus: true,
+			});
 		});
+		history.go(plan.goDelta);
 	}
 
 	// Click-outside-to-collapse the split pane (IDEA-2148). While the pane is
@@ -1089,7 +1250,36 @@
 	// Sync coordinator — handle tab-resume data refresh efficiently
 	let unsubscribeSync: (() => void) | null = null;
 
+	// Test-only hook (PLAN-2154 / TASK-2157): exposes the pane controller so e2e
+	// can drive `navigatePaneTo` — which has NO in-pane UI caller until
+	// TASK-2158/2159/2160 wire content links — and read back the depth/ownership
+	// stamp. Gated on an opt-in localStorage flag so it adds ZERO surface to
+	// production; the e2e harness sets `pad:pane-test-hook=1` before navigating.
+	interface PaneTestHook {
+		navigatePaneTo: (ref: string) => void;
+		closeItemPane: () => void;
+		getPaneState: () => ResolvedPaneState;
+	}
+	function installPaneTestHook() {
+		if (!browser) return;
+		try {
+			if (localStorage.getItem('pad:pane-test-hook') !== '1') return;
+		} catch {
+			return;
+		}
+		(window as unknown as { __padPaneController?: PaneTestHook }).__padPaneController = {
+			navigatePaneTo: (ref: string) => navigatePaneTo(ref),
+			closeItemPane: () => closeItemPane(),
+			getPaneState: () => currentPaneState(),
+		};
+	}
+	function removePaneTestHook() {
+		if (!browser) return;
+		delete (window as unknown as { __padPaneController?: PaneTestHook }).__padPaneController;
+	}
+
 	onMount(() => {
+		installPaneTestHook();
 		unsubscribeSync = syncService.onSync(async (result) => {
 			if (!wsSlug || !collSlug) return;
 
@@ -1113,9 +1303,13 @@
 	onDestroy(() => {
 		unsubscribeSSE?.();
 		unsubscribeSync?.();
+		removePaneTestHook();
 		// Drop any pending j/k pane-follow so a late timer can't call goto on
 		// the unmounted page (PLAN-2105 / TASK-2119).
 		cancelPaneFollow();
+		// Drop any pending two-phase `history.go` continuation so a late
+		// afterNavigate latch can't write to the unmounted page (R14).
+		pendingPaneLatch = null;
 		// Scroll save/restore cleanup is owned by createScrollRestoration
 		// (snapshot.capture fires on navigate-away; the helper's $effect
 		// teardown cancels any in-flight RAF).
@@ -2127,11 +2321,20 @@
 	function schedulePaneFollow() {
 		if (!browser) return;
 		if (!openItemRef) return; // pane closed → keyboard nav moves focus only
+		// DETACH (PLAN-2154 D-detach / R3): once the pane has drilled past the
+		// base (depth>0) it's an independent viewer — j/k must go INERT so a
+		// list follow can't laterally re-target (and RESET) the drilled stack.
+		// Guard at SCHEDULE time here AND re-check inside the fired callback
+		// below, since a timer armed at depth 0 can otherwise fire AFTER a drill
+		// (the R14 late-async-continuation clobber).
+		if (currentPaneState().paneDepth > 0) return;
 		cancelPaneFollow();
 		paneFollowTimer = setTimeout(() => {
 			paneFollowTimer = null;
-			// Re-check: the pane may have closed during the debounce window.
+			// Re-check: the pane may have closed OR drilled during the debounce
+			// window (R14 fence-on-continuation).
 			if (!openItemRef) return;
+			if (currentPaneState().paneDepth > 0) return;
 			if (focusedIndex < 0 || focusedIndex >= filteredItems.length) return;
 			const item = filteredItems[focusedIndex];
 			// Skip if the focused row is already the paned item — avoids a
@@ -3348,7 +3551,13 @@
 				{collSlug}
 				onClose={closeItemPane}
 				onGone={closeItemPane}
-				onNavigateAway={(url) => goto(url)}
+				onNavigateAway={(url) =>
+					goto(url, {
+						replaceState: true,
+						noScroll: true,
+						keepFocus: true,
+						state: currentPaneState(),
+					})}
 			/>
 		</aside>
 	{/if}
