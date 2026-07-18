@@ -279,27 +279,6 @@
 	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
 	let shareDialogOpen = $state(false);
 	let editCollectionOpen = $state(false);
-	// Plain (non-reactive) snapshot of "which item was open when the owner
-	// launched the collection editor" — consumed by the <EditCollectionModal>
-	// onupdated fence below. NOT a {@const}/prop-derived capture: Svelte 5
-	// passes props (including callback props like `onupdated`) as live
-	// getters that re-evaluate the parent's binding expression on every
-	// read, so a {@const keyedSlug = itemSlug} (or an inline-IIFE "snapshot"
-	// inside the prop expression) is NOT actually frozen at render time —
-	// the child re-reads it fresh at CALL time, i.e. whenever the pending
-	// save resolves, which can be long after an intervening item switch.
-	// That silently defeats a fence that LOOKS like it freezes (confirmed
-	// by instrumentation during the BUG-2129 investigation: `{@const}` and
-	// prop-expression IIFEs both observed reading the CURRENT itemSlug/
-	// loadGeneration/item.id, not the value at the modal-open render).
-	// A plain top-level `let`, WRITTEN synchronously inside a real click
-	// handler (onmanage, below — fires synchronously on click, never after
-	// an async gap) and READ synchronously inside another real callback
-	// (onupdated), is genuine JS variable semantics with no signal/getter
-	// indirection, matching the gen+id capture pattern used everywhere
-	// else in this file (loadData, updateField, the SSE handlers).
-	let pendingCollectionEditGen = 0;
-	let pendingCollectionEditItemId: string | undefined;
 
 	// Per-item dependency graph drawer (PLAN-1780 / TASK-1784). The renderer
 	// (and its dagre layout lib) are dynamically imported on first open so they
@@ -3428,13 +3407,6 @@
 						{wsSlug}
 						canEdit={isOwner}
 						onmanage={() => {
-							// Synchronous capture (fires on click, never after an
-							// async gap) — the freeze the EditCollectionModal
-							// onupdated fence below relies on. See the
-							// pendingCollectionEditGen/-ItemId declaration for why
-							// this can't be a {@const} in the modal's own markup.
-							pendingCollectionEditGen = loadGeneration;
-							pendingCollectionEditItemId = item?.id;
 							editCollectionSection = 'actions';
 							editCollectionOpen = true;
 						}}
@@ -4187,42 +4159,37 @@
 		     switch (it's closed on switch anyway; keeps its async loads scoped
 		     and its OWN in-progress edits from leaking across items). The
 		     onupdated fence below does NOT depend on this remount for
-		     correctness (see pendingCollectionEditGen/-ItemId) — a stale
-		     instance's in-flight save keeps running after this block is torn
-		     down regardless, same as any other JS promise. -->
+		     correctness — a stale instance's in-flight save keeps running
+		     after this block is torn down regardless, same as any other JS
+		     promise; the fence works off `editedCollectionId`, which
+		     EditCollectionModal echoes back rather than us trying to freeze
+		     anything on this side (see its Props.onupdated doc comment: a
+		     template-side {@const}/closure "snapshot" doesn't actually
+		     freeze in Svelte 5 — BUG-2129). -->
 		{#key itemSlug}
 		<EditCollectionModal
 			bind:open={editCollectionOpen}
 			{collection}
 			{wsSlug}
 			initialSection={editCollectionSection}
-			onupdated={(updated) => {
-				// Switch fence (BUG-2129): was the pane still showing the item
-				// this collection edit was launched from? Compared against the
-				// pendingCollectionEditGen/-ItemId snapshot taken synchronously
-				// in onmanage (see its declaration for why {@const}/prop-
-				// expression captures can't do this freeze reliably in Svelte 5).
-				const superseded =
-					pendingCollectionEditGen !== loadGeneration || item?.id !== pendingCollectionEditItemId;
-				if (superseded) {
-					// A genuinely superseded save must not navigate/close/
-					// archive-redirect the pane now showing a DIFFERENT item —
-					// that decision belongs to the abandoned route, not the
-					// current one. But dropping the callback outright (the
-					// pre-fix behavior) also skipped the field-shape refresh
-					// below, so a completed schema/field migration left the
-					// current pane holding PRE-migration `fields`; the next
-					// updateField() then serialized that stale blob straight
-					// back over the migrated values (BUG-2129). Minimal safe
-					// fix: if the currently-shown item is still in the
-					// collection that just changed, refresh it too.
-					if (updated && item?.collection_id === updated.id) {
-						collection = updated;
-						collectionStore.loadCollections(wsSlug);
-						void loadData();
-					}
-					return;
-				}
+			onupdated={(updated, editedCollectionId) => {
+				// Fence (BUG-2129): only act if the item CURRENTLY shown is
+				// still in the collection this save/archive targeted. Covers
+				// both directions —
+				//   - still on the original item: trivially the same
+				//     collection, so this is a no-op behavior change from
+				//     before.
+				//   - superseded (pane moved to a different item, same
+				//     collection): apply the FULL handling (was previously
+				//     dropped outright, leaving stale fields — the literal
+				//     BUG-2129 gap — and would also have skipped a pending
+				//     rename/archive's navigation for the new item, per
+				//     Codex review).
+				//   - superseded, DIFFERENT collection: no-op — a completed
+				//     edit for an abandoned item/collection must not
+				//     navigate/close/replace-fields on whatever the user is
+				//     now looking at.
+				if (!editedCollectionId || item?.collection_id !== editedCollectionId) return;
 				if (!updated) {
 					// Archive case — the collection is gone. Navigate away from
 					// this now-invalid item route rather than leaving the user
@@ -4250,7 +4217,11 @@
 				// pane re-targets its host collection page (keeping the pane
 				// open via `?item=`) instead of hard-navigating to the
 				// full-page item route. The destination triggers a fresh
-				// loadData() on arrival, so no explicit refresh here.
+				// loadData() on arrival, so no explicit refresh here. Reads
+				// `itemSlug`/`collSlug` live (not frozen) — correct for both
+				// the still-current and superseded-same-collection cases,
+				// since either way this must target whatever is CURRENTLY
+				// displayed.
 				if (updated.slug !== collSlug && itemSlug) {
 					handleNavigateAway(
 						embedded

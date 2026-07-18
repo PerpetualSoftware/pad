@@ -28,7 +28,23 @@
 		collection: Collection;
 		wsSlug: string;
 		initialSection?: 'general' | 'fields' | 'display' | 'actions';
-		onupdated: (updated?: Collection) => void;
+		// `editedCollectionId` echoes back which collection THIS save/archive
+		// targeted, captured synchronously (before the request) from the
+		// `collection` prop. Callers that render this modal inside a
+		// no-remount persistent host (e.g. ItemDetail's split pane — PLAN-2105
+		// / TASK-2112) can't rely on freezing that identity themselves via a
+		// template `{@const}` or a closure baked into the `onupdated` prop
+		// expression: Svelte 5 passes props (including callback props) as
+		// live getters that re-evaluate the parent's binding expression on
+		// every read, so such a "snapshot" is actually re-read fresh at CALL
+		// time — i.e. whenever this promise resolves, which can be long
+		// after the host has moved on to a different item/collection
+		// (confirmed by runtime instrumentation during the BUG-2129
+		// investigation). Passing the id back as a plain function argument
+		// sidesteps that entirely — it's a real JS value captured at the
+		// point this component synchronously read its OWN `collection` prop,
+		// not a re-evaluated expression.
+		onupdated: (updated?: Collection, editedCollectionId?: string) => void;
 		onclose: () => void;
 	}
 
@@ -50,10 +66,15 @@
 			return;
 		}
 		archiving = true;
+		// Synchronous capture (see the Props.onupdated doc comment) — read
+		// BEFORE the await, not after.
+		const editedCollectionId = collection.id;
+		const editedCollectionSlug = collection.slug;
+		const editedCollectionName = collection.name;
 		try {
-			await api.collections.delete(wsSlug, collection.slug);
-			toastStore.show(`Archived "${collection.name}"`, 'success');
-			onupdated();
+			await api.collections.delete(wsSlug, editedCollectionSlug);
+			toastStore.show(`Archived "${editedCollectionName}"`, 'success');
+			onupdated(undefined, editedCollectionId);
 			onclose();
 		} catch (err) {
 			toastStore.show('Failed to archive collection', 'error');
@@ -346,6 +367,10 @@
 		if (!name.trim() || saving || hasNewFieldBlockingErrors) return;
 		saving = true;
 		error = '';
+		// Synchronous capture (see the Props.onupdated doc comment) — read
+		// BEFORE the await, not after.
+		const editedCollectionId = collection.id;
+		const editedCollectionSlug = collection.slug;
 		try {
 			// Build existing fields back into FieldDef[]
 			const updatedExisting: FieldDef[] = existingFields.map((f) => {
@@ -509,9 +534,9 @@
 				data.migrations = migrations;
 			}
 
-			const updated = await api.collections.update(wsSlug, collection.slug, data);
+			const updated = await api.collections.update(wsSlug, editedCollectionSlug, data);
 			toastStore.show(`Updated ${name.trim()}`, 'success');
-			onupdated(updated);
+			onupdated(updated, editedCollectionId);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to update collection';
 		} finally {
