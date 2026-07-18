@@ -14,15 +14,17 @@
 
 	import { onMount, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
-	import type { GraphEdge, GraphNode, GraphResponse } from '$lib/types';
+	import type { GraphEdge, GraphNode, GraphResponse, PaneTarget } from '$lib/types';
 	import { createCollectionColorMap } from '$lib/graph/palette';
 	import { sseService, type ItemEvent } from '$lib/services/sse.svelte';
+	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 
 	let {
 		workspace,
 		focusRef,
 		depth: initialDepth = 2,
-		itemHref
+		itemHref,
+		onOpenTarget
 	}: {
 		workspace: string;
 		focusRef: string;
@@ -31,6 +33,14 @@
 		 *  cmd/ctrl-click opens the item in a new tab. Collection is passed so the
 		 *  caller can build /{user}/{ws}/{collection}/{ref} without a lookup. */
 		itemHref: (ref: string, collection?: string) => string;
+		/**
+		 * In-pane drill interceptor (PLAN-2154 Architecture B.4 / TASK-2159).
+		 * Intercepts the "Open" anchors ONLY — node clicks stay select-only, per
+		 * the plan (a stray click on a node must not navigate away). `undefined`
+		 * when no host wired a pane (e.g. the full-page route), in which case
+		 * the anchors fall through to plain `href` navigation.
+		 */
+		onOpenTarget?: (target: PaneTarget) => void;
 	} = $props();
 
 	// ── Fixed layout geometry ────────────────────────────────────────────────────
@@ -572,6 +582,16 @@
 		currentFocus = ref; // re-root the neighborhood on this node
 	}
 
+	// In-pane drill interception for the node "Open" anchors (TASK-2159 /
+	// PLAN-2154 Architecture B.4) — the controls-bar "Open ↗" and the
+	// detail-card "Open item ↗". NOT wired to node click/dblclick, which stay
+	// select/zoom-only (a stray click on a node must not navigate away).
+	function handleOpenClick(e: MouseEvent, ref: string, collection?: string) {
+		if (!shouldOpenInPane(e, !!onOpenTarget)) return;
+		e.preventDefault();
+		onOpenTarget?.({ ref, collectionSlug: collection });
+	}
+
 	function backToOrigin() {
 		currentFocus = focusRef;
 	}
@@ -682,7 +702,7 @@
 		<div class="spacer"></div>
 
 		<button type="button" class="ghost-btn" onclick={fitView} title="Fit graph to view">Fit</button>
-		<a class="open-btn" href={itemHref(currentFocus, collectionFor(currentFocus))}>Open ↗</a>
+		<a class="open-btn" href={itemHref(currentFocus, collectionFor(currentFocus))} onclick={(e) => handleOpenClick(e, currentFocus, collectionFor(currentFocus))}>Open ↗</a>
 	</div>
 
 	<!-- Canvas -->
@@ -832,7 +852,7 @@
 					{/if}
 				</div>
 				<div class="detail-actions">
-					<a class="open-btn" href={itemHref(sel.ref, sel.collection)}>Open item ↗</a>
+					<a class="open-btn" href={itemHref(sel.ref, sel.collection)} onclick={(e) => handleOpenClick(e, sel.ref, sel.collection)}>Open item ↗</a>
 					{#if sel.ref !== currentFocus}
 						<button type="button" class="ghost-btn" onclick={() => focusHere(sel.ref)}>Focus here</button>
 					{/if}

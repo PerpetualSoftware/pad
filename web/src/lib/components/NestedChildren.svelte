@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { api } from '$lib/api/client';
-	import type { Item } from '$lib/types';
+	import type { Item, PaneTarget } from '$lib/types';
 	import { parseFields, formatItemRef } from '$lib/types';
+	import { shouldOpenInPane } from './collections/itemCardClick';
 
 	interface Props {
 		wsSlug: string;
@@ -10,9 +11,16 @@
 		depth?: number;
 		maxDepth?: number;
 		terminalStatuses?: string[];
+		/**
+		 * In-pane drill interceptor (PLAN-2154 Architecture B.2 / TASK-2159).
+		 * Threaded from `ChildItems`/`ItemDetail`'s `fireOpenTarget`; forwarded
+		 * unchanged into the recursive `svelte:self` so every depth intercepts
+		 * the same way. `undefined` when no host wired a pane.
+		 */
+		onOpenTarget?: (target: PaneTarget) => void;
 	}
 
-	let { wsSlug, username = '', parentSlug, depth = 1, maxDepth = 3, terminalStatuses }: Props = $props();
+	let { wsSlug, username = '', parentSlug, depth = 1, maxDepth = 3, terminalStatuses, onOpenTarget }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
@@ -48,6 +56,16 @@
 	}
 
 	let doneCount = $derived(children.filter(c => terminal.includes(parseFields(c).status)).length);
+
+	// In-pane drill interception for a `.nested-link` anchor (TASK-2159 /
+	// PLAN-2154 Architecture B.2) — same predicate/contract as
+	// `ChildItems.handleChildClick`, duplicated rather than shared because the
+	// two components have independent `child`-shaped data on hand.
+	function handleChildClick(e: MouseEvent, child: Item) {
+		if (!shouldOpenInPane(e, !!onOpenTarget)) return;
+		e.preventDefault();
+		onOpenTarget?.({ ref: formatItemRef(child) ?? undefined, slug: child.slug, collectionSlug: child.collection_slug });
+	}
 </script>
 
 {#if loading}
@@ -74,7 +92,7 @@
 					{:else}
 						<span class="expand-spacer"></span>
 					{/if}
-					<a href="/{username}/{wsSlug}/{child.collection_slug}/{child.slug}" class="nested-link">
+					<a href="/{username}/{wsSlug}/{child.collection_slug}/{child.slug}" class="nested-link" onclick={(e) => handleChildClick(e, child)}>
 						<span class="nested-ref">{formatItemRef(child) ?? ''}</span>
 						<span class="nested-title" class:done={isDone}>{child.title}</span>
 					</a>
@@ -89,7 +107,7 @@
 					{/if}
 				</div>
 				{#if canExpand && isExpanded}
-					<svelte:self wsSlug={wsSlug} {username} parentSlug={child.slug} depth={depth + 1} {maxDepth} {terminalStatuses} />
+					<svelte:self wsSlug={wsSlug} {username} parentSlug={child.slug} depth={depth + 1} {maxDepth} {terminalStatuses} {onOpenTarget} />
 				{/if}
 			</div>
 		{/each}
