@@ -177,6 +177,14 @@ describe('isSamePaneTarget — same-item guard', () => {
 		// still matches when it's genuinely current's own slug.
 		expect(isSamePaneTarget({ slug: 'plan-6' }, current)).toBe(true);
 	});
+
+	it('an href-sourced ref-shaped candidate is likewise judged ONLY as a ref, not a slug fallback', () => {
+		// Same collision as above, via the href channel this time — a second
+		// Codex PR-diff round caught the href branch still checking slug
+		// before ref-shape.
+		const current = item({ id: 'id-9', slug: 'plan-6', item_number: 5, collection_prefix: 'TASK' });
+		expect(isSamePaneTarget({ href: '/alice/myws/plans/plan-6' }, current)).toBe(false);
+	});
 });
 
 describe('resolvePaneTarget — same-item guard short-circuits to null', () => {

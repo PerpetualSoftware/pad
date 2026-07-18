@@ -126,10 +126,11 @@ function matchesRefNumber(candidate: string, current: Item): boolean {
  * target `{ ref: "plan-6" }` names some OTHER item numbered 6) and wrongly
  * suppress a valid navigation. A `slug`-sourced candidate is likewise
  * judged only as a slug (or id). An `href`-sourced candidate carries no
- * declared identity — its trailing segment could be either shape — so both
- * are tried, matching the server's own ambiguous-string resolution order
- * for a bare `?item=` value (PLAN-2154 / TASK-2158; Codex review — PR diff
- * pass).
+ * declared identity — its trailing segment could be EITHER shape — so it's
+ * tried as a ref FIRST when it's ref-shaped (never falling through to the
+ * slug compare in that case either), and as a slug only when it isn't;
+ * this mirrors the server's own ref-before-slug resolution order for a bare
+ * `?item=` value (PLAN-2154 / TASK-2158; Codex review — PR diff pass, x2).
  *
  * `current` is optional/nullable so callers that don't have a loaded item
  * in hand (e.g. the collection host, which only sees the target) can call
@@ -150,9 +151,15 @@ export function isSamePaneTarget(target: PaneTarget, current: Item | null | unde
 	if (target.href) {
 		const candidate = lastHrefSegment(target.href);
 		if (!candidate) return false;
-		return (
-			candidate === current.id || candidate === current.slug || matchesRefNumber(candidate, current)
-		);
+		if (candidate === current.id) return true;
+		// Ref-shaped candidates are evaluated ONLY as refs — mirroring the
+		// server's ref-before-slug resolution order — never falling through
+		// to a slug compare that could coincidentally match current.slug's
+		// literal string while the ref actually names a DIFFERENT item (the
+		// same collision fixed above for `target.ref`, now made consistent
+		// for the href channel too; Codex review — PR diff pass).
+		if (REF_SHAPE.test(candidate)) return matchesRefNumber(candidate, current);
+		return candidate === current.slug;
 	}
 	return false;
 }
