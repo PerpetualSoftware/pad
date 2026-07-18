@@ -4173,83 +4173,92 @@
 			{wsSlug}
 			initialSection={editCollectionSection}
 			onupdated={(updated, editedCollectionId) => {
-				// Route/load-identity guard (Codex round 2). `itemMatchesRef`
-				// is the SAME "has loadData() caught up with the current
-				// route" invariant that gates collabKey and the SSE handlers
-				// elsewhere in this file. Between a route change (collSlug/
-				// itemSlug updating) and loadData()'s async resolution,
-				// `item`/`collection` can transiently still hold the
-				// PREVIOUS item's data while collSlug/itemSlug already
-				// reflect the new one — a mixed read across that window
-				// could pass the collection-id check below using the stale
-				// `item` but then build a navigation URL from the ALREADY-
-				// updated `collSlug`/`itemSlug`, hijacking to a broken
-				// mismatched URL. Bailing here is always safe: the route's
-				// own in-flight loadData() will fetch fresh state for
-				// wherever the user has actually landed.
-				if (!itemMatchesRef) return;
-				// Fence (BUG-2129): only act if the item CURRENTLY shown is
-				// still in the collection this save/archive targeted. Covers
-				// both directions —
+				if (!editedCollectionId) return;
+				// Keep the GLOBAL collections list (sidebar, pickers, etc.)
+				// fresh regardless of whether this pane/item is even
+				// affected — harmless and always correct.
+				collectionStore.loadCollections(wsSlug);
+
+				// Fence (BUG-2129): only act further if the item CURRENTLY
+				// known is in the collection this save/archive targeted.
+				// Covers both directions —
 				//   - still on the original item: trivially the same
 				//     collection, so this is a no-op behavior change from
 				//     before.
 				//   - superseded (pane moved to a different item, same
-				//     collection): apply the FULL handling (was previously
+				//     collection): apply the handling below (was previously
 				//     dropped outright, leaving stale fields — the literal
-				//     BUG-2129 gap — and would also have skipped a pending
-				//     rename/archive's navigation for the new item, per
-				//     Codex review).
-				//   - superseded, DIFFERENT collection: no-op — a completed
-				//     edit for an abandoned item/collection must not
-				//     navigate/close/replace-fields on whatever the user is
-				//     now looking at.
-				if (!editedCollectionId || item?.collection_id !== editedCollectionId) return;
-				if (!updated) {
-					// Archive case — the collection is gone. Navigate away from
-					// this now-invalid item route rather than leaving the user
-					// with stale state that would hit deleted resources.
-					// Route-away is parameterized (PLAN-2105 / TASK-2112): an
-					// embedded pane closes in place (the collection page
-					// reconciles the archive itself) instead of hard-navigating
-					// the whole page; full-page returns to the workspace root.
-					collectionStore.loadCollections(wsSlug);
-					if (embedded) {
-						handleGone();
-					} else {
-						void goto(`/${username}/${wsSlug}`);
+				//     BUG-2129 gap).
+				//   - superseded, DIFFERENT collection: no-op below — a
+				//     completed edit for an abandoned item/collection must
+				//     not touch whatever the user is now looking at.
+				// `item` can be MID-TRANSITION (still holding the PREVIOUS
+				// item's data) if a route change is in flight — see the
+				// itemMatchesRef gates below for why that's handled
+				// separately rather than bailing out entirely here (Codex).
+				if (item?.collection_id !== editedCollectionId) return;
+				if (updated) collection = updated;
+
+				// Route-changing side effects (rename-redirect / archive-
+				// redirect) are gated on `itemMatchesRef` — the SAME "has
+				// loadData() caught up with the current route" invariant
+				// that gates collabKey and the SSE handlers elsewhere in
+				// this file. Between a route change (collSlug/itemSlug
+				// updating) and loadData()'s async resolution, `item` above
+				// can still be stale (the PREVIOUS item) while collSlug/
+				// itemSlug already reflect the new one — building a
+				// navigation URL from that mix would hijack to a broken,
+				// mismatched URL (Codex). Skip navigation in that window;
+				// `void loadData()` below is unconditionally safe to call
+				// instead — it's idempotent and gen-fenced against any
+				// in-flight load (see loadData's `myGen` checks), so calling
+				// it again while a same-route load is still pending can only
+				// help (superseding it with fresher data) and never regress
+				// correctness. That's exactly what closes BUG-2129's
+				// stale-fields gap when an in-flight load raced the
+				// migration and lost.
+				if (itemMatchesRef) {
+					if (!updated) {
+						// Archive case — the collection is gone. Navigate
+						// away from this now-invalid item route rather than
+						// leaving the user with stale state that would hit
+						// deleted resources. Route-away is parameterized
+						// (PLAN-2105 / TASK-2112): an embedded pane closes in
+						// place (the collection page reconciles the archive
+						// itself) instead of hard-navigating the whole page;
+						// full-page returns to the workspace root.
+						if (embedded) {
+							handleGone();
+						} else {
+							void goto(`/${username}/${wsSlug}`);
+						}
+						return;
 					}
-					return;
+					// If the owner renamed the collection, its slug may have
+					// changed. The current `/[collection]/[slug]` URL still
+					// points at the old slug and subsequent loadData() calls
+					// (which fetch by collSlug) would 404. Navigate to the
+					// new slug while preserving the item slug — routed
+					// through handleNavigateAway (PLAN-2105 / TASK-2112) so
+					// an embedded pane re-targets its host collection page
+					// (keeping the pane open via `?item=`) instead of
+					// hard-navigating to the full-page item route. The
+					// destination triggers a fresh loadData() on arrival, so
+					// no explicit refresh here.
+					if (updated.slug !== collSlug && itemSlug) {
+						handleNavigateAway(
+							embedded
+								? `/${username}/${wsSlug}/${updated.slug}?item=${encodeURIComponent(itemSlug)}`
+								: `/${username}/${wsSlug}/${updated.slug}/${itemSlug}`,
+						);
+						return;
+					}
 				}
-				collection = updated;
-				collectionStore.loadCollections(wsSlug);
-				// If the owner renamed the collection, its slug may have
-				// changed. The current `/[collection]/[slug]` URL still
-				// points at the old slug and subsequent loadData() calls
-				// (which fetch by collSlug) would 404. Navigate to the
-				// new slug while preserving the item slug — routed through
-				// handleNavigateAway (PLAN-2105 / TASK-2112) so an embedded
-				// pane re-targets its host collection page (keeping the pane
-				// open via `?item=`) instead of hard-navigating to the
-				// full-page item route. The destination triggers a fresh
-				// loadData() on arrival, so no explicit refresh here. Reads
-				// `itemSlug`/`collSlug` live (not frozen) — correct for both
-				// the still-current and superseded-same-collection cases,
-				// since either way this must target whatever is CURRENTLY
-				// displayed.
-				if (updated.slug !== collSlug && itemSlug) {
-					handleNavigateAway(
-						embedded
-							? `/${username}/${wsSlug}/${updated.slug}?item=${encodeURIComponent(itemSlug)}`
-							: `/${username}/${wsSlug}/${updated.slug}/${itemSlug}`,
-					);
-					return;
-				}
-				// Non-navigating update: schema or field mappings may have
-				// changed (rename / migration), so reload the item so fields
-				// reflect the new shape. Without this, a subsequent
-				// updateField() would write stale fields JSON back and
-				// clobber migrated values.
+				// Non-navigating update (or the itemMatchesRef window):
+				// schema or field mappings may have changed (rename /
+				// migration), so reload the item so fields reflect the new
+				// shape. Without this, a subsequent updateField() would
+				// write stale fields JSON back and clobber migrated values.
 				void loadData();
 			}}
 			onclose={() => {

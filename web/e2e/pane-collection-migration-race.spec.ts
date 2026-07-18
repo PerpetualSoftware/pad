@@ -419,18 +419,28 @@ test('a collection migration completing after a cross-collection navigation does
 	await expect(page).toHaveURL(new RegExp(`/${collB.slug}/`));
 
 	const urlAtRelease = page.url();
+	// waitForResponse (not a fixed sleep) — we need the PATCH to actually
+	// COMPLETE (onupdated only fires once the fetch promise resolves)
+	// before checking the URL, or this assertion could false-pass simply
+	// because the buggy navigation hadn't had a chance to fire yet (Codex
+	// round 3).
+	const patchResponse = page.waitForResponse(
+		(r) => r.url().endsWith(`/collections/${collA.slug}`) && r.request().method() === 'PATCH',
+	);
 	releaseMigration();
+	await patchResponse;
 
-	// Give the (possibly buggy) navigation a moment to fire — long enough
-	// that a wrongful `goto()` would have landed, short enough to keep the
-	// suite fast. If BUG-2129's fence regresses to the non-functional
-	// `{@const keyedSlug}` comparison, this callback ALWAYS falls through to
-	// the "not superseded" branch and, since the edited collection's slug
-	// (collA) differs from the CURRENTLY-shown collSlug (collB), unconditionally
+	// A short settle window for onupdated's SYNCHRONOUS decision (and any
+	// navigation it triggers) to actually land — bounded by the confirmed
+	// PATCH completion above, not a guess at total round-trip time. If
+	// BUG-2129's fence regresses to the non-functional `{@const keyedSlug}`
+	// comparison, this callback ALWAYS falls through to the "not
+	// superseded" branch and, since the edited collection's slug (collA)
+	// differs from the CURRENTLY-shown collSlug (collB), unconditionally
 	// calls handleNavigateAway(`/{username}/{ws}/{collA.slug}/{itemSlug}`) —
 	// hard-redirecting off B's page to a broken URL (B's ref doesn't exist
 	// in collA).
-	await page.waitForTimeout(1500);
+	await page.waitForTimeout(500);
 
 	expect(
 		page.url(),
