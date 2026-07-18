@@ -35,6 +35,14 @@ const CROSS_WORKSPACE_HREF_PREFIX = '/-/r/';
 // catches both uniformly; a raw `string.startsWith` on the href only catches
 // the root-relative case (Codex review).
 const HREF_PARSE_BASE = 'http://pad.invalid';
+// The host of `HREF_PARSE_BASE` — a resolved href keeps this host ONLY when it
+// was a genuinely same-origin root-relative path. A value like
+// "/\evil.example/…" (browsers treat "\" as "/") or "//evil.example/…"
+// resolves to a DIFFERENT host and is really an external navigation, so
+// comparing the parsed host against this sentinel is the robust "is this
+// truly local?" test — a raw `startsWith('/')` string check is fooled by the
+// backslash trick (Codex review).
+const HREF_PARSE_HOST = new URL(HREF_PARSE_BASE).host;
 
 /** True when `href` is (or resolves to) the cross-workspace resolver route. */
 function isCrossWorkspaceHref(href: string): boolean {
@@ -125,16 +133,23 @@ export function isSameWorkspaceItemHref(
 ): boolean {
 	if (!wsSlug || collectionPrefixes.size === 0) return false;
 	if (isCrossWorkspaceHref(href)) return false;
-	const path = href.split(/[?#]/)[0];
-	// A root-relative href always leads with "/", so split()[0] is the empty
-	// string before it; require that (rejects a non-root-relative value) and
-	// strip it. Do NOT `filter(Boolean)` the rest — collapsing empties would
-	// accept malformed paths with a double slash / trailing slash
+	// Parse against the sentinel base and require the result to be
+	// same-origin: this rejects an href that only LOOKS root-relative but
+	// resolves cross-origin (`/\evil.example/…`, `//evil.example/…`) — those
+	// are external navigations, not local item links (Codex review).
+	let url: URL;
+	try {
+		url = new URL(href, HREF_PARSE_BASE);
+	} catch {
+		return false;
+	}
+	if (url.host !== HREF_PARSE_HOST) return false;
+	// `url.pathname` always leads with "/", so split()[0] is the empty string
+	// before it; drop it. Do NOT `filter(Boolean)` the rest — collapsing
+	// empties would accept malformed paths with a double slash / trailing slash
 	// (`/alice/myws//tasks/TASK-9`) as valid item routes (Codex review). Any
 	// remaining empty segment means the path isn't a clean item URL.
-	const raw = path.split('/');
-	if (raw[0] !== '') return false;
-	const segments = raw.slice(1);
+	const segments = url.pathname.split('/').slice(1);
 	if (segments.some((s) => s === '')) return false;
 	let ws: string;
 	let coll: string;

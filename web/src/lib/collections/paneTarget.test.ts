@@ -254,6 +254,17 @@ describe('isSameWorkspaceItemHref — editor content-link gate (TASK-2160)', () 
 		expect(isSameWorkspaceItemHref('/alice/myws/docs/roadmap2-5', 'myws', colls)).toBe(false);
 	});
 
+	it('rejects a backslash-authority href that resolves cross-origin (/\\evil.example/...)', () => {
+		// Browsers treat "\" as "/", so this resolves to https://evil.example/…
+		// — an external navigation that must NOT be classified as a local item
+		// link even though it "looks" root-relative (Codex review).
+		expect(isSameWorkspaceItemHref('/\\evil.example/myws/tasks/TASK-5', 'myws', colls)).toBe(false);
+	});
+
+	it('rejects a protocol-relative (//host/...) href', () => {
+		expect(isSameWorkspaceItemHref('//evil.example/myws/tasks/TASK-5', 'myws', colls)).toBe(false);
+	});
+
 	it('rejects a malformed double-slash path (empty interior segment)', () => {
 		expect(isSameWorkspaceItemHref('/alice/myws//tasks/TASK-9', 'myws', colls)).toBe(false);
 	});

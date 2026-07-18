@@ -26,6 +26,14 @@ let collectionsWorkspace = $state<string | null>(null);
 let activeItem = $state<Item | null>(null);
 let loading = $state(false);
 
+// Monotonic load generation for `loadCollections`. A workspace switch can
+// leave two list requests in flight (A pending, then B); without a guard a
+// late-resolving A response would overwrite B's `collections` +
+// `collectionsWorkspace` and strand `collectionsAreFreshFor(B)` at false. Each
+// call captures its generation and only commits if it's still the latest
+// (Codex review). Plain counter — not reactive; it only fences async writes.
+let collectionsLoadSeq = 0;
+
 export const collectionStore = {
 	get collections() { return collections; },
 	get items() { return items; },
@@ -65,9 +73,16 @@ export const collectionStore = {
 	},
 
 	async loadCollections(ws: string) {
+		const seq = ++collectionsLoadSeq;
 		loading = true;
 		try {
-			collections = await api.collections.list(ws);
+			const result = await api.collections.list(ws);
+			// Drop a stale response: a newer loadCollections (e.g. a workspace
+			// switch that resolved first) has superseded this one, so writing
+			// `collections`/`collectionsWorkspace` here would clobber the newer
+			// workspace's data with this older load (Codex review).
+			if (seq !== collectionsLoadSeq) return;
+			collections = result;
 			// Stamp the array with its source workspace so consumers can tell
 			// it apart from a stale previous-workspace load (see
 			// `collectionsAreFreshFor`). Set only on success — a failed load
@@ -75,7 +90,9 @@ export const collectionStore = {
 			// with it, which is the correct conservative signal.
 			collectionsWorkspace = ws;
 		} finally {
-			loading = false;
+			// Only the latest in-flight load owns the `loading` flag — an older
+			// load resolving late must not flip it off while the newer one runs.
+			if (seq === collectionsLoadSeq) loading = false;
 		}
 	},
 

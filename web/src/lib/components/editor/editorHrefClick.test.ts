@@ -161,6 +161,15 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 				href: '/alice/myws//tasks/TASK-9',
 			});
 		});
+
+		it('a backslash-authority href that resolves cross-origin is NOT pane-drilled (Codex review)', () => {
+			// "/\evil.example/..." resolves to https://evil.example/... in the
+			// browser — it must not be misclassified as a local item and drilled.
+			expect(planHrefClick(leftClick, '/\\evil.example/myws/tasks/TASK-5', ctx())).toEqual({
+				kind: 'goto',
+				href: '/\\evil.example/myws/tasks/TASK-5',
+			});
+		});
 	});
 
 	describe('missing context — declines to drill, falls back to goto', () => {
