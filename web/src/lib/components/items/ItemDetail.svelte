@@ -360,7 +360,12 @@
 		const url = new URL(page.url);
 		if (open) url.searchParams.set('graph', '1');
 		else url.searchParams.delete('graph');
-		goto(url, { replaceState: true, noScroll: true, keepFocus: true });
+		// This same-page toggle can PRESERVE an open pane's `?item=` (on the
+		// full-page host, Q1/Phase 2), so re-emit the current `page.state` to
+		// keep the pane depth+ownership stamp intact — a bare replaceState would
+		// blank it and desync the close arithmetic (PLAN-2154 R13). A no-op when
+		// there's no pane state to carry.
+		goto(url, { replaceState: true, noScroll: true, keepFocus: true, state: page.state });
 	}
 	function openGraph() {
 		setGraphParam(true);
