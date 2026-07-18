@@ -101,25 +101,35 @@ function rawPaneTargetCandidate(target: PaneTarget): string | null {
 	return null;
 }
 
+/** True when `candidate` is `current`'s own item number, expressed as a
+ *  ref-shaped string (case-insensitive, prefix ignored — see `REF_SHAPE`'s
+ *  doc comment). False when `current` has no item number. */
+function matchesRefNumber(candidate: string, current: Item): boolean {
+	if (!current.item_number) return false;
+	const number = parseRefNumber(candidate);
+	return number !== null && number === current.item_number;
+}
+
 /**
  * True when `target` refers to the SAME item as `current` — the item
  * presently loaded (e.g. `ItemDetail`'s own `item` state for the pane
- * showing it). Compares `current`'s stable `id` and slug, plus a
- * ref-shaped candidate's item NUMBER (not the literal ref string), against
- * the target's candidate:
+ * showing it).
  *
- *  - a target that names the current item by slug while it's open under its
- *    ref (or vice versa, or via an href built from either) is caught — a
- *    bare `itemUrlId(current) === candidate` string compare misses that
- *    alias;
- *  - a ref-shaped candidate is compared case-insensitively BY NUMBER ONLY,
- *    ignoring its prefix, mirroring the server's `GetItemByRef` (item
- *    numbers are workspace-unique, so it falls back to a number-only match
- *    when the prefix is stale — the same case a wiki-link written before an
- *    item moved collections, e.g. "[[PLAN-42]]" for an item now filed as
- *    TASK-42, would still present). Matching by number alone reproduces
- *    that same-item outcome instead of pushing a redundant re-target
- *    (PLAN-2154 / TASK-2158; Codex review).
+ * Field-provenance-aware: a target names an item through exactly one
+ * "channel" at a time, and only checked with that channel's own semantics,
+ * so a `ref`-sourced candidate is judged ONLY as a ref (id, or its item
+ * NUMBER — case-insensitive, prefix ignored, matching a stale/renamed
+ * prefix from before a collection move, mirroring the server's
+ * `GetItemByRef` number-only fallback) and never falls through to a raw
+ * string compare against `current.slug` — which could coincidentally equal
+ * a DIFFERENT item's ref string (e.g. current is slugged "plan-6" while a
+ * target `{ ref: "plan-6" }` names some OTHER item numbered 6) and wrongly
+ * suppress a valid navigation. A `slug`-sourced candidate is likewise
+ * judged only as a slug (or id). An `href`-sourced candidate carries no
+ * declared identity — its trailing segment could be either shape — so both
+ * are tried, matching the server's own ambiguous-string resolution order
+ * for a bare `?item=` value (PLAN-2154 / TASK-2158; Codex review — PR diff
+ * pass).
  *
  * `current` is optional/nullable so callers that don't have a loaded item
  * in hand (e.g. the collection host, which only sees the target) can call
@@ -128,13 +138,21 @@ function rawPaneTargetCandidate(target: PaneTarget): string | null {
  */
 export function isSamePaneTarget(target: PaneTarget, current: Item | null | undefined): boolean {
 	if (!current) return false;
-	const candidate = rawPaneTargetCandidate(target);
-	if (!candidate) return false;
-	if (candidate === current.id) return true;
-	if (candidate === current.slug) return true;
-	if (current.item_number) {
-		const number = parseRefNumber(candidate);
-		if (number !== null && number === current.item_number) return true;
+	// A cross-workspace href is unambiguous evidence of non-locality — see
+	// `rawPaneTargetCandidate`'s doc comment for why this precedes ref/slug.
+	if (target.href && isCrossWorkspaceHref(target.href)) return false;
+	if (target.ref) {
+		return target.ref === current.id || matchesRefNumber(target.ref, current);
+	}
+	if (target.slug) {
+		return target.slug === current.id || target.slug === current.slug;
+	}
+	if (target.href) {
+		const candidate = lastHrefSegment(target.href);
+		if (!candidate) return false;
+		return (
+			candidate === current.id || candidate === current.slug || matchesRefNumber(candidate, current)
+		);
 	}
 	return false;
 }

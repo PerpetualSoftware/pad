@@ -163,6 +163,20 @@ describe('isSamePaneTarget — same-item guard', () => {
 		// though the trailing ref segment is identical.
 		expect(isSamePaneTarget({ href: '/-/r/other-workspace/TASK-5' }, task5)).toBe(false);
 	});
+
+	it('a ref-sourced candidate is judged ONLY as a ref, never falling through to a raw slug compare', () => {
+		// The exact collision Codex's PR-diff pass flagged: current is
+		// slugged "plan-6" but numbered 5; a target explicitly carrying
+		// `{ ref: "plan-6" }` names a DIFFERENT item (number 6) and must NOT
+		// be swallowed as a same-item alias just because the ref string
+		// happens to equal current's slug — that would silently drop a
+		// legitimate navigation.
+		const current = item({ id: 'id-9', slug: 'plan-6', item_number: 5, collection_prefix: 'TASK' });
+		expect(isSamePaneTarget({ ref: 'plan-6' }, current)).toBe(false);
+		// A slug-sourced candidate is likewise judged only as a slug: it
+		// still matches when it's genuinely current's own slug.
+		expect(isSamePaneTarget({ slug: 'plan-6' }, current)).toBe(true);
+	});
 });
 
 describe('resolvePaneTarget — same-item guard short-circuits to null', () => {
