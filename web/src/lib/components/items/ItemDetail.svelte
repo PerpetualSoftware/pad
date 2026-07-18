@@ -286,6 +286,23 @@
 	let contentDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 	let saveStatus = $state<'idle' | 'saving' | 'saved'>('idle');
 	let saveStatusTimer: ReturnType<typeof setTimeout> | undefined;
+
+	// Per-instance shadow of editorStore.dirty/lastSaveTime (PLAN-2154 Phase 0 /
+	// R4, TASK-2156). editorStore is a module singleton — with a second
+	// concurrently-mounted ItemDetail (the future full-page-host + pane, D2),
+	// one instance's edits would flip the SHARED dirty flag, which the OTHER
+	// instance's SSE archive/delete guards below also read. A frozen/background
+	// master could then self-redirect off a pane edit it has nothing to do
+	// with. localDirty/localLastSaveTime mirror every editorStore.setDirty /
+	// setLastSaveTime call this instance makes (see handleContentUpdate,
+	// handleRawContentUpdate, the collab/raw savers, and the load/destroy
+	// resets below) so this instance's own guards can branch on ITS edits only.
+	// editorStore itself is left untouched — other consumers (ChildItems,
+	// +layout.svelte) still read/write it; ChildItems is rerouted to instance-
+	// scoped props below, +layout.svelte's single-instance self-save
+	// suppression is out of this task's scope.
+	let localDirty = $state(false);
+	let localLastSaveTime = $state(0);
 	// Debounce the add-relationship search so typing doesn't fire one /search
 	// request per keystroke (rate-limit relief). Cleared on the item-scoped
 	// reset + onDestroy so a pending fetch never fires after teardown/switch.
@@ -608,11 +625,14 @@
 				// the archived row and re-fetching would clobber the editor —
 				// the Codex-round-2 reasoning still holds there), and a re-fetch
 				// 404 (item hard-deleted — gone for real).
-				// editorStore.dirty catches unsaved content BEFORE the 1.2s
-				// debounced save flips saveStatus to 'saving' — without it a
-				// live archive in that window would re-fetch and clobber the
-				// user's in-progress edit (Codex P1).
-				if (saveStatus === 'saving' || editingTitle || editorStore.dirty) {
+				// localDirty catches unsaved content BEFORE the 1.2s debounced
+				// save flips saveStatus to 'saving' — without it a live archive
+				// in that window would re-fetch and clobber the user's
+				// in-progress edit (Codex P1). Reads the PER-INSTANCE shadow
+				// (TASK-2156), not the global editorStore.dirty singleton — a
+				// concurrently-mounted pane's edits must not trip THIS
+				// instance's redirect (PLAN-2154 D2 / R4).
+				if (saveStatus === 'saving' || editingTitle || localDirty) {
 					handleGone();
 					return;
 				}
@@ -713,11 +733,14 @@
 				// hard-deleted one redirects (TASK-1833). Keep the prior redirect
 				// when mid-edit (don't clobber an in-flight save against a
 				// now-archived row).
-				// editorStore.dirty catches unsaved content BEFORE the 1.2s
-				// debounced save flips saveStatus to 'saving' — without it a
-				// live archive in that window would re-fetch and clobber the
-				// user's in-progress edit (Codex P1).
-				if (saveStatus === 'saving' || editingTitle || editorStore.dirty) {
+				// localDirty catches unsaved content BEFORE the 1.2s debounced
+				// save flips saveStatus to 'saving' — without it a live archive
+				// in that window would re-fetch and clobber the user's
+				// in-progress edit (Codex P1). Reads the PER-INSTANCE shadow
+				// (TASK-2156), not the global editorStore.dirty singleton — a
+				// concurrently-mounted pane's edits must not trip THIS
+				// instance's redirect (PLAN-2154 D2 / R4).
+				if (saveStatus === 'saving' || editingTitle || localDirty) {
 					handleGone();
 					return;
 				}
@@ -806,6 +829,7 @@
 		// synchronously on unmount, before the awaited fetch continuations.
 		loadGeneration++;
 		editorStore.resetForDoc();
+		localDirty = false;
 		collectionStore.setActiveItem(null);
 	});
 
@@ -1012,6 +1036,7 @@
 			}
 			collectionStore.setActiveItem(itemData);
 			editorStore.resetForDoc();
+			localDirty = false;
 
 			// Fetch child item progress for any item (generalized parent/child)
 			try {
@@ -2304,6 +2329,7 @@
 		// TASK-1260 / PLAN-1248.
 		if (collabProvider) {
 			editorStore.setDirty(true);
+			localDirty = true;
 			collabFlusher.schedule(activeCollabContext, markdown);
 			return;
 		}
@@ -2314,6 +2340,7 @@
 		// non-trample the single shared timer guaranteed.
 		rawContentSaver.cancel();
 		editorStore.setDirty(true);
+		localDirty = true;
 		contentDebounceTimer = setTimeout(() => {
 			if (!item) return;
 			// Capture identity at fire time. loadData cancels this timer on a
@@ -2326,6 +2353,7 @@
 			// Set lastSaveTime BEFORE the API call so the SSE guard works
 			// even if the SSE event arrives before the response.
 			editorStore.setLastSaveTime(Date.now());
+			localLastSaveTime = Date.now();
 			const allItems = localIndex.getAll(wsSlug);
 			let toSave = markdown;
 			if (allItems.length > 0) {
@@ -2337,7 +2365,9 @@
 				// Don't overwrite item -- resetting editorContent would
 				// clobber anything typed since the debounce started.
 				editorStore.setLastSaveTime(Date.now());
+				localLastSaveTime = Date.now();
 				editorStore.setDirty(false);
+				localDirty = false;
 				showSaved();
 			}).catch(() => {
 				if (switchedAway(reqItem, gen)) return;
@@ -2467,6 +2497,7 @@
 			if (isForegroundCurrent()) {
 				saveStatus = 'saving';
 				editorStore.setLastSaveTime(Date.now());
+				localLastSaveTime = Date.now();
 			}
 			try {
 				// Pass the provider's per-tab op-log cursor (TASK-1319) so the
@@ -2498,7 +2529,9 @@
 				if (forceRefreshInFlight) return 'skipped';
 				if (isForegroundCurrent()) {
 					editorStore.setLastSaveTime(Date.now());
+					localLastSaveTime = Date.now();
 					editorStore.setDirty(false);
+					localDirty = false;
 					showSaved();
 				}
 				return 'flushed';
@@ -2548,6 +2581,7 @@
 						if (item && item.id === reqItemId && genAtSave === loadGeneration && rawContentSaver.pending === markdown) {
 							rawContentSaver.clearPending();
 							editorStore.setDirty(false);
+							localDirty = false;
 						}
 					})
 					.catch(() => {});
@@ -2555,11 +2589,13 @@
 			// Debounced raw save.
 			saveStatus = 'saving';
 			editorStore.setLastSaveTime(Date.now());
+			localLastSaveTime = Date.now();
 			// Raw mode: content is already in storage format (with [[wiki links]])
 			const toSave = markdown;
 			return api.items.update(wsSlug, reqItemId, { content: toSave }).then((updated) => {
 				if (!item || item.id !== reqItemId || genAtSave !== loadGeneration) return;
 				editorStore.setLastSaveTime(Date.now());
+				localLastSaveTime = Date.now();
 				// Raw saves change items.content via a path the
 				// collab dedupe doesn't see. Without resetting the
 				// flusher's dedupe baseline, a later collab flush could
@@ -2578,6 +2614,7 @@
 					item = withInflightTags(updated);
 					rawContentSaver.clearPending();
 					editorStore.setDirty(false);
+					localDirty = false;
 					showSaved();
 				} else {
 					// Newer pending edit; keep local content, adopt
@@ -2609,6 +2646,7 @@
 		// debounce into the saver.
 		clearTimeout(contentDebounceTimer);
 		editorStore.setDirty(true);
+		localDirty = true;
 		rawContentSaver.queue(markdown);
 	}
 
@@ -2663,6 +2701,7 @@
 				try {
 					saveStatus = 'saving';
 					editorStore.setLastSaveTime(Date.now());
+					localLastSaveTime = Date.now();
 					const updated = await api.items.update(wsSlug, reqItemId, { content: markdown });
 					if (!item || item.id !== reqItemId || genAtFlush !== loadGeneration) {
 						// Navigation completed during the await;
@@ -2671,6 +2710,7 @@
 						return false;
 					}
 					editorStore.setLastSaveTime(Date.now());
+					localLastSaveTime = Date.now();
 					// Raw saves change items.content via a path the
 					// collab dedupe doesn't see; reset the flusher's
 					// dedupe baseline so a future collab flush
@@ -2706,6 +2746,7 @@
 			}
 			if (!lastError && rawContentSaver.pending === null) {
 				editorStore.setDirty(false);
+				localDirty = false;
 				showSaved();
 				return true;
 			}
@@ -4110,7 +4151,7 @@
 		     always-mounted SSE guarantee below. -->
 		{#if item}
 			<div id="item-children" class="children-anchor">
-				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} />
+				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} />
 			</div>
 		{/if}
 
