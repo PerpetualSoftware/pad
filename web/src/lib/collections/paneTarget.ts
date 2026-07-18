@@ -137,6 +137,7 @@ export function isSameWorkspaceItemHref(
 	// same-origin: this rejects an href that only LOOKS root-relative but
 	// resolves cross-origin (`/\evil.example/…`, `//evil.example/…`) — those
 	// are external navigations, not local item links (Codex review).
+	const rawPath = href.split(/[?#]/)[0];
 	let url: URL;
 	try {
 		url = new URL(href, HREF_PARSE_BASE);
@@ -144,6 +145,15 @@ export function isSameWorkspaceItemHref(
 		return false;
 	}
 	if (url.host !== HREF_PARSE_HOST) return false;
+	// Require the raw path to ALREADY be in canonical form. The URL parser
+	// silently normalizes a path (backslash→slash, dot-segments, percent
+	// casing), so an href like `/alice/myws/tasks\TASK-5` would validate as
+	// `.../tasks/TASK-5` here — yet the RAW href is what the host later resolves
+	// (`resolvePaneTarget` splits on "/" only), yielding a bogus `tasks\TASK-5`
+	// segment and drilling an invalid item. Every builder emits clean ASCII
+	// item URLs, so any href that isn't already canonical isn't one — navigate
+	// it normally instead (Codex review, regression guard).
+	if (url.pathname !== rawPath) return false;
 	// `url.pathname` always leads with "/", so split()[0] is the empty string
 	// before it; drop it. Do NOT `filter(Boolean)` the rest — collapsing
 	// empties would accept malformed paths with a double slash / trailing slash

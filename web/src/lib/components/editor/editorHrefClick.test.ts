@@ -170,6 +170,13 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 				href: '/\\evil.example/myws/tasks/TASK-5',
 			});
 		});
+
+		it('a backslash-in-segment href is NOT pane-drilled (raw != canonical — Codex review)', () => {
+			expect(planHrefClick(leftClick, '/alice/myws/tasks\\TASK-5', ctx())).toEqual({
+				kind: 'goto',
+				href: '/alice/myws/tasks\\TASK-5',
+			});
+		});
 	});
 
 	describe('missing context — declines to drill, falls back to goto', () => {

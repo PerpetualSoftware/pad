@@ -265,6 +265,13 @@ describe('isSameWorkspaceItemHref — editor content-link gate (TASK-2160)', () 
 		expect(isSameWorkspaceItemHref('//evil.example/myws/tasks/TASK-5', 'myws', colls)).toBe(false);
 	});
 
+	it('rejects a backslash-in-segment href (URL-normalizes but the raw href is what gets resolved)', () => {
+		// `/alice/myws/tasks\TASK-5` normalizes to `.../tasks/TASK-5`, but the
+		// raw href is what the host later splits on "/" — accepting it would
+		// drill a bogus `tasks\TASK-5` item. Require canonical form (Codex).
+		expect(isSameWorkspaceItemHref('/alice/myws/tasks\\TASK-5', 'myws', colls)).toBe(false);
+	});
+
 	it('rejects a malformed double-slash path (empty interior segment)', () => {
 		expect(isSameWorkspaceItemHref('/alice/myws//tasks/TASK-9', 'myws', colls)).toBe(false);
 	});
