@@ -29,7 +29,7 @@
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
-	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
+	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -40,6 +40,7 @@
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
+	import { isSamePaneTarget } from '$lib/collections/paneTarget';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -81,6 +82,7 @@
 		onGone,
 		onNavigateAway,
 		onReady,
+		onOpenTarget,
 	}: {
 		username: string;
 		wsSlug: string;
@@ -91,6 +93,16 @@
 		onGone?: () => void;
 		onNavigateAway?: (url: string) => void;
 		onReady?: (ready: boolean) => void;
+		// PLAN-2154 Architecture B / TASK-2158: the seam content-link surfaces
+		// (relationships, breadcrumb, editor wiki-links, the graph drawer —
+		// TASK-2159/2160) will fire, via the internal `fireOpenTarget` wrapper
+		// below, to drill the pane in place instead of a hard navigation.
+		// Callers hand up a `PaneTarget` (ref/slug/href/collection metadata
+		// only — never a full `Item`); the collection host resolves it
+		// (`resolvePaneTarget`, `$lib/collections/paneTarget`) and drives its
+		// pane controller's `navigatePaneTo`. Not called by anything yet — no
+		// content-link surface intercepts clicks until TASK-2159/2160 land.
+		onOpenTarget?: (target: PaneTarget) => void;
 	} = $props();
 
 	// itemSlug is the identity that drives loadData + the whole collabKey
@@ -162,6 +174,21 @@
 	// the returning id matches but a newer load replaced the item in between.
 	function switchedAway(targetItem: Item, gen: number): boolean {
 		return gen !== loadGeneration || item?.id !== targetItem.id;
+	}
+
+	// The `onOpenTarget` seam's same-item guard (PLAN-2154 / TASK-2158). No
+	// content-link surface calls this yet — TASK-2159/2160's relationships /
+	// breadcrumb / editor wiki-link / graph interceptors will call
+	// `fireOpenTarget(target)` instead of `onOpenTarget?.(target)` directly, so
+	// a link that names THIS item (by ref, slug, id, or an href built from
+	// either — even when it differs from however the pane's own `?item=` names
+	// it) is dropped here rather than round-tripping to the host only to
+	// become a no-op there. `isSamePaneTarget` is the same reusable check
+	// `resolvePaneTarget` (`$lib/collections/paneTarget`) applies when a
+	// caller passes it a `current` item.
+	function fireOpenTarget(target: PaneTarget) {
+		if (isSamePaneTarget(target, item)) return;
+		onOpenTarget?.(target);
 	}
 
 	// Cross-collection `?item=` safety (PLAN-2105 / TASK-2112). A stale /

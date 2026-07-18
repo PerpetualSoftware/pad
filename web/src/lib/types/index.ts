@@ -1674,3 +1674,36 @@ export function formatItemRef(item: Item): string | null {
 export function itemUrlId(item: Item): string {
 	return formatItemRef(item) ?? item.slug;
 }
+
+/**
+ * The minimal, non-`Item` description of a navigation target a content-link
+ * surface hands to `ItemDetail`'s `onOpenTarget` callback (PLAN-2154
+ * Architecture B). Link surfaces — relationships, breadcrumb, editor wiki-
+ * links, the graph drawer — carry only href/ref/collection metadata about
+ * the item they point at, NEVER a full `Item` (fetching one just to link to
+ * it would defeat the point). `resolvePaneTarget`
+ * (`$lib/collections/paneTarget`) turns a `PaneTarget` into the canonical
+ * `?item=` value the pane controller (`navigatePaneTo`) expects.
+ *
+ * At least one of `ref` / `slug` / `href` should be set for the target to be
+ * resolvable; `ref` is preferred over `slug` over an `href`'s trailing path
+ * segment, mirroring `itemUrlId`/`formatItemRef`'s own ref-over-slug
+ * preference. `collectionSlug` is carried for future collection-aware
+ * routing / cross-collection guards — resolution itself doesn't need it,
+ * since the canonical `?item=` value is workspace-unique.
+ */
+export interface PaneTarget {
+	/** Canonical PREFIX-NUMBER ref, e.g. "TASK-5". */
+	ref?: string;
+	/** Item slug, used when no `ref` is available. */
+	slug?: string;
+	/** A SAME-WORKSPACE internal item URL, e.g. "/alice/myws/tasks/TASK-5"
+	 *  (only its trailing path segment — the ref-or-slug — is used). A
+	 *  cross-workspace resolver URL (`/-/r/{workspace}/{ref}`) is NOT
+	 *  resolvable through this field — `resolvePaneTarget` refuses it rather
+	 *  than risk opening the wrong item; that link shape should bypass pane
+	 *  interception and navigate normally. */
+	href?: string;
+	/** The target item's collection slug, if known. */
+	collectionSlug?: string;
+}
