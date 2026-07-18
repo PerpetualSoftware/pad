@@ -525,12 +525,15 @@
 	// promise, so these continuations resume AFTER the user may have
 	// re-targeted, drilled, or closed (the documented late-async-clobber class).
 	let controllerActionSeq = 0;
-	// A one-shot continuation to run on the next `afterNavigate` — the second
-	// phase of a `history.go`-then-write staged navigation (cold-base close /
-	// detached-open reset). Last write wins; a superseding action overwrites it.
-	let pendingPaneLatch: { seq: number; run: () => void } | null = null;
+	// A one-shot continuation to run once its `history.go` has actually landed at
+	// the intended destination — the second phase of a `history.go`-then-write
+	// staged navigation (cold-base close / detached-open reset). `run()` RETURNS
+	// whether it fired: false means "not at the destination yet" (e.g. a
+	// competing traversal landed us elsewhere first), so the latch stays armed
+	// for this go's own popstate rather than being dropped (R14; Codex review).
+	let pendingPaneLatch: { seq: number; run: () => boolean } | null = null;
 
-	function armPaneLatch(run: () => void) {
+	function armPaneLatch(run: () => boolean) {
 		pendingPaneLatch = { seq: controllerActionSeq, run };
 	}
 
@@ -547,18 +550,24 @@
 	}
 
 	// Consume the pending latch on navigation settle. Its `history.go` lands
-	// here as a POPSTATE — so we gate on `nav.type === 'popstate'` and leave the
-	// latch ARMED for any other navigation (a competing `goto`/link/form must
-	// not consume it against the wrong entry; it stays armed until its own
-	// `history.go` settles). The seq fence drops a superseded latch, and each
-	// `run()` re-checks live state before it writes (R14; Codex review P2).
+	// here as a POPSTATE, so we only look on popstate — but `popstate` also
+	// covers an unrelated browser Back/Forward, so we do NOT clear the latch
+	// eagerly: `run()` verifies it has actually reached its destination (depth
+	// collapsed to the base) and only THEN performs the write and reports true.
+	// A competing traversal that lands elsewhere leaves `run()` returning false
+	// and the latch armed for this go's own popstate — it can't be dropped
+	// against the wrong entry (R14; Codex review P2). The seq fence discards a
+	// superseded latch (a newer controller action can't run while one is
+	// in-flight, so this is belt-and-suspenders).
 	afterNavigate((nav) => {
 		const latch = pendingPaneLatch;
 		if (!latch) return;
-		if (nav.type !== 'popstate') return; // not our history.go yet — stay armed
-		pendingPaneLatch = null;
-		if (latch.seq !== controllerActionSeq) return; // superseded → discard
-		latch.run();
+		if (nav.type !== 'popstate') return; // not a history traversal — stay armed
+		if (latch.seq !== controllerActionSeq) {
+			pendingPaneLatch = null; // superseded → discard
+			return;
+		}
+		if (latch.run()) pendingPaneLatch = null; // consume only once it fires
 	});
 
 	function openItemPane(item: Item) {
@@ -584,11 +593,11 @@
 			cancelPaneFollow();
 			const resetState = plan.resetState;
 			armPaneLatch(() => {
-				if (!browser) return;
-				const landed = currentPaneState();
-				// Only re-target once the stack has actually collapsed to the base
-				// (defensive against a premature latch fire).
-				if (landed.paneDepth !== 0) return;
+				if (!browser) return false;
+				// Only re-target once the stack has actually collapsed to the base;
+				// a competing traversal that hasn't reached it leaves the latch
+				// armed (return false) for this go's own popstate.
+				if (currentPaneState().paneDepth !== 0) return false;
 				const u = new URL(page.url);
 				u.searchParams.set('item', targetRef);
 				goto(`${u.pathname}${u.search}`, {
@@ -597,6 +606,7 @@
 					keepFocus: true,
 					state: resetState,
 				});
+				return true;
 			});
 			history.go(plan.goDelta);
 			return;
@@ -629,6 +639,34 @@
 			noScroll: true,
 			keepFocus: true,
 			state: plan.state,
+		});
+	}
+
+	// A collection RENAME (fired from the pane's ItemDetail when the owner
+	// renames the collection) changes the pathname (old→new slug) while keeping
+	// `?item=`. It must:
+	//  • replaceState (not push) so it adds no uncounted history entry that
+	//    would desync the close-depth arithmetic (PLAN-2154 R8);
+	//  • stamp a FRESH UNOWNED depth-0 base on the new slug — NOT carry the old
+	//    ownership forward. Every predecessor entry (pre-pane base + any drills)
+	//    still points at the now-dead OLD slug, so an owned close would
+	//    `history.go` back onto a 404. Ownership means "a live pre-pane entry
+	//    exists to unwind to", which is false after a rename; an unowned base
+	//    closes by dropping `?item=` in place, staying on the valid new route.
+	//  • bypass the unsaved-draft `beforeNavigate` guard: the server-side
+	//    rename already committed, and this route component is REUSED across the
+	//    same-route pathname change (its quick-create drafts survive), so a
+	//    "Stay" prompt would strand the user on the now-dead old slug with the
+	//    stale owned stamp (Codex review).
+	function navigatePaneAfterRename(url: string) {
+		bypassNavGuard = true;
+		void goto(url, {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true,
+			state: { paneDepth: 0, paneOwned: false },
+		}).finally(() => {
+			bypassNavGuard = false;
 		});
 	}
 
@@ -670,11 +708,12 @@
 		// cold-base-go: go back to the cold base (still carries `?item=`), then
 		// delete it from a one-shot latch (`history.go` can't be awaited).
 		armPaneLatch(() => {
-			if (!browser) return;
-			// Re-check: only delete if we've reached a base that still shows the
-			// pane (R14 fence-on-continuation).
-			if (!page.url.searchParams.has('item')) return;
-			if (currentPaneState().paneDepth !== 0) return;
+			if (!browser) return false;
+			// Only delete once we've reached the cold base that still shows the
+			// pane (depth 0, `?item=` present); a competing traversal landing
+			// elsewhere leaves the latch armed (R14 fence-on-continuation).
+			if (!page.url.searchParams.has('item')) return false;
+			if (currentPaneState().paneDepth !== 0) return false;
 			const u = new URL(page.url);
 			u.searchParams.delete('item');
 			goto(`${u.pathname}${u.search}`, {
@@ -682,6 +721,7 @@
 				noScroll: true,
 				keepFocus: true,
 			});
+			return true;
 		});
 		history.go(plan.goDelta);
 	}
@@ -3561,24 +3601,7 @@
 				{collSlug}
 				onClose={closeItemPane}
 				onGone={closeItemPane}
-				onNavigateAway={(url) =>
-					goto(url, {
-						replaceState: true,
-						noScroll: true,
-						keepFocus: true,
-						// A collection RENAME changes the pathname (old→new slug) while
-						// keeping `?item=`. replaceState (not push) keeps the history
-						// entry COUNT stable, but we must NOT carry the old
-						// depth/ownership stamp forward: every predecessor entry (the
-						// pre-pane base + any drills) still points at the now-dead OLD
-						// slug, so an owned close would `history.go` back onto a 404
-						// ("Collection not found"). Ownership means "a live pre-pane
-						// entry exists to unwind to" — after a rename that's false. Stamp
-						// a fresh UNOWNED depth-0 base on the new slug so close drops
-						// `?item=` in place (staying on the valid new route) instead of
-						// navigating off it (PLAN-2154 R8; Codex review).
-						state: { paneDepth: 0, paneOwned: false },
-					})}
+				onNavigateAway={navigatePaneAfterRename}
 			/>
 		</aside>
 	{/if}
