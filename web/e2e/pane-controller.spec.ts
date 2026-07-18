@@ -414,4 +414,104 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		// page liveness via the heading rather than a specific row.)
 		await expect(page.getByRole('heading', { level: 1, name: new RegExp(newName) })).toBeVisible();
 	});
+
+	// ── Detach at depth>0 (PLAN-2154 Architecture C / D-detach / TASK-2161) ──
+	// Once the pane DRILLS past its base (depth>0) it becomes an independent
+	// viewer: the list row-highlight is cleared, the pane-snap effect stops
+	// snapping, and j/k goes INERT (schedulePaneFollow bails at schedule time and
+	// re-checks depth in its fired callback, and any pending follow is cancelled
+	// on drill). A direct row-click, by contrast, RESETS the stack (covered by
+	// the 'detached row click RESETS' test above). Only row-clicks reset; j/k
+	// never does.
+
+	test('detach: at depth>0 the list highlight is CLEARED, j/k cannot re-introduce it or move the pane, and unwind restores it', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl hl alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl hl bravo');
+		await seedDoc(fixture, request, 'Ctrl hl charlie');
+		await page.goto(docsUrl(fixture));
+
+		// The list row-highlight marker (`focusedItemId === item.id`) renders as
+		// `.item-card.focused` in the list column. Scoped to `.list-column` so the
+		// pane's own ItemDetail can never match.
+		const focusedRows = page.locator('.list-column .item-card.focused');
+
+		// Open A at depth 0 → the pane-snap effect highlights A's row.
+		await page.locator('.item-card', { hasText: 'Ctrl hl alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect(focusedRows).toHaveCount(1);
+		await expect(focusedRows).toHaveText(/Ctrl hl alpha/);
+
+		// Drill A→B → depth 1 (detached). The highlight is CLEARED (focusedItemId
+		// gated to null at depth>0) and the pane-snap effect no longer snaps to B.
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		const refAtB = openItemParam(page);
+		await expect(focusedRows).toHaveCount(0);
+
+		// j/k is INERT at depth>0: pressing j moves no highlight and does NOT
+		// re-target (schedulePaneFollow bails; focusedItemId stays null).
+		await page.evaluate(() => document.querySelector<HTMLElement>('.list-column')?.focus());
+		await page.keyboard.press('j');
+		await page.waitForTimeout(250); // > PANE_FOLLOW_DEBOUNCE_MS (140ms)
+		await expect(focusedRows).toHaveCount(0);
+		expect(openItemParam(page)).toBe(refAtB);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+
+		// Browser Back unwinds to depth 0 → the base row's highlight is restored
+		// (both openItemRef and page.state change, so the gated effect re-runs).
+		await page.goBack();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect(focusedRows).toHaveCount(1);
+		await expect(focusedRows).toHaveText(/Ctrl hl alpha/);
+	});
+
+	test('R3 late-timer: a j/k pane-follow scheduled at depth 0 does NOT clobber a drill to depth>0', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl late alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl late bravo');
+		await seedDoc(fixture, request, 'Ctrl late charlie');
+		await page.goto(docsUrl(fixture));
+
+		// Open A at depth 0.
+		await page.locator('.item-card', { hasText: 'Ctrl late alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+
+		// SCHEDULE a pane-follow at depth 0 (press j while focused on the list) —
+		// the 140ms debounce timer is now pending, armed to re-target the pane to
+		// the newly focused row.
+		await page.evaluate(() => document.querySelector<HTMLElement>('.list-column')?.focus());
+		await page.keyboard.press('j');
+
+		// DRILL to B BEFORE the follow fires (well within the 140ms window). The
+		// drill cancels the pending follow AND pushes depth 1; even if a timer
+		// somehow survived, its fired callback re-checks the CURRENT depth and
+		// bails. Either way the drilled `?item=` must NOT be clobbered.
+		await drillTo(page, b.slug);
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+
+		// Wait PAST the debounce window: the stale follow must never fire. Had it
+		// clobbered, it would have `openItemPane`-RESET the stack (depth→0) and
+		// re-targeted `?item=` to the j-focused row.
+		await page.waitForTimeout(250); // > PANE_FOLLOW_DEBOUNCE_MS (140ms)
+		expect(openItemParam(page)).toBe(b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+	});
 });

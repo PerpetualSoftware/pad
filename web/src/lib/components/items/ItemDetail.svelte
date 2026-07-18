@@ -41,6 +41,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
 	import { isSamePaneTarget } from '$lib/collections/paneTarget';
+	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
@@ -51,6 +52,12 @@
 		href: string | null;
 		status?: string;
 		linkId?: string;
+		// PaneTarget metadata (TASK-2159) — carried alongside `href` so the
+		// in-pane click interceptor can build a precise `PaneTarget` (ref/slug
+		// preferred over parsing href's trailing segment) without a re-lookup.
+		ref?: string;
+		slug?: string;
+		collectionSlug?: string;
 	};
 
 	type RelationshipGroup = {
@@ -179,20 +186,33 @@
 		return gen !== loadGeneration || item?.id !== targetItem.id;
 	}
 
-	// The `onOpenTarget` seam's same-item guard (PLAN-2154 / TASK-2158).
-	// Content-link interceptors call `fireOpenTarget(target)` instead of
-	// `onOpenTarget?.(target)` directly — the editor's content-body/wiki-link
-	// popover does (TASK-2160); relationships/breadcrumb/graph land
-	// separately — so a link that names THIS item (by ref, slug, id, or an
-	// href built from either — even when it differs from however the pane's
-	// own `?item=` names it) is dropped here rather than round-tripping to
-	// the host only to become a no-op there. `isSamePaneTarget` is the same
-	// reusable check `resolvePaneTarget` (`$lib/collections/paneTarget`)
+	// The `onOpenTarget` seam's same-item guard (PLAN-2154 / TASK-2158). Every
+	// content-link interceptor calls `fireOpenTarget(target)` instead of
+	// `onOpenTarget?.(target)` directly — the TASK-2159 anchor surfaces
+	// (relationships / Children / graph "Open") AND the TASK-2160 editor
+	// content-body/wiki-link popover — so a link that names THIS item (by ref,
+	// slug, id, or an href built from either — even when it differs from
+	// however the pane's own `?item=` names it) is dropped here rather than
+	// round-tripping to the host only to become a no-op there. `isSamePaneTarget`
+	// is the same reusable check `resolvePaneTarget` (`$lib/collections/paneTarget`)
 	// applies when a caller passes it a `current` item.
 	function fireOpenTarget(target: PaneTarget) {
 		if (isSamePaneTarget(target, item)) return;
 		onOpenTarget?.(target);
 	}
+
+	// The callback threaded down to every content-link surface: the
+	// anchor-based ones (relationships, `ChildItems`/`NestedChildren`,
+	// `ItemGraph`'s "Open" anchor — TASK-2159) and the editor content-body/
+	// wiki-link popover (`EditorLinkPopover` — TASK-2160). `undefined` — not
+	// `fireOpenTarget` — when no host wired `onOpenTarget` (e.g. the full-page
+	// route with no pane): those surfaces gate their click interception on
+	// `!!onOpenTarget` (mirroring `ItemCard`'s `shouldOpenInPane` contract,
+	// itemCardClick.ts), so passing a function that would just silently no-op
+	// after already having called `preventDefault()` would swallow the click
+	// with nothing happening. Passing `undefined` instead lets it fall through
+	// to the anchor's plain `href` navigation, same as before this task.
+	let paneOpenTarget = $derived(onOpenTarget ? fireOpenTarget : undefined);
 
 	// Cross-collection `?item=` safety (PLAN-2105 / TASK-2112). A stale /
 	// shared / hand-crafted `?item=REF` in the split pane could reference an
@@ -2832,7 +2852,10 @@
 			label: relationLabel(ref, title, id),
 			href,
 			status,
-			linkId: link.id
+			linkId: link.id,
+			ref,
+			slug,
+			collectionSlug
 		};
 	}
 
@@ -2998,6 +3021,18 @@
 	// self-inconsistent collection/ref path into `?item=` (PLAN-2154
 	// Architecture B.3 / TASK-2160; Codex review).
 	let collectionPrefixMap = $derived(new Map(allCollections.map((c) => [c.slug, c.prefix])));
+
+	// In-pane drill interception for a relationship's `<a class="link-target">`
+	// (TASK-2159 / PLAN-2154 Architecture B.1). Sits as a SIBLING of the
+	// delete button (`.link-row-actions .link-delete-btn`), not a descendant,
+	// so a delete click never bubbles through this anchor in the first place;
+	// `shouldOpenInPane`'s `defaultPrevented` check is still applied as the
+	// same backstop every other interceptor uses.
+	function handleRelationshipClick(e: MouseEvent, entry: RelationshipEntry) {
+		if (!shouldOpenInPane(e, !!paneOpenTarget)) return;
+		e.preventDefault();
+		paneOpenTarget?.({ ref: entry.ref, slug: entry.slug, href: entry.href ?? undefined, collectionSlug: entry.collectionSlug });
+	}
 
 	async function handleDeleteLink(linkId?: string) {
 		if (!linkId || !item) return;
@@ -4051,7 +4086,7 @@
 						/>
 						<EditorLinkPopover
 							editor={editorInstance}
-							onOpenTarget={onOpenTarget ? fireOpenTarget : undefined}
+							onOpenTarget={paneOpenTarget}
 							{wsSlug}
 							collectionPrefixes={collectionPrefixMap}
 						/>
@@ -4089,7 +4124,7 @@
 								{#each group.entries as entry (entry.key)}
 									<div class="link-row" class:tone-blocks={group.tone === 'blocks'} class:tone-wiki={group.tone === 'wiki'} class:tone-lineage={group.tone === 'lineage'}>
 										{#if entry.href}
-											<a href={entry.href} class="link-target">{entry.label}</a>
+											<a href={entry.href} class="link-target" onclick={(e) => handleRelationshipClick(e, entry)}>{entry.label}</a>
 										{:else}
 											<span class="link-target">{entry.label}</span>
 										{/if}
@@ -4168,7 +4203,7 @@
 		     always-mounted SSE guarantee below. -->
 		{#if item}
 			<div id="item-children" class="children-anchor">
-				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} />
+				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} />
 			</div>
 		{/if}
 
@@ -4249,7 +4284,7 @@
 					</div>
 				{:else if ItemGraphComp}
 					{@const Graph = ItemGraphComp}
-					<Graph workspace={wsSlug} focusRef={graphFocusRef} itemHref={graphItemHref} />
+					<Graph workspace={wsSlug} focusRef={graphFocusRef} itemHref={graphItemHref} onOpenTarget={paneOpenTarget} />
 				{:else}
 					<div class="graph-drawer-state">Loading graph…</div>
 				{/if}
