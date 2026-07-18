@@ -5,8 +5,11 @@
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
-	import type { Item } from '$lib/types';
-	import { parseFields, formatItemRef } from '$lib/types';
+	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	import type { Item, Collection } from '$lib/types';
+	import { parseFields, parseSchema, formatItemRef } from '$lib/types';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import {
@@ -159,27 +162,39 @@
 
 	// ── Data loading ─────────────────────────────────────────────────────────
 
+	// Monotonic fence so only the LATEST loadChildren() writes state. Multiple
+	// callers race concurrently (mount effect, SSE, sync, and the post-mutation
+	// refreshes below); without this a slower older fetch can resolve last and
+	// clobber `children` with a stale snapshot — and push it through
+	// onChildrenChange (Codex diff review). Plain `let` (CONVE-1688).
+	let loadSeq = 0;
+
 	async function loadChildren() {
-		// Capture the request identity (item + workspace) BEFORE the await.
-		// ItemDetail reuses this panel across a no-{#key} item switch (its
+		// Capture the request identity (item + workspace) + sequence BEFORE the
+		// await. ItemDetail reuses this panel across a no-{#key} item switch (its
 		// `itemSlug` prop just changes), so a slower A load must NOT overwrite
 		// B's children — nor fire onChildrenChange with A's data into the
 		// parent's childItemIds / progress overrides (PLAN-2105 / TASK-2112).
 		const reqSlug = itemSlug;
 		const reqWs = wsSlug;
+		const seq = ++loadSeq;
+		// `destroyed` guards the {#key itemSlug} teardown → same-slug remount
+		// case: a late load from the old instance must not push stale children
+		// through onChildrenChange into the freshly-mounted parent (Codex).
+		const stale = () => destroyed || seq !== loadSeq || reqSlug !== itemSlug || reqWs !== wsSlug;
 		loading = true;
 		error = '';
 		try {
 			const loaded = await api.items.children(reqWs, reqSlug);
-			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (stale()) return;
 			children = loaded;
 			onChildrenChange?.(children);
 		} catch (err) {
-			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			if (stale()) return;
 			error = err instanceof Error ? err.message : 'Failed to load children';
 			onChildrenChange?.([]);
 		} finally {
-			if (reqSlug === itemSlug && reqWs === wsSlug) loading = false;
+			if (!stale()) loading = false;
 		}
 	}
 
@@ -214,6 +229,14 @@
 	});
 
 	onDestroy(() => {
+		// DR-6b switch-safety fence. ChildItems is mounted inside a
+		// `{#key itemSlug}` in ItemDetail, so an item switch DESTROYS this
+		// instance rather than re-running its props — a captured-identity
+		// compare can't detect that (a destroyed instance keeps its old
+		// props). Every async add-child handler bails on this flag after its
+		// await so a create/search/link in flight during an item switch
+		// can't write into the wrong item or toast after teardown.
+		destroyed = true;
 		unsubscribeSSE?.();
 		unsubscribeSync?.();
 	});
@@ -221,18 +244,439 @@
 	function formatLabel(value: string): string {
 		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
+
+	// ── Add child (PLAN-2140) ─────────────────────────────────────────────────
+	// In-place "+ Add child" affordance with two independent modes:
+	//   • Create new  — POST a fresh item with `fields.parent` = this item.
+	//   • Link existing — reparent an existing item under this one via a
+	//     `parent` link (single-parent replace + cycle-check server-side).
+	// Create and Link are gated by INDEPENDENT capabilities (DR-2): create is
+	// authorized by the target collection, link by the source child.
+
+	// A collection defining an exact `parent` schema field would make the
+	// server treat our `fields.parent` as a normal field instead of a
+	// hierarchy edge (DR-1b) — exclude it. `plan` is evaluated independently
+	// server-side and does NOT break `fields.parent`, so it is NOT excluded.
+	function reservedParentKey(c: Collection): boolean {
+		return parseSchema(c).fields.some((f) => f.key === 'parent');
+	}
+
+	// A collection with a required field lacking a default can't be created
+	// from a title-only form (server rejects) — exclude it (DR-6a) so the
+	// create picker only offers collections a bare title satisfies.
+	function requiredNoDefault(c: Collection): boolean {
+		return parseSchema(c).fields.some((f) => f.required && f.default == null);
+	}
+
+	let eligibleCollections = $derived(
+		collectionStore.collections.filter(
+			(c) =>
+				!c.is_system &&
+				workspaceStore.canEditCollection(c.id) &&
+				!reservedParentKey(c) &&
+				!requiredNoDefault(c)
+		)
+	);
+
+	let createTabEnabled = $derived(eligibleCollections.length > 0);
+
+	// DR-2: link is authorized by the SOURCE child, so any member who can
+	// edit SOME item (role owner/editor, or an item/collection edit grant)
+	// may reparent — there is no `workspaceStore.role`; read the membership.
+	let canLinkExisting = $derived.by(() => {
+		const m = workspaceStore.currentMembership;
+		return (
+			!!m &&
+			(m.role === 'owner' ||
+				m.role === 'editor' ||
+				m.item_grants.some((g) => g.permission === 'edit') ||
+				m.collection_grants.some((g) => g.permission === 'edit'))
+		);
+	});
+
+	// Entry "+ Add child" shows iff at least one mode is usable.
+	let showAddChild = $derived(createTabEnabled || canLinkExisting);
+
+	// ── Form state ─────────────────────────────────────────────────────────
+	let addOpen = $state(false);
+	// The user's SELECTED tab. `effectiveMode` maps it onto an actually-
+	// enabled tab so a link-only user never lands on a disabled Create view
+	// (DR-2). Computing the displayed tab as a derived — rather than
+	// correcting `mode` inside an effect — avoids writing a $state an effect
+	// also reads (CONVE-1688).
+	let mode = $state<'create' | 'link'>('create');
+	let effectiveMode = $derived.by((): 'create' | 'link' => {
+		if (mode === 'create' && createTabEnabled) return 'create';
+		if (mode === 'link' && canLinkExisting) return 'link';
+		if (createTabEnabled) return 'create';
+		if (canLinkExisting) return 'link';
+		return 'create';
+	});
+
+	// Create mode
+	let createCollSlug = $state('');
+	let createTitle = $state('');
+	let creating = $state(false);
+
+	// Link mode
+	let linkSearch = $state('');
+	let linkResults = $state<Item[]>([]);
+	let linkSearching = $state(false);
+	let confirmCandidate = $state<Item | null>(null);
+	let linking = $state(false);
+
+	// DR-6b fences. Plain `let` (never `$state`): read/written only in
+	// handlers + onDestroy, never in an effect that also reads them
+	// (CONVE-1688). `destroyed` is set in onDestroy; `searchSeq` discards a
+	// slow older search that resolves after a newer one.
+	let destroyed = false;
+	let searchSeq = 0;
+
+	// Candidates: drop the parent itself, items already children here, and
+	// any the caller can't edit (view-only → 403 on link) — DR-2.
+	let linkCandidates = $derived(
+		linkResults.filter(
+			(r) =>
+				r.id !== itemId &&
+				!children.some((c) => c.id === r.id) &&
+				workspaceStore.canEditItem(r)
+		)
+	);
+
+	// DR-3: always confirm — a link can be a MOVE. Name the old parent when
+	// it's visible (search omits lineage, so treat absence as "unknown").
+	let confirmMessage = $derived.by(() => {
+		const cand = confirmCandidate;
+		if (!cand) return '';
+		const ref = formatItemRef(cand) ?? cand.slug;
+		if (cand.parent_ref && cand.parent_slug !== itemSlug) {
+			return `${ref} is currently under ${cand.parent_ref} — move it here?`;
+		}
+		return `Add ${ref} as a child here? If it's already a child elsewhere it will be moved.`;
+	});
+
+	function defaultCollSlug(): string {
+		const eligible = eligibleCollections;
+		if (eligible.length === 0) return '';
+		const tasks = eligible.find((c) => c.slug === 'tasks');
+		if (tasks) return tasks.slug;
+		// Parent's own collection, when it's eligible and we can identify it.
+		const parent = collectionStore.activeItem;
+		if (parent && parent.id === itemId) {
+			const own = eligible.find((c) => c.id === parent.collection_id);
+			if (own) return own.slug;
+		}
+		return eligible[0].slug;
+	}
+
+	function resetForm() {
+		createTitle = '';
+		linkSearch = '';
+		linkResults = [];
+		confirmCandidate = null;
+		linkSearching = false;
+		// Invalidate any in-flight search so its late result can't repopulate
+		// linkResults after the form was cleared/closed (Codex diff review P1).
+		searchSeq++;
+	}
+
+	// Close + clear the add-child form whenever the item identity changes.
+	// ItemDetail keys ChildItems on itemSlug, so an itemSlug change already
+	// remounts us with a fresh form — this additionally covers a same-slug
+	// switch across workspaces (itemId/wsSlug change, itemSlug constant, no
+	// remount) so a stale title/collection can't be submitted against the new
+	// item (Codex diff review). Dedicated identity-trigger effect per CONVE-606;
+	// reads only identity props and writes only form state (CONVE-1688-safe).
+	$effect(() => {
+		void itemId;
+		void wsSlug;
+		addOpen = false;
+		resetForm();
+	});
+
+	function toggleAddChild() {
+		if (addOpen) {
+			addOpen = false;
+			resetForm();
+			return;
+		}
+		mode = createTabEnabled ? 'create' : 'link';
+		createCollSlug = defaultCollSlug();
+		resetForm();
+		addOpen = true;
+	}
+
+	function selectMode(next: 'create' | 'link') {
+		// DR-6c: mode switching is locked while a submit is in flight.
+		if (creating || linking) return;
+		if (next === 'create' && !createTabEnabled) return;
+		if (next === 'link' && !canLinkExisting) return;
+		mode = next;
+		confirmCandidate = null;
+	}
+
+	async function submitCreate() {
+		const title = createTitle.trim();
+		const collSlug = createCollSlug;
+		if (!title || !collSlug || creating) return;
+		// DR-6b: capture identity BEFORE the await; bail after it if the
+		// instance was destroyed (item switch) or the identity moved.
+		const reqWs = wsSlug;
+		const reqSlug = itemSlug;
+		const reqId = itemId;
+		const stale = () => destroyed || reqWs !== wsSlug || reqSlug !== itemSlug || reqId !== itemId;
+		creating = true;
+		try {
+			// DR-1: parent goes ONLY through the `fields` JSON `parent` key.
+			// NEVER send `parent_id` — that writes the denormalized column
+			// without creating the child link.
+			await api.items.create(reqWs, collSlug, {
+				title,
+				fields: JSON.stringify({ parent: reqId })
+			});
+			if (stale()) return;
+			addOpen = false;
+			resetForm();
+			toastStore.show('Child added', 'success');
+			// DR-4: refresh directly (SSE is suppressed while the editor is
+			// dirty/recently saved), don't rely on the event.
+			loadChildren();
+		} catch (e: any) {
+			if (stale()) return;
+			const msg: string = e?.message ?? 'Failed to add child';
+			if (typeof msg === 'string' && msg.includes('item created but parent link failed')) {
+				// DR-5: the item committed but the parent edge failed. Surface
+				// it and refresh; do NOT auto-retry (would orphan-duplicate).
+				addOpen = false;
+				resetForm();
+				toastStore.show(msg, 'error');
+				loadChildren();
+			} else {
+				// DR-6a: any other 400/error — keep the form open to retry.
+				toastStore.show(msg, 'error');
+			}
+		} finally {
+			// Busy flag is per-instance UI, not identity-scoped data (data
+			// writes above are fenced by stale()). Clear it whenever the
+			// request settles; a write to a destroyed instance is a no-op.
+			creating = false;
+		}
+	}
+
+	async function searchLink() {
+		const q = linkSearch.trim();
+		if (!q) {
+			// Bump the sequence so any in-flight query is invalidated when the
+			// input is cleared — its late result must not repopulate results
+			// (Codex diff review P1).
+			searchSeq++;
+			linkResults = [];
+			linkSearching = false;
+			return;
+		}
+		// DR-6b: per-query sequence + identity fence.
+		const seq = ++searchSeq;
+		const reqWs = wsSlug;
+		const reqSlug = itemSlug;
+		const reqId = itemId;
+		const stale = () =>
+			destroyed || seq !== searchSeq || reqWs !== wsSlug || reqSlug !== itemSlug || reqId !== itemId;
+		linkSearching = true;
+		try {
+			const res = await api.search(q, { workspace: reqWs });
+			if (stale()) return;
+			linkResults = (res.results || []).map((r) => r.item);
+		} catch {
+			if (stale()) return;
+			linkResults = [];
+		} finally {
+			// Only the latest query controls the spinner (seq guard); a stale
+			// query settling must not clear a newer query's spinner.
+			if (seq === searchSeq) linkSearching = false;
+		}
+	}
+
+	function openConfirm(cand: Item) {
+		if (linking) return;
+		confirmCandidate = cand;
+	}
+
+	async function confirmLink() {
+		const cand = confirmCandidate;
+		if (!cand || linking) return;
+		// DR-6b: capture identity BEFORE the await.
+		const reqWs = wsSlug;
+		const reqSlug = itemSlug;
+		const reqId = itemId;
+		const stale = () => destroyed || reqWs !== wsSlug || reqSlug !== itemSlug || reqId !== itemId;
+		linking = true;
+		try {
+			// SOURCE = candidate, TARGET = current item id. Address the source
+			// by stable `id` (ResolveItem tries UUID first) — not the mutable
+			// slug, which could be reclaimed by another item mid-confirm (Codex).
+			// The server does single-parent replace + cycle detection.
+			await api.links.create(reqWs, cand.id, {
+				target_id: reqId,
+				link_type: 'parent'
+			});
+			if (stale()) return;
+			addOpen = false;
+			resetForm();
+			toastStore.show('Child linked', 'success');
+			loadChildren(); // DR-4
+		} catch (e: any) {
+			if (stale()) return;
+			// Cycle / conflict → toast, keep the form usable (stay on confirm).
+			toastStore.show(e?.message ?? 'Failed to link child', 'error');
+		} finally {
+			// Per-instance UI flag (data writes above are stale()-fenced);
+			// clear whenever the request settles.
+			linking = false;
+		}
+	}
 </script>
 
-{#if loading || error || children.length > 0}
+{#if loading || error || children.length > 0 || showAddChild}
 <div class="child-items">
 	<div class="section-header">
 		<h3>Children</h3>
-		<span class="child-count">{doneCount}/{totalCount} done</span>
+		<div class="section-header-controls">
+			{#if totalCount > 0}
+				<span class="child-count">{doneCount}/{totalCount} done</span>
+			{/if}
+			{#if showAddChild}
+				<button
+					class="add-child-toggle"
+					onclick={toggleAddChild}
+					disabled={creating || linking}
+					aria-expanded={addOpen}
+				>
+					{addOpen ? 'Cancel' : '+ Add child'}
+				</button>
+			{/if}
+		</div>
 	</div>
 
-	<div class="progress-bar">
-		<div class="progress-fill" style:width="{percentage}%"></div>
-	</div>
+	{#if addOpen}
+		<div class="add-child-form">
+			<div class="add-child-tabs" role="tablist">
+				<button
+					class="add-child-tab"
+					class:active={effectiveMode === 'create'}
+					role="tab"
+					aria-selected={effectiveMode === 'create'}
+					disabled={!createTabEnabled || creating || linking}
+					onclick={() => selectMode('create')}
+				>
+					Create new
+				</button>
+				<button
+					class="add-child-tab"
+					class:active={effectiveMode === 'link'}
+					role="tab"
+					aria-selected={effectiveMode === 'link'}
+					disabled={!canLinkExisting || creating || linking}
+					onclick={() => selectMode('link')}
+				>
+					Link existing
+				</button>
+			</div>
+
+			{#if effectiveMode === 'create'}
+				<div class="add-child-body add-child-create">
+					<select
+						class="add-child-select"
+						bind:value={createCollSlug}
+						disabled={creating}
+						aria-label="Collection"
+					>
+						{#each eligibleCollections as coll (coll.id)}
+							<option value={coll.slug}>{coll.name}</option>
+						{/each}
+					</select>
+					<input
+						class="add-child-input"
+						type="text"
+						placeholder="Child title…"
+						bind:value={createTitle}
+						disabled={creating}
+						onkeydown={(e) => {
+							if (e.key === 'Enter') {
+								e.preventDefault();
+								submitCreate();
+							}
+						}}
+					/>
+					<button
+						class="add-child-submit"
+						disabled={creating || !createTitle.trim() || !createCollSlug}
+						onclick={submitCreate}
+					>
+						{creating ? 'Adding…' : 'Add'}
+					</button>
+				</div>
+			{:else}
+				<div class="add-child-body add-child-link">
+					{#if confirmCandidate}
+						<div class="add-child-confirm">
+							<p class="add-child-confirm-msg">{confirmMessage}</p>
+							<div class="add-child-confirm-actions">
+								<button
+									class="add-child-submit"
+									disabled={linking}
+									onclick={confirmLink}
+								>
+									{linking ? 'Linking…' : 'Add as child'}
+								</button>
+								<button
+									class="add-child-cancel"
+									disabled={linking}
+									onclick={() => (confirmCandidate = null)}
+								>
+									Back
+								</button>
+							</div>
+						</div>
+					{:else}
+						<input
+							class="add-child-input"
+							type="text"
+							placeholder="Search items to link…"
+							bind:value={linkSearch}
+							disabled={linking}
+							oninput={() => searchLink()}
+						/>
+						{#if linkSearching}
+							<div class="add-child-hint">Searching…</div>
+						{:else if linkCandidates.length > 0}
+							<ul class="add-child-results">
+								{#each linkCandidates as cand (cand.id)}
+									<li>
+										<button
+											class="add-child-result"
+											disabled={linking}
+											onclick={() => openConfirm(cand)}
+										>
+											<span class="add-child-result-ref">{formatItemRef(cand) ?? ''}</span>
+											<span class="add-child-result-title">{cand.title}</span>
+										</button>
+									</li>
+								{/each}
+							</ul>
+						{:else if linkSearch.trim()}
+							<div class="add-child-hint">No matching items.</div>
+						{/if}
+					{/if}
+				</div>
+			{/if}
+		</div>
+	{/if}
+
+	{#if children.length > 0}
+		<div class="progress-bar">
+			<div class="progress-fill" style:width="{percentage}%"></div>
+		</div>
+	{/if}
 
 	{#if !loading && children.length >= 2}
 		<ChildChart {children} startDate={parentFields?.start_date} endDate={parentFields?.end_date} {terminalStatuses} />
@@ -545,6 +989,213 @@
 		color: var(--accent-red, #ef4444);
 		border-radius: var(--radius);
 		font-size: 0.85em;
+	}
+
+	/* ── Add child (PLAN-2140) ───────────────────────────────────────────── */
+	.section-header-controls {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+	}
+
+	.add-child-toggle {
+		background: none;
+		border: none;
+		padding: var(--space-1) var(--space-2);
+		font-size: 0.8em;
+		font-weight: 500;
+		color: var(--accent-blue);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.add-child-toggle:hover:not(:disabled) {
+		background: var(--bg-hover);
+	}
+
+	.add-child-toggle:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.add-child-form {
+		margin-bottom: var(--space-3);
+		padding: var(--space-3);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--bg-secondary);
+	}
+
+	.add-child-tabs {
+		display: flex;
+		gap: var(--space-1);
+		margin-bottom: var(--space-3);
+	}
+
+	.add-child-tab {
+		flex: 1;
+		padding: var(--space-2);
+		font-size: 0.8em;
+		font-weight: 500;
+		color: var(--text-muted);
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+	}
+
+	.add-child-tab.active {
+		color: var(--text-primary);
+		background: var(--bg-hover);
+		border-color: var(--accent-blue);
+	}
+
+	.add-child-tab:disabled {
+		opacity: 0.4;
+		cursor: not-allowed;
+	}
+
+	.add-child-body {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.add-child-create {
+		flex-direction: row;
+		flex-wrap: wrap;
+		align-items: center;
+	}
+
+	.add-child-select,
+	.add-child-input {
+		padding: var(--space-2);
+		font-size: 0.85em;
+		color: var(--text-primary);
+		background: var(--bg-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+	}
+
+	.add-child-input {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.add-child-select {
+		flex-shrink: 0;
+		max-width: 40%;
+	}
+
+	.add-child-input:disabled,
+	.add-child-select:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.add-child-submit {
+		padding: var(--space-2) var(--space-3);
+		font-size: 0.85em;
+		font-weight: 500;
+		color: #fff;
+		background: var(--accent-blue);
+		border: none;
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+		white-space: nowrap;
+	}
+
+	.add-child-submit:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.add-child-cancel {
+		padding: var(--space-2) var(--space-3);
+		font-size: 0.85em;
+		color: var(--text-muted);
+		background: none;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+		cursor: pointer;
+	}
+
+	.add-child-cancel:disabled {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+
+	.add-child-hint {
+		font-size: 0.8em;
+		color: var(--text-muted);
+		padding: var(--space-1) 0;
+	}
+
+	.add-child-results {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		max-height: 220px;
+		overflow-y: auto;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm);
+	}
+
+	.add-child-result {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		width: 100%;
+		padding: var(--space-2);
+		text-align: left;
+		background: none;
+		border: none;
+		border-bottom: 1px solid var(--border);
+		cursor: pointer;
+		color: inherit;
+	}
+
+	.add-child-results li:last-child .add-child-result {
+		border-bottom: none;
+	}
+
+	.add-child-result:hover:not(:disabled) {
+		background: var(--bg-hover);
+	}
+
+	.add-child-result:disabled {
+		opacity: 0.6;
+		cursor: not-allowed;
+	}
+
+	.add-child-result-ref {
+		font-family: var(--font-mono);
+		font-size: 0.78em;
+		color: var(--text-muted);
+		white-space: nowrap;
+		flex-shrink: 0;
+	}
+
+	.add-child-result-title {
+		flex: 1;
+		font-size: 0.85em;
+		color: var(--text-primary);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.add-child-confirm-msg {
+		margin: 0 0 var(--space-2) 0;
+		font-size: 0.85em;
+		color: var(--text-primary);
+	}
+
+	.add-child-confirm-actions {
+		display: flex;
+		gap: var(--space-2);
 	}
 
 	/* -----------------------------------------------------------------
