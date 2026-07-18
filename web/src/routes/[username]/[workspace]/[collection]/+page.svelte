@@ -2552,26 +2552,30 @@
 			if (target?.closest?.('dialog, [role="dialog"]')) return;
 			// Depth-aware ESC (PLAN-2154 Architecture C / R2, TASK-2163): once the
 			// pane has drilled to depth>0, ESC pops exactly ONE level via
-			// `history.back()` and CONSUMES the key — on desktop AND mobile alike —
-			// instead of either the two-level list-focus step below or a full
-			// close. It must NOT route through `returnFocusToList` /
+			// `history.back()` (delta -1) and CONSUMES the key — on desktop AND
+			// mobile alike — instead of either the two-level list-focus step below
+			// or a full close. It must NOT route through `returnFocusToList` /
 			// `resolvePaneReturnTarget` (list-row helpers, meaningless once
 			// detached — R2) or through the escape stack's `onClose` (a full
 			// close), so it's handled here, before both. Not gated on
 			// `target?.closest('.item-pane')` — a detached pane owns ESC
 			// regardless of exactly where focus landed, mirroring the depth-0
 			// fallback below. Gated on the pane still being the FRONTMOST escape
-			// layer so a stacked graph drawer still wins first. Fenced on
-			// `paneNavInFlight()` like every other controller `history.go` (R14)
-			// so a double ESC can't race an in-flight close/reset traversal —
-			// still consumes the key either way.
+			// layer so a stacked graph drawer still wins first. Routed through the
+			// existing FENCED `paneHistoryGo` (not a bare `history.back()`), gated
+			// on `paneNavInFlight()` like every other controller entry point
+			// (openItemPane / navigatePaneTo / closeItemPane) — a rapid double ESC,
+			// or an ESC racing a close/reset click, can't queue a second traversal
+			// against stale depth and overshoot (R14). A no-op while a traversal
+			// is already armed STILL consumes the key (falls through neither to
+			// the two-level step nor a full close).
 			if (
 				openItemRef &&
 				topEscapePriority() === ESCAPE_PRIORITY.pane &&
 				currentPaneState().paneDepth > 0
 			) {
 				e.preventDefault();
-				if (!paneNavInFlight()) history.back();
+				if (!paneNavInFlight()) paneHistoryGo(-1);
 				return;
 			}
 			// Desktop two-level ESC (TASK-2122): from INSIDE the open pane (a
