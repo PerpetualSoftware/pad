@@ -3,7 +3,7 @@
 	import { browser } from '$app/environment';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
 	import { api, PadApiError, isPlanLimitError, planLimitMessage } from '$lib/api/client';
-	import type { BulkItemsRequest, Collection, Item, QuickAction, View, ViewConfig } from '$lib/types';
+	import type { BulkItemsRequest, Collection, Item, PaneTarget, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
@@ -52,6 +52,7 @@
 		type ResolvedPaneState,
 	} from '$lib/collections/paneController';
 	import { paneFocusables, nextTrapTarget, resolvePaneReturnTarget } from '$lib/collections/paneFocus';
+	import { resolvePaneTarget } from '$lib/collections/paneTarget';
 	import { pushEscapeHandler, runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
 
@@ -505,13 +506,14 @@
 	// cold-load. The pure decision logic is in `$lib/collections/paneController`
 	// (unit-tested); this wiring EXECUTES the returned plans.
 	//
-	// NOTE (TASK-2157 scope): `navigatePaneTo` has no in-pane content-link
-	// caller yet — those land in TASK-2158/2159/2160, which resolve a
-	// `PaneTarget` (ref/slug/href/collection) to a canonical `?item=` value and
-	// then call `navigatePaneTo(resolvedRef)`. It's exported onto the pane's
-	// ItemDetail seam below and reachable now only via the depth>0 test hook
+	// NOTE (TASK-2157/2158 scope): `navigatePaneTo` still has no in-pane
+	// content-link CALLER — `ItemDetail`'s `onOpenTarget` prop and the
+	// `resolvePaneTarget`/`handleOpenTarget` resolve→drill path are wired
+	// (TASK-2158), but no content-link surface fires it yet; relationships,
+	// breadcrumb, editor wiki-links, and the graph drawer land in
+	// TASK-2159/2160. Until then it's reachable only via the depth>0 test hook
 	// (`__padPaneController`) so the controller's drill/reset/close arithmetic
-	// is exercisable end-to-end before the UI callers exist.
+	// is exercisable end-to-end before the real UI callers exist.
 
 	/** Current pane depth+ownership, read from SvelteKit `page.state`. */
 	function currentPaneState(): ResolvedPaneState {
@@ -645,9 +647,10 @@
 	}
 
 	// In-pane DRILL (Architecture A). `target` is an already-resolved canonical
-	// `?item=` ref (TASK-2158 supplies the PaneTarget→ref resolution in front of
-	// this). Same-ref guard + soft depth cap + ownership INHERITED from the
-	// current entry, all decided by `planPaneDrill`.
+	// `?item=` ref — `handleOpenTarget` below resolves a raw `PaneTarget`
+	// (TASK-2158) into this shape before calling in. Same-ref guard + soft
+	// depth cap + ownership INHERITED from the current entry, all decided by
+	// `planPaneDrill`.
 	function navigatePaneTo(target: string) {
 		if (paneNavInFlight()) return;
 		controllerActionSeq++;
@@ -664,6 +667,21 @@
 			keepFocus: true,
 			state: plan.state,
 		});
+	}
+
+	// `ItemDetail`'s `onOpenTarget` seam (PLAN-2154 Architecture B / TASK-2158).
+	// No content-link surface calls this yet (relationships/breadcrumb/editor
+	// wiki-links/graph land in TASK-2159/2160) — wiring it now establishes the
+	// resolve→drill path so those tasks only need to build the `PaneTarget` and
+	// fire it, with no host-side plumbing left to add. `resolvePaneTarget`
+	// (`$lib/collections/paneTarget`) turns whatever ref/slug/href shape the
+	// link surface hands up into the canonical `?item=` value `navigatePaneTo`
+	// expects; a target that resolves to nothing is silently dropped (nothing
+	// to open).
+	function handleOpenTarget(target: PaneTarget) {
+		const resolved = resolvePaneTarget(target);
+		if (!resolved) return;
+		navigatePaneTo(resolved);
 	}
 
 	// The pane's ItemDetail fires `onNavigateAway` for TWO distinct cases, which
@@ -1348,9 +1366,10 @@
 	let unsubscribeSync: (() => void) | null = null;
 
 	// Test-only hook (PLAN-2154 / TASK-2157): exposes the pane controller so e2e
-	// can drive `navigatePaneTo` — which has NO in-pane UI caller until
-	// TASK-2158/2159/2160 wire content links — and read back the depth/ownership
-	// stamp. Gated on an opt-in localStorage flag so it adds ZERO surface to
+	// can drive `navigatePaneTo` — which has NO real content-link UI caller
+	// until TASK-2159/2160 wire relationships/breadcrumb/editor/graph onto
+	// `ItemDetail`'s `onOpenTarget` — and read back the depth/ownership stamp.
+	// Gated on an opt-in localStorage flag so it adds ZERO surface to
 	// production; the e2e harness sets `pad:pane-test-hook=1` before navigating.
 	interface PaneTestHook {
 		navigatePaneTo: (ref: string) => void;
@@ -3649,6 +3668,7 @@
 				onClose={closeItemPane}
 				onGone={closeItemPane}
 				onNavigateAway={handlePaneNavigateAway}
+				onOpenTarget={handleOpenTarget}
 			/>
 		</aside>
 	{/if}

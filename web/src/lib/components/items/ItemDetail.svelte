@@ -29,7 +29,7 @@
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
-	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole } from '$lib/types';
+	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -81,6 +81,7 @@
 		onGone,
 		onNavigateAway,
 		onReady,
+		onOpenTarget,
 	}: {
 		username: string;
 		wsSlug: string;
@@ -91,6 +92,15 @@
 		onGone?: () => void;
 		onNavigateAway?: (url: string) => void;
 		onReady?: (ready: boolean) => void;
+		// PLAN-2154 Architecture B / TASK-2158: the seam content-link surfaces
+		// (relationships, breadcrumb, editor wiki-links, the graph drawer —
+		// TASK-2159/2160) will fire to drill the pane in place instead of a
+		// hard navigation. Callers hand up a `PaneTarget` (ref/slug/href/
+		// collection metadata only — never a full `Item`); the collection
+		// host resolves it (`resolvePaneTarget`, `$lib/collections/
+		// paneTarget`) and drives its pane controller's `navigatePaneTo`.
+		// Unused by ItemDetail itself until those link surfaces are wired.
+		onOpenTarget?: (target: PaneTarget) => void;
 	} = $props();
 
 	// itemSlug is the identity that drives loadData + the whole collabKey
