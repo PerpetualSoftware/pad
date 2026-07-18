@@ -2,14 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { planHrefClick, type HrefClickContext } from './editorHrefClick';
 
 // A left-click with no modifiers held — the common case.
-const leftClick = { button: 0, ctrlKey: false, metaKey: false, shiftKey: false };
+const leftClick = { button: 0, ctrlKey: false, metaKey: false, shiftKey: false, altKey: false };
 
 // The current-workspace context: workspace "myws" with collections
-// tasks/docs/plans (slug → ref prefix).
+// tasks/docs/plans + a digit-bearing prefix collection (slug → ref prefix).
 const COLLS = new Map([
 	['tasks', 'TASK'],
 	['docs', 'DOC'],
 	['plans', 'PLAN'],
+	['releases', 'R2'],
 ]);
 function ctx(overrides: Partial<HrefClickContext> = {}): HrefClickContext {
 	return { hasOnOpenTarget: true, wsSlug: 'myws', collectionPrefixes: COLLS, ...overrides };
@@ -39,6 +40,11 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 			expect(planHrefClick(e, '/alice/myws/tasks/TASK-5', ctx())).toEqual({ kind: 'passthrough' });
 		});
 
+		it('passthrough on alt-click (download gesture — Codex review)', () => {
+			const e = { ...leftClick, altKey: true };
+			expect(planHrefClick(e, '/alice/myws/tasks/TASK-5', ctx())).toEqual({ kind: 'passthrough' });
+		});
+
 		it('passthrough on middle-click (button 1)', () => {
 			const e = { ...leftClick, button: 1 };
 			expect(planHrefClick(e, '/alice/myws/tasks/TASK-5', ctx())).toEqual({ kind: 'passthrough' });
@@ -64,6 +70,13 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 			expect(planHrefClick(leftClick, '/alice/myws/docs/DOC-9', ctx())).toEqual({
 				kind: 'pane',
 				href: '/alice/myws/docs/DOC-9',
+			});
+		});
+
+		it('drills the pane for a digit-bearing collection prefix (e.g. R2-1 — Codex review)', () => {
+			expect(planHrefClick(leftClick, '/alice/myws/releases/R2-1', ctx())).toEqual({
+				kind: 'pane',
+				href: '/alice/myws/releases/R2-1',
 			});
 		});
 	});
@@ -139,6 +152,13 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 			expect(planHrefClick(leftClick, '/alice/myws/tasks/TASK-0', ctx())).toEqual({
 				kind: 'goto',
 				href: '/alice/myws/tasks/TASK-0',
+			});
+		});
+
+		it('a malformed double-slash path falls back to goto (Codex review)', () => {
+			expect(planHrefClick(leftClick, '/alice/myws//tasks/TASK-9', ctx())).toEqual({
+				kind: 'goto',
+				href: '/alice/myws//tasks/TASK-9',
 			});
 		});
 	});

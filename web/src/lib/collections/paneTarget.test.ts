@@ -219,11 +219,12 @@ describe('resolvePaneTarget — same-item guard short-circuits to null', () => {
 });
 
 describe('isSameWorkspaceItemHref — editor content-link gate (TASK-2160)', () => {
-	// collection slug → ref prefix
+	// collection slug → ref prefix (incl. a digit-bearing prefix, R2)
 	const colls = new Map([
 		['tasks', 'TASK'],
 		['docs', 'DOC'],
 		['plans', 'PLAN'],
+		['releases', 'R2'],
 	]);
 
 	it('accepts a username-prefixed item link in the current workspace', () => {
@@ -241,6 +242,24 @@ describe('isSameWorkspaceItemHref — editor content-link gate (TASK-2160)', () 
 
 	it('matches the ref prefix case-insensitively (server parseItemRef parity)', () => {
 		expect(isSameWorkspaceItemHref('/alice/myws/tasks/task-5', 'myws', colls)).toBe(true);
+	});
+
+	it('accepts a digit-bearing collection prefix (e.g. R2-1 — server ref grammar allows it)', () => {
+		expect(isSameWorkspaceItemHref('/alice/myws/releases/R2-1', 'myws', colls)).toBe(true);
+	});
+
+	it('rejects a digit-bearing SLUG that is not a known collection prefix (roadmap2-5)', () => {
+		// The exact prefix comparison keeps `roadmap2-5` a plain slug — its
+		// "prefix" (roadmap2) is not `docs`' prefix (DOC).
+		expect(isSameWorkspaceItemHref('/alice/myws/docs/roadmap2-5', 'myws', colls)).toBe(false);
+	});
+
+	it('rejects a malformed double-slash path (empty interior segment)', () => {
+		expect(isSameWorkspaceItemHref('/alice/myws//tasks/TASK-9', 'myws', colls)).toBe(false);
+	});
+
+	it('rejects a trailing-slash path (empty final segment)', () => {
+		expect(isSameWorkspaceItemHref('/alice/myws/tasks/TASK-5/', 'myws', colls)).toBe(false);
 	});
 
 	it('strips query/hash before matching', () => {
@@ -280,10 +299,6 @@ describe('isSameWorkspaceItemHref — editor content-link gate (TASK-2160)', () 
 		expect(isSameWorkspaceItemHref('/console', 'myws', colls)).toBe(false);
 		expect(isSameWorkspaceItemHref('/alice/myws/settings', 'myws', colls)).toBe(false); // settings not a collection
 		expect(isSameWorkspaceItemHref('/a/alice/myws/tasks/TASK-5', 'myws', colls)).toBe(false);
-	});
-
-	it('does not misread a digit-bearing slug as a ref', () => {
-		expect(isSameWorkspaceItemHref('/alice/myws/docs/roadmap2-5', 'myws', colls)).toBe(false);
 	});
 
 	it('declines when context is missing (empty wsSlug or empty collection map)', () => {

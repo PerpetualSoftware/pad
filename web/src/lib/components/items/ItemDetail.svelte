@@ -3020,7 +3020,18 @@
 	// than misrouting a cross-workspace plain path, a non-item route, or a
 	// self-inconsistent collection/ref path into `?item=` (PLAN-2154
 	// Architecture B.3 / TASK-2160; Codex review).
-	let collectionPrefixMap = $derived(new Map(allCollections.map((c) => [c.slug, c.prefix])));
+	//
+	// Gated on `collectionsAreFreshFor(wsSlug)`: `collectionStore.collections`
+	// is a single global slot that retains the PREVIOUS workspace's data while
+	// a workspace switch's `loadCollections()` is in flight, so pairing it with
+	// the current `wsSlug` unguarded could validate a link against another
+	// workspace's prefixes. An empty map during that window makes the gate
+	// decline (fall back to a normal `goto`) — the safe default (Codex review).
+	let collectionPrefixMap = $derived(
+		collectionStore.collectionsAreFreshFor(wsSlug)
+			? new Map(allCollections.map((c) => [c.slug, c.prefix]))
+			: new Map<string, string>(),
+	);
 
 	// In-pane drill interception for a relationship's `<a class="link-target">`
 	// (TASK-2159 / PLAN-2154 Architecture B.1). Sits as a SIBLING of the

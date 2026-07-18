@@ -13,6 +13,16 @@ let items = $state<Item[]>([]);
 // for a full workspace; a non-null value pairs the items array with its
 // source workspace.
 let itemsWorkspace = $state<string | null>(null);
+// Workspace slug the current `collections` array was loaded for — the
+// collections analogue of `itemsWorkspace`. `collections` is likewise a
+// single global slot that retains the previous workspace's data while
+// `loadCollections()` for the new workspace is in flight. A consumer that
+// pairs the collections with a specific `wsSlug` — e.g. TASK-2160's editor
+// content-link gate maps collection slug → ref prefix and validates a link
+// against the CURRENT workspace — must be able to tell "these collections
+// are actually this workspace's" from "stale from the last workspace"
+// (Codex review). Null = no load completed yet.
+let collectionsWorkspace = $state<string | null>(null);
 let activeItem = $state<Item | null>(null);
 let loading = $state(false);
 
@@ -20,6 +30,7 @@ export const collectionStore = {
 	get collections() { return collections; },
 	get items() { return items; },
 	get itemsWorkspace() { return itemsWorkspace; },
+	get collectionsWorkspace() { return collectionsWorkspace; },
 	get activeItem() { return activeItem; },
 	get loading() { return loading; },
 
@@ -34,6 +45,17 @@ export const collectionStore = {
 		return itemsWorkspace === ws;
 	},
 
+	/**
+	 * Returns true when the `collections` array was last loaded for the given
+	 * workspace slug — the collections analogue of `itemsAreFreshFor`. A
+	 * consumer that pairs collection metadata (e.g. slug → prefix) with a
+	 * specific workspace must gate on this rather than trust a possibly-stale
+	 * global array mid workspace-switch (Codex review, TASK-2160).
+	 */
+	collectionsAreFreshFor(ws: string): boolean {
+		return collectionsWorkspace === ws;
+	},
+
 	get defaultCollections() {
 		return collections.filter(c => c.is_default).sort((a, b) => a.sort_order - b.sort_order);
 	},
@@ -46,6 +68,12 @@ export const collectionStore = {
 		loading = true;
 		try {
 			collections = await api.collections.list(ws);
+			// Stamp the array with its source workspace so consumers can tell
+			// it apart from a stale previous-workspace load (see
+			// `collectionsAreFreshFor`). Set only on success — a failed load
+			// leaves the prior (possibly stale) array in place, and its stamp
+			// with it, which is the correct conservative signal.
+			collectionsWorkspace = ws;
 		} finally {
 			loading = false;
 		}

@@ -25,6 +25,7 @@ export interface HrefClickLike {
 	ctrlKey: boolean;
 	metaKey: boolean;
 	shiftKey: boolean;
+	altKey: boolean;
 }
 
 /**
@@ -77,8 +78,13 @@ export function planHrefClick(
 	ctx: HrefClickContext,
 ): HrefClickPlan {
 	if (!href) return { kind: 'passthrough' };
-	// Let the browser handle new-tab modifiers and middle-click itself.
-	if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return { kind: 'passthrough' };
+	// Let the browser handle new-tab / new-window / download modifiers and
+	// middle-click itself. `altKey` is included to match `itemCardClick.ts`'s
+	// `shouldOpenInPane` and every other pane interceptor — alt-click is a
+	// download gesture, not a pane drill (Codex review).
+	if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) {
+		return { kind: 'passthrough' };
+	}
 
 	const isInternal = href.startsWith('/') && !href.startsWith('//');
 	if (

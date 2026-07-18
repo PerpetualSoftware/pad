@@ -126,7 +126,16 @@ export function isSameWorkspaceItemHref(
 	if (!wsSlug || collectionPrefixes.size === 0) return false;
 	if (isCrossWorkspaceHref(href)) return false;
 	const path = href.split(/[?#]/)[0];
-	const segments = path.split('/').filter(Boolean);
+	// A root-relative href always leads with "/", so split()[0] is the empty
+	// string before it; require that (rejects a non-root-relative value) and
+	// strip it. Do NOT `filter(Boolean)` the rest — collapsing empties would
+	// accept malformed paths with a double slash / trailing slash
+	// (`/alice/myws//tasks/TASK-9`) as valid item routes (Codex review). Any
+	// remaining empty segment means the path isn't a clean item URL.
+	const raw = path.split('/');
+	if (raw[0] !== '') return false;
+	const segments = raw.slice(1);
+	if (segments.some((s) => s === '')) return false;
 	let ws: string;
 	let coll: string;
 	let ref: string;
@@ -140,14 +149,21 @@ export function isSameWorkspaceItemHref(
 	if (ws !== wsSlug) return false;
 	const expectedPrefix = collectionPrefixes.get(coll);
 	if (!expectedPrefix) return false;
-	const m = REF_SHAPE.exec(ref);
-	if (!m) return false;
-	const [, refPrefix, numStr] = m;
-	// The ref's prefix must name THIS collection (a self-consistent item-URL),
-	// and the number must be positive — a self-inconsistent path like
-	// `/playbooks/TASK-9` or a zero ref like `/tasks/TASK-0` navigates
-	// normally instead of drilling the wrong pane item.
+	// The ref must be exactly `<collection-prefix>-<positive-int>` — a
+	// self-consistent item-URL as every builder emits. Comparing against the
+	// KNOWN prefix (rather than a generic REF_SHAPE) accepts digit-bearing
+	// collection prefixes like `R2-1` (the server's ref grammar allows a
+	// letter-led alphanumeric prefix) while still rejecting a digit-bearing
+	// SLUG like `roadmap2-5` (its "prefix" won't equal the collection's), a
+	// self-inconsistent path like `/docs/TASK-9` (prefix mismatch), and a
+	// zero ref like `TASK-0` (server `parseItemRef` rejects zero). Prefixes
+	// never contain a hyphen, so the LAST hyphen splits prefix from number.
+	const dash = ref.lastIndexOf('-');
+	if (dash <= 0 || dash === ref.length - 1) return false;
+	const refPrefix = ref.slice(0, dash);
+	const numStr = ref.slice(dash + 1);
 	if (refPrefix.toLowerCase() !== expectedPrefix.toLowerCase()) return false;
+	if (!/^\d+$/.test(numStr)) return false;
 	return Number(numStr) > 0;
 }
 
