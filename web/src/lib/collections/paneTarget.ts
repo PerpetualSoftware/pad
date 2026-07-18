@@ -35,6 +35,14 @@ const CROSS_WORKSPACE_HREF_PREFIX = '/-/r/';
 // catches both uniformly; a raw `string.startsWith` on the href only catches
 // the root-relative case (Codex review).
 const HREF_PARSE_BASE = 'http://pad.invalid';
+// The host of `HREF_PARSE_BASE` — a resolved href keeps this host ONLY when it
+// was a genuinely same-origin root-relative path. A value like
+// "/\evil.example/…" (browsers treat "\" as "/") or "//evil.example/…"
+// resolves to a DIFFERENT host and is really an external navigation, so
+// comparing the parsed host against this sentinel is the robust "is this
+// truly local?" test — a raw `startsWith('/')` string check is fooled by the
+// backslash trick (Codex review).
+const HREF_PARSE_HOST = new URL(HREF_PARSE_BASE).host;
 
 /** True when `href` is (or resolves to) the cross-workspace resolver route. */
 function isCrossWorkspaceHref(href: string): boolean {
@@ -76,6 +84,112 @@ function parseRefNumber(candidate: string): number | null {
 	if (!m) return null;
 	const number = Number(m[2]);
 	return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+/**
+ * True when `href` is a root-relative link to a REF-identified item IN THE
+ * CURRENT WORKSPACE (`wsSlug`) that is WELL-FORMED — its collection segment
+ * is a known workspace collection AND that collection's prefix matches the
+ * ref's prefix (i.e. exactly the shape every item-URL builder emits). This
+ * is the strict gate that decides whether the ONE untrusted content-link
+ * surface — `EditorLinkPopover`, whose href comes off a Tiptap `link` MARK —
+ * may drill the split pane.
+ *
+ * Every OTHER `PaneTarget.href` producer (relationships, children, the graph
+ * drawer) builds its href FROM real same-workspace item data, so it's
+ * item-shaped by construction and doesn't need this check — `resolvePaneTarget`
+ * trusts it outright, slug-only items included. The editor popover is
+ * different: a `link` mark is indistinguishable between a wiki-link-inserted
+ * item link and a human-typed arbitrary path (Codex review, TASK-2160). A
+ * trailing-REF-shape test ALONE isn't enough, because the pane's `?item=`
+ * is scoped to the CURRENT workspace and resolved by ref NUMBER (the
+ * collection segment is dropped): a link to a different workspace's item as
+ * a plain path (`/bob/otherws/tasks/TASK-9` — NOT a `/-/r/` resolver link),
+ * to a non-item route that merely ends in a ref-shaped segment
+ * (`/alice/myws/tags/TASK-5`), or to a self-inconsistent path whose
+ * collection doesn't match the ref (`/alice/myws/playbooks/TASK-9`) would
+ * otherwise drill the current workspace's same-numbered item. So the
+ * segments are checked POSITIONALLY against the two shapes every item-URL
+ * builder in this codebase emits (`itemUrlId` via `renderMarkdown`/
+ * `wikiLinksToMarkdown`/`Editor.execLink`):
+ *
+ *   [username, workspace, collection, REF]   (4 segments — with username)
+ *   [workspace, collection, REF]             (3 segments — no username)
+ *
+ * requiring `workspace === wsSlug`, a `collectionPrefixes` entry for
+ * `collection`, a REF whose prefix equals that collection's prefix
+ * (case-insensitive — mirrors the server's case-insensitive `parseItemRef`),
+ * and a POSITIVE ref number (rejecting `TASK-0`, which the server's
+ * `parseItemRef` also rejects). A cross-workspace resolver link is rejected
+ * up front. Anything else falls back to a normal `goto` — the link still
+ * works, it just doesn't drill the pane (a graceful degradation, not a
+ * break). Empty `wsSlug` or `collectionPrefixes` (context not yet loaded)
+ * also declines, for the same safe fallback.
+ */
+export function isSameWorkspaceItemHref(
+	href: string,
+	wsSlug: string,
+	collectionPrefixes: ReadonlyMap<string, string>,
+): boolean {
+	if (!wsSlug || collectionPrefixes.size === 0) return false;
+	if (isCrossWorkspaceHref(href)) return false;
+	// Parse against the sentinel base and require the result to be
+	// same-origin: this rejects an href that only LOOKS root-relative but
+	// resolves cross-origin (`/\evil.example/…`, `//evil.example/…`) — those
+	// are external navigations, not local item links (Codex review).
+	const rawPath = href.split(/[?#]/)[0];
+	let url: URL;
+	try {
+		url = new URL(href, HREF_PARSE_BASE);
+	} catch {
+		return false;
+	}
+	if (url.host !== HREF_PARSE_HOST) return false;
+	// Require the raw path to ALREADY be in canonical form. The URL parser
+	// silently normalizes a path (backslash→slash, dot-segments, percent
+	// casing), so an href like `/alice/myws/tasks\TASK-5` would validate as
+	// `.../tasks/TASK-5` here — yet the RAW href is what the host later resolves
+	// (`resolvePaneTarget` splits on "/" only), yielding a bogus `tasks\TASK-5`
+	// segment and drilling an invalid item. Every builder emits clean ASCII
+	// item URLs, so any href that isn't already canonical isn't one — navigate
+	// it normally instead (Codex review, regression guard).
+	if (url.pathname !== rawPath) return false;
+	// `url.pathname` always leads with "/", so split()[0] is the empty string
+	// before it; drop it. Do NOT `filter(Boolean)` the rest — collapsing
+	// empties would accept malformed paths with a double slash / trailing slash
+	// (`/alice/myws//tasks/TASK-9`) as valid item routes (Codex review). Any
+	// remaining empty segment means the path isn't a clean item URL.
+	const segments = url.pathname.split('/').slice(1);
+	if (segments.some((s) => s === '')) return false;
+	let ws: string;
+	let coll: string;
+	let ref: string;
+	if (segments.length === 4) {
+		[, ws, coll, ref] = segments;
+	} else if (segments.length === 3) {
+		[ws, coll, ref] = segments;
+	} else {
+		return false;
+	}
+	if (ws !== wsSlug) return false;
+	const expectedPrefix = collectionPrefixes.get(coll);
+	if (!expectedPrefix) return false;
+	// The ref must be exactly `<collection-prefix>-<positive-int>` — a
+	// self-consistent item-URL as every builder emits. Comparing against the
+	// KNOWN prefix (rather than a generic REF_SHAPE) accepts digit-bearing
+	// collection prefixes like `R2-1` (the server's ref grammar allows a
+	// letter-led alphanumeric prefix) while still rejecting a digit-bearing
+	// SLUG like `roadmap2-5` (its "prefix" won't equal the collection's), a
+	// self-inconsistent path like `/docs/TASK-9` (prefix mismatch), and a
+	// zero ref like `TASK-0` (server `parseItemRef` rejects zero). Prefixes
+	// never contain a hyphen, so the LAST hyphen splits prefix from number.
+	const dash = ref.lastIndexOf('-');
+	if (dash <= 0 || dash === ref.length - 1) return false;
+	const refPrefix = ref.slice(0, dash);
+	const numStr = ref.slice(dash + 1);
+	if (refPrefix.toLowerCase() !== expectedPrefix.toLowerCase()) return false;
+	if (!/^\d+$/.test(numStr)) return false;
+	return Number(numStr) > 0;
 }
 
 /**

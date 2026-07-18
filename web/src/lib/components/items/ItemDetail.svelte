@@ -101,14 +101,17 @@
 		onNavigateAway?: (url: string) => void;
 		onReady?: (ready: boolean) => void;
 		// PLAN-2154 Architecture B / TASK-2158: the seam content-link surfaces
-		// (relationships, breadcrumb, editor wiki-links, the graph drawer —
-		// TASK-2159/2160) will fire, via the internal `fireOpenTarget` wrapper
-		// below, to drill the pane in place instead of a hard navigation.
-		// Callers hand up a `PaneTarget` (ref/slug/href/collection metadata
-		// only — never a full `Item`); the collection host resolves it
-		// (`resolvePaneTarget`, `$lib/collections/paneTarget`) and drives its
-		// pane controller's `navigatePaneTo`. Not called by anything yet — no
-		// content-link surface intercepts clicks until TASK-2159/2160 land.
+		// (relationships, breadcrumb, editor wiki-links, the graph drawer)
+		// fire, via the internal `fireOpenTarget` wrapper below, to drill the
+		// pane in place instead of a hard navigation. Callers hand up a
+		// `PaneTarget` (ref/slug/href/collection metadata only — never a full
+		// `Item`); the collection host resolves it (`resolvePaneTarget`,
+		// `$lib/collections/paneTarget`) and drives its pane controller's
+		// `navigatePaneTo`. Wired through to the editor's content-body/wiki-
+		// links via `EditorLinkPopover.handleHrefClick` (TASK-2160, Architecture
+		// B.3) — the single chokepoint editor-anchor navigation ever fires
+		// through. Relationships/breadcrumb/graph land separately
+		// (TASK-2159/2161ff).
 		onOpenTarget?: (target: PaneTarget) => void;
 	} = $props();
 
@@ -183,30 +186,32 @@
 		return gen !== loadGeneration || item?.id !== targetItem.id;
 	}
 
-	// The `onOpenTarget` seam's same-item guard (PLAN-2154 / TASK-2158). The
-	// TASK-2159 anchor interceptors (relationships / Children / graph "Open")
-	// call `fireOpenTarget(target)` instead of `onOpenTarget?.(target)`
-	// directly, so a link that names THIS item (by ref, slug, id, or an href
-	// built from either — even when it differs from however the pane's own
-	// `?item=` names it) is dropped here rather than round-tripping to the
-	// host only to become a no-op there. `isSamePaneTarget` is the same
-	// reusable check `resolvePaneTarget` (`$lib/collections/paneTarget`)
+	// The `onOpenTarget` seam's same-item guard (PLAN-2154 / TASK-2158). Every
+	// content-link interceptor calls `fireOpenTarget(target)` instead of
+	// `onOpenTarget?.(target)` directly — the TASK-2159 anchor surfaces
+	// (relationships / Children / graph "Open") AND the TASK-2160 editor
+	// content-body/wiki-link popover — so a link that names THIS item (by ref,
+	// slug, id, or an href built from either — even when it differs from
+	// however the pane's own `?item=` names it) is dropped here rather than
+	// round-tripping to the host only to become a no-op there. `isSamePaneTarget`
+	// is the same reusable check `resolvePaneTarget` (`$lib/collections/paneTarget`)
 	// applies when a caller passes it a `current` item.
 	function fireOpenTarget(target: PaneTarget) {
 		if (isSamePaneTarget(target, item)) return;
 		onOpenTarget?.(target);
 	}
 
-	// The callback threaded down to the anchor-based content-link surfaces
-	// (relationships, `ChildItems`/`NestedChildren`, `ItemGraph`'s "Open"
-	// anchor — TASK-2159). `undefined` — not `fireOpenTarget` — when no host
-	// wired `onOpenTarget` (e.g. the full-page route with no pane): those
-	// surfaces gate their click interception on `!!onOpenTarget` (mirroring
-	// `ItemCard`'s `shouldOpenInPane` contract, itemCardClick.ts), so passing
-	// a function that would just silently no-op after already having called
-	// `preventDefault()` would swallow the click with nothing happening.
-	// Passing `undefined` instead lets it fall through to the anchor's plain
-	// `href` navigation, same as before this task.
+	// The callback threaded down to every content-link surface: the
+	// anchor-based ones (relationships, `ChildItems`/`NestedChildren`,
+	// `ItemGraph`'s "Open" anchor — TASK-2159) and the editor content-body/
+	// wiki-link popover (`EditorLinkPopover` — TASK-2160). `undefined` — not
+	// `fireOpenTarget` — when no host wired `onOpenTarget` (e.g. the full-page
+	// route with no pane): those surfaces gate their click interception on
+	// `!!onOpenTarget` (mirroring `ItemCard`'s `shouldOpenInPane` contract,
+	// itemCardClick.ts), so passing a function that would just silently no-op
+	// after already having called `preventDefault()` would swallow the click
+	// with nothing happening. Passing `undefined` instead lets it fall through
+	// to the anchor's plain `href` navigation, same as before this task.
 	let paneOpenTarget = $derived(onOpenTarget ? fireOpenTarget : undefined);
 
 	// Cross-collection `?item=` safety (PLAN-2105 / TASK-2112). A stale /
@@ -3008,6 +3013,26 @@
 	// no-op "move" to the item's own collection (PLAN-2105 / TASK-2112).
 	let moveTargets = $derived(allCollections.filter(c => c.slug !== effectiveCollSlug));
 
+	// The workspace's collection slug → ref-prefix map — passed to
+	// EditorLinkPopover so it can confirm an editor content-link's href points
+	// at a WELL-FORMED item in THIS workspace (current wsSlug + a known
+	// collection whose prefix matches the ref) before drilling the pane, rather
+	// than misrouting a cross-workspace plain path, a non-item route, or a
+	// self-inconsistent collection/ref path into `?item=` (PLAN-2154
+	// Architecture B.3 / TASK-2160; Codex review).
+	//
+	// Gated on `collectionsAreFreshFor(wsSlug)`: `collectionStore.collections`
+	// is a single global slot that retains the PREVIOUS workspace's data while
+	// a workspace switch's `loadCollections()` is in flight, so pairing it with
+	// the current `wsSlug` unguarded could validate a link against another
+	// workspace's prefixes. An empty map during that window makes the gate
+	// decline (fall back to a normal `goto`) — the safe default (Codex review).
+	let collectionPrefixMap = $derived(
+		collectionStore.collectionsAreFreshFor(wsSlug)
+			? new Map(allCollections.map((c) => [c.slug, c.prefix]))
+			: new Map<string, string>(),
+	);
+
 	// In-pane drill interception for a relationship's `<a class="link-target">`
 	// (TASK-2159 / PLAN-2154 Architecture B.1). Sits as a SIBLING of the
 	// delete button (`.link-row-actions .link-delete-btn`), not a descendant,
@@ -4070,7 +4095,12 @@
 							collections={collectionStore.collections}
 							onItemCreated={(item, ws, epoch) => localIndex.upsert(ws, item, epoch)}
 						/>
-						<EditorLinkPopover editor={editorInstance} />
+						<EditorLinkPopover
+							editor={editorInstance}
+							onOpenTarget={paneOpenTarget}
+							{wsSlug}
+							collectionPrefixes={collectionPrefixMap}
+						/>
 					{/if}
 				{/if}
 			</div>
