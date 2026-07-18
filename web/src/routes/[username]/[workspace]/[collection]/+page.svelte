@@ -515,6 +515,53 @@
 		});
 	}
 
+	// Click-outside-to-collapse the split pane (IDEA-2148). While the pane is
+	// open on the DESKTOP split, a primary click on genuinely DEAD space in the
+	// list column collapses the pane — the pointer analogue of ESC-to-close.
+	// A click on ANY interactive/meaningful surface (a card, a control, a menu,
+	// the resize divider) belongs to that surface's own handler and must NOT
+	// collapse, so we bail whenever the click lands on — or inside — one; those
+	// handlers run first (bubbling), so re-targeting to another card or firing a
+	// button never races the close. Excluded on mobile: the list column is
+	// `inert` behind the full-screen overlay there so this can't fire anyway,
+	// but the viewport guard makes the intent explicit.
+	//
+	// This is a DENYLIST (bail on interactive) rather than a background
+	// allowlist: interactive elements are semantic and few (anchors, buttons,
+	// form controls, ARIA-roled widgets), so enumerating them is smaller and
+	// more stable than enumerating every background wrapper across list / board
+	// / table. A `[data-pane-keep]` opt-out lets any future non-semantic click
+	// surface exclude itself without editing this list.
+	const PANE_DISMISS_INTERACTIVE =
+		'a, button, input, textarea, select, label, summary, ' +
+		'[role="button"], [role="link"], [role="row"], [role="tab"], ' +
+		'[role="menuitem"], [role="menu"], [role="menuitemradio"], ' +
+		'[role="menuitemcheckbox"], [role="listbox"], [role="option"], ' +
+		'[role="checkbox"], [role="switch"], [role="separator"], ' +
+		'[contenteditable="true"], [draggable="true"], ' +
+		'.item-card, .table-row, .pane-divider, [data-pane-keep]';
+
+	function dismissPaneOnBackgroundClick(e: MouseEvent) {
+		// Desktop split pane only.
+		if (!openItemRef || viewport.isMobile) return;
+		// Primary, unmodified click only. Modifier/aux clicks are for
+		// selection, context menus, open-in-new-tab, etc. — not "click away".
+		if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+		const target = e.target as Element | null;
+		if (!target) return;
+		// A click on any interactive/meaningful surface is that surface's own.
+		if (target.closest(PANE_DISMISS_INTERACTIVE)) return;
+		// A drag that SELECTED text also ends in a `click`; that's a text
+		// selection, not a dismiss.
+		const sel = browser ? window.getSelection() : null;
+		if (sel && !sel.isCollapsed && sel.toString().trim() !== '') return;
+		// A click on the scroll gutter lands on the list column itself but
+		// outside its content box — not a background click.
+		const col = e.currentTarget as HTMLElement | null;
+		if (col && target === col && e.offsetX > col.clientWidth) return;
+		closeItemPane();
+	}
+
 	// Move keyboard focus back to the paned row in the list (TASK-2122). Backs
 	// the desktop ESC "back to the list" step — the pane stays OPEN, this only
 	// relocates focus. Returns false when there's no focused row to land on (e.g.
@@ -2779,7 +2826,18 @@
 	     screen-reader accessibility tree — a JS focus trap alone can't constrain
 	     an SR virtual cursor, and inert also blocks Cmd+F from focusing the
 	     hidden search box. Desktop split leaves the list fully interactive. -->
-	<div class="list-column" tabindex="-1" inert={viewport.isMobile && !!openItemRef}>
+	<!-- onclick collapses the open pane when the click lands on dead space
+	     (IDEA-2148). It's a background dismiss, NOT a control: ESC already
+	     provides the keyboard path (handled in the page keydown), so the
+	     static-element/keyboard-handler a11y rules don't apply here. -->
+	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
+	<div
+		class="list-column"
+		tabindex="-1"
+		inert={viewport.isMobile && !!openItemRef}
+		onclick={dismissPaneOnBackgroundClick}
+	>
 	{#if loading}
 		<div class="loading">Loading...</div>
 	{:else if metaError}
