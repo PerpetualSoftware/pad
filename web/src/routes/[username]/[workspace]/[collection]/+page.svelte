@@ -2347,8 +2347,20 @@
 
 	// --- Keyboard navigation ---
 	let focusedIndex = $state(-1);
+	// The list row-highlight marker (List/Board/Table read it as
+	// `focusedItemId === item.id`). Gated on stamped `depth===0` (PLAN-2154
+	// Architecture C / D-detach / TASK-2161): once the pane has DRILLED past its
+	// base (depth>0) it's an independent viewer, so the list highlight is
+	// CLEARED — the breadcrumb becomes the sole location indicator. `page.state`
+	// (read via `currentPaneState`) is reactive, so this recomputes to null on
+	// drill and re-highlights the base row on unwind. j/k may still nudge
+	// `focusedIndex` underneath a detached pane, but with no visible highlight
+	// here and no pane-follow (`schedulePaneFollow` is likewise inert at
+	// depth>0), so j/k is INERT while detached.
 	let focusedItemId = $derived(
-		focusedIndex >= 0 && focusedIndex < filteredItems.length
+		currentPaneState().paneDepth === 0 &&
+			focusedIndex >= 0 &&
+			focusedIndex < filteredItems.length
 			? filteredItems[focusedIndex].id
 			: null
 	);
@@ -2381,8 +2393,16 @@
 	// wins and restores the paned row. j/k between openItemRef changes still
 	// moves the cursor freely (this effect only re-runs on openItemRef /
 	// filteredItems changes, not on focusedIndex).
+	//
+	// DETACH gate (PLAN-2154 Architecture C / D-detach / TASK-2161): only snap
+	// while the pane is at its BASE (depth 0). Once drilled (depth>0) the pane
+	// shows an item that may not be in this list at all, and the row highlight
+	// is cleared (see `focusedItemId`), so snapping would be meaningless — bail.
+	// On unwind back to depth 0 both `openItemRef` and `page.state` change, so
+	// this re-runs and restores the base row's highlight.
 	$effect(() => {
 		if (!openItemRef) return;
+		if (currentPaneState().paneDepth > 0) return;
 		const idx = filteredItems.findIndex(
 			(i) => itemUrlId(i) === openItemRef || i.slug === openItemRef,
 		);
