@@ -745,7 +745,20 @@
 		});
 	});
 
+	// Set synchronously by onDestroy, checked by callbacks that can still be
+	// invoked AFTER this instance is torn down (a lingering closure from a
+	// still-pending promise — e.g. <EditCollectionModal>'s onupdated after
+	// the pane closed or the whole page navigated away mid-save). Unlike
+	// loadGeneration (which is about "has a NEWER load superseded this
+	// one" and gets reused/rechecked across the instance's live), this is
+	// a one-way "am I even still alive" flag — never reset, checked first
+	// by any handler whose global side effects (goto, collectionStore
+	// writes) would be wrong to run against a dead instance's stale
+	// closure-captured props (Codex PR review).
+	let destroyed = false;
+
 	onDestroy(() => {
+		destroyed = true;
 		unsubscribeSync?.();
 		unsubscribeSSE?.();
 		unsubscribeBeforePrint?.();
@@ -4156,30 +4169,95 @@
 
 	{#if isOwner && collection}
 		<!-- {#key itemSlug}: remount the owner collection-editor modal on item
-		     switch (it's closed on switch anyway; keeps its async loads scoped). -->
+		     switch (it's closed on switch anyway; keeps its async loads scoped
+		     and its OWN in-progress edits from leaking across items). The
+		     onupdated fence below does NOT depend on this remount for
+		     correctness — a stale instance's in-flight save keeps running
+		     after this block is torn down regardless, same as any other JS
+		     promise; the fence works off `editedCollectionSlug`, which
+		     EditCollectionModal echoes back rather than us trying to freeze
+		     anything on this side (see its Props.onupdated doc comment: a
+		     template-side {@const}/closure "snapshot" doesn't actually
+		     freeze in Svelte 5 — BUG-2129). -->
 		{#key itemSlug}
-		<!-- Capture item identity at THIS render so a destroyed A-instance's
-		     completed save/archive can't reload / navigate / close B's pane
-		     after the switch (PLAN-2105 / TASK-2112; coordinator). -->
-		{@const keyedSlug = itemSlug}
 		<EditCollectionModal
 			bind:open={editCollectionOpen}
 			{collection}
 			{wsSlug}
 			initialSection={editCollectionSection}
-			onupdated={(updated) => {
-				// Parent-side switch fence: drop a callback from a superseded
-				// item's modal instance (don't reload/navigate/close B's pane).
-				if (keyedSlug !== itemSlug) return;
+			onupdated={(updated, editedCollectionId, editedCollectionSlug, editedWsSlug) => {
+				// This callback can fire long after this ItemDetail instance
+				// (and everything it's part of — the pane, the whole page)
+				// was torn down — e.g. the user closed the pane, or
+				// navigated away entirely, before a pending save resolved.
+				// The closure still runs (JS doesn't cancel promises on
+				// unmount), so without this guard a dead instance's stale
+				// props could still call goto()/collectionStore writes,
+				// visibly affecting whatever the user has since navigated
+				// to (Codex PR review).
+				if (destroyed) return;
+				if (!editedCollectionId || !editedCollectionSlug || !editedWsSlug) return;
+				// Collection slugs are workspace-scoped (two workspaces can
+				// both have a "docs" collection) — guard against a reused
+				// instance (workspace switched without a remount) matching
+				// on slug alone (Codex PR review).
+				if (wsSlug !== editedWsSlug) return;
+				// Keep the GLOBAL collections list (sidebar, pickers, etc.)
+				// fresh regardless of whether this pane/item is even
+				// affected — harmless and always correct.
+				collectionStore.loadCollections(wsSlug);
+
+				// Fence (BUG-2129): only act further if the CURRENT ROUTE is
+				// still showing the collection this save/archive targeted.
+				// Compared against `collSlug` — a plain reactive prop
+				// derived straight from the route params — rather than
+				// `item`/`collection` (this component's OWN loaded state).
+				// item/collection lag behind an in-flight loadData() call
+				// (item can still hold the PREVIOUS item's data for a beat
+				// after a route change), so comparing against them risks a
+				// mixed stale/fresh read: pass the check on stale data,
+				// then build a navigation URL from the ALREADY-updated
+				// collSlug/itemSlug and hijack to a mismatched URL (Codex).
+				// collSlug has no such lag — it updates synchronously with
+				// the route — so this fence is correct regardless of
+				// whether loadData() has caught up yet, with no separate
+				// itemMatchesRef gate needed:
+				//   - still on the original item: collSlug trivially
+				//     matches (unchanged since the modal opened).
+				//   - superseded, SAME collection (embedded pane switch —
+				//     collSlug is fixed per pane/page, so it's unchanged):
+				//     matches — apply the full handling below (previously
+				//     dropped outright, leaving stale fields — the literal
+				//     BUG-2129 gap — and any pending rename/archive
+				//     unhandled).
+				//   - superseded, DIFFERENT collection (full-page
+				//     cross-collection navigation — collSlug updates the
+				//     instant the route changes): no match — a completed
+				//     edit for an abandoned collection must not touch
+				//     whatever the user has already navigated to.
+				//
+				// KNOWN LIMITATION (documented, not fixed here — deferred to
+				// PLAN-2154 Phase 1's TASK-2167 fence sweep): an embedded
+				// pane can be driven by a hand-crafted `?item=REF` whose
+				// item lives in a DIFFERENT collection than the host page's
+				// `collSlug` (loadData()'s cross-collection `?item=` safety
+				// refetch above handles this for rendering). Editing THAT
+				// item's real collection through this modal won't match
+				// `collSlug` and so won't trigger a reload here — a
+				// pre-existing edge case this fix doesn't regress against
+				// (the prior fence was dead code and refreshed
+				// unconditionally for ANY collection edit, relevant or
+				// not) but also doesn't newly solve.
+				if (collSlug !== editedCollectionSlug) return;
 				if (!updated) {
-					// Archive case — the collection is gone. Navigate away from
-					// this now-invalid item route rather than leaving the user
-					// with stale state that would hit deleted resources.
-					// Route-away is parameterized (PLAN-2105 / TASK-2112): an
-					// embedded pane closes in place (the collection page
-					// reconciles the archive itself) instead of hard-navigating
-					// the whole page; full-page returns to the workspace root.
-					collectionStore.loadCollections(wsSlug);
+					// Archive case — the collection is gone. Navigate away
+					// from this now-invalid item route rather than leaving
+					// the user with stale state that would hit deleted
+					// resources. Route-away is parameterized (PLAN-2105 /
+					// TASK-2112): an embedded pane closes in place (the
+					// collection page reconciles the archive itself)
+					// instead of hard-navigating the whole page; full-page
+					// returns to the workspace root.
 					if (embedded) {
 						handleGone();
 					} else {
@@ -4188,17 +4266,19 @@
 					return;
 				}
 				collection = updated;
-				collectionStore.loadCollections(wsSlug);
 				// If the owner renamed the collection, its slug may have
 				// changed. The current `/[collection]/[slug]` URL still
 				// points at the old slug and subsequent loadData() calls
-				// (which fetch by collSlug) would 404. Navigate to the
-				// new slug while preserving the item slug — routed through
+				// (which fetch by collSlug) would 404. Navigate to the new
+				// slug while preserving the item slug — routed through
 				// handleNavigateAway (PLAN-2105 / TASK-2112) so an embedded
-				// pane re-targets its host collection page (keeping the pane
-				// open via `?item=`) instead of hard-navigating to the
+				// pane re-targets its host collection page (keeping the
+				// pane open via `?item=`) instead of hard-navigating to the
 				// full-page item route. The destination triggers a fresh
-				// loadData() on arrival, so no explicit refresh here.
+				// loadData() on arrival, so no explicit refresh here. Reads
+				// `itemSlug` live (always current, whether or not
+				// loadData() has caught up) — correct for both the
+				// still-current and superseded-same-collection cases.
 				if (updated.slug !== collSlug && itemSlug) {
 					handleNavigateAway(
 						embedded
@@ -4208,10 +4288,14 @@
 					return;
 				}
 				// Non-navigating update: schema or field mappings may have
-				// changed (rename / migration), so reload the item so fields
-				// reflect the new shape. Without this, a subsequent
+				// changed (rename / migration), so reload the item so
+				// fields reflect the new shape. Without this, a subsequent
 				// updateField() would write stale fields JSON back and
-				// clobber migrated values.
+				// clobber migrated values. Always safe to call even if
+				// another load is already in flight — loadData() is
+				// idempotent and gen-fenced against any in-flight load, so
+				// this can only supersede it with fresher data, never
+				// regress correctness.
 				void loadData();
 			}}
 			onclose={() => {

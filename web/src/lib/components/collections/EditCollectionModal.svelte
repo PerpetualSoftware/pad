@@ -28,7 +28,36 @@
 		collection: Collection;
 		wsSlug: string;
 		initialSection?: 'general' | 'fields' | 'display' | 'actions';
-		onupdated: (updated?: Collection) => void;
+		// `editedCollectionId`/`editedCollectionSlug` echo back which
+		// collection THIS save/archive targeted, captured synchronously
+		// (before the request) from the `collection` prop. Callers that
+		// render this modal inside a no-remount persistent host (e.g.
+		// ItemDetail's split pane — PLAN-2105 / TASK-2112) can't rely on
+		// freezing that identity themselves via a template `{@const}` or a
+		// closure baked into the `onupdated` prop expression: Svelte 5
+		// passes props (including callback props) as live getters that
+		// re-evaluate the parent's binding expression on every read, so
+		// such a "snapshot" is actually re-read fresh at CALL time — i.e.
+		// whenever this promise resolves, which can be long after the host
+		// has moved on to a different item/collection (confirmed by
+		// runtime instrumentation during the BUG-2129 investigation).
+		// Passing these back as plain function arguments sidesteps that
+		// entirely — real JS values captured at the point this component
+		// synchronously read its OWN `collection` prop, not a re-evaluated
+		// expression. The slug (not just the id) matters to callers whose
+		// own "is this still relevant" check needs to compare against a
+		// route param (e.g. `collSlug`) rather than a loaded object that
+		// can itself be stale mid-navigation (Codex). `editedWsSlug` is the
+		// `wsSlug` PROP at the same synchronous capture point — collection
+		// slugs are workspace-scoped (two workspaces can both have a
+		// "docs" collection), so a caller reused across a workspace switch
+		// needs this to disambiguate (Codex PR review).
+		onupdated: (
+			updated?: Collection,
+			editedCollectionId?: string,
+			editedCollectionSlug?: string,
+			editedWsSlug?: string
+		) => void;
 		onclose: () => void;
 	}
 
@@ -50,10 +79,16 @@
 			return;
 		}
 		archiving = true;
+		// Synchronous capture (see the Props.onupdated doc comment) — read
+		// BEFORE the await, not after.
+		const editedCollectionId = collection.id;
+		const editedCollectionSlug = collection.slug;
+		const editedCollectionName = collection.name;
+		const editedWsSlug = wsSlug;
 		try {
-			await api.collections.delete(wsSlug, collection.slug);
-			toastStore.show(`Archived "${collection.name}"`, 'success');
-			onupdated();
+			await api.collections.delete(editedWsSlug, editedCollectionSlug);
+			toastStore.show(`Archived "${editedCollectionName}"`, 'success');
+			onupdated(undefined, editedCollectionId, editedCollectionSlug, editedWsSlug);
 			onclose();
 		} catch (err) {
 			toastStore.show('Failed to archive collection', 'error');
@@ -346,6 +381,11 @@
 		if (!name.trim() || saving || hasNewFieldBlockingErrors) return;
 		saving = true;
 		error = '';
+		// Synchronous capture (see the Props.onupdated doc comment) — read
+		// BEFORE the await, not after.
+		const editedCollectionId = collection.id;
+		const editedCollectionSlug = collection.slug;
+		const editedWsSlug = wsSlug;
 		try {
 			// Build existing fields back into FieldDef[]
 			const updatedExisting: FieldDef[] = existingFields.map((f) => {
@@ -509,9 +549,9 @@
 				data.migrations = migrations;
 			}
 
-			const updated = await api.collections.update(wsSlug, collection.slug, data);
+			const updated = await api.collections.update(editedWsSlug, editedCollectionSlug, data);
 			toastStore.show(`Updated ${name.trim()}`, 'success');
-			onupdated(updated);
+			onupdated(updated, editedCollectionId, editedCollectionSlug, editedWsSlug);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to update collection';
 		} finally {
