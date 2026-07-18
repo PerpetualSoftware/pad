@@ -259,6 +259,16 @@
 	let contentDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 	let saveStatus = $state<'idle' | 'saving' | 'saved'>('idle');
 	let saveStatusTimer: ReturnType<typeof setTimeout> | undefined;
+	// Debounce the add-relationship search so typing doesn't fire one /search
+	// request per keystroke (rate-limit relief). Cleared on the item-scoped
+	// reset + onDestroy so a pending fetch never fires after teardown/switch.
+	const ADD_LINK_SEARCH_DEBOUNCE_MS = 250;
+	let addLinkDebounceTimer: ReturnType<typeof setTimeout> | undefined;
+	// Per-query fence for the add-relationship search. loadGeneration only bumps
+	// on an item switch, so it can't invalidate an in-flight search when the box
+	// is merely emptied or closed on the SAME item — this seq does (Codex review
+	// P2). Plain `let` (CONVE-1688): read/written in handlers only.
+	let addLinkSearchSeq = 0;
 	let confirmDelete = $state(false);
 	let deleting = $state(false);
 	let restoring = $state(false);
@@ -739,6 +749,9 @@
 		unsubscribeSync?.();
 		unsubscribeSSE?.();
 		unsubscribeBeforePrint?.();
+		// Cancel a pending add-relationship search so it can't fire a wasted
+		// /search request after this instance is torn down.
+		clearTimeout(addLinkDebounceTimer);
 		// Invalidate any in-flight loadData so a request that resolves AFTER
 		// this instance is torn down (pane closed mid-load) can't reach its
 		// global-store writes — collectionStore.setActiveItem / editorStore —
@@ -844,6 +857,7 @@
 		editingTitle = false;
 		showMoveMenu = false;
 		showAddLink = false;
+		clearTimeout(addLinkDebounceTimer);
 		addLinkSearch = '';
 		addLinkResults = [];
 		addLinkLoading = false;
@@ -2920,18 +2934,49 @@
 	let addLinkResults = $state<Item[]>([]);
 	let addLinkLoading = $state(false);
 
+	// Cancel any pending debounce AND invalidate an in-flight add-relationship
+	// search so its late result can't repopulate the (now emptied/closed) box,
+	// and drop the loading flag. Used on empty, close, and after a link lands.
+	function cancelAddLinkSearch() {
+		clearTimeout(addLinkDebounceTimer);
+		addLinkSearchSeq++;
+		addLinkLoading = false;
+	}
+
+	// Debounced input handler. Emptying the box clears results + cancels any
+	// pending/in-flight request immediately; a non-empty query fires
+	// searchItemsForLink() only after the user pauses for the debounce window.
+	function onAddLinkInput() {
+		if (!addLinkSearch.trim()) {
+			cancelAddLinkSearch();
+			addLinkResults = [];
+			return;
+		}
+		clearTimeout(addLinkDebounceTimer);
+		// Query changed: invalidate any in-flight search and drop stale results
+		// so an old-query result can't appear or be selected during the debounce
+		// window; show loading until the new search lands (Codex review P2).
+		addLinkSearchSeq++;
+		addLinkResults = [];
+		addLinkLoading = true;
+		addLinkDebounceTimer = setTimeout(() => searchItemsForLink(), ADD_LINK_SEARCH_DEBOUNCE_MS);
+	}
+
 	async function searchItemsForLink() {
 		if (!addLinkSearch.trim()) {
 			addLinkResults = [];
 			return;
 		}
-		// Fence the async search so results from item A's add-link box can't
-		// repopulate the panel after switching to item B (Codex).
+		// Fence the async search so a result can't repopulate the panel after
+		// an item switch (loadGeneration) OR after the box was emptied/closed on
+		// the same item (addLinkSearchSeq) — Codex.
 		const gen = loadGeneration;
+		const seq = ++addLinkSearchSeq;
+		const stale = () => gen !== loadGeneration || seq !== addLinkSearchSeq;
 		addLinkLoading = true;
 		try {
 			const results = await api.search(addLinkSearch, { workspace: wsSlug });
-			if (gen !== loadGeneration) return;
+			if (stale()) return;
 			// Filter out self and items already linked
 			const linkedIds = new Set(itemLinks.flatMap(l => [l.source_id, l.target_id]));
 			addLinkResults = (results.results || [])
@@ -2939,10 +2984,10 @@
 				.filter((i: Item) => i.id !== item?.id && !linkedIds.has(i.id))
 				.slice(0, 10);
 		} catch {
-			if (gen !== loadGeneration) return;
+			if (stale()) return;
 			addLinkResults = [];
 		} finally {
-			if (gen === loadGeneration) addLinkLoading = false;
+			if (!stale()) addLinkLoading = false;
 		}
 	}
 
@@ -2964,6 +3009,9 @@
 			});
 			if (switchedAway(sourceItem, gen)) return;
 			itemLinks = [...itemLinks, newLink];
+			// Cancel any pending/in-flight search before closing the form so a
+			// stale debounced query can't fire after it's gone (Codex review P2).
+			cancelAddLinkSearch();
 			showAddLink = false;
 			addLinkSearch = '';
 			addLinkResults = [];
@@ -3970,7 +4018,7 @@
 					<div class="add-link-form">
 						<div class="add-link-header">
 							<h4>Add Relationship</h4>
-							<button class="add-link-close" onclick={() => { showAddLink = false; addLinkSearch = ''; addLinkResults = []; }}>×</button>
+							<button class="add-link-close" onclick={() => { cancelAddLinkSearch(); showAddLink = false; addLinkSearch = ''; addLinkResults = []; }}>×</button>
 						</div>
 						<div class="add-link-controls">
 							<select bind:value={addLinkType} class="add-link-type-select">
@@ -3986,7 +4034,7 @@
 								class="add-link-search"
 								placeholder="Search items..."
 								bind:value={addLinkSearch}
-								oninput={() => searchItemsForLink()}
+								oninput={onAddLinkInput}
 							/>
 						</div>
 						{#if addLinkLoading}

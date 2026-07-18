@@ -237,6 +237,7 @@
 		// await so a create/search/link in flight during an item switch
 		// can't write into the wrong item or toast after teardown.
 		destroyed = true;
+		clearTimeout(searchDebounceTimer);
 		unsubscribeSSE?.();
 		unsubscribeSync?.();
 	});
@@ -331,6 +332,12 @@
 	// slow older search that resolves after a newer one.
 	let destroyed = false;
 	let searchSeq = 0;
+	// Debounce the link-search network call so typing doesn't fire one request
+	// per keystroke (rate-limit relief). Plain `let` timer per the CommandPalette
+	// idiom; cleared on reset + onDestroy so a pending fetch never fires after
+	// the form closes or the instance is torn down.
+	const SEARCH_DEBOUNCE_MS = 250;
+	let searchDebounceTimer: ReturnType<typeof setTimeout> | undefined;
 
 	// Candidates: drop the parent itself, items already children here, and
 	// any the caller can't edit (view-only → 403 on link) — DR-2.
@@ -375,6 +382,9 @@
 		linkResults = [];
 		confirmCandidate = null;
 		linkSearching = false;
+		// Cancel a pending debounced search so it doesn't fire a wasted request
+		// after the form was cleared/closed.
+		clearTimeout(searchDebounceTimer);
 		// Invalidate any in-flight search so its late result can't repopulate
 		// linkResults after the form was cleared/closed (Codex diff review P1).
 		searchSeq++;
@@ -413,6 +423,12 @@
 		if (next === 'link' && !canLinkExisting) return;
 		mode = next;
 		confirmCandidate = null;
+		// Leaving Link mode hides the search box — cancel a pending debounced
+		// search + invalidate any in-flight one so it can't fire/repopulate
+		// after the input is gone (Codex review P2).
+		clearTimeout(searchDebounceTimer);
+		searchSeq++;
+		linkSearching = false;
 	}
 
 	async function submitCreate() {
@@ -461,6 +477,29 @@
 			// request settles; a write to a destroyed instance is a no-op.
 			creating = false;
 		}
+	}
+
+	// Debounced input handler. Clearing/emptying the box takes effect
+	// immediately (no wasted request); a non-empty query fires searchLink()
+	// only after the user pauses for SEARCH_DEBOUNCE_MS.
+	function onSearchInput() {
+		clearTimeout(searchDebounceTimer);
+		if (!linkSearch.trim()) {
+			// Invalidate any in-flight query so its late result can't repopulate
+			// results after the box was cleared (searchSeq fence).
+			searchSeq++;
+			linkResults = [];
+			linkSearching = false;
+			return;
+		}
+		// Query changed: invalidate any in-flight search (its result is now
+		// stale) and drop the previous results so they aren't shown or clickable
+		// during the debounce window; show loading until the new search lands
+		// (Codex review P2).
+		searchSeq++;
+		linkResults = [];
+		linkSearching = true;
+		searchDebounceTimer = setTimeout(() => searchLink(), SEARCH_DEBOUNCE_MS);
 	}
 
 	async function searchLink() {
@@ -644,7 +683,7 @@
 							placeholder="Search items to link…"
 							bind:value={linkSearch}
 							disabled={linking}
-							oninput={() => searchLink()}
+							oninput={onSearchInput}
 						/>
 						{#if linkSearching}
 							<div class="add-child-hint">Searching…</div>
