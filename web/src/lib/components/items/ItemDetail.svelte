@@ -745,7 +745,20 @@
 		});
 	});
 
+	// Set synchronously by onDestroy, checked by callbacks that can still be
+	// invoked AFTER this instance is torn down (a lingering closure from a
+	// still-pending promise — e.g. <EditCollectionModal>'s onupdated after
+	// the pane closed or the whole page navigated away mid-save). Unlike
+	// loadGeneration (which is about "has a NEWER load superseded this
+	// one" and gets reused/rechecked across the instance's live), this is
+	// a one-way "am I even still alive" flag — never reset, checked first
+	// by any handler whose global side effects (goto, collectionStore
+	// writes) would be wrong to run against a dead instance's stale
+	// closure-captured props (Codex PR review).
+	let destroyed = false;
+
 	onDestroy(() => {
+		destroyed = true;
 		unsubscribeSync?.();
 		unsubscribeSSE?.();
 		unsubscribeBeforePrint?.();
@@ -4172,8 +4185,23 @@
 			{collection}
 			{wsSlug}
 			initialSection={editCollectionSection}
-			onupdated={(updated, editedCollectionId, editedCollectionSlug) => {
-				if (!editedCollectionId || !editedCollectionSlug) return;
+			onupdated={(updated, editedCollectionId, editedCollectionSlug, editedWsSlug) => {
+				// This callback can fire long after this ItemDetail instance
+				// (and everything it's part of — the pane, the whole page)
+				// was torn down — e.g. the user closed the pane, or
+				// navigated away entirely, before a pending save resolved.
+				// The closure still runs (JS doesn't cancel promises on
+				// unmount), so without this guard a dead instance's stale
+				// props could still call goto()/collectionStore writes,
+				// visibly affecting whatever the user has since navigated
+				// to (Codex PR review).
+				if (destroyed) return;
+				if (!editedCollectionId || !editedCollectionSlug || !editedWsSlug) return;
+				// Collection slugs are workspace-scoped (two workspaces can
+				// both have a "docs" collection) — guard against a reused
+				// instance (workspace switched without a remount) matching
+				// on slug alone (Codex PR review).
+				if (wsSlug !== editedWsSlug) return;
 				// Keep the GLOBAL collections list (sidebar, pickers, etc.)
 				// fresh regardless of whether this pane/item is even
 				// affected — harmless and always correct.
@@ -4207,6 +4235,19 @@
 				//     instant the route changes): no match — a completed
 				//     edit for an abandoned collection must not touch
 				//     whatever the user has already navigated to.
+				//
+				// KNOWN LIMITATION (documented, not fixed here — deferred to
+				// PLAN-2154 Phase 1's TASK-2167 fence sweep): an embedded
+				// pane can be driven by a hand-crafted `?item=REF` whose
+				// item lives in a DIFFERENT collection than the host page's
+				// `collSlug` (loadData()'s cross-collection `?item=` safety
+				// refetch above handles this for rendering). Editing THAT
+				// item's real collection through this modal won't match
+				// `collSlug` and so won't trigger a reload here — a
+				// pre-existing edge case this fix doesn't regress against
+				// (the prior fence was dead code and refreshed
+				// unconditionally for ANY collection edit, relevant or
+				// not) but also doesn't newly solve.
 				if (collSlug !== editedCollectionSlug) return;
 				if (!updated) {
 					// Archive case — the collection is gone. Navigate away

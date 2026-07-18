@@ -47,8 +47,17 @@
 		// expression. The slug (not just the id) matters to callers whose
 		// own "is this still relevant" check needs to compare against a
 		// route param (e.g. `collSlug`) rather than a loaded object that
-		// can itself be stale mid-navigation (Codex).
-		onupdated: (updated?: Collection, editedCollectionId?: string, editedCollectionSlug?: string) => void;
+		// can itself be stale mid-navigation (Codex). `editedWsSlug` is the
+		// `wsSlug` PROP at the same synchronous capture point — collection
+		// slugs are workspace-scoped (two workspaces can both have a
+		// "docs" collection), so a caller reused across a workspace switch
+		// needs this to disambiguate (Codex PR review).
+		onupdated: (
+			updated?: Collection,
+			editedCollectionId?: string,
+			editedCollectionSlug?: string,
+			editedWsSlug?: string
+		) => void;
 		onclose: () => void;
 	}
 
@@ -75,10 +84,11 @@
 		const editedCollectionId = collection.id;
 		const editedCollectionSlug = collection.slug;
 		const editedCollectionName = collection.name;
+		const editedWsSlug = wsSlug;
 		try {
-			await api.collections.delete(wsSlug, editedCollectionSlug);
+			await api.collections.delete(editedWsSlug, editedCollectionSlug);
 			toastStore.show(`Archived "${editedCollectionName}"`, 'success');
-			onupdated(undefined, editedCollectionId, editedCollectionSlug);
+			onupdated(undefined, editedCollectionId, editedCollectionSlug, editedWsSlug);
 			onclose();
 		} catch (err) {
 			toastStore.show('Failed to archive collection', 'error');
@@ -375,6 +385,7 @@
 		// BEFORE the await, not after.
 		const editedCollectionId = collection.id;
 		const editedCollectionSlug = collection.slug;
+		const editedWsSlug = wsSlug;
 		try {
 			// Build existing fields back into FieldDef[]
 			const updatedExisting: FieldDef[] = existingFields.map((f) => {
@@ -538,9 +549,9 @@
 				data.migrations = migrations;
 			}
 
-			const updated = await api.collections.update(wsSlug, editedCollectionSlug, data);
+			const updated = await api.collections.update(editedWsSlug, editedCollectionSlug, data);
 			toastStore.show(`Updated ${name.trim()}`, 'success');
-			onupdated(updated, editedCollectionId, editedCollectionSlug);
+			onupdated(updated, editedCollectionId, editedCollectionSlug, editedWsSlug);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to update collection';
 		} finally {
