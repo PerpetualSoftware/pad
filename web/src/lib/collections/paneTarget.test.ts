@@ -148,6 +148,16 @@ describe('isSamePaneTarget — same-item guard', () => {
 		expect(isSamePaneTarget({ ref: 'TASK-6' }, task5)).toBe(false);
 	});
 
+	it('does NOT treat a digit-bearing slug as a ref, even when its trailing number coincides', () => {
+		// The server's parseItemRef requires a LETTERS-ONLY prefix (no digits);
+		// a slug like "roadmap2-5" is not ref-shaped by that grammar and must
+		// stay a plain slug candidate — not misread as ref number 5, which
+		// would false-positive against an unrelated item TASK-5 (Codex review
+		// — PR diff pass).
+		expect(isSamePaneTarget({ slug: 'roadmap2-5' }, task5)).toBe(false);
+		expect(isSamePaneTarget({ href: '/alice/myws/docs/roadmap2-5' }, task5)).toBe(false);
+	});
+
 	it('a cross-workspace resolver href never false-positives, even when the numbers coincide', () => {
 		// A different workspace's TASK-5 is NOT this workspace's task5, even
 		// though the trailing ref segment is identical.

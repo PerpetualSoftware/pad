@@ -60,9 +60,13 @@ function lastHrefSegment(href: string): string | null {
 }
 
 // Ref-shaped candidate: PREFIX-NUMBER. Mirrors `internal/store/items.go`'s
-// `parseItemRef` closely enough for guard purposes — case-insensitive
-// letter/digit prefix, a hyphen, then a positive integer suffix.
-const REF_SHAPE = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/;
+// `parseItemRef` — case-insensitive LETTERS-ONLY prefix (no digits; the
+// server's own loop rejects any non-A-Z byte in the prefix), a hyphen, then
+// a positive integer suffix. A looser digit-permitting prefix would
+// misclassify a digit-bearing slug like "roadmap2-5" as ref number 5 and
+// false-positive the same-item guard against an unrelated item TASK-5
+// (Codex review — PR diff pass).
+const REF_SHAPE = /^([A-Za-z]+)-(\d+)$/;
 
 /** Parse a ref-shaped candidate's item NUMBER (case-insensitive; prefix is
  *  discarded — see `isSamePaneTarget`). Null for a non-ref-shaped string or
