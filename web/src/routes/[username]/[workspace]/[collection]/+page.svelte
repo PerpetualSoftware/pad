@@ -2566,16 +2566,21 @@
 			// on `paneNavInFlight()` like every other controller entry point
 			// (openItemPane / navigatePaneTo / closeItemPane) — a rapid double ESC,
 			// or an ESC racing a close/reset click, can't queue a second traversal
-			// against stale depth and overshoot (R14). A no-op while a traversal
-			// is already armed STILL consumes the key (falls through neither to
-			// the two-level step nor a full close).
+			// against stale depth and overshoot (R14). Also gated on `!e.repeat` —
+			// a HELD key fires many auto-repeat keydowns, and each one settles the
+			// in-flight fence before the next arrives, so without this a single
+			// held press would unwind several levels (and could close the pane
+			// entirely), violating "pop exactly one level per press" (Codex
+			// review). A no-op (repeat, or a traversal already armed) STILL
+			// consumes the key (falls through neither to the two-level step nor a
+			// full close).
 			if (
 				openItemRef &&
 				topEscapePriority() === ESCAPE_PRIORITY.pane &&
 				currentPaneState().paneDepth > 0
 			) {
 				e.preventDefault();
-				if (!paneNavInFlight()) paneHistoryGo(-1);
+				if (!e.repeat && !paneNavInFlight()) paneHistoryGo(-1);
 				return;
 			}
 			// Desktop two-level ESC (TASK-2122): from INSIDE the open pane (a

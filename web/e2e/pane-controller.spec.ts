@@ -622,4 +622,54 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => openItemParam(page)).toBeNull();
 		await expect(pane).toBeHidden();
 	});
+
+	test('depth-aware ESC: a HELD key (auto-repeat keydowns) still pops only one level', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl esc-repeat alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl esc-repeat bravo');
+		const c = await seedDoc(fixture, request, 'Ctrl esc-repeat charlie');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl esc-repeat alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await drillTo(page, c.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+
+		// The initial (non-repeat) physical keydown pops one level, to depth 1.
+		await page.keyboard.press('Escape');
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+
+		// A held key then fires a burst of AUTO-REPEAT keydowns
+		// (`KeyboardEvent.repeat === true`) — dispatched here after the first
+		// pop's traversal has already settled, so `paneNavInFlight()` alone
+		// would no longer block them; only the `!e.repeat` guard does. None of
+		// them may pop a further level — "one level per press", not per
+		// keydown.
+		await page.evaluate(() => {
+			for (let i = 0; i < 5; i++) {
+				window.dispatchEvent(
+					new KeyboardEvent('keydown', {
+						key: 'Escape',
+						bubbles: true,
+						cancelable: true,
+						repeat: true,
+					}),
+				);
+			}
+		});
+		await page.waitForTimeout(100);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+		await expect(pane).toBeVisible();
+	});
 });
