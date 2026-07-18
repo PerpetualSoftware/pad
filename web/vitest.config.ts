@@ -32,6 +32,7 @@ function canResolve(id: string): boolean {
 	}
 }
 
+const projectRoot = fileURLToPath(new URL('.', import.meta.url));
 const $lib = fileURLToPath(new URL('./src/lib', import.meta.url));
 const appEnvironmentMock = fileURLToPath(new URL('./src/test/mocks/app-environment.ts', import.meta.url));
 
@@ -46,7 +47,10 @@ const appEnvironmentMock = fileURLToPath(new URL('./src/test/mocks/app-environme
 // exist?" error even though it does. Explicitly allowing the resolved
 // realpath fixes worktrees without changing behavior for a normal checkout,
 // where the realpath is just `<project>/node_modules` — already inside the
-// default allow-list.
+// default allow-list. `projectRoot` MUST stay in the allow list alongside
+// it — setting `server.fs.allow` REPLACES Vite's default (project root +
+// ancestors), so omitting the root here would deny access to ordinary
+// project source files (Codex review).
 const nodeModulesRealPath = (() => {
 	try {
 		return realpathSync(fileURLToPath(new URL('./node_modules', import.meta.url)));
@@ -90,7 +94,9 @@ export default defineConfig(async () => {
 					'$app/environment': appEnvironmentMock,
 				},
 			},
-			server: nodeModulesRealPath ? { fs: { allow: [nodeModulesRealPath] } } : undefined,
+			server: nodeModulesRealPath
+				? { fs: { allow: [projectRoot, nodeModulesRealPath] } }
+				: undefined,
 			test: {
 				name: 'jsdom',
 				environment: 'jsdom',
