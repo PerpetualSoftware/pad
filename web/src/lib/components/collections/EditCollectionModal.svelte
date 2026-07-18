@@ -28,23 +28,27 @@
 		collection: Collection;
 		wsSlug: string;
 		initialSection?: 'general' | 'fields' | 'display' | 'actions';
-		// `editedCollectionId` echoes back which collection THIS save/archive
-		// targeted, captured synchronously (before the request) from the
-		// `collection` prop. Callers that render this modal inside a
-		// no-remount persistent host (e.g. ItemDetail's split pane — PLAN-2105
-		// / TASK-2112) can't rely on freezing that identity themselves via a
-		// template `{@const}` or a closure baked into the `onupdated` prop
-		// expression: Svelte 5 passes props (including callback props) as
-		// live getters that re-evaluate the parent's binding expression on
-		// every read, so such a "snapshot" is actually re-read fresh at CALL
-		// time — i.e. whenever this promise resolves, which can be long
-		// after the host has moved on to a different item/collection
-		// (confirmed by runtime instrumentation during the BUG-2129
-		// investigation). Passing the id back as a plain function argument
-		// sidesteps that entirely — it's a real JS value captured at the
-		// point this component synchronously read its OWN `collection` prop,
-		// not a re-evaluated expression.
-		onupdated: (updated?: Collection, editedCollectionId?: string) => void;
+		// `editedCollectionId`/`editedCollectionSlug` echo back which
+		// collection THIS save/archive targeted, captured synchronously
+		// (before the request) from the `collection` prop. Callers that
+		// render this modal inside a no-remount persistent host (e.g.
+		// ItemDetail's split pane — PLAN-2105 / TASK-2112) can't rely on
+		// freezing that identity themselves via a template `{@const}` or a
+		// closure baked into the `onupdated` prop expression: Svelte 5
+		// passes props (including callback props) as live getters that
+		// re-evaluate the parent's binding expression on every read, so
+		// such a "snapshot" is actually re-read fresh at CALL time — i.e.
+		// whenever this promise resolves, which can be long after the host
+		// has moved on to a different item/collection (confirmed by
+		// runtime instrumentation during the BUG-2129 investigation).
+		// Passing these back as plain function arguments sidesteps that
+		// entirely — real JS values captured at the point this component
+		// synchronously read its OWN `collection` prop, not a re-evaluated
+		// expression. The slug (not just the id) matters to callers whose
+		// own "is this still relevant" check needs to compare against a
+		// route param (e.g. `collSlug`) rather than a loaded object that
+		// can itself be stale mid-navigation (Codex).
+		onupdated: (updated?: Collection, editedCollectionId?: string, editedCollectionSlug?: string) => void;
 		onclose: () => void;
 	}
 
@@ -74,7 +78,7 @@
 		try {
 			await api.collections.delete(wsSlug, editedCollectionSlug);
 			toastStore.show(`Archived "${editedCollectionName}"`, 'success');
-			onupdated(undefined, editedCollectionId);
+			onupdated(undefined, editedCollectionId, editedCollectionSlug);
 			onclose();
 		} catch (err) {
 			toastStore.show('Failed to archive collection', 'error');
@@ -536,7 +540,7 @@
 
 			const updated = await api.collections.update(wsSlug, editedCollectionSlug, data);
 			toastStore.show(`Updated ${name.trim()}`, 'success');
-			onupdated(updated, editedCollectionId);
+			onupdated(updated, editedCollectionId, editedCollectionSlug);
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to update collection';
 		} finally {
