@@ -79,6 +79,79 @@ function parseRefNumber(candidate: string): number | null {
 }
 
 /**
+ * True when `href` is a root-relative link to a REF-identified item IN THE
+ * CURRENT WORKSPACE (`wsSlug`) that is WELL-FORMED — its collection segment
+ * is a known workspace collection AND that collection's prefix matches the
+ * ref's prefix (i.e. exactly the shape every item-URL builder emits). This
+ * is the strict gate that decides whether the ONE untrusted content-link
+ * surface — `EditorLinkPopover`, whose href comes off a Tiptap `link` MARK —
+ * may drill the split pane.
+ *
+ * Every OTHER `PaneTarget.href` producer (relationships, children, the graph
+ * drawer) builds its href FROM real same-workspace item data, so it's
+ * item-shaped by construction and doesn't need this check — `resolvePaneTarget`
+ * trusts it outright, slug-only items included. The editor popover is
+ * different: a `link` mark is indistinguishable between a wiki-link-inserted
+ * item link and a human-typed arbitrary path (Codex review, TASK-2160). A
+ * trailing-REF-shape test ALONE isn't enough, because the pane's `?item=`
+ * is scoped to the CURRENT workspace and resolved by ref NUMBER (the
+ * collection segment is dropped): a link to a different workspace's item as
+ * a plain path (`/bob/otherws/tasks/TASK-9` — NOT a `/-/r/` resolver link),
+ * to a non-item route that merely ends in a ref-shaped segment
+ * (`/alice/myws/tags/TASK-5`), or to a self-inconsistent path whose
+ * collection doesn't match the ref (`/alice/myws/playbooks/TASK-9`) would
+ * otherwise drill the current workspace's same-numbered item. So the
+ * segments are checked POSITIONALLY against the two shapes every item-URL
+ * builder in this codebase emits (`itemUrlId` via `renderMarkdown`/
+ * `wikiLinksToMarkdown`/`Editor.execLink`):
+ *
+ *   [username, workspace, collection, REF]   (4 segments — with username)
+ *   [workspace, collection, REF]             (3 segments — no username)
+ *
+ * requiring `workspace === wsSlug`, a `collectionPrefixes` entry for
+ * `collection`, a REF whose prefix equals that collection's prefix
+ * (case-insensitive — mirrors the server's case-insensitive `parseItemRef`),
+ * and a POSITIVE ref number (rejecting `TASK-0`, which the server's
+ * `parseItemRef` also rejects). A cross-workspace resolver link is rejected
+ * up front. Anything else falls back to a normal `goto` — the link still
+ * works, it just doesn't drill the pane (a graceful degradation, not a
+ * break). Empty `wsSlug` or `collectionPrefixes` (context not yet loaded)
+ * also declines, for the same safe fallback.
+ */
+export function isSameWorkspaceItemHref(
+	href: string,
+	wsSlug: string,
+	collectionPrefixes: ReadonlyMap<string, string>,
+): boolean {
+	if (!wsSlug || collectionPrefixes.size === 0) return false;
+	if (isCrossWorkspaceHref(href)) return false;
+	const path = href.split(/[?#]/)[0];
+	const segments = path.split('/').filter(Boolean);
+	let ws: string;
+	let coll: string;
+	let ref: string;
+	if (segments.length === 4) {
+		[, ws, coll, ref] = segments;
+	} else if (segments.length === 3) {
+		[ws, coll, ref] = segments;
+	} else {
+		return false;
+	}
+	if (ws !== wsSlug) return false;
+	const expectedPrefix = collectionPrefixes.get(coll);
+	if (!expectedPrefix) return false;
+	const m = REF_SHAPE.exec(ref);
+	if (!m) return false;
+	const [, refPrefix, numStr] = m;
+	// The ref's prefix must name THIS collection (a self-consistent item-URL),
+	// and the number must be positive — a self-inconsistent path like
+	// `/playbooks/TASK-9` or a zero ref like `/tasks/TASK-0` navigates
+	// normally instead of drilling the wrong pane item.
+	if (refPrefix.toLowerCase() !== expectedPrefix.toLowerCase()) return false;
+	return Number(numStr) > 0;
+}
+
+/**
  * The raw ref-or-slug candidate a `PaneTarget` carries, before any
  * same-item normalization — `ref` preferred over `slug` over an `href`'s
  * trailing segment (mirrors `itemUrlId`/`formatItemRef`'s ref-over-slug

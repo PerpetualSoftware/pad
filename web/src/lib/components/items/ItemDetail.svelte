@@ -94,14 +94,17 @@
 		onNavigateAway?: (url: string) => void;
 		onReady?: (ready: boolean) => void;
 		// PLAN-2154 Architecture B / TASK-2158: the seam content-link surfaces
-		// (relationships, breadcrumb, editor wiki-links, the graph drawer —
-		// TASK-2159/2160) will fire, via the internal `fireOpenTarget` wrapper
-		// below, to drill the pane in place instead of a hard navigation.
-		// Callers hand up a `PaneTarget` (ref/slug/href/collection metadata
-		// only — never a full `Item`); the collection host resolves it
-		// (`resolvePaneTarget`, `$lib/collections/paneTarget`) and drives its
-		// pane controller's `navigatePaneTo`. Not called by anything yet — no
-		// content-link surface intercepts clicks until TASK-2159/2160 land.
+		// (relationships, breadcrumb, editor wiki-links, the graph drawer)
+		// fire, via the internal `fireOpenTarget` wrapper below, to drill the
+		// pane in place instead of a hard navigation. Callers hand up a
+		// `PaneTarget` (ref/slug/href/collection metadata only — never a full
+		// `Item`); the collection host resolves it (`resolvePaneTarget`,
+		// `$lib/collections/paneTarget`) and drives its pane controller's
+		// `navigatePaneTo`. Wired through to the editor's content-body/wiki-
+		// links via `EditorLinkPopover.handleHrefClick` (TASK-2160, Architecture
+		// B.3) — the single chokepoint editor-anchor navigation ever fires
+		// through. Relationships/breadcrumb/graph land separately
+		// (TASK-2159/2161ff).
 		onOpenTarget?: (target: PaneTarget) => void;
 	} = $props();
 
@@ -176,16 +179,16 @@
 		return gen !== loadGeneration || item?.id !== targetItem.id;
 	}
 
-	// The `onOpenTarget` seam's same-item guard (PLAN-2154 / TASK-2158). No
-	// content-link surface calls this yet — TASK-2159/2160's relationships /
-	// breadcrumb / editor wiki-link / graph interceptors will call
-	// `fireOpenTarget(target)` instead of `onOpenTarget?.(target)` directly, so
-	// a link that names THIS item (by ref, slug, id, or an href built from
-	// either — even when it differs from however the pane's own `?item=` names
-	// it) is dropped here rather than round-tripping to the host only to
-	// become a no-op there. `isSamePaneTarget` is the same reusable check
-	// `resolvePaneTarget` (`$lib/collections/paneTarget`) applies when a
-	// caller passes it a `current` item.
+	// The `onOpenTarget` seam's same-item guard (PLAN-2154 / TASK-2158).
+	// Content-link interceptors call `fireOpenTarget(target)` instead of
+	// `onOpenTarget?.(target)` directly — the editor's content-body/wiki-link
+	// popover does (TASK-2160); relationships/breadcrumb/graph land
+	// separately — so a link that names THIS item (by ref, slug, id, or an
+	// href built from either — even when it differs from however the pane's
+	// own `?item=` names it) is dropped here rather than round-tripping to
+	// the host only to become a no-op there. `isSamePaneTarget` is the same
+	// reusable check `resolvePaneTarget` (`$lib/collections/paneTarget`)
+	// applies when a caller passes it a `current` item.
 	function fireOpenTarget(target: PaneTarget) {
 		if (isSamePaneTarget(target, item)) return;
 		onOpenTarget?.(target);
@@ -2987,6 +2990,15 @@
 	// no-op "move" to the item's own collection (PLAN-2105 / TASK-2112).
 	let moveTargets = $derived(allCollections.filter(c => c.slug !== effectiveCollSlug));
 
+	// The workspace's collection slug → ref-prefix map — passed to
+	// EditorLinkPopover so it can confirm an editor content-link's href points
+	// at a WELL-FORMED item in THIS workspace (current wsSlug + a known
+	// collection whose prefix matches the ref) before drilling the pane, rather
+	// than misrouting a cross-workspace plain path, a non-item route, or a
+	// self-inconsistent collection/ref path into `?item=` (PLAN-2154
+	// Architecture B.3 / TASK-2160; Codex review).
+	let collectionPrefixMap = $derived(new Map(allCollections.map((c) => [c.slug, c.prefix])));
+
 	async function handleDeleteLink(linkId?: string) {
 		if (!linkId || !item) return;
 		// Capture identity BEFORE the awaits. The refresh GET must use the
@@ -4037,7 +4049,12 @@
 							collections={collectionStore.collections}
 							onItemCreated={(item, ws, epoch) => localIndex.upsert(ws, item, epoch)}
 						/>
-						<EditorLinkPopover editor={editorInstance} />
+						<EditorLinkPopover
+							editor={editorInstance}
+							onOpenTarget={onOpenTarget ? fireOpenTarget : undefined}
+							{wsSlug}
+							collectionPrefixes={collectionPrefixMap}
+						/>
 					{/if}
 				{/if}
 			</div>

@@ -1,11 +1,39 @@
 <script lang="ts">
 	import type { Editor } from '@tiptap/core';
 	import { goto } from '$app/navigation';
+	import type { PaneTarget } from '$lib/types';
+	import { planHrefClick } from './editorHrefClick';
+
+	// Stable empty fallback so an unprovided `collectionPrefixes` prop can't
+	// mint a fresh Map on every click (and reads as "no context → decline
+	// the pane drill" in `isSameWorkspaceItemHref`).
+	const EMPTY_COLLECTION_PREFIXES: ReadonlyMap<string, string> = new Map();
 
 	let {
 		editor,
+		onOpenTarget,
+		wsSlug = '',
+		collectionPrefixes,
 	}: {
 		editor: Editor | null;
+		// PLAN-2154 Architecture B.3 / TASK-2160: the pane-navigate seam.
+		// Content-body/wiki-link anchors in the Tiptap doc are inert
+		// `data-href` and every editor-anchor click is globally
+		// `preventDefault`ed elsewhere — this popover's `handleHrefClick` is
+		// the SINGLE chokepoint where navigation actually happens (open in a
+		// new tab and edit/remove bypass it entirely). `ItemDetail` threads
+		// its `fireOpenTarget` wrapper down here (same-item guard already
+		// applied there), so this component only decides WHETHER a click
+		// should drill the pane vs. hard-navigate — never resolves identity
+		// itself.
+		onOpenTarget?: (target: PaneTarget) => void;
+		// The current workspace slug + a map of collection slug → ref prefix —
+		// the context `planHrefClick` uses to confirm an internal link points at
+		// a WELL-FORMED item in THIS workspace before drilling the pane
+		// (rejecting cross-workspace plain paths, non-item routes, and
+		// self-inconsistent collection/ref paths; Codex review).
+		wsSlug?: string;
+		collectionPrefixes?: ReadonlyMap<string, string>;
 	} = $props();
 
 	let visible = $state(false);
@@ -112,19 +140,39 @@
 	// URLs fall back to a full-page load. The handler is attached to a
 	// real <a> element so middle-click / cmd-click / "copy link" behave
 	// naturally.
+	//
+	// PLAN-2154 Architecture B.3 / TASK-2160: this is the single `goto`
+	// chokepoint for editor content-body links, so it's also the single
+	// place that decides whether an internal item link should drill the
+	// pane in place instead of navigating away. Modifier/middle-click and
+	// external-URL handling are UNCHANGED — `planHrefClick` (factored out
+	// for unit testing, `./editorHrefClick`) only replaces the internal
+	// `goto(target)` call with the pane drill, and only when a handler is
+	// actually wired (a bare `<Editor>` with no `onOpenTarget`, e.g. an
+	// unembedded full-page view with no pane host, keeps navigating) AND the
+	// href is a current-workspace item link (`isSameWorkspaceItemHref`:
+	// right workspace slug + a known collection + a REF-shaped tail). A link
+	// a user typed by hand via "Edit link" — an app route, a different
+	// workspace's item, a `/-/r/` resolver link — is indistinguishable from
+	// a wiki-link at the Tiptap mark level, so it's left to navigate normally
+	// rather than misrouted into the current pane's `?item=` (Codex review).
 	function handleHrefClick(e: MouseEvent) {
-		if (!href) return;
-		// Let the browser handle new-tab modifiers and middle-click itself.
-		if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey) return;
+		const plan = planHrefClick(e, href, {
+			hasOnOpenTarget: !!onOpenTarget,
+			wsSlug,
+			collectionPrefixes: collectionPrefixes ?? EMPTY_COLLECTION_PREFIXES,
+		});
+		if (plan.kind === 'passthrough') return;
 		e.preventDefault();
 		e.stopPropagation();
-		const target = href;
 		visible = false;
 		editing = false;
-		if (target.startsWith('/') && !target.startsWith('//')) {
-			goto(target);
+		if (plan.kind === 'pane') {
+			onOpenTarget?.({ href: plan.href });
+		} else if (plan.kind === 'goto') {
+			goto(plan.href);
 		} else {
-			window.location.assign(target);
+			window.location.assign(plan.href);
 		}
 	}
 

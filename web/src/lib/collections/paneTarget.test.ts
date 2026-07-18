@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Item, PaneTarget } from '$lib/types';
-import { resolvePaneTarget, isSamePaneTarget } from './paneTarget';
+import { resolvePaneTarget, isSamePaneTarget, isSameWorkspaceItemHref } from './paneTarget';
 
 // Minimal Item stand-in — resolution/guard only touch id/slug/item_number/
 // collection_prefix (the fields `formatItemRef`/`itemUrlId` read).
@@ -215,5 +215,79 @@ describe('resolvePaneTarget — same-item guard short-circuits to null', () => {
 	it('resolves normally (no guard) when current has no matching id/ref/slug', () => {
 		const target: PaneTarget = { slug: 'legacy-item' };
 		expect(resolvePaneTarget(target, task5)).toBe('legacy-item');
+	});
+});
+
+describe('isSameWorkspaceItemHref — editor content-link gate (TASK-2160)', () => {
+	// collection slug → ref prefix
+	const colls = new Map([
+		['tasks', 'TASK'],
+		['docs', 'DOC'],
+		['plans', 'PLAN'],
+	]);
+
+	it('accepts a username-prefixed item link in the current workspace', () => {
+		expect(isSameWorkspaceItemHref('/alice/myws/tasks/TASK-5', 'myws', colls)).toBe(true);
+	});
+
+	it('accepts a workspace-root-relative (no username) item link', () => {
+		expect(isSameWorkspaceItemHref('/myws/tasks/TASK-5', 'myws', colls)).toBe(true);
+	});
+
+	it('accepts a link into any known collection whose prefix matches the ref', () => {
+		expect(isSameWorkspaceItemHref('/alice/myws/docs/DOC-9', 'myws', colls)).toBe(true);
+		expect(isSameWorkspaceItemHref('/alice/myws/plans/PLAN-2', 'myws', colls)).toBe(true);
+	});
+
+	it('matches the ref prefix case-insensitively (server parseItemRef parity)', () => {
+		expect(isSameWorkspaceItemHref('/alice/myws/tasks/task-5', 'myws', colls)).toBe(true);
+	});
+
+	it('strips query/hash before matching', () => {
+		expect(isSameWorkspaceItemHref('/alice/myws/tasks/TASK-5?x=1', 'myws', colls)).toBe(true);
+		expect(isSameWorkspaceItemHref('/alice/myws/tasks/TASK-5#sec', 'myws', colls)).toBe(true);
+	});
+
+	it('rejects a DIFFERENT workspace item as a plain path (would open the wrong item)', () => {
+		expect(isSameWorkspaceItemHref('/bob/otherws/tasks/TASK-9', 'myws', colls)).toBe(false);
+	});
+
+	it('rejects a non-item route whose tail merely looks ref-shaped', () => {
+		// `tags` is not a collection → tags route, not an item.
+		expect(isSameWorkspaceItemHref('/alice/myws/tags/TASK-5', 'myws', colls)).toBe(false);
+	});
+
+	it('rejects a self-inconsistent collection/ref path (collection prefix != ref prefix)', () => {
+		// `TASK-9` is a task, not a doc — the collection segment's prefix (DOC)
+		// must match the ref's prefix (TASK). Otherwise a hand-authored
+		// `/docs/TASK-9` would drop the segment and drill the real TASK-9.
+		expect(isSameWorkspaceItemHref('/alice/myws/docs/TASK-9', 'myws', colls)).toBe(false);
+	});
+
+	it('rejects a zero-number ref (server parseItemRef rejects zero)', () => {
+		expect(isSameWorkspaceItemHref('/alice/myws/tasks/TASK-0', 'myws', colls)).toBe(false);
+	});
+
+	it('rejects a cross-workspace resolver link', () => {
+		expect(isSameWorkspaceItemHref('/-/r/other-workspace/TASK-9', 'myws', colls)).toBe(false);
+	});
+
+	it('rejects a slug-only (non-ref) trailing segment', () => {
+		expect(isSameWorkspaceItemHref('/alice/myws/docs/some-slug', 'myws', colls)).toBe(false);
+	});
+
+	it('rejects wrong segment counts (too short / too long)', () => {
+		expect(isSameWorkspaceItemHref('/console', 'myws', colls)).toBe(false);
+		expect(isSameWorkspaceItemHref('/alice/myws/settings', 'myws', colls)).toBe(false); // settings not a collection
+		expect(isSameWorkspaceItemHref('/a/alice/myws/tasks/TASK-5', 'myws', colls)).toBe(false);
+	});
+
+	it('does not misread a digit-bearing slug as a ref', () => {
+		expect(isSameWorkspaceItemHref('/alice/myws/docs/roadmap2-5', 'myws', colls)).toBe(false);
+	});
+
+	it('declines when context is missing (empty wsSlug or empty collection map)', () => {
+		expect(isSameWorkspaceItemHref('/alice/myws/tasks/TASK-5', '', colls)).toBe(false);
+		expect(isSameWorkspaceItemHref('/alice/myws/tasks/TASK-5', 'myws', new Map())).toBe(false);
 	});
 });
