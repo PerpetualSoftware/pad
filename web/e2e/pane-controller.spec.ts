@@ -76,6 +76,20 @@ function historyLength(page: Page): Promise<number> {
 	return page.evaluate(() => history.length);
 }
 
+/**
+ * Whether the currently-focused element is a pane-header Back button
+ * (`aria-label="Back"`). A `page.evaluate` read of `document.activeElement`,
+ * NOT `expect(locator).toBeFocused()` — this file's other focus checks
+ * (pane-a11y-focus.spec.ts) use the same `evaluate`-based pattern, which is
+ * the reliable one under heavy parallel load: a bare locator-based
+ * `toBeFocused()` polls independently of the app's own microtask queue and
+ * can observe a still-mid-flush DOM after a header swap, where an
+ * `evaluate` round-trip naturally lets pending Svelte effects settle first.
+ */
+function backButtonIsFocused(page: Page): Promise<boolean> {
+	return page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Back');
+}
+
 /** Enable the controller test hook for all navigations in this context. */
 async function enableHook(page: Page): Promise<void> {
 	await page.addInitScript(() => {
@@ -855,19 +869,99 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await backBtn.click();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
 		await expect.poll(() => openItemParam(page)).toBe(c.slug);
-		await expect(backBtn).toBeFocused();
+		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
 
 		// Press 2: C(2) → B(1). Focus restored again.
 		await backBtn.click();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 		await expect.poll(() => openItemParam(page)).toBe(b.slug);
-		await expect(backBtn).toBeFocused();
+		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
 
 		// Press 3: B(1) → A(0), the base — chevron disappears, pane stays open.
 		await backBtn.click();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
 		await expect(pane).toBeVisible();
 		await expect(pane.locator('button[aria-label="Back"]')).toHaveCount(0);
+	});
+
+	test('Back chevron: a second press while the first pop is still loading still ends with focus restored (Codex review round 3)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl back-race alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back-race bravo');
+		const c = await seedDoc(fixture, request, 'Ctrl back-race charlie');
+		const d = await seedDoc(fixture, request, 'Ctrl back-race delta');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back-race alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await drillTo(page, c.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+		await drillTo(page, d.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 3, paneOwned: true });
+
+		// Gate C's item fetch — the FIRST Back press (D→C) lands on it and
+		// stalls mid-load, so the SECOND Back press (fired while that fetch is
+		// still outstanding) exercises the exact race Codex round 3 flagged:
+		// a click while `loading` is already true from an EARLIER, unrelated
+		// load must not let the focus-restore effect latch onto that stale
+		// cycle instead of its own.
+		let releaseGate: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			releaseGate = resolve;
+		});
+		await page.route(`**/api/v1/workspaces/*/items/${c.slug}`, async (route) => {
+			if (route.request().method() !== 'GET') {
+				await route.continue();
+				return;
+			}
+			await gate;
+			await route.continue();
+		});
+
+		const backBtn = pane.locator('button[aria-label="Back"]');
+		await expect(backBtn).toBeVisible();
+		await backBtn.focus();
+
+		// Press 1: D(3) → C(2). C's fetch is gated — this pop never actually
+		// finishes loading until the gate is released below.
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+		// Wait for the DOM to actually reach the minimal (loading) header —
+		// not just for `page.state` to have updated — so press 2 below
+		// deterministically lands mid-fetch regardless of system load
+		// (rather than merely racing the depth-poll's own timing).
+		await expect(pane.locator('.pane-header--minimal')).toBeVisible();
+
+		// Press 2, fired while `loading` is STILL true from the stalled C
+		// fetch (the history-level `paneNavInFlight()` fence has already
+		// cleared by now, since that only guards the `history.go` traversal
+		// itself, not the data fetch it triggers). Targets B, whose fetch is
+		// NOT gated.
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+
+		// The pane settled on B — focus must have landed on ITS Back button,
+		// not been consumed early by C's stale, still-outstanding load.
+		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
+
+		// Release the gate so C's now-superseded fetch can drain (generation-
+		// fenced server-side by `loadData`'s own `myGen === loadGeneration`
+		// checks — it must not clobber the now-current B state).
+		releaseGate();
+		await page.waitForTimeout(100);
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
 	});
 
 	test('Back chevron: a cold-loaded shared ?item= starts at depth 0 and stays hidden; browser Back still exits the pane', async ({

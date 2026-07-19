@@ -1902,31 +1902,31 @@
 	// re-anchors focus on the Back button's OWN click, not the general
 	// "focus per hop" for arbitrary content-link drills (TASK-2162).
 	//
-	// TWO flags, not one (Codex review round 2 follow-up): `paneDepth` (a
-	// `page.state`-derived value) updates SYNCHRONOUSLY with the popstate
-	// that `history.go(-1)` fires, which lands BEFORE `itemSlug` changes and
-	// `loadData()` sets `loading = true` — so a naive single-flag effect can
-	// observe `loading` still `false` (stale, from the PREVIOUS item) on that
-	// intermediate run, fire early, and consume the flag before the real
-	// reload cycle (the one that actually unmounts/remounts the header) even
-	// starts. `backFocusSeenLoading` requires observing `loading` go true
-	// FIRST, so the restore only fires on the matching false that follows it.
+	// Keyed off `itemSlug` actually CHANGING, not an observed `loading`
+	// true→false transition (Codex review rounds 2 and 3 both found races in
+	// an earlier `loading`-transition-based design: `paneDepth` can update a
+	// tick before `itemSlug` does, and a second press fired while a PRIOR
+	// item is still loading — `paneNavInFlight()` only fences the `history.go`
+	// traversal, not the data fetch — could let the effect latch onto that
+	// STALE, already-in-flight cycle instead of its own). `itemSlug` is
+	// purely URL-derived (`ref` prop → `page.url`'s `?item=`), so it updates
+	// SYNCHRONOUSLY with the same popstate that stamps `paneDepth`, regardless
+	// of whether the fetch for it has even started — comparing against it
+	// directly needs no "did I see the right transition" bookkeeping: once
+	// it differs from the ref captured at click time AND the (new item's)
+	// load has finished, the pop is done.
 	let pendingBackFocus = $state(false);
-	let backFocusSeenLoading = $state(false);
+	let backFocusStartSlug = '';
 	function handleBackClick() {
 		pendingBackFocus = true;
-		backFocusSeenLoading = false;
+		backFocusStartSlug = itemSlug;
 		onBack?.();
 	}
 	$effect(() => {
 		if (!pendingBackFocus) return;
-		if (loading) {
-			backFocusSeenLoading = true;
-			return;
-		}
-		if (!backFocusSeenLoading) return; // the reload hasn't actually started yet
+		if (itemSlug === backFocusStartSlug) return; // the pop hasn't landed yet
+		if (loading) return; // the new item is still loading
 		pendingBackFocus = false;
-		backFocusSeenLoading = false;
 		// Only if the stack still has a level to pop — at depth 0 there's no
 		// Back button left to focus (that terminal case is the general
 		// focus-management scope of TASK-2162, not this one).
