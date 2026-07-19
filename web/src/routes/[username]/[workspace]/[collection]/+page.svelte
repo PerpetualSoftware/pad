@@ -9,13 +9,13 @@
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
-	import ItemDetail from '$lib/components/items/ItemDetail.svelte';
+	import PaneHost from '$lib/components/collections/PaneHost.svelte';
 	import FilterBar from '$lib/components/collections/FilterBar.svelte';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import SSEStatusIndicator from '$lib/components/SSEStatusIndicator.svelte';
-	import { onDestroy, onMount, untrack } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -44,15 +44,9 @@
 		viewHasUnparentedFilter,
 	} from '$lib/collections/unparentedFilter';
 	import { KNOWN_COLLECTION_URL_PARAMS, buildCollectionUrlParams } from '$lib/collections/paneUrlParams';
-	import {
-		readPaneState,
-		planPaneDrill,
-		planLateralOpen,
-		planPaneClose,
-		type ResolvedPaneState,
-	} from '$lib/collections/paneController';
-	import { paneFocusables, nextTrapTarget, resolvePaneReturnTarget } from '$lib/collections/paneFocus';
-	import { resolvePaneTarget } from '$lib/collections/paneTarget';
+	import { type ResolvedPaneState } from '$lib/collections/paneController';
+	import { createPaneController } from '$lib/collections/paneHostController';
+	import { resolvePaneReturnTarget } from '$lib/collections/paneFocus';
 	import { createPaneMintSettle, PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
 	import { pushEscapeHandler, runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
@@ -552,326 +546,57 @@
 	// a deep-linked item that isn't in the current filtered list.
 	let paneReturnFocusEl: HTMLElement | null = null;
 
-	// ── Pane-navigation controller: depth/ownership state machine ──────────
-	// (PLAN-2154 Architecture A / TASK-2157). The pane is a navigable
-	// mini-browser: `openItemPane` handles lateral/list opens (first-open + at-
-	// depth-0 re-target + at-depth>0 stack RESET) and `navigatePaneTo` handles
-	// in-pane DRILLS. Depth + ownership live in SvelteKit `page.state` (NOT raw
-	// `history.state` — Kit nests app state under `sveltekit:states`), so they
-	// follow opaque Back/Forward, survive `history.go`, and reconstruct on
-	// cold-load. The pure decision logic is in `$lib/collections/paneController`
-	// (unit-tested); this wiring EXECUTES the returned plans.
-	//
-	// NOTE (TASK-2157/2158 scope): `navigatePaneTo` still has no in-pane
-	// content-link CALLER — `ItemDetail`'s `onOpenTarget` prop and the
-	// `resolvePaneTarget`/`handleOpenTarget` resolve→drill path are wired
-	// (TASK-2158), but no content-link surface fires it yet; relationships,
-	// breadcrumb, editor wiki-links, and the graph drawer land in
-	// TASK-2159/2160. Until then it's reachable only via the depth>0 test hook
-	// (`__padPaneController`) so the controller's drill/reset/close arithmetic
-	// is exercisable end-to-end before the real UI callers exist.
+	// ── Pane-navigation controller (PLAN-2154 Architecture A/E) ────────────
+	// The depth/ownership state machine + the fenced `history.go` traversals +
+	// the three-way staged close now live in `$lib/collections/paneHostController`
+	// (TASK-2170), so THIS page and the full-page item host mount ONE controller —
+	// no duplicated arithmetic. The COLLECTION-SPECIFIC pieces stay here and are
+	// injected: the j/k pane-follow cancel, the pane-region focus (owned by the
+	// shell), the list-row focus-return capture, and the unsaved-draft leave guard.
+	// Depth + ownership live in SvelteKit `page.state`; the pure decision logic is
+	// in `$lib/collections/paneController` (unit-tested), executed by the glue.
 
-	/** Current pane depth+ownership, read from SvelteKit `page.state`. */
-	function currentPaneState(): ResolvedPaneState {
-		return readPaneState(page.state);
+	// Capture the element that opened the pane so a close can return focus to it
+	// (TASK-2122). The controller calls this on FIRST-OPEN only; the live `.focused`
+	// row is the primary return target, this is the fallback for a deep-linked item
+	// filtered out of the current list.
+	function captureReturnFocus() {
+		if (!browser) return;
+		const active = document.activeElement as HTMLElement | null;
+		paneReturnFocusEl = active && active !== document.body ? active : null;
 	}
 
-	// R14 fence: a monotonically-increasing sequence bumped at the START of every
-	// controller action (open/drill/close). A two-phase `history.go` continuation
-	// captures it and BAILS if a newer action superseded it (belt-and-suspenders
-	// now that `paneNavInFlight()` blocks a fresh gesture mid-traversal).
-	let controllerActionSeq = 0;
-	// EVERY controller `history.go` (owned close, cold-base close, detached-open
-	// reset) marks navigation in-flight from the moment it's issued until its
-	// traversal settles (its own popstate) or a bounded fallback. `history.go`
-	// has no completion promise, so without this a duplicate gesture — a
-	// double-click ✕, an ESC racing a click-away — could stack a SECOND traversal
-	// before the first's popstate lands and OVERSHOOT the intended entry. Blocks
-	// re-entrancy; bounded so it can never stick (a stuck flag would freeze every
-	// pane gesture). Steady-state depth-0 opens/re-targets issue no `history.go`,
-	// so this only arms on a close/reset (R14; Codex review).
-	const PANE_GO_SETTLE_MS = 500;
-	let paneGoInFlight = false;
-	let paneGoTimer: ReturnType<typeof setTimeout> | null = null;
-	// The "then write" continuation of a STAGED go (cold-base close / reset).
-	// `run()` RETURNS whether it fired: false means "not at the destination yet"
-	// (a competing traversal landed us elsewhere), so it stays armed for this
-	// go's own popstate rather than firing against the wrong entry. Null for a
-	// one-phase owned close (nothing to write after the traversal).
-	let pendingPaneLatch: { seq: number; run: () => boolean } | null = null;
+	// The PaneHost shell instance — bound once it mounts (i.e. the pane is
+	// open). The controller's `focusPaneRegion` dep AND the list->pane Tab
+	// bridge both call `paneHostEl?.focusPaneRegion()`; the closure resolves
+	// `paneHostEl` lazily at hop time, after mount (PLAN-2154 Architecture E /
+	// TASK-2170).
+	let paneHostEl = $state<PaneHost | undefined>();
 
-	function paneNavInFlight(): boolean {
-		return paneGoInFlight;
-	}
-
-	function clearPaneGo() {
-		paneGoInFlight = false;
-		pendingPaneLatch = null;
-		if (paneGoTimer) {
-			clearTimeout(paneGoTimer);
-			paneGoTimer = null;
-		}
-	}
-
-	// Issue a controller traversal, fencing against a duplicate gesture stacking
-	// a second one. `latch` is the optional post-traversal write (cold-base /
-	// reset), fired from the settling popstate.
-	function paneHistoryGo(delta: number, latch?: () => boolean) {
-		paneGoInFlight = true;
-		pendingPaneLatch = latch ? { seq: controllerActionSeq, run: latch } : null;
-		if (paneGoTimer) clearTimeout(paneGoTimer);
-		paneGoTimer = setTimeout(() => {
-			paneGoTimer = null;
-			// Gave up waiting for the settling popstate (the traversal was
-			// superseded): best-effort fire the latch (its own preconditions no-op
-			// it off-target), then release the guard UNCONDITIONALLY so gestures
-			// can't stay blocked.
-			const l = pendingPaneLatch;
-			paneGoInFlight = false;
-			pendingPaneLatch = null;
-			l?.run();
-		}, PANE_GO_SETTLE_MS);
-		history.go(delta);
-	}
-
-	// Settle the in-flight traversal on its own POPSTATE. `popstate` also covers
-	// an unrelated browser Back/Forward, so a STAGED latch is not consumed
-	// eagerly: `run()` verifies it reached its destination (the pane base — depth
-	// 0 with `?item=` present) and reports whether it fired; if not, we stay
-	// in-flight for this go's own popstate (bounded by the fallback timer). A
-	// one-phase owned close has no latch and simply releases the guard.
-	afterNavigate((nav) => {
-		if (!paneGoInFlight) return;
-		if (nav.type !== 'popstate') return; // wait for the traversal's own popstate
-		const latch = pendingPaneLatch;
-		// Staged latch not yet at its destination → stay in-flight.
-		if (latch && latch.seq === controllerActionSeq && !latch.run()) return;
-		clearPaneGo();
+	const paneController = createPaneController({
+		getOpenItemRef: () => openItemRef,
+		cancelFollow: () => cancelPaneFollow(),
+		focusPaneRegion: () => paneHostEl?.focusPaneRegion(),
+		captureReturnFocus,
+		setBypassNavGuard: (bypass) => {
+			bypassNavGuard = bypass;
+		},
 	});
-
-	function openItemPane(item: Item) {
-		if (paneNavInFlight()) return;
-		controllerActionSeq++;
-		const targetRef = itemUrlId(item);
-		const url = new URL(page.url);
-		const alreadyOpen = url.searchParams.has('item');
-		// Capture the trigger on the FIRST open only — re-targeting (j/k follow /
-		// row re-click on an open pane) keeps the ORIGINAL trigger as the
-		// fallback return target (TASK-2122).
-		if (!alreadyOpen && browser) {
-			const active = document.activeElement as HTMLElement | null;
-			paneReturnFocusEl = active && active !== document.body ? active : null;
-		}
-		const plan = planLateralOpen(alreadyOpen, currentPaneState());
-		if (plan.kind === 'reset') {
-			// Detached (depth>0) direct row click → NEW top-level open: collapse
-			// the drill stack back to the base, then re-target the base to this
-			// item from a one-shot latch (`history.go` can't be awaited). Base
-			// ownership is preserved so the subsequent close still unwinds
-			// correctly. A pending j/k follow must not fire mid-reset.
-			cancelPaneFollow();
-			const resetState = plan.resetState;
-			paneHistoryGo(plan.goDelta, () => {
-				if (!browser) return false;
-				// Only re-target once the stack has actually collapsed to the pane
-				// BASE — a depth-0 entry that still carries `?item=`. Requiring
-				// `?item=` (not just depth 0) rejects a competing browser Back that
-				// landed on the pre-pane entry (which has no `?item=`), so the reset
-				// can't be written onto the wrong entry; it stays armed for this go's
-				// own popstate (Codex review).
-				if (!page.url.searchParams.has('item')) return false;
-				if (currentPaneState().paneDepth !== 0) return false;
-				const u = new URL(page.url);
-				u.searchParams.set('item', targetRef);
-				goto(`${u.pathname}${u.search}`, {
-					replaceState: true,
-					noScroll: true,
-					keepFocus: true,
-					state: resetState,
-				});
-				return true;
-			});
-			return;
-		}
-		url.searchParams.set('item', targetRef);
-		goto(`${url.pathname}${url.search}`, {
-			replaceState: plan.kind === 'replace',
-			noScroll: true,
-			keepFocus: true,
-			state: plan.state,
-		});
-	}
-
-	// In-pane DRILL (Architecture A). `target` is an already-resolved canonical
-	// `?item=` ref — `handleOpenTarget` below resolves a raw `PaneTarget`
-	// (TASK-2158) into this shape before calling in. Same-ref guard + soft
-	// depth cap + ownership INHERITED from the current entry, all decided by
-	// `planPaneDrill`.
-	function navigatePaneTo(target: string) {
-		if (paneNavInFlight()) return;
-		controllerActionSeq++;
-		// A pending j/k follow scheduled at a shallower depth must not fire after
-		// this drill and clobber it (R3 / R14).
-		cancelPaneFollow();
-		const plan = planPaneDrill(openItemRef, target, currentPaneState());
-		if (plan.kind === 'noop') return;
-		const url = new URL(page.url);
-		url.searchParams.set('item', target);
-		goto(`${url.pathname}${url.search}`, {
-			replaceState: plan.kind === 'replace',
-			noScroll: true,
-			keepFocus: true,
-			state: plan.state,
-		});
-		// Focus per hop (R1): pull focus into the stable pane region NOW, before
-		// this drill's `{#key itemSlug}` remount destroys the just-clicked link
-		// and dumps focus to `<body>`. Covers the editor-link keyboard path too —
-		// EditorLinkPopover.handleHrefClick hides the popover (removing the
-		// focused anchor) synchronously before calling in here.
-		focusPaneRegion();
-	}
-
-	// `ItemDetail`'s `onOpenTarget` seam (PLAN-2154 Architecture B / TASK-2158).
-	// No content-link surface calls this yet (relationships/breadcrumb/editor
-	// wiki-links/graph land in TASK-2159/2160) — wiring it now establishes the
-	// resolve→drill path so those tasks only need to build the `PaneTarget` and
-	// fire it, with no host-side plumbing left to add. `resolvePaneTarget`
-	// (`$lib/collections/paneTarget`) turns whatever ref/slug/href shape the
-	// link surface hands up into the canonical `?item=` value `navigatePaneTo`
-	// expects; a target that resolves to nothing is silently dropped (nothing
-	// to open).
-	function handleOpenTarget(target: PaneTarget) {
-		const resolved = resolvePaneTarget(target);
-		if (!resolved) return;
-		navigatePaneTo(resolved);
-	}
-
-	// The pane chrome's Back chevron (PLAN-2154 Architecture C / TASK-2164) —
-	// `ItemDetail`'s `onBack`, rendered only once `page.state.paneDepth > 0`.
-	// Pops exactly one drill level through the same FENCED `paneHistoryGo` /
-	// `paneNavInFlight()` guard the depth-aware ESC handler below uses (R14),
-	// not a bare `history.back()` — a rapid double-click, or a click racing
-	// ESC/close, can't queue a second traversal and overshoot. The depth
-	// check is defense-in-depth: the chevron only renders at depth>0, but a
-	// stale click could in principle race a continuation that already
-	// unwound the stack back to the base.
-	function handlePaneBack() {
-		if (currentPaneState().paneDepth > 0 && !paneNavInFlight()) {
-			paneHistoryGo(-1);
-			// Focus per hop (R1) — same rationale as `navigatePaneTo`: the pop
-			// remounts the pane content and unmounts the just-clicked Back button,
-			// so move focus onto the stable region before that drop can reach
-			// `<body>` (where the next `j`/`k` would steal to list-nav).
-			focusPaneRegion();
-		}
-	}
-
-	// The pane's ItemDetail fires `onNavigateAway` for TWO distinct cases, which
-	// we tell apart by whether the target URL still carries `?item=` (i.e. keeps
-	// the pane open):
-	//
-	//  • COLLECTION RENAME (`/user/ws/NEWSLUG?item=X`) — the pathname changed
-	//    (old→new slug) but the pane stays open. This needs the rename-specific
-	//    handling: replaceState (not push) so it adds no uncounted history entry
-	//    that would desync the close-depth arithmetic (R8); a FRESH UNOWNED
-	//    depth-0 stamp (every predecessor entry — pre-pane base + any drills —
-	//    still points at the now-dead OLD slug, so carrying ownership forward
-	//    would make an owned close `history.go` onto a 404; an unowned base
-	//    closes by dropping `?item=` in place on the valid new route); and a
-	//    bypass of the unsaved-draft guard (the rename already committed
-	//    server-side and this route component is REUSED across the same-route
-	//    pathname change, so its quick-create drafts survive — a "Stay" prompt
-	//    would only strand the user on the dead old slug). This fixes the
-	//    IMPERATIVE close; browser Back still traverses to the old-slug
-	//    predecessor (an inherent rename-in-history limitation — past entries
-	//    can't be rewritten — outside the controller's reach).
-	//
-	//  • ITEM MOVE to a different collection (`/user/ws/COLL/SLUG`, a full-page
-	//    item route with NO `?item=`) — this leaves the collection page entirely
-	//    (the pane closes, the component unmounts, its drafts WOULD be lost), so
-	//    it must retain the ORIGINAL guarded push: the unsaved-draft prompt has
-	//    to fire, and there is no pane to stamp (Codex review).
-	function handlePaneNavigateAway(url: string) {
-		let keepsPane = false;
-		try {
-			keepsPane = new URL(url, 'http://pad.invalid').searchParams.has('item');
-		} catch {
-			keepsPane = false;
-		}
-		if (!keepsPane) {
-			// Item move (or any away-nav that drops the pane) — original behavior:
-			// a guarded navigation so the unsaved-draft prompt still fires.
-			void goto(url);
-			return;
-		}
-		// Collection rename — rebase ownership + bypass the (now-spurious) draft
-		// guard for the committed, component-reusing pathname change.
-		bypassNavGuard = true;
-		void goto(url, {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true,
-			state: { paneDepth: 0, paneOwned: false },
-		}).finally(() => {
-			bypassNavGuard = false;
-		});
-	}
-
-	function closeItemPane() {
-		if (paneNavInFlight()) return;
-		controllerActionSeq++;
-		// A pending j/k pane-follow must not re-open the pane after an explicit
-		// close (e.g. ESC while a follow debounce is in flight).
-		cancelPaneFollow();
-		// Focus return to the originating row is handled by the close-detection
-		// effect below (keyed off `openItemRef` going truthy→null), so it covers
-		// browser Back / delete alike — not just this imperative close path.
-		const plan = planPaneClose(currentPaneState());
-		if (plan.kind === 'replace-delete') {
-			// Cold-loaded base with no drills: drop `?item=` in place. No pre-pane
-			// history entry to unwind to.
-			const url = new URL(page.url);
-			url.searchParams.delete('item');
-			goto(`${url.pathname}${url.search}`, {
-				replaceState: true,
-				noScroll: true,
-				keepFocus: true,
-			});
-			return;
-		}
-		if (plan.kind === 'owned-go') {
-			// Owned: unwind the pushed base + every drill back to the pre-pane URL
-			// (which carries no `?item=`, so the pane closes on arrival). This is
-			// PLAN-2154 R8's mandated close — and it makes an explicit ✕/ESC close
-			// IDENTICAL to the browser Back that already closed the pane in
-			// PLAN-2105 (a single Back pops the first-open push). Consequence: a
-			// list filter/view/search change made WHILE the pane was open — which
-			// `updateUrlFilters` replaceState'd onto the pane entry — is not
-			// carried to the pre-pane URL, exactly as browser Back already
-			// behaves. A one-phase traversal (no latch); the in-flight fence stops
-			// a duplicate ✕/ESC from stacking a second go(-1) that would overshoot.
-			paneHistoryGo(plan.goDelta);
-			return;
-		}
-		// cold-base-go: go back to the cold base (still carries `?item=`), then
-		// delete it from a latch fired on the settling popstate.
-		paneHistoryGo(plan.goDelta, () => {
-			if (!browser) return false;
-			// Only delete once we've reached the cold base that still shows the
-			// pane (depth 0, `?item=` present); a competing traversal landing
-			// elsewhere leaves it armed (R14 fence-on-continuation).
-			if (!page.url.searchParams.has('item')) return false;
-			if (currentPaneState().paneDepth !== 0) return false;
-			const u = new URL(page.url);
-			u.searchParams.delete('item');
-			goto(`${u.pathname}${u.search}`, {
-				replaceState: true,
-				noScroll: true,
-				keepFocus: true,
-			});
-			return true;
-		});
-	}
+	// Destructured with the SAME names the markup/handlers/test-hook already use
+	// (`onItemOpen={openItemPane}`, `onClose={closeItemPane}`, the depth-aware ESC
+	// handler, `schedulePaneFollow`, `__padPaneController`), so extracting the glue
+	// changed no call sites.
+	const {
+		currentPaneState,
+		paneNavInFlight,
+		clearPaneGo,
+		openItemPane,
+		navigatePaneTo,
+		handleOpenTarget,
+		handlePaneBack,
+		handlePaneNavigateAway,
+		closeItemPane,
+	} = paneController;
 
 	// Click-outside-to-collapse the split pane (IDEA-2148). While the pane is
 	// open on the DESKTOP split, a primary click on genuinely DEAD space in the
@@ -933,351 +658,6 @@
 		return true;
 	}
 
-	// Focus per hop (PLAN-2154 Architecture C / R1, TASK-2162). Move keyboard
-	// focus INTO the stable pane region on each in-pane hop — a drill
-	// (`navigatePaneTo`, the clicked link), an in-pane Back (`handlePaneBack`,
-	// the clicked Back chevron), or a depth-aware ESC pop. Each hop changes
-	// `?item=`, which remounts ItemDetail's `{#key itemSlug}` subtrees (and
-	// swaps its loaded↔minimal header) and DESTROYS whatever link/row/button
-	// was focused; `keepFocus` then has nothing to restore, so focus falls to
-	// `<body>`, where the NEXT `j`/`k` runs list-nav (`handlePageKeydown`'s
-	// `.item-pane` bail doesn't match `<body>`) and laterally re-targets the
-	// drilled `?item=`, corrupting the stack (R1).
-	//
-	// We focus the aria-labeled `<aside>` (`paneEl`) itself — it lives OUTSIDE
-	// every `{#key}` and the header swap, so it's STABLE across the remount.
-	// Called SYNCHRONOUSLY at the hop (while the just-activated control is still
-	// in the DOM), so focus moves onto the stable region BEFORE the imminent
-	// remount removes that control — the removed control never had focus to
-	// drop. Focus now sits inside `.item-pane`, so `handlePageKeydown` bails and
-	// `j`/`k` stay inert. This is the plan's serializable "focus per hop"
-	// target: no stored element ref (keyed remounts destroy those) — `paneEl`
-	// is re-found via its binding, never captured across a hop.
-	//
-	// The plan's "focus the originating link if still in the DOM, else the pane
-	// heading" reduces to this region focus in practice: the originating link
-	// always sits inside a `{#key itemSlug}` subtree that remounts on the very
-	// item change the hop triggers, so it is NEVER still in the DOM once the pop
-	// lands — the "else the pane heading" fallback is the operative branch, and
-	// re-finding the link across TASK-2166's mint settle is the unbounded timing
-	// tail we deliberately don't chase.
-	//
-	// Runs on BOTH desktop and the mobile overlay: on mobile `j`/`k` is already
-	// inert (the list is hidden), but focus must still not strand on `<body>`
-	// behind the overlay after a Back/drill — the synchronous belt this
-	// provides is what TASK-2164's now-retired `pendingBackFocus` used to give
-	// the mobile Back path, and the mobile focus trap's `focusin` is the async
-	// net on top. `{preventScroll:true}` so the programmatic focus never jumps
-	// the pane's scroll position (nor summons the mobile keyboard — `paneEl` is
-	// a non-editable region, not an input).
-	function focusPaneRegion() {
-		if (!browser) return;
-		if (!openItemRef || !paneEl) return;
-		paneEl.focus({ preventScroll: true });
-	}
-
-	// ── Resizable detail pane + persisted width (PLAN-2105 / TASK-2114) ─
-	// No resize primitive existed in the repo, so this is built from
-	// scratch: a draggable divider between the list column and the pane,
-	// pointer-captured so the drag can't select text or fall through to a
-	// row-click. The width persists to localStorage under a GLOBAL key that
-	// deliberately does NOT collide with the vestigial `pad-detail-panel`
-	// key in ui.svelte.ts, reusing the read-on-init / write-on-change idiom
-	// from that store (the `pad-topbar` pattern).
-	const PANE_WIDTH_KEY = 'pad-pane-width';
-	const PANE_WIDTH_MIN = 360; // mirrors the CSS clamp() floor
-	const PANE_WIDTH_MAX = 720; // generous ceiling (CSS clamp maxed at 640)
-	const PANE_WIDTH_DEFAULT = 460;
-	const PANE_DIVIDER_WIDTH = 6; // keep in sync with .pane-divider flex-basis
-	// Keep at least this much room for the list column so a wide drag (or a
-	// stored width carried over from a bigger screen) can never crush the
-	// list to nothing.
-	const LIST_MIN_WIDTH = 360;
-
-	// Min/max pane width for the CURRENT container. Measures the ACTUAL
-	// flex-row container (`.collection-page` — which spans `.main-content`,
-	// i.e. EXCLUDES the sidebar + page chrome) once the pane is mounted, so
-	// the clamp reflects real available space and a drag can never crush the
-	// list. Before the pane mounts (init / keyboard) it falls back to the
-	// viewport as a loose upper bound; the ResizeObserver below refits once
-	// the real container is measurable (Codex round 1 P2).
-	//
-	// When the container is too narrow to honor BOTH the pane floor and the
-	// list floor (e.g. a ~800px viewport with the sidebar expanded), the fixed
-	// 360px floors would force the list down to ~140px. In that regime both
-	// floors relax to 40% of the usable width so neither column is crushed —
-	// the pane can shrink below PANE_WIDTH_MIN and the list keeps ≥40% (Codex
-	// round 2 P2).
-	function paneBounds(): { min: number; max: number } {
-		let containerW = 0;
-		const container = paneEl?.parentElement ?? null;
-		if (container) containerW = container.getBoundingClientRect().width;
-		else if (browser) containerW = window.innerWidth;
-		if (containerW <= 0) return { min: PANE_WIDTH_MIN, max: PANE_WIDTH_MAX };
-		const usable = containerW - PANE_DIVIDER_WIDTH;
-		const listFloor = Math.min(LIST_MIN_WIDTH, usable * 0.4);
-		const paneFloor = Math.min(PANE_WIDTH_MIN, usable * 0.4);
-		const max = Math.max(paneFloor, Math.min(PANE_WIDTH_MAX, usable - listFloor));
-		return { min: paneFloor, max };
-	}
-	function clampPaneWidth(px: number): number {
-		const { min, max } = paneBounds();
-		return Math.max(min, Math.min(max, px));
-	}
-
-	// The RAW persisted preference (unclamped) — the width the user last
-	// chose. Kept separate from the APPLIED width so a temporarily narrow
-	// container (small window / open sidebar) refits the pane down without
-	// destroying the preference, and widening restores it.
-	function readStoredPaneWidth(): number | null {
-		if (!browser) return null;
-		try {
-			const raw = localStorage.getItem(PANE_WIDTH_KEY);
-			if (!raw) return null;
-			const n = Number(raw);
-			return Number.isFinite(n) ? n : null;
-		} catch {
-			return null;
-		}
-	}
-
-	// storedPaneWidth = the raw preference; paneWidth = that preference
-	// clamped to what currently fits. BOTH read synchronously from
-	// localStorage on the first client tick. These authenticated routes are
-	// CSR-only (adapter-static `fallback` ⇒ no runtime SSR), so the
-	// `!browser` → null branch only runs at build-time fallback generation,
-	// never for a real user: the persisted width is present on the very first
-	// client paint and a direct `?item=REF` landing shows no jump from the
-	// CSS default to the stored width (PLAN-2105 reflow mitigation). Applied
-	// as the `--pane-width` CSS var on the pane below; `null` → the CSS
-	// clamp() default.
-	let paneEl = $state<HTMLElement | null>(null);
-	let resizingPane = $state(false);
-	// Read once into a plain const so neither $state initializer references the
-	// other reactive value (which would only capture its initial value anyway).
-	const initialStoredWidth = readStoredPaneWidth();
-	let storedPaneWidth = $state<number | null>(initialStoredWidth);
-	let paneWidth = $state<number | null>(
-		initialStoredWidth != null ? clampPaneWidth(initialStoredWidth) : null,
-	);
-	// The pane's real rendered width, tracked by the ResizeObserver below.
-	// Fallback for `aria-valuenow` in the brief window before the observer
-	// first fires and sets `paneWidth`.
-	let measuredPaneWidth = $state<number | null>(null);
-	// The current bounds, mirrored into state so the divider's ARIA range
-	// tracks the relaxed floors on a cramped container (Codex round 3 P3).
-	let ariaMin = $state(PANE_WIDTH_MIN);
-	let ariaMax = $state(PANE_WIDTH_MAX);
-
-	// Commit a new user-chosen width: clamp, apply, persist the preference.
-	function setPaneWidth(px: number) {
-		const clamped = clampPaneWidth(px);
-		storedPaneWidth = clamped;
-		paneWidth = clamped;
-		if (browser) {
-			try {
-				localStorage.setItem(PANE_WIDTH_KEY, String(clamped));
-			} catch {}
-		}
-	}
-
-	// The width to APPLY for the current container: the user's saved
-	// preference if set, otherwise the CSS `clamp(360px, 38%, 640px)` default
-	// computed in JS — both clamped to what currently fits. Mirroring the CSS
-	// default means applying it as `--pane-width` matches what CSS renders on
-	// roomy layouts (so the observer's first run causes no reflow) while a
-	// cramped container gets a fitted width that doesn't crush the list, even
-	// with NO saved preference (Codex round 3 P2).
-	function fittedPaneWidth(): number {
-		const { min, max } = paneBounds();
-		let containerW = 0;
-		const container = paneEl?.parentElement ?? null;
-		if (container) containerW = container.getBoundingClientRect().width;
-		else if (browser) containerW = window.innerWidth;
-		const cssDefault = Math.min(640, Math.max(360, containerW * 0.38));
-		return Math.max(min, Math.min(max, storedPaneWidth ?? cssDefault));
-	}
-
-	// Re-fit the applied width + ARIA bounds to the current container. Called
-	// from the ResizeObserver on mount, window resize, and sidebar toggle.
-	function refitPaneWidth() {
-		paneWidth = fittedPaneWidth();
-		const b = paneBounds();
-		ariaMin = Math.round(b.min);
-		ariaMax = Math.round(b.max);
-	}
-
-	// Fit the pane to its real container: once synchronously before paint (so a
-	// direct `?item=` load never flashes an over-wide width) and then on every
-	// container resize via a ResizeObserver. Also samples the rendered width for
-	// ARIA. Effect re-runs when the pane mounts (paneEl binds).
-	$effect(() => {
-		if (!browser || !openItemRef || !paneEl) return;
-		const el = paneEl;
-		const container = el.parentElement;
-		if (!container) return;
-		// Synchronous FIRST fit against the real container, BEFORE the browser
-		// paints. This effect runs after the pane is in the DOM but within the
-		// same update cycle (pre-paint), so on a direct `/{ws}/{coll}?item=REF`
-		// load it corrects the init clamp — which used `window.innerWidth` and
-		// therefore over-counted by the ~260px sidebar — against the true
-		// flex-row width with NO visible jump. Waiting for the observer's first
-		// (async, post-paint) callback is what let an over-wide stored width
-		// flash before snapping (TASK-2114 hydration-reflow criterion; coord P2).
-		// Runs regardless of ResizeObserver support (needs only
-		// getBoundingClientRect). `untrack` so reading storedPaneWidth/paneEl
-		// inside the fit doesn't add them as deps of this observer effect (which
-		// would re-create the observer on every drag).
-		untrack(() => {
-			refitPaneWidth();
-			measuredPaneWidth = el.getBoundingClientRect().width;
-		});
-		// Observe the flex-row container so pane width refits on window resize
-		// AND sidebar toggles (which resize the container without a window
-		// `resize` event). Resizing the pane itself doesn't change the container
-		// width, so this can't loop.
-		if (typeof ResizeObserver === 'undefined') return;
-		const ro = new ResizeObserver(() => {
-			refitPaneWidth();
-			measuredPaneWidth = el.getBoundingClientRect().width;
-		});
-		ro.observe(container);
-		return () => ro.disconnect();
-	});
-
-	// Move focus INTO the pane on open — MOBILE ONLY (PLAN-2105 / TASK-2122).
-	// The mobile overlay is a modal, so focus enters it (and the trap below keeps
-	// it there). On the DESKTOP split we deliberately do NOT move focus: it stays
-	// on the list so arrow/j-k navigation (with the pane following) is
-	// uninterrupted; the user bridges INTO the pane with Tab and back with ESC
-	// (handled in the keydown handler). Focus lands on the `<aside>` region
-	// itself (tabindex=-1) — a screen reader announces the aria-labeled region
-	// and Tab proceeds into its controls. Re-runs on mount/unmount and on a
-	// breakpoint crossing (desktop→mobile enters the modal); `preventScroll`
-	// avoids a jump on a direct `?item=` deep-link; skips if focus is already
-	// inside.
-	$effect(() => {
-		if (!browser) return;
-		const el = paneEl;
-		if (!el || !viewport.isMobile) return;
-		if (!el.contains(document.activeElement)) {
-			el.focus({ preventScroll: true });
-		}
-	});
-
-	// Mobile focus trap (PLAN-2105 / TASK-2122). At ≤768px the pane is a
-	// full-screen overlay (modal semantics), so focus must stay WITHIN it. On the
-	// desktop split we deliberately do NOT trap — the list must stay reachable
-	// (Tab-out + j/k depend on it). Re-runs when the pane mounts/unmounts OR the
-	// viewport crosses the breakpoint, engaging/releasing the trap accordingly.
-	//
-	// Two backstops, both WINDOW/DOCUMENT-level (not pane-scoped) so they still
-	// fire after focus has already escaped the pane:
-	//  • Tab keydown — cycles focus within the pane's tabbables (smooth, no
-	//    flicker) via `nextTrapTarget`.
-	//  • focusin — the catch-all: ANY programmatic focus escape (Cmd+F focusing
-	//    the search box behind the overlay, a removed control dropping focus to
-	//    <body>) is pulled straight back into the pane (Codex P1 — Tab alone
-	//    can't see these).
-	// Both DEFER to a native modal <dialog> (Share / Edit Collection / the
-	// Open-Children confirm — `Modal.svelte` uses `showModal()`), which renders
-	// in the top layer above the overlay and owns its own focus cycle. `<aside>`
-	// isn't a dialog, so this never exempts the pane itself; role="dialog" sheets
-	// (BottomSheet) sit BELOW the pane and stay behind it, so focus belongs on
-	// the pane, not them.
-	$effect(() => {
-		if (!browser) return;
-		if (!paneEl || !viewport.isMobile) return;
-		// Bind the narrowed, non-null element so the nested handlers capture
-		// `HTMLElement` (TS re-widens a `$state` read back to `| null` across a
-		// closure boundary otherwise).
-		const region = paneEl;
-		// Surfaces that OWN their own focus/keyboard and legitimately overlay the
-		// pane — exempt from the trap so it neither hijacks their Tab nor yanks
-		// focus off them the instant they open. Recognised by role/tag rather than
-		// per-component class, so PANE-OWNED popups that portal out to <body>
-		// (outside `.item-pane` in the DOM) are all covered without whack-a-mole:
-		//  • native modal <dialog> (Share / Edit Collection / Open-Children
-		//    confirm) — top layer, self-trapping.
-		//  • [role="dialog"] — BottomSheets opened FROM WITHIN the pane (field
-		//    selects, Quick Actions, Move To); they render in the pane's own
-		//    stacking context, ABOVE its content, and own their Escape (Codex P1).
-		//  • [role="menu"] / [role="listbox"] — the item-actions reorder menu, the
-		//    editor slash/turn-into menus, select dropdowns, etc. (Codex P2).
-		//  • the editor block context menu — imperative, no ARIA role, so matched
-		//    by class (block-drag-handle.ts).
-		// (Focus already inside `.item-pane` is handled by the `region.contains`
-		// check at each call site.)
-		const inExemptSurface = (el: Element | null | undefined): boolean =>
-			!!el?.closest?.('dialog, [role="dialog"], [role="menu"], [role="listbox"], .block-context-menu');
-		function onTrapKeydown(e: KeyboardEvent) {
-			if (e.key !== 'Tab' || e.defaultPrevented) return;
-			if (inExemptSurface(e.target as Element | null)) return;
-			const target = nextTrapTarget(
-				paneFocusables(region),
-				document.activeElement,
-				e.shiftKey,
-				region,
-			);
-			if (target) {
-				e.preventDefault();
-				target.focus({ preventScroll: true });
-			}
-		}
-		function onFocusIn(e: FocusEvent) {
-			const t = e.target as Element | null;
-			if (!t || region.contains(t) || inExemptSurface(t)) return;
-			region.focus({ preventScroll: true });
-		}
-		window.addEventListener('keydown', onTrapKeydown);
-		document.addEventListener('focusin', onFocusIn);
-		return () => {
-			window.removeEventListener('keydown', onTrapKeydown);
-			document.removeEventListener('focusin', onFocusIn);
-		};
-	});
-
-	// Desktop focusin backstop (PLAN-2154 Architecture C / R1, TASK-2162) — the
-	// NARROWED desktop mirror of the mobile trap's focusin catch-all above.
-	// `focusPaneRegion` (fired synchronously at each hop) is the primary R1
-	// mechanism; this is the async safety net for a focus drop that lands
-	// LATER than that synchronous focus — e.g. an inner `{#key itemSlug}`
-	// subtree, or EditorLinkPopover's anchor, being removed a tick after the
-	// hop. It re-pulls focus into the pane ONLY when focus DROPS to `<body>`
-	// (the R1 removed-control case) AND the focus it dropped FROM was inside
-	// `.item-pane`. It must NOT fire for a deliberate Tab / click OUT to the
-	// list — the desktop split keeps the list reachable — so any outside
-	// target that ISN'T bare `<body>` (a real row/control) is left untouched.
-	//
-	// `focusin`'s own `relatedTarget` (the blurring element) is unreliable in
-	// exactly the R1 case — the element was REMOVED, so it's already gone — so
-	// we remember whether the last settled focus was inside the pane ourselves
-	// rather than reading it off the event.
-	$effect(() => {
-		if (!browser) return;
-		if (!paneEl || viewport.isMobile || !openItemRef) return;
-		const region = paneEl;
-		let lastFocusWasInPane = region.contains(document.activeElement);
-		function onFocusIn(e: FocusEvent) {
-			const t = e.target as Element | null;
-			if (t && region.contains(t)) {
-				lastFocusWasInPane = true;
-				return;
-			}
-			// Dropped to <body> out of the pane → pull it back into the stable
-			// region. `region.focus()` re-fires focusin with the region as target,
-			// which the branch above treats as "inside" (no loop).
-			if (t === document.body && lastFocusWasInPane) {
-				region.focus({ preventScroll: true });
-				return;
-			}
-			// A real element outside the pane (a list row/control the user Tabbed
-			// or clicked to) — legitimate on the desktop split; stand down.
-			lastFocusWasInPane = false;
-		}
-		document.addEventListener('focusin', onFocusIn);
-		return () => document.removeEventListener('focusin', onFocusIn);
-	});
 
 	// Return focus to the originating row whenever the pane CLOSES while this
 	// page stays mounted (PLAN-2105 / TASK-2122). Keyed off `openItemRef` going
@@ -1315,80 +695,6 @@
 		target?.focus();
 	});
 
-	// Safety net for an interrupted drag: if the pane closes (ESC / Back /
-	// nav removes the divider) mid-drag, pointerup/lostpointercapture may
-	// never fire, leaving text selection disabled and the col-resize cursor
-	// stuck across the whole app. When `?item=` clears, reset the flag and
-	// restore the global drag chrome the pointer handlers would have (Codex
-	// round 2 P2).
-	$effect(() => {
-		if (openItemRef) return;
-		if (resizingPane) {
-			resizingPane = false;
-			if (browser) {
-				document.body.style.userSelect = '';
-				document.body.style.cursor = '';
-			}
-		}
-	});
-
-	function onDividerPointerDown(e: PointerEvent) {
-		// Left button / touch / pen only; ignore right-click etc.
-		if (e.button !== 0) return;
-		// Stop the browser from starting a text selection or handing the
-		// gesture to the list (row-click nav) mid-drag.
-		e.preventDefault();
-		resizingPane = true;
-		const divider = e.currentTarget as HTMLElement;
-		divider.setPointerCapture(e.pointerId);
-		document.body.style.userSelect = 'none';
-		document.body.style.cursor = 'col-resize';
-	}
-
-	function onDividerPointerMove(e: PointerEvent) {
-		if (!resizingPane || !paneEl) return;
-		// The pane is right-docked, so its width is (its right edge − pointer
-		// x). Reading the live rect keeps this correct regardless of page
-		// padding or the pane's current size.
-		const rect = paneEl.getBoundingClientRect();
-		setPaneWidth(rect.right - e.clientX);
-	}
-
-	function endPaneResize(e: PointerEvent) {
-		if (!resizingPane) return;
-		resizingPane = false;
-		const divider = e.currentTarget as HTMLElement;
-		try {
-			divider.releasePointerCapture(e.pointerId);
-		} catch {}
-		document.body.style.userSelect = '';
-		document.body.style.cursor = '';
-	}
-
-	// The pane's actual current width — the applied width if set, else the
-	// real rendered size (the CSS clamp() default), so the FIRST keyboard
-	// nudge moves from where the pane visibly is rather than an assumed
-	// default that could be on the wrong side of it (Codex round 1 P2).
-	function currentPaneWidth(): number {
-		if (paneWidth != null) return paneWidth;
-		if (browser && paneEl) return paneEl.getBoundingClientRect().width;
-		return PANE_WIDTH_DEFAULT;
-	}
-
-	// Keyboard resize for the focusable separator (arrows nudge the width).
-	// ArrowLeft grows the pane (divider moves left), ArrowRight shrinks it,
-	// matching the drag direction.
-	function onDividerKeydown(e: KeyboardEvent) {
-		const step = e.shiftKey ? 32 : 16;
-		const current = currentPaneWidth();
-		if (e.key === 'ArrowLeft') {
-			e.preventDefault();
-			setPaneWidth(current + step);
-		} else if (e.key === 'ArrowRight') {
-			e.preventDefault();
-			setPaneWidth(current - step);
-		}
-	}
 
 	// Read filters from URL on load
 	function loadUrlFilters() {
@@ -2757,7 +2063,7 @@
 			// regardless of exactly where focus landed, mirroring the depth-0
 			// fallback below. Gated on the pane still being the FRONTMOST escape
 			// layer so a stacked graph drawer still wins first. Routed through the
-			// existing FENCED `paneHistoryGo` (not a bare `history.back()`), gated
+			// controller's fenced `handlePaneBack` (not a bare `history.back()`), gated
 			// on `paneNavInFlight()` like every other controller entry point
 			// (openItemPane / navigatePaneTo / closeItemPane) — a rapid double ESC,
 			// or an ESC racing a close/reset click, can't queue a second traversal
@@ -2771,17 +2077,16 @@
 			) {
 				e.preventDefault();
 				if (!paneNavInFlight()) {
-					paneHistoryGo(-1);
-					// Focus per hop (R1): land focus on the stable pane region so a
-					// control that WAS focused (e.g. the user Tabbed to the Back
-					// chevron) and is then removed by the pop's header swap / content
-					// remount can't strand focus on `<body>`. This targets `paneEl`
-					// itself, never a control the pop removes, so it doesn't rely on a
-					// `focusin` firing for the removal. It doesn't fight the depth-0
-					// two-level ESC below: that's a SEPARATE, later press, and from
-					// `paneEl` (inside `.item-pane`) it correctly runs
-					// `returnFocusToList` on the way out.
-					focusPaneRegion();
+					// Pop exactly one drill level through the controller's fenced
+					// traversal — the SAME public primitive the Back chevron uses
+					// (`handlePaneBack`), which also lands focus on the stable pane
+					// region (R1) so the pop's header-swap / content remount can't
+					// strand focus on `<body>`. It targets `paneEl` itself, never a
+					// control the pop removes, so it doesn't rely on a `focusin`
+					// firing. It doesn't fight the depth-0 two-level ESC below: that's
+					// a SEPARATE, later press, and from `paneEl` (inside `.item-pane`)
+					// it correctly runs `returnFocusToList` on the way out.
+					handlePaneBack();
 				}
 				return;
 			}
@@ -2901,11 +2206,11 @@
 					!e.shiftKey &&
 					!viewport.isMobile &&
 					focusedIndex >= 0 &&
-					paneEl &&
+					paneHostEl &&
 					(target === document.body || !!target?.matches?.('a.item-card, a.title-link'))
 				) {
 					e.preventDefault();
-					paneEl.focus();
+					paneHostEl.focusPaneRegion();
 				}
 				break;
 			// Escape is handled above (before the `.item-pane` guard).
@@ -3858,95 +3163,19 @@
 	{/if}
 	</div>
 	{#if openItemRef}
-		<!-- Draggable divider (PLAN-2105 / TASK-2114). Pointer-captured so a
-		     drag stays on the handle (never selects text or fires a row-click)
-		     and also keyboard-adjustable via the arrow keys. This is the ARIA
-		     "window splitter" pattern — a focusable separator IS interactive,
-		     but Svelte's a11y heuristic treats every separator as
-		     non-interactive, so the tabindex + pointer/key handlers are
-		     legitimately ignored here. -->
-		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-		<div
-			class="pane-divider"
-			class:resizing={resizingPane}
-			role="separator"
-			tabindex="0"
-			aria-orientation="vertical"
-			aria-label="Resize detail pane"
-			aria-valuemin={ariaMin}
-			aria-valuemax={ariaMax}
-			aria-valuenow={Math.min(ariaMax, Math.max(ariaMin, Math.round(paneWidth ?? measuredPaneWidth ?? PANE_WIDTH_DEFAULT)))}
-			onpointerdown={onDividerPointerDown}
-			onpointermove={onDividerPointerMove}
-			onpointerup={endPaneResize}
-			onlostpointercapture={endPaneResize}
-			onkeydown={onDividerKeydown}
-		></div>
-		<!--
-			The detail pane. CRITICAL (PLAN-2105 / TASK-2112): NO {#key} wrapper.
-			A→B item switch must be a PROP UPDATE (`ref` change re-drives
-			ItemDetail's loadData + collabKey via its own reactive effects,
-			reusing the mounted instance + its single SSE subscription). A
-			{#key} would silently full-remount on every switch and defeat the
-			whole design. Open/close (this {#if}) is the ONLY mount/unmount.
-			`onNavigateAway` handles the collection-rename case; onClose/onGone
-			clear only `?item=`, preserving view/sort/filter/tags/search.
-
-			`--pane-width` carries the persisted width (TASK-2114); undefined
-			until localStorage is read so the CSS clamp() default applies on
-			first paint when there's no stored value.
-		-->
-		<!--
-			`aside` gives the pane complementary-landmark semantics; `aria-label`
-			names it so a screen reader announces the region on entry (TASK-2122).
-			`tabindex="-1"` makes it a programmatic focus target (not a Tab stop):
-			Tab from the list moves focus here, and the mobile overlay moves focus
-			here on open (then traps it). Desktop keeps focus on the list so j/k
-			navigation is uninterrupted. Focus-in (mobile), the Tab bridge, ESC
-			return-to-list, and the mobile focus trap are wired in the effects +
-			keydown handler above.
-		-->
-		<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-		<aside
-			class="item-pane"
-			bind:this={paneEl}
-			tabindex="-1"
-			aria-label="Item detail"
-			style={paneWidth != null ? `--pane-width: ${paneWidth}px` : undefined}
-		>
-			{#if paneMintForRoute}
-				<!--
-					Nested (not `{#key}`) on `paneMintForRoute`, not raw `openItemRef`
-					(PLAN-2154 / TASK-2166; Codex review): while the pane is ALREADY
-					open on the SAME route, `paneMintForRoute` (== `paneMintRef`) stays
-					pinned at the last-settled ref through an entire popstate burst, so
-					this branch stays mounted and `ref` never flips mid-burst — the
-					coalescing itself. It only actually mounts/unmounts at a genuine
-					open (closed → first settle) or close (`openItemRef` going null
-					tears down the whole `{#if}` above) — OR a route change, where
-					`paneMintForRoute` falls through to the live `openItemRef` instead
-					(see the declaration above). A bare `paneMintRef` fallback to
-					`openItemRef` here would defeat the settle for the closed→open-
-					burst case, since `paneMintRef` legitimately stays null until the
-					first settle fires; `paneMintForRoute`'s fallback is scoped to an
-					actual pathname change, not a null-during-settle, so it doesn't
-					reintroduce that bug.
-				-->
-				<ItemDetail
-					ref={paneMintForRoute}
-					embedded
-					{username}
-					{wsSlug}
-					{collSlug}
-					onClose={closeItemPane}
-					onGone={closeItemPane}
-					onNavigateAway={handlePaneNavigateAway}
-					onOpenTarget={handleOpenTarget}
-					onBack={handlePaneBack}
-				/>
-			{/if}
-		</aside>
+		<PaneHost
+			bind:this={paneHostEl}
+			{openItemRef}
+			{username}
+			{wsSlug}
+			{collSlug}
+			{paneMintForRoute}
+			onClose={closeItemPane}
+			onGone={closeItemPane}
+			onNavigateAway={handlePaneNavigateAway}
+			onOpenTarget={handleOpenTarget}
+			onBack={handlePaneBack}
+		/>
 	{/if}
 </div>
 
@@ -4129,88 +3358,6 @@
 	.collection-page.pane-open.board-active .list-column {
 		overflow: hidden;
 		padding: var(--space-4) var(--space-2) var(--space-2) var(--space-4);
-	}
-	.item-pane {
-		/* Width comes from the persisted `--pane-width` CSS var (TASK-2114);
-		   the clamp() is the fallback before localStorage is read / when no
-		   width was ever stored. The .pane-divider (not this border) is the
-		   resting separator on desktop. */
-		flex: 0 0 var(--pane-width, clamp(360px, 38%, 640px));
-		min-width: 0;
-		overflow-y: auto;
-		background: var(--bg-primary);
-	}
-
-	/* Draggable resize handle between the list column and the pane
-	   (PLAN-2105 / TASK-2114). The 6px-wide element is the grab target; a
-	   centered pseudo-element draws the resting 1px separator (replacing the
-	   pane's old border-left) and thickens to an accent line on hover, focus,
-	   or active drag. */
-	.pane-divider {
-		flex: 0 0 6px;
-		align-self: stretch;
-		position: relative;
-		background: transparent;
-		cursor: col-resize;
-		/* No native text selection or touch scroll/gesture while dragging. */
-		user-select: none;
-		touch-action: none;
-	}
-	.pane-divider:focus-visible {
-		outline: none;
-	}
-	.pane-divider::after {
-		content: '';
-		position: absolute;
-		top: 0;
-		bottom: 0;
-		left: 50%;
-		width: 1px;
-		transform: translateX(-50%);
-		background: var(--border);
-		transition: background 0.12s, width 0.12s;
-	}
-	.pane-divider:hover::after,
-	.pane-divider:focus-visible::after,
-	.pane-divider.resizing::after {
-		background: var(--accent-blue);
-		width: 2px;
-	}
-
-	/* ── Mobile: full-screen overlay (PLAN-2105 Phase 4 / TASK-2121) ──────
-	   At ≤768px (the app-wide mobile breakpoint from breakpoint.svelte.ts,
-	   kept in lockstep with this media query) there is no room to split, so
-	   the detail pane covers the viewport as a full-screen overlay with the
-	   list column left mounted BEHIND it — its state + scroll position are
-	   preserved (the PLAN-2105 no-remount invariant), it's just hidden by
-	   the opaque overlay. Mirrors the graph drawer's mobile pattern
-	   (ItemDetail `.graph-drawer`: fixed, `width: 100vw`, no border).
-
-	   Pane visibility stays URL-derived (`?item=`); this overlay is pure
-	   presentation keyed off the viewport, NOT the vestigial
-	   `uiStore.detailPanelOpen` boolean — whose mobile-entry force-close
-	   must never reach `?item=` (see the reconciliation note in
-	   ui.svelte.ts). So crossing the 768px boundary only swaps
-	   split ⇄ overlay; it never closes the pane or drops the open item.
-
-	   `position: fixed` is viewport-relative here because no ancestor
-	   (.collection-page / .main-content / .app-shell) establishes a
-	   containing block via transform/filter/contain. z-index sits above
-	   the mobile chrome (BottomNav + MobileContextBar at 40) and below app
-	   modals / toasts / lightbox (99–100) so their global feedback still
-	   stacks over the item view. */
-	@media (max-width: 768px) {
-		.item-pane {
-			position: fixed;
-			inset: 0;
-			width: 100vw;
-			z-index: 60;
-			border-left: 0;
-		}
-		/* The vertical resize handle can't split a full-screen overlay. */
-		.pane-divider {
-			display: none;
-		}
 	}
 
 	.loading {
