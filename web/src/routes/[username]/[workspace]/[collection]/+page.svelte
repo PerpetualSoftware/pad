@@ -53,6 +53,7 @@
 	} from '$lib/collections/paneController';
 	import { paneFocusables, nextTrapTarget, resolvePaneReturnTarget } from '$lib/collections/paneFocus';
 	import { resolvePaneTarget } from '$lib/collections/paneTarget';
+	import { createPaneMintSettle, PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
 	import { pushEscapeHandler, runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
 
@@ -151,6 +152,30 @@
 	// No pane component is mounted yet (TASK-2112); this is the URL-state
 	// groundwork the pane will read.
 	let openItemRef = $derived(page.url.searchParams.get('item'));
+
+	// ── Provider-mint settle (PLAN-2154 Architecture D / TASK-2166) ────────
+	// `openItemRef` above is the immediate URL truth — used for the pane's
+	// mount boundary (`{#if openItemRef}`), title precedence, focus, and
+	// every other cheap read. The `<ItemDetail>` `ref` PROP is different: it
+	// re-drives `loadData`/`collabKey` (destroy + fresh-mint the Y.Doc/WS
+	// provider), which is expensive to fire once per intermediate popstate
+	// during a held Back/Forward. `paneMintRef` is the coalesced value fed
+	// to that prop — updated immediately for a deliberate open/drill/close
+	// (`nav.type !== 'popstate'`), but settled (~PANE_MINT_SETTLE_MS,
+	// mirroring the j/k `PANE_FOLLOW_DEBOUNCE_MS` coalescing) for a popstate
+	// burst so only the FINAL ref of the burst ever mints. See
+	// `$lib/collections/paneMintSettle` for the pure, unit-tested decision
+	// logic this just wires up.
+	let paneMintRef = $state<string | null>(page.url.searchParams.get('item'));
+	const paneMintSettle = createPaneMintSettle({
+		settleMs: PANE_MINT_SETTLE_MS,
+		onSettle: (ref) => {
+			paneMintRef = ref;
+		},
+	});
+	afterNavigate((nav) => {
+		paneMintSettle.onNavigate(nav.type, nav.to?.url.searchParams.get('item') ?? null);
+	});
 
 	// Reactive parse of the current search query — shared with the
 	// search-dispatch effect below so it doesn't reparse per run.
@@ -1426,6 +1451,9 @@
 		// Drop any in-flight `history.go` continuation (and its fallback timer) so
 		// a late afterNavigate latch can't write to the unmounted page.
 		clearPaneGo();
+		// Drop any pending provider-mint settle so a late timer can't write
+		// `paneMintRef` on the unmounted page (PLAN-2154 / TASK-2166).
+		paneMintSettle.cancel();
 		// Scroll save/restore cleanup is owned by createScrollRestoration
 		// (snapshot.capture fires on navigate-away; the helper's $effect
 		// teardown cancels any in-flight RAF).
@@ -3734,7 +3762,7 @@
 			style={paneWidth != null ? `--pane-width: ${paneWidth}px` : undefined}
 		>
 			<ItemDetail
-				ref={openItemRef}
+				ref={paneMintRef ?? openItemRef}
 				embedded
 				{username}
 				{wsSlug}
