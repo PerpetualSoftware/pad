@@ -877,6 +877,9 @@
 		// Cancel a pending add-relationship search so it can't fire a wasted
 		// /search request after this instance is torn down.
 		clearTimeout(addLinkDebounceTimer);
+		// Cancel a pending Back-chevron focus-restore timer (TASK-2164) so it
+		// can't write to `pendingBackFocus` after the pane closes.
+		clearTimeout(backFocusTimer);
 		// Invalidate any in-flight loadData so a request that resolves AFTER
 		// this instance is torn down (pane closed mid-load) can't reach its
 		// global-store writes — collectionStore.setActiveItem / editorStore —
@@ -1935,18 +1938,33 @@
 	// exact fence: capture it at click time and require the settled
 	// generation to be EXACTLY one more — i.e. the Back click's own load and
 	// nothing else raced in between. A mismatch means something else
-	// superseded it; abandon the restore instead of stealing focus. This
-	// also self-resolves the "armed indefinitely" case Codex flagged (a
-	// quick Back→Forward before the pop settles) — `loadGeneration` only
-	// increases, so once it passes the target it can never match again and
-	// the abandon branch takes over on the very next settle.
+	// superseded it; abandon the restore instead of stealing focus.
+	//
+	// BOUNDED, not indefinitely armed (Codex review round 7): the generation
+	// fence alone does NOT self-resolve every case — a Back immediately
+	// reversed by Forward within TASK-2166's ~140ms pane-mint settle window
+	// can coalesce to a NET NO-OP (neither `itemSlug` nor `loadGeneration`
+	// ever change), leaving `pendingBackFocus` armed with nothing left to
+	// ever falsify the generation check against. The NEXT, wholly unrelated
+	// single-load navigation would then satisfy `backFocusStartGen + 1` by
+	// coincidence and steal focus. A bounded timer (mirroring the host's own
+	// `PANE_GO_SETTLE_MS` "give up waiting" pattern, +page.svelte) closes
+	// this class of case generally instead of chasing each interleaving
+	// individually: if the click's own restore hasn't resolved within
+	// `BACK_FOCUS_TIMEOUT_MS`, disarm unconditionally.
+	const BACK_FOCUS_TIMEOUT_MS = 600;
 	let pendingBackFocus = $state(false);
 	let backFocusStartSlug = '';
 	let backFocusStartGen = 0;
+	let backFocusTimer: ReturnType<typeof setTimeout> | undefined;
 	function handleBackClick() {
 		pendingBackFocus = true;
 		backFocusStartSlug = itemSlug;
 		backFocusStartGen = loadGeneration;
+		clearTimeout(backFocusTimer);
+		backFocusTimer = setTimeout(() => {
+			pendingBackFocus = false;
+		}, BACK_FOCUS_TIMEOUT_MS);
 		onBack?.();
 	}
 	$effect(() => {
@@ -1954,6 +1972,7 @@
 		if (itemSlug === backFocusStartSlug) return; // the pop hasn't landed yet
 		if (loading) return; // the new item is still loading
 		pendingBackFocus = false; // one-shot regardless of outcome below
+		clearTimeout(backFocusTimer);
 		if (loadGeneration !== backFocusStartGen + 1) return; // superseded — abandon, don't steal focus
 		// At depth>0 there's a fresh Back button to land on. At depth 0 (the
 		// terminal pop, back to the base) the Back button is gone — Codex
