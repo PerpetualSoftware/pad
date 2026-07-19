@@ -42,6 +42,7 @@
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
 	import { isSamePaneTarget, breadcrumbParentTarget } from '$lib/collections/paneTarget';
 	import { readPaneState } from '$lib/collections/paneController';
+	import { PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
 	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
@@ -1913,57 +1914,63 @@
 	// re-anchors focus on the Back button's OWN click, not the general
 	// "focus per hop" for arbitrary content-link drills (TASK-2162).
 	//
-	// Keyed off `itemSlug` actually CHANGING, not an observed `loading`
-	// true→false transition (Codex review rounds 2 and 3 both found races in
-	// an earlier `loading`-transition-based design: `paneDepth` can update a
-	// tick before `itemSlug` does, and a second press fired while a PRIOR
-	// item is still loading — `paneNavInFlight()` only fences the `history.go`
-	// traversal, not the data fetch — could let the effect latch onto that
-	// STALE, already-in-flight cycle instead of its own). `itemSlug` is
-	// purely URL-derived (`ref` prop → `page.url`'s `?item=`), so it updates
-	// SYNCHRONOUSLY with the same popstate that stamps `paneDepth`, regardless
-	// of whether the fetch for it has even started — comparing against it
-	// directly needs no "did I see the right transition" bookkeeping: once
-	// it differs from the ref captured at click time AND the (new item's)
-	// load has finished, the pop is done.
+	// The design below survived several review rounds against real races;
+	// summarized here rather than as a round-by-round diary (Codex review
+	// round 9 asked for this after an earlier comment's timing claim was
+	// invalidated by a concurrent sibling change — see the note at the
+	// bottom).
 	//
-	// GENERATION-FENCED against a SUPERSEDING, unrelated navigation (Codex
-	// review round 6): comparing only `itemSlug` treats ANY later change as
-	// "the Back pop landed" — so if the user clicks a different row/link (or
-	// hits Forward) while the Back destination is still loading, that
-	// unrelated navigation's `itemSlug` change satisfies the check just as
-	// well, and focus gets stolen into a pane the user never asked to
-	// restore-focus on. `loadGeneration` (bumped synchronously at the top of
-	// EVERY `loadData()` call, regardless of what triggered it) gives an
-	// exact fence: capture it at click time and require the settled
-	// generation to be EXACTLY one more — i.e. the Back click's own load and
-	// nothing else raced in between. A mismatch means something else
-	// superseded it; abandon the restore instead of stealing focus.
+	// 1. Keyed off `itemSlug` actually CHANGING, not an observed `loading`
+	//    true→false transition. An earlier `loading`-transition design let a
+	//    second press fired while a PRIOR item was still loading — see (2) —
+	//    latch onto that STALE, already-in-flight cycle instead of its own
+	//    (`paneNavInFlight()` only fences the `history.go` traversal, not the
+	//    data fetch). Comparing `itemSlug` against the ref captured at click
+	//    time needs no "did I see the right transition" bookkeeping: once it
+	//    differs AND the new item's load has finished, the pop is done.
 	//
-	// NOT INDEFINITELY ARMED on a coalesced NO-OP (Codex review round 7): the
-	// generation fence alone doesn't self-resolve every case — a Back
-	// immediately reversed by Forward within TASK-2166's ~140ms pane-mint
-	// settle window can coalesce to a NET NO-OP (neither `itemSlug` nor
-	// `loadGeneration` ever change), leaving `pendingBackFocus` armed with
-	// nothing left to ever falsify the generation check against. The NEXT,
-	// wholly unrelated single-load navigation would then satisfy
-	// `backFocusStartGen + 1` by coincidence and steal focus.
+	// 2. GENERATION-FENCED against a SUPERSEDING, unrelated navigation.
+	//    Comparing only `itemSlug` treats ANY later change as "the Back pop
+	//    landed" — so if the user clicks a different row/link (or hits
+	//    Forward) while the Back destination is still loading, that unrelated
+	//    navigation's `itemSlug` change satisfies the check just as well, and
+	//    focus gets stolen into a pane the user never asked to restore-focus
+	//    on. `loadGeneration` (bumped synchronously at the top of EVERY
+	//    `loadData()` call, regardless of what triggered it) gives an exact
+	//    fence: capture it at click time and require the settled generation
+	//    to be EXACTLY one more — the Back click's own load and nothing else
+	//    raced in between. A mismatch means something else superseded it;
+	//    abandon the restore instead of stealing focus.
 	//
-	// A single check shortly after the settle window, NOT a blanket
-	// wall-clock cutoff on the whole intent (Codex review round 8: a fixed
-	// timeout that disarms unconditionally would ALSO cancel a legitimately
-	// slow, still-in-flight restore — `loadData()` makes several requests,
-	// and a modestly slow connection can easily outrun a few hundred ms,
-	// stranding a keyboard user's Back press on <body> for the common case,
-	// not just the rare no-op one). Since `itemSlug` updates SYNCHRONOUSLY
-	// with the popstate (independent of network speed) and `loadGeneration`
-	// bumps synchronously at the top of `loadData()`, a load that's
-	// genuinely in flight has ALREADY moved one of the two by the time this
-	// check fires — only the coalesced-to-nothing case still shows BOTH
-	// unchanged, so the check disarms exactly that case and leaves every
-	// other (however slow) pending restore to resolve normally through the
-	// effect below, however long it actually takes.
-	const BACK_FOCUS_NOOP_CHECK_MS = 200;
+	// 3. NOT INDEFINITELY ARMED on a coalesced NO-OP. The generation fence
+	//    alone doesn't self-resolve every case — a Back immediately reversed
+	//    by Forward within TASK-2166's pane-mint settle window (see the note
+	//    below) can coalesce to a NET NO-OP where neither `itemSlug` nor
+	//    `loadGeneration` ever change, leaving `pendingBackFocus` armed with
+	//    nothing left to ever falsify the generation check against — the
+	//    NEXT, wholly unrelated single-load navigation would then satisfy
+	//    `backFocusStartGen + 1` by coincidence and steal focus. Disarm it
+	//    with a single check, NOT a blanket wall-clock cutoff on the whole
+	//    intent (a fixed timeout that disarms unconditionally would ALSO
+	//    cancel a legitimately slow, still-in-flight restore — `loadData()`
+	//    makes several requests, and a modestly slow connection can easily
+	//    outrun a short timer). The check only disarms when BOTH `itemSlug`
+	//    and `loadGeneration` are STILL unchanged by the time it fires —
+	//    every other (however slow) pending restore resolves normally
+	//    through the effect below instead.
+	//
+	// NOTE — the check's timing, and why it can't be short: `itemSlug` does
+	// NOT update synchronously with the popstate `onBack` triggers. TASK-2166
+	// (a concurrent sibling change) added a provider-mint settle that
+	// deliberately COALESCES every popstate-driven `?item=` change onto the
+	// `<ItemDetail>` `ref` prop — even a single Back press — behind a
+	// `PANE_MINT_SETTLE_MS` (140ms) window (`paneMintSettle.ts`), so
+	// `itemSlug` only starts moving ~140ms (plus the `history.go`→popstate
+	// round-trip) after the click, regardless of network speed. The no-op
+	// check in (3) has to clear that mandatory delay before concluding
+	// "nothing moved" — sized at `PANE_MINT_SETTLE_MS * 2` for headroom over
+	// the popstate round-trip on top of the settle itself.
+	const BACK_FOCUS_NOOP_CHECK_MS = PANE_MINT_SETTLE_MS * 2;
 	let pendingBackFocus = $state(false);
 	let backFocusStartSlug = '';
 	let backFocusStartGen = 0;
