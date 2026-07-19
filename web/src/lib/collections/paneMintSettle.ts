@@ -15,8 +15,15 @@
 // Direct actions (`openItemPane`/`navigatePaneTo`/`closeItemPane` — a `goto`
 // push/replace, `nav.type !== 'popstate'`) apply IMMEDIATELY: they're
 // already a single deliberate action, not a burst, and delaying one would
-// only add latency users would notice. Only `nav.type === 'popstate'`
-// changes settle.
+// only add latency users would notice. A popstate landing on a CLOSED pane
+// (`ref === null`) also applies immediately, never settled: the pane's
+// mount boundary (`{#if openItemRef}` in `+page.svelte`) already reacts to
+// the raw URL instantly, tearing the `<ItemDetail>` down the moment the URL
+// loses `?item=`. If the null were delayed instead, a quick close-then-
+// reopen within the settle window (Back to close, Forward to reopen) would
+// remount `<ItemDetail>` against the STALE pre-close `paneMintRef` — wrong
+// content, and a wasted mint on top of the correct one that follows. Only a
+// popstate settling on a NON-null ref during an already-open pane settles.
 //
 // Framework-agnostic (no `$state`/`page`/`goto`) so it's unit-testable with
 // vitest fake timers without mounting the route — same pattern as
@@ -30,7 +37,8 @@ export interface PaneMintSettleConfig {
 	settleMs?: number;
 	/**
 	 * Fired with the settled `?item=` ref: immediately for a non-popstate
-	 * nav, or once a popstate burst quiesces for `settleMs` with no further
+	 * nav or a popstate landing on `null` (pane closed), or once a popstate
+	 * burst on a non-null ref quiesces for `settleMs` with no further
 	 * popstate. Only the LAST ref of a burst is ever applied — intermediate
 	 * refs traversed mid-burst are dropped, which is the coalescing itself.
 	 */
@@ -65,7 +73,8 @@ export function createPaneMintSettle(config: PaneMintSettleConfig): PaneMintSett
 
 	function onNavigate(navType: string, ref: string | null): void {
 		cancel();
-		if (navType !== 'popstate') {
+		// A close (ref === null) is never settled — see the module comment.
+		if (navType !== 'popstate' || ref === null) {
 			config.onSettle(ref);
 			return;
 		}

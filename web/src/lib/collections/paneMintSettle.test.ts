@@ -53,17 +53,48 @@ describe('createPaneMintSettle', () => {
 		expect(onSettle).toHaveBeenCalledTimes(1);
 	});
 
-	it('settles to null when a held-Back burst ends on the pane closing', () => {
+	it('a popstate that closes the pane (ref -> null) applies IMMEDIATELY, never settled', () => {
+		// The pane's mount boundary (`{#if openItemRef}` in +page.svelte)
+		// reacts to the raw URL instantly and tears `<ItemDetail>` down the
+		// moment `?item=` disappears — a delayed null would leave a stale
+		// non-null `paneMintRef` around to remount against on a quick
+		// close-then-reopen (the P2 this guards against; see the next spec).
 		const onSettle = vi.fn();
 		const settle = createPaneMintSettle({ onSettle });
 
-		settle.onNavigate('popstate', 'TASK-2');
+		settle.onNavigate('popstate', 'TASK-2'); // held Back, still mid-drill
 		vi.advanceTimersByTime(50);
-		settle.onNavigate('popstate', null);
-		vi.advanceTimersByTime(PANE_MINT_SETTLE_MS);
+		settle.onNavigate('popstate', null); // Back crosses the pane-closed boundary
 
+		// Fires right away — no need to advance the fake clock at all.
 		expect(onSettle).toHaveBeenCalledTimes(1);
 		expect(onSettle).toHaveBeenCalledWith(null);
+
+		// The superseded TASK-2 timer must not fire a stale second call.
+		vi.advanceTimersByTime(PANE_MINT_SETTLE_MS);
+		expect(onSettle).toHaveBeenCalledTimes(1);
+	});
+
+	it('a quick close-then-reopen (ref -> null -> different ref) settles cleanly with no stale intermediate mint', () => {
+		const onSettle = vi.fn();
+		const settle = createPaneMintSettle({ onSettle });
+
+		settle.onNavigate('popstate', 'TASK-2'); // pane open, drilling
+		settle.onNavigate('popstate', null); // Back closes — applies immediately
+		expect(onSettle).toHaveBeenNthCalledWith(1, null);
+
+		// Forward reopens on a DIFFERENT item, itself a held burst.
+		settle.onNavigate('popstate', 'TASK-9');
+		vi.advanceTimersByTime(50);
+		settle.onNavigate('popstate', 'TASK-10');
+		// Still just the close call — the reopen burst hasn't settled yet, and
+		// critically never applied the stale 'TASK-2' or the intermediate
+		// 'TASK-9'.
+		expect(onSettle).toHaveBeenCalledTimes(1);
+
+		vi.advanceTimersByTime(PANE_MINT_SETTLE_MS);
+		expect(onSettle).toHaveBeenCalledTimes(2);
+		expect(onSettle).toHaveBeenNthCalledWith(2, 'TASK-10');
 	});
 
 	it('cancel() drops a pending settle without applying it', () => {
