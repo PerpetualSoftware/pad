@@ -304,3 +304,31 @@ export function resolvePaneTarget(target: PaneTarget, current?: Item | null): st
 	if (isSamePaneTarget(target, current)) return null;
 	return rawPaneTargetCandidate(target);
 }
+
+/**
+ * Build the `PaneTarget` for an item's structural PARENT — the single-hop
+ * breadcrumb `ItemDetail` un-hides for the embedded pane (PLAN-2154
+ * Architecture C / D3, TASK-2165). Reads only fields already present on the
+ * item response (`parent_ref`/`parent_slug`/`parent_collection_slug` —
+ * `$lib/types` Item), so it reconstructs correctly even on a cold-loaded
+ * shared `?item=` pane URL with zero additional fetches — the same property
+ * that makes `resolvePaneTarget` above framework-agnostic and exhaustively
+ * unit-testable.
+ *
+ * `parent_slug` + `parent_collection_slug` are the presence gate (mirroring
+ * the pre-existing full-page breadcrumb's own `{#if item.parent_collection_slug
+ * && item.parent_slug}` condition): `parent_ref` is carried when available
+ * but not required, since a legacy/no-number item can have a parent
+ * addressable only by slug. Returns `undefined` when the item has no
+ * structural parent to show.
+ */
+export function breadcrumbParentTarget(
+	item: Pick<Item, 'parent_ref' | 'parent_slug' | 'parent_collection_slug'> | null | undefined,
+): PaneTarget | undefined {
+	if (!item?.parent_collection_slug || !item?.parent_slug) return undefined;
+	return {
+		ref: item.parent_ref ?? undefined,
+		slug: item.parent_slug,
+		collectionSlug: item.parent_collection_slug,
+	};
+}
