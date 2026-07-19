@@ -263,26 +263,32 @@
 		// A native <dialog> / role="dialog" sheet owns its own ESC.
 		if (document.querySelector('dialog[open], [role="dialog"]')) return;
 		// The MASTER's full-page (non-embedded) dependency-graph drawer keeps its
-		// OWN window ESC listener (ItemDetail, `!embedded`) — NOT the shared escape
-		// stack. If it's open (e.g. a pane was opened from a master graph node's
-		// "Open" anchor, leaving the graph up), defer this ESC to that listener so
-		// one press closes ONLY the graph, not the graph AND the pane (Codex
-		// review) — BUT only when the master graph is the FRONTMOST ESC concern.
-		// The PANE's OWN (embedded) graph drawer registers in the escape stack at
-		// the higher `graphDrawer` priority; when it's the top layer it is innermost
-		// and must close first via `runTopEscape` below, so we do NOT bail then (its
-		// own listener will still fire on the master graph — an inherent limit of
-		// that standalone listener — but at least the innermost layer closes). The
-		// master graph is a `.graph-drawer` OUTSIDE `.item-pane` (`closest`).
+		// OWN window ESC listener (ItemDetail, `!embedded`) that ignores
+		// preventDefault. Whenever one coexists with the pane, any ESC WE consume
+		// must ALSO `stopImmediatePropagation` so that listener can't double-close
+		// on the same keystroke — including auto-repeats of a held key, which its
+		// listener doesn't bail on either. The host's `<svelte:window>` listener is
+		// registered before it (that listener arms only when the graph opens), so
+		// this runs first and can suppress it. A master graph is a `.graph-drawer`
+		// OUTSIDE `.item-pane` (`closest`).
 		const hasMasterGraph = [...document.querySelectorAll('.graph-drawer')].some(
 			(g) => !g.closest('.item-pane'),
 		);
-		if (hasMasterGraph && topEscapePriority() !== ESCAPE_PRIORITY.graphDrawer) return;
-		// A HELD key auto-repeats; only the initial physical press acts.
+		// A HELD key auto-repeats; only the initial physical press acts. Consume the
+		// repeats — and suppress the master graph's listener on them (checked BEFORE
+		// the deferral below) so a hold can't cascade the master graph closed after
+		// the first press already closed the innermost layer (Codex review).
 		if (e.repeat) {
 			e.preventDefault();
+			if (hasMasterGraph) e.stopImmediatePropagation();
 			return;
 		}
+		// Defer to the master graph's own listener ONLY when it's the FRONTMOST ESC
+		// concern (no pane graph drawer at ESCAPE_PRIORITY.graphDrawer is the top
+		// stack layer): one press closes just the master graph via that listener (no
+		// stopImmediatePropagation here, so it fires). When a pane graph IS the top
+		// layer it's innermost and must close first via `runTopEscape` below.
+		if (hasMasterGraph && topEscapePriority() !== ESCAPE_PRIORITY.graphDrawer) return;
 		// Detached pane (depth>0): pop exactly one drill level, consume the key.
 		// Routed through the controller's fenced `handlePaneBack` (not a bare
 		// `history.back()`), gated on `paneNavInFlight()` — a rapid double ESC
