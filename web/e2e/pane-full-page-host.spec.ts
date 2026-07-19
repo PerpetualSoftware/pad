@@ -188,4 +188,29 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		// The master stays fully EDITABLE (never went peeking).
 		await expect(page.locator('h1.title.title-readonly')).toHaveCount(0);
 	});
+
+	test('a cold-loaded shared `?item=<a different item>` still mounts the pane (the self-collision mount-gate does not suppress legitimate cross-item cold loads)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		const master = await seedDoc(fixture, request, 'FP host cold master');
+		const other = await seedDoc(fixture, request, 'FP host cold other');
+		const otherRef = await itemRef(fixture, request, other.slug);
+
+		// Deep-link straight to the master with a shared `?item=` pointing at a
+		// DIFFERENT item. The mount-gate holds the pane one master-load beat (so a
+		// `?item=<master-alias>` can't transiently mint a 2nd provider), then mounts
+		// it once identity confirms the target isn't the master.
+		await page.goto(fullPageUrl(fixture, master.slug, `?item=${otherRef}`));
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect(pane.locator('.title', { hasText: 'FP host cold other' })).toBeVisible();
+		await expect.poll(() => openItemParam(page)).toBe(otherRef);
+		// The master is present + peeking (read-only) beside the pane.
+		await expect(page.locator('h1.title.title-readonly', { hasText: 'FP host cold master' })).toBeVisible();
+	});
 });

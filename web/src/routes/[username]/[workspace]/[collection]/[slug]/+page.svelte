@@ -127,18 +127,49 @@
 		clearPaneGo,
 	} = paneController;
 
-	// The forbidden `?item == master` collision (PLAN-2154 D2 / Architecture E).
-	// True when a resolved pane ref names the MASTER item itself — by its
-	// canonical ref, its slug, or its id (so a slug-path/ref-query alias is
-	// caught). Never fires until the master's identity resolves.
-	function isMaster(candidate: string): boolean {
-		return (
-			!!masterIdentity &&
-			(candidate === masterIdentity.ref ||
-				candidate === masterIdentity.slug ||
-				candidate === masterIdentity.id)
-		);
+	// Parse a ref-shaped candidate's item NUMBER — mirrors
+	// `$lib/collections/paneTarget`'s private `parseRefNumber` (case-insensitive
+	// LETTERS-only prefix, hyphen, positive integer). Null for a non-ref-shaped
+	// string or a zero/non-finite number.
+	function refNumber(candidate: string): number | null {
+		const m = /^([A-Za-z]+)-(\d+)$/.exec(candidate);
+		if (!m) return null;
+		const n = Number(m[2]);
+		return Number.isFinite(n) && n > 0 ? n : null;
 	}
+
+	// The forbidden `?item == master` collision (PLAN-2154 D2 / Architecture E).
+	// True when a candidate names the MASTER item itself — by its id, its slug,
+	// its canonical ref, OR (mirroring the server's case-insensitive, item-number
+	// resolution the way `isSamePaneTarget`'s `matchesRefNumber` does) any
+	// ref-shaped alias that resolves to the same item NUMBER. So a hand-crafted
+	// `?item=doc-5` / `DOC-005` / a stale pre-move prefix that all resolve to the
+	// master are caught too, not just the byte-exact canonical ref. Never fires
+	// until the master's identity resolves.
+	function isMaster(candidate: string): boolean {
+		if (!masterIdentity) return false;
+		if (
+			candidate === masterIdentity.id ||
+			candidate === masterIdentity.slug ||
+			candidate === masterIdentity.ref
+		) {
+			return true;
+		}
+		const n = refNumber(candidate);
+		return n !== null && n === refNumber(masterIdentity.ref);
+	}
+
+	// Whether to MOUNT the pane. Gating the MOUNT (not merely stripping `?item=`
+	// after the fact) closes the cold-load self-collision RACE (Codex review): on
+	// a cold `?item=` load the master identity is unresolved for a beat, and a
+	// `?item=` that turns out to alias the master would otherwise mount
+	// `PaneHost`/`ItemDetail` and mint a SECOND collab provider on the master's
+	// own room BEFORE the strip effect's `goto` removes the query. So the pane
+	// mounts only once identity has resolved AND confirmed the target isn't the
+	// master. For a CLICK-driven open the master identity is already resolved, so
+	// there is no delay; only a cold `?item=` load waits one master-load beat
+	// (master-first, which is the correct order anyway).
+	let showPane = $derived(!!openItemRef && !!masterIdentity && !isMaster(openItemRef));
 
 	// MASTER content-links FIRST-OPEN the pane (PLAN-2154 D3 / Architecture E).
 	// The master's relationship / child / wiki-link / graph surfaces hand up a
@@ -222,6 +253,18 @@
 		if (isTextEntryTarget(target)) return;
 		// A native <dialog> / role="dialog" sheet owns its own ESC.
 		if (document.querySelector('dialog[open], [role="dialog"]')) return;
+		// The MASTER's full-page (non-embedded) dependency-graph drawer keeps its
+		// OWN window ESC listener (ItemDetail, `!embedded`) — NOT the shared escape
+		// stack. If it's open (e.g. a pane was opened from a master graph node's
+		// "Open" anchor, leaving the graph up), defer this ESC to that listener so
+		// one press closes ONLY the graph, not the graph AND the pane (Codex
+		// review). The PANE's OWN (embedded) graph drawer registers in the escape
+		// stack at the higher `graphDrawer` priority and is closed correctly by
+		// `runTopEscape` below, so this bail is scoped to a `.graph-drawer` OUTSIDE
+		// `.item-pane` (a master graph) via `closest`.
+		for (const g of document.querySelectorAll('.graph-drawer')) {
+			if (!g.closest('.item-pane')) return;
+		}
 		// A HELD key auto-repeats; only the initial physical press acts.
 		if (e.repeat) {
 			e.preventDefault();
@@ -287,7 +330,7 @@
 			onOpenTarget={handleMasterOpenTarget}
 		/>
 	</div>
-	{#if openItemRef}
+	{#if showPane}
 		<PaneHost
 			bind:this={paneHostEl}
 			{openItemRef}
