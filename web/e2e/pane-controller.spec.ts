@@ -970,6 +970,87 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
 	});
 
+	test('Back chevron: a superseding row-click while the pop is still loading does NOT steal focus back into the pane (Codex review round 6)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		const a = await seedDoc(fixture, request, 'Ctrl back-supersede alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back-supersede bravo');
+		const c = await seedDoc(fixture, request, 'Ctrl back-supersede charlie');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back-supersede alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		// A real row click puts the item's REF (e.g. `DOC-16`), not its slug,
+		// in `?item=` (`itemUrlId` prefers `formatItemRef` — +page.svelte),
+		// and that's what the fetch path segment uses too. Capture it here
+		// rather than assuming `a.slug` so the route gate below actually
+		// matches.
+		const aRef = openItemParam(page);
+
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+
+		// Gate A's item fetch — the Back press (B→A) lands on it and stalls
+		// mid-load, giving room to fire an UNRELATED navigation (a direct
+		// row click on C) before the Back pop ever settles.
+		let releaseGate: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			releaseGate = resolve;
+		});
+		await page.route(`**/api/v1/workspaces/*/items/${aRef}`, async (route) => {
+			if (route.request().method() !== 'GET') {
+				await route.continue();
+				return;
+			}
+			await gate;
+			await route.continue();
+		});
+
+		const backBtn = pane.locator('button[aria-label="Back"]');
+		await expect(backBtn).toBeVisible();
+		await backBtn.focus();
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		// Confirm the pop is genuinely stalled mid-fetch before superseding it.
+		await expect(pane.locator('.pane-header--minimal')).toBeVisible();
+
+		// SUPERSEDE: a direct row click on a THIRD item while A is still
+		// loading. `paneDepth` is already 0 (the Back pop's own destination
+		// settled at the history level), so this is a normal depth-0
+		// re-target (`openItemPane` replace) — a completely different, later
+		// navigation than the stalled Back pop, landing on C.
+		await page.locator('.item-card', { hasText: 'Ctrl back-supersede charlie' }).first().click();
+		await expect(pane.locator('.title', { hasText: /Ctrl back-supersede charlie/ })).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		// A row click lands the item's ref (not necessarily its slug — same
+		// `itemUrlId` caveat as `aRef` above) in `?item=`; just confirm it
+		// changed to something other than A's ref.
+		const cRef = openItemParam(page);
+		expect(cRef).not.toBe(aRef);
+
+		// The stalled Back pop's pending focus-restore must NOT fire once A
+		// eventually settles — it was superseded, so it must not steal focus
+		// into C's pane chrome. `backButtonIsFocused` covers the paneDepth>0
+		// case; C is at depth 0, so also check the Close button directly.
+		const closeIsFocused = () =>
+			page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Close pane');
+		await expect.poll(closeIsFocused).toBe(false);
+
+		// Release the gate — A's now-superseded fetch drains (generation-
+		// fenced by `loadData`'s own checks), and the abandoned restore must
+		// still not fire afterward.
+		releaseGate();
+		await page.waitForTimeout(150);
+		await expect.poll(() => openItemParam(page)).toBe(cRef);
+		await expect.poll(closeIsFocused).toBe(false);
+	});
+
 	test('Back chevron: a cold-loaded shared ?item= starts at depth 0 and stays hidden; browser Back still exits the pane', async ({
 		page,
 		fixture,

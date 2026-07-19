@@ -1923,18 +1923,38 @@
 	// directly needs no "did I see the right transition" bookkeeping: once
 	// it differs from the ref captured at click time AND the (new item's)
 	// load has finished, the pop is done.
+	//
+	// GENERATION-FENCED against a SUPERSEDING, unrelated navigation (Codex
+	// review round 6): comparing only `itemSlug` treats ANY later change as
+	// "the Back pop landed" — so if the user clicks a different row/link (or
+	// hits Forward) while the Back destination is still loading, that
+	// unrelated navigation's `itemSlug` change satisfies the check just as
+	// well, and focus gets stolen into a pane the user never asked to
+	// restore-focus on. `loadGeneration` (bumped synchronously at the top of
+	// EVERY `loadData()` call, regardless of what triggered it) gives an
+	// exact fence: capture it at click time and require the settled
+	// generation to be EXACTLY one more — i.e. the Back click's own load and
+	// nothing else raced in between. A mismatch means something else
+	// superseded it; abandon the restore instead of stealing focus. This
+	// also self-resolves the "armed indefinitely" case Codex flagged (a
+	// quick Back→Forward before the pop settles) — `loadGeneration` only
+	// increases, so once it passes the target it can never match again and
+	// the abandon branch takes over on the very next settle.
 	let pendingBackFocus = $state(false);
 	let backFocusStartSlug = '';
+	let backFocusStartGen = 0;
 	function handleBackClick() {
 		pendingBackFocus = true;
 		backFocusStartSlug = itemSlug;
+		backFocusStartGen = loadGeneration;
 		onBack?.();
 	}
 	$effect(() => {
 		if (!pendingBackFocus) return;
 		if (itemSlug === backFocusStartSlug) return; // the pop hasn't landed yet
 		if (loading) return; // the new item is still loading
-		pendingBackFocus = false;
+		pendingBackFocus = false; // one-shot regardless of outcome below
+		if (loadGeneration !== backFocusStartGen + 1) return; // superseded — abandon, don't steal focus
 		// At depth>0 there's a fresh Back button to land on. At depth 0 (the
 		// terminal pop, back to the base) the Back button is gone — Codex
 		// review round 4 flagged that this left focus stranded on <body> with
