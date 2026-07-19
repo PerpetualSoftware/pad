@@ -309,9 +309,13 @@
 	// `handleBackClick` near `startEditTitle`) can reach whichever one
 	// re-mounts after the reload settles.
 	let backBtnEl = $state<HTMLButtonElement>();
-	// The loaded header's Close button — the focus-restore fallback for the
-	// TERMINAL Back pop (landing at depth 0, where there's no Back button
-	// left to land on; Codex review round 4).
+	// The Close button — the focus-restore fallback for the TERMINAL Back pop
+	// (landing at depth 0, where there's no Back button left to land on;
+	// Codex review round 4). Bound by BOTH headers, same reasoning as
+	// `backBtnEl` above: if the pop's destination is slow/failed, the
+	// MINIMAL header can still be mounted when the restore fires, and it
+	// needs its own Close button bound or the restore silently no-ops
+	// (Codex review round 5).
 	let closeBtnEl = $state<HTMLButtonElement>();
 
 	let fields = $derived<Record<string, any>>(item ? parseFields(item) : {});
@@ -3403,6 +3407,7 @@
 			{/if}
 			<button
 				type="button"
+				bind:this={closeBtnEl}
 				class="pane-header-btn"
 				onclick={() => onClose?.()}
 				title="Close pane"
