@@ -54,8 +54,12 @@
 	// The MASTER's resolved {id, ref, slug} identity (TASK-2173), captured via
 	// `onIdentity`. Drives the `?item == master` guard so a slug-path master and
 	// a ref-query `?item=` (or vice versa) that alias the SAME item are caught.
-	// `null` until the master's loaded item matches its URL ref.
+	// `null` until the master's loaded item matches its URL ref. Paired with the
+	// pathname it resolved for, so a STALE identity from a since-navigated master
+	// (Expand→Back, cross-collection, cross-workspace — all encoded in the
+	// pathname) is dropped (see `masterItem`).
 	let masterIdentity = $state<ResolvedItemIdentity | null>(null);
+	let masterIdentityPathname = $state<string | null>(null);
 
 	// Scroll restoration parks on the master's OWN `.item-page` overflow column
 	// (not the layout's `.main-content`), which is where the master content
@@ -148,24 +152,26 @@
 	// item #6 (Codex review).
 	let masterItem = $derived.by<PaneGuardItem | null>(() => {
 		if (!masterIdentity) return null;
-		const projected: PaneGuardItem = {
-			id: masterIdentity.id,
-			slug: masterIdentity.slug,
-			item_number: refNumber(masterIdentity.ref) ?? 0,
-		};
 		// `masterIdentity` (from `onIdentity`) LAGS a same-route master navigation:
 		// expanding a pane item to the full page, then browser-Back to
 		// `<prev-master>?item=<that item>`, REUSES this route — `masterIdentity`
 		// still holds the expanded item until the master reloads the previous one
-		// and re-emits identity. Comparing it against the live master `ref` path
-		// param (via the shared `isSamePaneTarget`) drops that STALE identity, so
-		// the self-guard / cold-load strip never match a bare `?item=` against the
-		// WRONG (previous) master and wrongly strip a still-valid pane — the R14
-		// late-continuation class (Codex review). Because `masterItem` is a
-		// `$derived` over `ref`, it re-nulls SYNCHRONOUSLY the instant `ref`
-		// changes — before the strip `$effect` runs — so the effect never sees a
-		// stale master. Null until identity resolves AND matches the current `ref`.
-		return isSamePaneTarget({ href: ref }, projected) ? projected : null;
+		// and re-emits identity. Compare the pathname it resolved FOR against the
+		// LIVE pathname: EVERY master navigation (ref, collection, OR workspace —
+		// all encoded in `/username/workspace/collection/ref`) makes them diverge,
+		// so a stale identity is dropped until the master reloads and re-emits.
+		// `?item=` lives in the query, not the pathname, so opening / drilling /
+		// closing the pane never trips this. Because it's a `$derived` over
+		// `page.url.pathname`, it re-nulls SYNCHRONOUSLY the instant the URL changes
+		// — before the strip `$effect` runs — so the guard never matches a bare
+		// `?item=` against the WRONG (previous) master (the R14 late-continuation
+		// class; Codex review). Null until identity resolves AND still matches.
+		if (masterIdentityPathname !== page.url.pathname) return null;
+		return {
+			id: masterIdentity.id,
+			slug: masterIdentity.slug,
+			item_number: refNumber(masterIdentity.ref) ?? 0,
+		};
 	});
 
 	// The forbidden `?item == master` collision (PLAN-2154 D2 / Architecture E)
@@ -264,9 +270,13 @@
 	// list, so there is NO two-level return-focus-to-list step: at depth>0 ESC
 	// pops exactly ONE drill level via the controller's fenced `handlePaneBack`;
 	// at depth 0 it closes the pane through the shared escape stack (the embedded
-	// pane registers `onClose` = `closeItemPane` at `ESCAPE_PRIORITY.pane`). Text
-	// edits, open modals/sheets, and a higher-priority stacked graph drawer all
-	// win ESC first (the same guards the collection host applies).
+	// pane registers `onClose` = `closeItemPane` at `ESCAPE_PRIORITY.pane`). The
+	// master's dependency-graph drawer now ALSO composes in the escape stack
+	// (ItemDetail routes both embedded + non-embedded graphs through it — TASK-2174),
+	// so a graph drawer (master or pane) is the innermost layer `runTopEscape`
+	// closes first, with no uncoordinated window listener to double-close. Text
+	// edits and open modals/sheets win ESC first (the same guards the collection
+	// host applies).
 	function handleHostKeydown(e: KeyboardEvent) {
 		// A control that already handled this key (preventDefault) owns it.
 		if (e.defaultPrevented) return;
@@ -276,33 +286,11 @@
 		if (isTextEntryTarget(target)) return;
 		// A native <dialog> / role="dialog" sheet owns its own ESC.
 		if (document.querySelector('dialog[open], [role="dialog"]')) return;
-		// The MASTER's full-page (non-embedded) dependency-graph drawer keeps its
-		// OWN window ESC listener (ItemDetail, `!embedded`) that ignores
-		// preventDefault. Whenever one coexists with the pane, any ESC WE consume
-		// must ALSO `stopImmediatePropagation` so that listener can't double-close
-		// on the same keystroke — including auto-repeats of a held key, which its
-		// listener doesn't bail on either. The host's `<svelte:window>` listener is
-		// registered before it (that listener arms only when the graph opens), so
-		// this runs first and can suppress it. A master graph is a `.graph-drawer`
-		// OUTSIDE `.item-pane` (`closest`).
-		const hasMasterGraph = [...document.querySelectorAll('.graph-drawer')].some(
-			(g) => !g.closest('.item-pane'),
-		);
-		// A HELD key auto-repeats; only the initial physical press acts. Consume the
-		// repeats — and suppress the master graph's listener on them (checked BEFORE
-		// the deferral below) so a hold can't cascade the master graph closed after
-		// the first press already closed the innermost layer (Codex review).
+		// A HELD key auto-repeats; only the initial physical press acts.
 		if (e.repeat) {
 			e.preventDefault();
-			if (hasMasterGraph) e.stopImmediatePropagation();
 			return;
 		}
-		// Defer to the master graph's own listener ONLY when it's the FRONTMOST ESC
-		// concern (no pane graph drawer at ESCAPE_PRIORITY.graphDrawer is the top
-		// stack layer): one press closes just the master graph via that listener (no
-		// stopImmediatePropagation here, so it fires). When a pane graph IS the top
-		// layer it's innermost and must close first via `runTopEscape` below.
-		if (hasMasterGraph && topEscapePriority() !== ESCAPE_PRIORITY.graphDrawer) return;
 		// Detached pane (depth>0): pop exactly one drill level, consume the key.
 		// Routed through the controller's fenced `handlePaneBack` (not a bare
 		// `history.back()`), gated on `paneNavInFlight()` — a rapid double ESC
@@ -319,21 +307,10 @@
 			}
 			return;
 		}
-		// Depth 0 (or a higher-priority layer): let the escape stack close exactly
-		// one layer, innermost-first (a pane graph drawer → the pane). No-op with
-		// no pane open (stack empty → returns false → native ESC untouched).
-		if (runTopEscape()) {
-			e.preventDefault();
-			// Case C (master graph + pane graph both open): `runTopEscape` just
-			// closed the innermost PANE graph. The MASTER graph's uncoordinated
-			// window listener ignores `preventDefault`, so stop it from ALSO closing
-			// on this same ESC — one layer per press. The host's `<svelte:window>`
-			// listener is registered before the master graph's (which arms only when
-			// that graph opens), so this runs first and can suppress it. Scoped to
-			// when a master graph actually exists so it never blocks unrelated window
-			// ESC listeners on the ordinary close path.
-			if (hasMasterGraph) e.stopImmediatePropagation();
-		}
+		// Otherwise let the escape stack close exactly one layer, innermost-first
+		// (a graph drawer → the pane). No-op with nothing registered (stack empty →
+		// returns false → native ESC untouched).
+		if (runTopEscape()) e.preventDefault();
 	}
 
 	onDestroy(() => {
@@ -370,7 +347,13 @@
 			{ref}
 			peeking={!!openItemRef}
 			onReady={(r) => (scrollReady = r)}
-			onIdentity={(id) => (masterIdentity = id)}
+			onIdentity={(id) => {
+				masterIdentity = id;
+				// Stamp the pathname this identity resolved FOR (see `masterItem`);
+				// `onIdentity` fires only once the loaded item matches the current
+				// URL, so `page.url.pathname` is that item's route here.
+				masterIdentityPathname = id ? page.url.pathname : null;
+			}}
 			onOpenTarget={handleMasterOpenTarget}
 		/>
 	</div>

@@ -504,27 +504,23 @@
 	function graphItemHref(ref: string, collection?: string): string {
 		return `/${username}/${wsSlug}/${collection ?? effectiveCollSlug}/${ref}`;
 	}
-	// ESC closes the graph drawer (only while open — no global listener otherwise).
-	// FULL-PAGE only: there's no pane/list contention on the full-page route, so
-	// it keeps its own window listener. The EMBEDDED graph drawer routes ESC
-	// through the shared escape stack instead (see below) so it composes with
-	// the pane + list-focus layers — one ESC closes exactly one layer
-	// (PLAN-2105 / TASK-2118).
+	// The dependency-graph drawer routes ESC through the shared escape stack as
+	// the highest-priority (innermost) layer — for BOTH the embedded pane AND the
+	// full-page (non-embedded) master. One ESC closes exactly one layer, composing
+	// with the pane + list-focus layers (PLAN-2105 / TASK-2118). The full-page
+	// master USED to keep its own `window` keydown listener on the assumption that
+	// "there's no pane/list contention on the full-page route" — but the full-page
+	// pane host (PLAN-2154 / TASK-2174) now mounts a pane beside a non-embedded
+	// master, and an uncoordinated window listener double-closed the master graph
+	// alongside the pane's own depth-aware ESC (it ignored preventDefault, text-
+	// edit / open-dialog / held-key guards, and the pane's precedence). Registering
+	// in the stack instead fixes that: the host's single top-level keydown
+	// (`handleHostKeydown` → `runTopEscape`) invokes it, exactly as the collection
+	// host does for the embedded pane. Only the `[collection]/[slug]` route mounts
+	// a non-embedded ItemDetail, and it owns that top-level listener, so there is
+	// no full-page surface left without one.
 	$effect(() => {
-		if (embedded) return;
 		if (!showGraph) return;
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === 'Escape') closeGraph();
-		};
-		window.addEventListener('keydown', onKey);
-		return () => window.removeEventListener('keydown', onKey);
-	});
-	// EMBEDDED graph drawer — highest-priority ESC layer (innermost). Registered
-	// into the shared escape stack while open; the single top-level listener on
-	// the collection page invokes only the top handler, so one ESC closes the
-	// drawer and leaves the pane open (PLAN-2105 / TASK-2118).
-	$effect(() => {
-		if (!embedded || !showGraph) return;
 		return pushEscapeHandler(() => {
 			closeGraph();
 			return true;
