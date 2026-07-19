@@ -160,12 +160,25 @@
 	// re-drives `loadData`/`collabKey` (destroy + fresh-mint the Y.Doc/WS
 	// provider), which is expensive to fire once per intermediate popstate
 	// during a held Back/Forward. `paneMintRef` is the coalesced value fed
-	// to that prop — updated immediately for a deliberate open/drill/close
-	// (`nav.type !== 'popstate'`), but settled (~PANE_MINT_SETTLE_MS,
-	// mirroring the j/k `PANE_FOLLOW_DEBOUNCE_MS` coalescing) for a popstate
-	// burst so only the FINAL ref of the burst ever mints. See
-	// `$lib/collections/paneMintSettle` for the pure, unit-tested decision
-	// logic this just wires up.
+	// to that prop (nested `{#if paneMintRef}`, below, so a still-settling
+	// null never reaches ItemDetail's required `ref: string` prop) — updated
+	// immediately for a deliberate open/drill/close, but settled
+	// (~PANE_MINT_SETTLE_MS, mirroring the j/k `PANE_FOLLOW_DEBOUNCE_MS`
+	// coalescing) for a same-pathname popstate burst so only the FINAL ref
+	// of the burst ever mints. See `$lib/collections/paneMintSettle` for the
+	// pure, unit-tested decision logic this just wires up.
+	//
+	// This component is REUSED across a workspace/collection switch (same
+	// route id, different `page.params`) — `wsSlug`/`collSlug` update
+	// IMMEDIATELY on any such popstate, so a coalesced `paneMintRef` could
+	// otherwise linger mid-settle carrying a ref from the SOURCE
+	// workspace/collection into the DESTINATION's `ItemDetail` for up to
+	// `PANE_MINT_SETTLE_MS` (Codex review). Only a same-pathname popstate —
+	// the pane-only `?item=` traversal this feature targets — is eligible to
+	// settle; any pathname change (route reuse across params, or the rare
+	// case where `nav.from` is unavailable, e.g. the initial load) is forced
+	// through the settle module's immediate branch by passing a non-
+	// `'popstate'` type.
 	let paneMintRef = $state<string | null>(page.url.searchParams.get('item'));
 	const paneMintSettle = createPaneMintSettle({
 		settleMs: PANE_MINT_SETTLE_MS,
@@ -174,7 +187,10 @@
 		},
 	});
 	afterNavigate((nav) => {
-		paneMintSettle.onNavigate(nav.type, nav.to?.url.searchParams.get('item') ?? null);
+		const samePathname =
+			!!nav.from && nav.to?.url.pathname === nav.from.url.pathname;
+		const effectiveType = samePathname ? nav.type : 'goto';
+		paneMintSettle.onNavigate(effectiveType, nav.to?.url.searchParams.get('item') ?? null);
 	});
 
 	// Reactive parse of the current search query — shared with the
@@ -3761,17 +3777,31 @@
 			aria-label="Item detail"
 			style={paneWidth != null ? `--pane-width: ${paneWidth}px` : undefined}
 		>
-			<ItemDetail
-				ref={paneMintRef ?? openItemRef}
-				embedded
-				{username}
-				{wsSlug}
-				{collSlug}
-				onClose={closeItemPane}
-				onGone={closeItemPane}
-				onNavigateAway={handlePaneNavigateAway}
-				onOpenTarget={handleOpenTarget}
-			/>
+			{#if paneMintRef}
+				<!--
+					Nested (not `{#key}`) on `paneMintRef`, not raw `openItemRef`
+					(PLAN-2154 / TASK-2166; Codex review): while the pane is ALREADY
+					open, `paneMintRef` stays pinned at the last-settled ref through an
+					entire popstate burst, so this branch stays mounted and `ref` never
+					flips mid-burst — the coalescing itself. It only actually
+					mounts/unmounts at a genuine open (closed → first settle) or close
+					(`openItemRef` going null tears down the whole `{#if}` above). A
+					fallback to `openItemRef` here would defeat the settle for exactly
+					the closed→open-burst case, since `paneMintRef` legitimately stays
+					null until the first settle fires.
+				-->
+				<ItemDetail
+					ref={paneMintRef}
+					embedded
+					{username}
+					{wsSlug}
+					{collSlug}
+					onClose={closeItemPane}
+					onGone={closeItemPane}
+					onNavigateAway={handlePaneNavigateAway}
+					onOpenTarget={handleOpenTarget}
+				/>
+			{/if}
 		</aside>
 	{/if}
 </div>
