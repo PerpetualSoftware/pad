@@ -1051,7 +1051,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(closeIsFocused).toBe(false);
 	});
 
-	test('Back chevron: a genuinely slow (but legitimate) destination load still restores focus, past the no-op check window (Codex review round 8)', async ({
+	test('Back chevron: a genuinely slow (but legitimate) destination load still restores focus, however long it takes', async ({
 		page,
 		fixture,
 		request,
@@ -1076,11 +1076,10 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 
 		// Gate A's item fetch — the Back press (B→A) LANDS on it, no
 		// unrelated navigation involved, so the eventual restore is fully
-		// legitimate. Held for 400ms: comfortably past the 200ms no-op check
-		// (which only disarms a genuine coalesced-to-nothing case — itemSlug
-		// has already changed here by then, so it must NOT fire) and past
-		// what the old, since-replaced flat 600ms wall-clock timeout design
-		// would have tolerated on a slower run.
+		// legitimate — no matter how long the fetch takes, the restore has no
+		// wall-clock deadline to race (the design deliberately dropped the
+		// timer-based "give up waiting" heuristic explored in earlier review
+		// rounds; see the focus-restore block's comment for why).
 		let releaseGate: () => void = () => {};
 		const gate = new Promise<void>((resolve) => {
 			releaseGate = resolve;
@@ -1101,7 +1100,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
 		await expect(pane.locator('.pane-header--minimal')).toBeVisible();
 
-		// Wait well past the 200ms no-op check before releasing — the pop
+		// Hold well past the mint-settle window before releasing — the pop
 		// must still be pending, not silently abandoned.
 		await page.waitForTimeout(400);
 		releaseGate();
