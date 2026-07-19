@@ -77,17 +77,27 @@ function historyLength(page: Page): Promise<number> {
 }
 
 /**
- * Whether the currently-focused element is a pane-header Back button
- * (`aria-label="Back"`). A `page.evaluate` read of `document.activeElement`,
- * NOT `expect(locator).toBeFocused()` — this file's other focus checks
+ * Whether keyboard focus currently sits INSIDE the detail pane (`.item-pane`).
+ * This is the actual "focus per hop" acceptance criterion (PLAN-2154 R1 /
+ * TASK-2162): each in-pane hop moves focus into the STABLE aria-labeled
+ * `<aside>` region so the next `j`/`k` can't steal to list-nav — the exact
+ * element (the region itself vs. a control within it) is not load-bearing, so
+ * this asserts containment rather than a specific button.
+ *
+ * A `page.evaluate` read of `document.activeElement`, NOT
+ * `expect(locator).toBeFocused()` — this file's other focus checks
  * (pane-a11y-focus.spec.ts) use the same `evaluate`-based pattern, which is
  * the reliable one under heavy parallel load: a bare locator-based
  * `toBeFocused()` polls independently of the app's own microtask queue and
  * can observe a still-mid-flush DOM after a header swap, where an
  * `evaluate` round-trip naturally lets pending Svelte effects settle first.
  */
-function backButtonIsFocused(page: Page): Promise<boolean> {
-	return page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Back');
+function paneHasFocus(page: Page): Promise<boolean> {
+	return page.evaluate(() => {
+		const active = document.activeElement;
+		const pane = document.querySelector('.item-pane');
+		return !!active && !!pane && pane.contains(active);
+	});
 }
 
 /** Enable the controller test hook for all navigations in this context. */
@@ -590,10 +600,24 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => openItemParam(page)).not.toBeNull();
 		await expect(pane).toBeVisible();
 
-		// At depth 0, ESC falls through to today's behavior: no row is focused,
-		// so the two-level "return focus to list" step is skipped and the
-		// escape stack's pane handler closes it directly — unchanged from
-		// before TASK-2163.
+		// At depth 0, ESC falls through to today's two-level desktop behavior
+		// (TASK-2118). Focus-per-hop (TASK-2162) keeps focus INSIDE the pane
+		// across the drills+pops, and the paned row A carries `.focused` again
+		// once the stack unwinds to depth 0, so the FIRST depth-0 ESC returns
+		// focus to the list (level one) — the pane stays open, `?item=` truthy —
+		// rather than closing outright. (Before focus-per-hop, drilling had
+		// dropped focus to <body>, so this branch was skipped and the pane
+		// closed on the first press; keeping focus in the pane is the correct
+		// fix, and it simply restores the standard two-level ESC here.)
+		await page.keyboard.press('Escape');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => openItemParam(page)).not.toBeNull();
+		await expect
+			.poll(() => page.evaluate(() => !!document.activeElement?.closest('.item-card')))
+			.toBe(true);
+
+		// The SECOND depth-0 ESC — now with focus on the list row, outside the
+		// pane — closes it, returning to the pre-pane URL.
 		await page.keyboard.press('Escape');
 		await expect.poll(() => openItemParam(page)).toBeNull();
 		await expect(pane).toBeHidden();
@@ -861,33 +885,33 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 
 		// Press 1: D(3) → C(2). The click triggers a reload (`loading` briefly
 		// true), which swaps the loaded header for the minimal one and
-		// unmounts the just-clicked, focused Back button — Codex review round
-		// 2, P2. Focus must land back on the (re-mounted) Back button once the
-		// reload settles, so a keyboard user can keep popping levels.
+		// unmounts the just-clicked, focused Back button. Focus-per-hop
+		// (TASK-2162) moves focus onto the STABLE pane region synchronously at
+		// the pop, so it stays inside `.item-pane` across that remount — a
+		// following `j`/`k` can't steal to list-nav, and further ESC/Back pops
+		// still land on the detached pane.
 		await expect(backBtn).toBeVisible();
 		await backBtn.focus();
 		await backBtn.click();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
 		await expect.poll(() => openItemParam(page)).toBe(c.slug);
-		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
+		await expect.poll(() => paneHasFocus(page)).toBe(true);
 
-		// Press 2: C(2) → B(1). Focus restored again.
+		// Press 2: C(2) → B(1). Focus stays in the pane again.
 		await backBtn.click();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 		await expect.poll(() => openItemParam(page)).toBe(b.slug);
-		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
+		await expect.poll(() => paneHasFocus(page)).toBe(true);
 
 		// Press 3: B(1) → A(0), the base — chevron disappears, pane stays open.
-		// The terminal pop has no Back button left to land focus on, so it
-		// falls back to the always-present Close button rather than stranding
-		// focus on <body> (Codex review round 4).
+		// The terminal pop has no Back button left to land focus on, but the
+		// pane region itself is always present, so focus stays inside the pane
+		// rather than stranding on <body>.
 		await backBtn.click();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
 		await expect(pane).toBeVisible();
 		await expect(pane.locator('button[aria-label="Back"]')).toHaveCount(0);
-		await expect
-			.poll(() => page.evaluate(() => document.activeElement?.getAttribute('aria-label')))
-			.toBe('Close pane');
+		await expect.poll(() => paneHasFocus(page)).toBe(true);
 	});
 
 	test('Back chevron: a second press while the first pop is still loading still ends with focus restored (Codex review round 3)', async ({
@@ -957,9 +981,10 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 		await expect.poll(() => openItemParam(page)).toBe(b.slug);
 
-		// The pane settled on B — focus must have landed on ITS Back button,
-		// not been consumed early by C's stale, still-outstanding load.
-		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
+		// The pane settled on B — focus stayed inside the pane throughout (each
+		// pop moves it onto the stable region synchronously), not consumed early
+		// or lost to <body> by C's stale, still-outstanding load.
+		await expect.poll(() => paneHasFocus(page)).toBe(true);
 
 		// Release the gate so C's now-superseded fetch can drain (generation-
 		// fenced server-side by `loadData`'s own `myGen === loadGeneration`
@@ -967,7 +992,7 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		releaseGate();
 		await page.waitForTimeout(100);
 		await expect.poll(() => openItemParam(page)).toBe(b.slug);
-		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
+		await expect.poll(() => paneHasFocus(page)).toBe(true);
 	});
 
 	test('Back chevron: a superseding row-click while the pop is still loading does NOT steal focus back into the pane (Codex review round 6)', async ({
@@ -1034,24 +1059,27 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const cRef = openItemParam(page);
 		expect(cRef).not.toBe(aRef);
 
-		// The stalled Back pop's pending focus-restore must NOT fire once A
-		// eventually settles — it was superseded, so it must not steal focus
-		// into C's pane chrome. `backButtonIsFocused` covers the paneDepth>0
-		// case; C is at depth 0, so also check the Close button directly.
+		// The stalled Back pop must NOT reach back and steal focus onto C's pane
+		// CHROME once A eventually settles. Under host-owned focus-per-hop there
+		// is no armed restore intent to mis-fire (TASK-2162 dissolved the exact
+		// TASK-2164 deferred edge this test guarded). We assert the Close button
+		// is never focused — not that focus stays wholly outside the pane, since
+		// C's editor legitimately autofocuses on load (ItemDetail), which is
+		// benign in-pane focus, not the mis-fire onto the Close/Back control.
 		const closeIsFocused = () =>
 			page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Close pane');
 		await expect.poll(closeIsFocused).toBe(false);
 
 		// Release the gate — A's now-superseded fetch drains (generation-
-		// fenced by `loadData`'s own checks), and the abandoned restore must
-		// still not fire afterward.
+		// fenced by `loadData`'s own checks), and no stale focus pull may fire
+		// afterward.
 		releaseGate();
 		await page.waitForTimeout(150);
 		await expect.poll(() => openItemParam(page)).toBe(cRef);
 		await expect.poll(closeIsFocused).toBe(false);
 	});
 
-	test('Back chevron: a genuinely slow (but legitimate) destination load still restores focus, however long it takes', async ({
+	test('Back chevron: a genuinely slow (but legitimate) destination load keeps focus in the pane, however long it takes', async ({
 		page,
 		fixture,
 		request,
@@ -1074,12 +1102,12 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await drillTo(page, b.slug);
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 
-		// Gate A's item fetch — the Back press (B→A) LANDS on it, no
-		// unrelated navigation involved, so the eventual restore is fully
-		// legitimate — no matter how long the fetch takes, the restore has no
-		// wall-clock deadline to race (the design deliberately dropped the
-		// timer-based "give up waiting" heuristic explored in earlier review
-		// rounds; see the focus-restore block's comment for why).
+		// Gate A's item fetch — the Back press (B→A) LANDS on it. Focus-per-hop
+		// moves focus onto the stable pane region SYNCHRONOUSLY at the pop, so
+		// it never depends on the destination load at all: no matter how long
+		// the fetch takes, focus can't drift out of the pane while it loads
+		// (TASK-2162 replaced TASK-2164's load-settle-timed restore, which is
+		// why there is no wall-clock deadline to race here).
 		let releaseGate: () => void = () => {};
 		const gate = new Promise<void>((resolve) => {
 			releaseGate = resolve;
@@ -1100,16 +1128,18 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
 		await expect(pane.locator('.pane-header--minimal')).toBeVisible();
 
-		// Hold well past the mint-settle window before releasing — the pop
-		// must still be pending, not silently abandoned.
+		// Focus is already inside the pane (moved there synchronously at the
+		// pop) even while the destination is still loading behind the minimal
+		// header.
+		await expect.poll(() => paneHasFocus(page)).toBe(true);
+
+		// Hold well past the mint-settle window before releasing — the pop's
+		// slow load must not knock focus back out of the pane.
 		await page.waitForTimeout(400);
 		releaseGate();
 		await expect.poll(() => openItemParam(page)).toBe(aRef);
 		await expect(pane.locator('.pane-header--minimal')).toBeHidden();
-
-		const closeIsFocusedAfterSlowLoad = () =>
-			page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Close pane');
-		await expect.poll(closeIsFocusedAfterSlowLoad).toBe(true);
+		await expect.poll(() => paneHasFocus(page)).toBe(true);
 	});
 
 	test('Back chevron: a cold-loaded shared ?item= starts at depth 0 and stays hidden; browser Back still exits the pane', async ({

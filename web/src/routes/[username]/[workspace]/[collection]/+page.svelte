@@ -723,6 +723,12 @@
 			keepFocus: true,
 			state: plan.state,
 		});
+		// Focus per hop (R1): pull focus into the stable pane region NOW, before
+		// this drill's `{#key itemSlug}` remount destroys the just-clicked link
+		// and dumps focus to `<body>`. Covers the editor-link keyboard path too —
+		// EditorLinkPopover.handleHrefClick hides the popover (removing the
+		// focused anchor) synchronously before calling in here.
+		focusPaneRegion();
 	}
 
 	// `ItemDetail`'s `onOpenTarget` seam (PLAN-2154 Architecture B / TASK-2158).
@@ -750,7 +756,14 @@
 	// stale click could in principle race a continuation that already
 	// unwound the stack back to the base.
 	function handlePaneBack() {
-		if (currentPaneState().paneDepth > 0 && !paneNavInFlight()) paneHistoryGo(-1);
+		if (currentPaneState().paneDepth > 0 && !paneNavInFlight()) {
+			paneHistoryGo(-1);
+			// Focus per hop (R1) — same rationale as `navigatePaneTo`: the pop
+			// remounts the pane content and unmounts the just-clicked Back button,
+			// so move focus onto the stable region before that drop can reach
+			// `<body>` (where the next `j`/`k` would steal to list-nav).
+			focusPaneRegion();
+		}
 	}
 
 	// The pane's ItemDetail fires `onNavigateAway` for TWO distinct cases, which
@@ -918,6 +931,49 @@
 		if (!target) return false;
 		target.focus();
 		return true;
+	}
+
+	// Focus per hop (PLAN-2154 Architecture C / R1, TASK-2162). Move keyboard
+	// focus INTO the stable pane region on each in-pane hop — a drill
+	// (`navigatePaneTo`, the clicked link), an in-pane Back (`handlePaneBack`,
+	// the clicked Back chevron), or a depth-aware ESC pop. Each hop changes
+	// `?item=`, which remounts ItemDetail's `{#key itemSlug}` subtrees (and
+	// swaps its loaded↔minimal header) and DESTROYS whatever link/row/button
+	// was focused; `keepFocus` then has nothing to restore, so focus falls to
+	// `<body>`, where the NEXT `j`/`k` runs list-nav (`handlePageKeydown`'s
+	// `.item-pane` bail doesn't match `<body>`) and laterally re-targets the
+	// drilled `?item=`, corrupting the stack (R1).
+	//
+	// We focus the aria-labeled `<aside>` (`paneEl`) itself — it lives OUTSIDE
+	// every `{#key}` and the header swap, so it's STABLE across the remount.
+	// Called SYNCHRONOUSLY at the hop (while the just-activated control is still
+	// in the DOM), so focus moves onto the stable region BEFORE the imminent
+	// remount removes that control — the removed control never had focus to
+	// drop. Focus now sits inside `.item-pane`, so `handlePageKeydown` bails and
+	// `j`/`k` stay inert. This is the plan's serializable "focus per hop"
+	// target: no stored element ref (keyed remounts destroy those) — `paneEl`
+	// is re-found via its binding, never captured across a hop.
+	//
+	// The plan's "focus the originating link if still in the DOM, else the pane
+	// heading" reduces to this region focus in practice: the originating link
+	// always sits inside a `{#key itemSlug}` subtree that remounts on the very
+	// item change the hop triggers, so it is NEVER still in the DOM once the pop
+	// lands — the "else the pane heading" fallback is the operative branch, and
+	// re-finding the link across TASK-2166's mint settle is the unbounded timing
+	// tail we deliberately don't chase.
+	//
+	// Runs on BOTH desktop and the mobile overlay: on mobile `j`/`k` is already
+	// inert (the list is hidden), but focus must still not strand on `<body>`
+	// behind the overlay after a Back/drill — the synchronous belt this
+	// provides is what TASK-2164's now-retired `pendingBackFocus` used to give
+	// the mobile Back path, and the mobile focus trap's `focusin` is the async
+	// net on top. `{preventScroll:true}` so the programmatic focus never jumps
+	// the pane's scroll position (nor summons the mobile keyboard — `paneEl` is
+	// a non-editable region, not an input).
+	function focusPaneRegion() {
+		if (!browser) return;
+		if (!openItemRef || !paneEl) return;
+		paneEl.focus({ preventScroll: true });
 	}
 
 	// ── Resizable detail pane + persisted width (PLAN-2105 / TASK-2114) ─
@@ -1179,6 +1235,48 @@
 			window.removeEventListener('keydown', onTrapKeydown);
 			document.removeEventListener('focusin', onFocusIn);
 		};
+	});
+
+	// Desktop focusin backstop (PLAN-2154 Architecture C / R1, TASK-2162) — the
+	// NARROWED desktop mirror of the mobile trap's focusin catch-all above.
+	// `focusPaneRegion` (fired synchronously at each hop) is the primary R1
+	// mechanism; this is the async safety net for a focus drop that lands
+	// LATER than that synchronous focus — e.g. an inner `{#key itemSlug}`
+	// subtree, or EditorLinkPopover's anchor, being removed a tick after the
+	// hop. It re-pulls focus into the pane ONLY when focus DROPS to `<body>`
+	// (the R1 removed-control case) AND the focus it dropped FROM was inside
+	// `.item-pane`. It must NOT fire for a deliberate Tab / click OUT to the
+	// list — the desktop split keeps the list reachable — so any outside
+	// target that ISN'T bare `<body>` (a real row/control) is left untouched.
+	//
+	// `focusin`'s own `relatedTarget` (the blurring element) is unreliable in
+	// exactly the R1 case — the element was REMOVED, so it's already gone — so
+	// we remember whether the last settled focus was inside the pane ourselves
+	// rather than reading it off the event.
+	$effect(() => {
+		if (!browser) return;
+		if (!paneEl || viewport.isMobile || !openItemRef) return;
+		const region = paneEl;
+		let lastFocusWasInPane = region.contains(document.activeElement);
+		function onFocusIn(e: FocusEvent) {
+			const t = e.target as Element | null;
+			if (t && region.contains(t)) {
+				lastFocusWasInPane = true;
+				return;
+			}
+			// Dropped to <body> out of the pane → pull it back into the stable
+			// region. `region.focus()` re-fires focusin with the region as target,
+			// which the branch above treats as "inside" (no loop).
+			if (t === document.body && lastFocusWasInPane) {
+				region.focus({ preventScroll: true });
+				return;
+			}
+			// A real element outside the pane (a list row/control the user Tabbed
+			// or clicked to) — legitimate on the desktop split; stand down.
+			lastFocusWasInPane = false;
+		}
+		document.addEventListener('focusin', onFocusIn);
+		return () => document.removeEventListener('focusin', onFocusIn);
 	});
 
 	// Return focus to the originating row whenever the pane CLOSES while this
@@ -2672,7 +2770,19 @@
 				currentPaneState().paneDepth > 0
 			) {
 				e.preventDefault();
-				if (!paneNavInFlight()) paneHistoryGo(-1);
+				if (!paneNavInFlight()) {
+					paneHistoryGo(-1);
+					// Focus per hop (R1): land focus on the stable pane region so a
+					// control that WAS focused (e.g. the user Tabbed to the Back
+					// chevron) and is then removed by the pop's header swap / content
+					// remount can't strand focus on `<body>`. This targets `paneEl`
+					// itself, never a control the pop removes, so it doesn't rely on a
+					// `focusin` firing for the removal. It doesn't fight the depth-0
+					// two-level ESC below: that's a SEPARATE, later press, and from
+					// `paneEl` (inside `.item-pane`) it correctly runs
+					// `returnFocusToList` on the way out.
+					focusPaneRegion();
+				}
 				return;
 			}
 			// Desktop two-level ESC (TASK-2122): from INSIDE the open pane (a

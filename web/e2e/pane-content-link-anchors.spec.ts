@@ -301,3 +301,182 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		expect(openItemParam(page)).toBe(new URL(paneUrlAtParent).searchParams.get('item'));
 	});
 });
+
+/**
+ * Focus per hop (PLAN-2154 Architecture C / R1, TASK-2162).
+ *
+ * Each in-pane hop (a content-link DRILL or an in-pane BACK) changes `?item=`,
+ * which remounts ItemDetail's `{#key itemSlug}` subtrees and destroys the very
+ * link/row the user just activated. `keepFocus` then has nothing to restore, so
+ * focus falls to `<body>` — where the next `j`/`k` runs list-nav
+ * (`handlePageKeydown`'s `.item-pane` bail doesn't match `<body>`) and could
+ * laterally re-target the drilled `?item=`. The host moves focus onto the
+ * STABLE aria-labeled `<aside>` region synchronously at each hop
+ * (`focusPaneRegion`), backed by a desktop `focusin` net, so focus stays inside
+ * `.item-pane` across the remount and `j`/`k` stay inert.
+ *
+ * These drive REAL content-link clicks (and a keyboard activation) so the
+ * anchor-removed-by-remount path is exercised end to end — `pane-controller`'s
+ * `drillTo` test hook calls `navigatePaneTo` directly and can't reproduce it.
+ * The editor content-body link path (EditorLinkPopover, which additionally
+ * hides its popover — removing the focused anchor — synchronously) funnels
+ * through the SAME `navigatePaneTo` → `focusPaneRegion` chokepoint these cover,
+ * with the synchronous-removal case caught by the same desktop `focusin` net.
+ */
+function paneHasFocus(page: Page): Promise<boolean> {
+	return page.evaluate(() => {
+		const active = document.activeElement;
+		const pane = document.querySelector('.item-pane');
+		return !!active && !!pane && pane.contains(active);
+	});
+}
+
+test.describe('focus per hop (PLAN-2154 / TASK-2162)', () => {
+	test.beforeEach(({}, testInfo) => {
+		test.skip(
+			testInfo.project.name !== 'desktop-chromium',
+			'focus-per-hop is a desktop-split concern; the mobile overlay runs its own focus trap',
+		);
+	});
+
+	// Gate GET fetches for one item ref so a hop's DESTINATION stays on the
+	// minimal (loading) pane header — no content, no editor. That isolates
+	// `focusPaneRegion` as the ONLY thing that could have put focus in the pane
+	// during the load window (ItemDetail's editor autofocuses once the item
+	// loads, which would otherwise mask whether the synchronous hop focus fired
+	// at all). Returns a `release` to drain the fetch afterward.
+	async function gateItemFetch(page: Page, ref: string): Promise<() => void> {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		await page.route(`**/api/v1/workspaces/*/items/${ref}`, async (route) => {
+			if (route.request().method() !== 'GET') {
+				await route.continue();
+				return;
+			}
+			await gate;
+			await route.continue();
+		});
+		return release;
+	}
+
+	test('a mouse content-link drill lands focus inside the pane (while loading), and the next j does not steal to list-nav', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+		const a = await seedDoc(fixture, request, 'Focus hop rel alpha');
+		const b = await seedDoc(fixture, request, 'Focus hop rel bravo');
+		const bRef = await itemRef(fixture, request, b.slug);
+		await seedRelatedLink(fixture, request, a.slug, b.id);
+		await page.goto(docsUrl(fixture));
+
+		await itemCard(page, 'Focus hop rel alpha').first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+
+		// Gate B so the drill's destination stalls on the loading header — the
+		// editor never mounts, so focus in the pane can only be `focusPaneRegion`.
+		const releaseB = await gateItemFetch(page, bRef);
+
+		// DRILL A→B by clicking the related-item link. Its anchor lives inside a
+		// `{#key itemSlug}` subtree that this very drill remounts — the exact R1
+		// "clicked link destroyed, focus falls to <body>" case.
+		const relLink = pane.locator('.link-target', { hasText: 'Focus hop rel bravo' });
+		await expect(relLink).toBeVisible();
+		await relLink.click();
+		await expect.poll(() => openItemParam(page)).toBe(bRef);
+		await expect(pane.locator('.pane-header--minimal')).toBeVisible();
+
+		// R1: focus is INSIDE the pane even mid-load, purely from the hop's
+		// synchronous region focus — not dropped to <body>.
+		await expect.poll(() => paneHasFocus(page)).toBe(true);
+
+		// The next `j` is inert (focus in the pane → the keydown handler bails),
+		// so the drilled `?item=` is untouched — no lateral list re-target.
+		await page.keyboard.press('j');
+		await page.waitForTimeout(250); // outlast the pane-follow debounce
+		expect(openItemParam(page)).toBe(bRef);
+		await expect.poll(() => paneHasFocus(page)).toBe(true);
+
+		releaseB();
+		await expect(pane.locator('.title', { hasText: /Focus hop rel bravo/ })).toBeVisible();
+	});
+
+	test('a keyboard content-link drill (focus the link, press Enter) also lands focus inside the pane while loading', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+		const a = await seedDoc(fixture, request, 'Focus hop kbd alpha');
+		const b = await seedDoc(fixture, request, 'Focus hop kbd bravo');
+		const bRef = await itemRef(fixture, request, b.slug);
+		await seedRelatedLink(fixture, request, a.slug, b.id);
+		await page.goto(docsUrl(fixture));
+
+		await itemCard(page, 'Focus hop kbd alpha').first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+
+		const releaseB = await gateItemFetch(page, bRef);
+
+		const relLink = pane.locator('.link-target', { hasText: 'Focus hop kbd bravo' });
+		await expect(relLink).toBeVisible();
+		// KEYBOARD drill: focus the anchor and activate it with Enter (an <a>
+		// fires its click handler on Enter). This is the keyboard analogue of
+		// the editor-link path, where the focused anchor is removed as the drill
+		// fires and focus must be recovered into the pane.
+		await relLink.focus();
+		await page.keyboard.press('Enter');
+		await expect.poll(() => openItemParam(page)).toBe(bRef);
+		await expect(pane.locator('.pane-header--minimal')).toBeVisible();
+		await expect.poll(() => paneHasFocus(page)).toBe(true);
+
+		releaseB();
+		await expect(pane.locator('.title', { hasText: /Focus hop kbd bravo/ })).toBeVisible();
+	});
+
+	test('an in-pane Back keeps focus inside the pane (while the popped-to item loads)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+		const a = await seedDoc(fixture, request, 'Focus hop back alpha');
+		const b = await seedDoc(fixture, request, 'Focus hop back bravo');
+		await seedRelatedLink(fixture, request, a.slug, b.id);
+		await page.goto(docsUrl(fixture));
+
+		await itemCard(page, 'Focus hop back alpha').first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		const aRef = openItemParam(page)!;
+
+		const relLink = pane.locator('.link-target', { hasText: 'Focus hop back bravo' });
+		await expect(relLink).toBeVisible();
+		await relLink.click();
+		await expect(pane.locator('.title', { hasText: /Focus hop back bravo/ })).toBeVisible();
+
+		// Gate A (the Back destination) so the pop stalls on the loading header —
+		// focus in the pane during that window is purely `focusPaneRegion`.
+		const releaseA = await gateItemFetch(page, aRef);
+
+		// In-pane Back (‹) pops B→A. The pop remounts the pane content and
+		// unmounts the just-clicked Back button; focus must stay inside the pane.
+		const backBtn = pane.locator('button[aria-label="Back"]');
+		await expect(backBtn).toBeVisible();
+		await backBtn.click();
+		await expect.poll(() => openItemParam(page)).toBe(aRef);
+		await expect(pane.locator('.pane-header--minimal')).toBeVisible();
+		await expect.poll(() => paneHasFocus(page)).toBe(true);
+
+		releaseA();
+		await expect(pane.locator('.title', { hasText: /Focus hop back alpha/ })).toBeVisible();
+	});
+});

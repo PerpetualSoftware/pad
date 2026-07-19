@@ -302,22 +302,6 @@
 	let titleDraft = $state('');
 	let titleInputEl = $state<HTMLTextAreaElement>();
 
-	// PLAN-2154 Architecture C / TASK-2164 (Codex review round 2, P2): the
-	// pane chrome's Back chevron. Bound by BOTH the loaded and minimal
-	// headers below (mutually exclusive `{#if}`s, so only one is ever
-	// mounted) so a pending focus-restore (see `pendingBackFocus` /
-	// `handleBackClick` near `startEditTitle`) can reach whichever one
-	// re-mounts after the reload settles.
-	let backBtnEl = $state<HTMLButtonElement>();
-	// The Close button — the focus-restore fallback for the TERMINAL Back pop
-	// (landing at depth 0, where there's no Back button left to land on;
-	// Codex review round 4). Bound by BOTH headers, same reasoning as
-	// `backBtnEl` above: if the pop's destination is slow/failed, the
-	// MINIMAL header can still be mounted when the restore fires, and it
-	// needs its own Close button bound or the restore silently no-ops
-	// (Codex review round 5).
-	let closeBtnEl = $state<HTMLButtonElement>();
-
 	let fields = $derived<Record<string, any>>(item ? parseFields(item) : {});
 	// Tags live on item.tags (a JSON-array string), NOT in the schema.
 	// parseTags is defensive (tolerates empty/garbage) and dedupes
@@ -1899,94 +1883,26 @@
 		el.style.height = el.scrollHeight + 'px';
 	}
 
-	// PLAN-2154 Architecture C / TASK-2164 (Codex review round 2, P2): the
-	// Back chevron's own click triggers a reload of the drilled-to item —
-	// `loadData()` sets `loading = true`, which swaps the loaded pane header
-	// for the minimal one and UNMOUNTS the just-clicked (and browser-focused)
-	// Back button, dropping focus to <body>. Without restoring it, a
-	// keyboard user popping a multi-level stack loses their place after every
-	// press. Mirrors the `pendingNewItemEdit` pattern above: flag the intent,
-	// then act once the reload settles. Deliberately narrow — this only
-	// re-anchors focus on the Back button's OWN click, not the general
-	// "focus per hop" for arbitrary content-link drills (TASK-2162).
+	// PLAN-2154 Architecture C / R1 — the Back chevron's onclick. A plain
+	// notify: the host (`[collection]/+page.svelte::handlePaneBack`) owns the
+	// fenced `paneHistoryGo(-1)` traversal AND the focus-per-hop restore.
 	//
-	// The design below survived several review rounds against real races;
-	// summarized here rather than as a round-by-round diary.
-	//
-	// 1. Keyed off `itemSlug` actually CHANGING, not an observed `loading`
-	//    true→false transition. An earlier `loading`-transition design let a
-	//    second press fired while a PRIOR item was still loading — see (2) —
-	//    latch onto that STALE, already-in-flight cycle instead of its own
-	//    (`paneNavInFlight()` only fences the `history.go` traversal, not the
-	//    data fetch). Comparing `itemSlug` against the ref captured at click
-	//    time needs no "did I see the right transition" bookkeeping: once it
-	//    differs AND the new item's load has finished, the pop is done.
-	//
-	// 2. GENERATION-FENCED against a SUPERSEDING, unrelated navigation.
-	//    Comparing only `itemSlug` treats ANY later change as "the Back pop
-	//    landed" — so if the user clicks a different row/link while the Back
-	//    destination is still loading, that unrelated navigation's `itemSlug`
-	//    change satisfies the check just as well, and focus gets stolen into
-	//    a pane the user never asked to restore-focus on. `loadGeneration`
-	//    (bumped synchronously at the top of EVERY `loadData()` call,
-	//    regardless of what triggered it) gives an exact, timing-independent
-	//    fence: capture it at click time and require the settled generation
-	//    to be EXACTLY one more — the Back click's own load and nothing else
-	//    raced in between. A mismatch means something else superseded it;
-	//    abandon the restore instead of stealing focus.
-	//
-	// KNOWN LIMITATION (deliberately not chased further — see below): a Back
-	// immediately reversed by Forward can, in principle, coalesce to a NET
-	// NO-OP (TASK-2166's provider-mint settle can settle back onto the exact
-	// ref this component started on, which Svelte's fine-grained reactivity
-	// then treats as no change at all) — leaving `pendingBackFocus` armed
-	// with nothing left to ever falsify the generation check against, so the
-	// NEXT, wholly unrelated single-load navigation could satisfy
-	// `backFocusStartGen + 1` by coincidence and land focus on ITS Close/Back
-	// button instead of wherever that unrelated navigation would have
-	// naturally put it. Three review rounds (7-9) tried progressively more
-	// careful wall-clock "give up waiting" timeouts to close this — each one
-	// got shown to be racing an ever-longer worst-case bound elsewhere in the
-	// pipeline (the mint settle, then the settle PLUS the popstate
-	// round-trip, then `paneHistoryGo`'s own 500ms fallback on top of both) —
-	// confirming a fixed-duration heuristic is structurally the wrong tool: closing
-	// it for real needs an explicit "did this specific click's traversal
-	// resolve" signal from the host (`+page.svelte`), not inference from
-	// elapsed time. That's new cross-component plumbing, not a hardening
-	// pass on the existing effect, so it's left as a documented, narrow,
-	// low-severity gap for TASK-2162 (the already-planned general "focus per
-	// hop" follow-up) rather than an ever-growing pile of timing patches
-	// here: the WORST outcome is focus landing on a nearby, still-sensible,
-	// keyboard-reachable pane control (Close or Back) instead of the ideal
-	// target — not lost, not on a hidden node, not a correctness or data
-	// issue — and it requires the fairly deliberate Back-then-Forward
-	// sequence to trigger at all.
-	let pendingBackFocus = $state(false);
-	let backFocusStartSlug = '';
-	let backFocusStartGen = 0;
+	// TASK-2164 originally kept focus restoration HERE — an armed
+	// `pendingBackFocus` intent that, once the pop's reload settled, focused
+	// this component's Back/Close button. That inference-from-load-settling
+	// design carried a documented, deliberately-deferred edge (a Back
+	// immediately reversed by Forward could coalesce to a net no-op that left
+	// the intent armed, so the next unrelated navigation stole focus onto a
+	// pane control by coincidence) whose real fix TASK-2164 identified as "an
+	// explicit 'did this traversal resolve' signal from the host, not
+	// inference from elapsed time." TASK-2162 supplies exactly that: the host
+	// moves focus into the STABLE pane region SYNCHRONOUSLY at each hop (drill
+	// AND back), so there is no armed intent left to mis-fire — the edge is
+	// dissolved, not patched. See `focusPaneRegion` in the host for the full
+	// "focus per hop" rationale. This component therefore no longer restores
+	// focus itself; `onBack` is a pure notify like `onClose`/`onOpenTarget`.
 	function handleBackClick() {
-		pendingBackFocus = true;
-		backFocusStartSlug = itemSlug;
-		backFocusStartGen = loadGeneration;
 		onBack?.();
-	}
-	$effect(() => {
-		if (!pendingBackFocus) return;
-		if (itemSlug === backFocusStartSlug) return; // the pop hasn't landed yet
-		if (loading) return; // the new item is still loading
-		pendingBackFocus = false; // one-shot regardless of outcome below
-		if (loadGeneration !== backFocusStartGen + 1) return; // superseded — abandon, don't steal focus
-		// At depth>0 there's a fresh Back button to land on. At depth 0 (the
-		// terminal pop, back to the base) the Back button is gone — Codex
-		// review round 4 flagged that this left focus stranded on <body> with
-		// the pane still open. Fall back to the always-present Close button
-		// rather than nothing: a stable, keyboard-reachable control, not a
-		// full "focus per hop" implementation (still TASK-2162's scope).
-		restoreBackFocus();
-	});
-	async function restoreBackFocus() {
-		await tick();
-		(paneDepth > 0 ? backBtnEl : closeBtnEl)?.focus({ preventScroll: true });
 	}
 
 	function showSaved() {
@@ -3439,7 +3355,6 @@
 			{#if paneDepth > 0}
 				<button
 					type="button"
-					bind:this={backBtnEl}
 					class="pane-header-btn pane-back-btn"
 					onclick={handleBackClick}
 					title="Back"
@@ -3448,7 +3363,6 @@
 			{/if}
 			<button
 				type="button"
-				bind:this={closeBtnEl}
 				class="pane-header-btn"
 				onclick={() => onClose?.()}
 				title="Close pane"
@@ -3529,7 +3443,6 @@
 					{#if paneDepth > 0}
 						<button
 							type="button"
-							bind:this={backBtnEl}
 							class="pane-header-btn pane-back-btn"
 							onclick={handleBackClick}
 							title="Back"
@@ -3566,7 +3479,6 @@
 					>↗</a>
 					<button
 						type="button"
-						bind:this={closeBtnEl}
 						class="pane-header-btn"
 						onclick={() => onClose?.()}
 						title="Close pane"
