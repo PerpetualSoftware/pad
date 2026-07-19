@@ -53,6 +53,7 @@
 	} from '$lib/collections/paneController';
 	import { paneFocusables, nextTrapTarget, resolvePaneReturnTarget } from '$lib/collections/paneFocus';
 	import { resolvePaneTarget } from '$lib/collections/paneTarget';
+	import { createPaneMintSettle, PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
 	import { pushEscapeHandler, runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
 
@@ -151,6 +152,61 @@
 	// No pane component is mounted yet (TASK-2112); this is the URL-state
 	// groundwork the pane will read.
 	let openItemRef = $derived(page.url.searchParams.get('item'));
+
+	// ── Provider-mint settle (PLAN-2154 Architecture D / TASK-2166) ────────
+	// `openItemRef` above is the immediate URL truth — used for the pane's
+	// mount boundary (`{#if openItemRef}`), title precedence, focus, and
+	// every other cheap read. The `<ItemDetail>` `ref` PROP is different: it
+	// re-drives `loadData`/`collabKey` (destroy + fresh-mint the Y.Doc/WS
+	// provider), which is expensive to fire once per intermediate popstate
+	// during a held Back/Forward. `paneMintRef` is the coalesced value —
+	// updated immediately for a deliberate open/drill/close, but settled
+	// (~PANE_MINT_SETTLE_MS, mirroring the j/k `PANE_FOLLOW_DEBOUNCE_MS`
+	// coalescing) for a same-pathname popstate burst so only the FINAL ref
+	// of the burst ever mints. See `$lib/collections/paneMintSettle` for the
+	// pure, unit-tested decision logic this just wires up.
+	//
+	// This component is REUSED across a workspace/collection switch (same
+	// route id, different `page.params`) — `wsSlug`/`collSlug` update
+	// IMMEDIATELY on any such popstate. Correcting `paneMintRef` from
+	// `afterNavigate` alone isn't enough (Codex review, PR #971 round 2):
+	// SvelteKit commits the new `page.params`/`page.url` — and Svelte
+	// re-renders every `$derived` over them, including `wsSlug`/`collSlug`
+	// AND the `<ItemDetail>` props built from them — BEFORE `afterNavigate`
+	// fires. So a plain `afterNavigate`-only fix still lets ONE render pass
+	// through with the DESTINATION `wsSlug`/`collSlug` paired against the
+	// still-stale SOURCE `paneMintRef`. `paneMintForRoute` below closes that
+	// gap: it's a `$derived` — recomputed SYNCHRONOUSLY in the very same
+	// reactive pass as `wsSlug`/`collSlug`, not a render-cycle later like an
+	// `afterNavigate`-driven correction — that falls back to the live,
+	// always-route-consistent `openItemRef` the instant `page.url.pathname`
+	// (reactive) diverges from `paneMintPathname` (the plain, non-reactive
+	// pathname `paneMintRef` was captured for, corrected by `afterNavigate`
+	// below). A same-pathname settle-in-progress (the actual pane-burst
+	// case) is unaffected: the pathnames match throughout, so this clamp is
+	// a no-op and `paneMintRef` — including a settling `null` — passes
+	// through untouched.
+	let paneMintRef = $state<string | null>(page.url.searchParams.get('item'));
+	// `string`, not SvelteKit's route-typed `Pathname` — `nav.to.url` (a plain
+	// `URL`) isn't route-typed, so the annotation avoids a type mismatch on
+	// the `afterNavigate` assignment below.
+	let paneMintPathname: string = page.url.pathname;
+	const paneMintSettle = createPaneMintSettle({
+		settleMs: PANE_MINT_SETTLE_MS,
+		onSettle: (ref) => {
+			paneMintRef = ref;
+		},
+	});
+	afterNavigate((nav) => {
+		const samePathname =
+			!!nav.from && nav.to?.url.pathname === nav.from.url.pathname;
+		const effectiveType = samePathname ? nav.type : 'goto';
+		paneMintPathname = nav.to?.url.pathname ?? paneMintPathname;
+		paneMintSettle.onNavigate(effectiveType, nav.to?.url.searchParams.get('item') ?? null);
+	});
+	let paneMintForRoute = $derived(
+		page.url.pathname === paneMintPathname ? paneMintRef : openItemRef,
+	);
 
 	// Reactive parse of the current search query — shared with the
 	// search-dispatch effect below so it doesn't reparse per run.
@@ -1439,6 +1495,9 @@
 		// Drop any in-flight `history.go` continuation (and its fallback timer) so
 		// a late afterNavigate latch can't write to the unmounted page.
 		clearPaneGo();
+		// Drop any pending provider-mint settle so a late timer can't write
+		// `paneMintRef` on the unmounted page (PLAN-2154 / TASK-2166).
+		paneMintSettle.cancel();
 		// Scroll save/restore cleanup is owned by createScrollRestoration
 		// (snapshot.capture fires on navigate-away; the helper's $effect
 		// teardown cancels any in-flight RAF).
@@ -3746,18 +3805,37 @@
 			aria-label="Item detail"
 			style={paneWidth != null ? `--pane-width: ${paneWidth}px` : undefined}
 		>
-			<ItemDetail
-				ref={openItemRef}
-				embedded
-				{username}
-				{wsSlug}
-				{collSlug}
-				onClose={closeItemPane}
-				onGone={closeItemPane}
-				onNavigateAway={handlePaneNavigateAway}
-				onOpenTarget={handleOpenTarget}
-				onBack={handlePaneBack}
-			/>
+			{#if paneMintForRoute}
+				<!--
+					Nested (not `{#key}`) on `paneMintForRoute`, not raw `openItemRef`
+					(PLAN-2154 / TASK-2166; Codex review): while the pane is ALREADY
+					open on the SAME route, `paneMintForRoute` (== `paneMintRef`) stays
+					pinned at the last-settled ref through an entire popstate burst, so
+					this branch stays mounted and `ref` never flips mid-burst — the
+					coalescing itself. It only actually mounts/unmounts at a genuine
+					open (closed → first settle) or close (`openItemRef` going null
+					tears down the whole `{#if}` above) — OR a route change, where
+					`paneMintForRoute` falls through to the live `openItemRef` instead
+					(see the declaration above). A bare `paneMintRef` fallback to
+					`openItemRef` here would defeat the settle for the closed→open-
+					burst case, since `paneMintRef` legitimately stays null until the
+					first settle fires; `paneMintForRoute`'s fallback is scoped to an
+					actual pathname change, not a null-during-settle, so it doesn't
+					reintroduce that bug.
+				-->
+				<ItemDetail
+					ref={paneMintForRoute}
+					embedded
+					{username}
+					{wsSlug}
+					{collSlug}
+					onClose={closeItemPane}
+					onGone={closeItemPane}
+					onNavigateAway={handlePaneNavigateAway}
+					onOpenTarget={handleOpenTarget}
+					onBack={handlePaneBack}
+				/>
+			{/if}
 		</aside>
 	{/if}
 </div>
