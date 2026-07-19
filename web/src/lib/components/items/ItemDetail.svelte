@@ -309,6 +309,10 @@
 	// `handleBackClick` near `startEditTitle`) can reach whichever one
 	// re-mounts after the reload settles.
 	let backBtnEl = $state<HTMLButtonElement>();
+	// The loaded header's Close button — the focus-restore fallback for the
+	// TERMINAL Back pop (landing at depth 0, where there's no Back button
+	// left to land on; Codex review round 4).
+	let closeBtnEl = $state<HTMLButtonElement>();
 
 	let fields = $derived<Record<string, any>>(item ? parseFields(item) : {});
 	// Tags live on item.tags (a JSON-array string), NOT in the schema.
@@ -1927,14 +1931,17 @@
 		if (itemSlug === backFocusStartSlug) return; // the pop hasn't landed yet
 		if (loading) return; // the new item is still loading
 		pendingBackFocus = false;
-		// Only if the stack still has a level to pop — at depth 0 there's no
-		// Back button left to focus (that terminal case is the general
-		// focus-management scope of TASK-2162, not this one).
-		if (paneDepth > 0) restoreBackFocus();
+		// At depth>0 there's a fresh Back button to land on. At depth 0 (the
+		// terminal pop, back to the base) the Back button is gone — Codex
+		// review round 4 flagged that this left focus stranded on <body> with
+		// the pane still open. Fall back to the always-present Close button
+		// rather than nothing: a stable, keyboard-reachable control, not a
+		// full "focus per hop" implementation (still TASK-2162's scope).
+		restoreBackFocus();
 	});
 	async function restoreBackFocus() {
 		await tick();
-		backBtnEl?.focus({ preventScroll: true });
+		(paneDepth > 0 ? backBtnEl : closeBtnEl)?.focus({ preventScroll: true });
 	}
 
 	function showSaved() {
@@ -3513,6 +3520,7 @@
 					>↗</a>
 					<button
 						type="button"
+						bind:this={closeBtnEl}
 						class="pane-header-btn"
 						onclick={() => onClose?.()}
 						title="Close pane"

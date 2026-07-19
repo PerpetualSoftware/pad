@@ -878,10 +878,16 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
 
 		// Press 3: B(1) → A(0), the base — chevron disappears, pane stays open.
+		// The terminal pop has no Back button left to land focus on, so it
+		// falls back to the always-present Close button rather than stranding
+		// focus on <body> (Codex review round 4).
 		await backBtn.click();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
 		await expect(pane).toBeVisible();
 		await expect(pane.locator('button[aria-label="Back"]')).toHaveCount(0);
+		await expect
+			.poll(() => page.evaluate(() => document.activeElement?.getAttribute('aria-label')))
+			.toBe('Close pane');
 	});
 
 	test('Back chevron: a second press while the first pop is still loading still ends with focus restored (Codex review round 3)', async ({
