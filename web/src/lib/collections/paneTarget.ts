@@ -16,6 +16,19 @@
 
 import type { Item, PaneTarget } from '$lib/types';
 
+/**
+ * The minimal item shape the same-item guard (`isSamePaneTarget` /
+ * `resolvePaneTarget`) actually reads: `id` + `slug` for exact matches and
+ * `item_number` for the case-insensitive ref-number equivalence. Narrowing the
+ * `current` param to this (rather than a full `Item`) lets callers that only
+ * hold a resolved identity — the full-page pane host, which has the master's
+ * `{ id, ref, slug }` from `ItemDetail.onIdentity` and derives `item_number`
+ * from `ref` (PLAN-2154 Architecture E / TASK-2174) — reuse the guard without
+ * fabricating a whole `Item`. A full `Item` is still assignable, so every
+ * existing caller is unaffected.
+ */
+export type PaneGuardItem = Pick<Item, 'id' | 'slug' | 'item_number'>;
+
 // The cross-workspace wiki-link resolver route, `/-/r/{workspace}/{ref}`
 // (`wikiLinksToMarkdown`/`renderMarkdown` in `$lib/utils/markdown`). Its
 // trailing segment IS a ref, but for a possibly-DIFFERENT workspace — taking
@@ -218,7 +231,7 @@ function rawPaneTargetCandidate(target: PaneTarget): string | null {
 /** True when `candidate` is `current`'s own item number, expressed as a
  *  ref-shaped string (case-insensitive, prefix ignored — see `REF_SHAPE`'s
  *  doc comment). False when `current` has no item number. */
-function matchesRefNumber(candidate: string, current: Item): boolean {
+function matchesRefNumber(candidate: string, current: PaneGuardItem): boolean {
 	if (!current.item_number) return false;
 	const number = parseRefNumber(candidate);
 	return number !== null && number === current.item_number;
@@ -251,7 +264,7 @@ function matchesRefNumber(candidate: string, current: Item): boolean {
  * this — and `resolvePaneTarget` — without one; the guard simply never
  * fires.
  */
-export function isSamePaneTarget(target: PaneTarget, current: Item | null | undefined): boolean {
+export function isSamePaneTarget(target: PaneTarget, current: PaneGuardItem | null | undefined): boolean {
 	if (!current) return false;
 	// A cross-workspace href is unambiguous evidence of non-locality — see
 	// `rawPaneTargetCandidate`'s doc comment for why this precedes ref/slug.
@@ -300,7 +313,7 @@ export function isSamePaneTarget(target: PaneTarget, current: Item | null | unde
  *
  * Returns null when the target carries nothing resolvable.
  */
-export function resolvePaneTarget(target: PaneTarget, current?: Item | null): string | null {
+export function resolvePaneTarget(target: PaneTarget, current?: PaneGuardItem | null): string | null {
 	if (isSamePaneTarget(target, current)) return null;
 	return rawPaneTargetCandidate(target);
 }

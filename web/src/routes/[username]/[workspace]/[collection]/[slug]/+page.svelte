@@ -8,7 +8,7 @@
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { createPaneController } from '$lib/collections/paneHostController';
 	import { createPaneMintSettle, PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
-	import { resolvePaneTarget } from '$lib/collections/paneTarget';
+	import { resolvePaneTarget, isSamePaneTarget, type PaneGuardItem } from '$lib/collections/paneTarget';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import type { PaneTarget, ResolvedItemIdentity } from '$lib/types';
@@ -127,10 +127,9 @@
 		clearPaneGo,
 	} = paneController;
 
-	// Parse a ref-shaped candidate's item NUMBER — mirrors
-	// `$lib/collections/paneTarget`'s private `parseRefNumber` (case-insensitive
-	// LETTERS-only prefix, hyphen, positive integer). Null for a non-ref-shaped
-	// string or a zero/non-finite number.
+	// Parse a ref-shaped candidate's item NUMBER (mirrors paneTarget's private
+	// `parseRefNumber`) — used only to derive `masterItem.item_number` from the
+	// master's canonical ref below.
 	function refNumber(candidate: string): number | null {
 		const m = /^([A-Za-z]+)-(\d+)$/.exec(candidate);
 		if (!m) return null;
@@ -138,25 +137,33 @@
 		return Number.isFinite(n) && n > 0 ? n : null;
 	}
 
-	// The forbidden `?item == master` collision (PLAN-2154 D2 / Architecture E).
-	// True when a candidate names the MASTER item itself — by its id, its slug,
-	// its canonical ref, OR (mirroring the server's case-insensitive, item-number
-	// resolution the way `isSamePaneTarget`'s `matchesRefNumber` does) any
-	// ref-shaped alias that resolves to the same item NUMBER. So a hand-crafted
-	// `?item=doc-5` / `DOC-005` / a stale pre-move prefix that all resolve to the
-	// master are caught too, not just the byte-exact canonical ref. Never fires
-	// until the master's identity resolves.
-	function isMaster(candidate: string): boolean {
-		if (!masterIdentity) return false;
-		if (
-			candidate === masterIdentity.id ||
-			candidate === masterIdentity.slug ||
-			candidate === masterIdentity.ref
-		) {
-			return true;
-		}
-		const n = refNumber(candidate);
-		return n !== null && n === refNumber(masterIdentity.ref);
+	// The master projected into the minimal identity the same-item guard reads
+	// (`id` / `slug` / `item_number`), built from `onIdentity`'s {id, ref, slug}
+	// with `item_number` parsed from the canonical `ref`. Reusing the SHARED,
+	// unit-tested `isSamePaneTarget` / `resolvePaneTarget` (rather than a
+	// hand-rolled compare) is what keeps the `?item == master` guard
+	// PROVENANCE-CORRECT: a bare `?item=` value resolves REF-BEFORE-SLUG the same
+	// way the server does, so a ref-shaped SLUG (e.g. master #5 slugged `plan-6`)
+	// is NOT mistaken for the master when `?item=plan-6` actually resolves to
+	// item #6 (Codex review).
+	let masterItem = $derived<PaneGuardItem | null>(
+		masterIdentity
+			? {
+					id: masterIdentity.id,
+					slug: masterIdentity.slug,
+					item_number: refNumber(masterIdentity.ref) ?? 0,
+				}
+			: null,
+	);
+
+	// The forbidden `?item == master` collision (PLAN-2154 D2 / Architecture E)
+	// for a BARE `?item=` string (the cold-load strip + the mount gate). Wrap the
+	// value as an href-channel target so `isSamePaneTarget` applies the server's
+	// ref-before-slug resolution order (ref-shaped → item-NUMBER match, else slug,
+	// plus id) — the documented "bare `?item=` value" contract. `false` while the
+	// master identity is unresolved (`masterItem` null).
+	function isMasterRef(candidate: string): boolean {
+		return isSamePaneTarget({ href: candidate }, masterItem);
 	}
 
 	// Whether to MOUNT the pane. Gating the MOUNT (not merely stripping `?item=`
@@ -169,7 +176,7 @@
 	// master. For a CLICK-driven open the master identity is already resolved, so
 	// there is no delay; only a cold `?item=` load waits one master-load beat
 	// (master-first, which is the correct order anyway).
-	let showPane = $derived(!!openItemRef && !!masterIdentity && !isMaster(openItemRef));
+	let showPane = $derived(!!openItemRef && !!masterIdentity && !isMasterRef(openItemRef));
 
 	// MASTER content-links FIRST-OPEN the pane (PLAN-2154 D3 / Architecture E).
 	// The master's relationship / child / wiki-link / graph surfaces hand up a
@@ -180,20 +187,22 @@
 	// master's room). The master's own <ItemDetail> `fireOpenTarget` already
 	// drops self-links against its loaded item; this is the host-side belt.
 	function handleMasterOpenTarget(target: PaneTarget) {
-		const resolved = resolvePaneTarget(target);
+		// `resolvePaneTarget(target, masterItem)` returns null BOTH when the target
+		// is unresolvable AND when it resolves to the master (the provenance-correct
+		// `isSamePaneTarget` self-guard), so a master self-link is a clean no-op.
+		const resolved = resolvePaneTarget(target, masterItem);
 		if (!resolved) return;
-		if (isMaster(resolved)) return;
 		openItemPaneByRef(resolved);
 	}
 
 	// PANE content-links DRILL in place (PLAN-2154 Architecture A/B). A link
 	// clicked INSIDE the pane re-targets the pane with a back stack via
-	// `navigatePaneTo` — the same-item guard drops a self-referential drill, and
-	// the `?item == master` guard drops one back onto the master.
+	// `navigatePaneTo` — the same `resolvePaneTarget(target, masterItem)` drops a
+	// drill back onto the master (the pane's own `fireOpenTarget` already dropped
+	// drills to the pane's currently-shown item).
 	function guardedDrill(target: PaneTarget) {
-		const resolved = resolvePaneTarget(target);
+		const resolved = resolvePaneTarget(target, masterItem);
 		if (!resolved) return;
-		if (isMaster(resolved)) return;
 		navigatePaneTo(resolved);
 	}
 
@@ -210,7 +219,7 @@
 		if (!browser) return;
 		if (!masterIdentity) return;
 		const current = openItemRef;
-		if (!current || !isMaster(current)) return;
+		if (!current || !isMasterRef(current)) return;
 		const url = new URL(page.url);
 		url.searchParams.delete('item');
 		void goto(`${url.pathname}${url.search}`, {
@@ -258,13 +267,17 @@
 		// stack. If it's open (e.g. a pane was opened from a master graph node's
 		// "Open" anchor, leaving the graph up), defer this ESC to that listener so
 		// one press closes ONLY the graph, not the graph AND the pane (Codex
-		// review). The PANE's OWN (embedded) graph drawer registers in the escape
-		// stack at the higher `graphDrawer` priority and is closed correctly by
-		// `runTopEscape` below, so this bail is scoped to a `.graph-drawer` OUTSIDE
-		// `.item-pane` (a master graph) via `closest`.
-		for (const g of document.querySelectorAll('.graph-drawer')) {
-			if (!g.closest('.item-pane')) return;
-		}
+		// review) — BUT only when the master graph is the FRONTMOST ESC concern.
+		// The PANE's OWN (embedded) graph drawer registers in the escape stack at
+		// the higher `graphDrawer` priority; when it's the top layer it is innermost
+		// and must close first via `runTopEscape` below, so we do NOT bail then (its
+		// own listener will still fire on the master graph — an inherent limit of
+		// that standalone listener — but at least the innermost layer closes). The
+		// master graph is a `.graph-drawer` OUTSIDE `.item-pane` (`closest`).
+		const hasMasterGraph = [...document.querySelectorAll('.graph-drawer')].some(
+			(g) => !g.closest('.item-pane'),
+		);
+		if (hasMasterGraph && topEscapePriority() !== ESCAPE_PRIORITY.graphDrawer) return;
 		// A HELD key auto-repeats; only the initial physical press acts.
 		if (e.repeat) {
 			e.preventDefault();
