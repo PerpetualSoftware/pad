@@ -3307,6 +3307,20 @@
 {#if embedded && (loading || error || !item || !collection)}
 	<header class="pane-header pane-header--minimal" aria-label="Item pane">
 		<div class="pane-header-actions">
+			<!-- Back chevron (PLAN-2154 Architecture C / TASK-2164, Codex review):
+			     every drill sets `loading = true`, landing here — WITHOUT this, a
+			     slow or failed drilled item would strand the user with no way back
+			     (only Close), especially on mobile where ESC isn't reachable. Same
+			     depth gate + `onBack` notify as the loaded header's chevron. -->
+			{#if paneDepth > 0}
+				<button
+					type="button"
+					class="pane-header-btn pane-back-btn"
+					onclick={() => onBack?.()}
+					title="Back"
+					aria-label="Back"
+				>‹</button>
+			{/if}
 			<button
 				type="button"
 				class="pane-header-btn"
