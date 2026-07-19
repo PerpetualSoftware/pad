@@ -60,6 +60,13 @@ import { onDestroy } from 'svelte';
 // the workspace layout; for pages outside the layout it falls back
 // to `window`. The lookup is cheap and re-runs on every capture /
 // restore so DOM swaps between mounts are handled.
+//
+// This is the DEFAULT resolver. A caller whose scroll container is NOT
+// `.main-content` (e.g. the full-page item host, whose master content
+// scrolls inside its own `.item-page` overflow column once a detail pane
+// docks beside it — PLAN-2154 Phase 2 / Architecture E) passes an explicit
+// `scrollTarget` getter in {@link ScrollRestorationOptions}; see
+// `resolveScrollTarget` in {@link createScrollRestoration}.
 function getScrollTarget(): HTMLElement | Window | null {
 	if (typeof document === 'undefined') return null;
 	const el = document.querySelector<HTMLElement>('.main-content');
@@ -117,6 +124,23 @@ export interface ScrollRestorationOptions {
 	 * routes that always remount on entry).
 	 */
 	persistKey?: () => string | null;
+	/**
+	 * Optional override for the scroll container to capture/restore. When
+	 * omitted, the module default is used: `.main-content` (the workspace
+	 * layout's overflow column), falling back to `window` for pages outside
+	 * the layout. Supply this ONLY when the page's scroll container differs —
+	 * e.g. the full-page item host, whose master content scrolls inside its
+	 * own `.item-page` overflow column once a detail pane docks beside it
+	 * (PLAN-2154 Phase 2 / Architecture E).
+	 *
+	 * Called lazily on every capture/restore (same semantics as the default
+	 * lookup), so it's safe to return `null` before the element mounts — the
+	 * restore loop re-fires each frame and picks the element up once present.
+	 * Because this fully REPLACES the default resolver, the caller owns its
+	 * own fallback: return `window` (or the default target) explicitly if a
+	 * fallback is wanted when the scoped element is absent.
+	 */
+	scrollTarget?: () => HTMLElement | Window | null;
 }
 
 export interface ScrollRestoration {
@@ -147,6 +171,14 @@ export interface ScrollRestoration {
 export function createScrollRestoration(
 	opts: ScrollRestorationOptions,
 ): ScrollRestoration {
+	// Which element to capture/restore against. Callers that scroll a
+	// non-default container (the full-page item host's `.item-page` column —
+	// PLAN-2154 Phase 2) pass `opts.scrollTarget`, which fully replaces the
+	// module default. Resolved lazily on every capture/restore, so a getter
+	// that returns null before mount is fine — the restore loop retries.
+	const resolveScrollTarget: () => HTMLElement | Window | null =
+		opts.scrollTarget ?? getScrollTarget;
+
 	// Parked restore value waiting for ready(). Stored together with the
 	// `persistKey` captured at restore-time so a value saved for entry A
 	// can't apply later to entry B.
@@ -370,7 +402,7 @@ export function createScrollRestoration(
 				return;
 			}
 
-			const target = getScrollTarget();
+			const target = resolveScrollTarget();
 			if (!target) {
 				cleanupListeners();
 				return;
@@ -409,7 +441,7 @@ export function createScrollRestoration(
 	return {
 		snapshot: {
 			capture: () => {
-				const y = readScrollY(getScrollTarget());
+				const y = readScrollY(resolveScrollTarget());
 				// Mirror to localStorage for cross-tab restoration. Only
 				// writes meaningful (>0) positions; clears the entry on
 				// y===0 so a stale value can't replay against a user
