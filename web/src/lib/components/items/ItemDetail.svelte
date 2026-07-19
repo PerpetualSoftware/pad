@@ -1940,19 +1940,30 @@
 	// nothing else raced in between. A mismatch means something else
 	// superseded it; abandon the restore instead of stealing focus.
 	//
-	// BOUNDED, not indefinitely armed (Codex review round 7): the generation
-	// fence alone does NOT self-resolve every case — a Back immediately
-	// reversed by Forward within TASK-2166's ~140ms pane-mint settle window
-	// can coalesce to a NET NO-OP (neither `itemSlug` nor `loadGeneration`
-	// ever change), leaving `pendingBackFocus` armed with nothing left to
-	// ever falsify the generation check against. The NEXT, wholly unrelated
-	// single-load navigation would then satisfy `backFocusStartGen + 1` by
-	// coincidence and steal focus. A bounded timer (mirroring the host's own
-	// `PANE_GO_SETTLE_MS` "give up waiting" pattern, +page.svelte) closes
-	// this class of case generally instead of chasing each interleaving
-	// individually: if the click's own restore hasn't resolved within
-	// `BACK_FOCUS_TIMEOUT_MS`, disarm unconditionally.
-	const BACK_FOCUS_TIMEOUT_MS = 600;
+	// NOT INDEFINITELY ARMED on a coalesced NO-OP (Codex review round 7): the
+	// generation fence alone doesn't self-resolve every case — a Back
+	// immediately reversed by Forward within TASK-2166's ~140ms pane-mint
+	// settle window can coalesce to a NET NO-OP (neither `itemSlug` nor
+	// `loadGeneration` ever change), leaving `pendingBackFocus` armed with
+	// nothing left to ever falsify the generation check against. The NEXT,
+	// wholly unrelated single-load navigation would then satisfy
+	// `backFocusStartGen + 1` by coincidence and steal focus.
+	//
+	// A single check shortly after the settle window, NOT a blanket
+	// wall-clock cutoff on the whole intent (Codex review round 8: a fixed
+	// timeout that disarms unconditionally would ALSO cancel a legitimately
+	// slow, still-in-flight restore — `loadData()` makes several requests,
+	// and a modestly slow connection can easily outrun a few hundred ms,
+	// stranding a keyboard user's Back press on <body> for the common case,
+	// not just the rare no-op one). Since `itemSlug` updates SYNCHRONOUSLY
+	// with the popstate (independent of network speed) and `loadGeneration`
+	// bumps synchronously at the top of `loadData()`, a load that's
+	// genuinely in flight has ALREADY moved one of the two by the time this
+	// check fires — only the coalesced-to-nothing case still shows BOTH
+	// unchanged, so the check disarms exactly that case and leaves every
+	// other (however slow) pending restore to resolve normally through the
+	// effect below, however long it actually takes.
+	const BACK_FOCUS_NOOP_CHECK_MS = 200;
 	let pendingBackFocus = $state(false);
 	let backFocusStartSlug = '';
 	let backFocusStartGen = 0;
@@ -1963,8 +1974,10 @@
 		backFocusStartGen = loadGeneration;
 		clearTimeout(backFocusTimer);
 		backFocusTimer = setTimeout(() => {
-			pendingBackFocus = false;
-		}, BACK_FOCUS_TIMEOUT_MS);
+			if (itemSlug === backFocusStartSlug && loadGeneration === backFocusStartGen) {
+				pendingBackFocus = false; // genuinely nothing moved — a coalesced no-op
+			}
+		}, BACK_FOCUS_NOOP_CHECK_MS);
 		onBack?.();
 	}
 	$effect(() => {

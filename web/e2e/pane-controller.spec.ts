@@ -1051,6 +1051,68 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(closeIsFocused).toBe(false);
 	});
 
+	test('Back chevron: a genuinely slow (but legitimate) destination load still restores focus, past the no-op check window (Codex review round 8)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl back-slow alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back-slow bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back-slow alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		// A real row click puts the item's REF (e.g. `DOC-16`), not its slug,
+		// in `?item=` (`itemUrlId` prefers `formatItemRef` — +page.svelte),
+		// and that's what the fetch path segment uses too.
+		const aRef = openItemParam(page);
+
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+
+		// Gate A's item fetch — the Back press (B→A) LANDS on it, no
+		// unrelated navigation involved, so the eventual restore is fully
+		// legitimate. Held for 400ms: comfortably past the 200ms no-op check
+		// (which only disarms a genuine coalesced-to-nothing case — itemSlug
+		// has already changed here by then, so it must NOT fire) and past
+		// what the old, since-replaced flat 600ms wall-clock timeout design
+		// would have tolerated on a slower run.
+		let releaseGate: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			releaseGate = resolve;
+		});
+		await page.route(`**/api/v1/workspaces/*/items/${aRef}`, async (route) => {
+			if (route.request().method() !== 'GET') {
+				await route.continue();
+				return;
+			}
+			await gate;
+			await route.continue();
+		});
+
+		const backBtn = pane.locator('button[aria-label="Back"]');
+		await expect(backBtn).toBeVisible();
+		await backBtn.focus();
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect(pane.locator('.pane-header--minimal')).toBeVisible();
+
+		// Wait well past the 200ms no-op check before releasing — the pop
+		// must still be pending, not silently abandoned.
+		await page.waitForTimeout(400);
+		releaseGate();
+		await expect.poll(() => openItemParam(page)).toBe(aRef);
+		await expect(pane.locator('.pane-header--minimal')).toBeHidden();
+
+		const closeIsFocusedAfterSlowLoad = () =>
+			page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Close pane');
+		await expect.poll(closeIsFocusedAfterSlowLoad).toBe(true);
+	});
+
 	test('Back chevron: a cold-loaded shared ?item= starts at depth 0 and stays hidden; browser Back still exits the pane', async ({
 		page,
 		fixture,
