@@ -159,10 +159,8 @@
 	// every other cheap read. The `<ItemDetail>` `ref` PROP is different: it
 	// re-drives `loadData`/`collabKey` (destroy + fresh-mint the Y.Doc/WS
 	// provider), which is expensive to fire once per intermediate popstate
-	// during a held Back/Forward. `paneMintRef` is the coalesced value fed
-	// to that prop (nested `{#if paneMintRef}`, below, so a still-settling
-	// null never reaches ItemDetail's required `ref: string` prop) — updated
-	// immediately for a deliberate open/drill/close, but settled
+	// during a held Back/Forward. `paneMintRef` is the coalesced value —
+	// updated immediately for a deliberate open/drill/close, but settled
 	// (~PANE_MINT_SETTLE_MS, mirroring the j/k `PANE_FOLLOW_DEBOUNCE_MS`
 	// coalescing) for a same-pathname popstate burst so only the FINAL ref
 	// of the burst ever mints. See `$lib/collections/paneMintSettle` for the
@@ -170,16 +168,29 @@
 	//
 	// This component is REUSED across a workspace/collection switch (same
 	// route id, different `page.params`) — `wsSlug`/`collSlug` update
-	// IMMEDIATELY on any such popstate, so a coalesced `paneMintRef` could
-	// otherwise linger mid-settle carrying a ref from the SOURCE
-	// workspace/collection into the DESTINATION's `ItemDetail` for up to
-	// `PANE_MINT_SETTLE_MS` (Codex review). Only a same-pathname popstate —
-	// the pane-only `?item=` traversal this feature targets — is eligible to
-	// settle; any pathname change (route reuse across params, or the rare
-	// case where `nav.from` is unavailable, e.g. the initial load) is forced
-	// through the settle module's immediate branch by passing a non-
-	// `'popstate'` type.
+	// IMMEDIATELY on any such popstate. Correcting `paneMintRef` from
+	// `afterNavigate` alone isn't enough (Codex review, PR #971 round 2):
+	// SvelteKit commits the new `page.params`/`page.url` — and Svelte
+	// re-renders every `$derived` over them, including `wsSlug`/`collSlug`
+	// AND the `<ItemDetail>` props built from them — BEFORE `afterNavigate`
+	// fires. So a plain `afterNavigate`-only fix still lets ONE render pass
+	// through with the DESTINATION `wsSlug`/`collSlug` paired against the
+	// still-stale SOURCE `paneMintRef`. `paneMintForRoute` below closes that
+	// gap: it's a `$derived` — recomputed SYNCHRONOUSLY in the very same
+	// reactive pass as `wsSlug`/`collSlug`, not a render-cycle later like an
+	// `afterNavigate`-driven correction — that falls back to the live,
+	// always-route-consistent `openItemRef` the instant `page.url.pathname`
+	// (reactive) diverges from `paneMintPathname` (the plain, non-reactive
+	// pathname `paneMintRef` was captured for, corrected by `afterNavigate`
+	// below). A same-pathname settle-in-progress (the actual pane-burst
+	// case) is unaffected: the pathnames match throughout, so this clamp is
+	// a no-op and `paneMintRef` — including a settling `null` — passes
+	// through untouched.
 	let paneMintRef = $state<string | null>(page.url.searchParams.get('item'));
+	// `string`, not SvelteKit's route-typed `Pathname` — `nav.to.url` (a plain
+	// `URL`) isn't route-typed, so the annotation avoids a type mismatch on
+	// the `afterNavigate` assignment below.
+	let paneMintPathname: string = page.url.pathname;
 	const paneMintSettle = createPaneMintSettle({
 		settleMs: PANE_MINT_SETTLE_MS,
 		onSettle: (ref) => {
@@ -190,8 +201,12 @@
 		const samePathname =
 			!!nav.from && nav.to?.url.pathname === nav.from.url.pathname;
 		const effectiveType = samePathname ? nav.type : 'goto';
+		paneMintPathname = nav.to?.url.pathname ?? paneMintPathname;
 		paneMintSettle.onNavigate(effectiveType, nav.to?.url.searchParams.get('item') ?? null);
 	});
+	let paneMintForRoute = $derived(
+		page.url.pathname === paneMintPathname ? paneMintRef : openItemRef,
+	);
 
 	// Reactive parse of the current search query — shared with the
 	// search-dispatch effect below so it doesn't reparse per run.
@@ -3777,21 +3792,26 @@
 			aria-label="Item detail"
 			style={paneWidth != null ? `--pane-width: ${paneWidth}px` : undefined}
 		>
-			{#if paneMintRef}
+			{#if paneMintForRoute}
 				<!--
-					Nested (not `{#key}`) on `paneMintRef`, not raw `openItemRef`
+					Nested (not `{#key}`) on `paneMintForRoute`, not raw `openItemRef`
 					(PLAN-2154 / TASK-2166; Codex review): while the pane is ALREADY
-					open, `paneMintRef` stays pinned at the last-settled ref through an
-					entire popstate burst, so this branch stays mounted and `ref` never
-					flips mid-burst — the coalescing itself. It only actually
-					mounts/unmounts at a genuine open (closed → first settle) or close
-					(`openItemRef` going null tears down the whole `{#if}` above). A
-					fallback to `openItemRef` here would defeat the settle for exactly
-					the closed→open-burst case, since `paneMintRef` legitimately stays
-					null until the first settle fires.
+					open on the SAME route, `paneMintForRoute` (== `paneMintRef`) stays
+					pinned at the last-settled ref through an entire popstate burst, so
+					this branch stays mounted and `ref` never flips mid-burst — the
+					coalescing itself. It only actually mounts/unmounts at a genuine
+					open (closed → first settle) or close (`openItemRef` going null
+					tears down the whole `{#if}` above) — OR a route change, where
+					`paneMintForRoute` falls through to the live `openItemRef` instead
+					(see the declaration above). A bare `paneMintRef` fallback to
+					`openItemRef` here would defeat the settle for the closed→open-
+					burst case, since `paneMintRef` legitimately stays null until the
+					first settle fires; `paneMintForRoute`'s fallback is scoped to an
+					actual pathname change, not a null-during-settle, so it doesn't
+					reintroduce that bug.
 				-->
 				<ItemDetail
-					ref={paneMintRef}
+					ref={paneMintForRoute}
 					embedded
 					{username}
 					{wsSlug}
