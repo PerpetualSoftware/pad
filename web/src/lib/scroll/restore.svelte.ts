@@ -404,7 +404,20 @@ export function createScrollRestoration(
 
 			const target = resolveScrollTarget();
 			if (!target) {
-				cleanupListeners();
+				// A custom `scrollTarget` getter can legitimately return null before
+				// its element mounts (e.g. the full-page host's `.item-page` during a
+				// remount). Honor the documented per-frame-retry contract: keep
+				// polling WITHIN THE SAME BUDGET until it appears, instead of aborting
+				// the restore permanently — `restoredKey` is already set for this key,
+				// so the gated effect will NOT re-fire, and a bare return would strand
+				// the parked offset forever. The default `.main-content`/window
+				// resolver never returns null in-browser, so existing callers are
+				// unaffected (Codex review, TASK-2171).
+				if (performance.now() - startTime > budgetMs) {
+					cleanupListeners();
+					return;
+				}
+				requestAnimationFrame(tryScroll);
 				return;
 			}
 
