@@ -1707,3 +1707,21 @@ export interface PaneTarget {
 	/** The target item's collection slug, if known. */
 	collectionSlug?: string;
 }
+
+/**
+ * The resolved identity of the item an `ItemDetail` has actually LOADED, once
+ * its loaded item matches the requested ref/slug (the same switch boundary as
+ * `itemMatchesRef` / scroll-readiness). Emitted via `ItemDetail`'s `onIdentity`
+ * callback (PLAN-2154 Architecture E bullet 4 / TASK-2173) so a host can enforce
+ * the `?item == master` guard even when a slug-path and a ref-query alias the
+ * same item — the full-page pane host (TASK-2174) compares its `?item=` target
+ * against all three fields before mounting a pane. `null` while unresolved.
+ */
+export interface ResolvedItemIdentity {
+	/** Stable item UUID. */
+	id: string;
+	/** Canonical PREFIX-NUMBER ref, e.g. "TASK-5". */
+	ref: string;
+	/** Item slug. */
+	slug: string;
+}

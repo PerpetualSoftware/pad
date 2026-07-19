@@ -29,7 +29,7 @@
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
-	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget } from '$lib/types';
+	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget, ResolvedItemIdentity } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -92,6 +92,7 @@
 		onGone,
 		onNavigateAway,
 		onReady,
+		onIdentity,
 		onOpenTarget,
 		onBack,
 	}: {
@@ -112,6 +113,14 @@
 		onGone?: () => void;
 		onNavigateAway?: (url: string) => void;
 		onReady?: (ready: boolean) => void;
+		// PLAN-2154 Architecture E bullet 4 / TASK-2173: emit the LOADED item's
+		// resolved {id, ref, slug} (or null while unresolved) so a host can enforce
+		// the `?item == master` guard even when a slug-path and a ref-query alias
+		// the same item. Fires on the same switch boundary as `onReady`
+		// (`itemMatchesRef`). The full-page pane host (TASK-2174) uses it to no-op /
+		// strip a `?item=` that resolves to the master itself. Additive — existing
+		// callers that don't pass it are byte-identical.
+		onIdentity?: (identity: ResolvedItemIdentity | null) => void;
 		// PLAN-2154 Architecture B / TASK-2158: the seam content-link surfaces
 		// (relationships, breadcrumb, editor wiki-links, the graph drawer)
 		// fire, via the internal `fireOpenTarget` wrapper below, to drill the
@@ -298,6 +307,25 @@
 	let scrollReady = $derived(!loading && itemMatchesRef);
 	$effect(() => {
 		onReady?.(scrollReady);
+	});
+
+	// Resolved identity for the host's `?item == master` guard (TASK-2173). Non-
+	// reactive-write $derived (CONVE-1688: the emit effect below only READS it):
+	// the loaded item's {id, ref, slug} once it matches the requested ref/slug,
+	// else null. `ref` is the canonical PREFIX-NUMBER the same way `itemMatchesRef`
+	// computes it, so a host comparing its `?item=` target against any of the
+	// three fields catches the slug-path/ref-query alias of the same item.
+	let resolvedIdentity = $derived<ResolvedItemIdentity | null>(
+		item !== null && itemMatchesRef
+			? {
+					id: item.id,
+					ref: `${item.collection_prefix}-${item.item_number}`,
+					slug: item.slug,
+				}
+			: null,
+	);
+	$effect(() => {
+		onIdentity?.(resolvedIdentity);
 	});
 
 	let editorInstance = $state<EditorType | null>(null);
