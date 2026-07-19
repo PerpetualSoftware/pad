@@ -38,6 +38,18 @@
 		 */
 		canEdit?: boolean;
 		/**
+		 * PLAN-2154 Phase 2 / D2 / R12 (TASK-2172): master-freeze. When the
+		 * full-page host peeks a pane beside this item's ItemDetail, the master
+		 * passes `frozen={true}` so ALL ChildItems mutations (add/link-child +
+		 * reorder) freeze while child-row NAVIGATION stays live. Kept SEPARATE
+		 * from `canEdit` on purpose: add/link-child authorize off independent
+		 * target-collection / source-child capabilities (NOT the parent's edit
+		 * permission), so folding the freeze into `canEdit` would wrongly strip
+		 * add-child from a non-peeking user who lacks parent-edit but has those
+		 * capabilities. Defaults false → byte-identical for existing callers.
+		 */
+		frozen?: boolean;
+		/**
 		 * Instance-scoped shadow of the OWNING ItemDetail's own dirty/
 		 * lastSaveTime (PLAN-2154 Phase 0 / R4, TASK-2156). ChildItems used to
 		 * read the global `editorStore.dirty`/`lastSaveTime` singleton directly
@@ -60,7 +72,7 @@
 		onOpenTarget?: (target: PaneTarget) => void;
 	}
 
-	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange, canEdit = true, selfDirty = false, selfLastSaveTime = 0, onOpenTarget }: Props = $props();
+	let { wsSlug, username = '', itemSlug, itemId, parentFields, terminalStatuses, onChildrenChange, canEdit = true, frozen = false, selfDirty = false, selfLastSaveTime = 0, onOpenTarget }: Props = $props();
 
 	const defaultTerminal = ['done', 'completed', 'resolved', 'cancelled', 'rejected', 'wontfix', 'fixed', 'implemented', 'archived', 'disabled', 'deprecated'];
 	const terminal = $derived(terminalStatuses ?? defaultTerminal);
@@ -142,12 +154,23 @@
 		groupData[status] = e.detail.items;
 		isDragging = false;
 
+		// HT-2176 Option A (TASK-2172): gate reorder INITIATION, not finalization.
+		// A NEW drag can't START while frozen (`dragDisabled: !canEdit || frozen`
+		// on the dnd zone), but a drag already IN PROGRESS when the pane opens must
+		// finalize and persist — so do NOT reject on `frozen` here. `!canEdit`
+		// stays (the zone gate mirror; a non-editor never reaches finalize anyway).
+		if (!canEdit) return;
+
 		const updates = groupData[status]
 			.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 			.map((item, index) => ({ id: item.id, sort_order: index }));
 
 		try {
 			for (const { id, sort_order } of updates) {
+				// HT-2176 Option A (TASK-2172): NO per-PATCH freeze recheck. The
+				// reorder was INITIATED before peeking (the top guard blocks a NEW
+				// one); breaking mid-loop would persist it only partially, leaving
+				// inconsistent sort_orders. Let the initiated reorder finish.
 				await api.items.update(wsSlug, id, { sort_order });
 			}
 		} catch (e) {
@@ -162,6 +185,9 @@
 	// persists the changed rows via the same per-child update loop the drag
 	// path uses. A canonical reload (SSE/sync) settles it afterward.
 	async function reorderChild(status: string, child: Item, dir: ReorderDirection) {
+		// Freeze guard (TASK-2172 / R14): mirror handleFinalize. The kebab is
+		// hidden while `!canEdit || frozen`; this drops a straggler invocation.
+		if (!canEdit || frozen) return;
 		const grp = (groupData[status] ?? []).filter(
 			(i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]
 		);
@@ -174,6 +200,8 @@
 		const updates = reorderGroup(grp, child.id, dir);
 		try {
 			for (const u of updates) {
+				// Option A (TASK-2172): no per-PATCH freeze recheck — a reorder
+				// initiated pre-pane finishes fully (see handleFinalize).
 				await api.items.update(wsSlug, u.item.id, { sort_order: u.sort_order });
 			}
 		} catch (e) {
@@ -331,8 +359,11 @@
 		);
 	});
 
-	// Entry "+ Add child" shows iff at least one mode is usable.
-	let showAddChild = $derived(createTabEnabled || canLinkExisting);
+	// Entry "+ Add child" shows iff at least one mode is usable — gated on the
+	// INDEPENDENT target-collection / source-child capabilities (NOT the parent's
+	// `canEdit`), so the freeze must not touch that logic. `&& !frozen` layers the
+	// master-freeze on top without changing any non-peeking behavior (TASK-2172).
+	let showAddChild = $derived((createTabEnabled || canLinkExisting) && !frozen);
 
 	// ── Form state ─────────────────────────────────────────────────────────
 	let addOpen = $state(false);
@@ -468,6 +499,9 @@
 	}
 
 	async function submitCreate() {
+		// Freeze guard (TASK-2172): the form is hidden while frozen, but drop a
+		// straggler (e.g. an Enter keydown mid-freeze) so no child is created.
+		if (frozen) return;
 		const title = createTitle.trim();
 		const collSlug = createCollSlug;
 		if (!title || !collSlug || creating) return;
@@ -578,7 +612,8 @@
 
 	async function confirmLink() {
 		const cand = confirmCandidate;
-		if (!cand || linking) return;
+		// Freeze guard (TASK-2172): mirror submitCreate — no reparent while frozen.
+		if (!cand || linking || frozen) return;
 		// DR-6b: capture identity BEFORE the await.
 		const reqWs = wsSlug;
 		const reqSlug = itemSlug;
@@ -632,7 +667,10 @@
 		</div>
 	</div>
 
-	{#if addOpen}
+	<!-- `&& !frozen` unmounts an already-open add-child form the instant the
+	     parent freezes (TASK-2172): the master-freeze must leave no live mutation
+	     controls, not just block their writes. -->
+	{#if addOpen && !frozen}
 		<div class="add-child-form">
 			<div class="add-child-tabs" role="tablist">
 				<button
@@ -776,7 +814,7 @@
 						type: 'child-item',
 						dropTargetClasses: ['drop-target'],
 						delayTouchStart: touchDragDelayMs,
-						dragDisabled: !canEdit
+						dragDisabled: !canEdit || frozen
 					}}
 					onconsider={(e) => handleConsider(status, e)}
 					onfinalize={(e) => handleFinalize(status, e)}
@@ -806,7 +844,7 @@
 										</span>
 									{/if}
 								</a>
-								{#if canEdit}
+								{#if canEdit && !frozen}
 									<ItemActionsMenu
 										item={child}
 										label={child.title}

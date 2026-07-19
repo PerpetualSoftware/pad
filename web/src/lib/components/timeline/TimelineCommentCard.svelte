@@ -21,6 +21,15 @@
 		 */
 		canEdit?: boolean;
 		/**
+		 * PLAN-2154 Phase 2 / D2 / R12 (TASK-2172): master-freeze. When a peeking
+		 * master's timeline is frozen, the author/admin edit affordance
+		 * (`canEditComment`) is suppressed AND any ALREADY-OPEN comment/reply edit
+		 * form (with its CommentEditor direct-upload) is unmounted — distinct from
+		 * `canEdit`, which gates reply/reaction/delete. Defaults false →
+		 * byte-identical for existing callers.
+		 */
+		frozen?: boolean;
+		/**
 		 * Resolves `pad-attachment:UUID` references in the comment / reply
 		 * bodies to inline images or file chips (IDEA-1650). Optional —
 		 * without it those references render as plain (broken) markdown
@@ -37,7 +46,7 @@
 		onRemoveReaction: (commentId: string, emoji: string) => void;
 	}
 
-	let { comment, wsSlug, username = '', items, currentUserId = '', canEdit = true, attachmentResolver, isAdmin = false, onDelete, onReply, onEdit, onReaction, onRemoveReaction }: Props = $props();
+	let { comment, wsSlug, username = '', items, currentUserId = '', canEdit = true, frozen = false, attachmentResolver, isAdmin = false, onDelete, onReply, onEdit, onReaction, onRemoveReaction }: Props = $props();
 
 	let showReplyForm = $state(false);
 	let submittingReply = $state(false);
@@ -52,6 +61,8 @@
 	// A null/empty user_id has no provable author → admin-only, matching the
 	// server's canEditComment.
 	function canEditComment(c: Comment): boolean {
+		// Master-freeze (TASK-2172): a peeking master surfaces no edit affordance.
+		if (frozen) return false;
 		return isAdmin || (!!c.user_id && c.user_id === currentUserId);
 	}
 
@@ -204,7 +215,9 @@
 		<div class="activity-label">commented on update</div>
 	{/if}
 
-	{#if editing}
+	{#if editing && !frozen}
+		<!-- Master-freeze (TASK-2172 / R12): unmount an already-open edit form —
+		     and its CommentEditor direct-upload — the instant the master peeks. -->
 		<div class="edit-compose">
 			<CommentEditor
 				{wsSlug}
@@ -307,7 +320,9 @@
 						{/if}
 					</div>
 
-					{#if editingReplyId === reply.id}
+					{#if editingReplyId === reply.id && !frozen}
+						<!-- Master-freeze (TASK-2172 / R12): same unmount-on-peek as
+						     the comment edit form above. -->
 						<div class="edit-compose">
 							<CommentEditor
 								{wsSlug}

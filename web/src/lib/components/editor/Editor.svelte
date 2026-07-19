@@ -140,7 +140,12 @@
 		// Clearing HTML prevents tiptap-markdown from re-decorating the paste target.
 		event.clipboardData.setData('text/html', '');
 
-		if (isCut) {
+		// Master-freeze / R12 (TASK-2172): the clipboard WRITE (copy) is read-only
+		// and always allowed, but the CUT deletes content — a Yjs mutation. handleDOMEvents
+		// fire even when the view is read-only (a peeking master OR a view-only
+		// viewer), so gate the delete on `view.editable`. A read-only cut degrades
+		// to a copy (same viewer bug-fix as the attachment gates).
+		if (isCut && view.editable) {
 			const tr = state.tr.delete(from, to);
 			view.dispatch(tr);
 		}
@@ -236,7 +241,10 @@
 		event.clipboardData.setData('text/plain', text);
 		event.clipboardData.setData('text/html', '');
 
-		if (isCut) {
+		// Master-freeze / R12 (TASK-2172): copy is read-only; the cut deletes
+		// rows/cells (a Yjs mutation) — gate on `view.editable` (see
+		// writeCodeBlockClipboard). A read-only cut degrades to a copy.
+		if (isCut && view.editable) {
 			if (selection instanceof CellSelection && selection.isRowSelection()) {
 				// Whole-row selection: prefer structural row removal so undo restores
 				// the rows intact in one step.
@@ -319,6 +327,11 @@
 	//     round-trip fidelity and matches spreadsheet convention.
 	function readTablePasteClipboard(view: any, event: ClipboardEvent): boolean {
 		if (!event.clipboardData) return false;
+		// Master-freeze / R12 (TASK-2172): a TSV paste REPLACES table cells — a Yjs
+		// mutation. handleDOMEvents fire even when the view is read-only (a peeking
+		// master OR a view-only viewer), so bail while read-only and let the default
+		// (contentEditable-blocked) paste path handle it — no cell mutation lands.
+		if (!view.editable) return false;
 		const { state } = view;
 
 		// Guard 1: anchor must be inside a table.
