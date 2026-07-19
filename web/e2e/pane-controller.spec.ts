@@ -829,25 +829,39 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 
-		// Drill to depth 3: A(0) → B(1) → C(2) → D(3).
+		// Drill to depth 3: A(0) → B(1) → C(2) → D(3). Each `drillTo` only
+		// awaits `navigatePaneTo`'s SYNCHRONOUS portion — the `goto()` it
+		// fires is fire-and-forget — so poll `page.state` to settle after
+		// each hop before firing the next; otherwise a later drill can read
+		// a still-stale depth off an in-flight earlier one (Codex review
+		// round 2, P1).
 		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 		await drillTo(page, c.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
 		await drillTo(page, d.slug);
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 3, paneOwned: true });
 		expect(openItemParam(page)).toBe(d.slug);
 
 		const backBtn = pane.locator('button[aria-label="Back"]');
 
-		// Press 1: D(3) → C(2).
+		// Press 1: D(3) → C(2). The click triggers a reload (`loading` briefly
+		// true), which swaps the loaded header for the minimal one and
+		// unmounts the just-clicked, focused Back button — Codex review round
+		// 2, P2. Focus must land back on the (re-mounted) Back button once the
+		// reload settles, so a keyboard user can keep popping levels.
 		await expect(backBtn).toBeVisible();
+		await backBtn.focus();
 		await backBtn.click();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
 		await expect.poll(() => openItemParam(page)).toBe(c.slug);
+		await expect(backBtn).toBeFocused();
 
-		// Press 2: C(2) → B(1).
+		// Press 2: C(2) → B(1). Focus restored again.
 		await backBtn.click();
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+		await expect(backBtn).toBeFocused();
 
 		// Press 3: B(1) → A(0), the base — chevron disappears, pane stays open.
 		await backBtn.click();

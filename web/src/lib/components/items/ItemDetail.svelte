@@ -302,6 +302,14 @@
 	let titleDraft = $state('');
 	let titleInputEl = $state<HTMLTextAreaElement>();
 
+	// PLAN-2154 Architecture C / TASK-2164 (Codex review round 2, P2): the
+	// pane chrome's Back chevron. Bound by BOTH the loaded and minimal
+	// headers below (mutually exclusive `{#if}`s, so only one is ever
+	// mounted) so a pending focus-restore (see `pendingBackFocus` /
+	// `handleBackClick` near `startEditTitle`) can reach whichever one
+	// re-mounts after the reload settles.
+	let backBtnEl = $state<HTMLButtonElement>();
+
 	let fields = $derived<Record<string, any>>(item ? parseFields(item) : {});
 	// Tags live on item.tags (a JSON-array string), NOT in the schema.
 	// parseTags is defensive (tolerates empty/garbage) and dedupes
@@ -1883,6 +1891,52 @@
 		el.style.height = el.scrollHeight + 'px';
 	}
 
+	// PLAN-2154 Architecture C / TASK-2164 (Codex review round 2, P2): the
+	// Back chevron's own click triggers a reload of the drilled-to item —
+	// `loadData()` sets `loading = true`, which swaps the loaded pane header
+	// for the minimal one and UNMOUNTS the just-clicked (and browser-focused)
+	// Back button, dropping focus to <body>. Without restoring it, a
+	// keyboard user popping a multi-level stack loses their place after every
+	// press. Mirrors the `pendingNewItemEdit` pattern above: flag the intent,
+	// then act once the reload settles. Deliberately narrow — this only
+	// re-anchors focus on the Back button's OWN click, not the general
+	// "focus per hop" for arbitrary content-link drills (TASK-2162).
+	//
+	// TWO flags, not one (Codex review round 2 follow-up): `paneDepth` (a
+	// `page.state`-derived value) updates SYNCHRONOUSLY with the popstate
+	// that `history.go(-1)` fires, which lands BEFORE `itemSlug` changes and
+	// `loadData()` sets `loading = true` — so a naive single-flag effect can
+	// observe `loading` still `false` (stale, from the PREVIOUS item) on that
+	// intermediate run, fire early, and consume the flag before the real
+	// reload cycle (the one that actually unmounts/remounts the header) even
+	// starts. `backFocusSeenLoading` requires observing `loading` go true
+	// FIRST, so the restore only fires on the matching false that follows it.
+	let pendingBackFocus = $state(false);
+	let backFocusSeenLoading = $state(false);
+	function handleBackClick() {
+		pendingBackFocus = true;
+		backFocusSeenLoading = false;
+		onBack?.();
+	}
+	$effect(() => {
+		if (!pendingBackFocus) return;
+		if (loading) {
+			backFocusSeenLoading = true;
+			return;
+		}
+		if (!backFocusSeenLoading) return; // the reload hasn't actually started yet
+		pendingBackFocus = false;
+		backFocusSeenLoading = false;
+		// Only if the stack still has a level to pop — at depth 0 there's no
+		// Back button left to focus (that terminal case is the general
+		// focus-management scope of TASK-2162, not this one).
+		if (paneDepth > 0) restoreBackFocus();
+	});
+	async function restoreBackFocus() {
+		await tick();
+		backBtnEl?.focus({ preventScroll: true });
+	}
+
 	function showSaved() {
 		saveStatus = 'saved';
 		clearTimeout(saveStatusTimer);
@@ -3333,8 +3387,9 @@
 			{#if paneDepth > 0}
 				<button
 					type="button"
+					bind:this={backBtnEl}
 					class="pane-header-btn pane-back-btn"
-					onclick={() => onBack?.()}
+					onclick={handleBackClick}
 					title="Back"
 					aria-label="Back"
 				>‹</button>
@@ -3421,8 +3476,9 @@
 					{#if paneDepth > 0}
 						<button
 							type="button"
+							bind:this={backBtnEl}
 							class="pane-header-btn pane-back-btn"
-							onclick={() => onBack?.()}
+							onclick={handleBackClick}
 							title="Back"
 							aria-label="Back"
 						>‹</button>
