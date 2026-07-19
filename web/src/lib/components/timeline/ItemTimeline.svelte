@@ -36,16 +36,29 @@
 		 */
 		itemId?: string;
 		collectionId?: string;
+		/**
+		 * PLAN-2154 Phase 2 / D2 / R12 (TASK-2172): master-freeze. When the
+		 * full-page host peeks a detail pane beside this item's ItemDetail, the
+		 * master passes `frozen={true}` so its timeline goes fully read-only:
+		 * the composer hides, reply/reaction/delete disable, any already-open
+		 * comment/reply edit form (and its CommentEditor direct-upload) unmounts,
+		 * and version restore hides. Defaults false → byte-identical for every
+		 * existing caller.
+		 */
+		frozen?: boolean;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
-	// aren't supplied (e.g. an older caller).
+	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
+	// (TASK-2172): while `frozen`, the composer / reply / reaction / delete
+	// affordances all disable through this single derived.
 	let canEdit = $derived(
-		itemId && collectionId
+		!frozen &&
+		(itemId && collectionId
 			? workspaceStore.canEditItem({ id: itemId, collection_id: collectionId })
-			: false
+			: false)
 	);
 
 	let entries: TimelineEntry[] = $state([]);
@@ -415,9 +428,14 @@
 		{/if}
 	</header>
 
-	<!-- Comment compose — gated on canEditItem (PLAN-1100 / TASK-1107).
+	<!-- Comment compose — gated on canEditItem (PLAN-1100 / TASK-1107) folded
+	     with the master-freeze (`frozen` → canEdit=false, TASK-2172).
 	     Read-only viewers / guests with view-only grants see the timeline
-	     thread but cannot post; the composer is hidden entirely. -->
+	     thread but cannot post; the composer is hidden entirely. Note: an
+	     attachment upload the user STARTED in this composer before the pane
+	     opened is orphaned when the composer unmounts on freeze — the ACCEPTED,
+	     tracked BUG-2177 tradeoff (its upload bails via attachment-upload.ts's
+	     view.isDestroyed check; no crash, no committed-content loss). -->
 	{#if canEdit}
 		<div class="compose">
 			<CommentEditor
@@ -459,6 +477,7 @@
 								{items}
 								{currentUserId}
 								{canEdit}
+								{frozen}
 								{isAdmin}
 								{attachmentResolver}
 								onDelete={handleDelete}
@@ -476,6 +495,7 @@
 								{itemSlug}
 								{currentContent}
 								{onRestore}
+								{frozen}
 							/>
 						{/if}
 					</div>

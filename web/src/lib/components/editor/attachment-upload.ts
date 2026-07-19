@@ -171,6 +171,22 @@ function startUpload(
 	opts
 		.upload(file)
 		.then((result) => {
+			// Master-freeze / R12 (TASK-2172); ACCEPTED tracked edge BUG-2177 — the
+			// bytes land server-side but the reference isn't inserted (no crash, no
+			// committed-content loss): the view can be torn down or turned
+			// read-only WHILE this upload is in flight — e.g. a peeking master
+			// remounts its editor (editable=false) via the `{#key peeking}`,
+			// destroying THIS view. Never dispatch into a destroyed/read-only view:
+			// dispatch on a destroyed view throws, and inserting into a frozen one
+			// is exactly the mutation the freeze forbids. Drop the result (the
+			// bytes are already stored server-side; the reference is simply not
+			// inserted) and clean up the placeholder if the same view still lives.
+			if (view.isDestroyed || !view.editable) {
+				if (!view.isDestroyed) {
+					view.dispatch(view.state.tr.setMeta(pluginKey, { remove: id } satisfies UploadAction));
+				}
+				return;
+			}
 			const state = pluginKey.getState(view.state);
 			const entry = state?.uploads.get(id);
 			if (!entry) return; // placeholder gone — drop the upload silently
@@ -181,7 +197,15 @@ function startUpload(
 			view.dispatch(tr);
 		})
 		.catch((err: unknown) => {
+			// Same teardown/freeze guard as the success path (TASK-2172): a
+			// destroyed view can't accept the placeholder-cleanup dispatch, and a
+			// read-only master (peeking) must not surface an upload-error alert for
+			// an upload it never let the user start. The cleanup dispatch is a
+			// meta-only transaction (no doc step → no Yjs op), so it's safe to run
+			// on a live view; only skip it when the view is gone.
+			if (view.isDestroyed) return;
 			view.dispatch(view.state.tr.setMeta(pluginKey, { remove: id } satisfies UploadAction));
+			if (!view.editable) return;
 			const message = err instanceof Error ? err.message : String(err ?? 'Upload failed');
 			opts.onError?.(filename, message);
 		});
@@ -260,6 +284,15 @@ export function attachmentUploadPlugin(opts: AttachmentUploadOptions): Plugin<Up
 			},
 			handleDOMEvents: {
 				paste(view, event) {
+					// Master-freeze / R12 (PLAN-2154 / TASK-2172): ProseMirror runs
+					// custom DOM handlers even when the view is NOT editable, so a
+					// paste onto a read-only editor (a peeking full-page master OR a
+					// genuine view-only viewer) would otherwise upload + dispatch a
+					// Yjs insertion. Bail while read-only. NOTE: this also closes the
+					// same latent hole for view-only viewers, whose attachment
+					// mutations were already broken (no provider to sync; the content
+					// PATCH 403s) — a bug fix, not a regression of any working flow.
+					if (!view.editable) return false;
 					const files = filesFromPaste(event as ClipboardEvent);
 					if (files.length === 0) return false; // let other handlers process the paste
 					event.preventDefault();
@@ -270,6 +303,8 @@ export function attachmentUploadPlugin(opts: AttachmentUploadOptions): Plugin<Up
 					return true;
 				},
 				drop(view, event) {
+					// Same editable gate as paste (TASK-2172 / R12).
+					if (!view.editable) return false;
 					const files = filesFromDrop(event as DragEvent);
 					if (files.length === 0) return false;
 					const pos = dropPosition(view, event as DragEvent);
@@ -318,6 +353,10 @@ export const AttachmentUpload = Extension.create<AttachmentUploadOptions>({
 			uploadAttachments:
 				(files: File[]) =>
 				({ view }) => {
+					// Master-freeze / R12 (TASK-2172): refuse programmatic uploads
+					// on a read-only editor (the invoking toolbar/slash surfaces are
+					// already hidden while frozen — defense-in-depth).
+					if (!view.editable) return false;
 					if (!files.length) return false;
 					const pos = view.state.selection.from;
 					for (const file of files) {

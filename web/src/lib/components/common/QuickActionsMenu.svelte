@@ -123,6 +123,11 @@
 	}
 
 	async function handleSaveNewAction() {
+		// Recheck `canEdit` at dispatch time: if it flips false while the create
+		// form is open (e.g. the PLAN-2154 master-freeze passing canEdit=false
+		// while peeking, TASK-2172), refuse the api.collections.update. The form
+		// itself unmounts on the same flip (see `{#if showCreateForm && canEdit}`).
+		if (!canEdit) return;
 		const label = newLabel.trim();
 		const prompt = newPrompt.trim();
 		if (!label || !prompt || saving) return;
@@ -239,7 +244,7 @@
 {/snippet}
 
 {#snippet actionList()}
-	{#if showCreateForm}
+	{#if showCreateForm && canEdit}
 		{@render createForm()}
 	{:else}
 		{#each filtered as action (action.label)}

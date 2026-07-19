@@ -2,7 +2,10 @@
 	interface Props {
 		title?: string;
 		detail?: string;
-		onRetry: () => void;
+		// Optional: when omitted the retry button is hidden entirely. The
+		// PLAN-2154 master-freeze (TASK-2172) passes it undefined while peeking so
+		// the frozen master can't trigger a provider-destroying reload.
+		onRetry?: () => void;
 		retryLabel?: string;
 	}
 
@@ -20,9 +23,11 @@
 	{#if detail}
 		<p class="error-detail">{detail}</p>
 	{/if}
-	<button class="retry-btn" onclick={onRetry}>
-		{retryLabel}
-	</button>
+	{#if onRetry}
+		<button class="retry-btn" onclick={onRetry}>
+			{retryLabel}
+		</button>
+	{/if}
 </div>
 
 <style>

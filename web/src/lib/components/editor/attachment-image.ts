@@ -315,6 +315,16 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			};
 
 			const swapNodeUuid = (newId: string): void => {
+				// Master-freeze / R12 (TASK-2172); ACCEPTED tracked edge BUG-2177:
+				// runRotate/runCrop gate editability at CLICK time, but the transform
+				// awaits a network round-trip during which the master can begin peeking
+				// — remounting the editor (editable=false) via the `{#key peeking}`,
+				// which destroys THIS NodeView's editor. Re-check right before the
+				// dispatch: a destroyed view would throw, and a read-only one must not
+				// receive the Yjs transaction the freeze forbids. The server-side
+				// transform still ran; only its doc reference is dropped (the tracked
+				// BUG-2177 tradeoff — no crash, no committed-content loss).
+				if (editor.isDestroyed || !editor.isEditable) return;
 				const pos = typeof getPos === 'function' ? getPos() : null;
 				if (pos == null) return;
 				// Replace the node's UUID at its current position.
@@ -342,6 +352,12 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			};
 
 			const runRotate = async (degrees: 90 | 180 | 270): Promise<void> => {
+				// Master-freeze / R12 (PLAN-2154 / TASK-2172): tiptap's `editable`
+				// flag does NOT gate this NodeView toolbar, so a read-only editor
+				// (e.g. a peeking full-page master) could otherwise rotate the
+				// attachment and dispatch a Yjs transaction. Refuse the transform
+				// unless the editor is currently editable.
+				if (!editor.isEditable) return;
 				// Snapshot uuid at click time. Now that update() keeps the
 				// NodeView alive, currentUuid can shift while transform is
 				// in flight (e.g. peer rotates the same image). Without the
@@ -364,6 +380,10 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			};
 
 			const runCrop = async (): Promise<void> => {
+				// Master-freeze / R12 (PLAN-2154 / TASK-2172): same editable gate as
+				// runRotate — a read-only editor must not open the crop modal or
+				// dispatch the resulting transform.
+				if (!editor.isEditable) return;
 				// Snapshot uuid + alt at click time. The crop rect the user
 				// chooses is bound to the IMAGE-AT-OPEN-TIME, so any drift
 				// (peer rotated/cropped while the modal is open) must
@@ -390,6 +410,12 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					rect = null;
 				}
 				if (rect == null) return;
+				// Master-freeze / R14 (TASK-2172); tracked edge BUG-2177: peeking can
+				// begin WHILE the crop modal is open. Re-check editability after it
+				// resolves — before the server-side transform — so a frozen/remounted
+				// master starts no transform (a crop initiated pre-pane whose editor
+				// remounts is the accepted BUG-2177 orphan: no crash, no content loss).
+				if (editor.isDestroyed || !editor.isEditable) return;
 				// Live node moved to a different uuid while the modal was
 				// open — the rect doesn't apply. Drop silently rather than
 				// mis-cropping the new image.
@@ -468,6 +494,13 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				},
 				selectNode() {
 					wrapper.classList.add('attachment-image-selected');
+					// Master-freeze / R12 (TASK-2172): don't surface the rotate/crop
+					// toolbar on a read-only editor — a peeking master OR a view-only
+					// viewer. Its buttons no-op via the editable gate in
+					// runRotate/runCrop; hiding it keeps the freeze visually honest.
+					// Closing this for viewers too is a bug fix (their transforms had
+					// no provider to sync and 403'd on save), not a working-flow change.
+					if (!editor.isEditable) return;
 					const tb = ensureToolbar();
 					tb.classList.remove('attachment-image-toolbar-hidden');
 				},

@@ -10,9 +10,16 @@
 		itemSlug: string;
 		currentContent: string;
 		onRestore?: (item: Item) => void;
+		/**
+		 * PLAN-2154 Phase 2 / D2 / R12 (TASK-2172): master-freeze. The restore
+		 * button is otherwise ungated (server-authorized), so a peeking master
+		 * must hide it to keep the freeze complete. Defaults false →
+		 * byte-identical for existing callers.
+		 */
+		frozen?: boolean;
 	}
 
-	let { version, wsSlug, itemSlug, currentContent, onRestore }: Props = $props();
+	let { version, wsSlug, itemSlug, currentContent, onRestore, frozen = false }: Props = $props();
 
 	let expanded = $state(false);
 	let confirming = $state(false);
@@ -68,6 +75,9 @@
 	}
 
 	async function confirmRestore() {
+		// Master-freeze guard (TASK-2172): the restore UI is hidden while frozen,
+		// but drop a straggler click so a peeking master never dispatches restore.
+		if (frozen) return;
 		// Capture the item identity before the await so a mid-flight item switch
 		// (rapid j/k / row-click in the split pane) can't fire onRestore with
 		// A's restored item into a parent now showing B — nor flip this card's
@@ -140,6 +150,8 @@
 				{/if}
 			</div>
 
+			<!-- Master-freeze (TASK-2172 / R12): a peeking master hides restore. -->
+			{#if !frozen}
 			<div class="restore-area">
 				{#if confirming}
 					<div class="confirm-prompt">
@@ -173,6 +185,7 @@
 					</button>
 				{/if}
 			</div>
+			{/if}
 		</div>
 	{/if}
 </div>
