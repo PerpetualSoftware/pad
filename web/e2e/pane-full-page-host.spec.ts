@@ -213,4 +213,45 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		// The master is present + peeking (read-only) beside the pane.
 		await expect(page.locator('h1.title.title-readonly', { hasText: 'FP host cold master' })).toBeVisible();
 	});
+
+	test('Expand a pane item to full page, then browser Back, restores the pane (no stale-master strip)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		// A (master) --related--> B.
+		const master = await seedDoc(fixture, request, 'FP host expand master');
+		const related = await seedDoc(fixture, request, 'FP host expand related');
+		await seedRelatedLink(fixture, request, master.slug, related.id);
+		const relatedRef = await itemRef(fixture, request, related.slug);
+
+		await page.goto(fullPageUrl(fixture, master.slug));
+		await page
+			.locator('.relationship-group', { hasText: 'Related' })
+			.locator('a.link-target', { hasText: 'FP host expand related' })
+			.click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
+		const paneUrl = page.url();
+
+		// Expand B to the full page (same route reused, master A -> B), dropping ?item=.
+		await pane.locator('button.pane-header-btn[aria-label="Expand to full page"]').click();
+		await expect(page.locator('.item-pane')).toHaveCount(0);
+		await expect(page.locator('button.title', { hasText: 'FP host expand related' })).toBeVisible();
+		await expect.poll(() => openItemParam(page)).toBeNull();
+
+		// Browser Back -> `master?item=B`. The route is reused and `masterIdentity`
+		// briefly still holds B; the fresh-for-`ref` gate must NOT let the strip
+		// delete `?item=B`, so the pane RESTORES to B beside the (reloaded) A master.
+		await page.goBack();
+		await expect(page).toHaveURL(paneUrl);
+		await expect(pane).toBeVisible();
+		await expect(pane.locator('.title', { hasText: 'FP host expand related' })).toBeVisible();
+		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
+		await expect(page.locator('h1.title.title-readonly', { hasText: 'FP host expand master' })).toBeVisible();
+	});
 });

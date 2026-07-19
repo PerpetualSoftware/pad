@@ -146,15 +146,27 @@
 	// way the server does, so a ref-shaped SLUG (e.g. master #5 slugged `plan-6`)
 	// is NOT mistaken for the master when `?item=plan-6` actually resolves to
 	// item #6 (Codex review).
-	let masterItem = $derived<PaneGuardItem | null>(
-		masterIdentity
-			? {
-					id: masterIdentity.id,
-					slug: masterIdentity.slug,
-					item_number: refNumber(masterIdentity.ref) ?? 0,
-				}
-			: null,
-	);
+	let masterItem = $derived.by<PaneGuardItem | null>(() => {
+		if (!masterIdentity) return null;
+		const projected: PaneGuardItem = {
+			id: masterIdentity.id,
+			slug: masterIdentity.slug,
+			item_number: refNumber(masterIdentity.ref) ?? 0,
+		};
+		// `masterIdentity` (from `onIdentity`) LAGS a same-route master navigation:
+		// expanding a pane item to the full page, then browser-Back to
+		// `<prev-master>?item=<that item>`, REUSES this route — `masterIdentity`
+		// still holds the expanded item until the master reloads the previous one
+		// and re-emits identity. Comparing it against the live master `ref` path
+		// param (via the shared `isSamePaneTarget`) drops that STALE identity, so
+		// the self-guard / cold-load strip never match a bare `?item=` against the
+		// WRONG (previous) master and wrongly strip a still-valid pane — the R14
+		// late-continuation class (Codex review). Because `masterItem` is a
+		// `$derived` over `ref`, it re-nulls SYNCHRONOUSLY the instant `ref`
+		// changes — before the strip `$effect` runs — so the effect never sees a
+		// stale master. Null until identity resolves AND matches the current `ref`.
+		return isSamePaneTarget({ href: ref }, projected) ? projected : null;
+	});
 
 	// The forbidden `?item == master` collision (PLAN-2154 D2 / Architecture E)
 	// for a BARE `?item=` string (the cold-load strip + the mount gate). Wrap the
@@ -168,15 +180,17 @@
 
 	// Whether to MOUNT the pane. Gating the MOUNT (not merely stripping `?item=`
 	// after the fact) closes the cold-load self-collision RACE (Codex review): on
-	// a cold `?item=` load the master identity is unresolved for a beat, and a
-	// `?item=` that turns out to alias the master would otherwise mount
+	// a cold `?item=` load the (fresh) master identity is unresolved for a beat,
+	// and a `?item=` that turns out to alias the master would otherwise mount
 	// `PaneHost`/`ItemDetail` and mint a SECOND collab provider on the master's
-	// own room BEFORE the strip effect's `goto` removes the query. So the pane
-	// mounts only once identity has resolved AND confirmed the target isn't the
-	// master. For a CLICK-driven open the master identity is already resolved, so
-	// there is no delay; only a cold `?item=` load waits one master-load beat
-	// (master-first, which is the correct order anyway).
-	let showPane = $derived(!!openItemRef && !!masterIdentity && !isMasterRef(openItemRef));
+	// own room BEFORE the strip effect's `goto` removes the query. Gating on
+	// `masterItem` (fresh-for-`ref`) means the pane mounts only once the CURRENT
+	// master's identity has resolved AND confirmed the target isn't the master —
+	// and never against a stale prior master (the Expand→Back case). For a
+	// CLICK-driven open the master identity is already resolved (and `ref` is
+	// unchanged), so there is no delay; only a cold `?item=` load or a master
+	// navigation waits one master-load beat (master-first, the correct order).
+	let showPane = $derived(!!openItemRef && !!masterItem && !isMasterRef(openItemRef));
 
 	// MASTER content-links FIRST-OPEN the pane (PLAN-2154 D3 / Architecture E).
 	// The master's relationship / child / wiki-link / graph surfaces hand up a
@@ -217,7 +231,7 @@
 	// a legitimately-opened pane (always a non-master ref) is never touched.
 	$effect(() => {
 		if (!browser) return;
-		if (!masterIdentity) return;
+		if (!masterItem) return;
 		const current = openItemRef;
 		if (!current || !isMasterRef(current)) return;
 		const url = new URL(page.url);
