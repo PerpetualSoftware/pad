@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import type { Item, PaneTarget } from '$lib/types';
-import { resolvePaneTarget, isSamePaneTarget, isSameWorkspaceItemHref } from './paneTarget';
+import {
+	resolvePaneTarget,
+	isSamePaneTarget,
+	isSameWorkspaceItemHref,
+	breadcrumbParentTarget,
+} from './paneTarget';
 
 // Minimal Item stand-in — resolution/guard only touch id/slug/item_number/
 // collection_prefix (the fields `formatItemRef`/`itemUrlId` read).
@@ -322,5 +327,65 @@ describe('isSameWorkspaceItemHref — editor content-link gate (TASK-2160)', () 
 	it('declines when context is missing (empty wsSlug or empty collection map)', () => {
 		expect(isSameWorkspaceItemHref('/alice/myws/tasks/TASK-5', '', colls)).toBe(false);
 		expect(isSameWorkspaceItemHref('/alice/myws/tasks/TASK-5', 'myws', new Map())).toBe(false);
+	});
+});
+
+describe('breadcrumbParentTarget — structural parent hop (PLAN-2154 Architecture C / D3, TASK-2165)', () => {
+	// Minimal item-shaped object carrying ONLY the parent_* fields a real API
+	// item response includes — proves the target reconstructs from the
+	// item's own data with ZERO additional fetches, exactly as it would on a
+	// cold-loaded shared `?item=` pane URL.
+	function withParent(opts: {
+		parent_ref?: string;
+		parent_slug?: string;
+		parent_collection_slug?: string;
+		parent_title?: string;
+	}) {
+		return opts;
+	}
+
+	it('builds a target from ref + slug + collectionSlug when the item has a structural parent', () => {
+		const target = breadcrumbParentTarget(
+			withParent({ parent_ref: 'PLAN-3', parent_slug: 'plan-3-slug', parent_collection_slug: 'plans' }),
+		);
+		expect(target).toEqual<PaneTarget>({
+			ref: 'PLAN-3',
+			slug: 'plan-3-slug',
+			collectionSlug: 'plans',
+		});
+	});
+
+	it('omits ref when the parent has no number (slug-only addressable)', () => {
+		const target = breadcrumbParentTarget(
+			withParent({ parent_slug: 'legacy-parent', parent_collection_slug: 'plans' }),
+		);
+		expect(target).toEqual<PaneTarget>({
+			ref: undefined,
+			slug: 'legacy-parent',
+			collectionSlug: 'plans',
+		});
+	});
+
+	it('returns undefined when the item has no structural parent at all', () => {
+		expect(breadcrumbParentTarget(withParent({}))).toBeUndefined();
+	});
+
+	it('returns undefined when only ONE of parent_slug/parent_collection_slug is present', () => {
+		expect(breadcrumbParentTarget(withParent({ parent_slug: 'plan-3-slug' }))).toBeUndefined();
+		expect(breadcrumbParentTarget(withParent({ parent_collection_slug: 'plans' }))).toBeUndefined();
+	});
+
+	it('returns undefined for a null/undefined item (no loaded item yet)', () => {
+		expect(breadcrumbParentTarget(null)).toBeUndefined();
+		expect(breadcrumbParentTarget(undefined)).toBeUndefined();
+	});
+
+	it('the resulting target round-trips through resolvePaneTarget to the parent ref (drills the pane)', () => {
+		const target = breadcrumbParentTarget(
+			withParent({ parent_ref: 'PLAN-3', parent_slug: 'plan-3-slug', parent_collection_slug: 'plans' }),
+		)!;
+		// No `current` item passed — mirrors the collection host's resolution
+		// once the click interceptor has already fired the target up.
+		expect(resolvePaneTarget(target)).toBe('PLAN-3');
 	});
 });

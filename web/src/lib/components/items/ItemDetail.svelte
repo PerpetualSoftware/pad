@@ -40,7 +40,7 @@
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
-	import { isSamePaneTarget } from '$lib/collections/paneTarget';
+	import { isSamePaneTarget, breadcrumbParentTarget } from '$lib/collections/paneTarget';
 	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
@@ -3045,6 +3045,24 @@
 		paneOpenTarget?.({ ref: entry.ref, slug: entry.slug, href: entry.href ?? undefined, collectionSlug: entry.collectionSlug });
 	}
 
+	// The structural-parent breadcrumb target (PLAN-2154 Architecture C / D3,
+	// TASK-2165) — `undefined` when the item has no structural parent, in
+	// which case the embedded pane's breadcrumb doesn't render at all (the
+	// pane chrome header above already surfaces the current item's own ref).
+	// `breadcrumbParentTarget` reads only the loaded item's own `parent_*`
+	// fields (zero new fetches), so this is correct even on a cold-loaded
+	// shared `?item=` pane URL.
+	let breadcrumbTarget = $derived(breadcrumbParentTarget(item));
+
+	// In-pane drill interception for the structural parent-breadcrumb hop.
+	// Mirrors `handleRelationshipClick`'s interception order: modifier/
+	// middle-click still falls through to the plain `<a href>` popout.
+	function handleBreadcrumbParentClick(e: MouseEvent) {
+		if (!breadcrumbTarget || !shouldOpenInPane(e, !!paneOpenTarget)) return;
+		e.preventDefault();
+		paneOpenTarget?.(breadcrumbTarget);
+	}
+
 	async function handleDeleteLink(linkId?: string) {
 		if (!linkId || !item) return;
 		// Capture identity BEFORE the awaits. The refresh GET must use the
@@ -3397,6 +3415,33 @@
 					>✕</button>
 				</div>
 			</header>
+			<!-- Structural parent breadcrumb (PLAN-2154 Architecture C / D3,
+			     TASK-2165) — un-hidden for the embedded pane. Single parent hop
+			     for v1: rendered only when the item HAS a structural parent
+			     (`parent_collection_slug` + `parent_slug`), reconstructed
+			     entirely from the item's own fields with zero new fetches, so
+			     it's correct even on a cold-loaded shared `?item=` pane URL.
+			     The pane chrome above already surfaces the current item's own
+			     ref/title, so there's nothing useful to add here when there's
+			     no parent to show. The parent hop routes through
+			     `paneOpenTarget` (drills the pane); `href` is preserved so a
+			     modifier/middle-click still pops it out to a new tab. -->
+			{#if breadcrumbTarget}
+				{@const parentCollSlug = breadcrumbTarget.collectionSlug}
+				{@const parentColl = allCollections.find(c => c.slug === parentCollSlug)}
+				<nav class="breadcrumb pane-breadcrumb" aria-label="Breadcrumb">
+					<a href="/{username}/{wsSlug}">Home</a>
+					<span class="sep">/</span>
+					<a href="/{username}/{wsSlug}/{parentCollSlug}">{parentColl?.icon ?? ''} {parentColl?.name ?? parentCollSlug}</a>
+					<span class="sep">/</span>
+					<a
+						href="/{username}/{wsSlug}/{parentCollSlug}/{breadcrumbTarget.slug}"
+						onclick={(e) => handleBreadcrumbParentClick(e)}
+					>{item.parent_ref || item.parent_title}</a>
+					<span class="sep">/</span>
+					<span class="current">{formatItemRef(item) || item.title}</span>
+				</nav>
+			{/if}
 		{/if}
 
 		<!-- Archived banner (TASK-1829) — read-only notice shown above the
@@ -4581,6 +4626,17 @@
 	}
 	.sep { color: var(--text-muted); }
 	.current { color: var(--text-primary); }
+
+	/* Pane breadcrumb (PLAN-2154 / TASK-2165) — reuses `.breadcrumb`'s look
+	   but sits below the (already sticky) `.pane-header` as a plain block,
+	   not sticky itself: it's a single parent hop, short enough that it
+	   doesn't need to stay pinned while the body scrolls, and staying
+	   non-sticky avoids stacking two opaque sticky bars at the top of a
+	   narrow pane. */
+	.pane-breadcrumb {
+		flex-wrap: wrap;
+		margin: 0 0 var(--space-3);
+	}
 	.copy-ref-btn {
 		position: relative;
 		display: inline-flex;
