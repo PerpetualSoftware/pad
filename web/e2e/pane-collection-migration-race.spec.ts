@@ -408,15 +408,35 @@ test('a collection migration completing after a cross-collection navigation does
 	await page.locator('button.btn-cancel', { hasText: 'Cancel' }).click();
 	await expect(page.locator('#edit-collection-title')).toHaveCount(0);
 
-	// Navigate A -> B via the relationship link — a real client-side
-	// SvelteKit transition (same route component, different params), while
-	// A's collection-edit save is still pending.
+	// Navigate A -> B while A's collection-edit save is still pending, as a real
+	// client-side SvelteKit transition (same `[collection]/[slug]` route
+	// component, different collection+item params) that REUSES the master
+	// <ItemDetail> instance — the same-instance reuse this fence guards.
+	//
+	// Post-TASK-2174 the full-page host mounts a detail pane, so a PLAIN click on
+	// a content link no longer hard-navigates the master: it FIRST-OPENS the
+	// target in the docked pane (`onOpenTarget` → `openItemPaneByRef`). To
+	// reproduce a same-instance cross-collection FULL-PAGE navigation we open B
+	// in the pane, then EXPAND it — `expandToFullPage` does a real client-side
+	// `goto(B's full-page URL)`, dropping `?item=` and re-driving the SAME master
+	// instance from collA/A to collB/B exactly as the pre-pane relationship-link
+	// nav did.
 	await page
 		.locator('.relationship-group', { hasText: 'Related' })
 		.locator('a.link-target', { hasText: bTitle })
 		.click();
+	// B opens in the docked pane beside the (now peeking) A master.
+	const pane = page.locator('.item-pane');
+	await expect(pane).toBeVisible();
+	await expect(pane.locator('.title', { hasText: bTitle })).toBeVisible();
+	await expect(page).toHaveURL(/\?item=/);
+	// Expand the pane -> the master navigates full-page to B (same instance,
+	// cross-collection), and `?item=` drops out so the pane unmounts.
+	await pane.locator('button.pane-header-btn[aria-label="Expand to full page"]').click();
+	await expect(page.locator('.item-pane')).toHaveCount(0);
 	await expect(page.locator('.title', { hasText: bTitle })).toBeVisible();
 	await expect(page).toHaveURL(new RegExp(`/${collB.slug}/`));
+	await expect(page).not.toHaveURL(/\?item=/);
 
 	const urlAtRelease = page.url();
 	// waitForResponse (not a fixed sleep) — we need the PATCH to actually

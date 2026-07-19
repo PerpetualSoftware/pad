@@ -81,6 +81,17 @@ export interface PaneController {
 	clearPaneGo: () => void;
 	/** Lateral / list open: first-open (push), depth-0 re-target (replace), or depth>0 stack RESET. */
 	openItemPane: (item: Item) => void;
+	/**
+	 * The ref-first counterpart to `openItemPane(item)` — first-open / re-target /
+	 * stack-reset the pane to an ALREADY-RESOLVED canonical `?item=` ref, applying
+	 * the exact same lateral-open semantics (`planLateralOpen`). `openItemPane` is a
+	 * thin wrapper over this that first derives the ref from an `Item` via
+	 * `itemUrlId`. Hosts whose content-links hand up a resolved ref rather than a
+	 * full `Item` — the full-page item host's MASTER content-links (PLAN-2154
+	 * Architecture E / TASK-2174), which FIRST-OPEN the pane (a depth-0
+	 * `paneOwned:true` push) instead of drilling — wire straight into this.
+	 */
+	openItemPaneByRef: (ref: string) => void;
 	/** In-pane DRILL to an already-resolved canonical `?item=` ref. */
 	navigatePaneTo: (target: string) => void;
 	/** `ItemDetail`'s `onOpenTarget` seam: resolve a raw `PaneTarget`, then drill. */
@@ -182,10 +193,16 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		clearPaneGo();
 	});
 
-	function openItemPane(item: Item) {
+	// Lateral / list open from an ALREADY-RESOLVED canonical `?item=` ref
+	// (PLAN-2154 Architecture E / TASK-2174). This is the whole body of the
+	// pre-refactor `openItemPane`; `openItemPane(item)` below is now a thin
+	// wrapper that derives `targetRef` from an `Item` and calls in, so its
+	// behavior — and the collection host's every `openItemPane(item)` call site —
+	// is byte-identical. The full-page item host's MASTER content-links (which
+	// hand up a resolved ref, not an `Item`) first-open the pane through here.
+	function openItemPaneByRef(targetRef: string) {
 		if (paneNavInFlight()) return;
 		controllerActionSeq++;
-		const targetRef = itemUrlId(item);
 		const url = new URL(page.url);
 		const alreadyOpen = url.searchParams.has('item');
 		// Capture the trigger on the FIRST open only — re-targeting (j/k follow /
@@ -232,6 +249,15 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 			keepFocus: true,
 			state: plan.state,
 		});
+	}
+
+	// Lateral / list open from an `Item` (the collection host's row / j-k
+	// selection). A thin wrapper over `openItemPaneByRef` — the ONLY thing it
+	// adds is deriving the canonical `?item=` ref from the item — so every
+	// existing `openItemPane(item)` call site is byte-identical to the
+	// pre-refactor function (PLAN-2154 Architecture E / TASK-2174).
+	function openItemPane(item: Item) {
+		openItemPaneByRef(itemUrlId(item));
 	}
 
 	// In-pane DRILL (Architecture A). `target` is an already-resolved canonical
@@ -406,6 +432,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		paneNavInFlight,
 		clearPaneGo,
 		openItemPane,
+		openItemPaneByRef,
 		navigatePaneTo,
 		handleOpenTarget,
 		handlePaneBack,
