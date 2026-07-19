@@ -76,6 +76,20 @@ function historyLength(page: Page): Promise<number> {
 	return page.evaluate(() => history.length);
 }
 
+/**
+ * Whether the currently-focused element is a pane-header Back button
+ * (`aria-label="Back"`). A `page.evaluate` read of `document.activeElement`,
+ * NOT `expect(locator).toBeFocused()` — this file's other focus checks
+ * (pane-a11y-focus.spec.ts) use the same `evaluate`-based pattern, which is
+ * the reliable one under heavy parallel load: a bare locator-based
+ * `toBeFocused()` polls independently of the app's own microtask queue and
+ * can observe a still-mid-flush DOM after a header swap, where an
+ * `evaluate` round-trip naturally lets pending Svelte effects settle first.
+ */
+function backButtonIsFocused(page: Page): Promise<boolean> {
+	return page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Back');
+}
+
 /** Enable the controller test hook for all navigations in this context. */
 async function enableHook(page: Page): Promise<void> {
 	await page.addInitScript(() => {
@@ -763,5 +777,396 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
 		await expect.poll(() => openItemParam(page)).toBe(b.slug);
 		await expect(pane).toBeVisible();
+	});
+
+	// ── In-pane Back chevron (PLAN-2154 Architecture C, TASK-2164) ──────────
+	// The pane chrome (⤢/↗/✕ today) grows a fourth control — a Back chevron —
+	// shown ONLY once the pane has drilled past its base (depth>0), wired to
+	// the same fenced `paneHistoryGo(-1)`/`paneNavInFlight()` traversal the
+	// depth-aware ESC handler above uses (R14). Depth is read reactively off
+	// SvelteKit `page.state` inside `ItemDetail` itself (never raw
+	// `history.state`), so the chevron's visibility always matches the
+	// controller's own `paneState()` read back through the test hook.
+
+	test('Back chevron: hidden at depth 0, visible once drilled, one press pops exactly one level', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl back alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		const refA = openItemParam(page);
+
+		const backBtn = pane.locator('button[aria-label="Back"]');
+		// Depth 0 (first-open) — the chevron is not rendered at all.
+		await expect(backBtn).toHaveCount(0);
+
+		// Drill A→B → depth 1 — the chevron appears.
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect(backBtn).toBeVisible();
+
+		// One press pops exactly one level: back to A at depth 0, and the pane
+		// stays open (this is a drill-stack pop, not a close).
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(refA);
+		await expect(pane).toBeVisible();
+		// Back at the base — the chevron is gone again.
+		await expect(pane.locator('button[aria-label="Back"]')).toHaveCount(0);
+	});
+
+	test('Back chevron: pops one level per press across a multi-hop drill', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl back-multi alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back-multi bravo');
+		const c = await seedDoc(fixture, request, 'Ctrl back-multi charlie');
+		const d = await seedDoc(fixture, request, 'Ctrl back-multi delta');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back-multi alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+
+		// Drill to depth 3: A(0) → B(1) → C(2) → D(3). Each `drillTo` only
+		// awaits `navigatePaneTo`'s SYNCHRONOUS portion — the `goto()` it
+		// fires is fire-and-forget — so poll `page.state` to settle after
+		// each hop before firing the next; otherwise a later drill can read
+		// a still-stale depth off an in-flight earlier one (Codex review
+		// round 2, P1).
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await drillTo(page, c.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+		await drillTo(page, d.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 3, paneOwned: true });
+		expect(openItemParam(page)).toBe(d.slug);
+
+		const backBtn = pane.locator('button[aria-label="Back"]');
+
+		// Press 1: D(3) → C(2). The click triggers a reload (`loading` briefly
+		// true), which swaps the loaded header for the minimal one and
+		// unmounts the just-clicked, focused Back button — Codex review round
+		// 2, P2. Focus must land back on the (re-mounted) Back button once the
+		// reload settles, so a keyboard user can keep popping levels.
+		await expect(backBtn).toBeVisible();
+		await backBtn.focus();
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(c.slug);
+		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
+
+		// Press 2: C(2) → B(1). Focus restored again.
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
+
+		// Press 3: B(1) → A(0), the base — chevron disappears, pane stays open.
+		// The terminal pop has no Back button left to land focus on, so it
+		// falls back to the always-present Close button rather than stranding
+		// focus on <body> (Codex review round 4).
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect(pane).toBeVisible();
+		await expect(pane.locator('button[aria-label="Back"]')).toHaveCount(0);
+		await expect
+			.poll(() => page.evaluate(() => document.activeElement?.getAttribute('aria-label')))
+			.toBe('Close pane');
+	});
+
+	test('Back chevron: a second press while the first pop is still loading still ends with focus restored (Codex review round 3)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl back-race alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back-race bravo');
+		const c = await seedDoc(fixture, request, 'Ctrl back-race charlie');
+		const d = await seedDoc(fixture, request, 'Ctrl back-race delta');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back-race alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await drillTo(page, c.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+		await drillTo(page, d.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 3, paneOwned: true });
+
+		// Gate C's item fetch — the FIRST Back press (D→C) lands on it and
+		// stalls mid-load, so the SECOND Back press (fired while that fetch is
+		// still outstanding) exercises the exact race Codex round 3 flagged:
+		// a click while `loading` is already true from an EARLIER, unrelated
+		// load must not let the focus-restore effect latch onto that stale
+		// cycle instead of its own.
+		let releaseGate: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			releaseGate = resolve;
+		});
+		await page.route(`**/api/v1/workspaces/*/items/${c.slug}`, async (route) => {
+			if (route.request().method() !== 'GET') {
+				await route.continue();
+				return;
+			}
+			await gate;
+			await route.continue();
+		});
+
+		const backBtn = pane.locator('button[aria-label="Back"]');
+		await expect(backBtn).toBeVisible();
+		await backBtn.focus();
+
+		// Press 1: D(3) → C(2). C's fetch is gated — this pop never actually
+		// finishes loading until the gate is released below.
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 2, paneOwned: true });
+		// Wait for the DOM to actually reach the minimal (loading) header —
+		// not just for `page.state` to have updated — so press 2 below
+		// deterministically lands mid-fetch regardless of system load
+		// (rather than merely racing the depth-poll's own timing).
+		await expect(pane.locator('.pane-header--minimal')).toBeVisible();
+
+		// Press 2, fired while `loading` is STILL true from the stalled C
+		// fetch (the history-level `paneNavInFlight()` fence has already
+		// cleared by now, since that only guards the `history.go` traversal
+		// itself, not the data fetch it triggers). Targets B, whose fetch is
+		// NOT gated.
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+
+		// The pane settled on B — focus must have landed on ITS Back button,
+		// not been consumed early by C's stale, still-outstanding load.
+		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
+
+		// Release the gate so C's now-superseded fetch can drain (generation-
+		// fenced server-side by `loadData`'s own `myGen === loadGeneration`
+		// checks — it must not clobber the now-current B state).
+		releaseGate();
+		await page.waitForTimeout(100);
+		await expect.poll(() => openItemParam(page)).toBe(b.slug);
+		await expect.poll(() => backButtonIsFocused(page)).toBe(true);
+	});
+
+	test('Back chevron: a superseding row-click while the pop is still loading does NOT steal focus back into the pane (Codex review round 6)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		const a = await seedDoc(fixture, request, 'Ctrl back-supersede alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back-supersede bravo');
+		const c = await seedDoc(fixture, request, 'Ctrl back-supersede charlie');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back-supersede alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		// A real row click puts the item's REF (e.g. `DOC-16`), not its slug,
+		// in `?item=` (`itemUrlId` prefers `formatItemRef` — +page.svelte),
+		// and that's what the fetch path segment uses too. Capture it here
+		// rather than assuming `a.slug` so the route gate below actually
+		// matches.
+		const aRef = openItemParam(page);
+
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+
+		// Gate A's item fetch — the Back press (B→A) lands on it and stalls
+		// mid-load, giving room to fire an UNRELATED navigation (a direct
+		// row click on C) before the Back pop ever settles.
+		let releaseGate: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			releaseGate = resolve;
+		});
+		await page.route(`**/api/v1/workspaces/*/items/${aRef}`, async (route) => {
+			if (route.request().method() !== 'GET') {
+				await route.continue();
+				return;
+			}
+			await gate;
+			await route.continue();
+		});
+
+		const backBtn = pane.locator('button[aria-label="Back"]');
+		await expect(backBtn).toBeVisible();
+		await backBtn.focus();
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		// Confirm the pop is genuinely stalled mid-fetch before superseding it.
+		await expect(pane.locator('.pane-header--minimal')).toBeVisible();
+
+		// SUPERSEDE: a direct row click on a THIRD item while A is still
+		// loading. `paneDepth` is already 0 (the Back pop's own destination
+		// settled at the history level), so this is a normal depth-0
+		// re-target (`openItemPane` replace) — a completely different, later
+		// navigation than the stalled Back pop, landing on C.
+		await page.locator('.item-card', { hasText: 'Ctrl back-supersede charlie' }).first().click();
+		await expect(pane.locator('.title', { hasText: /Ctrl back-supersede charlie/ })).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		// A row click lands the item's ref (not necessarily its slug — same
+		// `itemUrlId` caveat as `aRef` above) in `?item=`; just confirm it
+		// changed to something other than A's ref.
+		const cRef = openItemParam(page);
+		expect(cRef).not.toBe(aRef);
+
+		// The stalled Back pop's pending focus-restore must NOT fire once A
+		// eventually settles — it was superseded, so it must not steal focus
+		// into C's pane chrome. `backButtonIsFocused` covers the paneDepth>0
+		// case; C is at depth 0, so also check the Close button directly.
+		const closeIsFocused = () =>
+			page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Close pane');
+		await expect.poll(closeIsFocused).toBe(false);
+
+		// Release the gate — A's now-superseded fetch drains (generation-
+		// fenced by `loadData`'s own checks), and the abandoned restore must
+		// still not fire afterward.
+		releaseGate();
+		await page.waitForTimeout(150);
+		await expect.poll(() => openItemParam(page)).toBe(cRef);
+		await expect.poll(closeIsFocused).toBe(false);
+	});
+
+	test('Back chevron: a genuinely slow (but legitimate) destination load still restores focus, however long it takes', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl back-slow alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back-slow bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back-slow alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		// A real row click puts the item's REF (e.g. `DOC-16`), not its slug,
+		// in `?item=` (`itemUrlId` prefers `formatItemRef` — +page.svelte),
+		// and that's what the fetch path segment uses too.
+		const aRef = openItemParam(page);
+
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+
+		// Gate A's item fetch — the Back press (B→A) LANDS on it, no
+		// unrelated navigation involved, so the eventual restore is fully
+		// legitimate — no matter how long the fetch takes, the restore has no
+		// wall-clock deadline to race (the design deliberately dropped the
+		// timer-based "give up waiting" heuristic explored in earlier review
+		// rounds; see the focus-restore block's comment for why).
+		let releaseGate: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			releaseGate = resolve;
+		});
+		await page.route(`**/api/v1/workspaces/*/items/${aRef}`, async (route) => {
+			if (route.request().method() !== 'GET') {
+				await route.continue();
+				return;
+			}
+			await gate;
+			await route.continue();
+		});
+
+		const backBtn = pane.locator('button[aria-label="Back"]');
+		await expect(backBtn).toBeVisible();
+		await backBtn.focus();
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect(pane.locator('.pane-header--minimal')).toBeVisible();
+
+		// Hold well past the mint-settle window before releasing — the pop
+		// must still be pending, not silently abandoned.
+		await page.waitForTimeout(400);
+		releaseGate();
+		await expect.poll(() => openItemParam(page)).toBe(aRef);
+		await expect(pane.locator('.pane-header--minimal')).toBeHidden();
+
+		const closeIsFocusedAfterSlowLoad = () =>
+			page.evaluate(() => document.activeElement?.getAttribute('aria-label') === 'Close pane');
+		await expect.poll(closeIsFocusedAfterSlowLoad).toBe(true);
+	});
+
+	test('Back chevron: a cold-loaded shared ?item= starts at depth 0 and stays hidden; browser Back still exits the pane', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await enableHook(page);
+		await browserLogin(page);
+		const a = await seedDoc(fixture, request, 'Ctrl back-cold alpha');
+
+		// COLD LOAD straight into an open pane — no history stamp, so the
+		// controller normalizes to depth 0 / unowned (readPaneState's base
+		// default). The chevron must NOT render here.
+		await page.goto(docsUrl(fixture, `?item=${a.slug}`));
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: false });
+		await expect(pane.locator('button[aria-label="Back"]')).toHaveCount(0);
+
+		// Browser Back at the cold base behaves exactly as before this task —
+		// it leaves the page entirely (there was no pre-pane entry to unwind
+		// to within this tab's history), unaffected by the chevron addition.
+		await page.goBack();
+		await expect.poll(() => page.url()).not.toContain(`item=${a.slug}`);
+	});
+
+	test('Back chevron: works from the mobile full-screen overlay too', async ({
+		page,
+		fixture,
+		request,
+	}, testInfo) => {
+		test.skip(
+			testInfo.project.name !== 'desktop-chromium',
+			'mobile viewport is driven explicitly; one project is enough',
+		);
+		await page.setViewportSize(MOBILE);
+		await enableHook(page);
+		await browserLogin(page);
+		await seedDoc(fixture, request, 'Ctrl back-mobile alpha');
+		const b = await seedDoc(fixture, request, 'Ctrl back-mobile bravo');
+		await page.goto(docsUrl(fixture));
+
+		await page.locator('.item-card', { hasText: 'Ctrl back-mobile alpha' }).first().click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		const backBtn = pane.locator('button[aria-label="Back"]');
+		await expect(backBtn).toHaveCount(0);
+
+		await drillTo(page, b.slug);
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 1, paneOwned: true });
+		await expect(backBtn).toBeVisible();
+
+		await backBtn.click();
+		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
+		await expect(pane).toBeVisible();
+		await expect(pane.locator('button[aria-label="Back"]')).toHaveCount(0);
 	});
 });

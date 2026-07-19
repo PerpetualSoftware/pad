@@ -740,6 +740,19 @@
 		navigatePaneTo(resolved);
 	}
 
+	// The pane chrome's Back chevron (PLAN-2154 Architecture C / TASK-2164) —
+	// `ItemDetail`'s `onBack`, rendered only once `page.state.paneDepth > 0`.
+	// Pops exactly one drill level through the same FENCED `paneHistoryGo` /
+	// `paneNavInFlight()` guard the depth-aware ESC handler below uses (R14),
+	// not a bare `history.back()` — a rapid double-click, or a click racing
+	// ESC/close, can't queue a second traversal and overshoot. The depth
+	// check is defense-in-depth: the chevron only renders at depth>0, but a
+	// stale click could in principle race a continuation that already
+	// unwound the stack back to the base.
+	function handlePaneBack() {
+		if (currentPaneState().paneDepth > 0 && !paneNavInFlight()) paneHistoryGo(-1);
+	}
+
 	// The pane's ItemDetail fires `onNavigateAway` for TWO distinct cases, which
 	// we tell apart by whether the target URL still carries `?item=` (i.e. keeps
 	// the pane open):
@@ -3820,6 +3833,7 @@
 					onGone={closeItemPane}
 					onNavigateAway={handlePaneNavigateAway}
 					onOpenTarget={handleOpenTarget}
+					onBack={handlePaneBack}
 				/>
 			{/if}
 		</aside>
