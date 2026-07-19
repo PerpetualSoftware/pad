@@ -302,7 +302,18 @@
 		// Depth 0 (or a higher-priority layer): let the escape stack close exactly
 		// one layer, innermost-first (a pane graph drawer → the pane). No-op with
 		// no pane open (stack empty → returns false → native ESC untouched).
-		if (runTopEscape()) e.preventDefault();
+		if (runTopEscape()) {
+			e.preventDefault();
+			// Case C (master graph + pane graph both open): `runTopEscape` just
+			// closed the innermost PANE graph. The MASTER graph's uncoordinated
+			// window listener ignores `preventDefault`, so stop it from ALSO closing
+			// on this same ESC — one layer per press. The host's `<svelte:window>`
+			// listener is registered before the master graph's (which arms only when
+			// that graph opens), so this runs first and can suppress it. Scoped to
+			// when a master graph actually exists so it never blocks unrelated window
+			// ESC listeners on the ordinary close path.
+			if (hasMasterGraph) e.stopImmediatePropagation();
+		}
 	}
 
 	onDestroy(() => {
@@ -382,5 +393,27 @@
 		flex: 1 1 0;
 		min-width: 0;
 		overflow-y: auto;
+	}
+
+	/* Print: the docked pane is a screen-only navigational surface, and the
+	   flex-row host clips to the viewport for the on-screen split — neither is
+	   right for print. Hide the pane + divider so Ctrl/Cmd+P captures ONLY the
+	   master document (not two items side-by-side with duplicate footers), and
+	   un-clip the host/column so the master flows naturally across print pages —
+	   mirroring app.css's `.app-shell`/`.main-content` print unlock, which does
+	   not reach these route-owned containers (Codex review). */
+	@media print {
+		.item-page-host {
+			display: block;
+			height: auto;
+			overflow: visible;
+		}
+		.item-page {
+			overflow: visible;
+		}
+		.item-page-host :global(.item-pane),
+		.item-page-host :global(.pane-divider) {
+			display: none;
+		}
 	}
 </style>
