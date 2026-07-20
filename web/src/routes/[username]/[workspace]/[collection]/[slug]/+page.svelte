@@ -209,23 +209,37 @@
 		return isSamePaneTarget({ href: candidate }, masterItem);
 	}
 
-	// Server confirmation for the UNCERTAIN case above. `null` = pending; the only
-	// way to know whether a ref/UUID-shaped master slug is preempted (target
-	// resolves to a different live item) or reached by the server's slug-fallback
-	// (target resolves to the master) is to resolve `?item=` to its actual item id
-	// and compare. Fires ONLY when `masterMatchSync` is null, so a normal
-	// plain-slug master never touches the network.
-	let confirmedTargetIsMaster = $state<boolean | null>(null);
-	let lastConfirmKey: string | null = null; // plain let: an effect edge tracker (CONVE-1688)
+	// The exact identity of an uncertain resolve — `wsSlug`, the master, and the
+	// candidate — so a stored result is only ever consumed for the target it was
+	// computed for.
+	function uncertainKey(candidate: string, master: PaneGuardItem): string {
+		return `${wsSlug}::${master.id}::${candidate}`;
+	}
+
+	// Server confirmation for the UNCERTAIN case above. The only way to know whether
+	// a ref/UUID-shaped master slug is preempted (target resolves to a different
+	// live item) or reached by the server's slug-fallback (target resolves to the
+	// master) is to resolve `?item=` to its actual item id and compare. Fires ONLY
+	// when `masterMatchSync` is null, so a normal plain-slug master never touches
+	// the network. The result is STAMPED with its `key`: a consumer treats a
+	// key-mismatch (stale result for a different target, or none yet) as pending —
+	// so a prior target's answer can't transiently leak to a new one (Codex review).
+	let confirmedTarget = $state<{ key: string; isMaster: boolean } | null>(null);
+	// Dedup: the key currently being fetched, a plain `let` NOT `$state` — the
+	// effect must not READ the reactive `confirmedTarget` it also writes (CONVE-1688
+	// self-invalidation). Cleared on cancel/complete so revisiting a cancelled key
+	// re-fetches instead of wedging. (A re-run for the same still-open uncertain
+	// target won't fire — the effect's reactive deps `openItemRef`/`masterItem` are
+	// stable then — so this dedup only guards a genuine in-flight duplicate.)
+	let inFlightKey: string | null = null;
 	$effect(() => {
 		const candidate = openItemRef;
 		const master = masterItem;
 		if (!browser || !candidate || !master) return;
 		if (masterMatchSync(candidate) !== null) return; // sync decided → no fetch
-		const key = `${wsSlug}::${master.id}::${candidate}`;
-		if (key === lastConfirmKey) return; // already resolved / in flight for this key
-		lastConfirmKey = key;
-		confirmedTargetIsMaster = null; // pending (not read in this effect → no self-invalidation)
+		const key = uncertainKey(candidate, master);
+		if (key === inFlightKey) return; // a fetch is already in flight for this exact key
+		inFlightKey = key;
 		let cancelled = false;
 		void (async () => {
 			let isMaster: boolean;
@@ -237,13 +251,22 @@
 				// direction for the forbidden D2 collision.
 				isMaster = true;
 			}
-			if (cancelled || key !== lastConfirmKey) return;
-			confirmedTargetIsMaster = isMaster;
+			if (inFlightKey === key) inFlightKey = null;
+			if (cancelled) return;
+			confirmedTarget = { key, isMaster };
 		})();
 		return () => {
 			cancelled = true;
+			if (inFlightKey === key) inFlightKey = null; // re-armable, never wedged
 		};
 	});
+
+	// The server-confirmed answer for the CURRENT uncertain `?item=`, or null when
+	// pending (no stamped result for this exact key yet).
+	function confirmedFor(candidate: string, master: PaneGuardItem): boolean | null {
+		const key = uncertainKey(candidate, master);
+		return confirmedTarget?.key === key ? confirmedTarget.isMaster : null;
+	}
 
 	// Does the CURRENT `?item=` alias the master, for the MOUNT gate? Blocks (true)
 	// while an uncertain resolve is pending — never mount a 2nd provider on the
@@ -252,7 +275,7 @@
 		const candidate = openItemRef;
 		if (!candidate || !masterItem) return false;
 		const sync = masterMatchSync(candidate);
-		return sync !== null ? sync : (confirmedTargetIsMaster ?? true);
+		return sync !== null ? sync : (confirmedFor(candidate, masterItem) ?? true);
 	});
 
 	// Does the CURRENT `?item=` alias the master, for the cold-load STRIP? Only
@@ -262,7 +285,7 @@
 		const candidate = openItemRef;
 		if (!candidate || !masterItem) return false;
 		const sync = masterMatchSync(candidate);
-		return sync !== null ? sync : (confirmedTargetIsMaster ?? false);
+		return sync !== null ? sync : (confirmedFor(candidate, masterItem) ?? false);
 	});
 
 	// Whether to MOUNT the pane. Gating the MOUNT (not merely stripping `?item=`
@@ -288,26 +311,28 @@
 	// master's room). The master's own <ItemDetail> `fireOpenTarget` already
 	// drops self-links against its loaded item; this is the host-side belt.
 	function handleMasterOpenTarget(target: PaneTarget) {
-		// `resolvePaneTarget(target, masterItem)` returns null BOTH when the target
-		// is unresolvable AND when it resolves to the master (the provenance-correct
-		// `isSamePaneTarget` self-guard). `masterMatchSync(resolved) === true`
-		// additionally drops a resolved segment that DEFINITELY aliases the master
-		// (e.g. its plain slug) up front. An UNCERTAIN ref/UUID-shaped-slug alias
-		// (`=== null`) is left for the mount gate's server-confirm to catch — never
-		// a collision, just a possible brief `?item=` flicker in that pathological
-		// case.
-		const resolved = resolvePaneTarget(target, masterItem);
+		// Resolve WITHOUT `resolvePaneTarget`'s `current` same-item guard — that guard
+		// is `isSamePaneTarget`, which over-blocks the same undecidable UUID-shaped-
+		// slug case (a UUID-shaped href equal to the master's slug is treated as self
+		// even when it's a different LIVE item — Codex review). Instead drop only a
+		// DEFINITE master alias here (`masterMatchSync(resolved) === true`); an
+		// UNCERTAIN alias (`=== null`) is left for the mount gate's server-confirm to
+		// catch — never a collision, just a possible brief `?item=` flicker in that
+		// pathological case. A master self-link resolves to the master's ref →
+		// `masterMatchSync` true → still dropped here.
+		const resolved = resolvePaneTarget(target);
 		if (!resolved || masterMatchSync(resolved) === true) return;
 		openItemPaneByRef(resolved);
 	}
 
 	// PANE content-links DRILL in place (PLAN-2154 Architecture A/B). A link
 	// clicked INSIDE the pane re-targets the pane with a back stack via
-	// `navigatePaneTo` — the same `resolvePaneTarget(target, masterItem)` drops a
-	// drill back onto the master (the pane's own `fireOpenTarget` already dropped
-	// drills to the pane's currently-shown item).
+	// `navigatePaneTo` — the same `masterMatchSync(resolved) === true` drop guards
+	// a drill back onto the master (resolved without the `isSamePaneTarget`
+	// same-item guard, for the same UUID-shaped-slug reason as above; the pane's
+	// own `fireOpenTarget` already dropped drills to the pane's shown item).
 	function guardedDrill(target: PaneTarget) {
-		const resolved = resolvePaneTarget(target, masterItem);
+		const resolved = resolvePaneTarget(target);
 		if (!resolved || masterMatchSync(resolved) === true) return;
 		navigatePaneTo(resolved);
 	}
