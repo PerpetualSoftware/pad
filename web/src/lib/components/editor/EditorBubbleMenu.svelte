@@ -187,7 +187,14 @@
 			// path hides via the post-insert selectionUpdate, which never fires
 			// here), so A's create form/selection would otherwise linger over B
 			// (Codex).
-			if (originEditor.isDestroyed || editor !== originEditor) {
+			//
+			// `!originEditor.isEditable` is the master-freeze arm (PLAN-2179 DR-1
+			// / TASK-2180): the peeking `{#key}` remount used to destroy this
+			// editor mid-create (caught by `isDestroyed`); now the editor stays
+			// alive and merely goes read-only, so we must drop the wiki-link insert
+			// explicitly — a frozen master must not be mutated by an in-flight
+			// create the user started before the pane opened.
+			if (originEditor.isDestroyed || editor !== originEditor || !originEditor.isEditable) {
 				visible = false;
 				showForm = false;
 				title = '';

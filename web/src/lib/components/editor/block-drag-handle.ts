@@ -195,6 +195,12 @@ function dropPosAtY(view: EditorView, y: number, dragPos: number): number | null
 }
 
 function executeMove(view: EditorView, fromPos: number, fromNode: any, targetPos: number) {
+	// Reactive-freeze backstop (PLAN-2179 DR-1): a peeking / read-only editor
+	// must never dispatch a block move. `view.editable` is flipped synchronously
+	// by Editor.svelte's editable $effect — ProseMirror recomputes it in
+	// updateStateInner BEFORE plugin views update — so a freeze landing mid-drag
+	// can't persist through this authoritative dispatch guard.
+	if (!view.editable) return;
 	const { state } = view;
 	const { tr, schema } = state;
 
@@ -423,7 +429,10 @@ export const BlockDragHandle = Extension.create({
 
 					// --- Context menu ---
 					function showMenu() {
-						if (!activeBlock) return;
+						// Reactive-freeze bail (PLAN-2179 DR-1): no context menu on a
+						// frozen editor. The handle should already be hidden, but a
+						// freeze can race a queued handle-click/tap.
+						if (!activeBlock || !editorView.editable) return;
 						menuOpen = true;
 						editorView.dom.blur();
 
@@ -485,7 +494,8 @@ export const BlockDragHandle = Extension.create({
 					// Menu item clicks
 					menu.addEventListener('click', (e) => {
 						const btn = (e.target as HTMLElement).closest('.block-menu-item') as HTMLElement;
-						if (!btn || !activeBlock) return;
+						// Reactive-freeze bail (PLAN-2179 DR-1): turn-into is a mutation.
+						if (!btn || !activeBlock || !editorView.editable) return;
 						e.stopPropagation();
 
 						const type = btn.dataset.type;
@@ -500,7 +510,8 @@ export const BlockDragHandle = Extension.create({
 
 					duplicateBtn.addEventListener('click', (e) => {
 						e.stopPropagation();
-						if (!activeBlock) return;
+						// Reactive-freeze bail (PLAN-2179 DR-1): duplicate is a mutation.
+						if (!activeBlock || !editorView.editable) return;
 						const { tr } = editorView.state;
 						const insertPos = activeBlock.pos + activeBlock.node.nodeSize;
 						tr.insert(insertPos, activeBlock.node.copy(activeBlock.node.content));
@@ -512,7 +523,8 @@ export const BlockDragHandle = Extension.create({
 
 					deleteBtn.addEventListener('click', (e) => {
 						e.stopPropagation();
-						if (!activeBlock) return;
+						// Reactive-freeze bail (PLAN-2179 DR-1): delete is a mutation.
+						if (!activeBlock || !editorView.editable) return;
 						const { tr } = editorView.state;
 						tr.delete(activeBlock.pos, activeBlock.pos + activeBlock.node.nodeSize);
 
@@ -541,7 +553,10 @@ export const BlockDragHandle = Extension.create({
 					if (attachBtn) {
 						attachBtn.addEventListener('click', (e) => {
 							e.stopPropagation();
-							if (!activeBlock) return;
+							// Reactive-freeze bail (PLAN-2179 DR-1): don't even open the
+							// picker on a frozen editor (the deferred change handler is
+							// guarded too, for a freeze that lands while it's open).
+							if (!activeBlock || !editorView.editable) return;
 							const block = activeBlock;
 
 							// Find the last non-code textblock within the active block.
@@ -586,6 +601,10 @@ export const BlockDragHandle = Extension.create({
 						attachInput.value = '';
 						const pendingAfter = attachPendingParagraphAfter;
 						attachPendingParagraphAfter = null;
+						// Reactive-freeze bail (PLAN-2179 DR-1): if a freeze landed while
+						// the OS picker was open, drop the upload — pending state is
+						// already cleared above, so the doc stays untouched.
+						if (!editorView.editable) return;
 						if (!files.length) return;
 						if (pendingAfter !== null) {
 							// Atom / code-block path: create the host paragraph now,
@@ -705,7 +724,10 @@ export const BlockDragHandle = Extension.create({
 
 					// --- Drag lifecycle ---
 					function startDrag() {
-						if (!activeBlock) return;
+						// Reactive-freeze bail (PLAN-2179 DR-1): never begin a reorder
+						// on a frozen editor (e.g. a freeze between handle-mousedown and
+						// the drag-threshold move).
+						if (!activeBlock || !editorView.editable) return;
 						hideMenu();
 						dragging = true;
 						activeBlock.dom.style.opacity = '0.2';
@@ -732,7 +754,11 @@ export const BlockDragHandle = Extension.create({
 						stopAutoScroll();
 						editorView.dom.style.pointerEvents = '';
 
-						if (currentDropPos !== null && currentDropPos !== activeBlock.pos) {
+						// Reactive-freeze bail (PLAN-2179 DR-1): if a freeze landed
+						// mid-drag, skip the move dispatch but still run the cleanup
+						// below so the ghost/opacity/drop-line don't dangle. executeMove
+						// also self-guards on `view.editable` as a final backstop.
+						if (editorView.editable && currentDropPos !== null && currentDropPos !== activeBlock.pos) {
 							try {
 								executeMove(editorView, activeBlock.pos, activeBlock.node, currentDropPos);
 							} catch (e) {
@@ -764,6 +790,11 @@ export const BlockDragHandle = Extension.create({
 
 					// --- Mouse events ---
 					function onMouseMove(e: MouseEvent) {
+						// Reactive-freeze choke (PLAN-2179 DR-1): a frozen editor shows
+						// no handle, so no hover/click/drag interaction can start. This
+						// (plus update() below) is what lets `editable={!peeking}` shed
+						// the handle WITHOUT remounting the editor.
+						if (!editorView.editable) { hideHandle(); return; }
 						if (dragging || menuOpen) return;
 						hoverMode = true;
 						userHasInteracted = true;
@@ -883,6 +914,11 @@ export const BlockDragHandle = Extension.create({
 
 					return {
 						update(view) {
+							// Reactive-freeze choke (PLAN-2179 DR-1): setEditable(false)
+							// runs an updateState, and ProseMirror recomputes view.editable
+							// BEFORE this plugin update fires — so a freeze hides the handle
+							// synchronously here, no editor remount required.
+							if (!editorView.editable) { hideHandle(); return; }
 							if (dragging || menuOpen) return;
 							if (hoverMode) return;
 							if (!userHasInteracted) return;

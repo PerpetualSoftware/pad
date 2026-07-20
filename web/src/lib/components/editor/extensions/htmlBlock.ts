@@ -349,6 +349,15 @@ export const HtmlBlock = Node.create({
 			}
 
 			function commit() {
+				// Reactive-freeze guard (PLAN-2179 DR-1 / TASK-2180): entering
+				// source mode is gated on `isEditable` (see the preview click
+				// handler), but a block ALREADY in source mode when the master
+				// froze keeps its native textarea editable — and commit() fires on
+				// blur / Escape / ⌘-Enter / Done. Never dispatch that edit into a
+				// read-only / peeking doc. The old peeking `{#key}` remount closed
+				// this by destroying the NodeView; the reactive freeze needs the
+				// explicit bail.
+				if (!editor.isEditable) return;
 				const next = textarea.value;
 				const pos = typeof getPos === 'function' ? getPos() : null;
 				if (typeof pos !== 'number') return;
