@@ -117,6 +117,12 @@
 	}
 
 	function handleManage() {
+		// Recheck `canEdit` at dispatch time (mirrors handleSaveNewAction): if it
+		// flips false while the menu is open — e.g. the master-freeze passing
+		// canEdit=false once this side becomes the peeking preview (BUG-2263) — refuse
+		// to open the collection-settings editor. The trigger itself unmounts on the
+		// same flip (`{#if canEdit}`); this guards the render→click race.
+		if (!canEdit) return;
 		open = false;
 		resetCreateForm();
 		onmanage?.();

@@ -37,18 +37,26 @@
 		itemId?: string;
 		collectionId?: string;
 		/**
-		 * PLAN-2154 Phase 2 / D2 / R12 (TASK-2172): master-freeze. When the
-		 * full-page host peeks a detail pane beside this item's ItemDetail, the
-		 * master passes `frozen={true}` so its timeline goes fully read-only:
-		 * the composer hides, reply/reaction/delete disable, any already-open
-		 * comment/reply edit form (and its CommentEditor direct-upload) unmounts,
-		 * and version restore hides. Defaults false → byte-identical for every
-		 * existing caller.
+		 * `frozen` freezes the COMMENT/REACTION surfaces (composer, reply, edit,
+		 * delete, reaction). These are per-item / per-user REST entities, so under
+		 * the invisible-freeze model (BUG-2263) the full-page host leaves this
+		 * `false` even while peeking — comments stay live on the passive side.
+		 * Defaults false → byte-identical for every existing caller.
 		 */
 		frozen?: boolean;
+		/**
+		 * `restoreFrozen` freezes ONLY version restore. Unlike comments, a restore
+		 * REST-writes this item's `items.content` directly (not via the Y.Doc
+		 * applier), so on a peeking side whose Y.Doc is retained-alive it can be
+		 * overwritten by a later collab flush — a SAME-ITEM collision the
+		 * different-master/pane premise does NOT cover (BUG-2263 / Codex P1). The
+		 * host passes `restoreFrozen={peeking}` so restore stays confined to the
+		 * active editor. Defaults false → byte-identical for every existing caller.
+		 */
+		restoreFrozen?: boolean;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -495,7 +503,7 @@
 								{itemSlug}
 								{currentContent}
 								{onRestore}
-								{frozen}
+								frozen={frozen || restoreFrozen}
 							/>
 						{/if}
 					</div>

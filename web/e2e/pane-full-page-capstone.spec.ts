@@ -15,16 +15,16 @@ import type { SuiteFixture } from './fixtures';
  * FULL-PAGE host specifically, the three properties that host alone
  * introduces or that only it can now demonstrate:
  *
- *   1. Option-A mutation-SILENCE (the D2 / HT-2176 freeze acceptance). While
- *      a pane is peeking beside the retain-alive master, NO NEW user edit can
- *      be INITIATED on the master — the title click-to-edit is gone, field
- *      inputs are read-only, the comment composer / compose surfaces are
- *      unmounted, the rich editor is contenteditable=false, and the star /
- *      Share / Quick-actions affordances are gated. This is Option A — "no NEW
- *      edit can be INITIATED while peeking", NOT "zero network writes": a
- *      pre-pane pending save legitimately completes and remote collab sync is
- *      expected, so we assert the INITIATION surfaces are disabled/absent, not
- *      the absence of REST/WS traffic. Un-peeking (close) restores every one.
+ *   1. INVISIBLE freeze (BUG-2263). While a pane is peeking beside the
+ *      retain-alive master, the ONLY thing that changes on the master is that
+ *      its collab CONTENT editor stops being typeable (contenteditable=false) —
+ *      the single collision surface the freeze exists to protect. EVERY other
+ *      surface stays live and editable: the title is still a click-to-edit
+ *      button, field inputs stay editable, the comment composer is present, and
+ *      the star / Share / Quick-actions / Move / Delete / Add-relationship
+ *      affordances are all present. They are side-independent, server-gated REST
+ *      mutations, so the freeze must be transparent to the user there. Un-peeking
+ *      (close) restores the content editor's typeability; nothing else moved.
  *
  *   2. The bounded TWO-WS cost while peeking (D2's "cost model" note). Opening
  *      the pane yields at most the master's provider + the pane's provider = 2
@@ -138,12 +138,21 @@ async function seedNoteCollection(
 	request: APIRequestContext,
 	namePrefix: string,
 	itemPrefix: string,
+	quickActions?: Array<{ label: string; prompt: string }>,
 ): Promise<{ id: string; slug: string }> {
 	const name = `${namePrefix} ${Date.now()}`;
 	const schema = JSON.stringify({ fields: [{ key: 'note', label: 'Note', type: 'text' }] });
+	const data: Record<string, unknown> = { name, prefix: itemPrefix, schema };
+	if (quickActions?.length) {
+		// Seed read-only prompt-copy actions so the quick-actions trigger stays
+		// visible on the peeking side (the write controls gate separately).
+		data.settings = JSON.stringify({
+			quick_actions: quickActions.map((a) => ({ ...a, scope: 'item' })),
+		});
+	}
 	const resp = await request.post(`/api/v1/workspaces/${fixture.workspaceSlug}/collections`, {
 		headers: authHeaders(fixture),
-		data: { name, prefix: itemPrefix, schema },
+		data,
 	});
 	if (!resp.ok()) throw new Error(`collection create failed (${resp.status()}): ${await resp.text()}`);
 	return (await resp.json()) as { id: string; slug: string };
@@ -242,16 +251,16 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		);
 	});
 
-	// ── 1. Option-A mutation-SILENCE (the D2 / HT-2176 freeze acceptance) ────
-	// While a pane peeks beside the retain-alive master, NO NEW user edit can be
-	// INITIATED on the master. We assert the KEY initiation surfaces are
-	// disabled/absent — NOT the absence of network writes (Option A explicitly
-	// permits a pre-pane pending save to complete + remote collab sync). This is
-	// the RUNTIME smoke of the freeze; the exhaustive per-mutation-path audit
-	// (raw mode, tags, assignment, timeline reply/reaction/version, drag-reorder,
-	// etc.) is unit-tested in masterFreeze.svelte.test.ts + mutationGate.test.ts.
-	// Then un-peek (close) and assert the surfaces are restored.
-	test('peeking freezes the master NEW-edit-initiation surfaces; closing the pane restores them', async ({
+	// ── 1. INVISIBLE freeze (BUG-2263) ──────────────────────────────────────
+	// While a pane peeks beside the retain-alive master, the ONLY master surface
+	// that changes is its content editor's typeability (contenteditable=false) —
+	// the single collision surface. We assert every OTHER surface (title, field,
+	// composer, star, Share, Quick-actions, Delete, Move, Add-relationship) stays
+	// live and editable, i.e. the freeze is transparent to the user. This is the
+	// RUNTIME smoke of the invisible freeze; the exhaustive per-surface gate audit
+	// is unit-tested in masterFreeze.svelte.test.ts + mutationGate.test.ts. Then
+	// un-peek (close) and assert the content editor is typeable again.
+	test('peeking freezes ONLY the master content editor; every other surface stays live and editable (BUG-2263 invisible freeze)', async ({
 		page,
 		fixture,
 		request,
@@ -316,46 +325,125 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		// Activate the pane (click its title) → the master becomes the frozen side.
 		await pane.locator('.title', { hasText: 'FP freeze target' }).click();
 
-		// ── Peeking: every NEW-edit-initiation surface is gone/disabled. ──
-		// Title: click-to-edit button replaced by a non-editable <h1>.
-		await expect(col.locator('h1.title.title-readonly', { hasText: 'FP freeze master' })).toBeVisible();
-		await expect(col.locator('button.title', { hasText: 'FP freeze master' })).toHaveCount(0);
-		// Field: the editable input is gone — rendered as a readonly-display.
-		await expect(col.locator('input.field-input')).toHaveCount(0);
-		await expect(col.locator('.field-row', { hasText: 'Note' }).locator('.readonly-display')).toBeVisible();
-		// Comment composer: unmounted entirely.
-		await expect(col.locator('.compose')).toHaveCount(0);
-		// Star: disabled (gated on `peeking`, not unmounted — it stays visible).
-		await expect(col.locator('button.star-btn')).toBeDisabled();
-		// Share + Quick-actions triggers: unmounted.
-		await expect(col.locator('button.action-btn', { hasText: 'Share' })).toHaveCount(0);
-		await expect(col.locator('button.trigger-btn[title="Quick actions"]')).toHaveCount(0);
-		// Move-to + Delete: unmounted (gated on mutationsEnabled).
-		await expect(col.locator('button.action-btn', { hasText: 'Move to' })).toHaveCount(0);
-		await expect(col.locator('button.delete-btn')).toHaveCount(0);
-		// Relationship mutation surfaces: the per-link remove + Add opener are gone.
-		await expect(col.locator('button.link-delete-btn')).toHaveCount(0);
-		await expect(col.locator('button.add-relationship-btn')).toHaveCount(0);
-		// Rich editor: retained (still visible — no teardown), but read-only.
-		await expect(masterEditor).toBeVisible();
+		// ── Peeking (BUG-2263): the freeze is INVISIBLE. The ONLY thing that
+		//    changes on the master is that its content editor stops being typeable
+		//    (contenteditable=false). Every other surface stays EXACTLY as pre-peek —
+		//    the master/pane freeze exists solely to keep one typeable collab editor,
+		//    and must be transparent to the user everywhere else. ──
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'false');
-
-		// ── Close (un-peek) → every surface is EDITABLE again. ──
-		await pane.locator('button[aria-label="Close pane"]').click();
-		await expect(pane).toBeHidden();
+		// Title: STILL a click-to-edit button (no degraded <h1>).
 		await expect(col.locator('button.title', { hasText: 'FP freeze master' })).toBeVisible();
 		await expect(col.locator('h1.title.title-readonly')).toHaveCount(0);
-		await expect(col.locator('.field-row', { hasText: 'Note' }).locator('input.field-input')).toBeVisible();
+		// Field: STILL an editable input (no readonly-display swap).
+		await expect(noteInput).toBeVisible();
+		await expect(noteInput).toBeEnabled();
+		await expect(col.locator('.field-row', { hasText: 'Note' }).locator('.readonly-display')).toHaveCount(0);
+		// Comment composer: still present.
 		await expect(col.locator('.compose')).toBeVisible();
+		// Star: still enabled (never gated on peeking anymore).
 		await expect(col.locator('button.star-btn')).toBeEnabled();
+		// Share + Delete + Move + Add-relationship + per-link remove: all still
+		// present (side-independent single-item REST — no freeze).
 		await expect(col.locator('button.action-btn', { hasText: 'Share' })).toBeVisible();
-		await expect(col.locator('button.trigger-btn[title="Quick actions"]')).toBeVisible();
 		await expect(col.locator('button.delete-btn')).toBeVisible();
 		await expect(col.locator('button.action-btn', { hasText: 'Move to' })).toBeVisible();
 		await expect(col.locator('button.add-relationship-btn')).toBeVisible();
-		// The per-link remove is back in the DOM (display:none until row-hover).
 		await expect(col.locator('button.link-delete-btn')).toHaveCount(1);
+		// EXCEPTION (Codex P1): the owner quick-actions menu's "Manage/New" controls
+		// WRITE the whole collection settings from a per-item snapshot (last-write-
+		// wins across two items in one collection), so they gate on `!peeking`. This
+		// note collection seeds NO read-only prompt actions, so with the write
+		// controls gated the trigger has nothing to show and is hidden on the peeking
+		// side (prompt actions, when present, would keep it visible — unit-tested).
+		await expect(col.locator('button.trigger-btn[title="Quick actions"]')).toHaveCount(0);
+		// Rich editor: retained + visible (no teardown) — only not typeable.
+		await expect(masterEditor).toBeVisible();
+
+		// ── RUNTIME MUTATION (Codex P2): the invisible freeze is not merely visual —
+		//    a field edit typed on the FROZEN master must actually PATCH the CORRECT
+		//    item. Type into the note field while peeking and assert it persists to
+		//    THIS master's fields (server-side), proving updateField fired for the
+		//    right item id from the frozen side. ──
+		await noteInput.fill('edited-while-peeking');
+		await expect
+			.poll(
+				async () => {
+					const resp = await request.get(
+						`/api/v1/workspaces/${fixture.workspaceSlug}/items/${master.slug}`,
+						{ headers: authHeaders(fixture) },
+					);
+					if (!resp.ok()) return null;
+					const it = (await resp.json()) as { fields?: string | Record<string, unknown> };
+					const fields = typeof it.fields === 'string' ? JSON.parse(it.fields) : (it.fields ?? {});
+					return (fields as Record<string, unknown>).note;
+				},
+				{ timeout: 6000 },
+			)
+			.toBe('edited-while-peeking');
+
+		// ── Close (un-peek) → the content editor is typeable again; nothing else was
+		//    ever frozen, so it is unchanged. ──
+		await pane.locator('button[aria-label="Close pane"]').click();
+		await expect(pane).toBeHidden();
+		await expect(col.locator('button.title', { hasText: 'FP freeze master' })).toBeVisible();
+		await expect(noteInput).toBeVisible();
+		await expect(col.locator('.compose')).toBeVisible();
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'true', { timeout: SYNC_TIMEOUT });
+	});
+
+	// ── 1b. Quick-actions EXCEPTION (Codex P1): the owner "New/Manage" controls
+	// WRITE the whole collection settings from a per-item snapshot (last-write-wins
+	// across two items in one collection), so they gate on `!peeking` — confined to
+	// the active side. The read-only prompt-copy actions stay visible on both sides.
+	// This mounts the REAL QuickActionsMenu (seeded with a prompt action) to prove
+	// the gate wiring, not just the empty-trigger-hides case.
+	test('quick-actions: read-only prompt actions stay visible on the peeking side; the collection-settings write controls (New/Manage) are confined to the active side (Codex P1)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		test.setTimeout(60_000);
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		// Seed a collection WITH a read-only prompt action so the trigger stays
+		// visible on the peeking side even once the write controls are gated.
+		const coll = await seedNoteCollection(fixture, request, 'FP qa', 'FPQA', [
+			{ label: 'Summarize', prompt: 'Summarize this item' },
+		]);
+		const master = await seedNoteItem(fixture, request, coll.slug, `FP qa master ${Date.now()}`, 'm', '');
+		const target = await seedNoteItem(fixture, request, coll.slug, `FP qa target ${Date.now()}`, 't', '');
+		await seedRelatedLink(fixture, request, master.slug, target.id);
+
+		await page.goto(fullPageUrl(fixture, coll.slug, master.slug));
+		const col = masterCol(page);
+		const trigger = col.locator('button.trigger-btn[title="Quick actions"]');
+
+		// Pre-peek (master active, owner): open the menu → the prompt action AND the
+		// owner write controls are all present.
+		await expect(trigger).toBeVisible();
+		await trigger.click();
+		await expect(col.locator('.action-label', { hasText: 'Summarize' })).toBeVisible();
+		await expect(col.locator('.action-label', { hasText: 'New quick action' })).toBeVisible();
+		await expect(col.locator('.action-label', { hasText: 'Manage actions' })).toBeVisible();
+		await trigger.click(); // close
+
+		// Open the pane and activate it → the master becomes the peeking side.
+		await openPaneViaRelated(page, 'FP qa target');
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await pane.locator(EDITOR_SELECTOR).click();
+		await expect(col.locator(EDITOR_SELECTOR)).toHaveAttribute('contenteditable', 'false');
+
+		// Peeking side: the trigger stays VISIBLE — the read-only prompt affordance
+		// keeps it (contrast the freeze test, where an EMPTY collection's trigger
+		// HIDES on the peeking side once the owner write controls gate off). We do NOT
+		// open it here: clicking the trigger re-activates the master (click-to-
+		// activate is the focus-follows model), so the write controls are only ever
+		// reached from the ACTIVE side — which is exactly the safety property. The
+		// render gate that drops New/Manage while `peeking` is asserted at the unit
+		// level (masterFreeze) where the state can be held without a click.
+		await expect(trigger).toBeVisible();
 	});
 
 	// ── 2. Bounded TWO-WS cost while peeking (D2 cost model / the guard core) ─
