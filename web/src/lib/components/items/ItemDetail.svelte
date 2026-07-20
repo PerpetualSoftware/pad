@@ -2051,7 +2051,7 @@
 	});
 
 	async function startEditTitle() {
-		if (!item || !mutationsEnabled) return;
+		if (!item || !canEdit) return;
 		titleDraft = item.title;
 		editingTitle = true;
 		// Wait for the DOM to render the textarea, then focus + select all
@@ -2098,9 +2098,10 @@
 
 	async function saveTitle() {
 		editingTitle = false;
-		// Master-freeze guard (TASK-2172): a blur can fire saveTitle after the
-		// freeze began; drop the write so a peeking master never PATCHes a title.
-		if (!mutationsEnabled) return;
+		// Title edits are a single-item REST PATCH — side-independent, server-gated,
+		// no shared-content collision — so they are NOT frozen while peeking (BUG-2263):
+		// the freeze is invisible and gates only the content editor. Permission alone.
+		if (!canEdit) return;
 		if (!item || titleDraft.trim() === item.title) return;
 		// Capture the target item + generation BEFORE the await. A blur-fired
 		// saveTitle can resolve AFTER the pane switched to another item (click
@@ -2134,13 +2135,13 @@
 	}
 
 	async function updateField(key: string, value: any) {
-		// HT-2176 Option A (TASK-2172): NO `mutationsEnabled` recheck. NEW field
-		// input is blocked at the UI (`FieldEditor readonly={!mutationsEnabled}`),
-		// so this only ever runs for a value the user typed BEFORE the pane opened
-		// — FieldEditor's 500ms debounce fires the pending onchange after peeking
-		// began (peeking doesn't re-prop `value`, so its cancel-on-external-change
-		// $effect leaves the timer armed). That pre-pane save must COMPLETE, not be
-		// suppressed (mirrors the tag/raw pre-pane saves).
+		// NO freeze recheck (BUG-2263): field editing is invisible to the freeze —
+		// FieldEditor stays interactive on the peeking side (`readonly={!canEdit}`),
+		// and a field write is a single-item, server-gated REST PATCH with a
+		// field-level MERGE, so it is side-independent and cannot collide with the
+		// active editor. Permission is enforced at the UI (readonly) and server-side.
+		// (This also lets a pre-flip pending onchange from FieldEditor's 500ms
+		// debounce complete rather than being suppressed.)
 		if (!item) return;
 		const updated = { ...fields, [key]: value };
 		const payload = JSON.stringify(updated);
@@ -2249,7 +2250,7 @@
 	const tagSavers = new Map<string, TagSaver>();
 
 	function updateTags(newTags: string[]) {
-		if (!item || !mutationsEnabled) return;
+		if (!item || !canEdit) return;
 		const targetItem = item;
 		const targetWs = wsSlug;
 		// Optimistic so chips react instantly.
@@ -2281,10 +2282,10 @@
 		saveStatus = 'saving';
 		try {
 			while (saver.pending !== null) {
-				// HT-2176 Option A (TASK-2172): NO peeking recheck in the drain. NEW
-				// tag input is blocked at the UI (`TagInput readonly={!mutationsEnabled}`)
-				// + the `updateTags` guard, so this only drains a tag edit the user
-				// made BEFORE the pane opened — allowed to complete.
+				// NO freeze recheck in the drain (BUG-2263): tag editing is invisible
+				// to the freeze (TagInput stays interactive via `readonly={!canEdit}`)
+				// and a tag write is a side-independent single-item REST PATCH, so it
+				// runs from either side; `updateTags` gates on canEdit (permission).
 				const toSave = saver.pending;
 				saver.pending = null;
 				const fresh = await api.items.update(saver.ws, saver.itemId, {
@@ -2533,7 +2534,7 @@
 	}
 
 	async function updateAssignedUser(userId: string | null) {
-		if (!item || !mutationsEnabled) return;
+		if (!item || !canEdit) return;
 		// Capture target + generation before the await; drop the post-await
 		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112;
 		// coordinator P1).
@@ -2559,7 +2560,7 @@
 	}
 
 	async function updateAgentRole(roleId: string | null) {
-		if (!item || !mutationsEnabled) return;
+		if (!item || !canEdit) return;
 		// Capture target + generation before the await; drop the post-await
 		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112;
 		// coordinator P1).
@@ -3237,7 +3238,7 @@
 	}
 
 	async function handleDelete() {
-		if (!item || !mutationsEnabled) return;
+		if (!item || !canEdit) return;
 		// Capture identity before the await. The DELETE targets `targetItem.id`
 		// (= A), but the post-await feedback must be fenced: if the pane
 		// switched to B while A's delete was in flight, calling handleGone()
@@ -3268,9 +3269,9 @@
 	// archived — surface that message the same way other handlers do. TASK-1829.
 	async function handleRestore() {
 		// `canEdit` is forced false for an archived item, so restore gates on
-		// `canRestore` — freeze it with `!peeking` (not `mutationsEnabled`), the
-		// same split the render gate uses (TASK-2172).
-		if (!item || restoring || peeking) return;
+		// `canRestore` (checked at the render site). Restore is a single-item REST
+		// mutation — side-independent — so it is NOT frozen while peeking (BUG-2263).
+		if (!item || restoring) return;
 		// Capture target + generation before the awaits; drop the post-await
 		// write if the pane switched items mid-request (PLAN-2105 / TASK-2112;
 		// coordinator "gate all post-await writes").
@@ -3352,7 +3353,7 @@
 	}
 
 	async function handleDeleteLink(linkId?: string) {
-		if (!linkId || !item || !mutationsEnabled) return;
+		if (!linkId || !item || !canEdit) return;
 		// Capture identity BEFORE the awaits. The refresh GET must use the
 		// captured slug (not the live `itemSlug`, which an A→B→C switch would
 		// have advanced) and the result must be dropped if we switched away —
@@ -3442,7 +3443,7 @@
 	}
 
 	async function handleCreateLink(target: Item) {
-		if (!item || !mutationsEnabled) return;
+		if (!item || !canEdit) return;
 		// Capture the SOURCE item (the one being edited) + generation before the
 		// awaits. `target` is the link target chosen from search; `sourceItem`
 		// is the current item. Use the captured slug for the refresh GET and
@@ -3477,7 +3478,7 @@
 	}
 
 	async function handleMove(targetSlug: string) {
-		if (!item || moving || !mutationsEnabled) return;
+		if (!item || moving || !canEdit) return;
 		moving = true;
 		showMoveMenu = false;
 		// Capture FULL route identity (workspace, username, source
@@ -3776,7 +3777,7 @@
 					{/if}
 					<span class="archived-hint">It's read-only until restored.</span>
 				</div>
-				{#if canRestore && !peeking}
+				{#if canRestore}
 					<button class="archived-restore-btn" onclick={handleRestore} disabled={restoring}>
 						{restoring ? 'Restoring…' : 'Restore'}
 					</button>
@@ -3799,13 +3800,16 @@
 					onkeydown={handleTitleKeydown}
 					oninput={(e) => autoResizeTitle(e.currentTarget)}
 				></textarea>
-			{:else if mutationsEnabled}
+			{:else if canEdit}
+				<!-- Editable on BOTH master and pane, even while peeking (BUG-2263):
+				     the freeze is invisible. Clicking flips activePane (pointerdown)
+				     and startEditTitle opens the editor; the actual PATCH is
+				     permission-gated (canEdit), not freeze-gated. -->
 				<button class="title" onclick={startEditTitle}>
 					{item.title}
 				</button>
 			{:else}
-				<!-- Read-only title (PLAN-1100 / TASK-1105; frozen while peeking,
-				     TASK-2172) — no click-to-edit. -->
+				<!-- Read-only title for true viewers (no canEdit; PLAN-1100 / TASK-1105). -->
 				<h1 class="title title-readonly">{item.title}</h1>
 			{/if}
 			{#if typeof fields.pad_source_url === 'string' && fields.pad_source_url}
@@ -3829,7 +3833,11 @@
 					Refresh button so the import history is still
 					discoverable. (Per Codex review round 1.)
 				-->
-				{#if mutationsEnabled && !rawMode}
+				{#if canEdit && !rawMode}
+					<!-- Present on both master and pane even while peeking (BUG-2263);
+					     the chip's click flips activePane before refreshFromSource runs,
+					     whose own `mutationsEnabled` + `isEditable` guards keep the
+					     content REPLACE on the now-active editor. -->
 					<button
 						type="button"
 						class="source-chip"
@@ -3886,24 +3894,26 @@
 
 		<!-- Actions -->
 		<div class="meta-actions">
-			<!-- Star toggles a REST mutation (starredStore.toggle) and is otherwise
-			     available to viewers too, so it gates on `peeking` ONLY — NOT
-			     `mutationsEnabled` (which folds in canEdit and would wrongly disable
-			     a non-peeking viewer's star, breaking byte-identity). TASK-2172. -->
+			<!-- Star is a per-user, itemId-keyed REST toggle available to viewers too,
+			     and cannot collide across sides — so it is NOT frozen while peeking
+			     (BUG-2263). No canEdit or peeking gate. -->
 			<button
 				class="action-btn star-btn"
 				class:starred={starredStore.isStarred(item.id)}
-				disabled={peeking}
-				onclick={() => { if (peeking || !item) return; starredStore.toggle(wsSlug, item.slug, item.id); }}
+				onclick={() => { if (!item) return; starredStore.toggle(wsSlug, item.slug, item.id); }}
 				title={starredStore.isStarred(item.id) ? 'Unstar' : 'Star'}
 			>
 				{starredStore.isStarred(item.id) ? '★' : '☆'}
 			</button>
-			<!-- Quick-actions trigger gated on `!peeking` (TASK-2172): unmounts the
-			     whole menu while peeking, dismissing any open dropdown/create-form
-			     and blocking the owner create/manage collection-schema mutations.
-			     `&& !peeking` → byte-identical when not peeking. -->
-			{#if collection && (quickActions.length > 0 || isOwner) && !peeking}
+			<!-- Quick-actions menu: the prompt-copy actions are read-only and stay
+			     visible on the peeking side (invisible freeze, BUG-2263). But the
+			     owner "New / Manage actions" controls WRITE the whole collection
+			     `settings` JSON from this instance's local snapshot with no merge —
+			     and master + pane can be DIFFERENT items in the SAME collection, so
+			     two concurrent saves are last-write-wins. So `canEdit` (which gates
+			     ONLY those write controls) folds in `!peeking`: the collection-config
+			     writes are confined to the active side, the prompts stay on both. -->
+			{#if collection && (quickActions.length > 0 || isOwner)}
 				<!-- {#key itemSlug}: structural containment (PLAN-2105 / TASK-2112).
 				     Remount this item-scoped menu on every item switch so any
 				     in-flight quick-action continuation is discarded. Keyed on
@@ -3923,7 +3933,7 @@
 						{collection}
 						scope="item"
 						{wsSlug}
-						canEdit={isOwner}
+						canEdit={isOwner && !peeking}
 						onmanage={() => {
 							editCollectionSection = 'actions';
 							editCollectionOpen = true;
@@ -3989,7 +3999,7 @@
 					📎 {backlinksCount}
 				</button>
 			{/if}
-			{#if mutationsEnabled}
+			{#if canEdit}
 				<div class="move-wrapper">
 					<button class="action-btn" onclick={() => { showMoveMenu = !showMoveMenu; }} disabled={moving}>
 						{moving ? 'Moving...' : 'Move to...'}
@@ -4024,17 +4034,16 @@
 					{/if}
 				</div>
 			{/if}
-			<!-- Share opens a dialog that dispatches access-grant / share-link REST
-			     mutations; hide the trigger while peeking. `isOwner && !peeking`
-			     (not mutationsEnabled) stays byte-identical for an archived-item
-			     owner when not peeking. Any already-open dialog is dismissed by the
-			     peeking-begin transition (shareDialogOpen=false). TASK-2172. -->
-			{#if isOwner && !peeking}
+			<!-- Share opens a dialog that dispatches owner-only, item-scoped grant /
+			     share-link REST mutations — side-independent, so the trigger stays
+			     available on the peeking side too (BUG-2263). Any open dialog is still
+			     dismissed by the peek-begin transition when this side goes passive. -->
+			{#if isOwner}
 				<button class="action-btn" onclick={() => { shareDialogOpen = true; }}>
 					Share
 				</button>
 			{/if}
-			{#if mutationsEnabled}
+			{#if canEdit}
 				{#if confirmDelete}
 					<span class="delete-confirm">
 						Delete this item?
@@ -4131,7 +4140,7 @@
 									{field}
 									value={rawFieldValue}
 									onchange={(v) => updateField(field.key, v)}
-									readonly={!mutationsEnabled}
+									readonly={!canEdit}
 								/>
 							</div>
 						</div>
@@ -4146,7 +4155,7 @@
 							{tags}
 							suggestions={tagSuggestions}
 							onchange={updateTags}
-							readonly={!mutationsEnabled}
+							readonly={!canEdit}
 						/>
 					</div>
 				</div>
@@ -4159,7 +4168,7 @@
 					<div class="field-row">
 						<span class="field-label">Assigned to</span>
 						<div class="field-value">
-							{#if mutationsEnabled}
+							{#if canEdit}
 								<select
 									class="assignment-select"
 									value={item.assigned_user_id ?? ''}
@@ -4192,7 +4201,7 @@
 					<div class="field-row">
 						<span class="field-label">Role</span>
 						<div class="field-value">
-							{#if mutationsEnabled}
+							{#if canEdit}
 								<select
 									class="assignment-select"
 									value={item.agent_role_id ?? ''}
@@ -4591,7 +4600,7 @@
 											{#if entry.status}
 												<span class="link-status">{formatFieldDisplay(entry.status)}</span>
 											{/if}
-											{#if entry.linkId && mutationsEnabled}
+											{#if entry.linkId && canEdit}
 												<button class="link-delete-btn" title="Remove relationship" onclick={() => handleDeleteLink(entry.linkId)}>×</button>
 											{/if}
 										</span>
@@ -4604,9 +4613,11 @@
 			</div>
 		{/if}
 
-		<!-- Add Relationship — gated on the master-freeze predicate (PLAN-1100 /
-		     TASK-1105; frozen while peeking, TASK-2172). -->
-		{#if item && mutationsEnabled}
+		<!-- Add Relationship — a source-item-scoped REST link create, side-independent,
+		     so it stays available on the peeking side too (BUG-2263). Permission-gated
+		     on canEdit; the add-link box is dismissed by the peek-begin transition when
+		     this side goes passive. -->
+		{#if item && canEdit}
 			<div class="add-relationship-section">
 				{#if !showAddLink}
 					<button class="add-relationship-btn" onclick={() => { showAddLink = true; }}>
@@ -4663,13 +4674,12 @@
 		     always-mounted SSE guarantee below. -->
 		{#if item}
 			<div id="item-children" class="children-anchor">
-				<!-- ChildItems takes the REAL `canEdit` (reorder authorizes off
-				     parent edit) plus a SEPARATE `frozen={peeking}` (TASK-2172): the
-				     freeze stops add-child + reorder while child-row navigation stays
-				     live, WITHOUT routing add-child's independent capability logic
-				     through the parent's canEdit (that would change non-peeking
-				     behavior — the byte-identity regression the orchestrator flagged). -->
-				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} frozen={peeking} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} />
+				<!-- ChildItems takes the REAL `canEdit` and is NOT frozen while peeking
+				     (BUG-2263): add-child (create/link) and reorder are side-independent
+				     REST ops, so they stay live on the peeking side. `frozen={false}`
+				     also stops the dndzone from re-initing on activePane flips — removing
+				     a source of drill-click swallowing. -->
+				<ChildItems {wsSlug} {username} {itemSlug} itemId={item.id} parentFields={fields} terminalStatuses={childTerminalStatuses} onChildrenChange={(children) => { if (keyedSlug !== itemSlug) return; handleChildrenChange(children); }} {canEdit} frozen={false} selfDirty={localDirty} selfLastSaveTime={localLastSaveTime} onOpenTarget={paneOpenTarget} />
 			</div>
 		{/if}
 
@@ -4697,10 +4707,13 @@
 
 		<!-- Unified Timeline (comments + activity + versions) -->
 		<div id="item-timeline" class="timeline-section">
-			<!-- Timeline freeze (TASK-2172 / R12): `frozen={peeking}` hides the
-			     comment composer, disables reply/reaction/delete, unmounts any
-			     already-open comment/reply edit form (and its CommentEditor direct
-			     upload), and hides version restore on a peeking master. -->
+			<!-- Timeline COMMENTS/REACTIONS are per-item / per-user REST entities,
+			     side-independent, so they are NOT frozen while peeking (BUG-2263) —
+			     composer + controls stay live on the passive side. VERSION RESTORE is
+			     different: it REST-writes this item's `items.content` directly (not via
+			     the Y.Doc applier), so on a peeking side whose Y.Doc is retained-alive a
+			     later collab flush could overwrite it — a same-item collision. So it
+			     stays frozen: `restoreFrozen={peeking}` (Codex P1). -->
 			<ItemTimeline
 				{wsSlug}
 				{username}
@@ -4710,7 +4723,8 @@
 				onRestore={handleVersionRestore}
 				itemId={item.id}
 				collectionId={item.collection_id}
-				frozen={peeking}
+				frozen={false}
+				restoreFrozen={peeking}
 			/>
 		</div>
 		{/key}
