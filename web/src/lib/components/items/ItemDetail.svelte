@@ -283,10 +283,14 @@
 	// `ready` requires the loaded item's identity to match the URL ref —
 	// otherwise a same-instance route change (item A → wiki-link to B → back
 	// to A) would fire the restore against B's still-rendered content. The
-	// match accepts EITHER the slug form OR the issue ref (e.g. `TASK-123`)
-	// because `itemUrlId()` (in `$lib/types/index.ts`) prefers refs over
-	// slugs when building links, so most app URLs are `/tasks/TASK-123`
-	// rather than `/tasks/some-slug`. Codex BUG-1425 round 5 P1.
+	// match accepts the slug form, the issue ref (e.g. `TASK-123`), OR the raw
+	// item UUID: `itemUrlId()` (in `$lib/types/index.ts`) prefers refs over
+	// slugs when building links (so most app URLs are `/tasks/TASK-123`), but the
+	// server ALSO resolves a bare item id (internal/store/items.go) and app toast
+	// links use UUIDs — without the `item.id` arm a UUID route would never satisfy
+	// `itemMatchesRef`, so scroll-readiness, `onIdentity`, and the collab gate
+	// would silently never fire on it (Codex BUG-1425 round 5 P1; UUID arm added
+	// for the full-page pane host's `onIdentity` guard — orchestrator review).
 	//
 	// Embedded panes don't pass `onReady` — they manage their own scroll
 	// container (TASK-2112), not the route-level snapshot.
@@ -301,7 +305,8 @@
 	// destroyed editor (PLAN-2105 / TASK-2112 switch-safety; Codex).
 	let itemMatchesRef = $derived(
 		item !== null &&
-			(item.slug === itemSlug ||
+			(item.id === itemSlug ||
+				item.slug === itemSlug ||
 				`${item.collection_prefix}-${item.item_number}` === itemSlug),
 	);
 	let scrollReady = $derived(!loading && itemMatchesRef);

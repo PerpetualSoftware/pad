@@ -214,6 +214,34 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await expect(page.locator('h1.title.title-readonly', { hasText: 'FP host cold master' })).toBeVisible();
 	});
 
+	test('a cold-loaded `?item=<the master by its ref-shaped slug>` is stripped (server slug-fallback self-collision)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		// `seedDoc` titles are `<prefix> <Date.now()>`, and the server slugifies that
+		// to `<prefix>-<digits>` — so a doc titled "plan" gets the REF-SHAPED slug
+		// `plan-<timestamp>` while its own item number is small. `?item=plan-<ts>`
+		// therefore parses as a ref at a NON-existent number; the server falls back
+		// to the SLUG and resolves to THIS master. The ref-NUMBER channel alone
+		// (timestamp != item number) would MISS this — the guard must also match the
+		// raw slug string.
+		const master = await seedDoc(fixture, request, 'plan');
+		expect(master.slug).toMatch(/^[A-Za-z]+-\d+$/); // fixture assumption: ref-shaped slug
+		const masterRef = await itemRef(fixture, request, master.slug);
+		expect(master.slug).not.toBe(masterRef); // slug number != item ref number
+
+		await page.goto(fullPageUrl(fixture, master.slug, `?item=${encodeURIComponent(master.slug)}`));
+		await expect(page.locator('button.title')).toBeVisible();
+		// Must be stripped — never mount a second provider on the master's own room.
+		await expect(page.locator('.item-pane')).toHaveCount(0);
+		await expect.poll(() => openItemParam(page)).toBeNull();
+		await expect(page.locator('h1.title.title-readonly')).toHaveCount(0);
+	});
+
 	test('Expand a pane item to full page, then browser Back, restores the pane (no stale-master strip)', async ({
 		page,
 		fixture,

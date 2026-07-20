@@ -61,19 +61,24 @@
 	let masterIdentity = $state<ResolvedItemIdentity | null>(null);
 	let masterIdentityPathname = $state<string | null>(null);
 
-	// Scroll restoration parks on the master's OWN `.item-page` overflow column
-	// (not the layout's `.main-content`), which is where the master content
-	// scrolls once the flex-row host is in place — pane open or not (PLAN-2154
-	// Architecture E / TASK-2171's `scrollTarget` getter). `.item-page` is the
-	// FIRST (ancestor) `.item-page` in document order, so `querySelector` resolves
-	// to this host's scroll column, not <ItemDetail>'s inner content wrapper of
-	// the same (Svelte-scoped, separately-styled) class name.
+	// The master's OWN `.item-page` overflow column element, bound directly so
+	// scroll restoration targets THIS host's scroll column — not the layout's
+	// `.main-content`, and not <ItemDetail>'s inner content wrapper which reuses
+	// the same `.item-page` class. Binding the element removes the global
+	// `querySelector('.item-page')` that would rely on ancestor DOM order to
+	// disambiguate the collision (orchestrator Codex review).
+	let itemPageEl = $state<HTMLElement | null>(null);
+
+	// Scroll restoration parks on the master's own `.item-page` overflow column,
+	// which is where the master content scrolls once the flex-row host is in place
+	// — pane open or not (PLAN-2154 Architecture E / TASK-2171's `scrollTarget`
+	// getter). Returns the BOUND element (null before mount → restore.svelte.ts
+	// retries per frame).
 	const scrollRestoration = createScrollRestoration({
 		ready: () => scrollReady,
 		persistKey: () =>
 			wsSlug ? `pad-last-scroll-${wsSlug}-${page.url.pathname}` : null,
-		scrollTarget: () =>
-			browser ? document.querySelector<HTMLElement>('.item-page') : null,
+		scrollTarget: () => itemPageEl,
 	});
 	export const snapshot = scrollRestoration.snapshot;
 
@@ -175,12 +180,22 @@
 	});
 
 	// The forbidden `?item == master` collision (PLAN-2154 D2 / Architecture E)
-	// for a BARE `?item=` string (the cold-load strip + the mount gate). Wrap the
-	// value as an href-channel target so `isSamePaneTarget` applies the server's
-	// ref-before-slug resolution order (ref-shaped → item-NUMBER match, else slug,
-	// plus id) — the documented "bare `?item=` value" contract. `false` while the
-	// master identity is unresolved (`masterItem` null).
+	// for a BARE `?item=` string (the cold-load strip + the mount gate + a resolved
+	// content-link ref). The server resolves a bare/href `?item=` REF-FIRST, then
+	// falls back to SLUG (internal/store/items.go). So a candidate aliases the
+	// master if it matches under EITHER interpretation: the ref-number channel
+	// (`isSamePaneTarget`'s href resolution) OR the RAW string equal to the
+	// master's id / slug — INCLUDING a ref-shaped slug (e.g. master #5 slugged
+	// `plan-6` with no live #6, which the server resolves to the master by the slug
+	// fallback; the ref-number channel alone would miss it, 6≠5). Erring toward a
+	// match is the safe direction for the forbidden D2 collision — never mount a
+	// 2nd provider on the master's own collab room (orchestrator Codex review). The
+	// rare cost is over-blocking a hand-crafted `?item=<ref-shaped-slug>` when a
+	// live item at that number DOES exist; that merely declines to open a pane (no
+	// collision, no data loss). `false` while the master identity is unresolved.
 	function isMasterRef(candidate: string): boolean {
+		if (!masterItem) return false;
+		if (candidate === masterItem.id || candidate === masterItem.slug) return true;
 		return isSamePaneTarget({ href: candidate }, masterItem);
 	}
 
@@ -209,9 +224,12 @@
 	function handleMasterOpenTarget(target: PaneTarget) {
 		// `resolvePaneTarget(target, masterItem)` returns null BOTH when the target
 		// is unresolvable AND when it resolves to the master (the provenance-correct
-		// `isSamePaneTarget` self-guard), so a master self-link is a clean no-op.
+		// `isSamePaneTarget` self-guard). The extra `isMasterRef(resolved)` closes
+		// the ref-shaped-slug hole for an href-only editor link whose resolved
+		// segment string-equals the master slug (server slug-fallback) — dropping it
+		// at the source instead of relying on the mount gate + strip to catch it.
 		const resolved = resolvePaneTarget(target, masterItem);
-		if (!resolved) return;
+		if (!resolved || isMasterRef(resolved)) return;
 		openItemPaneByRef(resolved);
 	}
 
@@ -222,7 +240,7 @@
 	// drills to the pane's currently-shown item).
 	function guardedDrill(target: PaneTarget) {
 		const resolved = resolvePaneTarget(target, masterItem);
-		if (!resolved) return;
+		if (!resolved || isMasterRef(resolved)) return;
 		navigatePaneTo(resolved);
 	}
 
@@ -339,7 +357,7 @@
 	<!-- inert on the MOBILE overlay: the pane covers the viewport, so isolate the
 	     master from BOTH focus order and the SR tree behind it. Desktop keeps the
 	     master fully reachable (it's beside the pane, not behind it). -->
-	<div class="item-page" inert={viewport.isMobile && !!openItemRef}>
+	<div class="item-page" bind:this={itemPageEl} inert={viewport.isMobile && !!openItemRef}>
 		<ItemDetail
 			{username}
 			{wsSlug}
