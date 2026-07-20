@@ -2,11 +2,12 @@
 	import { page } from '$app/state';
 	import { goto, afterNavigate } from '$app/navigation';
 	import { browser } from '$app/environment';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, onMount } from 'svelte';
 	import ItemDetail from '$lib/components/items/ItemDetail.svelte';
 	import PaneHost from '$lib/components/collections/PaneHost.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { createPaneController } from '$lib/collections/paneHostController';
+	import { type ResolvedPaneState } from '$lib/collections/paneController';
 	import { createPaneMintSettle, PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
 	import { resolvePaneTarget, isSamePaneTarget, type PaneGuardItem } from '$lib/collections/paneTarget';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
@@ -338,7 +339,43 @@
 		if (runTopEscape()) e.preventDefault();
 	}
 
+	// Test-only hook (PLAN-2154 / TASK-2175): exposes the SAME pane-controller
+	// surface the collection page's hook does (`[collection]/+page.svelte`), so
+	// the full-page host's R14 async-race capstone can drive `navigatePaneTo`
+	// (in-pane drill), `closeItemPane` (three-way close), and read back the
+	// depth/ownership stamp — the drill/close continuations aren't otherwise
+	// synchronously drivable with the adversarial timing R14 needs. Gated on the
+	// same opt-in localStorage flag so it adds ZERO surface to production; the
+	// e2e harness sets `pad:pane-test-hook=1` before navigating.
+	interface PaneTestHook {
+		navigatePaneTo: (ref: string) => void;
+		closeItemPane: () => void;
+		getPaneState: () => ResolvedPaneState;
+	}
+	function installPaneTestHook() {
+		if (!browser) return;
+		try {
+			if (localStorage.getItem('pad:pane-test-hook') !== '1') return;
+		} catch {
+			return;
+		}
+		(window as unknown as { __padPaneController?: PaneTestHook }).__padPaneController = {
+			navigatePaneTo: (r: string) => navigatePaneTo(r),
+			closeItemPane: () => closeItemPane(),
+			getPaneState: () => currentPaneState(),
+		};
+	}
+	function removePaneTestHook() {
+		if (!browser) return;
+		delete (window as unknown as { __padPaneController?: PaneTestHook }).__padPaneController;
+	}
+
+	onMount(() => {
+		installPaneTestHook();
+	});
+
 	onDestroy(() => {
+		removePaneTestHook();
 		// Drop any in-flight controller `history.go` continuation, and cancel a
 		// settling paneMint so a late latch/settle can't write to the unmounted
 		// page (PLAN-2154 / TASK-2166/2170).
