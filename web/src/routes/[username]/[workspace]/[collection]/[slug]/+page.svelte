@@ -10,6 +10,7 @@
 	import { type ResolvedPaneState } from '$lib/collections/paneController';
 	import { createPaneMintSettle, PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
 	import { resolvePaneTarget, isSamePaneTarget, type PaneGuardItem } from '$lib/collections/paneTarget';
+	import { inExemptSurface } from '$lib/collections/paneFocus';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import type { PaneTarget, ResolvedItemIdentity } from '$lib/types';
@@ -114,6 +115,34 @@
 	// The controller's `focusPaneRegion` dep resolves it lazily at hop time.
 	let paneHostEl = $state<PaneHost | undefined>();
 
+	// ── Focus-follows-editing (PLAN-2179 DR-2/DR-3 / TASK-2181) ────────────
+	// Which side is the ACTIVE (editable) one. The master freezes while the PANE
+	// is active and vice-versa (via the `peeking` derivations below) so exactly
+	// ONE side is ever editable — no two-editor collision, by construction. The
+	// TASK-2180 reactive freeze makes flipping this a cheap toggle (no remount).
+	//
+	// Cold-load INITIALIZER: no focusin fires on a `?item=` deep-load, so seed the
+	// active side from viewport reality — desktop first-open/cold-load focus is the
+	// MASTER (openItemPaneByRef does NOT move focus into the pane; the pane opens as
+	// a read-only PREVIEW per DR-2), and mobile is pane-only (the master is inert
+	// behind the full-screen overlay). Persists across same-route navigations (this
+	// route component is REUSED on expand / browser Back), so a drilled-then-Back
+	// pane keeps `activePane='pane'`; a fresh first-open re-seeds it (below).
+	let activePane = $state<'master' | 'pane'>(viewport.isMobile ? 'pane' : 'master');
+
+	// Mobile is pane-only: crossing INTO the mobile breakpoint must force the pane
+	// active (the master goes `inert` behind the overlay — an "active" master there
+	// would be an un-editable dead end). Reads only `viewport.isMobile` (a plain
+	// prev-flag tracks the edge), writes only `activePane` → CONVE-1688-safe; fires
+	// on the transition, not every render. Desktop→mobile only; leaving mobile keeps
+	// whatever side was active.
+	let wasMobile = viewport.isMobile;
+	$effect(() => {
+		const nowMobile = viewport.isMobile;
+		if (nowMobile && !wasMobile) activePane = 'pane';
+		wasMobile = nowMobile;
+	});
+
 	// ── Pane-navigation controller (PLAN-2154 Architecture A/E) ────────────
 	// The SAME controller the collection page mounts — one depth/ownership state
 	// machine, one three-way close. The full-page host has NO list, so the
@@ -122,7 +151,17 @@
 	const paneController = createPaneController({
 		getOpenItemRef: () => openItemRef,
 		cancelFollow: () => {},
-		focusPaneRegion: () => paneHostEl?.focusPaneRegion(),
+		// Focus-follows-editing (PLAN-2179 DR-2 / TASK-2181): the controller calls
+		// this on EVERY pane-internal hop — a drill (`navigatePaneTo`), an in-pane
+		// Back (`handlePaneBack`), and the depth-aware ESC pop. All are pane-internal,
+		// so each makes the PANE the active/editable side. Setting `activePane` here
+		// (the single wire point) keeps it consistent with the synchronous
+		// `focusPaneRegion` focus move — the imminent focusin lands in the pane and
+		// the classifier agrees, no desync — and covers the test-hook drill path too.
+		focusPaneRegion: () => {
+			activePane = 'pane';
+			paneHostEl?.focusPaneRegion();
+		},
 		captureReturnFocus: () => {},
 		setBypassNavGuard: () => {},
 	});
@@ -238,6 +277,14 @@
 		// slug / ref-number (the conservative D2 guard — err toward a match).
 		const resolved = resolvePaneTarget(target, masterItem);
 		if (!resolved || isMasterRef(resolved)) return;
+		// First-open re-seeds the active side (PLAN-2179 DR-2 / TASK-2181): the pane
+		// opens as a read-only PREVIEW beside the still-editable master on desktop
+		// (pane-only on mobile). Explicit because `activePane` PERSISTS across the
+		// route's lifetime — a prior in-pane session may have left it 'pane', and a
+		// brand-new open must not inherit that (it would freeze the master on open).
+		// `openItemPaneByRef` does NOT move focus into the pane, so no focusin/hop
+		// fights this.
+		activePane = viewport.isMobile ? 'pane' : 'master';
 		openItemPaneByRef(resolved);
 	}
 
@@ -251,6 +298,58 @@
 		if (!resolved || isMasterRef(resolved)) return;
 		navigatePaneTo(resolved);
 	}
+
+	// ── Focus-follows-editing detectors (PLAN-2179 DR-2/DR-3 / TASK-2181) ───
+	// Classify which region a focus / pointer event landed in, so `activePane`
+	// tracks where the user is working:
+	//  • inside the MASTER column (`itemPageEl`, the bound `.item-page`) → 'master'
+	//  • inside the PANE region (`paneEl`, PaneHost's bound `.item-pane`) → 'pane'
+	//  • a portalled/self-trapping overlay (dialog/menu/listbox/block-context-menu,
+	//    the SHARED `inExemptSurface` set) → DON'T flip (it's in NEITHER region and
+	//    owns its own focus)
+	//  • a bare `<body>` drop or anything else → DON'T flip
+	// Membership is tested against the BOUND elements, never the `.item-page` /
+	// `.item-pane` CLASSES — ItemDetail's inner content wrapper reuses `.item-page`,
+	// so a class match inside the pane would misclassify (which is exactly why the
+	// host binds its own column and PaneHost exposes `getPaneRegion`).
+	function classifyPaneRegion(target: EventTarget | null): 'master' | 'pane' | null {
+		const el = target instanceof Element ? target : null;
+		if (!el) return null;
+		// Exempt FIRST: an overlay portalled out of a region (or rendered above it)
+		// is never a region switch, even if it happens to sit inside one in the DOM.
+		if (inExemptSurface(el)) return null;
+		if (itemPageEl && itemPageEl.contains(el)) return 'master';
+		const paneEl = paneHostEl?.getPaneRegion() ?? null;
+		if (paneEl && paneEl.contains(el)) return 'pane';
+		return null;
+	}
+
+	// Both detectors flip `activePane` ONLY on a CHANGED region (no begin/end
+	// transition churn on the frozen/active ItemDetail pair):
+	//  • focusin — the primary classifier: Tab / programmatic focus / a click that
+	//    lands on a focusable control fires it with a real region target.
+	//  • pointerdown (CAPTURE) — the activator for NON-focusable text: clicking
+	//    plain master/pane body text drops focus to `<body>` and fires NO region
+	//    focusin, so a pointer landing on the region must flip regardless of the
+	//    target's focusability. This is what actually makes "click into the master
+	//    activates it". Capture-phase so a child `stopPropagation` can't swallow it.
+	// Only mounted while a pane is open (`paneOpen`) — with no pane there is no
+	// second side to arbitrate. Reading the boolean (not raw `openItemRef`) keeps
+	// the effect from re-registering on every drill.
+	let paneOpen = $derived(!!openItemRef);
+	$effect(() => {
+		if (!browser || !paneOpen) return;
+		function onRegionEvent(e: Event) {
+			const region = classifyPaneRegion(e.target);
+			if (region && region !== activePane) activePane = region;
+		}
+		document.addEventListener('focusin', onRegionEvent);
+		document.addEventListener('pointerdown', onRegionEvent, true);
+		return () => {
+			document.removeEventListener('focusin', onRegionEvent);
+			document.removeEventListener('pointerdown', onRegionEvent, true);
+		};
+	});
 
 	// Cold-load strip (PLAN-2154 Architecture E). A hand-crafted / shared
 	// `?item=<the master's own ref>` URL must NOT mount a pane on the master itself
@@ -407,7 +506,7 @@
 			{wsSlug}
 			{collSlug}
 			{ref}
-			peeking={!!openItemRef}
+			peeking={!!openItemRef && activePane === 'pane'}
 			onReady={(r) => (scrollReady = r)}
 			onIdentity={(id) => {
 				masterIdentity = id;
@@ -427,6 +526,7 @@
 			{wsSlug}
 			{collSlug}
 			{paneMintForRoute}
+			{activePane}
 			onClose={closeItemPane}
 			onGone={closeItemPane}
 			onNavigateAway={handlePaneNavigateAway}

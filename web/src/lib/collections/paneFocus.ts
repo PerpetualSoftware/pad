@@ -46,6 +46,27 @@ export function paneFocusables(
 }
 
 /**
+ * Portalled / self-trapping surfaces that legitimately overlay EITHER pane
+ * region — a native modal `<dialog>`, an ARIA dialog / menu / listbox, or the
+ * editor's imperative block context menu (no ARIA role, matched by class). They
+ * own their own focus + keyboard and sit in NEITHER the master column nor the
+ * pane region (most portal out to `<body>`), so both call sites treat a focus /
+ * pointer landing on them as "not a region event":
+ *   • the mobile focus trap must not hijack their Tab or yank focus off them, and
+ *   • the full-page host's focus-follows-editing classifier (PLAN-2179 / DR-2)
+ *     must not read a focus / pointerdown on them as a master↔pane switch.
+ * ONE definition shared by both call sites (PaneHost's mobile trap + the host
+ * route's activePane classifier) so the two can't drift.
+ */
+export const PANE_EXEMPT_SURFACE_SELECTOR =
+	'dialog, [role="dialog"], [role="menu"], [role="listbox"], .block-context-menu';
+
+/** True when `el` (or an ancestor) is one of the {@link PANE_EXEMPT_SURFACE_SELECTOR} overlays. */
+export function inExemptSurface(el: Element | null | undefined): boolean {
+	return !!el?.closest?.(PANE_EXEMPT_SURFACE_SELECTOR);
+}
+
+/**
  * Where a Tab / Shift+Tab should send focus while the pane is TRAPPING (the
  * mobile full-screen overlay). Returns the element to focus, or `null` to let
  * the browser's native Tab move stand (focus is mid-list and staying inside the

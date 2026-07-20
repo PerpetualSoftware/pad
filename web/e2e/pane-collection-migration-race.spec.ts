@@ -425,7 +425,8 @@ test('a collection migration completing after a cross-collection navigation does
 		.locator('.relationship-group', { hasText: 'Related' })
 		.locator('a.link-target', { hasText: bTitle })
 		.click();
-	// B opens in the docked pane beside the (now peeking) A master.
+	// B opens in the docked pane beside the (still-editable, focus-follows) A
+	// master; the pane is a read-only preview until clicked into (PLAN-2179 DR-2).
 	const pane = page.locator('.item-pane');
 	await expect(pane).toBeVisible();
 	await expect(pane.locator('.title', { hasText: bTitle })).toBeVisible();

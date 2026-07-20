@@ -304,11 +304,17 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await expect(masterEditor).toBeVisible({ timeout: SYNC_TIMEOUT });
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'true');
 
-		// ── Open the pane → the master goes PEEKING (retain-alive read-only). ──
+		// ── Open the pane → focus-follows-editing (PLAN-2179 DR-2 / TASK-2181) keeps
+		//    the MASTER editable (the pane opens as a read-only PREVIEW). Then click
+		//    INTO the pane → the master goes PEEKING (retain-alive read-only). ──
 		await openPaneViaRelated(page, 'FP freeze target');
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		await expect(pane.locator('.title', { hasText: 'FP freeze target' })).toBeVisible();
+		// DR-2: opening alone does NOT freeze the master — it stays the active side.
+		await expect(editableTitle).toBeVisible();
+		// Activate the pane (click its title) → the master becomes the frozen side.
+		await pane.locator('.title', { hasText: 'FP freeze target' }).click();
 
 		// ── Peeking: every NEW-edit-initiation surface is gone/disabled. ──
 		// Title: click-to-edit button replaced by a non-editable <h1>.
@@ -414,6 +420,13 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await expect
 			.poll(liveRoomsObj, { timeout: SYNC_TIMEOUT })
 			.toEqual({ [master.id]: 1, [related.id]: 1 });
+
+		// Activate the pane (focus-follows: it opened as a read-only PREVIEW beside
+		// the still-active master — PLAN-2179 DR-2). Clicking into it makes it the
+		// active side so the child-row drill below isn't swallowed by the freeze
+		// flip's dndzone re-init; provider counts are unchanged by the activation
+		// (both sides are retain-alive).
+		await pane.locator('.title', { hasText: 'FP ws related' }).click();
 
 		// Drill related → grandchild INSIDE the pane (a real `.child-row` click).
 		// The pane provider RE-TARGETS: `related`'s socket is torn down, the

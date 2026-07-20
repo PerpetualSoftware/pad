@@ -26,7 +26,7 @@
 	import { onDestroy, untrack } from 'svelte';
 	import ItemDetail from '$lib/components/items/ItemDetail.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
-	import { paneFocusables, nextTrapTarget } from '$lib/collections/paneFocus';
+	import { paneFocusables, nextTrapTarget, inExemptSurface } from '$lib/collections/paneFocus';
 	import type { PaneTarget } from '$lib/types';
 
 	interface Props {
@@ -39,6 +39,14 @@
 		/** The coalesced provider-mint ref (TASK-2166) the host computes and passes
 		 *  in; the inner `<ItemDetail>` `ref` keys off THIS, not raw `openItemRef`. */
 		paneMintForRoute: string | null;
+		/** Focus-follows-editing (PLAN-2179 DR-2/DR-3, TASK-2181) — OPTIONAL. The
+		 *  full-page item host owns an `activePane: 'master'|'pane'` model and passes
+		 *  it here so the pane's inner ItemDetail freezes (`peeking`) while the MASTER
+		 *  is the active side, and the desktop focusin backstop stands down instead of
+		 *  fighting a click into the master. LEFT UNSET by the collection route (its
+		 *  master is the non-editable list) → pane stays always-editable + the backstop
+		 *  keeps its original always-pull-back behavior there (byte-identical). */
+		activePane?: 'master' | 'pane';
 		onClose: () => void;
 		onGone: () => void;
 		onNavigateAway: (url: string) => void;
@@ -52,6 +60,7 @@
 		wsSlug,
 		collSlug,
 		paneMintForRoute,
+		activePane,
 		onClose,
 		onGone,
 		onNavigateAway,
@@ -104,6 +113,16 @@
 		if (!browser) return;
 		if (!openItemRef || !paneEl) return;
 		paneEl.focus({ preventScroll: true });
+	}
+
+	// The stable `.item-pane` region element (PLAN-2179 / TASK-2181). Exposed so
+	// the full-page host's focus-follows classifier can test membership with
+	// `paneEl.contains(target)` against the BOUND element — the `.item-page` /
+	// `.item-pane` class pair alone can't disambiguate (ItemDetail's inner content
+	// wrapper reuses `.item-page`), which is exactly why the host binds its own
+	// column too. Returns null before mount.
+	export function getPaneRegion(): HTMLElement | null {
+		return paneEl;
 	}
 
 	// ── Resizable detail pane + persisted width (PLAN-2105 / TASK-2114) ─
@@ -323,23 +342,14 @@
 		// closure boundary otherwise).
 		const region = paneEl;
 		// Surfaces that OWN their own focus/keyboard and legitimately overlay the
-		// pane — exempt from the trap so it neither hijacks their Tab nor yanks
-		// focus off them the instant they open. Recognised by role/tag rather than
-		// per-component class, so PANE-OWNED popups that portal out to <body>
-		// (outside `.item-pane` in the DOM) are all covered without whack-a-mole:
-		//  • native modal <dialog> (Share / Edit Collection / Open-Children
-		//    confirm) — top layer, self-trapping.
-		//  • [role="dialog"] — BottomSheets opened FROM WITHIN the pane (field
-		//    selects, Quick Actions, Move To); they render in the pane's own
-		//    stacking context, ABOVE its content, and own their Escape (Codex P1).
-		//  • [role="menu"] / [role="listbox"] — the item-actions reorder menu, the
-		//    editor slash/turn-into menus, select dropdowns, etc. (Codex P2).
-		//  • the editor block context menu — imperative, no ARIA role, so matched
-		//    by class (block-drag-handle.ts).
+		// pane are exempt from the trap so it neither hijacks their Tab nor yanks
+		// focus off them the instant they open (native <dialog>, [role="dialog"]
+		// BottomSheets, [role="menu"] / [role="listbox"], the editor block context
+		// menu). Recognised by role/tag/class so pane-owned popups that portal out
+		// to <body> are all covered — the shared `inExemptSurface` set (paneFocus.ts)
+		// is the SAME one the host's focus-follows classifier reuses (PLAN-2179).
 		// (Focus already inside `.item-pane` is handled by the `region.contains`
 		// check at each call site.)
-		const inExemptSurface = (el: Element | null | undefined): boolean =>
-			!!el?.closest?.('dialog, [role="dialog"], [role="menu"], [role="listbox"], .block-context-menu');
 		function onTrapKeydown(e: KeyboardEvent) {
 			if (e.key !== 'Tab' || e.defaultPrevented) return;
 			if (inExemptSurface(e.target as Element | null)) return;
@@ -383,6 +393,15 @@
 	// exactly the R1 case — the element was REMOVED, so it's already gone — so
 	// we remember whether the last settled focus was inside the pane ourselves
 	// rather than reading it off the event.
+	//
+	// Focus-follows-editing reconciliation (PLAN-2179 DR-2 / TASK-2181): on the
+	// full-page host this backstop must DEFER to `activePane`. Clicking
+	// non-focusable MASTER text drops focus to `<body>`; if the last focus was in
+	// the pane this backstop would yank it straight back — fighting "click master
+	// → activate master". So the pull-back only fires while the PANE is the active
+	// side (`activePane !== 'master'`). When `activePane` is UNSET (the collection
+	// route never passes it) `undefined !== 'master'` is true → the original
+	// always-pull-back R1 behavior is byte-identical there.
 	$effect(() => {
 		if (!browser) return;
 		if (!paneEl || viewport.isMobile || !openItemRef) return;
@@ -395,14 +414,18 @@
 				return;
 			}
 			// Dropped to <body> out of the pane → pull it back into the stable
-			// region. `region.focus()` re-fires focusin with the region as target,
-			// which the branch above treats as "inside" (no loop).
-			if (t === document.body && lastFocusWasInPane) {
+			// region, but ONLY while the pane is the active side (else a click into
+			// the master would be immediately overridden). `region.focus()` re-fires
+			// focusin with the region as target, which the branch above treats as
+			// "inside" (no loop). Read `activePane` live at event time (not tracked
+			// by this effect) so the listener isn't re-registered on every flip.
+			if (t === document.body && lastFocusWasInPane && activePane !== 'master') {
 				region.focus({ preventScroll: true });
 				return;
 			}
 			// A real element outside the pane (a list row/control the user Tabbed
-			// or clicked to) — legitimate on the desktop split; stand down.
+			// or clicked to), OR a body drop while the MASTER is active — legitimate
+			// on the desktop split; stand down.
 			lastFocusWasInPane = false;
 		}
 		document.addEventListener('focusin', onFocusIn);
@@ -556,6 +579,7 @@
 		<ItemDetail
 			ref={paneMintForRoute}
 			embedded
+			peeking={activePane === 'master'}
 			{username}
 			{wsSlug}
 			{collSlug}

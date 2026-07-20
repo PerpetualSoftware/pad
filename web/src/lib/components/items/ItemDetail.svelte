@@ -697,12 +697,25 @@
 			});
 		} else if (ended) {
 			untrack(() => {
-				// Un-peek: the master reclaims the shared activeItem (R9). Nothing
-				// to re-flush — under Option A pre-pane saves already completed on
-				// their own while peeking; the freeze only ever blocked NEW edits.
-				if (item) {
+				// Un-peek: this side is now the active/editable one, so it reclaims the
+				// shared activeItem (R9). Nothing to re-flush — under Option A pre-pane
+				// saves already completed on their own while peeking; the freeze only
+				// ever blocked NEW edits. Gate on `itemMatchesRef` (PLAN-2179 / TASK-2181;
+				// Codex review): during a retarget (a drill that flips this side active
+				// while `ref` already points at the NEXT item but `item` still holds the
+				// previous one) reclaiming `item` would point activeItem at a stale item.
+				// Skip until the load resolves — loadData's now-unfrozen `!peeking`
+				// setActiveItem then claims the freshly-loaded item.
+				if (item && itemMatchesRef) {
 					collectionStore.setActiveItem(item);
 					activeItemOwnedId = item.id;
+					// This side owns the singleton editorStore now too — restore its
+					// scalars from THIS instance's own shadow so +layout's self-save
+					// suppression reads the ACTIVE side's real dirty/save state, not the
+					// side we just froze (PLAN-2179 / TASK-2181; Codex review). Mirrors the
+					// load-time / teardown ownership gates.
+					editorStore.setDirty(localDirty);
+					editorStore.setLastSaveTime(localLastSaveTime);
 				}
 			});
 		}
@@ -985,7 +998,18 @@
 		// (PLAN-2105 / TASK-2112; Codex round 2 P1). onDestroy runs
 		// synchronously on unmount, before the awaited fetch continuations.
 		loadGeneration++;
-		editorStore.resetForDoc();
+		// A FROZEN (peeking) instance is NOT the active editor — it never owned the
+		// singleton `editorStore`, so its teardown must not reset the scalars the
+		// ACTIVE side owns (PLAN-2179 / TASK-2181; Codex review). Closing a read-only
+		// preview beside a dirty editable master would otherwise wipe the master's
+		// global dirty flag and degrade +layout's self-save suppression. Symmetric
+		// with the load-time gate and the clear-if-owner for activeItem below.
+		// `wasPeeking` (the transition effect's plain prev-flag) is this instance's
+		// last frozen state; constant false for every non-host caller → resetForDoc
+		// runs, byte-identical.
+		if (!wasPeeking) {
+			editorStore.resetForDoc();
+		}
 		localDirty = false;
 		// R9 (TASK-2172): clear-if-owner. `collectionStore.activeItem` is a
 		// module singleton shared with the layout (self-save suppression) and
@@ -1201,9 +1225,38 @@
 			} else {
 				collection = collData;
 			}
-			collectionStore.setActiveItem(itemData);
-			activeItemOwnedId = itemData.id;
-			editorStore.resetForDoc();
+			// A FROZEN (peeking) instance must NOT write the SINGLETON global stores
+			// the ACTIVE side owns (PLAN-2179 DR-2 / TASK-2181). Both are module
+			// singletons shared across the two concurrently-mounted ItemDetail
+			// instances (master + docked pane):
+			//   • `collectionStore.activeItem` — feeds the layout self-save-suppression
+			//     + ChildItems.defaultCollSlug, which must track the EDITABLE side.
+			//   • `editorStore` scalars (mode/dirty/externalChange) — `resetForDoc()`
+			//     clears `dirty`; a frozen preview opening beside a DIRTY editable
+			//     master would otherwise wipe the master's dirty flag and degrade
+			//     +layout's self-save suppression (Codex review).
+			// On the focus-follows host the pane LOADS while the master stays active
+			// (`activePane='master'`); without this gate the pane's load would clobber
+			// both singletons. The freeze END transition reclaims them the instant THIS
+			// side becomes editable, so ownership always follows the active side.
+			// `peeking` defaults false → byte-identical for every non-host caller (the
+			// collection-route pane included — it never peeks). The per-instance
+			// `localDirty` shadow (below) resets unconditionally — it's what THIS
+			// instance's own SSE guards read (TASK-2156).
+			if (!peeking) {
+				collectionStore.setActiveItem(itemData);
+				activeItemOwnedId = itemData.id;
+				editorStore.resetForDoc();
+				// resetForDoc() clears mode/dirty/externalChange but NOT lastSaveTime,
+				// so a load-time ownership claim would otherwise inherit the PREVIOUS
+				// owner's save timestamp (e.g. a pane activated mid-load — when the END
+				// reclaim was skipped by the itemMatchesRef gate — inheriting the frozen
+				// master's). Establish THIS instance's own lastSaveTime, mirroring the
+				// END reclaim (Codex review). For a single-instance caller this is a
+				// no-op: localLastSaveTime already equals editorStore.lastSaveTime (they
+				// mirror on every write) → byte-identical for the collection route.
+				editorStore.setLastSaveTime(localLastSaveTime);
+			}
 			localDirty = false;
 
 			// Fetch child item progress for any item (generalized parent/child)
