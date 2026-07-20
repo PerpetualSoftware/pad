@@ -242,6 +242,37 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await expect(page.locator('h1.title.title-readonly')).toHaveCount(0);
 	});
 
+	test("a master whose SLUG equals another item's UUID does not over-block that item (server UUID-first precedence)", async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		// A is the real `?item=` target. B is a master whose SLUG is created to be
+		// EXACTLY A's UUID (slugify keeps a UUID's hex+hyphens verbatim). The server
+		// resolves `?item=<A's UUID>` UUID-FIRST to A — a DIFFERENT item — so the
+		// pane must OPEN A, NOT be stripped as a master self-collision just because
+		// B's slug string-equals it (orchestrator Codex round-8 verify).
+		const a = await seedDoc(fixture, request, 'FP host uuid-slug target');
+		const bResp = await request.post(
+			`/api/v1/workspaces/${fixture.workspaceSlug}/collections/docs/items`,
+			{ headers: authHeaders(fixture), data: { title: a.id, fields: '{}', content: '' } },
+		);
+		if (!bResp.ok()) throw new Error(`B create failed (${bResp.status()}): ${await bResp.text()}`);
+		const b = (await bResp.json()) as SeededItem;
+		expect(b.slug).toBe(a.id); // fixture assumption: B's slug IS A's UUID
+		// Resolve B by its OWN id — GET /items/<B.slug> would resolve UUID-first to A.
+		const bRef = await itemRef(fixture, request, b.id);
+
+		await page.goto(fullPageUrl(fixture, bRef, `?item=${encodeURIComponent(a.id)}`));
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect(pane.locator('.title', { hasText: 'FP host uuid-slug target' })).toBeVisible();
+		await expect.poll(() => openItemParam(page)).toBe(a.id);
+	});
+
 	test('Expand a pane item to full page, then browser Back, restores the pane (no stale-master strip)', async ({
 		page,
 		fixture,

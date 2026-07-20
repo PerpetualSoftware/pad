@@ -179,23 +179,34 @@
 		};
 	});
 
+	// A canonical item-UUID shape (`GetItemByRef`'s FIRST resolution branch —
+	// internal/store/items.go). Used to mirror the server's UUID-first precedence
+	// in `isMasterRef` below.
+	const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 	// The forbidden `?item == master` collision (PLAN-2154 D2 / Architecture E)
 	// for a BARE `?item=` string (the cold-load strip + the mount gate + a resolved
-	// content-link ref). The server resolves a bare/href `?item=` REF-FIRST, then
-	// falls back to SLUG (internal/store/items.go). So a candidate aliases the
-	// master if it matches under EITHER interpretation: the ref-number channel
-	// (`isSamePaneTarget`'s href resolution) OR the RAW string equal to the
-	// master's id / slug — INCLUDING a ref-shaped slug (e.g. master #5 slugged
-	// `plan-6` with no live #6, which the server resolves to the master by the slug
-	// fallback; the ref-number channel alone would miss it, 6≠5). Erring toward a
-	// match is the safe direction for the forbidden D2 collision — never mount a
-	// 2nd provider on the master's own collab room (orchestrator Codex review). The
-	// rare cost is over-blocking a hand-crafted `?item=<ref-shaped-slug>` when a
-	// live item at that number DOES exist; that merely declines to open a pane (no
+	// content-link ref). Mirrors the server's resolution PRECEDENCE — UUID-first,
+	// then ref (by NUMBER), then slug (internal/store/items.go) — as closely as a
+	// client can WITHOUT knowing which items exist:
+	//   1. an exact id match is always the master (UUID-first);
+	//   2. a UUID-SHAPED candidate that ISN'T the master's id resolves UUID-first
+	//      to a DIFFERENT item (UUIDs are assigned, not title-derived), so we do
+	//      NOT fall through to a slug compare — otherwise `?item=<another item's
+	//      UUID>` would be over-blocked whenever the master's slug coincidentally
+	//      equals it (orchestrator Codex round-8 verify);
+	//   3. otherwise match the ref NUMBER (`isSamePaneTarget`'s href channel) OR
+	//      the RAW slug string — so a ref-shaped SLUG the server reaches by its
+	//      slug-fallback (e.g. master #5 slugged `plan-6` with no live #6, 6≠5) is
+	//      caught, the forbidden D2 collision's safe direction.
+	// The only residual over-block is a hand-crafted `?item=<ref-shaped-slug>` when
+	// a live item at that number DOES exist — benign (declines to open a pane; no
 	// collision, no data loss). `false` while the master identity is unresolved.
 	function isMasterRef(candidate: string): boolean {
 		if (!masterItem) return false;
-		if (candidate === masterItem.id || candidate === masterItem.slug) return true;
+		if (candidate === masterItem.id) return true;
+		if (UUID_SHAPE.test(candidate)) return false;
+		if (candidate === masterItem.slug) return true;
 		return isSamePaneTarget({ href: candidate }, masterItem);
 	}
 
