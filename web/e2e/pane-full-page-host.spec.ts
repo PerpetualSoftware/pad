@@ -109,7 +109,7 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		);
 	});
 
-	test('a master content-link opens a pane beside the (read-only, still-live) master; the pane drills, in-pane Back and ✕ close cleanly', async ({
+	test('focus follows editing: open keeps the master editable (pane = read-only preview); clicking a side activates it and freezes the other; drill/back keep the pane active (PLAN-2179 DR-2/DR-3 / TASK-2181)', async ({
 		page,
 		fixture,
 		request,
@@ -126,12 +126,17 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		const relatedRef = await itemRef(fixture, request, related.slug);
 		const grandchildRef = await itemRef(fixture, request, grandchild.slug);
 
+		// Editable/frozen probes: a `button.title` is the click-to-edit title
+		// (editable side); an `h1.title.title-readonly` is the frozen side.
+		const masterEditable = page.locator('button.title', { hasText: 'FP host master' });
+		const masterFrozen = page.locator('h1.title.title-readonly', { hasText: 'FP host master' });
+
 		// Land on the MASTER full page. No pane yet: the flex-row host is present,
 		// the master title is EDITABLE (a click-to-edit button — not peeking), and
 		// there's no `?item=`.
 		await page.goto(fullPageUrl(fixture, master.slug));
 		await expect(page.locator('.item-page-host')).toBeVisible();
-		await expect(page.locator('button.title', { hasText: 'FP host master' })).toBeVisible();
+		await expect(masterEditable).toBeVisible();
 		await expect(page.locator('.item-pane')).toHaveCount(0);
 		expect(openItemParam(page)).toBeNull();
 
@@ -143,41 +148,68 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
-		await expect(pane.locator('.title', { hasText: 'FP host related' })).toBeVisible();
 		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
 
-		// The master is RETAIN-ALIVE READ-ONLY (peeking): its content is still
-		// rendered (not torn down), but the title is now a non-editable <h1>
-		// (`title-readonly`) instead of the click-to-edit button — the freeze.
-		await expect(page.locator('h1.title.title-readonly', { hasText: 'FP host master' })).toBeVisible();
-		await expect(page.locator('button.title', { hasText: 'FP host master' })).toHaveCount(0);
+		// DR-2: opening does NOT freeze the master. Focus-follows-editing means the
+		// MASTER stays the active/editable side (openItemPaneByRef never moves focus
+		// into the pane), and the pane opens as a READ-ONLY PREVIEW — pane title is a
+		// non-editable <h1>, no click-to-edit button.
+		await expect(masterEditable).toBeVisible();
+		await expect(masterFrozen).toHaveCount(0);
+		await expect(pane.locator('h1.title.title-readonly', { hasText: 'FP host related' })).toBeVisible();
+		await expect(pane.locator('button.title')).toHaveCount(0);
 
 		// Depth 0: the pane's Back chevron is hidden.
 		await expect(pane.locator('button.pane-back-btn')).toHaveCount(0);
 
-		// Click the CHILD row INSIDE the pane → DRILL in place (same pathname,
-		// `?item=` swaps to the child, the Back chevron appears at depth>0). The
-		// master stays put + read-only underneath.
+		// Drill a CHILD row directly from the FROZEN preview — on the FIRST click.
+		// Content-link / child-row navigation stays live while the master is active
+		// (the mini-browser preview), so the pointerdown activator EXCLUDES navigable
+		// targets: the freeze-flip can't re-init ChildItems' dndzone and swallow the
+		// click. The drill is pane-internal, so it ALSO activates the pane — pane
+		// editable, master frozen (PLAN-2179 DR-2 / TASK-2181). No pre-activation click.
 		const masterPathname = new URL(page.url()).pathname;
 		await pane.locator('.child-row', { hasText: 'FP host grandchild' }).click();
 		await expect.poll(() => openItemParam(page)).toBe(grandchildRef);
 		expect(new URL(page.url()).pathname).toBe(masterPathname);
 		await expect(pane.locator('button.pane-back-btn')).toBeVisible();
-		await expect(pane.locator('.title', { hasText: 'FP host grandchild' })).toBeVisible();
-		await expect(page.locator('h1.title.title-readonly', { hasText: 'FP host master' })).toBeVisible();
+		await expect(pane.locator('button.title', { hasText: 'FP host grandchild' })).toBeVisible();
+		await expect(masterFrozen).toBeVisible();
+		await expect(masterEditable).toHaveCount(0);
 
-		// Browser BACK → pops one drill level back to B in the pane.
+		// Browser BACK → pops one drill level back to B in the pane. A drill-pop is
+		// still pane-internal, so `activePane` stays 'pane' — pane editable, master
+		// frozen.
 		await page.goBack();
 		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
-		await expect(pane.locator('.title', { hasText: 'FP host related' })).toBeVisible();
+		await expect(pane.locator('button.title', { hasText: 'FP host related' })).toBeVisible();
 		await expect(pane.locator('button.pane-back-btn')).toHaveCount(0);
+		await expect(masterFrozen).toBeVisible();
+		await expect(masterEditable).toHaveCount(0);
+
+		// Click BACK into the MASTER — on its now-read-only <h1> title, a NON-focusable,
+		// NON-navigable element that drops focus to <body>. The pointerdown activator
+		// re-activates the master, and the desktop backstop must NOT yank focus back to
+		// the pane. Master editable again; pane freezes. Exactly one side editable.
+		await masterFrozen.click();
+		await expect(masterEditable).toBeVisible();
+		await expect(masterFrozen).toHaveCount(0);
+		await expect(pane.locator('h1.title.title-readonly', { hasText: 'FP host related' })).toBeVisible();
+		await expect(pane.locator('button.title')).toHaveCount(0);
+
+		// Click into the PANE on its read-only title (a NON-navigable target) → the
+		// pointerdown activator makes the pane the active side; the master freezes.
+		await pane.locator('.title', { hasText: 'FP host related' }).click();
+		await expect(pane.locator('button.title', { hasText: 'FP host related' })).toBeVisible();
+		await expect(masterFrozen).toBeVisible();
+		await expect(masterEditable).toHaveCount(0);
 
 		// Close (✕) → the pane unmounts cleanly, `?item=` drops, and the master is
 		// EDITABLE again (no longer peeking → click-to-edit button returns).
 		await pane.locator('button[title="Close pane"]').click();
 		await expect(page.locator('.item-pane')).toHaveCount(0);
 		await expect.poll(() => openItemParam(page)).toBeNull();
-		await expect(page.locator('button.title', { hasText: 'FP host master' })).toBeVisible();
+		await expect(masterEditable).toBeVisible();
 		await expect(page.locator('h1.title.title-readonly')).toHaveCount(0);
 	});
 
@@ -211,22 +243,27 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		expect(editorNode).not.toBeNull();
 		expect(await editorNode!.evaluate((el) => el.isConnected)).toBe(true);
 
-		// Open the pane → the master goes peeking (read-only).
+		// Open the pane → focus-follows keeps the MASTER active (DR-2), so its editor
+		// stays editable and the SAME DOM node stays connected — no open-driven remount.
+		const pane = page.locator('.item-pane');
 		await page
 			.locator('.relationship-group', { hasText: 'Related' })
 			.locator('a.link-target', { hasText: 'FP host reactive-freeze related' })
 			.click();
-		await expect(page.locator('.item-pane')).toBeVisible();
+		await expect(pane).toBeVisible();
 		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
+		expect(await editorNode!.evaluate((el) => el.isConnected)).toBe(true);
+		await expect(masterMainEditor).toHaveAttribute('contenteditable', 'true');
+
+		// Click INTO the pane → the master FREEZES. The freeze is REACTIVE: the SAME
+		// editor DOM node is still connected (a `{#key}`-driven remount — the OLD
+		// peeking-in-the-key behavior — would have detached this handle, isConnected →
+		// false), and it merely flipped contenteditable=false in place. This is the
+		// whole point of PLAN-2179 DR-1: freeze without destroying/recreating the editor.
+		await pane.locator('.title', { hasText: 'FP host reactive-freeze related' }).click();
 		await expect(
 			page.locator('h1.title.title-readonly', { hasText: 'FP host reactive-freeze master' }),
 		).toBeVisible();
-
-		// The freeze is REACTIVE: the SAME editor DOM node is still connected (a
-		// `{#key}`-driven remount — the OLD peeking-in-the-key behavior — would
-		// have detached this handle, isConnected → false), and it merely flipped
-		// contenteditable=false in place. This is the whole point of PLAN-2179
-		// DR-1: freeze without destroying/recreating the editor.
 		expect(await editorNode!.evaluate((el) => el.isConnected)).toBe(true);
 		await expect(masterMainEditor).toHaveAttribute('contenteditable', 'false');
 
@@ -274,15 +311,18 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await masterMain.locator('p').first().hover();
 		await expect.poll(handleDisplay, { timeout: 3000 }).not.toBe('none');
 
-		// PEEK: open the pane → the master freezes (contenteditable=false). Hovering
-		// the SAME paragraph must NOT reveal the handle — the reactive-editable
-		// choke (onMouseMove/update bail on !editorView.editable) keeps it hidden.
+		// PEEK: open the pane (focus-follows keeps the master editable — DR-2), then
+		// click INTO the pane → the master FREEZES (contenteditable=false). Hovering
+		// the SAME paragraph must NOT reveal the handle — the reactive-editable choke
+		// (onMouseMove/update bail on !editorView.editable) keeps it hidden.
+		const pane = page.locator('.item-pane');
 		await page
 			.locator('.relationship-group', { hasText: 'Related' })
 			.locator('a.link-target', { hasText: 'FP host drag-handle related' })
 			.click();
-		await expect(page.locator('.item-pane')).toBeVisible();
+		await expect(pane).toBeVisible();
 		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
+		await pane.locator('.title', { hasText: 'FP host drag-handle related' }).click();
 		await expect(masterMain).toHaveAttribute('contenteditable', 'false');
 		await page.mouse.move(5, 5); // leave the editor first
 		await masterMain.locator('p').first().hover({ force: true });
@@ -343,8 +383,12 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await expect(pane).toBeVisible();
 		await expect(pane.locator('.title', { hasText: 'FP host cold other' })).toBeVisible();
 		await expect.poll(() => openItemParam(page)).toBe(otherRef);
-		// The master is present + peeking (read-only) beside the pane.
-		await expect(page.locator('h1.title.title-readonly', { hasText: 'FP host cold master' })).toBeVisible();
+		// DR-2 cold-load initializer (desktop): no focusin fires on a `?item=` deep
+		// load, so `activePane` seeds to the MASTER — it's EDITABLE beside the pane,
+		// which opens as a read-only PREVIEW (frozen title).
+		await expect(page.locator('button.title', { hasText: 'FP host cold master' })).toBeVisible();
+		await expect(page.locator('h1.title.title-readonly', { hasText: 'FP host cold master' })).toHaveCount(0);
+		await expect(pane.locator('h1.title.title-readonly', { hasText: 'FP host cold other' })).toBeVisible();
 	});
 
 	test('a cold-loaded `?item=<the master by its ref-shaped slug>` is stripped (server slug-fallback self-collision)', async ({
@@ -411,8 +455,13 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await page.goBack();
 		await expect(page).toHaveURL(paneUrl);
 		await expect(pane).toBeVisible();
-		await expect(pane.locator('.title', { hasText: 'FP host expand related' })).toBeVisible();
 		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
+		// Clicking "Expand to full page" is a click INSIDE the pane, so `activePane`
+		// latched to 'pane' and PERSISTS across the expand + Back (this route
+		// component is REUSED, never remounted). The restored pane is therefore the
+		// ACTIVE/editable side and the master A is frozen — the pane "stays active"
+		// across browser Back (PLAN-2179 DR-2).
+		await expect(pane.locator('button.title', { hasText: 'FP host expand related' })).toBeVisible();
 		await expect(page.locator('h1.title.title-readonly', { hasText: 'FP host expand master' })).toBeVisible();
 	});
 });

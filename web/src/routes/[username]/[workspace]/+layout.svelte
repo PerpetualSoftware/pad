@@ -187,7 +187,15 @@
 						} else {
 							try {
 								const updated = await api.items.get(wsSlug, activeItem.slug);
-								collectionStore.setActiveItem(updated);
+								// Fence the late continuation (PLAN-2179 / TASK-2181): on the
+								// focus-follows-editing host `collectionStore.activeItem`
+								// ping-pongs master↔pane on each click, so the active item may
+								// have SWITCHED during this await. Don't clobber the new active
+								// side's reclaim with the item this event was for; the list
+								// refresh below is still valid for the fetched item regardless.
+								if (collectionStore.activeItem?.id === activeItem.id) {
+									collectionStore.setActiveItem(updated);
+								}
 								collectionStore.updateItemInList(updated);
 							} catch {}
 						}

@@ -304,11 +304,17 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await expect(masterEditor).toBeVisible({ timeout: SYNC_TIMEOUT });
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'true');
 
-		// ── Open the pane → the master goes PEEKING (retain-alive read-only). ──
+		// ── Open the pane → focus-follows-editing (PLAN-2179 DR-2 / TASK-2181) keeps
+		//    the MASTER editable (the pane opens as a read-only PREVIEW). Then click
+		//    INTO the pane → the master goes PEEKING (retain-alive read-only). ──
 		await openPaneViaRelated(page, 'FP freeze target');
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 		await expect(pane.locator('.title', { hasText: 'FP freeze target' })).toBeVisible();
+		// DR-2: opening alone does NOT freeze the master — it stays the active side.
+		await expect(editableTitle).toBeVisible();
+		// Activate the pane (click its title) → the master becomes the frozen side.
+		await pane.locator('.title', { hasText: 'FP freeze target' }).click();
 
 		// ── Peeking: every NEW-edit-initiation surface is gone/disabled. ──
 		// Title: click-to-edit button replaced by a non-editable <h1>.
@@ -415,11 +421,13 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 			.poll(liveRoomsObj, { timeout: SYNC_TIMEOUT })
 			.toEqual({ [master.id]: 1, [related.id]: 1 });
 
-		// Drill related → grandchild INSIDE the pane (a real `.child-row` click).
-		// The pane provider RE-TARGETS: `related`'s socket is torn down, the
-		// grandchild's minted — master + grandchild = STILL 2 distinct rooms, not
-		// {master, related, grandchild}. This is "one pane provider that
-		// re-targets, not N".
+		// Drill related → grandchild INSIDE the pane (a real `.child-row` click). The
+		// pane opened as a read-only PREVIEW (master active, DR-2), but a content-link
+		// / child-row drills on the FIRST click and activates the pane — no
+		// pane-activation pre-click, no dndzone-swallow (PLAN-2179 / TASK-2181). The
+		// pane provider RE-TARGETS: `related`'s socket is torn down, the grandchild's
+		// minted — master + grandchild = STILL 2 distinct rooms, not
+		// {master, related, grandchild}. This is "one pane provider that re-targets, not N".
 		await pane.locator('.child-row', { hasText: 'FP ws grandchild' }).click();
 		await expect(pane.locator('.title', { hasText: 'FP ws grandchild' })).toBeVisible();
 		await expect
