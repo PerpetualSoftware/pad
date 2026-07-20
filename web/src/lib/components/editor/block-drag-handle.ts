@@ -362,7 +362,25 @@ export const BlockDragHandle = Extension.create({
 					let menuOpen = false;
 
 					function getScrollContainer(): HTMLElement {
-						return wrapper.closest('.main-content') as HTMLElement || document.documentElement;
+						// Auto-scroll targets the INNERMOST actually-scrollable ancestor,
+						// resolved by computed `overflow-y` rather than a hard-coded
+						// `.main-content` class. The editor now lives inside different
+						// scroll owners depending on surface — the docked detail pane's
+						// `.item-pane`, the full-page item host's `.item-page` overflow
+						// column (PLAN-2154 Architecture E / TASK-2174), or the layout's
+						// `.main-content` — and a class walk is unreliable here because the
+						// full-page host's scroll column shares the `.item-page` class with
+						// <ItemDetail>'s NON-scrolling inner content wrapper. Walking to the
+						// first `auto`/`scroll`/`overlay` ancestor finds the right column on
+						// every surface (and fixes the pane editor, which previously scrolled
+						// the `.main-content` it doesn't live in).
+						let el: HTMLElement | null = wrapper.parentElement;
+						while (el && el !== document.documentElement) {
+							const oy = getComputedStyle(el).overflowY;
+							if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') return el;
+							el = el.parentElement;
+						}
+						return document.documentElement;
 					}
 
 					// --- Handle positioning ---
