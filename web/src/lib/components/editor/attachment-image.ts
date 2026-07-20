@@ -315,15 +315,16 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			};
 
 			const swapNodeUuid = (newId: string): void => {
-				// Master-freeze / R12 (TASK-2172); ACCEPTED tracked edge BUG-2177:
-				// runRotate/runCrop gate editability at CLICK time, but the transform
-				// awaits a network round-trip during which the master can begin peeking
-				// — remounting the editor (editable=false) via the `{#key peeking}`,
-				// which destroys THIS NodeView's editor. Re-check right before the
-				// dispatch: a destroyed view would throw, and a read-only one must not
-				// receive the Yjs transaction the freeze forbids. The server-side
-				// transform still ran; only its doc reference is dropped (the tracked
-				// BUG-2177 tradeoff — no crash, no committed-content loss).
+				// Master-freeze / R12 (TASK-2172): runRotate/runCrop gate editability
+				// at CLICK time, but the transform awaits a network round-trip during
+				// which the master can begin peeking — flipping the editor read-only
+				// (PLAN-2179 DR-1 / TASK-2180: `peeking` no longer remounts via the
+				// `{#key}`; it flips `editable=false` on the SAME view) — or a genuine
+				// remount (item switch / forceRefreshNonce) can destroy THIS NodeView's
+				// editor. Re-check right before the dispatch: a destroyed view would
+				// throw, and a read-only one must not receive the Yjs transaction the
+				// freeze forbids. The server-side transform still ran; only its doc
+				// reference is dropped (no crash, no committed-content loss).
 				if (editor.isDestroyed || !editor.isEditable) return;
 				const pos = typeof getPos === 'function' ? getPos() : null;
 				if (pos == null) return;

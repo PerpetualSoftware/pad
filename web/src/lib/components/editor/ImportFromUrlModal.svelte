@@ -89,7 +89,11 @@
 	}
 
 	function handleInsert() {
-		if (!result || !editor) return;
+		// Reactive-freeze guard (PLAN-2179 DR-1 / TASK-2180): the host closes this
+		// modal when the editor goes read-only (a peek), but belt the insert too —
+		// never mutate a frozen doc if an Insert click races that flip. The old
+		// peeking `{#key}` remount destroyed this modal outright.
+		if (!result || !editor || !editor.isEditable) return;
 		// Snapshot the editor's live emptiness BEFORE the insert. Under
 		// collab the ProseMirror doc reflects the authoritative Y.Doc
 		// state, which can include user-typed content that hasn't yet

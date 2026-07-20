@@ -2436,11 +2436,16 @@
 			// Bail if the user navigated to a different item — applying
 			// the refresh now would target the wrong document AND stamp
 			// the wrong source URL. The `editorInstance !== targetEditor` arm
-			// ALSO covers the ACCEPTED tracked edge BUG-2177 (TASK-2172): a
-			// source-refresh confirmed pre-pane whose editor is REMOUNTED by the
-			// peeking `{#key peeking}` — the captured `targetEditor` is stale, so
-			// we drop the content replacement (no crash, no committed-content loss).
-			if (switchedAway(targetItem, gen) || editorInstance !== targetEditor) {
+			// still guards genuine editor remounts (item switch /
+			// forceRefreshNonce). The `!targetEditor.isEditable` arm is the
+			// master-freeze backstop (PLAN-2179 DR-1 / TASK-2180): `peeking` no
+			// longer remounts the editor, so a source-refresh confirmed pre-pane
+			// keeps the SAME live `targetEditor` — but that editor is now frozen,
+			// and this full content REPLACE is exactly the mutation the freeze
+			// forbids. Drop it (the old peeking `{#key}` remount dropped it via the
+			// identity arm); no crash, no committed-content loss (the doc is in the
+			// retained Y.Doc).
+			if (switchedAway(targetItem, gen) || editorInstance !== targetEditor || !targetEditor?.isEditable) {
 				return;
 			}
 			const html = marked.parse(resp.markdown, { async: false }) as string;
@@ -4428,31 +4433,28 @@
 							<ContentSkeleton variant="inline" />
 						{:else}
 							<!--
-								Master-freeze (TASK-2154 D2 / TASK-2172): `peeking` is
-								in the {#key} so a freeze/un-freeze REMOUNTS the editor
-								re-bound to the SAME live Y.Doc (ydoc prop unchanged —
-								no teardown of the PROVIDER/Y.Doc, no data loss, the
-								forceRefreshNonce remount pattern). The remount is
-								load-bearing: BlockDragHandle is construction-gated on
-								`editable` (Editor.svelte ~885) — a complex plugin with no
-								single runtime gate — so a reactive editable flip alone
-								would leave the drag-reorder mutation hole open.
-								`editable={!peeking}` also auto-disables the slash menu,
-								mobile toolbar, and table toolbar. Defaults false →
-								editable=true, byte-identical for non-host callers.
-
-								Tradeoff (HT-2176 Option A): the remount destroys the
-								editor VIEW, so an editor-bound action in flight at the
-								instant the pane opens (a paste/drop upload, a rotate/crop
-								transform, a bubble-menu create, a source refresh) is
-								interrupted rather than completed. All degrade GRACEFULLY
-								— the completion paths check `view.isDestroyed`/identity
-								and drop silently; existing content is never lost (it's in
-								the retained Y.Doc). This is the accepted cost of closing
-								the drag-reorder NEW-mutation hole, which the freeze must
-								do; the alternative (no remount) reopens that hole.
+								Master-freeze (TASK-2154 D2 / TASK-2172 / PLAN-2179
+								DR-1 / TASK-2180): the `editable={!peeking}` freeze is
+								now PURELY REACTIVE — `peeking` is NO LONGER in the
+								{#key} (only item.id + forceRefreshNonce remount), so a
+								freeze/un-freeze keeps the SAME editor VIEW alive: no
+								teardown, no reconstruction, no orphaned in-flight action
+								(strictly improves BUG-2177). BlockDragHandle — the ONLY
+								construction-gated freeze surface — is now runtime
+								editable-aware (Editor.svelte registers it
+								unconditionally; block-drag-handle.ts chokes the handle
+								+ bails every mutation dispatch on `editorView.editable`,
+								flipped synchronously by Editor's editable $effect).
+								Everything else the old remount cited is ALREADY reactive
+								and needs no remount: attachment paste/drop/toolbar
+								(editable-gated, TASK-2172), clipboard cut/paste, image
+								rotate/crop, htmlBlock, slash/`[[` pickers (inert on a
+								contentEditable=false view), mobile/table toolbars ({#if
+								editable}), bubble/link popover (host-gated by {#if
+								mutationsEnabled} below). Defaults false → editable=true,
+								byte-identical for non-host callers.
 							-->
-							{#key `${item.id}:true:${forceRefreshNonce}:${peeking}`}
+							{#key `${item.id}:true:${forceRefreshNonce}`}
 								<Editor
 									content={editorContent}
 									onUpdate={handleContentUpdate}

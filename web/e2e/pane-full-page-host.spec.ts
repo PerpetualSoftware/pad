@@ -35,6 +35,22 @@ interface SeededItem {
 	slug: string;
 }
 
+/** Seed a doc with real markdown body content — needed for hover tests where a
+ *  concrete block must exist for the block drag handle to attach to. */
+async function seedDocWithContent(
+	fixture: SuiteFixture,
+	request: APIRequestContext,
+	titlePrefix: string,
+	content: string,
+): Promise<SeededItem> {
+	const resp = await request.post(
+		`/api/v1/workspaces/${fixture.workspaceSlug}/collections/docs/items`,
+		{ headers: authHeaders(fixture), data: { title: `${titlePrefix} ${Date.now()}`, fields: '{}', content } },
+	);
+	if (!resp.ok()) throw new Error(`doc create failed (${resp.status()}): ${await resp.text()}`);
+	return (await resp.json()) as SeededItem;
+}
+
 /** Seed a doc whose `fields.parent` makes it a child of `parentId` (mirrors
  *  `ChildItems.submitCreate`'s `{ parent }` shape) so the parent's pane renders
  *  a `.child-row` to drill into. */
@@ -163,6 +179,123 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await expect.poll(() => openItemParam(page)).toBeNull();
 		await expect(page.locator('button.title', { hasText: 'FP host master' })).toBeVisible();
 		await expect(page.locator('h1.title.title-readonly')).toHaveCount(0);
+	});
+
+	test('opening AND closing the pane freezes/thaws the master WITHOUT remounting its editor (PLAN-2179 DR-1 / TASK-2180 — reactive freeze)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		// A (master) --related--> B.
+		const master = await seedDoc(fixture, request, 'FP host reactive-freeze master');
+		const related = await seedDoc(fixture, request, 'FP host reactive-freeze related');
+		await seedRelatedLink(fixture, request, master.slug, related.id);
+		const relatedRef = await itemRef(fixture, request, related.slug);
+
+		await page.goto(fullPageUrl(fixture, master.slug));
+		await expect(page.locator('button.title', { hasText: 'FP host reactive-freeze master' })).toBeVisible();
+
+		// The MASTER's main content editor (its ProseMirror), scoped to the
+		// master column (`.item-page-host > .item-page`, never the `.item-pane`).
+		// Wait until it has synced to editable — the collab skeleton renders no
+		// ProseMirror, so this also guarantees the real editor is mounted before
+		// we capture a handle to its DOM node.
+		const masterMainEditor = page.locator(
+			'.item-page-host > .item-page .editor-wrapper .ProseMirror',
+		);
+		await expect(masterMainEditor).toHaveAttribute('contenteditable', 'true');
+		const editorNode = await masterMainEditor.elementHandle();
+		expect(editorNode).not.toBeNull();
+		expect(await editorNode!.evaluate((el) => el.isConnected)).toBe(true);
+
+		// Open the pane → the master goes peeking (read-only).
+		await page
+			.locator('.relationship-group', { hasText: 'Related' })
+			.locator('a.link-target', { hasText: 'FP host reactive-freeze related' })
+			.click();
+		await expect(page.locator('.item-pane')).toBeVisible();
+		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
+		await expect(
+			page.locator('h1.title.title-readonly', { hasText: 'FP host reactive-freeze master' }),
+		).toBeVisible();
+
+		// The freeze is REACTIVE: the SAME editor DOM node is still connected (a
+		// `{#key}`-driven remount — the OLD peeking-in-the-key behavior — would
+		// have detached this handle, isConnected → false), and it merely flipped
+		// contenteditable=false in place. This is the whole point of PLAN-2179
+		// DR-1: freeze without destroying/recreating the editor.
+		expect(await editorNode!.evaluate((el) => el.isConnected)).toBe(true);
+		await expect(masterMainEditor).toHaveAttribute('contenteditable', 'false');
+
+		// Close the pane → the master thaws back to editable. The editor node
+		// survives the un-freeze too (no remount on either edge), flipping
+		// contenteditable=true again in place.
+		await page.locator('button[title="Close pane"]').click();
+		await expect(page.locator('.item-pane')).toHaveCount(0);
+		await expect(page.locator('button.title', { hasText: 'FP host reactive-freeze master' })).toBeVisible();
+		await expect(page.locator('h1.title.title-readonly')).toHaveCount(0);
+		expect(await editorNode!.evaluate((el) => el.isConnected)).toBe(true);
+		await expect(masterMainEditor).toHaveAttribute('contenteditable', 'true');
+	});
+
+	test('the master block drag handle appears on hover while editable, is frozen (never appears) while peeking, and returns on close (PLAN-2179 DR-1 / TASK-2180)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		const master = await seedDocWithContent(
+			fixture,
+			request,
+			'FP host drag-handle master',
+			'Alpha paragraph here\n\nBravo paragraph here',
+		);
+		const related = await seedDoc(fixture, request, 'FP host drag-handle related');
+		await seedRelatedLink(fixture, request, master.slug, related.id);
+		const relatedRef = await itemRef(fixture, request, related.slug);
+
+		await page.goto(fullPageUrl(fixture, master.slug));
+		const masterMain = page.locator('.item-page-host > .item-page .editor-wrapper .ProseMirror');
+		await expect(masterMain).toHaveAttribute('contenteditable', 'true');
+		await expect(masterMain.locator('p').first()).toContainText('Alpha paragraph');
+
+		// The block drag handle lives inside the master's editor wrapper; it is
+		// display:none until a hover reveals it over a block.
+		const handle = page.locator('.item-page-host > .item-page .editor-wrapper .block-drag-handle');
+		const handleDisplay = () =>
+			handle.evaluate((el) => getComputedStyle(el as HTMLElement).display).catch(() => 'missing');
+
+		// EDITABLE: hovering a paragraph reveals the handle.
+		await masterMain.locator('p').first().hover();
+		await expect.poll(handleDisplay, { timeout: 3000 }).not.toBe('none');
+
+		// PEEK: open the pane → the master freezes (contenteditable=false). Hovering
+		// the SAME paragraph must NOT reveal the handle — the reactive-editable
+		// choke (onMouseMove/update bail on !editorView.editable) keeps it hidden.
+		await page
+			.locator('.relationship-group', { hasText: 'Related' })
+			.locator('a.link-target', { hasText: 'FP host drag-handle related' })
+			.click();
+		await expect(page.locator('.item-pane')).toBeVisible();
+		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
+		await expect(masterMain).toHaveAttribute('contenteditable', 'false');
+		await page.mouse.move(5, 5); // leave the editor first
+		await masterMain.locator('p').first().hover({ force: true });
+		await page.waitForTimeout(250);
+		expect(await handleDisplay()).toBe('none');
+
+		// CLOSE: the master thaws → hovering reveals the handle again.
+		await page.locator('button[title="Close pane"]').click();
+		await expect(page.locator('.item-pane')).toHaveCount(0);
+		await expect(masterMain).toHaveAttribute('contenteditable', 'true');
+		await page.mouse.move(5, 5);
+		await masterMain.locator('p').first().hover();
+		await expect.poll(handleDisplay, { timeout: 3000 }).not.toBe('none');
 	});
 
 	test('a cold-loaded `?item=<the master itself>` is stripped — never mounts a pane on the master', async ({

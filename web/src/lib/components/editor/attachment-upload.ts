@@ -171,16 +171,17 @@ function startUpload(
 	opts
 		.upload(file)
 		.then((result) => {
-			// Master-freeze / R12 (TASK-2172); ACCEPTED tracked edge BUG-2177 — the
-			// bytes land server-side but the reference isn't inserted (no crash, no
-			// committed-content loss): the view can be torn down or turned
-			// read-only WHILE this upload is in flight — e.g. a peeking master
-			// remounts its editor (editable=false) via the `{#key peeking}`,
-			// destroying THIS view. Never dispatch into a destroyed/read-only view:
-			// dispatch on a destroyed view throws, and inserting into a frozen one
-			// is exactly the mutation the freeze forbids. Drop the result (the
-			// bytes are already stored server-side; the reference is simply not
-			// inserted) and clean up the placeholder if the same view still lives.
+			// Master-freeze / R12 (TASK-2172): the view can be torn down or turned
+			// read-only WHILE this upload is in flight — a genuine remount (item
+			// switch / forceRefreshNonce) destroys THIS view, or a peeking master
+			// flips it read-only in place (PLAN-2179 DR-1 / TASK-2180: `peeking` is
+			// no longer in the `{#key}`, so a freeze flips `editable=false` on the
+			// SAME view rather than remounting it). Never dispatch into a
+			// destroyed/read-only view: dispatch on a destroyed view throws, and
+			// inserting into a frozen one is exactly the mutation the freeze forbids.
+			// Drop the result (the bytes are already stored server-side; the
+			// reference is simply not inserted) and clean up the placeholder if the
+			// same view still lives.
 			if (view.isDestroyed || !view.editable) {
 				if (!view.isDestroyed) {
 					view.dispatch(view.state.tr.setMeta(pluginKey, { remove: id } satisfies UploadAction));

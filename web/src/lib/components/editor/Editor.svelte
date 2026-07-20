@@ -20,6 +20,7 @@
 		selectionCell,
 		findTable,
 		TableMap,
+		columnResizingPluginKey,
 	} from '@tiptap/pm/tables';
 	import Link from '@tiptap/extension-link';
 	import CodeBlock from '@tiptap/extension-code-block';
@@ -715,7 +716,13 @@
 	}
 
 	function execSlash(id: string) {
-		if (!editor) return;
+		// Reactive-freeze guard (PLAN-2179 DR-1 / TASK-2180): a slash menu left
+		// OPEN when the master froze must not insert into the read-only doc. The
+		// `{#if slashOpen && editable}` render gate hides it reactively, and this
+		// is the belt for a queued Enter/click racing the flip. (The old peeking
+		// `{#key}` remount reset this component state; the reactive freeze needs
+		// the explicit bail.)
+		if (!editor || !editor.isEditable) return;
 		if (slashStartPos >= 0) {
 			const to = editor.state.selection.from;
 			editor.chain().focus().deleteRange({ from: slashStartPos, to }).run();
@@ -792,7 +799,9 @@
 	}
 
 	function execLink(doc: Item) {
-		if (!editor) return;
+		// Reactive-freeze guard (PLAN-2179 DR-1 / TASK-2180): see execSlash — a
+		// `[[` picker left open at freeze time must not mutate the read-only doc.
+		if (!editor || !editor.isEditable) return;
 		// Build the URL in the same shape wikiLinksToMarkdown produces so the
 		// save round-trip (markdownToWikiLinks) reliably converts it back to
 		// [[Title]]. We read from the live route params (not workspaceStore)
@@ -890,12 +899,17 @@
 				transformPastedText: true,
 				transformCopiedText: true,
 			}),
-			// BlockDragHandle registers a drag-to-reorder UI in the prose
-			// mirror view that is NOT gated on tiptap's `editable` flag —
-			// its handle can still drag/dispatch transactions even when
-			// `editable=false`. Exclude entirely in read-only mode so the
-			// handle is never injected (PLAN-1100 / TASK-1105 round 3).
-			...(editable ? [BlockDragHandle] : []),
+			// BlockDragHandle registers UNCONDITIONALLY (PLAN-2179 DR-1 /
+			// TASK-2180). It is now reactive-editable-aware: onMouseMove and
+			// the plugin update() choke on `editorView.editable` (hiding the
+			// handle synchronously the moment editable flips false), and every
+			// mutation dispatch site (drag-move, duplicate, delete, turn-into,
+			// attach) bails on `!editorView.editable`. That lets a read-only /
+			// peeking editor freeze the handle via `editable={!peeking}` WITHOUT
+			// remounting the editor — replacing the old construction-time gate
+			// (PLAN-1100 / TASK-1105) and, in ItemDetail, its peeking-driven
+			// `{#key}` remount. Pure superset: editable=true is byte-identical.
+			BlockDragHandle,
 			AttachmentImage.configure({
 				getDownloadUrl: getAttachmentUrl,
 				workspaceSlug: wsSlug,
@@ -1167,6 +1181,33 @@
 		});
 	});
 
+	// Master-freeze (PLAN-2179 DR-1 / TASK-2180): when the editor goes read-only
+	// (a peek), dismiss any open insertion UI — the slash / `[[` pickers and the
+	// Insert-from-URL modal — so none can linger over (or reappear on un-freeze
+	// above), or mutate, a frozen doc. Reactive counterpart to the old peeking
+	// `{#key}` remount, which reset this component state by destroying it. Split
+	// from the setEditable flip above per CONVE-606 (state reset vs sync).
+	$effect(() => {
+		if (editable) return;
+		untrack(() => {
+			slashOpen = false;
+			linkOpen = false;
+			importUrlModalOpen = false;
+			// Cancel an in-flight table column-resize: prosemirror-tables gates
+			// resize START on view.editable but its window mouseup completion does
+			// NOT recheck it, so a resize begun before the freeze would otherwise
+			// dispatch changed colwidths into the now-read-only doc (Codex round 3;
+			// direct Yjs repro confirmed). Clearing `dragging` (a meta-only tr — no
+			// doc step, no Yjs op, safe on a frozen view) makes that mouseup a
+			// no-op. The old peeking `{#key}` remount closed this by destroying the
+			// view mid-drag.
+			const view = editor?.view;
+			if (view && columnResizingPluginKey.getState(view.state)?.dragging) {
+				view.dispatch(view.state.tr.setMeta(columnResizingPluginKey, { setDragging: null }));
+			}
+		});
+	});
+
 	// Sync content when prop changes (e.g. doc switch, external update).
 	//
 	// CRITICAL: when ydoc is set, this path MUST NOT run. Y.Doc is the
@@ -1374,7 +1415,10 @@
 	{/if}
 </div>
 
-{#if slashOpen}
+<!-- `&& editable` (PLAN-2179 DR-1 / TASK-2180): reactively hide an open slash
+     menu the instant the master freezes, so a peeking editor can't insert via a
+     lingering picker. The old peeking `{#key}` remount dropped this state. -->
+{#if slashOpen && editable}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div role="none" style="position:fixed; inset:0; z-index:49;" onclick={closeSlash}></div>
 	<div class="slash-menu" style:left="{slashX}px" style:top="{slashY}px">
@@ -1392,7 +1436,7 @@
 	</div>
 {/if}
 
-{#if linkOpen}
+{#if linkOpen && editable}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div role="none" style="position:fixed; inset:0; z-index:49;" onclick={closeLink}></div>
 	<div class="slash-menu" style:left="{linkX}px" style:top="{linkY}px">
