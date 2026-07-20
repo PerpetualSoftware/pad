@@ -162,17 +162,12 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		// Depth 0: the pane's Back chevron is hidden.
 		await expect(pane.locator('button.pane-back-btn')).toHaveCount(0);
 
-		// Click INTO the pane (its title) → the pane becomes the active/editable side
-		// and the master FREEZES. Exactly one side editable.
-		await pane.locator('.title', { hasText: 'FP host related' }).click();
-		await expect(pane.locator('button.title', { hasText: 'FP host related' })).toBeVisible();
-		await expect(masterFrozen).toBeVisible();
-		await expect(masterEditable).toHaveCount(0);
-
-		// Click the CHILD row INSIDE the (now active) pane → DRILL in place (same
-		// pathname, `?item=` swaps to the child, the Back chevron appears at depth>0).
-		// A drill is pane-internal, so the PANE stays active and the master stays
-		// frozen.
+		// Drill a CHILD row directly from the FROZEN preview — on the FIRST click.
+		// Content-link / child-row navigation stays live while the master is active
+		// (the mini-browser preview), so the pointerdown activator EXCLUDES navigable
+		// targets: the freeze-flip can't re-init ChildItems' dndzone and swallow the
+		// click. The drill is pane-internal, so it ALSO activates the pane — pane
+		// editable, master frozen (PLAN-2179 DR-2 / TASK-2181). No pre-activation click.
 		const masterPathname = new URL(page.url()).pathname;
 		await pane.locator('.child-row', { hasText: 'FP host grandchild' }).click();
 		await expect.poll(() => openItemParam(page)).toBe(grandchildRef);
@@ -192,8 +187,8 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await expect(masterFrozen).toBeVisible();
 		await expect(masterEditable).toHaveCount(0);
 
-		// Click BACK into the MASTER — on its now-read-only <h1> title, a NON-focusable
-		// element that drops focus to <body>. The pointerdown activator (not focusin)
+		// Click BACK into the MASTER — on its now-read-only <h1> title, a NON-focusable,
+		// NON-navigable element that drops focus to <body>. The pointerdown activator
 		// re-activates the master, and the desktop backstop must NOT yank focus back to
 		// the pane. Master editable again; pane freezes. Exactly one side editable.
 		await masterFrozen.click();
@@ -201,6 +196,13 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await expect(masterFrozen).toHaveCount(0);
 		await expect(pane.locator('h1.title.title-readonly', { hasText: 'FP host related' })).toBeVisible();
 		await expect(pane.locator('button.title')).toHaveCount(0);
+
+		// Click into the PANE on its read-only title (a NON-navigable target) → the
+		// pointerdown activator makes the pane the active side; the master freezes.
+		await pane.locator('.title', { hasText: 'FP host related' }).click();
+		await expect(pane.locator('button.title', { hasText: 'FP host related' })).toBeVisible();
+		await expect(masterFrozen).toBeVisible();
+		await expect(masterEditable).toHaveCount(0);
 
 		// Close (✕) → the pane unmounts cleanly, `?item=` drops, and the master is
 		// EDITABLE again (no longer peeking → click-to-edit button returns).

@@ -421,18 +421,13 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 			.poll(liveRoomsObj, { timeout: SYNC_TIMEOUT })
 			.toEqual({ [master.id]: 1, [related.id]: 1 });
 
-		// Activate the pane (focus-follows: it opened as a read-only PREVIEW beside
-		// the still-active master — PLAN-2179 DR-2). Clicking into it makes it the
-		// active side so the child-row drill below isn't swallowed by the freeze
-		// flip's dndzone re-init; provider counts are unchanged by the activation
-		// (both sides are retain-alive).
-		await pane.locator('.title', { hasText: 'FP ws related' }).click();
-
-		// Drill related → grandchild INSIDE the pane (a real `.child-row` click).
-		// The pane provider RE-TARGETS: `related`'s socket is torn down, the
-		// grandchild's minted — master + grandchild = STILL 2 distinct rooms, not
-		// {master, related, grandchild}. This is "one pane provider that
-		// re-targets, not N".
+		// Drill related → grandchild INSIDE the pane (a real `.child-row` click). The
+		// pane opened as a read-only PREVIEW (master active, DR-2), but a content-link
+		// / child-row drills on the FIRST click and activates the pane — no
+		// pane-activation pre-click, no dndzone-swallow (PLAN-2179 / TASK-2181). The
+		// pane provider RE-TARGETS: `related`'s socket is torn down, the grandchild's
+		// minted — master + grandchild = STILL 2 distinct rooms, not
+		// {master, related, grandchild}. This is "one pane provider that re-targets, not N".
 		await pane.locator('.child-row', { hasText: 'FP ws grandchild' }).click();
 		await expect(pane.locator('.title', { hasText: 'FP ws grandchild' })).toBeVisible();
 		await expect

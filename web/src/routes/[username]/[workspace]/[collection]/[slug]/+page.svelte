@@ -324,14 +324,34 @@
 		return null;
 	}
 
-	// Both detectors flip `activePane` ONLY on a CHANGED region (no begin/end
-	// transition churn on the frozen/active ItemDetail pair):
+	// A pointer/focus target that is (or is inside) a navigable DRILL surface —
+	// a content link, child row, relationship link, breadcrumb, or graph "Open"
+	// (all `<a href>`, routed through `shouldOpenInPane` → `onOpenTarget`). NEITHER
+	// detector may flip `activePane` for these: flipping mid-gesture un-freezes the
+	// pane, which re-inits ChildItems' live `dndzone` (`dragDisabled` tracks the
+	// freeze) and SWALLOWS the very click that would drill (PLAN-2179 DR-2 /
+	// TASK-2181). Instead we let the click's own drill fire — `navigatePaneTo`
+	// ALREADY sets `activePane='pane'` (via focusPaneRegion) — so a content link in
+	// a frozen preview drills on the FIRST click AND activates the pane, no dndzone
+	// churn. (Chromium/Firefox focus an `<a href>` on mouse-click, so the exclusion
+	// must cover the focusin path too, not just pointerdown.)
+	function isNavigableDrillTarget(target: EventTarget | null): boolean {
+		const el = target instanceof Element ? target : null;
+		return !!el?.closest('a[href]');
+	}
+
+	// The detectors flip `activePane` ONLY on a CHANGED region (no begin/end
+	// transition churn on the frozen/active ItemDetail pair), and BOTH exclude
+	// navigable drill targets (their own click owns the transition — see above):
 	//  • focusin — the primary classifier: Tab / programmatic focus / a click that
-	//    lands on a focusable control fires it with a real region target.
-	//  • pointerdown (CAPTURE) — the activator for NON-focusable text: clicking
-	//    plain master/pane body text drops focus to `<body>` and fires NO region
-	//    focusin, so a pointer landing on the region must flip regardless of the
-	//    target's focusability. This is what actually makes "click into the master
+	//    lands focus on a focusable control fires it with a real region target.
+	//    Chromium/Firefox DO focus an `<a href>` on mouse-click, so this fires for a
+	//    content-link drill too — hence the same navigable exclusion here, or the
+	//    focus-driven flip would re-init the dndzone and swallow the drill.
+	//  • pointerdown (CAPTURE) — the activator for NON-focusable text/background:
+	//    clicking plain master/pane body text drops focus to `<body>` and fires NO
+	//    region focusin, so a pointer landing on the region must flip regardless of
+	//    the target's focusability. This is what makes "click into the master
 	//    activates it". Capture-phase so a child `stopPropagation` can't swallow it.
 	// Only mounted while a pane is open (`paneOpen`) — with no pane there is no
 	// second side to arbitrate. Reading the boolean (not raw `openItemRef`) keeps
@@ -340,6 +360,7 @@
 	$effect(() => {
 		if (!browser || !paneOpen) return;
 		function onRegionEvent(e: Event) {
+			if (isNavigableDrillTarget(e.target)) return;
 			const region = classifyPaneRegion(e.target);
 			if (region && region !== activePane) activePane = region;
 		}

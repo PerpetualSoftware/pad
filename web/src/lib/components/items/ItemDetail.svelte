@@ -2610,8 +2610,13 @@
 		// that canonical remote state as a background snapshot is exactly the
 		// retain-alive posture (the acceptance carves out remote sync); gating
 		// it here would half-tear-down the provider the freeze must keep whole.
+		// The per-instance SHADOW (`localDirty`) likewise updates unconditionally.
+		// But the SINGLETON `editorStore.dirty` IS peeking-gated (PLAN-2179 DR-2 /
+		// TASK-2181): it's owned by the ACTIVE side, so a FROZEN instance's remote
+		// traffic must not flip it — else a preview's background sync corrupts
+		// +layout's self-save suppression for the ACTIVE item.
 		if (collabProvider) {
-			editorStore.setDirty(true);
+			if (!peeking) editorStore.setDirty(true);
 			localDirty = true;
 			collabFlusher.schedule(activeCollabContext, markdown);
 			return;
@@ -2779,8 +2784,11 @@
 
 			if (isForegroundCurrent()) {
 				saveStatus = 'saving';
-				editorStore.setLastSaveTime(Date.now());
 				localLastSaveTime = Date.now();
+				// Singleton editorStore is owned by the ACTIVE side only: a FROZEN
+				// (peeking) instance stamps its own shadow above but must not touch the
+				// singleton (PLAN-2179 DR-2 / TASK-2181). `saveStatus` is per-instance.
+				if (!peeking) editorStore.setLastSaveTime(Date.now());
 			}
 			try {
 				// Pass the provider's per-tab op-log cursor (TASK-1319) so the
@@ -2811,10 +2819,14 @@
 				// round 10 [P1].
 				if (forceRefreshInFlight) return 'skipped';
 				if (isForegroundCurrent()) {
-					editorStore.setLastSaveTime(Date.now());
 					localLastSaveTime = Date.now();
-					editorStore.setDirty(false);
 					localDirty = false;
+					// Singleton editorStore: active side only (PLAN-2179 / TASK-2181) —
+					// a frozen preview's remote-op flush updates only its shadow above.
+					if (!peeking) {
+						editorStore.setLastSaveTime(Date.now());
+						editorStore.setDirty(false);
+					}
 					showSaved();
 				}
 				return 'flushed';
