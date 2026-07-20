@@ -9,6 +9,7 @@
 	import { createPaneController } from '$lib/collections/paneHostController';
 	import { createPaneMintSettle, PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
 	import { resolvePaneTarget, isSamePaneTarget, type PaneGuardItem } from '$lib/collections/paneTarget';
+	import { api } from '$lib/api/client';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import type { PaneTarget, ResolvedItemIdentity } from '$lib/types';
@@ -179,36 +180,90 @@
 		};
 	});
 
-	// A canonical item-UUID shape (`GetItemByRef`'s FIRST resolution branch —
-	// internal/store/items.go). Used to mirror the server's UUID-first precedence
-	// in `isMasterRef` below.
+	// Item-identifier SHAPES the server resolves a bare `?item=` by, in precedence
+	// order (`GetItemByRef` — internal/store/items.go): a canonical UUID, then a
+	// PREFIX-NUMBER ref, then a slug.
 	const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+	const REF_SHAPE = /^[A-Za-z]+-\d+$/;
 
-	// The forbidden `?item == master` collision (PLAN-2154 D2 / Architecture E)
-	// for a BARE `?item=` string (the cold-load strip + the mount gate + a resolved
-	// content-link ref). Mirrors the server's resolution PRECEDENCE — UUID-first,
-	// then ref (by NUMBER), then slug (internal/store/items.go) — as closely as a
-	// client can WITHOUT knowing which items exist:
-	//   1. an exact id match is always the master (UUID-first);
-	//   2. a UUID-SHAPED candidate that ISN'T the master's id resolves UUID-first
-	//      to a DIFFERENT item (UUIDs are assigned, not title-derived), so we do
-	//      NOT fall through to a slug compare — otherwise `?item=<another item's
-	//      UUID>` would be over-blocked whenever the master's slug coincidentally
-	//      equals it (orchestrator Codex round-8 verify);
-	//   3. otherwise match the ref NUMBER (`isSamePaneTarget`'s href channel) OR
-	//      the RAW slug string — so a ref-shaped SLUG the server reaches by its
-	//      slug-fallback (e.g. master #5 slugged `plan-6` with no live #6, 6≠5) is
-	//      caught, the forbidden D2 collision's safe direction.
-	// The only residual over-block is a hand-crafted `?item=<ref-shaped-slug>` when
-	// a live item at that number DOES exist — benign (declines to open a pane; no
-	// collision, no data loss). `false` while the master identity is unresolved.
-	function isMasterRef(candidate: string): boolean {
+	// SYNCHRONOUS `?item == master` decision (PLAN-2154 D2 / Architecture E) —
+	// `true` (definite master), `false` (definite non-master), or `null` when the
+	// answer can't be settled from the master identity ALONE and needs a server
+	// resolve. Mirrors the server's UUID-first → ref-by-NUMBER → slug precedence:
+	//   • exact id → master (UUID-first);
+	//   • candidate === master.slug: a PLAIN slug can't be preempted by a UUID/ref
+	//     lookup → definite master; but a ref/UUID-SHAPED slug MIGHT resolve
+	//     UUID/ref-first to a DIFFERENT LIVE item — OR fall back to the master when
+	//     that item is absent/archived/cross-workspace — which shape alone cannot
+	//     decide → `null` (server-confirm below). This is the ONLY network path,
+	//     and it's reached only for a pathological ref/UUID-shaped master slug;
+	//     a normal plain-slug master is always decided synchronously here.
+	//   • otherwise the ref-NUMBER channel (`isSamePaneTarget`'s href resolution)
+	//     is definite (ref numbers are workspace-unique).
+	function masterMatchSync(candidate: string): boolean | null {
 		if (!masterItem) return false;
 		if (candidate === masterItem.id) return true;
-		if (UUID_SHAPE.test(candidate)) return false;
-		if (candidate === masterItem.slug) return true;
+		if (candidate === masterItem.slug) {
+			return UUID_SHAPE.test(candidate) || REF_SHAPE.test(candidate) ? null : true;
+		}
 		return isSamePaneTarget({ href: candidate }, masterItem);
 	}
+
+	// Server confirmation for the UNCERTAIN case above. `null` = pending; the only
+	// way to know whether a ref/UUID-shaped master slug is preempted (target
+	// resolves to a different live item) or reached by the server's slug-fallback
+	// (target resolves to the master) is to resolve `?item=` to its actual item id
+	// and compare. Fires ONLY when `masterMatchSync` is null, so a normal
+	// plain-slug master never touches the network.
+	let confirmedTargetIsMaster = $state<boolean | null>(null);
+	let lastConfirmKey: string | null = null; // plain let: an effect edge tracker (CONVE-1688)
+	$effect(() => {
+		const candidate = openItemRef;
+		const master = masterItem;
+		if (!browser || !candidate || !master) return;
+		if (masterMatchSync(candidate) !== null) return; // sync decided → no fetch
+		const key = `${wsSlug}::${master.id}::${candidate}`;
+		if (key === lastConfirmKey) return; // already resolved / in flight for this key
+		lastConfirmKey = key;
+		confirmedTargetIsMaster = null; // pending (not read in this effect → no self-invalidation)
+		let cancelled = false;
+		void (async () => {
+			let isMaster: boolean;
+			try {
+				const resolved = await api.items.get(wsSlug, candidate);
+				isMaster = resolved?.id === master.id;
+			} catch {
+				// Resolve failed (network / not-found) — err toward BLOCKING, the safe
+				// direction for the forbidden D2 collision.
+				isMaster = true;
+			}
+			if (cancelled || key !== lastConfirmKey) return;
+			confirmedTargetIsMaster = isMaster;
+		})();
+		return () => {
+			cancelled = true;
+		};
+	});
+
+	// Does the CURRENT `?item=` alias the master, for the MOUNT gate? Blocks (true)
+	// while an uncertain resolve is pending — never mount a 2nd provider on the
+	// master's own room before we're sure it ISN'T the master.
+	let openTargetBlocksMount = $derived.by(() => {
+		const candidate = openItemRef;
+		if (!candidate || !masterItem) return false;
+		const sync = masterMatchSync(candidate);
+		return sync !== null ? sync : (confirmedTargetIsMaster ?? true);
+	});
+
+	// Does the CURRENT `?item=` alias the master, for the cold-load STRIP? Only
+	// strips once DEFINITELY the master — a pending resolve does NOT strip (never
+	// delete a `?item=` that might still resolve to a DIFFERENT item).
+	let openTargetIsMaster = $derived.by(() => {
+		const candidate = openItemRef;
+		if (!candidate || !masterItem) return false;
+		const sync = masterMatchSync(candidate);
+		return sync !== null ? sync : (confirmedTargetIsMaster ?? false);
+	});
 
 	// Whether to MOUNT the pane. Gating the MOUNT (not merely stripping `?item=`
 	// after the fact) closes the cold-load self-collision RACE (Codex review): on
@@ -222,7 +277,7 @@
 	// CLICK-driven open the master identity is already resolved (and `ref` is
 	// unchanged), so there is no delay; only a cold `?item=` load or a master
 	// navigation waits one master-load beat (master-first, the correct order).
-	let showPane = $derived(!!openItemRef && !!masterItem && !isMasterRef(openItemRef));
+	let showPane = $derived(!!openItemRef && !!masterItem && !openTargetBlocksMount);
 
 	// MASTER content-links FIRST-OPEN the pane (PLAN-2154 D3 / Architecture E).
 	// The master's relationship / child / wiki-link / graph surfaces hand up a
@@ -235,12 +290,14 @@
 	function handleMasterOpenTarget(target: PaneTarget) {
 		// `resolvePaneTarget(target, masterItem)` returns null BOTH when the target
 		// is unresolvable AND when it resolves to the master (the provenance-correct
-		// `isSamePaneTarget` self-guard). The extra `isMasterRef(resolved)` closes
-		// the ref-shaped-slug hole for an href-only editor link whose resolved
-		// segment string-equals the master slug (server slug-fallback) — dropping it
-		// at the source instead of relying on the mount gate + strip to catch it.
+		// `isSamePaneTarget` self-guard). `masterMatchSync(resolved) === true`
+		// additionally drops a resolved segment that DEFINITELY aliases the master
+		// (e.g. its plain slug) up front. An UNCERTAIN ref/UUID-shaped-slug alias
+		// (`=== null`) is left for the mount gate's server-confirm to catch — never
+		// a collision, just a possible brief `?item=` flicker in that pathological
+		// case.
 		const resolved = resolvePaneTarget(target, masterItem);
-		if (!resolved || isMasterRef(resolved)) return;
+		if (!resolved || masterMatchSync(resolved) === true) return;
 		openItemPaneByRef(resolved);
 	}
 
@@ -251,24 +308,23 @@
 	// drills to the pane's currently-shown item).
 	function guardedDrill(target: PaneTarget) {
 		const resolved = resolvePaneTarget(target, masterItem);
-		if (!resolved || isMasterRef(resolved)) return;
+		if (!resolved || masterMatchSync(resolved) === true) return;
 		navigatePaneTo(resolved);
 	}
 
 	// Cold-load strip (PLAN-2154 Architecture E). A hand-crafted / shared
 	// `?item=<the master's own ref>` URL must NOT mount a pane on the master
-	// itself (two providers, one room, one shared itemID-only cursor). Once the
-	// master's identity resolves, strip `?item=` in place if it aliases the
-	// master. Reads `masterIdentity`/`openItemRef` and WRITES neither (only a
-	// `goto` — CONVE-1688 safe); the strip drops `?item=`, `openItemRef`
-	// recomputes to null, and the effect re-runs to a no-op (settles, no loop).
-	// It can't fight the controller: `isMaster` only ever matches the master, so
-	// a legitimately-opened pane (always a non-master ref) is never touched.
+	// itself (two providers, one room, one shared itemID-only cursor). Strip
+	// `?item=` in place once it's DEFINITELY the master (`openTargetIsMaster` —
+	// which waits for the server-confirm on a pathological ref/UUID-shaped-slug
+	// master rather than stripping a `?item=` that might still resolve elsewhere).
+	// Reads reactive state and WRITES none of it (only a `goto` — CONVE-1688
+	// safe); the strip drops `?item=`, `openItemRef` recomputes to null, and the
+	// effect re-runs to a no-op (settles, no loop). It can't fight the controller:
+	// a legitimately-opened pane (a confirmed non-master ref) is never touched.
 	$effect(() => {
 		if (!browser) return;
-		if (!masterItem) return;
-		const current = openItemRef;
-		if (!current || !isMasterRef(current)) return;
+		if (!openTargetIsMaster) return;
 		const url = new URL(page.url);
 		url.searchParams.delete('item');
 		void goto(`${url.pathname}${url.search}`, {
