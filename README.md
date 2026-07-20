@@ -447,6 +447,29 @@ pad webhook create <url>     Create webhook
 
 All commands accept `--format json` for machine-readable output and `--workspace` to target a specific workspace.
 
+### Shell completion
+
+`pad` ships completion scripts for bash, zsh, fish, and PowerShell:
+
+```bash
+# Bash — current session only
+source <(pad completion bash)
+# Bash — persistent
+pad completion bash > /etc/bash_completion.d/pad                   # Linux
+pad completion bash > $(brew --prefix)/etc/bash_completion.d/pad   # macOS (Homebrew)
+
+# Zsh (make sure compinit runs in your ~/.zshrc)
+pad completion zsh > "${fpath[1]}/_pad"
+
+# Fish
+pad completion fish > ~/.config/fish/completions/pad.fish
+
+# PowerShell (append the output to your $PROFILE)
+pad completion powershell | Out-String | Invoke-Expression
+```
+
+Beyond command and flag names, completion is context-aware: collection arguments (e.g. `pad item list <TAB>`) complete against your workspace's collections, `--workspace` completes configured workspace names, and `--status` / `--priority` complete their valid values.
+
 ### Authentication
 
 Pad runs without authentication by default for frictionless local use. For local installs, `pad init` creates the first admin account inline. The lower-level commands are useful when you're hosting a Pad server (Docker / remote) and need to set up auth on the server host directly:
