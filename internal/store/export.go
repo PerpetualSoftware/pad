@@ -183,7 +183,7 @@ func (s *Store) ExportWorkspace(slug string) (*models.WorkspaceExport, error) {
 		FROM item_versions v
 		JOIN items i ON v.item_id = i.id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
-		ORDER BY v.created_at`), ws.ID)
+		ORDER BY v.created_at, v.version_seq`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export item versions: %w", err)
 	}
@@ -403,11 +403,16 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		if newItemID == "" {
 			continue
 		}
+		// version_seq (BUG-2270): re-derive a per-item monotonic seq at
+		// import time. data.ItemVersions is exported ORDER BY created_at,
+		// version_seq, so COALESCE(MAX,0)+1 reassigns 1,2,3… in that same
+		// deterministic order and imported same-second versions keep a
+		// stable tie-break instead of all defaulting to 0.
 		_, err := tx.Exec(s.q(`
-			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
+			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?))`),
 			newID(), newItemID, ver.Content, ver.ChangeSummary, ver.CreatedBy, ver.Source, s.dialect.BoolToInt(ver.IsDiff),
-			ver.CreatedAt)
+			ver.CreatedAt, newItemID)
 		if err != nil {
 			// Log detail but skip — version history is non-critical.
 			// Migrated from fmt.Printf to slog.Warn alongside the

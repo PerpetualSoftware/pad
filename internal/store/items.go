@@ -267,10 +267,13 @@ func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, t
 	// Create initial version if there's content
 	if input.Content != "" {
 		vid := newID()
+		// version_seq is a per-item monotonic tie-breaker (BUG-2270).
+		// COALESCE(MAX,0)+1 in the same tx; version creation is serialized
+		// per item under the item lock, so MAX+1 is race-safe.
 		_, err = tx.Exec(s.q(`
-			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at)
-			VALUES (?, ?, ?, '', ?, ?, ?, ?)
-		`), vid, id, input.Content, createdBy, source, s.dialect.BoolToInt(false), ts)
+			INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq)
+			VALUES (?, ?, ?, '', ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?))
+		`), vid, id, input.Content, createdBy, source, s.dialect.BoolToInt(false), ts, id)
 		if err != nil {
 			return fmt.Errorf("create initial version: %w", err)
 		}
@@ -2067,10 +2070,10 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// the per-(actor, source) throttle so a bracketing snapshot is always
 		// written when content changes — otherwise a throttled write would move
 		// items.content forward with no version anchoring the reverse-patch chain.
-		// NOTE(BUG-2270): ForceVersion can mint same-second versions; item_versions
-		// ordering has no monotonic tie-breaker (second-precision created_at), so
-		// rapid forced versions can resolve out of order. The tie-breaker (a
-		// version sequence, needs a schema migration) is tracked there.
+		// ForceVersion can mint same-second versions; item_versions ordering
+		// uses version_seq (a per-item monotonic counter, BUG-2270) to break
+		// second-precision created_at ties, so rapid forced versions resolve
+		// in deterministic insertion order. See migration 076/054.
 		forceVersion := input.ForceVersion || (input.Title != nil && *input.Title != existing.Title)
 		shouldVersion := forceVersion
 		if !shouldVersion {
@@ -2090,10 +2093,15 @@ func (s *Store) updateItemWithParentLinkOnce(
 				isDiff = true
 			}
 
+			// version_seq is a per-item monotonic tie-breaker (BUG-2270):
+			// same-second versions (a restore plus rapid edits) tie on
+			// created_at, so COALESCE(MAX,0)+1 gives a deterministic order.
+			// Race-safe because version creation is serialized per item
+			// under the item lock (this runs in the update's own tx).
 			_, err = tx.Exec(s.q(`
-				INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-			`), vid, id, versionContent, input.ChangeSummary, createdBy, source, s.dialect.BoolToInt(isDiff), ts)
+				INSERT INTO item_versions (id, item_id, content, change_summary, created_by, source, is_diff, created_at, version_seq)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(version_seq), 0) + 1 FROM item_versions WHERE item_id = ?))
+			`), vid, id, versionContent, input.ChangeSummary, createdBy, source, s.dialect.BoolToInt(isDiff), ts, id)
 			if err != nil {
 				return nil, fmt.Errorf("create version: %w", err)
 			}
@@ -4325,7 +4333,7 @@ func (s *Store) shouldCreateItemVersion(itemID, actor, source string) (bool, err
 		SELECT created_by, source, created_at
 		FROM item_versions
 		WHERE item_id = ?
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, version_seq DESC
 		LIMIT 1
 	`), itemID).Scan(&createdBy, &src, &createdAt)
 	if err == sql.ErrNoRows {
@@ -4400,6 +4408,16 @@ func (s *Store) GetItemVersionResolved(itemID, versionID, currentContent string)
 func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Version, error) {
 	ts := before.Format(time.RFC3339)
 	const selectCols = `id, item_id, content, change_summary, created_by, source, is_diff, created_at`
+	// Deliberately keeps `id DESC` (NOT version_seq DESC). This is a keyset-
+	// paginated query and the cursor below filters on id (`created_at = ? AND
+	// id < ?`); the ORDER-BY key MUST match the cursor key or a same-second
+	// row at a page boundary can be skipped forever. This path also feeds the
+	// UUID-keyed MERGED timeline (handlers_timeline.go re-sorts merged events
+	// by id and derives the next before_id from them) and does NOT reconstruct
+	// diffs, so version_seq ordering would neither be honored nor needed here.
+	// BUG-2270's same-second determinism lives in the diff-RECONSTRUCTION
+	// paths instead (ListItemVersions / ListItemVersionsResolved /
+	// shouldCreateItemVersion), which are ordered by version_seq DESC.
 	const orderLimit = `ORDER BY created_at DESC, id DESC LIMIT ?`
 
 	var rows *sql.Rows
@@ -4443,7 +4461,7 @@ func (s *Store) ListItemVersions(itemID string) ([]models.Version, error) {
 		SELECT id, item_id, content, change_summary, created_by, source, is_diff, created_at
 		FROM item_versions
 		WHERE item_id = ?
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, version_seq DESC
 	`), itemID)
 	if err != nil {
 		return nil, err
