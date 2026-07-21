@@ -244,7 +244,7 @@ func TestCollectionCRUD(t *testing.T) {
 	}
 
 	// Delete
-	err = s.DeleteCollection(col.ID)
+	err = s.DeleteCollection(col.ID, "")
 	if err != nil {
 		t.Fatalf("DeleteCollection error: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestCollectionDeleteDefaultRefused(t *testing.T) {
 	}
 
 	// Attempt to delete — should fail
-	err = s.DeleteCollection(col.ID)
+	err = s.DeleteCollection(col.ID, "")
 	if err == nil {
 		t.Fatal("expected error when deleting default collection")
 	}

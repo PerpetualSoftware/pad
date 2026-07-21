@@ -374,7 +374,25 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.store.DeleteCollection(coll.ID); err != nil {
+	// Optimistic-concurrency token (BUG-2265 Codex round 8): a caller that
+	// resolved the collection by stable id passes the updated_at it read so the
+	// delete 409s if a concurrent RENAME re-owned this slug with a DIFFERENT
+	// collection (or the collection changed) — never archiving the wrong one.
+	// Validated at the boundary (clean 400 on a malformed value).
+	expectedUpdatedAt := r.URL.Query().Get("expected_updated_at")
+	if expectedUpdatedAt != "" {
+		if _, perr := time.Parse(time.RFC3339, expectedUpdatedAt); perr != nil {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"expected_updated_at must be an RFC3339 timestamp")
+			return
+		}
+	}
+
+	if err := s.store.DeleteCollection(coll.ID, expectedUpdatedAt); err != nil {
+		if conflict, ok := asCollectionUpdateConflictError(err); ok {
+			writeCollectionUpdateConflictError(w, coll.Slug, conflict)
+			return
+		}
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 			return

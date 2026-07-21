@@ -443,7 +443,16 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	return s.GetCollection(id)
 }
 
-func (s *Store) DeleteCollection(id string) error {
+// DeleteCollection soft-deletes a collection by id. When expectedUpdatedAt is
+// non-empty it opts into optimistic-concurrency control (BUG-2265): the row's
+// updated_at is re-read UNDER A LOCK and the delete is rejected with a
+// CollectionUpdateConflictError when it no longer matches. This closes the
+// archive TOCTOU where the handler resolved a collection by its (mutable) slug
+// but a concurrent RENAME re-owned that slug with a DIFFERENT collection before
+// the delete landed — the token mismatch 409s instead of archiving the wrong
+// collection. Empty token keeps the legacy unconditional soft-delete (CLI/API
+// callers that don't opt in).
+func (s *Store) DeleteCollection(id string, expectedUpdatedAt string) error {
 	// Check if it's a default collection
 	var isDefault bool
 	err := s.db.QueryRow(s.q("SELECT is_default FROM collections WHERE id = ? AND deleted_at IS NULL"), id).Scan(&isDefault)
@@ -458,6 +467,43 @@ func (s *Store) DeleteCollection(id string) error {
 	}
 
 	ts := now()
+
+	if expectedUpdatedAt != "" {
+		expected, perr := time.Parse(time.RFC3339, expectedUpdatedAt)
+		if perr != nil {
+			return fmt.Errorf("invalid expected_updated_at %q: %w", expectedUpdatedAt, perr)
+		}
+		tx, terr := s.db.Begin()
+		if terr != nil {
+			return terr
+		}
+		defer tx.Rollback()
+
+		reread := "SELECT updated_at FROM collections WHERE id = ? AND deleted_at IS NULL"
+		if s.dialect.Driver() == DriverPostgres {
+			reread += " FOR UPDATE"
+		}
+		var currentUpdatedAt string
+		rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt)
+		if rerr == sql.ErrNoRows {
+			return sql.ErrNoRows
+		}
+		if rerr != nil {
+			return fmt.Errorf("re-read collection under lock: %w", rerr)
+		}
+		if actual := parseTime(currentUpdatedAt); !actual.Equal(expected) {
+			return &CollectionUpdateConflictError{
+				CollectionID:      id,
+				ExpectedUpdatedAt: expectedUpdatedAt,
+				ActualUpdatedAt:   actual,
+			}
+		}
+		if _, err := tx.Exec(s.q(`UPDATE collections SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`), ts, ts, id); err != nil {
+			return fmt.Errorf("delete collection: %w", err)
+		}
+		return tx.Commit()
+	}
+
 	result, err := s.db.Exec(s.q(`
 		UPDATE collections SET deleted_at = ?, updated_at = ?
 		WHERE id = ? AND deleted_at IS NULL

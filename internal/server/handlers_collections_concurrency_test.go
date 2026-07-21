@@ -163,6 +163,75 @@ func TestUpdateCollection_OptimisticConcurrency(t *testing.T) {
 	})
 }
 
+// TestDeleteCollection_OptimisticConcurrency covers BUG-2265 Codex round 8: the
+// archive/delete accepts an expected_updated_at token so a concurrent rename
+// that re-owned the slug (or any change) 409s instead of archiving the wrong
+// collection. Mirrors the update OCC.
+func TestDeleteCollection_OptimisticConcurrency(t *testing.T) {
+	srv := testServer(t)
+	slug := createWSWithCollections(t, srv)
+
+	seed := func(t *testing.T, name string) models.Collection {
+		t.Helper()
+		createRR := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
+			"name": name,
+		})
+		if createRR.Code != http.StatusCreated {
+			t.Fatalf("seed create: expected 201, got %d: %s", createRR.Code, createRR.Body.String())
+		}
+		var coll models.Collection
+		parseJSON(t, createRR, &coll)
+		return coll
+	}
+	exists := func(t *testing.T, collSlug string) bool {
+		t.Helper()
+		getRR := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections/"+collSlug, nil)
+		return getRR.Code == http.StatusOK
+	}
+
+	t.Run("malformed token is a 400", func(t *testing.T) {
+		coll := seed(t, "Del Malformed")
+		rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug+"?expected_updated_at=nope", nil)
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("expected 400 for malformed token, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+
+	t.Run("stale token 409s and does NOT delete", func(t *testing.T) {
+		coll := seed(t, "Del Stale")
+		rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug+"?expected_updated_at=2000-01-01T00:00:00Z", nil)
+		if rr.Code != http.StatusConflict {
+			t.Fatalf("expected 409 for stale token, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "update_conflict") {
+			t.Fatalf("expected update_conflict envelope, got: %s", rr.Body.String())
+		}
+		if !exists(t, coll.Slug) {
+			t.Fatalf("collection must still exist after a rejected (409) archive")
+		}
+	})
+
+	t.Run("current token archives (204)", func(t *testing.T) {
+		coll := seed(t, "Del Current")
+		token := coll.UpdatedAt.UTC().Format(time.RFC3339Nano)
+		rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug+"?expected_updated_at="+token, nil)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204 for current token, got %d: %s", rr.Code, rr.Body.String())
+		}
+		if exists(t, coll.Slug) {
+			t.Fatalf("collection must be gone after a successful archive")
+		}
+	})
+
+	t.Run("no token archives (legacy path, 204)", func(t *testing.T) {
+		coll := seed(t, "Del NoToken")
+		rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, nil)
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("expected 204 without a token, got %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+}
+
 // TestUpdateCollection_PublishesCollectionUpdatedEvent covers BUG-2265 part 3:
 // a successful collection update broadcasts a collection_updated event carrying
 // the workspace + collection slug so sibling ItemDetails / pages can refresh

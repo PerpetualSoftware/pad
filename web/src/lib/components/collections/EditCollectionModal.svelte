@@ -86,19 +86,25 @@
 		const editedCollectionSlug = seededCollectionSlug;
 		const editedCollectionName = seededCollectionName;
 		const editedWsSlug = seededWsSlug;
+		// OCC token (BUG-2265 Codex round 8): the seeded collection's updated_at.
+		// Passed to the server delete so a concurrent RENAME that re-owned this
+		// slug with a DIFFERENT collection 409s instead of archiving the wrong
+		// one — closing the resolve-by-id → delete-by-slug TOCTOU.
+		const editedExpectedUpdatedAt = expectedUpdatedAt;
 		const finishArchived = () => {
 			toastStore.show(`Archived "${editedCollectionName}"`, 'success');
 			onupdated(undefined, editedCollectionId, editedCollectionSlug, editedWsSlug);
 			onclose();
 		};
 		try {
-			await api.collections.delete(editedWsSlug, editedCollectionSlug);
+			await api.collections.delete(editedWsSlug, editedCollectionSlug, editedExpectedUpdatedAt);
 			finishArchived();
 		} catch (err) {
-			// A concurrent RENAME can kill the seeded slug (404), or a change
-			// could 409 (BUG-2265 Pattern C). Resolve the SAME collection by its
-			// STABLE id and retry the delete against its current slug; if it's
-			// already gone from the list, it's effectively archived already.
+			// A concurrent RENAME can kill the seeded slug (404) or 409 the OCC
+			// token (BUG-2265 Pattern C). Resolve the SAME collection by its
+			// STABLE id and retry the delete against its current slug + FRESH
+			// token; if it's already gone from the list, it's effectively
+			// archived already.
 			if (isConflictOrNotFound(err)) {
 				try {
 					const list = await api.collections.list(editedWsSlug);
@@ -107,7 +113,7 @@
 						finishArchived();
 						return;
 					}
-					await api.collections.delete(editedWsSlug, fresh.slug);
+					await api.collections.delete(editedWsSlug, fresh.slug, fresh.updated_at);
 					finishArchived();
 					return;
 				} catch {

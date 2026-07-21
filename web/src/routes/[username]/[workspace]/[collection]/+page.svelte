@@ -840,6 +840,11 @@
 				// can land on a dead intermediate. Deferred (already broken on main).
 				if (event.new_slug && event.new_slug !== coll) {
 					const search = typeof window !== 'undefined' ? window.location.search : '';
+					// TODO(BUG-2272): refresh global collectionStore / handle collection_updated
+					// in the workspace layout on rename. This route navigates, but the GLOBAL
+					// collectionStore (sidebar links/icons/names, pickers) isn't refreshed and
+					// the layout ignores collection_updated, so the sidebar keeps the dead old
+					// slug and clicking it 404s. Deferred (layout-level renavigation).
 					void goto(`/${username}/${wsSlug}/${event.new_slug}${search}`);
 					return;
 				}

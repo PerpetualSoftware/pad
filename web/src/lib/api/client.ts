@@ -940,10 +940,18 @@ export const api = {
 				body: JSON.stringify(data)
 			}),
 
-		delete: (ws: string, slug: string) =>
-			request<void>(`/workspaces/${ws}/collections/${slug}`, {
+		// expectedUpdatedAt (BUG-2265): the updated_at of the collection the
+		// caller resolved. Sent as a query param so the server 409s if a
+		// concurrent rename re-owned this slug with a DIFFERENT collection —
+		// never archiving the wrong one. Omit for the legacy unconditional path.
+		delete: (ws: string, slug: string, expectedUpdatedAt?: string) => {
+			const q = expectedUpdatedAt
+				? `?expected_updated_at=${encodeURIComponent(expectedUpdatedAt)}`
+				: '';
+			return request<void>(`/workspaces/${ws}/collections/${slug}${q}`, {
 				method: 'DELETE'
-			})
+			});
+		}
 	},
 
 	// ── Agent Roles ──────────────────────────────────────────────────────────

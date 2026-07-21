@@ -649,7 +649,7 @@ func TestDeleteCollectionGrant_SoftDeletedCollection_StillRevocable(t *testing.T
 	f := newRestrictedOwnerVisibilityFixture(t)
 	grantee := f.seedGrantee(t)
 
-	if err := f.srv.store.DeleteCollection(f.visibleColl.ID); err != nil {
+	if err := f.srv.store.DeleteCollection(f.visibleColl.ID, ""); err != nil {
 		t.Fatalf("soft-delete visible collection: %v", err)
 	}
 
@@ -734,7 +734,7 @@ func TestDeleteCollectionGrant_SoftDeletedCollection_UnrestrictedOwnerStillRevok
 	// Soft-delete AFTER seeding the grant/link, mirroring the real
 	// sequence: mint on a live collection, then the collection gets
 	// archived out from under them.
-	if err := srv.store.DeleteCollection(coll.ID); err != nil {
+	if err := srv.store.DeleteCollection(coll.ID, ""); err != nil {
 		t.Fatalf("soft-delete collection: %v", err)
 	}
 

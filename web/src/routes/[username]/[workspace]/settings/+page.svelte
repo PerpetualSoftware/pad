@@ -93,6 +93,12 @@
 	// SSE refresh — bumps this and gates its assignment, so a stale in-flight
 	// fetch (e.g. a slow load for workspace A) can't revert a newer one.
 	let collectionsGen = 0;
+	// Dedicated fence for the whole load() path (name/context/collections/
+	// members). Bumped only by load() (each workspace switch re-runs it), so a
+	// slow load for workspace A can't resume after B's load and clobber B — and,
+	// unlike collectionsGen (which an SSE refresh also bumps), an SSE
+	// collections-refresh mid-load doesn't drop load()'s name/members writes.
+	let loadGen = 0;
 	async function refreshCollections(ws: string) {
 		if (!ws) return;
 		const gen = ++collectionsGen;
@@ -138,17 +144,25 @@
 	});
 	async function load(slug: string) {
 		loading = true;
+		// Capture generations at ENTRY — BEFORE any await (including setCurrent)
+		// — and fence EVERY continuation (Codex round 8). A slow load for
+		// workspace A that resumes after B's load is superseded (myLoad !==
+		// loadGen) and drops all its writes, so it can't clobber B's
+		// name/context/collections/members. The collections write ALSO respects
+		// collectionsGen so it doesn't revert a fresher SSE refresh.
+		const myLoad = ++loadGen;
+		const myColl = ++collectionsGen;
 		try {
 			await workspaceStore.setCurrent(slug);
+			if (myLoad !== loadGen) return;
 			wsName = workspaceStore.current?.name ?? '';
 			contextEditor = JSON.stringify(workspaceStore.current?.context ?? {}, null, 2);
-			// Gate under the unified generation so a slow load can't revert a
-			// newer SSE refresh (or another load) that landed while in flight.
-			const gen = ++collectionsGen;
 			const fresh = await api.collections.list(slug);
-			if (gen === collectionsGen && slug === wsSlug) collections = fresh;
+			if (myLoad !== loadGen) return;
+			if (myColl === collectionsGen) collections = fresh;
 			try {
 				const memberData = await api.members.list(slug);
+				if (myLoad !== loadGen) return;
 				members = memberData.members ?? [];
 				invitations = memberData.invitations ?? [];
 				// Note: current-user role no longer derived here. workspaceStore.setCurrent
@@ -156,7 +170,7 @@
 			} catch {}
 		} catch { /* allow partial render */
 		} finally {
-			loading = false;
+			if (myLoad === loadGen) loading = false;
 		}
 	}
 	async function saveName() {
