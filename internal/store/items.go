@@ -4408,13 +4408,17 @@ func (s *Store) GetItemVersionResolved(itemID, versionID, currentContent string)
 func (s *Store) ListItemVersionsBeforeTime(itemID string, before time.Time, beforeID string, limit int) ([]models.Version, error) {
 	ts := before.Format(time.RFC3339)
 	const selectCols = `id, item_id, content, change_summary, created_by, source, is_diff, created_at`
-	// version_seq DESC is the monotonic same-second tie-breaker (BUG-2270),
-	// replacing the random-UUID `id DESC`. The keyset WHERE predicate below
-	// still filters on id: the timeline cursor (before_id) is a MERGED-stream
-	// id shared across comments/activities/versions, not a version_seq, and
-	// the 3x per-source over-fetch keeps same-second groups on one page so
-	// the boundary never splits them.
-	const orderLimit = `ORDER BY created_at DESC, version_seq DESC LIMIT ?`
+	// Deliberately keeps `id DESC` (NOT version_seq DESC). This is a keyset-
+	// paginated query and the cursor below filters on id (`created_at = ? AND
+	// id < ?`); the ORDER-BY key MUST match the cursor key or a same-second
+	// row at a page boundary can be skipped forever. This path also feeds the
+	// UUID-keyed MERGED timeline (handlers_timeline.go re-sorts merged events
+	// by id and derives the next before_id from them) and does NOT reconstruct
+	// diffs, so version_seq ordering would neither be honored nor needed here.
+	// BUG-2270's same-second determinism lives in the diff-RECONSTRUCTION
+	// paths instead (ListItemVersions / ListItemVersionsResolved /
+	// shouldCreateItemVersion), which are ordered by version_seq DESC.
+	const orderLimit = `ORDER BY created_at DESC, id DESC LIMIT ?`
 
 	var rows *sql.Rows
 	var err error
