@@ -807,11 +807,6 @@
 
 	// Subscribe to SSE events for live updates to this collection's items
 	let unsubscribeSSE: (() => void) | null = null;
-	// Dedicated monotonic counter for BUG-2265 collection-snapshot refreshes.
-	// `loadSeq` only bumps on route loadCollection() calls, so it can't order
-	// two rapid collection_updated fetches against EACH OTHER — this does,
-	// dropping an older refetch that resolves after a newer one (Codex P2).
-	let collectionRefreshSeq = 0;
 
 	$effect(() => {
 		// Clean up previous subscription
@@ -845,14 +840,15 @@
 					void goto(`/${username}/${wsSlug}/${event.new_slug}${search}`);
 					return;
 				}
-				const refreshSeq = ++collectionRefreshSeq;
-				const seq = loadSeq;
+				// Unified generation: bumped here AND by loadCollection /
+				// handleGroupReorder, so the last-started write wins and neither
+				// a stale refresh nor a stale load can revert a newer snapshot.
+				const collGen = ++collectionGen;
 				try {
 					const fresh = await api.collections.get(ws, coll);
-					// Drop if a newer refresh superseded us, a newer
-					// loadCollection ran, or the route moved on while fetching.
-					if (refreshSeq !== collectionRefreshSeq) return;
-					if (seq !== loadSeq || collSlug !== coll) return;
+					// Drop if a newer collection write superseded us or the route
+					// moved on while fetching.
+					if (collGen !== collectionGen || collSlug !== coll) return;
 					collection = fresh;
 				} catch {
 					// Best-effort; the next save will 409 and self-heal.
@@ -1060,8 +1056,19 @@
 	// result checks it's still the latest before writing.
 	let loadSeq = 0;
 
+	// UNIFIED collection-snapshot generation (BUG-2265 Codex): bumped by EVERY
+	// operation that assigns `collection` — loadCollection, the SSE
+	// collection_updated refresh, and handleGroupReorder — so the last-STARTED
+	// write wins and a stale in-flight continuation (e.g. a slow load resolving
+	// after a fresh SSE refresh, which uses a different lifecycle than loadSeq)
+	// can't revert the collection and its concurrency token. `loadSeq` still
+	// guards the route-load's OTHER state (views/members/progress); this token
+	// is dedicated to the `collection` object itself.
+	let collectionGen = 0;
+
 	async function loadCollection(ws: string, coll: string, includeArchived = false) {
 		const seq = ++loadSeq;
+		const collGen = ++collectionGen;
 		metaLoading = true;
 		metaError = null;
 		// Reset for the new route; only flips back to `true` once
@@ -1090,7 +1097,11 @@
 			// A newer load started while this one was in flight — drop
 			// this result so it can't overwrite the current route's state.
 			if (seq !== loadSeq) return;
-			collection = collData;
+			// Gate the collection SNAPSHOT on the unified generation: a newer
+			// SSE refresh (which bumps collectionGen but not loadSeq) may have
+			// landed fresher data since this load began — don't revert it. The
+			// route-load's other state below stays on loadSeq.
+			if (collGen === collectionGen) collection = collData;
 			savedViews = viewsData;
 			workspaceMembers = membersData.members ?? [];
 			activeViewId = null;
@@ -1159,7 +1170,9 @@
 			// error + Retry affordance instead of masking a live
 			// collection as deleted.
 			if (err instanceof PadApiError && err.code === 'not_found') {
-				collection = null;
+				// Same generation gate as the success path — don't null a
+				// collection a newer SSE refresh just repopulated.
+				if (collGen === collectionGen) collection = null;
 				metaError = null;
 				// `items` is derived from localIndex; nothing to clear here.
 				// A missing collection shows the empty / not-found state via
@@ -1620,6 +1633,10 @@
 		const ws = wsSlug;
 		const slug = collSlug;
 		const base = collection;
+		// Join the unified collection-snapshot fence: bump on start, gate every
+		// write, so a concurrent load/SSE-refresh that started later wins and a
+		// stale one can't revert our result (and vice-versa).
+		const collGen = ++collectionGen;
 
 		const s = parseSchema(base);
 		const idx = s.fields.findIndex((f) => f.key === groupField);
@@ -1634,7 +1651,7 @@
 				// a concurrent collection edit.
 				expected_updated_at: base.updated_at
 			});
-			if (ws !== wsSlug || slug !== collSlug) return;
+			if (collGen !== collectionGen || ws !== wsSlug || slug !== collSlug) return;
 			collection = updated;
 		} catch (err) {
 			if (isUpdateConflictError(err)) {
@@ -1646,7 +1663,7 @@
 				// token reseeds and the next re-drag doesn't 409 forever.
 				try {
 					const fresh = await api.collections.get(ws, slug);
-					if (ws === wsSlug && slug === collSlug) collection = fresh;
+					if (collGen === collectionGen && ws === wsSlug && slug === collSlug) collection = fresh;
 				} catch {
 					// Best-effort reseed.
 				}
@@ -2968,7 +2985,9 @@
 								// follow-up save reads fresh settings.quick_actions
 								// instead of stale ones — without this, a second
 								// save can overwrite the first before loadCollection
-								// resolves.
+								// resolves. Bump the unified fence so an in-flight
+								// stale load/refresh can't revert this fresh write.
+								collectionGen++;
 								collection = updated;
 								loadCollection(wsSlug, collSlug, showArchived);
 							}}

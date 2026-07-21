@@ -3,7 +3,9 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -265,6 +267,69 @@ func TestUpdateCollectionAppliesMigrationsAtomically(t *testing.T) {
 	}
 	if fields["status"] != "active" {
 		t.Errorf("item field value not migrated, got %v (fields %q)", fields["status"], got.Fields)
+	}
+}
+
+// TestUpdateCollectionMigrationNoDeadlockWithItemCreate is the BUG-2265 Codex
+// round-4 lock-ordering regression guard. UpdateCollection's migration path and
+// item creation both lock the workspace advisory/seq lock AND a collection row;
+// they MUST take them in the same order (workspace lock first, then the
+// collection row) or a concurrent item-create + schema-migration ABBA-deadlocks.
+// On Postgres a wrong order surfaces as a "deadlock detected" error (the
+// detector aborts a tx rather than hanging); on SQLite the single-writer lock
+// serializes everything. Either way, with the correct order every worker
+// succeeds.
+func TestUpdateCollectionMigrationNoDeadlockWithItemCreate(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollDeadlock")
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Tasks",
+		Slug:   "tasks-occ-deadlock",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["a","b"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	const workers = 8
+	var ready sync.WaitGroup
+	ready.Add(workers)
+	release := make(chan struct{})
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			ready.Done()
+			<-release // all workers contend simultaneously
+			if n%2 == 0 {
+				// Migration path: takes the workspace seq lock + the collection
+				// row FOR UPDATE. A non-matching rename still exercises both
+				// locks (len(Migrations) > 0 is the only gate).
+				_, e := s.UpdateCollection(coll.ID, models.CollectionUpdate{
+					Migrations: []models.FieldMigration{{Field: "status", RenameOptions: map[string]string{"z": "y"}}},
+				})
+				errCh <- e
+			} else {
+				// Item creation: takes the workspace advisory lock, then the
+				// collection-row FK lock on INSERT.
+				_, e := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+					Title:  fmt.Sprintf("i%d", n),
+					Fields: `{"status":"a"}`,
+				})
+				errCh <- e
+			}
+		}(i)
+	}
+	ready.Wait()
+	close(release)
+	wg.Wait()
+	close(errCh)
+	for e := range errCh {
+		if e != nil {
+			t.Fatalf("concurrent item-create + schema-migration errored (ABBA-deadlock regression?): %v", e)
+		}
 	}
 }
 

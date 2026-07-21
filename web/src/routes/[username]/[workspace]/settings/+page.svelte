@@ -88,23 +88,27 @@
 
 	// BUG-2265: keep the collections list fresh when another client changes a
 	// collection, so opening the edit modal seeds a CURRENT
-	// expected_updated_at instead of a stale one (which would produce a false
-	// 409 "reload" on a change that predates editing). `editingCollection` is
-	// captured at edit-click time from this list; a mid-edit refresh doesn't
-	// touch the already-open modal (its seed is edge-gated). Guarded so two
-	// rapid events can't resolve out of order.
-	let collectionsRefreshSeq = 0;
-	async function refreshCollectionsOnEvent() {
-		const ws = wsSlug;
+	// expected_updated_at instead of a stale one. UNIFIED generation (Codex):
+	// EVERY collections-list write — load(), create/update handlers, and the
+	// SSE refresh — bumps this and gates its assignment, so a stale in-flight
+	// fetch (e.g. a slow load for workspace A) can't revert a newer one.
+	let collectionsGen = 0;
+	async function refreshCollections(ws: string) {
 		if (!ws) return;
-		const seq = ++collectionsRefreshSeq;
+		const gen = ++collectionsGen;
 		try {
 			const fresh = await api.collections.list(ws);
-			// Drop if a newer refresh superseded us OR the workspace changed
-			// while fetching — a slow refresh for workspace A must not overwrite
-			// workspace B's freshly loaded list (Codex round 4).
-			if (seq !== collectionsRefreshSeq || ws !== wsSlug) return;
+			// Drop if a newer write superseded us OR the workspace changed.
+			if (gen !== collectionsGen || ws !== wsSlug) return;
 			collections = fresh;
+			// If the edit modal is open, feed it the refreshed object for the
+			// SAME id so a concurrent rename updates its `collection` prop and
+			// its same-id-rename retarget branch fires — otherwise the modal
+			// keeps PATCHing the dead old slug → 404 (Codex #4).
+			if (editingCollection) {
+				const refreshed = fresh.find((c) => c.id === editingCollection!.id);
+				if (refreshed) editingCollection = refreshed;
+			}
 		} catch {
 			// Best-effort; a stale token just yields a recoverable 409.
 		}
@@ -125,7 +129,7 @@
 			pendingHash = hash;
 		}
 		unsubscribeSSE = sseService.onItemEvent((event) => {
-			if (event.type === 'collection_updated') void refreshCollectionsOnEvent();
+			if (event.type === 'collection_updated') void refreshCollections(wsSlug);
 		});
 	});
 
@@ -138,7 +142,11 @@
 			await workspaceStore.setCurrent(slug);
 			wsName = workspaceStore.current?.name ?? '';
 			contextEditor = JSON.stringify(workspaceStore.current?.context ?? {}, null, 2);
-			collections = await api.collections.list(slug);
+			// Gate under the unified generation so a slow load can't revert a
+			// newer SSE refresh (or another load) that landed while in flight.
+			const gen = ++collectionsGen;
+			const fresh = await api.collections.list(slug);
+			if (gen === collectionsGen && slug === wsSlug) collections = fresh;
 			try {
 				const memberData = await api.members.list(slug);
 				members = memberData.members ?? [];
@@ -241,14 +249,14 @@
 		localStorage.setItem('pad-theme', theme);
 	}
 	async function handleCollectionCreated() {
-		collections = await api.collections.list(wsSlug);
+		await refreshCollections(wsSlug);
 		collectionStore.loadCollections(wsSlug);
 		showCreateModal = false;
 	}
 	async function handleCollectionUpdated() {
-		collections = await api.collections.list(wsSlug);
-		collectionStore.loadCollections(wsSlug);
 		editingCollection = null;
+		await refreshCollections(wsSlug);
+		collectionStore.loadCollections(wsSlug);
 	}
 	async function handleInvite() {
 		if (!inviteEmail.trim() || inviting) return;

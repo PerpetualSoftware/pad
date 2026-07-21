@@ -189,12 +189,14 @@
 	// counter — not reactive; it only fences async writes.
 	let loadGeneration = 0;
 
-	// Dedicated monotonic counter for BUG-2265 collection-snapshot refreshes.
-	// `loadGeneration` only bumps on item loadData() — it can't order two rapid
-	// collection_updated refetches against EACH OTHER, so an older refetch could
-	// resolve after (and clobber) a newer one. Plain counter — not reactive; it
-	// only fences the async collection refresh.
-	let collectionRefreshGen = 0;
+	// UNIFIED collection-snapshot generation (BUG-2265 Codex): bumped by EVERY
+	// operation that assigns `collection` — loadData's collection fetch, the SSE
+	// collection_updated refresh, and the quick-action / edit-modal callbacks —
+	// so the last-STARTED write wins and a stale in-flight continuation can't
+	// revert a newer snapshot (its token included). `loadGeneration` still
+	// fences the ITEM load; this token is dedicated to the `collection` object.
+	// Plain counter — not reactive; it only fences writes.
+	let collectionGen = 0;
 
 	// R9 teardown ownership (TASK-2172). The onDestroy clear-if-owner compares
 	// the global `collectionStore.activeItem` against the id THIS instance last
@@ -795,17 +797,18 @@
 				// Deferred (already broken on main; snapshot refresh below is the
 				// in-scope BUG-2265 fix).
 				const targetSlug = event.new_slug || slug;
-				const gen = loadGeneration;
-				const refreshGen = ++collectionRefreshGen;
+				// Unified generation: bumped here AND by loadData / the
+				// quick-action + edit-modal callbacks, so the last-started write
+				// wins and neither a stale refresh nor a stale load can revert a
+				// newer snapshot.
+				const collGen = ++collectionGen;
 				try {
 					const fresh = await api.collections.get(wsSlug, targetSlug);
-					// Persistent pane host has no {#key} remount — fence the
-					// write against a switch during the fetch (PLAN-2105
-					// discipline): drop if a newer refresh superseded us, a
-					// newer item load ran, or the loaded collection changed
-					// identity.
-					if (refreshGen !== collectionRefreshGen) return;
-					if (gen !== loadGeneration) return;
+					// Persistent pane host has no {#key} remount — fence the write
+					// against a switch during the fetch (PLAN-2105 discipline):
+					// drop if a newer collection write superseded us or the loaded
+					// collection changed identity.
+					if (collGen !== collectionGen) return;
 					if (!collection || collection.slug !== slug) return;
 					collection = fresh;
 				} catch {
@@ -1073,6 +1076,11 @@
 
 	async function loadData() {
 		const myGen = ++loadGeneration;
+		// Join the unified collection-snapshot fence so this load's `collection`
+		// write is dropped if a newer SSE refresh / callback landed a fresher
+		// snapshot while this load was in flight (Codex — separate lifecycle
+		// from loadGeneration).
+		const collGen = ++collectionGen;
 		loading = true;
 		error = '';
 		// Clear per-item state that must NOT leak across navigation.
@@ -1258,7 +1266,14 @@
 				try {
 					const realColl = await api.collections.get(wsSlug, itemData.collection_slug);
 					if (myGen !== loadGeneration) return;
-					collection = realColl;
+					// Gate the collection SNAPSHOT on the unified generation so a
+					// newer SSE refresh (bumps collectionGen, not loadGeneration)
+					// isn't reverted by this in-flight load.
+					// Apply when this is the freshest same-collection write OR when it's
+					// a switch to a DIFFERENT collection (a stale refresh for the old
+					// collection must not block loading the new one).
+					if (collGen === collectionGen || collection?.slug !== realColl.slug)
+						collection = realColl;
 				} catch {
 					if (myGen !== loadGeneration) return;
 					// Can't resolve the item's REAL collection. Surface the
@@ -1269,7 +1284,7 @@
 					error = 'Failed to load this item’s collection';
 					return;
 				}
-			} else {
+			} else if (collGen === collectionGen || collection?.slug !== collData.slug) {
 				collection = collData;
 			}
 			// A FROZEN (peeking) instance must NOT write the SINGLETON global stores
@@ -3987,6 +4002,9 @@
 						}}
 						oncollectionupdated={(updated) => {
 							if (keyedSlug !== itemSlug) return;
+							// Bump the unified fence so an in-flight stale load/refresh
+							// can't revert this fresh write (Codex).
+							collectionGen++;
 							collection = updated;
 						}}
 					/>
@@ -4923,6 +4941,9 @@
 					}
 					return;
 				}
+				// Bump the unified fence so an in-flight stale load/refresh can't
+				// revert this fresh edit-modal write (Codex).
+				collectionGen++;
 				collection = updated;
 				// If the owner renamed the collection, its slug may have
 				// changed. The current `/[collection]/[slug]` URL still

@@ -365,6 +365,22 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	}
 	defer tx.Rollback()
 
+	// LOCK ORDER (Codex P1 deadlock fix). When this update also migrates item
+	// field values it locks TWO things: the workspace advisory/seq lock (for
+	// the per-row seq bumps) and the collection ROW (FOR UPDATE, below). Item
+	// creation locks the same pair in the order [workspace advisory lock
+	// (tryCreateItem) → collection-row FK key-share lock (on INSERT)], so we
+	// MUST take the workspace lock FIRST here too — grabbing the row lock first
+	// would ABBA-deadlock against a concurrent item-create. Acquired only on the
+	// migration path (the only path that touches the workspace seq lock); a
+	// plain update just takes the row lock and can't deadlock. On SQLite both
+	// are no-ops under the single BEGIN IMMEDIATE write lock.
+	if len(input.Migrations) > 0 {
+		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
+			return nil, err
+		}
+	}
+
 	reread := "SELECT updated_at FROM collections WHERE id = ? AND deleted_at IS NULL"
 	if s.dialect.Driver() == DriverPostgres {
 		reread += " FOR UPDATE"
@@ -412,12 +428,9 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// the schema change (BUG-2265 Codex): a migration failure rolls back the
 	// schema AND the concurrency-token advance, so the row is untouched and the
 	// caller's retry works cleanly — no committed-schema/stale-items split and
-	// no guaranteed-409. Take the workspace seq lock first (the per-row seq
-	// bumps need it on Postgres; no-op on SQLite under BEGIN IMMEDIATE).
+	// no guaranteed-409. The workspace seq lock was already taken above (before
+	// the row lock) to preserve the item-create lock order.
 	if len(input.Migrations) > 0 {
-		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
-			return nil, err
-		}
 		if _, err := s.applyFieldMigrationsTx(tx, id, existing.WorkspaceID, input.Migrations); err != nil {
 			return nil, fmt.Errorf("apply field migrations: %w", err)
 		}
