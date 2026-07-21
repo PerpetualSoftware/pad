@@ -200,6 +200,32 @@ func (m *RoomManager) LastRestoreSeq(itemID string) (int64, bool) {
 	return v, ok
 }
 
+// invalidateRestoreFences drops the item's IN-MEMORY restore-fence fast-path
+// entries — both lastRestoreSeqs and restoreBoundaries — so the next Join
+// stale-seed check (manager.go ~L388) and collab-snapshot flush gate
+// (handlers_items.go ~L1328) fall through to the DURABLE columns
+// (items.last_restore_seq / items.restore_boundary_op_id).
+//
+// Used by ForceRefreshRoom's UNCERTAIN commit-outcome path (BUG-2276 residual 1).
+// After a Postgres restore commit whose landing we couldn't confirm, the caches may
+// still hold a PRIOR restore's generation. If THIS restore actually LANDED, a
+// cursor-0 peer seeded at the prior generation that reconnects — or a stale
+// collab-snapshot PATCH — would be admitted against the cached prior fence and
+// clobber the newly-landed content, because both consumers TRUST an in-memory hit
+// and skip the durable read. Clearing the fast-path forces the durable read, which
+// reflects this restore if it committed (and both consumers already FAIL CLOSED on a
+// durable read error). delete() on a nil map is a no-op. MUST be called under
+// itemLock so it can't race a concurrent restore's SetRestoreBoundary/SetLastRestoreSeq.
+func (m *RoomManager) invalidateRestoreFences(itemID string) {
+	m.lastRestoreSeqMu.Lock()
+	delete(m.lastRestoreSeqs, itemID)
+	m.lastRestoreSeqMu.Unlock()
+
+	m.restoreBoundaryMu.Lock()
+	delete(m.restoreBoundaries, itemID)
+	m.restoreBoundaryMu.Unlock()
+}
+
 // itemLock returns the lazily-allocated mutex guarding setup-phase
 // operations on itemID. Locks live in the manager for the lifetime of
 // the process — for a workspace with many items this is at most a few
@@ -1093,6 +1119,15 @@ func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int6
 				// re-evaluates the durable restore fences fresh through Join, which is
 				// correct whichever way the commit actually went. Leave rc.frozen set so
 				// any already-read frame is still dropped as the readLoop unwinds.
+				//
+				// FIRST, still under itemLock (and before releasing appendMu), drop the
+				// item's IN-MEMORY restore fences: if this restore LANDED, the caches
+				// still hold a PRIOR restore's generation, and a reconnecting cursor-0
+				// peer / stale collab-snapshot would be admitted against that stale cache
+				// and clobber the landed content. Clearing them forces Join + the snapshot
+				// gate to consult the DURABLE columns (which reflect this restore if it
+				// committed, and fail closed on a read error). (BUG-2276 residual 1, P1.)
+				m.invalidateRestoreFences(itemID)
 				if room != nil {
 					room.appendMu.Unlock()
 					room.closeAllConnsPlain()

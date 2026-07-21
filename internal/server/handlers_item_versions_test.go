@@ -4,12 +4,15 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/store/storetest"
 )
 
 const (
@@ -309,5 +312,122 @@ func TestRestoreItemVersionEmitsItemUpdatedSSE(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("restore did not emit an item_updated SSE event")
+	}
+
+	// Exactly one: no second event follows within a short window.
+	select {
+	case ev := <-ch:
+		t.Fatalf("restore must emit EXACTLY one event; got a second: type=%q", ev.Type)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+// testServerPostgres returns a *Server backed by an ISOLATED PostgreSQL database
+// (t.Skip unless PAD_TEST_POSTGRES_URL is set) with collab + an event bus wired.
+// Unlike testServer (always SQLite), this lets a test exercise the Postgres-gated
+// restore reconciliation end-to-end under `make test-pg`.
+func testServerPostgres(t *testing.T) (*Server, *events.MemoryBus) {
+	t.Helper()
+	s := storetest.NewPostgres(t) // skips if PAD_TEST_POSTGRES_URL is unset
+	srv := New(s)
+	t.Cleanup(func() { srv.Stop() })
+
+	obus := collab.NewMemoryOpBus()
+	t.Cleanup(obus.Close)
+	rm := collab.NewRoomManager(srv.store, obus)
+	t.Cleanup(rm.Close)
+	srv.SetCollabRoomManager(rm)
+
+	ebus := events.New()
+	srv.SetEventBus(ebus)
+	return srv, ebus
+}
+
+// TestRestoreVersionHandlerAckLossReconciledEndToEnd drives the ACTUAL restore
+// ENDPOINT through the real Postgres-gated handler with a commit-ack-loss seam
+// (BUG-2276 residual 1). The restore tx durably commits, then the seam returns an
+// error as if the ack were lost; the handler's Postgres-gated reconcile must
+// re-read, classify LANDED, and respond 200 with the restored item AND emit exactly
+// one item_updated event — proving the P2 no-false-404 fix end-to-end on a real
+// Postgres store. Skips unless PAD_TEST_POSTGRES_URL is set (runs under make test-pg).
+func TestRestoreVersionHandlerAckLossReconciledEndToEnd(t *testing.T) {
+	srv, ebus := testServerPostgres(t)
+	if srv.store.D().Driver() != store.DriverPostgres {
+		t.Fatalf("expected a Postgres store, got %s", srv.store.D().Driver())
+	}
+	slug := createWSWithCollections(t, srv)
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("resolve workspace: %v", err)
+	}
+
+	// Create v1, update to v2 so a version bracketing v1 exists to restore.
+	it := reconcileNewItem(t, srv, slug, reconcileOriginal)
+	time.Sleep(1100 * time.Millisecond)
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+it.Slug, map[string]interface{}{
+		"content": reconcileRestored,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update item: %d: %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+it.Slug+"/versions", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("list versions: %d: %s", rr.Code, rr.Body.String())
+	}
+	var versions []models.Version
+	parseJSON(t, rr, &versions)
+	var versionID string
+	for _, v := range versions {
+		if v.Content == reconcileOriginal {
+			versionID = v.ID
+			break
+		}
+	}
+	if versionID == "" {
+		t.Fatalf("no version with the original content to restore; got %d versions", len(versions))
+	}
+
+	// Arm the ack-loss seam to fire ONCE (this restore), so the tx durably lands but
+	// the commit closure returns an error — exactly the Postgres commit-ack-loss case.
+	var faultFired int32
+	srv.restoreAckFault = func() error {
+		if atomic.AddInt32(&faultFired, 1) == 1 {
+			return errSimAckLoss
+		}
+		return nil
+	}
+
+	ch := ebus.Subscribe(ws.ID)
+	defer ebus.Unsubscribe(ch)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+it.Slug+"/versions/"+versionID+"/restore", nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restore under ack-loss must RECONCILE to 200 (no false 404); got %d: %s", rr.Code, rr.Body.String())
+	}
+	if atomic.LoadInt32(&faultFired) == 0 {
+		t.Fatal("the ack-loss seam never fired; the reconcile path wasn't exercised")
+	}
+	var restored models.Item
+	parseJSON(t, rr, &restored)
+	if restored.Content != reconcileOriginal {
+		t.Fatalf("reconciled restore body content = %q, want the restored version content", restored.Content)
+	}
+	if restored.ID != it.ID {
+		t.Fatalf("reconciled restore body ID = %q, want %q", restored.ID, it.ID)
+	}
+
+	// Exactly one item_updated event fires on the reconciled path.
+	select {
+	case ev := <-ch:
+		if ev.Type != "item_updated" || ev.ItemID != it.ID {
+			t.Fatalf("reconciled restore SSE: type=%q item=%q, want item_updated for %q", ev.Type, ev.ItemID, it.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconciled restore did not emit an item_updated event")
+	}
+	select {
+	case ev := <-ch:
+		t.Fatalf("reconciled restore must emit EXACTLY one event; got a second: type=%q", ev.Type)
+	case <-time.After(300 * time.Millisecond):
 	}
 }

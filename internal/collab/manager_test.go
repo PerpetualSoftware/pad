@@ -765,6 +765,63 @@ func TestForceRefreshRoomReconcile(t *testing.T) {
 	})
 }
 
+// TestForceRefreshRoomUncertainInvalidatesInMemoryFences is the BUG-2276
+// residual-1 P1 guard: on the UNCERTAIN commit-outcome path, ForceRefreshRoom must
+// CLEAR the item's in-memory restore fences (lastRestoreSeqs + restoreBoundaries)
+// so a reconnecting stale-seed peer is judged against the DURABLE column — which
+// reflects a landed-but-ack-lost restore — not a PRIOR restore's cached generation.
+// Otherwise a cursor-0 peer seeded at the prior generation would be admitted against
+// the stale cache and clobber the landed content.
+func TestForceRefreshRoomUncertainInvalidatesInMemoryFences(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	// The DURABLE column reflects the LANDED-but-ack-lost restore R2 (seq=20). The
+	// in-memory caches still hold the PRIOR restore R1's generation (seq=10 /
+	// boundary=100) — the stale-cache trap this guards against.
+	store := &fakeOpLog{lastRestoreSeqs: map[string]int64{"item-a": 20}}
+	mgr := NewRoomManager(store, bus)
+	defer mgr.Close()
+
+	mgr.SetLastRestoreSeq("item-a", 10)   // R1 in-memory fast-path
+	mgr.SetRestoreBoundary("item-a", 100) // R1 in-memory boundary
+	if s, ok := mgr.LastRestoreSeq("item-a"); !ok || s != 10 {
+		t.Fatalf("precondition: R1 last restore seq = (%d,%v), want (10,true)", s, ok)
+	}
+	if b, ok := mgr.RestoreBoundary("item-a"); !ok || b != 100 {
+		t.Fatalf("precondition: R1 boundary = (%d,%v), want (100,true)", b, ok)
+	}
+
+	// R2's commit errors AND its reconcile read errors → UNCERTAIN.
+	err := mgr.ForceRefreshRoom("item-a",
+		func() (int64, int64, error) { return 0, 0, errors.New("commit: bad connection") },
+		func() (RestoreReconcileResult, error) {
+			return RestoreReconcileResult{}, errors.New("reconcile: read failed")
+		})
+	if err == nil {
+		t.Fatal("uncertain reconcile must return an error")
+	}
+
+	// Both in-memory fences must be CLEARED so the next check reads durable.
+	if s, ok := mgr.LastRestoreSeq("item-a"); ok {
+		t.Fatalf("uncertain must invalidate the in-memory last-restore-seq fence; still cached (%d)", s)
+	}
+	if b, ok := mgr.RestoreBoundary("item-a"); ok {
+		t.Fatalf("uncertain must invalidate the in-memory restore boundary; still cached (%d)", b)
+	}
+
+	// A peer seeded at R1's generation (content_seq=10) now reconnecting is judged
+	// against the DURABLE column (R2=20): 10 < 20 → force_refresh. With the STALE
+	// cache it would have compared 10 vs cached-10 (equal) and been admitted — the
+	// clobber this fix prevents.
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+	stale := dialWSContentSeq(t, srv, "item-a", 10)
+	defer stale.Close()
+	if ctl := readControlWithin(t, stale, time.Second); ctl.Type != ControlMessageForceRefresh {
+		t.Fatalf("stale R1-generation seed after uncertain: want %q (durable fence), got %q", ControlMessageForceRefresh, ctl.Type)
+	}
+}
+
 // TestJoinDurableRestoreBoundaryFencesStaleSeedAfterRestart is the BUG-2264
 // restart-durability guard (residual #1 closed): the stale-seed Join fence must
 // survive a server restart. A restore in a PRIOR process stamped the DURABLE

@@ -245,6 +245,15 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 				// or reseeding; the handler surfaces it below.
 				return 0, 0, errRestoreItemGone
 			}
+			if s.restoreAckFault != nil {
+				if fe := s.restoreAckFault(); fe != nil {
+					// TEST SEAM (BUG-2276 residual 1): the tx above committed DURABLY,
+					// but return an error exactly as UpdateItemWithPreCheck would on a
+					// lost ack — and do NOT set `updated`, so reconcile must recover the
+					// restored item from the durable state.
+					return 0, 0, fe
+				}
+			}
 			updated = u
 			// (pre-prune MAX for the stale-flush boundary, restored seq for the
 			// content generation Join uses to force_refresh stale-seeded peers).
