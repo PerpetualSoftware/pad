@@ -309,14 +309,17 @@
 		) {
 			// SAME collection (same id) but a concurrent RENAME changed its slug
 			// (and name) while the modal is open (Codex P2). Retarget the PATCH
-			// endpoint slug + re-capture the token so handleSave/handleArchive
-			// hit the LIVE slug instead of the now-dead one (which would 404
-			// before the token could even 409). Do NOT reseed the form — the
-			// user's in-progress edits are preserved.
+			// endpoint (slug/name/ws) so handleSave/handleArchive hit the LIVE
+			// slug instead of the now-dead one (which would 404 before the token
+			// could even 409). Do NOT reseed the form, and DELIBERATELY do NOT
+			// re-capture the token: the seeded token stays stale so the save
+			// correctly 409s → the non-destructive "collection changed, reload"
+			// message, rather than succeeding and reverting the concurrent rename
+			// with this modal's pre-rename full form (the exact stale-snapshot
+			// clobber BUG-2265 prevents).
 			seededCollectionSlug = collection.slug;
 			seededCollectionName = collection.name;
 			seededWsSlug = wsSlug;
-			expectedUpdatedAt = collection.updated_at;
 		}
 		// Latch AFTER the seed so the next `collection` change (e.g. the
 		// BUG-2265 broadcast) re-runs this effect but skips re-seeding until
