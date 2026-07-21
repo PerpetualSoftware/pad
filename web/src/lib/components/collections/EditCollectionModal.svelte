@@ -301,6 +301,22 @@
 
 			void loadCollectionOptions();
 			void loadPreviewContext();
+		} else if (
+			open &&
+			collection &&
+			collection.id === seededCollectionId &&
+			collection.slug !== seededCollectionSlug
+		) {
+			// SAME collection (same id) but a concurrent RENAME changed its slug
+			// (and name) while the modal is open (Codex P2). Retarget the PATCH
+			// endpoint slug + re-capture the token so handleSave/handleArchive
+			// hit the LIVE slug instead of the now-dead one (which would 404
+			// before the token could even 409). Do NOT reseed the form — the
+			// user's in-progress edits are preserved.
+			seededCollectionSlug = collection.slug;
+			seededCollectionName = collection.name;
+			seededWsSlug = wsSlug;
+			expectedUpdatedAt = collection.updated_at;
 		}
 		// Latch AFTER the seed so the next `collection` change (e.g. the
 		// BUG-2265 broadcast) re-runs this effect but skips re-seeding until

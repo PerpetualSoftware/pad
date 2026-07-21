@@ -789,6 +789,11 @@
 				// On a rename, refetch by the NEW slug (the old one is dead) so
 				// this pane's collection reference — used to build quick-action /
 				// edit writes — stays valid (Codex P2).
+				// TODO(BUG-2272): full cross-tab rename renavigation — the
+				// full-page item route's URL/collSlug is NOT retargeted here, so
+				// breadcrumbs / a hard reload still resolve the dead old slug.
+				// Deferred (already broken on main; snapshot refresh below is the
+				// in-scope BUG-2265 fix).
 				const targetSlug = event.new_slug || slug;
 				const gen = loadGeneration;
 				const refreshGen = ++collectionRefreshGen;

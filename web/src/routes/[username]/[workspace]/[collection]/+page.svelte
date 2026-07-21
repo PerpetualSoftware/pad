@@ -835,6 +835,11 @@
 				// to the new slug — preserving the query string (open pane) — so
 				// the next fetch/action doesn't 404. Mirrors the originating
 				// client's rename navigation.
+				// TODO(BUG-2272): full cross-tab rename renavigation — chained
+				// renames replayed on reconnect (A→B then B→C) can arrive with
+				// `coll` already past the intermediate slug, so a B→C event whose
+				// old slug (B) no longer matches `coll` is skipped and the route
+				// can land on a dead intermediate. Deferred (already broken on main).
 				if (event.new_slug && event.new_slug !== coll) {
 					const search = typeof window !== 'undefined' ? window.location.search : '';
 					void goto(`/${username}/${wsSlug}/${event.new_slug}${search}`);

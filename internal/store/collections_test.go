@@ -208,6 +208,66 @@ func TestUpdateCollectionExpectedUpdatedAtConflict(t *testing.T) {
 	}
 }
 
+// TestUpdateCollectionAppliesMigrationsAtomically (BUG-2265 Codex P1): the
+// schema change and its field-value migration commit together in ONE tx — the
+// item's renamed option value lands with the schema, and the concurrency token
+// advances once. (Failure-rollback is covered structurally: the migration runs
+// inside the same tx, so an error returns before commit.)
+func TestUpdateCollectionAppliesMigrationsAtomically(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollMigrate")
+
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Tasks",
+		Slug:   "tasks-occ-migrate",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","closed"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "T", Fields: `{"status":"open"}`})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	token := coll.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+	newSchema := `{"fields":[{"key":"status","label":"Status","type":"select","options":["active","closed"]}]}`
+	updated, err := s.UpdateCollection(coll.ID, models.CollectionUpdate{
+		Schema:            &newSchema,
+		ExpectedUpdatedAt: token,
+		Migrations:        []models.FieldMigration{{Field: "status", RenameOptions: map[string]string{"open": "active"}}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCollection with migration: %v", err)
+	}
+	// Schema change landed (compare semantically — Postgres re-serializes the
+	// JSONB schema column, so an exact-string check would false-fail on PG).
+	var gotSchema models.CollectionSchema
+	if err := json.Unmarshal([]byte(updated.Schema), &gotSchema); err != nil {
+		t.Fatalf("parse updated schema %q: %v", updated.Schema, err)
+	}
+	if len(gotSchema.Fields) != 1 || len(gotSchema.Fields[0].Options) != 2 ||
+		gotSchema.Fields[0].Options[0] != "active" || gotSchema.Fields[0].Options[1] != "closed" {
+		t.Errorf("schema options not updated to [active closed]: %q", updated.Schema)
+	}
+	// Token advanced exactly (strictly past the accepted token).
+	if !updated.UpdatedAt.After(coll.UpdatedAt) {
+		t.Errorf("token did not advance: %s !> %s", updated.UpdatedAt.UTC(), coll.UpdatedAt.UTC())
+	}
+	// Item value migrated in the SAME commit.
+	got, err := s.GetItem(item.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(got.Fields), &fields); err != nil {
+		t.Fatalf("parse item fields %q: %v", got.Fields, err)
+	}
+	if fields["status"] != "active" {
+		t.Errorf("item field value not migrated, got %v (fields %q)", fields["status"], got.Fields)
+	}
+}
+
 // TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber is the BUG-2265
 // same-second regression guard (Codex P1): two guarded writes reusing the SAME
 // token must not both succeed even when they land in the same wall-clock second

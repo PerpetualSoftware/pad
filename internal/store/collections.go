@@ -407,6 +407,22 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	if _, err := tx.Exec(s.q(query), args...); err != nil {
 		return nil, fmt.Errorf("update collection: %w", err)
 	}
+
+	// Apply field-value migrations (select-option renames) in the SAME tx as
+	// the schema change (BUG-2265 Codex): a migration failure rolls back the
+	// schema AND the concurrency-token advance, so the row is untouched and the
+	// caller's retry works cleanly — no committed-schema/stale-items split and
+	// no guaranteed-409. Take the workspace seq lock first (the per-row seq
+	// bumps need it on Postgres; no-op on SQLite under BEGIN IMMEDIATE).
+	if len(input.Migrations) > 0 {
+		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
+			return nil, err
+		}
+		if _, err := s.applyFieldMigrationsTx(tx, id, existing.WorkspaceID, input.Migrations); err != nil {
+			return nil, fmt.Errorf("apply field migrations: %w", err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit collection update: %w", err)
 	}
@@ -489,6 +505,25 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 		return 0, err
 	}
 
+	totalAffected, err := s.applyFieldMigrationsTx(tx, collectionID, workspaceID, migrations)
+	if err != nil {
+		return totalAffected, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return totalAffected, err
+	}
+	return totalAffected, nil
+}
+
+// applyFieldMigrationsTx runs the per-row field-value migration loop on an
+// EXISTING transaction. Extracted so UpdateCollection can run the schema
+// change and its item migrations ATOMICALLY in one tx (BUG-2265 Codex: a
+// migration failure must roll back the schema AND the concurrency token, or a
+// 500 leaves the row changed and every client retry blind-409s). Callers must
+// already hold the workspace seq lock (acquireWorkspaceSeqLock) so the per-row
+// seq bumps serialize on Postgres.
+func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID string, migrations []models.FieldMigration) (int64, error) {
 	ts := now()
 	var totalAffected int64
 
@@ -547,10 +582,6 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 				totalAffected += n
 			}
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return totalAffected, err
 	}
 	return totalAffected, nil
 }
