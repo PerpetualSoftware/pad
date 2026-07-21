@@ -207,6 +207,26 @@ function isUpdateConflictError(err: unknown): err is PadApiError {
 }
 
 /**
+ * Returns true when `err` is a 404 not_found. BUG-2265 (Codex round 6): a
+ * competing RENAME can kill the slug a write targeted, so the request returns
+ * 404 instead of 409 — retry paths must treat BOTH as "resolve the fresh
+ * collection by stable id and retry", surfacing an error only if it's truly
+ * gone.
+ */
+function isNotFoundError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'not_found';
+}
+
+/**
+ * True when `err` is either an optimistic-concurrency 409 OR a rename-induced
+ * 404 — the two ways a concurrent collection change can defeat a slug-targeted
+ * write (BUG-2265). Retry paths branch on this to resolve-by-id and retry.
+ */
+function isConflictOrNotFound(err: unknown): err is PadApiError {
+	return isUpdateConflictError(err) || isNotFoundError(err);
+}
+
+/**
  * Returns a human-readable upgrade-signal message for a plan limit error.
  * Falls back to the server-supplied `err.message` if details are unavailable,
  * so the function is always safe to call. TASK-788.
@@ -2394,4 +2414,12 @@ export const api = {
 	}
 };
 
-export { PadApiError, isPlanLimitError, planLimitMessage, isRateLimitError, isUpdateConflictError };
+export {
+	PadApiError,
+	isPlanLimitError,
+	planLimitMessage,
+	isRateLimitError,
+	isUpdateConflictError,
+	isNotFoundError,
+	isConflictOrNotFound
+};

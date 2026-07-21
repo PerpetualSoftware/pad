@@ -71,14 +71,21 @@ type Event struct {
 	// that is a rename (BUG-2265). The event is routed by Collection (the OLD
 	// slug, which the sibling tabs still address) so old-slug watchers receive
 	// it and can re-target to NewSlug. Empty for non-rename updates.
-	NewSlug   string `json:"new_slug,omitempty"`
-	Title     string `json:"title,omitempty"`
-	DocType   string `json:"doc_type,omitempty"`
-	Actor     string `json:"actor,omitempty"`
-	ActorName string `json:"actor_name,omitempty"`
-	Source    string `json:"source,omitempty"`
-	UserID    string `json:"user_id,omitempty"` // For user-scoped events (e.g. star/unstar)
-	Timestamp int64  `json:"timestamp"`
+	NewSlug string `json:"new_slug,omitempty"`
+	// ItemsChanged is set on a collection_updated event whose schema migration
+	// actually mutated item field values (BUG-2265). It's a SANITIZED reconcile
+	// signal — a bare bool carrying NO per-item data — so it can be delivered to
+	// item-grant subscribers (who receive collection_updated) without leaking
+	// items they can't see; their client triggers a /items-changes deltaSync
+	// (server-filtered to their grants) to pick up the migrated field JSON.
+	ItemsChanged bool   `json:"items_changed,omitempty"`
+	Title        string `json:"title,omitempty"`
+	DocType      string `json:"doc_type,omitempty"`
+	Actor        string `json:"actor,omitempty"`
+	ActorName    string `json:"actor_name,omitempty"`
+	Source       string `json:"source,omitempty"`
+	UserID       string `json:"user_id,omitempty"` // For user-scoped events (e.g. star/unstar)
+	Timestamp    int64  `json:"timestamp"`
 	// Seq is the workspace-scoped monotonic mutation cursor of the
 	// item the event references (PLAN-1343 / TASK-1352). Populated
 	// for item lifecycle events (created / updated / archived /

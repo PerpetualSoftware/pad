@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { api, parseRetryAfterMs, isRateLimitError, PadApiError, setRateLimitHandler } from './client';
+import {
+	api,
+	parseRetryAfterMs,
+	isRateLimitError,
+	PadApiError,
+	setRateLimitHandler,
+	isNotFoundError,
+	isUpdateConflictError,
+	isConflictOrNotFound
+} from './client';
 
 // The 401 interceptor branches on `typeof window !== 'undefined'`. The
 // vitest environment here is 'node' (see vitest.config.ts), so `window` is
@@ -29,6 +38,52 @@ function mockFetchOnce(status: number, body: unknown) {
 		}))
 	);
 }
+
+// BUG-2265 Pattern C: retry paths must recover from BOTH a 409 update_conflict
+// (settings/schema changed) AND a 404 not_found (a competing RENAME killed the
+// slug). These verify the classification helpers those retries branch on, and
+// that a real 404/409 response surfaces as the right PadApiError code.
+describe('conflict/not-found classification (BUG-2265 Pattern C)', () => {
+	beforeEach(() => vi.unstubAllGlobals());
+	afterEach(() => vi.unstubAllGlobals());
+
+	it('a 404 surfaces as not_found and is classified for retry', async () => {
+		mockFetchOnce(404, { error: { code: 'not_found', message: 'gone' } });
+		const err = await api.collections
+			.update('ws', 'renamed-away', { settings: '{}' })
+			.then(() => null)
+			.catch((e) => e);
+		expect(err).toBeInstanceOf(PadApiError);
+		expect((err as PadApiError).code).toBe('not_found');
+		expect(isNotFoundError(err)).toBe(true);
+		expect(isConflictOrNotFound(err)).toBe(true);
+		expect(isUpdateConflictError(err)).toBe(false);
+	});
+
+	it('a 409 surfaces as update_conflict and is classified for retry', async () => {
+		mockFetchOnce(409, {
+			error: { code: 'update_conflict', message: 'stale', details: { ref: 'tasks' } },
+		});
+		const err = await api.collections
+			.update('ws', 'tasks', { settings: '{}', expected_updated_at: 'x' })
+			.then(() => null)
+			.catch((e) => e);
+		expect(err).toBeInstanceOf(PadApiError);
+		expect((err as PadApiError).code).toBe('update_conflict');
+		expect(isUpdateConflictError(err)).toBe(true);
+		expect(isConflictOrNotFound(err)).toBe(true);
+		expect(isNotFoundError(err)).toBe(false);
+	});
+
+	it('an unrelated error is NOT classified for conflict/not-found retry', async () => {
+		mockFetchOnce(500, { error: { code: 'internal_error', message: 'boom' } });
+		const err = await api.collections
+			.update('ws', 'tasks', { settings: '{}' })
+			.then(() => null)
+			.catch((e) => e);
+		expect(isConflictOrNotFound(err)).toBe(false);
+	});
+});
 
 describe('api client 401 handling (BUG-1929)', () => {
 	beforeEach(() => {

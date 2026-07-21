@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
-	import { api, PadApiError, isPlanLimitError, planLimitMessage, isUpdateConflictError } from '$lib/api/client';
+	import { api, PadApiError, isPlanLimitError, planLimitMessage, isConflictOrNotFound } from '$lib/api/client';
 	import type { BulkItemsRequest, Collection, Item, PaneTarget, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
@@ -1654,16 +1654,21 @@
 			if (collGen !== collectionGen || ws !== wsSlug || slug !== collSlug) return;
 			collection = updated;
 		} catch (err) {
-			if (isUpdateConflictError(err)) {
-				// The schema changed under us. Replaying this stale option order
-				// onto the fresh field would silently drop concurrent option
-				// add/remove/rename, so ABORT — reordering is cosmetic and never
-				// worth clobbering a real schema edit. REFETCH here (don't rely on
-				// the SSE broadcast, which may be missed / mid-reconnect) so the
-				// token reseeds and the next re-drag doesn't 409 forever.
+			// A concurrent change defeats our slug-targeted write via a 409
+			// (schema changed) OR a 404 (a RENAME killed the slug). Handle BOTH
+			// (BUG-2265 Pattern C). Replaying this stale option order onto the
+			// fresh field would silently drop concurrent option add/remove/rename,
+			// so ABORT — reordering is cosmetic and never worth clobbering a real
+			// schema edit. Reseed by STABLE id (a slug refetch would 404 on a
+			// rename) — not the SSE broadcast, which may be missed / reconnecting —
+			// so the token reseeds and the next re-drag doesn't fail forever.
+			if (isConflictOrNotFound(err)) {
 				try {
-					const fresh = await api.collections.get(ws, slug);
-					if (collGen === collectionGen && ws === wsSlug && slug === collSlug) collection = fresh;
+					const list = await api.collections.list(ws);
+					const fresh = list.find((c) => c.id === base.id);
+					if (fresh && collGen === collectionGen && ws === wsSlug && slug === collSlug) {
+						collection = fresh;
+					}
 				} catch {
 					// Best-effort reseed.
 				}

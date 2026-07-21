@@ -808,12 +808,39 @@
 					// against a switch during the fetch (PLAN-2105 discipline):
 					// drop if a newer collection write superseded us or the loaded
 					// collection changed identity.
-					if (collGen !== collectionGen) return;
-					if (!collection || collection.slug !== slug) return;
-					collection = fresh;
+					if (collGen === collectionGen && collection && collection.slug === slug) {
+						collection = fresh;
+					}
 				} catch {
 					// Best-effort — a stale snapshot just means the next save
 					// may 409 and self-heal via QuickActionsMenu's retry.
+				}
+				// BUG-2265 (Codex P1): if the schema migration mutated item field
+				// values, THIS pane's `item` (loaded via api.items.get, NOT from
+				// the localIndex that the workspace deltaSync reconciles) may hold
+				// stale field JSON — a later full-fields save would UNDO the
+				// migration. Refetch it. Skip while mid-edit (saving/title-editing):
+				// item-level optimistic concurrency then catches a clobbering save
+				// via a 409, and refetching would clobber the editor.
+				if (
+					event.items_changed &&
+					item &&
+					itemMatchesRef &&
+					saveStatus !== 'saving' &&
+					!editingTitle
+				) {
+					const gen = loadGeneration;
+					const reqItemId = item.id;
+					const reqWsSlug = wsSlug;
+					const reqItemSlug = itemSlug;
+					try {
+						const updated = await api.items.get(reqWsSlug, reqItemSlug);
+						if (item && item.id === reqItemId && gen === loadGeneration) {
+							item = adoptServerItem(updated);
+						}
+					} catch {
+						// Best-effort — the next event / tab-resume sync catches up.
+					}
 				}
 				return;
 			}

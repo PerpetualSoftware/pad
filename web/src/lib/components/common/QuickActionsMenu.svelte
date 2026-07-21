@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { QuickAction, Item, Collection } from '$lib/types';
 	import { parseFields, formatItemRef, parseSettings } from '$lib/types';
-	import { api, isUpdateConflictError } from '$lib/api/client';
+	import { api, isConflictOrNotFound } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
@@ -176,15 +176,15 @@
 					expected_updated_at: baseCollection.updated_at
 				});
 			} catch (err) {
-				if (!isUpdateConflictError(err)) throw err;
-				// Someone changed the collection between our read and write —
-				// possibly a RENAME, which makes the captured slug dead (a
-				// slug-based refetch would 404). Resolve by the STABLE id
-				// instead (mirrors EditCollectionModal's identity approach),
-				// then re-append onto its fresh settings and retry ONCE.
+				// A concurrent change can defeat our slug-targeted write two ways:
+				// a 409 update_conflict (settings changed) OR a 404 not_found (a
+				// RENAME killed the slug). Recover from BOTH (BUG-2265 Pattern C):
+				// resolve the collection by its STABLE id, re-append onto its
+				// fresh settings, and retry ONCE. Surface only if it's truly gone.
+				if (!isConflictOrNotFound(err)) throw err;
 				const list = await api.collections.list(ws);
 				const fresh = list.find((c) => c.id === baseCollection.id);
-				if (!fresh) throw err; // collection gone (deleted) — surface the conflict
+				if (!fresh) throw err; // collection gone (deleted) — surface it
 				updated = await api.collections.update(ws, fresh.slug, {
 					settings: appendOnto(fresh),
 					expected_updated_at: fresh.updated_at

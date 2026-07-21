@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api, isUpdateConflictError } from '$lib/api/client';
+	import { api, isConflictOrNotFound } from '$lib/api/client';
 	import type { Collection, CollectionUpdate, CollectionSettings, FieldDef, FieldMigration, QuickAction } from '$lib/types';
 	import { parseSchema, parseSettings } from '$lib/types';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
@@ -86,12 +86,34 @@
 		const editedCollectionSlug = seededCollectionSlug;
 		const editedCollectionName = seededCollectionName;
 		const editedWsSlug = seededWsSlug;
-		try {
-			await api.collections.delete(editedWsSlug, editedCollectionSlug);
+		const finishArchived = () => {
 			toastStore.show(`Archived "${editedCollectionName}"`, 'success');
 			onupdated(undefined, editedCollectionId, editedCollectionSlug, editedWsSlug);
 			onclose();
+		};
+		try {
+			await api.collections.delete(editedWsSlug, editedCollectionSlug);
+			finishArchived();
 		} catch (err) {
+			// A concurrent RENAME can kill the seeded slug (404), or a change
+			// could 409 (BUG-2265 Pattern C). Resolve the SAME collection by its
+			// STABLE id and retry the delete against its current slug; if it's
+			// already gone from the list, it's effectively archived already.
+			if (isConflictOrNotFound(err)) {
+				try {
+					const list = await api.collections.list(editedWsSlug);
+					const fresh = list.find((c) => c.id === editedCollectionId);
+					if (!fresh) {
+						finishArchived();
+						return;
+					}
+					await api.collections.delete(editedWsSlug, fresh.slug);
+					finishArchived();
+					return;
+				} catch {
+					// fall through to the generic error
+				}
+			}
 			toastStore.show('Failed to archive collection', 'error');
 		} finally {
 			archiving = false;
@@ -625,10 +647,14 @@
 			toastStore.show(`Updated ${name.trim()}`, 'success');
 			onupdated(updated, editedCollectionId, editedCollectionSlug, editedWsSlug);
 		} catch (err) {
-			if (isUpdateConflictError(err)) {
-				// Non-destructive: keep the user's in-progress edits visible and
-				// tell them to reload to pick up the concurrent change, then
-				// re-apply. We deliberately do NOT auto-merge a full-form edit.
+			if (isConflictOrNotFound(err)) {
+				// The collection changed elsewhere — a 409 (settings/schema
+				// changed) OR a 404 (a RENAME killed the slug we targeted). Both
+				// are non-destructive here (BUG-2265 Pattern C): keep the user's
+				// in-progress edits visible and tell them to reload, then re-apply.
+				// We deliberately do NOT auto-merge a full-form edit — a rebuilt
+				// schema+settings blob from a stale snapshot can't be safely
+				// reconciled, and silently overwriting would clobber the change.
 				error =
 					'This collection was changed elsewhere while you were editing. Reload to see the latest, then re-apply your changes.';
 			} else {

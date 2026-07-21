@@ -24,6 +24,9 @@ func TestSSEEventVisibleFor(t *testing.T) {
 	collRenamed := func(oldSlug, newSlug string) events.Event {
 		return events.Event{Type: events.CollectionUpdated, Collection: oldSlug, NewSlug: newSlug}
 	}
+	collMigrated := func(coll string) events.Event {
+		return events.Event{Type: events.CollectionUpdated, Collection: coll, ItemsChanged: true}
+	}
 
 	// A subscriber that revalidated AFTER a rename knows only the NEW slug.
 	newSlugOnly := sseVisibility{
@@ -65,6 +68,11 @@ func TestSSEEventVisibleFor(t *testing.T) {
 		{"item-grant-only denied collection.updated for invisible collection", itemGrantOnly, collUpdated("secrets"), false},
 		{"full-collection access gets collection.updated", fullColl, collUpdated("tasks"), true},
 		{"all-access gets collection.updated", allAccess, collUpdated("tasks"), true},
+		// BUG-2265 Pattern A: the migration-reconcile signal rides on
+		// collection.updated (items_changed) so item-grant editors receive it
+		// for a visible collection and reconcile their item's migrated fields.
+		{"item-grant-only gets migration collection.updated for visible collection", itemGrantOnly, collMigrated("tasks"), true},
+		{"item-grant-only denied migration collection.updated for invisible collection", itemGrantOnly, collMigrated("secrets"), false},
 		// Rename: a subscriber that only knows the NEW slug (revalidated after
 		// the rename) still receives the event routed by the OLD slug, so it
 		// learns the mapping (Codex round 2).

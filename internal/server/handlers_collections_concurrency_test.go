@@ -277,13 +277,13 @@ func TestUpdateCollection_RenameEventCarriesNewSlug(t *testing.T) {
 	}
 }
 
-// TestUpdateCollection_MigrationEmitsBulkItemsEvent covers BUG-2265 Codex round
-// 5 P1: a schema change that MIGRATES item field values must ALSO emit the bulk
-// item-mutation signal (items_bulk_updated) so open item views reconcile the
-// migrated rows via /items-changes — collection_updated only refreshes
-// collection metadata. A settings-only update (no migrated items) must NOT emit
-// it.
-func TestUpdateCollection_MigrationEmitsBulkItemsEvent(t *testing.T) {
+// TestUpdateCollection_MigrationSetsItemsChanged covers BUG-2265 Codex round 6:
+// a schema change that MIGRATES item field values must set the SANITIZED
+// items_changed flag on the (already item-grant-delivered, old-slug-routed)
+// collection_updated event, so open views reconcile the migrated rows via a
+// client /items-changes deltaSync. A settings-only update (no migrated items)
+// leaves items_changed false. No separate items_bulk_updated is emitted.
+func TestUpdateCollection_MigrationSetsItemsChanged(t *testing.T) {
 	srv := testServerWithEvents(t)
 	slug := createWSWithCollections(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(slug)
@@ -302,7 +302,26 @@ func TestUpdateCollection_MigrationEmitsBulkItemsEvent(t *testing.T) {
 		t.Fatalf("CreateItem: %v", err)
 	}
 
-	t.Run("migration touching an item emits items_bulk_updated", func(t *testing.T) {
+	// awaitCollectionUpdated returns the next collection_updated event (or fails).
+	awaitCollectionUpdated := func(t *testing.T, ch <-chan events.Event) events.Event {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case event := <-ch:
+				if event.Type == events.CollectionUpdated {
+					return event
+				}
+				if event.Type == events.ItemsBulkUpdated {
+					t.Fatalf("collection update must not emit items_bulk_updated (folded into collection_updated)")
+				}
+			case <-deadline:
+				t.Fatal("timed out waiting for collection_updated")
+			}
+		}
+	}
+
+	t.Run("migration touching an item sets items_changed", func(t *testing.T) {
 		ch := srv.events.Subscribe(ws.ID)
 		defer srv.events.Unsubscribe(ch)
 
@@ -315,27 +334,21 @@ func TestUpdateCollection_MigrationEmitsBulkItemsEvent(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("migration update: expected 200, got %d: %s", rr.Code, rr.Body.String())
 		}
-
-		deadline := time.After(2 * time.Second)
-		for {
-			select {
-			case event := <-ch:
-				if event.Type == events.ItemsBulkUpdated {
-					if event.Collection != coll.Slug {
-						t.Fatalf("bulk event collection=%q want %q", event.Collection, coll.Slug)
-					}
-					if event.Op != "migrate" || event.Count != 1 {
-						t.Fatalf("bulk event op=%q count=%d, want migrate/1", event.Op, event.Count)
-					}
-					return
-				}
-			case <-deadline:
-				t.Fatal("timed out waiting for items_bulk_updated after a migration")
-			}
+		event := awaitCollectionUpdated(t, ch)
+		if event.Collection != coll.Slug {
+			t.Fatalf("collection_updated collection=%q want %q", event.Collection, coll.Slug)
+		}
+		if !event.ItemsChanged {
+			t.Fatalf("migration collection_updated must set items_changed")
+		}
+		// Still sanitized — no actor/source leaked to item-grant subscribers.
+		if event.Actor != "" || event.Source != "" || event.Count != 0 {
+			t.Fatalf("migration event leaked non-sanitized fields: actor=%q source=%q count=%d",
+				event.Actor, event.Source, event.Count)
 		}
 	})
 
-	t.Run("settings-only update emits NO items_bulk_updated", func(t *testing.T) {
+	t.Run("settings-only update leaves items_changed false", func(t *testing.T) {
 		ch := srv.events.Subscribe(ws.ID)
 		defer srv.events.Unsubscribe(ch)
 
@@ -345,18 +358,9 @@ func TestUpdateCollection_MigrationEmitsBulkItemsEvent(t *testing.T) {
 		if rr.Code != http.StatusOK {
 			t.Fatalf("settings update: expected 200, got %d: %s", rr.Code, rr.Body.String())
 		}
-
-		// Drain briefly; a bulk event must NOT arrive (a collection_updated may).
-		deadline := time.After(300 * time.Millisecond)
-		for {
-			select {
-			case event := <-ch:
-				if event.Type == events.ItemsBulkUpdated {
-					t.Fatalf("settings-only update must not emit items_bulk_updated")
-				}
-			case <-deadline:
-				return
-			}
+		event := awaitCollectionUpdated(t, ch)
+		if event.ItemsChanged {
+			t.Fatalf("settings-only update must not set items_changed")
 		}
 	})
 }

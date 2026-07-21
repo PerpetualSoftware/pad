@@ -272,25 +272,24 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 	// ALWAYS routed by the OLD slug (coll.Slug) — the slug sibling tabs still
 	// address. On a rename the event carries the NEW slug so those tabs can
 	// re-target instead of silently hitting the dead old slug on their next
-	// action (Codex P2). No actor/source: an item-grant guest receives this
-	// event, so it must not leak the owner's identity/source (Codex P1).
+	// action (Codex P2). No actor/source: an item-grant subscriber receives
+	// this event, so it must not leak the owner's identity/source (Codex P1).
+	//
+	// itemsChanged (Codex round 6 P1): a field-value migration mutated item
+	// `fields` JSON and advanced item `seq`. Rather than a SEPARATE
+	// items_bulk_updated event (which carries op/count for items an item-grant
+	// subscriber can't see, and isn't rename-routed), fold a SANITIZED bool
+	// onto this already item-grant-delivered, old-slug-routed event. The client
+	// triggers a /items-changes deltaSync (server-filtered to the caller's
+	// grants) + refetches an open item, so open views reconcile the migrated
+	// field JSON — closing the clobber where a stale full-fields item update
+	// would UNDO the migration. Empty/false leak surface: "a collection you can
+	// see items in changed [+ renamed + had item changes]".
 	newSlug := ""
 	if updated.Slug != coll.Slug {
 		newSlug = updated.Slug
 	}
-	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, coll.Slug, newSlug)
-
-	// BUG-2265 (Codex P1): a field-value migration mutated item `fields` JSON
-	// and advanced item `seq`. collection_updated only refreshes collection
-	// METADATA — open item views would keep stale field JSON under the new
-	// schema and a later full-fields item update could UNDO the migration. When
-	// the migration actually touched ≥1 item, ALSO emit the existing bulk
-	// item-mutation signal (items_bulk_updated) so open views reconcile the
-	// migrated rows via /items-changes. Routed by the collection so the SSE
-	// visibility filter handles it like any collection-scoped item event.
-	if migratedItems > 0 {
-		s.publishBulkItemsEvent(workspaceID, "migrate", updated.Slug, int(migratedItems), "", "", "", 0)
-	}
+	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, coll.Slug, newSlug, migratedItems > 0)
 
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -317,19 +316,22 @@ func writeCollectionUpdateConflictError(w http.ResponseWriter, ref string, confl
 // publishCollectionEvent publishes a real-time collection-level change
 // (BUG-2265). Collection carries the (old) slug so the SSE visibility filter
 // routes it to workspace clients who can see the collection; newSlug is set
-// only on a rename. Deliberately SANITIZED — no Actor / ActorName / Source —
-// because this event is delivered to item-grant-only subscribers, who must
-// not learn the owner's identity or edit source (Codex P1). Clients only need
-// the slug(s) to refresh their snapshot / re-target.
-func (s *Server) publishCollectionEvent(eventType, workspaceID, collectionSlug, newSlug string) {
+// only on a rename; itemsChanged is set when a schema migration mutated item
+// field values (a SANITIZED reconcile bool). Deliberately SANITIZED — no Actor
+// / ActorName / Source, no per-item data — because this event is delivered to
+// item-grant subscribers, who must not learn the owner's identity/source or
+// anything about items they can't see (Codex P1). Clients only need the
+// slug(s) + itemsChanged to refresh their snapshot / re-target / reconcile.
+func (s *Server) publishCollectionEvent(eventType, workspaceID, collectionSlug, newSlug string, itemsChanged bool) {
 	if s.events == nil {
 		return
 	}
 	s.events.Publish(events.Event{
-		Type:        eventType,
-		WorkspaceID: workspaceID,
-		Collection:  collectionSlug,
-		NewSlug:     newSlug,
+		Type:         eventType,
+		WorkspaceID:  workspaceID,
+		Collection:   collectionSlug,
+		NewSlug:      newSlug,
+		ItemsChanged: itemsChanged,
 	})
 }
 
