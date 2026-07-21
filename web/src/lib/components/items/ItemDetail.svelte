@@ -298,21 +298,32 @@
 	// BUG-2272: a remote rename of THIS collection in another tab leaves the
 	// full-page route's `collSlug` prop (page.params.collection) frozen at the
 	// DEAD old slug until a real navigation — so breadcrumbs + a hard reload
-	// resolve a 404. On such a rename the SSE handler below records the
-	// {from,to} slugs here and `goto`s the live URL; this override retargets
-	// the effective slug (breadcrumbs + navigateToCollectionRoot + item URLs)
-	// to the new slug while the goto is in flight. Self-expiring: honored ONLY
-	// while the prop is still the pre-rename slug (`from === collSlug`) — once
-	// the goto commits (prop advances to the new slug) OR a real navigation
-	// moves the prop elsewhere, the guard fails and the derived falls through
-	// to the live prop, so no stale override survives (no reset effect needed).
-	// Embedded panes never touch this branch — they trust `item.collection_slug`
-	// (PLAN-2154, no goto).
-	let renameOverride = $state<{ from: string; to: string } | null>(null);
+	// resolve a 404. On such a rename the SSE handler below records the renamed
+	// collection's stable id + {from,to} slugs here and `goto`s the live URL;
+	// this override retargets the effective slug (breadcrumbs +
+	// navigateToCollectionRoot + item URLs) to the new slug while the goto is in
+	// flight. Applied ONLY when ALL of:
+	//   - `collectionId === collection?.id` — we still DISPLAY the very collection
+	//     that was renamed. Slugs are reusable: after X renames A→B, a DIFFERENT
+	//     collection Y can later adopt the freed slug A; without this identity
+	//     scope a persistent full-page route sitting on Y at `/…/A/…` would match
+	//     `from === collSlug` and wrongly resolve to B. Also guards X being renamed
+	//     AGAIN out of band (we navigate to X's newest slug before the event lands).
+	//   - `from === collSlug` — the route prop is still the pre-rename slug; the
+	//     moment the goto commits (prop advances to the new slug) or a real
+	//     navigation moves it, the guard fails and the derived falls through to
+	//     the live prop. So the override is self-expiring — no stale value survives
+	//     and no reset effect is needed.
+	// A subsequent B→C for the SAME collection id re-records the override to C
+	// (chained renames intact). Embedded panes never touch this branch — they
+	// trust `item.collection_slug` (PLAN-2154, no goto).
+	let renameOverride = $state<{ collectionId: string; from: string; to: string } | null>(null);
 	let effectiveCollSlug = $derived(
 		embedded && item?.collection_slug
 			? item.collection_slug
-			: renameOverride && renameOverride.from === collSlug
+			: renameOverride &&
+				  renameOverride.from === collSlug &&
+				  renameOverride.collectionId === collection?.id
 				? renameOverride.to
 				: collSlug,
 	);
@@ -847,7 +858,14 @@
 				if (!embedded && event.new_slug) {
 					const believed = effectiveCollSlug;
 					if (event.collection === believed && event.new_slug !== believed) {
-						renameOverride = { from: collSlug, to: event.new_slug };
+						// Scope to the renamed collection's stable id (=== snap.id,
+						// guarded above) so a later reuse of the old slug by a
+						// DIFFERENT collection can't re-trigger this override (P2).
+						renameOverride = {
+							collectionId: event.collection_id ?? snap.id,
+							from: collSlug,
+							to: event.new_slug,
+						};
 						const search = typeof window !== 'undefined' ? window.location.search : '';
 						void goto(`/${username}/${wsSlug}/${event.new_slug}/${itemSlug}${search}`, {
 							replaceState: true,
