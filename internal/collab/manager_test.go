@@ -526,7 +526,7 @@ func TestForceRefreshRoom(t *testing.T) {
 			return 0, 0, err
 		}
 		return maxID, 42, nil
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("ForceRefreshRoom: %v", err)
 	}
 	if !committed {
@@ -573,6 +573,173 @@ func TestForceRefreshRoom(t *testing.T) {
 	if !sawForceRefresh {
 		t.Fatal("client did not receive a force_refresh frame before the conn closed")
 	}
+}
+
+// TestForceRefreshRoomReconcile covers the Postgres commit-outcome reconciliation
+// (BUG-2276 residual 1): when the restore commit returns an error, the supplied
+// reconcile callback disambiguates three outcomes — landed (take the success
+// path), definitely rolled back (un-freeze + bail), and uncertain (stay frozen +
+// bail). The SQLite/self-host path (reconcile == nil) is exercised by
+// TestForceRefreshRoom above.
+func TestForceRefreshRoomReconcile(t *testing.T) {
+	// (a) The commit's tx DURABLY landed but its ack was lost (Postgres), so the
+	// commit closure prunes the op-log then returns an error. reconcile reports
+	// Landed → ForceRefreshRoom must take the SUCCESS path: publish the recovered
+	// boundary + seq and reseed peers, NOT un-freeze onto a stale doc.
+	t.Run("landed_takes_success_path", func(t *testing.T) {
+		bus := NewMemoryOpBus()
+		defer bus.Close()
+		store := &fakeOpLog{}
+		mgr := NewRoomManager(store, bus)
+		defer mgr.Close()
+
+		srv := newCollabTestServer(t, mgr)
+		defer srv.Close()
+
+		conn := dialWS(t, srv, "item-a")
+		defer conn.Close()
+		for i := 0; i < 200; i++ {
+			if mgr.RoomCount() == 1 && bus.SubscriberCount("item-a") == 1 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+
+		if _, err := store.AppendYjsUpdate("item-a", []byte{0x00, 0x01}, "1"); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		const wantBoundary = int64(8)
+		const wantSeq = int64(99)
+		reconciled := false
+		err := mgr.ForceRefreshRoom("item-a",
+			func() (int64, int64, error) {
+				// The tx pruned the op-log and committed durably, then the ack was
+				// lost at the commit boundary — so it surfaces here as an error.
+				if _, perr := store.PruneYjsUpdatesBefore("item-a", distantFuture); perr != nil {
+					return 0, 0, perr
+				}
+				return 0, 0, errors.New("commit: driver: bad connection")
+			},
+			func() (RestoreReconcileResult, error) {
+				reconciled = true
+				return RestoreReconcileResult{Landed: true, Boundary: wantBoundary, Seq: wantSeq}, nil
+			})
+		if err != nil {
+			t.Fatalf("ForceRefreshRoom (landed) returned error, want success: %v", err)
+		}
+		if !reconciled {
+			t.Fatal("reconcile callback did not run")
+		}
+		if b, ok := mgr.RestoreBoundary("item-a"); !ok || b != wantBoundary {
+			t.Fatalf("restore boundary = (%d, %v), want (%d, true)", b, ok, wantBoundary)
+		}
+		if s, ok := mgr.LastRestoreSeq("item-a"); !ok || s != wantSeq {
+			t.Fatalf("last restore seq = (%d, %v), want (%d, true)", s, ok, wantSeq)
+		}
+		// The success path ran the reseed: the peer got a force_refresh frame.
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		sawForceRefresh := false
+		for {
+			mt, data, rerr := conn.ReadMessage()
+			if rerr != nil {
+				break
+			}
+			if mt == websocket.TextMessage {
+				var ctl ControlMessage
+				if json.Unmarshal(data, &ctl) == nil && ctl.Type == ControlMessageForceRefresh {
+					sawForceRefresh = true
+				}
+			}
+		}
+		if !sawForceRefresh {
+			t.Fatal("landed reconcile did not reseed peers (no force_refresh frame)")
+		}
+	})
+
+	// (b) The commit genuinely rolled back. reconcile reports !Landed →
+	// ForceRefreshRoom un-freezes the conn and returns the commit error; no
+	// boundary/seq published, peers keep their live Y.Doc.
+	t.Run("rolled_back_unfreezes", func(t *testing.T) {
+		bus := NewMemoryOpBus()
+		defer bus.Close()
+		mgr := NewRoomManager(&fakeOpLog{}, bus)
+		defer mgr.Close()
+
+		room := mgr.getOrCreate("item-a")
+		rc := &roomConn{id: 1, conn: &websocket.Conn{}}
+		rc.canWrite.Store(true)
+		if err := room.addConn(rc); err != nil {
+			t.Fatalf("addConn: %v", err)
+		}
+		// Drop the fake conn before Close so closeAll doesn't Close() a nil socket.
+		defer func() {
+			room.mu.Lock()
+			delete(room.conns, rc.conn)
+			room.mu.Unlock()
+		}()
+
+		commitErr := errors.New("commit: rolled back")
+		err := mgr.ForceRefreshRoom("item-a",
+			func() (int64, int64, error) { return 0, 0, commitErr },
+			func() (RestoreReconcileResult, error) {
+				return RestoreReconcileResult{Landed: false}, nil
+			})
+		if !errors.Is(err, commitErr) {
+			t.Fatalf("ForceRefreshRoom (rolled back) err = %v, want the commit error", err)
+		}
+		if rc.frozen.Load() {
+			t.Fatal("rolled-back reconcile must UN-freeze the conn, but frozen is still set")
+		}
+		if _, ok := mgr.RestoreBoundary("item-a"); ok {
+			t.Fatal("rolled-back reconcile must NOT publish a restore boundary")
+		}
+		if _, ok := mgr.LastRestoreSeq("item-a"); ok {
+			t.Fatal("rolled-back reconcile must NOT publish a last restore seq")
+		}
+	})
+
+	// (c) The commit errored AND the reconcile read itself failed → outcome
+	// UNCERTAIN. ForceRefreshRoom must keep the conn FROZEN (safe degraded mode)
+	// and return an error wrapping both causes; no boundary/seq published.
+	t.Run("uncertain_stays_frozen", func(t *testing.T) {
+		bus := NewMemoryOpBus()
+		defer bus.Close()
+		mgr := NewRoomManager(&fakeOpLog{}, bus)
+		defer mgr.Close()
+
+		room := mgr.getOrCreate("item-a")
+		rc := &roomConn{id: 1, conn: &websocket.Conn{}}
+		rc.canWrite.Store(true)
+		if err := room.addConn(rc); err != nil {
+			t.Fatalf("addConn: %v", err)
+		}
+		defer func() {
+			room.mu.Lock()
+			delete(room.conns, rc.conn)
+			room.mu.Unlock()
+		}()
+
+		commitErr := errors.New("commit: bad connection")
+		reconcileErr := errors.New("reconcile: read failed")
+		err := mgr.ForceRefreshRoom("item-a",
+			func() (int64, int64, error) { return 0, 0, commitErr },
+			func() (RestoreReconcileResult, error) {
+				return RestoreReconcileResult{}, reconcileErr
+			})
+		if err == nil {
+			t.Fatal("uncertain reconcile must return an error")
+		}
+		if !errors.Is(err, commitErr) || !errors.Is(err, reconcileErr) {
+			t.Fatalf("uncertain err = %v, want it to wrap BOTH the commit and reconcile errors", err)
+		}
+		if !rc.frozen.Load() {
+			t.Fatal("uncertain reconcile must KEEP the conn frozen (safe degraded mode)")
+		}
+		if _, ok := mgr.RestoreBoundary("item-a"); ok {
+			t.Fatal("uncertain reconcile must NOT publish a restore boundary")
+		}
+	})
 }
 
 // TestJoinDurableRestoreBoundaryFencesStaleSeedAfterRestart is the BUG-2264

@@ -3,12 +3,15 @@ package server
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // errRestoreItemGone signals that the item was concurrently deleted during a
@@ -175,6 +178,22 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 		// atomically (no out-of-tx fail-open) and a failed commit rolls back all of
 		// it. ForceRefreshRoom then publishes the boundary (maxID+1) + content
 		// generation (seq) and reseeds under the per-item lock.
+		//
+		// Postgres-only commit-outcome reconciliation (BUG-2276 residual 1): on
+		// Postgres a commit that DURABLY lands but whose ack is lost at the
+		// connection boundary surfaces to ForceRefreshRoom as an error; supply a
+		// reconcile callback that re-reads to distinguish that from a genuine
+		// rollback. On SQLite a commit error is unambiguous, so we pass nil and keep
+		// the verbatim rollback-on-error path. `item.Seq` is the pre-restore seq the
+		// reconcile compares last_restore_seq against; `content` is the exact
+		// restored version content.
+		var reconcile func() (collab.RestoreReconcileResult, error)
+		if s.store.D().Driver() == store.DriverPostgres {
+			preRestoreSeq := item.Seq
+			reconcile = func() (collab.RestoreReconcileResult, error) {
+				return s.reconcileRestoreCommit(item.ID, content, preRestoreSeq)
+			}
+		}
 		werr := s.collab.ForceRefreshRoom(item.ID, func() (int64, int64, error) {
 			var maxID int64
 			u, uerr := s.store.UpdateItemWithPreCheck(item.ID, input,
@@ -205,7 +224,7 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 			// (pre-prune MAX for the stale-flush boundary, restored seq for the
 			// content generation Join uses to force_refresh stale-seeded peers).
 			return maxID, u.Seq, nil
-		})
+		}, reconcile)
 		if werr != nil {
 			if errors.Is(werr, errRestoreItemGone) {
 				writeError(w, http.StatusNotFound, "not_found", "Item not found")
@@ -245,4 +264,68 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// reconcileRestoreCommit re-reads an item after a version-restore commit reported
+// an error, to determine whether the restore's transaction DURABLY landed anyway
+// (a Postgres commit whose ack was lost at the connection boundary — BUG-2276
+// residual 1). It is supplied to ForceRefreshRoom ONLY on Postgres; SQLite passes
+// nil, keeping the unambiguous rollback-on-error behavior.
+//
+// A restore's defining durable effects, all written in ONE tx, are: items.content
+// = the target version's content, items.last_restore_seq = the restore's new
+// item.seq (strictly greater than the pre-restore seq), and
+// items.restore_boundary_op_id = pre-prune MAX(op-log.id)+1. We read all three and
+// require the two INDEPENDENT signals to AGREE:
+//
+//   - contentMatches: fresh items.content == the exact restored version content
+//     (a restore sets content to an EXACT prior version).
+//   - seqAdvanced:    items.last_restore_seq > the pre-restore seq. last_restore_seq
+//     is written ONLY by restores, which are serialised under the collab per-item
+//     lock, so during this reconcile it holds either the pre-restore value (rolled
+//     back) or this restore's new seq (landed) — never a concurrent writer's.
+//
+// Both true  → LANDED (recover Boundary = restore_boundary_op_id and Seq =
+//
+//	last_restore_seq so ForceRefreshRoom's success path publishes the same
+//	fences it would have on a clean commit).
+//
+// Both false → DEFINITELY rolled back (un-freeze, the genuine-rollback path).
+// Disagree / read error → ambiguous; return an error so ForceRefreshRoom keeps the
+//
+//	room FROZEN (the safe degraded mode). This also covers the rare
+//	restore-to-identical-content tx that ALSO ack-lost (contentMatches
+//	coincidentally true while seqAdvanced is false): staying frozen is safe.
+func (s *Server) reconcileRestoreCommit(itemID, targetContent string, preRestoreSeq int64) (collab.RestoreReconcileResult, error) {
+	fresh, err := s.store.GetItem(itemID)
+	if err != nil {
+		return collab.RestoreReconcileResult{}, fmt.Errorf("reconcile restore: read item: %w", err)
+	}
+	if fresh == nil {
+		// Item gone (or soft-deleted) on a fresh read — no live restored content to
+		// converge on, so treat as NOT landed (un-freeze). A concurrently-deleted
+		// item is the errRestoreItemGone case, surfaced as an in-tx signal instead.
+		return collab.RestoreReconcileResult{Landed: false}, nil
+	}
+	lastRestoreSeq, lrOK, err := s.store.ItemLastRestoreSeq(itemID)
+	if err != nil {
+		return collab.RestoreReconcileResult{}, fmt.Errorf("reconcile restore: read last_restore_seq: %w", err)
+	}
+	boundaryOpID, bOK, err := s.store.ItemRestoreBoundaryOpID(itemID)
+	if err != nil {
+		return collab.RestoreReconcileResult{}, fmt.Errorf("reconcile restore: read restore_boundary_op_id: %w", err)
+	}
+
+	contentMatches := fresh.Content == targetContent
+	seqAdvanced := lrOK && lastRestoreSeq > preRestoreSeq
+	switch {
+	case contentMatches && seqAdvanced && bOK:
+		return collab.RestoreReconcileResult{Landed: true, Boundary: boundaryOpID, Seq: lastRestoreSeq}, nil
+	case !contentMatches && !seqAdvanced:
+		return collab.RestoreReconcileResult{Landed: false}, nil
+	default:
+		return collab.RestoreReconcileResult{}, fmt.Errorf(
+			"reconcile restore: ambiguous outcome (contentMatches=%v seqAdvanced=%v boundaryStamped=%v)",
+			contentMatches, seqAdvanced, bOK)
+	}
 }
