@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { tick, onMount, onDestroy, untrack } from 'svelte';
-	import { api, PadApiError, type ImportURLResponse } from '$lib/api/client';
+	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
 	import { marked } from 'marked';
 	import { collectionStore } from '$lib/stores/collections.svelte';
@@ -2291,14 +2291,14 @@
 		// (This also lets a pre-flip pending onchange from FieldEditor's 500ms
 		// debounce complete rather than being suppressed.)
 		if (!item) return;
-		// NOTE(BUG-2273): this sends a FULL `fields` blob (stale ...fields + one
-		// key) with NO expected_updated_at / fields_patch — the web editor never
-		// adopted the IDEA-1480/v0.14 item merge+OCC. So a concurrent schema
-		// MIGRATION (or any other field write) can be silently UNDONE by this
-		// write. The BUG-2265 migration reconcile above refetches to shrink the
-		// window, but the real fix is item-level OCC here (tracked in BUG-2273).
-		const updated = { ...fields, [key]: value };
-		const payload = JSON.stringify(updated);
+		// BUG-2273: field edits use fields_patch + optimistic concurrency instead
+		// of a full-blob replace. Only the single changed key travels; the server
+		// MERGES it into the row read under its write lock (mergeFieldsPatch), so a
+		// concurrent write to OTHER fields — or a schema MIGRATION committing while
+		// this save is in flight — is no longer silently undone. `expected_updated_at`
+		// makes a stale write fail with a 409 `update_conflict` we refetch-and-retry
+		// below (IDEA-1480 / MCP v0.14, finally adopted by the web editor).
+		const patch = { [key]: value };
 		const targetItem = item;
 		const targetWs = wsSlug;
 		// Generation + id fence (Codex). A plain id check has an A→B→A gap (the
@@ -2311,14 +2311,45 @@
 		const stillCurrent = () => gen === loadGeneration && item?.id === targetItem.id;
 		saveStatus = 'saving';
 
-		const doUpdate = (force: boolean) =>
+		// One PATCH attempt: single-key merge, OCC-guarded by the caller-supplied
+		// updated_at. `force` overrides the open-children guard (BUG-1538).
+		const doUpdate = (force: boolean, expectedUpdatedAt: string) =>
 			api.items.update(targetWs, targetItem.id, {
-				fields: payload,
+				fields_patch: patch,
+				expected_updated_at: expectedUpdatedAt,
 				...(force ? { force: true } : {})
 			});
 
+		// Bound on OCC refetch-and-retry cycles per save (a hot item shouldn't spin).
+		const MAX_FIELD_OCC_RETRIES = 2;
+		// The freshest server item seen during OCC refetches — adopted to show
+		// server truth if we ultimately give up (so the field snaps to reality,
+		// not to our un-landed optimistic value).
+		let lastServerItem: Item | null = null;
+
+		// Submit the single-key patch, transparently refetch-and-retrying on a
+		// 409 `update_conflict`. Because only `key` is ever in `fields_patch`, a
+		// retry re-applies THIS delta against the freshly-read row without
+		// clobbering whatever another writer changed — the whole point of BUG-2273.
+		const submitWithOCC = async (force: boolean): Promise<Item> => {
+			let expected = targetItem.updated_at;
+			for (let attempt = 0; ; attempt++) {
+				try {
+					return await doUpdate(force, expected);
+				} catch (e) {
+					if (isUpdateConflictError(e) && attempt < MAX_FIELD_OCC_RETRIES && stillCurrent()) {
+						const latest = await api.items.get(targetWs, targetItem.id);
+						lastServerItem = latest;
+						expected = latest.updated_at;
+						continue;
+					}
+					throw e;
+				}
+			}
+		};
+
 		try {
-			const fresh = await doUpdate(false);
+			const fresh = await submitWithOCC(false);
 			if (!stillCurrent()) return;
 			item = withInflightTags(fresh);
 			showSaved();
@@ -2340,7 +2371,7 @@
 				try {
 					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => {
 						if (!stillCurrent()) throw new Error('switched away');
-						return doUpdate(true);
+						return submitWithOCC(true);
 					});
 				} catch (retryErr) {
 					// The force retry itself failed (network / 500 /
@@ -2369,6 +2400,25 @@
 				saveStatus = 'idle';
 				item = { ...item };
 				toastStore.show('Status change cancelled', 'info');
+				return;
+			}
+			// BUG-2273: OCC retries were exhausted (or a conflict raced a pane
+			// switch). Don't clobber — adopt the freshest server truth we saw so
+			// the field snaps to reality rather than to our un-landed value, and
+			// tell the user to reconcile.
+			if (isUpdateConflictError(e)) {
+				if (!stillCurrent() || !item) return;
+				saveStatus = 'idle';
+				// `lastServerItem` is only ever assigned inside the submitWithOCC
+				// closure, so TS's control-flow narrows it to `null` here — the
+				// assertion restores the real union type it actually holds.
+				const server = lastServerItem as Item | null;
+				if (server && server.id === item.id) {
+					item = withInflightTags(server);
+				} else {
+					item = { ...item };
+				}
+				toastStore.show('This item was changed elsewhere — reload to see the latest.', 'error');
 				return;
 			}
 			// Any other failure mode — network, validation, 500, etc.

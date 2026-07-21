@@ -677,6 +677,25 @@ export interface ItemUpdate {
 	title?: string;
 	content?: string;
 	fields?: string;
+	/**
+	 * Field-level SHALLOW merge (IDEA-1480 / TASK-2022): only the keys present
+	 * here are written; every other stored field is left untouched. Mutually
+	 * exclusive with `fields` — the server rejects a request carrying both.
+	 * Sent as a JSON object (not a stringified blob, unlike `fields`), mirroring
+	 * the server model's `map[string]interface{}`. Use this (paired with
+	 * `expected_updated_at`) instead of a full-blob replace so two concurrent
+	 * single-field edits — or a field save racing a schema migration — can't
+	 * clobber each other (BUG-2273).
+	 */
+	fields_patch?: Record<string, unknown>;
+	/**
+	 * Optimistic-concurrency token (IDEA-1480 / TASK-2022, BUG-2273). Round-trip
+	 * the `updated_at` you last read; the server re-reads under a write lock and
+	 * rejects a stale write with a 409 `update_conflict` (details carry
+	 * `{ ref, expected_updated_at, actual_updated_at }`). Omit for
+	 * last-write-wins. Mirrors `CollectionUpdate.expected_updated_at`.
+	 */
+	expected_updated_at?: string;
 	tags?: string;
 	pinned?: boolean;
 	sort_order?: number;
