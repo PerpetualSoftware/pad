@@ -260,18 +260,16 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Apply field value migrations to existing items
-	if len(migrations) > 0 {
-		if _, err := s.store.MigrateItemFieldValues(coll.ID, migrations); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Schema updated but migration failed: "+err.Error())
-			return
-		}
-	}
-
 	// BUG-2265 (part 3): broadcast a collection.updated event so sibling
 	// ItemDetails / collection pages in this workspace refresh their own
 	// independent Collection snapshot proactively — shrinking the window in
 	// which another client would send a stale expected_updated_at and 409.
+	//
+	// Published BEFORE the field migration runs (Codex P2): UpdateCollection has
+	// already COMMITTED (updated_at advanced), so even if the migration below
+	// fails and we return a 500, the row genuinely changed — siblings must still
+	// be told to resync their concurrency token, or they'd 409 blindly against a
+	// value they can never guess. Publishing on the commit is the accurate seam.
 	//
 	// ALWAYS routed by the OLD slug (coll.Slug) — the slug sibling tabs still
 	// address. On a rename the event carries the NEW slug so those tabs can
@@ -283,6 +281,14 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		newSlug = updated.Slug
 	}
 	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, coll.Slug, newSlug)
+
+	// Apply field value migrations to existing items
+	if len(migrations) > 0 {
+		if _, err := s.store.MigrateItemFieldValues(coll.ID, migrations); err != nil {
+			writeError(w, http.StatusInternalServerError, "internal_error", "Schema updated but migration failed: "+err.Error())
+			return
+		}
+	}
 
 	writeJSON(w, http.StatusOK, updated)
 }

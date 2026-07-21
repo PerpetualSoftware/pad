@@ -97,6 +97,61 @@ func TestUpdateCollection_OptimisticConcurrency(t *testing.T) {
 		}
 	})
 
+	// Codex round-2 P2: the 409's actual_updated_at must be FULL sub-second
+	// precision so the client can round-trip it as the token on retry. A
+	// truncated (second-precision) token would never match the row's real
+	// sub-second updated_at, 409-looping forever.
+	t.Run("409 actual_updated_at round-trips as a usable retry token", func(t *testing.T) {
+		coll := seed(t, "OCC RoundTrip")
+		// First update establishes a sub-second updated_at on the row.
+		first := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
+			"settings": `{"layout":"content-primary"}`,
+		})
+		if first.Code != http.StatusOK {
+			t.Fatalf("first update: expected 200, got %d: %s", first.Code, first.Body.String())
+		}
+		var afterFirst models.Collection
+		parseJSON(t, first, &afterFirst)
+
+		// A stale token loses the race → 409 carrying the row's real token.
+		conflictRR := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
+			"settings":            `{"layout":"fields-primary"}`,
+			"expected_updated_at": coll.UpdatedAt.UTC().Format(time.RFC3339),
+		})
+		if conflictRR.Code != http.StatusConflict {
+			t.Fatalf("expected 409, got %d: %s", conflictRR.Code, conflictRR.Body.String())
+		}
+		var envelope struct {
+			Error struct {
+				Details struct {
+					ActualUpdatedAt string `json:"actual_updated_at"`
+				} `json:"details"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(conflictRR.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("parse 409 envelope: %v", err)
+		}
+		actual := envelope.Error.Details.ActualUpdatedAt
+		if actual == "" {
+			t.Fatalf("409 missing actual_updated_at: %s", conflictRR.Body.String())
+		}
+		// It must equal the row's current updated_at at full precision, not a
+		// second-truncated version of it.
+		if actual != afterFirst.UpdatedAt.UTC().Format(time.RFC3339Nano) {
+			t.Fatalf("actual_updated_at %q not full-precision (want %q)", actual, afterFirst.UpdatedAt.UTC().Format(time.RFC3339Nano))
+		}
+
+		// Retrying with the returned token must now SUCCEED — proving it's a
+		// usable token, not a truncated one that loops forever.
+		retryRR := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
+			"settings":            `{"layout":"fields-primary"}`,
+			"expected_updated_at": actual,
+		})
+		if retryRR.Code != http.StatusOK {
+			t.Fatalf("retry with returned token should succeed, got %d: %s", retryRR.Code, retryRR.Body.String())
+		}
+	})
+
 	t.Run("omitting the token keeps last-write-wins (200)", func(t *testing.T) {
 		coll := seed(t, "OCC NoToken")
 		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{

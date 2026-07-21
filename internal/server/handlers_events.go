@@ -386,18 +386,30 @@ func sseEventVisibleFor(vis sseVisibility, sseUserID string, event events.Event)
 		}
 		return true
 	}
-	if !vis.visibleSlugSet[collection] {
+	// Determine which slug this subscriber can actually see. For a rename
+	// (NewSlug set, BUG-2265) the event is ROUTED by the OLD slug, but a
+	// subscriber that reconnected / revalidated AFTER the rename only has the
+	// NEW slug in its visibleSlugSet — accept EITHER so the client still learns
+	// the rename mapping (Codex). Non-rename events have NewSlug == "", so this
+	// reduces to the old single-slug check.
+	visibleColl := ""
+	if vis.visibleSlugSet[collection] {
+		visibleColl = collection
+	} else if event.NewSlug != "" && vis.visibleSlugSet[event.NewSlug] {
+		visibleColl = event.NewSlug
+	}
+	if visibleColl == "" {
 		return false
 	}
 	// For subscribers filtered to item-level grants in this collection
 	// (no full-collection access):
-	if vis.grantedItemSet != nil && !vis.fullCollSet[collection] {
+	if vis.grantedItemSet != nil && !vis.fullCollSet[visibleColl] {
 		// Item-scoped events: gate on the specific granted item.
 		if itemID != "" {
 			return vis.grantedItemSet[itemID]
 		}
 		// collection.updated (BUG-2265) is itemless but carries ONLY the
-		// collection slug — no per-item op/count/timing — and the collection
+		// collection slug(s) — no per-item op/count/timing — and the collection
 		// is already confirmed visible above, so it's safe to deliver to
 		// item-grant subscribers. They need it to converge their ItemDetail's
 		// schema/settings snapshot for the items they CAN see.

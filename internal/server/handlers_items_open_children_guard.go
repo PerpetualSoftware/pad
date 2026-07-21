@@ -330,9 +330,18 @@ func writeUpdateConflictEnvelope(w http.ResponseWriter, ref, expectedUpdatedAt s
 				"%s was modified by another writer since you last read it; re-read and retry.",
 				ref),
 			"details": map[string]any{
-				"ref":                 ref,
+				"ref": ref,
+				// expected_updated_at is echoed verbatim (the exact string the
+				// caller sent). actual_updated_at MUST use full RFC3339Nano
+				// precision so a client can round-trip it back as the token on
+				// retry: collection tokens are now sub-second (BUG-2265), and
+				// truncating to whole seconds (time.RFC3339) would hand back a
+				// token that never matches, 409-looping forever. Item tokens are
+				// second-precision (zero nanoseconds), so RFC3339Nano emits no
+				// fractional part for them — byte-identical to the old output,
+				// and the item path parses/compares via time.Equal regardless.
 				"expected_updated_at": expectedUpdatedAt,
-				"actual_updated_at":   actualUpdatedAt.UTC().Format(time.RFC3339),
+				"actual_updated_at":   actualUpdatedAt.UTC().Format(time.RFC3339Nano),
 			},
 		},
 	})

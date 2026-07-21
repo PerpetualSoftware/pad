@@ -21,6 +21,14 @@ func TestSSEEventVisibleFor(t *testing.T) {
 	collUpdated := func(coll string) events.Event {
 		return events.Event{Type: events.CollectionUpdated, Collection: coll}
 	}
+	collRenamed := func(oldSlug, newSlug string) events.Event {
+		return events.Event{Type: events.CollectionUpdated, Collection: oldSlug, NewSlug: newSlug}
+	}
+
+	// A subscriber that revalidated AFTER a rename knows only the NEW slug.
+	newSlugOnly := sseVisibility{
+		visibleSlugSet: map[string]bool{"renamed-tasks": true},
+	}
 
 	allAccess := sseVisibility{visibleSlugSet: nil}
 
@@ -57,6 +65,12 @@ func TestSSEEventVisibleFor(t *testing.T) {
 		{"item-grant-only denied collection.updated for invisible collection", itemGrantOnly, collUpdated("secrets"), false},
 		{"full-collection access gets collection.updated", fullColl, collUpdated("tasks"), true},
 		{"all-access gets collection.updated", allAccess, collUpdated("tasks"), true},
+		// Rename: a subscriber that only knows the NEW slug (revalidated after
+		// the rename) still receives the event routed by the OLD slug, so it
+		// learns the mapping (Codex round 2).
+		{"rename delivered when only new slug is visible", newSlugOnly, collRenamed("tasks", "renamed-tasks"), true},
+		{"rename still dropped when neither slug is visible", newSlugOnly, collRenamed("tasks", "other-new"), false},
+		{"rename delivered when only old slug is visible", fullColl, collRenamed("tasks", "renamed-tasks"), true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
