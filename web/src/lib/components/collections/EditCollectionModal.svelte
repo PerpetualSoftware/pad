@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api } from '$lib/api/client';
+	import { api, isConflictOrNotFound } from '$lib/api/client';
 	import type { Collection, CollectionUpdate, CollectionSettings, FieldDef, FieldMigration, QuickAction } from '$lib/types';
 	import { parseSchema, parseSettings } from '$lib/types';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
@@ -79,18 +79,47 @@
 			return;
 		}
 		archiving = true;
-		// Synchronous capture (see the Props.onupdated doc comment) — read
-		// BEFORE the await, not after.
-		const editedCollectionId = collection.id;
-		const editedCollectionSlug = collection.slug;
-		const editedCollectionName = collection.name;
-		const editedWsSlug = wsSlug;
-		try {
-			await api.collections.delete(editedWsSlug, editedCollectionSlug);
+		// Target the SEEDED collection identity, NOT the live props — the props
+		// may now identify a different collection while this form still shows
+		// the seeded one, and archive is destructive (Codex switch-safety).
+		const editedCollectionId = seededCollectionId;
+		const editedCollectionSlug = seededCollectionSlug;
+		const editedCollectionName = seededCollectionName;
+		const editedWsSlug = seededWsSlug;
+		// OCC token (BUG-2265 Codex round 8): the seeded collection's updated_at.
+		// Passed to the server delete so a concurrent RENAME that re-owned this
+		// slug with a DIFFERENT collection 409s instead of archiving the wrong
+		// one — closing the resolve-by-id → delete-by-slug TOCTOU.
+		const editedExpectedUpdatedAt = expectedUpdatedAt;
+		const finishArchived = () => {
 			toastStore.show(`Archived "${editedCollectionName}"`, 'success');
 			onupdated(undefined, editedCollectionId, editedCollectionSlug, editedWsSlug);
 			onclose();
+		};
+		try {
+			await api.collections.delete(editedWsSlug, editedCollectionSlug, editedExpectedUpdatedAt);
+			finishArchived();
 		} catch (err) {
+			// A concurrent RENAME can kill the seeded slug (404) or 409 the OCC
+			// token (BUG-2265 Pattern C). Resolve the SAME collection by its
+			// STABLE id and retry the delete against its current slug + FRESH
+			// token; if it's already gone from the list, it's effectively
+			// archived already.
+			if (isConflictOrNotFound(err)) {
+				try {
+					const list = await api.collections.list(editedWsSlug);
+					const fresh = list.find((c) => c.id === editedCollectionId);
+					if (!fresh) {
+						finishArchived();
+						return;
+					}
+					await api.collections.delete(editedWsSlug, fresh.slug, fresh.updated_at);
+					finishArchived();
+					return;
+				} catch {
+					// fall through to the generic error
+				}
+			}
 			toastStore.show('Failed to archive collection', 'error');
 		} finally {
 			archiving = false;
@@ -108,6 +137,26 @@
 	let description = $state('');
 	let saving = $state(false);
 	let error = $state('');
+
+	// Optimistic-concurrency token (BUG-2265): the collection's updated_at
+	// captured at the moment the form was seeded from `collection` (see the
+	// open-edge seed effect below). handleSave round-trips it so a full-form
+	// save that lost a race to another writer is rejected with a 409 instead
+	// of silently overwriting their change; on 409 we surface a
+	// non-destructive "reload" message and keep the user's edits intact.
+	let expectedUpdatedAt = $state('');
+
+	// Target-collection IDENTITY captured when the form was SEEDED (Codex
+	// switch-safety). SvelteKit reuses this modal's host route, so the
+	// `collection`/`wsSlug` PROPS can come to identify a DIFFERENT collection
+	// while collection A's form is still on screen. handleSave/handleArchive
+	// MUST target the collection the form was seeded from — never the live
+	// props — or a save overwrites, and an archive DELETES, the wrong
+	// collection. The seed effect re-seeds when the identity changes.
+	let seededCollectionId = $state('');
+	let seededCollectionSlug = $state('');
+	let seededCollectionName = $state('');
+	let seededWsSlug = $state('');
 
 	// ── Field editing state ──────────────────────────────────────────────────
 	// EditableField shape lives in `./field-editor-types.ts` so FieldEditor
@@ -207,8 +256,24 @@
 
 	// ── Sync from collection when modal opens ────────────────────────────────
 
+	// Seed the form once per open transition (open false→true) OR when the
+	// target collection IDENTITY changes while open (Codex switch-safety —
+	// navigation can swap the `collection` prop to a different collection). A
+	// same-identity `collection` reassignment (BUG-2265's sibling broadcast
+	// refreshing settings/updated_at) must NOT re-seed, or it would wipe the
+	// user's in-progress edits — so gate on the id, not any change. `wasOpen`
+	// is a plain (non-reactive) latch.
+	let wasOpen = false;
+
 	$effect(() => {
-		if (open && collection) {
+		if (open && collection && (!wasOpen || collection.id !== seededCollectionId)) {
+			// Capture the target identity the form is being seeded FROM, so
+			// handleSave/handleArchive act on it rather than the live props.
+			seededCollectionId = collection.id;
+			seededCollectionSlug = collection.slug;
+			seededCollectionName = collection.name;
+			seededWsSlug = wsSlug;
+			expectedUpdatedAt = collection.updated_at;
 			name = collection.name;
 			selectedIcon = collection.icon || '';
 			description = collection.description || '';
@@ -264,7 +329,30 @@
 
 			void loadCollectionOptions();
 			void loadPreviewContext();
+		} else if (
+			open &&
+			collection &&
+			collection.id === seededCollectionId &&
+			collection.slug !== seededCollectionSlug
+		) {
+			// SAME collection (same id) but a concurrent RENAME changed its slug
+			// (and name) while the modal is open (Codex P2). Retarget the PATCH
+			// endpoint (slug/name/ws) so handleSave/handleArchive hit the LIVE
+			// slug instead of the now-dead one (which would 404 before the token
+			// could even 409). Do NOT reseed the form, and DELIBERATELY do NOT
+			// re-capture the token: the seeded token stays stale so the save
+			// correctly 409s → the non-destructive "collection changed, reload"
+			// message, rather than succeeding and reverting the concurrent rename
+			// with this modal's pre-rename full form (the exact stale-snapshot
+			// clobber BUG-2265 prevents).
+			seededCollectionSlug = collection.slug;
+			seededCollectionName = collection.name;
+			seededWsSlug = wsSlug;
 		}
+		// Latch AFTER the seed so the next `collection` change (e.g. the
+		// BUG-2265 broadcast) re-runs this effect but skips re-seeding until
+		// the modal is actually closed and reopened.
+		wasOpen = open;
 	});
 
 	// ── Existing field actions ───────────────────────────────────────────────
@@ -381,11 +469,13 @@
 		if (!name.trim() || saving || hasNewFieldBlockingErrors) return;
 		saving = true;
 		error = '';
-		// Synchronous capture (see the Props.onupdated doc comment) — read
-		// BEFORE the await, not after.
-		const editedCollectionId = collection.id;
-		const editedCollectionSlug = collection.slug;
-		const editedWsSlug = wsSlug;
+		// Target the SEEDED collection identity, NOT the live props — the form
+		// data and expectedUpdatedAt below were seeded from that collection, so
+		// the write must land on it even if the props now identify a different
+		// collection (Codex switch-safety). Matches the captured token.
+		const editedCollectionId = seededCollectionId;
+		const editedCollectionSlug = seededCollectionSlug;
+		const editedWsSlug = seededWsSlug;
 		try {
 			// Build existing fields back into FieldDef[]
 			const updatedExisting: FieldDef[] = existingFields.map((f) => {
@@ -542,7 +632,13 @@
 				icon: selectedIcon || undefined,
 				description: description.trim() || undefined,
 				schema: JSON.stringify({ fields: allFields }),
-				settings: JSON.stringify(settingsObj)
+				settings: JSON.stringify(settingsObj),
+				// BUG-2265: round-trip the open-time token so a full-form save
+				// that lost a race is rejected rather than clobbering the other
+				// writer. Unlike QuickActionsMenu we do NOT auto-merge a whole
+				// form — a rebuilt schema+settings blob from a stale snapshot
+				// can't be safely reconciled — so we surface a reload prompt.
+				expected_updated_at: expectedUpdatedAt || undefined
 			};
 
 			if (migrations.length > 0) {
@@ -550,10 +646,26 @@
 			}
 
 			const updated = await api.collections.update(editedWsSlug, editedCollectionSlug, data);
+			// Keep the token fresh in case the modal stays open (the parent may
+			// leave it mounted after a save) so a subsequent edit doesn't
+			// spuriously 409 against our own just-committed change.
+			expectedUpdatedAt = updated.updated_at;
 			toastStore.show(`Updated ${name.trim()}`, 'success');
 			onupdated(updated, editedCollectionId, editedCollectionSlug, editedWsSlug);
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to update collection';
+			if (isConflictOrNotFound(err)) {
+				// The collection changed elsewhere — a 409 (settings/schema
+				// changed) OR a 404 (a RENAME killed the slug we targeted). Both
+				// are non-destructive here (BUG-2265 Pattern C): keep the user's
+				// in-progress edits visible and tell them to reload, then re-apply.
+				// We deliberately do NOT auto-merge a full-form edit — a rebuilt
+				// schema+settings blob from a stale snapshot can't be safely
+				// reconciled, and silently overwriting would clobber the change.
+				error =
+					'This collection was changed elsewhere while you were editing. Reload to see the latest, then re-apply your changes.';
+			} else {
+				error = err instanceof Error ? err.message : 'Failed to update collection';
+			}
 		} finally {
 			saving = false;
 		}

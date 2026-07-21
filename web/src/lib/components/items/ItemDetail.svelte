@@ -189,6 +189,28 @@
 	// counter — not reactive; it only fences async writes.
 	let loadGeneration = 0;
 
+	// UNIFIED collection-snapshot generation (BUG-2265 Codex): bumped by EVERY
+	// operation that assigns `collection` — loadData's collection fetch, the SSE
+	// collection_updated refresh, and the quick-action / edit-modal callbacks —
+	// so the last-STARTED write wins and a stale in-flight continuation can't
+	// revert a newer snapshot (its token included). `loadGeneration` still
+	// fences the ITEM load; this token is dedicated to the `collection` object.
+	// Plain counter — not reactive; it only fences writes.
+	let collectionGen = 0;
+
+	// UNIFIED item-snapshot generation (BUG-2265 Codex round 9): bumped by EVERY
+	// async operation that assigns `item` from a fetch — loadData's item load,
+	// the SSE item_updated/archived/restored refetches, the onSync refetches,
+	// the collab refresh, the migration item-refetch, and the user-write adopts
+	// (title/field/tag saves) — so the last-STARTED write wins and a stale
+	// in-flight continuation can't revert a newer item snapshot. Distinct from
+	// loadGeneration (which also fences the whole load's collection/links/
+	// members writes) so a same-item refetch doesn't need a full reload to be
+	// ordered against another. Every `item = <fetched>` gates on this + the item
+	// id; synchronous optimistic writes bump it so a stale refetch can't revert
+	// them. Plain counter — not reactive.
+	let itemGen = 0;
+
 	// R9 teardown ownership (TASK-2172). The onDestroy clear-if-owner compares
 	// the global `collectionStore.activeItem` against the id THIS instance last
 	// set active — NOT against the reactive `item`, which a cross-collection load
@@ -767,6 +789,92 @@
 		// the user's in-flight document. A proper fix needs editor-dirty-
 		// state integration; tracked separately.
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
+			// BUG-2265 sibling broadcast: another ItemDetail / collection page
+			// changed THIS collection's settings/schema. This instance holds
+			// its OWN independent `collection` snapshot (the full-page pane
+			// host renders a master + a pane, each with its own copy), so
+			// refresh it here — a subsequent quick-action / edit save then
+			// sends a fresh expected_updated_at instead of clobbering the
+			// sibling's write. `collection_updated` carries no item_id, so this
+			// branch must run BEFORE the item-id guard below.
+			if (event.type === 'collection_updated') {
+				const snap = collection;
+				// Match by STABLE id, not slug (Codex round 7): a replayed rename
+				// event's old slug can be re-owned by a DIFFERENT collection, so a
+				// slug match could load the wrong schema into this pane.
+				if (!snap || event.collection_id !== snap.id) return;
+				const slug = snap.slug;
+				// On a rename, refetch by the NEW slug (the old one is dead) so
+				// this pane's collection reference — used to build quick-action /
+				// edit writes — stays valid (Codex P2).
+				// TODO(BUG-2272): full cross-tab rename renavigation — the
+				// full-page item route's URL/collSlug is NOT retargeted here, so
+				// breadcrumbs / a hard reload still resolve the dead old slug.
+				// Deferred (already broken on main; snapshot refresh below is the
+				// in-scope BUG-2265 fix).
+				// Fetch the collection's CURRENT slug. A rename carries new_slug;
+				// a settings update that follows a rename routes by (and carries in
+				// `collection`) the NEW slug — so prefer new_slug, THEN event's own
+				// slug, THEN the pane's snapshot slug. Using `slug` alone would make
+				// a post-rename settings update request the DEAD old slug and bump
+				// collectionGen, cancelling the valid rename fetch (Codex round 9).
+				const targetSlug = event.new_slug || event.collection || slug;
+				// Unified generation: bumped here AND by loadData / the
+				// quick-action + edit-modal callbacks, so the last-started write
+				// wins and neither a stale refresh nor a stale load can revert a
+				// newer snapshot.
+				const collGen = ++collectionGen;
+				try {
+					const fresh = await api.collections.get(wsSlug, targetSlug);
+					// Persistent pane host has no {#key} remount — fence the write
+					// against a switch during the fetch (PLAN-2105 discipline):
+					// drop if a newer collection write superseded us or the loaded
+					// collection changed IDENTITY. Compare by stable id, not slug,
+					// so a rename (same id, new slug) still applies (Codex round 9).
+					if (collGen === collectionGen && collection && collection.id === snap.id) {
+						collection = fresh;
+					}
+				} catch {
+					// Best-effort — a stale snapshot just means the next save
+					// may 409 and self-heal via QuickActionsMenu's retry.
+				}
+				// BUG-2265 (Codex P1): if the schema migration mutated item field
+				// values, THIS pane's `item` (loaded via api.items.get, NOT from
+				// the localIndex that the workspace deltaSync reconciles) may hold
+				// stale field JSON — a later full-fields save would UNDO the
+				// migration. Refetch it. Skip while mid-edit (saving/title-editing):
+				// item-level optimistic concurrency then catches a clobbering save
+				// via a 409, and refetching would clobber the editor.
+				// NOTE(BUG-2273): updateField's full-blob write lacks item-level OCC
+				// (no expected_updated_at / fields_patch — the web editor never
+				// adopted IDEA-1480/v0.14), so a mid-edit field save can still race
+				// this reconcile. The migration reconcile is best-effort until then.
+				if (
+					event.items_changed &&
+					item &&
+					itemMatchesRef &&
+					saveStatus !== 'saving' &&
+					!editingTitle
+				) {
+					const reqItemId = item.id;
+					const reqWsSlug = wsSlug;
+					const reqItemSlug = itemSlug;
+					// Dedicated item-snapshot gen (round 9): the migration refetch
+					// and loadData no longer share loadGeneration, so a stale
+					// loadData response can't overwrite the migrated item (and
+					// vice-versa).
+					const myItemGen = ++itemGen;
+					try {
+						const updated = await api.items.get(reqWsSlug, reqItemSlug);
+						if (item && item.id === reqItemId && myItemGen === itemGen) {
+							item = adoptServerItem(updated);
+						}
+					} catch {
+						// Best-effort — the next event / tab-resume sync catches up.
+					}
+				}
+				return;
+			}
 			if (!item || event.item_id !== item.id) return;
 			// Ignore events while mid-switch: during A→B the loaded `item` is
 			// still A but the requested ref is already B, so a stale archive/
@@ -774,11 +882,10 @@
 			// B's just-opening pane. The new item's loadData refetches fresh
 			// state anyway (PLAN-2105 / TASK-2112; Codex).
 			if (!itemMatchesRef) return;
-			// Capture the generation at accept-time; every post-await guard
-			// below also checks it so a switch DURING an in-flight refetch (or
-			// an A→B→A that re-matches the id) can't apply a stale write or fire
-			// handleGone() against the wrong item.
-			const sseGen = loadGeneration;
+			// Item writes below are ordered via the dedicated itemGen (round 9),
+			// captured per-refetch just before the fetch so a switch / a newer
+			// item write (load, migration, another SSE/onSync refetch) drops the
+			// stale continuation. Identity is always checked by item id.
 
 			// Archive is destructive and must NOT be gated by the
 			// edit-conflict guard below — a user editing a since-archived
@@ -809,12 +916,13 @@
 				const archItemId = item.id;
 				const archWsSlug = wsSlug;
 				const archItemSlug = itemSlug;
+				const myItemGen = ++itemGen;
 				try {
 					const archived = await api.items.get(archWsSlug, archItemSlug);
-					if (!item || item.id !== archItemId || sseGen !== loadGeneration) return;
+					if (!item || item.id !== archItemId || myItemGen !== itemGen) return;
 					item = withInflightTags(archived);
 				} catch {
-					if (!item || item.id !== archItemId || sseGen !== loadGeneration) return;
+					if (!item || item.id !== archItemId || myItemGen !== itemGen) return;
 					handleGone();
 				}
 				return;
@@ -833,13 +941,15 @@
 			const reqItemId = item.id;
 			const reqWsSlug = wsSlug;
 			const reqItemSlug = itemSlug;
+			// One switch case runs per event, so bump the item-snapshot gen once.
+			const myItemGen = ++itemGen;
 
 			switch (event.type) {
 				case 'item_updated': {
 					try {
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
 						// Bail if the user navigated away before this resolved.
-						if (!item || item.id !== reqItemId || sseGen !== loadGeneration) return;
+						if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 						// Drop TASK-1243's conservative content-skip
 						// when collab is active (TASK-1262). Under
 						// collab the editor reads from Y.Doc, NOT
@@ -858,7 +968,7 @@
 						// still lose chars without this branch.
 						item = adoptServerItem(updated);
 						const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
-						if (!item || item.id !== reqItemId || sseGen !== loadGeneration) return;
+						if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 						itemLinks = links;
 					} catch {
 						// Ignore — will catch up on next event
@@ -868,7 +978,7 @@
 				case 'item_restored': {
 					try {
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
-						if (!item || item.id !== reqItemId || sseGen !== loadGeneration) return;
+						if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 						item = adoptServerItem(updated);
 					} catch {
 						// Ignore — will catch up on next event
@@ -885,10 +995,8 @@
 			// clobber it — the new item's loadData refetches fresh state
 			// (PLAN-2105 / TASK-2112; Codex).
 			if (!itemMatchesRef) return;
-			// Generation captured at accept-time; every post-await guard below
-			// also checks it so a switch during an in-flight refetch (or an
-			// A→B→A id re-match) can't clobber the wrong item or fire handleGone.
-			const syncGen = loadGeneration;
+			// Item writes below are ordered via the dedicated itemGen (round 9),
+			// bumped per-refetch; a switch is caught by the item-id check.
 
 			if (result.type === 'caught_up') return;
 
@@ -917,12 +1025,13 @@
 				const delItemId = item.id;
 				const delWsSlug = wsSlug;
 				const delItemSlug = itemSlug;
+				const myItemGen = ++itemGen;
 				try {
 					const refreshed = await api.items.get(delWsSlug, delItemSlug);
-					if (!item || item.id !== delItemId || syncGen !== loadGeneration) return;
+					if (!item || item.id !== delItemId || myItemGen !== itemGen) return;
 					item = withInflightTags(refreshed);
 				} catch {
-					if (!item || item.id !== delItemId || syncGen !== loadGeneration) return;
+					if (!item || item.id !== delItemId || myItemGen !== itemGen) return;
 					handleGone();
 				}
 				return;
@@ -946,22 +1055,25 @@
 					// Merge server state without disrupting the editor.
 					// Same collab-aware adoption rule as the SSE
 					// handler above (TASK-1262).
-					if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
+					if (!item || item.id !== reqItemId) return;
+					// Bump the item-snapshot gen so an in-flight refetch drops (round 9).
+					const myItemGen = ++itemGen;
 					item = adoptServerItem(updated);
 					const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
-					if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
+					if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 					itemLinks = links;
 				}
 				return;
 			}
 
 			// Full refresh fallback
+			const myItemGen = ++itemGen;
 			try {
 				const updated = await api.items.get(reqWsSlug, reqItemSlug);
-				if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
+				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				item = adoptServerItem(updated);
 				const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
-				if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
+				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				itemLinks = links;
 				syncService.markSynced(); // Advance cursor now that reload succeeded
 			} catch {
@@ -1026,6 +1138,16 @@
 
 	async function loadData() {
 		const myGen = ++loadGeneration;
+		// Join the unified collection-snapshot fence so this load's `collection`
+		// write is dropped if a newer SSE refresh / callback landed a fresher
+		// snapshot while this load was in flight (Codex — separate lifecycle
+		// from loadGeneration).
+		const collGen = ++collectionGen;
+		// Join the item-snapshot fence (round 9) so this load's `item` write is
+		// dropped if a newer item write (e.g. the migration refetch, or another
+		// load/refetch) landed a fresher item while this load was in flight —
+		// they no longer share loadGeneration.
+		const myItemGen = ++itemGen;
 		loading = true;
 		error = '';
 		// Clear per-item state that must NOT leak across navigation.
@@ -1197,7 +1319,10 @@
 			// Overlay any in-flight optimistic tag edit so navigating away and
 			// back mid-save can't show (and then let a follow-up edit overwrite
 			// with) stale server tags. See withInflightTags. Per Codex PR #659.
-			item = withInflightTags(itemData);
+			// Gate the ITEM snapshot on itemGen too: a newer item write (e.g. the
+			// migration refetch) that bumped itemGen but not loadGeneration must
+			// not be reverted by this in-flight load (round 9).
+			if (myItemGen === itemGen) item = withInflightTags(itemData);
 			// Cross-collection `?item=` safety (PLAN-2105 / TASK-2112). The
 			// Promise.all above optimistically fetched the collection by the
 			// route's `collSlug` — correct for the common (row-click) case,
@@ -1211,7 +1336,14 @@
 				try {
 					const realColl = await api.collections.get(wsSlug, itemData.collection_slug);
 					if (myGen !== loadGeneration) return;
-					collection = realColl;
+					// Gate the collection SNAPSHOT on the unified generation so a
+					// newer SSE refresh (bumps collectionGen, not loadGeneration)
+					// isn't reverted by this in-flight load.
+					// Apply when this is the freshest same-collection write OR when it's
+					// a switch to a DIFFERENT collection (a stale refresh for the old
+					// collection must not block loading the new one).
+					if (collGen === collectionGen || collection?.id !== realColl.id)
+						collection = realColl;
 				} catch {
 					if (myGen !== loadGeneration) return;
 					// Can't resolve the item's REAL collection. Surface the
@@ -1222,7 +1354,7 @@
 					error = 'Failed to load this item’s collection';
 					return;
 				}
-			} else {
+			} else if (collGen === collectionGen || collection?.id !== collData.id) {
 				collection = collData;
 			}
 			// A FROZEN (peeking) instance must NOT write the SINGLETON global stores
@@ -1777,6 +1909,10 @@
 				// refresh. Per Codex round 4 [P1].
 				const refreshCtx = ctx;
 				const refreshGen = loadGeneration;
+				// Order the `item` write against every other item-snapshot write
+				// via the dedicated itemGen (round 9); refreshGen still guards the
+				// collab provider + nonce rebuild.
+				const myItemGen = ++itemGen;
 				void api.items
 					.get(refreshCtx.wsSlug, refreshCtx.itemId)
 					.then((fresh) => {
@@ -1786,7 +1922,7 @@
 						// NEW item's provider needlessly and stamp A's content
 						// into the wrong slot (PLAN-2105 / TASK-2112; Codex).
 						if (collabProvider !== provider || refreshGen !== loadGeneration) return;
-						if (item && item.id === refreshCtx.itemId) {
+						if (item && item.id === refreshCtx.itemId && myItemGen === itemGen) {
 							item = withInflightTags(fresh);
 						}
 						// Refetch succeeded → safe to rebuild.
@@ -2143,6 +2279,12 @@
 		// (This also lets a pre-flip pending onchange from FieldEditor's 500ms
 		// debounce complete rather than being suppressed.)
 		if (!item) return;
+		// NOTE(BUG-2273): this sends a FULL `fields` blob (stale ...fields + one
+		// key) with NO expected_updated_at / fields_patch — the web editor never
+		// adopted the IDEA-1480/v0.14 item merge+OCC. So a concurrent schema
+		// MIGRATION (or any other field write) can be silently UNDONE by this
+		// write. The BUG-2265 migration reconcile above refetches to shrink the
+		// window, but the real fix is item-level OCC here (tracked in BUG-2273).
 		const updated = { ...fields, [key]: value };
 		const payload = JSON.stringify(updated);
 		const targetItem = item;
@@ -3940,6 +4082,9 @@
 						}}
 						oncollectionupdated={(updated) => {
 							if (keyedSlug !== itemSlug) return;
+							// Bump the unified fence so an in-flight stale load/refresh
+							// can't revert this fresh write (Codex).
+							collectionGen++;
 							collection = updated;
 						}}
 					/>
@@ -4876,6 +5021,9 @@
 					}
 					return;
 				}
+				// Bump the unified fence so an in-flight stale load/refresh can't
+				// revert this fresh edit-modal write (Codex).
+				collectionGen++;
 				collection = updated;
 				// If the owner renamed the collection, its slug may have
 				// changed. The current `/[collection]/[slug]` URL still

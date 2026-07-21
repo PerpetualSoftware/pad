@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
-	import { api, PadApiError, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { api, PadApiError, isPlanLimitError, planLimitMessage, isConflictOrNotFound } from '$lib/api/client';
 	import type { BulkItemsRequest, Collection, Item, PaneTarget, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
@@ -819,6 +819,50 @@
 		const coll = collSlug;
 
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
+			// BUG-2265 sibling broadcast: another client changed THIS
+			// collection's settings/schema. Refresh the page's own
+			// `collection` snapshot so its list-header quick actions / edit
+			// controls send a fresh expected_updated_at. Carries no item_id,
+			// so short-circuit before the item-delta path below.
+			if (event.type === 'collection_updated') {
+				// Match by STABLE id, not slug (Codex round 7): a replayed rename
+				// event's old slug can be re-owned by a DIFFERENT collection, so a
+				// slug match could navigate away / refresh from the wrong one.
+				if (!collection || event.collection_id !== collection.id) return;
+				// Rename (Codex P2): this route's URL slug is now dead. Re-target
+				// to the new slug — preserving the query string (open pane) — so
+				// the next fetch/action doesn't 404. Mirrors the originating
+				// client's rename navigation.
+				// TODO(BUG-2272): full cross-tab rename renavigation — chained
+				// renames replayed on reconnect (A→B then B→C) can arrive with
+				// `coll` already past the intermediate slug, so a B→C event whose
+				// old slug (B) no longer matches `coll` is skipped and the route
+				// can land on a dead intermediate. Deferred (already broken on main).
+				if (event.new_slug && event.new_slug !== coll) {
+					const search = typeof window !== 'undefined' ? window.location.search : '';
+					// TODO(BUG-2272): refresh global collectionStore / handle collection_updated
+					// in the workspace layout on rename. This route navigates, but the GLOBAL
+					// collectionStore (sidebar links/icons/names, pickers) isn't refreshed and
+					// the layout ignores collection_updated, so the sidebar keeps the dead old
+					// slug and clicking it 404s. Deferred (layout-level renavigation).
+					void goto(`/${username}/${wsSlug}/${event.new_slug}${search}`);
+					return;
+				}
+				// Unified generation: bumped here AND by loadCollection /
+				// handleGroupReorder, so the last-started write wins and neither
+				// a stale refresh nor a stale load can revert a newer snapshot.
+				const collGen = ++collectionGen;
+				try {
+					const fresh = await api.collections.get(ws, coll);
+					// Drop if a newer collection write superseded us or the route
+					// moved on while fetching.
+					if (collGen !== collectionGen || collSlug !== coll) return;
+					collection = fresh;
+				} catch {
+					// Best-effort; the next save will 409 and self-heal.
+				}
+				return;
+			}
 			// React to item lifecycle events by pulling deltas through
 			// the local store. With seq-stamped events (TASK-1358) we
 			// can short-circuit duplicates the server's replay buffer
@@ -1020,8 +1064,19 @@
 	// result checks it's still the latest before writing.
 	let loadSeq = 0;
 
+	// UNIFIED collection-snapshot generation (BUG-2265 Codex): bumped by EVERY
+	// operation that assigns `collection` — loadCollection, the SSE
+	// collection_updated refresh, and handleGroupReorder — so the last-STARTED
+	// write wins and a stale in-flight continuation (e.g. a slow load resolving
+	// after a fresh SSE refresh, which uses a different lifecycle than loadSeq)
+	// can't revert the collection and its concurrency token. `loadSeq` still
+	// guards the route-load's OTHER state (views/members/progress); this token
+	// is dedicated to the `collection` object itself.
+	let collectionGen = 0;
+
 	async function loadCollection(ws: string, coll: string, includeArchived = false) {
 		const seq = ++loadSeq;
+		const collGen = ++collectionGen;
 		metaLoading = true;
 		metaError = null;
 		// Reset for the new route; only flips back to `true` once
@@ -1050,7 +1105,11 @@
 			// A newer load started while this one was in flight — drop
 			// this result so it can't overwrite the current route's state.
 			if (seq !== loadSeq) return;
-			collection = collData;
+			// Gate the collection SNAPSHOT on the unified generation: a newer
+			// SSE refresh (which bumps collectionGen but not loadSeq) may have
+			// landed fresher data since this load began — don't revert it. The
+			// route-load's other state below stays on loadSeq.
+			if (collGen === collectionGen) collection = collData;
 			savedViews = viewsData;
 			workspaceMembers = membersData.members ?? [];
 			activeViewId = null;
@@ -1119,7 +1178,9 @@
 			// error + Retry affordance instead of masking a live
 			// collection as deleted.
 			if (err instanceof PadApiError && err.code === 'not_found') {
-				collection = null;
+				// Same generation gate as the success path — don't null a
+				// collection a newer SSE refresh just repopulated.
+				if (collGen === collectionGen) collection = null;
 				metaError = null;
 				// `items` is derived from localIndex; nothing to clear here.
 				// A missing collection shows the empty / not-found state via
@@ -1575,18 +1636,58 @@
 
 	async function handleGroupReorder(newOrder: string[]) {
 		if (!wsSlug || !collSlug || !collection) return;
-		const currentSchema = parseSchema(collection);
-		const fieldIdx = currentSchema.fields.findIndex((f) => f.key === groupField);
-		if (fieldIdx === -1) return;
+		// Capture identity + base snapshot BEFORE the await (no {#key} on this
+		// route — a switch mid-await must not write the wrong collection).
+		const ws = wsSlug;
+		const slug = collSlug;
+		const base = collection;
+		// Join the unified collection-snapshot fence: bump on start, gate every
+		// write, so a concurrent load/SSE-refresh that started later wins and a
+		// stale one can't revert our result (and vice-versa).
+		const collGen = ++collectionGen;
 
-		// Update the field's options to the new order
-		currentSchema.fields[fieldIdx].options = newOrder;
-		const newSchemaStr = JSON.stringify(currentSchema);
+		const s = parseSchema(base);
+		const idx = s.fields.findIndex((f) => f.key === groupField);
+		if (idx === -1) return;
+		s.fields[idx].options = newOrder;
+		const schemaStr = JSON.stringify(s);
 
 		try {
-			const updated = await api.collections.update(wsSlug, collSlug, { schema: newSchemaStr });
+			const updated = await api.collections.update(ws, slug, {
+				schema: schemaStr,
+				// BUG-2265: reject a stale full-schema write rather than clobber
+				// a concurrent collection edit.
+				expected_updated_at: base.updated_at
+			});
+			if (collGen !== collectionGen || ws !== wsSlug || slug !== collSlug) return;
 			collection = updated;
-		} catch {
+		} catch (err) {
+			// A concurrent change defeats our slug-targeted write via a 409
+			// (schema changed) OR a 404 (a RENAME killed the slug). Handle BOTH
+			// (BUG-2265 Pattern C). Replaying this stale option order onto the
+			// fresh field would silently drop concurrent option add/remove/rename,
+			// so ABORT — reordering is cosmetic and never worth clobbering a real
+			// schema edit. Reseed by STABLE id (a slug refetch would 404 on a
+			// rename) — not the SSE broadcast, which may be missed / reconnecting —
+			// so the token reseeds and the next re-drag doesn't fail forever.
+			if (isConflictOrNotFound(err)) {
+				try {
+					const list = await api.collections.list(ws);
+					const fresh = list.find((c) => c.id === base.id);
+					if (fresh && collGen === collectionGen && ws === wsSlug && slug === collSlug) {
+						collection = fresh;
+						// TODO(BUG-2272): on a remote RENAME this reseeds `collection`
+						// (fresh slug) but NOT the route's `collSlug`, so the NEXT
+						// reorder still PATCHes the dead old slug and re-fails. A real
+						// fix retargets the route slug (renavigation, deferred to
+						// BUG-2272); we don't build that here.
+					}
+				} catch {
+					// Best-effort reseed.
+				}
+				toastStore.show('Columns changed elsewhere — please reorder again', 'error');
+				return;
+			}
 			toastStore.show('Failed to save column order', 'error');
 		}
 	}
@@ -2902,7 +3003,9 @@
 								// follow-up save reads fresh settings.quick_actions
 								// instead of stale ones — without this, a second
 								// save can overwrite the first before loadCollection
-								// resolves.
+								// resolves. Bump the unified fence so an in-flight
+								// stale load/refresh can't revert this fresh write.
+								collectionGen++;
 								collection = updated;
 								loadCollection(wsSlug, collSlug, showArchived);
 							}}

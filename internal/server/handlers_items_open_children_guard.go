@@ -313,6 +313,16 @@ func writeOpenChildrenError(w http.ResponseWriter, parentRef string, details *op
 // (e.g. "TASK-5"). The details carry both timestamps so a client can decide
 // whether to re-read + retry or surface the collision to the user.
 func writeUpdateConflictError(w http.ResponseWriter, ref string, conflict *store.UpdateConflictError) {
+	writeUpdateConflictEnvelope(w, ref, conflict.ExpectedUpdatedAt, conflict.ActualUpdatedAt)
+}
+
+// writeUpdateConflictEnvelope is the shared writer for the
+// pad-structured-error/v1 update_conflict envelope. Both the item path
+// (writeUpdateConflictError) and the collection path
+// (writeCollectionUpdateConflictError, BUG-2265) emit the IDENTICAL wire shape
+// through this helper so clients branch on one `code` + `details` contract
+// regardless of which resource conflicted.
+func writeUpdateConflictEnvelope(w http.ResponseWriter, ref, expectedUpdatedAt string, actualUpdatedAt time.Time) {
 	writeJSON(w, http.StatusConflict, map[string]any{
 		"error": map[string]any{
 			"code": "update_conflict",
@@ -320,9 +330,18 @@ func writeUpdateConflictError(w http.ResponseWriter, ref string, conflict *store
 				"%s was modified by another writer since you last read it; re-read and retry.",
 				ref),
 			"details": map[string]any{
-				"ref":                 ref,
-				"expected_updated_at": conflict.ExpectedUpdatedAt,
-				"actual_updated_at":   conflict.ActualUpdatedAt.UTC().Format(time.RFC3339),
+				"ref": ref,
+				// expected_updated_at is echoed verbatim (the exact string the
+				// caller sent). actual_updated_at MUST use full RFC3339Nano
+				// precision so a client can round-trip it back as the token on
+				// retry: collection tokens are now sub-second (BUG-2265), and
+				// truncating to whole seconds (time.RFC3339) would hand back a
+				// token that never matches, 409-looping forever. Item tokens are
+				// second-precision (zero nanoseconds), so RFC3339Nano emits no
+				// fractional part for them — byte-identical to the old output,
+				// and the item path parses/compares via time.Equal regardless.
+				"expected_updated_at": expectedUpdatedAt,
+				"actual_updated_at":   actualUpdatedAt.UTC().Format(time.RFC3339Nano),
 			},
 		},
 	})

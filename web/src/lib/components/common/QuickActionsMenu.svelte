@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { QuickAction, Item, Collection } from '$lib/types';
 	import { parseFields, formatItemRef, parseSettings } from '$lib/types';
-	import { api } from '$lib/api/client';
+	import { api, isConflictOrNotFound } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
@@ -138,6 +138,13 @@
 		const prompt = newPrompt.trim();
 		if (!label || !prompt || saving) return;
 		saving = true;
+		// Capture workspace + collection identity BEFORE any await. This
+		// component is reused across items/collections without a guaranteed
+		// remount, so reading live props after the await could fetch/update the
+		// WRONG collection on a mid-save navigation (BUG-2265 switch-safety).
+		const ws = wsSlug;
+		const baseCollection = collection;
+		const slug = baseCollection.slug;
 		try {
 			const icon = newIcon.trim();
 			const newAction: QuickAction = {
@@ -146,14 +153,52 @@
 				scope,
 				...(icon ? { icon } : {})
 			};
-			const settings = parseSettings(collection);
-			const nextSettings = {
-				...settings,
-				quick_actions: [...(settings.quick_actions ?? []), newAction]
+
+			// BUG-2265: append onto a base snapshot AND round-trip its
+			// updated_at so the server rejects a stale write instead of
+			// clobbering a sibling ItemDetail's concurrent settings change.
+			// `appendOnto` re-derives the full settings from a FRESH base
+			// each time, so a 409-triggered refetch+retry re-applies our new
+			// action onto whatever the other writer just saved (no silent
+			// loss) rather than replaying our stale local snapshot.
+			const appendOnto = (base: Collection): string => {
+				const s = parseSettings(base);
+				return JSON.stringify({
+					...s,
+					quick_actions: [...(s.quick_actions ?? []), newAction]
+				});
 			};
-			const updated = await api.collections.update(wsSlug, collection.slug, {
-				settings: JSON.stringify(nextSettings)
-			});
+
+			let updated: Collection;
+			try {
+				updated = await api.collections.update(ws, slug, {
+					settings: appendOnto(baseCollection),
+					expected_updated_at: baseCollection.updated_at
+				});
+			} catch (err) {
+				// A concurrent change can defeat our slug-targeted write two ways:
+				// a 409 update_conflict (settings changed) OR a 404 not_found (a
+				// RENAME killed the slug). Recover from BOTH (BUG-2265 Pattern C):
+				// resolve the collection by its STABLE id, re-append onto its
+				// fresh settings, and retry ONCE. Surface only if it's truly gone.
+				if (!isConflictOrNotFound(err)) throw err;
+				const list = await api.collections.list(ws);
+				const fresh = list.find((c) => c.id === baseCollection.id);
+				if (!fresh) throw err; // collection gone (deleted) — surface it
+				updated = await api.collections.update(ws, fresh.slug, {
+					settings: appendOnto(fresh),
+					expected_updated_at: fresh.updated_at
+				});
+			}
+			// Only propagate the result if this component still represents the
+			// SAME collection it started with — compared by STABLE id so a
+			// concurrent rename (slug changed, same collection) still
+			// propagates, while a genuine switch to a DIFFERENT collection
+			// (different id) is dropped. On a reused route (no guaranteed
+			// remount) `oncollectionupdated` is the live (navigated) page's
+			// callback — feeding it our old response would assign stale data to
+			// the wrong page (Codex switch-safety).
+			if (wsSlug !== ws || collection?.id !== baseCollection.id) return;
 			toastStore.show('Saved', 'success');
 			oncollectionupdated?.(updated);
 			resetCreateForm();

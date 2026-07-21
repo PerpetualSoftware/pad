@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { sseService } from '$lib/services/sse.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import type { Collection, WorkspaceContext } from '$lib/types';
 	import { parseSchema } from '$lib/types';
@@ -85,6 +86,41 @@
 		if (wsSlug) load(wsSlug);
 	});
 
+	// BUG-2265: keep the collections list fresh when another client changes a
+	// collection, so opening the edit modal seeds a CURRENT
+	// expected_updated_at instead of a stale one. UNIFIED generation (Codex):
+	// EVERY collections-list write — load(), create/update handlers, and the
+	// SSE refresh — bumps this and gates its assignment, so a stale in-flight
+	// fetch (e.g. a slow load for workspace A) can't revert a newer one.
+	let collectionsGen = 0;
+	// Dedicated fence for the whole load() path (name/context/collections/
+	// members). Bumped only by load() (each workspace switch re-runs it), so a
+	// slow load for workspace A can't resume after B's load and clobber B — and,
+	// unlike collectionsGen (which an SSE refresh also bumps), an SSE
+	// collections-refresh mid-load doesn't drop load()'s name/members writes.
+	let loadGen = 0;
+	async function refreshCollections(ws: string) {
+		if (!ws) return;
+		const gen = ++collectionsGen;
+		try {
+			const fresh = await api.collections.list(ws);
+			// Drop if a newer write superseded us OR the workspace changed.
+			if (gen !== collectionsGen || ws !== wsSlug) return;
+			collections = fresh;
+			// If the edit modal is open, feed it the refreshed object for the
+			// SAME id so a concurrent rename updates its `collection` prop and
+			// its same-id-rename retarget branch fires — otherwise the modal
+			// keeps PATCHing the dead old slug → 404 (Codex #4).
+			if (editingCollection) {
+				const refreshed = fresh.find((c) => c.id === editingCollection!.id);
+				if (refreshed) editingCollection = refreshed;
+			}
+		} catch {
+			// Best-effort; a stale token just yields a recoverable 409.
+		}
+	}
+	let unsubscribeSSE: (() => void) | null = null;
+
 	onMount(() => {
 		const stored = localStorage.getItem('pad-theme');
 		if (stored === 'light' || stored === 'dark') {
@@ -98,16 +134,35 @@
 			// so an owner-only tab in the hash won't be in validTabIds yet.
 			pendingHash = hash;
 		}
+		unsubscribeSSE = sseService.onItemEvent((event) => {
+			if (event.type === 'collection_updated') void refreshCollections(wsSlug);
+		});
+	});
+
+	onDestroy(() => {
+		unsubscribeSSE?.();
 	});
 	async function load(slug: string) {
 		loading = true;
+		// Capture generations at ENTRY — BEFORE any await (including setCurrent)
+		// — and fence EVERY continuation (Codex round 8). A slow load for
+		// workspace A that resumes after B's load is superseded (myLoad !==
+		// loadGen) and drops all its writes, so it can't clobber B's
+		// name/context/collections/members. The collections write ALSO respects
+		// collectionsGen so it doesn't revert a fresher SSE refresh.
+		const myLoad = ++loadGen;
+		const myColl = ++collectionsGen;
 		try {
 			await workspaceStore.setCurrent(slug);
+			if (myLoad !== loadGen) return;
 			wsName = workspaceStore.current?.name ?? '';
 			contextEditor = JSON.stringify(workspaceStore.current?.context ?? {}, null, 2);
-			collections = await api.collections.list(slug);
+			const fresh = await api.collections.list(slug);
+			if (myLoad !== loadGen) return;
+			if (myColl === collectionsGen) collections = fresh;
 			try {
 				const memberData = await api.members.list(slug);
+				if (myLoad !== loadGen) return;
 				members = memberData.members ?? [];
 				invitations = memberData.invitations ?? [];
 				// Note: current-user role no longer derived here. workspaceStore.setCurrent
@@ -115,7 +170,7 @@
 			} catch {}
 		} catch { /* allow partial render */
 		} finally {
-			loading = false;
+			if (myLoad === loadGen) loading = false;
 		}
 	}
 	async function saveName() {
@@ -208,14 +263,14 @@
 		localStorage.setItem('pad-theme', theme);
 	}
 	async function handleCollectionCreated() {
-		collections = await api.collections.list(wsSlug);
+		await refreshCollections(wsSlug);
 		collectionStore.loadCollections(wsSlug);
 		showCreateModal = false;
 	}
 	async function handleCollectionUpdated() {
-		collections = await api.collections.list(wsSlug);
-		collectionStore.loadCollections(wsSlug);
 		editingCollection = null;
+		await refreshCollections(wsSlug);
+		collectionStore.loadCollections(wsSlug);
 	}
 	async function handleInvite() {
 		if (!inviteEmail.trim() || inviting) return;

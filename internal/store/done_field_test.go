@@ -200,7 +200,7 @@ func TestGetItemProgress_HonorsSoftDeletedChildCollections(t *testing.T) {
 
 	// Soft-delete the tasks collection. Its items remain in the DB and
 	// are still linked to the plan.
-	if err := s.DeleteCollection(tasks.ID); err != nil {
+	if err := s.DeleteCollection(tasks.ID, ""); err != nil {
 		t.Fatalf("soft delete tasks: %v", err)
 	}
 

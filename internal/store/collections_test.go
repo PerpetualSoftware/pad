@@ -2,7 +2,10 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -113,6 +116,352 @@ func TestUpdateCollectionCoercesEmptyStringSettings(t *testing.T) {
 	}
 	if updated.Settings != "{}" {
 		t.Errorf("expected UpdateCollection to coerce empty-string settings to %q, got %q", "{}", updated.Settings)
+	}
+}
+
+// TestUpdateCollectionExpectedUpdatedAtMatch: a matching optimistic-concurrency
+// token (BUG-2265) lets the settings write through unchanged. Mirrors the item
+// path's TestUpdateItemExpectedUpdatedAtMatch.
+func TestUpdateCollectionExpectedUpdatedAtMatch(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollMatch")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Things",
+		Slug: "things-occ-match",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+
+	expected := created.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+	settings := `{"quick_actions":[{"label":"Ship","prompt":"/pad ship","scope":"item"}]}`
+	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings:          &settings,
+		ExpectedUpdatedAt: expected,
+	})
+	if err != nil {
+		t.Fatalf("UpdateCollection with matching expected_updated_at should succeed: %v", err)
+	}
+	if updated == nil {
+		t.Fatalf("UpdateCollection returned nil")
+	}
+	// Compare semantically — Postgres re-serializes the JSONB column (spaces /
+	// key order differ from the literal we sent), so an exact-string check
+	// would be a false failure on PG while passing on SQLite.
+	var got models.CollectionSettings
+	if err := json.Unmarshal([]byte(updated.Settings), &got); err != nil {
+		t.Fatalf("parse updated settings %q: %v", updated.Settings, err)
+	}
+	if len(got.QuickActions) != 1 || got.QuickActions[0].Label != "Ship" {
+		t.Errorf("expected the Ship quick action to be written, got %q", updated.Settings)
+	}
+}
+
+// TestUpdateCollectionExpectedUpdatedAtConflict: a stale token is rejected with
+// *CollectionUpdateConflictError and the write does NOT land — the BUG-2265
+// last-write-wins fix. Mirrors TestUpdateItemExpectedUpdatedAtConflict.
+func TestUpdateCollectionExpectedUpdatedAtConflict(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollConflict")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:     "Things",
+		Slug:     "things-occ-conflict",
+		Settings: `{"layout":"balanced"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+
+	// A timestamp that definitely doesn't match the row's updated_at.
+	stale := "2000-01-01T00:00:00Z"
+	newSettings := `{"quick_actions":[{"label":"X","prompt":"y","scope":"item"}]}`
+	_, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings:          &newSettings,
+		ExpectedUpdatedAt: stale,
+	})
+	if err == nil {
+		t.Fatal("expected CollectionUpdateConflictError, got nil")
+	}
+	var conflict *CollectionUpdateConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected *CollectionUpdateConflictError, got %T: %v", err, err)
+	}
+	if conflict.ExpectedUpdatedAt != stale {
+		t.Errorf("conflict.ExpectedUpdatedAt: got %q want %q", conflict.ExpectedUpdatedAt, stale)
+	}
+	if conflict.ActualUpdatedAt.IsZero() {
+		t.Error("conflict.ActualUpdatedAt should carry the row's real timestamp")
+	}
+
+	// The write must NOT have landed — settings unchanged (semantic compare;
+	// see the match test for why exact-string fails on Postgres JSONB).
+	reread, err := s.GetCollection(created.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+	var got models.CollectionSettings
+	if err := json.Unmarshal([]byte(reread.Settings), &got); err != nil {
+		t.Fatalf("parse reread settings %q: %v", reread.Settings, err)
+	}
+	if got.Layout != "balanced" || len(got.QuickActions) != 0 {
+		t.Errorf("settings should be unchanged after a rejected conflict, got %q", reread.Settings)
+	}
+}
+
+// TestUpdateCollectionAppliesMigrationsAtomically (BUG-2265 Codex P1): the
+// schema change and its field-value migration commit together in ONE tx — the
+// item's renamed option value lands with the schema, and the concurrency token
+// advances once. (Failure-rollback is covered structurally: the migration runs
+// inside the same tx, so an error returns before commit.)
+func TestUpdateCollectionAppliesMigrationsAtomically(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollMigrate")
+
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Tasks",
+		Slug:   "tasks-occ-migrate",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","closed"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "T", Fields: `{"status":"open"}`})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	token := coll.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+	newSchema := `{"fields":[{"key":"status","label":"Status","type":"select","options":["active","closed"]}]}`
+	updated, err := s.UpdateCollection(coll.ID, models.CollectionUpdate{
+		Schema:            &newSchema,
+		ExpectedUpdatedAt: token,
+		Migrations:        []models.FieldMigration{{Field: "status", RenameOptions: map[string]string{"open": "active"}}},
+	})
+	if err != nil {
+		t.Fatalf("UpdateCollection with migration: %v", err)
+	}
+	// Schema change landed (compare semantically — Postgres re-serializes the
+	// JSONB schema column, so an exact-string check would false-fail on PG).
+	var gotSchema models.CollectionSchema
+	if err := json.Unmarshal([]byte(updated.Schema), &gotSchema); err != nil {
+		t.Fatalf("parse updated schema %q: %v", updated.Schema, err)
+	}
+	if len(gotSchema.Fields) != 1 || len(gotSchema.Fields[0].Options) != 2 ||
+		gotSchema.Fields[0].Options[0] != "active" || gotSchema.Fields[0].Options[1] != "closed" {
+		t.Errorf("schema options not updated to [active closed]: %q", updated.Schema)
+	}
+	// Token advanced exactly (strictly past the accepted token).
+	if !updated.UpdatedAt.After(coll.UpdatedAt) {
+		t.Errorf("token did not advance: %s !> %s", updated.UpdatedAt.UTC(), coll.UpdatedAt.UTC())
+	}
+	// Item value migrated in the SAME commit.
+	got, err := s.GetItem(item.ID)
+	if err != nil || got == nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(got.Fields), &fields); err != nil {
+		t.Fatalf("parse item fields %q: %v", got.Fields, err)
+	}
+	if fields["status"] != "active" {
+		t.Errorf("item field value not migrated, got %v (fields %q)", fields["status"], got.Fields)
+	}
+}
+
+// TestUpdateCollectionMigrationNoDeadlockWithItemCreate is the BUG-2265 Codex
+// round-4 lock-ordering regression guard. UpdateCollection's migration path and
+// item creation both lock the workspace advisory/seq lock AND a collection row;
+// they MUST take them in the same order (workspace lock first, then the
+// collection row) or a concurrent item-create + schema-migration ABBA-deadlocks.
+// On Postgres a wrong order surfaces as a "deadlock detected" error (the
+// detector aborts a tx rather than hanging); on SQLite the single-writer lock
+// serializes everything. Either way, with the correct order every worker
+// succeeds.
+func TestUpdateCollectionMigrationNoDeadlockWithItemCreate(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollDeadlock")
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Tasks",
+		Slug:   "tasks-occ-deadlock",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["a","b"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+
+	const workers = 8
+	var ready sync.WaitGroup
+	ready.Add(workers)
+	release := make(chan struct{})
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			ready.Done()
+			<-release // all workers contend simultaneously
+			if n%2 == 0 {
+				// Migration path: takes the workspace seq lock + the collection
+				// row FOR UPDATE. A non-matching rename still exercises both
+				// locks (len(Migrations) > 0 is the only gate).
+				_, e := s.UpdateCollection(coll.ID, models.CollectionUpdate{
+					Migrations: []models.FieldMigration{{Field: "status", RenameOptions: map[string]string{"z": "y"}}},
+				})
+				errCh <- e
+			} else {
+				// Item creation: takes the workspace advisory lock, then the
+				// collection-row FK lock on INSERT.
+				_, e := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+					Title:  fmt.Sprintf("i%d", n),
+					Fields: `{"status":"a"}`,
+				})
+				errCh <- e
+			}
+		}(i)
+	}
+	ready.Wait()
+	close(release)
+	wg.Wait()
+	close(errCh)
+	for e := range errCh {
+		if e != nil {
+			t.Fatalf("concurrent item-create + schema-migration errored (ABBA-deadlock regression?): %v", e)
+		}
+	}
+}
+
+// TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber is the BUG-2265
+// same-second regression guard (Codex P1): two guarded writes reusing the SAME
+// token must not both succeed even when they land in the same wall-clock second
+// (now() is one-second precision). The first accepted write advances updated_at
+// strictly past the token, so replaying the stale token conflicts — DETERMINISTIC
+// regardless of timing.
+func TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollSameSecond")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Things",
+		Slug: "things-occ-samesecond",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+
+	token := created.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+
+	first := `{"layout":"content-primary"}`
+	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings:          &first,
+		ExpectedUpdatedAt: token,
+	})
+	if err != nil {
+		t.Fatalf("first guarded update should succeed: %v", err)
+	}
+	// The accepted write must have advanced updated_at strictly past the token
+	// even if it committed in the same second the token was read.
+	if !updated.UpdatedAt.After(created.UpdatedAt) {
+		t.Fatalf("updated_at must advance past the token: created=%s updated=%s",
+			created.UpdatedAt.UTC(), updated.UpdatedAt.UTC())
+	}
+
+	// Replaying the SAME (now stale) token must conflict, not clobber.
+	second := `{"layout":"fields-primary"}`
+	_, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings:          &second,
+		ExpectedUpdatedAt: token,
+	})
+	var conflict *CollectionUpdateConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("replaying the stale token must conflict, got %T: %v", err, err)
+	}
+
+	// The first write must still be the current state (second write rejected).
+	reread, err := s.GetCollection(created.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+	var got models.CollectionSettings
+	if err := json.Unmarshal([]byte(reread.Settings), &got); err != nil {
+		t.Fatalf("parse reread settings %q: %v", reread.Settings, err)
+	}
+	if got.Layout != "content-primary" {
+		t.Errorf("expected the first write to survive, got %q", reread.Settings)
+	}
+}
+
+// TestUpdateCollectionTokenlessWriteStillAdvancesToken is the BUG-2265 Codex
+// round-2 guard: a TOKENLESS update must also advance updated_at strictly past
+// the row's current value, so it can't regress the concurrency token in the
+// same wall-clock second and let a stale guarded token clobber newer data.
+func TestUpdateCollectionTokenlessWriteStillAdvancesToken(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollTokenlessMono")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Things",
+		Slug: "things-occ-tokenless-mono",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+	token := created.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+
+	// Tokenless write (the CLI/MCP/API path) — must advance updated_at even if
+	// it lands in the same second the token was read.
+	first := `{"layout":"content-primary"}`
+	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{Settings: &first})
+	if err != nil {
+		t.Fatalf("tokenless update should succeed: %v", err)
+	}
+	if !updated.UpdatedAt.After(created.UpdatedAt) {
+		t.Fatalf("tokenless update must advance updated_at: created=%s updated=%s",
+			created.UpdatedAt.UTC(), updated.UpdatedAt.UTC())
+	}
+
+	// A guarded write replaying the pre-tokenless token must now conflict.
+	second := `{"layout":"fields-primary"}`
+	_, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings:          &second,
+		ExpectedUpdatedAt: token,
+	})
+	var conflict *CollectionUpdateConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("stale guarded token must conflict after a tokenless write, got %T: %v", err, err)
+	}
+}
+
+// TestUpdateCollectionNoTokenSkipsConcurrencyCheck: omitting the token keeps
+// the legacy last-write-wins path — an unconditional write that always lands
+// (CLI / MCP / API callers that don't opt in). BUG-2265 is additive.
+func TestUpdateCollectionNoTokenSkipsConcurrencyCheck(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollNoToken")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Things",
+		Slug: "things-occ-notoken",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+
+	settings := `{"layout":"content-primary"}`
+	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings: &settings, // no ExpectedUpdatedAt
+	})
+	if err != nil {
+		t.Fatalf("UpdateCollection without token should succeed: %v", err)
+	}
+	var got models.CollectionSettings
+	if err := json.Unmarshal([]byte(updated.Settings), &got); err != nil {
+		t.Fatalf("parse updated settings %q: %v", updated.Settings, err)
+	}
+	if got.Layout != "content-primary" {
+		t.Errorf("settings not written: got %q", updated.Settings)
 	}
 }
 

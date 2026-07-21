@@ -9,6 +9,18 @@ export interface ItemEvent {
 	item_id: string;
 	title: string;
 	collection: string;
+	// STABLE collection identity on collection_updated events (BUG-2265). Slugs
+	// are mutable/reusable and events replay, so clients MUST match these events
+	// by `collection_id`, not `collection` (slug) — the slug is only for the
+	// rename-navigation URL.
+	collection_id?: string;
+	// On a collection_updated RENAME, the collection's new slug (the event is
+	// routed by the old slug). Absent for non-rename updates. BUG-2265.
+	new_slug?: string;
+	// On a collection_updated whose schema migration mutated item field values,
+	// a SANITIZED reconcile flag (no per-item data) — the client triggers a
+	// /items-changes deltaSync + refetches an open item. BUG-2265.
+	items_changed?: boolean;
 	actor: string;
 	actor_name?: string;
 	source: string;
@@ -33,6 +45,10 @@ const ITEM_EVENTS = [
 	'item_archived',
 	'item_restored',
 	'workspace_updated',
+	// Collection-row change (settings/schema/name/icon). Carries `collection`
+	// (slug) but no `item_id`; ItemDetail / collection pages refresh their
+	// independent Collection snapshot on it (BUG-2265 sibling broadcast).
+	'collection_updated',
 	'comment_created',
 	'comment_updated',
 	'comment_deleted',
@@ -235,6 +251,15 @@ function createSSEService() {
 				const data: ItemEvent = JSON.parse(e.data);
 				dispatchItemEvent(data);
 				broadcast({ type: 'item_event', event: data });
+				// BUG-2265: a collection_updated whose schema migration mutated
+				// item field values also needs an item reconcile — its
+				// items_changed flag is delivered even to item-grant subscribers,
+				// so route it through the same /items-changes sync as bulk item
+				// mutations. Peers get the sync_required broadcast too.
+				if (data.type === 'collection_updated' && data.items_changed) {
+					dispatchSyncRequired();
+					broadcast({ type: 'sync_required' });
+				}
 			});
 		}
 	}

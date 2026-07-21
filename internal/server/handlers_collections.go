@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // reservedSchemaFieldKeys are collection schema field keys that collide
@@ -205,6 +208,19 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// BUG-2265: validate the optimistic-concurrency token's format at the
+	// boundary so a malformed value is a clean 400 rather than surfacing from
+	// the store as a generic 500. The store re-parses (guaranteed to succeed)
+	// and does the actual under-lock comparison. Mirrors handlers_items.go's
+	// handleUpdateItem boundary check.
+	if input.ExpectedUpdatedAt != "" {
+		if _, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt); perr != nil {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"expected_updated_at must be an RFC3339 timestamp")
+			return
+		}
+	}
+
 	if input.Schema != nil {
 		var schema models.CollectionSchema
 		if err := json.Unmarshal([]byte(*input.Schema), &schema); err != nil {
@@ -224,12 +240,29 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	// Extract migrations before updating (they're not stored on the collection)
-	migrations := input.Migrations
-	input.Migrations = nil
+	// Field-value migrations (select-option renames) are applied ATOMICALLY
+	// inside UpdateCollection's transaction (BUG-2265 Codex P1) — a migration
+	// failure rolls back the schema change AND the concurrency-token advance,
+	// so nothing is committed and the caller's retry works cleanly. Leave them
+	// on the input rather than extracting + running them as a separate,
+	// non-atomic write.
+	// items_changed is set from whether a field MIGRATION WAS REQUESTED, NOT
+	// how many rows actually changed (Codex round 7 P1): an item-grant
+	// subscriber receives this flag, so keying it off the affected-row count
+	// would let a subscriber whose OWN items were unaffected infer that HIDDEN
+	// items matched the migrated value — an info leak. "Migration requested"
+	// leaks nothing about hidden item values. Captured before the store call
+	// (input is passed by value, but read it here for clarity).
+	migrationRequested := len(input.Migrations) > 0
 
 	updated, err := s.store.UpdateCollection(coll.ID, input)
 	if err != nil {
+		// BUG-2265: an optimistic-concurrency loss → structured 409, same
+		// wire shape as the item path, BEFORE the generic internal-error path.
+		if conflict, ok := asCollectionUpdateConflictError(err); ok {
+			writeCollectionUpdateConflictError(w, coll.Slug, conflict)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -238,15 +271,84 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Apply field value migrations to existing items
-	if len(migrations) > 0 {
-		if _, err := s.store.MigrateItemFieldValues(coll.ID, migrations); err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "Schema updated but migration failed: "+err.Error())
-			return
-		}
+	// BUG-2265 (part 3): broadcast a collection.updated event so sibling
+	// ItemDetails / collection pages in this workspace refresh their own
+	// independent Collection snapshot proactively — shrinking the window in
+	// which another client would send a stale expected_updated_at and 409.
+	// Published AFTER the fully-atomic update+migration committed, so a failed
+	// migration (which rolled everything back) does NOT emit a spurious refresh.
+	//
+	// ALWAYS routed by the OLD slug (coll.Slug) — the slug sibling tabs still
+	// address. On a rename the event carries the NEW slug so those tabs can
+	// re-target instead of silently hitting the dead old slug on their next
+	// action (Codex P2). No actor/source: an item-grant subscriber receives
+	// this event, so it must not leak the owner's identity/source (Codex P1).
+	//
+	// items_changed (Codex round 6/7 P1): a requested field migration mutates
+	// item `fields` JSON and advances item `seq`. Rather than a SEPARATE
+	// items_bulk_updated event (which carries op/count for items an item-grant
+	// subscriber can't see, and isn't rename-routed), fold a SANITIZED bool onto
+	// this already item-grant-delivered, old-slug-routed event. The client
+	// triggers a /items-changes deltaSync (server-filtered to the caller's
+	// grants) + refetches an open item, so open views reconcile the migrated
+	// field JSON — closing the clobber where a stale full-fields item update
+	// would UNDO the migration.
+	//
+	// The event carries the STABLE collection ID (Codex round 7 P1): slugs are
+	// mutable and reusable, and events replay, so a stale rename event could
+	// otherwise pass a subscriber's slug-based match for a DIFFERENT collection
+	// now owning the old slug. Clients match by collection_id, not slug (the
+	// slug(s) stay only for the rename-navigation URL).
+	newSlug := ""
+	if updated.Slug != coll.Slug {
+		newSlug = updated.Slug
 	}
+	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, updated.ID, coll.Slug, newSlug, migrationRequested)
 
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// asCollectionUpdateConflictError reports whether err is (or wraps) a
+// store.CollectionUpdateConflictError and returns it. Mirrors
+// asUpdateConflictError for the item path (BUG-2265).
+func asCollectionUpdateConflictError(err error) (*store.CollectionUpdateConflictError, bool) {
+	var conflict *store.CollectionUpdateConflictError
+	if errors.As(err, &conflict) {
+		return conflict, true
+	}
+	return nil, false
+}
+
+// writeCollectionUpdateConflictError emits the shared update_conflict envelope
+// (HTTP 409) for a collection optimistic-concurrency loss. `ref` is the
+// collection slug. Reuses writeUpdateConflictEnvelope so the wire shape is
+// byte-for-byte identical to the item path's 409 (BUG-2265).
+func writeCollectionUpdateConflictError(w http.ResponseWriter, ref string, conflict *store.CollectionUpdateConflictError) {
+	writeUpdateConflictEnvelope(w, ref, conflict.ExpectedUpdatedAt, conflict.ActualUpdatedAt)
+}
+
+// publishCollectionEvent publishes a real-time collection-level change
+// (BUG-2265). collectionID is the STABLE identity clients match on; Collection
+// carries the (old) slug so the SSE visibility filter routes it to workspace
+// clients who can see the collection; newSlug is set only on a rename;
+// itemsChanged is set when a field migration was requested (a SANITIZED
+// reconcile bool). Deliberately SANITIZED — no Actor / ActorName / Source, no
+// per-item data — because this event is delivered to item-grant subscribers,
+// who must not learn the owner's identity/source or
+// anything about items they can't see (Codex P1). Clients only need the
+// slug(s) + itemsChanged to refresh their snapshot / re-target / reconcile.
+func (s *Server) publishCollectionEvent(eventType, workspaceID, collectionID, collectionSlug, newSlug string, itemsChanged bool) {
+	if s.events == nil {
+		return
+	}
+	s.events.Publish(events.Event{
+		Type:         eventType,
+		WorkspaceID:  workspaceID,
+		CollectionID: collectionID,
+		Collection:   collectionSlug,
+		NewSlug:      newSlug,
+		ItemsChanged: itemsChanged,
+	})
 }
 
 func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) {
@@ -272,7 +374,25 @@ func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if err := s.store.DeleteCollection(coll.ID); err != nil {
+	// Optimistic-concurrency token (BUG-2265 Codex round 8): a caller that
+	// resolved the collection by stable id passes the updated_at it read so the
+	// delete 409s if a concurrent RENAME re-owned this slug with a DIFFERENT
+	// collection (or the collection changed) — never archiving the wrong one.
+	// Validated at the boundary (clean 400 on a malformed value).
+	expectedUpdatedAt := r.URL.Query().Get("expected_updated_at")
+	if expectedUpdatedAt != "" {
+		if _, perr := time.Parse(time.RFC3339, expectedUpdatedAt); perr != nil {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"expected_updated_at must be an RFC3339 timestamp")
+			return
+		}
+	}
+
+	if err := s.store.DeleteCollection(coll.ID, expectedUpdatedAt); err != nil {
+		if conflict, ok := asCollectionUpdateConflictError(err); ok {
+			writeCollectionUpdateConflictError(w, coll.Slug, conflict)
+			return
+		}
 		if err == sql.ErrNoRows {
 			writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 			return

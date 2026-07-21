@@ -432,6 +432,10 @@ export interface CollectionUpdate {
 	settings?: string;
 	sort_order?: number;
 	migrations?: FieldMigration[];
+	// Optimistic-concurrency token (BUG-2265). Round-trip the `updated_at`
+	// you last read; the server re-reads under a write lock and rejects a
+	// stale write with a 409 `update_conflict`. Omit for last-write-wins.
+	expected_updated_at?: string;
 }
 
 // ─── Agent Roles ─────────────────────────────────────────────────────────────

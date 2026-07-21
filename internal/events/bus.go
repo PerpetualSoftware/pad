@@ -21,6 +21,14 @@ const (
 	ItemArchived = "item_archived"
 	ItemRestored = "item_restored"
 
+	// Collection events. Emitted when a collection's own row changes
+	// (settings/schema/name/icon, e.g. a quick-action added). Routed by
+	// Collection (slug) through the SSE visibility filter so sibling
+	// ItemDetails / collection pages refresh their independent Collection
+	// snapshot proactively — shrinking the optimistic-concurrency (409)
+	// window (BUG-2265).
+	CollectionUpdated = "collection_updated"
+
 	// Comment events
 	CommentCreated = "comment_created"
 	CommentUpdated = "comment_updated"
@@ -58,14 +66,33 @@ type Event struct {
 	WorkspaceID string `json:"workspace_id"`
 	DocumentID  string `json:"document_id,omitempty"`
 	ItemID      string `json:"item_id,omitempty"`
-	Collection  string `json:"collection,omitempty"`
-	Title       string `json:"title,omitempty"`
-	DocType     string `json:"doc_type,omitempty"`
-	Actor       string `json:"actor,omitempty"`
-	ActorName   string `json:"actor_name,omitempty"`
-	Source      string `json:"source,omitempty"`
-	UserID      string `json:"user_id,omitempty"` // For user-scoped events (e.g. star/unstar)
-	Timestamp   int64  `json:"timestamp"`
+	// CollectionID is the STABLE collection identity on a collection_updated
+	// event (BUG-2265). Slugs are mutable and reusable and events replay, so a
+	// stale rename event's OLD slug could be re-owned by a different collection;
+	// clients therefore match these events by CollectionID, not the slug (which
+	// stays only for rename-navigation URLs). Empty on non-collection events.
+	CollectionID string `json:"collection_id,omitempty"`
+	Collection   string `json:"collection,omitempty"`
+	// NewSlug carries a collection's NEW slug on a collection_updated event
+	// that is a rename (BUG-2265). The event is routed by Collection (the OLD
+	// slug, which the sibling tabs still address) so old-slug watchers receive
+	// it and can re-target to NewSlug. Empty for non-rename updates.
+	NewSlug string `json:"new_slug,omitempty"`
+	// ItemsChanged is set on a collection_updated event when a field MIGRATION
+	// WAS REQUESTED (a schema change carrying migrations), independent of how
+	// many rows actually changed (BUG-2265 Codex round 7). It's a SANITIZED
+	// reconcile signal — a bare bool carrying NO per-item data and revealing
+	// nothing about hidden item values — so it can be delivered to item-grant
+	// subscribers; their client triggers a /items-changes deltaSync
+	// (server-filtered to their grants) to pick up the migrated field JSON.
+	ItemsChanged bool   `json:"items_changed,omitempty"`
+	Title        string `json:"title,omitempty"`
+	DocType      string `json:"doc_type,omitempty"`
+	Actor        string `json:"actor,omitempty"`
+	ActorName    string `json:"actor_name,omitempty"`
+	Source       string `json:"source,omitempty"`
+	UserID       string `json:"user_id,omitempty"` // For user-scoped events (e.g. star/unstar)
+	Timestamp    int64  `json:"timestamp"`
 	// Seq is the workspace-scoped monotonic mutation cursor of the
 	// item the event references (PLAN-1343 / TASK-1352). Populated
 	// for item lifecycle events (created / updated / archived /

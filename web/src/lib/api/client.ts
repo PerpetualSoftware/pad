@@ -194,6 +194,39 @@ function isPlanLimitError(err: unknown): err is PadApiError {
 }
 
 /**
+ * Returns true when `err` is the optimistic-concurrency 409 (BUG-2265):
+ * the resource was modified by another writer since the caller last read it.
+ * `err.details` carries `{ ref, expected_updated_at, actual_updated_at }`.
+ * Callers can catch this to transparently refetch-and-retry (quick actions)
+ * or surface a "reload to see the latest" message (full-form edits). Mirrors
+ * isRateLimitError / isPlanLimitError; shared by the item and collection
+ * update paths, whose 409 wire shape is identical.
+ */
+function isUpdateConflictError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'update_conflict';
+}
+
+/**
+ * Returns true when `err` is a 404 not_found. BUG-2265 (Codex round 6): a
+ * competing RENAME can kill the slug a write targeted, so the request returns
+ * 404 instead of 409 — retry paths must treat BOTH as "resolve the fresh
+ * collection by stable id and retry", surfacing an error only if it's truly
+ * gone.
+ */
+function isNotFoundError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'not_found';
+}
+
+/**
+ * True when `err` is either an optimistic-concurrency 409 OR a rename-induced
+ * 404 — the two ways a concurrent collection change can defeat a slug-targeted
+ * write (BUG-2265). Retry paths branch on this to resolve-by-id and retry.
+ */
+function isConflictOrNotFound(err: unknown): err is PadApiError {
+	return isUpdateConflictError(err) || isNotFoundError(err);
+}
+
+/**
  * Returns a human-readable upgrade-signal message for a plan limit error.
  * Falls back to the server-supplied `err.message` if details are unavailable,
  * so the function is always safe to call. TASK-788.
@@ -907,10 +940,18 @@ export const api = {
 				body: JSON.stringify(data)
 			}),
 
-		delete: (ws: string, slug: string) =>
-			request<void>(`/workspaces/${ws}/collections/${slug}`, {
+		// expectedUpdatedAt (BUG-2265): the updated_at of the collection the
+		// caller resolved. Sent as a query param so the server 409s if a
+		// concurrent rename re-owned this slug with a DIFFERENT collection —
+		// never archiving the wrong one. Omit for the legacy unconditional path.
+		delete: (ws: string, slug: string, expectedUpdatedAt?: string) => {
+			const q = expectedUpdatedAt
+				? `?expected_updated_at=${encodeURIComponent(expectedUpdatedAt)}`
+				: '';
+			return request<void>(`/workspaces/${ws}/collections/${slug}${q}`, {
 				method: 'DELETE'
-			})
+			});
+		}
 	},
 
 	// ── Agent Roles ──────────────────────────────────────────────────────────
@@ -2381,4 +2422,12 @@ export const api = {
 	}
 };
 
-export { PadApiError, isPlanLimitError, planLimitMessage, isRateLimitError };
+export {
+	PadApiError,
+	isPlanLimitError,
+	planLimitMessage,
+	isRateLimitError,
+	isUpdateConflictError,
+	isNotFoundError,
+	isConflictOrNotFound
+};

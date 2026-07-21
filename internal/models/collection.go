@@ -93,6 +93,14 @@ type CollectionUpdate struct {
 	Settings    *string          `json:"settings,omitempty"`
 	SortOrder   *int             `json:"sort_order,omitempty"`
 	Migrations  []FieldMigration `json:"migrations,omitempty"`
+	// ExpectedUpdatedAt, when non-empty, opts into optimistic-concurrency
+	// control (BUG-2265, mirroring the item pattern from IDEA-1480): the
+	// store re-reads the row's updated_at under the workspace write lock and
+	// rejects the write with a conflict error when it no longer matches the
+	// RFC3339 timestamp the caller last read. Empty = last-write-wins (the
+	// legacy behaviour, unchanged for CLI / MCP / API callers that don't send
+	// it). Never persisted; consumed by UpdateCollection only.
+	ExpectedUpdatedAt string `json:"expected_updated_at,omitempty"`
 }
 
 // ErrInvalidSettingsType is returned by CollectionUpdate.UnmarshalJSON

@@ -5,10 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// CollectionUpdateConflictError is returned by UpdateCollection when the
+// caller supplied CollectionUpdate.ExpectedUpdatedAt and it no longer matches
+// the collection's current updated_at — another writer changed the row first
+// (BUG-2265, optimistic concurrency; mirrors items.go's UpdateConflictError
+// for the item path from IDEA-1480/TASK-2022). The check runs under the same
+// workspace write lock as the mutation, so a matching timestamp is a genuine
+// guarantee that nothing slipped in between. The handler maps this to the same
+// pad-structured-error/v1 conflict envelope (HTTP 409, code "update_conflict")
+// the item path emits.
+type CollectionUpdateConflictError struct {
+	CollectionID      string
+	ExpectedUpdatedAt string
+	ActualUpdatedAt   time.Time
+}
+
+func (e *CollectionUpdateConflictError) Error() string {
+	return fmt.Sprintf(
+		"collection %s was modified by another writer (expected updated_at %s, actual %s)",
+		e.CollectionID, e.ExpectedUpdatedAt, e.ActualUpdatedAt.UTC().Format(time.RFC3339),
+	)
+}
 
 func (s *Store) CreateCollection(workspaceID string, input models.CollectionCreate) (*models.Collection, error) {
 	id := newID()
@@ -247,7 +270,12 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		return nil, nil
 	}
 
-	ts := now()
+	// Sub-second timestamp (BUG-2265): collections.updated_at doubles as the
+	// concurrency token, so it must differ between two writes in the same
+	// wall-clock second. nowNano() makes that near-certain without a schema
+	// change (the column is TEXT on both dialects and never lexically compared
+	// — only via time.Equal and for display).
+	ts := nowNano()
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{ts}
 
@@ -306,15 +334,125 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 
 	args = append(args, id)
 	query := fmt.Sprintf("UPDATE collections SET %s WHERE id = ?", strings.Join(sets, ", "))
-	_, err = s.db.Exec(s.q(query), args...)
+
+	// BUG-2265: collections.updated_at doubles as the optimistic-concurrency
+	// token (no schema migration — it's the existing column). For that to be
+	// reliable it must satisfy two invariants that a plain
+	// `UPDATE ... SET updated_at = now()` doesn't, so EVERY update (guarded or
+	// not) runs through one small transaction that re-reads the row and derives
+	// the new timestamp atomically:
+	//
+	//   1. Serialized check-and-set. The re-read happens under a lock, so a
+	//      concurrent writer can't slip between it and the UPDATE. SQLite gets
+	//      this from the db-wide BEGIN IMMEDIATE write lock (_txlock=immediate);
+	//      Postgres needs an explicit `FOR UPDATE` row lock (it rejects `FOR
+	//      UPDATE` on SQLite syntactically, hence the driver gate). This also
+	//      closes the tokenless-writer race the advisory lock could NOT (an
+	//      advisory lock only serializes writers that also take it — Codex P1).
+	//
+	//   2. Strictly monotonic token. Sub-second nowNano() makes same-second
+	//      collisions near-impossible, but a coarse platform clock (or an NTP
+	//      step-back) could still return a value <= the row's current one, which
+	//      would let a tokenless or racing write keep/regress the token and a
+	//      stale reader clobber newer data. Guard it: when the fresh timestamp
+	//      doesn't already exceed the row's current value, advance by a single
+	//      NANOSECOND past it. That keeps the token strictly increasing on every
+	//      writer while bounding any drift to nanoseconds — no meaningful
+	//      advance-into-the-future even under sustained writes.
+	tx, err := s.db.Begin()
 	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	// LOCK ORDER (Codex P1 deadlock fix). When this update also migrates item
+	// field values it locks TWO things: the workspace advisory/seq lock (for
+	// the per-row seq bumps) and the collection ROW (FOR UPDATE, below). Item
+	// creation locks the same pair in the order [workspace advisory lock
+	// (tryCreateItem) → collection-row FK key-share lock (on INSERT)], so we
+	// MUST take the workspace lock FIRST here too — grabbing the row lock first
+	// would ABBA-deadlock against a concurrent item-create. Acquired only on the
+	// migration path (the only path that touches the workspace seq lock); a
+	// plain update just takes the row lock and can't deadlock. On SQLite both
+	// are no-ops under the single BEGIN IMMEDIATE write lock.
+	if len(input.Migrations) > 0 {
+		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
+			return nil, err
+		}
+	}
+
+	reread := "SELECT updated_at FROM collections WHERE id = ? AND deleted_at IS NULL"
+	if s.dialect.Driver() == DriverPostgres {
+		reread += " FOR UPDATE"
+	}
+	var currentUpdatedAt string
+	rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt)
+	if rerr == sql.ErrNoRows {
+		// Deleted between the pre-tx GetCollection and here — treat as not-found.
+		return nil, nil
+	}
+	if rerr != nil {
+		return nil, fmt.Errorf("re-read collection under lock: %w", rerr)
+	}
+	current := parseTime(currentUpdatedAt)
+
+	// Optimistic-concurrency guard — only when the caller opted in by sending
+	// the token it last read. Compared with time.Equal (format-agnostic).
+	if input.ExpectedUpdatedAt != "" {
+		expected, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt)
+		if perr != nil {
+			return nil, fmt.Errorf("invalid expected_updated_at %q: %w", input.ExpectedUpdatedAt, perr)
+		}
+		if !current.Equal(expected) {
+			return nil, &CollectionUpdateConflictError{
+				CollectionID:      id,
+				ExpectedUpdatedAt: input.ExpectedUpdatedAt,
+				ActualUpdatedAt:   current,
+			}
+		}
+	}
+
+	// Monotonic advance (invariant 2 above). args[0] is the `updated_at = ?`
+	// bind built first, so overwrite it in place. A one-nanosecond step keeps
+	// the token strictly increasing without drifting meaningfully ahead of
+	// wall-clock.
+	if !parseTime(ts).After(current) {
+		args[0] = current.Add(time.Nanosecond).UTC().Format(time.RFC3339Nano)
+	}
+
+	if _, err := tx.Exec(s.q(query), args...); err != nil {
 		return nil, fmt.Errorf("update collection: %w", err)
+	}
+
+	// Apply field-value migrations (select-option renames) in the SAME tx as
+	// the schema change (BUG-2265 Codex): a migration failure rolls back the
+	// schema AND the concurrency-token advance, so the row is untouched and the
+	// caller's retry works cleanly — no committed-schema/stale-items split and
+	// no guaranteed-409. The workspace seq lock was already taken above (before
+	// the row lock) to preserve the item-create lock order.
+	if len(input.Migrations) > 0 {
+		if _, err := s.applyFieldMigrationsTx(tx, id, existing.WorkspaceID, input.Migrations); err != nil {
+			return nil, fmt.Errorf("apply field migrations: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit collection update: %w", err)
 	}
 
 	return s.GetCollection(id)
 }
 
-func (s *Store) DeleteCollection(id string) error {
+// DeleteCollection soft-deletes a collection by id. When expectedUpdatedAt is
+// non-empty it opts into optimistic-concurrency control (BUG-2265): the row's
+// updated_at is re-read UNDER A LOCK and the delete is rejected with a
+// CollectionUpdateConflictError when it no longer matches. This closes the
+// archive TOCTOU where the handler resolved a collection by its (mutable) slug
+// but a concurrent RENAME re-owned that slug with a DIFFERENT collection before
+// the delete landed — the token mismatch 409s instead of archiving the wrong
+// collection. Empty token keeps the legacy unconditional soft-delete (CLI/API
+// callers that don't opt in).
+func (s *Store) DeleteCollection(id string, expectedUpdatedAt string) error {
 	// Check if it's a default collection
 	var isDefault bool
 	err := s.db.QueryRow(s.q("SELECT is_default FROM collections WHERE id = ? AND deleted_at IS NULL"), id).Scan(&isDefault)
@@ -329,6 +467,43 @@ func (s *Store) DeleteCollection(id string) error {
 	}
 
 	ts := now()
+
+	if expectedUpdatedAt != "" {
+		expected, perr := time.Parse(time.RFC3339, expectedUpdatedAt)
+		if perr != nil {
+			return fmt.Errorf("invalid expected_updated_at %q: %w", expectedUpdatedAt, perr)
+		}
+		tx, terr := s.db.Begin()
+		if terr != nil {
+			return terr
+		}
+		defer tx.Rollback()
+
+		reread := "SELECT updated_at FROM collections WHERE id = ? AND deleted_at IS NULL"
+		if s.dialect.Driver() == DriverPostgres {
+			reread += " FOR UPDATE"
+		}
+		var currentUpdatedAt string
+		rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt)
+		if rerr == sql.ErrNoRows {
+			return sql.ErrNoRows
+		}
+		if rerr != nil {
+			return fmt.Errorf("re-read collection under lock: %w", rerr)
+		}
+		if actual := parseTime(currentUpdatedAt); !actual.Equal(expected) {
+			return &CollectionUpdateConflictError{
+				CollectionID:      id,
+				ExpectedUpdatedAt: expectedUpdatedAt,
+				ActualUpdatedAt:   actual,
+			}
+		}
+		if _, err := tx.Exec(s.q(`UPDATE collections SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL`), ts, ts, id); err != nil {
+			return fmt.Errorf("delete collection: %w", err)
+		}
+		return tx.Commit()
+	}
+
 	result, err := s.db.Exec(s.q(`
 		UPDATE collections SET deleted_at = ?, updated_at = ?
 		WHERE id = ? AND deleted_at IS NULL
@@ -389,6 +564,25 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 		return 0, err
 	}
 
+	totalAffected, err := s.applyFieldMigrationsTx(tx, collectionID, workspaceID, migrations)
+	if err != nil {
+		return totalAffected, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return totalAffected, err
+	}
+	return totalAffected, nil
+}
+
+// applyFieldMigrationsTx runs the per-row field-value migration loop on an
+// EXISTING transaction. Extracted so UpdateCollection can run the schema
+// change and its item migrations ATOMICALLY in one tx (BUG-2265 Codex: a
+// migration failure must roll back the schema AND the concurrency token, or a
+// 500 leaves the row changed and every client retry blind-409s). Callers must
+// already hold the workspace seq lock (acquireWorkspaceSeqLock) so the per-row
+// seq bumps serialize on Postgres.
+func (s *Store) applyFieldMigrationsTx(tx *sql.Tx, collectionID, workspaceID string, migrations []models.FieldMigration) (int64, error) {
 	ts := now()
 	var totalAffected int64
 
@@ -447,10 +641,6 @@ func (s *Store) MigrateItemFieldValues(collectionID string, migrations []models.
 				totalAffected += n
 			}
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return totalAffected, err
 	}
 	return totalAffected, nil
 }
