@@ -3523,6 +3523,58 @@
 		item = withInflightTags(updatedItem);
 	}
 
+	// BUG-2271: flush the LIVE collab editor's markdown into items.content BEFORE
+	// a version restore issues its POST. The restore's server-side undo-point
+	// ("Restored from…") is captured from the CURRENT persisted items.content
+	// inside the restore tx; a live collab editor may hold edits still sitting in
+	// the Y.Doc/op-log within the ~5s flush-debounce window (not yet PATCHed).
+	// Those edits would be lost after the restore prunes the op-log + reseeds all
+	// peers (BUG-2264). The collab server is a dumb relay with no Yjs decoder, so
+	// it CANNOT render the live Y.Doc to markdown — the only place that can is
+	// this initiating client. So we drain the live editor into items.content here
+	// (via the same `?source=collab-snapshot` flush the idle timer uses); with no
+	// restore boundary set yet, the flush passes and the undo-point then reflects
+	// the true pre-restore live state. Threaded down to TimelineVersionCard, which
+	// awaits it immediately before `api.versions.restore`.
+	//
+	// RESIDUAL (accepted, do NOT try to close): only THIS client's editor is
+	// flushed. An edit a peer typed but that hasn't yet synced over the WS to this
+	// initiator (sub-second window) still isn't captured — this narrows BUG-2271
+	// from the ~5s debounce window to the sub-second sync window, the accepted
+	// trade of the client-side approach (the relay can't decode the Y.Doc).
+	async function flushCollabBeforeRestore(): Promise<void> {
+		// No LIVE collab editor to drain: non-collab item, raw mode (provider
+		// destroyed), a viewer (no provider/editor), or the editor isn't mounted.
+		// In every such case items.content is already canonical, so no-op.
+		if (!collabProvider || !editorInstance || editorInstance.isDestroyed || !item) return;
+		// Flush against the context the connected provider was minted with (captured
+		// at $effect-body time, NOT live route state), so the PATCH is self-routing
+		// and can never cross-write another item. Switch-safety: activeCollabContext
+		// and the live editor are minted together for the shown item and reset
+		// together on a no-{#key} pane switch, so require they still agree with the
+		// shown item before flushing (mirrors the rich→raw toggle fences —
+		// TASK-2112 / TASK-2172). A stale ctx is skipped rather than mis-flushed.
+		const ctx = activeCollabContext;
+		if (!ctx || ctx.itemId !== item.id) return;
+		// Read the live editor's markdown; fall back to the per-edit shadow if the
+		// live read throws (mirrors the flusher's readEditorMarkdown injection).
+		let md: string | null = null;
+		try {
+			const raw = (editorInstance.storage as any).markdown?.getMarkdown?.();
+			if (typeof raw === 'string') md = raw;
+		} catch {
+			// Live read failed — fall through to the shadow.
+		}
+		if (md == null) md = lastEditorMarkdown;
+		if (md == null) return;
+		// keepalive=false — this is a foreground flush the user is waiting on (the
+		// restore blocks on it). The flusher's own dedupe short-circuits to a no-op
+		// when there are no unflushed edits, so a clean view costs at most one
+		// deduped call. We await so items.content is updated before the restore
+		// captures the undo-point; the outcome is irrelevant (best-effort).
+		await collabFlusher.flush(ctx, md, false);
+	}
+
 	async function handleDelete() {
 		if (!item || !canEdit) return;
 		// Capture identity before the await. The DELETE targets `targetItem.id`
@@ -5011,6 +5063,7 @@
 				currentContent={item.content ?? ''}
 				items={localIndex.getAll(wsSlug)}
 				onRestore={handleVersionRestore}
+				flushBeforeRestore={flushCollabBeforeRestore}
 				itemId={item.id}
 				collectionId={item.collection_id}
 				frozen={false}

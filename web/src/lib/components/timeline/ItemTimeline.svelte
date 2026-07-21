@@ -54,9 +54,18 @@
 		 * active editor. Defaults false → byte-identical for every existing caller.
 		 */
 		restoreFrozen?: boolean;
+		/**
+		 * BUG-2271: forwarded verbatim to TimelineVersionCard so the initiating
+		 * client can flush its LIVE collab editor markdown into items.content
+		 * BEFORE a restore captures the server-side undo-point (otherwise in-flight
+		 * edits still in the ~5s flush-debounce window are lost). Threaded from
+		 * ItemDetail, which owns the collab flusher. Unset → no-op for non-collab
+		 * callers, so existing usage is unaffected.
+		 */
+		flushBeforeRestore?: () => Promise<void>;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -503,6 +512,7 @@
 								{itemSlug}
 								{currentContent}
 								{onRestore}
+								{flushBeforeRestore}
 								frozen={frozen || restoreFrozen}
 							/>
 						{/if}

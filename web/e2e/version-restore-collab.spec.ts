@@ -163,3 +163,151 @@ test('restoring a version under live collab is not clobbered by the next flush (
 	expect(finalItem.content).toContain(gamma);
 	expect(finalItem.content).not.toContain(beta);
 });
+
+/**
+ * Undo-point captures an UNFLUSHED live edit (BUG-2271).
+ *
+ * A version restore creates a "Restored from…" undo-point version from the
+ * CURRENT persisted items.content, server-side, inside the restore tx. If a
+ * live collab editor holds edits still sitting in the Y.Doc/op-log within the
+ * ~5s flush-debounce window (not yet PATCHed to items.content), those edits are
+ * NOT in the undo-point — and, because the restore also prunes the op-log +
+ * reseeds every peer (BUG-2264), they are permanently lost.
+ *
+ * The collab server is a dumb relay with no Yjs decoder, so it can't render the
+ * live Y.Doc to markdown. The fix is client-side: the initiating client flushes
+ * its live editor markdown into items.content BEFORE issuing the restore, so the
+ * undo-point reflects the true pre-restore live state. ItemDetail threads a
+ * `flushBeforeRestore` callback down through ItemTimeline → TimelineVersionCard,
+ * which awaits it immediately before the restore POST.
+ *
+ * This spec drives the restore through the REAL UI button (not the API) so the
+ * flush-before-restore callback is exercised:
+ *
+ *   seed alpha → type+flush beta (creates a version) → reload (so the timeline
+ *   shows the version card) → type gamma but do NOT wait for its flush → click
+ *   Restore in the UI → assert a version now holds gamma (the undo-point).
+ *
+ * Under the bug, clicking Restore issues no pre-flush, so the undo-point is
+ * captured without gamma and gamma is lost when the op-log is pruned — no
+ * version ever contains gamma and the poll goes red.
+ *
+ * Determinism note: we reach the Restore click well under the 5s idle-flush
+ * window, so the collab-snapshot PATCH that lands gamma is the restore-triggered
+ * one, not the idle timer. (Even if the idle timer raced ahead it would persist
+ * gamma to items.content but create a version holding the PRE-gamma content — so
+ * only the restore's pre-flush undo-point can hold gamma. See BUG-2264 spec for
+ * the version-on-content-change behaviour.)
+ */
+test('an unflushed live edit is captured in the restore undo-point via the UI (BUG-2271)', async ({
+	page,
+	fixture,
+	request
+}, testInfo) => {
+	test.skip(
+		testInfo.project.name !== 'desktop-chromium',
+		'version-restore collab is viewport-agnostic; one project is enough'
+	);
+	// A flush + reload + WS re-handshake + a second flush + restore need well
+	// over the 30s default on a busy CI runner.
+	test.setTimeout(90_000);
+
+	const ws = fixture.workspaceSlug;
+	const headers = {
+		Authorization: `Bearer ${fixture.apiToken}`,
+		'Content-Type': 'application/json'
+	};
+	const ts = Date.now();
+	const alpha = `alpha-base-${ts}`;
+	const beta = `beta-mid-${ts}`;
+	const gamma = `gamma-unflushed-${ts}`;
+
+	// Seed a doc whose v1 body is `alpha` — the state we restore back to.
+	const createResp = await request.post(`/api/v1/workspaces/${ws}/collections/docs/items`, {
+		headers,
+		data: { title: `Restore undo-point ${ts}`, content: alpha }
+	});
+	if (!createResp.ok())
+		throw new Error(`doc create failed (${createResp.status()}): ${await createResp.text()}`);
+	const { slug } = (await createResp.json()) as { id: string; slug: string };
+
+	await browserLogin(page);
+	await page.goto(`/${fixture.adminUsername}/${ws}/docs/${slug}`);
+
+	let editor = page.locator(EDITOR_SELECTOR);
+	await expect(editor).toBeVisible();
+	await expect(editor).toContainText(alpha);
+	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible();
+
+	// Type `beta` and let it flush — persists "alpha beta" and (first content
+	// change → no throttle) creates the version snapshot we later restore to.
+	const betaFlushed = page.waitForResponse(
+		async (r) =>
+			r.url().includes('source=collab-snapshot') &&
+			r.request().method() === 'PATCH' &&
+			r.ok() &&
+			(await r.text()).includes(beta),
+		{ timeout: 30_000 }
+	);
+	await editor.click();
+	await page.keyboard.press('Control+End');
+	await page.keyboard.type(' ' + beta);
+	await expect(editor).toContainText(beta);
+	await betaFlushed;
+
+	// Reload so the timeline renders the version card. Content saves deliberately
+	// do NOT auto-refresh the timeline (ItemTimeline only refreshes on
+	// comment/reaction events); a natural reload surfaces the new version entry.
+	await page.reload();
+	editor = page.locator(EDITOR_SELECTOR);
+	await expect(editor).toBeVisible();
+	await expect(editor).toContainText(beta);
+	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible();
+
+	// Type `gamma` but do NOT wait for its idle flush — it stays in the live
+	// Y.Doc, unpersisted to items.content (the BUG-2271 window). We reach the
+	// Restore click well under 5s so the idle timer can't pre-persist it.
+	await editor.click();
+	await page.keyboard.press('Control+End');
+	await page.keyboard.type(' ' + gamma);
+	await expect(editor).toContainText(gamma);
+
+	// Sanity: items.content does NOT yet hold gamma (still the unflushed window).
+	const preRestore = await request.get(`/api/v1/workspaces/${ws}/items/${slug}`, { headers });
+	expect(preRestore.ok()).toBeTruthy();
+	expect((await preRestore.json()).content as string).not.toContain(gamma);
+
+	// Drive the restore through the UI. confirmRestore must FIRST flush the live
+	// editor (gamma) into items.content, THEN POST the restore — so the server's
+	// undo-point (captured from items.content in the restore tx) includes gamma.
+	const restoreDone = page.waitForResponse(
+		(r) =>
+			/\/versions\/[^/]+\/restore$/.test(r.url()) &&
+			r.request().method() === 'POST' &&
+			r.ok(),
+		{ timeout: 30_000 }
+	);
+	const card = page.locator('#item-timeline .version-card').first();
+	await card.locator('.card-header').click(); // expand
+	await card.getByRole('button', { name: 'Restore this version' }).click();
+	await card.getByRole('button', { name: 'Confirm Restore' }).click();
+	await restoreDone;
+
+	// The undo-point version created by the restore holds the pre-restore
+	// items.content — which, thanks to the pre-restore flush, includes gamma.
+	// Under the bug no version ever holds gamma (it was lost with the op-log).
+	await expect
+		.poll(
+			async () => {
+				const vr = await request.get(
+					`/api/v1/workspaces/${ws}/items/${slug}/versions`,
+					{ headers }
+				);
+				if (!vr.ok()) return false;
+				const versions = (await vr.json()) as Array<{ content: string }>;
+				return versions.some((v) => v.content.includes(gamma));
+			},
+			{ timeout: 15_000 }
+		)
+		.toBe(true);
+});
