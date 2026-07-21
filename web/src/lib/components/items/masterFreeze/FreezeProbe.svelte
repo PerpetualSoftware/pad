@@ -52,13 +52,13 @@
 <div data-testid="child-frozen">{false}</div>
 <div data-testid="timeline-frozen">{false}</div>
 
-<!-- The Rich⇄Markdown mode toggle is a provider-LIFECYCLE control (switching to
-     Markdown destroys the retained collab provider), so it stays hidden on the
-     passive preview (`!peeking`); it reappears the instant you click in (which
-     you must do to edit content anyway). The one accepted visible exception. -->
-{#if !peeking}
-	<button data-testid="mode-toggle">Rich / Markdown</button>
-{/if}
+<!-- The Rich⇄Markdown mode toggle now renders on BOTH sides (BUG-2263 follow-up).
+     It IS a provider-LIFECYCLE control (Markdown destroys the retained provider),
+     but a click activates THIS side first (pointerdown → peeking=false) before the
+     guarded flip runs, so the teardown only ever happens on the now-active side. So
+     it renders unconditionally like the other invisible-freeze surfaces; the flip's
+     `if (peeking) return` onclick guards are the backstop for a re-peek mid-flush. -->
+<button data-testid="mode-toggle">Rich / Markdown</button>
 
 <!-- REST mutation UI — gated on `canEdit` alone, present on both sides. -->
 {#if canEdit}

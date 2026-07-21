@@ -339,6 +339,56 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await expect.poll(handleDisplay, { timeout: 3000 }).not.toBe('none');
 	});
 
+	test('the Rich/Markdown mode toggle renders on the peeking side and flips in ONE gesture (BUG-2263 follow-up)', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		const master = await seedDocWithContent(fixture, request, 'FP mode-toggle master', 'Master body paragraph.');
+		const related = await seedDoc(fixture, request, 'FP mode-toggle related');
+		await seedRelatedLink(fixture, request, master.slug, related.id);
+		const relatedRef = await itemRef(fixture, request, related.slug);
+
+		await page.goto(fullPageUrl(fixture, master.slug));
+		const masterCol = page.locator('.item-page-host > .item-page');
+		const masterEditor = masterCol.locator('.editor-wrapper .ProseMirror');
+		const masterToggle = masterCol.locator('.editor-mode-toggle');
+		await expect(masterEditor).toHaveAttribute('contenteditable', 'true');
+		await expect(masterToggle).toBeVisible();
+
+		// Open the pane → the master stays active (DR-2); the pane is a read-only
+		// preview. NEW (BUG-2263 follow-up): the peeking PANE shows the mode toggle —
+		// previously it was hidden on the peeking side.
+		await page
+			.locator('.relationship-group', { hasText: 'Related' })
+			.locator('a.link-target', { hasText: 'FP mode-toggle related' })
+			.click();
+		const pane = page.locator('.item-pane');
+		await expect(pane).toBeVisible();
+		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
+		const paneEditor = pane.locator('.editor-wrapper .ProseMirror');
+		await expect(pane.locator('.editor-mode-toggle')).toBeVisible();
+		await expect(paneEditor).toHaveAttribute('contenteditable', 'false');
+
+		// Click into the pane → the MASTER becomes the peeking side; its toggle stays.
+		await paneEditor.click();
+		await expect(masterEditor).toHaveAttribute('contenteditable', 'false');
+		await expect(masterToggle).toBeVisible();
+
+		// ONE GESTURE: click the peeking master's "Markdown" button. Its onclick bails
+		// on `if (peeking) return`, so a successful flip PROVES the pointerdown
+		// activator un-peeked the master FIRST, in the same gesture.
+		await masterCol.locator('.editor-mode-toggle .mode-btn', { hasText: 'Markdown' }).click();
+		await expect(masterCol.locator('.editor-mode-toggle .mode-btn', { hasText: 'Markdown' })).toHaveClass(/active/);
+		// Master is now in raw markdown mode: the ProseMirror unmounted, and the pane
+		// is the frozen side — exactly one typeable editor throughout.
+		await expect(masterEditor).toHaveCount(0);
+		await expect(paneEditor).toHaveAttribute('contenteditable', 'false');
+	});
+
 	test('a cold-loaded `?item=<the master itself>` is stripped — never mounts a pane on the master', async ({
 		page,
 		fixture,
