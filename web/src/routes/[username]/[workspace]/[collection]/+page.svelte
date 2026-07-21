@@ -2,7 +2,7 @@
 	import { page } from '$app/state';
 	import { browser } from '$app/environment';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
-	import { api, PadApiError, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { api, PadApiError, isPlanLimitError, planLimitMessage, isUpdateConflictError } from '$lib/api/client';
 	import type { BulkItemsRequest, Collection, Item, PaneTarget, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
@@ -1601,16 +1601,42 @@
 
 	async function handleGroupReorder(newOrder: string[]) {
 		if (!wsSlug || !collSlug || !collection) return;
-		const currentSchema = parseSchema(collection);
-		const fieldIdx = currentSchema.fields.findIndex((f) => f.key === groupField);
-		if (fieldIdx === -1) return;
 
-		// Update the field's options to the new order
-		currentSchema.fields[fieldIdx].options = newOrder;
-		const newSchemaStr = JSON.stringify(currentSchema);
+		// Apply `newOrder` to the grouped field's options ON TOP OF a base
+		// schema. Re-derived from a FRESH base on a 409 retry so the reorder
+		// lands on the latest schema instead of clobbering a concurrent
+		// collection edit with our stale snapshot (BUG-2265 — this is a
+		// full-schema write, the same last-write-wins class the modal /
+		// quick-actions paths were hardened against). Returns null when the
+		// grouped field no longer exists in the base.
+		const applyOrder = (base: Collection): string | null => {
+			const s = parseSchema(base);
+			const idx = s.fields.findIndex((f) => f.key === groupField);
+			if (idx === -1) return null;
+			s.fields[idx].options = newOrder;
+			return JSON.stringify(s);
+		};
 
 		try {
-			const updated = await api.collections.update(wsSlug, collSlug, { schema: newSchemaStr });
+			const schemaStr = applyOrder(collection);
+			if (schemaStr === null) return;
+			let updated: Collection;
+			try {
+				updated = await api.collections.update(wsSlug, collSlug, {
+					schema: schemaStr,
+					expected_updated_at: collection.updated_at
+				});
+			} catch (err) {
+				if (!isUpdateConflictError(err)) throw err;
+				// Refetch, re-apply the reorder onto the fresh schema, retry once.
+				const fresh = await api.collections.get(wsSlug, collSlug);
+				const retryStr = applyOrder(fresh);
+				if (retryStr === null) return;
+				updated = await api.collections.update(wsSlug, fresh.slug, {
+					schema: retryStr,
+					expected_updated_at: fresh.updated_at
+				});
+			}
 			collection = updated;
 		} catch {
 			toastStore.show('Failed to save column order', 'error');

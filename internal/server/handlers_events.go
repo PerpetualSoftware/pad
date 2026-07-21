@@ -396,7 +396,15 @@ func sseEventVisibleFor(vis sseVisibility, sseUserID string, event events.Event)
 		if itemID != "" {
 			return vis.grantedItemSet[itemID]
 		}
-		// Itemless collection-scoped events (e.g. the items_bulk_updated
+		// collection.updated (BUG-2265) is itemless but carries ONLY the
+		// collection slug — no per-item op/count/timing — and the collection
+		// is already confirmed visible above, so it's safe to deliver to
+		// item-grant subscribers. They need it to converge their ItemDetail's
+		// schema/settings snapshot for the items they CAN see.
+		if event.Type == events.CollectionUpdated {
+			return true
+		}
+		// Other itemless collection-scoped events (e.g. the items_bulk_updated
 		// batch event, TASK-1668) can't be item-grant-filtered — they'd
 		// otherwise leak op/count/timing for items the subscriber can't
 		// see. Suppress; these subscribers reconcile their granted items

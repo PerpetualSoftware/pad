@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { api, isPlanLimitError, planLimitMessage } from '$lib/api/client';
+	import { sseService } from '$lib/services/sse.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import type { Collection, WorkspaceContext } from '$lib/types';
 	import { parseSchema } from '$lib/types';
@@ -85,6 +86,27 @@
 		if (wsSlug) load(wsSlug);
 	});
 
+	// BUG-2265: keep the collections list fresh when another client changes a
+	// collection, so opening the edit modal seeds a CURRENT
+	// expected_updated_at instead of a stale one (which would produce a false
+	// 409 "reload" on a change that predates editing). `editingCollection` is
+	// captured at edit-click time from this list; a mid-edit refresh doesn't
+	// touch the already-open modal (its seed is edge-gated). Guarded so two
+	// rapid events can't resolve out of order.
+	let collectionsRefreshSeq = 0;
+	async function refreshCollectionsOnEvent() {
+		if (!wsSlug) return;
+		const seq = ++collectionsRefreshSeq;
+		try {
+			const fresh = await api.collections.list(wsSlug);
+			if (seq !== collectionsRefreshSeq) return;
+			collections = fresh;
+		} catch {
+			// Best-effort; a stale token just yields a recoverable 409.
+		}
+	}
+	let unsubscribeSSE: (() => void) | null = null;
+
 	onMount(() => {
 		const stored = localStorage.getItem('pad-theme');
 		if (stored === 'light' || stored === 'dark') {
@@ -98,6 +120,13 @@
 			// so an owner-only tab in the hash won't be in validTabIds yet.
 			pendingHash = hash;
 		}
+		unsubscribeSSE = sseService.onItemEvent((event) => {
+			if (event.type === 'collection_updated') void refreshCollectionsOnEvent();
+		});
+	});
+
+	onDestroy(() => {
+		unsubscribeSSE?.();
 	});
 	async function load(slug: string) {
 		loading = true;
