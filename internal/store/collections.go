@@ -330,83 +330,76 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	args = append(args, id)
 	query := fmt.Sprintf("UPDATE collections SET %s WHERE id = ?", strings.Join(sets, ", "))
 
-	// Optimistic-concurrency guard (BUG-2265). When the caller round-trips the
-	// updated_at it last read, do the compare-and-set ATOMICALLY so two clients
-	// editing the same collection's settings can't clobber each other (the
-	// full-page pane host's master + pane each hold an independent Collection
-	// snapshot). Re-read the row inside the tx, compare with time.Equal
-	// (format-agnostic — Postgres re-serializes the JSONB/timestamptz round
-	// trip), then UPDATE. Callers that don't send the token keep the legacy
-	// single-statement last-write-wins path below unchanged.
+	// BUG-2265: collections.updated_at doubles as the optimistic-concurrency
+	// token (no schema migration — it's the existing column). For that to be
+	// reliable it must satisfy two invariants that a plain
+	// `UPDATE ... SET updated_at = now()` doesn't, so EVERY update (guarded or
+	// not) runs through one small transaction that re-reads the row and derives
+	// the new timestamp atomically:
 	//
-	// Serialization is watertight on BOTH drivers WITHOUT relying on the
-	// advisory lock (which only serializes writers that also take it — a
-	// tokenless UpdateCollection would slip between the re-read and the UPDATE
-	// on Postgres, Codex P1):
-	//   - SQLite: the db-wide BEGIN IMMEDIATE write lock (_txlock=immediate)
-	//     already serializes EVERY writer for the whole tx.
-	//   - Postgres: the re-read takes a `FOR UPDATE` row lock, so a concurrent
-	//     tokenless UPDATE blocks on that row until this tx commits.
+	//   1. Serialized check-and-set. The re-read happens under a lock, so a
+	//      concurrent writer can't slip between it and the UPDATE. SQLite gets
+	//      this from the db-wide BEGIN IMMEDIATE write lock (_txlock=immediate);
+	//      Postgres needs an explicit `FOR UPDATE` row lock (it rejects `FOR
+	//      UPDATE` on SQLite syntactically, hence the driver gate). This also
+	//      closes the tokenless-writer race the advisory lock could NOT (an
+	//      advisory lock only serializes writers that also take it — Codex P1).
+	//
+	//   2. Strictly monotonic token. now() is one-second precision, so two
+	//      writes in the same wall-clock second — or a tokenless write racing a
+	//      guarded one — would otherwise keep OR regress the timestamp, letting
+	//      a stale reader's token still match and clobber newer data (Codex P1).
+	//      Every write therefore advances updated_at strictly past the row's
+	//      current value; now() is used verbatim whenever it already exceeds it
+	//      (the common case, so timestamps stay accurate).
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	reread := "SELECT updated_at FROM collections WHERE id = ? AND deleted_at IS NULL"
+	if s.dialect.Driver() == DriverPostgres {
+		reread += " FOR UPDATE"
+	}
+	var currentUpdatedAt string
+	rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt)
+	if rerr == sql.ErrNoRows {
+		// Deleted between the pre-tx GetCollection and here — treat as not-found.
+		return nil, nil
+	}
+	if rerr != nil {
+		return nil, fmt.Errorf("re-read collection under lock: %w", rerr)
+	}
+	current := parseTime(currentUpdatedAt)
+
+	// Optimistic-concurrency guard — only when the caller opted in by sending
+	// the token it last read. Compared with time.Equal (format-agnostic).
 	if input.ExpectedUpdatedAt != "" {
 		expected, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt)
 		if perr != nil {
 			return nil, fmt.Errorf("invalid expected_updated_at %q: %w", input.ExpectedUpdatedAt, perr)
 		}
-
-		tx, err := s.db.Begin()
-		if err != nil {
-			return nil, err
-		}
-		defer tx.Rollback()
-
-		// Re-read updated_at UNDER a row lock (Postgres) / the BEGIN IMMEDIATE
-		// write lock (SQLite). SQLite rejects `FOR UPDATE` syntactically, so it
-		// is Postgres-only; the whole-DB write lock makes it unnecessary there.
-		reread := "SELECT updated_at FROM collections WHERE id = ? AND deleted_at IS NULL"
-		if s.dialect.Driver() == DriverPostgres {
-			reread += " FOR UPDATE"
-		}
-		var currentUpdatedAt string
-		rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt)
-		if rerr == sql.ErrNoRows {
-			// Deleted between the pre-tx read and here — treat as not-found.
-			return nil, nil
-		}
-		if rerr != nil {
-			return nil, fmt.Errorf("re-read collection under lock: %w", rerr)
-		}
-		if actual := parseTime(currentUpdatedAt); !actual.Equal(expected) {
+		if !current.Equal(expected) {
 			return nil, &CollectionUpdateConflictError{
 				CollectionID:      id,
 				ExpectedUpdatedAt: input.ExpectedUpdatedAt,
-				ActualUpdatedAt:   actual,
+				ActualUpdatedAt:   current,
 			}
 		}
-
-		// Guarantee the stored updated_at STRICTLY ADVANCES past the accepted
-		// token so a second guarded write within the SAME wall-clock second
-		// still changes the token (now() is one-second precision — two
-		// same-second writes would otherwise keep an identical token and defeat
-		// the guard, Codex P1). now() is used verbatim whenever it already
-		// exceeds the token (the common case; timestamps stay accurate). args[0]
-		// is the `updated_at = ?` bind (built first, above).
-		if !parseTime(ts).After(expected) {
-			args[0] = expected.Add(time.Second).UTC().Format(time.RFC3339)
-		}
-
-		if _, err := tx.Exec(s.q(query), args...); err != nil {
-			return nil, fmt.Errorf("update collection: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return nil, fmt.Errorf("commit collection update: %w", err)
-		}
-
-		return s.GetCollection(id)
 	}
 
-	_, err = s.db.Exec(s.q(query), args...)
-	if err != nil {
+	// Monotonic advance (invariant 2 above). args[0] is the `updated_at = ?`
+	// bind built first, so overwrite it in place.
+	if !parseTime(ts).After(current) {
+		args[0] = current.Add(time.Second).UTC().Format(time.RFC3339)
+	}
+
+	if _, err := tx.Exec(s.q(query), args...); err != nil {
 		return nil, fmt.Errorf("update collection: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit collection update: %w", err)
 	}
 
 	return s.GetCollection(id)

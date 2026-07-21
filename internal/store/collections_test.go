@@ -268,6 +268,47 @@ func TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber(t *testing.T) {
 	}
 }
 
+// TestUpdateCollectionTokenlessWriteStillAdvancesToken is the BUG-2265 Codex
+// round-2 guard: a TOKENLESS update must also advance updated_at strictly past
+// the row's current value, so it can't regress the concurrency token in the
+// same wall-clock second and let a stale guarded token clobber newer data.
+func TestUpdateCollectionTokenlessWriteStillAdvancesToken(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollTokenlessMono")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Things",
+		Slug: "things-occ-tokenless-mono",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+	token := created.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+
+	// Tokenless write (the CLI/MCP/API path) — must advance updated_at even if
+	// it lands in the same second the token was read.
+	first := `{"layout":"content-primary"}`
+	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{Settings: &first})
+	if err != nil {
+		t.Fatalf("tokenless update should succeed: %v", err)
+	}
+	if !updated.UpdatedAt.After(created.UpdatedAt) {
+		t.Fatalf("tokenless update must advance updated_at: created=%s updated=%s",
+			created.UpdatedAt.UTC(), updated.UpdatedAt.UTC())
+	}
+
+	// A guarded write replaying the pre-tokenless token must now conflict.
+	second := `{"layout":"fields-primary"}`
+	_, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings:          &second,
+		ExpectedUpdatedAt: token,
+	})
+	var conflict *CollectionUpdateConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("stale guarded token must conflict after a tokenless write, got %T: %v", err, err)
+	}
+}
+
 // TestUpdateCollectionNoTokenSkipsConcurrencyCheck: omitting the token keeps
 // the legacy last-write-wins path — an unconditional write that always lands
 // (CLI / MCP / API callers that don't opt in). BUG-2265 is additive.
