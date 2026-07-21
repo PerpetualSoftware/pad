@@ -67,13 +67,18 @@ type Event struct {
 	DocumentID  string `json:"document_id,omitempty"`
 	ItemID      string `json:"item_id,omitempty"`
 	Collection  string `json:"collection,omitempty"`
-	Title       string `json:"title,omitempty"`
-	DocType     string `json:"doc_type,omitempty"`
-	Actor       string `json:"actor,omitempty"`
-	ActorName   string `json:"actor_name,omitempty"`
-	Source      string `json:"source,omitempty"`
-	UserID      string `json:"user_id,omitempty"` // For user-scoped events (e.g. star/unstar)
-	Timestamp   int64  `json:"timestamp"`
+	// NewSlug carries a collection's NEW slug on a collection_updated event
+	// that is a rename (BUG-2265). The event is routed by Collection (the OLD
+	// slug, which the sibling tabs still address) so old-slug watchers receive
+	// it and can re-target to NewSlug. Empty for non-rename updates.
+	NewSlug   string `json:"new_slug,omitempty"`
+	Title     string `json:"title,omitempty"`
+	DocType   string `json:"doc_type,omitempty"`
+	Actor     string `json:"actor,omitempty"`
+	ActorName string `json:"actor_name,omitempty"`
+	Source    string `json:"source,omitempty"`
+	UserID    string `json:"user_id,omitempty"` // For user-scoped events (e.g. star/unstar)
+	Timestamp int64  `json:"timestamp"`
 	// Seq is the workspace-scoped monotonic mutation cursor of the
 	// item the event references (PLAN-1343 / TASK-1352). Populated
 	// for item lifecycle events (created / updated / archived /

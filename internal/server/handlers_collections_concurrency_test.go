@@ -150,10 +150,74 @@ func TestUpdateCollection_PublishesCollectionUpdatedEvent(t *testing.T) {
 				if event.Collection != coll.Slug {
 					t.Fatalf("collection_updated collection=%q want %q", event.Collection, coll.Slug)
 				}
+				if event.NewSlug != "" {
+					t.Fatalf("settings-only update should not carry new_slug, got %q", event.NewSlug)
+				}
+				// Sanitized: no owner identity/source leaked to (item-grant) guests.
+				if event.Actor != "" || event.ActorName != "" || event.Source != "" {
+					t.Fatalf("collection_updated leaked actor metadata: actor=%q name=%q source=%q",
+						event.Actor, event.ActorName, event.Source)
+				}
 				return
 			}
 		case <-deadline:
 			t.Fatal("timed out waiting for collection_updated event")
+		}
+	}
+}
+
+// TestUpdateCollection_RenameEventCarriesNewSlug covers BUG-2265 Codex-round
+// P2: a rename broadcasts collection_updated routed by the OLD slug and
+// carrying the NEW slug so remote tabs can re-target instead of hitting the
+// dead old slug.
+func TestUpdateCollection_RenameEventCarriesNewSlug(t *testing.T) {
+	srv := testServerWithEvents(t)
+	slug := createWSWithCollections(t, srv)
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("workspace: %v", err)
+	}
+
+	createRR := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
+		"name": "Old Name",
+	})
+	if createRR.Code != http.StatusCreated {
+		t.Fatalf("seed create: expected 201, got %d: %s", createRR.Code, createRR.Body.String())
+	}
+	var coll models.Collection
+	parseJSON(t, createRR, &coll)
+	oldSlug := coll.Slug
+
+	ch := srv.events.Subscribe(ws.ID)
+	defer srv.events.Unsubscribe(ch)
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+oldSlug, map[string]interface{}{
+		"name": "Brand New Name",
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("rename: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var updated models.Collection
+	parseJSON(t, rr, &updated)
+	if updated.Slug == oldSlug {
+		t.Fatalf("expected the rename to change the slug, still %q", oldSlug)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case event := <-ch:
+			if event.Type == events.CollectionUpdated {
+				if event.Collection != oldSlug {
+					t.Fatalf("rename event should route by OLD slug, got %q want %q", event.Collection, oldSlug)
+				}
+				if event.NewSlug != updated.Slug {
+					t.Fatalf("rename event new_slug=%q want %q", event.NewSlug, updated.Slug)
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for rename collection_updated event")
 		}
 	}
 }

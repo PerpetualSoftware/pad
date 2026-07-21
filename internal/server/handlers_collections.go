@@ -273,17 +273,16 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 	// independent Collection snapshot proactively — shrinking the window in
 	// which another client would send a stale expected_updated_at and 409.
 	//
-	// Only when the slug is UNCHANGED (settings/schema/icon/description edits —
-	// the common BUG-2265 case). A rename changes the slug, and the event is
-	// routed + visibility-filtered by slug: an old-slug event would make
-	// siblings refetch the now-dead old slug (404), while a new-slug event
-	// can't reach clients whose visibility snapshot still knows the old slug
-	// (Codex P2). Renames are handled by the existing navigation path
-	// (ItemDetail.onupdated / the collection route), not this refresh event.
-	if updated.Slug == coll.Slug {
-		actor, source := actorFromRequest(r)
-		s.publishCollectionEvent(events.CollectionUpdated, workspaceID, coll.Slug, actor, actorNameFromRequest(r), source)
+	// ALWAYS routed by the OLD slug (coll.Slug) — the slug sibling tabs still
+	// address. On a rename the event carries the NEW slug so those tabs can
+	// re-target instead of silently hitting the dead old slug on their next
+	// action (Codex P2). No actor/source: an item-grant guest receives this
+	// event, so it must not leak the owner's identity/source (Codex P1).
+	newSlug := ""
+	if updated.Slug != coll.Slug {
+		newSlug = updated.Slug
 	}
+	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, coll.Slug, newSlug)
 
 	writeJSON(w, http.StatusOK, updated)
 }
@@ -307,10 +306,14 @@ func writeCollectionUpdateConflictError(w http.ResponseWriter, ref string, confl
 	writeUpdateConflictEnvelope(w, ref, conflict.ExpectedUpdatedAt, conflict.ActualUpdatedAt)
 }
 
-// publishCollectionEvent publishes a real-time event for a collection-level
-// change (BUG-2265). Collection carries the slug so the SSE visibility filter
-// routes it to workspace clients who can see the collection.
-func (s *Server) publishCollectionEvent(eventType, workspaceID, collectionSlug, actor, actorName, source string) {
+// publishCollectionEvent publishes a real-time collection-level change
+// (BUG-2265). Collection carries the (old) slug so the SSE visibility filter
+// routes it to workspace clients who can see the collection; newSlug is set
+// only on a rename. Deliberately SANITIZED — no Actor / ActorName / Source —
+// because this event is delivered to item-grant-only subscribers, who must
+// not learn the owner's identity or edit source (Codex P1). Clients only need
+// the slug(s) to refresh their snapshot / re-target.
+func (s *Server) publishCollectionEvent(eventType, workspaceID, collectionSlug, newSlug string) {
 	if s.events == nil {
 		return
 	}
@@ -318,9 +321,7 @@ func (s *Server) publishCollectionEvent(eventType, workspaceID, collectionSlug, 
 		Type:        eventType,
 		WorkspaceID: workspaceID,
 		Collection:  collectionSlug,
-		Actor:       actor,
-		ActorName:   actorName,
-		Source:      source,
+		NewSlug:     newSlug,
 	})
 }
 
