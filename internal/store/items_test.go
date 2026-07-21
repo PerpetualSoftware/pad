@@ -2509,6 +2509,87 @@ func TestItemVersionCreation(t *testing.T) {
 	}
 }
 
+// TestItemVersionForceBypassesThrottle guards the ForceVersion flag (BUG-2264):
+// a version restore sets it so a snapshot is ALWAYS taken when content changes,
+// even on a repeat same-(actor, source) write inside the 1h throttle window.
+// Without it the throttle skips the snapshot, moving items.content forward with
+// no version anchoring the reverse-patch chain (and losing the restore's undo
+// point).
+func TestItemVersionForceBypassesThrottle(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+
+	item := createTestItem(t, s, ws.ID, col.ID, "My Task", "v0")
+
+	// Seed a most-recent version under a DIFFERENT (actor, source) so the next
+	// user/web write is guaranteed to snapshot (actor/source change bypasses
+	// the throttle) — this pins the most-recent version's attribution.
+	a := "a"
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Content: &a, LastModifiedBy: "agent", Source: "cli"}); err != nil {
+		t.Fatalf("UpdateItem a: %v", err)
+	}
+	// user/web write: actor/source changed from (agent, cli) → creates a version.
+	// The most-recent version is now (user, web).
+	b := "b"
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Content: &b, LastModifiedBy: "user", Source: "web"}); err != nil {
+		t.Fatalf("UpdateItem b: %v", err)
+	}
+	before, err := s.ListItemVersions(item.ID)
+	if err != nil {
+		t.Fatalf("ListItemVersions before: %v", err)
+	}
+
+	// A second user/web content write inside the throttle window is suppressed —
+	// the exact throttle a plain (non-forced) restore would hit.
+	c := "c"
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{Content: &c, LastModifiedBy: "user", Source: "web"}); err != nil {
+		t.Fatalf("UpdateItem c: %v", err)
+	}
+	throttled, err := s.ListItemVersions(item.ID)
+	if err != nil {
+		t.Fatalf("ListItemVersions throttled: %v", err)
+	}
+	if len(throttled) != len(before) {
+		t.Fatalf("expected throttled same-(actor,source) write to add no version: had %d, now %d", len(before), len(throttled))
+	}
+
+	// The same write WITH ForceVersion must bypass the throttle and snapshot.
+	d := "d"
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{
+		Content:        &d,
+		LastModifiedBy: "user",
+		Source:         "web",
+		ForceVersion:   true,
+		ChangeSummary:  "Restored from version …",
+	}); err != nil {
+		t.Fatalf("UpdateItem forced: %v", err)
+	}
+	forced, err := s.ListItemVersions(item.ID)
+	if err != nil {
+		t.Fatalf("ListItemVersions forced: %v", err)
+	}
+	if len(forced) != len(throttled)+1 {
+		t.Fatalf("expected ForceVersion to add exactly one version despite throttle: had %d, now %d", len(throttled), len(forced))
+	}
+
+	// ForceVersion must NOT create a version when content is unchanged (it is
+	// only consulted inside the content-changed branch).
+	if _, err := s.UpdateItem(item.ID, models.ItemUpdate{
+		Content:      &d, // identical to current content
+		ForceVersion: true,
+	}); err != nil {
+		t.Fatalf("UpdateItem forced no-op: %v", err)
+	}
+	noop, err := s.ListItemVersions(item.ID)
+	if err != nil {
+		t.Fatalf("ListItemVersions noop: %v", err)
+	}
+	if len(noop) != len(forced) {
+		t.Fatalf("expected ForceVersion with unchanged content to add no version: had %d, now %d", len(forced), len(noop))
+	}
+}
+
 func TestWorkspaceHasAgentActivity(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Connect Banner")

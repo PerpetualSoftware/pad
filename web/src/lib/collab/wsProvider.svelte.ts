@@ -198,6 +198,18 @@ export interface CollabProviderOptions {
 	 * leaving the editor on stale state.
 	 */
 	onForceRefresh?: ForceRefreshHandler;
+	/**
+	 * The items.content generation (`item.seq`) this provider's Y.Doc was
+	 * SEEDED from (BUG-2264). Announced to the server as `?content_seq=<seq>`
+	 * on every (re)connect. If it predates the item's most recent version
+	 * RESTORE, the server force_refreshes this connection before its on-open
+	 * state push can resurrect the stale pre-restore document. Constant for the
+	 * provider's lifetime (the seed doesn't change under it); the force_refresh
+	 * recovery refetches a fresh item + rebuilds the provider with the new seq.
+	 * Omitted / 0 falls through to legacy behaviour (server can't fence a stale
+	 * seed) — no regression.
+	 */
+	contentSeq?: number;
 }
 
 export class CollabProvider {
@@ -298,6 +310,11 @@ export class CollabProvider {
 	private readonly WebSocketImpl: typeof WebSocket;
 	private readonly onApplierRequest?: ApplierRequestHandler;
 	private readonly onForceRefresh?: ForceRefreshHandler;
+	/**
+	 * items.content generation the Y.Doc was seeded from, announced as
+	 * `?content_seq=` on every (re)connect (BUG-2264). Constant per provider.
+	 */
+	private readonly contentSeq: number;
 	private destroyed = false;
 	private reconnectAttempts = 0;
 	private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -318,6 +335,7 @@ export class CollabProvider {
 		this.WebSocketImpl = options.WebSocketImpl ?? globalThis.WebSocket;
 		this.onApplierRequest = options.onApplierRequest;
 		this.onForceRefresh = options.onForceRefresh;
+		this.contentSeq = options.contentSeq ?? 0;
 		// Restore the per-tab cursor BEFORE the first connect. The
 		// `since=<id>` query string is appended in connect() each
 		// time so a reconnect after some live edits announces a
@@ -1139,9 +1157,17 @@ export class CollabProvider {
 	 * that hard-code the base URL working as-is.
 	 */
 	private connectUrl(): string {
-		if (this.lastOpLogID <= 0) return this.url;
+		// `content_seq` (the items.content generation the Y.Doc was seeded from)
+		// rides alongside `since` on every (re)connect so the server can
+		// force_refresh a connection whose seed predates the last version restore
+		// (BUG-2264). Both are omitted when 0, so test fixtures that hard-code the
+		// base URL and fresh clients with no cursor/seq keep the bare base URL.
+		const params: string[] = [];
+		if (this.lastOpLogID > 0) params.push(`since=${this.lastOpLogID}`);
+		if (this.contentSeq > 0) params.push(`content_seq=${this.contentSeq}`);
+		if (params.length === 0) return this.url;
 		const sep = this.url.includes('?') ? '&' : '?';
-		return `${this.url}${sep}since=${this.lastOpLogID}`;
+		return `${this.url}${sep}${params.join('&')}`;
 	}
 
 	private closeSocket(code: number, reason: string): void {

@@ -2063,7 +2063,15 @@ func (s *Store) updateItemWithParentLinkOnce(
 			source = "web"
 		}
 
-		forceVersion := input.Title != nil && *input.Title != existing.Title
+		// ForceVersion (e.g. a version restore) and a title change both bypass
+		// the per-(actor, source) throttle so a bracketing snapshot is always
+		// written when content changes — otherwise a throttled write would move
+		// items.content forward with no version anchoring the reverse-patch chain.
+		// NOTE(BUG-2270): ForceVersion can mint same-second versions; item_versions
+		// ordering has no monotonic tie-breaker (second-precision created_at), so
+		// rapid forced versions can resolve out of order. The tie-breaker (a
+		// version sequence, needs a schema migration) is tracked there.
+		forceVersion := input.ForceVersion || (input.Title != nil && *input.Title != existing.Title)
 		shouldVersion := forceVersion
 		if !shouldVersion {
 			shouldVersion, err = s.shouldCreateItemVersion(id, createdBy, source)
@@ -2260,6 +2268,19 @@ func (s *Store) updateItemWithParentLinkOnce(
 		return nil, fmt.Errorf("update item: %w", err)
 	}
 
+	// Durable restore boundary (BUG-2264): stamp last_restore_seq with the seq
+	// this UPDATE just assigned. A second statement (not a SET on the UPDATE
+	// above) because seq is computed there via nextWorkspaceSeqSubquery, so
+	// `last_restore_seq = seq` in the same statement would read the OLD seq; a
+	// follow-up UPDATE in the SAME tx reads the freshly-committed-to-row value.
+	// Atomic with the content write + op-log prune (all in this one tx), so the
+	// boundary can never be torn from the restore it fences.
+	if input.MarkRestoreBoundary {
+		if _, err = tx.Exec(s.q("UPDATE items SET last_restore_seq = seq WHERE id = ?"), id); err != nil {
+			return nil, fmt.Errorf("stamp restore boundary: %w", err)
+		}
+	}
+
 	// Record a structured status transition when the fields blob was part
 	// of this update AND the `status` value actually changed. Written in
 	// the same tx as the item UPDATE so the transition log can never
@@ -2354,11 +2375,26 @@ func (s *Store) updateItemWithParentLinkOnce(
 		}
 	}
 
+	// Read the updated row WITHIN the tx, BEFORE commit (BUG-2264). A
+	// post-commit re-read (s.GetItem) can fail AFTER a successful commit —
+	// making a committed update look failed to the caller (version-restore
+	// treats that as "roll back the room" and diverges) — and can observe a
+	// concurrent writer's later seq. getItemTx sees exactly this tx's own write
+	// (identical SQL to GetItem); a read failure here rolls the tx back cleanly,
+	// so a nil error is an unambiguous "this update committed, with this seq".
+	updated, err := s.getItemTx(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if updated == nil {
+		return nil, nil
+	}
+
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 
-	return s.GetItem(id)
+	return updated, nil
 }
 
 // DeleteItem soft-deletes the item by stamping deleted_at and bumping

@@ -503,6 +503,42 @@ func TestHandleControlMessageIgnoresAckFromReadOnlyConn(t *testing.T) {
 	}
 }
 
+// TestHandleControlMessageIgnoresAckFromFrozenConn is the pick-then-freeze half
+// of the BUG-2264 applier fix: a WRITABLE conn that ForceRefreshRoom froze mid
+// version-restore has its inbound sync frames dropped by readLoop, so an
+// applier_ack from it would be a phantom success (ApplyExternalContent returns
+// nil, the PATCH handler skips its direct-write fallback, and the external edit
+// is silently lost while the restore prunes the op-log). canWrite=true isolates
+// the frozen gate from the read-only gate.
+func TestHandleControlMessageIgnoresAckFromFrozenConn(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	defer mgr.Close()
+
+	room := mgr.getOrCreate("item-a")
+
+	rc := &roomConn{id: 1, conn: &websocket.Conn{}}
+	rc.canWrite.Store(true)
+	rc.frozen.Store(true)
+
+	reqID := "req-frozen"
+	ch, err := room.registerPendingAck(reqID, rc.conn)
+	if err != nil {
+		t.Fatalf("registerPendingAck: %v", err)
+	}
+
+	payload, _ := json.Marshal(ControlMessage{Type: ControlMessageApplierAck, RequestID: reqID})
+	room.handleControlMessage(rc, payload)
+
+	select {
+	case <-ch:
+		t.Fatal("applier_ack from a frozen conn must be ignored, but it signaled the pending ack")
+	case <-time.After(50 * time.Millisecond):
+		// Correct: the ack was dropped before routeApplierAck.
+	}
+}
+
 // TestPruneAndApplyAllowsReadOnlyRoom verifies the load-bearing
 // writer-aware guard (TASK-265): a room whose only peers are read-only
 // must NOT block the no-applier direct write. PruneAndApply runs applyFn

@@ -1747,6 +1747,12 @@
 		// active editing. collabKey just changed to this itemId, so item is
 		// the freshly-loaded item for it. Per Codex review.
 		const baseline = untrack(() => (item && item.id === itemId ? item.content ?? '' : ''));
+		// The items.content generation this Y.Doc is being seeded from (same
+		// untracked item snapshot as `baseline`). Announced to the server as
+		// ?content_seq= so a restore can force_refresh a connection whose seed
+		// predates it (BUG-2264). Untracked for the same reason as `baseline`:
+		// tracking `item.seq` would rebuild the provider on every seq bump.
+		const seedSeq = untrack(() => (item && item.id === itemId ? item.seq ?? 0 : 0));
 		// Eager, all-tabs seedMd (BUG-1941 follow-up — codex round 2 found
 		// that only the multi-tab-election WINNER got a captured seed via
 		// the lazy-seed effect below; a second tab on the same item, or
@@ -1807,6 +1813,12 @@
 
 		const doc = new Y.Doc();
 		const provider = new CollabProvider(itemId, doc, {
+			// The items.content generation this Y.Doc is seeded from, announced
+			// as ?content_seq= so a version restore can force_refresh this
+			// connection if its seed predates the restore (BUG-2264). The
+			// force_refresh recovery below refetches a fresh item and rebuilds
+			// this provider, so the rebuilt provider announces the new seq.
+			contentSeq: seedSeq,
 			// Designated-applier handler: when a CLI / MCP / API caller
 			// PATCHes content while this tab is connected, the server
 			// asks one tab to apply the markdown via the editor's

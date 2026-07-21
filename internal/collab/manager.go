@@ -95,6 +95,109 @@ type RoomManager struct {
 	// round 5.
 	itemLocksMu sync.Mutex
 	itemLocks   map[string]*sync.Mutex
+
+	// restoreBoundaries records, per item, the pre-prune MAX(op-log.id)+1 at the
+	// most recent version RESTORE (BUG-2264, prune+reseed). A collab-snapshot
+	// flush whose op_log_cursor is BELOW this boundary captured a Y.Doc that
+	// predates the restore's op-log wipe — its markdown is the stale PRE-restore
+	// content — so the PATCH handler rejects it (RestoreBoundary), preventing an
+	// in-flight pre-restore flush from re-clobbering items.content after the
+	// restore write.
+	//
+	// In-memory (process-lifetime, monotonic non-decreasing). Op-log ids never
+	// reset, so a stale boundary can never falsely reject a genuine post-restore
+	// flush (whose cursor is always >= the boundary). One int64 per restored
+	// item — same acceptable footprint as itemLocks. For the process-restart
+	// residual this shares with lastRestoreSeqs, see that field's doc.
+	restoreBoundaryMu sync.Mutex
+	restoreBoundaries map[string]int64
+
+	// lastRestoreSeqs records, per item, the item.seq assigned by the most
+	// recent version RESTORE — i.e. the content generation of the restored (and
+	// now canonical) items.content that the pruned op-log's peers must rebuild
+	// from (BUG-2264, closing the additional-P1 + Codex-xhigh stale-seed race).
+	// On Join a client announces the items.content `seq` its Y.Doc was seeded
+	// from (?content_seq=); if that seed predates the last restore (contentSeq <
+	// lastRestoreSeq), the client's seed is the stale PRE-restore content and the
+	// empty/post-restore op-log can't reconcile it (a since==0 client slips the
+	// resume-cursor MIN check entirely), so Join force_refreshes it BEFORE its
+	// on-open Y.encodeStateAsUpdate can re-push the stale document. This closes
+	// the two seed-based clobbers the resume-cursor boundary alone can't: a lost
+	// force_refresh frame on a cursor-0 peer, and a browser that GETs
+	// items.content, blocks in Join behind the restore, and joins after the prune.
+	//
+	// In-memory / monotonic, mirroring restoreBoundaries. Seq is
+	// workspace-monotonic and only bumped when THIS item is written, so a stale
+	// value can never falsely reject a client that seeded at-or-after the restore.
+	//
+	// This is a FAST-PATH cache, not the source of truth. The restart hole it
+	// used to have — a server restart resets the map, and a restart is NOT a safe
+	// refresh barrier because the BROWSER's in-memory Y.Doc survives the WS drop,
+	// so a cursor-0 pre-restore provider reconnecting post-restart would slip the
+	// since==0 resume-cursor check and re-push its stale document — is now closed
+	// DURABLY by items.last_restore_seq (BUG-2264, migration 075/pg 053). The
+	// restore stamps that column in its own tx; Join reads it (via
+	// store.ItemLastRestoreSeq) whenever this in-memory fast-path misses, so a
+	// stale-seeded tab is fenced even after a restart. This map only saves the
+	// column read in the common (same-process) case.
+	lastRestoreSeqMu sync.Mutex
+	lastRestoreSeqs  map[string]int64
+}
+
+// SetRestoreBoundary records a restore boundary for itemID, keeping the
+// stored value monotonically non-decreasing (a later restore always has a
+// higher op-log MAX, and a stale/duplicate call can never lower it). See the
+// restoreBoundaries field doc for the invariant this enforces (BUG-2264).
+func (m *RoomManager) SetRestoreBoundary(itemID string, boundary int64) {
+	if itemID == "" || boundary <= 0 {
+		return
+	}
+	m.restoreBoundaryMu.Lock()
+	defer m.restoreBoundaryMu.Unlock()
+	if m.restoreBoundaries == nil {
+		m.restoreBoundaries = make(map[string]int64)
+	}
+	if boundary > m.restoreBoundaries[itemID] {
+		m.restoreBoundaries[itemID] = boundary
+	}
+}
+
+// RestoreBoundary returns the restore boundary recorded for itemID, or
+// (0, false) when none has been set. The collab-snapshot PATCH handler
+// consults it to reject stale pre-restore flushes (BUG-2264).
+func (m *RoomManager) RestoreBoundary(itemID string) (int64, bool) {
+	m.restoreBoundaryMu.Lock()
+	defer m.restoreBoundaryMu.Unlock()
+	v, ok := m.restoreBoundaries[itemID]
+	return v, ok
+}
+
+// SetLastRestoreSeq records the item.seq of the most recent restore for itemID,
+// kept monotonically non-decreasing (a later restore always has a higher seq;
+// a stale/duplicate call can never lower it). See the lastRestoreSeqs field doc
+// for the seed-based clobber this closes (BUG-2264).
+func (m *RoomManager) SetLastRestoreSeq(itemID string, seq int64) {
+	if itemID == "" || seq <= 0 {
+		return
+	}
+	m.lastRestoreSeqMu.Lock()
+	defer m.lastRestoreSeqMu.Unlock()
+	if m.lastRestoreSeqs == nil {
+		m.lastRestoreSeqs = make(map[string]int64)
+	}
+	if seq > m.lastRestoreSeqs[itemID] {
+		m.lastRestoreSeqs[itemID] = seq
+	}
+}
+
+// LastRestoreSeq returns the item.seq of the most recent restore for itemID, or
+// (0, false) when none has been recorded. Join consults it to force_refresh a
+// client whose announced ?content_seq predates the last restore (BUG-2264).
+func (m *RoomManager) LastRestoreSeq(itemID string) (int64, bool) {
+	m.lastRestoreSeqMu.Lock()
+	defer m.lastRestoreSeqMu.Unlock()
+	v, ok := m.lastRestoreSeqs[itemID]
+	return v, ok
 }
 
 // itemLock returns the lazily-allocated mutex guarding setup-phase
@@ -147,6 +250,18 @@ func NewRoomManagerWithConfig(store opLogStore, bus OpBus, cfg RoomManagerConfig
 // close the conn cleanly. Per TASK-1319.
 var ErrForceRefreshSent = errors.New("collab: client cursor below op-log MIN; force_refresh sent")
 
+// ErrStaleSeedFenceUnavailable is returned by Join when the DURABLE stale-seed
+// boundary read (items.last_restore_seq) fails on an in-memory miss, so we can't
+// confirm the client's ?content_seq seed is current (BUG-2264). We fail CLOSED —
+// the conn is closed WITHOUT admitting it (so a stale seed can't be pushed) — but
+// via a plain close, NOT a force_refresh: force_refresh would make the client
+// DISCARD its Y.Doc and rebuild, and a persistent read error (DB down) would then
+// spin an unbounded refresh/GET loop that also drops local-only edits (Codex
+// xhigh). A plain close is retryable: the client's provider reconnects with
+// backoff, Y.Doc intact, and once the DB recovers it's admitted (or legitimately
+// force_refreshed if genuinely stale). The handler closes the conn on this.
+var ErrStaleSeedFenceUnavailable = errors.New("collab: durable restore-boundary read failed; retryable close")
+
 // Join attaches a freshly-upgraded WebSocket connection to the room
 // for itemID. Replays the op-log to the new peer, spins up an inbound
 // reader and an outbound writer, and blocks until the WebSocket
@@ -179,7 +294,7 @@ var ErrForceRefreshSent = errors.New("collab: client cursor below op-log MIN; fo
 // Returns whatever error caused the WebSocket to close, or nil on a
 // normal close. The handler typically logs but doesn't act on the
 // return value: the connection is gone either way.
-func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, canWrite bool, onRegistered func()) error {
+func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, contentSeq int64, canWrite bool, onRegistered func()) error {
 	// Gate Add on the closed flag under m.mu so a late Join (e.g. a
 	// hijacked WS handler that didn't enter Join until AFTER Close
 	// returned) can't sneak past the drain barrier.
@@ -245,6 +360,59 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, can
 					"since", since,
 					"min_id", minID,
 					"has_min", hasMin,
+				)
+				_ = sendForceRefreshFrame(conn)
+				itemLock.Unlock()
+				return ErrForceRefreshSent
+			}
+		}
+
+		// Stale-seed force_refresh (BUG-2264). Independent of the resume-cursor
+		// check above: `?content_seq=<seq>` is the items.content generation the
+		// client's Y.Doc was SEEDED from. If it predates the most recent restore
+		// (contentSeq < lastRestoreSeq), the seed is the stale PRE-restore content
+		// and the pruned op-log can't reconcile it — a since==0 client (fresh
+		// session OR a cursor-0 peer whose force_refresh frame was lost) slips the
+		// MIN check entirely and would re-push that stale document on open.
+		//
+		// The boundary has two tiers: the in-memory lastRestoreSeqs fast-path
+		// (set under itemLock by ForceRefreshRoom, so a Join serialised behind a
+		// restore sees it) and the DURABLE items.last_restore_seq column (written
+		// in the restore's own tx). The durable value is the source of truth
+		// across a server RESTART: after a restart the in-memory map is empty, so
+		// a stale-seeded cursor-0 tab reconnecting would otherwise slip through —
+		// on an in-memory miss we read the column so it is still fenced. contentSeq
+		// ==0 (old bundle that doesn't announce it) falls through to the legacy
+		// behaviour — no regression.
+		if contentSeq > 0 {
+			lastRestoreSeq, ok := m.LastRestoreSeq(itemID)
+			if !ok {
+				durable, hasDurable, derr := m.store.ItemLastRestoreSeq(itemID)
+				if derr != nil {
+					// FAIL CLOSED, but RETRYABLE (Codex xhigh): a read error means
+					// we can't confirm the seed is current, so admitting the client
+					// would let a stale cursor-0 tab push its pre-restore Y.Doc and
+					// clobber the restored content once the DB recovers. Close the
+					// conn WITHOUT admitting it — but via a plain close, not a
+					// force_refresh: force_refresh discards the Y.Doc + rebuilds, so
+					// a persistent read error would spin an unbounded refresh/GET
+					// loop and drop local-only edits. A plain close lets the client
+					// reconnect with backoff, Y.Doc intact, until the DB recovers.
+					// Only reachable on an in-memory miss (post-restart), contentSeq>0.
+					slog.Warn("collab: durable restore-boundary read failed; retryable close (fence unavailable)",
+						"item_id", itemID, "error", derr)
+					itemLock.Unlock()
+					return ErrStaleSeedFenceUnavailable
+				}
+				if hasDurable {
+					lastRestoreSeq, ok = durable, true
+				}
+			}
+			if ok && contentSeq < lastRestoreSeq {
+				slog.Info("collab: client seed predates last restore; sending force_refresh",
+					"item_id", itemID,
+					"content_seq", contentSeq,
+					"last_restore_seq", lastRestoreSeq,
 				)
 				_ = sendForceRefreshFrame(conn)
 				itemLock.Unlock()
@@ -785,6 +953,140 @@ func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 	room.mu.Unlock()
 
 	return applyFn()
+}
+
+// ForceRefreshRoom makes items.content the canonical source for an item's collab
+// state: it runs `commit` under the per-item lock (so the caller can atomically
+// set items.content to the value clients should rebuild from), prunes the ENTIRE
+// per-item op-log (the commit does the prune in its own transaction), then
+// force-refreshes every connected client (force_refresh frame + close) so each
+// peer discards its in-memory Y.Doc and lazy-seeds from items.content on
+// reconnect. Used by version-restore (BUG-2264): the restored content becomes
+// canonical and every peer converges on it — unflushed edits are discarded,
+// which is exactly restore semantics.
+//
+// `commit` MUST perform the canonical items.content write, the version row, AND
+// the op-log wipe in ONE store transaction (the restore handler passes
+// UpdateItemWithPreCheck + PruneItemOpLogTx). ForceRefreshRoom no longer prunes
+// separately: a split prune/commit leaves a divergent state on any failure
+// (Codex xhigh [P1]). The op-log wipe is what makes reconnecting/cold clients
+// lazy-seed from items.content (an empty op-log ⇒ nothing to replay).
+//
+// Holding the per-item lock across the commit + boundary + broadcast serialises
+// against Join's addConn+replayTo (and the collab-snapshot gate, which also runs
+// under this lock), so a client reconnecting after its force_refresh blocks here
+// until the op-log is empty AND the boundary is published, then rebuilds cleanly.
+//
+// Failure handling (Codex xhigh [P1]): the conns are frozen (rc.frozen=true) and
+// appendMu is held BEFORE the fallible commit. If the commit fails the restore
+// did not happen (the ONE tx rolled back — items.content, version, op-log wipe,
+// and the boundary MAX read all together), so we UN-freeze the conns (peers keep
+// editing their live Y.Doc, viewers keep their read-only status), do NOT publish
+// the boundary, skip the reseed, and return the error — the room is left exactly
+// as it was. The freeze uses a dedicated rc.frozen flag, NOT canWrite, so the
+// mid-session auth revalidation loop (which writes canWrite) can neither thaw the
+// freeze mid-restore nor get its viewer/editor decision clobbered by it.
+//
+// RESIDUAL (BUG-2276, deferred — commit-outcome ambiguity): a commit ERROR is
+// treated as "rolled back". On SQLite (the self-host shape) that holds — a commit
+// either fsyncs or it doesn't. On Postgres a commit that DURABLY lands but whose
+// acknowledgement is lost (connection drop at the commit boundary) surfaces as an
+// error here, so we unfreeze+resume peers on a stale Y.Doc even though the DB now
+// holds restored content + a pruned op-log — a stale flush could then clobber.
+// Un-freezing is the RIGHT call for the common genuine-rollback error (a real
+// rollback must not discard peers' unflushed edits), so the fix is not "reseed on
+// every error" (that regresses the common case) but commit-outcome reconciliation
+// (re-read after a commit error to learn what actually happened). Narrow +
+// Postgres-only; tracked in BUG-2276.
+//
+// `commit` returns (pre-prune MAX(op-log), restored item.seq): both captured
+// INSIDE its transaction, so the boundary can't fail-open on a MAX read error
+// (the whole restore rolls back instead) and the seq is this restore's, not a
+// concurrent writer's.
+//
+// The stale-SEED clobber that survives the boundary (BUG-2264 additional-P1 +
+// Codex-xhigh) is closed by the restore boundary generation: the restore stamps
+// the item's seq both in-memory (lastRestoreSeqs fast-path) and DURABLY
+// (items.last_restore_seq, in the commit tx), and Join force_refreshes any client
+// whose announced ?content_seq predates it. That catches a client whose Y.Doc
+// seeded from PRE-restore items.content and would otherwise re-push it as a fresh
+// (post-MAX) op — (1) a lost force_refresh frame on a cursor-0 peer, (2) a browser
+// that GETs items.content, blocks in Join behind this restore, and joins AFTER
+// the prune (so it isn't in forceRefreshAll), and (3) a cursor-0 pre-restore tab
+// that reconnects AFTER a server restart (fenced off the durable column since the
+// in-memory fast-path is empty then). See the lastRestoreSeqs field doc.
+func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int64, error)) error {
+	lock := m.itemLock(itemID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	m.mu.Lock()
+	room := m.rooms[itemID]
+	m.mu.Unlock()
+
+	// P1c — freeze inbound persistence for the duration: hold appendMu (which
+	// readLoop takes across its frozen/canWrite check + AppendYjsUpdate) AND mark
+	// every conn frozen, so no live readLoop can append a frame after the prune
+	// (which would survive as a stale op replayed on reconnect). A readLoop that
+	// already read a frame and is queued on appendMu will, on acquiring it, see
+	// frozen=true and drop the frame. Lock order: itemLock → appendMu → room.mu.
+	// No socket I/O happens under appendMu.
+	if room != nil {
+		room.appendMu.Lock()
+		room.mu.Lock()
+		for _, rc := range room.conns {
+			rc.frozen.Store(true)
+		}
+		room.mu.Unlock()
+	}
+
+	// The commit reads the pre-prune MAX(op-log), writes items.content=restored +
+	// the version, and wipes the op-log in ONE transaction, returning (MAX, seq).
+	// On failure nothing changed on disk; un-freeze the room and bail without
+	// publishing the boundary or reseeding.
+	var maxID, restoredSeq int64
+	if commit != nil {
+		m, seq, err := commit()
+		if err != nil {
+			if room != nil {
+				room.mu.Lock()
+				for _, rc := range room.conns {
+					rc.frozen.Store(false)
+				}
+				room.mu.Unlock()
+				room.appendMu.Unlock()
+			}
+			return err
+		}
+		maxID, restoredSeq = m, seq
+	}
+
+	// Commit succeeded: items.content=restored, op-log empty. Publish the
+	// stale-flush boundary = pre-prune MAX+1 (or 1 when empty). IDs are
+	// AUTOINCREMENT/BIGSERIAL-monotonic across prunes, so every in-flight
+	// snapshot's cursor (≤ pre-prune MAX) is below the boundary and rejected by
+	// the collab-snapshot gate, while every genuine post-refresh op gets an id ≥
+	// MAX+1 and is accepted. The gate runs under this same itemLock, so no
+	// in-flight snapshot can slip a write between the prune (committed above) and
+	// the boundary becoming visible.
+	m.SetRestoreBoundary(itemID, maxID+1)
+
+	// Record the restored content generation so Join can force_refresh any peer
+	// whose ?content_seq seed predates it (the stale-SEED clobber the op-log-id
+	// boundary alone can't fence — see the lastRestoreSeqs field doc). Set under
+	// this same itemLock, so a Join serialised behind this restore sees the
+	// updated generation.
+	m.SetLastRestoreSeq(itemID, restoredSeq)
+
+	// Reseed: every peer discards its in-memory Y.Doc and rebuilds from the (now
+	// canonical) items.content on reconnect. The conns stay frozen (never cleared
+	// on the success path) until forceRefreshAll closes them, so no late frame can
+	// append even after appendMu is released for the socket fan-out.
+	if room != nil {
+		room.appendMu.Unlock()
+		room.forceRefreshAll()
+	}
+	return nil
 }
 
 // closeFrameDeadline is the absolute time budget for sending a

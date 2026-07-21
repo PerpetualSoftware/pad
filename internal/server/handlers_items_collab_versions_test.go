@@ -3,11 +3,14 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/gorilla/websocket"
 )
 
 // TestCollabSnapshotHTTPSourceStamping is a regression guard for
@@ -397,4 +400,445 @@ func TestCollabSnapshotRejectsCursorZeroOnNonEmptyOpLog(t *testing.T) {
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("expected 409 Conflict for cursor=0 on non-empty op-log; got %d %s", rr.Code, rr.Body.String())
 	}
+}
+
+// TestCollabSnapshotRejectedBelowRestoreBoundary is the BUG-2264 Invariant B
+// guard at the HTTP boundary. Once a version restore reconciles the live Y.Doc
+// and records a restore boundary (MAX(op-log.id) at restore time), a
+// collab-snapshot flush whose op_log_cursor is BELOW the boundary captured a
+// PRE-restore Y.Doc — its markdown is stale and would re-clobber the restored
+// content — so the handler rejects it (409). A flush at or above the boundary
+// is a post-restore snapshot and is accepted. Requires the RoomManager (the
+// boundary lives there and the check runs only on the s.collab != nil path).
+func TestCollabSnapshotRejectedBelowRestoreBoundary(t *testing.T) {
+	srv := testServerWithCollab(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":   "Restore boundary gate",
+		"content": "v1",
+		"source":  "cli",
+		"fields":  `{"status":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	// Seed op-log rows so the MIN-based staleness check passes (non-empty log,
+	// low MIN) — isolating the restore-boundary gate from the MIN gate.
+	var ids []int64
+	for i := 0; i < 5; i++ {
+		id, err := srv.store.AppendYjsUpdate(created.ID, []byte{0x00, byte(i + 1)}, "1")
+		if err != nil {
+			t.Fatalf("AppendYjsUpdate %d: %v", i, err)
+		}
+		ids = append(ids, id)
+	}
+	// Simulate the collab-live restore having recorded the boundary at a mid-log
+	// id (the restore path sets it to MAX(op-log) after the applier ack).
+	srv.collab.SetRestoreBoundary(created.ID, ids[2])
+
+	// A flush below the boundary (but >= MIN) is a stale pre-restore snapshot.
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{"content": "stale pre-restore", "op_log_cursor": ids[1]},
+	)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("pre-restore flush (cursor %d < boundary %d): expected 409, got %d %s", ids[1], ids[2], rr.Code, rr.Body.String())
+	}
+	// items.content must NOT have been clobbered by the stale snapshot.
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+created.Slug, nil)
+	var afterReject models.Item
+	parseJSON(t, rr, &afterReject)
+	if afterReject.Content == "stale pre-restore" {
+		t.Fatalf("stale pre-restore snapshot clobbered items.content (BUG-2264 Invariant B)")
+	}
+
+	// A flush at the boundary is a post-restore snapshot → accepted.
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{"content": "post-restore", "op_log_cursor": ids[2]},
+	)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("post-restore flush (cursor %d >= boundary %d): expected 200, got %d %s", ids[2], ids[2], rr.Code, rr.Body.String())
+	}
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+created.Slug, nil)
+	var afterAccept models.Item
+	parseJSON(t, rr, &afterAccept)
+	if afterAccept.Content != "post-restore" {
+		t.Fatalf("post-restore flush should have written items.content, got %q", afterAccept.Content)
+	}
+
+	// Fail-closed on a MISSING cursor once a boundary exists: a snapshot with no
+	// op_log_cursor can't prove it captured post-restore state, so it must be
+	// rejected too — otherwise a legacy/in-flight no-cursor flush would sail past
+	// the fence and clobber the restore.
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{"content": "no-cursor stale"},
+	)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("no-cursor flush with a boundary set: expected 409 (fail closed), got %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+created.Slug, nil)
+	var afterNoCursor models.Item
+	parseJSON(t, rr, &afterNoCursor)
+	if afterNoCursor.Content == "no-cursor stale" {
+		t.Fatalf("no-cursor flush clobbered items.content past the restore boundary (BUG-2264 Invariant B)")
+	}
+}
+
+// TestCollabSnapshotRejectedBelowDurableRestoreBoundaryAfterRestart is the
+// BUG-2264 residual-#1 guard for the COLLAB-SNAPSHOT flush vector: after a server
+// restart the in-memory RoomManager.RestoreBoundary is gone, so a surviving
+// pre-restore tab's stale flush must be fenced off the DURABLE
+// items.restore_boundary_op_id column instead. On an empty (post-restore, pruned)
+// op-log the MIN gate accepts cursor 0 (the fresh-client path), so the durable
+// boundary is the only thing standing between a stale cursor-0 flush and the
+// restored content.
+func TestCollabSnapshotRejectedBelowDurableRestoreBoundaryAfterRestart(t *testing.T) {
+	srv := testServerWithCollab(t)
+	slug := createWSWithCollections(t, srv)
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
+		"title":   "Durable restore boundary gate",
+		"content": "v1",
+		"source":  "cli",
+		"fields":  `{"status":"open"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	// Baseline: with NO restore boundary (durable or in-memory) and an empty
+	// op-log, a cursor-0 flush is the accepted fresh-client path.
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{"content": "fresh cursor-0", "op_log_cursor": int64(0)},
+	)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("baseline cursor-0 flush (no boundary): expected 200, got %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Simulate a restore that happened in a PRIOR process: stamp the DURABLE
+	// boundary but leave the in-memory RoomManager.RestoreBoundary ABSENT (a fresh
+	// process after a restart).
+	if err := srv.store.SetItemRestoreBoundaryOpID(created.ID, 6); err != nil {
+		t.Fatalf("SetItemRestoreBoundaryOpID: %v", err)
+	}
+	if _, ok := srv.collab.RestoreBoundary(created.ID); ok {
+		t.Fatal("in-memory restore boundary must be absent for the restart scenario")
+	}
+
+	// The same cursor-0 flush is now FENCED by the durable boundary (cursor 0 < 6)
+	// even though the in-memory boundary is gone — the restart-durability fix.
+	rr = doRequest(srv, "PATCH",
+		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
+		map[string]interface{}{"content": "stale pre-restore", "op_log_cursor": int64(0)},
+	)
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("stale cursor-0 flush vs durable boundary: expected 409, got %d %s", rr.Code, rr.Body.String())
+	}
+	rr = doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+created.Slug, nil)
+	var after models.Item
+	parseJSON(t, rr, &after)
+	if after.Content == "stale pre-restore" {
+		t.Fatalf("stale flush clobbered items.content past the DURABLE restore boundary")
+	}
+}
+
+// restoreCollabFixture bundles the ws + collection + item(v1, edited to v2 so a
+// version resolving to v1 exists) + live test server the prune+reseed restore
+// tests share.
+type restoreCollabFixture struct {
+	srv         *Server
+	ts          *httptest.Server
+	wsSlug      string
+	itemID      string
+	itemSlug    string
+	v1VersionID string
+}
+
+func newRestoreCollabFixture(t *testing.T, name string) *restoreCollabFixture {
+	t.Helper()
+	srv := testServerWithCollab(t)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: name})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "Doc", Content: "v1", Fields: `{}`})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	v2 := "v2"
+	if _, err := srv.store.UpdateItem(item.ID, models.ItemUpdate{Content: &v2, LastModifiedBy: "user", Source: "web"}); err != nil {
+		t.Fatalf("seed v2: %v", err)
+	}
+	versions, err := srv.store.ListItemVersionsResolved(item.ID, "v2")
+	if err != nil {
+		t.Fatalf("ListItemVersionsResolved: %v", err)
+	}
+	var v1VersionID string
+	for _, v := range versions {
+		if v.Content == "v1" {
+			v1VersionID = v.ID
+			break
+		}
+	}
+	if v1VersionID == "" {
+		t.Fatalf("no version resolving to v1")
+	}
+	return &restoreCollabFixture{srv: srv, ts: ts, wsSlug: ws.Slug, itemID: item.ID, itemSlug: item.Slug, v1VersionID: v1VersionID}
+}
+
+// dialReady dials the collab WS and blocks until the initial control frame (the
+// post-replay op_log_cursor, sent AFTER addConn) proves the conn is registered.
+func (f *restoreCollabFixture) dialReady(t *testing.T) *websocket.Conn {
+	t.Helper()
+	conn, resp, err := dialCollab(t, f.ts.URL, f.itemID, nil, "")
+	if err != nil {
+		status := ""
+		if resp != nil {
+			status = resp.Status
+		}
+		t.Fatalf("dialCollab: %v (%s)", err, status)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, _, rerr := conn.ReadMessage(); rerr != nil {
+		t.Fatalf("waiting for initial collab frame: %v", rerr)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	return conn
+}
+
+func (f *restoreCollabFixture) restore(t *testing.T) *httptest.ResponseRecorder {
+	t.Helper()
+	return doRequest(f.srv, "POST",
+		"/api/v1/workspaces/"+f.wsSlug+"/items/"+f.itemSlug+"/versions/"+f.v1VersionID+"/restore", nil)
+}
+
+func assertItemContent(t *testing.T, srv *Server, itemID, want string) {
+	t.Helper()
+	got, err := srv.store.GetItem(itemID)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if got.Content != want {
+		t.Fatalf("items.content: want %q, got %q", want, got.Content)
+	}
+}
+
+func assertOpLogEmpty(t *testing.T, srv *Server, itemID string) {
+	t.Helper()
+	if _, ok, err := srv.store.MaxOpLogID(itemID); err != nil || ok {
+		t.Fatalf("op-log must be pruned/empty (ok=%v, err=%v)", ok, err)
+	}
+}
+
+// assertGotForceRefresh drains conn until it either receives a force_refresh
+// control frame (pass) or the conn closes without one (fail).
+func assertGotForceRefresh(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	saw := false
+	for {
+		mt, data, err := conn.ReadMessage()
+		if err != nil {
+			break // conn closed
+		}
+		if mt == websocket.TextMessage {
+			var ctl struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(data, &ctl) == nil && ctl.Type == "force_refresh" {
+				saw = true
+			}
+		}
+	}
+	if !saw {
+		t.Fatal("peer did not receive a force_refresh frame before the conn closed")
+	}
+}
+
+// TestRestoreLiveRoomPrunesAndReseeds is the BUG-2264 prune+reseed happy path: a
+// restore under a live collab room writes items.content=restored, prunes the
+// per-item op-log, sets the stale-flush boundary, and force-refreshes every peer
+// so they rebuild from the restored content (all peers converge; unflushed edits
+// are discarded — restore semantics).
+func TestRestoreLiveRoomPrunesAndReseeds(t *testing.T) {
+	f := newRestoreCollabFixture(t, "LiveRestore")
+	conn := f.dialReady(t)
+	// A peer op grows the op-log so we can prove the prune wipes it + boundary.
+	if _, err := f.srv.store.AppendYjsUpdate(f.itemID, []byte{0x00, 0x01}, "1"); err != nil {
+		t.Fatalf("seed op: %v", err)
+	}
+	maxBefore, _, _ := f.srv.store.MaxOpLogID(f.itemID)
+
+	rr := f.restore(t)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restore: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertItemContent(t, f.srv, f.itemID, "v1")
+	assertOpLogEmpty(t, f.srv, f.itemID)
+	if b, ok := f.srv.collab.RestoreBoundary(f.itemID); !ok || b <= maxBefore {
+		t.Fatalf("restore boundary must be > pre-prune MAX %d; got %d ok=%v", maxBefore, b, ok)
+	}
+	// The op-log-id boundary was also stamped DURABLY (survives restart) with the
+	// same pre-prune MAX+1, atomically in the restore tx.
+	if db, ok, derr := f.srv.store.ItemRestoreBoundaryOpID(f.itemID); derr != nil || !ok || db <= maxBefore {
+		t.Fatalf("durable restore_boundary_op_id must be > pre-prune MAX %d; got %d ok=%v err=%v", maxBefore, db, ok, derr)
+	}
+	assertGotForceRefresh(t, conn)
+}
+
+// TestRestorePrunesStalePeerOpAndFencesStaleCursor is the BUG-2264 P1b guard:
+// after the prune the op-log is empty, and an in-flight stale collab-snapshot —
+// whether it carries the pruned peer op's cursor OR cursor 0 — is fenced by the
+// pre-prune-MAX+1 boundary and cannot clobber the restored items.content.
+func TestRestorePrunesStalePeerOpAndFencesStaleCursor(t *testing.T) {
+	f := newRestoreCollabFixture(t, "R1PeerOp")
+	conn := f.dialReady(t)
+	// A concurrent peer op grows MAX(op-log) to nID (the false-positive the old
+	// "MAX grew" heuristic tripped on; prune+reseed doesn't care — it prunes it).
+	nID, err := f.srv.store.AppendYjsUpdate(f.itemID, []byte{0x00, 0x01}, "1")
+	if err != nil {
+		t.Fatalf("seed peer op: %v", err)
+	}
+
+	rr := f.restore(t)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restore: %d %s", rr.Code, rr.Body.String())
+	}
+	assertItemContent(t, f.srv, f.itemID, "v1")
+	assertOpLogEmpty(t, f.srv, f.itemID)
+	assertGotForceRefresh(t, conn)
+
+	// Stale snapshot at the pruned peer op's cursor → rejected, no clobber.
+	rr = doRequest(f.srv, "PATCH",
+		"/api/v1/workspaces/"+f.wsSlug+"/items/"+f.itemSlug+"?source=collab-snapshot",
+		map[string]interface{}{"content": "stale pre-restore", "op_log_cursor": nID})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("stale-cursor flush (cursor=%d) must be 409, got %d: %s", nID, rr.Code, rr.Body.String())
+	}
+	assertItemContent(t, f.srv, f.itemID, "v1")
+
+	// cursor=0 must ALSO be fenced (the empty-op-log MIN gate alone accepts 0).
+	rr = doRequest(f.srv, "PATCH",
+		"/api/v1/workspaces/"+f.wsSlug+"/items/"+f.itemSlug+"?source=collab-snapshot",
+		map[string]interface{}{"content": "stale cursor zero", "op_log_cursor": int64(0)})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("stale cursor=0 flush must be 409, got %d: %s", rr.Code, rr.Body.String())
+	}
+	assertItemContent(t, f.srv, f.itemID, "v1")
+}
+
+// TestRestoreNoRoomStillPrunesAndWrites: with collab configured but no live room,
+// the restore still writes items.content=restored and prunes any stale op-log, so
+// a later cold connect lazy-seeds the restored content.
+func TestRestoreNoRoomStillPrunesAndWrites(t *testing.T) {
+	f := newRestoreCollabFixture(t, "NoRoom") // no dialReady → no live room
+	if _, err := f.srv.store.AppendYjsUpdate(f.itemID, []byte{0x00, 0x01}, "1"); err != nil {
+		t.Fatalf("seed stale op: %v", err)
+	}
+	rr := f.restore(t)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restore: %d %s", rr.Code, rr.Body.String())
+	}
+	assertItemContent(t, f.srv, f.itemID, "v1")
+	assertOpLogEmpty(t, f.srv, f.itemID)
+}
+
+// dialContentSeq dials the collab WS announcing ?content_seq=<seq> (the
+// items.content generation the client's Y.Doc was seeded from).
+func (f *restoreCollabFixture) dialContentSeq(t *testing.T, seq int64) *websocket.Conn {
+	t.Helper()
+	target := f.itemID + "?content_seq=" + strconv.FormatInt(seq, 10)
+	conn, resp, err := dialCollab(t, f.ts.URL, target, nil, "")
+	if err != nil {
+		status := ""
+		if resp != nil {
+			status = resp.Status
+		}
+		t.Fatalf("dialCollab(content_seq=%d): %v (%s)", seq, err, status)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// assertNoForceRefresh reads the first frame and fails if it is a force_refresh
+// (a normal Join's first frame is the op_log_cursor control, not force_refresh).
+func assertNoForceRefresh(t *testing.T, conn *websocket.Conn) {
+	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	mt, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("expected a normal initial frame, got read error: %v", err)
+	}
+	if mt == websocket.TextMessage {
+		var ctl struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(data, &ctl) == nil && ctl.Type == "force_refresh" {
+			t.Fatal("current-generation client was wrongly force_refreshed")
+		}
+	}
+}
+
+// TestRestoreForceRefreshesStaleSeedOnJoin is the BUG-2264 stale-SEED guard
+// (additional-P1 + Codex-xhigh): after a restore, a client that connects with a
+// Y.Doc seeded from PRE-restore items.content — a cursor-0 peer whose
+// force_refresh frame was lost, or a browser that GET items.content before the
+// restore and joins after the prune — announces a ?content_seq below the
+// restored generation and must be force_refreshed BEFORE its on-open state push
+// can resurrect the stale document. A client that seeded at (or after) the
+// restored generation must join normally.
+func TestRestoreForceRefreshesStaleSeedOnJoin(t *testing.T) {
+	f := newRestoreCollabFixture(t, "StaleSeed")
+
+	// The seq a pre-restore client would have seeded from (item is at v2).
+	pre, err := f.srv.store.GetItem(f.itemID)
+	if err != nil {
+		t.Fatalf("GetItem (pre): %v", err)
+	}
+	preSeq := pre.Seq
+
+	rr := f.restore(t)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restore: %d %s", rr.Code, rr.Body.String())
+	}
+	assertItemContent(t, f.srv, f.itemID, "v1")
+
+	lrs, ok := f.srv.collab.LastRestoreSeq(f.itemID)
+	if !ok || lrs <= preSeq {
+		t.Fatalf("lastRestoreSeq must be > pre-restore seq %d; got %d ok=%v", preSeq, lrs, ok)
+	}
+
+	// The DURABLE boundary (items.last_restore_seq) was stamped atomically in the
+	// restore tx with the SAME seq — this is what survives a server restart.
+	durable, hasDurable, derr := f.srv.store.ItemLastRestoreSeq(f.itemID)
+	if derr != nil || !hasDurable {
+		t.Fatalf("durable last_restore_seq must be set after restore (ok=%v, err=%v)", hasDurable, derr)
+	}
+	if durable != lrs {
+		t.Fatalf("durable last_restore_seq %d must equal the in-memory boundary %d", durable, lrs)
+	}
+
+	// A stale-seed client (content_seq predates the restore) is force_refreshed.
+	staleConn := f.dialContentSeq(t, preSeq)
+	assertGotForceRefresh(t, staleConn)
+
+	// A current-seed client (content_seq == restored generation) joins normally.
+	freshConn := f.dialContentSeq(t, lrs)
+	assertNoForceRefresh(t, freshConn)
 }

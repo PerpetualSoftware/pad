@@ -574,9 +574,26 @@ type ItemUpdate struct {
 	// re-attribute a CLI/MCP-created item to "collab-snapshot" and
 	// silently flip it out of `WorkspaceHasAgentActivity`'s count.
 	// Per Codex review round 3 of TASK-1267 [P2].
-	VersionSource string  `json:"version_source,omitempty"`
-	ChangeSummary string  `json:"change_summary,omitempty"`
-	Comment       *string `json:"comment,omitempty"`
+	VersionSource string `json:"version_source,omitempty"`
+	ChangeSummary string `json:"change_summary,omitempty"`
+	// ForceVersion bypasses the per-(actor, source) version throttle
+	// (VersionThrottleInterval) so a version snapshot is ALWAYS created when
+	// content changes. Set by deliberate, infrequent operations that must
+	// leave an undo point regardless of recent edit cadence — chiefly a
+	// version RESTORE, which changes items.content out from under the existing
+	// reverse-patch chain and would corrupt that chain (and lose the restore's
+	// own undo point) if a throttled write moved content forward without a
+	// bracketing version. Internal-only (`json:"-"`): the store honours it, but
+	// no HTTP client can set it. Only consulted when content actually changes.
+	ForceVersion bool `json:"-"`
+	// MarkRestoreBoundary stamps items.last_restore_seq with this update's newly
+	// assigned seq, INSIDE the same transaction as the content write + op-log
+	// prune (BUG-2264). Set only by version RESTORE. That durable per-item
+	// boundary is what Join reads to force_refresh a client whose ?content_seq
+	// seed predates the restore — surviving a server restart, unlike the
+	// in-memory fast-path. Internal-only (`json:"-"`); no HTTP client can set it.
+	MarkRestoreBoundary bool    `json:"-"`
+	Comment             *string `json:"comment,omitempty"`
 	// OpLogCursor is the highest item_yjs_updates.id the calling client
 	// has applied into its local Y.Doc (TASK-1319). Used by the
 	// collab-snapshot flush PATCH to advance the op-log GC watermark

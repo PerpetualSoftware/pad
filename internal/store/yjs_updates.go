@@ -228,6 +228,91 @@ func (s *Store) MaxOpLogID(itemID string) (int64, bool, error) {
 	return v.Int64, true, nil
 }
 
+// ItemLastRestoreSeq returns items.last_restore_seq — the item.seq stamped by
+// the most recent version RESTORE (BUG-2264), or (0, false) when the item has
+// never been restored (NULL column) or is missing. This is the DURABLE restore
+// boundary the collab Join fence reads to force_refresh a client whose
+// ?content_seq seed predates the last restore; unlike the in-memory
+// lastRestoreSeqs fast-path, it survives a server restart.
+func (s *Store) ItemLastRestoreSeq(itemID string) (int64, bool, error) {
+	if itemID == "" {
+		return 0, false, errors.New("ItemLastRestoreSeq: itemID is required")
+	}
+	query := s.dialect.Rebind(`SELECT last_restore_seq FROM items WHERE id = ?`)
+	var v sql.NullInt64
+	if err := s.db.QueryRow(query, itemID).Scan(&v); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("item last restore seq: %w", err)
+	}
+	if !v.Valid {
+		return 0, false, nil
+	}
+	return v.Int64, true, nil
+}
+
+// StampRestoreBoundaryOpIDTx sets items.restore_boundary_op_id INSIDE the
+// caller's transaction (BUG-2264) — the DURABLE counterpart of the in-memory
+// RoomManager.RestoreBoundary. Version-restore stamps it with pre-prune
+// MAX(op-log.id)+1 in the SAME tx as the op-log wipe + content write, so the
+// collab-snapshot flush gate can reject a stale pre-restore flush even after a
+// server restart (when the in-memory boundary is gone). op-log ids are monotonic
+// across prunes, so the stored value never falsely rejects a genuine
+// post-restore flush.
+func (s *Store) StampRestoreBoundaryOpIDTx(tx *sql.Tx, itemID string, boundary int64) error {
+	if tx == nil {
+		return errors.New("StampRestoreBoundaryOpIDTx: tx is required")
+	}
+	if itemID == "" {
+		return errors.New("StampRestoreBoundaryOpIDTx: itemID is required")
+	}
+	query := s.dialect.Rebind(`UPDATE items SET restore_boundary_op_id = ? WHERE id = ?`)
+	if _, err := tx.Exec(query, boundary, itemID); err != nil {
+		return fmt.Errorf("stamp restore boundary op id: %w", err)
+	}
+	return nil
+}
+
+// SetItemRestoreBoundaryOpID is the non-transactional setter for
+// items.restore_boundary_op_id. Production stamps the boundary atomically inside
+// the restore tx via StampRestoreBoundaryOpIDTx; this standalone form exists for
+// callers/tests that set it outside a restore tx (e.g. simulating the
+// post-restart state — durable column present, in-memory boundary absent).
+func (s *Store) SetItemRestoreBoundaryOpID(itemID string, boundary int64) error {
+	if itemID == "" {
+		return errors.New("SetItemRestoreBoundaryOpID: itemID is required")
+	}
+	query := s.dialect.Rebind(`UPDATE items SET restore_boundary_op_id = ? WHERE id = ?`)
+	if _, err := s.db.Exec(query, boundary, itemID); err != nil {
+		return fmt.Errorf("set restore boundary op id: %w", err)
+	}
+	return nil
+}
+
+// ItemRestoreBoundaryOpID returns items.restore_boundary_op_id — the DURABLE
+// op-log-id restore boundary (BUG-2264), or (0, false) when the item has never
+// been restored (NULL) or is missing. The collab-snapshot flush gate reads it
+// when the in-memory RoomManager.RestoreBoundary misses (after a restart), so a
+// surviving pre-restore tab's stale flush is still fenced.
+func (s *Store) ItemRestoreBoundaryOpID(itemID string) (int64, bool, error) {
+	if itemID == "" {
+		return 0, false, errors.New("ItemRestoreBoundaryOpID: itemID is required")
+	}
+	query := s.dialect.Rebind(`SELECT restore_boundary_op_id FROM items WHERE id = ?`)
+	var v sql.NullInt64
+	if err := s.db.QueryRow(query, itemID).Scan(&v); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("item restore boundary op id: %w", err)
+	}
+	if !v.Valid {
+		return 0, false, nil
+	}
+	return v.Int64, true, nil
+}
+
 // GetItemContentFlushedOpLogID returns the value of
 // items.content_flushed_op_log_id for an item — the highest op-log
 // id known to be reflected in items.content, or (0, false) if the
@@ -405,4 +490,61 @@ func (s *Store) PruneYjsUpdatesBefore(itemID string, before time.Time) (int64, e
 		return 0, fmt.Errorf("prune yjs updates (rows affected): %w", err)
 	}
 	return n, nil
+}
+
+// MaxOpLogIDTx is the in-transaction variant of MaxOpLogID. Version-restore
+// (BUG-2264) reads the pre-prune MAX inside the SAME tx as the op-log wipe +
+// content write, so the restore boundary (MAX+1) is captured atomically: a read
+// error rolls the whole restore back (clean failure) instead of the previous
+// out-of-tx fail-open, where a MAX read error silently published boundary 1 and
+// let a stale snapshot carrying any real pre-prune cursor slip through.
+func (s *Store) MaxOpLogIDTx(tx *sql.Tx, itemID string) (int64, bool, error) {
+	if tx == nil {
+		return 0, false, errors.New("MaxOpLogIDTx: tx is required")
+	}
+	if itemID == "" {
+		return 0, false, errors.New("MaxOpLogIDTx: itemID is required")
+	}
+	query := s.dialect.Rebind(`SELECT MAX(id) FROM item_yjs_updates WHERE item_id = ?`)
+	var v sql.NullInt64
+	if err := tx.QueryRow(query, itemID).Scan(&v); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("max op-log id (tx): %w", err)
+	}
+	if !v.Valid {
+		return 0, false, nil
+	}
+	return v.Int64, true, nil
+}
+
+// PruneItemOpLogTx deletes an item's ENTIRE op-log inside the caller's
+// transaction. Used by version-restore (BUG-2264): the restore's canonical
+// items.content write, its "Restored from…" version row, AND the op-log wipe
+// must be one atomic unit — a commit-then-prune (or prune-then-commit) split
+// leaves a divergent state on any failure (restored content + a stale op-log,
+// or a wiped op-log + unchanged content that a cold connect then lazy-seeds
+// wrong). Running the DELETE in UpdateItem's own tx (via its precheck hook)
+// means a failed update rolls the prune back too, so the three move together
+// or not at all (Codex xhigh [P1]).
+//
+// Wipes every row (no cutoff): a restore makes the old version canonical and
+// discards all in-flight collaborative state, so nothing in the op-log should
+// survive to be replayed. Safe as a full wipe for the same reason the
+// schema-rebuild path is (yjs_updates.go's prefix-prune caveat is about
+// deleting a PREFIX while keeping a dependent suffix — deleting everything has
+// no dangling causal references).
+func (s *Store) PruneItemOpLogTx(tx *sql.Tx, itemID string) error {
+	if tx == nil {
+		return errors.New("PruneItemOpLogTx: tx is required")
+	}
+	if itemID == "" {
+		return errors.New("PruneItemOpLogTx: itemID is required")
+	}
+	query := s.dialect.Rebind(`DELETE FROM item_yjs_updates WHERE item_id = ?`)
+	if _, err := tx.Exec(query, itemID); err != nil {
+		return fmt.Errorf("prune item op-log in tx: %w", err)
+	}
+	return nil
 }

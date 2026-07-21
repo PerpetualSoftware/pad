@@ -310,7 +310,14 @@ func (r *Room) pickApplier(tried map[*websocket.Conn]struct{}) *roomConn {
 		// and the edit would be silently lost. Skip them so election
 		// only ever lands on a writer (or returns nil → the caller's
 		// direct-write fallback fires).
-		if !rc.canWrite.Load() {
+		//
+		// A frozen conn (mid version-restore, BUG-2264) is excluded for the
+		// identical reason: readLoop drops its inbound sync frames while frozen,
+		// so an elected frozen conn would ack a no-op. Combined with the frozen
+		// check in handleControlMessage (which rejects a late ack from a conn
+		// frozen AFTER it was picked), a concurrent ApplyExternalContent can never
+		// falsely succeed against a restore's frozen peer.
+		if !rc.canWrite.Load() || rc.frozen.Load() {
 			continue
 		}
 		candidates = append(candidates, rc)
