@@ -33,6 +33,10 @@ const ITEM_EVENTS = [
 	'item_archived',
 	'item_restored',
 	'workspace_updated',
+	// Collection-row change (settings/schema/name/icon). Carries `collection`
+	// (slug) but no `item_id`; ItemDetail / collection pages refresh their
+	// independent Collection snapshot on it (BUG-2265 sibling broadcast).
+	'collection_updated',
 	'comment_created',
 	'comment_updated',
 	'comment_deleted',

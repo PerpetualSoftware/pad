@@ -767,6 +767,34 @@
 		// the user's in-flight document. A proper fix needs editor-dirty-
 		// state integration; tracked separately.
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
+			// BUG-2265 sibling broadcast: another ItemDetail / collection page
+			// changed THIS collection's settings/schema. This instance holds
+			// its OWN independent `collection` snapshot (the full-page pane
+			// host renders a master + a pane, each with its own copy), so
+			// refresh it here — a subsequent quick-action / edit save then
+			// sends a fresh expected_updated_at instead of clobbering the
+			// sibling's write. `collection_updated` carries no item_id, so this
+			// branch must run BEFORE the item-id guard below.
+			if (event.type === 'collection_updated') {
+				const snap = collection;
+				if (!snap || event.collection !== snap.slug) return;
+				const slug = snap.slug;
+				const gen = loadGeneration;
+				try {
+					const fresh = await api.collections.get(wsSlug, slug);
+					// Persistent pane host has no {#key} remount — fence the
+					// write against a switch during the fetch (PLAN-2105
+					// discipline): drop if a newer load superseded us or the
+					// loaded collection changed identity.
+					if (gen !== loadGeneration) return;
+					if (!collection || collection.slug !== slug) return;
+					collection = fresh;
+				} catch {
+					// Best-effort — a stale snapshot just means the next save
+					// may 409 and self-heal via QuickActionsMenu's retry.
+				}
+				return;
+			}
 			if (!item || event.item_id !== item.id) return;
 			// Ignore events while mid-switch: during A→B the loaded `item` is
 			// still A but the requested ref is already B, so a stale archive/

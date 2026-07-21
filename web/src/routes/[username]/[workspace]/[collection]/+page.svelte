@@ -819,6 +819,25 @@
 		const coll = collSlug;
 
 		unsubscribeSSE = sseService.onItemEvent(async (event) => {
+			// BUG-2265 sibling broadcast: another client changed THIS
+			// collection's settings/schema. Refresh the page's own
+			// `collection` snapshot so its list-header quick actions / edit
+			// controls send a fresh expected_updated_at. Carries no item_id,
+			// so short-circuit before the item-delta path below.
+			if (event.type === 'collection_updated') {
+				if (event.collection !== coll) return;
+				const seq = loadSeq;
+				try {
+					const fresh = await api.collections.get(ws, coll);
+					// Drop if a newer loadCollection superseded us or the route
+					// moved on while fetching.
+					if (seq !== loadSeq || collSlug !== coll) return;
+					collection = fresh;
+				} catch {
+					// Best-effort; the next save will 409 and self-heal.
+				}
+				return;
+			}
 			// React to item lifecycle events by pulling deltas through
 			// the local store. With seq-stamped events (TASK-1358) we
 			// can short-circuit duplicates the server's replay buffer

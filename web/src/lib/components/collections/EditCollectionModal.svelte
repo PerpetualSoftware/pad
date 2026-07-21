@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { api } from '$lib/api/client';
+	import { api, isUpdateConflictError } from '$lib/api/client';
 	import type { Collection, CollectionUpdate, CollectionSettings, FieldDef, FieldMigration, QuickAction } from '$lib/types';
 	import { parseSchema, parseSettings } from '$lib/types';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
@@ -109,6 +109,14 @@
 	let saving = $state(false);
 	let error = $state('');
 
+	// Optimistic-concurrency token (BUG-2265): the collection's updated_at
+	// captured at the moment the form was seeded from `collection` (see the
+	// open-edge seed effect below). handleSave round-trips it so a full-form
+	// save that lost a race to another writer is rejected with a 409 instead
+	// of silently overwriting their change; on 409 we surface a
+	// non-destructive "reload" message and keep the user's edits intact.
+	let expectedUpdatedAt = $state('');
+
 	// ── Field editing state ──────────────────────────────────────────────────
 	// EditableField shape lives in `./field-editor-types.ts` so FieldEditor
 	// and this modal share one type.
@@ -207,8 +215,18 @@
 
 	// ── Sync from collection when modal opens ────────────────────────────────
 
+	// Seed the form ONCE per open transition (open false→true), not on every
+	// `collection` reassignment. BUG-2265's sibling broadcast can refresh the
+	// parent's `collection` prop while this modal is open mid-edit; without
+	// this edge-gate the effect would re-run and wipe the user's in-progress
+	// edits (and reset the captured optimistic-concurrency token). `wasOpen`
+	// is a plain (non-reactive) latch — the effect still depends on `open` and
+	// `collection`, but only re-seeds on the rising edge of `open`.
+	let wasOpen = false;
+
 	$effect(() => {
-		if (open && collection) {
+		if (open && !wasOpen && collection) {
+			expectedUpdatedAt = collection.updated_at;
 			name = collection.name;
 			selectedIcon = collection.icon || '';
 			description = collection.description || '';
@@ -265,6 +283,10 @@
 			void loadCollectionOptions();
 			void loadPreviewContext();
 		}
+		// Latch AFTER the seed so the next `collection` change (e.g. the
+		// BUG-2265 broadcast) re-runs this effect but skips re-seeding until
+		// the modal is actually closed and reopened.
+		wasOpen = open;
 	});
 
 	// ── Existing field actions ───────────────────────────────────────────────
@@ -542,7 +564,13 @@
 				icon: selectedIcon || undefined,
 				description: description.trim() || undefined,
 				schema: JSON.stringify({ fields: allFields }),
-				settings: JSON.stringify(settingsObj)
+				settings: JSON.stringify(settingsObj),
+				// BUG-2265: round-trip the open-time token so a full-form save
+				// that lost a race is rejected rather than clobbering the other
+				// writer. Unlike QuickActionsMenu we do NOT auto-merge a whole
+				// form — a rebuilt schema+settings blob from a stale snapshot
+				// can't be safely reconciled — so we surface a reload prompt.
+				expected_updated_at: expectedUpdatedAt || undefined
 			};
 
 			if (migrations.length > 0) {
@@ -550,10 +578,22 @@
 			}
 
 			const updated = await api.collections.update(editedWsSlug, editedCollectionSlug, data);
+			// Keep the token fresh in case the modal stays open (the parent may
+			// leave it mounted after a save) so a subsequent edit doesn't
+			// spuriously 409 against our own just-committed change.
+			expectedUpdatedAt = updated.updated_at;
 			toastStore.show(`Updated ${name.trim()}`, 'success');
 			onupdated(updated, editedCollectionId, editedCollectionSlug, editedWsSlug);
 		} catch (err) {
-			error = err instanceof Error ? err.message : 'Failed to update collection';
+			if (isUpdateConflictError(err)) {
+				// Non-destructive: keep the user's in-progress edits visible and
+				// tell them to reload to pick up the concurrent change, then
+				// re-apply. We deliberately do NOT auto-merge a full-form edit.
+				error =
+					'This collection was changed elsewhere while you were editing. Reload to see the latest, then re-apply your changes.';
+			} else {
+				error = err instanceof Error ? err.message : 'Failed to update collection';
+			}
 		} finally {
 			saving = false;
 		}

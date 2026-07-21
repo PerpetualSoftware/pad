@@ -194,6 +194,19 @@ function isPlanLimitError(err: unknown): err is PadApiError {
 }
 
 /**
+ * Returns true when `err` is the optimistic-concurrency 409 (BUG-2265):
+ * the resource was modified by another writer since the caller last read it.
+ * `err.details` carries `{ ref, expected_updated_at, actual_updated_at }`.
+ * Callers can catch this to transparently refetch-and-retry (quick actions)
+ * or surface a "reload to see the latest" message (full-form edits). Mirrors
+ * isRateLimitError / isPlanLimitError; shared by the item and collection
+ * update paths, whose 409 wire shape is identical.
+ */
+function isUpdateConflictError(err: unknown): err is PadApiError {
+	return err instanceof PadApiError && err.code === 'update_conflict';
+}
+
+/**
  * Returns a human-readable upgrade-signal message for a plan limit error.
  * Falls back to the server-supplied `err.message` if details are unavailable,
  * so the function is always safe to call. TASK-788.
@@ -2381,4 +2394,4 @@ export const api = {
 	}
 };
 
-export { PadApiError, isPlanLimitError, planLimitMessage, isRateLimitError };
+export { PadApiError, isPlanLimitError, planLimitMessage, isRateLimitError, isUpdateConflictError };

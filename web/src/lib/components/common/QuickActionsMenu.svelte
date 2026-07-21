@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { QuickAction, Item, Collection } from '$lib/types';
 	import { parseFields, formatItemRef, parseSettings } from '$lib/types';
-	import { api } from '$lib/api/client';
+	import { api, isUpdateConflictError } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
@@ -146,14 +146,39 @@
 				scope,
 				...(icon ? { icon } : {})
 			};
-			const settings = parseSettings(collection);
-			const nextSettings = {
-				...settings,
-				quick_actions: [...(settings.quick_actions ?? []), newAction]
+
+			// BUG-2265: append onto a base snapshot AND round-trip its
+			// updated_at so the server rejects a stale write instead of
+			// clobbering a sibling ItemDetail's concurrent settings change.
+			// `appendOnto` re-derives the full settings from a FRESH base
+			// each time, so a 409-triggered refetch+retry re-applies our new
+			// action onto whatever the other writer just saved (no silent
+			// loss) rather than replaying our stale local snapshot.
+			const appendOnto = (base: Collection): string => {
+				const s = parseSettings(base);
+				return JSON.stringify({
+					...s,
+					quick_actions: [...(s.quick_actions ?? []), newAction]
+				});
 			};
-			const updated = await api.collections.update(wsSlug, collection.slug, {
-				settings: JSON.stringify(nextSettings)
-			});
+
+			let updated: Collection;
+			try {
+				updated = await api.collections.update(wsSlug, collection.slug, {
+					settings: appendOnto(collection),
+					expected_updated_at: collection.updated_at
+				});
+			} catch (err) {
+				if (!isUpdateConflictError(err)) throw err;
+				// Someone changed the collection between our read and write.
+				// Refetch the current collection, re-append onto its fresh
+				// settings, and retry ONCE. Only a second conflict surfaces.
+				const fresh = await api.collections.get(wsSlug, collection.slug);
+				updated = await api.collections.update(wsSlug, fresh.slug, {
+					settings: appendOnto(fresh),
+					expected_updated_at: fresh.updated_at
+				});
+			}
 			toastStore.show('Saved', 'success');
 			oncollectionupdated?.(updated);
 			resetCreateForm();
