@@ -246,7 +246,7 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 	// so nothing is committed and the caller's retry works cleanly. Leave them
 	// on the input rather than extracting + running them as a separate,
 	// non-atomic write.
-	updated, err := s.store.UpdateCollection(coll.ID, input)
+	updated, migratedItems, err := s.store.UpdateCollection(coll.ID, input)
 	if err != nil {
 		// BUG-2265: an optimistic-concurrency loss → structured 409, same
 		// wire shape as the item path, BEFORE the generic internal-error path.
@@ -279,6 +279,18 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		newSlug = updated.Slug
 	}
 	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, coll.Slug, newSlug)
+
+	// BUG-2265 (Codex P1): a field-value migration mutated item `fields` JSON
+	// and advanced item `seq`. collection_updated only refreshes collection
+	// METADATA — open item views would keep stale field JSON under the new
+	// schema and a later full-fields item update could UNDO the migration. When
+	// the migration actually touched ≥1 item, ALSO emit the existing bulk
+	// item-mutation signal (items_bulk_updated) so open views reconcile the
+	// migrated rows via /items-changes. Routed by the collection so the SSE
+	// visibility filter handles it like any collection-scoped item event.
+	if migratedItems > 0 {
+		s.publishBulkItemsEvent(workspaceID, "migrate", updated.Slug, int(migratedItems), "", "", "", 0)
+	}
 
 	writeJSON(w, http.StatusOK, updated)
 }

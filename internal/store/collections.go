@@ -261,13 +261,13 @@ func (s *Store) ListCollections(workspaceID string) ([]models.Collection, error)
 	return result, nil
 }
 
-func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*models.Collection, error) {
+func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*models.Collection, int64, error) {
 	existing, err := s.GetCollection(id)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if existing == nil {
-		return nil, nil
+		return nil, 0, nil
 	}
 
 	// Sub-second timestamp (BUG-2265): collections.updated_at doubles as the
@@ -292,7 +292,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		}
 		newSlug, err := s.uniqueSlugExcluding("collections", "workspace_id", existing.WorkspaceID, baseSlug, id)
 		if err != nil {
-			return nil, fmt.Errorf("unique slug: %w", err)
+			return nil, 0, fmt.Errorf("unique slug: %w", err)
 		}
 		sets = append(sets, "slug = ?")
 		args = append(args, newSlug)
@@ -361,7 +361,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	//      advance-into-the-future even under sustained writes.
 	tx, err := s.db.Begin()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer tx.Rollback()
 
@@ -377,7 +377,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// are no-ops under the single BEGIN IMMEDIATE write lock.
 	if len(input.Migrations) > 0 {
 		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 	}
 
@@ -389,10 +389,10 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt)
 	if rerr == sql.ErrNoRows {
 		// Deleted between the pre-tx GetCollection and here — treat as not-found.
-		return nil, nil
+		return nil, 0, nil
 	}
 	if rerr != nil {
-		return nil, fmt.Errorf("re-read collection under lock: %w", rerr)
+		return nil, 0, fmt.Errorf("re-read collection under lock: %w", rerr)
 	}
 	current := parseTime(currentUpdatedAt)
 
@@ -401,10 +401,10 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	if input.ExpectedUpdatedAt != "" {
 		expected, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt)
 		if perr != nil {
-			return nil, fmt.Errorf("invalid expected_updated_at %q: %w", input.ExpectedUpdatedAt, perr)
+			return nil, 0, fmt.Errorf("invalid expected_updated_at %q: %w", input.ExpectedUpdatedAt, perr)
 		}
 		if !current.Equal(expected) {
-			return nil, &CollectionUpdateConflictError{
+			return nil, 0, &CollectionUpdateConflictError{
 				CollectionID:      id,
 				ExpectedUpdatedAt: input.ExpectedUpdatedAt,
 				ActualUpdatedAt:   current,
@@ -421,7 +421,7 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	}
 
 	if _, err := tx.Exec(s.q(query), args...); err != nil {
-		return nil, fmt.Errorf("update collection: %w", err)
+		return nil, 0, fmt.Errorf("update collection: %w", err)
 	}
 
 	// Apply field-value migrations (select-option renames) in the SAME tx as
@@ -430,17 +430,19 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	// caller's retry works cleanly — no committed-schema/stale-items split and
 	// no guaranteed-409. The workspace seq lock was already taken above (before
 	// the row lock) to preserve the item-create lock order.
+	var migratedItems int64
 	if len(input.Migrations) > 0 {
-		if _, err := s.applyFieldMigrationsTx(tx, id, existing.WorkspaceID, input.Migrations); err != nil {
-			return nil, fmt.Errorf("apply field migrations: %w", err)
+		if migratedItems, err = s.applyFieldMigrationsTx(tx, id, existing.WorkspaceID, input.Migrations); err != nil {
+			return nil, 0, fmt.Errorf("apply field migrations: %w", err)
 		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit collection update: %w", err)
+		return nil, 0, fmt.Errorf("commit collection update: %w", err)
 	}
 
-	return s.GetCollection(id)
+	updated, err := s.GetCollection(id)
+	return updated, migratedItems, err
 }
 
 func (s *Store) DeleteCollection(id string) error {

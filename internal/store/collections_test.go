@@ -105,7 +105,7 @@ func TestUpdateCollectionCoercesEmptyStringSettings(t *testing.T) {
 	}
 
 	empty := ""
-	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
+	updated, _, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
 		Settings: &empty,
 	})
 	if err != nil {
@@ -136,7 +136,7 @@ func TestUpdateCollectionExpectedUpdatedAtMatch(t *testing.T) {
 
 	expected := created.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 	settings := `{"quick_actions":[{"label":"Ship","prompt":"/pad ship","scope":"item"}]}`
-	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
+	updated, _, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
 		Settings:          &settings,
 		ExpectedUpdatedAt: expected,
 	})
@@ -177,7 +177,7 @@ func TestUpdateCollectionExpectedUpdatedAtConflict(t *testing.T) {
 	// A timestamp that definitely doesn't match the row's updated_at.
 	stale := "2000-01-01T00:00:00Z"
 	newSettings := `{"quick_actions":[{"label":"X","prompt":"y","scope":"item"}]}`
-	_, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
+	_, _, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
 		Settings:          &newSettings,
 		ExpectedUpdatedAt: stale,
 	})
@@ -234,7 +234,7 @@ func TestUpdateCollectionAppliesMigrationsAtomically(t *testing.T) {
 
 	token := coll.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 	newSchema := `{"fields":[{"key":"status","label":"Status","type":"select","options":["active","closed"]}]}`
-	updated, err := s.UpdateCollection(coll.ID, models.CollectionUpdate{
+	updated, _, err := s.UpdateCollection(coll.ID, models.CollectionUpdate{
 		Schema:            &newSchema,
 		ExpectedUpdatedAt: token,
 		Migrations:        []models.FieldMigration{{Field: "status", RenameOptions: map[string]string{"open": "active"}}},
@@ -307,7 +307,7 @@ func TestUpdateCollectionMigrationNoDeadlockWithItemCreate(t *testing.T) {
 				// Migration path: takes the workspace seq lock + the collection
 				// row FOR UPDATE. A non-matching rename still exercises both
 				// locks (len(Migrations) > 0 is the only gate).
-				_, e := s.UpdateCollection(coll.ID, models.CollectionUpdate{
+				_, _, e := s.UpdateCollection(coll.ID, models.CollectionUpdate{
 					Migrations: []models.FieldMigration{{Field: "status", RenameOptions: map[string]string{"z": "y"}}},
 				})
 				errCh <- e
@@ -354,7 +354,7 @@ func TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber(t *testing.T) {
 	token := created.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 
 	first := `{"layout":"content-primary"}`
-	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
+	updated, _, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
 		Settings:          &first,
 		ExpectedUpdatedAt: token,
 	})
@@ -370,7 +370,7 @@ func TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber(t *testing.T) {
 
 	// Replaying the SAME (now stale) token must conflict, not clobber.
 	second := `{"layout":"fields-primary"}`
-	_, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
+	_, _, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
 		Settings:          &second,
 		ExpectedUpdatedAt: token,
 	})
@@ -413,7 +413,7 @@ func TestUpdateCollectionTokenlessWriteStillAdvancesToken(t *testing.T) {
 	// Tokenless write (the CLI/MCP/API path) — must advance updated_at even if
 	// it lands in the same second the token was read.
 	first := `{"layout":"content-primary"}`
-	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{Settings: &first})
+	updated, _, err := s.UpdateCollection(created.ID, models.CollectionUpdate{Settings: &first})
 	if err != nil {
 		t.Fatalf("tokenless update should succeed: %v", err)
 	}
@@ -424,7 +424,7 @@ func TestUpdateCollectionTokenlessWriteStillAdvancesToken(t *testing.T) {
 
 	// A guarded write replaying the pre-tokenless token must now conflict.
 	second := `{"layout":"fields-primary"}`
-	_, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
+	_, _, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
 		Settings:          &second,
 		ExpectedUpdatedAt: token,
 	})
@@ -450,7 +450,7 @@ func TestUpdateCollectionNoTokenSkipsConcurrencyCheck(t *testing.T) {
 	}
 
 	settings := `{"layout":"content-primary"}`
-	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
+	updated, _, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
 		Settings: &settings, // no ExpectedUpdatedAt
 	})
 	if err != nil {

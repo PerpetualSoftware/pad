@@ -177,23 +177,28 @@
 				});
 			} catch (err) {
 				if (!isUpdateConflictError(err)) throw err;
-				// Someone changed the collection between our read and write.
-				// Refetch the SAME collection (captured slug — not live props),
-				// re-append onto its fresh settings, and retry ONCE. Only a
-				// second conflict surfaces.
-				const fresh = await api.collections.get(ws, slug);
+				// Someone changed the collection between our read and write —
+				// possibly a RENAME, which makes the captured slug dead (a
+				// slug-based refetch would 404). Resolve by the STABLE id
+				// instead (mirrors EditCollectionModal's identity approach),
+				// then re-append onto its fresh settings and retry ONCE.
+				const list = await api.collections.list(ws);
+				const fresh = list.find((c) => c.id === baseCollection.id);
+				if (!fresh) throw err; // collection gone (deleted) — surface the conflict
 				updated = await api.collections.update(ws, fresh.slug, {
 					settings: appendOnto(fresh),
 					expected_updated_at: fresh.updated_at
 				});
 			}
 			// Only propagate the result if this component still represents the
-			// SAME collection it started with. On a reused route (no guaranteed
-			// remount) the live `collection`/`wsSlug` props may now identify a
-			// DIFFERENT collection, and `oncollectionupdated` is the live
-			// (navigated) page's callback — feeding it our old response would
-			// assign stale data to the wrong page (Codex switch-safety).
-			if (wsSlug !== ws || collection?.slug !== slug) return;
+			// SAME collection it started with — compared by STABLE id so a
+			// concurrent rename (slug changed, same collection) still
+			// propagates, while a genuine switch to a DIFFERENT collection
+			// (different id) is dropped. On a reused route (no guaranteed
+			// remount) `oncollectionupdated` is the live (navigated) page's
+			// callback — feeding it our old response would assign stale data to
+			// the wrong page (Codex switch-safety).
+			if (wsSlug !== ws || collection?.id !== baseCollection.id) return;
 			toastStore.show('Saved', 'success');
 			oncollectionupdated?.(updated);
 			resetCreateForm();

@@ -276,3 +276,87 @@ func TestUpdateCollection_RenameEventCarriesNewSlug(t *testing.T) {
 		}
 	}
 }
+
+// TestUpdateCollection_MigrationEmitsBulkItemsEvent covers BUG-2265 Codex round
+// 5 P1: a schema change that MIGRATES item field values must ALSO emit the bulk
+// item-mutation signal (items_bulk_updated) so open item views reconcile the
+// migrated rows via /items-changes — collection_updated only refreshes
+// collection metadata. A settings-only update (no migrated items) must NOT emit
+// it.
+func TestUpdateCollection_MigrationEmitsBulkItemsEvent(t *testing.T) {
+	srv := testServerWithEvents(t)
+	slug := createWSWithCollections(t, srv)
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("workspace: %v", err)
+	}
+	coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Tasks",
+		Slug:   "tasks-migrate-evt",
+		Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["a","b"]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	if _, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "T", Fields: `{"status":"a"}`}); err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	t.Run("migration touching an item emits items_bulk_updated", func(t *testing.T) {
+		ch := srv.events.Subscribe(ws.ID)
+		defer srv.events.Unsubscribe(ch)
+
+		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
+			"schema": `{"fields":[{"key":"status","label":"Status","type":"select","options":["c","b"]}]}`,
+			"migrations": []map[string]interface{}{
+				{"field": "status", "rename_options": map[string]string{"a": "c"}},
+			},
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("migration update: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case event := <-ch:
+				if event.Type == events.ItemsBulkUpdated {
+					if event.Collection != coll.Slug {
+						t.Fatalf("bulk event collection=%q want %q", event.Collection, coll.Slug)
+					}
+					if event.Op != "migrate" || event.Count != 1 {
+						t.Fatalf("bulk event op=%q count=%d, want migrate/1", event.Op, event.Count)
+					}
+					return
+				}
+			case <-deadline:
+				t.Fatal("timed out waiting for items_bulk_updated after a migration")
+			}
+		}
+	})
+
+	t.Run("settings-only update emits NO items_bulk_updated", func(t *testing.T) {
+		ch := srv.events.Subscribe(ws.ID)
+		defer srv.events.Unsubscribe(ch)
+
+		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
+			"settings": `{"layout":"content-primary"}`,
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("settings update: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+
+		// Drain briefly; a bulk event must NOT arrive (a collection_updated may).
+		deadline := time.After(300 * time.Millisecond)
+		for {
+			select {
+			case event := <-ch:
+				if event.Type == events.ItemsBulkUpdated {
+					t.Fatalf("settings-only update must not emit items_bulk_updated")
+				}
+			case <-deadline:
+				return
+			}
+		}
+	})
+}
