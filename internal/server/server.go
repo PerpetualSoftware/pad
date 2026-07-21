@@ -247,6 +247,14 @@ type Server struct {
 	// homelabs behind a firewall) typically prefer this; operators with
 	// public exposure should leave it off and use the logs-token path.
 	bypassSetupToken bool
+
+	// restoreAckFault is a TEST SEAM (always nil in production). When non-nil,
+	// handleRestoreItemVersion's collab commit closure invokes it AFTER the restore
+	// transaction has durably committed; a non-nil return simulates a Postgres commit
+	// whose acknowledgement was lost at the connection boundary (the tx landed, but
+	// the driver surfaces an error), exercising BUG-2276 residual 1's commit-outcome
+	// reconciliation end-to-end through the real handler.
+	restoreAckFault func() error
 }
 
 // goAsync spawns fn in a goroutine that's tracked by s.bg, so Stop() can

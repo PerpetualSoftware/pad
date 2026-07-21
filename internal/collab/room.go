@@ -611,6 +611,35 @@ func (r *Room) closeAll() {
 	}
 }
 
+// closeAllConnsPlain force-closes every connection on this room with a PLAIN
+// socket Close — no force_refresh frame, and the room is left ALIVE (not marked
+// closing) so a reconnect rejoins normally. Used by ForceRefreshRoom's UNCERTAIN
+// commit-outcome path (BUG-2276 residual 1): when a Postgres restore commit
+// errors and reconciliation cannot tell whether the tx landed, we must NOT tell
+// peers to reseed from items.content (a force_refresh would assert the content is
+// authoritative, which is exactly what we don't know). We also must not leave the
+// peers frozen-but-open: the collab read path has no WS read-deadline/heartbeat,
+// so a frozen conn would silently drop every subsequent edit forever. A plain
+// close makes each client reconnect and re-evaluate the DURABLE restore fences
+// (items.last_restore_seq / restore_boundary_op_id) fresh through Join, which is
+// safe whichever way the commit actually went. conn.Close is concurrency-safe
+// with an in-flight WriteMessage (gorilla), so no writeMu handshake is needed;
+// each conn's frozen flag is left set so any frame already read is still dropped
+// before the readLoop unwinds. Mirrors closeAll's collect-under-lock /
+// close-outside-lock discipline.
+func (r *Room) closeAllConnsPlain() {
+	r.mu.Lock()
+	conns := make([]*websocket.Conn, 0, len(r.conns))
+	for c := range r.conns {
+		conns = append(conns, c)
+	}
+	r.mu.Unlock()
+
+	for _, c := range conns {
+		_ = c.Close()
+	}
+}
+
 // forceRefreshAll sends a force_refresh control frame to every connected client
 // and then closes each connection, so every peer discards its in-memory Y.Doc
 // and rebuilds from the canonical items.content on reconnect (BUG-2264). Used by

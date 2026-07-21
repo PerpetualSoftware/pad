@@ -526,7 +526,7 @@ func TestForceRefreshRoom(t *testing.T) {
 			return 0, 0, err
 		}
 		return maxID, 42, nil
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("ForceRefreshRoom: %v", err)
 	}
 	if !committed {
@@ -572,6 +572,253 @@ func TestForceRefreshRoom(t *testing.T) {
 	}
 	if !sawForceRefresh {
 		t.Fatal("client did not receive a force_refresh frame before the conn closed")
+	}
+}
+
+// TestForceRefreshRoomReconcile covers the Postgres commit-outcome reconciliation
+// (BUG-2276 residual 1): when the restore commit returns an error, the supplied
+// reconcile callback disambiguates three outcomes — landed (take the success
+// path), definitely rolled back (un-freeze + bail), and uncertain (stay frozen +
+// bail). The SQLite/self-host path (reconcile == nil) is exercised by
+// TestForceRefreshRoom above.
+func TestForceRefreshRoomReconcile(t *testing.T) {
+	// (a) The commit's tx DURABLY landed but its ack was lost (Postgres), so the
+	// commit closure prunes the op-log then returns an error. reconcile reports
+	// Landed → ForceRefreshRoom must take the SUCCESS path: publish the recovered
+	// boundary + seq and reseed peers, NOT un-freeze onto a stale doc.
+	t.Run("landed_takes_success_path", func(t *testing.T) {
+		bus := NewMemoryOpBus()
+		defer bus.Close()
+		store := &fakeOpLog{}
+		mgr := NewRoomManager(store, bus)
+		defer mgr.Close()
+
+		srv := newCollabTestServer(t, mgr)
+		defer srv.Close()
+
+		conn := dialWS(t, srv, "item-a")
+		defer conn.Close()
+		for i := 0; i < 200; i++ {
+			if mgr.RoomCount() == 1 && bus.SubscriberCount("item-a") == 1 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+
+		if _, err := store.AppendYjsUpdate("item-a", []byte{0x00, 0x01}, "1"); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+
+		const wantBoundary = int64(8)
+		const wantSeq = int64(99)
+		reconciled := false
+		err := mgr.ForceRefreshRoom("item-a",
+			func() (int64, int64, error) {
+				// The tx pruned the op-log and committed durably, then the ack was
+				// lost at the commit boundary — so it surfaces here as an error.
+				if _, perr := store.PruneYjsUpdatesBefore("item-a", distantFuture); perr != nil {
+					return 0, 0, perr
+				}
+				return 0, 0, errors.New("commit: driver: bad connection")
+			},
+			func() (RestoreReconcileResult, error) {
+				reconciled = true
+				return RestoreReconcileResult{Landed: true, Boundary: wantBoundary, Seq: wantSeq}, nil
+			})
+		if err != nil {
+			t.Fatalf("ForceRefreshRoom (landed) returned error, want success: %v", err)
+		}
+		if !reconciled {
+			t.Fatal("reconcile callback did not run")
+		}
+		if b, ok := mgr.RestoreBoundary("item-a"); !ok || b != wantBoundary {
+			t.Fatalf("restore boundary = (%d, %v), want (%d, true)", b, ok, wantBoundary)
+		}
+		if s, ok := mgr.LastRestoreSeq("item-a"); !ok || s != wantSeq {
+			t.Fatalf("last restore seq = (%d, %v), want (%d, true)", s, ok, wantSeq)
+		}
+		// The success path ran the reseed: the peer got a force_refresh frame.
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		sawForceRefresh := false
+		for {
+			mt, data, rerr := conn.ReadMessage()
+			if rerr != nil {
+				break
+			}
+			if mt == websocket.TextMessage {
+				var ctl ControlMessage
+				if json.Unmarshal(data, &ctl) == nil && ctl.Type == ControlMessageForceRefresh {
+					sawForceRefresh = true
+				}
+			}
+		}
+		if !sawForceRefresh {
+			t.Fatal("landed reconcile did not reseed peers (no force_refresh frame)")
+		}
+	})
+
+	// (b) The commit genuinely rolled back. reconcile reports !Landed →
+	// ForceRefreshRoom un-freezes the conn and returns the commit error; no
+	// boundary/seq published, peers keep their live Y.Doc.
+	t.Run("rolled_back_unfreezes", func(t *testing.T) {
+		bus := NewMemoryOpBus()
+		defer bus.Close()
+		mgr := NewRoomManager(&fakeOpLog{}, bus)
+		defer mgr.Close()
+
+		room := mgr.getOrCreate("item-a")
+		rc := &roomConn{id: 1, conn: &websocket.Conn{}}
+		rc.canWrite.Store(true)
+		if err := room.addConn(rc); err != nil {
+			t.Fatalf("addConn: %v", err)
+		}
+		// Drop the fake conn before Close so closeAll doesn't Close() a nil socket.
+		defer func() {
+			room.mu.Lock()
+			delete(room.conns, rc.conn)
+			room.mu.Unlock()
+		}()
+
+		commitErr := errors.New("commit: rolled back")
+		err := mgr.ForceRefreshRoom("item-a",
+			func() (int64, int64, error) { return 0, 0, commitErr },
+			func() (RestoreReconcileResult, error) {
+				return RestoreReconcileResult{Landed: false}, nil
+			})
+		if !errors.Is(err, commitErr) {
+			t.Fatalf("ForceRefreshRoom (rolled back) err = %v, want the commit error", err)
+		}
+		if rc.frozen.Load() {
+			t.Fatal("rolled-back reconcile must UN-freeze the conn, but frozen is still set")
+		}
+		if _, ok := mgr.RestoreBoundary("item-a"); ok {
+			t.Fatal("rolled-back reconcile must NOT publish a restore boundary")
+		}
+		if _, ok := mgr.LastRestoreSeq("item-a"); ok {
+			t.Fatal("rolled-back reconcile must NOT publish a last restore seq")
+		}
+	})
+
+	// (c) The commit errored AND the reconcile read itself failed → outcome
+	// UNCERTAIN. ForceRefreshRoom must return an error wrapping both causes, must
+	// NOT publish a boundary/seq, and must PLAIN-CLOSE the peer's socket (NOT
+	// force_refresh) so it reconnects and re-evaluates the durable fences fresh —
+	// a frozen-but-open socket would silently drop every subsequent edit forever.
+	t.Run("uncertain_plain_closes_peers", func(t *testing.T) {
+		bus := NewMemoryOpBus()
+		defer bus.Close()
+		mgr := NewRoomManager(&fakeOpLog{}, bus)
+		defer mgr.Close()
+
+		srv := newCollabTestServer(t, mgr)
+		defer srv.Close()
+
+		conn := dialWS(t, srv, "item-a")
+		defer conn.Close()
+		for i := 0; i < 200; i++ {
+			if mgr.RoomCount() == 1 && bus.SubscriberCount("item-a") == 1 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+
+		commitErr := errors.New("commit: bad connection")
+		reconcileErr := errors.New("reconcile: read failed")
+		err := mgr.ForceRefreshRoom("item-a",
+			func() (int64, int64, error) { return 0, 0, commitErr },
+			func() (RestoreReconcileResult, error) {
+				return RestoreReconcileResult{}, reconcileErr
+			})
+		if err == nil {
+			t.Fatal("uncertain reconcile must return an error")
+		}
+		if !errors.Is(err, commitErr) || !errors.Is(err, reconcileErr) {
+			t.Fatalf("uncertain err = %v, want it to wrap BOTH the commit and reconcile errors", err)
+		}
+		if _, ok := mgr.RestoreBoundary("item-a"); ok {
+			t.Fatal("uncertain reconcile must NOT publish a restore boundary")
+		}
+		if _, ok := mgr.LastRestoreSeq("item-a"); ok {
+			t.Fatal("uncertain reconcile must NOT publish a last restore seq")
+		}
+		// The peer's socket must be PLAIN-closed: no force_refresh frame arrives
+		// before the read errors out. (force_refresh would falsely assert
+		// items.content is authoritative, which is exactly what's unknown here.)
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		closed := false
+		for {
+			mt, data, rerr := conn.ReadMessage()
+			if rerr != nil {
+				closed = true
+				break // socket closed by closeAllConnsPlain
+			}
+			if mt == websocket.TextMessage {
+				var ctl ControlMessage
+				if json.Unmarshal(data, &ctl) == nil && ctl.Type == ControlMessageForceRefresh {
+					t.Fatal("uncertain reconcile plain-closes; it must NOT send a force_refresh frame")
+				}
+			}
+		}
+		if !closed {
+			t.Fatal("uncertain reconcile must close the peer's socket")
+		}
+	})
+}
+
+// TestForceRefreshRoomUncertainInvalidatesInMemoryFences is the BUG-2276
+// residual-1 P1 guard: on the UNCERTAIN commit-outcome path, ForceRefreshRoom must
+// CLEAR the item's in-memory restore fences (lastRestoreSeqs + restoreBoundaries)
+// so a reconnecting stale-seed peer is judged against the DURABLE column — which
+// reflects a landed-but-ack-lost restore — not a PRIOR restore's cached generation.
+// Otherwise a cursor-0 peer seeded at the prior generation would be admitted against
+// the stale cache and clobber the landed content.
+func TestForceRefreshRoomUncertainInvalidatesInMemoryFences(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	// The DURABLE column reflects the LANDED-but-ack-lost restore R2 (seq=20). The
+	// in-memory caches still hold the PRIOR restore R1's generation (seq=10 /
+	// boundary=100) — the stale-cache trap this guards against.
+	store := &fakeOpLog{lastRestoreSeqs: map[string]int64{"item-a": 20}}
+	mgr := NewRoomManager(store, bus)
+	defer mgr.Close()
+
+	mgr.SetLastRestoreSeq("item-a", 10)   // R1 in-memory fast-path
+	mgr.SetRestoreBoundary("item-a", 100) // R1 in-memory boundary
+	if s, ok := mgr.LastRestoreSeq("item-a"); !ok || s != 10 {
+		t.Fatalf("precondition: R1 last restore seq = (%d,%v), want (10,true)", s, ok)
+	}
+	if b, ok := mgr.RestoreBoundary("item-a"); !ok || b != 100 {
+		t.Fatalf("precondition: R1 boundary = (%d,%v), want (100,true)", b, ok)
+	}
+
+	// R2's commit errors AND its reconcile read errors → UNCERTAIN.
+	err := mgr.ForceRefreshRoom("item-a",
+		func() (int64, int64, error) { return 0, 0, errors.New("commit: bad connection") },
+		func() (RestoreReconcileResult, error) {
+			return RestoreReconcileResult{}, errors.New("reconcile: read failed")
+		})
+	if err == nil {
+		t.Fatal("uncertain reconcile must return an error")
+	}
+
+	// Both in-memory fences must be CLEARED so the next check reads durable.
+	if s, ok := mgr.LastRestoreSeq("item-a"); ok {
+		t.Fatalf("uncertain must invalidate the in-memory last-restore-seq fence; still cached (%d)", s)
+	}
+	if b, ok := mgr.RestoreBoundary("item-a"); ok {
+		t.Fatalf("uncertain must invalidate the in-memory restore boundary; still cached (%d)", b)
+	}
+
+	// A peer seeded at R1's generation (content_seq=10) now reconnecting is judged
+	// against the DURABLE column (R2=20): 10 < 20 → force_refresh. With the STALE
+	// cache it would have compared 10 vs cached-10 (equal) and been admitted — the
+	// clobber this fix prevents.
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+	stale := dialWSContentSeq(t, srv, "item-a", 10)
+	defer stale.Close()
+	if ctl := readControlWithin(t, stale, time.Second); ctl.Type != ControlMessageForceRefresh {
+		t.Fatalf("stale R1-generation seed after uncertain: want %q (durable fence), got %q", ControlMessageForceRefresh, ctl.Type)
 	}
 }
 

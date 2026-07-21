@@ -200,6 +200,32 @@ func (m *RoomManager) LastRestoreSeq(itemID string) (int64, bool) {
 	return v, ok
 }
 
+// invalidateRestoreFences drops the item's IN-MEMORY restore-fence fast-path
+// entries — both lastRestoreSeqs and restoreBoundaries — so the next Join
+// stale-seed check (manager.go ~L388) and collab-snapshot flush gate
+// (handlers_items.go ~L1328) fall through to the DURABLE columns
+// (items.last_restore_seq / items.restore_boundary_op_id).
+//
+// Used by ForceRefreshRoom's UNCERTAIN commit-outcome path (BUG-2276 residual 1).
+// After a Postgres restore commit whose landing we couldn't confirm, the caches may
+// still hold a PRIOR restore's generation. If THIS restore actually LANDED, a
+// cursor-0 peer seeded at the prior generation that reconnects — or a stale
+// collab-snapshot PATCH — would be admitted against the cached prior fence and
+// clobber the newly-landed content, because both consumers TRUST an in-memory hit
+// and skip the durable read. Clearing the fast-path forces the durable read, which
+// reflects this restore if it committed (and both consumers already FAIL CLOSED on a
+// durable read error). delete() on a nil map is a no-op. MUST be called under
+// itemLock so it can't race a concurrent restore's SetRestoreBoundary/SetLastRestoreSeq.
+func (m *RoomManager) invalidateRestoreFences(itemID string) {
+	m.lastRestoreSeqMu.Lock()
+	delete(m.lastRestoreSeqs, itemID)
+	m.lastRestoreSeqMu.Unlock()
+
+	m.restoreBoundaryMu.Lock()
+	delete(m.restoreBoundaries, itemID)
+	m.restoreBoundaryMu.Unlock()
+}
+
 // itemLock returns the lazily-allocated mutex guarding setup-phase
 // operations on itemID. Locks live in the manager for the lifetime of
 // the process — for a workspace with many items this is at most a few
@@ -987,17 +1013,28 @@ func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 // mid-session auth revalidation loop (which writes canWrite) can neither thaw the
 // freeze mid-restore nor get its viewer/editor decision clobbered by it.
 //
-// RESIDUAL (BUG-2276, deferred — commit-outcome ambiguity): a commit ERROR is
-// treated as "rolled back". On SQLite (the self-host shape) that holds — a commit
-// either fsyncs or it doesn't. On Postgres a commit that DURABLY lands but whose
-// acknowledgement is lost (connection drop at the commit boundary) surfaces as an
-// error here, so we unfreeze+resume peers on a stale Y.Doc even though the DB now
-// holds restored content + a pruned op-log — a stale flush could then clobber.
-// Un-freezing is the RIGHT call for the common genuine-rollback error (a real
-// rollback must not discard peers' unflushed edits), so the fix is not "reseed on
-// every error" (that regresses the common case) but commit-outcome reconciliation
-// (re-read after a commit error to learn what actually happened). Narrow +
-// Postgres-only; tracked in BUG-2276.
+// COMMIT-OUTCOME RECONCILIATION (BUG-2276 residual 1): a commit ERROR is
+// ambiguous on Postgres but not on SQLite. On SQLite (the self-host shape) a
+// commit either fsyncs or it doesn't, so when `reconcile` is nil an error is
+// taken as a rollback verbatim (un-freeze + bail, above). On Postgres a commit
+// that DURABLY lands but whose acknowledgement is lost (connection drop at the
+// commit boundary) ALSO surfaces here as an error; blindly un-freezing would
+// resume peers on a stale Y.Doc even though the DB now holds restored content + a
+// pruned op-log, and a subsequent stale flush could then clobber. Un-freezing is
+// still the RIGHT call for a genuine rollback (a real rollback must not discard
+// peers' unflushed edits), so the fix is not "reseed on every error" (that
+// regresses the common case) but commit-outcome reconciliation: the Postgres
+// caller supplies a `reconcile` callback that RE-READS after a commit error to
+// learn what actually happened, yielding three outcomes — (a) LANDED → treat as
+// success (publish the boundary + reseed using the durably-stamped boundary/seq;
+// do NOT un-freeze); (b) DEFINITELY rolled back → un-freeze + bail (the
+// genuine-rollback case); (c) the reconcile read itself failed / outcome
+// UNCERTAIN → keep the conns FROZEN and return (never un-freeze onto a
+// possibly-stale doc — a frozen peer can't persist and converges cleanly once it
+// reconnects/times out, the safe degraded mode). The whole mechanism is gated to
+// Postgres by the caller passing `reconcile` ONLY when the store dialect is
+// Postgres; with `reconcile == nil` the SQLite/self-host path stays byte-for-byte
+// the pre-fix behavior. Tracked in BUG-2276.
 //
 // `commit` returns (pre-prune MAX(op-log), restored item.seq): both captured
 // INSIDE its transaction, so the boundary can't fail-open on a MAX read error
@@ -1015,7 +1052,7 @@ func (m *RoomManager) PruneAndApply(itemID string, applyFn func() error) error {
 // the prune (so it isn't in forceRefreshAll), and (3) a cursor-0 pre-restore tab
 // that reconnects AFTER a server restart (fenced off the durable column since the
 // in-memory fast-path is empty then). See the lastRestoreSeqs field doc.
-func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int64, error)) error {
+func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int64, error), reconcile func() (RestoreReconcileResult, error)) error {
 	lock := m.itemLock(itemID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -1042,34 +1079,87 @@ func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int6
 
 	// The commit reads the pre-prune MAX(op-log), writes items.content=restored +
 	// the version, and wipes the op-log in ONE transaction, returning (MAX, seq).
-	// On failure nothing changed on disk; un-freeze the room and bail without
-	// publishing the boundary or reseeding.
-	var maxID, restoredSeq int64
+	// boundary/restoredSeq are the values the success path publishes: on a clean
+	// commit they are (MAX+1, seq) straight from the return; on a Postgres commit
+	// whose ack was lost but whose tx reconciliation proves DID land, they are
+	// recovered from the durable stamps by `reconcile` (BUG-2276 residual 1). The
+	// defaults cover the (prod-unused) commit==nil path — the historical
+	// SetRestoreBoundary(1) / SetLastRestoreSeq(0).
+	boundary, restoredSeq := int64(1), int64(0)
 	if commit != nil {
-		m, seq, err := commit()
-		if err != nil {
-			if room != nil {
-				room.mu.Lock()
-				for _, rc := range room.conns {
-					rc.frozen.Store(false)
-				}
-				room.mu.Unlock()
-				room.appendMu.Unlock()
-			}
+		maxID, seq, err := commit()
+		switch {
+		case err == nil:
+			boundary, restoredSeq = maxID+1, seq
+		case reconcile == nil:
+			// SQLite / self-host: a commit error is unambiguous — the ONE tx rolled
+			// back (items.content, version, op-log wipe, boundary read all together),
+			// so nothing changed on disk. Un-freeze the room and bail without
+			// publishing the boundary or reseeding; the room is left exactly as it
+			// was. (Byte-for-byte the pre-BUG-2276 behavior.)
+			m.unfreezeAndReleaseAppend(room)
 			return err
+		default:
+			// Postgres: the commit reported an error, but a durably-landed commit
+			// whose ack was lost at the connection boundary ALSO surfaces here. Re-read
+			// to learn what actually happened before discarding peers' state.
+			res, rerr := reconcile()
+			switch {
+			case rerr != nil:
+				// (c) UNCERTAIN — the reconcile read itself failed (or a not-found
+				// re-read: the item may have been archived AFTER a durable-but-ack-lost
+				// commit), so we cannot tell a genuine rollback from an ack-lost-but-
+				// landed commit. Un-freezing onto a possibly-stale Y.Doc could let a
+				// stale flush clobber content that may in fact be committed; but simply
+				// leaving the conns frozen-and-open would silently drop every subsequent
+				// edit forever (the collab read path has no WS read-deadline/heartbeat).
+				// SAFEST: release appendMu (no socket I/O under appendMu), then
+				// PLAIN-CLOSE the sockets — NOT force_refresh (we don't know
+				// items.content is authoritative). Each client reconnects and
+				// re-evaluates the durable restore fences fresh through Join, which is
+				// correct whichever way the commit actually went. Leave rc.frozen set so
+				// any already-read frame is still dropped as the readLoop unwinds.
+				//
+				// FIRST, still under itemLock (and before releasing appendMu), drop the
+				// item's IN-MEMORY restore fences: if this restore LANDED, the caches
+				// still hold a PRIOR restore's generation, and a reconnecting cursor-0
+				// peer / stale collab-snapshot would be admitted against that stale cache
+				// and clobber the landed content. Clearing them forces Join + the snapshot
+				// gate to consult the DURABLE columns (which reflect this restore if it
+				// committed, and fail closed on a read error). (BUG-2276 residual 1, P1.)
+				m.invalidateRestoreFences(itemID)
+				if room != nil {
+					room.appendMu.Unlock()
+					room.closeAllConnsPlain()
+				}
+				slog.Error("collab: version-restore commit outcome uncertain after ack loss; froze + plain-closed peers to force a safe reconnect",
+					"item_id", itemID, "commit_err", err, "reconcile_err", rerr)
+				return errors.Join(err, rerr)
+			case !res.Landed:
+				// (b) definitely rolled back — un-freeze + bail, identical to the
+				// self-host path. Peers keep their unflushed edits.
+				m.unfreezeAndReleaseAppend(room)
+				return err
+			default:
+				// (a) landed despite the lost ack — treat as SUCCESS. Recover the
+				// boundary + restored seq from the durable stamps and fall through to
+				// the success path (publish + reseed); do NOT un-freeze.
+				boundary, restoredSeq = res.Boundary, res.Seq
+				slog.Warn("collab: version-restore commit ack lost but effects landed; reconciled to success",
+					"item_id", itemID, "boundary", boundary, "restored_seq", restoredSeq, "commit_err", err)
+			}
 		}
-		maxID, restoredSeq = m, seq
 	}
 
-	// Commit succeeded: items.content=restored, op-log empty. Publish the
-	// stale-flush boundary = pre-prune MAX+1 (or 1 when empty). IDs are
-	// AUTOINCREMENT/BIGSERIAL-monotonic across prunes, so every in-flight
+	// Commit succeeded (or reconciled to landed): items.content=restored, op-log
+	// empty. Publish the stale-flush boundary = pre-prune MAX+1 (or 1 when empty).
+	// IDs are AUTOINCREMENT/BIGSERIAL-monotonic across prunes, so every in-flight
 	// snapshot's cursor (≤ pre-prune MAX) is below the boundary and rejected by
 	// the collab-snapshot gate, while every genuine post-refresh op gets an id ≥
 	// MAX+1 and is accepted. The gate runs under this same itemLock, so no
 	// in-flight snapshot can slip a write between the prune (committed above) and
 	// the boundary becoming visible.
-	m.SetRestoreBoundary(itemID, maxID+1)
+	m.SetRestoreBoundary(itemID, boundary)
 
 	// Record the restored content generation so Join can force_refresh any peer
 	// whose ?content_seq seed predates it (the stale-SEED clobber the op-log-id
@@ -1087,6 +1177,39 @@ func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int6
 		room.forceRefreshAll()
 	}
 	return nil
+}
+
+// RestoreReconcileResult reports what a post-commit-error re-read learned about
+// whether a version-restore's transaction DURABLY landed despite a lost commit
+// acknowledgement (BUG-2276 residual 1, Postgres-only). Boundary/Seq are valid
+// ONLY when Landed is true — they are recovered from the durable restore stamps
+// (items.restore_boundary_op_id = pre-prune MAX(op-log.id)+1, and
+// items.last_restore_seq = the restored item.seq) so ForceRefreshRoom can reuse
+// its normal success path. The producer returns a non-nil error instead (leaving
+// this zero) when it cannot tell landed from rolled-back — the UNCERTAIN outcome,
+// which keeps the room frozen.
+type RestoreReconcileResult struct {
+	Landed   bool
+	Boundary int64
+	Seq      int64
+}
+
+// unfreezeAndReleaseAppend reverses the freeze applied at the top of
+// ForceRefreshRoom on a genuine rollback: it clears every conn's frozen flag
+// (peers resume editing their live Y.Doc, viewers keep read-only) and releases
+// appendMu, leaving the room exactly as it was before the restore attempt. A nil
+// room is a no-op (nothing was frozen). MUST be called with appendMu held; it
+// preserves the room.mu-inside-appendMu lock order.
+func (m *RoomManager) unfreezeAndReleaseAppend(room *Room) {
+	if room == nil {
+		return
+	}
+	room.mu.Lock()
+	for _, rc := range room.conns {
+		rc.frozen.Store(false)
+	}
+	room.mu.Unlock()
+	room.appendMu.Unlock()
 }
 
 // closeFrameDeadline is the absolute time budget for sending a
