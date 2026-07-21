@@ -189,6 +189,13 @@
 	// counter — not reactive; it only fences async writes.
 	let loadGeneration = 0;
 
+	// Dedicated monotonic counter for BUG-2265 collection-snapshot refreshes.
+	// `loadGeneration` only bumps on item loadData() — it can't order two rapid
+	// collection_updated refetches against EACH OTHER, so an older refetch could
+	// resolve after (and clobber) a newer one. Plain counter — not reactive; it
+	// only fences the async collection refresh.
+	let collectionRefreshGen = 0;
+
 	// R9 teardown ownership (TASK-2172). The onDestroy clear-if-owner compares
 	// the global `collectionStore.activeItem` against the id THIS instance last
 	// set active — NOT against the reactive `item`, which a cross-collection load
@@ -780,12 +787,15 @@
 				if (!snap || event.collection !== snap.slug) return;
 				const slug = snap.slug;
 				const gen = loadGeneration;
+				const refreshGen = ++collectionRefreshGen;
 				try {
 					const fresh = await api.collections.get(wsSlug, slug);
 					// Persistent pane host has no {#key} remount — fence the
 					// write against a switch during the fetch (PLAN-2105
-					// discipline): drop if a newer load superseded us or the
-					// loaded collection changed identity.
+					// discipline): drop if a newer refresh superseded us, a
+					// newer item load ran, or the loaded collection changed
+					// identity.
+					if (refreshGen !== collectionRefreshGen) return;
 					if (gen !== loadGeneration) return;
 					if (!collection || collection.slug !== slug) return;
 					collection = fresh;

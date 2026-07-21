@@ -208,6 +208,66 @@ func TestUpdateCollectionExpectedUpdatedAtConflict(t *testing.T) {
 	}
 }
 
+// TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber is the BUG-2265
+// same-second regression guard (Codex P1): two guarded writes reusing the SAME
+// token must not both succeed even when they land in the same wall-clock second
+// (now() is one-second precision). The first accepted write advances updated_at
+// strictly past the token, so replaying the stale token conflicts — DETERMINISTIC
+// regardless of timing.
+func TestUpdateCollectionTokenAdvancesPreventsSameSecondClobber(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollSameSecond")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Things",
+		Slug: "things-occ-samesecond",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+
+	token := created.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+
+	first := `{"layout":"content-primary"}`
+	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings:          &first,
+		ExpectedUpdatedAt: token,
+	})
+	if err != nil {
+		t.Fatalf("first guarded update should succeed: %v", err)
+	}
+	// The accepted write must have advanced updated_at strictly past the token
+	// even if it committed in the same second the token was read.
+	if !updated.UpdatedAt.After(created.UpdatedAt) {
+		t.Fatalf("updated_at must advance past the token: created=%s updated=%s",
+			created.UpdatedAt.UTC(), updated.UpdatedAt.UTC())
+	}
+
+	// Replaying the SAME (now stale) token must conflict, not clobber.
+	second := `{"layout":"fields-primary"}`
+	_, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings:          &second,
+		ExpectedUpdatedAt: token,
+	})
+	var conflict *CollectionUpdateConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("replaying the stale token must conflict, got %T: %v", err, err)
+	}
+
+	// The first write must still be the current state (second write rejected).
+	reread, err := s.GetCollection(created.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+	var got models.CollectionSettings
+	if err := json.Unmarshal([]byte(reread.Settings), &got); err != nil {
+		t.Fatalf("parse reread settings %q: %v", reread.Settings, err)
+	}
+	if got.Layout != "content-primary" {
+		t.Errorf("expected the first write to survive, got %q", reread.Settings)
+	}
+}
+
 // TestUpdateCollectionNoTokenSkipsConcurrencyCheck: omitting the token keeps
 // the legacy last-write-wins path — an unconditional write that always lands
 // (CLI / MCP / API callers that don't opt in). BUG-2265 is additive.

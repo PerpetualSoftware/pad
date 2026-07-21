@@ -272,10 +272,18 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 	// ItemDetails / collection pages in this workspace refresh their own
 	// independent Collection snapshot proactively — shrinking the window in
 	// which another client would send a stale expected_updated_at and 409.
-	// Published with the NEW slug (renames change it); settings-only edits
-	// keep the slug, which is the common BUG-2265 case (quick actions).
-	actor, source := actorFromRequest(r)
-	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, updated.Slug, actor, actorNameFromRequest(r), source)
+	//
+	// Only when the slug is UNCHANGED (settings/schema/icon/description edits —
+	// the common BUG-2265 case). A rename changes the slug, and the event is
+	// routed + visibility-filtered by slug: an old-slug event would make
+	// siblings refetch the now-dead old slug (404), while a new-slug event
+	// can't reach clients whose visibility snapshot still knows the old slug
+	// (Codex P2). Renames are handled by the existing navigation path
+	// (ItemDetail.onupdated / the collection route), not this refresh event.
+	if updated.Slug == coll.Slug {
+		actor, source := actorFromRequest(r)
+		s.publishCollectionEvent(events.CollectionUpdated, workspaceID, coll.Slug, actor, actorNameFromRequest(r), source)
+	}
 
 	writeJSON(w, http.StatusOK, updated)
 }

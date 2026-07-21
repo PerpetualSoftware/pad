@@ -807,6 +807,11 @@
 
 	// Subscribe to SSE events for live updates to this collection's items
 	let unsubscribeSSE: (() => void) | null = null;
+	// Dedicated monotonic counter for BUG-2265 collection-snapshot refreshes.
+	// `loadSeq` only bumps on route loadCollection() calls, so it can't order
+	// two rapid collection_updated fetches against EACH OTHER — this does,
+	// dropping an older refetch that resolves after a newer one (Codex P2).
+	let collectionRefreshSeq = 0;
 
 	$effect(() => {
 		// Clean up previous subscription
@@ -826,11 +831,13 @@
 			// so short-circuit before the item-delta path below.
 			if (event.type === 'collection_updated') {
 				if (event.collection !== coll) return;
+				const refreshSeq = ++collectionRefreshSeq;
 				const seq = loadSeq;
 				try {
 					const fresh = await api.collections.get(ws, coll);
-					// Drop if a newer loadCollection superseded us or the route
-					// moved on while fetching.
+					// Drop if a newer refresh superseded us, a newer
+					// loadCollection ran, or the route moved on while fetching.
+					if (refreshSeq !== collectionRefreshSeq) return;
 					if (seq !== loadSeq || collSlug !== coll) return;
 					collection = fresh;
 				} catch {

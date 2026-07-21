@@ -331,16 +331,22 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	query := fmt.Sprintf("UPDATE collections SET %s WHERE id = ?", strings.Join(sets, ", "))
 
 	// Optimistic-concurrency guard (BUG-2265). When the caller round-trips the
-	// updated_at it last read, do the compare-and-set ATOMICALLY under the
-	// workspace write lock so two clients editing the same collection's
-	// settings can't clobber each other (the full-page pane host's master +
-	// pane each hold an independent Collection snapshot). Mirrors the item
-	// path (items.go updateItemWithParentLinkOnce): re-read the row inside the
-	// tx after taking the lock, compare with time.Equal, then UPDATE. On
-	// SQLite the db-wide BEGIN IMMEDIATE write lock (set via _txlock=immediate)
-	// already serializes writers; on Postgres acquireWorkspaceSeqLock takes the
-	// per-workspace advisory xact lock. Callers that don't send the token keep
-	// the legacy single-statement last-write-wins path below unchanged.
+	// updated_at it last read, do the compare-and-set ATOMICALLY so two clients
+	// editing the same collection's settings can't clobber each other (the
+	// full-page pane host's master + pane each hold an independent Collection
+	// snapshot). Re-read the row inside the tx, compare with time.Equal
+	// (format-agnostic — Postgres re-serializes the JSONB/timestamptz round
+	// trip), then UPDATE. Callers that don't send the token keep the legacy
+	// single-statement last-write-wins path below unchanged.
+	//
+	// Serialization is watertight on BOTH drivers WITHOUT relying on the
+	// advisory lock (which only serializes writers that also take it — a
+	// tokenless UpdateCollection would slip between the re-read and the UPDATE
+	// on Postgres, Codex P1):
+	//   - SQLite: the db-wide BEGIN IMMEDIATE write lock (_txlock=immediate)
+	//     already serializes EVERY writer for the whole tx.
+	//   - Postgres: the re-read takes a `FOR UPDATE` row lock, so a concurrent
+	//     tokenless UPDATE blocks on that row until this tx commits.
 	if input.ExpectedUpdatedAt != "" {
 		expected, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt)
 		if perr != nil {
@@ -353,14 +359,15 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		}
 		defer tx.Rollback()
 
-		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
-			return nil, err
+		// Re-read updated_at UNDER a row lock (Postgres) / the BEGIN IMMEDIATE
+		// write lock (SQLite). SQLite rejects `FOR UPDATE` syntactically, so it
+		// is Postgres-only; the whole-DB write lock makes it unnecessary there.
+		reread := "SELECT updated_at FROM collections WHERE id = ? AND deleted_at IS NULL"
+		if s.dialect.Driver() == DriverPostgres {
+			reread += " FOR UPDATE"
 		}
-
-		// Re-read updated_at UNDER the lock — the pre-tx GetCollection above
-		// ran before the lock, so a concurrent writer could have superseded it.
 		var currentUpdatedAt string
-		rerr := tx.QueryRow(s.q("SELECT updated_at FROM collections WHERE id = ? AND deleted_at IS NULL"), id).Scan(&currentUpdatedAt)
+		rerr := tx.QueryRow(s.q(reread), id).Scan(&currentUpdatedAt)
 		if rerr == sql.ErrNoRows {
 			// Deleted between the pre-tx read and here — treat as not-found.
 			return nil, nil
@@ -374,6 +381,17 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 				ExpectedUpdatedAt: input.ExpectedUpdatedAt,
 				ActualUpdatedAt:   actual,
 			}
+		}
+
+		// Guarantee the stored updated_at STRICTLY ADVANCES past the accepted
+		// token so a second guarded write within the SAME wall-clock second
+		// still changes the token (now() is one-second precision — two
+		// same-second writes would otherwise keep an identical token and defeat
+		// the guard, Codex P1). now() is used verbatim whenever it already
+		// exceeds the token (the common case; timestamps stay accurate). args[0]
+		// is the `updated_at = ?` bind (built first, above).
+		if !parseTime(ts).After(expected) {
+			args[0] = expected.Add(time.Second).UTC().Format(time.RFC3339)
 		}
 
 		if _, err := tx.Exec(s.q(query), args...); err != nil {
