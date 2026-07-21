@@ -1303,6 +1303,55 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 					return errStaleCollabSnapshot
 				}
 			}
+			// Restore-boundary gate (BUG-2264 Invariant B): reject a stale
+			// PRE-restore snapshot. A version restore that reconciled the live
+			// Y.Doc through the applier records a boundary = MAX(op-log.id) at
+			// restore time; a flush whose op_log_cursor is below it captured a
+			// Y.Doc predating the restore's applier op, so its markdown is the
+			// pre-restore content that would clobber the restore. The
+			// op_log_cursor frame is delivered AFTER the restore's binary update
+			// on the same conn, and every Y.Doc update re-arms the client flush,
+			// so a cursor >= boundary always reflects post-restore content — this
+			// rejects only genuinely stale flushes (a post-restore flush
+			// momentarily below the boundary is harmlessly deferred to the next
+			// flush). Runs OUTSIDE the cursor-present gate above and FAILS CLOSED
+			// on a missing cursor: a snapshot without a cursor can't prove it
+			// captured post-restore state, so once a boundary exists it must be
+			// rejected too (a nil cursor would otherwise sail straight past the
+			// fence into the write below).
+			// Read the restore boundary from the in-memory fast-path, falling back
+			// to the DURABLE items.restore_boundary_op_id column on a miss — so a
+			// pre-restore flush is fenced even after a server restart cleared the
+			// in-memory map (BUG-2264 residual #1). A durable read ERROR fails
+			// CLOSED (reject the flush): we can't prove the flush is post-restore,
+			// and rejecting is safe (the client reloads; no data is discarded).
+			boundary, ok := s.collab.RestoreBoundary(item.ID)
+			if !ok {
+				durable, hasDurable, derr := s.store.ItemRestoreBoundaryOpID(item.ID)
+				if derr != nil {
+					slog.Warn("collab-snapshot: durable restore-boundary read failed; failing closed",
+						"item_id", item.ID, "error", derr)
+					return errStaleCollabSnapshot
+				}
+				if hasDurable {
+					boundary, ok = durable, true
+				}
+			}
+			if ok {
+				if input.OpLogCursor == nil || *input.OpLogCursor < boundary {
+					cur := int64(-1)
+					if input.OpLogCursor != nil {
+						cur = *input.OpLogCursor
+					}
+					slog.Info("collab-snapshot: rejecting PATCH; cursor below/absent vs restore boundary",
+						"item_id", item.ID,
+						"cursor", cur,
+						"has_cursor", input.OpLogCursor != nil,
+						"restore_boundary", boundary,
+					)
+					return errStaleCollabSnapshot
+				}
+			}
 			updated, uerr := s.store.UpdateItemWithParentLink(item.ID, input, openChildrenPrecheck, parentLink)
 			if uerr != nil {
 				return uerr

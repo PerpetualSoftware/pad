@@ -33,6 +33,16 @@ type fakeOpLog struct {
 	// it. Missing key = NULL watermark = "never flushed".
 	contentFlushedIDs map[string]int64
 
+	// lastRestoreSeqs simulates the DURABLE items.last_restore_seq column
+	// (BUG-2264). Tests populate it to exercise the Join stale-seed fence's
+	// durable read (e.g. a fresh RoomManager on the same store = a "restart"
+	// with an empty in-memory fast-path). Missing key = NULL = never restored.
+	lastRestoreSeqs map[string]int64
+
+	// failLastRestoreSeq makes ItemLastRestoreSeq return an error, to exercise
+	// the Join fence's fail-closed path (a flaky DB after restart).
+	failLastRestoreSeq bool
+
 	// onListDormantHook fires once per call to
 	// ListDormantOpLogItemsBefore, AFTER the listing scan but BEFORE
 	// the result is returned to the caller. Used by tests that
@@ -222,6 +232,16 @@ func (f *fakeOpLog) MaxOpLogID(itemID string) (int64, bool, error) {
 	return maxID, found, nil
 }
 
+func (f *fakeOpLog) ItemLastRestoreSeq(itemID string) (int64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failLastRestoreSeq {
+		return 0, false, errors.New("simulated durable last_restore_seq read failure")
+	}
+	v, ok := f.lastRestoreSeqs[itemID]
+	return v, ok, nil
+}
+
 func (f *fakeOpLog) appendCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -257,10 +277,16 @@ func newCollabTestServer(t *testing.T, mgr *RoomManager) *httptest.Server {
 				since = v
 			}
 		}
+		var contentSeq int64
+		if raw := r.URL.Query().Get("content_seq"); raw != "" {
+			if v, perr := strconv.ParseInt(raw, 10, 64); perr == nil && v > 0 {
+				contentSeq = v
+			}
+		}
 		// `?readonly=1` joins as a read-only participant (canWrite=false)
 		// so tests can exercise the TASK-265 gate. Default is writable.
 		canWrite := r.URL.Query().Get("readonly") != "1"
-		_ = mgr.Join(itemID, conn, since, canWrite, nil)
+		_ = mgr.Join(itemID, conn, since, contentSeq, canWrite, nil)
 	})
 	return httptest.NewServer(mux)
 }
@@ -279,6 +305,19 @@ func dialWSSince(t *testing.T, server *httptest.Server, itemID string, since int
 	if since > 0 {
 		wsURL += "?since=" + strconv.FormatInt(since, 10)
 	}
+	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	return c
+}
+
+// dialWSContentSeq appends `?content_seq=<seq>` so the test exercises the
+// BUG-2264 stale-seed force_refresh fence.
+func dialWSContentSeq(t *testing.T, server *httptest.Server, itemID string, contentSeq int64) *websocket.Conn {
+	t.Helper()
+	u, _ := url.Parse(server.URL)
+	wsURL := "ws://" + u.Host + "/ws/" + itemID + "?content_seq=" + strconv.FormatInt(contentSeq, 10)
 	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
@@ -391,6 +430,228 @@ func TestRoomManagerLazyCreate(t *testing.T) {
 	}
 	if got := mgr.RoomCount(); got != 1 {
 		t.Fatalf("after first Join: want 1 room, got %d", got)
+	}
+}
+
+// TestRestoreBoundaryMonotonic covers the per-item restore boundary the
+// collab-snapshot PATCH handler consults to reject stale pre-restore flushes
+// (BUG-2264 Invariant B): unset reads as (0,false); SetRestoreBoundary records
+// a value and keeps it monotonically non-decreasing (a later/higher restore
+// wins; a stale/lower or non-positive call can never lower it); boundaries are
+// isolated per item.
+func TestRestoreBoundaryMonotonic(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+
+	if v, ok := mgr.RestoreBoundary("item-a"); ok || v != 0 {
+		t.Fatalf("unset boundary: want (0,false), got (%d,%v)", v, ok)
+	}
+
+	mgr.SetRestoreBoundary("item-a", 10)
+	if v, ok := mgr.RestoreBoundary("item-a"); !ok || v != 10 {
+		t.Fatalf("after set 10: want (10,true), got (%d,%v)", v, ok)
+	}
+
+	// A later restore with a higher op-log MAX advances the boundary.
+	mgr.SetRestoreBoundary("item-a", 25)
+	if v, _ := mgr.RestoreBoundary("item-a"); v != 25 {
+		t.Fatalf("after set 25: want 25, got %d", v)
+	}
+
+	// A stale / duplicate call with a lower value can never lower the boundary.
+	mgr.SetRestoreBoundary("item-a", 12)
+	if v, _ := mgr.RestoreBoundary("item-a"); v != 25 {
+		t.Fatalf("after stale set 12: boundary must stay 25, got %d", v)
+	}
+
+	// Non-positive values are ignored (no boundary to enforce).
+	mgr.SetRestoreBoundary("item-a", 0)
+	mgr.SetRestoreBoundary("item-a", -5)
+	if v, _ := mgr.RestoreBoundary("item-a"); v != 25 {
+		t.Fatalf("after non-positive sets: boundary must stay 25, got %d", v)
+	}
+
+	// Boundaries are per item.
+	if v, ok := mgr.RestoreBoundary("item-b"); ok || v != 0 {
+		t.Fatalf("unrelated item-b: want (0,false), got (%d,%v)", v, ok)
+	}
+}
+
+// TestForceRefreshRoom verifies the server-initiated force-refresh (BUG-2264):
+// it runs the caller's commit, prunes the ENTIRE per-item op-log, and sends a
+// force_refresh control frame to every connected client before closing the
+// connection — so peers discard their in-memory Y.Doc and rebuild from
+// items.content.
+func TestForceRefreshRoom(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	store := &fakeOpLog{}
+	mgr := NewRoomManager(store, bus)
+	defer mgr.Close()
+
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	conn := dialWS(t, srv, "item-a")
+	defer conn.Close()
+
+	for i := 0; i < 200; i++ {
+		if mgr.RoomCount() == 1 && bus.SubscriberCount("item-a") == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Seed op-log rows to prove the prune wipes them.
+	if _, err := store.AppendYjsUpdate("item-a", []byte{0x00, 0x01}, "1"); err != nil {
+		t.Fatalf("seed 1: %v", err)
+	}
+	if _, err := store.AppendYjsUpdate("item-a", []byte{0x00, 0x02}, "1"); err != nil {
+		t.Fatalf("seed 2: %v", err)
+	}
+
+	// The commit captures the pre-prune MAX and performs the op-log wipe
+	// atomically (the real path runs both inside UpdateItem's tx via
+	// MaxOpLogIDTx + PruneItemOpLogTx); the fake mirrors that by reading MAX,
+	// pruning here, and returning (MAX, restored seq).
+	committed := false
+	if err := mgr.ForceRefreshRoom("item-a", func() (int64, int64, error) {
+		committed = true
+		maxID, _, merr := store.MaxOpLogID("item-a")
+		if merr != nil {
+			return 0, 0, merr
+		}
+		if _, err := store.PruneYjsUpdatesBefore("item-a", distantFuture); err != nil {
+			return 0, 0, err
+		}
+		return maxID, 42, nil
+	}); err != nil {
+		t.Fatalf("ForceRefreshRoom: %v", err)
+	}
+	if !committed {
+		t.Fatal("commit callback did not run")
+	}
+
+	// Op-log fully pruned (by the commit).
+	store.mu.Lock()
+	remaining := 0
+	for _, r := range store.rows {
+		if r.ItemID == "item-a" {
+			remaining++
+		}
+	}
+	store.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("op-log not pruned: %d rows remain", remaining)
+	}
+
+	// The restore published both fences: the op-log-id boundary (MAX+1) and the
+	// content generation (the restored seq).
+	if b, ok := mgr.RestoreBoundary("item-a"); !ok || b <= 0 {
+		t.Fatalf("restore boundary not published: got (%d, %v)", b, ok)
+	}
+	if s, ok := mgr.LastRestoreSeq("item-a"); !ok || s != 42 {
+		t.Fatalf("last restore seq = (%d, %v), want (42, true)", s, ok)
+	}
+
+	// The client received a force_refresh frame and then the conn was closed.
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	sawForceRefresh := false
+	for {
+		mt, data, err := conn.ReadMessage()
+		if err != nil {
+			break // conn closed by forceRefreshAll
+		}
+		if mt == websocket.TextMessage {
+			var ctl ControlMessage
+			if json.Unmarshal(data, &ctl) == nil && ctl.Type == ControlMessageForceRefresh {
+				sawForceRefresh = true
+			}
+		}
+	}
+	if !sawForceRefresh {
+		t.Fatal("client did not receive a force_refresh frame before the conn closed")
+	}
+}
+
+// TestJoinDurableRestoreBoundaryFencesStaleSeedAfterRestart is the BUG-2264
+// restart-durability guard (residual #1 closed): the stale-seed Join fence must
+// survive a server restart. A restore in a PRIOR process stamped the DURABLE
+// items.last_restore_seq column; after a restart the RoomManager is brand new,
+// so its in-memory lastRestoreSeqs fast-path is empty. A cursor-0 tab that
+// seeded PRE-restore reconnects — it must STILL be force_refreshed, off the
+// durable column read, not the (absent) in-memory value.
+func TestJoinDurableRestoreBoundaryFencesStaleSeedAfterRestart(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	// Durable boundary present in the store (a restore stamped seq=10), but the
+	// manager is fresh — exactly the post-restart state.
+	store := &fakeOpLog{lastRestoreSeqs: map[string]int64{"item-a": 10}}
+	mgr := NewRoomManager(store, bus)
+	defer mgr.Close()
+	if _, ok := mgr.LastRestoreSeq("item-a"); ok {
+		t.Fatal("a fresh manager must have an empty in-memory restore-boundary fast-path")
+	}
+
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	// Stale seed (content_seq=5 < durable 10): force_refreshed via the durable
+	// column even though the in-memory fast-path is empty.
+	stale := dialWSContentSeq(t, srv, "item-a", 5)
+	defer stale.Close()
+	if ctl := readControlWithin(t, stale, time.Second); ctl.Type != ControlMessageForceRefresh {
+		t.Fatalf("stale seed after restart: want %q, got %q", ControlMessageForceRefresh, ctl.Type)
+	}
+
+	// Current seed (content_seq=10 == durable): joins normally (first control
+	// frame is the op_log_cursor, never force_refresh).
+	fresh := dialWSContentSeq(t, srv, "item-a", 10)
+	defer fresh.Close()
+	if ctl := readControlWithin(t, fresh, time.Second); ctl.Type == ControlMessageForceRefresh {
+		t.Fatal("current-generation seed must NOT be force_refreshed after restart")
+	}
+}
+
+// TestJoinFailsClosedWhenDurableBoundaryReadErrors is the BUG-2264 fail-closed
+// guard (Codex xhigh): if the durable restore-boundary read errors on an
+// in-memory miss (a flaky DB after a restart), the fence must NOT degrade open
+// and admit a possibly-stale seed — that client could push its pre-restore Y.Doc
+// and clobber the restored content once the DB recovers. It fails CLOSED via a
+// RETRYABLE plain close (NOT a force_refresh, which would discard the Y.Doc and
+// spin an unbounded refresh loop on a persistent error): the conn is closed
+// without admission and WITHOUT a force_refresh frame, so the client reconnects
+// with backoff, Y.Doc intact.
+func TestJoinFailsClosedWhenDurableBoundaryReadErrors(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	// Empty in-memory fast-path (fresh manager) AND the durable read errors.
+	store := &fakeOpLog{failLastRestoreSeq: true}
+	mgr := NewRoomManager(store, bus)
+	defer mgr.Close()
+
+	srv := newCollabTestServer(t, mgr)
+	defer srv.Close()
+
+	c := dialWSContentSeq(t, srv, "item-a", 5)
+	defer c.Close()
+
+	// The conn is closed by the server WITHOUT a force_refresh frame (that would
+	// discard the Y.Doc). We should see a close/read error and never a
+	// force_refresh control message.
+	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
+	for {
+		mt, data, err := c.ReadMessage()
+		if err != nil {
+			break // conn closed — the expected retryable close
+		}
+		if mt == websocket.TextMessage {
+			var ctl ControlMessage
+			if json.Unmarshal(data, &ctl) == nil && ctl.Type == ControlMessageForceRefresh {
+				t.Fatal("durable-read error must NOT force_refresh (discards Y.Doc); expected a retryable close")
+			}
+		}
 	}
 }
 
@@ -718,7 +979,7 @@ func TestRoomManagerJoinAfterCloseFailsFast(t *testing.T) {
 
 	// Direct Join — bypass the WS plumbing since we want to exercise
 	// the closed-flag short-circuit in isolation.
-	err := mgr.Join("item-a", nil, 0, true, nil) // conn is irrelevant; we never reach the WS path
+	err := mgr.Join("item-a", nil, 0, 0, true, nil) // conn is irrelevant; we never reach the WS path
 	if !errors.Is(err, errManagerClosed) {
 		t.Fatalf("want errManagerClosed, got %v", err)
 	}

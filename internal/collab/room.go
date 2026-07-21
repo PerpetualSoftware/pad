@@ -90,6 +90,19 @@ type roomConn struct {
 	// Server-side mirror of the REST requireEditPermission gate
 	// (TASK-265).
 	canWrite atomic.Bool
+
+	// frozen reports whether ForceRefreshRoom (version restore, BUG-2264) has
+	// paused this connection's inbound sync persistence for the duration of a
+	// prune+reseed. Kept SEPARATE from canWrite deliberately: the mid-session
+	// auth revalidation loop writes canWrite freely, so overloading it as the
+	// restore freeze let a revalidation tick thaw the freeze mid-restore
+	// (Codex xhigh [P1]) and a failed restore silently promote a viewer to
+	// writable. readLoop drops a sync frame when EITHER frozen or !canWrite.
+	// Set under appendMu (so a readLoop already queued on appendMu observes it
+	// on the very next check) and cleared only by ForceRefreshRoom's failure
+	// path; on success the conn is force-closed instead. atomic.Bool so the
+	// restore goroutine's write can't race readLoop's read.
+	frozen atomic.Bool
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -100,6 +113,20 @@ func (rc *roomConn) writeMessage(messageType int, data []byte) error {
 	rc.writeMu.Lock()
 	defer rc.writeMu.Unlock()
 	return rc.conn.WriteMessage(messageType, data)
+}
+
+// writeMessageWithDeadline writes one frame with a bounded write deadline, both
+// the deadline set AND the write under writeMu — gorilla treats SetWriteDeadline
+// as a write-side method, so doing it outside the mutex would race the writeLoop
+// (BUG-2264 P2). Used by force_refresh so a slow/dead peer can't block the caller
+// indefinitely while it holds the per-item lock.
+func (rc *roomConn) writeMessageWithDeadline(messageType int, data []byte, deadline time.Time) error {
+	rc.writeMu.Lock()
+	defer rc.writeMu.Unlock()
+	_ = rc.conn.SetWriteDeadline(deadline)
+	err := rc.conn.WriteMessage(messageType, data)
+	_ = rc.conn.SetWriteDeadline(time.Time{})
+	return err
 }
 
 // Room is the per-item collab fan-out point. One Room per `itemID`
@@ -171,14 +198,21 @@ type opLogStore interface {
 	// (TASK-1319): when a reconnecting client announces `?since=<id>`
 	// and that id is below MIN, rows it expected to replay have
 	// been pruned and the server sends ControlMessageForceRefresh.
-	// MaxOpLogID is intentionally NOT on this interface — earlier
-	// versions used it to populate the initial cursor when replay
-	// produced no rows, but Codex round 6 [P1] caught the race
-	// between MaxOpLogID and an in-flight broadcast: the cursor
-	// could advertise an id whose binary frame hadn't been
-	// delivered through this conn's writeLoop yet. The initial
-	// cursor now strictly uses `max(highestReplayed, since)`.
 	MinOpLogID(itemID string) (int64, bool, error)
+	// MaxOpLogID is consulted ONLY by ForceRefreshRoom (BUG-2264), which reads
+	// it under the per-item lock WITH appendMu held (inbound persistence frozen)
+	// to set the pre-prune restore boundary = MAX+1. That fencing is why the
+	// broadcast-vs-MAX race (Codex round 6 [P1] of TASK-1319) — which kept this
+	// off the initial-cursor path — does not apply here: no frame can be persisted
+	// but not yet delivered, because appends are frozen while we read.
+	MaxOpLogID(itemID string) (int64, bool, error)
+	// ItemLastRestoreSeq returns the DURABLE per-item restore boundary
+	// (items.last_restore_seq) — the item.seq of the most recent version restore
+	// (BUG-2264). Join consults it to force_refresh a client whose ?content_seq
+	// seed predates the last restore; being persisted, it fences a stale-seeded
+	// cursor-0 tab that reconnects AFTER a server restart (when the in-memory
+	// lastRestoreSeqs fast-path is empty). (0, false) = never restored.
+	ItemLastRestoreSeq(itemID string) (int64, bool, error)
 }
 
 // addConn registers a freshly-built roomConn with the room. Cancels
@@ -349,7 +383,15 @@ func (r *Room) readLoop(rc *roomConn) error {
 			// dropped. Without this fencing a reader could read
 			// canWrite=true, block on appendMu, and persist AFTER
 			// SetConnWritable(false) returned (TOCTOU).
-			if !rc.canWrite.Load() {
+			//
+			// The `frozen` check shares the same appendMu fence and closes
+			// the restore-prune window (BUG-2264): a readLoop that already
+			// read a frame and is queued on appendMu when ForceRefreshRoom
+			// sets frozen=true will, on acquiring appendMu, drop the frame
+			// instead of appending it AFTER the prune (which would survive as
+			// a stale post-boundary op). It is a separate flag from canWrite
+			// so the auth revalidation loop can't thaw it mid-restore.
+			if rc.frozen.Load() || !rc.canWrite.Load() {
 				r.appendMu.Unlock()
 				continue
 			}
@@ -506,10 +548,37 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 		// dropped by the read-only gate, making ApplyExternalContent
 		// return nil, skip the PATCH handler's direct-write fallback,
 		// and silently lose the external edit.
-		if !rc.canWrite.Load() {
-			slog.Warn("collab: applier_ack from read-only conn; ignoring",
+		//
+		// A frozen conn (mid version-restore, BUG-2264) is rejected for the
+		// same reason AND to close the pick-then-freeze race: pickApplier may
+		// have elected this conn while it was writable, then ForceRefreshRoom
+		// froze it before its editor produced the sync frames. readLoop drops
+		// those frames while frozen, so accepting the ack would falsely report
+		// success. Rejecting it leaves the request pending until the applier
+		// flow times out and retries (pickApplier now skips frozen), so the
+		// caller's direct-write fallback owns the external edit.
+		//
+		// This is a plain atomic read, NOT taken under appendMu. Synchronising
+		// it with appendMu (to observe the freeze's FINAL state) would couple
+		// the ack path to the restore commit's duration — ForceRefreshRoom holds
+		// appendMu across the whole prune+write tx, so a slow commit (or any slow
+		// AppendYjsUpdate) could stall the ack past ApplyExternalContent's
+		// timeout and spuriously fail even a NORMAL ack (Codex xhigh round 5).
+		// The un-synchronised read leaves one narrow residual (BUG-2276): if a
+		// restore ROLLS BACK while an in-flight applier ack races the transient
+		// frozen=true window, the ack is dropped even though the rolled-back
+		// conn's frames persisted, so the applier flow retries/falls back
+		// (re-applying its own markdown — a possible clobber of peer edits made
+		// in the retry window). That is a quadruple-narrow edge (concurrent
+		// external PATCH + exact ack timing + restore ROLLBACK, i.e. a DB commit
+		// error + peer edits in the retry window); fully closing it needs the
+		// applier flow serialised with the restore under itemLock (a larger
+		// rework with its own 30s-restore-stall cost). Tracked in BUG-2276.
+		if !rc.canWrite.Load() || rc.frozen.Load() {
+			slog.Warn("collab: applier_ack from read-only or frozen conn; ignoring",
 				"item_id", r.itemID,
 				"client_id", rc.id,
+				"frozen", rc.frozen.Load(),
 			)
 			return
 		}
@@ -540,6 +609,63 @@ func (r *Room) closeAll() {
 	for _, c := range conns {
 		_ = c.Close()
 	}
+}
+
+// forceRefreshAll sends a force_refresh control frame to every connected client
+// and then closes each connection, so every peer discards its in-memory Y.Doc
+// and rebuilds from the canonical items.content on reconnect (BUG-2264). Used by
+// RoomManager.ForceRefreshRoom after the op-log has been pruned. The frame goes
+// through rc.writeMessage (holds writeMu) so it can't race the live writeLoop's
+// concurrent write — sendForceRefreshFrame's bare conn.WriteMessage is only safe
+// pre-addConn. Snapshots the conn set under r.mu, then does socket I/O OUTSIDE
+// the lock (matching closeAll) so a slow write/close can't block the room's
+// addConn/removeConn.
+func (r *Room) forceRefreshAll() {
+	payload, err := json.Marshal(ControlMessage{Type: ControlMessageForceRefresh})
+	if err != nil {
+		slog.Warn("collab: marshal force_refresh frame failed", "item_id", r.itemID, "error", err)
+		payload = nil
+	}
+
+	r.mu.Lock()
+	conns := make([]*roomConn, 0, len(r.conns))
+	for _, rc := range r.conns {
+		conns = append(conns, rc)
+	}
+	r.mu.Unlock()
+
+	// Fan the frame+close out per conn concurrently (additional-P2): a slow peer
+	// already inside a deadline-free WriteMessage would otherwise block the whole
+	// loop — and the caller still holds the per-item lock, stalling that item's
+	// restore/joins/snapshots.
+	//
+	// Each conn's frame is written with a bounded write deadline, but the deadline
+	// is set INSIDE writeMu (gorilla treats SetWriteDeadline as a write op), so it
+	// can't bound the wait to ACQUIRE writeMu. If the writeLoop is wedged in a
+	// deadline-free WriteMessage to a dead peer it holds writeMu indefinitely and
+	// writeMessageWithDeadline would block on writeMu.Lock() forever, hanging
+	// wg.Wait while the caller holds the per-item lock (BUG-2264 P1, Codex xhigh).
+	// So arm an independent timer per conn that Closes it after the deadline:
+	// conn.Close is concurrency-safe with an in-flight WriteMessage (gorilla), so
+	// it forces the wedged write to error, releasing writeMu and unblocking us.
+	var wg sync.WaitGroup
+	deadline := time.Now().Add(closeFrameDeadline)
+	for _, rc := range conns {
+		wg.Add(1)
+		go func(rc *roomConn) {
+			defer wg.Done()
+			// The timer bounds writeMu acquisition even if the frame write itself
+			// never gets to run its own deadline; Close is idempotent so the
+			// explicit Close below is harmless if the timer already fired.
+			t := time.AfterFunc(closeFrameDeadline, func() { _ = rc.conn.Close() })
+			if payload != nil {
+				_ = rc.writeMessageWithDeadline(websocket.TextMessage, payload, deadline)
+			}
+			t.Stop()
+			_ = rc.conn.Close()
+		}(rc)
+	}
+	wg.Wait()
 }
 
 // connIDCounter is package-scoped so multiple RoomManagers in the

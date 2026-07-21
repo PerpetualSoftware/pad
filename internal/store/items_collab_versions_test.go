@@ -365,8 +365,6 @@ func TestCollabSnapshotNoCursorLeavesWatermark(t *testing.T) {
 	}
 }
 
-// TestMinAndMaxOpLogIDEmptyAndPopulated covers the two store helpers
-// the resume-cursor protocol depends on.
 func TestMinAndMaxOpLogIDEmptyAndPopulated(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Min Max Test")

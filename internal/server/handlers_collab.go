@@ -159,6 +159,19 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// `?content_seq=<seq>` is the items.content generation the client's Y.Doc
+	// was SEEDED from (BUG-2264). If it predates the item's most recent restore,
+	// Join force_refreshes the client before its on-open Y.encodeStateAsUpdate
+	// can re-push the stale pre-restore document. Empty / blank / unparseable
+	// values are tolerated as 0 (older bundles that don't announce it fall
+	// through to the legacy resume-cursor behaviour with no regression).
+	var contentSeq int64
+	if raw := r.URL.Query().Get("content_seq"); raw != "" {
+		if v, perr := strconv.ParseInt(raw, 10, 64); perr == nil && v > 0 {
+			contentSeq = v
+		}
+	}
+
 	conn, err := collabUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade itself emits the right HTTP status (e.g. 400 on
@@ -233,11 +246,19 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 	// (closes `registered`) fires once the conn is in the room, so
 	// revalidation only starts after SetConnWritable can find it.
 	onRegistered := func() { close(registered) }
-	if err := s.collab.Join(itemID, conn, sinceID, access.canWrite, onRegistered); err != nil {
+	if err := s.collab.Join(itemID, conn, sinceID, contentSeq, access.canWrite, onRegistered); err != nil {
 		// ErrForceRefreshSent is the protocol's normal close-after-
 		// notify path — the JSON frame is already on the wire and
 		// the client knows what to do. Don't warn.
 		if errors.Is(err, collab.ErrForceRefreshSent) {
+			return
+		}
+		// ErrStaleSeedFenceUnavailable is an expected, retryable close (the
+		// durable stale-seed boundary read failed, so we fail closed without
+		// admitting the peer; Join already logged it at warn). The deferred
+		// conn.Close closes the WS so the client reconnects with backoff,
+		// Y.Doc intact. Don't double-warn. Per BUG-2264 (Codex xhigh).
+		if errors.Is(err, collab.ErrStaleSeedFenceUnavailable) {
 			return
 		}
 		// Normal closure paths surface here as websocket.CloseError
