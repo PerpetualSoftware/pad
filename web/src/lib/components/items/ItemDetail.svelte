@@ -4235,12 +4235,14 @@
 			     Editor, EditorBubbleMenu, provider, collabKey and SSE stay
 			     persistent across an A→B item switch (the no-{#key} perf premise). -->
 			<div class="content-panel">
-				<!-- Master-freeze (TASK-2172): the Rich⇄Markdown toggle is a
-				     provider-LIFECYCLE control — switching to Markdown flushes,
-				     sets rawMode, nulls collabKey and DESTROYS the retained
-				     provider (violating retain-alive). Hide it entirely while
-				     peeking; the onclick guards below are belt-and-suspenders. -->
-				{#if !peeking}
+				<!-- BUG-2263 invisible freeze: the Rich⇄Markdown toggle renders on
+				     BOTH sides. It IS a provider-LIFECYCLE control (Markdown flushes,
+				     nulls collabKey, DESTROYS the retained provider), but a click
+				     activates THIS side first (pointerdown → activePane flip →
+				     peeking=false) before the flip runs, so the teardown only ever
+				     happens on the now-ACTIVE side — never while peeking. The onclick
+				     `peeking` guards below stay as the backstop for a re-peek DURING the
+				     async flush (e.g. the user clicks the other side mid-flip). -->
 				<div class="editor-mode-toggle">
 					<button
 						class="mode-btn"
@@ -4435,7 +4437,6 @@
 						title="Raw markdown editor"
 					>Markdown</button>
 				</div>
-				{/if}
 				{#if rawMode}
 					{#key item.id}
 						<!-- Master-freeze (TASK-2172, HT-2176 Option A): a peeking

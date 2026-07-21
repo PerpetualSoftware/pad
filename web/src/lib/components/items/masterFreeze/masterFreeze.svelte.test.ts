@@ -76,11 +76,14 @@ describe('invisible master/pane freeze wiring (BUG-2263)', () => {
 		expect(text(r, 'mutationsEnabled')).toBe('false');
 
 		// CONTENT bucket — frozen: the editor is not typeable, the raw editor is
-		// read-only, the bubble/link chrome + provider-lifecycle mode toggle hide.
+		// read-only, and the selection bubble/link chrome is gone (it only appears on
+		// a selection, which requires activation).
 		expect(text(r, 'editor-editable')).toBe('false');
 		expect(text(r, 'raw-readonly')).toBe('true');
 		expect(present(r, 'editor-mutation-ui')).toBe(false);
-		expect(present(r, 'mode-toggle')).toBe(false);
+		// The Rich/Markdown toggle now renders on the peeking side too (BUG-2263
+		// follow-up): a click activates the side before the guarded provider flip.
+		expect(present(r, 'mode-toggle')).toBe(true);
 
 		// REST bucket — INVISIBLE: fields interactive, children/timeline not frozen.
 		expect(text(r, 'field-readonly')).toBe('false');
@@ -112,7 +115,9 @@ describe('invisible master/pane freeze wiring (BUG-2263)', () => {
 		const r = render({ canEdit: true, peeking: false });
 
 		expect(text(r, 'mutationsEnabled')).toBe('true');
-		// Content surfaces are the ONLY difference from the peeking case.
+		// The editor's own state (typeable, raw not read-only) + its selection chrome
+		// are the ONLY differences from the peeking case. The mode toggle now renders
+		// in BOTH states (asserted true here and in the peeking case above).
 		expect(text(r, 'editor-editable')).toBe('true');
 		expect(text(r, 'raw-readonly')).toBe('false');
 		expect(present(r, 'editor-mutation-ui')).toBe(true);
