@@ -1080,17 +1080,24 @@ func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int6
 			res, rerr := reconcile()
 			switch {
 			case rerr != nil:
-				// (c) UNCERTAIN — the reconcile read itself failed, so we cannot tell a
-				// genuine rollback from an ack-lost-but-landed commit. SAFEST: keep the
-				// conns FROZEN and return. Un-freezing onto a possibly-stale Y.Doc risks
-				// a stale flush clobbering content that may in fact be committed; a
-				// still-frozen peer simply can't persist and converges cleanly once it
-				// reconnects (or its socket times out). Release appendMu only — leave
-				// rc.frozen set, do NOT reseed.
+				// (c) UNCERTAIN — the reconcile read itself failed (or a not-found
+				// re-read: the item may have been archived AFTER a durable-but-ack-lost
+				// commit), so we cannot tell a genuine rollback from an ack-lost-but-
+				// landed commit. Un-freezing onto a possibly-stale Y.Doc could let a
+				// stale flush clobber content that may in fact be committed; but simply
+				// leaving the conns frozen-and-open would silently drop every subsequent
+				// edit forever (the collab read path has no WS read-deadline/heartbeat).
+				// SAFEST: release appendMu (no socket I/O under appendMu), then
+				// PLAIN-CLOSE the sockets — NOT force_refresh (we don't know
+				// items.content is authoritative). Each client reconnects and
+				// re-evaluates the durable restore fences fresh through Join, which is
+				// correct whichever way the commit actually went. Leave rc.frozen set so
+				// any already-read frame is still dropped as the readLoop unwinds.
 				if room != nil {
 					room.appendMu.Unlock()
+					room.closeAllConnsPlain()
 				}
-				slog.Error("collab: version-restore commit outcome uncertain after ack loss; leaving room frozen",
+				slog.Error("collab: version-restore commit outcome uncertain after ack loss; froze + plain-closed peers to force a safe reconnect",
 					"item_id", itemID, "commit_err", err, "reconcile_err", rerr)
 				return errors.Join(err, rerr)
 			case !res.Landed:

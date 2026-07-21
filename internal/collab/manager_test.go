@@ -700,25 +700,27 @@ func TestForceRefreshRoomReconcile(t *testing.T) {
 	})
 
 	// (c) The commit errored AND the reconcile read itself failed → outcome
-	// UNCERTAIN. ForceRefreshRoom must keep the conn FROZEN (safe degraded mode)
-	// and return an error wrapping both causes; no boundary/seq published.
-	t.Run("uncertain_stays_frozen", func(t *testing.T) {
+	// UNCERTAIN. ForceRefreshRoom must return an error wrapping both causes, must
+	// NOT publish a boundary/seq, and must PLAIN-CLOSE the peer's socket (NOT
+	// force_refresh) so it reconnects and re-evaluates the durable fences fresh —
+	// a frozen-but-open socket would silently drop every subsequent edit forever.
+	t.Run("uncertain_plain_closes_peers", func(t *testing.T) {
 		bus := NewMemoryOpBus()
 		defer bus.Close()
 		mgr := NewRoomManager(&fakeOpLog{}, bus)
 		defer mgr.Close()
 
-		room := mgr.getOrCreate("item-a")
-		rc := &roomConn{id: 1, conn: &websocket.Conn{}}
-		rc.canWrite.Store(true)
-		if err := room.addConn(rc); err != nil {
-			t.Fatalf("addConn: %v", err)
+		srv := newCollabTestServer(t, mgr)
+		defer srv.Close()
+
+		conn := dialWS(t, srv, "item-a")
+		defer conn.Close()
+		for i := 0; i < 200; i++ {
+			if mgr.RoomCount() == 1 && bus.SubscriberCount("item-a") == 1 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
 		}
-		defer func() {
-			room.mu.Lock()
-			delete(room.conns, rc.conn)
-			room.mu.Unlock()
-		}()
 
 		commitErr := errors.New("commit: bad connection")
 		reconcileErr := errors.New("reconcile: read failed")
@@ -733,11 +735,32 @@ func TestForceRefreshRoomReconcile(t *testing.T) {
 		if !errors.Is(err, commitErr) || !errors.Is(err, reconcileErr) {
 			t.Fatalf("uncertain err = %v, want it to wrap BOTH the commit and reconcile errors", err)
 		}
-		if !rc.frozen.Load() {
-			t.Fatal("uncertain reconcile must KEEP the conn frozen (safe degraded mode)")
-		}
 		if _, ok := mgr.RestoreBoundary("item-a"); ok {
 			t.Fatal("uncertain reconcile must NOT publish a restore boundary")
+		}
+		if _, ok := mgr.LastRestoreSeq("item-a"); ok {
+			t.Fatal("uncertain reconcile must NOT publish a last restore seq")
+		}
+		// The peer's socket must be PLAIN-closed: no force_refresh frame arrives
+		// before the read errors out. (force_refresh would falsely assert
+		// items.content is authoritative, which is exactly what's unknown here.)
+		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		closed := false
+		for {
+			mt, data, rerr := conn.ReadMessage()
+			if rerr != nil {
+				closed = true
+				break // socket closed by closeAllConnsPlain
+			}
+			if mt == websocket.TextMessage {
+				var ctl ControlMessage
+				if json.Unmarshal(data, &ctl) == nil && ctl.Type == ControlMessageForceRefresh {
+					t.Fatal("uncertain reconcile plain-closes; it must NOT send a force_refresh frame")
+				}
+			}
+		}
+		if !closed {
+			t.Fatal("uncertain reconcile must close the peer's socket")
 		}
 	})
 }
