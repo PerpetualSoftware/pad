@@ -21,6 +21,14 @@ const (
 	ItemArchived = "item_archived"
 	ItemRestored = "item_restored"
 
+	// Collection events. Emitted when a collection's own row changes
+	// (settings/schema/name/icon, e.g. a quick-action added). Routed by
+	// Collection (slug) through the SSE visibility filter so sibling
+	// ItemDetails / collection pages refresh their independent Collection
+	// snapshot proactively — shrinking the optimistic-concurrency (409)
+	// window (BUG-2265).
+	CollectionUpdated = "collection_updated"
+
 	// Comment events
 	CommentCreated = "comment_created"
 	CommentUpdated = "comment_updated"

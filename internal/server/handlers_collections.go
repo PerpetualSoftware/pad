@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // reservedSchemaFieldKeys are collection schema field keys that collide
@@ -205,6 +208,19 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// BUG-2265: validate the optimistic-concurrency token's format at the
+	// boundary so a malformed value is a clean 400 rather than surfacing from
+	// the store as a generic 500. The store re-parses (guaranteed to succeed)
+	// and does the actual under-lock comparison. Mirrors handlers_items.go's
+	// handleUpdateItem boundary check.
+	if input.ExpectedUpdatedAt != "" {
+		if _, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt); perr != nil {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"expected_updated_at must be an RFC3339 timestamp")
+			return
+		}
+	}
+
 	if input.Schema != nil {
 		var schema models.CollectionSchema
 		if err := json.Unmarshal([]byte(*input.Schema), &schema); err != nil {
@@ -230,6 +246,12 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 
 	updated, err := s.store.UpdateCollection(coll.ID, input)
 	if err != nil {
+		// BUG-2265: an optimistic-concurrency loss → structured 409, same
+		// wire shape as the item path, BEFORE the generic internal-error path.
+		if conflict, ok := asCollectionUpdateConflictError(err); ok {
+			writeCollectionUpdateConflictError(w, coll.Slug, conflict)
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
@@ -246,7 +268,52 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
+	// BUG-2265 (part 3): broadcast a collection.updated event so sibling
+	// ItemDetails / collection pages in this workspace refresh their own
+	// independent Collection snapshot proactively — shrinking the window in
+	// which another client would send a stale expected_updated_at and 409.
+	// Published with the NEW slug (renames change it); settings-only edits
+	// keep the slug, which is the common BUG-2265 case (quick actions).
+	actor, source := actorFromRequest(r)
+	s.publishCollectionEvent(events.CollectionUpdated, workspaceID, updated.Slug, actor, actorNameFromRequest(r), source)
+
 	writeJSON(w, http.StatusOK, updated)
+}
+
+// asCollectionUpdateConflictError reports whether err is (or wraps) a
+// store.CollectionUpdateConflictError and returns it. Mirrors
+// asUpdateConflictError for the item path (BUG-2265).
+func asCollectionUpdateConflictError(err error) (*store.CollectionUpdateConflictError, bool) {
+	var conflict *store.CollectionUpdateConflictError
+	if errors.As(err, &conflict) {
+		return conflict, true
+	}
+	return nil, false
+}
+
+// writeCollectionUpdateConflictError emits the shared update_conflict envelope
+// (HTTP 409) for a collection optimistic-concurrency loss. `ref` is the
+// collection slug. Reuses writeUpdateConflictEnvelope so the wire shape is
+// byte-for-byte identical to the item path's 409 (BUG-2265).
+func writeCollectionUpdateConflictError(w http.ResponseWriter, ref string, conflict *store.CollectionUpdateConflictError) {
+	writeUpdateConflictEnvelope(w, ref, conflict.ExpectedUpdatedAt, conflict.ActualUpdatedAt)
+}
+
+// publishCollectionEvent publishes a real-time event for a collection-level
+// change (BUG-2265). Collection carries the slug so the SSE visibility filter
+// routes it to workspace clients who can see the collection.
+func (s *Server) publishCollectionEvent(eventType, workspaceID, collectionSlug, actor, actorName, source string) {
+	if s.events == nil {
+		return
+	}
+	s.events.Publish(events.Event{
+		Type:        eventType,
+		WorkspaceID: workspaceID,
+		Collection:  collectionSlug,
+		Actor:       actor,
+		ActorName:   actorName,
+		Source:      source,
+	})
 }
 
 func (s *Server) handleDeleteCollection(w http.ResponseWriter, r *http.Request) {
