@@ -217,7 +217,7 @@ func TestCollectionCRUD(t *testing.T) {
 	// Update
 	newName := "My Tasks"
 	newIcon := "list"
-	updated, _, err := s.UpdateCollection(col.ID, models.CollectionUpdate{
+	updated, err := s.UpdateCollection(col.ID, models.CollectionUpdate{
 		Name: &newName,
 		Icon: &newIcon,
 	})

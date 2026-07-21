@@ -377,6 +377,17 @@ func sseEventVisibleFor(vis sseVisibility, sseUserID string, event events.Event)
 	if vis.visibleSlugSet == nil {
 		return true // all access
 	}
+	// collection_updated (BUG-2265) matches on the STABLE collection ID, not the
+	// mutable slug. Slugs are reusable and events replay, so a stale rename
+	// event's OLD slug could be re-owned by a DIFFERENT collection and pass a
+	// slug-based check for a collection this subscriber can't actually see
+	// (misroute + leak of the new slug). Matching by ID closes that. The event
+	// is sanitized (no per-item data), so any subscriber who can see the
+	// collection — full OR item-grant access — receives it and reconciles.
+	// (Legacy events without a CollectionID fall through to slug matching.)
+	if event.Type == events.CollectionUpdated && event.CollectionID != "" {
+		return vis.visibleCollIDSet[event.CollectionID]
+	}
 	if collection == "" {
 		// Events without a collection (workspace-level, legacy docs) are
 		// only sent to actual members, not guests — they may contain
@@ -431,6 +442,12 @@ type sseVisibility struct {
 	// editor with no collection scope). A non-nil empty map means deny all
 	// collection-scoped events (fail-closed on grant-resolution errors).
 	visibleSlugSet map[string]bool
+	// visibleCollIDSet mirrors visibleSlugSet keyed by STABLE collection ID.
+	// collection_updated events (BUG-2265) match on this, not the mutable slug,
+	// so a replayed rename event whose OLD slug was re-owned by a DIFFERENT
+	// collection can't pass visibility for a collection the subscriber can't
+	// actually see. nil when visibleSlugSet is nil (no filtering).
+	visibleCollIDSet map[string]bool
 	// grantedItemSet is populated for users whose effective access is
 	// item-level (guests, restricted members). nil = no item filtering
 	// needed beyond visibleSlugSet.
@@ -500,7 +517,9 @@ func (s *Server) computeSSEVisibility(r *http.Request, workspaceID string) sseVi
 		v.visibleSlugSet = make(map[string]bool) // empty = deny
 	} else if visibleIDs != nil {
 		v.visibleSlugSet = make(map[string]bool, len(visibleIDs))
+		v.visibleCollIDSet = make(map[string]bool, len(visibleIDs))
 		for _, id := range visibleIDs {
+			v.visibleCollIDSet[id] = true
 			coll, _ := s.store.GetCollection(id)
 			if coll != nil {
 				v.visibleSlugSet[coll.Slug] = true

@@ -205,6 +205,9 @@ func TestUpdateCollection_PublishesCollectionUpdatedEvent(t *testing.T) {
 				if event.Collection != coll.Slug {
 					t.Fatalf("collection_updated collection=%q want %q", event.Collection, coll.Slug)
 				}
+				if event.CollectionID != coll.ID {
+					t.Fatalf("collection_updated collection_id=%q want %q", event.CollectionID, coll.ID)
+				}
 				if event.NewSlug != "" {
 					t.Fatalf("settings-only update should not carry new_slug, got %q", event.NewSlug)
 				}
@@ -266,6 +269,9 @@ func TestUpdateCollection_RenameEventCarriesNewSlug(t *testing.T) {
 				if event.Collection != oldSlug {
 					t.Fatalf("rename event should route by OLD slug, got %q want %q", event.Collection, oldSlug)
 				}
+				if event.CollectionID != updated.ID {
+					t.Fatalf("rename event collection_id=%q want %q (stable identity)", event.CollectionID, updated.ID)
+				}
 				if event.NewSlug != updated.Slug {
 					t.Fatalf("rename event new_slug=%q want %q", event.NewSlug, updated.Slug)
 				}
@@ -277,12 +283,13 @@ func TestUpdateCollection_RenameEventCarriesNewSlug(t *testing.T) {
 	}
 }
 
-// TestUpdateCollection_MigrationSetsItemsChanged covers BUG-2265 Codex round 6:
-// a schema change that MIGRATES item field values must set the SANITIZED
-// items_changed flag on the (already item-grant-delivered, old-slug-routed)
-// collection_updated event, so open views reconcile the migrated rows via a
-// client /items-changes deltaSync. A settings-only update (no migrated items)
-// leaves items_changed false. No separate items_bulk_updated is emitted.
+// TestUpdateCollection_MigrationSetsItemsChanged covers BUG-2265 Codex round
+// 6/7: a schema change carrying migrations sets the SANITIZED items_changed
+// flag on collection_updated — keyed on whether a migration was REQUESTED, not
+// how many rows changed (round 7 P1: an affected-row count would let an
+// item-grant subscriber infer that hidden items matched). The event carries the
+// STABLE CollectionID for id-based matching. A settings-only update leaves
+// items_changed false. No separate items_bulk_updated is emitted.
 func TestUpdateCollection_MigrationSetsItemsChanged(t *testing.T) {
 	srv := testServerWithEvents(t)
 	slug := createWSWithCollections(t, srv)
@@ -338,13 +345,38 @@ func TestUpdateCollection_MigrationSetsItemsChanged(t *testing.T) {
 		if event.Collection != coll.Slug {
 			t.Fatalf("collection_updated collection=%q want %q", event.Collection, coll.Slug)
 		}
+		if event.CollectionID != coll.ID {
+			t.Fatalf("collection_updated collection_id=%q want %q", event.CollectionID, coll.ID)
+		}
 		if !event.ItemsChanged {
 			t.Fatalf("migration collection_updated must set items_changed")
 		}
-		// Still sanitized — no actor/source leaked to item-grant subscribers.
+		// Still sanitized — no actor/source/count leaked to item-grant subscribers.
 		if event.Actor != "" || event.Source != "" || event.Count != 0 {
 			t.Fatalf("migration event leaked non-sanitized fields: actor=%q source=%q count=%d",
 				event.Actor, event.Source, event.Count)
+		}
+	})
+
+	t.Run("migration matching ZERO items still sets items_changed (no row-count leak)", func(t *testing.T) {
+		ch := srv.events.Subscribe(ws.ID)
+		defer srv.events.Unsubscribe(ch)
+
+		// Rename an option value that NO item currently has → 0 rows migrated.
+		// items_changed must STILL be true (keyed on request, not row count), so
+		// an item-grant subscriber can't infer whether hidden items matched.
+		rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/collections/"+coll.Slug, map[string]interface{}{
+			"schema": `{"fields":[{"key":"status","label":"Status","type":"select","options":["b","z"]}]}`,
+			"migrations": []map[string]interface{}{
+				{"field": "status", "rename_options": map[string]string{"nonexistent": "z"}},
+			},
+		})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("zero-match migration: expected 200, got %d: %s", rr.Code, rr.Body.String())
+		}
+		event := awaitCollectionUpdated(t, ch)
+		if !event.ItemsChanged {
+			t.Fatalf("a REQUESTED migration must set items_changed even when 0 rows matched")
 		}
 	})
 

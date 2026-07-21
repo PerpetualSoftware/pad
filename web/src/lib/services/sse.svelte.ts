@@ -9,6 +9,11 @@ export interface ItemEvent {
 	item_id: string;
 	title: string;
 	collection: string;
+	// STABLE collection identity on collection_updated events (BUG-2265). Slugs
+	// are mutable/reusable and events replay, so clients MUST match these events
+	// by `collection_id`, not `collection` (slug) — the slug is only for the
+	// rename-navigation URL.
+	collection_id?: string;
 	// On a collection_updated RENAME, the collection's new slug (the event is
 	// routed by the old slug). Absent for non-rename updates. BUG-2265.
 	new_slug?: string;

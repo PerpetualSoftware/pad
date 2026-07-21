@@ -825,7 +825,10 @@
 			// controls send a fresh expected_updated_at. Carries no item_id,
 			// so short-circuit before the item-delta path below.
 			if (event.type === 'collection_updated') {
-				if (event.collection !== coll) return;
+				// Match by STABLE id, not slug (Codex round 7): a replayed rename
+				// event's old slug can be re-owned by a DIFFERENT collection, so a
+				// slug match could navigate away / refresh from the wrong one.
+				if (!collection || event.collection_id !== collection.id) return;
 				// Rename (Codex P2): this route's URL slug is now dead. Re-target
 				// to the new slug — preserving the query string (open pane) — so
 				// the next fetch/action doesn't 404. Mirrors the originating
@@ -1668,6 +1671,11 @@
 					const fresh = list.find((c) => c.id === base.id);
 					if (fresh && collGen === collectionGen && ws === wsSlug && slug === collSlug) {
 						collection = fresh;
+						// TODO(BUG-2272): on a remote RENAME this reseeds `collection`
+						// (fresh slug) but NOT the route's `collSlug`, so the NEXT
+						// reorder still PATCHes the dead old slug and re-fails. A real
+						// fix retargets the route slug (renavigation, deferred to
+						// BUG-2272); we don't build that here.
 					}
 				} catch {
 					// Best-effort reseed.

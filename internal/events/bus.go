@@ -66,17 +66,24 @@ type Event struct {
 	WorkspaceID string `json:"workspace_id"`
 	DocumentID  string `json:"document_id,omitempty"`
 	ItemID      string `json:"item_id,omitempty"`
-	Collection  string `json:"collection,omitempty"`
+	// CollectionID is the STABLE collection identity on a collection_updated
+	// event (BUG-2265). Slugs are mutable and reusable and events replay, so a
+	// stale rename event's OLD slug could be re-owned by a different collection;
+	// clients therefore match these events by CollectionID, not the slug (which
+	// stays only for rename-navigation URLs). Empty on non-collection events.
+	CollectionID string `json:"collection_id,omitempty"`
+	Collection   string `json:"collection,omitempty"`
 	// NewSlug carries a collection's NEW slug on a collection_updated event
 	// that is a rename (BUG-2265). The event is routed by Collection (the OLD
 	// slug, which the sibling tabs still address) so old-slug watchers receive
 	// it and can re-target to NewSlug. Empty for non-rename updates.
 	NewSlug string `json:"new_slug,omitempty"`
-	// ItemsChanged is set on a collection_updated event whose schema migration
-	// actually mutated item field values (BUG-2265). It's a SANITIZED reconcile
-	// signal — a bare bool carrying NO per-item data — so it can be delivered to
-	// item-grant subscribers (who receive collection_updated) without leaking
-	// items they can't see; their client triggers a /items-changes deltaSync
+	// ItemsChanged is set on a collection_updated event when a field MIGRATION
+	// WAS REQUESTED (a schema change carrying migrations), independent of how
+	// many rows actually changed (BUG-2265 Codex round 7). It's a SANITIZED
+	// reconcile signal — a bare bool carrying NO per-item data and revealing
+	// nothing about hidden item values — so it can be delivered to item-grant
+	// subscribers; their client triggers a /items-changes deltaSync
 	// (server-filtered to their grants) to pick up the migrated field JSON.
 	ItemsChanged bool   `json:"items_changed,omitempty"`
 	Title        string `json:"title,omitempty"`

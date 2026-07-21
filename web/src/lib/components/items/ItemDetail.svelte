@@ -786,7 +786,10 @@
 			// branch must run BEFORE the item-id guard below.
 			if (event.type === 'collection_updated') {
 				const snap = collection;
-				if (!snap || event.collection !== snap.slug) return;
+				// Match by STABLE id, not slug (Codex round 7): a replayed rename
+				// event's old slug can be re-owned by a DIFFERENT collection, so a
+				// slug match could load the wrong schema into this pane.
+				if (!snap || event.collection_id !== snap.id) return;
 				const slug = snap.slug;
 				// On a rename, refetch by the NEW slug (the old one is dead) so
 				// this pane's collection reference — used to build quick-action /
@@ -822,6 +825,10 @@
 				// migration. Refetch it. Skip while mid-edit (saving/title-editing):
 				// item-level optimistic concurrency then catches a clobbering save
 				// via a 409, and refetching would clobber the editor.
+				// NOTE(BUG-2273): updateField's full-blob write lacks item-level OCC
+				// (no expected_updated_at / fields_patch — the web editor never
+				// adopted IDEA-1480/v0.14), so a mid-edit field save can still race
+				// this reconcile. The migration reconcile is best-effort until then.
 				if (
 					event.items_changed &&
 					item &&
@@ -2232,6 +2239,12 @@
 		// (This also lets a pre-flip pending onchange from FieldEditor's 500ms
 		// debounce complete rather than being suppressed.)
 		if (!item) return;
+		// NOTE(BUG-2273): this sends a FULL `fields` blob (stale ...fields + one
+		// key) with NO expected_updated_at / fields_patch — the web editor never
+		// adopted the IDEA-1480/v0.14 item merge+OCC. So a concurrent schema
+		// MIGRATION (or any other field write) can be silently UNDONE by this
+		// write. The BUG-2265 migration reconcile above refetches to shrink the
+		// window, but the real fix is item-level OCC here (tracked in BUG-2273).
 		const updated = { ...fields, [key]: value };
 		const payload = JSON.stringify(updated);
 		const targetItem = item;
