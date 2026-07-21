@@ -288,13 +288,17 @@ test('a collection migration completing after a rapid A->B pane switch refreshes
 		'B should have reloaded post-migration fields (the fix), not stayed on the stale pre-migration snapshot',
 	).toBe('draft-migrated');
 
-	// Now the clobber check: edit an UNRELATED field on B. `updateField()`
-	// serializes B's entire local `fields` object back to the server
-	// (ItemDetail.svelte). Pre-fix, B's local `fields.status` would still
-	// be the stale "draft" (the reload above never happened), so this PATCH
-	// would silently clobber the server's migrated "draft-migrated" back to
-	// "draft". Post-fix, B's local fields already reflect the migration, so
-	// the round-trip preserves it.
+	// Now the clobber check: edit an UNRELATED field on B. Post-BUG-2273,
+	// `updateField()` (ItemDetail.svelte) sends a single-key `fields_patch`
+	// carrying ONLY the edited field plus an `expected_updated_at` OCC token —
+	// not a full-blob replace of B's entire local `fields`. The migrated
+	// `status` is never in the request at all, so it is structurally
+	// un-clobberable: the server merges the one key under its write lock and
+	// leaves every other field (including the freshly-migrated `status`)
+	// untouched. Pre-BUG-2273 this PATCH serialized B's whole local `fields`
+	// object, so a stale local `status` could silently overwrite the migrated
+	// value — the clobber is now impossible by construction, not merely avoided
+	// by the reload above.
 	const categoryRow = pane.locator('.field-row:has(.field-label:text-is("Category"))');
 	const categoryInput = categoryRow.locator('input.field-input');
 	await expect(categoryInput).toHaveValue('pre-migration');
@@ -311,12 +315,19 @@ test('a collection migration completing after a rapid A->B pane switch refreshes
 	const patchRes = await fieldPatch;
 	expect(patchRes.ok()).toBe(true);
 	const patchBody = JSON.parse(patchRes.request().postData() ?? '{}');
-	const patchFields = JSON.parse(patchBody.fields ?? '{}');
+	// BUG-2273: the write is a single-key merge patch, not a full-blob replace —
+	// only the edited `category` travels, `status` is absent (so it can't be
+	// clobbered), and an OCC token rides along.
 	expect(
-		patchFields.status,
-		'editing an unrelated field on B must not clobber the migrated status back to the stale value',
-	).toBe('draft-migrated');
-	expect(patchFields.category).toBe('post-migration-edit');
+		patchBody.fields_patch?.category,
+		'the unrelated-field edit is sent as a single-key fields_patch',
+	).toBe('post-migration-edit');
+	expect(
+		patchBody.fields_patch?.status,
+		'the migrated status must NOT be in the patch (structurally un-clobberable)',
+	).toBeUndefined();
+	expect(patchBody.fields, 'no full fields blob is sent alongside fields_patch').toBeUndefined();
+	expect(patchBody.expected_updated_at, 'the field write is OCC-guarded').toBeTruthy();
 
 	// Belt-and-suspenders: read B back from the server and confirm neither
 	// value was clobbered by the round-trip.
