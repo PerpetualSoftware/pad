@@ -1028,6 +1028,32 @@ export class CollabProvider {
 					return;
 				}
 
+				// Durable persistence bracket (BUG-2276 residual 2). Send
+				// applier_apply_start on the SAME socket IMMEDIATELY before invoking
+				// the handler, whose onApplierRequest applies setContent
+				// SYNCHRONOUSLY (no await before the mutation) so the setContent
+				// Y.Doc update frame is emitted right after this control frame with
+				// no keystroke frame interleaving. The server uses the (apply_start →
+				// setContent frame → applier_ack) bracket to decide, from DURABLE
+				// op-log state, whether the applier's edit actually persisted vs. was
+				// dropped by a concurrent version-restore freeze — attribution that a
+				// bare op-log-advance watermark can't make (concurrent typing). The
+				// handler MUST keep setContent synchronous for the bracket to stay
+				// tight; a future await before setContent would let a keystroke frame
+				// slip into the bracket.
+				if (
+					sourceWs &&
+					sourceWs === this.ws &&
+					sourceWs.readyState === this.WebSocketImpl.OPEN
+				) {
+					sourceWs.send(
+						JSON.stringify({
+							type: 'applier_apply_start',
+							request_id: msg.request_id,
+						}),
+					);
+				}
+
 				let applied = false;
 				try {
 					applied = await this.onApplierRequest(

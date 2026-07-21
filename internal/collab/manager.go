@@ -839,11 +839,7 @@ func (m *RoomManager) getOrCreate(itemID string) *Room {
 		conns:         make(map[*websocket.Conn]*roomConn),
 		pendingAcks:   make(map[string]*pendingApplierAck),
 		onIdle:        m.markRoomGone,
-		// restorePreempt is captured by in-flight appliers and closed by a restore
-		// to preempt them (BUG-2276 residual 2); it must be non-nil from birth.
-		restorePreempt: make(chan struct{}),
 	}
-	r.restoreCond = sync.NewCond(&r.restoreMu)
 	m.rooms[itemID] = r
 	return r
 }
@@ -1065,13 +1061,13 @@ func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int6
 	room := m.rooms[itemID]
 	m.mu.Unlock()
 
-	// Restore-gate serialisation (BUG-2276 residual 2): BEFORE freezing, preempt +
-	// drain any in-flight designated-applier round-trip and block new ones, so no
-	// applier ack can race the frozen=true window below (the residual-2 clobber).
-	// beginRestore is bounded to the applier-preempt handshake, never the 30s applier
-	// timeout, and touches only the leaf restoreMu (no appendMu/room.mu held here).
-	// The deferred resolveRestore releases every parked/blocked round-trip on EVERY
-	// return path (rollback, uncertain, success), the instant this restore resolves.
+	// Restore-gate serialisation (BUG-2276 residual 2): mark a restore in progress so
+	// a NEW applier round-trip blocks in enterApplierGate until this restore resolves.
+	// The deferred resolveRestore releases every gate-blocked / finalized-and-parked
+	// round-trip on EVERY return path (rollback, uncertain, success), the instant this
+	// restore resolves. beginRestore never blocks (no drain) — in-flight round-trips
+	// are finalized by the freeze below. restoreMu is a leaf lock (no appendMu/room.mu
+	// held here).
 	if room != nil {
 		room.beginRestore()
 		defer room.resolveRestore()
@@ -1084,13 +1080,15 @@ func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int6
 	// already read a frame and is queued on appendMu will, on acquiring it, see
 	// frozen=true and drop the frame. Lock order: itemLock → appendMu → room.mu.
 	// No socket I/O happens under appendMu.
+	//
+	// freezeAndFinalizePending ALSO finalizes every in-flight designated-applier
+	// round-trip from durable op-log state, atomic with the freeze (BUG-2276
+	// residual 2): a round-trip whose setContent frame durably landed BEFORE this
+	// freeze resolves to success; one whose frame is still in flight (and will now be
+	// dropped) resolves to retry. No applier ack can race the frozen window.
 	if room != nil {
 		room.appendMu.Lock()
-		room.mu.Lock()
-		for _, rc := range room.conns {
-			rc.frozen.Store(true)
-		}
-		room.mu.Unlock()
+		room.freezeAndFinalizePending()
 	}
 
 	// The commit reads the pre-prune MAX(op-log), writes items.content=restored +

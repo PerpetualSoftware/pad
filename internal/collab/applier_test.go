@@ -334,7 +334,7 @@ func TestApplyExternalContentSendsExpiresAt(t *testing.T) {
 }
 
 // TestApplyExternalContentRejectsAckFromUnexpectedConn confirms the
-// expectedConn check in routeApplierAck. We wire two conns; the FIRST
+// expectedConn check in resolveApplierAck. We wire two conns; the FIRST
 // is the chosen applier; the SECOND tries to forge an ack for the
 // first's request. The forgery should be ignored, and the request
 // should still time out.
@@ -483,11 +483,11 @@ func TestHandleControlMessageIgnoresAckFromReadOnlyConn(t *testing.T) {
 
 	// Read-only conn: canWrite defaults to false. The conn pointer is
 	// only used for identity (pending-ack expectedConn match); no I/O
-	// happens on it because the ack is rejected before routeApplierAck.
+	// happens on it because the ack is rejected before resolveApplierAck.
 	rc := &roomConn{id: 1, conn: &websocket.Conn{}}
 
 	reqID := "req-readonly"
-	ch, err := room.registerPendingAck(reqID, rc.conn)
+	ch, err := room.registerPendingAck(reqID, rc)
 	if err != nil {
 		t.Fatalf("registerPendingAck: %v", err)
 	}
@@ -497,20 +497,19 @@ func TestHandleControlMessageIgnoresAckFromReadOnlyConn(t *testing.T) {
 
 	select {
 	case <-ch:
-		t.Fatal("applier_ack from a read-only conn must be ignored, but it signaled the pending ack")
+		t.Fatal("applier_ack from a read-only conn must be ignored, but it resolved the round-trip")
 	case <-time.After(50 * time.Millisecond):
-		// Correct: the ack was dropped before routeApplierAck.
+		// Correct: the ack was dropped before resolveApplierAck.
 	}
 }
 
-// TestHandleControlMessageIgnoresAckFromFrozenConn is the pick-then-freeze half
-// of the BUG-2264 applier fix: a WRITABLE conn that ForceRefreshRoom froze mid
-// version-restore has its inbound sync frames dropped by readLoop, so an
-// applier_ack from it would be a phantom success (ApplyExternalContent returns
-// nil, the PATCH handler skips its direct-write fallback, and the external edit
-// is silently lost while the restore prunes the op-log). canWrite=true isolates
-// the frozen gate from the read-only gate.
-func TestHandleControlMessageIgnoresAckFromFrozenConn(t *testing.T) {
+// TestApplierAckFromFrozenConnResolvesFromDurableState is the BUG-2276 residual-2
+// replacement for the old "frozen conn ack is ignored" test. A frozen conn's ack is
+// now PROCESSED, but it resolves the round-trip from DURABLE op-log state, not a
+// phantom success: if a frame in the apply bracket was frozen-dropped
+// (frozenDropSeq advanced past the apply_start baseline), the ack resolves to FALSE
+// (retry) — never a phantom success while the setContent was lost to the freeze.
+func TestApplierAckFromFrozenConnResolvesFromDurableState(t *testing.T) {
 	bus := NewMemoryOpBus()
 	defer bus.Close()
 	mgr := NewRoomManager(&fakeOpLog{}, bus)
@@ -523,19 +522,61 @@ func TestHandleControlMessageIgnoresAckFromFrozenConn(t *testing.T) {
 	rc.frozen.Store(true)
 
 	reqID := "req-frozen"
-	ch, err := room.registerPendingAck(reqID, rc.conn)
+	ch, err := room.registerPendingAck(reqID, rc)
 	if err != nil {
 		t.Fatalf("registerPendingAck: %v", err)
 	}
+
+	// Open the apply bracket (captures the baseline), then simulate the setContent
+	// frame being frozen-dropped by readLoop while this conn is frozen.
+	room.startApplierApply(reqID, rc)
+	rc.frozenDropSeq.Add(1)
 
 	payload, _ := json.Marshal(ControlMessage{Type: ControlMessageApplierAck, RequestID: reqID})
 	room.handleControlMessage(rc, payload)
 
 	select {
-	case <-ch:
-		t.Fatal("applier_ack from a frozen conn must be ignored, but it signaled the pending ack")
+	case success := <-ch:
+		if success {
+			t.Fatal("frozen-dropped setContent must resolve to FALSE (retry), not a phantom success")
+		}
 	case <-time.After(50 * time.Millisecond):
-		// Correct: the ack was dropped before routeApplierAck.
+		t.Fatal("frozen conn ack must resolve the round-trip from durable state, but nothing was delivered")
+	}
+}
+
+// TestApplierAckSucceedsWhenFramePersisted confirms the positive durable case: a
+// setContent frame that persisted (no frozen drop in the bracket) resolves the ack
+// to SUCCESS — including the no-op-diff case where setContent persists nothing.
+func TestApplierAckSucceedsWhenFramePersisted(t *testing.T) {
+	bus := NewMemoryOpBus()
+	defer bus.Close()
+	mgr := NewRoomManager(&fakeOpLog{}, bus)
+	defer mgr.Close()
+
+	room := mgr.getOrCreate("item-a")
+	rc := &roomConn{id: 1, conn: &websocket.Conn{}}
+	rc.canWrite.Store(true)
+
+	reqID := "req-ok"
+	ch, err := room.registerPendingAck(reqID, rc)
+	if err != nil {
+		t.Fatalf("registerPendingAck: %v", err)
+	}
+	room.startApplierApply(reqID, rc)
+	// setContent persisted a frame (op-log id 7); no frozen drop.
+	rc.lastPersistedOpID.Store(7)
+
+	payload, _ := json.Marshal(ControlMessage{Type: ControlMessageApplierAck, RequestID: reqID})
+	room.handleControlMessage(rc, payload)
+
+	select {
+	case success := <-ch:
+		if !success {
+			t.Fatal("a persisted setContent (no frozen drop) must resolve the ack to success")
+		}
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("ack must resolve the round-trip, but nothing was delivered")
 	}
 }
 
