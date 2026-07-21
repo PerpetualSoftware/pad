@@ -17,9 +17,24 @@
 		 * byte-identical for existing callers.
 		 */
 		frozen?: boolean;
+		/**
+		 * BUG-2271: flush the initiating client's LIVE collab editor markdown into
+		 * items.content BEFORE the restore POST runs. The restore's server-side
+		 * undo-point ("Restored from…") is captured from the CURRENT persisted
+		 * items.content inside the restore tx; a live collab editor may hold edits
+		 * still sitting in the Y.Doc/op-log within the ~5s flush-debounce window
+		 * (not yet PATCHed). Without this flush those edits aren't captured in the
+		 * undo-point and are lost after the restore wipes the op-log + reseeds peers
+		 * (BUG-2264). The collab server is a dumb relay with no Yjs decoder, so the
+		 * ONLY place that can render the live doc to markdown is the initiating
+		 * client — hence a client-side flush here. ItemDetail owns the flusher and
+		 * threads this down through ItemTimeline; leave it unset (no-op) for
+		 * non-collab / other callers, who are then byte-identical to before.
+		 */
+		flushBeforeRestore?: () => Promise<void>;
 	}
 
-	let { version, wsSlug, itemSlug, currentContent, onRestore, frozen = false }: Props = $props();
+	let { version, wsSlug, itemSlug, currentContent, onRestore, frozen = false, flushBeforeRestore }: Props = $props();
 
 	let expanded = $state(false);
 	let confirming = $state(false);
@@ -87,6 +102,19 @@
 		const reqWs = wsSlug;
 		restoring = true;
 		try {
+			// BUG-2271: flush the initiating client's live collab editor into
+			// items.content FIRST, so the restore's undo-point (captured from
+			// items.content server-side, inside the restore tx) reflects in-flight
+			// edits not yet PATCHed. Best-effort: a flush failure must NOT block a
+			// user-confirmed restore, so swallow and proceed. The flush is
+			// self-routing (it PATCHes the item it was minted against), so no
+			// cross-write is possible even if the pane switched mid-await; the
+			// restore below re-fences on reqSlug/reqWs as before.
+			try {
+				await flushBeforeRestore?.();
+			} catch {
+				// Swallow — proceed with the restore regardless.
+			}
 			const updatedItem = await api.versions.restore(reqWs, reqSlug, version.id);
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			confirming = false;

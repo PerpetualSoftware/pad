@@ -3523,6 +3523,89 @@
 		item = withInflightTags(updatedItem);
 	}
 
+	// BUG-2271: flush the LIVE collab editor's markdown into items.content BEFORE
+	// a version restore issues its POST. The restore's server-side undo-point
+	// ("Restored from…") is captured from the CURRENT persisted items.content
+	// inside the restore tx; a live collab editor may hold edits still sitting in
+	// the Y.Doc/op-log within the ~5s flush-debounce window (not yet PATCHed).
+	// Those edits would be lost after the restore prunes the op-log + reseeds all
+	// peers (BUG-2264). The collab server is a dumb relay with no Yjs decoder, so
+	// it CANNOT render the live Y.Doc to markdown — the only place that can is
+	// this initiating client. So we drain the live editor into items.content here
+	// (via the same `?source=collab-snapshot` flush the idle timer uses); with no
+	// restore boundary set yet, the flush passes and the undo-point then reflects
+	// the true pre-restore live state. Threaded down to TimelineVersionCard, which
+	// awaits it immediately before `api.versions.restore`.
+	//
+	// RESIDUAL (accepted, do NOT try to close): only THIS client's editor is
+	// flushed. An edit a peer typed but that hasn't yet synced over the WS to this
+	// initiator (sub-second window) still isn't captured — this narrows BUG-2271
+	// from the ~5s debounce window to the sub-second sync window, the accepted
+	// trade of the client-side approach (the relay can't decode the Y.Doc).
+	async function flushCollabBeforeRestore(): Promise<void> {
+		// No LIVE collab editor to drain: non-collab item, raw mode (provider
+		// destroyed), a viewer (no provider/editor), or the editor isn't mounted.
+		// In every such case items.content is already canonical, so no-op.
+		if (!collabProvider || !editorInstance || editorInstance.isDestroyed || !item) return;
+		// Flush against the context the connected provider was minted with (captured
+		// at $effect-body time, NOT live route state), so the PATCH is self-routing
+		// and can never cross-write another item. Switch-safety: activeCollabContext
+		// and the live editor are minted together for the shown item and reset
+		// together on a no-{#key} pane switch, so require they still agree with the
+		// shown item before flushing (mirrors the rich→raw toggle fences —
+		// TASK-2112 / TASK-2172). A stale ctx is skipped rather than mis-flushed.
+		const ctx = activeCollabContext;
+		if (!ctx || ctx.itemId !== item.id) return;
+		// Read the live editor's markdown; fall back to the per-edit shadow if the
+		// live read throws (mirrors the flusher's readEditorMarkdown injection).
+		let md: string | null = null;
+		try {
+			const raw = (editorInstance.storage as any).markdown?.getMarkdown?.();
+			if (typeof raw === 'string') md = raw;
+		} catch {
+			// Live read failed — fall through to the shadow.
+		}
+		if (md == null) md = lastEditorMarkdown;
+		if (md == null) return;
+		// keepalive=false — this is a foreground flush the user is waiting on (the
+		// restore blocks on it). The flusher's own dedupe short-circuits to a no-op
+		// when there are no unflushed edits, so a clean view costs at most one
+		// deduped call. We await so items.content is updated before the restore
+		// captures the undo-point. The flush ctx is self-routing (PATCHes ctx's
+		// item), so a same-item provider replacement during the await can't
+		// cross-write, and the only post-await action is an informational toast —
+		// switch-safe regardless of where the pane is now.
+		const result = await collabFlusher.flush(ctx, md, false);
+		// Non-silent failure (Codex P1 on #994). Warn ONLY on 'failed' — an
+		// attempted, non-deduped snapshot PATCH the server rejected (e.g. the
+		// restore-boundary 409 in the narrow post-reconnect cursor-0 window; see
+		// the residual note below), so the live edit did NOT land in items.content
+		// and the undo-point won't capture it. The other outcomes are NOT losses:
+		// 'flushed' landed it; 'deduped' means the server already has this exact
+		// markdown; 'skipped' is force-refresh recovery which either attempted no
+		// PATCH (nothing to lose) OR the PATCH already succeeded before
+		// forceRefreshInFlight flipped (content IS in items.content + the
+		// undo-point) — so warning on 'skipped' would mis-fire on ordinary
+		// restores. The restore itself is never blocked (the caller proceeds).
+		if (result === 'failed') {
+			toastStore.show(
+				'Your most recent edits may not be included in the restore point.',
+				'error',
+			);
+		}
+		// RESIDUAL (accepted): in the narrow window where the provider has just
+		// reconnected and the editor is exposed BEFORE the new connection's
+		// op_log_cursor anchor arrives (cursor still 0), a flush against an item
+		// with a prior DURABLE restore boundary is rejected (cursor < boundary →
+		// 409) and lands as 'failed' above — the user is warned rather than
+		// silently losing the edit. We deliberately do NOT pre-wait for the anchor:
+		// the anchor flag is lifetime-scoped (stays true across reconnects), so a
+		// wait wouldn't actually gate the NEW connection, and per-connection
+		// scoping would entangle the delicate TASK-1319 pre-anchor buffering /
+		// force-refresh machinery. The warn-only path is the proportionate outcome
+		// for this narrow case.
+	}
+
 	async function handleDelete() {
 		if (!item || !canEdit) return;
 		// Capture identity before the await. The DELETE targets `targetItem.id`
@@ -5011,6 +5094,7 @@
 				currentContent={item.content ?? ''}
 				items={localIndex.getAll(wsSlug)}
 				onRestore={handleVersionRestore}
+				flushBeforeRestore={flushCollabBeforeRestore}
 				itemId={item.id}
 				collectionId={item.collection_id}
 				frozen={false}
