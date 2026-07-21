@@ -5,10 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// CollectionUpdateConflictError is returned by UpdateCollection when the
+// caller supplied CollectionUpdate.ExpectedUpdatedAt and it no longer matches
+// the collection's current updated_at — another writer changed the row first
+// (BUG-2265, optimistic concurrency; mirrors items.go's UpdateConflictError
+// for the item path from IDEA-1480/TASK-2022). The check runs under the same
+// workspace write lock as the mutation, so a matching timestamp is a genuine
+// guarantee that nothing slipped in between. The handler maps this to the same
+// pad-structured-error/v1 conflict envelope (HTTP 409, code "update_conflict")
+// the item path emits.
+type CollectionUpdateConflictError struct {
+	CollectionID      string
+	ExpectedUpdatedAt string
+	ActualUpdatedAt   time.Time
+}
+
+func (e *CollectionUpdateConflictError) Error() string {
+	return fmt.Sprintf(
+		"collection %s was modified by another writer (expected updated_at %s, actual %s)",
+		e.CollectionID, e.ExpectedUpdatedAt, e.ActualUpdatedAt.UTC().Format(time.RFC3339),
+	)
+}
 
 func (s *Store) CreateCollection(workspaceID string, input models.CollectionCreate) (*models.Collection, error) {
 	id := newID()
@@ -306,6 +329,63 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 
 	args = append(args, id)
 	query := fmt.Sprintf("UPDATE collections SET %s WHERE id = ?", strings.Join(sets, ", "))
+
+	// Optimistic-concurrency guard (BUG-2265). When the caller round-trips the
+	// updated_at it last read, do the compare-and-set ATOMICALLY under the
+	// workspace write lock so two clients editing the same collection's
+	// settings can't clobber each other (the full-page pane host's master +
+	// pane each hold an independent Collection snapshot). Mirrors the item
+	// path (items.go updateItemWithParentLinkOnce): re-read the row inside the
+	// tx after taking the lock, compare with time.Equal, then UPDATE. On
+	// SQLite the db-wide BEGIN IMMEDIATE write lock (set via _txlock=immediate)
+	// already serializes writers; on Postgres acquireWorkspaceSeqLock takes the
+	// per-workspace advisory xact lock. Callers that don't send the token keep
+	// the legacy single-statement last-write-wins path below unchanged.
+	if input.ExpectedUpdatedAt != "" {
+		expected, perr := time.Parse(time.RFC3339, input.ExpectedUpdatedAt)
+		if perr != nil {
+			return nil, fmt.Errorf("invalid expected_updated_at %q: %w", input.ExpectedUpdatedAt, perr)
+		}
+
+		tx, err := s.db.Begin()
+		if err != nil {
+			return nil, err
+		}
+		defer tx.Rollback()
+
+		if err := s.acquireWorkspaceSeqLock(tx, existing.WorkspaceID); err != nil {
+			return nil, err
+		}
+
+		// Re-read updated_at UNDER the lock — the pre-tx GetCollection above
+		// ran before the lock, so a concurrent writer could have superseded it.
+		var currentUpdatedAt string
+		rerr := tx.QueryRow(s.q("SELECT updated_at FROM collections WHERE id = ? AND deleted_at IS NULL"), id).Scan(&currentUpdatedAt)
+		if rerr == sql.ErrNoRows {
+			// Deleted between the pre-tx read and here — treat as not-found.
+			return nil, nil
+		}
+		if rerr != nil {
+			return nil, fmt.Errorf("re-read collection under lock: %w", rerr)
+		}
+		if actual := parseTime(currentUpdatedAt); !actual.Equal(expected) {
+			return nil, &CollectionUpdateConflictError{
+				CollectionID:      id,
+				ExpectedUpdatedAt: input.ExpectedUpdatedAt,
+				ActualUpdatedAt:   actual,
+			}
+		}
+
+		if _, err := tx.Exec(s.q(query), args...); err != nil {
+			return nil, fmt.Errorf("update collection: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit collection update: %w", err)
+		}
+
+		return s.GetCollection(id)
+	}
+
 	_, err = s.db.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("update collection: %w", err)

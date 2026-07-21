@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 
@@ -113,6 +114,128 @@ func TestUpdateCollectionCoercesEmptyStringSettings(t *testing.T) {
 	}
 	if updated.Settings != "{}" {
 		t.Errorf("expected UpdateCollection to coerce empty-string settings to %q, got %q", "{}", updated.Settings)
+	}
+}
+
+// TestUpdateCollectionExpectedUpdatedAtMatch: a matching optimistic-concurrency
+// token (BUG-2265) lets the settings write through unchanged. Mirrors the item
+// path's TestUpdateItemExpectedUpdatedAtMatch.
+func TestUpdateCollectionExpectedUpdatedAtMatch(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollMatch")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Things",
+		Slug: "things-occ-match",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+
+	expected := created.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+	settings := `{"quick_actions":[{"label":"Ship","prompt":"/pad ship","scope":"item"}]}`
+	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings:          &settings,
+		ExpectedUpdatedAt: expected,
+	})
+	if err != nil {
+		t.Fatalf("UpdateCollection with matching expected_updated_at should succeed: %v", err)
+	}
+	if updated == nil {
+		t.Fatalf("UpdateCollection returned nil")
+	}
+	// Compare semantically — Postgres re-serializes the JSONB column (spaces /
+	// key order differ from the literal we sent), so an exact-string check
+	// would be a false failure on PG while passing on SQLite.
+	var got models.CollectionSettings
+	if err := json.Unmarshal([]byte(updated.Settings), &got); err != nil {
+		t.Fatalf("parse updated settings %q: %v", updated.Settings, err)
+	}
+	if len(got.QuickActions) != 1 || got.QuickActions[0].Label != "Ship" {
+		t.Errorf("expected the Ship quick action to be written, got %q", updated.Settings)
+	}
+}
+
+// TestUpdateCollectionExpectedUpdatedAtConflict: a stale token is rejected with
+// *CollectionUpdateConflictError and the write does NOT land — the BUG-2265
+// last-write-wins fix. Mirrors TestUpdateItemExpectedUpdatedAtConflict.
+func TestUpdateCollectionExpectedUpdatedAtConflict(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollConflict")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:     "Things",
+		Slug:     "things-occ-conflict",
+		Settings: `{"layout":"balanced"}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+
+	// A timestamp that definitely doesn't match the row's updated_at.
+	stale := "2000-01-01T00:00:00Z"
+	newSettings := `{"quick_actions":[{"label":"X","prompt":"y","scope":"item"}]}`
+	_, err = s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings:          &newSettings,
+		ExpectedUpdatedAt: stale,
+	})
+	if err == nil {
+		t.Fatal("expected CollectionUpdateConflictError, got nil")
+	}
+	var conflict *CollectionUpdateConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("expected *CollectionUpdateConflictError, got %T: %v", err, err)
+	}
+	if conflict.ExpectedUpdatedAt != stale {
+		t.Errorf("conflict.ExpectedUpdatedAt: got %q want %q", conflict.ExpectedUpdatedAt, stale)
+	}
+	if conflict.ActualUpdatedAt.IsZero() {
+		t.Error("conflict.ActualUpdatedAt should carry the row's real timestamp")
+	}
+
+	// The write must NOT have landed — settings unchanged (semantic compare;
+	// see the match test for why exact-string fails on Postgres JSONB).
+	reread, err := s.GetCollection(created.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+	var got models.CollectionSettings
+	if err := json.Unmarshal([]byte(reread.Settings), &got); err != nil {
+		t.Fatalf("parse reread settings %q: %v", reread.Settings, err)
+	}
+	if got.Layout != "balanced" || len(got.QuickActions) != 0 {
+		t.Errorf("settings should be unchanged after a rejected conflict, got %q", reread.Settings)
+	}
+}
+
+// TestUpdateCollectionNoTokenSkipsConcurrencyCheck: omitting the token keeps
+// the legacy last-write-wins path — an unconditional write that always lands
+// (CLI / MCP / API callers that don't opt in). BUG-2265 is additive.
+func TestUpdateCollectionNoTokenSkipsConcurrencyCheck(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "OCCCollNoToken")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Things",
+		Slug: "things-occ-notoken",
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection error: %v", err)
+	}
+
+	settings := `{"layout":"content-primary"}`
+	updated, err := s.UpdateCollection(created.ID, models.CollectionUpdate{
+		Settings: &settings, // no ExpectedUpdatedAt
+	})
+	if err != nil {
+		t.Fatalf("UpdateCollection without token should succeed: %v", err)
+	}
+	var got models.CollectionSettings
+	if err := json.Unmarshal([]byte(updated.Settings), &got); err != nil {
+		t.Fatalf("parse updated settings %q: %v", updated.Settings, err)
+	}
+	if got.Layout != "content-primary" {
+		t.Errorf("settings not written: got %q", updated.Settings)
 	}
 }
 
