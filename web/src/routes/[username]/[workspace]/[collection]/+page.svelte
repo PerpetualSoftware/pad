@@ -6,6 +6,7 @@
 	import type { BulkItemsRequest, Collection, Item, PaneTarget, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
+	import { resolveRenameNavTarget } from '$lib/collections/renameNav';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
@@ -863,26 +864,30 @@
 				// collectionStore so the sidebar/pickers point at the live slug too
 				// (they'd otherwise keep the dead slug and 404 on click).
 				if (event.new_slug) {
-					// BUG-2272 P2: reject a rename while `collection` is a STALE
-					// snapshot from a PREVIOUS route (a cross-collection load window).
-					// `collSlug` flips synchronously on navigation but `loadCollection`
-					// is async, so the id gate above can still pass for the previous
-					// collection — e.g. X/B → Y/A where Y reused X's freed slug A:
-					// `collection` is briefly still X, `event.collection_id` matches X,
-					// and `collSlug === A` matches, firing goto(.../B) and hijacking the
-					// Y navigation. Require the loaded snapshot to identify the CURRENT
-					// route (`collection.slug === collSlug`) before acting. A legit
-					// rename still passes: at event time we're still on the old slug, so
-					// the snapshot matches. Chained replay bursts are synchronous
-					// (pre-goto-commit, `collSlug` unchanged), so both events still see
-					// the matching pre-burst snapshot.
-					if (collection.slug !== collSlug) return;
-					const believed = renameNav ?? collSlug;
-					if (event.collection === believed && event.new_slug !== believed) {
-						renameNav = event.new_slug;
+					// BUG-2272 P2: resolveRenameNavTarget balances two concerns —
+					// (1) reject a rename computed against a STALE snapshot from the
+					// PREVIOUS collection (the reused-slug X/B → Y/A window, where the
+					// stale id gate would otherwise fire a goto that hijacks the Y
+					// navigation), and (2) STILL apply a chained continuation on THIS
+					// route during the goto→reload window (a live A→B commits, then B→C
+					// arrives while loadCollection(B) is in flight and the snapshot is
+					// briefly stale — dropping it would strand us on dead slug B).
+					// `renameNav === collSlug` distinguishes them: it holds only in the
+					// continuation window, never in the reused-slug case (renameNav is
+					// reset on cross-collection nav, ~line 834). See renameNav.ts +
+					// renameNav.test.ts for the deterministic scenarios.
+					const target = resolveRenameNavTarget({
+						eventOldSlug: event.collection,
+						eventNewSlug: event.new_slug,
+						loadedCollectionSlug: collection.slug,
+						routeSlug: collSlug,
+						renameNav,
+					});
+					if (target) {
+						renameNav = target;
 						void collectionStore.loadCollections(ws);
 						const search = typeof window !== 'undefined' ? window.location.search : '';
-						void goto(`/${username}/${wsSlug}/${event.new_slug}${search}`);
+						void goto(`/${username}/${wsSlug}/${target}${search}`);
 					}
 					return;
 				}
