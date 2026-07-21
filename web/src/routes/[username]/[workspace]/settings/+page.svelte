@@ -95,11 +95,15 @@
 	// rapid events can't resolve out of order.
 	let collectionsRefreshSeq = 0;
 	async function refreshCollectionsOnEvent() {
-		if (!wsSlug) return;
+		const ws = wsSlug;
+		if (!ws) return;
 		const seq = ++collectionsRefreshSeq;
 		try {
-			const fresh = await api.collections.list(wsSlug);
-			if (seq !== collectionsRefreshSeq) return;
+			const fresh = await api.collections.list(ws);
+			// Drop if a newer refresh superseded us OR the workspace changed
+			// while fetching — a slow refresh for workspace A must not overwrite
+			// workspace B's freshly loaded list (Codex round 4).
+			if (seq !== collectionsRefreshSeq || ws !== wsSlug) return;
 			collections = fresh;
 		} catch {
 			// Best-effort; a stale token just yields a recoverable 409.

@@ -1601,44 +1601,37 @@
 
 	async function handleGroupReorder(newOrder: string[]) {
 		if (!wsSlug || !collSlug || !collection) return;
+		// Capture identity + base snapshot BEFORE the await (no {#key} on this
+		// route — a switch mid-await must not write the wrong collection).
+		const ws = wsSlug;
+		const slug = collSlug;
+		const base = collection;
 
-		// Apply `newOrder` to the grouped field's options ON TOP OF a base
-		// schema. Re-derived from a FRESH base on a 409 retry so the reorder
-		// lands on the latest schema instead of clobbering a concurrent
-		// collection edit with our stale snapshot (BUG-2265 — this is a
-		// full-schema write, the same last-write-wins class the modal /
-		// quick-actions paths were hardened against). Returns null when the
-		// grouped field no longer exists in the base.
-		const applyOrder = (base: Collection): string | null => {
-			const s = parseSchema(base);
-			const idx = s.fields.findIndex((f) => f.key === groupField);
-			if (idx === -1) return null;
-			s.fields[idx].options = newOrder;
-			return JSON.stringify(s);
-		};
+		const s = parseSchema(base);
+		const idx = s.fields.findIndex((f) => f.key === groupField);
+		if (idx === -1) return;
+		s.fields[idx].options = newOrder;
+		const schemaStr = JSON.stringify(s);
 
 		try {
-			const schemaStr = applyOrder(collection);
-			if (schemaStr === null) return;
-			let updated: Collection;
-			try {
-				updated = await api.collections.update(wsSlug, collSlug, {
-					schema: schemaStr,
-					expected_updated_at: collection.updated_at
-				});
-			} catch (err) {
-				if (!isUpdateConflictError(err)) throw err;
-				// Refetch, re-apply the reorder onto the fresh schema, retry once.
-				const fresh = await api.collections.get(wsSlug, collSlug);
-				const retryStr = applyOrder(fresh);
-				if (retryStr === null) return;
-				updated = await api.collections.update(wsSlug, fresh.slug, {
-					schema: retryStr,
-					expected_updated_at: fresh.updated_at
-				});
-			}
+			const updated = await api.collections.update(ws, slug, {
+				schema: schemaStr,
+				// BUG-2265: reject a stale full-schema write rather than clobber
+				// a concurrent collection edit.
+				expected_updated_at: base.updated_at
+			});
+			if (ws !== wsSlug || slug !== collSlug) return;
 			collection = updated;
-		} catch {
+		} catch (err) {
+			if (isUpdateConflictError(err)) {
+				// The schema changed under us. Replaying this stale option order
+				// onto the fresh field would silently drop concurrent option
+				// add/remove/rename, so ABORT — reordering is cosmetic and never
+				// worth clobbering a real schema edit. `collection` refreshes via
+				// the collection_updated broadcast; the user can re-drag.
+				toastStore.show('Columns changed elsewhere — please reorder again', 'error');
+				return;
+			}
 			toastStore.show('Failed to save column order', 'error');
 		}
 	}

@@ -138,6 +138,13 @@
 		const prompt = newPrompt.trim();
 		if (!label || !prompt || saving) return;
 		saving = true;
+		// Capture workspace + collection identity BEFORE any await. This
+		// component is reused across items/collections without a guaranteed
+		// remount, so reading live props after the await could fetch/update the
+		// WRONG collection on a mid-save navigation (BUG-2265 switch-safety).
+		const ws = wsSlug;
+		const baseCollection = collection;
+		const slug = baseCollection.slug;
 		try {
 			const icon = newIcon.trim();
 			const newAction: QuickAction = {
@@ -164,17 +171,18 @@
 
 			let updated: Collection;
 			try {
-				updated = await api.collections.update(wsSlug, collection.slug, {
-					settings: appendOnto(collection),
-					expected_updated_at: collection.updated_at
+				updated = await api.collections.update(ws, slug, {
+					settings: appendOnto(baseCollection),
+					expected_updated_at: baseCollection.updated_at
 				});
 			} catch (err) {
 				if (!isUpdateConflictError(err)) throw err;
 				// Someone changed the collection between our read and write.
-				// Refetch the current collection, re-append onto its fresh
-				// settings, and retry ONCE. Only a second conflict surfaces.
-				const fresh = await api.collections.get(wsSlug, collection.slug);
-				updated = await api.collections.update(wsSlug, fresh.slug, {
+				// Refetch the SAME collection (captured slug — not live props),
+				// re-append onto its fresh settings, and retry ONCE. Only a
+				// second conflict surfaces.
+				const fresh = await api.collections.get(ws, slug);
+				updated = await api.collections.update(ws, fresh.slug, {
 					settings: appendOnto(fresh),
 					expected_updated_at: fresh.updated_at
 				});
