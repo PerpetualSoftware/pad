@@ -327,6 +327,24 @@
 				? renameOverride.to
 				: collSlug,
 	);
+	// BUG-2272 P2: the override is a SPENT-ONCE bridge, not a dormant persistent
+	// pair — null it the instant the route prop leaves the pre-rename slug (the
+	// goto it triggered committed, so `collSlug === to`, OR a real navigation
+	// moved on). Clearing it — rather than leaving it dormant behind the guards —
+	// closes a TRANSIENT: after X/B settled, an X/B → Y/A navigation (Y reusing
+	// X's freed slug A) sets `collSlug === A` synchronously while Y's collection
+	// fetch is still async, so `collection` is briefly the stale X snapshot and
+	// BOTH guards (`from === collSlug` AND `collectionId === collection.id`) would
+	// pass again, misdirecting to B until Y loads. A cleared override can't
+	// reactivate. The legit window still holds: the rename handler sets the
+	// override while `collSlug` is still `from`, so this keeps it until the goto
+	// commits; chained A→B→C stays intact (the burst is synchronous, `collSlug`
+	// unchanged until the final goto commits).
+	$effect(() => {
+		if (renameOverride && collSlug !== renameOverride.from) {
+			renameOverride = null;
+		}
+	});
 
 	// ── Scroll position restoration readiness (BUG-1425) ───────────────
 	// The route wrapper (`[slug]/+page.svelte`) owns `createScrollRestoration`

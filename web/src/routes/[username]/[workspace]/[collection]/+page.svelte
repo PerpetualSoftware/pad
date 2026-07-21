@@ -863,6 +863,20 @@
 				// collectionStore so the sidebar/pickers point at the live slug too
 				// (they'd otherwise keep the dead slug and 404 on click).
 				if (event.new_slug) {
+					// BUG-2272 P2: reject a rename while `collection` is a STALE
+					// snapshot from a PREVIOUS route (a cross-collection load window).
+					// `collSlug` flips synchronously on navigation but `loadCollection`
+					// is async, so the id gate above can still pass for the previous
+					// collection — e.g. X/B → Y/A where Y reused X's freed slug A:
+					// `collection` is briefly still X, `event.collection_id` matches X,
+					// and `collSlug === A` matches, firing goto(.../B) and hijacking the
+					// Y navigation. Require the loaded snapshot to identify the CURRENT
+					// route (`collection.slug === collSlug`) before acting. A legit
+					// rename still passes: at event time we're still on the old slug, so
+					// the snapshot matches. Chained replay bursts are synchronous
+					// (pre-goto-commit, `collSlug` unchanged), so both events still see
+					// the matching pre-burst snapshot.
+					if (collection.slug !== collSlug) return;
 					const believed = renameNav ?? collSlug;
 					if (event.collection === believed && event.new_slug !== believed) {
 						renameNav = event.new_slug;
