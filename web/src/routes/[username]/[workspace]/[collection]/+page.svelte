@@ -831,6 +831,15 @@
 			// so short-circuit before the item-delta path below.
 			if (event.type === 'collection_updated') {
 				if (event.collection !== coll) return;
+				// Rename (Codex P2): this route's URL slug is now dead. Re-target
+				// to the new slug — preserving the query string (open pane) — so
+				// the next fetch/action doesn't 404. Mirrors the originating
+				// client's rename navigation.
+				if (event.new_slug && event.new_slug !== coll) {
+					const search = typeof window !== 'undefined' ? window.location.search : '';
+					void goto(`/${username}/${wsSlug}/${event.new_slug}${search}`);
+					return;
+				}
 				const refreshSeq = ++collectionRefreshSeq;
 				const seq = loadSeq;
 				try {
@@ -1627,8 +1636,15 @@
 				// The schema changed under us. Replaying this stale option order
 				// onto the fresh field would silently drop concurrent option
 				// add/remove/rename, so ABORT — reordering is cosmetic and never
-				// worth clobbering a real schema edit. `collection` refreshes via
-				// the collection_updated broadcast; the user can re-drag.
+				// worth clobbering a real schema edit. REFETCH here (don't rely on
+				// the SSE broadcast, which may be missed / mid-reconnect) so the
+				// token reseeds and the next re-drag doesn't 409 forever.
+				try {
+					const fresh = await api.collections.get(ws, slug);
+					if (ws === wsSlug && slug === collSlug) collection = fresh;
+				} catch {
+					// Best-effort reseed.
+				}
 				toastStore.show('Columns changed elsewhere — please reorder again', 'error');
 				return;
 			}

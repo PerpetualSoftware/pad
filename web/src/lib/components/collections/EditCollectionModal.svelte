@@ -79,12 +79,13 @@
 			return;
 		}
 		archiving = true;
-		// Synchronous capture (see the Props.onupdated doc comment) — read
-		// BEFORE the await, not after.
-		const editedCollectionId = collection.id;
-		const editedCollectionSlug = collection.slug;
-		const editedCollectionName = collection.name;
-		const editedWsSlug = wsSlug;
+		// Target the SEEDED collection identity, NOT the live props — the props
+		// may now identify a different collection while this form still shows
+		// the seeded one, and archive is destructive (Codex switch-safety).
+		const editedCollectionId = seededCollectionId;
+		const editedCollectionSlug = seededCollectionSlug;
+		const editedCollectionName = seededCollectionName;
+		const editedWsSlug = seededWsSlug;
 		try {
 			await api.collections.delete(editedWsSlug, editedCollectionSlug);
 			toastStore.show(`Archived "${editedCollectionName}"`, 'success');
@@ -116,6 +117,18 @@
 	// of silently overwriting their change; on 409 we surface a
 	// non-destructive "reload" message and keep the user's edits intact.
 	let expectedUpdatedAt = $state('');
+
+	// Target-collection IDENTITY captured when the form was SEEDED (Codex
+	// switch-safety). SvelteKit reuses this modal's host route, so the
+	// `collection`/`wsSlug` PROPS can come to identify a DIFFERENT collection
+	// while collection A's form is still on screen. handleSave/handleArchive
+	// MUST target the collection the form was seeded from — never the live
+	// props — or a save overwrites, and an archive DELETES, the wrong
+	// collection. The seed effect re-seeds when the identity changes.
+	let seededCollectionId = $state('');
+	let seededCollectionSlug = $state('');
+	let seededCollectionName = $state('');
+	let seededWsSlug = $state('');
 
 	// ── Field editing state ──────────────────────────────────────────────────
 	// EditableField shape lives in `./field-editor-types.ts` so FieldEditor
@@ -215,17 +228,23 @@
 
 	// ── Sync from collection when modal opens ────────────────────────────────
 
-	// Seed the form ONCE per open transition (open false→true), not on every
-	// `collection` reassignment. BUG-2265's sibling broadcast can refresh the
-	// parent's `collection` prop while this modal is open mid-edit; without
-	// this edge-gate the effect would re-run and wipe the user's in-progress
-	// edits (and reset the captured optimistic-concurrency token). `wasOpen`
-	// is a plain (non-reactive) latch — the effect still depends on `open` and
-	// `collection`, but only re-seeds on the rising edge of `open`.
+	// Seed the form once per open transition (open false→true) OR when the
+	// target collection IDENTITY changes while open (Codex switch-safety —
+	// navigation can swap the `collection` prop to a different collection). A
+	// same-identity `collection` reassignment (BUG-2265's sibling broadcast
+	// refreshing settings/updated_at) must NOT re-seed, or it would wipe the
+	// user's in-progress edits — so gate on the id, not any change. `wasOpen`
+	// is a plain (non-reactive) latch.
 	let wasOpen = false;
 
 	$effect(() => {
-		if (open && !wasOpen && collection) {
+		if (open && collection && (!wasOpen || collection.id !== seededCollectionId)) {
+			// Capture the target identity the form is being seeded FROM, so
+			// handleSave/handleArchive act on it rather than the live props.
+			seededCollectionId = collection.id;
+			seededCollectionSlug = collection.slug;
+			seededCollectionName = collection.name;
+			seededWsSlug = wsSlug;
 			expectedUpdatedAt = collection.updated_at;
 			name = collection.name;
 			selectedIcon = collection.icon || '';
@@ -403,11 +422,13 @@
 		if (!name.trim() || saving || hasNewFieldBlockingErrors) return;
 		saving = true;
 		error = '';
-		// Synchronous capture (see the Props.onupdated doc comment) — read
-		// BEFORE the await, not after.
-		const editedCollectionId = collection.id;
-		const editedCollectionSlug = collection.slug;
-		const editedWsSlug = wsSlug;
+		// Target the SEEDED collection identity, NOT the live props — the form
+		// data and expectedUpdatedAt below were seeded from that collection, so
+		// the write must land on it even if the props now identify a different
+		// collection (Codex switch-safety). Matches the captured token.
+		const editedCollectionId = seededCollectionId;
+		const editedCollectionSlug = seededCollectionSlug;
+		const editedWsSlug = seededWsSlug;
 		try {
 			// Build existing fields back into FieldDef[]
 			const updatedExisting: FieldDef[] = existingFields.map((f) => {

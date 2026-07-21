@@ -9,6 +9,9 @@ export interface ItemEvent {
 	item_id: string;
 	title: string;
 	collection: string;
+	// On a collection_updated RENAME, the collection's new slug (the event is
+	// routed by the old slug). Absent for non-rename updates. BUG-2265.
+	new_slug?: string;
 	actor: string;
 	actor_name?: string;
 	source: string;

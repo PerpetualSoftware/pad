@@ -786,10 +786,14 @@
 				const snap = collection;
 				if (!snap || event.collection !== snap.slug) return;
 				const slug = snap.slug;
+				// On a rename, refetch by the NEW slug (the old one is dead) so
+				// this pane's collection reference — used to build quick-action /
+				// edit writes — stays valid (Codex P2).
+				const targetSlug = event.new_slug || slug;
 				const gen = loadGeneration;
 				const refreshGen = ++collectionRefreshGen;
 				try {
-					const fresh = await api.collections.get(wsSlug, slug);
+					const fresh = await api.collections.get(wsSlug, targetSlug);
 					// Persistent pane host has no {#key} remount — fence the
 					// write against a switch during the fetch (PLAN-2105
 					// discipline): drop if a newer refresh superseded us, a

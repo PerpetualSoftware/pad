@@ -187,6 +187,13 @@
 					expected_updated_at: fresh.updated_at
 				});
 			}
+			// Only propagate the result if this component still represents the
+			// SAME collection it started with. On a reused route (no guaranteed
+			// remount) the live `collection`/`wsSlug` props may now identify a
+			// DIFFERENT collection, and `oncollectionupdated` is the live
+			// (navigated) page's callback — feeding it our old response would
+			// assign stale data to the wrong page (Codex switch-safety).
+			if (wsSlug !== ws || collection?.slug !== slug) return;
 			toastStore.show('Saved', 'success');
 			oncollectionupdated?.(updated);
 			resetCreateForm();
