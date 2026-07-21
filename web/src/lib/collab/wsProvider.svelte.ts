@@ -258,21 +258,6 @@ export class CollabProvider {
 	lastOpLogID = $state(0);
 
 	/**
-	 * Public read of `cursorAnchored` (below): true once the server has
-	 * delivered any op_log_cursor control frame this provider's lifetime, i.e.
-	 * the op-log cursor is anchored so a collab-snapshot flush will carry a
-	 * cursor the server can evaluate against the restore boundary. Read by the
-	 * pre-restore flush (BUG-2271 / Codex P1) to avoid flushing in the
-	 * post-reconnect, pre-anchor window where the cursor is still 0 and a durable
-	 * restore boundary would reject the PATCH. Non-reactive (the backing field
-	 * flips inside an async control-frame handler) — poll it, don't read it in a
-	 * `$effect`.
-	 */
-	get anchored(): boolean {
-		return this.cursorAnchored;
-	}
-
-	/**
 	 * True after the server has sent ANY op_log_cursor control frame
 	 * in this provider's lifetime — including the initial post-
 	 * replay cursor of 0 against an empty op-log. The boolean

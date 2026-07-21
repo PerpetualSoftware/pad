@@ -195,14 +195,16 @@ test('restoring a version under live collab is not clobbered by the next flush (
  *
  * Determinism / no false-pass (Codex P3 on #994): the poll alone could pass for
  * the WRONG reason if the ordinary 5s idle flush happened to land gamma before
- * the restore. So we ALSO capture request ordering and assert the fix's causal
- * signature directly: a `source=collab-snapshot` PATCH carrying gamma is
- * INITIATED after the "Confirm Restore" click (i.e. it's the pre-restore flush,
- * not the idle timer) AND its response arrives BEFORE the restore POST is issued
- * (i.e. the client awaited it). Under the bug the restore POST fires immediately
- * on click with no preceding gamma flush, so no gamma PATCH can complete before
- * the restore POST — the ordering assertion goes red. Reaching the click well
- * under 5s keeps the idle timer from firing before the click.
+ * the restore. So we deterministically SUPPRESS the idle flush — a route gate
+ * ABORTS every `source=collab-snapshot` PATCH until we explicitly allow it,
+ * immediately before the Confirm-Restore click — so the ONLY gamma collab-snapshot
+ * PATCH that can land is the pre-restore one. That makes both assertions airtight:
+ * (1) items.content can only acquire gamma via the pre-restore flush, so the
+ * undo-point holding gamma proves the fix; and (2) a monotonic event sequence
+ * (array index, not ms timestamps) shows the successful gamma flush response is
+ * dispatched STRICTLY before the restore POST is issued (the client awaited it).
+ * Under the bug the restore POST fires with no preceding gamma flush, so both go
+ * red.
  */
 test('an unflushed live edit is captured in the restore undo-point via the UI (BUG-2271)', async ({
 	page,
@@ -269,35 +271,53 @@ test('an unflushed live edit is captured in the restore undo-point via the UI (B
 	await expect(editor).toContainText(beta);
 	await expect(page.locator(SYNCED_BADGE_SELECTOR)).toBeVisible();
 
-	// Capture request ordering so we can prove the PRE-RESTORE flush (not the idle
-	// timer) is what landed gamma (Codex P3). Record, with timestamps: when a
-	// gamma-carrying collab-snapshot PATCH is INITIATED and when its RESPONSE
-	// arrives, and when the restore POST is INITIATED. Registered before typing so
-	// nothing is missed; the gamma filter ignores the earlier beta flush.
-	const order: { kind: 'gamma-flush-start' | 'gamma-flush-done' | 'restore-start'; t: number }[] = [];
+	// P3 (Codex): deterministically SUPPRESS the ordinary 5s idle collab-snapshot
+	// flush so the ONLY gamma-carrying collab-snapshot PATCH that can land is the
+	// pre-restore one — making both the outcome and the ordering assertions
+	// airtight (no reliance on "reach the click under 5s"). A route gate ABORTS
+	// collab-snapshot PATCHes until we explicitly allow them, immediately before
+	// the Confirm-Restore click. The earlier beta flush already completed before
+	// this gate is installed, so it's unaffected; hydration after the reload does
+	// no edit, so it issues no flush to abort.
+	let allowSnapshotFlush = false;
+	await page.route(/source=collab-snapshot/, async (route) => {
+		if (route.request().method() === 'PATCH' && !allowSnapshotFlush) {
+			await route.abort();
+			return;
+		}
+		await route.continue();
+	});
+
+	// Record a MONOTONIC event sequence (array index, NOT ms Date.now()) so the
+	// ordering compare is exact and tie-free. Only a SUCCESSFUL (2xx) gamma
+	// collab-snapshot response and the restore POST request enter the sequence;
+	// aborted idle attempts fire 'requestfailed', never 'response', so they can't
+	// pollute it. The gamma filter also ignores the earlier beta flush.
+	const seq: string[] = [];
 	const isGammaFlush = (r: PWRequest) =>
 		r.url().includes('source=collab-snapshot') &&
 		r.method() === 'PATCH' &&
 		(r.postData() ?? '').includes(gamma);
 	const isRestorePost = (r: PWRequest) =>
 		/\/versions\/[^/]+\/restore$/.test(r.url()) && r.method() === 'POST';
-	page.on('request', (r) => {
-		if (isGammaFlush(r)) order.push({ kind: 'gamma-flush-start', t: Date.now() });
-		else if (isRestorePost(r)) order.push({ kind: 'restore-start', t: Date.now() });
-	});
 	page.on('response', (resp) => {
-		if (isGammaFlush(resp.request())) order.push({ kind: 'gamma-flush-done', t: Date.now() });
+		if (isGammaFlush(resp.request()) && resp.ok()) seq.push('gamma-flush-ok');
+	});
+	page.on('request', (r) => {
+		if (isRestorePost(r)) seq.push('restore-start');
 	});
 
-	// Type `gamma` but do NOT wait for its idle flush — it stays in the live
-	// Y.Doc, unpersisted to items.content (the BUG-2271 window). We reach the
-	// Restore click well under 5s so the idle timer can't pre-persist it.
+	// Type `gamma` — its idle flush is now blocked by the gate, so it stays in the
+	// live Y.Doc, unpersisted to items.content (the BUG-2271 window).
 	await editor.click();
 	await page.keyboard.press('Control+End');
 	await page.keyboard.type(' ' + gamma);
 	await expect(editor).toContainText(gamma);
 
-	// Sanity: items.content does NOT yet hold gamma (still the unflushed window).
+	// Sanity: items.content does NOT hold gamma. With the gate aborting every
+	// collab-snapshot PATCH, gamma can reach items.content ONLY via the pre-restore
+	// flush we allow below — so the undo-point holding gamma is airtight proof that
+	// the pre-restore flush (not an idle flush) captured it.
 	const preRestore = await request.get(`/api/v1/workspaces/${ws}/items/${slug}`, { headers });
 	expect(preRestore.ok()).toBeTruthy();
 	expect((await preRestore.json()).content as string).not.toContain(gamma);
@@ -315,27 +335,22 @@ test('an unflushed live edit is captured in the restore undo-point via the UI (B
 	const card = page.locator('#item-timeline .version-card').first();
 	await card.locator('.card-header').click(); // expand
 	await card.getByRole('button', { name: 'Restore this version' }).click();
-	// Timestamp the click so we can prove the gamma flush was initiated AFTER it
-	// (the pre-restore flush) and not by the idle timer beforehand.
-	const clickTime = Date.now();
+	// Allow collab-snapshot PATCHes ONLY from here, so the first (and only) gamma
+	// PATCH that lands is the pre-restore flush the confirm click triggers.
+	allowSnapshotFlush = true;
 	await card.getByRole('button', { name: 'Confirm Restore' }).click();
 	await restoreDone;
 
-	// Ordering proof (Codex P3): the fix's causal signature must hold.
-	const gammaStart = order.find((e) => e.kind === 'gamma-flush-start');
-	const gammaDone = order.find((e) => e.kind === 'gamma-flush-done');
-	const restoreStart = order.find((e) => e.kind === 'restore-start');
-	expect(gammaStart, 'a gamma collab-snapshot PATCH must be issued').toBeTruthy();
-	expect(gammaDone, 'the gamma flush must complete').toBeTruthy();
-	expect(restoreStart, 'the restore POST must be issued').toBeTruthy();
-	// (a) The gamma flush was initiated AFTER the Confirm-Restore click → it's the
-	//     pre-restore flush, not a stray idle-timer flush that raced ahead.
-	expect(gammaStart!.t).toBeGreaterThanOrEqual(clickTime);
-	// (b) The gamma flush RESPONSE arrived BEFORE the restore POST was issued →
-	//     the client awaited the flush, so items.content held gamma when the
-	//     restore captured its undo-point. Under the bug the restore POST fires
-	//     first and this is false.
-	expect(gammaDone!.t).toBeLessThanOrEqual(restoreStart!.t);
+	// Ordering proof (Codex P3): a SUCCESSFUL gamma collab-snapshot flush occurred
+	// AND its response was dispatched STRICTLY BEFORE the restore POST was issued
+	// (monotonic index — the client awaited the flush before POSTing the restore).
+	// Under the bug the restore POST fires with no preceding gamma flush, so
+	// 'gamma-flush-ok' is absent (or after) → red.
+	const gammaIdx = seq.indexOf('gamma-flush-ok');
+	const restoreIdx = seq.indexOf('restore-start');
+	expect(gammaIdx, 'a successful pre-restore gamma flush must occur').toBeGreaterThanOrEqual(0);
+	expect(restoreIdx, 'the restore POST must be issued').toBeGreaterThanOrEqual(0);
+	expect(gammaIdx).toBeLessThan(restoreIdx);
 
 	// And the outcome: the undo-point version created by the restore holds the
 	// pre-restore items.content — which, thanks to the pre-restore flush, includes

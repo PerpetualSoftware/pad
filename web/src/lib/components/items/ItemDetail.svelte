@@ -3556,30 +3556,6 @@
 		// TASK-2112 / TASK-2172). A stale ctx is skipped rather than mis-flushed.
 		const ctx = activeCollabContext;
 		if (!ctx || ctx.itemId !== item.id) return;
-		// P1 (Codex on #994): a provider that just reconnected can expose the
-		// editor after its ~1s synced grace but BEFORE the server's op_log_cursor
-		// anchor arrives (lastOpLogID still 0 / not anchored). A flush issued in
-		// that window carries cursor 0, which the server rejects against a prior
-		// DURABLE restore boundary (handlers_items.go: cursor < boundary → 409) —
-		// the typed edit would be lost. Wait, bounded, for the anchor so the flush
-		// carries a boundary-satisfying cursor. Resolves immediately in the common
-		// (already-anchored) case, so it adds no latency to a normal restore; the
-		// cap keeps a never-arriving anchor from hanging the restore. If it times
-		// out unanchored, we fall through and step 2 (below) makes any resulting
-		// failure non-silent.
-		await waitForCollabAnchor(collabProvider, 1500);
-		// Re-check after the await: the pane may have switched or the editor torn
-		// down while we waited. (The flush ctx is self-routing, but don't read a
-		// destroyed editor or flush for a now-different item.)
-		if (
-			!collabProvider ||
-			!editorInstance ||
-			editorInstance.isDestroyed ||
-			!item ||
-			item.id !== ctx.itemId
-		) {
-			return;
-		}
 		// Read the live editor's markdown; fall back to the per-edit shadow if the
 		// live read throws (mirrors the flusher's readEditorMarkdown injection).
 		let md: string | null = null;
@@ -3595,40 +3571,39 @@
 		// restore blocks on it). The flusher's own dedupe short-circuits to a no-op
 		// when there are no unflushed edits, so a clean view costs at most one
 		// deduped call. We await so items.content is updated before the restore
-		// captures the undo-point.
+		// captures the undo-point. The flush ctx is self-routing (PATCHes ctx's
+		// item), so a same-item provider replacement during the await can't
+		// cross-write, and the only post-await action is an informational toast —
+		// switch-safe regardless of where the pane is now.
 		const result = await collabFlusher.flush(ctx, md, false);
-		// Step 2 (Codex P1): 'flushed' landed the edit and 'deduped' means the
-		// server already has this exact markdown — both success. 'failed' (e.g. the
-		// boundary 409 above) and 'skipped' (force-refresh recovery: the Y.Doc
-		// markdown is known stale) mean the live edit did NOT land in items.content,
-		// so the restore's undo-point won't capture it. We must NOT block the
-		// restore — but the loss must not be silent, so surface it. (The restore
-		// still proceeds in the caller.)
-		if (result === 'failed' || result === 'skipped') {
+		// Non-silent failure (Codex P1 on #994). Warn ONLY on 'failed' — an
+		// attempted, non-deduped snapshot PATCH the server rejected (e.g. the
+		// restore-boundary 409 in the narrow post-reconnect cursor-0 window; see
+		// the residual note below), so the live edit did NOT land in items.content
+		// and the undo-point won't capture it. The other outcomes are NOT losses:
+		// 'flushed' landed it; 'deduped' means the server already has this exact
+		// markdown; 'skipped' is force-refresh recovery which either attempted no
+		// PATCH (nothing to lose) OR the PATCH already succeeded before
+		// forceRefreshInFlight flipped (content IS in items.content + the
+		// undo-point) — so warning on 'skipped' would mis-fire on ordinary
+		// restores. The restore itself is never blocked (the caller proceeds).
+		if (result === 'failed') {
 			toastStore.show(
 				'Your most recent edits may not be included in the restore point.',
 				'error',
 			);
 		}
-	}
-
-	// Bounded best-effort wait for the collab provider's op-log cursor anchor
-	// (BUG-2271 / Codex P1). Resolves immediately when already anchored; otherwise
-	// polls the (non-reactive) `anchored` getter until it flips or the deadline
-	// passes, then resolves regardless (best-effort — never rejects, never hangs).
-	function waitForCollabAnchor(provider: CollabProvider, timeoutMs: number): Promise<void> {
-		if (provider.anchored) return Promise.resolve();
-		return new Promise((resolve) => {
-			const deadline = Date.now() + timeoutMs;
-			const tick = () => {
-				if (provider.anchored || Date.now() >= deadline) {
-					resolve();
-					return;
-				}
-				setTimeout(tick, 50);
-			};
-			setTimeout(tick, 50);
-		});
+		// RESIDUAL (accepted): in the narrow window where the provider has just
+		// reconnected and the editor is exposed BEFORE the new connection's
+		// op_log_cursor anchor arrives (cursor still 0), a flush against an item
+		// with a prior DURABLE restore boundary is rejected (cursor < boundary →
+		// 409) and lands as 'failed' above — the user is warned rather than
+		// silently losing the edit. We deliberately do NOT pre-wait for the anchor:
+		// the anchor flag is lifetime-scoped (stays true across reconnects), so a
+		// wait wouldn't actually gate the NEW connection, and per-connection
+		// scoping would entangle the delicate TASK-1319 pre-anchor buffering /
+		// force-refresh machinery. The warn-only path is the proportionate outcome
+		// for this narrow case.
 	}
 
 	async function handleDelete() {
