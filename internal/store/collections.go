@@ -270,7 +270,12 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 		return nil, nil
 	}
 
-	ts := now()
+	// Sub-second timestamp (BUG-2265): collections.updated_at doubles as the
+	// concurrency token, so it must differ between two writes in the same
+	// wall-clock second. nowNano() makes that near-certain without a schema
+	// change (the column is TEXT on both dialects and never lexically compared
+	// — only via time.Equal and for display).
+	ts := nowNano()
 	sets := []string{"updated_at = ?"}
 	args := []interface{}{ts}
 
@@ -345,13 +350,15 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	//      closes the tokenless-writer race the advisory lock could NOT (an
 	//      advisory lock only serializes writers that also take it — Codex P1).
 	//
-	//   2. Strictly monotonic token. now() is one-second precision, so two
-	//      writes in the same wall-clock second — or a tokenless write racing a
-	//      guarded one — would otherwise keep OR regress the timestamp, letting
-	//      a stale reader's token still match and clobber newer data (Codex P1).
-	//      Every write therefore advances updated_at strictly past the row's
-	//      current value; now() is used verbatim whenever it already exceeds it
-	//      (the common case, so timestamps stay accurate).
+	//   2. Strictly monotonic token. Sub-second nowNano() makes same-second
+	//      collisions near-impossible, but a coarse platform clock (or an NTP
+	//      step-back) could still return a value <= the row's current one, which
+	//      would let a tokenless or racing write keep/regress the token and a
+	//      stale reader clobber newer data. Guard it: when the fresh timestamp
+	//      doesn't already exceed the row's current value, advance by a single
+	//      NANOSECOND past it. That keeps the token strictly increasing on every
+	//      writer while bounding any drift to nanoseconds — no meaningful
+	//      advance-into-the-future even under sustained writes.
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -390,9 +397,11 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 	}
 
 	// Monotonic advance (invariant 2 above). args[0] is the `updated_at = ?`
-	// bind built first, so overwrite it in place.
+	// bind built first, so overwrite it in place. A one-nanosecond step keeps
+	// the token strictly increasing without drifting meaningfully ahead of
+	// wall-clock.
 	if !parseTime(ts).After(current) {
-		args[0] = current.Add(time.Second).UTC().Format(time.RFC3339)
+		args[0] = current.Add(time.Nanosecond).UTC().Format(time.RFC3339Nano)
 	}
 
 	if _, err := tx.Exec(s.q(query), args...); err != nil {

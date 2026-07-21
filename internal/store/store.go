@@ -847,6 +847,19 @@ func now() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
+// nowNano is a sub-second (nanosecond) UTC timestamp. Used where a stored
+// timestamp doubles as an optimistic-concurrency token and must distinguish
+// writes that land within the same wall-clock second (BUG-2265 collections):
+// second-precision now() would collide, forcing a whole-second "advance into
+// the future" to keep the token monotonic. Sub-second resolution makes
+// collisions near-impossible, so the token advances naturally and never drifts
+// meaningfully ahead of wall-clock. The value is a valid RFC3339 string
+// (time.Parse(time.RFC3339, …) accepts the fractional seconds), so it
+// round-trips through parseTime and the JSON API unchanged.
+func nowNano() string {
+	return time.Now().UTC().Format(time.RFC3339Nano)
+}
+
 func parseTime(s string) time.Time {
 	t, _ := time.Parse(time.RFC3339, s)
 	return t
