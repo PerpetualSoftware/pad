@@ -198,6 +198,19 @@
 	// Plain counter — not reactive; it only fences writes.
 	let collectionGen = 0;
 
+	// UNIFIED item-snapshot generation (BUG-2265 Codex round 9): bumped by EVERY
+	// async operation that assigns `item` from a fetch — loadData's item load,
+	// the SSE item_updated/archived/restored refetches, the onSync refetches,
+	// the collab refresh, the migration item-refetch, and the user-write adopts
+	// (title/field/tag saves) — so the last-STARTED write wins and a stale
+	// in-flight continuation can't revert a newer item snapshot. Distinct from
+	// loadGeneration (which also fences the whole load's collection/links/
+	// members writes) so a same-item refetch doesn't need a full reload to be
+	// ordered against another. Every `item = <fetched>` gates on this + the item
+	// id; synchronous optimistic writes bump it so a stale refetch can't revert
+	// them. Plain counter — not reactive.
+	let itemGen = 0;
+
 	// R9 teardown ownership (TASK-2172). The onDestroy clear-if-owner compares
 	// the global `collectionStore.activeItem` against the id THIS instance last
 	// set active — NOT against the reactive `item`, which a cross-collection load
@@ -799,7 +812,13 @@
 				// breadcrumbs / a hard reload still resolve the dead old slug.
 				// Deferred (already broken on main; snapshot refresh below is the
 				// in-scope BUG-2265 fix).
-				const targetSlug = event.new_slug || slug;
+				// Fetch the collection's CURRENT slug. A rename carries new_slug;
+				// a settings update that follows a rename routes by (and carries in
+				// `collection`) the NEW slug — so prefer new_slug, THEN event's own
+				// slug, THEN the pane's snapshot slug. Using `slug` alone would make
+				// a post-rename settings update request the DEAD old slug and bump
+				// collectionGen, cancelling the valid rename fetch (Codex round 9).
+				const targetSlug = event.new_slug || event.collection || slug;
 				// Unified generation: bumped here AND by loadData / the
 				// quick-action + edit-modal callbacks, so the last-started write
 				// wins and neither a stale refresh nor a stale load can revert a
@@ -810,8 +829,9 @@
 					// Persistent pane host has no {#key} remount — fence the write
 					// against a switch during the fetch (PLAN-2105 discipline):
 					// drop if a newer collection write superseded us or the loaded
-					// collection changed identity.
-					if (collGen === collectionGen && collection && collection.slug === slug) {
+					// collection changed IDENTITY. Compare by stable id, not slug,
+					// so a rename (same id, new slug) still applies (Codex round 9).
+					if (collGen === collectionGen && collection && collection.id === snap.id) {
 						collection = fresh;
 					}
 				} catch {
@@ -836,13 +856,17 @@
 					saveStatus !== 'saving' &&
 					!editingTitle
 				) {
-					const gen = loadGeneration;
 					const reqItemId = item.id;
 					const reqWsSlug = wsSlug;
 					const reqItemSlug = itemSlug;
+					// Dedicated item-snapshot gen (round 9): the migration refetch
+					// and loadData no longer share loadGeneration, so a stale
+					// loadData response can't overwrite the migrated item (and
+					// vice-versa).
+					const myItemGen = ++itemGen;
 					try {
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
-						if (item && item.id === reqItemId && gen === loadGeneration) {
+						if (item && item.id === reqItemId && myItemGen === itemGen) {
 							item = adoptServerItem(updated);
 						}
 					} catch {
@@ -858,11 +882,10 @@
 			// B's just-opening pane. The new item's loadData refetches fresh
 			// state anyway (PLAN-2105 / TASK-2112; Codex).
 			if (!itemMatchesRef) return;
-			// Capture the generation at accept-time; every post-await guard
-			// below also checks it so a switch DURING an in-flight refetch (or
-			// an A→B→A that re-matches the id) can't apply a stale write or fire
-			// handleGone() against the wrong item.
-			const sseGen = loadGeneration;
+			// Item writes below are ordered via the dedicated itemGen (round 9),
+			// captured per-refetch just before the fetch so a switch / a newer
+			// item write (load, migration, another SSE/onSync refetch) drops the
+			// stale continuation. Identity is always checked by item id.
 
 			// Archive is destructive and must NOT be gated by the
 			// edit-conflict guard below — a user editing a since-archived
@@ -893,12 +916,13 @@
 				const archItemId = item.id;
 				const archWsSlug = wsSlug;
 				const archItemSlug = itemSlug;
+				const myItemGen = ++itemGen;
 				try {
 					const archived = await api.items.get(archWsSlug, archItemSlug);
-					if (!item || item.id !== archItemId || sseGen !== loadGeneration) return;
+					if (!item || item.id !== archItemId || myItemGen !== itemGen) return;
 					item = withInflightTags(archived);
 				} catch {
-					if (!item || item.id !== archItemId || sseGen !== loadGeneration) return;
+					if (!item || item.id !== archItemId || myItemGen !== itemGen) return;
 					handleGone();
 				}
 				return;
@@ -917,13 +941,15 @@
 			const reqItemId = item.id;
 			const reqWsSlug = wsSlug;
 			const reqItemSlug = itemSlug;
+			// One switch case runs per event, so bump the item-snapshot gen once.
+			const myItemGen = ++itemGen;
 
 			switch (event.type) {
 				case 'item_updated': {
 					try {
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
 						// Bail if the user navigated away before this resolved.
-						if (!item || item.id !== reqItemId || sseGen !== loadGeneration) return;
+						if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 						// Drop TASK-1243's conservative content-skip
 						// when collab is active (TASK-1262). Under
 						// collab the editor reads from Y.Doc, NOT
@@ -942,7 +968,7 @@
 						// still lose chars without this branch.
 						item = adoptServerItem(updated);
 						const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
-						if (!item || item.id !== reqItemId || sseGen !== loadGeneration) return;
+						if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 						itemLinks = links;
 					} catch {
 						// Ignore — will catch up on next event
@@ -952,7 +978,7 @@
 				case 'item_restored': {
 					try {
 						const updated = await api.items.get(reqWsSlug, reqItemSlug);
-						if (!item || item.id !== reqItemId || sseGen !== loadGeneration) return;
+						if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 						item = adoptServerItem(updated);
 					} catch {
 						// Ignore — will catch up on next event
@@ -969,10 +995,8 @@
 			// clobber it — the new item's loadData refetches fresh state
 			// (PLAN-2105 / TASK-2112; Codex).
 			if (!itemMatchesRef) return;
-			// Generation captured at accept-time; every post-await guard below
-			// also checks it so a switch during an in-flight refetch (or an
-			// A→B→A id re-match) can't clobber the wrong item or fire handleGone.
-			const syncGen = loadGeneration;
+			// Item writes below are ordered via the dedicated itemGen (round 9),
+			// bumped per-refetch; a switch is caught by the item-id check.
 
 			if (result.type === 'caught_up') return;
 
@@ -1001,12 +1025,13 @@
 				const delItemId = item.id;
 				const delWsSlug = wsSlug;
 				const delItemSlug = itemSlug;
+				const myItemGen = ++itemGen;
 				try {
 					const refreshed = await api.items.get(delWsSlug, delItemSlug);
-					if (!item || item.id !== delItemId || syncGen !== loadGeneration) return;
+					if (!item || item.id !== delItemId || myItemGen !== itemGen) return;
 					item = withInflightTags(refreshed);
 				} catch {
-					if (!item || item.id !== delItemId || syncGen !== loadGeneration) return;
+					if (!item || item.id !== delItemId || myItemGen !== itemGen) return;
 					handleGone();
 				}
 				return;
@@ -1030,22 +1055,25 @@
 					// Merge server state without disrupting the editor.
 					// Same collab-aware adoption rule as the SSE
 					// handler above (TASK-1262).
-					if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
+					if (!item || item.id !== reqItemId) return;
+					// Bump the item-snapshot gen so an in-flight refetch drops (round 9).
+					const myItemGen = ++itemGen;
 					item = adoptServerItem(updated);
 					const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
-					if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
+					if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 					itemLinks = links;
 				}
 				return;
 			}
 
 			// Full refresh fallback
+			const myItemGen = ++itemGen;
 			try {
 				const updated = await api.items.get(reqWsSlug, reqItemSlug);
-				if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
+				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				item = adoptServerItem(updated);
 				const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
-				if (!item || item.id !== reqItemId || syncGen !== loadGeneration) return;
+				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				itemLinks = links;
 				syncService.markSynced(); // Advance cursor now that reload succeeded
 			} catch {
@@ -1115,6 +1143,11 @@
 		// snapshot while this load was in flight (Codex — separate lifecycle
 		// from loadGeneration).
 		const collGen = ++collectionGen;
+		// Join the item-snapshot fence (round 9) so this load's `item` write is
+		// dropped if a newer item write (e.g. the migration refetch, or another
+		// load/refetch) landed a fresher item while this load was in flight —
+		// they no longer share loadGeneration.
+		const myItemGen = ++itemGen;
 		loading = true;
 		error = '';
 		// Clear per-item state that must NOT leak across navigation.
@@ -1286,7 +1319,10 @@
 			// Overlay any in-flight optimistic tag edit so navigating away and
 			// back mid-save can't show (and then let a follow-up edit overwrite
 			// with) stale server tags. See withInflightTags. Per Codex PR #659.
-			item = withInflightTags(itemData);
+			// Gate the ITEM snapshot on itemGen too: a newer item write (e.g. the
+			// migration refetch) that bumped itemGen but not loadGeneration must
+			// not be reverted by this in-flight load (round 9).
+			if (myItemGen === itemGen) item = withInflightTags(itemData);
 			// Cross-collection `?item=` safety (PLAN-2105 / TASK-2112). The
 			// Promise.all above optimistically fetched the collection by the
 			// route's `collSlug` — correct for the common (row-click) case,
@@ -1306,7 +1342,7 @@
 					// Apply when this is the freshest same-collection write OR when it's
 					// a switch to a DIFFERENT collection (a stale refresh for the old
 					// collection must not block loading the new one).
-					if (collGen === collectionGen || collection?.slug !== realColl.slug)
+					if (collGen === collectionGen || collection?.id !== realColl.id)
 						collection = realColl;
 				} catch {
 					if (myGen !== loadGeneration) return;
@@ -1318,7 +1354,7 @@
 					error = 'Failed to load this item’s collection';
 					return;
 				}
-			} else if (collGen === collectionGen || collection?.slug !== collData.slug) {
+			} else if (collGen === collectionGen || collection?.id !== collData.id) {
 				collection = collData;
 			}
 			// A FROZEN (peeking) instance must NOT write the SINGLETON global stores
@@ -1873,6 +1909,10 @@
 				// refresh. Per Codex round 4 [P1].
 				const refreshCtx = ctx;
 				const refreshGen = loadGeneration;
+				// Order the `item` write against every other item-snapshot write
+				// via the dedicated itemGen (round 9); refreshGen still guards the
+				// collab provider + nonce rebuild.
+				const myItemGen = ++itemGen;
 				void api.items
 					.get(refreshCtx.wsSlug, refreshCtx.itemId)
 					.then((fresh) => {
@@ -1882,7 +1922,7 @@
 						// NEW item's provider needlessly and stamp A's content
 						// into the wrong slot (PLAN-2105 / TASK-2112; Codex).
 						if (collabProvider !== provider || refreshGen !== loadGeneration) return;
-						if (item && item.id === refreshCtx.itemId) {
+						if (item && item.id === refreshCtx.itemId && myItemGen === itemGen) {
 							item = withInflightTags(fresh);
 						}
 						// Refetch succeeded → safe to rebuild.
