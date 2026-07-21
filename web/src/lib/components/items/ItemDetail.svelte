@@ -162,7 +162,10 @@
 	// behavior exactly. When embedded, the pane injects handlers so an exit
 	// clears `?item=` in place instead of hard-navigating (TASK-2107).
 	function navigateToCollectionRoot() {
-		goto(`/${username}/${wsSlug}/${collSlug}`);
+		// effectiveCollSlug (not the raw prop) so a cross-tab rename that
+		// retargeted `renameOverride` lands on the LIVE collection root, not the
+		// dead old slug (BUG-2272). Full-page only — embedded uses onGone/onClose.
+		goto(`/${username}/${wsSlug}/${effectiveCollSlug}`);
 	}
 	// Fired when the open item disappears (archived mid-edit, hard delete,
 	// deleted). Full-page → collection root. Embedded → the pane's onGone,
@@ -291,9 +294,57 @@
 	// schema selection (loadData refetches the right collection below) and
 	// for building any collection-scoped URL — never the possibly-wrong
 	// route prop. Full-page keeps `collSlug` (the route is authoritative).
+	//
+	// BUG-2272: a remote rename of THIS collection in another tab leaves the
+	// full-page route's `collSlug` prop (page.params.collection) frozen at the
+	// DEAD old slug until a real navigation — so breadcrumbs + a hard reload
+	// resolve a 404. On such a rename the SSE handler below records the renamed
+	// collection's stable id + {from,to} slugs here and `goto`s the live URL;
+	// this override retargets the effective slug (breadcrumbs +
+	// navigateToCollectionRoot + item URLs) to the new slug while the goto is in
+	// flight. Applied ONLY when ALL of:
+	//   - `collectionId === collection?.id` — we still DISPLAY the very collection
+	//     that was renamed. Slugs are reusable: after X renames A→B, a DIFFERENT
+	//     collection Y can later adopt the freed slug A; without this identity
+	//     scope a persistent full-page route sitting on Y at `/…/A/…` would match
+	//     `from === collSlug` and wrongly resolve to B. Also guards X being renamed
+	//     AGAIN out of band (we navigate to X's newest slug before the event lands).
+	//   - `from === collSlug` — the route prop is still the pre-rename slug; the
+	//     moment the goto commits (prop advances to the new slug) or a real
+	//     navigation moves it, the guard fails and the derived falls through to
+	//     the live prop. So the override is self-expiring — no stale value survives
+	//     and no reset effect is needed.
+	// A subsequent B→C for the SAME collection id re-records the override to C
+	// (chained renames intact). Embedded panes never touch this branch — they
+	// trust `item.collection_slug` (PLAN-2154, no goto).
+	let renameOverride = $state<{ collectionId: string; from: string; to: string } | null>(null);
 	let effectiveCollSlug = $derived(
-		embedded && item?.collection_slug ? item.collection_slug : collSlug,
+		embedded && item?.collection_slug
+			? item.collection_slug
+			: renameOverride &&
+				  renameOverride.from === collSlug &&
+				  renameOverride.collectionId === collection?.id
+				? renameOverride.to
+				: collSlug,
 	);
+	// BUG-2272 P2: the override is a SPENT-ONCE bridge, not a dormant persistent
+	// pair — null it the instant the route prop leaves the pre-rename slug (the
+	// goto it triggered committed, so `collSlug === to`, OR a real navigation
+	// moved on). Clearing it — rather than leaving it dormant behind the guards —
+	// closes a TRANSIENT: after X/B settled, an X/B → Y/A navigation (Y reusing
+	// X's freed slug A) sets `collSlug === A` synchronously while Y's collection
+	// fetch is still async, so `collection` is briefly the stale X snapshot and
+	// BOTH guards (`from === collSlug` AND `collectionId === collection.id`) would
+	// pass again, misdirecting to B until Y loads. A cleared override can't
+	// reactivate. The legit window still holds: the rename handler sets the
+	// override while `collSlug` is still `from`, so this keeps it until the goto
+	// commits; chained A→B→C stays intact (the burst is synchronous, `collSlug`
+	// unchanged until the final goto commits).
+	$effect(() => {
+		if (renameOverride && collSlug !== renameOverride.from) {
+			renameOverride = null;
+		}
+	});
 
 	// ── Scroll position restoration readiness (BUG-1425) ───────────────
 	// The route wrapper (`[slug]/+page.svelte`) owns `createScrollRestoration`
@@ -804,14 +855,45 @@
 				// slug match could load the wrong schema into this pane.
 				if (!snap || event.collection_id !== snap.id) return;
 				const slug = snap.slug;
+				// BUG-2272: on the FULL-PAGE item route, retarget the URL +
+				// breadcrumb to the collection's NEW slug on a remote rename.
+				// `collSlug` (page.params.collection) is frozen at the dead old
+				// slug until a navigation, so a hard reload / breadcrumb click
+				// would 404. Record the {from,to} override — which drives
+				// effectiveCollSlug → breadcrumb + navigateToCollectionRoot
+				// immediately — and `goto` the live URL, PRESERVING the query
+				// string so an open pane (?item=) survives. `effectiveCollSlug` is
+				// the slug we currently believe this route is on (the pending
+				// rename target while a goto is in flight, else the live prop; its
+				// self-expiring guard drops a stale override once the user
+				// navigates elsewhere). Match the event's OLD slug
+				// (event.collection) against it so chained renames (A→B→C) advance
+				// in order and a late/duplicate replay of an already-applied rename
+				// can't yank us back to a dead intermediate slug. ONLY when
+				// !embedded — the embedded pane's URL segment is a PLAN-2154
+				// concern; it retargets via item.collection_slug / injected
+				// callbacks, never a goto.
+				if (!embedded && event.new_slug) {
+					const believed = effectiveCollSlug;
+					if (event.collection === believed && event.new_slug !== believed) {
+						// Scope to the renamed collection's stable id (=== snap.id,
+						// guarded above) so a later reuse of the old slug by a
+						// DIFFERENT collection can't re-trigger this override (P2).
+						renameOverride = {
+							collectionId: event.collection_id ?? snap.id,
+							from: collSlug,
+							to: event.new_slug,
+						};
+						const search = typeof window !== 'undefined' ? window.location.search : '';
+						void goto(`/${username}/${wsSlug}/${event.new_slug}/${itemSlug}${search}`, {
+							replaceState: true,
+							noScroll: true,
+						});
+					}
+				}
 				// On a rename, refetch by the NEW slug (the old one is dead) so
 				// this pane's collection reference — used to build quick-action /
 				// edit writes — stays valid (Codex P2).
-				// TODO(BUG-2272): full cross-tab rename renavigation — the
-				// full-page item route's URL/collSlug is NOT retargeted here, so
-				// breadcrumbs / a hard reload still resolve the dead old slug.
-				// Deferred (already broken on main; snapshot refresh below is the
-				// in-scope BUG-2265 fix).
 				// Fetch the collection's CURRENT slug. A rename carries new_slug;
 				// a settings update that follows a rename routes by (and carries in
 				// `collection`) the NEW slug — so prefer new_slug, THEN event's own
@@ -3861,7 +3943,7 @@
 						<a href="/{username}/{wsSlug}/{item.parent_collection_slug}/{item.parent_slug}">{item.parent_ref || item.parent_title}</a>
 						<span class="sep">/</span>
 					{:else}
-						<a href="/{username}/{wsSlug}/{collSlug}">{collection.icon} {collection.name}</a>
+						<a href="/{username}/{wsSlug}/{effectiveCollSlug}">{collection.icon} {collection.name}</a>
 						<span class="sep">/</span>
 					{/if}
 					<span class="current">{formatItemRef(item) || item.title}</span>

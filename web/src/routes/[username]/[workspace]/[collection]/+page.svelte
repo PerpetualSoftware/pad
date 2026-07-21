@@ -6,6 +6,7 @@
 	import type { BulkItemsRequest, Collection, Item, PaneTarget, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
+	import { resolveRenameNavTarget } from '$lib/collections/renameNav';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
@@ -808,12 +809,30 @@
 	// Subscribe to SSE events for live updates to this collection's items
 	let unsubscribeSSE: (() => void) | null = null;
 
+	// BUG-2272: the slug we currently believe this route is on, advanced
+	// SYNCHRONOUSLY on each rename `goto` (see the collection_updated handler).
+	// Deliberately a PLAIN let, NOT $state: a reactive value here would re-run
+	// the SSE $effect on every rename — tearing down the listener mid-burst.
+	// It serializes chained/replayed renames (A→B then B→C) that arrive before
+	// SvelteKit commits each goto (collSlug/page.params lag the goto), so each
+	// event retargets from where we're actually headed. Reset at re-subscribe
+	// when a real navigation lands on a slug that isn't the pending target.
+	let renameNav: string | null = null;
+
 	$effect(() => {
 		// Clean up previous subscription
 		unsubscribeSSE?.();
 		unsubscribeSSE = null;
 
 		if (!wsSlug || !collSlug) return;
+
+		// BUG-2272: this $effect re-runs whenever collSlug changes (a real
+		// navigation OR a committed rename goto). If the new route slug isn't the
+		// rename target we were headed to, any pending rename intent is stale —
+		// clear it so a later rename event's old-slug match is anchored to the
+		// live route rather than a dead target. (renameNav is a plain let, so
+		// reading/writing it here creates no reactive dependency.)
+		if (renameNav !== null && renameNav !== collSlug) renameNav = null;
 
 		const ws = wsSlug;
 		const coll = collSlug;
@@ -829,23 +848,47 @@
 				// event's old slug can be re-owned by a DIFFERENT collection, so a
 				// slug match could navigate away / refresh from the wrong one.
 				if (!collection || event.collection_id !== collection.id) return;
-				// Rename (Codex P2): this route's URL slug is now dead. Re-target
-				// to the new slug — preserving the query string (open pane) — so
-				// the next fetch/action doesn't 404. Mirrors the originating
-				// client's rename navigation.
-				// TODO(BUG-2272): full cross-tab rename renavigation — chained
-				// renames replayed on reconnect (A→B then B→C) can arrive with
-				// `coll` already past the intermediate slug, so a B→C event whose
-				// old slug (B) no longer matches `coll` is skipped and the route
-				// can land on a dead intermediate. Deferred (already broken on main).
-				if (event.new_slug && event.new_slug !== coll) {
-					const search = typeof window !== 'undefined' ? window.location.search : '';
-					// TODO(BUG-2272): refresh global collectionStore / handle collection_updated
-					// in the workspace layout on rename. This route navigates, but the GLOBAL
-					// collectionStore (sidebar links/icons/names, pickers) isn't refreshed and
-					// the layout ignores collection_updated, so the sidebar keeps the dead old
-					// slug and clicking it 404s. Deferred (layout-level renavigation).
-					void goto(`/${username}/${wsSlug}/${event.new_slug}${search}`);
+				// Rename (Codex P2 / BUG-2272): this route's URL slug is now dead —
+				// retarget to the new slug, robust to chained/replayed renames.
+				// `renameNav` (a plain, non-reactive tracker advanced synchronously
+				// on each rename goto below) is the slug we currently believe we're
+				// on; a burst of replayed renames (A→B then B→C) arrives before
+				// SvelteKit commits each goto (collSlug/page.params lag), so DON'T
+				// compare against the frozen `coll`. Match the event's OLD slug
+				// (event.collection) against `renameNav` — or the LIVE route param
+				// (collSlug) when no rename is pending — so each event retargets from
+				// wherever we're actually headed, chaining to the FINAL slug and
+				// dropping a late/duplicate replay of an already-applied rename that
+				// would otherwise land us on a dead intermediate. Preserve the query
+				// string so an open pane survives, and refresh the global
+				// collectionStore so the sidebar/pickers point at the live slug too
+				// (they'd otherwise keep the dead slug and 404 on click).
+				if (event.new_slug) {
+					// BUG-2272 P2: resolveRenameNavTarget balances two concerns —
+					// (1) reject a rename computed against a STALE snapshot from the
+					// PREVIOUS collection (the reused-slug X/B → Y/A window, where the
+					// stale id gate would otherwise fire a goto that hijacks the Y
+					// navigation), and (2) STILL apply a chained continuation on THIS
+					// route during the goto→reload window (a live A→B commits, then B→C
+					// arrives while loadCollection(B) is in flight and the snapshot is
+					// briefly stale — dropping it would strand us on dead slug B).
+					// `renameNav === collSlug` distinguishes them: it holds only in the
+					// continuation window, never in the reused-slug case (renameNav is
+					// reset on cross-collection nav, ~line 834). See renameNav.ts +
+					// renameNav.test.ts for the deterministic scenarios.
+					const target = resolveRenameNavTarget({
+						eventOldSlug: event.collection,
+						eventNewSlug: event.new_slug,
+						loadedCollectionSlug: collection.slug,
+						routeSlug: collSlug,
+						renameNav,
+					});
+					if (target) {
+						renameNav = target;
+						void collectionStore.loadCollections(ws);
+						const search = typeof window !== 'undefined' ? window.location.search : '';
+						void goto(`/${username}/${wsSlug}/${target}${search}`);
+					}
 					return;
 				}
 				// Unified generation: bumped here AND by loadCollection /
@@ -1676,11 +1719,21 @@
 					const fresh = list.find((c) => c.id === base.id);
 					if (fresh && collGen === collectionGen && ws === wsSlug && slug === collSlug) {
 						collection = fresh;
-						// TODO(BUG-2272): on a remote RENAME this reseeds `collection`
-						// (fresh slug) but NOT the route's `collSlug`, so the NEXT
-						// reorder still PATCHes the dead old slug and re-fails. A real
-						// fix retargets the route slug (renavigation, deferred to
-						// BUG-2272); we don't build that here.
+						// BUG-2272: a 404 here means a RENAME (not just a concurrent
+						// schema edit) killed the old slug. Reseeding `collection` alone
+						// leaves the route on the dead slug, so the NEXT reorder would
+						// PATCH it and re-fail forever. Retarget the route (and refresh
+						// the sidebar) to the live slug — mirroring the SSE rename
+						// navigation and sharing the same `renameNav` intent tracker —
+						// so subsequent actions hit a valid slug. A plain 409 (schema
+						// edit, no rename) leaves fresh.slug === collSlug, so this is a
+						// no-op there.
+						if (fresh.slug !== collSlug) {
+							renameNav = fresh.slug;
+							void collectionStore.loadCollections(ws);
+							const search = typeof window !== 'undefined' ? window.location.search : '';
+							void goto(`/${username}/${wsSlug}/${fresh.slug}${search}`);
+						}
 					}
 				} catch {
 					// Best-effort reseed.
