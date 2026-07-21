@@ -166,6 +166,13 @@ var (
 // The function blocks until ack OR all attempts time out — the PATCH
 // handler stays open during this window and the caller sees the
 // final outcome on return.
+//
+// A concurrent version restore (ForceRefreshRoom) is serialised against the
+// round-trip via the per-room restore gate (BUG-2276 residual 2, see
+// restore_coord.go): if a restore preempts an in-flight election (or is in progress
+// when one starts), the election restarts from scratch once the restore RESOLVES —
+// on rollback against the unfrozen room, on commit against the force-closed room.
+// The outer loop caps those restarts.
 func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error {
 	m.mu.Lock()
 	if m.closed {
@@ -179,6 +186,27 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 		return ErrNoActiveRoom
 	}
 
+	for restart := 0; restart < applierMaxRestartsAfterRestore; restart++ {
+		err, preempted := m.electAndApply(room, itemID, markdown)
+		if !preempted {
+			return err
+		}
+		// A version restore preempted / blocked this election and has now
+		// resolved (electAndApply already waited it out). Re-elect from scratch:
+		// a fresh request_id + tried set against the post-restore room.
+	}
+	// Restore storm: fall back to a direct write rather than spin.
+	return ErrNoApplierAvailable
+}
+
+// electAndApply runs one designated-applier election (first attempt + one retry)
+// against the room, bracketed by the restore gate. It returns (err, preempted):
+// preempted==true means a version restore interrupted the election and has resolved,
+// so ApplyExternalContent should restart; err is meaningless in that case. When
+// preempted==false, err is the final outcome (nil on ack, or a sentinel).
+func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error, bool) {
+	// A FRESH request_id per election: a late ack from a preempted prior election
+	// (same conn, re-picked after a rollback) can't be mistaken for this one's.
 	requestID := uuid.NewString()
 	timeouts := []time.Duration{applierFirstTimeout(), applierRetryTimeout()}
 
@@ -194,20 +222,31 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 	// review round 5.
 	var anyWriteSucceeded bool
 	for attempt := 0; attempt < applierMaxAttempts; attempt++ {
+		// Enter the restore gate FIRST so we wait out any in-progress restore
+		// before electing. `waited` means a restore held the room and just
+		// resolved — restart the whole election (the room's conn set changed).
+		preempt, waited := room.enterApplierGate()
+		if waited {
+			room.exitApplierGate()
+			return nil, true
+		}
+
 		applier := room.pickApplier(tried)
 		if applier == nil {
 			// No more candidates left.
+			room.exitApplierGate()
 			if !anyWriteSucceeded {
-				return ErrNoApplierAvailable
+				return ErrNoApplierAvailable, false
 			}
-			return ErrAllAppliersTimedOut
+			return ErrAllAppliersTimedOut, false
 		}
 		tried[applier.conn] = struct{}{}
 
 		ackCh, registerErr := room.registerPendingAck(requestID, applier.conn)
 		if registerErr != nil {
 			// Race: room closed between pickApplier and registration.
-			return registerErr
+			room.exitApplierGate()
+			return registerErr, false
 		}
 
 		// Send the applier_request as a TextMessage. y-protocol
@@ -229,7 +268,8 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 		payload, err := json.Marshal(msg)
 		if err != nil {
 			room.cancelPendingAck(requestID)
-			return fmt.Errorf("marshal applier_request: %w", err)
+			room.exitApplierGate()
+			return fmt.Errorf("marshal applier_request: %w", err), false
 		}
 		if err := applier.writeMessage(websocket.TextMessage, payload); err != nil {
 			// Conn write failed (slow / dead). Drop the pending
@@ -240,6 +280,7 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 			// so the conn's readLoop wakes up cleanly, and try
 			// the next applier. Per Codex review round 6.
 			room.cancelPendingAck(requestID)
+			room.exitApplierGate()
 			room.removeConn(applier)
 			_ = applier.conn.Close()
 			slog.Warn("collab: applier_request write failed; trying next",
@@ -251,7 +292,7 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 		}
 		anyWriteSucceeded = true
 
-		// Wait for the ack OR timeout.
+		// Wait for the ack, a restore preempt, OR timeout.
 		select {
 		case <-ackCh:
 			// Success: the applier propagated Y.Doc updates via the
@@ -260,9 +301,33 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 			// so the room's pendingAcks map doesn't grow unbounded
 			// across the lifetime of the room.
 			room.cancelPendingAck(requestID)
-			return nil
+			room.exitApplierGate()
+			return nil, false
+		case <-preempt:
+			// A version restore is about to freeze the room (BUG-2276 residual 2).
+			// Give an already-in-flight ack a bounded grace to arrive while the room
+			// is still UNFROZEN: if the applier's content already landed, its ack is
+			// delivered normally within this window and we resolve as SUCCESS
+			// (sub-case A) — no retry, no clobber. Otherwise (sub-case B) abandon and
+			// park until the restore resolves, then restart the election.
+			select {
+			case <-ackCh:
+				room.cancelPendingAck(requestID)
+				room.exitApplierGate()
+				return nil, false
+			case <-time.After(applierPreemptGrace()):
+			}
+			room.cancelPendingAck(requestID)
+			room.exitApplierGate()
+			room.waitRestoreResolved() // bounded to the restore-tx duration
+			slog.Info("collab: applier round-trip preempted by version restore; will re-elect",
+				"item_id", itemID,
+				"client_id", applier.id,
+			)
+			return nil, true
 		case <-time.After(timeouts[attempt]):
 			room.cancelPendingAck(requestID)
+			room.exitApplierGate()
 			slog.Warn("collab: applier_request timed out; will retry next applier",
 				"item_id", itemID,
 				"client_id", applier.id,
@@ -279,9 +344,9 @@ func (m *RoomManager) ApplyExternalContent(itemID string, markdown string) error
 	if !anyWriteSucceeded {
 		// applierMaxAttempts exhausted without ever putting bytes on
 		// the wire. Same recovery profile as no-applier-found.
-		return ErrNoApplierAvailable
+		return ErrNoApplierAvailable, false
 	}
-	return ErrAllAppliersTimedOut
+	return ErrAllAppliersTimedOut, false
 }
 
 // ErrManagerClosed exposes the manager's internal closed-flag error

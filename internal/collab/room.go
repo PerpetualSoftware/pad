@@ -164,6 +164,41 @@ type Room struct {
 	// from spoofing acks for someone else's request.
 	pendingMu   sync.Mutex
 	pendingAcks map[string]*pendingApplierAck
+
+	// --- version-restore ↔ designated-applier coordination (BUG-2276 residual 2) ---
+	//
+	// These serialise the designated-applier round-trip (ApplyExternalContent)
+	// against an in-progress version restore (ForceRefreshRoom) so that an applier
+	// ack can NEVER race the restore's transient frozen=true window — the residual-2
+	// clobber. The design is "release-on-resolve": a restore preempts + drains any
+	// in-flight applier round-trip BEFORE it freezes (so none is mid-ack-wait when
+	// the freeze lands), and a new applier round-trip WAITS for an in-progress
+	// restore to resolve (commit OR rollback) before it proceeds. Everything is
+	// released the instant the restore resolves, bounded to the restore-tx duration
+	// (plus a short applier-preempt grace), NEVER to the 30s applier timeout.
+	//
+	// restoreMu is a LEAF lock: it is never held while acquiring appendMu / room.mu
+	// / pendingMu, it never acquires them while held, and no socket I/O happens under
+	// it. Lock order stays itemLock → appendMu → room.mu, with restoreMu orthogonal.
+	restoreMu sync.Mutex
+	// restoreCond is signalled when applierInFlight reaches 0, so a restore draining
+	// in beginRestore wakes as soon as the last in-flight round-trip yields.
+	restoreCond *sync.Cond
+	// restoreActive is true from beginRestore (before the freeze) until resolveRestore
+	// (after commit/rollback/uncertain). While true, new applier round-trips block in
+	// enterApplierGate.
+	restoreActive bool
+	// restoreResolved is closed by resolveRestore when the active restore finishes;
+	// nil when no restore is in progress. Preempted / gate-blocked appliers wait on it.
+	restoreResolved chan struct{}
+	// restorePreempt is captured by each in-flight applier round-trip at gate entry and
+	// CLOSED by beginRestore to preempt those round-trips' ack-waits. resolveRestore
+	// installs a fresh open channel for the next cycle. Non-nil for the room's lifetime.
+	restorePreempt chan struct{}
+	// applierInFlight counts designated-applier round-trips currently between
+	// enterApplierGate and exitApplierGate (i.e. in their send + ack-wait window).
+	// beginRestore drains this to 0 before freezing.
+	applierInFlight int
 }
 
 // opLogStore is the store surface a Room needs. Pulling it into a
@@ -564,16 +599,17 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 		// appendMu across the whole prune+write tx, so a slow commit (or any slow
 		// AppendYjsUpdate) could stall the ack past ApplyExternalContent's
 		// timeout and spuriously fail even a NORMAL ack (Codex xhigh round 5).
-		// The un-synchronised read leaves one narrow residual (BUG-2276): if a
-		// restore ROLLS BACK while an in-flight applier ack races the transient
-		// frozen=true window, the ack is dropped even though the rolled-back
-		// conn's frames persisted, so the applier flow retries/falls back
-		// (re-applying its own markdown — a possible clobber of peer edits made
-		// in the retry window). That is a quadruple-narrow edge (concurrent
-		// external PATCH + exact ack timing + restore ROLLBACK, i.e. a DB commit
-		// error + peer edits in the retry window); fully closing it needs the
-		// applier flow serialised with the restore under itemLock (a larger
-		// rework with its own 30s-restore-stall cost). Tracked in BUG-2276.
+		//
+		// The frozen branch is now a DEFENCE-IN-DEPTH backstop, not the primary
+		// race guard. BUG-2276 residual 2 closed the ack-races-the-freeze window at
+		// the source: ForceRefreshRoom preempts + drains every in-flight applier
+		// round-trip (beginRestore) BEFORE it sets frozen=true, and new round-trips
+		// wait out an in-progress restore (enterApplierGate), so by the time a conn
+		// is frozen there is no pending applier ack left to drop. This read remains
+		// as a cheap guard for a conn that was frozen after being elected but whose
+		// round-trip had already yielded — dropping such a stray ack is correct
+		// (its request_id was cancelled, so routeApplierAck would no-op anyway).
+		// See restore_coord.go for the release-on-resolve mechanism.
 		if !rc.canWrite.Load() || rc.frozen.Load() {
 			slog.Warn("collab: applier_ack from read-only or frozen conn; ignoring",
 				"item_id", r.itemID,

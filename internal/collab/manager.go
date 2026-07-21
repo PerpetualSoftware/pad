@@ -839,7 +839,11 @@ func (m *RoomManager) getOrCreate(itemID string) *Room {
 		conns:         make(map[*websocket.Conn]*roomConn),
 		pendingAcks:   make(map[string]*pendingApplierAck),
 		onIdle:        m.markRoomGone,
+		// restorePreempt is captured by in-flight appliers and closed by a restore
+		// to preempt them (BUG-2276 residual 2); it must be non-nil from birth.
+		restorePreempt: make(chan struct{}),
 	}
+	r.restoreCond = sync.NewCond(&r.restoreMu)
 	m.rooms[itemID] = r
 	return r
 }
@@ -1060,6 +1064,18 @@ func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int6
 	m.mu.Lock()
 	room := m.rooms[itemID]
 	m.mu.Unlock()
+
+	// Restore-gate serialisation (BUG-2276 residual 2): BEFORE freezing, preempt +
+	// drain any in-flight designated-applier round-trip and block new ones, so no
+	// applier ack can race the frozen=true window below (the residual-2 clobber).
+	// beginRestore is bounded to the applier-preempt handshake, never the 30s applier
+	// timeout, and touches only the leaf restoreMu (no appendMu/room.mu held here).
+	// The deferred resolveRestore releases every parked/blocked round-trip on EVERY
+	// return path (rollback, uncertain, success), the instant this restore resolves.
+	if room != nil {
+		room.beginRestore()
+		defer room.resolveRestore()
+	}
 
 	// P1c — freeze inbound persistence for the duration: hold appendMu (which
 	// readLoop takes across its frozen/canWrite check + AppendYjsUpdate) AND mark
