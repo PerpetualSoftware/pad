@@ -17,8 +17,19 @@
 // writer (one `enter`/`leave` per active overlay via an `$effect`); the layout
 // is the only reader. This one-way split satisfies CONVE-1688 — a store must
 // never read state it also writes.
+import { untrack } from 'svelte';
+
 let overlayCount = $state(0);
 
+// The mutators are called from a PaneHost `$effect` (the only writer). A naive
+// `overlayCount += 1` READS `overlayCount` inside that tracked scope, so the
+// effect would take a reactive dependency on the very signal it writes —
+// enter() dirties the effect, which re-runs, enter()s again, ad infinitum:
+// `effect_update_depth_exceeded`, which aborts the flush and strands the rest
+// of the subtree's reactivity (BUG-2284 — the mobile pane rendered empty
+// because `paneMintForRoute` stopped recomputing). `untrack` the read so a
+// write never establishes that self-dependency; the write still notifies the
+// layout reader normally.
 export const paneOverlay = {
 	/** True while ≥1 mobile detail-pane overlay is active. Read by the workspace layout. */
 	get mobileOverlayActive() {
@@ -26,10 +37,10 @@ export const paneOverlay = {
 	},
 	/** Register a newly-active mobile overlay. Pair every call with `leave()`. */
 	enter() {
-		overlayCount += 1;
+		overlayCount = untrack(() => overlayCount) + 1;
 	},
 	/** Release a mobile overlay that stopped being active (unmount / breakpoint / close). */
 	leave() {
-		overlayCount = Math.max(0, overlayCount - 1);
+		overlayCount = Math.max(0, untrack(() => overlayCount) - 1);
 	},
 };

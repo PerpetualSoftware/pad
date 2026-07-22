@@ -10,6 +10,15 @@ beforeEach(() => {
 	vi.resetModules();
 });
 
+// NOTE (BUG-2284): the mutators `untrack` their `overlayCount` read so a
+// caller writing them from inside an `$effect` (PaneHost is the only writer)
+// can't take a reactive dependency on the signal it writes — which would loop
+// (`effect_update_depth_exceeded`) and abort the flush. That runaway only
+// manifests under the real browser scheduler, not jsdom/vitest, so the loop
+// regression is guarded by the E2E `pane-controller.spec.ts` mobile-overlay
+// tests. The ref-count semantics below still lock the mutators' behavior so the
+// untrack change can't silently break counting.
+
 describe('paneOverlay', () => {
 	it('starts inactive', async () => {
 		const { paneOverlay } = await import('./paneOverlay.svelte');
