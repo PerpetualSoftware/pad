@@ -178,6 +178,16 @@
 		(onNavigateAway ?? ((u: string) => goto(u, { replaceState: true })))(url);
 
 	let item = $state<Item | null>(null);
+	// The wsSlug the currently-held `item` was actually loaded under. Stamped
+	// lock-stepped with every `item` adoption in loadData, so it can never
+	// disagree with `item`'s workspace. Folded into `itemMatchesRef` below so the
+	// switch boundary is workspace-aware: on a REUSED (no-{#key}) ItemDetail
+	// instance, a cross-workspace nav that preserves `?item=<ref>` for a ref both
+	// workspaces own (ws1?item=TASK-1 → ws2?item=TASK-1) would otherwise keep the
+	// predicate true across the switch — leaving `collabKey` pinned to ws1's
+	// item.id and rawMode carried over until ws2's load resolves (IDEA-2135).
+	// In single-workspace usage this always equals `wsSlug` → byte-identical.
+	let loadedItemWsSlug = $state('');
 	let collection = $state<Collection | null>(null);
 	let loading = $state(true);
 	let error = $state('');
@@ -376,8 +386,15 @@
 	// stale provider for the previous item tears down the instant `ref`
 	// changes — before the new fetch resolves — instead of lingering with a
 	// destroyed editor (PLAN-2105 / TASK-2112 switch-safety; Codex).
+	// The workspace arm (`loadedItemWsSlug === wsSlug`) makes the switch boundary
+	// workspace-aware (IDEA-2135): a reused instance navigating ws1→ws2 with the
+	// same `?item=<ref>`, where both workspaces own that ref, flips the predicate
+	// false the instant `wsSlug` changes — before ws2's load resolves — so
+	// `collabKey`/`scrollReady`/`resolvedIdentity` and the rawMode-reset gate all
+	// tighten together instead of lingering on the previous workspace's item.
 	let itemMatchesRef = $derived(
 		item !== null &&
+			loadedItemWsSlug === wsSlug &&
 			(item.id === itemSlug ||
 				item.slug === itemSlug ||
 				`${item.collection_prefix}-${item.item_number}` === itemSlug),
@@ -1404,7 +1421,15 @@
 			// Gate the ITEM snapshot on itemGen too: a newer item write (e.g. the
 			// migration refetch) that bumped itemGen but not loadGeneration must
 			// not be reverted by this in-flight load (round 9).
-			if (myItemGen === itemGen) item = withInflightTags(itemData);
+			// Stamp the workspace this item was loaded under in lockstep with the
+			// item adoption (IDEA-2135) — same gate, so `loadedItemWsSlug` and
+			// `item` can never disagree about which workspace `item` belongs to.
+			// `reqWsSlug` (captured at load start) is authoritative here: `myGen`
+			// was already checked above, so no newer load has moved `wsSlug` on.
+			if (myItemGen === itemGen) {
+				item = withInflightTags(itemData);
+				loadedItemWsSlug = reqWsSlug;
+			}
 			// Cross-collection `?item=` safety (PLAN-2105 / TASK-2112). The
 			// Promise.all above optimistically fetched the collection by the
 			// route's `collSlug` — correct for the common (row-click) case,
