@@ -331,10 +331,11 @@
 	//    can't see these).
 	// Both DEFER to a native modal <dialog> (Share / Edit Collection / the
 	// Open-Children confirm — `Modal.svelte` uses `showModal()`), which renders
-	// in the top layer above the overlay and owns its own focus cycle. `<aside>`
-	// isn't a dialog, so this never exempts the pane itself; role="dialog" sheets
-	// (BottomSheet) sit BELOW the pane and stay behind it, so focus belongs on
-	// the pane, not them.
+	// in the top layer above the overlay and owns its own focus cycle. The pane
+	// itself now carries `role="dialog"` on mobile (TASK-2131), so the exempt
+	// selector excludes it via `:not(.item-pane)` — the trap must NOT treat the
+	// region it's guarding as an exempt surface; role="dialog" sheets (BottomSheet)
+	// sit BELOW the pane and stay behind it, so focus belongs on the pane, not them.
 	$effect(() => {
 		if (!browser) return;
 		if (!paneEl || !viewport.isMobile) return;

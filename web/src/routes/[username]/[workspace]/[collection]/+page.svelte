@@ -2189,9 +2189,12 @@
 			// (not bare `dialog`) because `Modal.svelte`'s native <dialog> is
 			// ALWAYS mounted and toggled via `showModal()`/`close()` — an
 			// existence check without `[open]` would false-positive on every page
-			// that merely HAS a Modal instance, open or not. The pane (<aside>)
-			// and graph drawer aren't dialogs, so this never blocks the chain.
-			if (document.querySelector('dialog[open], [role="dialog"]')) return;
+			// that merely HAS a Modal instance, open or not. The pane itself now
+			// carries `role="dialog"` on the mobile overlay (TASK-2131), so it is
+			// EXCLUDED via `:not(.item-pane)` — its ESC is owned by its own escape-
+			// stack handler, and counting it here would swallow ESC-to-close / pop.
+			// The graph drawer isn't a dialog, so the chain is otherwise unblocked.
+			if (document.querySelector('dialog[open], [role="dialog"]:not(.item-pane)')) return;
 			// A HELD key fires many auto-repeat keydowns (`e.repeat === true`).
 			// Consumed here, BEFORE any layer-close/pop decision, so a hold can
 			// never cascade through the chain — only the initial physical press

@@ -57,9 +57,16 @@ export function paneFocusables(
  *     must not read a focus / pointerdown on them as a master↔pane switch.
  * ONE definition shared by both call sites (PaneHost's mobile trap + the host
  * route's activePane classifier) so the two can't drift.
+ *
+ * `[role="dialog"]:not(.item-pane)` EXCLUDES the pane region itself (TASK-2131):
+ * the mobile overlay now carries `role="dialog"` (a true modal), but it is the
+ * region these consumers operate ON, not a foreign overlay to defer to — without
+ * the `:not`, `closest()` from any in-pane element would match the pane and
+ * wrongly mark the whole pane exempt (killing the mobile Tab trap and confusing
+ * the classifier). A genuinely nested dialog opened FROM the pane still matches.
  */
 export const PANE_EXEMPT_SURFACE_SELECTOR =
-	'dialog, [role="dialog"], [role="menu"], [role="listbox"], .block-context-menu';
+	'dialog, [role="dialog"]:not(.item-pane), [role="menu"], [role="listbox"], .block-context-menu';
 
 /** True when `el` (or an ancestor) is one of the {@link PANE_EXEMPT_SURFACE_SELECTOR} overlays. */
 export function inExemptSurface(el: Element | null | undefined): boolean {
