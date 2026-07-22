@@ -795,7 +795,12 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		// itself on open — so `document.activeElement` stays on the trigger
 		// button back inside `.item-pane` while the sheet is showing.
 		await pane.locator('button.trigger-btn[title="Quick actions"]').click();
-		const sheet = page.locator('[role="dialog"]', { hasText: 'Quick actions' });
+		// Target the sheet by ACCESSIBLE NAME, not `[role="dialog"]` + text: on the
+		// mobile overlay the pane itself is now `role="dialog"` (TASK-2131) and it
+		// CONTAINS the sheet, so a text filter matches both the pane and the sheet
+		// (strict-mode violation). The pane's accessible name is "Item detail"; the
+		// BottomSheet's is "Quick actions" (its `aria-labelledby` heading) — unique.
+		const sheet = page.getByRole('dialog', { name: 'Quick actions' });
 		await expect(sheet).toBeVisible();
 
 		// ESC must be owned entirely by the sheet (it has its own window
@@ -1175,6 +1180,10 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await expect.poll(() => page.url()).not.toContain(`item=${a.slug}`);
 	});
 
+	// Also the regression guard for BUG-2284: the mobile overlay's `paneOverlay`
+	// ref-count effect must not self-loop (`effect_update_depth_exceeded`) and
+	// strand `paneMintForRoute` — if it does, the pane renders EMPTY and the Back
+	// chevron below never mounts.
 	test('Back chevron: works from the mobile full-screen overlay too', async ({
 		page,
 		fixture,
