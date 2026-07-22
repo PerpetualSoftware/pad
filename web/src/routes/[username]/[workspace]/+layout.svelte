@@ -12,6 +12,7 @@
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { registerWorkspaceTools, type WebMcpHandle } from '$lib/webmcp/register';
+	import { paneOverlay } from '$lib/stores/paneOverlay.svelte';
 	import ConnectBanner from '$lib/components/ConnectBanner.svelte';
 	import VerifyEmailBanner from '$lib/components/VerifyEmailBanner.svelte';
 	import BottomNav from '$lib/components/layout/BottomNav.svelte';
@@ -254,8 +255,21 @@
 	workspaceName={workspaceStore.current?.name ?? ''}
 />
 
-<MobileContextBar />
+<!--
+	App-shell chrome (PLAN-2105 / TASK-2131). While a mobile detail-pane overlay
+	is up (`paneOverlay.mobileOverlayActive`, set by PaneHost) these two chrome
+	siblings sit BEHIND the full-screen modal, so they're marked `inert` — out of
+	the focus order and the screen-reader tree. `display: contents` wrappers carry
+	the `inert` (which cascades to descendants) without adding a box, so the fixed
+	context bar / bottom nav render exactly as before. Off mobile / pane closed the
+	signal is false and the attribute is absent, so nothing changes on desktop.
+-->
+<div style="display: contents" inert={paneOverlay.mobileOverlayActive}>
+	<MobileContextBar />
+</div>
 
 {@render children()}
 
-<BottomNav />
+<div style="display: contents" inert={paneOverlay.mobileOverlayActive}>
+	<BottomNav />
+</div>

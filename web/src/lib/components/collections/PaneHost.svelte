@@ -26,6 +26,7 @@
 	import { onDestroy, untrack } from 'svelte';
 	import ItemDetail from '$lib/components/items/ItemDetail.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import { paneOverlay } from '$lib/stores/paneOverlay.svelte';
 	import { paneFocusables, nextTrapTarget, inExemptSurface } from '$lib/collections/paneFocus';
 	import type { PaneTarget } from '$lib/types';
 
@@ -377,6 +378,25 @@
 		};
 	});
 
+	// App-shell isolation for the mobile modal (PLAN-2105 / TASK-2131). The
+	// focus trap + `aria-modal` above keep KEYBOARD focus in the overlay, but a
+	// JS trap can't constrain a screen-reader virtual cursor and `aria-modal`
+	// alone is unevenly honored — so the app-shell chrome the layout renders
+	// (`MobileContextBar` + `BottomNav`) must physically leave the a11y tree
+	// while the overlay is up. That chrome lives in `+layout.svelte`, ABOVE this
+	// host, so we can't `inert` it by prop; instead register the active overlay
+	// in a shared store the layout reads (the list column, in-DOM here, is
+	// already inerted directly). Gated on the SAME condition as the trap
+	// (`viewport.isMobile && openItemRef`); the cleanup releases the ref on
+	// unmount and on any dep change (breakpoint crossing, `openItemRef`
+	// clearing), so desktop and closed states never inert the chrome.
+	$effect(() => {
+		if (!browser) return;
+		if (!openItemRef || !viewport.isMobile) return;
+		paneOverlay.enter();
+		return () => paneOverlay.leave();
+	});
+
 	// Desktop focusin backstop (PLAN-2154 Architecture C / R1, TASK-2162) — the
 	// NARROWED desktop mirror of the mobile trap's focusin catch-all above.
 	// `focusPaneRegion` (fired synchronously at each hop) is the primary R1
@@ -545,14 +565,21 @@
 	first paint when there's no stored value.
 -->
 <!--
-	`aside` gives the pane complementary-landmark semantics; `aria-label`
-	names it so a screen reader announces the region on entry (TASK-2122).
-	`tabindex="-1"` makes it a programmatic focus target (not a Tab stop):
-	Tab from the list moves focus here, and the mobile overlay moves focus
-	here on open (then traps it). Desktop keeps focus on the list so j/k
-	navigation is uninterrupted. Focus-in (mobile), the Tab bridge, ESC
-	return-to-list, and the mobile focus trap are wired in the effects +
-	the host's keydown handler.
+	`aria-label` names the pane so a screen reader announces the region on
+	entry (TASK-2122). `tabindex="-1"` makes it a programmatic focus target
+	(not a Tab stop): Tab from the list moves focus here, and the mobile
+	overlay moves focus here on open (then traps it). Desktop keeps focus on
+	the list so j/k navigation is uninterrupted. Focus-in (mobile), the Tab
+	bridge, ESC return-to-list, and the mobile focus trap are wired in the
+	effects + the host's keydown handler.
+
+	Role is viewport-dependent (PLAN-2105 / TASK-2131). On the DESKTOP split
+	the pane is a non-modal companion to the list, so it stays a bare `<aside>`
+	(implicit `complementary` landmark) with no `aria-modal`. On MOBILE it's a
+	full-screen overlay covering everything, so it becomes a `role="dialog"`
+	`aria-modal="true"` modal — paired with the app-shell chrome being inerted
+	(the overlay effect above) and the mobile focus trap for a complete modal.
+	`aria-label` supplies the required accessible name in the dialog case.
 -->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <aside
@@ -560,6 +587,8 @@
 	bind:this={paneEl}
 	tabindex="-1"
 	aria-label="Item detail"
+	role={viewport.isMobile ? 'dialog' : undefined}
+	aria-modal={viewport.isMobile ? 'true' : undefined}
 	style={paneWidth != null ? `--pane-width: ${paneWidth}px` : undefined}
 >
 	{#if paneMintForRoute}
