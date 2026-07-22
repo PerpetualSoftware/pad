@@ -18,6 +18,7 @@
 -->
 <script lang="ts">
 	import type { Snippet } from 'svelte';
+	import { paneFocusables, nextTrapTarget } from '$lib/collections/paneFocus';
 
 	interface Props {
 		open: boolean;
@@ -35,11 +36,74 @@
 	const uid = $props.id();
 	const headingId = `bottom-sheet-heading-${uid}`;
 
+	// bind:this the sheet panel so the open/close effect can move focus INTO it
+	// and the Tab handler can cycle focus WITHIN it. `$state` so the effect
+	// re-runs once the `{#if open}` block mounts the element (mirrors
+	// Modal.svelte's `dialogEl`).
+	let sheetEl = $state<HTMLElement>();
+
+	// Plain `let` (NOT $state, per CONVE-1688): focus bookkeeping read/written
+	// only inside the effect + teardown, never in reactive position.
+	let previouslyFocused: HTMLElement | null = null;
+
+	function restoreFocus() {
+		if (previouslyFocused && document.contains(previouslyFocused)) {
+			previouslyFocused.focus();
+		}
+		previouslyFocused = null;
+	}
+
+	// Move focus INTO the sheet when it opens, and restore it to the trigger on
+	// close (BUG-2130). Without this the sheet is a `role="dialog"` that never
+	// takes focus: ESC reaches the trigger's layer underneath (closing THAT),
+	// and Tab escapes the sheet. Reads `open` (prop) + `sheetEl` ($state); writes
+	// only the plain `previouslyFocused`, so no $state is both read and written
+	// here and the effect can't self-invalidate (mirrors Modal.svelte).
+	$effect(() => {
+		const el = sheetEl;
+		if (open && el) {
+			if (previouslyFocused === null) {
+				previouslyFocused = (document.activeElement as HTMLElement | null) ?? null;
+			}
+			// Focus the panel itself (tabindex=-1) rather than a control inside —
+			// avoids implying a selection in the option-list sheets, and lets a
+			// screen reader announce the dialog. Tab then steps to the first
+			// control. Guarded so a benign effect re-run can't yank focus back off
+			// a control the user has already tabbed to.
+			if (!el.contains(document.activeElement)) {
+				el.focus({ preventScroll: true });
+			}
+		} else if (!open) {
+			restoreFocus();
+		}
+	});
+
+	// If the component is torn down while open (e.g. a consumer that only mounts
+	// the sheet on mobile), still return focus to the trigger.
+	$effect(() => () => restoreFocus());
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (!open) return;
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			onclose();
+			return;
+		}
+		// Trap Tab within the sheet: without this, Tab past the last control
+		// escapes into the obscured content behind it (BUG-2130). Reuses the
+		// pane's tested trap math (paneFocus.ts) so the two focus traps can't
+		// drift.
+		if (e.key === 'Tab' && sheetEl) {
+			const target = nextTrapTarget(
+				paneFocusables(sheetEl),
+				document.activeElement,
+				e.shiftKey,
+				sheetEl
+			);
+			if (target) {
+				e.preventDefault();
+				target.focus({ preventScroll: true });
+			}
 		}
 	}
 </script>
@@ -51,6 +115,7 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="bs-overlay" onclick={onclose}>
 		<div
+			bind:this={sheetEl}
 			class="bs-sheet"
 			role="dialog"
 			aria-modal="true"
