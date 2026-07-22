@@ -4,6 +4,7 @@ import {
 	paneFocusables,
 	nextTrapTarget,
 	resolvePaneReturnTarget,
+	inExemptSurface,
 } from './paneFocus';
 
 // jsdom has no layout engine, so `offsetParent` / `getClientRects` can't gate
@@ -61,6 +62,47 @@ describe('paneFocusables', () => {
 
 	it('the selector includes positive/zero tabindex but not -1', () => {
 		expect(PANE_FOCUSABLE_SELECTOR).toContain('[tabindex]:not([tabindex="-1"])');
+	});
+});
+
+describe('inExemptSurface', () => {
+	it('does NOT treat the pane region itself as exempt (TASK-2131)', () => {
+		// The mobile overlay carries role="dialog"; an in-pane control must not be
+		// seen as an exempt foreign surface (that killed the mobile Tab trap and
+		// confused the focus-follows classifier). Excluded via `:not(.item-pane)`.
+		const root = mount(`
+			<aside class="item-pane" role="dialog" aria-modal="true">
+				<button id="in-pane">edit</button>
+			</aside>
+		`);
+		expect(inExemptSurface(root.querySelector('#in-pane'))).toBe(false);
+	});
+
+	it('treats a nested dialog/menu opened FROM the pane as exempt', () => {
+		// A real overlay (e.g. a BottomSheet or field-select menu) that portals in
+		// while the pane is open still owns its own focus/keyboard.
+		const root = mount(`
+			<aside class="item-pane" role="dialog">
+				<div role="menu"><button id="menu-item">move to…</button></div>
+			</aside>
+			<div role="dialog" id="sheet"><button id="sheet-btn">confirm</button></div>
+		`);
+		expect(inExemptSurface(root.querySelector('#menu-item'))).toBe(true);
+		expect(inExemptSurface(root.querySelector('#sheet-btn'))).toBe(true);
+	});
+
+	it('treats a native <dialog> and standalone overlays as exempt; nothing else', () => {
+		const root = mount(`
+			<dialog open><button id="native">ok</button></dialog>
+			<div role="listbox"><div id="opt">option</div></div>
+			<div class="block-context-menu"><button id="ctx">turn into</button></div>
+			<button id="plain">plain</button>
+		`);
+		expect(inExemptSurface(root.querySelector('#native'))).toBe(true);
+		expect(inExemptSurface(root.querySelector('#opt'))).toBe(true);
+		expect(inExemptSurface(root.querySelector('#ctx'))).toBe(true);
+		expect(inExemptSurface(root.querySelector('#plain'))).toBe(false);
+		expect(inExemptSurface(null)).toBe(false);
 	});
 });
 

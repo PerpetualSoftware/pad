@@ -430,8 +430,11 @@
 		const target = e.target as HTMLElement | null;
 		// Text-editing targets own ESC locally — don't hijack into a layer-close.
 		if (isTextEntryTarget(target)) return;
-		// A native <dialog> / role="dialog" sheet owns its own ESC.
-		if (document.querySelector('dialog[open], [role="dialog"]')) return;
+		// A native <dialog> / role="dialog" sheet owns its own ESC. The pane's own
+		// mobile overlay is `role="dialog"` too (TASK-2131) but is EXCLUDED via
+		// `:not(.item-pane)` — it's the layer this ESC is meant to close, handled
+		// through the shared escape stack, not a foreign modal to defer to.
+		if (document.querySelector('dialog[open], [role="dialog"]:not(.item-pane)')) return;
 		// A HELD key auto-repeats; only the initial physical press acts.
 		if (e.repeat) {
 			e.preventDefault();

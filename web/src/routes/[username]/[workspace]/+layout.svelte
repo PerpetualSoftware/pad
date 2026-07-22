@@ -12,6 +12,7 @@
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { registerWorkspaceTools, type WebMcpHandle } from '$lib/webmcp/register';
+	import { paneOverlay } from '$lib/stores/paneOverlay.svelte';
 	import ConnectBanner from '$lib/components/ConnectBanner.svelte';
 	import VerifyEmailBanner from '$lib/components/VerifyEmailBanner.svelte';
 	import BottomNav from '$lib/components/layout/BottomNav.svelte';
@@ -246,16 +247,34 @@
 	}
 </script>
 
-<VerifyEmailBanner />
+<!--
+	App-shell chrome (PLAN-2105 / TASK-2131). While a mobile detail-pane overlay
+	is up (`paneOverlay.mobileOverlayActive`, set by PaneHost) every app-shell
+	sibling the layout renders sits BEHIND the full-screen modal, so all of them
+	are marked `inert` — out of the focus order and the screen-reader tree.
+	`aria-modal` on the pane isn't reliably honored on its own, so the background
+	must physically leave the a11y tree; that has to cover the banners
+	(VerifyEmailBanner's Resend, ConnectBanner's action) as well as the context
+	bar / bottom nav, or their controls stay reachable behind the modal. Only
+	`{@render children()}` — which contains the pane itself — is left interactive.
+	`display: contents` wrappers carry the `inert` (which cascades to descendants)
+	without adding a box, so the fixed chrome renders exactly as before. Off mobile
+	/ pane closed the signal is false and the attribute is absent — no desktop change.
+-->
+<div style="display: contents" inert={paneOverlay.mobileOverlayActive}>
+	<VerifyEmailBanner />
 
-<ConnectBanner
-	{wsSlug}
-	serverUrl={typeof window !== 'undefined' ? window.location.origin : ''}
-	workspaceName={workspaceStore.current?.name ?? ''}
-/>
+	<ConnectBanner
+		{wsSlug}
+		serverUrl={typeof window !== 'undefined' ? window.location.origin : ''}
+		workspaceName={workspaceStore.current?.name ?? ''}
+	/>
 
-<MobileContextBar />
+	<MobileContextBar />
+</div>
 
 {@render children()}
 
-<BottomNav />
+<div style="display: contents" inert={paneOverlay.mobileOverlayActive}>
+	<BottomNav />
+</div>
