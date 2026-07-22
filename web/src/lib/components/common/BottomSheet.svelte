@@ -84,6 +84,15 @@
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (!open) return;
+		// Only the FRONTMOST (innermost) open sheet handles keys. A nested child
+		// sheet — e.g. the emoji picker opened from inside the Quick Actions sheet
+		// — renders inside our content, so while one is open IT owns Escape/Tab.
+		// Every open sheet listens on `window`, so without this both handlers fire
+		// and a single Escape closes two layers (BUG-2130 layer isolation, nested
+		// case). Order-independent by design: a `defaultPrevented` check can't
+		// work here because the outer sheet's window listener is registered first
+		// and fires before the inner's.
+		if (sheetEl?.querySelector('.bs-sheet')) return;
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			onclose();

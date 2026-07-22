@@ -125,6 +125,27 @@ describe('BottomSheet.svelte', () => {
 		expect(evt.defaultPrevented).toBe(true);
 	});
 
+	it('a sheet containing a nested open sheet stays out of Escape (only the inner closes)', async () => {
+		// Reproduces the nested case (Quick Actions sheet → emoji-picker sheet):
+		// the inner sheet renders DOM-nested inside the outer's content. Both
+		// listen on window, so a naive handler would close BOTH on one Escape.
+		// Here the outer's children include a nested `.bs-sheet`, so the outer
+		// must NOT fire its onclose — the innermost sheet owns Escape.
+		const nested = createRawSnippet(() => ({
+			render: () =>
+				`<div><div class="bs-overlay"><div class="bs-sheet" role="dialog" aria-modal="true" tabindex="-1"><button type="button">Inner</button></div></div></div>`
+		}));
+		const onclose = vi.fn();
+		render(BottomSheet, { props: baseProps({ open: true, onclose, children: nested }) });
+		await tick();
+		flushSync();
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		// Outer sheet stayed out: its onclose did not fire (the inner sheet, were
+		// it a real BottomSheet, would have closed via its own window listener).
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
 	it('restores focus to the previously-focused trigger on close', async () => {
 		const trigger = document.createElement('button');
 		trigger.type = 'button';
