@@ -112,8 +112,28 @@
 		newIcon = '';
 	}
 
-	function handleOpenCreateForm() {
+	function handleOpenCreateForm(e: MouseEvent) {
+		// stopPropagation, mirroring handleTriggerClick (BUG-2281): flipping
+		// showCreateForm unmounts the footer's {:else} branch (this very
+		// button). Svelte 5 flushSyncs after a delegated event handler, so by
+		// the time this click bubbles on to the <svelte:window> click-outside
+		// handler the button is DETACHED — `target.closest('.quick-actions-menu')`
+		// then returns null, and handleWindowClick treats it as an outside
+		// click and closes the whole menu (open=false + resetCreateForm),
+		// wiping the create form the instant it opens. Stopping propagation
+		// keeps the click from reaching the window handler at all.
+		e.stopPropagation();
 		showCreateForm = true;
+	}
+
+	function handleCancelCreateForm(e: MouseEvent) {
+		// Same detach-then-window-close race as handleOpenCreateForm (BUG-2281):
+		// resetCreateForm unmounts the create form (this Cancel button), so
+		// without stopPropagation the bubbling click would hit the window
+		// handler on a detached target and close the whole menu instead of
+		// returning to the action list.
+		e.stopPropagation();
+		resetCreateForm();
 	}
 
 	function handleManage() {
@@ -279,7 +299,7 @@
 			Template variables: {'{ref}'} {'{title}'} {'{status}'} {'{priority}'} {'{collection}'} {'{content}'} {'{fields}'}
 		</div>
 		<div class="qa-actions">
-			<button class="qa-btn qa-btn-cancel" type="button" onclick={resetCreateForm}>
+			<button class="qa-btn qa-btn-cancel" type="button" onclick={handleCancelCreateForm}>
 				Cancel
 			</button>
 			<button

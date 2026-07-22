@@ -4284,18 +4284,15 @@
 			     writes are confined to the active side, the prompts stay on both. -->
 			{#if collection && (quickActions.length > 0 || isOwner)}
 				<!-- {#key itemSlug}: structural containment (PLAN-2105 / TASK-2112).
-				     Remount this item-scoped menu on every item switch so any
-				     in-flight quick-action continuation is discarded. Keyed on
-				     itemSlug (the URL/ref identity), NOT item.id, so it resets the
-				     instant the ref changes rather than waiting for B to load. -->
+				     Remount this item-scoped menu on every item switch so the
+				     child's OWN local state (open form, in-progress inputs) resets.
+				     Keyed on itemSlug (the URL/ref identity), NOT item.id, so it
+				     resets the instant the ref changes rather than waiting for B to
+				     load. NOTE: the remount does NOT cancel a destroyed instance's
+				     in-flight save promise — that promise still fires
+				     oncollectionupdated into this persistent parent (see the
+				     switch-safety note on the callback). -->
 				{#key itemSlug}
-					<!-- Capture the item identity at THIS render (frozen for this
-					     {#key} instance). A destroyed instance's in-flight async
-					     still fires its callback into the PERSISTENT parent, and
-					     its OWN prop check passes (frozen at its item) — so the
-					     PARENT-side guard below drops the write when the pane has
-					     since moved on (PLAN-2105 / TASK-2112; coordinator). -->
-					{@const keyedSlug = itemSlug}
 					<QuickActionsMenu
 						actions={quickActions}
 						{item}
@@ -4308,7 +4305,28 @@
 							editCollectionOpen = true;
 						}}
 						oncollectionupdated={(updated) => {
-							if (keyedSlug !== itemSlug) return;
+							// Switch-safety note (BUG-2280 — investigated, NOT a live
+							// bug; do NOT add a template-side {@const keyedSlug =
+							// itemSlug} "snapshot" fence here). A quick-action save can
+							// resolve AFTER an A->B switch and fire this callback from a
+							// destroyed {#key} instance, but it's already safe by two
+							// independent layers, so no parent fence is needed:
+							//   1. QuickActionsMenu's OWN child-side guard
+							//      (`collection?.id !== baseCollection.id`, captured
+							//      pre-await) drops the callback on a CROSS-collection
+							//      switch: a destroyed instance's `collection` prop reads
+							//      the LIVE parent value (B's collection), not a frozen
+							//      A — so the guard fails and oncollectionupdated is
+							//      never invoked. (A {@const} snapshot would NOT freeze
+							//      in Svelte 5 — it's a lazily-pulled derived that reads
+							//      the current itemSlug — so a keyedSlug fence here is a
+							//      no-op: the literal BUG-2129 trap. Verified empirically.)
+							//   2. On a SAME-collection switch the callback DOES fire,
+							//      but `updated` is that same collection, so assigning it
+							//      is correct; and loadData's collection write
+							//      (`collGen === collectionGen || collection?.id !==
+							//      collData.id`) forces the right collection regardless
+							//      of the collectionGen bump below.
 							// Bump the unified fence so an in-flight stale load/refresh
 							// can't revert this fresh write (Codex).
 							collectionGen++;
