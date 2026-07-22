@@ -14,6 +14,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -1450,6 +1451,15 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			// directWrite callback is also final — a retry would just lose
 			// the same race again.
 			writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
+			return
+		} else if errors.Is(err, collab.ErrApplierAmbiguous) {
+			// BUG-2276 residual 2 (P1, mixed-deploy window): a legacy (non-bracket-
+			// capable) applier was caught by a concurrent version restore and its
+			// outcome can't be confirmed. FAIL-SAFE — do NOT fall through to a direct
+			// write (which could clobber the live doc / lose the write); return a
+			// retryable 409 so the external caller retries once clients converge.
+			writeError(w, http.StatusConflict, "applier_ambiguous",
+				"A concurrent version restore made this edit's outcome ambiguous; please retry.")
 			return
 		}
 		// Any other error path (e.g. ErrAllAppliersTimedOut, retry

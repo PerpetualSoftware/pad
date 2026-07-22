@@ -320,7 +320,7 @@ var ErrStaleSeedFenceUnavailable = errors.New("collab: durable restore-boundary 
 // Returns whatever error caused the WebSocket to close, or nil on a
 // normal close. The handler typically logs but doesn't act on the
 // return value: the connection is gone either way.
-func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, contentSeq int64, canWrite bool, onRegistered func()) error {
+func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, contentSeq int64, canWrite bool, bracketCapable bool, onRegistered func()) error {
 	// Gate Add on the closed flag under m.mu so a late Join (e.g. a
 	// hijacked WS handler that didn't enter Join until AFTER Close
 	// returned) can't sneak past the drain barrier.
@@ -462,6 +462,7 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 			connectedAt: time.Now(),
 		}
 		rc.canWrite.Store(canWrite)
+		rc.bracketCapable.Store(bracketCapable)
 
 		if err := room.addConn(rc); err != nil {
 			itemLock.Unlock()
@@ -840,6 +841,8 @@ func (m *RoomManager) getOrCreate(itemID string) *Room {
 		pendingAcks:   make(map[string]*pendingApplierAck),
 		onIdle:        m.markRoomGone,
 	}
+	// restoreCond guards the admission drain in beginRestore (BUG-2276 residual 2).
+	r.restoreCond = sync.NewCond(&r.restoreMu)
 	m.rooms[itemID] = r
 	return r
 }
@@ -1061,6 +1064,18 @@ func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int6
 	room := m.rooms[itemID]
 	m.mu.Unlock()
 
+	// Restore-gate serialisation (BUG-2276 residual 2): mark a restore in progress so
+	// a NEW applier round-trip blocks in enterApplierGate until this restore resolves.
+	// The deferred resolveRestore releases every gate-blocked / finalized-and-parked
+	// round-trip on EVERY return path (rollback, uncertain, success), the instant this
+	// restore resolves. beginRestore never blocks (no drain) — in-flight round-trips
+	// are finalized by the freeze below. restoreMu is a leaf lock (no appendMu/room.mu
+	// held here).
+	if room != nil {
+		room.beginRestore()
+		defer room.resolveRestore()
+	}
+
 	// P1c — freeze inbound persistence for the duration: hold appendMu (which
 	// readLoop takes across its frozen/canWrite check + AppendYjsUpdate) AND mark
 	// every conn frozen, so no live readLoop can append a frame after the prune
@@ -1068,13 +1083,15 @@ func (m *RoomManager) ForceRefreshRoom(itemID string, commit func() (int64, int6
 	// already read a frame and is queued on appendMu will, on acquiring it, see
 	// frozen=true and drop the frame. Lock order: itemLock → appendMu → room.mu.
 	// No socket I/O happens under appendMu.
+	//
+	// freezeAndFinalizePending ALSO finalizes every in-flight designated-applier
+	// round-trip from durable op-log state, atomic with the freeze (BUG-2276
+	// residual 2): a round-trip whose setContent frame durably landed BEFORE this
+	// freeze resolves to success; one whose frame is still in flight (and will now be
+	// dropped) resolves to retry. No applier ack can race the frozen window.
 	if room != nil {
 		room.appendMu.Lock()
-		room.mu.Lock()
-		for _, rc := range room.conns {
-			rc.frozen.Store(true)
-		}
-		room.mu.Unlock()
+		room.freezeAndFinalizePending()
 	}
 
 	// The commit reads the pre-prune MAX(op-log), writes items.content=restored +

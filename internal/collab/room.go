@@ -103,6 +103,33 @@ type roomConn struct {
 	// path; on success the conn is force-closed instead. atomic.Bool so the
 	// restore goroutine's write can't race readLoop's read.
 	frozen atomic.Bool
+
+	// lastPersistedOpID + frozenDropSeq are the DURABLE persistence-correlation
+	// signals for the designated-applier round-trip (BUG-2276 residual 2). Both
+	// are mutated ONLY by this conn's readLoop under appendMu:
+	//   - lastPersistedOpID holds the op-log id of the last sync frame this conn
+	//     PERSISTED. It advances only for frames that actually landed
+	//     (AppendYjsUpdate returned id>0 while UNFROZEN), so it is a monotonic
+	//     durable high-water for the conn.
+	//   - frozenDropSeq counts sync frames this conn had DROPPED because it was
+	//     frozen (a version restore froze it mid-apply). It advances only on a
+	//     frozen drop, never on a viewer/canWrite drop.
+	// The applier flow captures both at apply_start (the bracket baseline). A
+	// restore's finalization reads lastPersistedOpID UNDER appendMu (atomic with
+	// setting frozen) to decide, durably, whether the applier's setContent frame
+	// landed BEFORE the freeze; the ack path reads frozenDropSeq to decide whether
+	// it was dropped by a freeze. See restore_coord.go for the soundness argument.
+	// atomic so the finalizing/ack goroutines can read them without appendMu.
+	lastPersistedOpID atomic.Int64
+	frozenDropSeq     atomic.Int64
+
+	// bracketCapable reports whether this connection's client sends the
+	// applier_apply_start bracket (BUG-2276 residual 2). Announced at Join via
+	// `?applier_bracket=1`. pickApplier prefers capable conns; a round-trip elected
+	// on a NON-capable (legacy) conn that a restore can't confirm resolves to an
+	// AMBIGUOUS outcome (fail-safe: the external write is retried, never re-applied /
+	// clobbered). Set once at Join; read on the election + finalization paths.
+	bracketCapable atomic.Bool
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -164,6 +191,38 @@ type Room struct {
 	// from spoofing acks for someone else's request.
 	pendingMu   sync.Mutex
 	pendingAcks map[string]*pendingApplierAck
+
+	// --- version-restore ↔ designated-applier coordination (BUG-2276 residual 2) ---
+	//
+	// These serialise the designated-applier round-trip (ApplyExternalContent)
+	// against an in-progress version restore (ForceRefreshRoom). A NEW round-trip
+	// WAITS for an in-progress restore to resolve (commit OR rollback) before it
+	// elects (enterApplierGate); an ALREADY in-flight round-trip is FINALIZED by the
+	// restore under appendMu, atomic with the freeze, using the durable
+	// persistence-correlation signal (see restore_coord.go + the roomConn atomics).
+	// So an applier ack can never race the frozen window: the applier's fate is
+	// decided from DURABLE op-log state, not timing.
+	//
+	// restoreMu is a LEAF lock: never held while acquiring appendMu / room.mu /
+	// pendingMu, and never acquires them while held. Lock order stays itemLock →
+	// appendMu → room.mu, with restoreMu orthogonal.
+	restoreMu sync.Mutex
+	// restoreActive is true from beginRestore (before the freeze) until resolveRestore
+	// (after commit/rollback/uncertain). While true, new applier round-trips block in
+	// enterApplierGate.
+	restoreActive bool
+	// restoreResolved is closed by resolveRestore when the active restore finishes;
+	// nil when no restore is in progress. Gate-blocked / finalized-and-parked appliers
+	// wait on it.
+	restoreResolved chan struct{}
+	// admittedUnregistered counts round-trips that passed enterApplierGate but have
+	// NOT yet finished registering their pending-ack entry (the enter→register gap).
+	// beginRestore drains this to 0 BEFORE the freeze scan so no admitted round-trip
+	// is missed by freezeAndFinalizePending (BUG-2276 residual 2, P1). The gap is
+	// mutex-only (pickApplier + registerPendingAck, no I/O), so the drain is
+	// microseconds — never the applier round-trip. restoreCond signals it reaching 0.
+	restoreCond          *sync.Cond
+	admittedUnregistered int
 }
 
 // opLogStore is the store surface a Room needs. Pulling it into a
@@ -391,7 +450,16 @@ func (r *Room) readLoop(rc *roomConn) error {
 			// instead of appending it AFTER the prune (which would survive as
 			// a stale post-boundary op). It is a separate flag from canWrite
 			// so the auth revalidation loop can't thaw it mid-restore.
-			if rc.frozen.Load() || !rc.canWrite.Load() {
+			if rc.frozen.Load() {
+				// Frozen by an in-progress version restore: this frame is dropped.
+				// Record the drop (BUG-2276 residual 2) so the applier flow's ack
+				// path can tell, durably, that a frame in this conn's apply bracket
+				// was dropped by the freeze → the external content did NOT land.
+				rc.frozenDropSeq.Add(1)
+				r.appendMu.Unlock()
+				continue
+			}
+			if !rc.canWrite.Load() {
 				r.appendMu.Unlock()
 				continue
 			}
@@ -410,6 +478,14 @@ func (r *Room) readLoop(rc *roomConn) error {
 				// even when persistence is blipping. persistedID == 0
 				// → no cursor frame is emitted by writeLoop for this
 				// event (we'd be advertising a fictional id).
+			}
+			if persistedID > 0 {
+				// Advance the conn's durable high-water (BUG-2276 residual 2). Only
+				// frames that actually landed advance it, so a restore's finalization
+				// can read it (under appendMu) to know this conn's applier frame
+				// persisted BEFORE the freeze. Still under appendMu, so it is ordered
+				// with the finalization's read.
+				rc.lastPersistedOpID.Store(persistedID)
 			}
 			r.bus.Publish(OpEvent{
 				ItemID:   r.itemID,
@@ -523,10 +599,10 @@ func (r *Room) writeLoop(rc *roomConn) {
 	}
 }
 
-// handleControlMessage dispatches a TextMessage frame received from
-// a peer. Today the only valid type is applier_ack (TASK-1257); any
-// other type is dropped silently so a future client extension can
-// add new control types without older servers blowing up.
+// handleControlMessage dispatches a TextMessage frame received from a peer:
+// applier_apply_start / applier_ack (the designated-applier bracket, TASK-1257 +
+// BUG-2276 residual 2). Unknown types are dropped silently so a future client
+// extension can add new control types without older servers blowing up.
 func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 	var ctl ControlMessage
 	if err := json.Unmarshal(data, &ctl); err != nil {
@@ -536,6 +612,23 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 		return
 	}
 	switch ctl.Type {
+	case ControlMessageApplierApplyStart:
+		if ctl.RequestID == "" {
+			return
+		}
+		// A read-only participant can never be a legitimate applier (pickApplier
+		// excludes non-writers), so ignore a bracket-start from one.
+		if !rc.canWrite.Load() {
+			return
+		}
+		// Open the durable persistence bracket for this request (BUG-2276
+		// residual 2). The client sends apply_start IMMEDIATELY before setContent
+		// (synchronously), so capturing this conn's high-water + frozen-drop count
+		// now means the bracket contains EXACTLY the setContent frame — attribution
+		// is airtight against concurrent typing. Processed in readLoop order (before
+		// the setContent frame), even while frozen (control frames are never
+		// frozen-dropped). See restore_coord.go.
+		r.startApplierApply(ctl.RequestID, rc)
 	case ControlMessageApplierAck:
 		if ctl.RequestID == "" {
 			return
@@ -549,40 +642,22 @@ func (r *Room) handleControlMessage(rc *roomConn, data []byte) {
 		// return nil, skip the PATCH handler's direct-write fallback,
 		// and silently lose the external edit.
 		//
-		// A frozen conn (mid version-restore, BUG-2264) is rejected for the
-		// same reason AND to close the pick-then-freeze race: pickApplier may
-		// have elected this conn while it was writable, then ForceRefreshRoom
-		// froze it before its editor produced the sync frames. readLoop drops
-		// those frames while frozen, so accepting the ack would falsely report
-		// success. Rejecting it leaves the request pending until the applier
-		// flow times out and retries (pickApplier now skips frozen), so the
-		// caller's direct-write fallback owns the external edit.
-		//
-		// This is a plain atomic read, NOT taken under appendMu. Synchronising
-		// it with appendMu (to observe the freeze's FINAL state) would couple
-		// the ack path to the restore commit's duration — ForceRefreshRoom holds
-		// appendMu across the whole prune+write tx, so a slow commit (or any slow
-		// AppendYjsUpdate) could stall the ack past ApplyExternalContent's
-		// timeout and spuriously fail even a NORMAL ack (Codex xhigh round 5).
-		// The un-synchronised read leaves one narrow residual (BUG-2276): if a
-		// restore ROLLS BACK while an in-flight applier ack races the transient
-		// frozen=true window, the ack is dropped even though the rolled-back
-		// conn's frames persisted, so the applier flow retries/falls back
-		// (re-applying its own markdown — a possible clobber of peer edits made
-		// in the retry window). That is a quadruple-narrow edge (concurrent
-		// external PATCH + exact ack timing + restore ROLLBACK, i.e. a DB commit
-		// error + peer edits in the retry window); fully closing it needs the
-		// applier flow serialised with the restore under itemLock (a larger
-		// rework with its own 30s-restore-stall cost). Tracked in BUG-2276.
-		if !rc.canWrite.Load() || rc.frozen.Load() {
-			slog.Warn("collab: applier_ack from read-only or frozen conn; ignoring",
+		// A FROZEN conn is NO LONGER dropped here (BUG-2276 residual 2). The old
+		// design dropped a frozen conn's ack because it couldn't tell whether the
+		// applier's frames had persisted. Now the durable bracket answers that: the
+		// ack path resolves the round-trip to SUCCESS only if no frame was
+		// frozen-dropped in its apply bracket (frozenDropSeq unchanged), and to
+		// RETRY otherwise — so a frozen conn whose setContent was dropped correctly
+		// resolves to retry, and one whose setContent already persisted before the
+		// freeze correctly resolves to success. No timing, no phantom success.
+		if !rc.canWrite.Load() {
+			slog.Warn("collab: applier_ack from read-only conn; ignoring",
 				"item_id", r.itemID,
 				"client_id", rc.id,
-				"frozen", rc.frozen.Load(),
 			)
 			return
 		}
-		r.routeApplierAck(ctl.RequestID, rc.conn)
+		r.resolveApplierAck(ctl.RequestID, rc)
 	default:
 		// Unknown control type — drop.
 	}

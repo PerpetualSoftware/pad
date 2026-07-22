@@ -75,12 +75,21 @@ const SYNC_GRACE_MS = 1_000;
  * mutation is owned by the caller — only the handler can refuse to
  * apply once the deadline has passed. Returning `false` after a
  * stale check keeps the late-apply hazard closed.
+ *
+ * The return type is SYNCHRONOUS (`boolean`, not `Promise<boolean>`) BY
+ * DESIGN (BUG-2276 residual 2, P2): the provider sends `applier_apply_start`
+ * immediately before invoking this handler and `applier_ack` immediately
+ * after, forming the server's durable persistence bracket. The handler's
+ * setContent MUST emit its Y.Doc frame synchronously inside that bracket so
+ * no concurrent keystroke frame can slip in and be misattributed. Allowing a
+ * Promise would let a handler `await` between apply_start and setContent,
+ * re-opening that hole — so the type forbids it structurally.
  */
 export type ApplierRequestHandler = (
 	markdown: string,
 	requestID: string,
 	expiresAtMillis: number,
-) => boolean | Promise<boolean>;
+) => boolean;
 
 /**
  * Callback fired when the server sends a `force_refresh` control
@@ -862,7 +871,7 @@ export class CollabProvider {
 		}
 	};
 
-	private async handleControlMessage(raw: string, sourceWs: WebSocket | null): Promise<void> {
+	private handleControlMessage(raw: string, sourceWs: WebSocket | null): void {
 		let msg: {
 			type?: string;
 			request_id?: string;
@@ -1028,13 +1037,45 @@ export class CollabProvider {
 					return;
 				}
 
+				// Durable persistence bracket (BUG-2276 residual 2). apply_start,
+				// the SYNCHRONOUS setContent handler, and applier_ack are emitted
+				// back-to-back on the SAME socket with NO await between them, so the
+				// setContent Y.Doc frame is the only frame inside the (apply_start →
+				// frame → applier_ack) bracket. That lets the server decide, from
+				// DURABLE op-log state, whether the applier's edit persisted vs. was
+				// dropped by a concurrent version-restore freeze — attribution a bare
+				// op-log-advance watermark can't make (concurrent typing). The handler
+				// is SYNCHRONOUS by type (P2): a Promise return could `await` between
+				// apply_start and setContent and let a keystroke frame slip into the
+				// bracket, so the type forbids it structurally.
+				//
+				// The bracket + ack MUST ride the socket that delivered the request —
+				// the server keys pending state by conn, so a post-force-reconnect new
+				// socket is silently ignored (server falls back after its timeout). If
+				// the source socket is gone we apply NOTHING (no orphan bracket) and let
+				// the server's fallback own the write.
+				const applierSocketOK =
+					!!sourceWs &&
+					sourceWs === this.ws &&
+					sourceWs.readyState === this.WebSocketImpl.OPEN;
+				if (!applierSocketOK) {
+					console.warn(
+						'collab: applier source socket gone, skipping apply',
+						msg.request_id,
+					);
+					return;
+				}
+
+				sourceWs.send(
+					JSON.stringify({
+						type: 'applier_apply_start',
+						request_id: msg.request_id,
+					}),
+				);
+
 				let applied = false;
 				try {
-					applied = await this.onApplierRequest(
-						msg.markdown,
-						msg.request_id,
-						expiresAt,
-					);
+					applied = this.onApplierRequest(msg.markdown, msg.request_id, expiresAt);
 				} catch (err) {
 					console.warn('collab: applier handler threw, treating as not-applied', err);
 					applied = false;
@@ -1042,35 +1083,18 @@ export class CollabProvider {
 
 				if (!applied) return;
 				if (expiresAt > 0 && Date.now() > expiresAt) {
-					// Awaited handler crossed the deadline. The server
-					// has likely retried or fallen back; don't ack a
-					// late apply.
+					// Handler crossed the deadline. The server has likely retried or
+					// fallen back; don't ack a late apply.
 					console.warn('collab: applier_request acked too late, suppressing', msg.request_id);
 					return;
 				}
 
-				const ack = JSON.stringify({
-					type: 'applier_ack',
-					request_id: msg.request_id,
-				});
-				// MUST send the ack on the same socket that delivered
-				// the request — the server keys pending acks by conn,
-				// so an ack sent on a post-force-reconnect new socket
-				// is silently ignored and the external write waits
-				// for the applier-timeout fallback (TASK-1257). Per
-				// Codex review round 2 [P2] of TASK-1265.
-				if (
-					sourceWs &&
-					sourceWs === this.ws &&
-					sourceWs.readyState === this.WebSocketImpl.OPEN
-				) {
-					sourceWs.send(ack);
-				} else {
-					console.warn(
-						'collab: applier source socket gone, suppressing late ack',
-						msg.request_id,
-					);
-				}
+				sourceWs.send(
+					JSON.stringify({
+						type: 'applier_ack',
+						request_id: msg.request_id,
+					}),
+				);
 				return;
 			}
 			default:
@@ -1165,6 +1189,13 @@ export class CollabProvider {
 		const params: string[] = [];
 		if (this.lastOpLogID > 0) params.push(`since=${this.lastOpLogID}`);
 		if (this.contentSeq > 0) params.push(`content_seq=${this.contentSeq}`);
+		// Announce durable-applier-bracket capability (BUG-2276 residual 2) only when
+		// this tab can actually be a designated applier (an onApplierRequest handler is
+		// installed). The server prefers electing bracket-capable conns and can confirm
+		// their applier outcome durably against a concurrent version restore; a legacy
+		// (non-announcing) conn is fail-safed instead of risking a clobber. Gating on
+		// the handler keeps non-applier/read-only tabs on the bare base URL.
+		if (this.onApplierRequest) params.push('applier_bracket=1');
 		if (params.length === 0) return this.url;
 		const sep = this.url.includes('?') ? '&' : '?';
 		return `${this.url}${sep}${params.join('&')}`;

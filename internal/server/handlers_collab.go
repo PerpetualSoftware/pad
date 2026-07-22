@@ -172,6 +172,13 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// `?applier_bracket=1` announces that this client sends the applier_apply_start
+	// bracket (BUG-2276 residual 2). Only bracket-capable conns can have their applier
+	// outcome durably confirmed against a concurrent version restore; the manager
+	// prefers them when electing and fails a legacy round-trip SAFE (retryable) rather
+	// than risk a clobber. Absent/other value = legacy (false).
+	bracketCapable := r.URL.Query().Get("applier_bracket") == "1"
+
 	conn, err := collabUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade itself emits the right HTTP status (e.g. 400 on
@@ -246,7 +253,7 @@ func (s *Server) handleCollab(w http.ResponseWriter, r *http.Request) {
 	// (closes `registered`) fires once the conn is in the room, so
 	// revalidation only starts after SetConnWritable can find it.
 	onRegistered := func() { close(registered) }
-	if err := s.collab.Join(itemID, conn, sinceID, contentSeq, access.canWrite, onRegistered); err != nil {
+	if err := s.collab.Join(itemID, conn, sinceID, contentSeq, access.canWrite, bracketCapable, onRegistered); err != nil {
 		// ErrForceRefreshSent is the protocol's normal close-after-
 		// notify path — the JSON frame is already on the wire and
 		// the client knows what to do. Don't warn.
