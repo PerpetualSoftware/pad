@@ -193,6 +193,28 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		clearPaneGo();
 	});
 
+	// Re-assert pane focus AFTER a popstate pop settles (BUG-2278). The
+	// synchronous `focusPaneRegion()` belt in `handlePaneBack` / the depth-aware
+	// ESC pop is not self-sufficient on the pop path: `handlePaneBack` pops via
+	// `history.go(-1)` (a popstate, which SvelteKit cannot carry `keepFocus`
+	// through), and since @sveltejs/kit 2.66 (#15452) the client blurs the active
+	// element to `<body>` BEFORE the component update. That early blur fires only
+	// `focusout` (no `focusin`), and Kit's end-of-nav `reset_focus()` `body.focus()`
+	// is then a no-op that dispatches no `focusin` — so PaneHost's focusin-only
+	// backstop (which pre-2.66 piggybacked on that `focusin(body)` to pull focus
+	// back into the pane) is starved and focus strands on `<body>`. Re-parking
+	// focus on the stable `paneEl` here — after the settle, on the next frame so it
+	// runs after Kit's microtask-scheduled `reset_focus` — removes the dependency
+	// on that incidental event. No-op when the pane closed (`focusPaneRegion` bails
+	// on `!openItemRef`) or focus already landed inside the pane (the drill path,
+	// which uses `goto({keepFocus:true})`, never hits this).
+	afterNavigate((nav) => {
+		if (nav.type !== 'popstate' || !browser) return;
+		requestAnimationFrame(() => {
+			if (document.activeElement === document.body) deps.focusPaneRegion();
+		});
+	});
+
 	// Lateral / list open from an ALREADY-RESOLVED canonical `?item=` ref
 	// (PLAN-2154 Architecture E / TASK-2174). This is the whole body of the
 	// pre-refactor `openItemPane`; `openItemPane(item)` below is now a thin
