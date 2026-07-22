@@ -82,17 +82,31 @@
 	// the sheet on mobile), still return focus to the trigger.
 	$effect(() => () => restoreFocus());
 
+	// Is this the FRONTMOST open sheet — the only one that should act on
+	// Escape/Tab? Every open sheet listens on `window`, so without a gate a
+	// single Escape closes every open layer at once (BUG-2130 layer isolation).
+	// The realistic multi-sheet case is nesting (a control inside a sheet opens
+	// another — e.g. the emoji picker inside Quick Actions), where the child
+	// renders DOM-INSIDE our content; a sheet that contains a deeper open sheet
+	// is never frontmost. Among the remaining leaf sheets (the theoretical
+	// sibling case — two full-screen overlays can't both be reached by the user,
+	// but stay robust anyway) the last in document order paints on top at the
+	// shared z-index, so it's the frontmost. Recomputed per keydown, so it's
+	// order-independent (a `defaultPrevented` check can't work: the outer sheet's
+	// window listener is registered first and fires before the inner's). The
+	// single-sheet path short-circuits to `true` — no behavior change there.
+	function isFrontmostSheet(): boolean {
+		if (!sheetEl) return false;
+		const open = Array.from(document.querySelectorAll<HTMLElement>('.bs-sheet'));
+		if (open.length <= 1) return true;
+		if (sheetEl.querySelector('.bs-sheet')) return false; // we contain a deeper sheet
+		const leaves = open.filter((s) => !s.querySelector('.bs-sheet'));
+		return leaves[leaves.length - 1] === sheetEl;
+	}
+
 	function handleKeydown(e: KeyboardEvent) {
 		if (!open) return;
-		// Only the FRONTMOST (innermost) open sheet handles keys. A nested child
-		// sheet — e.g. the emoji picker opened from inside the Quick Actions sheet
-		// — renders inside our content, so while one is open IT owns Escape/Tab.
-		// Every open sheet listens on `window`, so without this both handlers fire
-		// and a single Escape closes two layers (BUG-2130 layer isolation, nested
-		// case). Order-independent by design: a `defaultPrevented` check can't
-		// work here because the outer sheet's window listener is registered first
-		// and fires before the inner's.
-		if (sheetEl?.querySelector('.bs-sheet')) return;
+		if (!isFrontmostSheet()) return;
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			onclose();

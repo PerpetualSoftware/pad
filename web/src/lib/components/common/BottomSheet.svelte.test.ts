@@ -146,6 +146,30 @@ describe('BottomSheet.svelte', () => {
 		expect(onclose).not.toHaveBeenCalled();
 	});
 
+	it('only the topmost of sibling sheets handles Escape (last in document order)', async () => {
+		// Two open sheets that do NOT contain each other (sibling topology). Both
+		// listen on window; only the one painted on top (last in document order at
+		// the shared z-index) should act on Escape.
+		const onclose = vi.fn();
+		render(BottomSheet, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		// A later sibling sheet appended after this one → this one is no longer
+		// frontmost and must stay out of Escape.
+		const sibling = document.createElement('div');
+		sibling.className = 'bs-sheet';
+		document.body.appendChild(sibling);
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(onclose).not.toHaveBeenCalled();
+
+		// Remove the sibling → this sheet is frontmost again and handles Escape.
+		sibling.remove();
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
 	it('restores focus to the previously-focused trigger on close', async () => {
 		const trigger = document.createElement('button');
 		trigger.type = 'button';
