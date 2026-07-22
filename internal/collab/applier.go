@@ -149,9 +149,28 @@ type ControlMessage struct {
 // double-send. expectedConn lets the server reject acks/brackets from other peers
 // (defence in depth). The bracket baselines are captured at request-send and
 // refined at apply_start (BUG-2276 residual 2).
+// applierOutcome is the DURABLE resolution of an applier round-trip (BUG-2276
+// residual 2). It is derived from op-log state, never a timer.
+type applierOutcome int
+
+const (
+	// applierPersisted — the applier's setContent durably landed (or was a no-op-diff
+	// on already-current content). Success; never re-applied.
+	applierPersisted applierOutcome = iota
+	// applierNotPersisted — the setContent DID NOT land (dropped by a freeze, or its
+	// frame is still in flight and will now be dropped). Safe to re-apply after the
+	// restore resolves — nothing landed to clobber.
+	applierNotPersisted
+	// applierAmbiguous — a legacy (non-bracket-capable) round-trip caught by a freeze:
+	// its setContent MIGHT have persisted, but without the apply_start bracket the
+	// server can't confirm. FAIL-SAFE: the external write is NOT re-applied (that
+	// could clobber peer edits) — it is returned as retryable via ErrApplierAmbiguous.
+	applierAmbiguous
+)
+
 type pendingApplierAck struct {
 	expectedConn *websocket.Conn
-	resultCh     chan bool
+	resultCh     chan applierOutcome
 
 	// startPersistedOpID / startFrozenDropSeq are the applier conn's durable
 	// high-water + frozen-drop count at the START of the apply bracket. Seeded at
@@ -159,8 +178,7 @@ type pendingApplierAck struct {
 	// scopes to exactly the setContent frame.
 	startPersistedOpID int64
 	startFrozenDropSeq int64
-	// applyStarted is set when apply_start was received. Finalization treats an
-	// un-bracketed round-trip as not-persisted (safe: retry, never a false success).
+	// applyStarted is set when apply_start was received.
 	applyStarted bool
 	// delivered guards resultCh against a double send (ack vs finalization race).
 	delivered bool
@@ -168,13 +186,13 @@ type pendingApplierAck struct {
 
 // deliver sends the round-trip's durable outcome exactly once. MUST be called with
 // r.pendingMu held.
-func (p *pendingApplierAck) deliver(success bool) {
+func (p *pendingApplierAck) deliver(o applierOutcome) {
 	if p.delivered {
 		return
 	}
 	p.delivered = true
 	select {
-	case p.resultCh <- success:
+	case p.resultCh <- o:
 	default:
 	}
 }
@@ -195,6 +213,13 @@ var (
 	// ack. Caller falls back to direct write and (depending on
 	// preference) logs a warn so operators can see degraded sessions.
 	ErrAllAppliersTimedOut = errors.New("collab: all designated appliers timed out")
+
+	// ErrApplierAmbiguous — a legacy (non-bracket-capable) applier round-trip was
+	// caught by a concurrent version restore and cannot be confirmed persisted
+	// (BUG-2276 residual 2, P1 mixed-deploy window). The caller MUST NOT fall back to
+	// a direct write / re-apply (either could clobber); instead it returns a RETRYABLE
+	// error to the external-write caller so the write is retried once clients converge.
+	ErrApplierAmbiguous = errors.New("collab: applier outcome ambiguous (legacy conn during restore); retry")
 )
 
 // ApplyExternalContent routes an external content update through a
@@ -265,7 +290,9 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 	for attempt := 0; attempt < applierMaxAttempts; attempt++ {
 		// Enter the restore gate FIRST so we wait out any in-progress restore
 		// before electing. `waited` means a restore held the room and just
-		// resolved — restart the whole election (the room's conn set changed).
+		// resolved — restart the whole election (the room's conn set changed). A
+		// !waited return ADMITS us; finishAdmission MUST run before we wait on the
+		// outcome so a concurrent beginRestore drains us (P1).
 		if room.enterApplierGate() {
 			return nil, true
 		}
@@ -273,6 +300,7 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 		applier := room.pickApplier(tried)
 		if applier == nil {
 			// No more candidates left.
+			room.finishAdmission()
 			if !anyWriteSucceeded {
 				return ErrNoApplierAvailable, false
 			}
@@ -281,6 +309,9 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 		tried[applier.conn] = struct{}{}
 
 		resultCh, registerErr := room.registerPendingAck(requestID, applier)
+		// End the admission span the instant registration is done (entry now visible
+		// to freezeAndFinalizePending), whether it succeeded or not.
+		room.finishAdmission()
 		if registerErr != nil {
 			// Race: room closed between pickApplier and registration.
 			return registerErr, false
@@ -334,24 +365,39 @@ func (m *RoomManager) electAndApply(room *Room, itemID, markdown string) (error,
 
 		// Wait for the DURABLE outcome OR timeout.
 		select {
-		case success := <-resultCh:
+		case outcome := <-resultCh:
 			room.cancelPendingAck(requestID)
-			if success {
+			switch outcome {
+			case applierPersisted:
 				// The applier's setContent durably landed (no frame in its apply
 				// bracket was frozen-dropped). All peers are on the new state.
 				return nil, false
+			case applierAmbiguous:
+				// Legacy conn caught by a restore: setContent MIGHT have landed but we
+				// can't confirm. FAIL-SAFE — do NOT re-apply (that could clobber peer
+				// edits); return retryable so the external write is retried once
+				// clients converge (BUG-2276 residual 2, P1 mixed-deploy window). Wait
+				// for the restore to resolve first so the caller's retry isn't a busy
+				// spin against a still-frozen room.
+				room.waitRestoreResolved()
+				slog.Warn("collab: applier round-trip ambiguous (legacy conn during restore); returning retryable",
+					"item_id", itemID,
+					"client_id", applier.id,
+				)
+				return ErrApplierAmbiguous, false
+			default: // applierNotPersisted
+				// A version restore froze this apply, so setContent did NOT land. This
+				// is a DURABLE determination (see restore_coord.go), not a timing guess
+				// — so we never re-apply over a landed edit. Wait for the restore to
+				// resolve, then restart the election: re-apply on rollback (unfrozen
+				// room), fall back on commit (force-closed room).
+				room.waitRestoreResolved() // bounded to the restore-tx duration
+				slog.Info("collab: applier round-trip superseded by version restore; will re-elect",
+					"item_id", itemID,
+					"client_id", applier.id,
+				)
+				return nil, true
 			}
-			// Not persisted: a version restore froze this apply, so setContent did
-			// NOT land. This is a DURABLE determination (see restore_coord.go), not a
-			// timing guess — so we never re-apply over a landed edit. Wait for the
-			// restore to resolve, then restart the election: re-apply on rollback
-			// (unfrozen room), fall back on commit (force-closed room).
-			room.waitRestoreResolved() // bounded to the restore-tx duration
-			slog.Info("collab: applier round-trip superseded by version restore; will re-elect",
-				"item_id", itemID,
-				"client_id", applier.id,
-			)
-			return nil, true
 		case <-time.After(timeouts[attempt]):
 			room.cancelPendingAck(requestID)
 			slog.Warn("collab: applier_request timed out; will retry next applier",
@@ -435,7 +481,17 @@ func (r *Room) pickApplier(tried map[*websocket.Conn]struct{}) *roomConn {
 		// success/commit path leaves conns frozen until they are force-closed, so a
 		// commit-case re-election must skip them → returns nil → the caller's
 		// direct-write fallback. (BUG-2276 residual 2.)
-		if !rc.canWrite.Load() || rc.frozen.Load() {
+		//
+		// An UNANCHORED conn (replayDone not yet flipped) is excluded (BUG-2276
+		// residual 2, P1): a conn is in the room map BEFORE runConn writes its initial
+		// op_log_cursor, and its client buffers Y.Doc updates until it receives that
+		// cursor (cursorAnchored). Electing it in that window means setContent produces
+		// a BUFFERED frame that is never sent, yet the client still acks — a false
+		// success for a never-persisted write. replayDone flips right after the cursor
+		// is written under writeMu, and any later applier_request is ordered behind
+		// that cursor on the same conn, so an elected (replayDone) conn is guaranteed
+		// anchored before it applies.
+		if !rc.canWrite.Load() || rc.frozen.Load() || !rc.replayDone.Load() {
 			continue
 		}
 		candidates = append(candidates, rc)
@@ -445,9 +501,15 @@ func (r *Room) pickApplier(tried map[*websocket.Conn]struct{}) *roomConn {
 	if len(candidates) == 0 {
 		return nil
 	}
-	// Stable: longest-connected first; tiebreak on conn id (which
-	// is monotonic within the process).
+	// Stable ordering. PRIMARY: bracket-capable conns first (BUG-2276 residual 2, P1)
+	// — prefer a conn whose applier outcome the freeze can confirm durably, so we
+	// avoid the legacy-ambiguous fail-safe whenever any capable conn exists. SECONDARY:
+	// longest-connected (most authoritative cumulative Y.Doc); tiebreak on conn id.
 	sort.SliceStable(candidates, func(i, j int) bool {
+		ci, cj := candidates[i].bracketCapable.Load(), candidates[j].bracketCapable.Load()
+		if ci != cj {
+			return ci // capable (true) sorts before non-capable (false)
+		}
 		if !candidates[i].connectedAt.Equal(candidates[j].connectedAt) {
 			return candidates[i].connectedAt.Before(candidates[j].connectedAt)
 		}
@@ -462,7 +524,7 @@ func (r *Room) pickApplier(tried map[*websocket.Conn]struct{}) *roomConn {
 // later by apply_start). Returns the result channel the caller selects on (true =
 // the applier's content durably landed, false = it did not), or an error if the room
 // is no longer accepting requests.
-func (r *Room) registerPendingAck(requestID string, applier *roomConn) (<-chan bool, error) {
+func (r *Room) registerPendingAck(requestID string, applier *roomConn) (<-chan applierOutcome, error) {
 	r.mu.Lock()
 	closing := r.closing
 	r.mu.Unlock()
@@ -477,7 +539,7 @@ func (r *Room) registerPendingAck(requestID string, applier *roomConn) (<-chan b
 		// is effectively impossible.
 		return nil, fmt.Errorf("collab: duplicate request_id %s", requestID)
 	}
-	ch := make(chan bool, 1)
+	ch := make(chan applierOutcome, 1)
 	r.pendingAcks[requestID] = &pendingApplierAck{
 		expectedConn:       applier.conn,
 		resultCh:           ch,
@@ -515,12 +577,14 @@ func (r *Room) startApplierApply(requestID string, rc *roomConn) {
 }
 
 // resolveApplierAck resolves the round-trip on receipt of the applier_ack (the
-// bracket end), from durable state: SUCCESS iff no frame in the apply bracket was
-// frozen-dropped (frozenDropSeq unchanged). A no-op-diff setContent, which persists
-// nothing, also resolves to success (nothing was dropped → the doc already reflects
-// the content). Delivers the outcome once; a concurrent restore finalization may
-// have delivered first (idempotent). Only the expected conn may resolve. Called by
-// readLoop on an applier_ack control message. (BUG-2276 residual 2.)
+// bracket end), from durable state. If no frame was frozen-dropped in the bracket
+// (frozenDropSeq unchanged) → applierPersisted (a no-op-diff setContent, dropping
+// nothing, also succeeds — the doc already reflects the content). If a frame WAS
+// frozen-dropped: for a bracket-capable, apply_start-opened round-trip the bracket
+// scopes the drop to the setContent frame → applierNotPersisted (safe re-apply); for
+// a legacy/un-bracketed round-trip the drop can't be attributed → applierAmbiguous
+// (fail-safe). Delivers once; a concurrent restore finalization may have delivered
+// first (idempotent). Only the expected conn may resolve. (BUG-2276 residual 2.)
 func (r *Room) resolveApplierAck(requestID string, rc *roomConn) {
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
@@ -535,19 +599,34 @@ func (r *Room) resolveApplierAck(requestID string, rc *roomConn) {
 		return
 	}
 	dropped := rc.frozenDropSeq.Load() > pending.startFrozenDropSeq
-	pending.deliver(!dropped)
+	switch {
+	case !dropped:
+		pending.deliver(applierPersisted)
+	case rc.bracketCapable.Load() && pending.applyStarted:
+		pending.deliver(applierNotPersisted)
+	default:
+		pending.deliver(applierAmbiguous)
+	}
 }
 
 // freezeAndFinalizePending is the atomic heart of the version-restore ↔ applier
 // coordination (BUG-2276 residual 2). Called by ForceRefreshRoom with appendMu held,
 // it (1) marks every conn frozen and (2) FINALIZES every in-flight applier
-// round-trip from durable op-log state — success iff the applier conn's high-water
-// advanced past the bracket baseline (its setContent frame durably landed BEFORE
-// this freeze). Because the freeze and the high-water read share the appendMu
-// critical section, a frame still in flight is blocked on appendMu and will be
-// dropped once the freeze is visible — so a NOT-advanced entry is a durable "did not
-// land", never a race. An un-bracketed round-trip (apply_start not seen) is treated
-// as not-persisted (safe: it re-elects; never a false success).
+// round-trip from durable op-log state. Because the freeze and the high-water read
+// share the appendMu critical section, a frame still in flight is blocked on appendMu
+// and will be dropped once the freeze is visible — so a NOT-advanced high-water is a
+// durable "did not land", never a race. Outcomes:
+//   - apply_start seen AND high-water advanced past the bracket baseline →
+//     applierPersisted (landed before the freeze; never re-applied).
+//   - apply_start seen (bracket-capable) but not advanced → applierNotPersisted (its
+//     frame is in flight and will now be dropped; safe re-apply).
+//   - NO apply_start on a bracket-CAPABLE conn → applierNotPersisted (the client sends
+//     apply_start before its frame, so an unseen apply_start means the frame hasn't
+//     landed either; safe re-apply).
+//   - NO apply_start on a LEGACY conn (not bracket-capable) → applierAmbiguous: the
+//     legacy client may have persisted setContent before the freeze but the server
+//     can't confirm it, so re-applying could clobber. FAIL-SAFE (ErrApplierAmbiguous;
+//     retryable). rc==nil (conn gone) is also treated as ambiguous.
 //
 // Lock order: caller holds appendMu; we take room.mu then release it before
 // pendingMu, so no room.mu↔pendingMu nesting. No socket I/O under any lock.
@@ -563,11 +642,26 @@ func (r *Room) freezeAndFinalizePending() {
 	r.pendingMu.Lock()
 	for _, pending := range r.pendingAcks {
 		rc := conns[pending.expectedConn]
-		persisted := false
-		if rc != nil && pending.applyStarted {
-			persisted = rc.lastPersistedOpID.Load() > pending.startPersistedOpID
+		var outcome applierOutcome
+		switch {
+		case rc == nil:
+			// Applier conn gone; can't confirm — fail safe.
+			outcome = applierAmbiguous
+		case pending.applyStarted:
+			if rc.lastPersistedOpID.Load() > pending.startPersistedOpID {
+				outcome = applierPersisted
+			} else {
+				outcome = applierNotPersisted
+			}
+		case rc.bracketCapable.Load():
+			// Capable conn, apply_start not yet processed → its frame (which follows
+			// apply_start on the same conn) hasn't landed → safe re-apply.
+			outcome = applierNotPersisted
+		default:
+			// Legacy conn, no bracket → can't attribute; fail safe.
+			outcome = applierAmbiguous
 		}
-		pending.deliver(persisted)
+		pending.deliver(outcome)
 	}
 	r.pendingMu.Unlock()
 }

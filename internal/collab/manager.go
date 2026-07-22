@@ -320,7 +320,7 @@ var ErrStaleSeedFenceUnavailable = errors.New("collab: durable restore-boundary 
 // Returns whatever error caused the WebSocket to close, or nil on a
 // normal close. The handler typically logs but doesn't act on the
 // return value: the connection is gone either way.
-func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, contentSeq int64, canWrite bool, onRegistered func()) error {
+func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, contentSeq int64, canWrite bool, bracketCapable bool, onRegistered func()) error {
 	// Gate Add on the closed flag under m.mu so a late Join (e.g. a
 	// hijacked WS handler that didn't enter Join until AFTER Close
 	// returned) can't sneak past the drain barrier.
@@ -462,6 +462,7 @@ func (m *RoomManager) Join(itemID string, conn *websocket.Conn, since int64, con
 			connectedAt: time.Now(),
 		}
 		rc.canWrite.Store(canWrite)
+		rc.bracketCapable.Store(bracketCapable)
 
 		if err := room.addConn(rc); err != nil {
 			itemLock.Unlock()
@@ -840,6 +841,8 @@ func (m *RoomManager) getOrCreate(itemID string) *Room {
 		pendingAcks:   make(map[string]*pendingApplierAck),
 		onIdle:        m.markRoomGone,
 	}
+	// restoreCond guards the admission drain in beginRestore (BUG-2276 residual 2).
+	r.restoreCond = sync.NewCond(&r.restoreMu)
 	m.rooms[itemID] = r
 	return r
 }

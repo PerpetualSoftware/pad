@@ -1912,7 +1912,7 @@
 			// applier-timeout fallback (~30s) and then writing
 			// items.content directly. The full ExpiresAtMillis-driven
 			// late-apply guard is TASK-1262's concern.
-			onApplierRequest: async (markdown, _requestID, expiresAtMillis) => {
+			onApplierRequest: (markdown, _requestID, expiresAtMillis) => {
 				// Reject unless we can apply into the LIVE editor for THIS
 				// provider's item. The no-{#key} pane switch can leave
 				// editorInstance pointing at a destroyed editor, or this

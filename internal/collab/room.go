@@ -122,6 +122,14 @@ type roomConn struct {
 	// atomic so the finalizing/ack goroutines can read them without appendMu.
 	lastPersistedOpID atomic.Int64
 	frozenDropSeq     atomic.Int64
+
+	// bracketCapable reports whether this connection's client sends the
+	// applier_apply_start bracket (BUG-2276 residual 2). Announced at Join via
+	// `?applier_bracket=1`. pickApplier prefers capable conns; a round-trip elected
+	// on a NON-capable (legacy) conn that a restore can't confirm resolves to an
+	// AMBIGUOUS outcome (fail-safe: the external write is retried, never re-applied /
+	// clobbered). Set once at Join; read on the election + finalization paths.
+	bracketCapable atomic.Bool
 }
 
 // writeMessage is a tiny helper that holds writeMu while writing one
@@ -207,6 +215,14 @@ type Room struct {
 	// nil when no restore is in progress. Gate-blocked / finalized-and-parked appliers
 	// wait on it.
 	restoreResolved chan struct{}
+	// admittedUnregistered counts round-trips that passed enterApplierGate but have
+	// NOT yet finished registering their pending-ack entry (the enter→register gap).
+	// beginRestore drains this to 0 BEFORE the freeze scan so no admitted round-trip
+	// is missed by freezeAndFinalizePending (BUG-2276 residual 2, P1). The gap is
+	// mutex-only (pickApplier + registerPendingAck, no I/O), so the drain is
+	// microseconds — never the applier round-trip. restoreCond signals it reaching 0.
+	restoreCond          *sync.Cond
+	admittedUnregistered int
 }
 
 // opLogStore is the store surface a Room needs. Pulling it into a

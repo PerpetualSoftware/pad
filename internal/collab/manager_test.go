@@ -286,7 +286,9 @@ func newCollabTestServer(t *testing.T, mgr *RoomManager) *httptest.Server {
 		// `?readonly=1` joins as a read-only participant (canWrite=false)
 		// so tests can exercise the TASK-265 gate. Default is writable.
 		canWrite := r.URL.Query().Get("readonly") != "1"
-		_ = mgr.Join(itemID, conn, since, contentSeq, canWrite, nil)
+		// `?applier_bracket=1` marks the conn bracket-capable (BUG-2276 residual 2).
+		bracketCapable := r.URL.Query().Get("applier_bracket") == "1"
+		_ = mgr.Join(itemID, conn, since, contentSeq, canWrite, bracketCapable, nil)
 	})
 	return httptest.NewServer(mux)
 }
@@ -294,6 +296,36 @@ func newCollabTestServer(t *testing.T, mgr *RoomManager) *httptest.Server {
 func dialWS(t *testing.T, server *httptest.Server, itemID string) *websocket.Conn {
 	t.Helper()
 	return dialWSSince(t, server, itemID, 0)
+}
+
+// waitElectable polls until the room for itemID has at least n conns that pickApplier
+// would actually elect — writable, anchored (replayDone), not frozen. Gates tests
+// that drive ApplyExternalContent so they don't race the post-replay cursor write:
+// an unanchored conn is deliberately NOT elected (BUG-2276 residual 2, P1), because
+// its client buffers Y.Doc updates until it receives the initial cursor.
+func waitElectable(t *testing.T, mgr *RoomManager, itemID string, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mgr.mu.Lock()
+		room := mgr.rooms[itemID]
+		mgr.mu.Unlock()
+		if room != nil {
+			room.mu.Lock()
+			c := 0
+			for _, rc := range room.conns {
+				if rc.canWrite.Load() && rc.replayDone.Load() && !rc.frozen.Load() {
+					c++
+				}
+			}
+			room.mu.Unlock()
+			if c >= n {
+				return
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("room %s did not reach %d electable conns within deadline", itemID, n)
 }
 
 // dialWSSince is the resume-cursor variant: appends `?since=<id>` to
@@ -321,6 +353,19 @@ func dialWSContentSeq(t *testing.T, server *httptest.Server, itemID string, cont
 	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
+	}
+	return c
+}
+
+// dialWSBracket joins as a bracket-capable participant (`?applier_bracket=1`) so
+// the conn can be durably confirmed by a restore's finalization (BUG-2276 residual 2).
+func dialWSBracket(t *testing.T, server *httptest.Server, itemID string) *websocket.Conn {
+	t.Helper()
+	u, _ := url.Parse(server.URL)
+	wsURL := "ws://" + u.Host + "/ws/" + itemID + "?applier_bracket=1"
+	c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial bracket: %v", err)
 	}
 	return c
 }
@@ -1226,7 +1271,7 @@ func TestRoomManagerJoinAfterCloseFailsFast(t *testing.T) {
 
 	// Direct Join — bypass the WS plumbing since we want to exercise
 	// the closed-flag short-circuit in isolation.
-	err := mgr.Join("item-a", nil, 0, 0, true, nil) // conn is irrelevant; we never reach the WS path
+	err := mgr.Join("item-a", nil, 0, 0, true, false, nil) // conn is irrelevant; we never reach the WS path
 	if !errors.Is(err, errManagerClosed) {
 		t.Fatalf("want errManagerClosed, got %v", err)
 	}

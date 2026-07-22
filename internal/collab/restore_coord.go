@@ -49,16 +49,28 @@ package collab
 // (hard constraint 5).
 
 // beginRestore is called by ForceRefreshRoom under the per-item lock, BEFORE it
-// freezes the room. It marks a restore in progress so new applier round-trips block
-// in enterApplierGate. It does NOT drain: in-flight round-trips are finalized by the
-// freeze itself (see (*Room).freezeAndFinalizePending), so there is nothing to wait
-// on here — beginRestore never blocks. Paired with resolveRestore (deferred by the
-// caller so it runs on every return path).
+// freezes the room. It (1) marks a restore in progress so new applier round-trips
+// block in enterApplierGate, and (2) DRAINS the admission gap — waits for every
+// round-trip that already passed the gate but hasn't finished registering its
+// pending-ack entry to register (admittedUnregistered → 0). Without this drain a
+// round-trip admitted just before beginRestore could register AFTER
+// freezeAndFinalizePending's scan and be missed (BUG-2276 residual 2, P1): the
+// nonresponsive case would hang the applier timeout and a no-op setContent could
+// falsely ack.
+//
+// The drain is bounded to the enter→register window, which is mutex-only (pickApplier
+// + registerPendingAck, no I/O) — microseconds, NEVER the applier round-trip. It
+// cannot stall: it waits only for registration to complete, and a round-trip that is
+// forced to restart (enterApplierGate returned waited) was never counted as admitted.
+// Paired with resolveRestore (deferred by the caller so it runs on every return path).
 func (r *Room) beginRestore() {
 	r.restoreMu.Lock()
 	r.restoreActive = true
 	if r.restoreResolved == nil {
 		r.restoreResolved = make(chan struct{})
+	}
+	for r.admittedUnregistered > 0 {
+		r.restoreCond.Wait()
 	}
 	r.restoreMu.Unlock()
 }
@@ -80,8 +92,12 @@ func (r *Room) resolveRestore() {
 // enterApplierGate is called at the start of each applier election. It blocks while
 // a version restore holds the room and reports whether it had to wait. When it
 // waited, the caller must NOT proceed with a stale election — it restarts
-// ApplyExternalContent from scratch against the now-resolved room. The common path
-// (no restore) returns immediately with waited=false.
+// ApplyExternalContent from scratch against the now-resolved room (and is NOT counted
+// as admitted). The common path (no restore) returns immediately with waited=false
+// and ADMITS the round-trip: it is counted in admittedUnregistered until the caller
+// calls finishAdmission (after registering, or on any early bail before registering),
+// so a concurrent beginRestore drains it before the freeze scan (P1). MUST be paired
+// with exactly one finishAdmission on every !waited path.
 func (r *Room) enterApplierGate() (waited bool) {
 	r.restoreMu.Lock()
 	for r.restoreActive {
@@ -93,8 +109,26 @@ func (r *Room) enterApplierGate() (waited bool) {
 		}
 		r.restoreMu.Lock()
 	}
+	if !waited {
+		r.admittedUnregistered++
+	}
 	r.restoreMu.Unlock()
 	return waited
+}
+
+// finishAdmission ends the admission span opened by a !waited enterApplierGate — call
+// it exactly once after registerPendingAck returns (success or error) or on any early
+// bail before registration. When the count hits zero it wakes a beginRestore draining
+// the admission gap. (BUG-2276 residual 2, P1.)
+func (r *Room) finishAdmission() {
+	r.restoreMu.Lock()
+	if r.admittedUnregistered > 0 {
+		r.admittedUnregistered--
+	}
+	if r.admittedUnregistered == 0 {
+		r.restoreCond.Broadcast()
+	}
+	r.restoreMu.Unlock()
 }
 
 // waitRestoreResolved blocks until the in-progress restore (if any) resolves. Called
