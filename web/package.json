@@ -39,6 +39,7 @@
 	"overrides": {
 		"cookie": "^0.7.2",
 		"linkify-it": "^5.0.2",
+		"markdown-it": "^14.3.0",
 		"layercake": {
 			"typescript": "$typescript"
 		}
@@ -62,7 +63,7 @@
 		"3d-force-graph": "1.80.0",
 		"d3-scale": "4.0.2",
 		"diff": "^9.0.0",
-		"dompurify": "^3.4.2",
+		"dompurify": "^3.4.12",
 		"idb": "^8.0.3",
 		"layercake": "10.0.2",
 		"lowlight": "^3.3.0",
