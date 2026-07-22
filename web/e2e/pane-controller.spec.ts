@@ -170,7 +170,13 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await page.goto(docsUrl(fixture));
 
 		const prePaneUrl = page.url();
-		const row = page.locator('.item-card', { hasText: 'Ctrl regress alpha' }).first();
+		// Open the FIRST rendered row (not a NAMED one) so the `j` (down) below
+		// always has a row beneath it to re-target to. The two seeds share a
+		// same-second `created_at`, so their list order is a non-deterministic
+		// tie-break (BUG-2270); a named row could land LAST, where `j` clamps at
+		// the final index and the pane-follow correctly finds nothing new to
+		// target — a test-ordering artifact, not a follow-logic bug (BUG-2279).
+		const row = page.locator('.item-card').first();
 		await expect(row).toBeVisible();
 		await row.click();
 
@@ -181,8 +187,9 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		// First-open MINTS ownership at depth 0.
 		await expect.poll(() => paneState(page)).toEqual({ paneDepth: 0, paneOwned: true });
 
-		// j moves the list cursor; the pane FOLLOWS (re-target replace) — still
-		// depth 0, still owned, and NO new history entry (the PLAN-2105 fix).
+		// j moves the list cursor to the row below; the pane FOLLOWS (re-target
+		// replace) — still depth 0, still owned, and NO new history entry (the
+		// PLAN-2105 fix).
 		const lenAfterOpen = await historyLength(page);
 		await page.keyboard.press('j');
 		await expect.poll(() => openItemParam(page)).not.toBe(refA);
