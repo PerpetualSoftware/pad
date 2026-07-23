@@ -47,8 +47,10 @@ export function preservePaneItemParam(params: URLSearchParams, currentUrl: URL):
 
 /** The filter/sort/view/search state `updateUrlFilters` serializes. */
 export interface CollectionUrlFilterState {
-	/** The page's `ViewMode` ('list' | 'board' | 'table'); 'list' is the
-	 *  default and omitted from the query string. */
+	/** The page's `ViewMode` ('list' | 'board' | 'table'). Always serialized
+	 *  to `?view=` — since a collection's default view can be Board (IDEA-2274),
+	 *  omitting `list` would make a copied List URL resolve back to Board for a
+	 *  viewer without the sender's localStorage. */
 	viewMode: string;
 	activeFilters: Record<string, string>;
 	selectedTags: string[];
@@ -67,7 +69,10 @@ export interface CollectionUrlFilterState {
  */
 export function buildCollectionUrlParams(state: CollectionUrlFilterState, currentUrl: URL): URLSearchParams {
 	const params = new URLSearchParams();
-	if (state.viewMode !== 'list') params.set('view', state.viewMode);
+	// Always serialize the view — a List selection on a board-default
+	// collection must survive a copied link (no localStorage) rather than
+	// silently resolving back to the collection's Board default (IDEA-2274).
+	params.set('view', state.viewMode);
 	for (const [k, v] of Object.entries(state.activeFilters)) {
 		params.set(k, v);
 	}
