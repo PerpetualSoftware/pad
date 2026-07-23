@@ -3,6 +3,7 @@
 	import { parseSchema, parseFields } from '$lib/types';
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
+	import { bucketByColumn, UNCATEGORIZED } from '$lib/collections/boardColumns';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
@@ -201,7 +202,9 @@
 	}
 
 	function handleColumnDragOver(e: DragEvent, colValue: string) {
-		if (!draggedColumn || draggedColumn === colValue) return;
+		// The pinned UNCATEGORIZED lane isn't a reorder target — a real column
+		// can't be moved to its left (DR-1), so don't show a drop indicator on it.
+		if (!draggedColumn || draggedColumn === colValue || colValue === UNCATEGORIZED) return;
 		e.preventDefault();
 		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
 		dragOverColumn = colValue;
@@ -241,25 +244,17 @@
 	let columnData: Record<string, Item[]> = $state({});
 
 	let propColumnData = $derived.by(() => {
-		const result: Record<string, Item[]> = {};
-		for (const col of columns) {
-			result[col] = [];
-		}
-		for (const item of items) {
-			const fields = parseFields(item);
-			const value = fields[groupField] ?? '';
-			if (result[value]) {
-				result[value].push(item);
-			}
-		}
+		// Bucket items into their lanes, routing empty/unknown-value items
+		// into the UNCATEGORIZED ('') lane instead of dropping them (IDEA-2275).
+		const result = bucketByColumn(items, groupField, columns);
 		// `preserveOrder` opts out of the in-column sort so search rank
 		// from the parent isn't overridden — TASK-1367. Otherwise sort
 		// each lane by its effective mode — the per-lane override if set,
 		// else the page-wide sort (TASK-1670 / TASK-1673); 'manual'
 		// resolves to the stored sort_order, preserving prior behavior.
 		if (!preserveOrder) {
-			for (const col of columns) {
-				result[col].sort(itemComparator(laneSortFor(col), collection));
+			for (const key of Object.keys(result)) {
+				result[key].sort(itemComparator(laneSortFor(key), collection));
 			}
 		}
 		return result;
@@ -268,12 +263,29 @@
 	// Cooldown after a drop — suppress syncs while reorder API calls + SSE events settle
 	let dropCooldown = $state(false);
 
+	// Whether the UNCATEGORIZED lane is shown — true when any item lacks a
+	// valid group value (IDEA-2275: "only if needed"). Synced from the settled
+	// prop data in the SAME gate as columnData so the lane doesn't vanish
+	// mid-drag when its last card leaves. Written here, only ever READ in the
+	// `renderColumns` derivation below — never read inside this effect
+	// (CONVE-1688).
+	let showUncategorized = $state(false);
+
 	$effect(() => {
 		const data = propColumnData;
 		if (!isDragging && !dropCooldown) {
 			columnData = data;
+			showUncategorized = (data[UNCATEGORIZED]?.length ?? 0) > 0;
 		}
 	});
+
+	// The lanes to render, left→right: the pinned UNCATEGORIZED lane first when
+	// needed (DR-1), then the user-orderable real columns. UNCATEGORIZED is
+	// deliberately kept OUT of `columnOrder` (the persisted, drag-reorderable
+	// set) so it can't be reordered into the middle or written to saved order.
+	let renderColumns = $derived(
+		showUncategorized ? [UNCATEGORIZED, ...columnOrder] : columnOrder
+	);
 
 	// Surface the board's rendered column structure to the parent for keyboard
 	// navigation (PLAN-2105 / TASK-2119). Visual column order (`columnOrder`,
@@ -283,7 +295,7 @@
 	// is the single source of truth — the parent navigates THIS, never a
 	// re-derived grouping that could disagree with what's on screen.
 	let navColumns = $derived(
-		columnOrder.map((col) => ({
+		renderColumns.map((col) => ({
 			value: col,
 			items: (columnData[col] ?? []).filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME]),
 		}))
@@ -370,6 +382,7 @@
 	}
 
 	function formatLabel(value: string): string {
+		if (!value) return 'Uncategorized';
 		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
 
@@ -396,8 +409,11 @@
 	// insert it at the target lane's head BEFORE committing; otherwise the
 	// card would render in BOTH lanes until the cooldown/SSE settle (DR-7).
 	function moveItem(columnValue: string, item: Item, dir: 'left' | 'right') {
-		const target = adjacentColumn(columnOrder, columnValue, dir);
-		if (!target) return;
+		// Adjacency follows the RENDER order (which includes the pinned
+		// UNCATEGORIZED lane), so a card can move right out of it into the
+		// first real column, or left into it — the menu counterpart to a drag.
+		const target = adjacentColumn(renderColumns, columnValue, dir);
+		if (target === null) return;
 
 		const source = (columnData[columnValue] ?? []).filter((i) => i.id !== item.id);
 		const dest = [item, ...(columnData[target] ?? []).filter((i) => i.id !== item.id)];
@@ -428,9 +444,12 @@
 		const disabled: Set<ReorderDirection | 'left' | 'right'> = new Set(
 			disabledDirections(index, length)
 		);
-		const colIdx = columnOrder.indexOf(columnValue);
+		// Horizontal edges follow the RENDER order (incl. the pinned
+		// UNCATEGORIZED lane) so the hidden left/right options match where
+		// moveItem can actually land the card.
+		const colIdx = renderColumns.indexOf(columnValue);
 		if (colIdx <= 0) disabled.add('left');
-		if (colIdx >= columnOrder.length - 1) disabled.add('right');
+		if (colIdx >= renderColumns.length - 1) disabled.add('right');
 		return disabled;
 	}
 
@@ -454,12 +473,15 @@
 	<EmptyState {collection} {wsSlug} {oncreate} />
 {:else}
 <div class="board-view">
-	{#each columnOrder as colValue (colValue)}
+	{#each renderColumns as colValue (colValue)}
 		{@const colItems = columnData[colValue] ?? []}
+		{@const isUncategorized = colValue === UNCATEGORIZED}
+		{@const colDraggable = canEdit && !isUncategorized}
 		<div
 			class="kanban-column"
 			class:drag-over-left={dragOverColumn === colValue}
 			class:dragging-source={draggedColumn === colValue}
+			class:uncategorized-column={isUncategorized}
 			role="group"
 			aria-label="{formatLabel(colValue)} column"
 			ondragover={(e) => handleColumnDragOver(e, colValue)}
@@ -469,13 +491,13 @@
 			<!-- svelte-ignore a11y_no_static_element_interactions -->
 			<div
 				class="column-header {columnCssClass(colValue)}"
-				draggable={canEdit}
+				draggable={colDraggable}
 				role="toolbar"
 				tabindex="0"
-				ondragstart={canEdit ? (e) => handleColumnDragStart(e, colValue) : undefined}
-				ondragend={canEdit ? handleColumnDragEnd : undefined}
+				ondragstart={colDraggable ? (e) => handleColumnDragStart(e, colValue) : undefined}
+				ondragend={colDraggable ? handleColumnDragEnd : undefined}
 			>
-				{#if canEdit}
+				{#if colDraggable}
 					<span class="column-drag-handle" title="Drag to reorder">⠿</span>
 				{/if}
 				<span class="column-name">{formatLabel(colValue)}</span>
@@ -487,8 +509,11 @@
 					     verbs are owner/editor-gated by the page). Don't gate
 					     on `canEdit`, or an owner/editor without a collection
 					     edit grant (canBulkEdit true, canEdit false) couldn't
-					     open the menu at all. TASK-1672 / Codex round 4. -->
-					{#if onCreateInColumn}
+					     open the menu at all. TASK-1672 / Codex round 4. The
+					     UNCATEGORIZED lane hides "add" (creating an explicitly
+					     uncategorized item makes no sense) but keeps the bulk
+					     ⋯ menu — "move/tag/assign all" is useful for triage. -->
+					{#if onCreateInColumn && !isUncategorized}
 						<button
 							class="lane-btn lane-add-btn"
 							title="Add item to {formatLabel(colValue).toLowerCase()}"
@@ -521,7 +546,7 @@
 									laneSort={laneSortOverrides[colValue]}
 									onSetLaneSort={(m) => setLaneSort(colValue, m)}
 									onClose={closeMenu}
-									onAddItem={onCreateInColumn ? () => openDraft(colValue) : undefined}
+									onAddItem={onCreateInColumn && !isUncategorized ? () => openDraft(colValue) : undefined}
 									onArchive={onArchiveColumn ? () => onArchiveColumn?.(colItems) : undefined}
 									onMove={onMoveColumn ? (status) => onMoveColumn?.(colItems, status) : undefined}
 									onTag={onTagColumn ? (tag) => onTagColumn?.(colItems, tag) : undefined}
@@ -697,6 +722,17 @@
 
 	.column-header.col-blocked {
 		border-bottom-color: var(--accent-orange);
+	}
+
+	/* The pinned Uncategorized lane (IDEA-2275) — a triage bucket for items
+	   with no valid group value. It isn't draggable/reorderable, so drop the
+	   grab cursor, and a dashed muted accent distinguishes it from the real
+	   status columns. */
+	.uncategorized-column .column-header {
+		cursor: default;
+		border-bottom-style: dashed;
+		border-bottom-color: var(--text-muted);
+		color: var(--text-secondary);
 	}
 
 	.column-drag-handle {
