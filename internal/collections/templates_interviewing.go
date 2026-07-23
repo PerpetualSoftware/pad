@@ -234,6 +234,10 @@ func interviewingContactsCollection(sortOrder int) DefaultCollection {
 			Layout:      "balanced",
 			DefaultView: "board",
 			ListSortBy:  "last_contact",
+			// Contacts has no `status` field; group the board by relationship
+			// so the default board renders real lanes instead of a single
+			// Uncategorized column (Codex review round 2).
+			BoardGroupBy: "relationship",
 		},
 	}
 }
