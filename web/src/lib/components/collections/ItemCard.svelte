@@ -5,6 +5,7 @@
 	import { parseFields, parseSchema, parseTags, formatItemRef, itemUrlId } from '$lib/types';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { relativeTime } from '$lib/utils/markdown';
 	import ItemActionsMenu from './ItemActionsMenu.svelte';
 	import type { ReorderDirection } from '$lib/collections/reorder';
 	import { shouldOpenInPane } from './itemCardClick';
@@ -63,6 +64,12 @@
 	let itemUrl = $derived(`/${username}/${wsSlug}/${collection.slug}/${itemUrlId(item)}`);
 	let itemRef = $derived(formatItemRef(item));
 	let tags = $derived(parseTags(item));
+
+	// Absolute created timestamp for the age element's tooltip (IDEA-2286); the
+	// visible label is the abbreviated relativeTime() the item-detail header uses.
+	let createdAtTitle = $derived(
+		item.created_at ? `Created ${new Date(item.created_at).toLocaleString()}` : ''
+	);
 
 	function tagUrl(tag: string): string {
 		return `/${username}/${wsSlug}/tags/${encodeURIComponent(tag)}`;
@@ -275,8 +282,12 @@
 				{#if item.agent_role_icon}{item.agent_role_icon} {/if}{item.agent_role_name}
 			</span>
 		{/if}
+		<span class="meta-spacer"></span>
 		{#if item.assigned_user_name}
 			<span class="meta-assignee">{item.assigned_user_name}</span>
+		{/if}
+		{#if item.created_at}
+			<span class="meta-age" title={createdAtTitle}>{relativeTime(item.created_at)}</span>
 		{/if}
 	</div>
 
@@ -582,7 +593,23 @@
 		font-size: 0.7em;
 		font-weight: 500;
 		color: var(--accent-blue);
-		margin-left: auto;
+		white-space: nowrap;
+	}
+
+	/* Spacer pushes the assignee + age cluster to the right edge so the age sits
+	   opposite the status (IDEA-2286). A dedicated spacer — rather than
+	   margin-left:auto on both assignee and age — keeps the layout deterministic:
+	   two competing auto margins would split the free space and strand the
+	   assignee mid-row. */
+	.meta-spacer {
+		flex: 1 1 0;
+		min-width: 0;
+	}
+
+	.meta-age {
+		font-size: 0.7em;
+		font-weight: 500;
+		color: var(--text-muted);
 		white-space: nowrap;
 	}
 
