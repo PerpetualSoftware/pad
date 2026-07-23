@@ -390,10 +390,20 @@
 	<div class="backdrop" onclick={() => uiStore.closeSidebar()}></div>
 {/if}
 
+<!--
+	BUG-2282: collapsed = off-screen/hidden (mobile drawer slid out via
+	translateX; desktop width:0). `pointer-events:none` (see .sidebar.collapsed)
+	blocks the mouse but leaves the nav in the a11y tree + tab order — an SR
+	virtual cursor / Tab reaches off-screen links. `inert` removes it from both,
+	matching the same collapsed condition. Safe: the re-open control lives in
+	TopBar (outside the aside), so this never traps the user; swipe-to-open is a
+	window handler, not on the aside.
+-->
 <aside
 	class="sidebar"
 	class:collapsed={!uiStore.sidebarOpen}
 	class:mobile={uiStore.isMobile}
+	inert={!uiStore.sidebarOpen}
 	bind:this={sidebarEl}
 	ontouchstart={handleTouchStart}
 	ontouchmove={handleTouchMove}
