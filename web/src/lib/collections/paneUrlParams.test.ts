@@ -82,6 +82,12 @@ describe('buildCollectionUrlParams', () => {
 		expect(params.get('item')).toBe('TASK-5');
 	});
 
+	it('serializes ?view=list explicitly so a copied List URL never resolves back to a board default (IDEA-2274)', () => {
+		const currentUrl = new URL('https://pad.test/alice/ws/tasks');
+		const params = buildCollectionUrlParams(state({ viewMode: 'list' }), currentUrl);
+		expect(params.get('view')).toBe('list');
+	});
+
 	it('preserves an existing ?item= across a tag/search change', () => {
 		const currentUrl = new URL('https://pad.test/alice/ws/tasks?item=DOC-2');
 		const params = buildCollectionUrlParams(

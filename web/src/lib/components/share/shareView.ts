@@ -108,15 +108,15 @@ export function coerceFields(schema: unknown): FieldDef[] {
 	);
 }
 
-const DEFAULT_SETTINGS: PublicViewSettings = { default_view: 'list' };
+const DEFAULT_SETTINGS: PublicViewSettings = { default_view: 'board' };
 
 /** Normalize raw `settings` (string-or-object) into PublicViewSettings,
- *  validating `default_view` against the known set and defaulting to 'list'. */
+ *  validating `default_view` against the known set and defaulting to 'board'. */
 export function coerceSettings(settings: unknown): PublicViewSettings {
 	const obj = coerceObject(settings);
 	const view = obj.default_view;
 	const default_view: PublicViewSettings['default_view'] =
-		view === 'board' || view === 'table' || view === 'list' ? view : 'list';
+		view === 'board' || view === 'table' || view === 'list' ? view : 'board';
 	return {
 		default_view,
 		board_group_by: typeof obj.board_group_by === 'string' ? obj.board_group_by : undefined,

@@ -191,7 +191,7 @@
 
 	// ── Display settings state ──────────────────────────────────────────────
 
-	let defaultView = $state<'list' | 'board' | 'table'>('list');
+	let defaultView = $state<'list' | 'board' | 'table'>('board');
 	let layout = $state<'fields-primary' | 'content-primary' | 'balanced'>('balanced');
 	let boardGroupBy = $state('status');
 	let listGroupBy = $state('');
@@ -313,7 +313,7 @@
 
 			// Sync display settings
 			const s = parseSettings(collection);
-			defaultView = (['board', 'list', 'table'].includes(s.default_view) ? s.default_view : 'list') as typeof defaultView;
+			defaultView = (['board', 'list', 'table'].includes(s.default_view) ? s.default_view : 'board') as typeof defaultView;
 			layout = (['fields-primary', 'content-primary', 'balanced'].includes(s.layout) ? s.layout : 'balanced') as typeof layout;
 			boardGroupBy = s.board_group_by || 'status';
 			listGroupBy = s.list_group_by || '';

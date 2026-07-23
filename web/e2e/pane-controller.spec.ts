@@ -167,7 +167,10 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		await browserLogin(page);
 		await seedDoc(fixture, request, 'Ctrl regress alpha');
 		await seedDoc(fixture, request, 'Ctrl regress bravo');
-		await page.goto(docsUrl(fixture));
+		// Pin list view: this test exercises LIST j/k re-target. The workspace
+		// default is now Board (IDEA-2274), so request list explicitly rather
+		// than lean on board's single-lane collapse matching flat stepping.
+		await page.goto(docsUrl(fixture, '?view=list'));
 
 		const prePaneUrl = page.url();
 		// Open the FIRST rendered row (not a NAMED one) so the `j` (down) below

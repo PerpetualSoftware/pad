@@ -453,7 +453,7 @@
 	let tags = $derived(parseTags(item));
 	let tagSuggestions = $state<string[]>([]);
 	let schema = $derived(collection ? parseSchema(collection) : { fields: [] });
-	let settings = $derived<CollectionSettings>(collection ? parseSettings(collection) : { layout: 'balanced', default_view: 'list' });
+	let settings = $derived<CollectionSettings>(collection ? parseSettings(collection) : { layout: 'balanced', default_view: 'board' });
 	let layout = $derived(settings.layout);
 	let quickActions = $derived<QuickAction[]>(settings.quick_actions ?? []);
 

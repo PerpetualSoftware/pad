@@ -1640,7 +1640,7 @@ export function parseSchema(collection: Collection): CollectionSchema {
 	}
 }
 
-const settingsDefaults = (): CollectionSettings => ({ layout: 'balanced', default_view: 'list' });
+const settingsDefaults = (): CollectionSettings => ({ layout: 'balanced', default_view: 'board' });
 
 export function parseSettings(collection: Collection): CollectionSettings {
 	try {

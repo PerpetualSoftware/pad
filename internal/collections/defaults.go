@@ -102,7 +102,7 @@ func Defaults() []DefaultCollection {
 			},
 			Settings: models.CollectionSettings{
 				Layout:      "balanced",
-				DefaultView: "list",
+				DefaultView: "board",
 				ListSortBy:  "created_at",
 				ListGroupBy: "status",
 				QuickActions: []models.QuickAction{
@@ -151,7 +151,7 @@ func Defaults() []DefaultCollection {
 			},
 			Settings: models.CollectionSettings{
 				Layout:      "content-primary",
-				DefaultView: "list",
+				DefaultView: "board",
 				ListSortBy:  "sort_order",
 				QuickActions: []models.QuickAction{
 					{Label: "Plan this", Prompt: "/pad plan {ref} \"{title}\" — outline goals, deliverables, and timeline", Scope: "item", Icon: "📐"},
@@ -187,7 +187,7 @@ func Defaults() []DefaultCollection {
 			},
 			Settings: models.CollectionSettings{
 				Layout:      "content-primary",
-				DefaultView: "list",
+				DefaultView: "board",
 				ListSortBy:  "updated_at",
 				ListGroupBy: "category",
 				QuickActions: []models.QuickAction{

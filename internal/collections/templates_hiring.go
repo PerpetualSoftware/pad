@@ -164,7 +164,7 @@ func hiringLoopsCollection(sortOrder int) DefaultCollection {
 		},
 		Settings: models.CollectionSettings{
 			Layout:       "balanced",
-			DefaultView:  "list",
+			DefaultView:  "board",
 			ListSortBy:   "date",
 			BoardGroupBy: "result",
 		},
@@ -205,7 +205,7 @@ func hiringFeedbackCollection(sortOrder int) DefaultCollection {
 		},
 		Settings: models.CollectionSettings{
 			Layout:      "content-primary",
-			DefaultView: "list",
+			DefaultView: "board",
 			ListSortBy:  "updated_at",
 			// Group by "submitted" so the done-state pipeline
 			// (DoneFieldKey/TerminalValuesForDoneField) lines up with the
