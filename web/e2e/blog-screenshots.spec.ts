@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 import { test } from './fixtures';
 import { seedRealisticContent, seedConventions, type ConventionInput } from './lib/demo-seed';
+import { browserLogin } from './lib/collab-helpers';
 
 /**
  * Blog post screenshot capture.
@@ -164,5 +165,121 @@ test.describe('BLOG-1704 pad-v0-7', () => {
 			.waitFor({ state: 'visible', timeout: 15_000 });
 		await page.waitForTimeout(1000); // settle view render
 		await page.screenshot({ path: resolve(OUT_DIR, '01-shared-collection.png'), fullPage: false });
+	});
+});
+
+// ─── BLOG-2289: Pad v0.11 docked detail pane (item mini-browser) ─────────────
+
+test.describe('BLOG-2289 pad-v0-11', () => {
+	test.skip(!enabled, 'set PAD_BLOG_SCREENSHOTS=1 to regenerate blog screenshots');
+
+	// 2x device scale → high-res source PNG for cover.webp / og.png (as v0.7).
+	test.use({ viewport: { width: 1440, height: 900 }, colorScheme: 'dark', deviceScaleFactor: 2 });
+
+	const POST_SLUG = 'pad-v0-11-item-pane';
+	const OUT_DIR = resolve(PAD_WEB_STATIC_BLOG, POST_SLUG);
+
+	test.beforeAll(async () => {
+		await mkdir(OUT_DIR, { recursive: true });
+	});
+
+	test('seed + capture docked detail pane', async ({ page, fixture, request }) => {
+		test.setTimeout(120_000);
+
+		// Lived-in tasks collection so the list column behind the pane looks real.
+		await seedRealisticContent(fixture, request);
+
+		const ws = fixture.workspaceSlug;
+		const headers = {
+			Authorization: `Bearer ${fixture.apiToken}`,
+			'Content-Type': 'application/json'
+		};
+
+		type RefLike = {
+			id?: string;
+			ref?: string;
+			collection_prefix?: string;
+			item_number?: number;
+			slug?: string;
+		};
+		// The pane's `?item=` param wants the issue-ID ref (e.g. TASK-7). Tolerate
+		// either a computed `ref` or the raw prefix+number pair; fall back to slug.
+		const refOf = (it: RefLike): string | undefined =>
+			it.ref ||
+			(it.collection_prefix && it.item_number
+				? `${it.collection_prefix}-${it.item_number}`
+				: it.slug);
+
+		// The demo tasks carry no `content`, so the pane would render an empty
+		// body. Create one task WITH a real markdown paragraph so the docked
+		// detail pane shows a lived-in item, and open THAT.
+		const createResp = await request.post(
+			`/api/v1/workspaces/${ws}/collections/tasks/items`,
+			{
+				headers,
+				data: {
+					title: 'Wire up the docked detail pane',
+					fields: JSON.stringify({ status: 'in-progress', priority: 'high', effort: 'm' }),
+					content:
+						'Open any item beside the list without losing your place. The detail ' +
+						'pane docks to the right of the board or list so you can read the full ' +
+						'write-up, edit inline, and page through items with j/k while the ' +
+						'collection stays put.\n\n' +
+						'Back and forward work naturally, deep links reopen the pane on the ' +
+						'right item, and on mobile it expands to a full-screen overlay.'
+				}
+			}
+		);
+		if (!createResp.ok()) {
+			throw new Error(
+				`pane item create failed (${createResp.status()}): ${await createResp.text()}`
+			);
+		}
+		const created = (await createResp.json()) as RefLike;
+		let ref = refOf(created);
+
+		// Fallback: if the create response didn't carry a usable ref, look it up
+		// in the collection's item list (a bare array) by the id we just created.
+		if (!ref && created.id) {
+			const listResp = await request.get(
+				`/api/v1/workspaces/${ws}/collections/tasks/items`,
+				{ headers }
+			);
+			if (listResp.ok()) {
+				const items = (await listResp.json()) as RefLike[];
+				const match = Array.isArray(items)
+					? items.find((it) => it.id === created.id)
+					: undefined;
+				if (match) ref = refOf(match);
+			}
+		}
+		if (!ref) throw new Error('could not resolve a ref for the pane item');
+
+		// The pane's body is a live collab editor for an editable (owner) user,
+		// and the collab WebSocket handshake authenticates from the SESSION
+		// COOKIE — a browser WS can't carry the suite's Bearer header. Without a
+		// same-browser login the editor stays stuck "Connecting…" and the body
+		// renders loading skeletons instead of the seeded paragraph. Mint the
+		// cookie in-page (same pattern as the collab specs) so the pane hydrates.
+		await browserLogin(page);
+
+		// `?item=<ref>` opens the docked detail pane beside the tasks list
+		// (PLAN-2105). `.item-pane` is the pane region; its `.title` node only
+		// renders once the embedded ItemDetail has loaded the item.
+		await page.goto(`/${fixture.adminUsername}/${ws}/tasks?item=${ref}`);
+		await page.waitForLoadState('domcontentloaded');
+		await page
+			.locator('.item-pane .title')
+			.first()
+			.waitFor({ state: 'visible', timeout: 15_000 });
+		// Wait for the pane's collab editor to actually render the seeded body
+		// (not a connecting-skeleton) so the screenshot shows a lived-in item.
+		await page
+			.locator('.item-pane .editor-content .ProseMirror')
+			.filter({ hasText: 'Open any item beside the list' })
+			.first()
+			.waitFor({ state: 'visible', timeout: 20_000 });
+		await page.waitForTimeout(1000); // settle SSE-driven re-renders
+		await page.screenshot({ path: resolve(OUT_DIR, '01-item-pane.png'), fullPage: false });
 	});
 });
