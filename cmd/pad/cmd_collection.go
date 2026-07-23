@@ -205,7 +205,7 @@ the --fields DSL does. Set "label" explicitly when you want a custom display nam
 				settings.Layout = "fields-primary"
 			}
 			if settings.DefaultView == "" {
-				settings.DefaultView = "list"
+				settings.DefaultView = "board"
 			}
 			settingsJSON, _ := json.Marshal(settings)
 
@@ -240,7 +240,7 @@ the --fields DSL does. Set "label" explicitly when you want a custom display nam
 	cmd.Flags().StringVar(&fieldsDSL, "fields", "", "field definitions DSL (key:type[:options]; ...); use --schema for terminal_options, computed, defaults, etc.")
 	cmd.Flags().StringVar(&schemaInput, "schema", "", "full CollectionSchema JSON: inline, @path, or - for stdin; mutually exclusive with --fields")
 	cmd.Flags().StringVar(&layout, "layout", "fields-primary", "item detail layout: fields-primary, content-primary, balanced")
-	cmd.Flags().StringVar(&defaultView, "default-view", "list", "default view type: list, board, table")
+	cmd.Flags().StringVar(&defaultView, "default-view", "board", "default view type: list, board, table")
 	cmd.Flags().StringVar(&boardGroup, "board-group-by", "status", "field to group by in board view")
 
 	return cmd

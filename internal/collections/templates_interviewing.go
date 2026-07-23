@@ -146,7 +146,7 @@ func interviewingInterviewsCollection(sortOrder int) DefaultCollection {
 		},
 		Settings: models.CollectionSettings{
 			Layout:       "balanced",
-			DefaultView:  "list",
+			DefaultView:  "board",
 			ListSortBy:   "date",
 			BoardGroupBy: "prep_status",
 		},
@@ -191,7 +191,7 @@ func interviewingCompaniesCollection(sortOrder int) DefaultCollection {
 		},
 		Settings: models.CollectionSettings{
 			Layout:      "balanced",
-			DefaultView: "list",
+			DefaultView: "board",
 			ListSortBy:  "updated_at",
 		},
 	}
@@ -232,7 +232,7 @@ func interviewingContactsCollection(sortOrder int) DefaultCollection {
 		},
 		Settings: models.CollectionSettings{
 			Layout:      "balanced",
-			DefaultView: "list",
+			DefaultView: "board",
 			ListSortBy:  "last_contact",
 		},
 	}

@@ -263,7 +263,10 @@ test.describe('pane async-race hardening (PLAN-2154 R14 / TASK-2167)', () => {
 			const item = await seedNoteItem(fixture, request, coll.slug, name, '');
 			slugByName.set(name, item.slug);
 		}
-		await page.goto(collUrl(fixture, coll.slug));
+		// Pin list view: this test dispatches `j` and asserts the `.focused`
+		// marker steps the flat LIST deterministically. The default is now Board
+		// (IDEA-2274), so request list explicitly.
+		await page.goto(collUrl(fixture, coll.slug, '?view=list'));
 
 		const pane = page.locator('.item-pane');
 		const cardTitles = page.locator('.list-column .item-card .card-title');

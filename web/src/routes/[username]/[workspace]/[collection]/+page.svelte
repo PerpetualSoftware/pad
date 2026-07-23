@@ -73,7 +73,7 @@
 	// `indexError`/`deltaSyncFailed` retry box — instead of masking a
 	// live collection as deleted. Cleared at the top of every load.
 	let metaError = $state<Error | null>(null);
-	let viewMode = $state<ViewMode>('list');
+	let viewMode = $state<ViewMode>('board');
 	// Page-wide within-group sort (TASK-1670 / IDEA-1648). 'manual' is the
 	// stored sort_order (drag order). Persisted per collection.
 	let sortMode = $state<SortMode>('manual');
@@ -1203,7 +1203,7 @@
 			// Set view mode: URL param > localStorage > collection default
 			const settings = parseSettings(collData);
 			const defaultMode = (['board', 'list', 'table'].includes(settings.default_view))
-				? settings.default_view as ViewMode : 'list';
+				? settings.default_view as ViewMode : 'board';
 			viewMode = loadSavedViewMode(coll, defaultMode);
 			sortMode = loadSavedSortMode(coll);
 

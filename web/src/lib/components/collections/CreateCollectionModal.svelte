@@ -53,7 +53,7 @@
 	// reveal defaults closed so the fast-path "pick a template, name it,
 	// create" flow stays uncluttered.
 	let showAdvanced = $state(false);
-	let defaultView = $state<'list' | 'board' | 'table'>('list');
+	let defaultView = $state<'list' | 'board' | 'table'>('board');
 	let layout = $state<'fields-primary' | 'content-primary' | 'balanced'>('balanced');
 	let boardGroupBy = $state('status');
 	let listGroupBy = $state('');
@@ -125,7 +125,7 @@
 			fields = [];
 			selectedSettings = null;
 			showAdvanced = false;
-			defaultView = 'list';
+			defaultView = 'board';
 			layout = 'balanced';
 			boardGroupBy = 'status';
 			listGroupBy = '';
@@ -167,7 +167,7 @@
 		fields = [];
 		selectedSettings = null;
 		showAdvanced = false;
-		defaultView = 'list';
+		defaultView = 'board';
 		layout = 'balanced';
 		boardGroupBy = 'status';
 		listGroupBy = '';

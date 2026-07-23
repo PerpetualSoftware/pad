@@ -104,7 +104,10 @@ test.describe('pane accessibility & focus management (PLAN-2105 / TASK-2122)', (
 		await browserLogin(page);
 		await seedDoc(fixture, request, 'A11y split alpha');
 		await seedDoc(fixture, request, 'A11y split bravo');
-		await page.goto(docsUrl(fixture));
+		// Pin list view: this test exercises LIST j/k cursor nav. The workspace
+		// default is now Board (IDEA-2274), so request list explicitly rather
+		// than lean on board's single-lane collapse matching flat stepping.
+		await page.goto(docsUrl(fixture, '?view=list'));
 
 		await page.locator('.item-card').first().click();
 		const pane = page.locator('.item-pane');

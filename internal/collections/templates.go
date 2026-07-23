@@ -162,7 +162,7 @@ func docsCollection(sortOrder int) DefaultCollection {
 		},
 		Settings: models.CollectionSettings{
 			Layout:      "content-primary",
-			DefaultView: "list",
+			DefaultView: "board",
 			ListSortBy:  "updated_at",
 			ListGroupBy: "category",
 		},
@@ -346,7 +346,7 @@ func conventionsCollection(sortOrder int, triggerOptions, scopeOptions []string)
 		},
 		Settings: models.CollectionSettings{
 			Layout:      "balanced",
-			DefaultView: "list",
+			DefaultView: "board",
 			ListSortBy:  "trigger",
 			ListGroupBy: "trigger",
 		},
@@ -414,7 +414,7 @@ func playbooksCollection(sortOrder int, triggerOptions, scopeOptions []string) D
 		},
 		Settings: models.CollectionSettings{
 			Layout:      "content-primary",
-			DefaultView: "list",
+			DefaultView: "board",
 			ListSortBy:  "updated_at",
 			ListGroupBy: "trigger",
 		},
@@ -666,7 +666,7 @@ var templates = []WorkspaceTemplate{
 				},
 				Settings: models.CollectionSettings{
 					Layout:      "balanced",
-					DefaultView: "list",
+					DefaultView: "board",
 					ListSortBy:  "created_at",
 					ListGroupBy: "status",
 				},

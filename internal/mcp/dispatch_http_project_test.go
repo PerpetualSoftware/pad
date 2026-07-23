@@ -633,7 +633,7 @@ func TestMapCollectionCreate_ParsesFieldsDSL(t *testing.T) {
 	if settings["layout"] != "fields-primary" {
 		t.Errorf("default layout = %v", settings["layout"])
 	}
-	if settings["default_view"] != "list" {
+	if settings["default_view"] != "board" {
 		t.Errorf("default_view = %v", settings["default_view"])
 	}
 	if settings["board_group_by"] != "status" {

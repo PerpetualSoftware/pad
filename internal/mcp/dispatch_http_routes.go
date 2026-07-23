@@ -451,7 +451,7 @@ func init() {
 //   - Auto-fill Label as title-cased(key with `_` → ` `).
 //   - First select-typed `status` field is marked required + default
 //     (matches CLI; the handler also enforces this on its side).
-//   - Layout defaults to "fields-primary"; default_view to "list";
+//   - Layout defaults to "fields-primary"; default_view to "board";
 //     board_group_by to "status" (matches CLI's flag defaults).
 //
 // Schema and Settings are JSON-encoded into strings before the POST
@@ -516,7 +516,7 @@ func mapCollectionCreate(input map[string]any) (string, string, []byte, error) {
 	}
 	defaultView, _ := input["default_view"].(string)
 	if defaultView == "" {
-		defaultView = "list"
+		defaultView = "board"
 	}
 	boardGroupBy, _ := input["board_group_by"].(string)
 	if boardGroupBy == "" {
