@@ -33,7 +33,7 @@
 	// Selection is a discriminated handle: either a base view type, or a saved
 	// view addressed by slug (which resolves to a base view_type for rendering).
 	let selectedKind = $state<'base' | 'saved'>('base');
-	let selectedBase = $state<BaseView>('list');
+	let selectedBase = $state<BaseView>('board');
 	let selectedSavedSlug = $state('');
 
 	let loading = $state(true);
@@ -71,7 +71,7 @@
 
 	// Owner's default base view, the fallback when nothing is selected.
 	let defaultView = $derived<BaseView>(
-		coerceBaseView(collectionData?.collection.settings?.default_view) ?? 'list'
+		coerceBaseView(collectionData?.collection.settings?.default_view) ?? 'board'
 	);
 
 	// The effective base view fed to PublicCollectionView. A saved-view
