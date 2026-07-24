@@ -332,6 +332,11 @@ export function fieldValueColor(field: FieldDef | undefined, value: string): str
  *  a "Shipped"/"Closed" column still reads as a finished lane. */
 export function columnAccentClassFor(field: FieldDef | undefined, value: string): string {
 	switch (value) {
+		case 'open':
+		case 'new':
+		case 'todo':
+		case 'planned':
+			return 'col-open';
 		case 'in_progress':
 			return 'col-in-progress';
 		case 'done':

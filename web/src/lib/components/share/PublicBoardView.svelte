@@ -93,6 +93,10 @@
 		font-size: 0.9em;
 	}
 
+	.column-header.col-open {
+		border-bottom-color: var(--status-blue);
+	}
+
 	.column-header.col-in-progress {
 		border-bottom-color: var(--accent-amber);
 	}

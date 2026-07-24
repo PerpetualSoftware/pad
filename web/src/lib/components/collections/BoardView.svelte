@@ -712,6 +712,10 @@
 		gap: var(--space-1);
 	}
 
+	.column-header.col-open {
+		border-bottom-color: var(--status-blue);
+	}
+
 	.column-header.col-in-progress {
 		border-bottom-color: var(--accent-amber);
 	}
