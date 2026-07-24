@@ -77,6 +77,7 @@
 		target="_blank"
 		rel="noopener noreferrer"
 		class="dropdown-item resources-item"
+		role="menuitem"
 		onclick={() => onclose?.()}
 	>
 		<span>{link.label}</span>

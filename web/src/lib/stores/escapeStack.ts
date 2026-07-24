@@ -27,6 +27,9 @@ export const ESCAPE_PRIORITY = {
 	listFocus: 10,
 	pane: 20,
 	graphDrawer: 30,
+	// Dropdown menus are the innermost layer — ESC closes an open menu
+	// before it collapses the pane/drawer under it (PLAN-2290 Phase 2).
+	menu: 40,
 } as const;
 
 interface Entry {

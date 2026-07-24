@@ -226,7 +226,7 @@ test('a collection migration completing after a rapid A->B pane switch refreshes
 
 	// Open Quick Actions -> Manage actions -> Edit Collection modal, Fields tab.
 	await pane.locator('button.trigger-btn[title="Quick actions"]').click();
-	await pane.locator('button.action-item.footer-row', { hasText: 'Manage actions' }).click();
+	await pane.getByRole('menuitem', { name: 'Manage actions' }).click();
 	await expect(page.locator('#edit-collection-title')).toBeVisible();
 	await page.locator('button.tab', { hasText: 'Fields' }).click();
 
@@ -399,7 +399,7 @@ test('a collection migration completing after a cross-collection navigation does
 	});
 
 	await page.locator('button.trigger-btn[title="Quick actions"]').click();
-	await page.locator('button.action-item.footer-row', { hasText: 'Manage actions' }).click();
+	await page.getByRole('menuitem', { name: 'Manage actions' }).click();
 	await expect(page.locator('#edit-collection-title')).toBeVisible();
 	await page.locator('button.tab', { hasText: 'Fields' }).click();
 
