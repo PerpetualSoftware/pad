@@ -327,26 +327,10 @@ export function fieldValueColor(field: FieldDef | undefined, value: string): str
 	return 'var(--text-muted)';
 }
 
-/** Schema-driven board-column accent class. Literal status values map to the
- *  in-app palette; a custom terminal option falls back to the `done` accent so
- *  a "Shipped"/"Closed" column still reads as a finished lane. */
-export function columnAccentClassFor(field: FieldDef | undefined, value: string): string {
-	switch (value) {
-		case 'open':
-		case 'new':
-		case 'todo':
-		case 'planned':
-			return 'col-open';
-		case 'in_progress':
-			return 'col-in-progress';
-		case 'done':
-			return 'col-done';
-		case 'blocked':
-			return 'col-blocked';
-	}
-	if (value && field?.terminal_options?.includes(value)) return 'col-done';
-	return '';
-}
+/** Board-column accent class — canonical implementation lives in
+ *  $lib/utils/fieldColors (neutral module); re-exported here so the
+ *  public-share import surface is unchanged. */
+export { columnAccentClassFor } from '$lib/utils/fieldColors';
 
 
 /** Group `items` by `groupField` value, in option order with any extra values

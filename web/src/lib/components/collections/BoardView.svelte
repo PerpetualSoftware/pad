@@ -4,7 +4,7 @@
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
 	import { bucketByColumn, UNCATEGORIZED } from '$lib/collections/boardColumns';
-	import { columnAccentClassFor } from '$lib/components/share/shareView';
+	import { columnAccentClassFor } from '$lib/utils/fieldColors';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
