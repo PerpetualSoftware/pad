@@ -439,7 +439,7 @@
 
 	.form-error {
 		font-size: 0.8em;
-		color: #ef4444;
+		color: var(--accent-red);
 		padding: 0 var(--space-1);
 	}
 </style>

@@ -1585,7 +1585,7 @@
 		color: var(--accent-blue);
 	}
 	:global(.block-menu-item-danger) {
-		color: #ef4444;
+		color: var(--accent-red);
 	}
 	:global(.block-menu-item-danger:hover) {
 		background: rgba(239, 68, 68, 0.1);
@@ -2005,7 +2005,7 @@
 	}
 	.tt-btn-danger:hover {
 		background: rgba(239, 68, 68, 0.1);
-		color: #ef4444;
+		color: var(--accent-red);
 	}
 	.tt-sep {
 		width: 1px;

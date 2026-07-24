@@ -339,7 +339,7 @@
 		text-align: center;
 	}
 	.state-msg.error {
-		color: #ef4444;
+		color: var(--accent-red);
 	}
 	.state-msg.empty {
 		font-style: italic;
@@ -415,7 +415,7 @@
 		padding: var(--space-3) 0 0;
 	}
 	.load-more-error {
-		color: #ef4444;
+		color: var(--accent-red);
 		font-size: 0.8rem;
 	}
 	.btn {

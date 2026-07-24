@@ -944,7 +944,7 @@
 		background: var(--bg-primary);
 		border: 1px solid var(--accent-blue);
 		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-sm, 0 1px 3px rgba(0, 0, 0, 0.12));
+		box-shadow: var(--shadow-sm);
 	}
 
 	.lane-draft-input {

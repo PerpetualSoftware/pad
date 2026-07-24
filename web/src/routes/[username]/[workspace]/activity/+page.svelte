@@ -207,7 +207,7 @@
 			case 'moved':
 				return 'var(--accent-amber)';
 			default:
-				return 'var(--accent-blue)';
+				return 'var(--status-blue)';
 		}
 	}
 

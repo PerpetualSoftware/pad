@@ -219,13 +219,13 @@
 	}
 
 	.error-message {
-		color: #ef4444;
+		color: var(--accent-red);
 		font-size: 0.85rem;
 		line-height: 1.5;
 	}
 
 	.error {
-		color: #ef4444;
+		color: var(--accent-red);
 		font-size: 0.85rem;
 		text-align: left;
 		margin-bottom: var(--space-4);

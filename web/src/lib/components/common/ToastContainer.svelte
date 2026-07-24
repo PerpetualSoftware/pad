@@ -100,10 +100,10 @@
 	}
 
 	.toast-error {
-		border-left: 3px solid var(--accent-red, #ef4444);
+		border-left: 3px solid var(--accent-red);
 	}
 	.toast-error .toast-icon {
-		color: var(--accent-red, #ef4444);
+		color: var(--accent-red);
 	}
 
 	.toast-info {

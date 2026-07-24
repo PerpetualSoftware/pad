@@ -1215,7 +1215,7 @@
 		min-width: 16px;
 		height: 16px;
 		padding: 0 4px;
-		background: var(--accent-red, #ef4444);
+		background: var(--accent-red);
 		color: #fff;
 		font-size: 0.65em;
 		font-weight: 700;

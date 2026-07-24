@@ -305,7 +305,7 @@
 
 	.badge.danger {
 		background: rgba(239, 68, 68, 0.15);
-		color: #dc2626;
+		color: var(--accent-red);
 	}
 
 	.error-kind {

@@ -981,7 +981,7 @@
 	}
 
 	.error {
-		color: #ef4444;
+		color: var(--accent-red);
 		font-size: 0.85rem;
 	}
 
@@ -1133,8 +1133,8 @@
 	}
 
 	.delete-btn:hover {
-		color: #ef4444;
-		border-color: #ef4444;
+		color: var(--accent-red);
+		border-color: var(--accent-red);
 	}
 
 	.empty-text {
@@ -1295,9 +1295,9 @@
 		align-self: flex-start;
 		padding: var(--space-2) var(--space-4);
 		background: transparent;
-		border: 1px solid #ef4444;
+		border: 1px solid var(--accent-red);
 		border-radius: var(--radius);
-		color: #ef4444;
+		color: var(--accent-red);
 		font-size: 0.85rem;
 		font-weight: 500;
 		font-family: var(--font-ui);
@@ -1306,7 +1306,7 @@
 	}
 
 	.danger-btn:hover:not(:disabled) {
-		background: color-mix(in srgb, #ef4444 10%, transparent);
+		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
 	}
 
 	.danger-btn:disabled {
@@ -1322,12 +1322,12 @@
 
 	/* Danger Zone (TASK-1961) — red header/border per the danger palette */
 	.danger-card {
-		border-color: color-mix(in srgb, #ef4444 40%, var(--border));
+		border-color: color-mix(in srgb, var(--accent-red) 40%, var(--border));
 	}
 
 	.danger-title {
-		color: #ef4444;
-		border-bottom-color: color-mix(in srgb, #ef4444 40%, var(--border));
+		color: var(--accent-red);
+		border-bottom-color: color-mix(in srgb, var(--accent-red) 40%, var(--border));
 	}
 
 	.danger-row {
@@ -1374,7 +1374,7 @@
 	}
 
 	.delete-warnings strong {
-		color: #ef4444;
+		color: var(--accent-red);
 	}
 
 	/* Inline "Export my data" link inside the delete confirm nudge (TASK-1962) */

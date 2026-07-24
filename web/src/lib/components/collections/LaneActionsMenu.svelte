@@ -296,7 +296,7 @@
 		background: var(--bg-primary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.15));
+		box-shadow: var(--shadow-md);
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
@@ -322,11 +322,11 @@
 	}
 
 	.lane-menu-item.lmi-danger {
-		color: var(--accent-red, #ef4444);
+		color: var(--accent-red);
 	}
 
 	.lane-menu-item.lmi-danger:hover {
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
+		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
 	}
 
 	.lmi-icon {
@@ -391,7 +391,7 @@
 	.lmc-yes {
 		flex: 1;
 		padding: 6px 10px;
-		background: var(--accent-red, #ef4444);
+		background: var(--accent-red);
 		border: none;
 		border-radius: var(--radius-sm);
 		color: #fff;

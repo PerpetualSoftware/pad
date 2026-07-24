@@ -96,7 +96,7 @@
 		switch (state?.toUpperCase()) {
 			case 'OPEN': return 'var(--accent-green)';
 			case 'MERGED': return 'var(--accent-purple, #8b5cf6)';
-			case 'CLOSED': return 'var(--accent-red, #ef4444)';
+			case 'CLOSED': return 'var(--accent-red)';
 			case 'DRAFT': return 'var(--text-muted)';
 			default: return 'var(--text-muted)';
 		}

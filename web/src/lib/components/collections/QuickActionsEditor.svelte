@@ -372,8 +372,8 @@
 	}
 
 	.qa-remove-btn:hover {
-		color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
+		color: var(--accent-red);
+		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
 	}
 
 	.qa-reorder-btn:disabled {
@@ -457,8 +457,8 @@
 	}
 
 	.qa-seg-unknown {
-		color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 14%, transparent);
+		color: var(--accent-red);
+		background: color-mix(in srgb, var(--accent-red) 14%, transparent);
 		padding: 0 2px;
 		border-radius: 2px;
 		text-decoration: underline wavy currentColor;

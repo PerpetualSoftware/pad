@@ -211,7 +211,7 @@
 						y1={0}
 						x2={chartData.todayX}
 						y2={chartH}
-						stroke="var(--accent-blue)"
+						stroke="var(--status-blue)"
 						stroke-width="1"
 						stroke-dasharray="4 3"
 						opacity="0.7"
@@ -220,7 +220,7 @@
 						x={chartData.todayX}
 						y={-6}
 						text-anchor="middle"
-						fill="var(--accent-blue)"
+						fill="var(--status-blue)"
 						font-size="10"
 						opacity="0.8"
 					>

@@ -74,11 +74,11 @@
 
 	.sse-state-disconnected,
 	.sse-state-unauthorized {
-		color: var(--accent-red, #c0392b);
+		color: var(--accent-red);
 	}
 	.sse-state-disconnected .sse-state-dot,
 	.sse-state-unauthorized .sse-state-dot {
-		background: var(--accent-red, #c0392b);
+		background: var(--accent-red);
 	}
 
 	@keyframes sse-pulse {

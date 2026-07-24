@@ -679,8 +679,8 @@
 	}
 
 	.field-key-input.has-error {
-		border-color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 4%, transparent);
+		border-color: var(--accent-red);
+		background: color-mix(in srgb, var(--accent-red) 4%, transparent);
 	}
 
 	.field-key-error,
@@ -691,7 +691,7 @@
 	}
 
 	.field-key-error {
-		color: var(--accent-red, #ef4444);
+		color: var(--accent-red);
 	}
 
 	.field-key-hint {
@@ -732,8 +732,8 @@
 	}
 
 	.field-remove-btn:hover {
-		color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
+		color: var(--accent-red);
+		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
 	}
 
 	/* ── Options area (select / multi_select) ──────────────────────────────── */
@@ -900,8 +900,8 @@
 	}
 
 	.option-remove-btn:hover {
-		color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
+		color: var(--accent-red);
+		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
 	}
 
 	.option-add-btn {
@@ -1083,7 +1083,7 @@
 	}
 
 	.advanced-clear:hover:not(:disabled) {
-		color: var(--accent-red, #ef4444);
+		color: var(--accent-red);
 	}
 
 	.advanced-clear:disabled {

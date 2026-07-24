@@ -146,7 +146,7 @@
 	}
 
 	.error-msg {
-		color: #ef4444;
+		color: var(--accent-red);
 		padding: var(--space-6);
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);

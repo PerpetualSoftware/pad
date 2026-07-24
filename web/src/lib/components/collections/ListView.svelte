@@ -470,7 +470,7 @@
 	.archive-yes {
 		background: none;
 		border: none;
-		color: var(--accent-red, #ef4444);
+		color: var(--accent-red);
 		font-size: 0.78em;
 		cursor: pointer;
 		padding: 2px 6px;
@@ -479,7 +479,7 @@
 	}
 
 	.archive-yes:hover {
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
+		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
 	}
 
 	.archive-no {

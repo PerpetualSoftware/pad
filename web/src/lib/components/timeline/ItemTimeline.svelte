@@ -617,10 +617,10 @@
 
 	.error {
 		padding: var(--space-2) var(--space-3);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
-		border: 1px solid color-mix(in srgb, var(--accent-red, #ef4444) 30%, transparent);
+		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent-red) 30%, transparent);
 		border-radius: var(--radius);
-		color: var(--accent-red, #ef4444);
+		color: var(--accent-red);
 		font-size: 0.85em;
 	}
 

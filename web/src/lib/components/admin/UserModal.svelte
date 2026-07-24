@@ -218,8 +218,8 @@
 		font-size: 0.7rem;
 		padding: 2px 8px;
 		border-radius: var(--radius-sm);
-		background: color-mix(in srgb, #ef4444 15%, transparent);
-		color: #ef4444;
+		background: color-mix(in srgb, var(--accent-red) 15%, transparent);
+		color: var(--accent-red);
 	}
 	.user-modal-close {
 		background: transparent;

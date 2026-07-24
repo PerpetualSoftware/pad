@@ -169,7 +169,7 @@
 	}
 
 	.error-msg {
-		color: #ef4444;
+		color: var(--accent-red);
 		padding: var(--space-4) var(--space-6);
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
@@ -278,7 +278,7 @@
 
 	.days-badge.low {
 		background: rgba(239, 68, 68, 0.1);
-		color: #ef4444;
+		color: var(--accent-red);
 		border-color: rgba(239, 68, 68, 0.3);
 	}
 

@@ -430,8 +430,8 @@
 
 	.error-msg {
 		padding: var(--space-2) var(--space-3);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 12%, transparent);
-		color: var(--accent-red, #ef4444);
+		background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+		color: var(--accent-red);
 		border-radius: var(--radius);
 		font-size: 0.85em;
 	}

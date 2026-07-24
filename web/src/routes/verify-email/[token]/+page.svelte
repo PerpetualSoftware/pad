@@ -192,7 +192,7 @@
 	}
 
 	.error {
-		color: #ef4444;
+		color: var(--accent-red);
 		font-size: 0.85rem;
 		text-align: left;
 	}

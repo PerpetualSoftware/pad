@@ -62,8 +62,8 @@ handlers — onchange is never called.
 	let dropdownEl: HTMLDivElement | undefined = $state(undefined);
 
 	const STATUS_COLORS: Record<string, string> = {
-		open: 'var(--accent-blue)',
-		new: 'var(--accent-blue)',
+		open: 'var(--status-blue)',
+		new: 'var(--status-blue)',
 		in_progress: 'var(--accent-amber)',
 		active: 'var(--accent-green)',
 		done: 'var(--accent-green)',
@@ -73,7 +73,7 @@ handlers — onchange is never called.
 		rejected: 'var(--accent-orange)',
 		critical: 'var(--accent-orange)',
 		high: 'var(--accent-amber)',
-		medium: 'var(--accent-blue)',
+		medium: 'var(--status-blue)',
 		low: 'var(--text-muted)',
 		draft: 'var(--text-muted)',
 		closed: 'var(--text-muted)',

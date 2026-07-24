@@ -401,8 +401,8 @@
 		color: var(--accent-green, #22c55e);
 	}
 	.badge.danger {
-		background: color-mix(in srgb, #ef4444 15%, transparent);
-		color: #ef4444;
+		background: color-mix(in srgb, var(--accent-red) 15%, transparent);
+		color: var(--accent-red);
 	}
 	.badge.warning {
 		background: color-mix(in srgb, #f59e0b 15%, transparent);
@@ -450,7 +450,7 @@
 		font-size: 0.9rem;
 	}
 	.error-msg {
-		color: #ef4444;
+		color: var(--accent-red);
 		padding: var(--space-6);
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);

@@ -745,8 +745,8 @@
 	.btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); }
 	.btn-secondary:hover { background: var(--bg-hover); text-decoration: none; }
 	.btn-small { padding: 2px var(--space-3); font-size: 0.8em; }
-	.btn-danger { background: #dc2626; color: #fff; }
-	.btn-danger-outline { background: none; color: #dc2626; border: 1px solid #dc2626; }
+	.btn-danger { background: var(--accent-red); color: #fff; }
+	.btn-danger-outline { background: none; color: var(--accent-red); border: 1px solid var(--accent-red); }
 	.btn-danger-outline:hover { background: rgba(220,38,38,0.1); }
 
 	/* Create form */
@@ -825,7 +825,7 @@
 	.edit-textarea { width: 100%; padding: var(--space-2) var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-size: 0.85em; font-family: inherit; line-height: 1.6; resize: vertical; margin-bottom: var(--space-3); box-sizing: border-box; }
 	.edit-textarea:focus { border-color: var(--accent-blue); outline: none; }
 	.edit-hint { font-size: 0.75em; color: var(--text-muted); margin-left: auto; }
-	.confirm-text { font-size: 0.8em; color: #dc2626; }
+	.confirm-text { font-size: 0.8em; color: var(--accent-red); }
 
 	@media (max-width: 640px) {
 		.page-header { flex-direction: column; }

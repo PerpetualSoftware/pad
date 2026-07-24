@@ -722,7 +722,7 @@
 		if (['done', 'completed', 'fixed', 'implemented', 'resolved'].includes(s))
 			return 'var(--accent-green)';
 		if (['in_progress', 'exploring', 'fixing'].includes(s)) return 'var(--accent-amber)';
-		if (['open', 'new', 'draft', 'todo', 'planned'].includes(s)) return 'var(--accent-blue)';
+		if (['open', 'new', 'draft', 'todo', 'planned'].includes(s)) return 'var(--status-blue)';
 		if (s === 'active') return 'var(--accent-cyan)';
 		return 'var(--text-muted)';
 	}
