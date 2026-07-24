@@ -7,6 +7,8 @@
 	import { relativeTime } from '$lib/utils/markdown';
 	import { parseFieldChanges } from '$lib/utils/activityChanges';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
+	import PageHeader from '$lib/components/common/PageHeader.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import type { Activity, Collection } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -234,18 +236,7 @@
 </script>
 
 <div class="activity-page">
-	<header class="page-header">
-		<div class="page-header-left">
-			<h1>Activity</h1>
-			{#if !loading}
-				<span class="entry-count"
-					>{filteredActivities.length} entr{filteredActivities.length === 1
-						? 'y'
-						: 'ies'}</span
-				>
-			{/if}
-		</div>
-	</header>
+	<PageHeader title="Activity" count={loading ? undefined : filteredActivities.length} />
 
 	<!-- Filters -->
 	<div class="filters-row">
@@ -306,17 +297,13 @@
 			{/each}
 		</div>
 	{:else if filteredActivities.length === 0}
-		<div class="empty-state">
-			<div class="empty-icon">~</div>
-			<p class="empty-title">No activity found</p>
-			<p class="empty-desc">
-				{#if filterAction || filterSource || filterCollection}
-					Try changing or clearing the filters.
-				{:else}
-					Activity will appear here as items are created, updated, and managed.
-				{/if}
-			</p>
-		</div>
+		<EmptyState
+			icon="~"
+			title="No activity found"
+			message={filterAction || filterSource || filterCollection
+				? 'Try changing or clearing the filters.'
+				: 'Activity will appear here as items are created, updated, and managed.'}
+		/>
 	{:else}
 		<div class="timeline">
 			{#each groupedActivities as group (group.date)}
@@ -409,28 +396,6 @@
 		max-width: var(--content-max-width);
 		margin: 0 auto;
 		padding: var(--space-8) var(--space-6);
-	}
-
-	/* ── Header ───────────────────────────────────────────────────────── */
-	.page-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-4);
-		margin-bottom: var(--space-6);
-	}
-	.page-header-left {
-		display: flex;
-		align-items: baseline;
-		gap: var(--space-3);
-	}
-	.page-header h1 {
-		font-size: 1.6em;
-		font-weight: 700;
-	}
-	.entry-count {
-		font-size: 0.9em;
-		color: var(--text-muted);
 	}
 
 	/* ── Filters ──────────────────────────────────────────────────────── */
@@ -678,27 +643,6 @@
 		font-size: 0.8em;
 		color: var(--text-muted);
 		white-space: nowrap;
-	}
-
-	/* ── Empty State ──────────────────────────────────────────────────── */
-	.empty-state {
-		text-align: center;
-		padding: var(--space-10) var(--space-4);
-		color: var(--text-muted);
-	}
-	.empty-icon {
-		font-size: 2em;
-		margin-bottom: var(--space-3);
-		opacity: 0.5;
-	}
-	.empty-title {
-		font-size: 1.1em;
-		font-weight: 600;
-		color: var(--text-secondary);
-		margin-bottom: var(--space-2);
-	}
-	.empty-desc {
-		font-size: 0.9em;
 	}
 
 	/* ── Load More ────────────────────────────────────────────────────── */

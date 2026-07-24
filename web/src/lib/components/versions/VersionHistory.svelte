@@ -4,6 +4,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import DiffView from './DiffView.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 
 	interface Props {
@@ -234,11 +235,11 @@
 		{:else if error}
 			<div class="error-msg">{error}</div>
 		{:else if timeline.length === 0}
-			<div class="empty-state">
-				<span class="empty-icon">&#128196;</span>
-				<p>No history yet</p>
-				<p class="empty-hint">Changes to this item will appear here automatically.</p>
-			</div>
+			<EmptyState
+				icon="📄"
+				title="No history yet"
+				message="Changes to this item will appear here automatically."
+			/>
 		{:else}
 			<div class="timeline">
 				{#each timeline as entry, i (entry.id)}
@@ -437,26 +438,6 @@
 		color: var(--accent-red);
 		border-radius: var(--radius);
 		font-size: 0.85em;
-	}
-
-	.empty-state {
-		text-align: center;
-		padding: var(--space-6) var(--space-4);
-		color: var(--text-muted);
-	}
-
-	.empty-icon {
-		font-size: 2em;
-		display: block;
-		margin-bottom: var(--space-2);
-	}
-
-	.empty-state p { margin: 0; font-size: 0.9em; }
-
-	.empty-hint {
-		margin-top: var(--space-1) !important;
-		font-size: 0.8em !important;
-		color: var(--text-muted);
 	}
 
 	.timeline { display: flex; flex-direction: column; }

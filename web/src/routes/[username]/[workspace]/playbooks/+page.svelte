@@ -9,6 +9,8 @@
 	import { statusColor } from '$lib/utils/fieldColors';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+	import PageHeader from '$lib/components/common/PageHeader.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
 	import {
 		PLAYBOOK_SKELETON_BODY,
@@ -385,31 +387,29 @@
 	{#if loading}
 		<div class="loading">Loading playbooks...</div>
 	{:else}
-		<header class="page-header">
-			<div class="header-text">
-				<h1>Playbooks</h1>
-				<p class="subtitle">Multi-step workflows that agents follow for specific actions</p>
-			</div>
-			{#if !showNewForm}
-				<div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;">
-					<a href="/{username}/{wsSlug}/library?tab=playbooks" class="new-btn" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);">📚 Browse Library</a>
-					<Button
-						variant="secondary"
-						disabled={importing}
-						onclick={openImportPicker}
-						title="Import a playbook or convention from a .pad.md artifact"
-					>{importing ? 'Importing…' : 'Import artifact'}</Button>
-					<Button variant="primary" onclick={() => (showNewForm = true)}>+ New Playbook</Button>
-					<input
-						bind:this={importInputEl}
-						type="file"
-						accept=".md,text/markdown"
-						class="visually-hidden-input"
-						onchange={onImportFileChange}
-					/>
-				</div>
-			{/if}
-		</header>
+		<PageHeader title="Playbooks" description="Multi-step workflows that agents follow for specific actions">
+			{#snippet actions()}
+				{#if !showNewForm}
+					<div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;">
+						<a href="/{username}/{wsSlug}/library?tab=playbooks" class="new-btn" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);">📚 Browse Library</a>
+						<Button
+							variant="secondary"
+							disabled={importing}
+							onclick={openImportPicker}
+							title="Import a playbook or convention from a .pad.md artifact"
+						>{importing ? 'Importing…' : 'Import artifact'}</Button>
+						<Button variant="primary" onclick={() => (showNewForm = true)}>+ New Playbook</Button>
+						<input
+							bind:this={importInputEl}
+							type="file"
+							accept=".md,text/markdown"
+							class="visually-hidden-input"
+							onchange={onImportFileChange}
+						/>
+					</div>
+				{/if}
+			{/snippet}
+		</PageHeader>
 
 		{#if showNewForm}
 			<div class="new-form">
@@ -482,17 +482,21 @@
 		{/if}
 
 		{#if sorted.length === 0 && hasActiveFilters && !showNewForm}
-			<div class="empty-state">
-				<p>No playbooks match your filters.</p>
-				<Button variant="ghost" onclick={clearFilters}>Clear filters</Button>
-			</div>
+			<EmptyState message="No playbooks match your filters.">
+				{#snippet actions()}
+					<Button variant="ghost" onclick={clearFilters}>Clear filters</Button>
+				{/snippet}
+			</EmptyState>
 		{:else if sorted.length === 0 && !showNewForm}
-			<div class="empty-state">
-				<div class="empty-icon">&#x1F4D8;</div>
-				<h2>No playbooks yet</h2>
-				<p>Playbooks are multi-step workflows that guide agents through complex tasks.</p>
-				<Button variant="primary" onclick={() => (showNewForm = true)}>Create Your First Playbook</Button>
-			</div>
+			<EmptyState
+				icon="📘"
+				title="No playbooks yet"
+				message="Playbooks are multi-step workflows that guide agents through complex tasks."
+			>
+				{#snippet actions()}
+					<Button variant="primary" onclick={() => (showNewForm = true)}>Create Your First Playbook</Button>
+				{/snippet}
+			</EmptyState>
 		{:else}
 			<div class="cards">
 				{#each sorted as item (item.id)}
@@ -571,18 +575,11 @@
 <style>
 	.playbooks-page { max-width: var(--content-max-width); margin: 0 auto; padding: var(--space-8) var(--space-6); }
 	.loading { text-align: center; padding-top: 20vh; color: var(--text-muted); }
-	.page-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: var(--space-8); gap: var(--space-4); }
-	.page-header h1 { font-size: 1.6em; margin-bottom: var(--space-1); }
-	.subtitle { color: var(--text-secondary); font-size: 0.95em; }
 	/* .new-btn retained only for the Browse Library <a> (the shared Button
 	   primitive renders <button> elements only). */
 	.new-btn { background: var(--accent-blue); color: #fff; padding: var(--space-2) var(--space-5); border-radius: var(--radius); font-size: 0.85em; font-weight: 600; white-space: nowrap; flex-shrink: 0; transition: opacity 0.15s; }
 	.new-btn:hover { opacity: 0.85; }
 	.visually-hidden-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
-	.empty-state { text-align: center; padding: var(--space-10) var(--space-6); color: var(--text-secondary); }
-	.empty-icon { font-size: 3em; margin-bottom: var(--space-4); opacity: 0.6; }
-	.empty-state h2 { font-size: 1.2em; font-weight: 600; margin-bottom: var(--space-2); color: var(--text-primary); }
-	.empty-state p { font-size: 0.9em; color: var(--text-muted); margin-bottom: var(--space-5); }
 	.filter-bar { display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-4); flex-wrap: wrap; }
 	.search-input { flex: 1; min-width: 160px; padding: var(--space-1) var(--space-3); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.85em; color: var(--text-primary); }
 	.search-input::placeholder { color: var(--text-muted); }
@@ -629,7 +626,6 @@
 		.new-form-grid { grid-template-columns: 1fr; }
 	}
 	@media (max-width: 768px) {
-		.page-header { flex-direction: column; }
 		.form-actions { flex-direction: column; }
 		/* Full-width form buttons on mobile — the shared Button primitive's
 		   root carries the .btn class, so :global reaches into it. */

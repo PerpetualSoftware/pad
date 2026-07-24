@@ -8,6 +8,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import type { Workspace } from '$lib/types';
 
 	let workspaces = $state<Workspace[]>([]);
@@ -76,9 +77,14 @@
 			</div>
 
 			{#if ownedWorkspaces.length === 0}
-				<div class="empty-state">
-					<p class="empty-text">You don't have any workspaces yet.</p>
-					<button type="button" class="empty-action" onclick={() => uiStore.openCreateWorkspace()}>Create your first workspace</button>
+				<div class="empty-card">
+					<EmptyState message="You don't have any workspaces yet.">
+						{#snippet actions()}
+							<Button variant="secondary" onclick={() => uiStore.openCreateWorkspace()}>
+								Create your first workspace
+							</Button>
+						{/snippet}
+					</EmptyState>
 				</div>
 			{:else}
 				<div class="workspace-grid">
@@ -105,8 +111,8 @@
 			</div>
 
 			{#if sharedWorkspaces.length === 0}
-				<div class="empty-state">
-					<p class="empty-text">No workspaces have been shared with you yet.</p>
+				<div class="empty-card">
+					<EmptyState message="No workspaces have been shared with you yet." />
 				</div>
 			{:else}
 				<div class="workspace-grid">
@@ -227,32 +233,11 @@
 		margin-top: var(--space-1);
 	}
 
-	.empty-state {
-		padding: var(--space-10) var(--space-6);
-		text-align: center;
+	/* Layout-only wrapper: the dashed section box around the shared
+	   <EmptyState> (which owns padding/centering/typography). */
+	.empty-card {
 		background: var(--bg-secondary);
 		border: 1px dashed var(--border);
 		border-radius: var(--radius-lg);
-	}
-
-	.empty-text {
-		color: var(--text-muted);
-		font-size: 0.9rem;
-		margin-bottom: var(--space-3);
-	}
-
-	.empty-action {
-		background: none;
-		border: none;
-		padding: 0;
-		color: var(--accent-blue);
-		font-family: inherit;
-		font-size: 0.9rem;
-		font-weight: 500;
-		cursor: pointer;
-	}
-
-	.empty-action:hover {
-		text-decoration: underline;
 	}
 </style>

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { adminFetch, adminPost, getCSRFToken, formatDate } from '$lib/stores/admin.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
 	interface AdminInvitation {
 		id: string;
@@ -127,10 +128,10 @@
 		</div>
 
 		{#if invitations.length === 0}
-			<div class="empty-state">
-				<p class="empty-title">No pending invitations</p>
-				<p class="empty-desc">Workspace invitations will appear here once users are invited.</p>
-			</div>
+			<EmptyState
+				title="No pending invitations"
+				message="Workspace invitations will appear here once users are invited."
+			/>
 		{:else}
 			<div class="table-wrap">
 				<table class="table">
@@ -321,28 +322,6 @@
 		font-size: 0.75rem;
 		color: var(--text-muted);
 		margin-top: var(--space-1);
-	}
-
-	/* Empty state */
-	.empty-state {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		padding: var(--space-10) 0;
-		gap: var(--space-2);
-		text-align: center;
-	}
-	.empty-title {
-		font-size: 0.95rem;
-		font-weight: 600;
-		color: var(--text-primary);
-		margin: 0;
-	}
-	.empty-desc {
-		font-size: 0.85rem;
-		color: var(--text-muted);
-		margin: 0;
 	}
 
 	/* States */
