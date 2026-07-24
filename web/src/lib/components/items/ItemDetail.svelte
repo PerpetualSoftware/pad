@@ -4539,6 +4539,10 @@
 				const next = e.key === 'ArrowRight'
 					? (idx + 1) % tabs.length
 					: (idx - 1 + tabs.length) % tabs.length;
+				// Automatic activation: panels are display-toggles (always
+				// mounted), so activating on arrow-focus is free and keeps the
+				// roving tabindex consistent (tabindex derives from activeTab).
+				activeTab = PANE_TABS[next].id;
 				tabs[next].focus();
 			}}
 		>
