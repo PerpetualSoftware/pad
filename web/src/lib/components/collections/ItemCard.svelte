@@ -565,7 +565,7 @@
 		background: color-mix(in srgb, var(--accent-purple) var(--chip-alpha, 16%), transparent);
 		border: none;
 		border-radius: 6px;
-		color: var(--accent-purple);
+		color: color-mix(in srgb, var(--accent-purple) var(--chip-text-mix, 100%), #000);
 		font-weight: 500;
 		cursor: pointer;
 		max-width: 12rem;
