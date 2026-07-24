@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { tick } from 'svelte';
 	import type { QuickAction, Item, Collection } from '$lib/types';
 	import { parseFields, formatItemRef, parseSettings } from '$lib/types';
 	import { api, isConflictOrNotFound } from '$lib/api/client';
@@ -42,6 +43,17 @@
 	// primitive's outside-click is pointerdown-based and fires BEFORE a row
 	// click mutates state, so the detach hazard is structurally gone.
 	let showCreateForm = $state(false);
+	let labelInputEl: HTMLInputElement | undefined = $state(undefined);
+
+	// The focused "New quick action" row unmounts when the form swaps in —
+	// hand focus to the label input so keyboard users aren't dropped on
+	// <body> (PR #1022 Codex finding). Reads showCreateForm, writes only
+	// DOM focus.
+	$effect(() => {
+		if (showCreateForm) {
+			tick().then(() => labelInputEl?.focus());
+		}
+	});
 	let newLabel = $state('');
 	let newPrompt = $state('');
 	let newIcon = $state('');
@@ -256,6 +268,7 @@
 				type="text"
 				placeholder="Action label"
 				bind:value={newLabel}
+				bind:this={labelInputEl}
 			/>
 		</div>
 		<textarea

@@ -18,6 +18,9 @@ interface ClickOutsideOptions {
 	/** Additional containers that count as "inside" (trigger element,
 	 *  portaled sub-popovers like EmojiPicker). */
 	extra?: () => (Element | null | undefined)[];
+	/** Evaluated per event — return true to skip the outside-close (e.g.
+	 *  while a drag interaction is in flight; cf. the TopBar pill drags). */
+	suppress?: () => boolean;
 }
 
 export function clickOutside(node: HTMLElement, options: ClickOutsideOptions) {
@@ -25,6 +28,7 @@ export function clickOutside(node: HTMLElement, options: ClickOutsideOptions) {
 
 	function onPointerDown(e: PointerEvent) {
 		if (opts.enabled === false) return;
+		if (opts.suppress?.()) return;
 		const target = e.target as Element | null;
 		if (!target) return;
 		if (node.contains(target)) return;

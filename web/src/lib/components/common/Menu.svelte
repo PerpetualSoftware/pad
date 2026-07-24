@@ -29,6 +29,9 @@
 		/** Extra containers that count as "inside" for outside-click
 		 *  (e.g. a nested portaled emoji picker). */
 		exempt?: () => (Element | null | undefined)[];
+		/** Return true to suppress outside-close for this event (e.g. while
+		 *  a drag interaction is in flight — cf. TopBar pill drags). */
+		suppressOutside?: () => boolean;
 		children: Snippet;
 	}
 
@@ -43,6 +46,7 @@
 		sheetTitle,
 		ariaLabel,
 		exempt,
+		suppressOutside,
 		children
 	}: Props = $props();
 
@@ -88,12 +92,18 @@
 		return unregister;
 	});
 
-	// Portal mode: any scroll closes (coords would go stale).
+	// Portal mode: any scroll or resize closes (coords would go stale).
+	// Deliberately onclose() and NOT close(): refocusing the trigger here
+	// would scroll the card back into view and fight the user's scroll.
 	$effect(() => {
 		if (!open || useSheet || mode !== 'portal') return;
-		const onScroll = () => close();
-		window.addEventListener('scroll', onScroll, { capture: true, passive: true });
-		return () => window.removeEventListener('scroll', onScroll, { capture: true });
+		const dismiss = () => onclose();
+		window.addEventListener('scroll', dismiss, { capture: true, passive: true });
+		window.addEventListener('resize', dismiss, { passive: true });
+		return () => {
+			window.removeEventListener('scroll', dismiss, { capture: true });
+			window.removeEventListener('resize', dismiss);
+		};
 	});
 
 	function close() {
@@ -151,7 +161,7 @@
 			tabindex="-1"
 			bind:this={panelEl}
 			use:portal
-			use:clickOutside={{ onOutside: onclose, extra: () => [trigger, ...(exempt?.() ?? [])] }}
+			use:clickOutside={{ onOutside: onclose, extra: () => [trigger, ...(exempt?.() ?? [])], suppress: suppressOutside }}
 			onkeydown={onKeydown}
 		>
 			{@render children()}
@@ -164,7 +174,7 @@
 			aria-label={ariaLabel}
 			tabindex="-1"
 			bind:this={panelEl}
-			use:clickOutside={{ onOutside: onclose, extra: () => [trigger, ...(exempt?.() ?? [])] }}
+			use:clickOutside={{ onOutside: onclose, extra: () => [trigger, ...(exempt?.() ?? [])], suppress: suppressOutside }}
 			onkeydown={onKeydown}
 		>
 			{@render children()}

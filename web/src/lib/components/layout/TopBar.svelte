@@ -666,6 +666,7 @@
 				trigger={userTriggerEl}
 				mode="anchored"
 				ariaLabel="User menu"
+				suppressOutside={() => isDragging || dragArmed}
 			>
 				<div class="user-dropdown">
 					<div class="user-info">
