@@ -14,6 +14,8 @@
 	import FilterBar from '$lib/components/collections/FilterBar.svelte';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import Menu from '$lib/components/common/Menu.svelte';
+	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import SSEStatusIndicator from '$lib/components/SSEStatusIndicator.svelte';
 	import { onDestroy, onMount } from 'svelte';
@@ -1395,6 +1397,24 @@
 	// Desktop keeps the segmented toggle unchanged. Uses the shared breakpoint
 	// store (TASK-2028).
 	let viewSheetOpen = $state(false);
+
+	// Toolbar consolidation (PLAN-2290 Phase 3 / TASK-2293): the desktop
+	// segmented view toggle + saved-views tab bar merge into one View menu;
+	// sort becomes an icon menu; archived/edit/share live in the ⋯ menu.
+	let viewMenuOpen = $state(false);
+	let viewMenuTrigger = $state<HTMLElement | undefined>(undefined);
+	let sortMenuOpen = $state(false);
+	let sortMenuTrigger = $state<HTMLElement | undefined>(undefined);
+	let collMenuOpen = $state(false);
+	let collMenuTrigger = $state<HTMLElement | undefined>(undefined);
+
+	const VIEW_CHOICES = [
+		{ mode: 'list' as const, label: 'List', icon: '☰' },
+		{ mode: 'board' as const, label: 'Board', icon: '▦' },
+		{ mode: 'table' as const, label: 'Table', icon: '☷' }
+	];
+
+	let viewModeIcon = $derived(VIEW_CHOICES.find((v) => v.mode === viewMode)?.icon ?? '▦');
 
 	// If the viewport crosses above the mobile breakpoint while the sheet is
 	// open (e.g. rotation), close it so a return to mobile doesn't immediately
@@ -2974,74 +2994,135 @@
 							</BottomSheet>
 						{/if}
 					{:else}
-						<div class="view-toggle">
+						<div class="menu-anchor">
 							<button
-								class="toggle-btn"
-								class:active={viewMode === 'list'}
-								onclick={() => { saveViewMode('list'); updateUrlFilters(); }}
-								aria-label="List view"
-								title="List view"
-							>&#9776;</button>
-							<button
-								class="toggle-btn"
-								class:active={viewMode === 'board'}
-								onclick={() => { saveViewMode('board'); updateUrlFilters(); }}
-								aria-label="Board view"
-								title="Board view"
-							>&#9638;</button>
-							<button
-								class="toggle-btn"
-								class:active={viewMode === 'table'}
-								onclick={() => { saveViewMode('table'); updateUrlFilters(); }}
-								aria-label="Table view"
-								title="Table view"
-							>&#9783;</button>
+								class="view-dd-trigger"
+								bind:this={viewMenuTrigger}
+								onclick={() => (viewMenuOpen = !viewMenuOpen)}
+								aria-haspopup="menu"
+								aria-expanded={viewMenuOpen}
+								aria-label="Change view"
+								title="View, saved views"
+							>
+								<span class="view-dd-icon" aria-hidden="true">{viewModeIcon}</span>
+								{viewModeLabel}
+								<span class="view-dd-caret" aria-hidden="true">▾</span>
+							</button>
+							<Menu
+								open={viewMenuOpen}
+								onclose={() => (viewMenuOpen = false)}
+								trigger={viewMenuTrigger}
+								mode="anchored"
+								align="left"
+								ariaLabel="View"
+							>
+								{#each VIEW_CHOICES as choice (choice.mode)}
+									<MenuItem
+										icon={choice.icon}
+										checked={viewMode === choice.mode}
+										onclick={() => {
+											saveViewMode(choice.mode);
+											updateUrlFilters();
+											viewMenuOpen = false;
+										}}
+									>
+										{choice.label}
+									</MenuItem>
+								{/each}
+								{#if savedViews.length > 0}
+									<div class="menu-divider" role="separator"></div>
+									<div class="menu-label">Saved views</div>
+									<MenuItem
+										checked={activeViewId === null}
+										onclick={() => { clearActiveView(); viewMenuOpen = false; }}
+									>
+										All
+									</MenuItem>
+									{#each savedViews as view (view.id)}
+										<div class="saved-view-row">
+											<button
+												role="menuitem"
+												class="saved-view-activate"
+												class:active={activeViewId === view.id}
+												onclick={() => { applyViewConfig(view); viewMenuOpen = false; }}
+											>
+												<span class="saved-view-name">{view.name}</span>
+												{#if defaultViewId === view.id}
+													<span class="saved-view-default" title="Default view — applied on entry" aria-label="Default view">📌</span>
+												{/if}
+											</button>
+											<button
+												class="saved-view-delete"
+												onclick={(e) => { e.stopPropagation(); deleteView(view.id, view.name); }}
+												aria-label="Delete view {view.name}"
+												title="Delete view"
+											>&times;</button>
+										</div>
+									{/each}
+									{#if activeViewId !== null}
+										<MenuItem
+											icon="📌"
+											onclick={() => { toggleMakeDefault(); viewMenuOpen = false; }}
+										>
+											{isCurrentDefault ? 'Remove as default' : 'Make default'}
+										</MenuItem>
+									{/if}
+								{/if}
+								<div class="menu-divider" role="separator"></div>
+								<MenuItem icon="★" onclick={() => { openSaveView(); viewMenuOpen = false; }}>
+									Save current view…
+								</MenuItem>
+							</Menu>
 						</div>
 					{/if}
 
 					{#if viewMode !== 'table'}
-						<label class="sort-control" title="Sort items">
-							<span class="sort-label">Sort</span>
-							<select
-								class="sort-select"
-								value={sortMode}
-								onchange={(e) => saveSortMode(e.currentTarget.value as SortMode)}
+						<div class="menu-anchor">
+							<button
+								class="toolbar-icon-btn"
+								bind:this={sortMenuTrigger}
+								onclick={() => (sortMenuOpen = !sortMenuOpen)}
+								aria-haspopup="menu"
+								aria-expanded={sortMenuOpen}
 								aria-label="Sort items"
+								title="Sort items"
 							>
+								<svg width="15" height="15" viewBox="0 0 15 15" fill="none" aria-hidden="true"><path d="M4 2v10M4 12l-2.2-2.4M4 12l2.2-2.4M11 13V3M11 3 8.8 5.4M11 3l2.2 2.4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+							</button>
+							<Menu
+								open={sortMenuOpen}
+								onclose={() => (sortMenuOpen = false)}
+								trigger={sortMenuTrigger}
+								mode="anchored"
+								sheetOnMobile
+								sheetTitle="Sort items"
+								ariaLabel="Sort items"
+							>
+								<div class="menu-label">Sort within groups</div>
 								{#each sortOptions as opt (opt.value)}
-									<option value={opt.value}>{opt.label}</option>
+									<MenuItem
+										checked={sortMode === opt.value}
+										onclick={() => { saveSortMode(opt.value as SortMode); sortMenuOpen = false; }}
+									>
+										{opt.label}
+									</MenuItem>
 								{/each}
-							</select>
-						</label>
+							</Menu>
+						</div>
 					{/if}
 
 					<button
-						class="filter-toggle-btn"
+						class="toolbar-icon-btn filter-toggle-btn"
 						class:has-filters={hasActiveFilters}
 						onclick={() => filtersOpen = !filtersOpen}
 						aria-label="Toggle filters"
-						title="Toggle filters"
+						aria-expanded={filtersOpen}
+						title="Filters"
 					>
 						<svg class="filter-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
-						<span class="filter-label">Filters</span>
 						{#if hasActiveFilters}
 							<span class="filter-badge"></span>
 						{/if}
-					</button>
-
-					<label class="archive-toggle">
-						<input type="checkbox" bind:checked={showArchived} />
-						<span>Archived</span>
-					</label>
-
-					<button
-						class="save-view-btn"
-						onclick={openSaveView}
-						aria-label="Save current view"
-						title="Save current view"
-					>
-						<span class="save-view-icon">&#9733;</span>
-						<span class="save-view-label">Save View</span>
 					</button>
 
 					{#if collection && (quickActions.length > 0 || isOwner)}
@@ -3069,27 +3150,43 @@
 						/>
 					{/if}
 
-					{#if isOwner}
+					<div class="menu-anchor">
 						<button
-							class="edit-collection-btn"
-							onclick={() => { editCollectionOpen = true; }}
-							title="Edit collection"
+							class="toolbar-icon-btn"
+							bind:this={collMenuTrigger}
+							onclick={() => (collMenuOpen = !collMenuOpen)}
+							aria-haspopup="menu"
+							aria-expanded={collMenuOpen}
+							aria-label="Collection menu"
+							title="More"
+						>⋯</button>
+						<Menu
+							open={collMenuOpen}
+							onclose={() => (collMenuOpen = false)}
+							trigger={collMenuTrigger}
+							mode="anchored"
+							sheetOnMobile
+							sheetTitle="Collection"
+							ariaLabel="Collection menu"
 						>
-							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-							<span class="edit-collection-label">Edit</span>
-						</button>
-					{/if}
-
-					{#if isOwner}
-						<button
-							class="share-btn-header"
-							onclick={() => { shareDialogOpen = true; }}
-							title="Share collection"
-						>
-							<svg class="share-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
-							<span class="share-btn-label">Share</span>
-						</button>
-					{/if}
+							<MenuItem
+								icon="🗃"
+								checked={showArchived}
+								onclick={() => { showArchived = !showArchived; collMenuOpen = false; }}
+							>
+								Show archived
+							</MenuItem>
+							{#if isOwner}
+								<div class="menu-divider" role="separator"></div>
+								<MenuItem icon="✎" onclick={() => { editCollectionOpen = true; collMenuOpen = false; }}>
+									Edit collection…
+								</MenuItem>
+								<MenuItem icon="⇗" onclick={() => { shareDialogOpen = true; collMenuOpen = false; }}>
+									Share collection…
+								</MenuItem>
+							{/if}
+						</Menu>
+					</div>
 
 					{#if canEditThisCollection}
 						<button class="new-btn" onclick={handleNewButtonClick} disabled={creatingNew}>
@@ -3119,63 +3216,9 @@
 				</div>
 			{/if}
 
-			{#if savedViews.length > 0}
-				<div class="saved-views-bar">
-					<button
-						class="saved-view-tab"
-						class:active={activeViewId === null}
-						onclick={clearActiveView}
-					>All</button>
-					{#each savedViews as view (view.id)}
-						<button
-							class="saved-view-tab"
-							class:active={activeViewId === view.id}
-							onclick={() => applyViewConfig(view)}
-						>
-							<span class="saved-view-name">{view.name}</span>
-							{#if defaultViewId === view.id}
-								<!--
-									Pin icon marks the saved default. Visible
-									on every tab (not just active) so users can
-									see at a glance which view will be applied
-									on next entry. TASK-1366.
-								-->
-								<span class="saved-view-default" title="Default view — applied on entry" aria-label="Default view">📌</span>
-							{/if}
-							<span
-								class="saved-view-delete"
-								role="button"
-								tabindex="0"
-								onclick={(e) => { e.stopPropagation(); deleteView(view.id, view.name); }}
-								onkeydown={(e) => { if (e.key === 'Enter') { e.stopPropagation(); deleteView(view.id, view.name); } }}
-								aria-label="Delete view {view.name}"
-								title="Delete view"
-							>&times;</span>
-						</button>
-					{/each}
-					{#if activeViewId !== null}
-						<!--
-							"Make default" affordance (TASK-1366 / Phase 3d).
-							Only shown when a saved view is active — toggles
-							whether THIS view becomes the per-(workspace,
-							collection) default applied on next page entry.
-							Storage is pure localStorage v1; cross-device
-							syncs would need a server-side is_default column
-							(out of scope for this phase).
-						-->
-						<button
-							class="saved-view-default-toggle"
-							class:active={isCurrentDefault}
-							onclick={toggleMakeDefault}
-							title={isCurrentDefault
-								? 'Remove as default for this collection'
-								: 'Apply this view automatically on next entry'}
-						>
-							{isCurrentDefault ? 'Default ★' : 'Make default'}
-						</button>
-					{/if}
-				</div>
-			{/if}
+			<!-- Saved views live in the View menu now (PLAN-2290 Phase 3);
+			     the tab bar is retired. TASK-1366's pin/default semantics
+			     carry over unchanged. -->
 
 			{#if saveViewOpen}
 				<div class="save-view-form">
@@ -3631,35 +3674,108 @@
 		flex-wrap: wrap;
 	}
 
-	.view-toggle {
-		display: flex;
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		overflow: hidden;
+	/* Toolbar consolidation (PLAN-2290 Phase 3): View dropdown + icon
+	   buttons + ⋯ menu replace the segmented toggle / sort select /
+	   labeled buttons row. */
+	.menu-anchor {
+		position: relative;
 		flex-shrink: 0;
 	}
 
-	.toggle-btn {
+	.view-dd-trigger {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
 		background: var(--bg-secondary);
-		border: none;
-		padding: var(--space-1) var(--space-2);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		padding: var(--space-1) var(--space-3);
 		cursor: pointer;
-		font-size: 0.95em;
+		font-size: 0.85em;
+		font-weight: 550;
 		color: var(--text-secondary);
-		line-height: 1;
+		white-space: nowrap;
 	}
 
-	.toggle-btn:not(:last-child) {
-		border-right: 1px solid var(--border);
-	}
-
-	.toggle-btn.active {
-		background: var(--bg-tertiary);
+	.view-dd-trigger:hover {
 		color: var(--text-primary);
+		border-color: var(--border-strong, var(--text-muted));
 	}
 
-	.toggle-btn:hover:not(.active) {
+	.view-dd-icon {
+		opacity: 0.8;
+	}
+
+	.view-dd-caret {
+		font-size: 0.75em;
+		color: var(--text-muted);
+	}
+
+	.toolbar-icon-btn {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 30px;
+		height: 28px;
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		cursor: pointer;
+		color: var(--text-secondary);
+		position: relative;
+		flex-shrink: 0;
+	}
+
+	.toolbar-icon-btn:hover {
+		color: var(--text-primary);
+		border-color: var(--border-strong, var(--text-muted));
+	}
+
+	.menu-divider {
+		border-top: 1px solid var(--border-subtle);
+		margin: 5px 4px;
+	}
+
+	.menu-label {
+		font-size: 0.72em;
+		font-weight: 600;
+		letter-spacing: 0.07em;
+		text-transform: uppercase;
+		color: var(--text-muted);
+		padding: 4px 9px 2px;
+	}
+
+	.saved-view-row {
+		display: flex;
+		align-items: center;
+		gap: 2px;
+	}
+
+	.saved-view-activate {
+		flex: 1;
+		display: flex;
+		align-items: center;
+		gap: 7px;
+		padding: 7px 9px;
+		border: none;
+		border-radius: var(--radius-sm);
+		background: none;
+		color: var(--text-primary);
+		font: inherit;
+		font-size: 13px;
+		text-align: left;
+		cursor: pointer;
+		min-width: 0;
+	}
+
+	.saved-view-activate:hover,
+	.saved-view-activate:focus-visible {
 		background: var(--bg-hover);
+		outline: none;
+	}
+
+	.saved-view-activate.active {
+		color: var(--accent-primary-soft, var(--accent-blue));
 	}
 
 	/* Mobile view chip — replaces the segmented .view-toggle under 640px.
@@ -3727,29 +3843,8 @@
 	}
 
 	/* Filter toggle */
-	.filter-toggle-btn {
-		display: flex;
-		align-items: center;
-		gap: var(--space-1);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-1) var(--space-3);
-		cursor: pointer;
-		font-size: 0.82em;
-		color: var(--text-secondary);
-		white-space: nowrap;
-		position: relative;
-		transition: border-color 0.15s, color 0.15s;
-	}
-
-	.filter-toggle-btn:hover {
-		color: var(--text-primary);
-		border-color: var(--text-muted);
-	}
-
 	.filter-toggle-btn.has-filters {
-		border-color: var(--accent-blue);
+		border-color: color-mix(in srgb, var(--accent-primary, var(--accent-blue)) 55%, transparent);
 		color: var(--text-primary);
 	}
 
@@ -3757,12 +3852,15 @@
 		flex-shrink: 0;
 	}
 
+	/* Active-filter dot rides the icon button's corner (mock treatment). */
 	.filter-badge {
+		position: absolute;
+		top: 3px;
+		right: 3px;
 		width: 6px;
 		height: 6px;
 		border-radius: 50%;
-		background: var(--accent-blue);
-		flex-shrink: 0;
+		background: var(--accent-primary, var(--accent-blue));
 	}
 
 	.filters-panel {
@@ -3770,54 +3868,7 @@
 	}
 
 	/* Page-wide sort control (TASK-1670) — sits next to the view toggle. */
-	.sort-control {
-		display: flex;
-		align-items: center;
-		gap: var(--space-1);
-		font-size: 0.82em;
-		color: var(--text-muted);
-		white-space: nowrap;
-		flex-shrink: 0;
-	}
-
-	.sort-label {
-		display: none;
-	}
-
 	@media (min-width: 900px) {
-		.sort-label {
-			display: inline;
-		}
-	}
-
-	.sort-select {
-		appearance: auto;
-		background: var(--bg-secondary);
-		color: var(--text-primary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		padding: 4px 6px;
-		font-size: inherit;
-		cursor: pointer;
-	}
-
-	.archive-toggle {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		font-size: 0.82em;
-		color: var(--text-muted);
-		cursor: pointer;
-		white-space: nowrap;
-		flex-shrink: 0;
-	}
-
-	.archive-toggle input {
-		accent-color: var(--accent-blue);
-	}
-
-	.archive-toggle:hover {
-		color: var(--text-secondary);
 	}
 
 	.new-btn {
@@ -3870,84 +3921,24 @@
 	}
 
 	/* Save view button */
-	.save-view-btn {
-		display: flex;
-		align-items: center;
-		gap: var(--space-1);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-1) var(--space-3);
-		cursor: pointer;
-		font-size: 0.82em;
-		color: var(--text-secondary);
-		white-space: nowrap;
-		transition: border-color 0.15s, color 0.15s;
-	}
-
-	.save-view-btn:hover {
-		color: var(--text-primary);
-		border-color: var(--text-muted);
-	}
-
-	.save-view-icon {
-		font-size: 1em;
-		line-height: 1;
-	}
-
 	/* Saved views tabs */
-	.saved-views-bar {
-		display: flex;
-		align-items: center;
-		gap: var(--space-1);
-		padding: var(--space-2) 0;
-		overflow-x: auto;
-		scrollbar-width: none;
-	}
-
-	.saved-views-bar::-webkit-scrollbar {
-		display: none;
-	}
-
-	.saved-view-tab {
-		display: flex;
-		align-items: center;
-		gap: var(--space-1);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-1) var(--space-3);
-		cursor: pointer;
-		font-size: 0.8em;
-		color: var(--text-secondary);
-		white-space: nowrap;
-		transition: all 0.15s;
-	}
-
-	.saved-view-tab:hover {
-		background: var(--bg-hover);
-		color: var(--text-primary);
-	}
-
-	.saved-view-tab.active {
-		background: var(--bg-tertiary);
-		border-color: var(--accent-blue);
-		color: var(--text-primary);
-		font-weight: 600;
-	}
-
 	.saved-view-delete {
 		display: none;
 		font-size: 1.1em;
 		line-height: 1;
 		color: var(--text-muted);
 		cursor: pointer;
-		padding: 0 2px;
-		border-radius: 2px;
+		padding: 0 6px;
+		border: none;
+		background: none;
+		border-radius: var(--radius-sm);
+		flex-shrink: 0;
 	}
 
-	.saved-view-tab:hover .saved-view-delete {
-		display: inline;
+	/* Revealed on row hover/focus (was tab-hover in the old saved-views bar). */
+	.saved-view-row:hover .saved-view-delete,
+	.saved-view-row:focus-within .saved-view-delete {
+		display: inline-flex;
 	}
 
 	.saved-view-delete:hover {
@@ -3968,31 +3959,6 @@
 		text button that flips to filled state when the current view is
 		the persisted default.
 	*/
-	.saved-view-default-toggle {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		font-size: 0.75em;
-		padding: 2px 8px;
-		border-radius: 999px;
-		color: var(--text-muted);
-		background: none;
-		border: 1px solid var(--border);
-		cursor: pointer;
-		white-space: nowrap;
-		transition: all 0.15s ease;
-		margin-left: var(--space-1);
-	}
-	.saved-view-default-toggle:hover {
-		color: var(--text-secondary);
-		background: var(--bg-hover);
-	}
-	.saved-view-default-toggle.active {
-		color: var(--accent-amber);
-		border-color: color-mix(in srgb, var(--accent-amber) 40%, transparent);
-		background: color-mix(in srgb, var(--accent-amber) 12%, transparent);
-	}
-
 	/* Save view form */
 	.save-view-form {
 		padding: var(--space-2) 0;
@@ -4039,74 +4005,12 @@
 			justify-content: flex-start;
 		}
 
-		.archive-toggle {
-			display: none;
-		}
-
-		.filter-label {
-			display: none;
-		}
-
 		.new-btn-label {
 			display: none;
 		}
 
-		.save-view-label {
-			display: none;
-		}
-
-		.share-btn-label {
-			display: none;
-		}
-
-		.edit-collection-label {
-			display: none;
-		}
 	}
 
 	/* Share button */
-	.share-btn-header {
-		display: flex;
-		align-items: center;
-		gap: var(--space-1);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-1) var(--space-3);
-		cursor: pointer;
-		font-size: 0.82em;
-		color: var(--text-secondary);
-		white-space: nowrap;
-		transition: border-color 0.15s, color 0.15s;
-	}
-
-	.share-btn-header:hover {
-		color: var(--text-primary);
-		border-color: var(--text-muted);
-	}
-
-	.share-icon {
-		flex-shrink: 0;
-	}
-
 	/* Edit collection button */
-	.edit-collection-btn {
-		display: flex;
-		align-items: center;
-		gap: var(--space-1);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-1) var(--space-3);
-		cursor: pointer;
-		font-size: 0.82em;
-		color: var(--text-secondary);
-		white-space: nowrap;
-		transition: border-color 0.15s, color 0.15s;
-	}
-
-	.edit-collection-btn:hover {
-		color: var(--text-primary);
-		border-color: var(--text-muted);
-	}
 </style>
