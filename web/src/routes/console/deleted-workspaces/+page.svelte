@@ -2,6 +2,8 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import PageHeader from '$lib/components/common/PageHeader.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import type { DeletedWorkspace } from '$lib/types';
 
 	// Deleted workspaces page (TASK-1975). Lists the caller's soft-deleted
@@ -73,13 +75,10 @@
 </svelte:head>
 
 <div class="page">
-	<header class="page-header">
-		<h1>Deleted workspaces</h1>
-		<p class="page-desc">
-			Workspaces you've deleted are kept for a short window before they're permanently
-			removed. Restore one to bring it back with all its data.
-		</p>
-	</header>
+	<PageHeader
+		title="Deleted workspaces"
+		description="Workspaces you've deleted are kept for a short window before they're permanently removed. Restore one to bring it back with all its data."
+	/>
 
 	{#if loading}
 		<div class="loading-msg">Loading&hellip;</div>
@@ -89,11 +88,11 @@
 			<button class="btn" onclick={load}>Retry</button>
 		</div>
 	{:else if workspaces.length === 0}
-		<div class="empty-state">
-			<p class="empty-title">No recently deleted workspaces</p>
-			<p class="empty-desc">
-				Workspaces you delete will appear here until they're permanently removed.
-			</p>
+		<div class="empty-card">
+			<EmptyState
+				title="No recently deleted workspaces"
+				message="Workspaces you delete will appear here until they're permanently removed."
+			/>
 		</div>
 	{:else}
 		<div class="table-wrap">
@@ -139,26 +138,8 @@
 </div>
 
 <style>
-	.page {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-6);
-	}
-
-	.page-header h1 {
-		margin: 0 0 var(--space-2) 0;
-		font-size: 1.5rem;
-		font-weight: 700;
-		color: var(--text-primary);
-		letter-spacing: -0.01em;
-	}
-
-	.page-desc {
-		margin: 0;
-		font-size: 0.9rem;
-		color: var(--text-secondary);
-		max-width: 60ch;
-	}
+	/* Header spacing comes from the shared <PageHeader> primitive's own
+	   margin-bottom (the old .page flex gap would have doubled it). */
 
 	/* States */
 	.loading-msg {
@@ -185,25 +166,12 @@
 		font-size: 0.85rem;
 	}
 
-	.empty-state {
-		padding: var(--space-8) var(--space-6);
-		text-align: center;
+	/* Layout-only wrapper: the boxed surface around the shared
+	   <EmptyState> (which owns padding/centering/typography). */
+	.empty-card {
 		background: var(--bg-secondary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
-	}
-
-	.empty-title {
-		margin: 0 0 var(--space-2) 0;
-		font-size: 1rem;
-		font-weight: 600;
-		color: var(--text-primary);
-	}
-
-	.empty-desc {
-		margin: 0;
-		font-size: 0.9rem;
-		color: var(--text-secondary);
 	}
 
 	/* Table */

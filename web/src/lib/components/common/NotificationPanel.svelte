@@ -2,6 +2,7 @@
 	import { fly, fade } from 'svelte/transition';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { HistoryEntry } from '$lib/stores/toast.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
 	let { visible, onclose }: { visible: boolean; onclose: () => void } = $props();
 
@@ -49,15 +50,7 @@
 
 		<div class="panel-body">
 			{#if toastStore.history.length === 0}
-				<div class="empty-state">
-					<span class="empty-icon">
-						<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-							<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
-							<path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-						</svg>
-					</span>
-					<p>No notifications yet</p>
-				</div>
+				<EmptyState icon="🔔" message="No notifications yet" />
 			{:else}
 				{#each toastStore.history as entry (entry.id)}
 					{#if entry.link}
@@ -146,23 +139,6 @@
 		flex: 1;
 		overflow-y: auto;
 		min-height: 0;
-	}
-
-	.empty-state {
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		padding: var(--space-8) var(--space-4);
-		color: var(--text-muted);
-		gap: var(--space-3);
-	}
-	.empty-state .empty-icon {
-		opacity: 0.4;
-	}
-	.empty-state p {
-		margin: 0;
-		font-size: 0.88em;
 	}
 
 	.notification-row {

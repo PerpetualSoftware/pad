@@ -3,6 +3,8 @@
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
+	import PageHeader from '$lib/components/common/PageHeader.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import type { TagCount } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -47,12 +49,7 @@
 </svelte:head>
 
 <div class="tags-page">
-	<div class="page-header">
-		<div class="page-header-left">
-			<h1>🏷 Tags</h1>
-			<span class="item-count">{tags.length} tag{tags.length !== 1 ? 's' : ''}</span>
-		</div>
-	</div>
+	<PageHeader title="Tags" icon="🏷" count={tags.length} />
 
 	{#if loading}
 		<div class="tag-cloud">
@@ -61,14 +58,11 @@
 			{/each}
 		</div>
 	{:else if tags.length === 0}
-		<div class="empty-state">
-			<div class="empty-icon">🏷</div>
-			<h2>No tags yet</h2>
-			<p>
-				Add tags to an item from its detail page. Tags span collections, so one tag can group
-				items of any type — a useful way to view related work together.
-			</p>
-		</div>
+		<EmptyState
+			icon="🏷"
+			title="No tags yet"
+			message="Add tags to an item from its detail page. Tags span collections, so one tag can group items of any type — a useful way to view related work together."
+		/>
 	{:else}
 		<div class="tag-cloud">
 			{#each tags as t (t.tag)}
@@ -86,33 +80,6 @@
 		max-width: var(--content-max-width);
 		margin: 0 auto;
 		padding: var(--space-8) var(--space-6);
-	}
-
-	.page-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-4);
-		margin-bottom: var(--space-6);
-		flex-wrap: wrap;
-	}
-
-	.page-header-left {
-		display: flex;
-		align-items: baseline;
-		gap: var(--space-3);
-	}
-
-	.page-header h1 {
-		font-size: 1.6em;
-		font-weight: 700;
-		color: var(--text-primary);
-		margin: 0;
-	}
-
-	.item-count {
-		font-size: 0.85em;
-		color: var(--text-muted);
 	}
 
 	.tag-cloud {
@@ -171,31 +138,5 @@
 		50% {
 			opacity: 0.7;
 		}
-	}
-
-	.empty-state {
-		text-align: center;
-		padding: var(--space-12) var(--space-6);
-		color: var(--text-muted);
-	}
-
-	.empty-icon {
-		font-size: 3em;
-		margin-bottom: var(--space-4);
-		opacity: 0.4;
-	}
-
-	.empty-state h2 {
-		font-size: 1.1em;
-		font-weight: 600;
-		color: var(--text-secondary);
-		margin: 0 0 var(--space-2);
-	}
-
-	.empty-state p {
-		font-size: 0.9em;
-		line-height: 1.5;
-		max-width: 400px;
-		margin: 0 auto;
 	}
 </style>

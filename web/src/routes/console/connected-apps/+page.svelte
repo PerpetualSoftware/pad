@@ -4,6 +4,7 @@
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import type { ConnectedApp, Workspace } from '$lib/types';
 
 	// Connected Apps page (TASK-954). Lists every active OAuth grant
@@ -268,13 +269,10 @@
 </script>
 
 <div class="page">
-	<header class="page-header">
-		<h1>Connected apps</h1>
-		<p class="page-desc">
-			Apps and assistants that can act on your behalf via the MCP API. Revoking an app
-			immediately invalidates its access.
-		</p>
-	</header>
+	<PageHeader
+		title="Connected apps"
+		description="Apps and assistants that can act on your behalf via the MCP API. Revoking an app immediately invalidates its access."
+	/>
 
 	{#if loading}
 		<div class="loading-msg">Loading&hellip;</div>
@@ -609,26 +607,8 @@
 </Modal>
 
 <style>
-	.page {
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-6);
-	}
-
-	.page-header h1 {
-		margin: 0 0 var(--space-2) 0;
-		font-size: 1.5rem;
-		font-weight: 700;
-		color: var(--text-primary);
-		letter-spacing: -0.01em;
-	}
-
-	.page-desc {
-		margin: 0;
-		font-size: 0.9rem;
-		color: var(--text-secondary);
-		max-width: 60ch;
-	}
+	/* Header spacing comes from the shared <PageHeader> primitive's own
+	   margin-bottom (the old .page flex gap would have doubled it). */
 
 	/* States */
 	.loading-msg {

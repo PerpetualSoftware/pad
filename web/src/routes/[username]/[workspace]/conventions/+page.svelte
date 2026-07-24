@@ -8,6 +8,8 @@
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
 	import Button from '$lib/components/common/Button.svelte';
+	import PageHeader from '$lib/components/common/PageHeader.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
 	const TRIGGERS = ['always','on-task-start','on-task-complete','on-implement','on-commit','on-pr-create','on-plan-start','on-plan-complete','on-plan'] as const;
 	type Trigger = typeof TRIGGERS[number];
@@ -479,12 +481,8 @@
 	{#if loading}
 		<div class="loading">Loading conventions...</div>
 	{:else}
-		<header class="page-header">
-			<div class="header-text">
-				<h1>Conventions</h1>
-				<p class="subtitle">Rules that guide agent behavior in this project</p>
-			</div>
-			<div class="header-actions">
+		<PageHeader title="Conventions" description="Rules that guide agent behavior in this project">
+			{#snippet actions()}
 				<a href="/{username}/{workspace}/library" class="btn btn-secondary">Browse Library</a>
 				<Button
 					variant="secondary"
@@ -504,8 +502,8 @@
 					class="visually-hidden-input"
 					onchange={onImportFileChange}
 				/>
-			</div>
-		</header>
+			{/snippet}
+		</PageHeader>
 
 		{#if showCreate}
 			<form class="create-form" onsubmit={(e) => { e.preventDefault(); handleCreate(); }}>
@@ -579,16 +577,17 @@
 		{/if}
 
 		{#if conventions.length === 0 && !showCreate}
-			<div class="empty-state">
-				<div class="empty-icon">📏</div>
-				<h2>No conventions yet</h2>
-				<p>Add rules from the library or create your own.</p>
-			</div>
+			<EmptyState
+				icon="📏"
+				title="No conventions yet"
+				message="Add rules from the library or create your own."
+			/>
 		{:else if grouped.length === 0 && hasActiveFilters}
-			<div class="empty-state">
-				<p>No conventions match your filters.</p>
-				<Button variant="secondary" onclick={clearFilters}>Clear filters</Button>
-			</div>
+			<EmptyState message="No conventions match your filters.">
+				{#snippet actions()}
+					<Button variant="secondary" onclick={clearFilters}>Clear filters</Button>
+				{/snippet}
+			</EmptyState>
 		{:else}
 			<div class="groups">
 				{#each grouped as group (group.trigger)}
@@ -732,11 +731,6 @@
 	.conventions-page { max-width: var(--content-max-width); margin: 0 auto; padding: var(--space-8) var(--space-6); }
 	.loading { text-align: center; padding-top: 20vh; color: var(--text-muted); }
 
-	/* Header */
-	.page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: var(--space-4); margin-bottom: var(--space-6); flex-wrap: wrap; }
-	.header-text h1 { font-size: 1.6em; margin-bottom: var(--space-1); }
-	.subtitle { color: var(--text-secondary); font-size: 0.9em; }
-	.header-actions { display: flex; gap: var(--space-2); flex-shrink: 0; flex-wrap: wrap; }
 	.visually-hidden-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
 	/* Buttons — .btn/.btn-secondary retained only for the Browse Library <a>
@@ -752,12 +746,6 @@
 	.form-field { display: flex; flex-direction: column; gap: var(--space-1); flex: 1; min-width: 120px; }
 	.form-field span { font-size: 0.8em; color: var(--text-secondary); font-weight: 600; }
 	.form-actions { display: flex; gap: var(--space-2); justify-content: flex-end; }
-
-	/* Empty state */
-	.empty-state { text-align: center; padding: var(--space-10) var(--space-6); }
-	.empty-icon { font-size: 3em; margin-bottom: var(--space-4); opacity: 0.6; }
-	.empty-state h2 { font-size: 1.2em; font-weight: 600; margin-bottom: var(--space-2); }
-	.empty-state p { color: var(--text-muted); font-size: 0.9em; }
 
 	/* Search/filter bar */
 	.filter-bar { display: flex; gap: var(--space-2); align-items: center; margin-bottom: var(--space-4); flex-wrap: wrap; }
@@ -824,8 +812,6 @@
 	.confirm-text { font-size: 0.8em; color: var(--accent-red); }
 
 	@media (max-width: 640px) {
-		.page-header { flex-direction: column; }
-		.header-actions { width: 100%; }
 		.scope-badge { display: none; }
 		.form-row { flex-direction: column; }
 	}

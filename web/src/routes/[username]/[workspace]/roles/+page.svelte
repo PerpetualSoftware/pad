@@ -12,6 +12,9 @@
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
+	import Button from '$lib/components/common/Button.svelte';
+	import PageHeader from '$lib/components/common/PageHeader.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 
@@ -427,28 +430,27 @@
 </svelte:head>
 
 <div class="role-board-page">
-	<header class="page-header">
-		<div class="page-header-left">
-			<h1><span class="page-icon" aria-hidden="true">&#127917;</span> Role Board</h1>
-			{#if !loading}
-				<span class="item-count">{totalItems} item{totalItems === 1 ? '' : 's'}</span>
-			{/if}
-		</div>
-		<div class="page-header-right">
-			<button
-				class="toggle-btn"
-				class:active={highlightMine}
-				onclick={() => highlightMine = !highlightMine}
-			>
-				Mine
-			</button>
-			<!-- "+ New" only when there's at least one collection the user can
-			     create items in (eligibleCollections is now canEditCollection-filtered). -->
-			{#if eligibleCollections.length > 0}
-				<button class="new-item-btn" onclick={openNewItem}>+ New</button>
-			{/if}
-		</div>
-	</header>
+	<!-- Layout-only wrapper: keeps the header non-shrinking inside the page's
+	     column flex and carries the mobile padding the page previously put on
+	     .page-header (the page itself drops to padding: 0 on mobile). -->
+	<div class="header-wrap">
+		<PageHeader title="Role Board" icon="🎭" count={loading ? undefined : totalItems}>
+			{#snippet actions()}
+				<button
+					class="toggle-btn"
+					class:active={highlightMine}
+					onclick={() => highlightMine = !highlightMine}
+				>
+					Mine
+				</button>
+				<!-- "+ New" only when there's at least one collection the user can
+				     create items in (eligibleCollections is now canEditCollection-filtered). -->
+				{#if eligibleCollections.length > 0}
+					<button class="new-item-btn" onclick={openNewItem}>+ New</button>
+				{/if}
+			{/snippet}
+		</PageHeader>
+	</div>
 
 
 	<!-- Role edit/create modal -->
@@ -469,7 +471,7 @@
 				<button class="dialog-close" onclick={closeNewItem}>✕</button>
 			</div>
 			<div class="collection-grid">
-				{#each eligibleCollections as coll}
+				{#each eligibleCollections as coll (coll.id)}
 					<button class="collection-pick" onclick={() => selectCollection(coll.slug)}>
 						<span class="collection-pick-icon">{coll.icon || '📦'}</span>
 						<span class="collection-pick-name">{coll.name}</span>
@@ -570,31 +572,31 @@
 			{/each}
 		</div>
 	{:else if error}
-		<div class="empty-state">
-			<div class="empty-icon">!</div>
-			<p class="empty-title">Failed to load</p>
-			<p class="empty-desc">{error}</p>
-			<button class="retry-btn" onclick={loadData}>Retry</button>
-		</div>
+		<EmptyState icon="!" title="Failed to load" message={error}>
+			{#snippet actions()}
+				<Button variant="secondary" onclick={loadData}>Retry</Button>
+			{/snippet}
+		</EmptyState>
 	{:else if orderedLanes.length === 0}
-		<div class="empty-state">
-			{#if highlightMine}
-				<div class="empty-icon">&#128100;</div>
-				<p class="empty-title">No items assigned to you</p>
-				<p class="empty-desc">
-					Turn off "My Work" to see all items, or assign items to yourself from the item detail page.
-				</p>
-			{:else}
-				<div class="empty-icon">&#127917;</div>
-				<p class="empty-title">No roles configured</p>
-				<p class="empty-desc">
-					Agent roles let you organize work by what kind of thinking it requires — planning, implementing, reviewing, etc.
-				</p>
-				{#if isOwner}
-					<button class="retry-btn" onclick={openCreateModal}>Create your first role</button>
-				{/if}
-			{/if}
-		</div>
+		{#if highlightMine}
+			<EmptyState
+				icon="👤"
+				title="No items assigned to you"
+				message="Turn off &quot;My Work&quot; to see all items, or assign items to yourself from the item detail page."
+			/>
+		{:else}
+			<EmptyState
+				icon="🎭"
+				title="No roles configured"
+				message="Agent roles let you organize work by what kind of thinking it requires — planning, implementing, reviewing, etc."
+			>
+				{#snippet actions()}
+					{#if isOwner}
+						<Button variant="secondary" onclick={openCreateModal}>Create your first role</Button>
+					{/if}
+				{/snippet}
+			</EmptyState>
+		{/if}
 	{:else}
 		<div class="lanes-container">
 			{#each orderedLanes as lane (lane.role?.id ?? '__unassigned')}
@@ -693,37 +695,9 @@
 	}
 
 	/* ── Header ───────────────────────────────────────────────────────── */
-	.page-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-4);
-		margin-bottom: var(--space-5);
+	/* Layout-only wrapper around the shared PageHeader (see markup comment). */
+	.header-wrap {
 		flex-shrink: 0;
-	}
-	.page-header-left {
-		display: flex;
-		align-items: baseline;
-		gap: var(--space-3);
-	}
-	.page-header h1 {
-		font-size: 1.6em;
-		font-weight: 700;
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-	}
-	.page-icon {
-		font-size: 0.85em;
-	}
-	.item-count {
-		font-size: 0.9em;
-		color: var(--text-muted);
-	}
-	.page-header-right {
-		display: flex;
-		align-items: center;
-		gap: var(--space-3);
 	}
 
 	/* ── Toggle Button ────────────────────────────────────────────────── */
@@ -1004,46 +978,6 @@
 		color: inherit;
 	}
 
-	/* ── Empty State ──────────────────────────────────────────────────── */
-	.empty-state {
-		text-align: center;
-		padding: var(--space-10) var(--space-4);
-		color: var(--text-muted);
-	}
-	.empty-icon {
-		font-size: 2em;
-		margin-bottom: var(--space-3);
-		opacity: 0.5;
-	}
-	.empty-title {
-		font-size: 1.1em;
-		font-weight: 600;
-		color: var(--text-secondary);
-		margin-bottom: var(--space-2);
-	}
-	.empty-desc {
-		font-size: 0.9em;
-		max-width: 400px;
-		margin: 0 auto;
-		line-height: 1.5;
-	}
-	.retry-btn {
-		margin-top: var(--space-4);
-		background: var(--bg-secondary);
-		color: var(--text-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		padding: var(--space-2) var(--space-5);
-		font-size: 0.85em;
-		font-weight: 600;
-		cursor: pointer;
-		transition: background 0.15s, border-color 0.15s;
-	}
-	.retry-btn:hover {
-		border-color: var(--text-muted);
-		background: var(--bg-hover);
-	}
-
 	/* ── Skeleton ─────────────────────────────────────────────────────── */
 	.skeleton-board {
 		display: flex;
@@ -1088,7 +1022,7 @@
 		.role-board-page {
 			padding: 0;
 		}
-		.page-header {
+		.header-wrap {
 			padding: var(--space-3) var(--space-4);
 		}
 		.lanes-container {
@@ -1253,11 +1187,6 @@
 	.role-input:focus {
 		outline: 2px solid var(--accent-blue);
 		outline-offset: -1px;
-	}
-	.role-input-icon {
-		width: 48px;
-		flex-shrink: 0;
-		text-align: center;
 	}
 	.role-btn {
 		padding: 5px 12px;

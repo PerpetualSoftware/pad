@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { adminFetch } from '$lib/stores/admin.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 
 	// Admin MCP audit log page (PLAN-943 TASK-960).
 	//
@@ -145,10 +146,10 @@
 			<button class="btn" onclick={() => loadEntries()}>Retry</button>
 		</div>
 	{:else if entries.length === 0}
-		<div class="empty-state">
-			<p class="empty-title">No MCP audit entries</p>
-			<p class="empty-desc">Audit rows appear here as soon as the first /mcp request lands.</p>
-		</div>
+		<EmptyState
+			title="No MCP audit entries"
+			message="Audit rows appear here as soon as the first /mcp request lands."
+		/>
 	{:else}
 		<div class="table-wrap">
 			<table class="table">
@@ -218,22 +219,10 @@
 	}
 
 	.loading-msg,
-	.error-msg,
-	.empty-state {
+	.error-msg {
 		padding: var(--space-6);
 		text-align: center;
 		color: var(--text-muted);
-	}
-
-	.empty-title {
-		font-size: 1rem;
-		font-weight: 600;
-		color: var(--text-primary);
-		margin-bottom: var(--space-1);
-	}
-
-	.empty-desc {
-		font-size: 0.9rem;
 	}
 
 	.table-wrap {

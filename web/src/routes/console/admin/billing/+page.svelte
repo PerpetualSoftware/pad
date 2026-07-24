@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import type { AdminBillingStats } from '$lib/types';
 
 	let stats = $state<AdminBillingStats | null>(null);
@@ -94,9 +95,8 @@
 			<button class="btn" onclick={initialLoad}>Retry</button>
 		</div>
 	{:else if stats}
-		<header class="page-header">
-			<h1>Billing</h1>
-			<div class="header-actions">
+		<PageHeader title="Billing">
+			{#snippet actions()}
 				<button class="btn" onclick={refresh} disabled={refreshing}>
 					{refreshing ? 'Refreshing...' : 'Refresh'}
 				</button>
@@ -108,8 +108,8 @@
 				>
 					Open in Stripe Dashboard <span aria-hidden="true">&#8599;</span>
 				</a>
-			</div>
-		</header>
+			{/snippet}
+		</PageHeader>
 
 		{#if stats.cloud_unreachable}
 			<div class="banner warning" role="alert">
@@ -219,25 +219,6 @@
 	.error-msg p {
 		margin: 0;
 		font-size: 0.85rem;
-	}
-
-	.page-header {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--space-3);
-		flex-wrap: wrap;
-	}
-	.page-header h1 {
-		margin: 0;
-		font-size: 1.5rem;
-		font-weight: 600;
-		color: var(--text-primary);
-	}
-	.header-actions {
-		display: flex;
-		gap: var(--space-2);
-		align-items: center;
 	}
 
 	.btn {

@@ -5,6 +5,7 @@
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { browser } from '$app/environment';
 	import ItemCard from '$lib/components/collections/ItemCard.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import type { Item, Collection } from '$lib/types';
 
 	type ViewMode = 'list' | 'board';
@@ -170,11 +171,11 @@
 			</div>
 		</div>
 	{:else if fetchedItems.length === 0}
-		<div class="empty-state">
-			<div class="empty-icon">🏷</div>
-			<h2>No items tagged “{tag}”</h2>
-			<p>Add this tag to an item from its detail page to group it here.</p>
-		</div>
+		<EmptyState
+			icon="🏷"
+			title={`No items tagged “${tag}”`}
+			message="Add this tag to an item from its detail page to group it here."
+		/>
 	{:else if viewMode === 'board'}
 		<!-- Board: one lane per collection (the shared axis). Read-only — no
 		     drag/status changes, since moving a card between collection lanes
@@ -348,32 +349,6 @@
 		50% {
 			opacity: 0.7;
 		}
-	}
-
-	.empty-state {
-		text-align: center;
-		padding: var(--space-12) var(--space-6);
-		color: var(--text-muted);
-	}
-
-	.empty-icon {
-		font-size: 3em;
-		margin-bottom: var(--space-4);
-		opacity: 0.4;
-	}
-
-	.empty-state h2 {
-		font-size: 1.1em;
-		font-weight: 600;
-		color: var(--text-secondary);
-		margin: 0 0 var(--space-2);
-	}
-
-	.empty-state p {
-		font-size: 0.9em;
-		line-height: 1.5;
-		max-width: 400px;
-		margin: 0 auto;
 	}
 
 	.tag-list {
