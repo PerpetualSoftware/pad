@@ -53,11 +53,9 @@
 	}
 
 	function displayValue(field: FieldDef, value: string): string {
-		const base = isCategorical(field)
-			? field.key === 'status'
-				? formatLabel(value).toUpperCase()
-				: formatLabel(value)
-			: value;
+		// Title Case for categorical values — matches the chip pills on the
+		// card/list/table surfaces (PLAN-2290 Phase 3; no more SHOUTED status).
+		const base = isCategorical(field) ? formatLabel(value) : value;
 		return field.suffix ? `${base} ${field.suffix}` : base;
 	}
 </script>
@@ -87,15 +85,17 @@
 </div>
 
 <style>
+	/* Card skin tokens (PLAN-2290 Phase 3) so the panel seams with the
+	   card/row it expands from — same background/border, joined corners. */
 	.item-expansion {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-4);
 		padding: var(--space-4);
-		background: var(--bg-primary);
-		border: 1px solid var(--border-subtle, var(--border));
+		background: var(--card-bg, var(--bg-primary));
+		border: 1px solid var(--card-border, var(--border));
 		border-top: none;
-		border-radius: 0 0 var(--radius) var(--radius);
+		border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 	}
 
 	.expansion-fields {

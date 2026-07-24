@@ -102,13 +102,13 @@
 						<span class="row-title">{item.title}</span>
 						<span class="row-meta">
 							{#if priorityFieldDef && priority}
-								<span class="row-priority" style:color={fieldValueColor(priorityFieldDef, priority)}
+								<span class="row-priority" style:--chip-c={fieldValueColor(priorityFieldDef, priority)}
 									>{formatLabel(priority)}</span
 								>
 							{/if}
 							{#if statusFieldDef && status}
-								<span class="row-status" style:color={fieldValueColor(statusFieldDef, status)}
-									>{formatLabel(status).toUpperCase()}</span
+								<span class="row-status" style:--chip-c={fieldValueColor(statusFieldDef, status)}
+									>{formatLabel(status)}</span
 								>
 							{/if}
 						</span>
@@ -170,31 +170,34 @@
 		min-width: 0;
 	}
 
+	/* Row skin — the in-app card tokens (PLAN-2290 Phase 3) so shared list
+	   rows read like the owner's list of cards. */
 	.list-row {
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
 		padding: var(--space-3) var(--space-4);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border-subtle, var(--border));
-		border-radius: var(--radius);
+		background: var(--card-bg, var(--bg-primary));
+		border: 1px solid var(--card-border, var(--border));
+		border-radius: var(--radius-lg);
+		box-shadow: var(--shadow-card, none);
 		min-width: 0;
 	}
 
 	.row-wrap.expanded .list-row {
 		border-bottom: none;
-		border-radius: var(--radius) var(--radius) 0 0;
+		border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 	}
 
 	.list-row.interactive {
 		cursor: pointer;
-		transition: background 0.1s;
+		transition: background 0.1s, border-color 0.1s;
 	}
 	.list-row.interactive:hover {
-		background: var(--bg-hover);
+		border-color: var(--border-strong, var(--border));
 	}
 	.list-row.interactive:focus-visible {
-		outline: 2px solid var(--accent-blue);
+		outline: 2px solid var(--accent-primary, var(--accent-blue));
 		outline-offset: -2px;
 	}
 
@@ -217,22 +220,24 @@
 	.row-meta {
 		display: flex;
 		align-items: center;
-		gap: var(--space-3);
+		gap: var(--space-2);
 		flex-shrink: 0;
 	}
 
-	.row-priority {
-		font-size: 0.75em;
-		font-weight: 600;
-		white-space: nowrap;
-	}
-
+	/* Status/priority as tinted chip pills — the in-app Chip primitive's `sm`
+	   metrics; `--chip-c` set inline from fieldValueColor. */
+	.row-priority,
 	.row-status {
-		font-size: 0.72em;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.02em;
+		display: inline-flex;
+		align-items: center;
+		padding: 1px 6px;
+		border-radius: 6px;
+		font-size: 0.8em;
+		font-weight: 500;
+		line-height: 1.5;
 		white-space: nowrap;
+		background: color-mix(in srgb, var(--chip-c, var(--accent-gray)) var(--chip-alpha, 16%), transparent);
+		color: color-mix(in srgb, var(--chip-c, var(--accent-gray)) var(--chip-text-mix, 100%), #000);
 	}
 
 	.group-empty {
