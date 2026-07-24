@@ -45,6 +45,9 @@
 	--accent-gray: #9ca3af;
 	--accent-brown: #a8896c;
 	--accent-red: #ef4444;
+	/* Solid destructive fill — the red where white text passes AA (4.83:1)
+	   in both themes. Button variant="danger-solid" (final confirms). */
+	--accent-red-strong: #dc2626;
 
 	/* Literal blue for categorical uses (status maps, charts, info badges).
 	   Stays blue even if the brand accent changes — see PLAN-2290. */

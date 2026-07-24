@@ -4,8 +4,11 @@
 
 	interface Props extends HTMLButtonAttributes {
 		/** primary = filled violet (AA text via --accent-primary-strong);
-		 *  secondary = raised neutral; ghost = borderless; danger = red tint. */
-		variant?: 'primary' | 'secondary' | 'ghost' | 'danger';
+		 *  secondary = raised neutral; ghost = borderless; danger = red tint
+		 *  (entry-level destructive); danger-solid = filled red for the FINAL
+		 *  confirm of an irreversible action (AA white text via
+		 *  --accent-red-strong). */
+		variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'danger-solid';
 		size?: 'sm' | 'md';
 		children: Snippet;
 	}
@@ -14,12 +17,13 @@
 		variant = 'secondary',
 		size = 'md',
 		type = 'button',
+		class: className = '',
 		children,
 		...rest
 	}: Props = $props();
 </script>
 
-<button class="btn {variant} {size}" {type} {...rest}>
+<button {...rest} class="btn {variant} {size} {className}" {type}>
 	{@render children()}
 </button>
 
@@ -99,5 +103,14 @@
 	.danger:hover:not(:disabled) {
 		background: color-mix(in srgb, var(--accent-red) 20%, transparent);
 		border-color: var(--accent-red);
+	}
+
+	.danger-solid {
+		background: var(--accent-red-strong, #dc2626);
+		color: var(--text-on-accent);
+	}
+
+	.danger-solid:hover:not(:disabled) {
+		filter: brightness(1.1);
 	}
 </style>

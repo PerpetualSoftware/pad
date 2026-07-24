@@ -708,7 +708,7 @@
 														</Button>
 														{#if confirmDelete === item.slug}
 															<span class="confirm-text">Delete this convention?</span>
-															<Button variant="danger" size="sm" onclick={() => deleteConvention(item)}>Confirm</Button>
+															<Button variant="danger-solid" size="sm" onclick={() => deleteConvention(item)}>Confirm</Button>
 															<Button variant="secondary" size="sm" onclick={() => (confirmDelete = null)}>Cancel</Button>
 														{:else}
 															<Button variant="danger" size="sm" onclick={() => (confirmDelete = item.slug)}>Delete</Button>

@@ -120,7 +120,7 @@
 
 			<div class="modal-footer">
 				<Button variant="secondary" autofocus onclick={onCancel}>Cancel</Button>
-				<Button variant="danger" onclick={onConfirm}>
+				<Button variant="danger-solid" onclick={onConfirm}>
 					Override and mark {active.details.attempted_value}
 				</Button>
 			</div>
