@@ -25,6 +25,9 @@
 
 	/* Tint strength for Chip/badge fills (color-mix percentage). */
 	--chip-alpha: 16%;
+	/* Chip TEXT darkening: 100% = raw accent (dark theme); light theme
+	   drops to ~72% mixed toward black so small colored labels hold AA. */
+	--chip-text-mix: 100%;
 
 	/* Brand accent. --accent-blue is aliased to it because ~95% of its 462
 	   call sites mean "brand accent", not "blue" (see PLAN-2290); the
@@ -660,6 +663,7 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 	--card-border: #d0d0dc;
 	--shadow-card: 0 1px 3px rgba(23, 23, 40, 0.1);
 	--chip-alpha: 12%;
+	--chip-text-mix: 72%;
 	--accent-primary: #7c3aed;
 	--accent-primary-soft: #8b5cf6;
 	--accent-primary-strong: #7c3aed;
@@ -698,6 +702,7 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 		--card-border: #d0d0dc;
 		--shadow-card: 0 1px 3px rgba(23, 23, 40, 0.1);
 	--chip-alpha: 12%;
+	--chip-text-mix: 72%;
 		--accent-primary: #7c3aed;
 		--accent-primary-soft: #8b5cf6;
 	--accent-primary-strong: #7c3aed;

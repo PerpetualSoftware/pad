@@ -103,3 +103,28 @@ export function hasCanonicalStatus(value: string): boolean {
 export function formatFieldLabel(value: string): string {
 	return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
+
+/** Board-column accent class for a lane value. Literal statuses map to the
+ *  canonical lane palette; a custom terminal option (e.g. "shipped") reads
+ *  as a done lane. Shared by BoardView AND the public-share fork
+ *  (shareView.ts re-exports) so lane accents can never drift between them. */
+export function columnAccentClassFor(
+	field: { terminal_options?: string[] } | undefined,
+	value: string
+): string {
+	switch (value) {
+		case 'open':
+		case 'new':
+		case 'todo':
+		case 'planned':
+			return 'col-open';
+		case 'in_progress':
+			return 'col-in-progress';
+		case 'done':
+			return 'col-done';
+		case 'blocked':
+			return 'col-blocked';
+	}
+	if (value && field?.terminal_options?.includes(value)) return 'col-done';
+	return '';
+}

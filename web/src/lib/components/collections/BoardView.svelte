@@ -4,6 +4,7 @@
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, adjacentColumn, type ReorderDirection } from '$lib/collections/reorder';
 	import { bucketByColumn, UNCATEGORIZED } from '$lib/collections/boardColumns';
+	import { columnAccentClassFor } from '$lib/utils/fieldColors';
 	import { dndzone, TRIGGERS, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
 	import ItemCard from './ItemCard.svelte';
@@ -453,17 +454,13 @@
 		return disabled;
 	}
 
+	// Delegates to the shared accent mapper (shareView.ts) so the in-app
+	// board and the public-share fork can never drift again — this was the
+	// FIFTH parallel status-color-ish implementation (PR #1023 Codex catch).
+	// Bonus: terminal_options-aware, so custom "Shipped"-style lanes read
+	// as done here too, matching public boards.
 	function columnCssClass(value: string): string {
-		switch (value) {
-			case 'in_progress':
-				return 'col-in-progress';
-			case 'done':
-				return 'col-done';
-			case 'blocked':
-				return 'col-blocked';
-			default:
-				return '';
-		}
+		return columnAccentClassFor(field, value);
 	}
 </script>
 
@@ -710,6 +707,10 @@
 		flex: 0 0 auto;
 		align-items: center;
 		gap: var(--space-1);
+	}
+
+	.column-header.col-open {
+		border-bottom-color: var(--status-blue);
 	}
 
 	.column-header.col-in-progress {

@@ -7,6 +7,7 @@
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { statusColor, priorityColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
+	import Chip from '$lib/components/common/Chip.svelte';
 	import ItemActionsMenu from './ItemActionsMenu.svelte';
 	import type { ReorderDirection } from '$lib/collections/reorder';
 	import { shouldOpenInPane } from './itemCardClick';
@@ -173,14 +174,6 @@
 		</button>
 	{/if}
 	<div class="card-top-row">
-		<button
-			class="star-btn"
-			class:starred
-			onclick={toggleStar}
-			title={starred ? 'Unstar' : 'Star'}
-		>
-			{starred ? '★' : '☆'}
-		</button>
 		{#if showCollection && item.collection_name}
 			<span class="collection-badge">
 				{#if item.collection_icon}{item.collection_icon} {/if}{item.collection_name}
@@ -208,6 +201,14 @@
 				<span class="sr-only" aria-live="polite">{copied ? `Copied ${itemRef}` : ''}</span>
 			</span>
 		{/if}
+		<button
+			class="star-btn"
+			class:starred
+			onclick={toggleStar}
+			title={starred ? 'Unstar' : 'Star'}
+		>
+			{starred ? '★' : '☆'}
+		</button>
 		{#if onReorderItem}
 			<ItemActionsMenu
 				{item}
@@ -227,29 +228,27 @@
 	<div class="card-meta">
 		{#if statusField && fields.status}
 			{#if statusCyclable}
-				<button
-					class="meta-status meta-status-btn"
-					class:pulsing
-					style:color={statusColor(fields.status)}
+				<Chip
+					size="sm"
+					color={statusColor(fields.status)}
+					pulse={pulsing}
 					onclick={cycleStatus}
 					title="Click to cycle status"
 				>
-					{formatLabel(fields.status).toUpperCase()}
-				</button>
+					{formatLabel(fields.status)}
+				</Chip>
 			{:else}
-				<span class="meta-status" style:color={statusColor(fields.status)}>
-					{formatLabel(fields.status).toUpperCase()}
-				</span>
+				<Chip size="sm" color={statusColor(fields.status)}>
+					{formatLabel(fields.status)}
+				</Chip>
 			{/if}
 		{/if}
 		{#if priorityField && fields.priority}
-			{#if statusField && fields.status}<span class="meta-sep">&middot;</span>{/if}
-			<span class="meta-priority" style:color={priorityColor(fields.priority)}>
+			<Chip size="sm" color={priorityColor(fields.priority)}>
 				{formatLabel(fields.priority)}
-			</span>
+			</Chip>
 		{/if}
 		{#if item.parent_title}
-			<span class="meta-sep">&middot;</span>
 			{@const parentLabel = item.parent_ref ? `${item.parent_ref}: ${item.parent_title}` : item.parent_title}
 			<span class="meta-parent" title={parentLabel}>{parentLabel}</span>
 		{/if}
@@ -294,9 +293,10 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
+		background: var(--card-bg, var(--bg-primary));
+		border: 1px solid var(--card-border, var(--border));
+		border-radius: var(--radius-lg);
+		box-shadow: var(--shadow-card, none);
 		padding: var(--space-4) var(--space-5);
 		text-decoration: none;
 		color: inherit;
@@ -338,15 +338,19 @@
 		transform: scale(0.95);
 	}
 
-	.item-card:hover,
-	.item-card.focused {
-		background: var(--bg-hover);
+	.item-card:hover {
+		border-color: var(--border-strong, var(--border));
 		text-decoration: none;
 	}
 
+	/* Selected-in-pane ring (the mock's violet glow). E2E asserts the
+	   .focused CLASS, not these styles — keep the class name stable. */
 	.item-card.focused {
-		outline: 2px solid var(--accent-blue);
-		outline-offset: -2px;
+		border-color: color-mix(in srgb, var(--accent-primary, var(--accent-blue)) 60%, transparent);
+		box-shadow:
+			0 0 0 1px color-mix(in srgb, var(--accent-primary, var(--accent-blue)) 45%, transparent),
+			0 4px 18px color-mix(in srgb, var(--accent-primary, var(--accent-blue)) 22%, transparent);
+		text-decoration: none;
 	}
 
 	.item-card.compact {
@@ -359,10 +363,11 @@
 		gap: var(--space-2);
 	}
 
-	/* Reorder kebab sits at the far right of the top row. When a PR badge
-	   is present the `.has-pr` padding-right reservation keeps it clear of
-	   the absolutely-positioned badge (kebab lands just left of it). */
-	.card-top-row :global(.item-actions-menu) {
+	/* The star + reorder kebab form the right cluster (mock anatomy: ref
+	   left, star/kebab right). ONE auto margin — on the star — pushes the
+	   cluster right; the kebab follows it. Two competing auto margins
+	   would split the free space (see .meta-spacer note below). */
+	.card-top-row .star-btn {
 		margin-left: auto;
 	}
 
@@ -489,58 +494,12 @@
 		min-width: 0;
 	}
 
-	.meta-status {
-		font-size: 0.7em;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.02em;
-		white-space: nowrap;
-	}
-
-	.meta-status-btn {
-		border: none;
-		background: none;
-		cursor: pointer;
-		padding: 0;
-		font-family: inherit;
-		line-height: inherit;
-		transition: filter 0.1s, transform 0.1s;
-	}
-
-	.meta-status-btn:hover {
-		filter: brightness(1.3);
-		transform: scale(1.05);
-	}
-
-	.meta-status-btn:active {
-		transform: scale(0.95);
-	}
-
-	.meta-status-btn.pulsing {
-		animation: status-pulse 0.3s ease-out;
-	}
-
-	@keyframes status-pulse {
-		0% {
-			text-shadow: 0 0 0 currentColor;
-		}
-		70% {
-			text-shadow: 0 0 8px currentColor;
-		}
-		100% {
-			text-shadow: 0 0 0 currentColor;
-		}
-	}
+	/* Status + priority render as Chip primitives now (tinted pills per
+	   the refresh mock); the chip carries the click-cycle + pulse. */
 
 	.meta-sep {
 		font-size: 0.7em;
 		color: var(--text-muted);
-	}
-
-	.meta-priority {
-		font-size: 0.7em;
-		font-weight: 600;
-		white-space: nowrap;
 	}
 
 	.meta-parent {
@@ -596,16 +555,18 @@
 		gap: var(--space-1, 0.25rem);
 	}
 
+	/* Tag pills use the Chip tint treatment (purple family per the mock). */
 	.card-tag {
 		display: inline-flex;
 		align-items: center;
-		padding: 0.05em 0.45em;
+		padding: 0.1em 0.55em;
 		font-size: 0.68em;
 		line-height: 1.5;
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: 999px;
-		color: var(--text-secondary);
+		background: color-mix(in srgb, var(--accent-purple) var(--chip-alpha, 16%), transparent);
+		border: none;
+		border-radius: 6px;
+		color: color-mix(in srgb, var(--accent-purple) var(--chip-text-mix, 100%), #000);
+		font-weight: 500;
 		cursor: pointer;
 		max-width: 12rem;
 		overflow: hidden;
@@ -614,8 +575,7 @@
 	}
 
 	.card-tag:hover {
-		color: var(--text-primary);
-		border-color: var(--text-tertiary, var(--text-secondary));
+		filter: brightness(1.15);
 	}
 
 	.card-progress {

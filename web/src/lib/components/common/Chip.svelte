@@ -65,7 +65,9 @@
 		line-height: 1.5;
 		white-space: nowrap;
 		background: color-mix(in srgb, var(--chip-c) var(--chip-alpha, 16%), transparent);
-		color: var(--chip-c);
+		/* --chip-text-mix darkens chip text in light mode (100% dark / ~75%
+		   light) so small colored labels hold AA on white-ish surfaces. */
+		color: color-mix(in srgb, var(--chip-c) var(--chip-text-mix, 100%), #000);
 	}
 
 	.chip.md {
