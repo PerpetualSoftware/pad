@@ -735,6 +735,12 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 		--text-muted: #555555;
 		--border: #cccccc;
 		--border-subtle: #dddddd;
+		/* Pin light-theme accents for paper — otherwise printing from the
+		   dark theme puts the bright dark-mode accent on white (PR #1018
+		   Codex finding). */
+		--accent-primary: #7c3aed;
+		--accent-blue: var(--accent-primary);
+		--accent-red: #dc2626;
 	}
 
 	html, body {

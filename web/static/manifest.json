@@ -4,8 +4,8 @@
   "description": "Project Management for the agent era",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#1a1a1a",
-  "theme_color": "#4a9eff",
+  "background_color": "#0b0b10",
+  "theme_color": "#8b5cf6",
   "icons": [
     {
       "src": "/icon.svg",
