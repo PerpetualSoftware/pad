@@ -152,7 +152,7 @@
 		background: var(--modal-bg, var(--bg-secondary));
 		border: var(--modal-border, 1px solid var(--border));
 		border-radius: var(--modal-radius, var(--radius-lg));
-		box-shadow: var(--modal-shadow, 0 20px 60px rgba(0, 0, 0, 0.5));
+		box-shadow: var(--modal-shadow);
 	}
 
 	/* The dialog is always mounted (visibility driven by showModal()/close()).

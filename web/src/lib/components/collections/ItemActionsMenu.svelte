@@ -283,7 +283,7 @@
 		background: var(--bg-primary);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.15));
+		box-shadow: var(--shadow-md);
 		display: flex;
 		flex-direction: column;
 		gap: 2px;

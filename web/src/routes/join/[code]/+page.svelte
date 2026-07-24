@@ -465,7 +465,7 @@
 	}
 
 	.error-text {
-		color: #ef4444;
+		color: var(--accent-red);
 	}
 
 	.form {
@@ -503,7 +503,7 @@
 	}
 
 	.error {
-		color: #ef4444;
+		color: var(--accent-red);
 		font-size: 0.85rem;
 	}
 
@@ -582,6 +582,6 @@
 	}
 
 	.username-status.taken {
-		color: #ef4444;
+		color: var(--accent-red);
 	}
 </style>

@@ -173,7 +173,7 @@
 		text-align: center;
 	}
 	.state-msg.error {
-		color: #ef4444;
+		color: var(--accent-red);
 	}
 	.state-msg.empty {
 		font-style: italic;

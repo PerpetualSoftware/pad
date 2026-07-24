@@ -20,6 +20,14 @@
 	--accent-orange: #fb923c;
 	--accent-gray: #9ca3af;
 	--accent-brown: #a8896c;
+	--accent-red: #ef4444;
+
+	/* Literal blue for categorical uses (status maps, charts, info badges).
+	   Stays blue even if the brand accent changes — see PLAN-2290. */
+	--status-blue: #4a9eff;
+
+	/* Text color on accent-filled surfaces (buttons, filled badges). */
+	--text-on-accent: #ffffff;
 
 	--status-draft: #666666;
 	--status-active: #4ade80;
@@ -49,6 +57,16 @@
 	--radius: 6px;
 	--radius-sm: 4px;
 	--radius-lg: 8px;
+
+	/* Elevation scale. Values match the long-standing inline fallbacks
+	   (ItemActionsMenu/LaneActionsMenu/BoardView/Modal) so defining them
+	   is behavior-preserving. Theme-invariant for now — PLAN-2290 PR B
+	   may tune per theme. */
+	--shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.12);
+	--shadow-md: 0 4px 12px rgba(0, 0, 0, 0.15);
+	--shadow-lg: 0 10px 30px rgba(0, 0, 0, 0.3);
+	--modal-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+	--scrim: rgba(0, 0, 0, 0.5);
 }
 
 * {
@@ -614,6 +632,8 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 	--accent-orange: #ea580c;
 	--accent-gray: #6b7280;
 	--accent-brown: #92400e;
+	--accent-red: #ef4444;
+	--status-blue: #2563eb;
 	--status-draft: #999999;
 	--status-active: #16a34a;
 	--status-completed: #2563eb;
@@ -640,6 +660,8 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 		--accent-orange: #ea580c;
 		--accent-gray: #6b7280;
 		--accent-brown: #92400e;
+		--accent-red: #ef4444;
+		--status-blue: #2563eb;
 		--status-draft: #999999;
 		--status-active: #16a34a;
 		--status-completed: #2563eb;

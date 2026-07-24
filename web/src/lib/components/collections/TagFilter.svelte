@@ -81,8 +81,8 @@
 		background: var(--bg-hover, var(--bg-tertiary));
 	}
 	.tag-chip.active {
-		background: var(--accent-blue, #3b82f6);
-		border-color: var(--accent-blue, #3b82f6);
+		background: var(--accent-blue);
+		border-color: var(--accent-blue);
 		color: #fff;
 		font-weight: 600;
 	}

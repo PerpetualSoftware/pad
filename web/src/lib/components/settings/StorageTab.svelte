@@ -482,13 +482,13 @@
 	}
 
 	.btn-remove {
-		color: #ef4444;
+		color: var(--accent-red);
 		border-color: transparent;
 		background: none;
 	}
 
 	.btn-remove:hover {
-		background: color-mix(in srgb, #ef4444 15%, transparent);
+		background: color-mix(in srgb, var(--accent-red) 15%, transparent);
 	}
 
 	.role-select {
@@ -568,7 +568,7 @@
 	}
 
 	.usage-fill.crit {
-		background: color-mix(in srgb, #ef4444 85%, transparent);
+		background: color-mix(in srgb, var(--accent-red) 85%, transparent);
 	}
 
 	.usage-subline {
@@ -675,8 +675,8 @@
 		margin-left: var(--space-1);
 		font-size: 0.7em;
 		text-transform: uppercase;
-		color: #ef4444;
-		background: color-mix(in srgb, #ef4444 12%, transparent);
+		color: var(--accent-red);
+		background: color-mix(in srgb, var(--accent-red) 12%, transparent);
 		padding: 0 var(--space-1);
 		border-radius: var(--radius-sm);
 	}

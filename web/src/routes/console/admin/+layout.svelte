@@ -95,7 +95,7 @@
 		color: var(--text-muted); padding: var(--space-10) 0; text-align: center; font-size: 0.95rem;
 	}
 	.error-msg {
-		color: #ef4444; padding: var(--space-6); background: var(--bg-secondary);
+		color: var(--accent-red); padding: var(--space-6); background: var(--bg-secondary);
 		border: 1px solid var(--border); border-radius: var(--radius);
 	}
 

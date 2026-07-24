@@ -263,7 +263,7 @@
 		const s = status.toLowerCase().replace(/-/g, '_');
 		if (['done', 'completed', 'fixed', 'implemented', 'resolved'].includes(s)) return 'var(--accent-green)';
 		if (['in_progress', 'exploring', 'fixing', 'confirmed', 'in_review'].includes(s)) return 'var(--accent-amber)';
-		if (['open', 'new', 'draft', 'todo', 'planned'].includes(s)) return 'var(--accent-blue)';
+		if (['open', 'new', 'draft', 'todo', 'planned'].includes(s)) return 'var(--status-blue)';
 		if (['cancelled', 'rejected', 'wontfix'].includes(s)) return 'var(--accent-gray)';
 		if (s === 'active') return 'var(--accent-cyan)';
 		if (['archived', 'disabled', 'deprecated'].includes(s)) return 'var(--text-muted)';
@@ -653,7 +653,7 @@
 							{:else if activity.source === 'cli'}
 								<span class="actor-badge cli">cli</span>
 							{/if}
-							<span class="activity-dot" style="color: {activity.action === 'created' ? 'var(--accent-green)' : activity.action === 'archived' ? 'var(--text-muted)' : 'var(--accent-blue)'};">{activityIcon(activity.action)}</span>
+							<span class="activity-dot" style="color: {activity.action === 'created' ? 'var(--accent-green)' : activity.action === 'archived' ? 'var(--text-muted)' : 'var(--status-blue)'};">{activityIcon(activity.action)}</span>
 							<span class="activity-verb">{activityVerb(activity.action)}</span>
 							{#if activity.item_ref}
 								<span class="activity-ref">{activity.item_ref}</span>

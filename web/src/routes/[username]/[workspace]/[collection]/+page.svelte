@@ -3380,7 +3380,7 @@
 	maxWidth="360px"
 	placement="center"
 	--modal-bg="var(--bg-primary)"
-	--modal-shadow="var(--shadow-lg, 0 10px 30px rgba(0, 0, 0, 0.3))"
+	--modal-shadow="var(--shadow-lg)"
 >
 	{#if showLeaveDialog}
 		<div class="leave-dialog">
@@ -3433,8 +3433,8 @@
 	}
 	.leave-discard {
 		background: none;
-		border-color: var(--accent-red, #ef4444) !important;
-		color: var(--accent-red, #ef4444);
+		border-color: var(--accent-red) !important;
+		color: var(--accent-red);
 	}
 	.leave-save {
 		background: var(--accent-blue);

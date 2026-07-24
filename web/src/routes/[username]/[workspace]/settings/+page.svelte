@@ -912,8 +912,8 @@
 	}
 	.tab-icon { font-size: 0.9em; }
 	.tab.danger { color: var(--text-muted); }
-	.tab.danger:hover { color: #ef4444; }
-	.tab.danger.active { color: #ef4444; border-bottom-color: #ef4444; }
+	.tab.danger:hover { color: var(--accent-red); }
+	.tab.danger.active { color: var(--accent-red); border-bottom-color: var(--accent-red); }
 	/* ── Sections ──── */
 	.section { margin-bottom: var(--space-8); }
 	.section h2 { font-size: 1.1em; color: var(--text-secondary); margin-bottom: var(--space-4); }
@@ -965,7 +965,7 @@
 	.context-editor:focus { outline: none; border-color: var(--accent-blue); }
 	.context-help { margin: 0; font-size: 0.8em; color: var(--text-muted); }
 	.context-help code { font-family: var(--font-mono); font-size: 0.95em; }
-	.context-error { margin: 0; font-size: 0.82em; color: #ef4444; }
+	.context-error { margin: 0; font-size: 0.82em; color: var(--accent-red); }
 	.context-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 	/* ── Members ──── */
 	.members-list { display: flex; flex-direction: column; }
@@ -978,8 +978,8 @@
 	.member-actions { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
 	.role-select { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); font-size: 0.8em; color: var(--text-primary); cursor: pointer; }
 	.role-badge { font-size: 0.8em; background: var(--bg-tertiary); color: var(--text-secondary); padding: 2px 10px; border-radius: 10px; }
-	.btn-remove { color: #ef4444; border-color: transparent; background: none; }
-	.btn-remove:hover { background: color-mix(in srgb, #ef4444 15%, transparent); }
+	.btn-remove { color: var(--accent-red); border-color: transparent; background: none; }
+	.btn-remove:hover { background: color-mix(in srgb, var(--accent-red) 15%, transparent); }
 	/* ── Collection Access ──── */
 	.member-card-wrapper { display: flex; flex-direction: column; }
 	.member-card-wrapper + .member-card-wrapper { margin-top: var(--space-3); }
@@ -1017,25 +1017,25 @@
 	.invite-row input { flex: 1; min-width: 180px; max-width: 300px; }
 	.invite-result { font-size: 0.82em; margin-top: var(--space-2); }
 	.invite-success { color: var(--accent-green); }
-	.invite-error { color: #ef4444; }
+	.invite-error { color: var(--accent-red); }
 	/* ── Danger Zone ──── */
-	.danger-banner { background: color-mix(in srgb, #ef4444 8%, var(--bg-secondary)); border: 1px solid color-mix(in srgb, #ef4444 25%, var(--border)); border-radius: var(--radius); padding: var(--space-3) var(--space-4); margin-bottom: var(--space-4); }
-	.danger-banner p { font-size: 0.88em; color: #ef4444; margin: 0; }
-	.danger-card { border-color: color-mix(in srgb, #ef4444 30%, var(--border)); }
+	.danger-banner { background: color-mix(in srgb, var(--accent-red) 8%, var(--bg-secondary)); border: 1px solid color-mix(in srgb, var(--accent-red) 25%, var(--border)); border-radius: var(--radius); padding: var(--space-3) var(--space-4); margin-bottom: var(--space-4); }
+	.danger-banner p { font-size: 0.88em; color: var(--accent-red); margin: 0; }
+	.danger-card { border-color: color-mix(in srgb, var(--accent-red) 30%, var(--border)); }
 	.danger-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
 	.danger-info { flex: 1; }
 	.danger-info strong { font-size: 0.9em; }
 	.danger-info p { font-size: 0.8em; color: var(--text-muted); margin: var(--space-1) 0 0; }
-	.btn-danger { padding: var(--space-2) var(--space-4); background: none; border: 1px solid #ef4444; border-radius: var(--radius); color: #ef4444; font-size: 0.85em; cursor: pointer; white-space: nowrap; font-weight: 500; }
-	.btn-danger:hover:not(:disabled) { background: #ef4444; color: #fff; }
+	.btn-danger { padding: var(--space-2) var(--space-4); background: none; border: 1px solid var(--accent-red); border-radius: var(--radius); color: var(--accent-red); font-size: 0.85em; cursor: pointer; white-space: nowrap; font-weight: 500; }
+	.btn-danger:hover:not(:disabled) { background: var(--accent-red); color: #fff; }
 	.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
 	.danger-confirm { display: flex; flex-direction: column; gap: var(--space-3); }
 	.danger-warning { font-size: 0.88em; color: var(--text-primary); margin: 0; }
-	.danger-warning strong { color: #ef4444; }
+	.danger-warning strong { color: var(--accent-red); }
 	.danger-input-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 	.slug-hint { font-size: 0.82em; padding: var(--space-1) var(--space-2); background: var(--bg-tertiary); border-radius: var(--radius-sm); color: var(--text-muted); font-family: var(--font-mono); }
 	.danger-input { flex: 1; min-width: 180px; max-width: 300px; padding: var(--space-2); font-size: 0.88em; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-family: var(--font-mono); }
-	.danger-input:focus { outline: none; border-color: #ef4444; }
+	.danger-input:focus { outline: none; border-color: var(--accent-red); }
 	.danger-actions { display: flex; gap: var(--space-2); }
 	.section-desc { font-size: 0.85em; color: var(--text-muted); margin-bottom: var(--space-3); }
 </style>

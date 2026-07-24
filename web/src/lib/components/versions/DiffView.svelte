@@ -371,7 +371,7 @@
 	}
 
 	.label-old {
-		color: var(--accent-red, #ef4444);
+		color: var(--accent-red);
 	}
 
 	.label-new {
@@ -401,8 +401,8 @@
 	}
 
 	.stat-removed {
-		color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 12%, transparent);
+		color: var(--accent-red);
+		background: color-mix(in srgb, var(--accent-red) 12%, transparent);
 	}
 
 	.stat-none {
@@ -439,12 +439,12 @@
 	}
 
 	.diff-line.removed {
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, var(--bg-primary, #1a1a1a));
+		background: color-mix(in srgb, var(--accent-red) 10%, var(--bg-primary, #1a1a1a));
 	}
 
 	.diff-line.removed .line-content,
 	.diff-line.removed .line-prefix {
-		color: var(--accent-red, #ef4444);
+		color: var(--accent-red);
 	}
 
 	.line-num {
@@ -528,7 +528,7 @@
 		font-weight: 600;
 	}
 	.html-block-chunk-stat-removed {
-		color: var(--accent-red, #ef4444);
+		color: var(--accent-red);
 		font-weight: 600;
 	}
 	.html-block-chunk-lines {

@@ -554,7 +554,7 @@
 	}
 	.hint.error,
 	.msg.error {
-		color: #ef4444;
+		color: var(--accent-red);
 	}
 	.msg {
 		font-size: 0.85rem;
@@ -614,11 +614,11 @@
 		filter: brightness(1.1);
 	}
 	.btn-danger {
-		color: #ef4444;
-		border-color: color-mix(in srgb, #ef4444 50%, transparent);
+		color: var(--accent-red);
+		border-color: color-mix(in srgb, var(--accent-red) 50%, transparent);
 	}
 	.btn-danger:hover {
-		background: color-mix(in srgb, #ef4444 10%, transparent);
+		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
 	}
 	.btn-sub {
 		background: transparent;
@@ -676,9 +676,9 @@
 		flex-direction: column;
 		gap: var(--space-2);
 		padding: var(--space-3);
-		border: 1px solid color-mix(in srgb, #ef4444 30%, transparent);
+		border: 1px solid color-mix(in srgb, var(--accent-red) 30%, transparent);
 		border-radius: var(--radius);
-		background: color-mix(in srgb, #ef4444 5%, transparent);
+		background: color-mix(in srgb, var(--accent-red) 5%, transparent);
 	}
 	.confirm-text {
 		margin: 0;

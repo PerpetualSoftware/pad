@@ -941,8 +941,8 @@
 	.error-banner {
 		margin: var(--space-3) var(--space-6) 0;
 		padding: var(--space-2) var(--space-3);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 12%, transparent);
-		color: var(--accent-red, #ef4444);
+		background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+		color: var(--accent-red);
 		border-radius: var(--radius);
 		font-size: 0.85em;
 		flex-shrink: 0;
@@ -1155,8 +1155,8 @@
 	.danger-zone {
 		margin-top: var(--space-6);
 		padding: var(--space-4);
-		background: color-mix(in srgb, #ef4444 6%, var(--bg-secondary));
-		border: 1px solid color-mix(in srgb, #ef4444 30%, var(--border));
+		background: color-mix(in srgb, var(--accent-red) 6%, var(--bg-secondary));
+		border: 1px solid color-mix(in srgb, var(--accent-red) 30%, var(--border));
 		border-radius: var(--radius);
 	}
 
@@ -1170,7 +1170,7 @@
 		font-weight: 600;
 		text-transform: uppercase;
 		letter-spacing: 0.05em;
-		color: #ef4444;
+		color: var(--accent-red);
 	}
 
 	.danger-zone-hint {
@@ -1183,9 +1183,9 @@
 	.btn-archive {
 		padding: var(--space-2) var(--space-4);
 		background: transparent;
-		border: 1px solid #ef4444;
+		border: 1px solid var(--accent-red);
 		border-radius: var(--radius);
-		color: #ef4444;
+		color: var(--accent-red);
 		font-size: 0.88em;
 		font-weight: 500;
 		cursor: pointer;
@@ -1193,7 +1193,7 @@
 	}
 
 	.btn-archive:hover {
-		background: #ef4444;
+		background: var(--accent-red);
 		color: #fff;
 	}
 
@@ -1210,7 +1210,7 @@
 	}
 
 	.danger-zone-confirm-msg strong {
-		color: #ef4444;
+		color: var(--accent-red);
 	}
 
 	.danger-zone-confirm-actions {
@@ -1220,8 +1220,8 @@
 
 	.btn-archive-confirm {
 		padding: var(--space-2) var(--space-4);
-		background: #ef4444;
-		border: 1px solid #ef4444;
+		background: var(--accent-red);
+		border: 1px solid var(--accent-red);
 		border-radius: var(--radius);
 		color: #fff;
 		font-size: 0.88em;

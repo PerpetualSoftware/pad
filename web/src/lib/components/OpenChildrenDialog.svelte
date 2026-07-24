@@ -285,7 +285,7 @@
 	}
 
 	.btn-danger {
-		background: var(--color-danger, #dc2626);
+		background: var(--accent-red);
 		color: white;
 	}
 	.btn-danger:hover {

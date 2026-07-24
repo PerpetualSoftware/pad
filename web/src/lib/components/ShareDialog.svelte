@@ -510,8 +510,8 @@
 	.error-msg {
 		margin-top: var(--space-2);
 		padding: var(--space-2) var(--space-3);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 12%, transparent);
-		color: var(--accent-red, #ef4444);
+		background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+		color: var(--accent-red);
 		border-radius: var(--radius);
 		font-size: 0.82em;
 	}
@@ -598,9 +598,9 @@
 	}
 
 	.revoke-btn:hover:not(:disabled) {
-		color: var(--accent-red, #ef4444);
-		background: color-mix(in srgb, var(--accent-red, #ef4444) 10%, transparent);
-		border-color: color-mix(in srgb, var(--accent-red, #ef4444) 20%, transparent);
+		color: var(--accent-red);
+		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+		border-color: color-mix(in srgb, var(--accent-red) 20%, transparent);
 	}
 
 	.revoke-btn:disabled {

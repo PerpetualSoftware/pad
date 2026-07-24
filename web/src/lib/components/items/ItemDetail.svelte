@@ -5698,9 +5698,9 @@
 	.collab-state-reconnecting .collab-state-dot {
 		background: var(--accent-yellow, #d4a017);
 	}
-	.collab-state-offline { color: var(--accent-red, #c0392b); }
+	.collab-state-offline { color: var(--accent-red); }
 	.collab-state-offline .collab-state-dot {
-		background: var(--accent-red, #c0392b);
+		background: var(--accent-red);
 	}
 
 	/* Layout variants */

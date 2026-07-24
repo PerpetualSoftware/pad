@@ -1005,7 +1005,7 @@
 		color: var(--accent-green);
 	}
 	.stat-value.negative {
-		color: var(--accent-red, #ef4444);
+		color: var(--accent-red);
 	}
 
 	/* ── Cards ────────────────────────────────────────────────────────── */

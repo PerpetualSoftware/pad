@@ -20,8 +20,8 @@
 	function dotColor(type: HistoryEntry['type']): string {
 		switch (type) {
 			case 'success': return 'var(--accent-green)';
-			case 'error': return 'var(--accent-red, #ef4444)';
-			case 'info': return 'var(--accent-blue)';
+			case 'error': return 'var(--accent-red)';
+			case 'info': return 'var(--status-blue)';
 		}
 	}
 
