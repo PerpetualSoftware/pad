@@ -6,6 +6,7 @@
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { relativeTime } from '$lib/utils/markdown';
+	import { statusColor, priorityColor, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
 	import ItemActionsMenu from './ItemActionsMenu.svelte';
 	import type { ReorderDirection } from '$lib/collections/reorder';
 	import { shouldOpenInPane } from './itemCardClick';
@@ -122,30 +123,6 @@
 		setTimeout(() => { pulsing = false; }, 300);
 
 		onStatusClick(item, nextStatus);
-	}
-
-	function statusColor(status: string): string {
-		switch (status) {
-			case 'open': return 'var(--text-secondary)';
-			case 'in_progress': return 'var(--accent-amber)';
-			case 'done': return 'var(--accent-green)';
-			case 'blocked': return 'var(--accent-orange)';
-			default: return 'var(--text-muted)';
-		}
-	}
-
-	function priorityColor(priority: string): string {
-		switch (priority) {
-			case 'critical': return 'var(--accent-orange)';
-			case 'high': return 'var(--accent-amber)';
-			case 'medium': return 'var(--text-secondary)';
-			case 'low': return 'var(--text-muted)';
-			default: return 'var(--text-muted)';
-		}
-	}
-
-	function formatLabel(value: string): string {
-		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
 
 	function toggleStar(e: MouseEvent) {

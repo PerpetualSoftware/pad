@@ -10,6 +10,7 @@
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import StorageTab from '$lib/components/settings/StorageTab.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -564,10 +565,10 @@
 					{#if contextSummary.length > 0}
 						<div class="context-summary">
 							{#each contextSummary as entry (entry.label)}
-								<div class="context-chip">
+								<Chip color="var(--accent-gray)">
 									<span class="context-chip-label">{entry.label}</span>
 									<span class="context-chip-value">{entry.value}</span>
-								</div>
+								</Chip>
 							{/each}
 						</div>
 					{/if}
@@ -620,9 +621,9 @@
 											<span class="member-email">{member.user_email}</span>
 										</div>
 										{#if expandedAccessUserId === member.user_id && !accessLoading}
-											<span class="access-badge" class:access-badge-specific={accessMode === 'specific'}>
+											<Chip size="sm" color={accessMode === 'specific' ? 'var(--status-blue)' : 'var(--accent-gray)'}>
 												{accessMode === 'all' ? 'All collections' : `${accessCollectionIds.length} collection${accessCollectionIds.length !== 1 ? 's' : ''}`}
-											</span>
+											</Chip>
 										{/if}
 									</div>
 									<div class="member-actions">
@@ -647,7 +648,7 @@
 												Remove
 											</button>
 										{:else}
-											<span class="role-badge">{member.role}</span>
+											<Chip color="var(--accent-gray)">{member.role}</Chip>
 										{/if}
 									</div>
 								</div>
@@ -686,7 +687,7 @@
 															<input type="checkbox" checked disabled />
 															<span class="access-coll-icon">{coll.icon || '#'}</span>
 															<span class="access-coll-name">{coll.name}</span>
-															<span class="access-system-tag">system</span>
+															<Chip size="sm" color="var(--accent-gray)">system</Chip>
 														</label>
 													{/each}
 												</div>
@@ -713,7 +714,7 @@
 						{#each invitations as inv (inv.id)}
 							<div class="card invitation-row">
 								<span class="inv-email">{inv.email}</span>
-								<span class="role-badge">{inv.role}</span>
+								<Chip color="var(--accent-gray)">{inv.role}</Chip>
 								{#if inv.join_url || inv.code}
 									<button class="btn btn-small copy-link-btn" onclick={async () => { const url = inv.join_url || `${window.location.origin}/join/${inv.code}`; const ok = await copyToClipboard(url); toastStore.show(ok ? 'Link copied!' : 'Failed to copy link', ok ? 'success' : 'error'); }}>
 										Copy invite link
@@ -774,7 +775,7 @@
 									<span class="coll-slug mono">/{coll.slug}</span>
 									<span class="coll-count">{coll.item_count ?? 0} items</span>
 									{#if coll.is_default}
-										<span class="badge">default</span>
+										<Chip size="sm" color="var(--status-blue)">default</Chip>
 									{/if}
 									{#if isOwner}
 										<span class="edit-hint">Edit</span>
@@ -783,7 +784,7 @@
 								{#if schema.fields.length > 0}
 									<div class="field-tags">
 										{#each schema.fields as field (field.key)}
-											<span class="field-tag">{field.key}: {field.type}</span>
+											<Chip size="sm" color="var(--accent-gray)"><span class="field-tag">{field.key}: {field.type}</span></Chip>
 										{/each}
 									</div>
 								{/if}
@@ -947,9 +948,8 @@
 	.edit-hint { font-size: 0.75em; color: var(--text-muted); opacity: 0; transition: opacity 0.15s; }
 	.coll-card-btn:hover .edit-hint { opacity: 1; color: var(--accent-blue); }
 	.coll-count { margin-left: auto; font-size: 0.8em; color: var(--text-muted); }
-	.badge { font-size: 0.7em; background: var(--accent-blue); color: #fff; padding: 1px 6px; border-radius: 10px; font-weight: 600; }
 	.field-tags { display: flex; flex-wrap: wrap; gap: var(--space-1); margin-top: var(--space-2); }
-	.field-tag { font-size: 0.75em; font-family: var(--font-mono); background: var(--bg-tertiary); color: var(--text-secondary); padding: 1px 8px; border-radius: 10px; }
+	.field-tag { font-family: var(--font-mono); }
 	.empty-text { color: var(--text-muted); font-size: 0.9em; }
 	.theme-row { display: flex; align-items: center; justify-content: space-between; font-size: 0.9em; }
 	.theme-toggle { display: flex; background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; cursor: pointer; }
@@ -957,7 +957,6 @@
 	.theme-option.active { background: var(--accent-blue); color: #fff; }
 	.context-card { display: flex; flex-direction: column; gap: var(--space-3); }
 	.context-summary { display: flex; flex-wrap: wrap; gap: var(--space-2); }
-	.context-chip { display: inline-flex; align-items: center; gap: var(--space-2); background: var(--bg-tertiary); border: 1px solid var(--border-subtle); border-radius: 999px; padding: var(--space-1) var(--space-3); font-size: 0.78em; }
 	.context-chip-label { color: var(--text-muted); }
 	.context-chip-value { color: var(--text-primary); font-weight: 600; }
 	.context-label { font-size: 0.82em; color: var(--text-secondary); }
@@ -977,7 +976,6 @@
 	.member-email { font-size: 0.8em; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.member-actions { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
 	.role-select { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); font-size: 0.8em; color: var(--text-primary); cursor: pointer; }
-	.role-badge { font-size: 0.8em; background: var(--bg-tertiary); color: var(--text-secondary); padding: 2px 10px; border-radius: 10px; }
 	.btn-remove { color: var(--accent-red); border-color: transparent; background: none; }
 	.btn-remove:hover { background: color-mix(in srgb, var(--accent-red) 15%, transparent); }
 	/* ── Collection Access ──── */
@@ -985,8 +983,6 @@
 	.member-card-wrapper + .member-card-wrapper { margin-top: var(--space-3); }
 	.member-card-wrapper .card.member-row { border-radius: var(--radius); }
 	.member-card-wrapper:has(.access-panel) .card.member-row { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-color: transparent; }
-	.access-badge { font-size: 0.72em; padding: 2px 8px; border-radius: 10px; background: var(--bg-tertiary); color: var(--text-muted); white-space: nowrap; margin-left: var(--space-2); }
-	.access-badge-specific { background: color-mix(in srgb, var(--accent-blue) 15%, transparent); color: var(--accent-blue); }
 	.btn-access { color: var(--accent-blue); border-color: var(--accent-blue); background: none; }
 	.btn-access:hover { background: color-mix(in srgb, var(--accent-blue) 10%, transparent); }
 	.btn-access-active { background: color-mix(in srgb, var(--accent-blue) 15%, transparent); }
@@ -1002,7 +998,6 @@
 	.access-coll-name { flex: 1; }
 	.access-coll-system { opacity: 0.6; cursor: default; }
 	.access-coll-system:hover { background: none; }
-	.access-system-tag { font-size: 0.7em; background: var(--bg-secondary); color: var(--text-muted); padding: 1px 5px; border-radius: 8px; }
 	.access-actions { display: flex; align-items: center; gap: var(--space-2); }
 	.invitations-section { margin-top: var(--space-4); }
 	.invitations-section h3 { font-size: 0.9em; color: var(--text-muted); margin-bottom: var(--space-2); }

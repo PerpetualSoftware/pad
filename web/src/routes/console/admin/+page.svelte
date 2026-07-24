@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import { adminFetch, formatDate, adminStore, type AdminUser } from '$lib/stores/admin.svelte';
 	import UserModal from '$lib/components/admin/UserModal.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
 
 	// --- List + pagination + filter + sort state (PLAN-1542 / TASK-1549) ---
 	// All filter state is reactive $state; we rebuild the query string on
@@ -248,6 +249,15 @@
 		return 'cold';
 	}
 
+	// Status pill colors — these are admin *user* states (disabled /
+	// no-workspace / inactive), not item statuses, so they map locally
+	// rather than through fieldColors.statusColor. "active" never renders.
+	function userStatusColor(status: string): string {
+		if (status === 'disabled') return 'var(--accent-red)';
+		if (status === 'inactive') return 'var(--accent-amber)';
+		return 'var(--accent-gray)'; // no-workspace
+	}
+
 	onMount(() => {
 		hydrateFromURL();
 		loadList(true);
@@ -398,20 +408,20 @@
 								     "active" is the common case; omit the pill to avoid
 								     visual noise. Other states call out problems. -->
 								{#if user.status && user.status !== 'active'}
-									<span class="badge status-{user.status}">{user.status}</span>
+									<span class="status-chip"><Chip size="sm" color={userStatusColor(user.status)}>{user.status}</Chip></span>
 								{/if}
 							</td>
 							<td
-								><span class="badge" class:admin={user.role === 'admin'}
-									>{user.role || 'member'}</span
+								><Chip size="sm" color={user.role === 'admin' ? 'var(--accent-orange)' : 'var(--accent-gray)'}
+									>{user.role || 'member'}</Chip
 								></td
 							>
 							<td class="num-cell">{user.workspace_count ?? 0}</td>
 							<td>{user.email}</td>
 							{#if adminStore.stats?.cloud_mode}
 								<td
-									><span class="badge" class:pro={user.plan === 'pro'}
-										>{user.plan || 'free'}</span
+									><Chip size="sm" color={user.plan === 'pro' ? 'var(--status-blue)' : 'var(--accent-gray)'}
+										>{user.plan || 'free'}</Chip
 									></td
 								>
 							{/if}
@@ -616,38 +626,10 @@
 		color: var(--text-muted);
 		font-size: 0.8rem;
 	}
-	.badge {
-		padding: 2px var(--space-2);
-		border-radius: var(--radius-sm);
-		font-size: 0.75rem;
-		font-weight: 500;
-		background: color-mix(in srgb, var(--accent-gray, #888) 15%, transparent);
-		color: var(--text-muted);
-	}
-	.badge.pro {
-		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		color: var(--accent-blue);
-	}
-	.badge.admin {
-		background: color-mix(in srgb, var(--accent-orange, #f59e0b) 15%, transparent);
-		color: var(--accent-orange, #f59e0b);
-	}
-	/* Status pill — server-side computed (disabled / no-workspace / inactive /
-	   active). "active" never renders; the other three call out something
-	   actionable. PLAN-1542 / TASK-1548. */
-	.badge.status-disabled {
-		background: color-mix(in srgb, var(--accent-red) 15%, transparent);
-		color: var(--accent-red);
-		margin-left: var(--space-2);
-	}
-	.badge.status-no-workspace {
-		background: color-mix(in srgb, var(--accent-gray, #888) 15%, transparent);
-		color: var(--text-muted);
-		margin-left: var(--space-2);
-	}
-	.badge.status-inactive {
-		background: color-mix(in srgb, #f59e0b 15%, transparent);
-		color: #f59e0b;
+	/* Status pill wrapper — keeps the pill offset from the user name.
+	   Colors live in userStatusColor(); the pill itself is the shared
+	   <Chip> primitive. PLAN-1542 / TASK-1548 / TASK-2292. */
+	.status-chip {
 		margin-left: var(--space-2);
 	}
 	/* Numeric cells (workspace_count, storage_bytes) — right-aligned and

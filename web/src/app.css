@@ -20,6 +20,9 @@
 	--card-border: #363648;
 	--shadow-card: 0 2px 6px rgba(0, 0, 0, 0.35);
 
+	/* Tint strength for Chip/badge fills (color-mix percentage). */
+	--chip-alpha: 16%;
+
 	/* Brand accent. --accent-blue is aliased to it because ~95% of its 462
 	   call sites mean "brand accent", not "blue" (see PLAN-2290); the
 	   literally-blue categorical sites use --status-blue instead.
@@ -645,6 +648,7 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 	--card-bg: #ffffff;
 	--card-border: #d0d0dc;
 	--shadow-card: 0 1px 3px rgba(23, 23, 40, 0.1);
+	--chip-alpha: 12%;
 	--accent-primary: #7c3aed;
 	--accent-primary-soft: #8b5cf6;
 	--accent-blue: var(--accent-primary);
@@ -680,6 +684,7 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 		--card-bg: #ffffff;
 		--card-border: #d0d0dc;
 		--shadow-card: 0 1px 3px rgba(23, 23, 40, 0.1);
+	--chip-alpha: 12%;
 		--accent-primary: #7c3aed;
 		--accent-primary-soft: #8b5cf6;
 		--accent-blue: var(--accent-primary);

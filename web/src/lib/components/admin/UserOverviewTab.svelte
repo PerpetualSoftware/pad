@@ -11,6 +11,7 @@
 -->
 <script lang="ts">
 	import { adminFetch, type AdminUser } from '$lib/stores/admin.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
 
 	interface Props {
 		user: AdminUser;
@@ -147,8 +148,12 @@
 		<div class="vitals-email">{user.email}</div>
 	</div>
 	<div class="vitals-badges">
-		<span class="badge badge-role badge-{user.role || 'member'}">{user.role || 'member'}</span>
-		<span class="badge badge-plan badge-{user.plan || 'free'}">{user.plan || 'free'}</span>
+		<Chip color={(user.role || 'member') === 'admin' ? 'var(--accent-orange)' : 'var(--accent-gray)'}
+			>{user.role || 'member'}</Chip
+		>
+		<Chip color={(user.plan || 'free') === 'pro' ? 'var(--status-blue)' : 'var(--accent-gray)'}
+			>{user.plan || 'free'}</Chip
+		>
 		<span class="vitals-age">Joined {accountAge(user.created_at)}</span>
 	</div>
 </header>
@@ -255,22 +260,6 @@
 	.vitals-age {
 		font-size: 0.8rem;
 		color: var(--text-muted);
-	}
-	.badge {
-		padding: 2px 8px;
-		border-radius: var(--radius-sm);
-		font-size: 0.75rem;
-		background: color-mix(in srgb, var(--accent-gray, #888) 15%, transparent);
-		color: var(--text-muted);
-		text-transform: lowercase;
-	}
-	.badge.badge-admin {
-		background: color-mix(in srgb, var(--accent-orange, #f59e0b) 15%, transparent);
-		color: var(--accent-orange, #f59e0b);
-	}
-	.badge.badge-pro {
-		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		color: var(--accent-blue);
 	}
 	.tiles {
 		display: grid;

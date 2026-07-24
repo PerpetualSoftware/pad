@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
+	import Chip from '$lib/components/common/Chip.svelte';
 	import type { AdminBillingStats } from '$lib/types';
 
 	let stats = $state<AdminBillingStats | null>(null);
@@ -116,7 +117,7 @@
 			</div>
 		{:else if !stats.stripe_configured}
 			<div class="banner info" role="status" aria-live="polite">
-				<span class="badge info-badge">Stripe not configured</span>
+				<Chip color="var(--status-blue)">Stripe not configured</Chip>
 				Stripe billing is not yet configured. Stripe-derived metrics will be zero
 				until <code>STRIPE_SECRET_KEY</code> is set on pad-cloud.
 			</div>
@@ -127,7 +128,7 @@
 			<div class="stat" class:disabled={stripeUnavailable}>
 				<span class="stat-label">MRR</span>
 				{#if stripeUnavailable}
-					<span class="badge na">N/A</span>
+					<span class="stat-chip"><Chip color="var(--accent-gray)">N/A</Chip></span>
 				{:else}
 					<span class="stat-value">{mrrFormatted}</span>
 				{/if}
@@ -138,7 +139,7 @@
 			<div class="stat" class:disabled={stripeUnavailable}>
 				<span class="stat-label">ARR</span>
 				{#if stripeUnavailable}
-					<span class="badge na">N/A</span>
+					<span class="stat-chip"><Chip color="var(--accent-gray)">N/A</Chip></span>
 				{:else}
 					<span class="stat-value">{arrFormatted}</span>
 				{/if}
@@ -149,7 +150,7 @@
 			<div class="stat" class:disabled={stripeUnavailable}>
 				<span class="stat-label">Active Subscriptions</span>
 				{#if stripeUnavailable}
-					<span class="badge na">N/A</span>
+					<span class="stat-chip"><Chip color="var(--accent-gray)">N/A</Chip></span>
 				{:else}
 					<span class="stat-value">{stats.active_subscriptions}</span>
 				{/if}
@@ -178,7 +179,7 @@
 			<div class="stat" class:disabled={stripeUnavailable}>
 				<span class="stat-label">Churn (30d)</span>
 				{#if stripeUnavailable}
-					<span class="badge na">N/A</span>
+					<span class="stat-chip"><Chip color="var(--accent-gray)">N/A</Chip></span>
 				{:else}
 					<span class="stat-value">{churnFormatted}</span>
 				{/if}
@@ -331,23 +332,10 @@
 		line-height: 1.4;
 	}
 
-	.badge {
-		padding: 2px var(--space-2);
-		border-radius: var(--radius-sm);
-		font-size: 0.75rem;
-		font-weight: 500;
-		background: color-mix(in srgb, #888 15%, transparent);
-		color: var(--text-muted);
-		display: inline-block;
-		width: fit-content;
-	}
-	.badge.na {
-		font-size: 1rem;
-		padding: 4px var(--space-2);
-	}
-	.badge.info-badge {
-		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		color: var(--accent-blue);
+	/* Keeps the N/A chip content-width inside the column-flex .stat
+	   (flex children otherwise stretch cross-axis). TASK-2292. */
+	.stat-chip {
+		align-self: flex-start;
 	}
 
 	.updated-footer {
