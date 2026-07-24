@@ -432,6 +432,9 @@ test('a collection migration completing after a cross-collection navigation does
 	// `goto(B's full-page URL)`, dropping `?item=` and re-driving the SAME master
 	// instance from collA/A to collB/B exactly as the pre-pane relationship-link
 	// nav did.
+	// Relationships moved under the Relationships tab (PLAN-2290 Phase 4) — activate
+	// it on the master before clicking the related link.
+	await page.locator('.item-page-host > .item-page').getByRole('tab', { name: 'Relationships' }).click();
 	await page
 		.locator('.relationship-group', { hasText: 'Related' })
 		.locator('a.link-target', { hasText: bTitle })

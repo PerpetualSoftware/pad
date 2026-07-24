@@ -142,6 +142,8 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		expect(openItemParam(page)).toBeNull();
 
 		// Click the RELATED link on the master → FIRST-OPEN the pane beside it.
+		// Relationships moved under the Relationships tab (PLAN-2290 Phase 4).
+		await page.locator('.item-page-host > .item-page').getByRole('tab', { name: 'Relationships' }).click();
 		await page
 			.locator('.relationship-group', { hasText: 'Related' })
 			.locator('a.link-target', { hasText: 'FP host related' })
@@ -164,10 +166,12 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		// Depth 0: the pane's Back chevron is hidden.
 		await expect(pane.locator('button.pane-back-btn')).toHaveCount(0);
 
-		// Drill a CHILD row directly from the preview — on the FIRST click. The drill
-		// is pane-internal, so it ALSO activates the pane — pane editable, master
-		// frozen (PLAN-2179 DR-2 / TASK-2181). No pre-activation click.
+		// Drill a CHILD row from the preview. Children live under the pane's
+		// Relationships tab (PLAN-2290 Phase 4), so reveal it first; the child-row click
+		// then drills AND (being a pane-side control) activates the pane — pane editable,
+		// master frozen (PLAN-2179 DR-2 / TASK-2181).
 		const masterPathname = new URL(page.url()).pathname;
+		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		await pane.locator('.child-row', { hasText: 'FP host grandchild' }).click();
 		await expect.poll(() => openItemParam(page)).toBe(grandchildRef);
 		expect(new URL(page.url()).pathname).toBe(masterPathname);
@@ -189,10 +193,11 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await expect(paneEditor).toHaveAttribute('contenteditable', 'true');
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'false');
 
-		// Click BACK into the MASTER content editor → the pointerdown activator
-		// re-activates the master (and the same click lands the caret in the now-
-		// editable view — one gesture), and the desktop backstop must NOT yank focus
-		// back to the pane. Master editable again; pane freezes. Exactly one side.
+		// Click BACK into the MASTER content editor. It lives under the master's Details
+		// tab (PLAN-2290 Phase 4); switching to it + clicking the editor are master-side
+		// controls, so the pointerdown activator re-activates the master (exactly one
+		// editable side), and the desktop backstop must NOT yank focus back to the pane.
+		await page.locator('.item-page-host > .item-page').getByRole('tab', { name: 'Details' }).click();
 		await masterEditor.click();
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'true');
 		await expect(paneEditor).toHaveAttribute('contenteditable', 'false');
@@ -246,6 +251,8 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		// Open the pane → focus-follows keeps the MASTER active (DR-2), so its editor
 		// stays editable and the SAME DOM node stays connected — no open-driven remount.
 		const pane = page.locator('.item-pane');
+		// Relationships moved under the Relationships tab (PLAN-2290 Phase 4).
+		await page.locator('.item-page-host > .item-page').getByRole('tab', { name: 'Relationships' }).click();
 		await page
 			.locator('.relationship-group', { hasText: 'Related' })
 			.locator('a.link-target', { hasText: 'FP host reactive-freeze related' })
@@ -317,6 +324,8 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		// the SAME paragraph must NOT reveal the handle — the reactive-editable choke
 		// (onMouseMove/update bail on !editorView.editable) keeps it hidden.
 		const pane = page.locator('.item-pane');
+		// Relationships moved under the Relationships tab (PLAN-2290 Phase 4).
+		await page.locator('.item-page-host > .item-page').getByRole('tab', { name: 'Relationships' }).click();
 		await page
 			.locator('.relationship-group', { hasText: 'Related' })
 			.locator('a.link-target', { hasText: 'FP host drag-handle related' })
@@ -324,16 +333,19 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await expect(pane).toBeVisible();
 		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
 		await pane.locator('.editor-wrapper .ProseMirror').click();
+		// Peeking freezes the master editor (contenteditable=false). The block-drag-
+		// handle choke keys off `editorView.editable`, so this DOM state IS the handle-
+		// suppression guarantee; the master editor now sits under the inactive Details
+		// tab (PLAN-2290 Phase 4), so a hover probe here isn't meaningful — the hover-
+		// suppression path is unit-covered (masterFreeze.svelte.test.ts).
 		await expect(masterMain).toHaveAttribute('contenteditable', 'false');
-		await page.mouse.move(5, 5); // leave the editor first
-		await masterMain.locator('p').first().hover({ force: true });
-		await page.waitForTimeout(250);
-		expect(await handleDisplay()).toBe('none');
 
-		// CLOSE: the master thaws → hovering reveals the handle again.
+		// CLOSE: the master thaws → back on its Details tab (PLAN-2290 Phase 4), hovering
+		// a paragraph reveals the handle again.
 		await page.locator('button[title="Close pane"]').click();
 		await expect(page.locator('.item-pane')).toHaveCount(0);
 		await expect(masterMain).toHaveAttribute('contenteditable', 'true');
+		await page.locator('.item-page-host > .item-page').getByRole('tab', { name: 'Details' }).click();
 		await page.mouse.move(5, 5);
 		await masterMain.locator('p').first().hover();
 		await expect.poll(handleDisplay, { timeout: 3000 }).not.toBe('none');
@@ -362,6 +374,8 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		// Open the pane → the master stays active (DR-2); the pane is a read-only
 		// preview. NEW (BUG-2263 follow-up): the peeking PANE shows the mode toggle —
 		// previously it was hidden on the peeking side.
+		// Relationships moved under the Relationships tab (PLAN-2290 Phase 4).
+		await page.locator('.item-page-host > .item-page').getByRole('tab', { name: 'Relationships' }).click();
 		await page
 			.locator('.relationship-group', { hasText: 'Related' })
 			.locator('a.link-target', { hasText: 'FP mode-toggle related' })
@@ -376,11 +390,16 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		// Click into the pane → the MASTER becomes the peeking side; its toggle stays.
 		await paneEditor.click();
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'false');
-		await expect(masterToggle).toBeVisible();
+		// BUG-2263 (PLAN-2290 Phase 4): the mode toggle is NOT peeking-gated — it stays
+		// in the DOM on the peeking side (it lives under the master's Details tab, so it's
+		// tab-hidden here, not freeze-hidden; its visibility was asserted pre-peek above).
+		await expect(masterToggle).toHaveCount(1);
 
-		// ONE GESTURE: click the peeking master's "Markdown" button. Its onclick bails
-		// on `if (peeking) return`, so a successful flip PROVES the pointerdown
-		// activator un-peeked the master FIRST, in the same gesture.
+		// Flip Rich→Markdown from the master. Switching to its Details tab (PLAN-2290
+		// Phase 4) is a master-side control, so it re-activates the master per focus-
+		// follows (PLAN-2179) — the product's deliberate un-peek-on-interaction — then
+		// the Markdown button flips in place.
+		await masterCol.getByRole('tab', { name: 'Details' }).click();
 		await masterCol.locator('.editor-mode-toggle .mode-btn', { hasText: 'Markdown' }).click();
 		await expect(masterCol.locator('.editor-mode-toggle .mode-btn', { hasText: 'Markdown' })).toHaveClass(/active/);
 		// Master is now in raw markdown mode: the ProseMirror unmounted, and the pane
@@ -487,6 +506,8 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		const relatedRef = await itemRef(fixture, request, related.slug);
 
 		await page.goto(fullPageUrl(fixture, master.slug));
+		// Relationships moved under the Relationships tab (PLAN-2290 Phase 4).
+		await page.locator('.item-page-host > .item-page').getByRole('tab', { name: 'Relationships' }).click();
 		await page
 			.locator('.relationship-group', { hasText: 'Related' })
 			.locator('a.link-target', { hasText: 'FP host expand related' })

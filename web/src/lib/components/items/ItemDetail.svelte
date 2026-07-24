@@ -513,6 +513,44 @@
 	// (and its dagre layout lib) are dynamically imported on first open so they
 	// stay out of the item-page bundle.
 	let showGraph = $state(false);
+
+	// ── Pane tabs (PLAN-2290 Phase 4 / TASK-2294) ─────────────────────────
+	// Details / Relationships / Activity / Versions. HARD RULE: panels are
+	// CSS-hidden (`.tab-hidden`), NEVER `{#if}`-unmounted — the collab
+	// editor, ChildItems/ItemTimeline SSE subscriptions, and BacklinksPanel's
+	// count callback all carry mount-time side effects that must survive tab
+	// switches (see the section-map recon on TASK-2294). Tab switching stays
+	// interactive while `peeking` (view-only, side-independent — same class
+	// as star/quick-action prompts). Resets to Details on item switch so a
+	// retargeted pane never opens on a stale tab.
+	type PaneTab = 'details' | 'relationships' | 'activity' | 'versions';
+	let activeTab = $state<PaneTab>('details');
+	const PANE_TABS: Array<{ id: PaneTab; label: string }> = [
+		{ id: 'details', label: 'Details' },
+		{ id: 'relationships', label: 'Relationships' },
+		{ id: 'activity', label: 'Activity' },
+		{ id: 'versions', label: 'Versions' }
+	];
+
+	// The action-bar jump buttons scroll to sections that may live in a
+	// hidden tab: switch first, let the panel become visible, then scroll.
+	async function jumpToSection(tab: PaneTab, anchorId: string) {
+		activeTab = tab;
+		await tick();
+		document.getElementById(anchorId)?.scrollIntoView({ behavior: 'smooth' });
+	}
+
+	// Item switch (the no-{#key} A→B retarget) lands on Details — mirrors
+	// the fields/data-panels {#key itemSlug} remounts. Guarded write: only
+	// touches activeTab when the slug actually changed (no read-write loop;
+	// lastTabSlug is a plain let, not $state).
+	let lastTabSlug: string | undefined;
+	$effect(() => {
+		if (itemSlug !== lastTabSlug) {
+			lastTabSlug = itemSlug;
+			activeTab = 'details';
+		}
+	});
 	// The graph focuses by issue ref (e.g. TASK-5); null when the item has no
 	// number (shouldn't happen, but gates the button so we never focus on '').
 	let graphFocusRef = $derived(item ? formatItemRef(item) : null);
@@ -4362,7 +4400,7 @@
 			{/if}
 			<button
 				class="action-btn"
-				onclick={() => { document.getElementById('item-timeline')?.scrollIntoView({ behavior: 'smooth' }); }}
+				onclick={() => jumpToSection('activity', 'item-timeline')}
 			>
 				Timeline
 			</button>
@@ -4390,7 +4428,7 @@
 					class="action-btn"
 					title="{childTotal} child item{childTotal === 1 ? '' : 's'}, {childDone} done"
 					aria-label="Jump to Children — {childDone} of {childTotal} done"
-					onclick={() => { document.getElementById('item-children')?.scrollIntoView({ behavior: 'smooth' }); }}
+					onclick={() => jumpToSection('relationships', 'item-children')}
 				>
 					🌳 {childDone}/{childTotal}
 				</button>
@@ -4409,7 +4447,7 @@
 				<button
 					class="action-btn"
 					title="Mentioned in {backlinksCount} other item{backlinksCount === 1 ? '' : 's'}"
-					onclick={() => { document.getElementById('item-backlinks')?.scrollIntoView({ behavior: 'smooth' }); }}
+					onclick={() => jumpToSection('relationships', 'item-backlinks')}
 				>
 					📎 {backlinksCount}
 				</button>
@@ -4477,6 +4515,23 @@
 			{/if}
 		</div>
 
+		<!-- Pane tabs (PLAN-2290 Phase 4). Panels below are CSS-hidden, never
+		     unmounted — see the PaneTab block in the script. -->
+		<div class="pane-tabs" role="tablist" aria-label="Item sections">
+			{#each PANE_TABS as t (t.id)}
+				<button
+					class="pane-tab"
+					class:on={activeTab === t.id}
+					role="tab"
+					aria-selected={activeTab === t.id}
+					onclick={() => (activeTab = t.id)}
+				>
+					{t.label}
+				</button>
+			{/each}
+		</div>
+
+		<div class="tab-panel" class:tab-hidden={activeTab !== 'details'} role="tabpanel" aria-label="Details">
 		{#if codeContext}
 			<div class="code-context-section">
 				<h3 class="section-title">Code Context</h3>
@@ -4978,6 +5033,7 @@
 				{/if}
 			</div>
 		</div>
+		</div><!-- /tab-panel Details -->
 
 		<!-- {#key itemSlug}: structural containment (PLAN-2105 / TASK-2112).
 		     Remounts the item-scoped data panels below (relationships, add-link
@@ -4994,6 +5050,7 @@
 		     to B — the child's OWN prop check can't catch it (its prop is frozen
 		     at A). PLAN-2105 / TASK-2112; coordinator. -->
 		{@const keyedSlug = itemSlug}
+		<div class="tab-panel" class:tab-hidden={activeTab !== 'relationships'} role="tabpanel" aria-label="Relationships">
 		{#if relationshipGroups.length > 0}
 			<div class="relationships-section">
 				<h3 class="section-title">Relationships</h3>
@@ -5120,8 +5177,18 @@
 				/>
 			</div>
 		{/if}
+		</div><!-- /tab-panel Relationships -->
 
-		<!-- Unified Timeline (comments + activity + versions) -->
+		<!-- Unified Timeline (comments + activity + versions). ONE mounted
+		     instance serves both the Activity and Versions tabs — the
+		     visibleKinds render-filter switches with the tab, the SSE
+		     subscription and merged feed survive (PLAN-2290 Phase 4). -->
+		<div
+			class="tab-panel"
+			class:tab-hidden={activeTab !== 'activity' && activeTab !== 'versions'}
+			role="tabpanel"
+			aria-label={activeTab === 'versions' ? 'Versions' : 'Activity'}
+		>
 		<div id="item-timeline" class="timeline-section">
 			<!-- Timeline COMMENTS/REACTIONS are per-item / per-user REST entities,
 			     side-independent, so they are NOT frozen while peeking (BUG-2263) —
@@ -5142,8 +5209,10 @@
 				collectionId={item.collection_id}
 				frozen={false}
 				restoreFrozen={peeking}
+				visibleKinds={activeTab === 'versions' ? ['version'] : ['comment', 'activity']}
 			/>
 		</div>
+		</div><!-- /tab-panel Activity/Versions -->
 		{/key}
 
 	</div>
@@ -5344,6 +5413,53 @@
 		justify-content: center;
 		height: 50vh;
 		color: var(--text-muted);
+	}
+
+	/* ── Pane tabs (PLAN-2290 Phase 4) ────────────────────────────────── */
+	.pane-tabs {
+		display: flex;
+		gap: 2px;
+		border-bottom: 1px solid var(--border-subtle);
+		margin: var(--space-4) 0 var(--space-4);
+	}
+
+	.pane-tab {
+		padding: 7px 11px 9px;
+		font-size: 0.92em;
+		font-weight: 550;
+		color: var(--text-muted);
+		background: none;
+		border: none;
+		border-bottom: 2px solid transparent;
+		margin-bottom: -1px;
+		border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+		cursor: pointer;
+	}
+
+	.pane-tab:hover {
+		color: var(--text-secondary);
+		background: var(--bg-hover);
+	}
+
+	.pane-tab.on {
+		color: var(--text-primary);
+		border-bottom-color: var(--accent-primary, var(--accent-blue));
+	}
+
+	/* Hidden tab panels stay MOUNTED (collab editor, SSE feeds, backlink
+	   counts — see the PaneTab script block). display:none only. */
+	.tab-hidden {
+		display: none;
+	}
+
+	/* Print renders the full document: every panel visible, no tab chrome. */
+	@media print {
+		.tab-hidden {
+			display: block !important;
+		}
+		.pane-tabs {
+			display: none !important;
+		}
 	}
 
 	.item-page {
