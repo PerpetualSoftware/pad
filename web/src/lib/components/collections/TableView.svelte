@@ -4,6 +4,8 @@
 	import { itemComparator, type SortMode } from '$lib/collections/itemSort';
 	import { reorderGroup, disabledDirections, type ReorderDirection } from '$lib/collections/reorder';
 	import { page } from '$app/state';
+	import { statusColor, priorityColor, hasCanonicalStatus, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
+	import Chip from '$lib/components/common/Chip.svelte';
 	import EmptyState from '../common/EmptyState.svelte';
 	import ItemActionsMenu from './ItemActionsMenu.svelte';
 
@@ -138,17 +140,33 @@
 		}
 	}
 
+	// Per-row pulse for the status click-cycle chip (mirrors ItemCard's
+	// `pulsing`, keyed by item id since the table renders many rows).
+	let pulsingId = $state<string | null>(null);
+
 	function cycleStatus(item: Item, options: string[]) {
 		if (!onStatusChange) return;
 		const fields = parseFields(item);
 		const current = fields.status ?? '';
 		const idx = options.indexOf(current);
 		const next = options[(idx + 1) % options.length];
+		pulsingId = item.id;
+		setTimeout(() => {
+			if (pulsingId === item.id) pulsingId = null;
+		}, 300);
 		onStatusChange(item, next);
 	}
 
-	function formatLabel(value: string): string {
-		return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+	/** FieldEditor's canonical-value resolution: canonical statuses + the four
+	 *  priorities get the fieldColors palette; unknown values return null so
+	 *  the cell renders as plain text instead of a chip. */
+	function selectValueColor(val: string): string | null {
+		if (hasCanonicalStatus(val)) return statusColor(val);
+		const p = val?.toLowerCase();
+		if (p === 'critical' || p === 'high' || p === 'medium' || p === 'low') {
+			return priorityColor(val);
+		}
+		return null;
 	}
 
 	function relativeTime(dateStr: string): string {
@@ -190,11 +208,17 @@
 	 * columns bracket a `minmax(200px, 1fr)` Title and `auto`-sized
 	 * field columns, matching the pre-refactor `.col-*` widths.
 	 */
+	/* Field columns are EXTRINSIC (minmax + fr, no `auto`): every row
+	 * resolves the same track list against the same width, so per-row
+	 * `grid-template-columns: inherit` aligns identically WITHOUT subgrid.
+	 * That matters because content-visibility:auto implies layout
+	 * containment, which disables subgrid on the same element per spec —
+	 * rows collapsed to a single stacked column in Chromium (TASK-2208). */
 	let gridTemplate = $derived(
 		[
 			'70px',
 			'minmax(200px, 1fr)',
-			...visibleFields.map(() => 'auto'),
+			...visibleFields.map(() => 'minmax(90px, 0.55fr)'),
 			'90px',
 			...(canReorder ? ['44px'] : [])
 		].join(' ')
@@ -242,9 +266,22 @@
 				{#each visibleFields as field (field.key)}
 					<div class="table-cell" role="cell">
 						{#if field.key === 'status' && field.options && onStatusChange}
-							<button class="cell-status" onclick={() => cycleStatus(item, field.options!)} title="Click to cycle">
+							<Chip
+								size="sm"
+								color={statusColor(fields[field.key] ?? '')}
+								pulse={pulsingId === item.id}
+								onclick={() => cycleStatus(item, field.options!)}
+								title="Click to cycle status"
+							>
 								{formatLabel(fields[field.key] ?? '')}
-							</button>
+							</Chip>
+						{:else if field.options && typeof fields[field.key] === 'string' && fields[field.key]}
+							{@const chipColor = selectValueColor(fields[field.key])}
+							{#if chipColor}
+								<Chip size="sm" color={chipColor}>{formatLabel(fields[field.key])}</Chip>
+							{:else}
+								<span class="cell-value">{fields[field.key]}</span>
+							{/if}
 						{:else}
 							<span class="cell-value">{fields[field.key] ?? ''}</span>
 						{/if}
@@ -282,25 +319,19 @@
 	}
 
 	/*
-	 * Each row inherits the parent grid's columns via `subgrid`. This
-	 * keeps cell alignment perfect across rows AND lets the row itself
-	 * be the unit that content-visibility can skip.
-	 *
-	 * subgrid: Chrome 117+ / Firefox 71+ / Safari 16+. Browsers without
-	 * subgrid fall back to the same column template as the parent — see
-	 * the @supports block below.
+	 * Rows inherit the parent's (fully extrinsic) column template instead
+	 * of using subgrid: content-visibility:auto implies layout containment,
+	 * which DISABLES subgrid on the same element per spec — every row
+	 * collapsed to a single stacked column in Chromium (TASK-2208). With
+	 * no `auto` tracks in the template, `inherit` yields pixel-identical
+	 * columns on every row, and rows stay the unit content-visibility
+	 * can skip.
 	 */
 	.table-row {
 		display: grid;
-		grid-template-columns: subgrid;
+		grid-template-columns: inherit;
 		grid-column: 1 / -1;
 		border-bottom: 1px solid var(--border-subtle, var(--border));
-	}
-
-	@supports not (grid-template-columns: subgrid) {
-		.table-row {
-			grid-template-columns: inherit;
-		}
 	}
 
 	.table-row.table-header {
@@ -334,10 +365,13 @@
 		background: var(--bg-hover);
 	}
 
-	/* Highlight the row whose detail pane is open (PLAN-2105 / TASK-2112). */
+	/* Highlight the row whose detail pane is open (PLAN-2105 / TASK-2112).
+	   Violet tint + left accent bar — the table-row adaptation of ItemCard's
+	   selected ring (PLAN-2290 Phase 3). E2E asserts the .focused CLASS, not
+	   these styles — keep the class name stable. */
 	.table-row:not(.table-header).focused {
-		background: var(--bg-hover);
-		box-shadow: inset 2px 0 0 var(--accent-blue);
+		background: color-mix(in srgb, var(--accent-primary, var(--accent-blue)) 7%, transparent);
+		box-shadow: inset 2px 0 0 var(--accent-primary, var(--accent-blue));
 	}
 
 	.table-cell {
@@ -396,22 +430,9 @@
 		font-size: 0.9em;
 	}
 
-	.cell-status {
-		background: none;
-		border: none;
-		font: inherit;
-		font-size: 0.85em;
-		color: var(--text-secondary);
-		cursor: pointer;
-		padding: 2px 8px;
-		border-radius: var(--radius-sm);
-		background: var(--bg-tertiary);
-	}
-
-	.cell-status:hover {
-		background: var(--bg-hover);
-		color: var(--text-primary);
-	}
+	/* Status + recognized select values render as Chip primitives now
+	   (tinted pills per the refresh mock); the chip carries the
+	   click-cycle + pulse. */
 
 	.cell-date {
 		font-size: 0.8em;

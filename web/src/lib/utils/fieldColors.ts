@@ -104,26 +104,28 @@ export function formatFieldLabel(value: string): string {
 	return value.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-/** Board-column accent class for a lane value. Literal statuses map to the
- *  canonical lane palette; a custom terminal option (e.g. "shipped") reads
- *  as a done lane. Shared by BoardView AND the public-share fork
- *  (shareView.ts re-exports) so lane accents can never drift between them. */
+/** Board-column accent class for a lane value, derived from the SAME
+ *  canonical STATUS_COLORS map as the chips — so lane accents, chip colors,
+ *  and hyphen/underscore vocabularies can never disagree (TASK-2213: the
+ *  default template ships 'in-progress', which the old hard-coded switch
+ *  missed). Negative-terminal values (cancelled/rejected/wontfix → gray/
+ *  muted family) deliberately get NO accent — a cancelled lane must not
+ *  read as done-green. Custom terminal options (e.g. "shipped") still read
+ *  as done lanes. Shared by BoardView AND the public-share fork
+ *  (shareView.ts re-exports). */
+const COLOR_TO_COLUMN_CLASS: Record<string, string> = {
+	[GREEN]: 'col-done',
+	[AMBER]: 'col-in-progress',
+	[BLUE]: 'col-open',
+	[ORANGE]: 'col-blocked',
+};
+
 export function columnAccentClassFor(
 	field: { terminal_options?: string[] } | undefined,
 	value: string
 ): string {
-	switch (value) {
-		case 'open':
-		case 'new':
-		case 'todo':
-		case 'planned':
-			return 'col-open';
-		case 'in_progress':
-			return 'col-in-progress';
-		case 'done':
-			return 'col-done';
-		case 'blocked':
-			return 'col-blocked';
+	if (hasCanonicalStatus(value)) {
+		return COLOR_TO_COLUMN_CLASS[statusColor(value)] ?? '';
 	}
 	if (value && field?.terminal_options?.includes(value)) return 'col-done';
 	return '';

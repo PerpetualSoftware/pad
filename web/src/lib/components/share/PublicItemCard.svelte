@@ -4,8 +4,9 @@
 	// Strictly presentational: no links, no star, no status cycling, no drag.
 	// Renders the title, ref, and a small meta row (status + priority) styled
 	// for an anonymous audience. Mirrors the in-app ItemCard's visual language
-	// (status/priority colors, uppercase status) without any of its coupling to
-	// page.params / mutation handlers.
+	// (PLAN-2290 Phase 3: card skin tokens + tinted chip pills for
+	// status/priority) without any of its coupling to page.params / mutation
+	// handlers.
 	//
 	// Inline read-only expand (TASK-1684): the optional `onactivate` callback +
 	// `expandable` flag turn the card into a button-like toggle affordance. When
@@ -89,13 +90,12 @@
 		{#if (statusFieldDef && status) || (priorityFieldDef && priority)}
 			<div class="card-meta">
 				{#if statusFieldDef && status}
-					<span class="meta-status" style:color={fieldValueColor(statusFieldDef, status)}>
-						{formatLabel(status).toUpperCase()}
+					<span class="meta-status" style:--chip-c={fieldValueColor(statusFieldDef, status)}>
+						{formatLabel(status)}
 					</span>
 				{/if}
 				{#if priorityFieldDef && priority}
-					{#if statusFieldDef && status}<span class="meta-sep">&middot;</span>{/if}
-					<span class="meta-priority" style:color={fieldValueColor(priorityFieldDef, priority)}>
+					<span class="meta-priority" style:--chip-c={fieldValueColor(priorityFieldDef, priority)}>
 						{formatLabel(priority)}
 					</span>
 				{/if}
@@ -118,20 +118,23 @@
 		min-width: 0;
 	}
 
+	/* Card skin — same tokens as the in-app ItemCard (PLAN-2290 Phase 3) so a
+	   shared board card looks like the owner's. */
 	.public-card {
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
+		background: var(--card-bg, var(--bg-primary));
+		border: 1px solid var(--card-border, var(--border));
+		border-radius: var(--radius-lg);
+		box-shadow: var(--shadow-card, none);
 		padding: var(--space-3) var(--space-4);
 		min-width: 0;
 	}
 
 	.public-card-wrap.expanded .public-card {
 		border-bottom: none;
-		border-radius: var(--radius) var(--radius) 0 0;
+		border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 	}
 
 	.public-card.interactive {
@@ -140,12 +143,11 @@
 	}
 
 	.public-card.interactive:hover {
-		background: var(--bg-hover);
-		border-color: var(--text-tertiary, var(--text-secondary));
+		border-color: var(--border-strong, var(--border));
 	}
 
 	.public-card.interactive:focus-visible {
-		outline: 2px solid var(--accent-blue);
+		outline: 2px solid var(--accent-primary, var(--accent-blue));
 		outline-offset: -2px;
 	}
 
@@ -180,22 +182,21 @@
 		min-width: 0;
 	}
 
-	.meta-status {
-		font-size: 0.7em;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.02em;
-		white-space: nowrap;
-	}
-
-	.meta-sep {
-		font-size: 0.7em;
-		color: var(--text-muted);
-	}
-
+	/* Status/priority read as tinted chip pills — the in-app Chip primitive's
+	   `sm` metrics (padding 1px 6px, radius 6px, 0.8em/500) without its
+	   interactivity. `--chip-c` is set inline from fieldValueColor so custom
+	   terminal vocabularies keep the owner's palette. */
+	.meta-status,
 	.meta-priority {
-		font-size: 0.7em;
-		font-weight: 600;
+		display: inline-flex;
+		align-items: center;
+		padding: 1px 6px;
+		border-radius: 6px;
+		font-size: 0.8em;
+		font-weight: 500;
+		line-height: 1.5;
 		white-space: nowrap;
+		background: color-mix(in srgb, var(--chip-c, var(--accent-gray)) var(--chip-alpha, 16%), transparent);
+		color: color-mix(in srgb, var(--chip-c, var(--accent-gray)) var(--chip-text-mix, 100%), #000);
 	}
 </style>

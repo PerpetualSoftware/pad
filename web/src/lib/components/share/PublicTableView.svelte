@@ -31,11 +31,15 @@
 	let columns = $derived(visibleFields(collection.fields));
 	let hasRefs = $derived(items.some((i) => !!i.ref));
 
+	/* Extrinsic tracks only (no `auto`): rows use grid-template-columns:
+	 * inherit, and content-visibility's layout containment disables
+	 * subgrid per spec (TASK-2208) — see TableView.svelte for the full
+	 * rationale. */
 	let gridTemplate = $derived(
 		[
 			...(hasRefs ? ['70px'] : []),
 			'minmax(200px, 1fr)',
-			...columns.map(() => 'auto')
+			...columns.map(() => 'minmax(90px, 0.55fr)')
 		].join(' ')
 	);
 
@@ -98,8 +102,20 @@
 					{@const text = formatFieldValue(raw)}
 					{@const color = typeof raw === 'string' ? cellColor(field, raw) : undefined}
 					<div class="table-cell" role="cell">
-						{#if field.key === 'status' && text}
-							<span class="cell-status" style:color>{formatLabel(text).toUpperCase()}</span>
+						{#if (field.key === 'status' || field.key === 'priority') && color && text}
+							<!-- Tinted chip pill (Phase 3 card language); .cell-status kept
+							     as the status cell's stable hook. -->
+							<span
+								class="cell-chip"
+								class:cell-status={field.key === 'status'}
+								style:--chip-c={color}>{formatLabel(text)}</span
+							>
+						{:else if field.type === 'multi_select' && Array.isArray(raw) && raw.length > 0}
+							<span class="cell-tags">
+								{#each raw as tag, i (i)}
+									<span class="cell-tag">{formatFieldValue(tag)}</span>
+								{/each}
+							</span>
 						{:else if color && text}
 							<span class="cell-value" style:color>{formatLabel(text)}</span>
 						{:else}
@@ -137,17 +153,14 @@
 		font-size: 0.88em;
 	}
 
+	/* inherit, not subgrid: content-visibility containment disables subgrid
+	   on the same element (TASK-2208); template is fully extrinsic so every
+	   row aligns identically. */
 	.table-row {
 		display: grid;
-		grid-template-columns: subgrid;
+		grid-template-columns: inherit;
 		grid-column: 1 / -1;
 		border-bottom: 1px solid var(--border-subtle, var(--border));
-	}
-
-	@supports not (grid-template-columns: subgrid) {
-		.table-row {
-			grid-template-columns: inherit;
-		}
 	}
 
 	.table-row.table-header {
@@ -170,7 +183,7 @@
 		background: var(--bg-hover);
 	}
 	.table-row.interactive:focus-visible {
-		outline: 2px solid var(--accent-blue);
+		outline: 2px solid var(--accent-primary, var(--accent-blue));
 		outline-offset: -2px;
 	}
 
@@ -228,11 +241,43 @@
 		white-space: nowrap;
 	}
 
-	.cell-status {
+	/* Status/priority as tinted chip pills — the in-app Chip primitive's `sm`
+	   metrics; `--chip-c` set inline from the schema-aware cellColor. */
+	.cell-chip {
+		display: inline-flex;
+		align-items: center;
+		padding: 1px 6px;
+		border-radius: 6px;
+		font-size: 0.8em;
+		font-weight: 500;
+		line-height: 1.5;
+		white-space: nowrap;
+		background: color-mix(in srgb, var(--chip-c, var(--accent-gray)) var(--chip-alpha, 16%), transparent);
+		color: color-mix(in srgb, var(--chip-c, var(--accent-gray)) var(--chip-text-mix, 100%), #000);
+	}
+
+	.cell-tags {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1, 0.25rem);
+		min-width: 0;
+	}
+
+	/* Multi-select values as purple tag pills — mirrors ItemCard's .card-tag
+	   tint treatment. */
+	.cell-tag {
+		display: inline-flex;
+		align-items: center;
+		padding: 1px 6px;
+		border-radius: 6px;
 		font-size: 0.78em;
-		font-weight: 700;
-		text-transform: uppercase;
-		letter-spacing: 0.02em;
+		font-weight: 500;
+		line-height: 1.5;
+		background: color-mix(in srgb, var(--accent-purple) var(--chip-alpha, 16%), transparent);
+		color: color-mix(in srgb, var(--accent-purple) var(--chip-text-mix, 100%), #000);
+		max-width: 12rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 </style>
