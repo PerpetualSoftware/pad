@@ -24,6 +24,12 @@ import type { SuiteFixture } from './fixtures';
  * Pre-fix: the create form never appears. Post-fix (stopPropagation): it
  * opens and stays, and Cancel returns to the action list instead of
  * closing the whole menu.
+ *
+ * PLAN-2290 Phase 2 update: QuickActionsMenu now rides the shared Menu
+ * primitive, whose pointerdown-based instance-scoped outside-click fires
+ * BEFORE row clicks mutate state — the stopPropagation workaround is gone
+ * because the detach hazard is structurally impossible. This test stays
+ * as regression coverage for the same user-visible behavior.
  */
 
 function authHeaders(fixture: SuiteFixture) {
@@ -101,7 +107,7 @@ test("the inline 'New quick action' form opens and stays open (BUG-2281)", async
 	await expect(page.locator('.title', { hasText: 'BUG-2281 form item' })).toBeVisible();
 
 	await page.locator('button.trigger-btn[title="Quick actions"]').click();
-	const openFormBtn = page.locator('button.action-item.footer-row', { hasText: 'New quick action' });
+	const openFormBtn = page.getByRole('menuitem', { name: 'New quick action' });
 	await expect(openFormBtn).toBeVisible();
 	await openFormBtn.click();
 
@@ -120,7 +126,7 @@ test("the inline 'New quick action' form opens and stays open (BUG-2281)", async
 	await page.locator('button.qa-btn.qa-btn-cancel', { hasText: 'Cancel' }).click();
 	await expect(page.locator('input.qa-label-input')).toHaveCount(0);
 	await expect(
-		page.locator('button.action-item.footer-row', { hasText: 'New quick action' }),
+		page.getByRole('menuitem', { name: 'New quick action' }),
 		'Cancel returns to the action list rather than closing the whole menu',
 	).toBeVisible();
 });

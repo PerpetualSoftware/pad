@@ -9,8 +9,20 @@
 	The host (ListView / BoardView / TableView / ChildItems) owns all
 	ordering context — it passes a bound `onReorder(dir)` and the set of
 	`disabledDirs` for this item's position. This component is purely the
-	menu surface: open/close, positioning, a11y, and emitting the chosen
-	direction.
+	trigger + emitting the chosen direction; the shared Menu primitive
+	(PLAN-2290 Phase 2) owns positioning, outside-click, keyboard nav,
+	and menu a11y.
+
+	Menu runs in PORTAL mode here, non-negotiably: ItemCard's host rows
+	establish paint containment via `content-visibility: auto` (ListView
+	rows, BoardView cards, TableView rows — all for off-screen
+	virtualization), which clips absolutely-positioned descendants to the
+	row box. The portal's body-level fixed panel escapes the containment
+	entirely.
+
+	No mobile sheet on purpose: the small fixed dropdown works on every
+	viewport (a 188px panel fits even on a 320px phone), and a sheet for
+	a 4-item menu read as "taking over the card".
 
 	Why a dedicated component (not QuickActionsMenu): QuickActionsMenu is
 	coupled to prompt-template quick actions (resolve/copy, inline create
@@ -18,9 +30,10 @@
 	component is simpler than bending that one.
 -->
 <script lang="ts">
-	import { tick } from 'svelte';
 	import type { Item } from '$lib/types';
 	import type { ReorderDirection } from '$lib/collections/reorder';
+	import Menu from '$lib/components/common/Menu.svelte';
+	import MenuItem from '$lib/components/common/MenuItem.svelte';
 
 	// Horizontal (adjacent-column) moves ride a SEPARATE optional callback so
 	// the shared vertical `onReorder` type stays 'top'|'bottom'|'up'|'down'
@@ -70,58 +83,6 @@
 
 	let open = $state(false);
 	let triggerEl = $state<HTMLButtonElement>();
-	let panelEl = $state<HTMLDivElement>();
-	let x = $state(0);
-	let y = $state(0);
-	let activeIndex = $state(0);
-
-	const PANEL_W = 188;
-	const ROW_H = 38;
-
-	/**
-	 * Portal the desktop panel to <body>. ItemCard's host rows establish
-	 * paint containment via `content-visibility: auto` (ListView rows,
-	 * BoardView cards, TableView rows — all for off-screen virtualization),
-	 * which clips descendant overflow to the row box. An absolutely-
-	 * positioned dropdown would be sheared off at ~36–60px; a body-level
-	 * portal with fixed coords escapes the containment entirely. Mirrors
-	 * the EmojiPickerButton pattern.
-	 */
-	function portal(node: HTMLElement) {
-		document.body.appendChild(node);
-		return {
-			destroy() {
-				node.remove();
-			}
-		};
-	}
-
-	function openMenu() {
-		if (!triggerEl || actions.length === 0) return;
-		const r = triggerEl.getBoundingClientRect();
-		// Right-align the panel under the trigger; flip above if it would
-		// leave the viewport, clamp to the left edge. The small fixed
-		// dropdown works on every viewport (it fits a 188px panel even on a
-		// 320px phone), so there's no separate mobile sheet — a sheet for a
-		// 4-item menu read as "taking over the card".
-		let left = r.right - PANEL_W;
-		if (left < 8) left = 8;
-		const estH = actions.length * ROW_H + 8;
-		let top = r.bottom + 4;
-		if (top + estH > window.innerHeight - 8) {
-			top = Math.max(8, r.top - estH - 4);
-		}
-		x = left;
-		y = top;
-		open = true;
-		activeIndex = 0;
-		tick().then(() => focusItem(0));
-	}
-
-	function closeMenu(returnFocus = true) {
-		open = false;
-		if (returnFocus) triggerEl?.focus();
-	}
 
 	function pick(dir: MenuDirection) {
 		if (disabledDirs?.has(dir)) return;
@@ -129,7 +90,7 @@
 		// the optimistic reorder state — a second move needs a reopen, by
 		// which point the new order has settled. (Drag is naturally
 		// debounced; menu clicks are not.)
-		closeMenu(false);
+		open = false;
 		if (dir === 'left' || dir === 'right') {
 			onMove?.(dir);
 		} else {
@@ -139,64 +100,14 @@
 
 	function onTriggerClick(e: MouseEvent) {
 		// The trigger lives inside the card's <a>; stop the click from
-		// navigating (mirrors toggleStar in ItemCard).
+		// navigating (mirrors toggleStar in ItemCard). This is card
+		// behavior, NOT an outside-click workaround — it stays under the
+		// Menu primitive.
 		e.preventDefault();
 		e.stopPropagation();
-		if (open) closeMenu();
-		else openMenu();
+		open = !open;
 	}
-
-	function focusItem(i: number) {
-		const btns = panelEl?.querySelectorAll<HTMLButtonElement>('.iam-item');
-		btns?.[i]?.focus();
-	}
-
-	function onPanelKeydown(e: KeyboardEvent) {
-		if (e.key === 'Escape') {
-			e.preventDefault();
-			closeMenu();
-		} else if (e.key === 'ArrowDown') {
-			e.preventDefault();
-			activeIndex = (activeIndex + 1) % actions.length;
-			focusItem(activeIndex);
-		} else if (e.key === 'ArrowUp') {
-			e.preventDefault();
-			activeIndex = (activeIndex - 1 + actions.length) % actions.length;
-			focusItem(activeIndex);
-		} else if (e.key === 'Home') {
-			e.preventDefault();
-			activeIndex = 0;
-			focusItem(0);
-		} else if (e.key === 'End') {
-			e.preventDefault();
-			activeIndex = actions.length - 1;
-			focusItem(activeIndex);
-		}
-	}
-
-	// Instance-scoped outside-click: don't match a shared class (that would
-	// also match OTHER item menus' triggers and keep this one open when
-	// another opens). Check this instance's own trigger + portaled panel.
-	function onWindowClick(e: MouseEvent) {
-		if (!open) return;
-		const t = e.target as Node | null;
-		if (!t) return;
-		if (triggerEl?.contains(t) || panelEl?.contains(t)) return;
-		closeMenu(false);
-	}
-
-	// A scroll while open detaches the fixed panel from its row — close it.
-	// Capture catches inner scroll containers (board column, table scroll)
-	// in addition to the window. Only listens while open.
-	$effect(() => {
-		if (!open) return;
-		const onScroll = () => closeMenu(false);
-		window.addEventListener('scroll', onScroll, true);
-		return () => window.removeEventListener('scroll', onScroll, true);
-	});
 </script>
-
-<svelte:window onclick={onWindowClick} />
 
 {#if actions.length > 0}
 	<span class="item-actions-menu">
@@ -214,30 +125,18 @@
 			⋮
 		</button>
 
-		{#if open}
-			<div
-				bind:this={panelEl}
-				class="iam-panel"
-				role="menu"
-				tabindex="-1"
-				use:portal
-				style="position:fixed; left:{x}px; top:{y}px; z-index:99999;"
-				onkeydown={onPanelKeydown}
-			>
-				{#each actions as a, i (a.dir)}
-					<button
-						type="button"
-						class="iam-item"
-						role="menuitem"
-						tabindex={i === activeIndex ? 0 : -1}
-						onclick={() => pick(a.dir)}
-					>
-						<span class="iam-icon" aria-hidden="true">{a.icon}</span>
-						{a.text}
-					</button>
-				{/each}
-			</div>
-		{/if}
+		<Menu
+			{open}
+			onclose={() => (open = false)}
+			trigger={triggerEl}
+			mode="portal"
+			width={188}
+			ariaLabel={label ? `Reorder ${label}` : 'Reorder item'}
+		>
+			{#each actions as a (a.dir)}
+				<MenuItem icon={a.icon} onclick={() => pick(a.dir)}>{a.text}</MenuItem>
+			{/each}
+		</Menu>
 	</span>
 {/if}
 
@@ -272,55 +171,5 @@
 		opacity: 1;
 		outline: 2px solid var(--accent-blue);
 		outline-offset: 1px;
-	}
-
-	/* Portaled panel lives at <body>, so it can't rely on any ancestor
-	   variables being in scope — it uses the same global custom props the
-	   rest of the app's surfaces use. */
-	:global(.iam-panel) {
-		min-width: 188px;
-		padding: var(--space-1);
-		background: var(--bg-primary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-md);
-		box-shadow: var(--shadow-md);
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-	}
-
-	:global(.iam-item) {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		width: 100%;
-		padding: 8px 10px;
-		background: none;
-		border: none;
-		border-radius: var(--radius-sm);
-		color: var(--text-primary);
-		font-size: 0.875em;
-		text-align: left;
-		cursor: pointer;
-	}
-
-	:global(.iam-item:hover),
-	:global(.iam-item:focus-visible) {
-		background: var(--bg-hover);
-		outline: none;
-	}
-
-	:global(.iam-icon) {
-		width: 1.1em;
-		text-align: center;
-		flex-shrink: 0;
-		color: var(--text-muted);
-	}
-
-	/* Comfortable tap targets on touch without a separate sheet. */
-	@media (pointer: coarse) {
-		:global(.iam-item) {
-			padding: 12px 12px;
-		}
 	}
 </style>

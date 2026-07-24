@@ -12,11 +12,14 @@
 	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
 	import UserMenuResources from '$lib/components/layout/UserMenuResources.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
+	import Menu from '$lib/components/common/Menu.svelte';
+	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
 
 	let userMenuOpen = $state(false);
+	let userTriggerEl: HTMLButtonElement | undefined = $state(undefined);
 	let currentTheme = $state<'dark' | 'light'>('dark');
 	let connectOpen = $state(false);
 
@@ -590,13 +593,28 @@
 	}
 </script>
 
+<!--
+	This window handler now serves ONLY the dnd-entangled workspace
+	overflow menu. The user menu moved onto the shared Menu primitive
+	(PLAN-2290 Phase 2 / TASK-2292), which owns its own instance-scoped
+	pointerdown outside-click.
+
+	The overflow menu deliberately stays on window `click` with the
+	`!isDragging` guard rather than the primitive's pointerdown-based
+	outside-close:
+	  • pointerdown fires at drag START — mousedown on a workspace pill
+	    (outside the menu) is exactly how a reorder drag begins, so a
+	    pointerdown-based close would tear the menu down as the user
+	    starts dragging toward it.
+	  • the `click` fired on mouseup at drag END must NOT close the menu
+	    either — finalize handlers are still wiring up state at that
+	    point (drop animation / finalize ordering), hence the
+	    `!isDragging` guard below.
+-->
 <svelte:window
 	onmouseup={disarmMenu}
 	onclick={(e) => {
 		const target = e.target as HTMLElement;
-		if (userMenuOpen && !target.closest('.user-menu-container')) {
-			closeUserMenu();
-		}
 		// Don't close on outside-click during a drag — the click event
 		// fired on mouseup at drag end would otherwise tear down the
 		// menu while finalize handlers are still wiring up state.
@@ -611,6 +629,108 @@
 	}}
 	onkeydown={handleOverflowKeydown}
 />
+
+<!--
+	User menu — shared by the desktop and mobile branches (the two copies
+	were previously duplicated verbatim). Migrated onto the shared Menu
+	primitive (PLAN-2290 Phase 2 / TASK-2292): the primitive owns the
+	panel skin, pointerdown outside-click, ESC via the escape stack,
+	roving keyboard nav over [role^=menuitem], and focus-return to the
+	trigger. Rows that navigate stay real <a>s (role="menuitem" so the
+	roving nav picks them up); action rows are MenuItem buttons.
+
+	The inner .user-dropdown wrapper is a styling hook, not a panel:
+	UserMenuResources' scoped styles target :global(.user-dropdown)
+	(see its <style> block), so the class must survive even though the
+	Menu primitive now owns the panel itself.
+-->
+{#snippet userMenu()}
+	{#if authStore.user}
+		<div class="user-menu-container">
+			<button
+				class="user-trigger"
+				bind:this={userTriggerEl}
+				aria-haspopup="menu"
+				aria-expanded={userMenuOpen}
+				aria-label="User menu"
+				onclick={() => (userMenuOpen = !userMenuOpen)}
+			>
+				<span class="user-avatar" style="background: {wsColor(authStore.user.name || authStore.user.email)}">
+					{(authStore.user.name || authStore.user.email).charAt(0).toUpperCase()}
+				</span>
+			</button>
+
+			<Menu
+				open={userMenuOpen}
+				onclose={closeUserMenu}
+				trigger={userTriggerEl}
+				mode="anchored"
+				ariaLabel="User menu"
+			>
+				<div class="user-dropdown">
+					<div class="user-info">
+						<span class="user-dropdown-name">{authStore.user?.name}</span>
+						<span class="user-dropdown-email">{authStore.user?.email}</span>
+					</div>
+					<div class="dropdown-divider"></div>
+					<a href="/console" class="menu-link" role="menuitem" onclick={closeUserMenu}>
+						Workspaces
+					</a>
+					<a href="/console/settings" class="menu-link" role="menuitem" onclick={closeUserMenu}>
+						Settings
+					</a>
+					{#if authStore.cloudMode}
+						<a href="/console/billing" class="menu-link" role="menuitem" onclick={closeUserMenu}>
+							Billing
+						</a>
+					{/if}
+					{#if authStore.user?.role === 'admin'}
+						<a href="/console/admin" class="menu-link" role="menuitem" onclick={closeUserMenu}>
+							Admin
+						</a>
+					{/if}
+					<!--
+						Theme toggle deliberately does NOT close the menu — matches
+						the pre-migration behavior (the label flips in place so the
+						user can toggle back without reopening).
+					-->
+					<MenuItem onclick={toggleTheme}>
+						{currentTheme === 'dark' ? 'Light mode' : 'Dark mode'}
+					</MenuItem>
+
+					<!--
+						Resources block (TASK-905). Replaces the prior inline Cloud
+						Support/Status pair — that block became a special case of
+						the unified Resources component, which adds Docs, Changelog,
+						and GitHub on Cloud and a trimmed Docs/GitHub list on
+						self-hosted. Closes the product → marketing handoff seam.
+					-->
+					<UserMenuResources cloudMode={authStore.cloudMode} onclose={closeUserMenu} />
+
+					<!--
+						"Connect a project…" sits after the Resources block and just
+						above the Sign-out divider — it's a CLI-onboarding action,
+						semantically closer to Settings/Resources than to account
+						actions, but visually we want it adjacent to the divider so
+						it reads as a discrete action rather than another link.
+					-->
+					{#if workspaceStore.current?.slug}
+						<MenuItem
+							onclick={() => {
+								closeUserMenu();
+								connectOpen = true;
+							}}
+						>
+							Connect a project…
+						</MenuItem>
+					{/if}
+					<div class="dropdown-divider"></div>
+					<MenuItem danger onclick={handleLogout}>Sign out</MenuItem>
+				</div>
+			</Menu>
+		</div>
+	{/if}
+{/snippet}
 
 {#if !mobile}
 	<!-- ── Desktop ────────────────────────────────────────────────────────── -->
@@ -819,79 +939,7 @@
 					<path d="M3 11L8 6L13 11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 				</svg>
 			</button>
-			{#if authStore.user}
-				<div class="user-menu-container">
-					<button
-						class="user-trigger"
-						onclick={() => userMenuOpen = !userMenuOpen}
-					>
-						<span class="user-avatar" style="background: {wsColor(authStore.user.name || authStore.user.email)}">
-							{(authStore.user.name || authStore.user.email).charAt(0).toUpperCase()}
-						</span>
-					</button>
-
-					{#if userMenuOpen}
-						<div class="user-dropdown">
-							<div class="user-info">
-								<span class="user-dropdown-name">{authStore.user.name}</span>
-								<span class="user-dropdown-email">{authStore.user.email}</span>
-							</div>
-							<div class="dropdown-divider"></div>
-							<a href="/console" class="dropdown-item" onclick={closeUserMenu}>
-								Workspaces
-							</a>
-							<a href="/console/settings" class="dropdown-item" onclick={closeUserMenu}>
-								Settings
-							</a>
-							{#if authStore.cloudMode}
-								<a href="/console/billing" class="dropdown-item" onclick={closeUserMenu}>
-									Billing
-								</a>
-							{/if}
-							{#if authStore.user?.role === 'admin'}
-								<a href="/console/admin" class="dropdown-item" onclick={closeUserMenu}>
-									Admin
-								</a>
-							{/if}
-							<button class="dropdown-item" onclick={toggleTheme}>
-								{currentTheme === 'dark' ? 'Light mode' : 'Dark mode'}
-							</button>
-
-							<!--
-								Resources block (TASK-905). Replaces the prior inline Cloud
-								Support/Status pair — that block became a special case of
-								the unified Resources component, which adds Docs, Changelog,
-								and GitHub on Cloud and a trimmed Docs/GitHub list on
-								self-hosted. Closes the product → marketing handoff seam.
-							-->
-							<UserMenuResources cloudMode={authStore.cloudMode} onclose={closeUserMenu} />
-
-							<!--
-								"Connect a project…" sits after the Resources block and just
-								above the Sign-out divider — it's a CLI-onboarding action,
-								semantically closer to Settings/Resources than to account
-								actions, but visually we want it adjacent to the divider so
-								it reads as a discrete action rather than another link.
-							-->
-							{#if workspaceStore.current?.slug}
-								<button
-									class="dropdown-item"
-									onclick={() => {
-										closeUserMenu();
-										connectOpen = true;
-									}}
-								>
-									Connect a project…
-								</button>
-							{/if}
-							<div class="dropdown-divider"></div>
-							<button class="dropdown-item logout" onclick={handleLogout}>
-								Sign out
-							</button>
-						</div>
-					{/if}
-				</div>
-			{/if}
+			{@render userMenu()}
 		</div>
 
 		<!--
@@ -972,67 +1020,7 @@
 				<path d="M10.5 10.5L13.5 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 			</svg>
 		</button>
-		{#if authStore.user}
-			<div class="user-menu-container">
-				<button
-					class="user-trigger"
-					onclick={() => userMenuOpen = !userMenuOpen}
-				>
-					<span class="user-avatar" style="background: {wsColor(authStore.user.name || authStore.user.email)}">
-						{(authStore.user.name || authStore.user.email).charAt(0).toUpperCase()}
-					</span>
-				</button>
-
-				{#if userMenuOpen}
-					<div class="user-dropdown">
-						<div class="user-info">
-							<span class="user-dropdown-name">{authStore.user.name}</span>
-							<span class="user-dropdown-email">{authStore.user.email}</span>
-						</div>
-						<div class="dropdown-divider"></div>
-						<a href="/console" class="dropdown-item" onclick={closeUserMenu}>
-							Workspaces
-						</a>
-						<a href="/console/settings" class="dropdown-item" onclick={closeUserMenu}>
-							Settings
-						</a>
-						{#if authStore.cloudMode}
-							<a href="/console/billing" class="dropdown-item" onclick={closeUserMenu}>
-								Billing
-							</a>
-						{/if}
-						{#if authStore.user?.role === 'admin'}
-							<a href="/console/admin" class="dropdown-item" onclick={closeUserMenu}>
-								Admin
-							</a>
-						{/if}
-						<button class="dropdown-item" onclick={toggleTheme}>
-							{currentTheme === 'dark' ? 'Light mode' : 'Dark mode'}
-						</button>
-
-						<!-- Resources — see desktop branch for placement rationale. -->
-						<UserMenuResources cloudMode={authStore.cloudMode} onclose={closeUserMenu} />
-
-						<!-- Connect a project — see desktop branch for placement rationale. -->
-						{#if workspaceStore.current?.slug}
-							<button
-								class="dropdown-item"
-								onclick={() => {
-									closeUserMenu();
-									connectOpen = true;
-								}}
-							>
-								Connect a project…
-							</button>
-						{/if}
-						<div class="dropdown-divider"></div>
-						<button class="dropdown-item logout" onclick={handleLogout}>
-							Sign out
-						</button>
-					</div>
-				{/if}
-			</div>
-		{/if}
+		{@render userMenu()}
 
 		<!-- Same Connect modal pattern as the desktop branch — see notes above. -->
 		{#if workspaceStore.current?.slug}
@@ -1459,6 +1447,8 @@
 		background: var(--bg-hover);
 	}
 
+	/* Anchored-mode wrapper for the user Menu — the primitive's panel is
+	   position: absolute against this. */
 	.user-menu-container {
 		position: relative;
 	}
@@ -1486,23 +1476,9 @@
 		color: #fff;
 	}
 
-	.user-dropdown {
-		position: absolute;
-		top: calc(100% + 6px);
-		right: 0;
-		min-width: 200px;
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-lg);
-		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
-		z-index: 50;
-		overflow: hidden;
-		animation: dropdown-in 0.12s ease-out;
-	}
-	@keyframes dropdown-in {
-		from { opacity: 0; transform: translateY(-4px); }
-		to { opacity: 1; transform: translateY(0); }
-	}
+	/* Panel skin/positioning now lives in the Menu primitive. The
+	   .user-dropdown class survives markup-side as a styling hook for
+	   UserMenuResources' :global(.user-dropdown) rules. */
 
 	.user-info {
 		padding: var(--space-3) var(--space-4);
@@ -1525,26 +1501,31 @@
 		background: var(--border);
 	}
 
-	.dropdown-item {
-		display: block;
+	/* Anchor rows inside the user Menu. Links stay real <a>s (they
+	   navigate; role="menuitem" keeps them in the primitive's roving
+	   keyboard nav), so they can't be MenuItem buttons — mirror
+	   MenuItem's .mi metrics here so link rows and button rows read
+	   as one set. */
+	.menu-link {
+		display: flex;
+		align-items: center;
 		width: 100%;
-		text-align: left;
-		padding: var(--space-2) var(--space-4);
-		font-size: 0.85em;
-		color: var(--text-secondary);
-		text-decoration: none;
-		transition: background 0.1s, color 0.1s;
-	}
-	.dropdown-item:hover {
-		background: var(--bg-hover);
+		padding: 7px 9px;
+		border-radius: var(--radius-sm);
+		font-size: 13px;
 		color: var(--text-primary);
 		text-decoration: none;
 	}
-	.dropdown-item.logout {
-		color: var(--accent-orange);
+	.menu-link:hover,
+	.menu-link:focus-visible {
+		background: var(--bg-hover);
+		text-decoration: none;
+		outline: none;
 	}
-	.dropdown-item.logout:hover {
-		background: color-mix(in srgb, var(--accent-orange) 10%, var(--bg-hover));
+	@media (pointer: coarse) {
+		.menu-link {
+			padding: 11px 10px;
+		}
 	}
 
 </style>
