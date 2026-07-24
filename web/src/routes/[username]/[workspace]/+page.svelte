@@ -11,6 +11,7 @@
 	import { relativeTime } from '$lib/utils/markdown';
 	import OnboardingLaunchpad from '$lib/components/OnboardingLaunchpad.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
+	import Button from '$lib/components/common/Button.svelte';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
@@ -357,10 +358,10 @@
 			</div>
 			<div class="dash-header-actions">
 				{#if firstCollection}
-					<button class="btn btn-secondary" onclick={() => uiStore.requestQuickAdd(firstCollection.slug)}>{firstCollection.icon} New {firstCollection.name.replace(/s$/, '')}</button>
+					<Button variant="secondary" onclick={() => uiStore.requestQuickAdd(firstCollection.slug)}>{firstCollection.icon} New {firstCollection.name.replace(/s$/, '')}</Button>
 				{/if}
 				{#if hasTasksCollection}
-					<button class="btn btn-primary" onclick={() => uiStore.requestQuickAdd('tasks')}>+ New Task</button>
+					<Button variant="primary" onclick={() => uiStore.requestQuickAdd('tasks')}>+ New Task</Button>
 				{/if}
 			</div>
 		</header>
@@ -418,8 +419,8 @@
 							have it set up for you — or create your first collection by hand.
 						</p>
 						<div class="empty-escape-actions">
-							<button class="btn btn-primary" onclick={() => (showCreateCollection = true)}>+ Create a collection</button>
-							<button class="btn btn-secondary" onclick={showOnboarding}>Show setup guide</button>
+							<Button variant="primary" onclick={() => (showCreateCollection = true)}>+ Create a collection</Button>
+							<Button variant="secondary" onclick={showOnboarding}>Show setup guide</Button>
 						</div>
 					</div>
 				</div>
@@ -664,7 +665,7 @@
 			<div class="dash-error-icon">⚠️</div>
 			<h2>Couldn't load the dashboard</h2>
 			<p>Something went wrong while loading. It may be a temporary network or server issue.</p>
-			<button class="btn btn-primary" onclick={() => { if (wsSlug) load(wsSlug); }}>Retry</button>
+			<Button variant="primary" onclick={() => { if (wsSlug) load(wsSlug); }}>Retry</Button>
 		</div>
 	{:else}
 		<div class="loading">No dashboard data available.</div>
@@ -743,10 +744,6 @@
 		color: var(--text-muted);
 		max-width: 32em;
 	}
-	.dash-error .btn {
-		cursor: pointer;
-		border: none;
-	}
 
 	/* ── Header ─────────────────────────────────────────────────────────── */
 	.dash-header {
@@ -774,45 +771,8 @@
 		display: flex;
 		gap: var(--space-2);
 	}
-	.btn {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-1);
-		font-size: 0.85em;
-		font-weight: 600;
-		padding: var(--space-2) var(--space-4);
-		border-radius: var(--radius);
-		text-decoration: none;
-		transition: background 0.15s, border-color 0.15s, opacity 0.15s;
-		white-space: nowrap;
-	}
-	.btn:hover {
-		text-decoration: none;
-	}
-	.btn-primary {
-		background: var(--accent-blue);
-		color: #fff;
-	}
-	.btn-primary:hover {
-		opacity: 0.9;
-	}
-	.btn-secondary {
-		background: transparent;
-		color: var(--text-secondary);
-		border: 1px solid var(--border);
-	}
-	.btn-secondary:hover {
-		border-color: var(--text-muted);
-		color: var(--text-primary);
-	}
 
 	/* ── Onboarding ─────────────────────────────────────────────────────── */
-	.onboarding-wrapper {
-		margin-bottom: var(--space-6);
-		display: flex;
-		flex-direction: column;
-		gap: var(--space-3);
-	}
 	.onboarding-reshow {
 		margin-bottom: var(--space-4);
 	}

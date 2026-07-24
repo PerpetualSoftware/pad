@@ -32,6 +32,10 @@
 	   with the Phase 2 Button primitive via --text-on-accent. */
 	--accent-primary: #9268f8;
 	--accent-primary-soft: #a78bfa;
+	/* Filled-control variant: the violet band where white text passes AA
+	   (4.96:1) while the fill stays ≥3:1 against --bg-secondary. Used by
+	   Button primary fills; links/text keep --accent-primary. */
+	--accent-primary-strong: #7c4ff0;
 	--accent-blue: var(--accent-primary);
 	--accent-green: #4ade80;
 	--accent-purple: #a78bfa;
@@ -41,6 +45,9 @@
 	--accent-gray: #9ca3af;
 	--accent-brown: #a8896c;
 	--accent-red: #ef4444;
+	/* Solid destructive fill — the red where white text passes AA (4.83:1)
+	   in both themes. Button variant="danger-solid" (final confirms). */
+	--accent-red-strong: #dc2626;
 
 	/* Literal blue for categorical uses (status maps, charts, info badges).
 	   Stays blue even if the brand accent changes — see PLAN-2290. */
@@ -651,6 +658,7 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 	--chip-alpha: 12%;
 	--accent-primary: #7c3aed;
 	--accent-primary-soft: #8b5cf6;
+	--accent-primary-strong: #7c3aed;
 	--accent-blue: var(--accent-primary);
 	--accent-red: #dc2626;
 	--accent-green: #16a34a;
@@ -687,6 +695,7 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 	--chip-alpha: 12%;
 		--accent-primary: #7c3aed;
 		--accent-primary-soft: #8b5cf6;
+	--accent-primary-strong: #7c3aed;
 		--accent-blue: var(--accent-primary);
 		--accent-red: #dc2626;
 		--accent-green: #16a34a;

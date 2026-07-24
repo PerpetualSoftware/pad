@@ -7,6 +7,7 @@
 	import type { Workspace, WorkspaceTemplate } from '$lib/types';
 	import { groupTemplatesByCategory } from '$lib/utils/templates';
 	import Modal from '$lib/components/common/Modal.svelte';
+	import Button from '$lib/components/common/Button.svelte';
 
 	interface Props {
 		/**
@@ -354,15 +355,15 @@
 		</div>
 
 		<div class="modal-footer">
-			<button class="cancel-btn" onclick={close}>Cancel</button>
+			<Button variant="secondary" onclick={close}>Cancel</Button>
 			{#if mode === 'create'}
-				<button class="action-btn" onclick={createWorkspace} disabled={!newName.trim()}>
+				<Button variant="primary" onclick={createWorkspace} disabled={!newName.trim()}>
 					Create Workspace
-				</button>
+				</Button>
 			{:else}
-				<button class="action-btn" onclick={importWorkspace} disabled={!importFile || importing}>
+				<Button variant="primary" onclick={importWorkspace} disabled={!importFile || importing}>
 					{importing ? 'Importing...' : 'Import Workspace'}
-				</button>
+				</Button>
 			{/if}
 		</div>
 </Modal>
@@ -622,23 +623,6 @@
 		padding: var(--space-4) var(--space-5);
 		border-top: 1px solid var(--border);
 	}
-	.action-btn {
-		background: var(--accent-blue); color: #fff;
-		padding: var(--space-2) var(--space-5);
-		border-radius: var(--radius);
-		font-size: 0.88em; font-weight: 500; cursor: pointer;
-	}
-	.action-btn:hover:not(:disabled) { filter: brightness(1.1); }
-	.action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-	.cancel-btn {
-		padding: var(--space-2) var(--space-4);
-		border-radius: var(--radius);
-		font-size: 0.88em; color: var(--text-muted);
-		background: var(--bg-tertiary);
-		border: 1px solid var(--border); cursor: pointer;
-	}
-	.cancel-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-
 	/* Mobile: tighter padding inside the modal so the blank card body and the
 	   expanded template categories don't overflow horizontally at 480px. */
 	@media (max-width: 480px) {

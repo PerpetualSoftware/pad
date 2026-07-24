@@ -7,6 +7,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import Button from '$lib/components/common/Button.svelte';
 	import type { Workspace } from '$lib/types';
 
 	let workspaces = $state<Workspace[]>([]);
@@ -71,7 +72,7 @@
 		<section class="section">
 			<div class="section-header">
 				<h2 class="section-title">Your Workspaces</h2>
-				<button type="button" class="create-btn" onclick={() => uiStore.openCreateWorkspace()}>Create Workspace</button>
+				<Button variant="primary" onclick={() => uiStore.openCreateWorkspace()}>Create Workspace</Button>
 			</div>
 
 			{#if ownedWorkspaces.length === 0}
@@ -170,25 +171,6 @@
 		font-size: 1.1rem;
 		font-weight: 600;
 		color: var(--text-primary);
-	}
-
-	.create-btn {
-		padding: var(--space-2) var(--space-4);
-		background: var(--accent-blue);
-		color: #fff;
-		border: none;
-		border-radius: var(--radius);
-		font-family: inherit;
-		font-size: 0.85rem;
-		font-weight: 500;
-		text-decoration: none;
-		cursor: pointer;
-		transition: opacity 0.15s;
-	}
-
-	.create-btn:hover {
-		opacity: 0.9;
-		text-decoration: none;
 	}
 
 	.workspace-grid {

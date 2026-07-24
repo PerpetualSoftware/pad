@@ -15,6 +15,7 @@
 	import { page } from '$app/state';
 	import { openChildrenDialog } from '$lib/stores/openChildrenDialog.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
+	import Button from '$lib/components/common/Button.svelte';
 
 	let active = $derived(openChildrenDialog.active);
 
@@ -118,16 +119,10 @@
 			</div>
 
 			<div class="modal-footer">
-				<!-- svelte-ignore a11y_autofocus -->
-				<button
-					type="button"
-					class="btn btn-secondary"
-					autofocus
-					onclick={onCancel}>Cancel</button
-				>
-				<button type="button" class="btn btn-danger" onclick={onConfirm}>
+				<Button variant="secondary" autofocus onclick={onCancel}>Cancel</Button>
+				<Button variant="danger-solid" onclick={onConfirm}>
 					Override and mark {active.details.attempted_value}
-				</button>
+				</Button>
 			</div>
 	{/if}
 </Modal>
@@ -264,32 +259,6 @@
 		padding: var(--space-4) var(--space-6);
 		border-top: 1px solid var(--border);
 		flex-shrink: 0;
-	}
-
-	.btn {
-		padding: var(--space-2) var(--space-4);
-		border-radius: var(--radius-md);
-		font-size: 0.9em;
-		font-weight: 500;
-		cursor: pointer;
-		border: 1px solid transparent;
-	}
-
-	.btn-secondary {
-		background: var(--bg-tertiary);
-		color: var(--text-primary);
-		border-color: var(--border);
-	}
-	.btn-secondary:hover {
-		background: var(--bg-secondary);
-	}
-
-	.btn-danger {
-		background: var(--accent-red);
-		color: white;
-	}
-	.btn-danger:hover {
-		filter: brightness(1.08);
 	}
 
 	@media (max-width: 600px) {

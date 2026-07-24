@@ -7,6 +7,7 @@
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
 	import { SvelteSet, SvelteMap } from 'svelte/reactivity';
+	import Button from '$lib/components/common/Button.svelte';
 
 	const TRIGGERS = ['always','on-task-start','on-task-complete','on-implement','on-commit','on-pr-create','on-plan-start','on-plan-complete','on-plan'] as const;
 	type Trigger = typeof TRIGGERS[number];
@@ -485,17 +486,17 @@
 			</div>
 			<div class="header-actions">
 				<a href="/{username}/{workspace}/library" class="btn btn-secondary">Browse Library</a>
-				<button
-					class="btn btn-secondary"
+				<Button
+					variant="secondary"
 					disabled={importing}
 					onclick={openImportPicker}
 					title="Import a convention or playbook from a .pad.md artifact"
 				>
 					{importing ? 'Importing…' : 'Import artifact'}
-				</button>
-				<button class="btn btn-primary" onclick={() => (showCreate = !showCreate)}>
+				</Button>
+				<Button variant="primary" onclick={() => (showCreate = !showCreate)}>
 					{showCreate ? 'Cancel' : '+ New Convention'}
-				</button>
+				</Button>
 				<input
 					bind:this={importInputEl}
 					type="file"
@@ -547,10 +548,10 @@
 				<textarea bind:value={newCommands} placeholder="Optional command references, one per line..." rows="2"></textarea>
 				<textarea bind:value={newContent} placeholder="Instruction the agent should follow..." rows="3"></textarea>
 				<div class="form-actions">
-					<button type="button" class="btn btn-secondary" onclick={resetForm}>Cancel</button>
-					<button type="submit" class="btn btn-primary" disabled={creating || !newTitle.trim()}>
+					<Button variant="secondary" onclick={resetForm}>Cancel</Button>
+					<Button variant="primary" type="submit" disabled={creating || !newTitle.trim()}>
 						{creating ? 'Creating...' : 'Create'}
-					</button>
+					</Button>
 				</div>
 			</form>
 		{/if}
@@ -572,7 +573,7 @@
 					{#each ENFORCEMENT_LEVELS as p (p)}<option value={p}>{p}</option>{/each}
 				</select>
 				{#if hasActiveFilters}
-					<button class="btn btn-small btn-secondary" onclick={clearFilters}>Clear</button>
+					<Button variant="secondary" size="sm" onclick={clearFilters}>Clear</Button>
 				{/if}
 			</div>
 		{/if}
@@ -586,7 +587,7 @@
 		{:else if grouped.length === 0 && hasActiveFilters}
 			<div class="empty-state">
 				<p>No conventions match your filters.</p>
-				<button class="btn btn-secondary" onclick={clearFilters}>Clear filters</button>
+				<Button variant="secondary" onclick={clearFilters}>Clear filters</Button>
 			</div>
 		{:else}
 			<div class="groups">
@@ -656,8 +657,8 @@
 														onkeydown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); saveEditing(item); } if (e.key === 'Escape') cancelEditing(); }}
 													></textarea>
 													<div class="expanded-actions">
-														<button class="btn btn-small btn-primary" disabled={saving} onclick={() => saveEditing(item)}>{saving ? 'Saving...' : 'Save'}</button>
-														<button class="btn btn-small btn-secondary" onclick={cancelEditing}>Cancel</button>
+														<Button variant="primary" size="sm" disabled={saving} onclick={() => saveEditing(item)}>{saving ? 'Saving...' : 'Save'}</Button>
+														<Button variant="secondary" size="sm" onclick={cancelEditing}>Cancel</Button>
 														<span class="edit-hint">⌘+Enter to save · Esc to cancel</span>
 													</div>
 												{:else}
@@ -695,21 +696,22 @@
 														</div>
 													{/if}
 													<div class="expanded-actions">
-														<button class="btn btn-small btn-secondary" onclick={() => startEditing(item)}>Edit</button>
-														<button
-															class="btn btn-small btn-secondary"
+														<Button variant="secondary" size="sm" onclick={() => startEditing(item)}>Edit</Button>
+														<Button
+															variant="secondary"
+															size="sm"
 															disabled={exportingSlug === item.slug}
 															onclick={() => handleExport(item)}
 															title="Download as a .pad.md artifact"
 														>
 															{exportingSlug === item.slug ? 'Exporting…' : 'Export'}
-														</button>
+														</Button>
 														{#if confirmDelete === item.slug}
 															<span class="confirm-text">Delete this convention?</span>
-															<button class="btn btn-small btn-danger" onclick={() => deleteConvention(item)}>Confirm</button>
-															<button class="btn btn-small btn-secondary" onclick={() => (confirmDelete = null)}>Cancel</button>
+															<Button variant="danger-solid" size="sm" onclick={() => deleteConvention(item)}>Confirm</Button>
+															<Button variant="secondary" size="sm" onclick={() => (confirmDelete = null)}>Cancel</Button>
 														{:else}
-															<button class="btn btn-small btn-danger-outline" onclick={() => (confirmDelete = item.slug)}>Delete</button>
+															<Button variant="danger" size="sm" onclick={() => (confirmDelete = item.slug)}>Delete</Button>
 														{/if}
 													</div>
 												{/if}
@@ -737,17 +739,11 @@
 	.header-actions { display: flex; gap: var(--space-2); flex-shrink: 0; flex-wrap: wrap; }
 	.visually-hidden-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
-	/* Buttons */
+	/* Buttons — .btn/.btn-secondary retained only for the Browse Library <a>
+	   (the shared Button primitive renders <button> elements only). */
 	.btn { padding: var(--space-1) var(--space-4); border-radius: var(--radius); font-size: 0.85em; font-weight: 600; cursor: pointer; border: none; white-space: nowrap; text-decoration: none; display: inline-flex; align-items: center; }
-	.btn-primary { background: var(--accent-blue); color: #fff; }
-	.btn-primary:hover { opacity: 0.9; text-decoration: none; }
-	.btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
 	.btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); }
 	.btn-secondary:hover { background: var(--bg-hover); text-decoration: none; }
-	.btn-small { padding: 2px var(--space-3); font-size: 0.8em; }
-	.btn-danger { background: var(--accent-red); color: #fff; }
-	.btn-danger-outline { background: none; color: var(--accent-red); border: 1px solid var(--accent-red); }
-	.btn-danger-outline:hover { background: rgba(220,38,38,0.1); }
 
 	/* Create form */
 	.create-form { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-4); margin-bottom: var(--space-6); display: flex; flex-direction: column; gap: var(--space-3); }

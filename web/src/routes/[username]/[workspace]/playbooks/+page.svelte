@@ -8,6 +8,7 @@
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
 	import { statusColor } from '$lib/utils/fieldColors';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import Button from '$lib/components/common/Button.svelte';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
 	import {
 		PLAYBOOK_SKELETON_BODY,
@@ -392,14 +393,13 @@
 			{#if !showNewForm}
 				<div style="display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap;">
 					<a href="/{username}/{wsSlug}/library?tab=playbooks" class="new-btn" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);">📚 Browse Library</a>
-					<button
-						class="new-btn"
-						style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);"
+					<Button
+						variant="secondary"
 						disabled={importing}
 						onclick={openImportPicker}
 						title="Import a playbook or convention from a .pad.md artifact"
-					>{importing ? 'Importing…' : 'Import artifact'}</button>
-					<button class="new-btn" onclick={() => (showNewForm = true)}>+ New Playbook</button>
+					>{importing ? 'Importing…' : 'Import artifact'}</Button>
+					<Button variant="primary" onclick={() => (showNewForm = true)}>+ New Playbook</Button>
 					<input
 						bind:this={importInputEl}
 						type="file"
@@ -457,9 +457,9 @@
 					</div>
 				</div>
 				<div class="form-actions">
-					<button class="btn btn-secondary" onclick={resetForm}>Cancel</button>
-					<button class="btn btn-draft" disabled={!newTitle.trim()} onclick={() => createPlaybook('draft')}>Create as Draft</button>
-					<button class="btn btn-primary" disabled={!newTitle.trim()} onclick={() => createPlaybook('active')}>Create as Active</button>
+					<Button variant="ghost" onclick={resetForm}>Cancel</Button>
+					<Button variant="secondary" disabled={!newTitle.trim()} onclick={() => createPlaybook('draft')}>Create as Draft</Button>
+					<Button variant="primary" disabled={!newTitle.trim()} onclick={() => createPlaybook('active')}>Create as Active</Button>
 				</div>
 			</div>
 		{/if}
@@ -476,7 +476,7 @@
 					{#each allScopes as s (s)}<option value={s}>{s}</option>{/each}
 				</select>
 				{#if hasActiveFilters}
-					<button class="action-btn" onclick={clearFilters}>Clear</button>
+					<Button variant="secondary" size="sm" onclick={clearFilters}>Clear</Button>
 				{/if}
 			</div>
 		{/if}
@@ -484,14 +484,14 @@
 		{#if sorted.length === 0 && hasActiveFilters && !showNewForm}
 			<div class="empty-state">
 				<p>No playbooks match your filters.</p>
-				<button class="btn btn-secondary" onclick={clearFilters}>Clear filters</button>
+				<Button variant="ghost" onclick={clearFilters}>Clear filters</Button>
 			</div>
 		{:else if sorted.length === 0 && !showNewForm}
 			<div class="empty-state">
 				<div class="empty-icon">&#x1F4D8;</div>
 				<h2>No playbooks yet</h2>
 				<p>Playbooks are multi-step workflows that guide agents through complex tasks.</p>
-				<button class="btn btn-primary" onclick={() => (showNewForm = true)}>Create Your First Playbook</button>
+				<Button variant="primary" onclick={() => (showNewForm = true)}>Create Your First Playbook</Button>
 			</div>
 		{:else}
 			<div class="cards">
@@ -539,24 +539,24 @@
 								</div>
 								<div class="card-divider"></div>
 								<div class="card-actions">
-									<button class="action-btn" onclick={() => goto(`/${username}/${wsSlug}/playbooks/${itemUrlId(item)}`)}>Edit</button>
-									<button class="action-btn" disabled={togglingStatus === item.slug} onclick={() => toggleStatus(item)}>
+									<Button variant="secondary" size="sm" onclick={() => goto(`/${username}/${wsSlug}/playbooks/${itemUrlId(item)}`)}>Edit</Button>
+									<Button variant="secondary" size="sm" disabled={togglingStatus === item.slug} onclick={() => toggleStatus(item)}>
 										{togglingStatus === item.slug ? '...' : nextStatusLabel(status)}
-									</button>
-									<button class="action-btn" disabled={duplicating === item.slug} onclick={() => duplicatePlaybook(item)}>
+									</Button>
+									<Button variant="secondary" size="sm" disabled={duplicating === item.slug} onclick={() => duplicatePlaybook(item)}>
 										{duplicating === item.slug ? '...' : 'Duplicate'}
-									</button>
-									<button class="action-btn" disabled={exportingSlug === item.slug} onclick={() => exportPlaybook(item)} title="Download as a .pad.md artifact">
+									</Button>
+									<Button variant="secondary" size="sm" disabled={exportingSlug === item.slug} onclick={() => exportPlaybook(item)} title="Download as a .pad.md artifact">
 										{exportingSlug === item.slug ? '...' : 'Export'}
-									</button>
+									</Button>
 									{#if confirmDeleteSlug === item.slug}
 										<span class="delete-confirm">
 											Delete?
-											<button class="action-btn action-danger" disabled={deleting === item.slug} onclick={() => deletePlaybook(item.slug)}>{deleting === item.slug ? '...' : 'Yes'}</button>
-											<button class="action-btn" onclick={() => (confirmDeleteSlug = null)}>No</button>
+											<Button variant="danger" size="sm" disabled={deleting === item.slug} onclick={() => deletePlaybook(item.slug)}>{deleting === item.slug ? '...' : 'Yes'}</Button>
+											<Button variant="secondary" size="sm" onclick={() => (confirmDeleteSlug = null)}>No</Button>
 										</span>
 									{:else}
-										<button class="action-btn action-danger" onclick={() => (confirmDeleteSlug = item.slug)}>Delete</button>
+										<Button variant="danger" size="sm" onclick={() => (confirmDeleteSlug = item.slug)}>Delete</Button>
 									{/if}
 								</div>
 							</div>
@@ -574,9 +574,10 @@
 	.page-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: var(--space-8); gap: var(--space-4); }
 	.page-header h1 { font-size: 1.6em; margin-bottom: var(--space-1); }
 	.subtitle { color: var(--text-secondary); font-size: 0.95em; }
+	/* .new-btn retained only for the Browse Library <a> (the shared Button
+	   primitive renders <button> elements only). */
 	.new-btn { background: var(--accent-blue); color: #fff; padding: var(--space-2) var(--space-5); border-radius: var(--radius); font-size: 0.85em; font-weight: 600; white-space: nowrap; flex-shrink: 0; transition: opacity 0.15s; }
 	.new-btn:hover { opacity: 0.85; }
-	.new-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 	.visually-hidden-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 	.empty-state { text-align: center; padding: var(--space-10) var(--space-6); color: var(--text-secondary); }
 	.empty-icon { font-size: 3em; margin-bottom: var(--space-4); opacity: 0.6; }
@@ -611,11 +612,6 @@
 	.code-line { font-family: var(--font-mono); font-size: 0.85em; background: var(--bg-tertiary); padding: 2px var(--space-2); border-radius: var(--radius-sm); margin: 2px 0; }
 	.no-content { color: var(--text-muted); font-size: 0.9em; font-style: italic; }
 	.card-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
-	.action-btn { padding: var(--space-1) var(--space-3); font-size: 0.8em; font-weight: 600; border-radius: var(--radius); background: var(--bg-tertiary); color: var(--text-secondary); border: 1px solid var(--border); cursor: pointer; transition: background 0.15s, color 0.15s; }
-	.action-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
-	.action-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-	.action-danger { color: var(--accent-orange); }
-	.action-danger:hover { background: color-mix(in srgb, var(--accent-orange) 15%, var(--bg-tertiary)); color: var(--accent-orange); }
 	.delete-confirm { display: flex; align-items: center; gap: var(--space-2); font-size: 0.8em; color: var(--accent-orange); font-weight: 600; }
 	.new-form { background: var(--bg-secondary); border: 1px solid var(--accent-blue); border-radius: var(--radius-lg); padding: var(--space-5); margin-bottom: var(--space-6); }
 	.new-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: var(--space-4); align-items: start; margin-top: var(--space-2); }
@@ -629,19 +625,14 @@
 	.form-input:focus, .form-textarea:focus { border-color: var(--accent-blue); outline: none; }
 	.form-textarea { padding: var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-family: var(--font-mono); font-size: 0.9em; line-height: 1.6; min-height: 200px; resize: vertical; }
 	.form-actions { display: flex; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-4); }
-	.btn { padding: var(--space-2) var(--space-5); border-radius: var(--radius); font-size: 0.85em; font-weight: 600; cursor: pointer; border: none; transition: opacity 0.15s; }
-	.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-	.btn:hover:not(:disabled) { opacity: 0.85; }
-	.btn-primary { background: var(--accent-blue); color: #fff; }
-	.btn-draft { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border); }
-	.btn-secondary { background: transparent; color: var(--text-secondary); }
-	.btn-secondary:hover:not(:disabled) { color: var(--text-primary); opacity: 1; }
 	@media (max-width: 1024px) {
 		.new-form-grid { grid-template-columns: 1fr; }
 	}
 	@media (max-width: 768px) {
 		.page-header { flex-direction: column; }
 		.form-actions { flex-direction: column; }
-		.form-actions .btn { width: 100%; text-align: center; }
+		/* Full-width form buttons on mobile — the shared Button primitive's
+		   root carries the .btn class, so :global reaches into it. */
+		.form-actions :global(.btn) { width: 100%; }
 	}
 </style>
