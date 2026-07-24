@@ -8,7 +8,12 @@
 		dot?: boolean;
 		/** `sm` for dense rows (cards, table cells); `md` elsewhere. */
 		size?: 'sm' | 'md';
-		/** When provided the chip renders as a <button>. */
+		/** When provided the chip renders as a <button>. The click always
+		 *  preventDefault()s (a chip is never a link — this stops a parent
+		 *  <a> card from navigating) but propagation continues so
+		 *  click-outside closers still see it; callers inside interactive
+		 *  cards should stopPropagation() in their handler if the card
+		 *  itself also handles clicks (house pattern, cf. ItemCard). */
 		onclick?: (e: MouseEvent) => void;
 		title?: string;
 		/** Brief scale pulse — used by status click-cycling. */
@@ -34,7 +39,10 @@
 		class:pulse
 		style:--chip-c={color}
 		{title}
-		{onclick}
+		onclick={(e) => {
+			e.preventDefault();
+			onclick?.(e);
+		}}
 	>
 		{#if dot}<span class="dot" aria-hidden="true"></span>{/if}
 		{@render children()}
