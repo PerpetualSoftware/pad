@@ -1,18 +1,35 @@
 :root {
-	--bg-primary: #1a1a1a;
-	--bg-secondary: #242424;
-	--bg-tertiary: #2e2e2e;
-	--bg-hover: #353535;
-	--bg-active: #3a3a3a;
+	/* PLAN-2290 violet refresh — dark is the primary theme. Neutrals are
+	   violet-biased; muted text meets WCAG AA on all bg tokens (TASK-2262 C9). */
+	--bg-primary: #0b0b10;
+	--bg-secondary: #14141b;
+	--bg-tertiary: #1c1c25;
+	--bg-hover: #22222d;
+	--bg-active: #2a2a36;
 
-	--text-primary: #e0e0e0;
-	--text-secondary: #a0a0a0;
-	--text-muted: #666666;
+	--text-primary: #f0f0f4;
+	--text-secondary: #a9a9b8;
+	--text-muted: #8b8b9c;
 
-	--border: #333333;
-	--border-subtle: #2a2a2a;
+	--border: #262633;
+	--border-subtle: #1d1d27;
+	--border-strong: #4a4a5e;
 
-	--accent-blue: #4a9eff;
+	/* Card surface family (consumed app-wide from Phase 3 on). */
+	--card-bg: #16161f;
+	--card-border: #363648;
+	--shadow-card: 0 2px 6px rgba(0, 0, 0, 0.35);
+
+	/* Brand accent. --accent-blue is aliased to it because ~95% of its 462
+	   call sites mean "brand accent", not "blue" (see PLAN-2290); the
+	   literally-blue categorical sites use --status-blue instead.
+	   #9268f8 (not the mock's #8b5cf6): the one violet that passes AA as
+	   link text on --bg-secondary (4.85:1) while beating the old blue for
+	   white button text (3.78:1 vs 2.75:1). True text-on-fill AA lands
+	   with the Phase 2 Button primitive via --text-on-accent. */
+	--accent-primary: #9268f8;
+	--accent-primary-soft: #a78bfa;
+	--accent-blue: var(--accent-primary);
 	--accent-green: #4ade80;
 	--accent-purple: #a78bfa;
 	--accent-amber: #fbbf24;
@@ -54,9 +71,9 @@
 	--space-8: 32px;
 	--space-10: 40px;
 
-	--radius: 6px;
-	--radius-sm: 4px;
-	--radius-lg: 8px;
+	--radius: 8px;
+	--radius-sm: 5px;
+	--radius-lg: 12px;
 
 	/* Elevation scale. Values match the long-standing inline fallbacks
 	   (ItemActionsMenu/LaneActionsMenu/BoardView/Modal) so defining them
@@ -614,17 +631,24 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 
 /* Light mode */
 [data-theme="light"] {
-	--bg-primary: #ffffff;
-	--bg-secondary: #f7f7f8;
-	--bg-tertiary: #eeeff1;
-	--bg-hover: #e5e6e8;
-	--bg-active: #dddee0;
-	--text-primary: #1a1a1a;
-	--text-secondary: #555555;
-	--text-muted: #999999;
-	--border: #e0e0e0;
-	--border-subtle: #eaeaea;
-	--accent-blue: #2563eb;
+	--bg-primary: #f5f5f9;
+	--bg-secondary: #ffffff;
+	--bg-tertiary: #efeff4;
+	--bg-hover: #ededf3;
+	--bg-active: #e3e3ec;
+	--text-primary: #191922;
+	--text-secondary: #4d4d5c;
+	--text-muted: #63637a;
+	--border: #dcdce6;
+	--border-subtle: #e8e8f0;
+	--border-strong: #b4b4c6;
+	--card-bg: #ffffff;
+	--card-border: #d0d0dc;
+	--shadow-card: 0 1px 3px rgba(23, 23, 40, 0.1);
+	--accent-primary: #7c3aed;
+	--accent-primary-soft: #8b5cf6;
+	--accent-blue: var(--accent-primary);
+	--accent-red: #dc2626;
 	--accent-green: #16a34a;
 	--accent-purple: #7c3aed;
 	--accent-amber: #d97706;
@@ -642,17 +666,24 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 
 @media (prefers-color-scheme: light) {
 	:root:not([data-theme="dark"]) {
-		--bg-primary: #ffffff;
-		--bg-secondary: #f7f7f8;
-		--bg-tertiary: #eeeff1;
-		--bg-hover: #e5e6e8;
-		--bg-active: #dddee0;
-		--text-primary: #1a1a1a;
-		--text-secondary: #555555;
-		--text-muted: #999999;
-		--border: #e0e0e0;
-		--border-subtle: #eaeaea;
-		--accent-blue: #2563eb;
+		--bg-primary: #f5f5f9;
+		--bg-secondary: #ffffff;
+		--bg-tertiary: #efeff4;
+		--bg-hover: #ededf3;
+		--bg-active: #e3e3ec;
+		--text-primary: #191922;
+		--text-secondary: #4d4d5c;
+		--text-muted: #63637a;
+		--border: #dcdce6;
+		--border-subtle: #e8e8f0;
+		--border-strong: #b4b4c6;
+		--card-bg: #ffffff;
+		--card-border: #d0d0dc;
+		--shadow-card: 0 1px 3px rgba(23, 23, 40, 0.1);
+		--accent-primary: #7c3aed;
+		--accent-primary-soft: #8b5cf6;
+		--accent-blue: var(--accent-primary);
+		--accent-red: #dc2626;
 		--accent-green: #16a34a;
 		--accent-purple: #7c3aed;
 		--accent-amber: #d97706;
