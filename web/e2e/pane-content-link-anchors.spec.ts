@@ -158,6 +158,8 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		await expect.poll(() => openItemParam(page)).not.toBeNull();
 		const paneUrlAtParent = page.url();
 
+		// Children moved under the Relationships tab (PLAN-2290 Phase 4).
+		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		const childRow = pane.locator('.child-row', { hasText: 'Anchors children kid' });
 		await expect(childRow).toBeVisible();
 
@@ -177,6 +179,8 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		// the pane's own `?item=` must stay put (proving our handler bailed).
 		await page.goto(paneUrlAtParent);
 		await expect(pane).toBeVisible();
+		// The pane retarget reset the tab to Details — re-activate Relationships.
+		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		await expect(childRow).toBeVisible();
 		const [popup] = await Promise.all([
 			page.context().waitForEvent('page'),
@@ -205,6 +209,8 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		await expect(pane).toBeVisible();
 		const paneUrlAtA = page.url();
 
+		// Relationships moved under the Relationships tab (PLAN-2290 Phase 4).
+		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		const relLink = pane.locator('.link-target', { hasText: 'Anchors rel bravo' });
 		await expect(relLink).toBeVisible();
 
@@ -217,6 +223,8 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		// pane's own `?item=` is untouched.
 		await page.goto(paneUrlAtA);
 		await expect(pane).toBeVisible();
+		// The pane retarget reset the tab to Details — re-activate Relationships.
+		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		await expect(relLink).toBeVisible();
 		const [popup] = await Promise.all([
 			page.context().waitForEvent('page'),
@@ -385,6 +393,8 @@ test.describe('focus per hop (PLAN-2154 / TASK-2162)', () => {
 		// DRILL A→B by clicking the related-item link. Its anchor lives inside a
 		// `{#key itemSlug}` subtree that this very drill remounts — the exact R1
 		// "clicked link destroyed, focus falls to <body>" case.
+		// The related link lives under the Relationships tab (PLAN-2290 Phase 4).
+		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		const relLink = pane.locator('.link-target', { hasText: 'Focus hop rel bravo' });
 		await expect(relLink).toBeVisible();
 		await relLink.click();
@@ -425,6 +435,8 @@ test.describe('focus per hop (PLAN-2154 / TASK-2162)', () => {
 
 		const releaseB = await gateItemFetch(page, bRef);
 
+		// The related link lives under the Relationships tab (PLAN-2290 Phase 4).
+		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		const relLink = pane.locator('.link-target', { hasText: 'Focus hop kbd bravo' });
 		await expect(relLink).toBeVisible();
 		// KEYBOARD drill: focus the anchor and activate it with Enter (an <a>
@@ -458,6 +470,8 @@ test.describe('focus per hop (PLAN-2154 / TASK-2162)', () => {
 		await expect(pane).toBeVisible();
 		const aRef = openItemParam(page)!;
 
+		// The related link lives under the Relationships tab (PLAN-2290 Phase 4).
+		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		const relLink = pane.locator('.link-target', { hasText: 'Focus hop back bravo' });
 		await expect(relLink).toBeVisible();
 		await relLink.click();

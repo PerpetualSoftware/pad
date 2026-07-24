@@ -37,6 +37,11 @@
 		itemId?: string;
 		collectionId?: string;
 		/**
+		 * Which entry kinds render (undefined = all). Filter-only: the merged
+		 * feed still fetches every kind, so switching kinds never refetches.
+		 */
+		visibleKinds?: Array<'comment' | 'activity' | 'version'>;
+		/**
 		 * `frozen` freezes the COMMENT/REACTION surfaces (composer, reply, edit,
 		 * delete, reaction). These are per-item / per-user REST entities, so under
 		 * the invisible-freeze model (BUG-2263) the full-page host leaves this
@@ -65,7 +70,7 @@
 		flushBeforeRestore?: () => Promise<void>;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -79,6 +84,14 @@
 	);
 
 	let entries: TimelineEntry[] = $state([]);
+
+	// Render-side filter over the one merged feed. The instance stays
+	// mounted across filter changes (SSE subscriptions live on) — the pane's
+	// Activity/Versions tabs drive this (PLAN-2290 Phase 4). undefined = all.
+	let visibleEntries = $derived(
+		visibleKinds ? entries.filter((e) => visibleKinds.includes(e.kind)) : entries
+	);
+	let showComposer = $derived(!visibleKinds || visibleKinds.includes('comment'));
 	let hasMore: boolean = $state(false);
 	let loading: boolean = $state(false);
 	let loadingMore: boolean = $state(false);
@@ -453,7 +466,7 @@
 	     opened is orphaned when the composer unmounts on freeze — the ACCEPTED,
 	     tracked BUG-2177 tradeoff (its upload bails via attachment-upload.ts's
 	     view.isDestroyed check; no crash, no committed-content loss). -->
-	{#if canEdit}
+	{#if canEdit && showComposer}
 		<div class="compose">
 			<CommentEditor
 				{wsSlug}
@@ -479,7 +492,7 @@
 
 	{#if !loading || entries.length > 0}
 		<div class="entry-list" bind:this={entryListEl}>
-			{#each entries as entry (entry.id)}
+			{#each visibleEntries as entry (entry.id)}
 				<div class="entry">
 					<div class="entry-rail">
 						<span class="dot {dotClass(entry.kind)}"></span>

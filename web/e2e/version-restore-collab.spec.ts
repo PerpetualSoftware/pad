@@ -332,6 +332,8 @@ test('an unflushed live edit is captured in the restore undo-point via the UI (B
 			r.ok(),
 		{ timeout: 30_000 }
 	);
+	// Version cards moved under the Versions tab (PLAN-2290 Phase 4).
+	await page.getByRole('tab', { name: 'Versions' }).click();
 	const card = page.locator('#item-timeline .version-card').first();
 	await card.locator('.card-header').click(); // expand
 	await card.getByRole('button', { name: 'Restore this version' }).click();

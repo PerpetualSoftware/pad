@@ -237,6 +237,9 @@ function collabRoom(url: string): string | null {
 /** Open the pane by clicking a MASTER relationship link (the host's real
  *  first-open path — `handleMasterOpenTarget` → `openItemPaneByRef`). */
 async function openPaneViaRelated(page: Page, titlePrefix: string): Promise<void> {
+	// Relationships moved under the Relationships tab (PLAN-2290 Phase 4) — activate
+	// it on the master before clicking the related link.
+	await masterCol(page).getByRole('tab', { name: 'Relationships' }).click();
 	await masterCol(page)
 		.locator('.relationship-group', { hasText: 'Related' })
 		.locator('a.link-target', { hasText: titlePrefix })
@@ -286,32 +289,39 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await page.goto(fullPageUrl(fixture, coll.slug, master.slug));
 		const col = masterCol(page);
 
-		// ── Pre-peek: the master is fully EDITABLE (no pane yet). ──
+		// ── Pre-peek: the master is fully EDITABLE (no pane yet). The Phase-4 tabs
+		//    (PLAN-2290) split the surfaces across Details / Relationships / Activity, so
+		//    verify each tab's editable surface HERE, before the peek; the peek-era
+		//    checks below stay DOM-based (the exhaustive per-surface freeze audit lives
+		//    in masterFreeze.svelte.test.ts + mutationGate.test.ts). ──
 		await expect(page.locator('.item-page-host')).toBeVisible();
 		const editableTitle = col.locator('button.title', { hasText: 'FP freeze master' });
 		await expect(editableTitle).toBeVisible();
-		// The Note field is an editable input (FieldEditor, not readonly-display).
+		// Details tab (default): the Note field is an editable input (FieldEditor, not
+		// readonly-display), and the rich editor is the live, synced, EDITABLE collab editor.
 		const noteInput = col.locator('.field-row', { hasText: 'Note' }).locator('input.field-input');
 		await expect(noteInput).toBeVisible();
 		await expect(noteInput).toBeEnabled();
-		// The comment composer is present.
-		await expect(col.locator('.compose')).toBeVisible();
-		// Star is enabled; Share + Quick-actions + Delete are present.
+		await expect(col.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
+		const masterEditor = col.locator(EDITOR_SELECTOR);
+		await expect(masterEditor).toBeVisible({ timeout: SYNC_TIMEOUT });
+		await expect(masterEditor).toHaveAttribute('contenteditable', 'true');
+		// Action bar (above the tabs): Star enabled; Share + Quick-actions + Delete + Move present.
 		await expect(col.locator('button.star-btn')).toBeEnabled();
 		await expect(col.locator('button.action-btn', { hasText: 'Share' })).toBeVisible();
 		await expect(col.locator('button.trigger-btn[title="Quick actions"]')).toBeVisible();
 		await expect(col.locator('button.delete-btn')).toBeVisible();
 		await expect(col.locator('button.action-btn', { hasText: 'Move to' })).toBeVisible();
-		// Relationship mutation surfaces (the master HAS a `related` link): the
-		// per-link remove button (rendered but `display:none` until row-hover, so
-		// assert DOM presence, not visibility) and the "+ Add relationship" opener.
+		// Relationships tab: the per-link remove button (rendered but `display:none`
+		// until row-hover, so assert DOM presence) and the "+ Add relationship" opener.
+		await col.getByRole('tab', { name: 'Relationships' }).click();
 		await expect(col.locator('button.link-delete-btn')).toHaveCount(1);
 		await expect(col.locator('button.add-relationship-btn')).toBeVisible();
-		// The rich editor is the live collab editor and is EDITABLE.
-		await expect(col.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
-		const masterEditor = col.locator(EDITOR_SELECTOR);
-		await expect(masterEditor).toBeVisible({ timeout: SYNC_TIMEOUT });
-		await expect(masterEditor).toHaveAttribute('contenteditable', 'true');
+		// Activity tab: the comment composer.
+		await col.getByRole('tab', { name: 'Activity' }).click();
+		await expect(col.locator('.compose')).toBeVisible();
+		// Return to Details so the peek-era editor checks read the right tab.
+		await col.getByRole('tab', { name: 'Details' }).click();
 
 		// ── Open the pane → focus-follows-editing (PLAN-2179 DR-2 / TASK-2181) keeps
 		//    the MASTER editable (the pane opens as a read-only PREVIEW). Then click
@@ -325,29 +335,31 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		// Activate the pane (click its title) → the master becomes the frozen side.
 		await pane.locator('.title', { hasText: 'FP freeze target' }).click();
 
-		// ── Peeking (BUG-2263): the freeze is INVISIBLE. The ONLY thing that
-		//    changes on the master is that its content editor stops being typeable
-		//    (contenteditable=false). Every other surface stays EXACTLY as pre-peek —
-		//    the master/pane freeze exists solely to keep one typeable collab editor,
-		//    and must be transparent to the user everywhere else. ──
+		// ── Peeking (BUG-2263): the freeze is INVISIBLE. The ONLY thing that changes
+		//    on the master is its content editor stops being typeable
+		//    (contenteditable=false). Every OTHER surface stays live — but Phase-4 put
+		//    the field / relationships / composer under inactive tabs here, so their
+		//    "not frozen" guarantee is asserted DOM-based (present + enabled), not by
+		//    visibility on a hidden tab (their visual editability was verified per-tab
+		//    pre-peek). ──
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'false');
 		// Title: STILL a click-to-edit button (no degraded <h1>).
 		await expect(col.locator('button.title', { hasText: 'FP freeze master' })).toBeVisible();
 		await expect(col.locator('h1.title.title-readonly')).toHaveCount(0);
-		// Field: STILL an editable input (no readonly-display swap).
-		await expect(noteInput).toBeVisible();
+		// Field: STILL an editable input (present + enabled, no readonly-display swap).
+		await expect(noteInput).toHaveCount(1);
 		await expect(noteInput).toBeEnabled();
 		await expect(col.locator('.field-row', { hasText: 'Note' }).locator('.readonly-display')).toHaveCount(0);
-		// Comment composer: still present.
-		await expect(col.locator('.compose')).toBeVisible();
+		// Comment composer: still present (not peeking-gated — ItemTimeline frozen={false}).
+		await expect(col.locator('.compose')).toHaveCount(1);
 		// Star: still enabled (never gated on peeking anymore).
 		await expect(col.locator('button.star-btn')).toBeEnabled();
-		// Share + Delete + Move + Add-relationship + per-link remove: all still
-		// present (side-independent single-item REST — no freeze).
+		// Share + Delete + Move (action bar, above the tabs): all still present.
 		await expect(col.locator('button.action-btn', { hasText: 'Share' })).toBeVisible();
 		await expect(col.locator('button.delete-btn')).toBeVisible();
 		await expect(col.locator('button.action-btn', { hasText: 'Move to' })).toBeVisible();
-		await expect(col.locator('button.add-relationship-btn')).toBeVisible();
+		// Add-relationship + per-link remove: still present (side-independent single-item REST — no freeze).
+		await expect(col.locator('button.add-relationship-btn')).toHaveCount(1);
 		await expect(col.locator('button.link-delete-btn')).toHaveCount(1);
 		// EXCEPTION (Codex P1): the owner quick-actions menu's "Manage/New" controls
 		// WRITE the whole collection settings from a per-item snapshot (last-write-
@@ -356,14 +368,16 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		// controls gated the trigger has nothing to show and is hidden on the peeking
 		// side (prompt actions, when present, would keep it visible — unit-tested).
 		await expect(col.locator('button.trigger-btn[title="Quick actions"]')).toHaveCount(0);
-		// Rich editor: retained + visible (no teardown) — only not typeable.
-		await expect(masterEditor).toBeVisible();
+		// Rich editor: retained (no teardown) — only not typeable.
+		await expect(masterEditor).toHaveCount(1);
 
 		// ── RUNTIME MUTATION (Codex P2): the invisible freeze is not merely visual —
-		//    a field edit typed on the FROZEN master must actually PATCH the CORRECT
-		//    item. Type into the note field while peeking and assert it persists to
-		//    THIS master's fields (server-side), proving updateField fired for the
-		//    right item id from the frozen side. ──
+		//    a field edit must actually PATCH the CORRECT item. The field lives under
+		//    the master's Details tab (Phase-4); switching to it re-activates the master
+		//    per focus-follows (the same un-peek a field click always triggered), then
+		//    the edit must persist to THIS master's fields (server-side), proving
+		//    updateField fired for the right item id. ──
+		await col.getByRole('tab', { name: 'Details' }).click();
 		await noteInput.fill('edited-while-peeking');
 		await expect
 			.poll(
@@ -382,12 +396,13 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 			.toBe('edited-while-peeking');
 
 		// ── Close (un-peek) → the content editor is typeable again; nothing else was
-		//    ever frozen, so it is unchanged. ──
+		//    ever frozen, so it is unchanged (composer asserted DOM-present — it's under
+		//    the Activity tab). ──
 		await pane.locator('button[aria-label="Close pane"]').click();
 		await expect(pane).toBeHidden();
 		await expect(col.locator('button.title', { hasText: 'FP freeze master' })).toBeVisible();
 		await expect(noteInput).toBeVisible();
-		await expect(col.locator('.compose')).toBeVisible();
+		await expect(col.locator('.compose')).toHaveCount(1);
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'true', { timeout: SYNC_TIMEOUT });
 	});
 
@@ -516,6 +531,9 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		// pane provider RE-TARGETS: `related`'s socket is torn down, the grandchild's
 		// minted — master + grandchild = STILL 2 distinct rooms, not
 		// {master, related, grandchild}. This is "one pane provider that re-targets, not N".
+		// Children moved under the Relationships tab (PLAN-2290 Phase 4); revealing
+		// the child-row needs the pane's Relationships tab active first.
+		await pane.getByRole('tab', { name: 'Relationships' }).click();
 		await pane.locator('.child-row', { hasText: 'FP ws grandchild' }).click();
 		await expect(pane.locator('.title', { hasText: 'FP ws grandchild' })).toBeVisible();
 		await expect
