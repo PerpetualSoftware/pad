@@ -21,6 +21,7 @@
 	import { untrack } from 'svelte';
 	import { adminFetch, adminPatch, adminPost, type AdminUser } from '$lib/stores/admin.svelte';
 	import { api } from '$lib/api/client';
+	import Button from '$lib/components/common/Button.svelte';
 
 	interface Props {
 		user: AdminUser;
@@ -338,32 +339,29 @@
 			</select>
 			{#if editRole !== (user.role || 'member')}
 				{#if !roleConfirm}
-					<button
-						class="btn"
-						type="button"
+					<Button
+						variant="secondary"
 						onclick={() => {
 							roleConfirm = true;
 							roleMsg = '';
-						}}>Change Role</button
+						}}>Change Role</Button
 					>
 				{:else}
 					<div class="role-confirm">
 						<span class="role-confirm-msg">
 							{roleAction()} <strong>{user.name || user.username}</strong> to {editRole}?
 						</span>
-						<button
-							class="btn btn-primary"
-							type="button"
+						<Button
+							variant="primary"
 							disabled={roleSaving}
-							onclick={changeRole}>{roleSaving ? 'Saving…' : 'Confirm'}</button
+							onclick={changeRole}>{roleSaving ? 'Saving…' : 'Confirm'}</Button
 						>
-						<button
-							class="btn btn-sub"
-							type="button"
+						<Button
+							variant="ghost"
 							onclick={() => {
 								roleConfirm = false;
 								editRole = user.role || 'member';
-							}}>Cancel</button
+							}}>Cancel</Button
 						>
 					</div>
 				{/if}
@@ -388,17 +386,16 @@
 			<div class="msg error">{resetError}</div>
 		{/if}
 		{#if !resetConfirm}
-			<button class="btn" type="button" onclick={() => (resetConfirm = true)}>Reset password</button>
+			<Button variant="secondary" onclick={() => (resetConfirm = true)}>Reset password</Button>
 		{:else}
 			<div class="row">
 				<span>Send a password-reset email or generate a temporary password?</span>
-				<button
-					class="btn btn-primary"
-					type="button"
+				<Button
+					variant="primary"
 					disabled={resetSaving}
-					onclick={resetPassword}>{resetSaving ? 'Working…' : 'Confirm'}</button
+					onclick={resetPassword}>{resetSaving ? 'Working…' : 'Confirm'}</Button
 				>
-				<button class="btn btn-sub" type="button" onclick={() => (resetConfirm = false)}>Cancel</button>
+				<Button variant="ghost" onclick={() => (resetConfirm = false)}>Cancel</Button>
 			</div>
 		{/if}
 	</div>
@@ -409,14 +406,13 @@
 		{#if disableMsg}<div class="msg" class:error={disableMsg.includes('failed') || disableMsg.includes('Type the')}>{disableMsg}</div>{/if}
 		{#if !user.disabled_at}
 			{#if !disableConfirm}
-				<button
-					class="btn btn-danger"
-					type="button"
+				<Button
+					variant="danger"
 					onclick={() => {
 						disableConfirm = true;
 						disableTyped = '';
 						disableMsg = '';
-					}}>Disable account</button
+					}}>Disable account</Button
 				>
 			{:else}
 				<!-- Typed-email confirmation (new in T1551). Mirrors the
@@ -435,30 +431,28 @@
 						aria-label="Type the user's email to confirm disable"
 					/>
 					<div class="row">
-						<button
-							class="btn btn-danger"
-							type="button"
+						<Button
+							variant="danger"
 							disabled={disableSaving || disableTyped.trim() !== user.email}
 							onclick={toggleDisable}
 							title={disableTyped.trim() === user.email
 								? 'Disable this account'
 								: `Type ${user.email} to enable this button (paste tolerant)`}
-							>{disableSaving ? 'Disabling…' : 'Disable'}</button
+							>{disableSaving ? 'Disabling…' : 'Disable'}</Button
 						>
-						<button
-							class="btn btn-sub"
-							type="button"
+						<Button
+							variant="ghost"
 							onclick={() => {
 								disableConfirm = false;
 								disableTyped = '';
-							}}>Cancel</button
+							}}>Cancel</Button
 						>
 					</div>
 				</div>
 			{/if}
 		{:else}
-			<button class="btn" type="button" disabled={disableSaving} onclick={toggleDisable}
-				>{disableSaving ? 'Enabling…' : 'Re-enable account'}</button
+			<Button variant="secondary" disabled={disableSaving} onclick={toggleDisable}
+				>{disableSaving ? 'Enabling…' : 'Re-enable account'}</Button
 			>
 		{/if}
 	</div>
@@ -473,8 +467,8 @@
 				This user hasn't confirmed their email. Marking it verified unblocks content
 				mutations and invites for their account.
 			</p>
-			<button class="btn" type="button" disabled={verifySaving} onclick={verifyEmail}
-				>{verifySaving ? 'Verifying…' : 'Mark email verified'}</button
+			<Button variant="secondary" disabled={verifySaving} onclick={verifyEmail}
+				>{verifySaving ? 'Verifying…' : 'Mark email verified'}</Button
 			>
 		</div>
 	{/if}
@@ -525,8 +519,8 @@
 	</div>
 
 	<div class="save-row">
-		<button class="btn btn-primary" type="button" disabled={saving} onclick={saveUser}
-			>{saving ? 'Saving…' : 'Save plan + overrides'}</button
+		<Button variant="primary" disabled={saving} onclick={saveUser}
+			>{saving ? 'Saving…' : 'Save plan + overrides'}</Button
 		>
 		{#if saveMsg}<span class="msg" class:ok={saveMsg === 'Saved'}>{saveMsg}</span>{/if}
 	</div>
@@ -584,46 +578,6 @@
 	.role-confirm-msg {
 		font-size: 0.85rem;
 		color: var(--text-muted);
-	}
-	.btn {
-		padding: 6px 12px;
-		border-radius: var(--radius-sm);
-		border: 1px solid var(--border);
-		background: var(--bg-secondary);
-		color: var(--text-primary);
-		cursor: pointer;
-		font-size: 0.85rem;
-	}
-	.btn:hover {
-		background: var(--bg-tertiary);
-	}
-	.btn:focus-visible {
-		outline: 2px solid var(--accent-blue);
-		outline-offset: 2px;
-	}
-	.btn[disabled] {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.btn-primary {
-		background: var(--accent-blue);
-		color: white;
-		border-color: var(--accent-blue);
-	}
-	.btn-primary:hover {
-		filter: brightness(1.1);
-	}
-	.btn-danger {
-		color: var(--accent-red);
-		border-color: color-mix(in srgb, var(--accent-red) 50%, transparent);
-	}
-	.btn-danger:hover {
-		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
-	}
-	.btn-sub {
-		background: transparent;
-		color: var(--text-muted);
-		border: 1px dashed var(--border);
 	}
 	select,
 	input[type='text'] {

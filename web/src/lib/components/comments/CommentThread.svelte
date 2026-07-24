@@ -4,6 +4,7 @@
 	import { sseService } from '$lib/services/sse.svelte';
 	import { relativeTime, renderMarkdown } from '$lib/utils/markdown';
 	import type { Comment, Item } from '$lib/types';
+	import Button from '$lib/components/common/Button.svelte';
 
 	interface Props {
 		wsSlug: string;
@@ -168,13 +169,13 @@
 		></textarea>
 		<div class="compose-actions">
 			<span class="hint">Ctrl+Enter to submit</span>
-			<button
-				class="submit-btn"
+			<Button
+				variant="primary"
 				type="submit"
 				disabled={submitting || !newBody.trim()}
 			>
 				{submitting ? 'Posting...' : 'Comment'}
-			</button>
+			</Button>
 		</div>
 	</form>
 </div>
@@ -434,23 +435,4 @@
 		color: var(--text-muted);
 	}
 
-	.submit-btn {
-		padding: var(--space-1) var(--space-4);
-		background: var(--accent-blue);
-		border: none;
-		border-radius: var(--radius);
-		color: #fff;
-		font-size: 0.85em;
-		font-weight: 500;
-		cursor: pointer;
-	}
-
-	.submit-btn:hover:not(:disabled) {
-		filter: brightness(1.1);
-	}
-
-	.submit-btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
 </style>

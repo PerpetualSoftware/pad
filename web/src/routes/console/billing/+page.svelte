@@ -2,6 +2,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import Button from '$lib/components/common/Button.svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { onMount, onDestroy } from 'svelte';
@@ -283,13 +284,15 @@
 			{#if isPro}
 				<a href="/billing/portal" class="secondary-btn">Manage Billing</a>
 			{:else if stripeAvailable}
-				<button
-					class="primary-btn"
-					onclick={startCheckout}
-					disabled={checkoutInProgress}
-				>
-					{checkoutInProgress ? 'Redirecting…' : 'Upgrade to Pro'}
-				</button>
+				<div class="cta-line">
+					<Button
+						variant="primary"
+						onclick={startCheckout}
+						disabled={checkoutInProgress}
+					>
+						{checkoutInProgress ? 'Redirecting…' : 'Upgrade to Pro'}
+					</Button>
+				</div>
 			{/if}
 		</div>
 	</section>
@@ -328,13 +331,13 @@
 			{#if !isPro}
 				{#if stripeAvailable}
 					<div class="compare-cta">
-						<button
-							class="primary-btn"
+						<Button
+							variant="primary"
 							onclick={startCheckout}
 							disabled={checkoutInProgress}
 						>
 							{checkoutInProgress ? 'Redirecting…' : 'Upgrade to Pro'}
-						</button>
+						</Button>
 					</div>
 				{:else}
 					<div class="compare-cta coming-soon">
@@ -426,29 +429,10 @@
 		line-height: 1.4;
 	}
 
-	.primary-btn {
-		display: inline-block;
+	/* Layout-only wrapper: keeps the checkout CTA at natural width inside
+	   the card-body flex column (the old .primary-btn carried align-self). */
+	.cta-line {
 		align-self: flex-start;
-		padding: var(--space-2) var(--space-5);
-		background: var(--accent-blue);
-		color: #fff;
-		border: none;
-		border-radius: var(--radius);
-		font-size: 0.9rem;
-		font-weight: 500;
-		text-decoration: none;
-		cursor: pointer;
-		transition: opacity 0.15s;
-	}
-
-	.primary-btn:hover:not(:disabled) {
-		opacity: 0.9;
-		text-decoration: none;
-	}
-
-	.primary-btn:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
 	}
 
 	.secondary-btn {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { Collection } from '$lib/types';
+	import Button from '$lib/components/common/Button.svelte';
 
 	interface Props {
 		collection: Collection;
@@ -49,9 +50,11 @@
 	<div class="empty-icon">{collection.icon || ''}</div>
 	<p class="empty-message">{message}</p>
 	{#if oncreate}
-		<button class="create-btn" onclick={oncreate}>
-			+ Create {singularName[0].toUpperCase() + singularName.slice(1)}
-		</button>
+		<div class="create-btn-wrap">
+			<Button variant="primary" onclick={oncreate}>
+				+ Create {singularName[0].toUpperCase() + singularName.slice(1)}
+			</Button>
+		</div>
 	{/if}
 	<div class="agent-hint">
 		<span class="hint-text">Or try: <code>{agentPrompt}</code></span>
@@ -87,21 +90,9 @@
 		line-height: 1.5;
 	}
 
-	.create-btn {
-		background: var(--accent-blue);
-		color: #fff;
-		border: none;
-		padding: var(--space-2) var(--space-5);
-		border-radius: var(--radius);
-		font-size: 0.9em;
-		font-weight: 600;
-		cursor: pointer;
-		transition: opacity 0.1s;
+	/* Layout-only wrapper — the button itself is the shared <Button> primitive. */
+	.create-btn-wrap {
 		margin-bottom: var(--space-5);
-	}
-
-	.create-btn:hover {
-		opacity: 0.85;
 	}
 
 	.agent-hint {

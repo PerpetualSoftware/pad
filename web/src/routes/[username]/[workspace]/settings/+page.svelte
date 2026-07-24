@@ -11,6 +11,7 @@
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import StorageTab from '$lib/components/settings/StorageTab.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import Button from '$lib/components/common/Button.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -510,9 +511,9 @@
 								onkeydown={(e) => isOwner && e.key === 'Enter' && saveName()}
 							/>
 							{#if isOwner}
-								<button class="btn btn-small" onclick={saveName} disabled={savingName}>
+								<Button variant="secondary" size="sm" onclick={saveName} disabled={savingName}>
 									{savingName ? 'Saving...' : 'Save'}
-								</button>
+								</Button>
 								{#if nameStatus === 'saved'}
 									<span class="status-saved">Saved</span>
 								{:else if nameStatus === 'error'}
@@ -587,15 +588,15 @@
 					{/if}
 					{#if isOwner}
 						<div class="context-actions">
-							<button class="btn btn-primary" onclick={saveContext} disabled={savingContext}>
+							<Button variant="primary" onclick={saveContext} disabled={savingContext}>
 								{savingContext ? 'Saving...' : 'Save Context'}
-							</button>
-							<button class="btn" onclick={resetContextEditor} disabled={savingContext}>
+							</Button>
+							<Button variant="secondary" onclick={resetContextEditor} disabled={savingContext}>
 								Reset
-							</button>
-							<button class="btn" onclick={clearContextEditor} disabled={savingContext}>
+							</Button>
+							<Button variant="secondary" onclick={clearContextEditor} disabled={savingContext}>
 								Clear
-							</button>
+							</Button>
 							{#if contextStatus === 'saved'}
 								<span class="status-saved">Saved</span>
 							{:else if contextStatus === 'error' && !contextError}
@@ -644,9 +645,9 @@
 												<option value="editor">Editor</option>
 												<option value="viewer">Viewer</option>
 											</select>
-											<button class="btn btn-small btn-remove" onclick={() => handleRemoveMember(member.user_id, member.user_name)}>
+											<Button variant="danger" size="sm" onclick={() => handleRemoveMember(member.user_id, member.user_name)}>
 												Remove
-											</button>
+											</Button>
 										{:else}
 											<Chip color="var(--accent-gray)">{member.role}</Chip>
 										{/if}
@@ -693,12 +694,12 @@
 												</div>
 											{/if}
 											<div class="access-actions">
-												<button class="btn btn-primary btn-small" onclick={saveCollectionAccess} disabled={accessSaving}>
+												<Button variant="primary" size="sm" onclick={saveCollectionAccess} disabled={accessSaving}>
 													{accessSaving ? 'Saving...' : 'Save'}
-												</button>
-												<button class="btn btn-small" onclick={() => { expandedAccessUserId = null; }}>
+												</Button>
+												<Button variant="secondary" size="sm" onclick={() => { expandedAccessUserId = null; }}>
 													Cancel
-												</button>
+												</Button>
 											</div>
 										{/if}
 									</div>
@@ -723,9 +724,9 @@
 									<span class="inv-sent-label">Sent via email</span>
 								{/if}
 								{#if isOwner}
-									<button class="btn btn-small btn-remove" onclick={() => handleCancelInvitation(inv.id, inv.email)}>
+									<Button variant="danger" size="sm" onclick={() => handleCancelInvitation(inv.id, inv.email)}>
 										Cancel
-									</button>
+									</Button>
 								{/if}
 							</div>
 						{/each}
@@ -748,9 +749,9 @@
 								<option value="viewer">Viewer</option>
 								<option value="owner">Owner</option>
 							</select>
-							<button class="btn btn-primary btn-small" onclick={handleInvite} disabled={inviting || !inviteEmail.trim()}>
+							<Button variant="primary" size="sm" onclick={handleInvite} disabled={inviting || !inviteEmail.trim()}>
 								{inviting ? 'Inviting...' : 'Invite'}
-							</button>
+							</Button>
 						</div>
 						{#if inviteResult}
 							<p class="invite-result" class:invite-success={inviteResult.type === 'success'} class:invite-error={inviteResult.type === 'error'}>
@@ -844,9 +845,9 @@
 								<strong>Delete this workspace</strong>
 								<p>This immediately hides the workspace and everything in it — collections, items, documents, and attachments — and permanently deletes it 30 days later. You can restore it any time within those 30 days — from the Undo prompt right after deleting, the workspace switcher's Recently deleted section, or the Deleted workspaces page.</p>
 							</div>
-							<button class="btn btn-danger" onclick={() => confirmDelete = true}>
+							<Button variant="danger" onclick={() => confirmDelete = true}>
 								Delete workspace
-							</button>
+							</Button>
 						</div>
 					{:else}
 						<div class="danger-confirm">
@@ -862,10 +863,10 @@
 								/>
 							</div>
 							<div class="danger-actions">
-								<button class="btn btn-danger" onclick={handleDeleteWorkspace} disabled={deleteInput !== wsSlug || deleting}>
+								<Button variant="danger" onclick={handleDeleteWorkspace} disabled={deleteInput !== wsSlug || deleting}>
 									{deleting ? 'Deleting...' : 'Delete this workspace'}
-								</button>
-								<button class="btn" onclick={() => { confirmDelete = false; deleteInput = ''; }}>Cancel</button>
+								</Button>
+								<Button variant="secondary" onclick={() => { confirmDelete = false; deleteInput = ''; }}>Cancel</Button>
 							</div>
 						</div>
 					{/if}
@@ -929,12 +930,12 @@
 	.inline-edit input { flex: 1; min-width: 120px; max-width: 300px; }
 	.status-saved { font-size: 0.8em; color: var(--accent-green); }
 	.status-error { font-size: 0.8em; color: var(--accent-orange); }
+	/* .btn/.btn-small retained for the remaining non-migrated controls: the
+	   export <a> (Button renders <button> only), .btn-access (stateful
+	   toggle), .copy-link-btn (accent-outline), and .btn-create (dashed). */
 	.btn { padding: var(--space-2) var(--space-4); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.85em; cursor: pointer; color: var(--text-primary); }
 	.btn:hover { background: var(--bg-hover); }
-	.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 	.btn-small { padding: var(--space-1) var(--space-3); font-size: 0.8em; }
-	.btn-primary { background: var(--accent-blue); border-color: var(--accent-blue); color: #fff; }
-	.btn-primary:hover { opacity: 0.9; }
 	.btn-create { margin-top: var(--space-3); width: 100%; padding: var(--space-3); background: var(--bg-secondary); border: 1px dashed var(--border); border-radius: var(--radius); color: var(--text-secondary); font-size: 0.85em; cursor: pointer; }
 	.btn-create:hover { border-color: var(--accent-blue); color: var(--accent-blue); }
 	.coll-list { display: flex; flex-direction: column; gap: var(--space-3); }
@@ -976,8 +977,6 @@
 	.member-email { font-size: 0.8em; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 	.member-actions { display: flex; align-items: center; gap: var(--space-2); flex-shrink: 0; }
 	.role-select { background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-1) var(--space-2); font-size: 0.8em; color: var(--text-primary); cursor: pointer; }
-	.btn-remove { color: var(--accent-red); border-color: transparent; background: none; }
-	.btn-remove:hover { background: color-mix(in srgb, var(--accent-red) 15%, transparent); }
 	/* ── Collection Access ──── */
 	.member-card-wrapper { display: flex; flex-direction: column; }
 	.member-card-wrapper + .member-card-wrapper { margin-top: var(--space-3); }
@@ -1021,9 +1020,6 @@
 	.danger-info { flex: 1; }
 	.danger-info strong { font-size: 0.9em; }
 	.danger-info p { font-size: 0.8em; color: var(--text-muted); margin: var(--space-1) 0 0; }
-	.btn-danger { padding: var(--space-2) var(--space-4); background: none; border: 1px solid var(--accent-red); border-radius: var(--radius); color: var(--accent-red); font-size: 0.85em; cursor: pointer; white-space: nowrap; font-weight: 500; }
-	.btn-danger:hover:not(:disabled) { background: var(--accent-red); color: #fff; }
-	.btn-danger:disabled { opacity: 0.4; cursor: not-allowed; }
 	.danger-confirm { display: flex; flex-direction: column; gap: var(--space-3); }
 	.danger-warning { font-size: 0.88em; color: var(--text-primary); margin: 0; }
 	.danger-warning strong { color: var(--accent-red); }

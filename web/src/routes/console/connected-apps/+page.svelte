@@ -3,6 +3,7 @@
 	import { api } from '$lib/api/client';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import Button from '$lib/components/common/Button.svelte';
 	import type { ConnectedApp, Workspace } from '$lib/types';
 
 	// Connected Apps page (TASK-954). Lists every active OAuth grant
@@ -280,7 +281,7 @@
 	{:else if error}
 		<div class="error-msg">
 			<p>{error}</p>
-			<button class="btn" onclick={loadApps}>Retry</button>
+			<Button variant="secondary" onclick={loadApps}>Retry</Button>
 		</div>
 	{:else if apps.length === 0}
 		<div class="empty-state">
@@ -407,14 +408,14 @@
 					</div>
 
 					<div class="app-actions">
-						<button
-							class="btn"
+						<Button
+							variant="secondary"
 							onclick={() => (editingId === app.id ? closeEdit() : openEdit(app))}
 							aria-expanded={editingId === app.id}
 						>
 							{editingId === app.id ? 'Done' : 'Edit'}
-						</button>
-						<button class="btn btn-danger" onclick={() => openConfirm(app)}>Revoke</button>
+						</Button>
+						<Button variant="danger" onclick={() => openConfirm(app)}>Revoke</Button>
 					</div>
 
 					{#if editingId === app.id}
@@ -438,14 +439,14 @@
 										bind:value={nameDrafts[app.id]}
 										disabled={!!savingFlag[app.id]}
 									/>
-									<button
-										class="btn"
+									<Button
+										variant="secondary"
 										onclick={() => saveName(app)}
 										disabled={!!savingFlag[app.id] ||
 											(nameDrafts[app.id] ?? '').trim() === (app.name ?? '')}
 									>
 										Save
-									</button>
+									</Button>
 								</div>
 								{#if !(app.name ?? '')}
 									<p class="edit-hint">
@@ -558,13 +559,13 @@
 											<option value={ws.slug}>{ws.name}</option>
 										{/each}
 									</select>
-									<button
-										class="btn"
+									<Button
+										variant="secondary"
 										onclick={() => addWorkspaceToApp(app)}
 										disabled={!!savingFlag[app.id] || !addPickerSlug[app.id]}
 									>
 										Add
-									</button>
+									</Button>
 								</div>
 								{#if workspacesError}
 									<p class="edit-hint edit-hint-error">{workspacesError}</p>
@@ -598,10 +599,10 @@
 				<p class="modal-error">{revokeError}</p>
 			{/if}
 			<div class="modal-actions">
-				<button class="btn" onclick={closeConfirm} disabled={revoking}>Cancel</button>
-				<button class="btn btn-danger" onclick={confirmRevoke} disabled={revoking}>
+				<Button variant="secondary" onclick={closeConfirm} disabled={revoking}>Cancel</Button>
+				<Button variant="danger" onclick={confirmRevoke} disabled={revoking}>
 					{revoking ? 'Revoking…' : 'Revoke'}
-				</button>
+				</Button>
 			</div>
 		</div>
 	{/if}
@@ -868,38 +869,6 @@
 		flex-shrink: 0;
 	}
 
-	/* Buttons */
-	.btn {
-		padding: var(--space-2) var(--space-4);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		color: var(--text-primary);
-		font-size: 0.85rem;
-		font-weight: 500;
-		cursor: pointer;
-		transition: background 0.15s, color 0.15s, border-color 0.15s;
-	}
-
-	.btn:hover:not(:disabled) {
-		background: var(--bg-tertiary);
-	}
-
-	.btn:disabled {
-		opacity: 0.5;
-		cursor: default;
-	}
-
-	.btn-danger {
-		color: var(--accent-red);
-		border-color: rgba(239, 68, 68, 0.4);
-	}
-
-	.btn-danger:hover:not(:disabled) {
-		background: rgba(239, 68, 68, 0.1);
-		border-color: var(--accent-red);
-	}
-
 	/* Modal — surface/backdrop/Escape come from the shared <Modal> primitive
 	   (TASK-2083); this wrapper just restores the inner padding + column layout. */
 	.revoke-modal {
@@ -948,7 +917,9 @@
 			align-self: stretch;
 		}
 
-		.app-actions .btn {
+		/* Layout-only: stretch the shared <Button>s full-width on mobile.
+		   :global because the button element lives inside the Button component. */
+		.app-actions :global(button) {
 			width: 100%;
 		}
 	}

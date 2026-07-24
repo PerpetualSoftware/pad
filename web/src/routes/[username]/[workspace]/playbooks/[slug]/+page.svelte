@@ -7,6 +7,7 @@
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact } from '$lib/utils/artifacts';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
+	import Button from '$lib/components/common/Button.svelte';
 	import {
 		argumentsFromJSON,
 		argumentsToJSON,
@@ -261,24 +262,22 @@
 				/>
 			</div>
 			<div class="header-actions">
-				<button type="button" class="btn btn-secondary" onclick={cancel}>Cancel</button>
-				<button
-					type="button"
-					class="btn btn-secondary"
+				<Button variant="secondary" onclick={cancel}>Cancel</Button>
+				<Button
+					variant="secondary"
 					disabled={exporting}
 					onclick={handleExport}
 					title="Download this playbook as a .pad.md artifact"
 				>
 					{exporting ? 'Exporting…' : 'Export'}
-				</button>
-				<button
-					type="button"
-					class="btn btn-primary"
+				</Button>
+				<Button
+					variant="primary"
 					disabled={saving || !title.trim()}
 					onclick={save}
 				>
 					{saving ? 'Saving…' : 'Save'}
-				</button>
+				</Button>
 			</div>
 		</header>
 
@@ -376,35 +375,6 @@
 		gap: var(--space-2);
 		flex-shrink: 0;
 	}
-	.btn {
-		padding: var(--space-2) var(--space-5);
-		border-radius: var(--radius);
-		font-size: 0.85em;
-		font-weight: 600;
-		cursor: pointer;
-		border: none;
-		transition: opacity 0.15s;
-	}
-	.btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
-	}
-	.btn:hover:not(:disabled) {
-		opacity: 0.85;
-	}
-	.btn-primary {
-		background: var(--accent-blue);
-		color: #fff;
-	}
-	.btn-secondary {
-		background: transparent;
-		color: var(--text-secondary);
-		border: 1px solid var(--border);
-	}
-	.btn-secondary:hover:not(:disabled) {
-		color: var(--text-primary);
-		opacity: 1;
-	}
 	.edit-grid {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
@@ -462,7 +432,9 @@
 		.header-actions {
 			align-self: stretch;
 		}
-		.header-actions .btn {
+		/* Equal-width header buttons on mobile — the shared Button primitive's
+		   root carries the .btn class, so :global reaches into it. */
+		.header-actions :global(.btn) {
 			flex: 1;
 		}
 	}

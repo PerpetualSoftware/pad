@@ -5,6 +5,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { exportAndDownloadAccountData } from '$lib/utils/artifacts';
+	import Button from '$lib/components/common/Button.svelte';
 	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse } from '$lib/types';
 
 	// Profile
@@ -511,9 +512,11 @@
 				{#if profileMsg}
 					<p class="success">{profileMsg}</p>
 				{/if}
-				<button class="primary-btn" onclick={saveProfile} disabled={profileSaving}>
-					{profileSaving ? 'Saving...' : 'Save Changes'}
-				</button>
+				<div class="btn-row">
+					<Button variant="primary" onclick={saveProfile} disabled={profileSaving}>
+						{profileSaving ? 'Saving...' : 'Save Changes'}
+					</Button>
+				</div>
 			</div>
 		</section>
 
@@ -539,9 +542,11 @@
 				{#if passwordMsg}
 					<p class="success">{passwordMsg}</p>
 				{/if}
-				<button class="primary-btn" onclick={changePassword} disabled={passwordSaving}>
-					{passwordSaving ? 'Changing...' : 'Change Password'}
-				</button>
+				<div class="btn-row">
+					<Button variant="primary" onclick={changePassword} disabled={passwordSaving}>
+						{passwordSaving ? 'Changing...' : 'Change Password'}
+					</Button>
+				</div>
 			</div>
 		</section>
 
@@ -576,23 +581,27 @@
 										<p class="error">{totpError}</p>
 									{/if}
 									<div class="btn-row">
-										<button class="danger-btn" onclick={disableTOTP} disabled={totpSaving}>
+										<Button variant="danger" onclick={disableTOTP} disabled={totpSaving}>
 											{totpSaving ? 'Disabling...' : 'Confirm Disable'}
-										</button>
-										<button class="secondary-btn" onclick={() => { showDisableConfirm = false; disablePassword = ''; totpError = ''; }} disabled={totpSaving}>
+										</Button>
+										<Button variant="secondary" onclick={() => { showDisableConfirm = false; disablePassword = ''; totpError = ''; }} disabled={totpSaving}>
 											Cancel
-										</button>
+										</Button>
 									</div>
 								</div>
 							{:else}
-								<button class="danger-btn" onclick={() => { showDisableConfirm = true; totpError = ''; totpMsg = ''; }}>
-									Disable 2FA
-								</button>
+								<div class="btn-row">
+									<Button variant="danger" onclick={() => { showDisableConfirm = true; totpError = ''; totpMsg = ''; }}>
+										Disable 2FA
+									</Button>
+								</div>
 							{/if}
 						{:else}
-							<button class="primary-btn" onclick={startTOTPSetup} disabled={totpSaving}>
-								{totpSaving ? 'Setting up...' : 'Enable 2FA'}
-							</button>
+							<div class="btn-row">
+								<Button variant="primary" onclick={startTOTPSetup} disabled={totpSaving}>
+									{totpSaving ? 'Setting up...' : 'Enable 2FA'}
+								</Button>
+							</div>
 						{/if}
 					</div>
 					{#if totpMsg}
@@ -631,10 +640,10 @@
 						<p class="error">{totpError}</p>
 					{/if}
 					<div class="btn-row">
-						<button class="primary-btn" onclick={verifyTOTP} disabled={totpSaving || !totpCode.trim()}>
+						<Button variant="primary" onclick={verifyTOTP} disabled={totpSaving || !totpCode.trim()}>
 							{totpSaving ? 'Verifying...' : 'Verify & Enable'}
-						</button>
-						<button class="secondary-btn" onclick={cancelSetup} disabled={totpSaving}>Cancel</button>
+						</Button>
+						<Button variant="secondary" onclick={cancelSetup} disabled={totpSaving}>Cancel</Button>
 					</div>
 
 				{:else if totpStep === 'recovery'}
@@ -646,13 +655,15 @@
 							{/each}
 						</div>
 						<div class="btn-row">
-							<button class="secondary-btn" onclick={copyRecoveryCodes}>Copy</button>
-							<button class="secondary-btn" onclick={downloadRecoveryCodes}>Download</button>
+							<Button variant="secondary" onclick={copyRecoveryCodes}>Copy</Button>
+							<Button variant="secondary" onclick={downloadRecoveryCodes}>Download</Button>
 						</div>
 						{#if totpMsg}
 							<p class="success">{totpMsg}</p>
 						{/if}
-						<button class="primary-btn" onclick={finishSetup}>Done</button>
+						<div class="btn-row">
+							<Button variant="primary" onclick={finishSetup}>Done</Button>
+						</div>
 					</div>
 				{/if}
 			</div>
@@ -680,7 +691,7 @@
 									{/if}
 								</div>
 								{#if linked}
-									<button class="delete-btn" onclick={() => unlinkProvider(p.id)}>Unlink</button>
+									<Button variant="danger" size="sm" onclick={() => unlinkProvider(p.id)}>Unlink</Button>
 								{:else if p.webLinkable}
 									<a href="/auth/{p.id}/link" data-sveltekit-reload class="primary-btn small">Link {p.name}</a>
 								{/if}
@@ -744,9 +755,9 @@
 						bind:value={newTokenName}
 						disabled={tokenCreating}
 					/>
-					<button class="primary-btn" onclick={createToken} disabled={tokenCreating || !newTokenName.trim()}>
+					<Button variant="primary" onclick={createToken} disabled={tokenCreating || !newTokenName.trim()}>
 						{tokenCreating ? 'Creating...' : 'Create'}
-					</button>
+					</Button>
 				</div>
 
 				{#if tokenError}
@@ -766,7 +777,7 @@
 										{/if}
 									</span>
 								</div>
-								<button class="delete-btn" onclick={() => deleteToken(token.id)}>Delete</button>
+								<Button variant="danger" size="sm" onclick={() => deleteToken(token.id)}>Delete</Button>
 							</div>
 						{/each}
 					</div>
@@ -788,9 +799,9 @@
 							take a moment for large accounts.
 						</p>
 					</div>
-					<button class="danger-btn" onclick={exportData} disabled={exportSaving}>
+					<Button variant="danger" onclick={exportData} disabled={exportSaving}>
 						{exportSaving ? 'Exporting...' : 'Export my data'}
-					</button>
+					</Button>
 				</div>
 				{#if exportMsg}
 					<p class="success" role="status" aria-live="polite">{exportMsg}</p>
@@ -810,7 +821,7 @@
 						</p>
 					</div>
 					{#if !showDeleteConfirm}
-						<button class="danger-btn" onclick={revealDeleteConfirm}>Delete my account</button>
+						<Button variant="danger" onclick={revealDeleteConfirm}>Delete my account</Button>
 					{/if}
 				</div>
 
@@ -889,10 +900,10 @@
 						{/if}
 
 						<div class="btn-row">
-							<button class="danger-btn" onclick={deleteAccount} disabled={deleteSaving}>
+							<Button variant="danger" onclick={deleteAccount} disabled={deleteSaving}>
 								{deleteSaving ? 'Deleting...' : 'Permanently delete my account'}
-							</button>
-							<button class="secondary-btn" onclick={cancelDelete} disabled={deleteSaving}>Cancel</button>
+							</Button>
+							<Button variant="secondary" onclick={cancelDelete} disabled={deleteSaving}>Cancel</Button>
 						</div>
 					</div>
 				{/if}
@@ -1120,23 +1131,6 @@
 		color: var(--text-muted);
 	}
 
-	.delete-btn {
-		padding: var(--space-1) var(--space-3);
-		background: transparent;
-		border: 1px solid var(--border);
-		border-radius: var(--radius-sm);
-		color: var(--text-muted);
-		font-size: 0.75rem;
-		cursor: pointer;
-		flex-shrink: 0;
-		transition: color 0.15s, border-color 0.15s;
-	}
-
-	.delete-btn:hover {
-		color: var(--accent-red);
-		border-color: var(--accent-red);
-	}
-
 	.empty-text {
 		color: var(--text-muted);
 		font-size: 0.85rem;
@@ -1289,29 +1283,6 @@
 
 	.secondary-btn:hover:not(:disabled) {
 		background: var(--bg-hover);
-	}
-
-	.danger-btn {
-		align-self: flex-start;
-		padding: var(--space-2) var(--space-4);
-		background: transparent;
-		border: 1px solid var(--accent-red);
-		border-radius: var(--radius);
-		color: var(--accent-red);
-		font-size: 0.85rem;
-		font-weight: 500;
-		font-family: var(--font-ui);
-		cursor: pointer;
-		transition: background 0.15s;
-	}
-
-	.danger-btn:hover:not(:disabled) {
-		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
-	}
-
-	.danger-btn:disabled {
-		opacity: 0.6;
-		cursor: not-allowed;
 	}
 
 	.disable-confirm {
