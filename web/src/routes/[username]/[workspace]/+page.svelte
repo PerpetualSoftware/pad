@@ -2,6 +2,7 @@
 	import { page } from '$app/state';
 	import { onMount, onDestroy, untrack } from 'svelte';
 	import { browser } from '$app/environment';
+	import { statusColor, priorityColor } from '$lib/utils/fieldColors';
 	import { api, PadApiError } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -259,26 +260,9 @@
 	// web-only escape hatch on the skipped-onboarding board (TASK-1856).
 	let hasUserCollections = $derived(collections.some(c => !c.is_system));
 
-	function statusColor(status: string): string {
-		const s = status.toLowerCase().replace(/-/g, '_');
-		if (['done', 'completed', 'fixed', 'implemented', 'resolved'].includes(s)) return 'var(--accent-green)';
-		if (['in_progress', 'exploring', 'fixing', 'confirmed', 'in_review'].includes(s)) return 'var(--accent-amber)';
-		if (['open', 'new', 'draft', 'todo', 'planned'].includes(s)) return 'var(--status-blue)';
-		if (['cancelled', 'rejected', 'wontfix'].includes(s)) return 'var(--accent-gray)';
-		if (s === 'active') return 'var(--accent-cyan)';
-		if (['archived', 'disabled', 'deprecated'].includes(s)) return 'var(--text-muted)';
-		return 'var(--text-secondary)';
-	}
+	// statusColor imported from $lib/utils/fieldColors (canonical palette).
 
-	function priorityColor(priority: string): string {
-		switch (priority?.toLowerCase()) {
-			case 'critical': return 'var(--accent-orange)';
-			case 'high': return 'var(--accent-amber)';
-			case 'medium': return 'var(--text-secondary)';
-			case 'low': return 'var(--text-muted)';
-			default: return 'var(--text-muted)';
-		}
-	}
+	// priorityColor imported from $lib/utils/fieldColors (canonical palette).
 
 	function collProgress(coll: Collection): { total: number; done: number; pct: number } {
 		const breakdown = dashboard?.summary.by_collection[coll.name] ?? dashboard?.summary.by_collection[coll.slug] ?? {};

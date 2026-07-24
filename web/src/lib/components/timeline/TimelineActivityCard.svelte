@@ -2,6 +2,7 @@
 	import type { Activity } from '$lib/types';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { parseFieldChanges } from '$lib/utils/activityChanges';
+	import Chip from '$lib/components/common/Chip.svelte';
 
 	let { activity }: { activity: Activity } = $props();
 
@@ -35,10 +36,6 @@
 		return '';
 	}
 
-	function getActorBadgeClass(actor: string): string {
-		return actor === 'agent' ? 'actor-agent' : 'actor-user';
-	}
-
 	function getActorLabel(a: Activity): string {
 		return a.actor === 'agent' ? 'Agent' : 'User';
 	}
@@ -55,7 +52,11 @@
 
 <div class="card">
 	<div class="row">
-		<span class="badge {getActorBadgeClass(activity.actor)}">{getActorLabel(activity)}</span>
+		<Chip
+			size="sm"
+			color={activity.actor === 'agent' ? 'var(--accent-purple)' : 'var(--status-blue)'}
+			>{getActorLabel(activity)}</Chip
+		>
 		{#if activity.actor_name}
 			<span class="actor-name">{activity.actor_name}</span>
 		{/if}
@@ -65,7 +66,7 @@
 				{metadata.from_collection} &rarr; {metadata.to_collection}
 			</span>
 		{/if}
-		<span class="badge source-badge">{getSourceLabel(activity.source)}</span>
+		<Chip size="sm">{getSourceLabel(activity.source)}</Chip>
 		<span class="spacer"></span>
 		<span class="timestamp" title={new Date(activity.created_at).toLocaleString()}>{relativeTime(activity.created_at)}</span>
 	</div>
@@ -102,27 +103,6 @@
 		min-width: 0;
 	}
 
-	.badge {
-		display: inline-flex;
-		align-items: center;
-		padding: 0 var(--space-2);
-		border-radius: var(--radius-sm);
-		font-size: 0.75em;
-		font-weight: 600;
-		line-height: 1.75;
-		white-space: nowrap;
-	}
-
-	.actor-agent {
-		background: color-mix(in srgb, var(--accent-purple) 15%, transparent);
-		color: var(--accent-purple);
-	}
-
-	.actor-user {
-		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		color: var(--accent-blue);
-	}
-
 	.actor-name {
 		font-size: 0.85em;
 		color: var(--text-primary);
@@ -146,11 +126,6 @@
 
 	.move-detail {
 		font-size: 0.8em;
-		color: var(--text-muted);
-	}
-
-	.source-badge {
-		background: var(--bg-tertiary);
 		color: var(--text-muted);
 	}
 

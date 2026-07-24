@@ -6,6 +6,8 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { exportAndDownloadArtifact, importArtifactFile } from '$lib/utils/artifacts';
+	import { statusColor } from '$lib/utils/fieldColors';
+	import Chip from '$lib/components/common/Chip.svelte';
 	import PlaybookFormFields from '$lib/components/playbooks/PlaybookFormFields.svelte';
 	import {
 		PLAYBOOK_SKELETON_BODY,
@@ -504,12 +506,12 @@
 						<button class="card-header" onclick={() => toggleExpand(item.id)} aria-expanded={isExpanded}>
 							<div class="card-title-row">
 								<span class="card-title" class:deprecated-title={status === 'deprecated'}>{item.title}</span>
-								<span class="status-badge status-{status}">{statusLabel(status)}</span>
+								<Chip size="sm" color={statusColor(status)}>{statusLabel(status)}</Chip>
 							</div>
 							<div class="card-meta">
-								<span class="badge badge-trigger">{trigger}</span>
+								<Chip size="sm" color="var(--status-blue)">{trigger}</Chip>
 								<span class="meta-sep">&middot;</span>
-								<span class="badge badge-scope">{scope}</span>
+								<Chip size="sm" color="var(--accent-purple)">{scope}</Chip>
 								{#if steps > 0}
 									<span class="meta-sep">&middot;</span>
 									<span class="step-count">{steps} step{steps !== 1 ? 's' : ''}</span>
@@ -596,14 +598,7 @@
 	.card-title-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 	.card-title { font-size: 1.05em; font-weight: 600; }
 	.deprecated-title { text-decoration: line-through; color: var(--text-muted); }
-	.status-badge { font-size: 0.7em; padding: 2px 10px; border-radius: 10px; font-weight: 600; white-space: nowrap; text-transform: uppercase; letter-spacing: 0.03em; }
-	.status-active { background: color-mix(in srgb, var(--accent-green) 20%, transparent); color: var(--accent-green); }
-	.status-draft { background: color-mix(in srgb, var(--accent-gray) 20%, transparent); color: var(--accent-gray); }
-	.status-deprecated { background: color-mix(in srgb, var(--accent-orange) 20%, transparent); color: var(--accent-orange); }
 	.card-meta { display: flex; align-items: center; gap: var(--space-2); font-size: 0.85em; color: var(--text-secondary); }
-	.badge { font-size: 0.8em; padding: 1px 8px; border-radius: 10px; font-weight: 600; white-space: nowrap; }
-	.badge-trigger { background: color-mix(in srgb, var(--accent-blue) 20%, transparent); color: var(--accent-blue); }
-	.badge-scope { background: color-mix(in srgb, var(--accent-purple) 20%, transparent); color: var(--accent-purple); }
 	.meta-sep { color: var(--text-muted); }
 	.step-count { color: var(--text-muted); font-size: 0.9em; }
 	.chevron { margin-left: auto; font-size: 0.65em; color: var(--text-muted); transition: transform 0.2s; }
@@ -629,10 +624,9 @@
 	.new-form h2 { font-size: 1.1em; margin-bottom: var(--space-4); }
 	.form-fields { display: flex; flex-direction: column; gap: var(--space-4); }
 	.form-row { display: flex; flex-direction: column; gap: var(--space-1); }
-	.form-row-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-4); }
 	.form-label { font-size: 0.8em; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; }
-	.form-input, .form-select { padding: var(--space-2) var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-size: 0.95em; }
-	.form-input:focus, .form-select:focus, .form-textarea:focus { border-color: var(--accent-blue); outline: none; }
+	.form-input { padding: var(--space-2) var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-size: 0.95em; }
+	.form-input:focus, .form-textarea:focus { border-color: var(--accent-blue); outline: none; }
 	.form-textarea { padding: var(--space-3); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); font-family: var(--font-mono); font-size: 0.9em; line-height: 1.6; min-height: 200px; resize: vertical; }
 	.form-actions { display: flex; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-4); }
 	.btn { padding: var(--space-2) var(--space-5); border-radius: var(--radius); font-size: 0.85em; font-weight: 600; cursor: pointer; border: none; transition: opacity 0.15s; }
@@ -647,7 +641,6 @@
 	}
 	@media (max-width: 768px) {
 		.page-header { flex-direction: column; }
-		.form-row-pair { grid-template-columns: 1fr; }
 		.form-actions { flex-direction: column; }
 		.form-actions .btn { width: 100%; text-align: center; }
 	}

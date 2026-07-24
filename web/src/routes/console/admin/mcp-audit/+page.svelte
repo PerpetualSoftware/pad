@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { adminFetch } from '$lib/stores/admin.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
 
 	// Admin MCP audit log page (PLAN-943 TASK-960).
 	//
@@ -62,11 +63,14 @@
 		});
 	}
 
+	// Chip color for an MCP result status. These are transport results
+	// (ok / denied / error), not item statuses, so they map locally
+	// rather than through fieldColors.statusColor (TASK-2292).
 	function statusColor(status: string): string {
-		if (status === 'ok') return 'success';
-		if (status === 'denied') return 'warning';
-		if (status === 'error') return 'danger';
-		return '';
+		if (status === 'ok') return 'var(--accent-green)';
+		if (status === 'denied') return 'var(--accent-amber)';
+		if (status === 'error') return 'var(--accent-red)';
+		return 'var(--accent-gray)';
 	}
 
 	function shortRef(s: string): string {
@@ -168,15 +172,15 @@
 							<td title={entry.user_id}>{shortRef(entry.user_id)}</td>
 							<td title={entry.connection_id}>{shortRef(entry.connection_id)}</td>
 							<td>
-								<span class="badge {entry.token_kind === 'oauth' ? 'success' : ''}">
+								<Chip size="sm" color={entry.token_kind === 'oauth' ? 'var(--accent-green)' : 'var(--accent-gray)'}>
 									{entry.token_kind}
-								</span>
+								</Chip>
 							</td>
 							<td class="tool-cell">{entry.tool_name}</td>
 							<td>
-								<span class="badge {statusColor(entry.result_status)}">
+								<Chip size="sm" color={statusColor(entry.result_status)}>
 									{entry.result_status}
-								</span>
+								</Chip>
 								{#if entry.error_kind}
 									<span class="error-kind">{entry.error_kind}</span>
 								{/if}
@@ -279,33 +283,6 @@
 		font-variant-numeric: tabular-nums;
 		text-align: right;
 		color: var(--text-secondary);
-	}
-
-	.badge {
-		display: inline-block;
-		padding: 2px 8px;
-		border-radius: 999px;
-		background: var(--bg-tertiary);
-		color: var(--text-secondary);
-		font-size: 0.72rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-
-	.badge.success {
-		background: rgba(34, 197, 94, 0.15);
-		color: #16a34a;
-	}
-
-	.badge.warning {
-		background: rgba(217, 119, 6, 0.15);
-		color: #b45309;
-	}
-
-	.badge.danger {
-		background: rgba(239, 68, 68, 0.15);
-		color: var(--accent-red);
 	}
 
 	.error-kind {

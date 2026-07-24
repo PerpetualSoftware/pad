@@ -8,6 +8,7 @@
 -->
 <script lang="ts">
 	import { adminFetch, type AdminUser } from '$lib/stores/admin.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
 
 	interface Props {
 		user: AdminUser;
@@ -148,7 +149,16 @@
 							</a>
 							<div class="ws-slug">{ws.workspace_slug}</div>
 						</td>
-						<td><span class="badge role-{ws.role}">{ws.role}</span></td>
+						<td>
+							<Chip
+								size="sm"
+								color={ws.role === 'owner'
+									? 'var(--accent-orange)'
+									: ws.role === 'editor'
+										? 'var(--status-blue)'
+										: 'var(--accent-gray)'}>{ws.role}</Chip
+							>
+						</td>
 						<td class="num">{ws.collections_count}</td>
 						<td class="num">{ws.items_open} / {ws.items_total}</td>
 						<td class="num">{ws.members_count}</td>
@@ -215,22 +225,6 @@
 	.ws-slug {
 		font-size: 0.75rem;
 		color: var(--text-muted);
-	}
-	.badge {
-		padding: 2px var(--space-2);
-		border-radius: var(--radius-sm);
-		font-size: 0.75rem;
-		background: color-mix(in srgb, var(--accent-gray, #888) 15%, transparent);
-		color: var(--text-muted);
-		text-transform: lowercase;
-	}
-	.badge.role-owner {
-		background: color-mix(in srgb, var(--accent-orange, #f59e0b) 15%, transparent);
-		color: var(--accent-orange, #f59e0b);
-	}
-	.badge.role-editor {
-		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		color: var(--accent-blue);
 	}
 	.show-all-btn {
 		display: block;

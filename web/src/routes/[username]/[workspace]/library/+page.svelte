@@ -2,6 +2,8 @@
 	import { page } from '$app/state';
 	import { api } from '$lib/api/client';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
+	import { statusColor } from '$lib/utils/fieldColors';
 	import type { LibraryCategory, LibraryConvention, PlaybookCategory, LibraryPlaybook, Item } from '$lib/types';
 
 	let wsSlug = $derived(page.params.workspace ?? '');
@@ -170,20 +172,20 @@
 								<div class="card-body">
 									<h3 class="card-title">{convention.title}</h3>
 									<div class="badges">
-										<span class="badge trigger">{convention.trigger}</span>
-										<span class="badge scope">{conventionSurfaceLabel(convention)}</span>
-										<span class="badge priority" style="background: {priorityColors[convention.enforcement] ?? 'var(--accent-gray)'}">
+										<Chip size="sm" color="var(--status-blue)">{convention.trigger}</Chip>
+										<Chip size="sm" color="var(--accent-purple)">{conventionSurfaceLabel(convention)}</Chip>
+										<Chip size="sm" color={priorityColors[convention.enforcement] ?? 'var(--accent-gray)'}>
 											{convention.enforcement}
-										</span>
+										</Chip>
 										{#if convention.commands?.length}
-											<span class="badge scope">{convention.commands.length} cmd{convention.commands.length > 1 ? 's' : ''}</span>
+											<Chip size="sm" color="var(--accent-purple)">{convention.commands.length} cmd{convention.commands.length > 1 ? 's' : ''}</Chip>
 										{/if}
 									</div>
 									<p class="card-content">{truncate(convention.content, 100)}</p>
 								</div>
 								<div class="card-action">
 									{#if isActive}
-										<span class="active-badge">Active</span>
+										<Chip color={statusColor('active')}>Active</Chip>
 									{:else}
 										<button
 											class="activate-btn"
@@ -229,19 +231,19 @@
 									<h3 class="card-title">{playbook.title}</h3>
 									<div class="badges">
 										{#if playbook.invocation_slug}
-											<span class="badge slug" title={`Run it by saying "run the ${playbook.invocation_slug} playbook" — or the shortcut for your agent: /pad ${playbook.invocation_slug} (Claude Code), $pad ${playbook.invocation_slug} (Codex), pad_playbook action=run ref=${playbook.invocation_slug} (MCP)`}>▶ {playbook.invocation_slug}</span>
+											<Chip size="sm" color="var(--accent-green)" title={`Run it by saying "run the ${playbook.invocation_slug} playbook" — or the shortcut for your agent: /pad ${playbook.invocation_slug} (Claude Code), $pad ${playbook.invocation_slug} (Codex), pad_playbook action=run ref=${playbook.invocation_slug} (MCP)`}><span class="slug-text">▶ {playbook.invocation_slug}</span></Chip>
 										{/if}
-										<span class="badge trigger">{playbook.trigger}</span>
-										<span class="badge scope">{playbook.scope}</span>
+										<Chip size="sm" color="var(--status-blue)">{playbook.trigger}</Chip>
+										<Chip size="sm" color="var(--accent-purple)">{playbook.scope}</Chip>
 										{#if playbook.arguments && playbook.arguments.length > 0}
-											<span class="badge args" title="Accepts {playbook.arguments.length} argument{playbook.arguments.length === 1 ? '' : 's'}">{playbook.arguments.length} arg{playbook.arguments.length === 1 ? '' : 's'}</span>
+											<Chip size="sm" color="var(--accent-amber)" title="Accepts {playbook.arguments.length} argument{playbook.arguments.length === 1 ? '' : 's'}">{playbook.arguments.length} arg{playbook.arguments.length === 1 ? '' : 's'}</Chip>
 										{/if}
 									</div>
 									<p class="card-content card-steps">{previewSteps(playbook.content)}</p>
 								</div>
 								<div class="card-action">
 									{#if isActive}
-										<span class="active-badge">Active</span>
+										<Chip color={statusColor('active')}>Active</Chip>
 									{:else}
 										<button
 											class="activate-btn"
@@ -332,23 +334,8 @@
 	.card-steps { white-space: pre-line; }
 
 	.badges { display: flex; flex-wrap: wrap; gap: var(--space-1); }
-	.badge {
-		font-size: 0.7em;
-		padding: 2px 8px;
-		border-radius: 10px;
-		font-weight: 600;
-		white-space: nowrap;
-	}
-	.badge.trigger { background: color-mix(in srgb, var(--accent-blue) 20%, transparent); color: var(--accent-blue); }
-	.badge.scope { background: color-mix(in srgb, var(--accent-purple) 20%, transparent); color: var(--accent-purple); }
-	.badge.priority { color: #fff; }
 	/* PLAN-1377 invocation surface — slug chip signals "this playbook is callable as /pad <slug>". */
-	.badge.slug {
-		background: color-mix(in srgb, var(--accent-green) 18%, transparent);
-		color: var(--accent-green);
-		font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
-	}
-	.badge.args { background: color-mix(in srgb, var(--accent-amber) 20%, transparent); color: var(--accent-amber); }
+	.slug-text { font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace); }
 
 	.card-action { display: flex; justify-content: flex-end; }
 
@@ -368,15 +355,6 @@
 	}
 	.activate-btn:hover { opacity: 0.9; }
 	.activate-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-
-	.active-badge {
-		padding: var(--space-1) var(--space-4);
-		background: color-mix(in srgb, var(--accent-green) 20%, transparent);
-		color: var(--accent-green);
-		border-radius: var(--radius);
-		font-size: 0.8em;
-		font-weight: 600;
-	}
 
 	.spinner {
 		width: 14px;

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { adminFetch } from '$lib/stores/admin.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
 
 	interface Activity {
 		id: string;
@@ -70,11 +71,13 @@
 		return ACTION_LABELS[action] ?? action.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 	}
 
+	// Chip color for an audit action — success/danger/warning semantics
+	// mapped onto the shared accent tokens (TASK-2292).
 	function actionColor(action: string): string {
-		if (['login', 'register', 'oauth_login'].includes(action)) return 'success';
-		if (['login_failed', 'oauth_login_failed', 'user_disabled', 'account_deleted'].includes(action)) return 'danger';
-		if (['password_reset_by_admin', 'user_enabled', 'plan_changed', 'role_changed', 'settings_changed'].includes(action)) return 'warning';
-		return '';
+		if (['login', 'register', 'oauth_login'].includes(action)) return 'var(--accent-green)';
+		if (['login_failed', 'oauth_login_failed', 'user_disabled', 'account_deleted'].includes(action)) return 'var(--accent-red)';
+		if (['password_reset_by_admin', 'user_enabled', 'plan_changed', 'role_changed', 'settings_changed'].includes(action)) return 'var(--accent-amber)';
+		return 'var(--accent-gray)';
 	}
 
 	function relativeTime(dateStr: string): string {
@@ -275,9 +278,9 @@
 							</td>
 							<td>{displayUser(entry)}</td>
 							<td>
-								<span class="badge {actionColor(entry.action)}">
+								<Chip size="sm" color={actionColor(entry.action)}>
 									{formatAction(entry.action)}
-								</span>
+								</Chip>
 							</td>
 							<td class="details-cell">{formatMetadata(entry.metadata, entry.action)}</td>
 							<td class="ip-cell">{entry.ip_address || '\u2014'}</td>
@@ -383,30 +386,6 @@
 		font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
 		font-size: 0.8rem;
 		white-space: nowrap;
-	}
-
-	/* Badge */
-	.badge {
-		display: inline-block;
-		padding: 2px var(--space-2);
-		border-radius: var(--radius-sm);
-		font-size: 0.75rem;
-		font-weight: 500;
-		background: color-mix(in srgb, var(--accent-gray, #888) 15%, transparent);
-		color: var(--text-muted);
-		white-space: nowrap;
-	}
-	.badge.success {
-		background: color-mix(in srgb, var(--accent-green, #22c55e) 15%, transparent);
-		color: var(--accent-green, #22c55e);
-	}
-	.badge.danger {
-		background: color-mix(in srgb, var(--accent-red) 15%, transparent);
-		color: var(--accent-red);
-	}
-	.badge.warning {
-		background: color-mix(in srgb, #f59e0b 15%, transparent);
-		color: #f59e0b;
 	}
 
 	/* Load more */

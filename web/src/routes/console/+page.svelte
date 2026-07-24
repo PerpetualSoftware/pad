@@ -6,6 +6,7 @@
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
 	import type { Workspace } from '$lib/types';
 
 	let workspaces = $state<Workspace[]>([]);
@@ -113,9 +114,9 @@
 							<div class="card-top">
 								<span class="card-name">{ws.name}</span>
 								{#if ws.is_guest}
-									<span class="badge guest">Guest</span>
+									<Chip size="sm" color="var(--accent-amber)">Guest</Chip>
 								{:else}
-									<span class="badge member">Member</span>
+									<Chip size="sm" color="var(--status-blue)">Member</Chip>
 								{/if}
 							</div>
 							{#if ws.description}
@@ -242,24 +243,6 @@
 		color: var(--text-muted);
 		font-size: 0.8rem;
 		margin-top: var(--space-1);
-	}
-
-	.badge {
-		padding: 2px var(--space-2);
-		border-radius: var(--radius-sm);
-		font-size: 0.75rem;
-		font-weight: 500;
-		flex-shrink: 0;
-	}
-
-	.badge.member {
-		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		color: var(--accent-blue);
-	}
-
-	.badge.guest {
-		background: color-mix(in srgb, var(--accent-amber) 15%, transparent);
-		color: var(--accent-amber);
 	}
 
 	.empty-state {

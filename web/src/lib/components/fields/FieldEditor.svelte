@@ -18,6 +18,7 @@ handlers — onchange is never called.
 	import type { FieldDef } from '$lib/types';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import { statusColor, priorityColor, hasCanonicalStatus, formatFieldLabel as formatLabel } from '$lib/utils/fieldColors';
 
 	interface Props {
 		field: FieldDef;
@@ -61,33 +62,15 @@ handlers — onchange is never called.
 	let triggerEl: HTMLButtonElement | undefined = $state(undefined);
 	let dropdownEl: HTMLDivElement | undefined = $state(undefined);
 
-	const STATUS_COLORS: Record<string, string> = {
-		open: 'var(--status-blue)',
-		new: 'var(--status-blue)',
-		in_progress: 'var(--accent-amber)',
-		active: 'var(--accent-green)',
-		done: 'var(--accent-green)',
-		completed: 'var(--accent-green)',
-		published: 'var(--accent-green)',
-		blocked: 'var(--accent-orange)',
-		rejected: 'var(--accent-orange)',
-		critical: 'var(--accent-orange)',
-		high: 'var(--accent-amber)',
-		medium: 'var(--status-blue)',
-		low: 'var(--text-muted)',
-		draft: 'var(--text-muted)',
-		closed: 'var(--text-muted)',
-		archived: 'var(--text-muted)'
-	};
-
+	/** Canonical palette from $lib/utils/fieldColors; priorities colored too.
+	 *  Returns null for unrecognized values so the color dot is suppressed. */
 	function getStatusColor(val: string): string | null {
-		return STATUS_COLORS[val] ?? null;
-	}
-
-	function formatLabel(val: string): string {
-		return val
-			.replace(/_/g, ' ')
-			.replace(/\b\w/g, (c) => c.toUpperCase());
+		if (hasCanonicalStatus(val)) return statusColor(val);
+		const p = val?.toLowerCase();
+		if (p === 'critical' || p === 'high' || p === 'medium' || p === 'low') {
+			return priorityColor(val);
+		}
+		return null;
 	}
 
 	function toggleDropdown() {

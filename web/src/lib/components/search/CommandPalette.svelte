@@ -2,6 +2,7 @@
 	import { untrack } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
+	import { statusColor } from '$lib/utils/fieldColors';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
@@ -717,15 +718,7 @@
 		return s.replace(/<[^>]*>/g, '');
 	}
 
-	function statusColor(status: string): string {
-		const s = status?.toLowerCase().replace(/-/g, '_');
-		if (['done', 'completed', 'fixed', 'implemented', 'resolved'].includes(s))
-			return 'var(--accent-green)';
-		if (['in_progress', 'exploring', 'fixing'].includes(s)) return 'var(--accent-amber)';
-		if (['open', 'new', 'draft', 'todo', 'planned'].includes(s)) return 'var(--status-blue)';
-		if (s === 'active') return 'var(--accent-cyan)';
-		return 'var(--text-muted)';
-	}
+	// statusColor imported from $lib/utils/fieldColors (canonical palette).
 
 	function priorityDot(priority: string): string {
 		const p = priority?.toLowerCase();

@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import Modal from '$lib/components/common/Modal.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
 	import type { ConnectedApp, Workspace } from '$lib/types';
 
 	// Connected Apps page (TASK-954). Lists every active OAuth grant
@@ -151,10 +152,11 @@
 		unknown: 'Unknown'
 	};
 
-	function tierClass(tier: ConnectedApp['capability_tier']): string {
-		if (tier === 'read_write') return 'tier-blue';
-		if (tier === 'full_access') return 'tier-orange';
-		return 'tier-gray';
+	// Chip color for a capability tier (TASK-2292).
+	function tierColor(tier: ConnectedApp['capability_tier']): string {
+		if (tier === 'read_write') return 'var(--status-blue)';
+		if (tier === 'full_access') return 'var(--accent-orange)';
+		return 'var(--accent-gray)';
 	}
 
 	function relativeTime(dateStr: string | undefined): string {
@@ -311,9 +313,9 @@
 						<div class="app-body">
 							<div class="app-title-row">
 								<h2 class="app-title">{app.client_name}</h2>
-								<span class="badge {tierClass(app.capability_tier)}">
+								<Chip color={tierColor(app.capability_tier)}>
 									{TIER_LABELS[app.capability_tier]}
-								</span>
+								</Chip>
 							</div>
 
 							<div class="chip-row">
@@ -510,7 +512,7 @@
 								<div class="edit-label-row">
 									<span class="edit-label">Workspace allow-list</span>
 									{#if isAll}
-										<span class="edit-badge">Inert while wildcard is on</span>
+										<Chip size="sm" color="var(--accent-gray)">Inert while wildcard is on</Chip>
 									{/if}
 								</div>
 								<div class="ws-chips">
@@ -866,34 +868,6 @@
 		flex-shrink: 0;
 	}
 
-	/* Badges */
-	.badge {
-		display: inline-block;
-		padding: 2px 8px;
-		border-radius: 999px;
-		font-size: 0.72rem;
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		background: var(--bg-tertiary);
-		color: var(--text-secondary);
-	}
-
-	.badge.tier-gray {
-		background: rgba(148, 163, 184, 0.15);
-		color: var(--text-secondary);
-	}
-
-	.badge.tier-blue {
-		background: rgba(59, 130, 246, 0.15);
-		color: var(--accent-blue);
-	}
-
-	.badge.tier-orange {
-		background: rgba(217, 119, 6, 0.15);
-		color: var(--accent-orange, #d97706);
-	}
-
 	/* Buttons */
 	.btn {
 		padding: var(--space-2) var(--space-4);
@@ -1011,15 +985,6 @@
 		align-items: center;
 		gap: 0.5rem;
 		flex-wrap: wrap;
-	}
-
-	.edit-badge {
-		font-size: 0.75rem;
-		padding: 0.15rem 0.5rem;
-		border-radius: 4px;
-		background: var(--bg-muted, #f0f0f0);
-		color: var(--text-tertiary, #666);
-		font-weight: normal;
 	}
 
 	.edit-row {

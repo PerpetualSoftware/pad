@@ -3,6 +3,7 @@
 	import { api } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import DiffView from './DiffView.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 
 	interface Props {
@@ -268,17 +269,18 @@
 									<div class="entry-meta">
 										<span class="entry-time" title={new Date(entry.created_at).toLocaleString()}>{relativeTime(entry.created_at)}</span>
 										<div class="badges">
-											<span class="badge badge-version">Content</span>
-											<span
-												class="badge"
-												class:badge-agent={entry.actor === 'agent'}
-												class:badge-user={entry.actor !== 'agent'}
+											<Chip size="sm" color="var(--status-blue)">Content</Chip>
+											<Chip
+												size="sm"
+												color={entry.actor === 'agent'
+													? 'var(--accent-purple)'
+													: 'var(--status-blue)'}
 											>
 												{actorLabel(entry)}
-											</span>
-											<span class="badge badge-source">
+											</Chip>
+											<Chip size="sm" color="var(--accent-green)">
 												{sourceLabel(entry.source)}
-											</span>
+											</Chip>
 										</div>
 									</div>
 									{#if entry.summary}
@@ -333,16 +335,17 @@
 									<div class="entry-meta">
 										<span class="entry-time" title={new Date(entry.created_at).toLocaleString()}>{relativeTime(entry.created_at)}</span>
 										<div class="badges">
-											<span
-												class="badge"
-												class:badge-agent={entry.actor === 'agent'}
-												class:badge-user={entry.actor !== 'agent'}
+											<Chip
+												size="sm"
+												color={entry.actor === 'agent'
+													? 'var(--accent-purple)'
+													: 'var(--status-blue)'}
 											>
 												{actorLabel(entry)}
-											</span>
-											<span class="badge badge-source">
+											</Chip>
+											<Chip size="sm" color="var(--accent-green)">
 												{sourceLabel(entry.source)}
-											</span>
+											</Chip>
 										</div>
 									</div>
 									<p class="change-summary">{entry.summary}</p>
@@ -543,38 +546,6 @@
 	}
 
 	.badges { display: flex; gap: var(--space-1); }
-
-	.badge {
-		display: inline-flex;
-		align-items: center;
-		padding: 1px var(--space-2);
-		border-radius: 9999px;
-		font-size: 0.7em;
-		font-weight: 500;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		line-height: 1.6;
-	}
-
-	.badge-agent {
-		background: color-mix(in srgb, var(--accent-purple, #a855f7) 15%, transparent);
-		color: var(--accent-purple, #a855f7);
-	}
-
-	.badge-user {
-		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		color: var(--accent-blue);
-	}
-
-	.badge-source {
-		background: color-mix(in srgb, var(--accent-green) 15%, transparent);
-		color: var(--accent-green);
-	}
-
-	.badge-version {
-		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		color: var(--accent-blue);
-	}
 
 	.change-summary {
 		margin: var(--space-1) 0 0 0;

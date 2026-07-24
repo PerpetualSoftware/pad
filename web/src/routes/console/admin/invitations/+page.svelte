@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { adminFetch, adminPost, getCSRFToken, formatDate } from '$lib/stores/admin.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
 
 	interface AdminInvitation {
 		id: string;
@@ -149,9 +150,9 @@
 								<td>{inv.email}</td>
 								<td>{inv.workspace_name}</td>
 								<td>
-									<span class="badge" class:owner={inv.role === 'owner'}>
+									<Chip size="sm" color={inv.role === 'owner' ? 'var(--accent-green)' : 'var(--accent-gray)'}>
 										{inv.role}
-									</span>
+									</Chip>
 								</td>
 								<td>{inv.invited_by_name}</td>
 								<td class="date-cell">{formatDate(inv.created_at)}</td>
@@ -295,20 +296,6 @@
 	}
 	.date-cell {
 		white-space: nowrap;
-	}
-
-	/* Badge */
-	.badge {
-		padding: 2px var(--space-2);
-		border-radius: var(--radius-sm);
-		font-size: 0.75rem;
-		font-weight: 500;
-		background: color-mix(in srgb, var(--accent-gray, #888) 15%, transparent);
-		color: var(--text-muted);
-	}
-	.badge.owner {
-		background: color-mix(in srgb, var(--accent-green, #22c55e) 15%, transparent);
-		color: var(--accent-green, #22c55e);
 	}
 
 	/* Actions */

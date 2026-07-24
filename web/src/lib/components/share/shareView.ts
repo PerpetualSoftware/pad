@@ -301,22 +301,11 @@ export function formatFieldValue(value: unknown): string {
 	return String(value);
 }
 
-/** Status color — mirrors ItemCard.statusColor so a shared board matches the
- *  owner's palette. Returns a CSS custom-property reference. */
-export function statusColor(status: string): string {
-	switch (status) {
-		case 'open':
-			return 'var(--text-secondary)';
-		case 'in_progress':
-			return 'var(--accent-amber)';
-		case 'done':
-			return 'var(--accent-green)';
-		case 'blocked':
-			return 'var(--accent-orange)';
-		default:
-			return 'var(--text-muted)';
-	}
-}
+/** Status/priority colors — the canonical palette from $lib/utils/fieldColors,
+ *  so a shared board matches the owner's view exactly. Re-exported to keep the
+ *  public-share import surface unchanged. */
+import { statusColor, priorityColor, hasCanonicalStatus } from '$lib/utils/fieldColors';
+export { statusColor, priorityColor };
 
 /** Schema-driven color for a select-field value. Prefers the literal status
  *  vocabulary (so the canonical open/in_progress/done/blocked palette matches
@@ -330,7 +319,7 @@ export function fieldValueColor(field: FieldDef | undefined, value: string): str
 	if (!value) return 'var(--text-muted)';
 	if (field?.key === 'priority') return priorityColor(value);
 	// Canonical status palette first — exact owner match.
-	if (value === 'open' || value === 'in_progress' || value === 'done' || value === 'blocked') {
+	if (hasCanonicalStatus(value)) {
 		return statusColor(value);
 	}
 	// Custom vocabulary: terminal options read as "done".
@@ -354,21 +343,6 @@ export function columnAccentClassFor(field: FieldDef | undefined, value: string)
 	return '';
 }
 
-/** Priority color — mirrors ItemCard.priorityColor. */
-export function priorityColor(priority: string): string {
-	switch (priority) {
-		case 'critical':
-			return 'var(--accent-orange)';
-		case 'high':
-			return 'var(--accent-amber)';
-		case 'medium':
-			return 'var(--text-secondary)';
-		case 'low':
-			return 'var(--text-muted)';
-		default:
-			return 'var(--text-muted)';
-	}
-}
 
 /** Group `items` by `groupField` value, in option order with any extra values
  *  appended (sorted), and ungrouped ('') last when present. Mirrors

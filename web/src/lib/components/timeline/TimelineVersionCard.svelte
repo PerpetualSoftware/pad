@@ -2,6 +2,7 @@
 	import type { Version, Item } from '$lib/types';
 	import { api } from '$lib/api/client';
 	import DiffView from '$lib/components/versions/DiffView.svelte';
+	import Chip from '$lib/components/common/Chip.svelte';
 	import { relativeTime } from '$lib/utils/markdown';
 
 	interface Props {
@@ -149,16 +150,15 @@
 			{/if}
 		</div>
 		<div class="badges">
-			<span
-				class="badge"
-				class:badge-agent={version.created_by === 'agent'}
-				class:badge-user={version.created_by !== 'agent'}
+			<Chip
+				size="sm"
+				color={version.created_by === 'agent' ? 'var(--accent-purple)' : 'var(--status-blue)'}
 			>
 				{actorLabel(version.created_by)}
-			</span>
-			<span class="badge badge-source">
+			</Chip>
+			<Chip size="sm" color="var(--accent-green)">
 				{sourceLabel(version.source)}
-			</span>
+			</Chip>
 		</div>
 		<span class="timestamp" title={new Date(version.created_at).toLocaleString()}>
 			{relativeTime(version.created_at)}
@@ -287,33 +287,6 @@
 		display: flex;
 		gap: var(--space-1);
 		flex-shrink: 0;
-	}
-
-	.badge {
-		display: inline-flex;
-		align-items: center;
-		padding: 1px var(--space-2);
-		border-radius: 9999px;
-		font-size: 0.7em;
-		font-weight: 500;
-		text-transform: uppercase;
-		letter-spacing: 0.03em;
-		line-height: 1.6;
-	}
-
-	.badge-agent {
-		background: color-mix(in srgb, var(--accent-purple, #a855f7) 15%, transparent);
-		color: var(--accent-purple, #a855f7);
-	}
-
-	.badge-user {
-		background: color-mix(in srgb, var(--accent-blue) 15%, transparent);
-		color: var(--accent-blue);
-	}
-
-	.badge-source {
-		background: color-mix(in srgb, var(--accent-green) 15%, transparent);
-		color: var(--accent-green);
 	}
 
 	.timestamp {
