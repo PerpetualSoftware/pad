@@ -525,6 +525,9 @@
 	// retargeted pane never opens on a stale tab.
 	type PaneTab = 'details' | 'relationships' | 'activity' | 'versions';
 	let activeTab = $state<PaneTab>('details');
+	// Stable per-instance suffix so tab/panel aria-controls pairs stay unique
+	// when TWO ItemDetail instances mount (full-page master + docked pane).
+	const uid = $props.id();
 	const PANE_TABS: Array<{ id: PaneTab; label: string }> = [
 		{ id: 'details', label: 'Details' },
 		{ id: 'relationships', label: 'Relationships' },
@@ -2420,8 +2423,11 @@
 		if (e.key === 'Enter') {
 			e.preventDefault();
 			saveTitle();
-			// Move focus to the editor so you can start writing immediately
-			requestAnimationFrame(() => editorInstance?.commands.focus());
+			// Move focus to the editor so you can start writing immediately.
+			// The editor lives under the Details tab — surface it first or the
+			// focus lands on a display:none node (PR #1027 Codex finding).
+			activeTab = 'details';
+			tick().then(() => requestAnimationFrame(() => editorInstance?.commands.focus()));
 		} else if (e.key === 'Escape') {
 			editingTitle = false;
 		}
@@ -4517,13 +4523,35 @@
 
 		<!-- Pane tabs (PLAN-2290 Phase 4). Panels below are CSS-hidden, never
 		     unmounted — see the PaneTab block in the script. -->
-		<div class="pane-tabs" role="tablist" aria-label="Item sections">
+		<div
+			class="pane-tabs"
+			role="tablist"
+			aria-label="Item sections"
+			tabindex={-1}
+			onkeydown={(e) => {
+				if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+				const tabs = Array.from(
+					(e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]')
+				);
+				const idx = tabs.indexOf(document.activeElement as HTMLElement);
+				if (idx === -1) return;
+				e.preventDefault();
+				const next = e.key === 'ArrowRight'
+					? (idx + 1) % tabs.length
+					: (idx - 1 + tabs.length) % tabs.length;
+				tabs[next].focus();
+			}}
+		>
 			{#each PANE_TABS as t (t.id)}
 				<button
 					class="pane-tab"
 					class:on={activeTab === t.id}
 					role="tab"
 					aria-selected={activeTab === t.id}
+					aria-controls={t.id === 'activity' || t.id === 'versions'
+						? `pane-panel-feed-${uid}`
+						: `pane-panel-${t.id}-${uid}`}
+					tabindex={activeTab === t.id ? 0 : -1}
 					onclick={() => (activeTab = t.id)}
 				>
 					{t.label}
@@ -4531,7 +4559,7 @@
 			{/each}
 		</div>
 
-		<div class="tab-panel" class:tab-hidden={activeTab !== 'details'} role="tabpanel" aria-label="Details">
+		<div class="tab-panel" class:tab-hidden={activeTab !== 'details'} role="tabpanel" id="pane-panel-details-{uid}" aria-label="Details">
 		{#if codeContext}
 			<div class="code-context-section">
 				<h3 class="section-title">Code Context</h3>
@@ -5050,7 +5078,7 @@
 		     to B — the child's OWN prop check can't catch it (its prop is frozen
 		     at A). PLAN-2105 / TASK-2112; coordinator. -->
 		{@const keyedSlug = itemSlug}
-		<div class="tab-panel" class:tab-hidden={activeTab !== 'relationships'} role="tabpanel" aria-label="Relationships">
+		<div class="tab-panel" class:tab-hidden={activeTab !== 'relationships'} role="tabpanel" id="pane-panel-relationships-{uid}" aria-label="Relationships">
 		{#if relationshipGroups.length > 0}
 			<div class="relationships-section">
 				<h3 class="section-title">Relationships</h3>
@@ -5187,6 +5215,7 @@
 			class="tab-panel"
 			class:tab-hidden={activeTab !== 'activity' && activeTab !== 'versions'}
 			role="tabpanel"
+			id="pane-panel-feed-{uid}"
 			aria-label={activeTab === 'versions' ? 'Versions' : 'Activity'}
 		>
 		<div id="item-timeline" class="timeline-section">

@@ -333,12 +333,21 @@ test.describe('full-page pane host (PLAN-2154 Phase 2 / TASK-2174)', () => {
 		await expect(pane).toBeVisible();
 		await expect.poll(() => openItemParam(page)).toBe(relatedRef);
 		await pane.locator('.editor-wrapper .ProseMirror').click();
-		// Peeking freezes the master editor (contenteditable=false). The block-drag-
-		// handle choke keys off `editorView.editable`, so this DOM state IS the handle-
-		// suppression guarantee; the master editor now sits under the inactive Details
-		// tab (PLAN-2290 Phase 4), so a hover probe here isn't meaningful — the hover-
-		// suppression path is unit-covered (masterFreeze.svelte.test.ts).
 		await expect(masterMain).toHaveAttribute('contenteditable', 'false');
+
+		// INTEGRATION: put the master's Details tab back on-screen so the hover
+		// probe is meaningful (clicking the master tab bar ACTIVATES the master —
+		// focus-follows, PLAN-2290 Phase 4), then re-peek by clicking back into
+		// the pane. Master is now frozen WITH its editor visible: hovering the
+		// same paragraph must NOT reveal the handle — the reactive-editable
+		// choke (onMouseMove/update bail on !editorView.editable) end-to-end.
+		await page.locator('.item-page-host > .item-page').getByRole('tab', { name: 'Details' }).click();
+		await expect(masterMain).toHaveAttribute('contenteditable', 'true');
+		await pane.locator('.editor-wrapper .ProseMirror').click();
+		await expect(masterMain).toHaveAttribute('contenteditable', 'false');
+		await page.mouse.move(5, 5);
+		await masterMain.locator('p').first().hover({ force: true });
+		await expect.poll(handleDisplay, { timeout: 3000 }).toBe('none');
 
 		// CLOSE: the master thaws → back on its Details tab (PLAN-2290 Phase 4), hovering
 		// a paragraph reveals the handle again.
