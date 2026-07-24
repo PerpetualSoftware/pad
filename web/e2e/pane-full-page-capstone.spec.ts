@@ -423,9 +423,9 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		// owner write controls are all present.
 		await expect(trigger).toBeVisible();
 		await trigger.click();
-		await expect(col.locator('.action-label', { hasText: 'Summarize' })).toBeVisible();
-		await expect(col.locator('.action-label', { hasText: 'New quick action' })).toBeVisible();
-		await expect(col.locator('.action-label', { hasText: 'Manage actions' })).toBeVisible();
+		await expect(col.getByRole('menuitem', { name: 'Summarize' })).toBeVisible();
+		await expect(col.getByRole('menuitem', { name: 'New quick action' })).toBeVisible();
+		await expect(col.getByRole('menuitem', { name: 'Manage actions' })).toBeVisible();
 		await trigger.click(); // close
 
 		// Open the pane and activate it → the master becomes the peeking side.

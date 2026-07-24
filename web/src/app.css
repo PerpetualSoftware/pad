@@ -4,6 +4,9 @@
 	--bg-primary: #0b0b10;
 	--bg-secondary: #14141b;
 	--bg-tertiary: #1c1c25;
+	/* Elevated overlay surfaces (menus, popovers). Same as tertiary in
+	   dark; pure white in light where tertiary is a gray input tone. */
+	--bg-raised: #1c1c25;
 	--bg-hover: #22222d;
 	--bg-active: #2a2a36;
 
@@ -644,6 +647,7 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 	--bg-primary: #f5f5f9;
 	--bg-secondary: #ffffff;
 	--bg-tertiary: #efeff4;
+	--bg-raised: #ffffff;
 	--bg-hover: #ededf3;
 	--bg-active: #e3e3ec;
 	--text-primary: #191922;
@@ -681,6 +685,7 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 		--bg-primary: #f5f5f9;
 		--bg-secondary: #ffffff;
 		--bg-tertiary: #efeff4;
+	--bg-raised: #ffffff;
 		--bg-hover: #ededf3;
 		--bg-active: #e3e3ec;
 		--text-primary: #191922;

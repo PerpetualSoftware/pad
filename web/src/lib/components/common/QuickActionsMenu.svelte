@@ -3,8 +3,8 @@
 	import { parseFields, formatItemRef, parseSettings } from '$lib/types';
 	import { api, isConflictOrNotFound } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
-	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import Menu from '$lib/components/common/Menu.svelte';
+	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
 
 	interface Props {
@@ -31,11 +31,16 @@
 
 	let open = $state(false);
 	let alignLeft = $state(false);
-	let triggerEl = $state<HTMLButtonElement | null>(null);
+	let triggerEl = $state<HTMLButtonElement>();
 
 	// ── Inline create-form state ─────────────────────────────────────────
 	// `showCreateForm` collapses the action list and swaps in the inline
 	// form when the user clicks "+ New quick action" in the footer.
+	//
+	// The BUG-2281 stopPropagation workaround (open/cancel clicks racing the
+	// window click-outside handler on a detached target) is retired: the Menu
+	// primitive's outside-click is pointerdown-based and fires BEFORE a row
+	// click mutates state, so the detach hazard is structurally gone.
 	let showCreateForm = $state(false);
 	let newLabel = $state('');
 	let newPrompt = $state('');
@@ -43,9 +48,6 @@
 	let saving = $state(false);
 
 	let filtered = $derived(actions.filter((a) => a.scope === scope));
-
-	// Mobile viewport swaps the absolute-positioned popover for a BottomSheet
-	// that never clips off-screen. Uses the shared breakpoint store (TASK-2028).
 
 	function resolvePrompt(action: QuickAction): string {
 		let prompt = action.prompt;
@@ -110,30 +112,6 @@
 		newLabel = '';
 		newPrompt = '';
 		newIcon = '';
-	}
-
-	function handleOpenCreateForm(e: MouseEvent) {
-		// stopPropagation, mirroring handleTriggerClick (BUG-2281): flipping
-		// showCreateForm unmounts the footer's {:else} branch (this very
-		// button). Svelte 5 flushSyncs after a delegated event handler, so by
-		// the time this click bubbles on to the <svelte:window> click-outside
-		// handler the button is DETACHED — `target.closest('.quick-actions-menu')`
-		// then returns null, and handleWindowClick treats it as an outside
-		// click and closes the whole menu (open=false + resetCreateForm),
-		// wiping the create form the instant it opens. Stopping propagation
-		// keeps the click from reaching the window handler at all.
-		e.stopPropagation();
-		showCreateForm = true;
-	}
-
-	function handleCancelCreateForm(e: MouseEvent) {
-		// Same detach-then-window-close race as handleOpenCreateForm (BUG-2281):
-		// resetCreateForm unmounts the create form (this Cancel button), so
-		// without stopPropagation the bubbling click would hit the window
-		// handler on a detached target and close the whole menu instead of
-		// returning to the action list.
-		e.stopPropagation();
-		resetCreateForm();
 	}
 
 	function handleManage() {
@@ -233,15 +211,14 @@
 		}
 	}
 
-	function handleTriggerClick(e: MouseEvent) {
-		e.stopPropagation();
+	function handleTriggerClick() {
 		const nextOpen = !open;
-		// Only compute alignment when opening on desktop; the mobile branch
-		// renders a BottomSheet which doesn't need trigger-relative positioning.
-		if (nextOpen && !viewport.isMobile && triggerEl) {
+		if (nextOpen && triggerEl) {
 			const rect = triggerEl.getBoundingClientRect();
 			// If the trigger is too close to the left edge, the default
-			// right-anchored 200px dropdown would clip — switch to left-anchored.
+			// right-anchored dropdown would clip — switch to left-anchored.
+			// (Only matters for the desktop anchored panel; the mobile
+			// BottomSheet ignores alignment, so computing it is harmless.)
 			alignLeft = rect.left < 220;
 		}
 		if (!nextOpen) {
@@ -252,31 +229,23 @@
 		open = nextOpen;
 	}
 
-	function handleWindowClick(e: MouseEvent) {
-		// On mobile the BottomSheet owns dismissal (backdrop tap, Escape,
-		// swipe-down) — skip the outside-click handler so it doesn't race.
-		if (viewport.isMobile) return;
-		const target = e.target as HTMLElement;
-		if (!target) return;
-		// The EmojiPickerButton portals its dropdown to document.body (or the
-		// nearest <dialog>); clicks inside the portal (.epb-dropdown) or on
-		// the emoji trigger itself (.emoji-picker-button) should NOT close
-		// the menu, or the in-progress emoji selection is lost before the
-		// bound value can update.
-		if (target.closest('.epb-dropdown') || target.closest('.emoji-picker-button')) return;
-		if (!target.closest('.quick-actions-menu')) {
-			open = false;
-			resetCreateForm();
-		}
-	}
-
-	function handleBottomSheetClose() {
+	function closeMenu() {
 		open = false;
 		resetCreateForm();
 	}
-</script>
 
-<svelte:window onclick={handleWindowClick} />
+	// The EmojiPickerButton portals its dropdown to document.body (or the
+	// nearest <dialog>), so it is NOT inside the Menu panel's DOM — pass its
+	// containers as outside-click exemptions or the in-progress emoji
+	// selection closes the whole menu before the bound value can update.
+	// Queried from document because of the portal.
+	function emojiPickerContainers(): (Element | null | undefined)[] {
+		return [
+			...document.querySelectorAll('.epb-dropdown'),
+			...document.querySelectorAll('.emoji-picker-button')
+		];
+	}
+</script>
 
 {#snippet createForm()}
 	<div class="create-form">
@@ -299,7 +268,7 @@
 			Template variables: {'{ref}'} {'{title}'} {'{status}'} {'{priority}'} {'{collection}'} {'{content}'} {'{fields}'}
 		</div>
 		<div class="qa-actions">
-			<button class="qa-btn qa-btn-cancel" type="button" onclick={handleCancelCreateForm}>
+			<button class="qa-btn qa-btn-cancel" type="button" onclick={resetCreateForm}>
 				Cancel
 			</button>
 			<button
@@ -319,24 +288,15 @@
 		{@render createForm()}
 	{:else}
 		{#each filtered as action (action.label)}
-			<button class="action-item" onclick={() => handleAction(action)}>
-				{#if action.icon}
-					<span class="action-icon">{action.icon}</span>
-				{/if}
-				<span class="action-label">{action.label}</span>
-			</button>
+			<MenuItem icon={action.icon} onclick={() => handleAction(action)}>
+				{action.label}
+			</MenuItem>
 		{/each}
 		<div class="dropdown-tagline">Copy a prompt to your agent</div>
 		{#if canEdit}
 			<div class="footer-divider"></div>
-			<button class="action-item footer-row" type="button" onclick={handleOpenCreateForm}>
-				<span class="action-icon">+</span>
-				<span class="action-label">New quick action</span>
-			</button>
-			<button class="action-item footer-row" type="button" onclick={handleManage}>
-				<span class="action-icon">&#9881;</span>
-				<span class="action-label">Manage actions</span>
-			</button>
+			<MenuItem icon="+" onclick={() => (showCreateForm = true)}>New quick action</MenuItem>
+			<MenuItem icon="⚙" onclick={handleManage}>Manage actions</MenuItem>
 		{/if}
 	{/if}
 {/snippet}
@@ -346,26 +306,34 @@
 		<button
 			bind:this={triggerEl}
 			class="trigger-btn"
+			aria-haspopup="menu"
+			aria-expanded={open}
 			onclick={handleTriggerClick}
 			title="Quick actions"
 		>
 			&#9889;
 		</button>
 
-		{#if viewport.isMobile}
-			<BottomSheet {open} onclose={handleBottomSheetClose} title="Quick actions">
-				{@render actionList()}
-			</BottomSheet>
-		{:else if open}
-			<div class="dropdown" class:align-left={alignLeft}>
+		<Menu
+			{open}
+			onclose={closeMenu}
+			trigger={triggerEl}
+			align={alignLeft ? 'left' : 'right'}
+			sheetOnMobile
+			sheetTitle="Quick actions"
+			ariaLabel="Quick actions"
+			exempt={emojiPickerContainers}
+		>
+			<div class="qa-body">
 				{@render actionList()}
 			</div>
-		{/if}
+		</Menu>
 	</div>
 {/if}
 
 <style>
 	.quick-actions-menu {
+		/* Anchor for Menu's anchored mode. */
 		position: relative;
 		display: inline-block;
 	}
@@ -386,57 +354,13 @@
 		color: var(--text-primary);
 	}
 
-	.dropdown {
-		position: absolute;
-		top: 100%;
-		right: 0;
-		margin-top: var(--space-1);
-		min-width: 240px;
-		/* Defensive cap so the popover can never overflow the viewport
-		   horizontally, even if trigger placement or zoom produces an
-		   edge case we didn't anticipate. */
+	/* Sizes the slotted content (Menu's panel is min-width 180px on its
+	   own — too narrow for the inline create form). The viewport cap is
+	   defensive: the popover should never overflow horizontally even if
+	   trigger placement or zoom produces an edge case we didn't anticipate. */
+	.qa-body {
+		min-width: 230px;
 		max-width: calc(100vw - var(--space-4));
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-		z-index: 50;
-		padding: var(--space-1) 0;
-	}
-
-	/* When the trigger sits near the viewport's left edge, flip to
-	   left-anchored so the dropdown opens rightward and stays on-screen. */
-	.dropdown.align-left {
-		right: auto;
-		left: 0;
-	}
-
-	.action-item {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		width: 100%;
-		padding: var(--space-2) var(--space-3);
-		background: none;
-		border: none;
-		color: var(--text-primary);
-		font-size: 0.85em;
-		cursor: pointer;
-		text-align: left;
-		transition: background 0.1s;
-	}
-
-	.action-item:hover {
-		background: var(--bg-tertiary);
-	}
-
-	.action-icon {
-		flex-shrink: 0;
-	}
-
-	.action-label {
-		flex: 1;
-		min-width: 0;
 	}
 
 	.dropdown-tagline {
@@ -447,21 +371,12 @@
 		text-align: center;
 	}
 
-	/* ── Footer rows (gated by canEdit) ─────────────────────────────── */
+	/* ── Footer (gated by canEdit) ──────────────────────────────────── */
 
 	.footer-divider {
 		height: 1px;
 		background: var(--border);
 		margin: var(--space-1) 0;
-	}
-
-	.footer-row {
-		color: var(--text-secondary);
-	}
-
-	.footer-row:hover {
-		color: var(--text-primary);
-		background: var(--bg-tertiary);
 	}
 
 	/* ── Inline create form ─────────────────────────────────────────── */
