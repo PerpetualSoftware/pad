@@ -142,7 +142,11 @@
 
 	// Per-row pulse for the status click-cycle chip (mirrors ItemCard's
 	// `pulsing`, keyed by item id since the table renders many rows).
+	// pulseSeq fences the timeout: two rapid clicks on the SAME row would
+	// otherwise let the first click's timer clear the second click's pulse
+	// early (PR #1024 Codex finding — the timer-fence bug class).
 	let pulsingId = $state<string | null>(null);
+	let pulseSeq = 0;
 
 	function cycleStatus(item: Item, options: string[]) {
 		if (!onStatusChange) return;
@@ -151,8 +155,9 @@
 		const idx = options.indexOf(current);
 		const next = options[(idx + 1) % options.length];
 		pulsingId = item.id;
+		const seq = ++pulseSeq;
 		setTimeout(() => {
-			if (pulsingId === item.id) pulsingId = null;
+			if (pulseSeq === seq) pulsingId = null;
 		}, 300);
 		onStatusChange(item, next);
 	}
