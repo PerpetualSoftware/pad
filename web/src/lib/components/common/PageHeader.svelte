@@ -45,7 +45,8 @@
 	.header-row {
 		display: flex;
 		align-items: center;
-		gap: var(--space-3);
+		gap: var(--space-2) var(--space-3);
+		flex-wrap: wrap;
 	}
 
 	h1 {
@@ -78,7 +79,9 @@
 		display: flex;
 		align-items: center;
 		gap: var(--space-2);
-		flex: 0 0 auto;
+		flex: 0 1 auto;
+		flex-wrap: wrap;
+		justify-content: flex-end;
 	}
 
 	.header-desc {
