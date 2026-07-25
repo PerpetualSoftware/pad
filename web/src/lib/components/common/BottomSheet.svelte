@@ -24,10 +24,16 @@
 		open: boolean;
 		onclose: () => void;
 		title?: string;
+		/** Changes to this value re-run the focus handoff while the sheet
+		 *  STAYS open. A consumer that swaps its content in place (a
+		 *  drill-down sub-view) unmounts the focused control, dropping focus
+		 *  to <body>; pass the view identity here so focus returns to the
+		 *  sheet. PLAN-2326 DR-8. */
+		focusKey?: string | number;
 		children: Snippet;
 	}
 
-	let { open, onclose, title, children }: Props = $props();
+	let { open, onclose, title, focusKey, children }: Props = $props();
 
 	// Stable per-instance heading id so aria-labelledby can point at the
 	// visible title when one is provided. $props.id() must be the direct
@@ -59,7 +65,15 @@
 	// and Tab escapes the sheet. Reads `open` (prop) + `sheetEl` ($state); writes
 	// only the plain `previouslyFocused`, so no $state is both read and written
 	// here and the effect can't self-invalidate (mirrors Modal.svelte).
+	//
+	// `focusKey` is read purely for dependency tracking: a consumer that swaps
+	// its content IN PLACE (Menu's drill-down sub-views) leaves `open` and
+	// `sheetEl` untouched while unmounting the focused control, so without this
+	// read the effect wouldn't re-run and focus would sit on <body>
+	// (PLAN-2326 DR-8). The `el.contains(document.activeElement)` guard below
+	// keeps the re-run a no-op whenever focus is still inside the sheet.
 	$effect(() => {
+		focusKey;
 		const el = sheetEl;
 		if (open && el) {
 			if (previouslyFocused === null) {
