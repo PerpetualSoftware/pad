@@ -252,7 +252,9 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		await expect(pane).toBeVisible();
 		const paneUrlAtParent = page.url();
 
-		await pane.locator('button[title="View this item\'s dependency graph"]').click();
+		// Graph opens from the pane ⋯ overflow now (PLAN-2290 Phase 4 PR B).
+		await pane.locator('button.pane-more-btn').click();
+		await pane.getByRole('menuitem', { name: 'Dependency graph' }).click();
 		const drawer = pane.locator('.graph-drawer');
 		await expect(drawer).toBeVisible();
 		const childNode = drawer.locator('.node', { hasText: childRef });
@@ -288,7 +290,9 @@ test.describe('content-link anchor interception (PLAN-2154 / TASK-2159)', () => 
 		await expect(pane).toBeVisible();
 		const paneUrlAtParent = page.url();
 
-		await pane.locator('button[title="View this item\'s dependency graph"]').click();
+		// Graph opens from the pane ⋯ overflow now (PLAN-2290 Phase 4 PR B).
+		await pane.locator('button.pane-more-btn').click();
+		await pane.getByRole('menuitem', { name: 'Dependency graph' }).click();
 		const drawer = pane.locator('.graph-drawer');
 		await expect(drawer).toBeVisible();
 
