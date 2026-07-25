@@ -460,7 +460,7 @@
 									{item.status.replace(/-/g, ' ')}
 								</span>
 								{#if item.priority}
-									<span class="active-priority" style="color: {priorityColor(item.priority)};">{item.priority}</span>
+									<span class="active-priority" style="--chip-c: {priorityColor(item.priority)};">{item.priority}</span>
 								{/if}
 								<span class="active-time" title={new Date(item.updated_at).toLocaleString()}>{relativeTime(item.updated_at)}</span>
 							</div>
@@ -493,7 +493,7 @@
 									{item.status.replace(/-/g, ' ')}
 								</span>
 								{#if item.priority}
-									<span class="active-priority" style="color: {priorityColor(item.priority)};">{item.priority}</span>
+									<span class="active-priority" style="--chip-c: {priorityColor(item.priority)};">{item.priority}</span>
 								{/if}
 							</div>
 						</a>
@@ -764,8 +764,13 @@
 		font-weight: 700;
 	}
 	.item-count {
-		font-size: 0.9em;
+		font-size: 0.55em;
+		font-weight: 600;
 		color: var(--text-muted);
+		background: var(--bg-tertiary);
+		border-radius: 99px;
+		padding: 2px 9px;
+		font-variant-numeric: tabular-nums;
 	}
 	.dash-header-actions {
 		display: flex;
@@ -960,10 +965,15 @@
 		white-space: nowrap;
 		text-transform: capitalize;
 	}
+	/* Chip treatment (PLAN-2290): tinted pill, not bare colored text. */
 	.active-priority {
-		font-size: 0.75em;
-		font-weight: 600;
+		font-size: 0.72em;
+		font-weight: 500;
 		text-transform: capitalize;
+		padding: 1px 6px;
+		border-radius: 6px;
+		background: color-mix(in srgb, var(--chip-c, var(--accent-gray)) var(--chip-alpha, 16%), transparent);
+		color: color-mix(in srgb, var(--chip-c, var(--accent-gray)) var(--chip-text-mix, 100%), #000);
 	}
 	.active-time {
 		font-size: 0.75em;

@@ -599,6 +599,10 @@
 	.change-arrow {
 		opacity: 0.5;
 	}
+	/* PLAN-2290 sweep: the 'from' value was near-invisible in dark theme. */
+	.change-from {
+		color: var(--text-secondary);
+	}
 	.change-to {
 		color: var(--text-primary);
 	}
