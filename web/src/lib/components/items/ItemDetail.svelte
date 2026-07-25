@@ -4547,6 +4547,12 @@
 			}}
 		>
 			{#each PANE_TABS as t (t.id)}
+				<!-- pointerdown + click both activate (idempotent): pointerdown wins
+				     the race against the focus-follows activation cascade — on a
+				     peeking master the pointerdown-triggered re-render can swallow
+				     the subsequent click on slow machines (CI caught it; same
+				     same-click detach class as BUG-2281). click remains for
+				     keyboard (Enter/Space). -->
 				<button
 					class="pane-tab"
 					class:on={activeTab === t.id}
@@ -4556,6 +4562,13 @@
 						? `pane-panel-feed-${uid}`
 						: `pane-panel-${t.id}-${uid}`}
 					tabindex={activeTab === t.id ? 0 : -1}
+					onpointerdown={(e) => {
+						// Mouse only: touch pointerdown fires on scroll-start, and a
+						// drag beginning on a tab must not switch panels (Codex).
+						// Mobile has no peeking master, so the click-swallow race
+						// this guards against doesn't exist there.
+						if (e.pointerType === 'mouse') activeTab = t.id;
+					}}
 					onclick={() => (activeTab = t.id)}
 				>
 					{t.label}
