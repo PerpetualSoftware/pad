@@ -306,12 +306,17 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		const masterEditor = col.locator(EDITOR_SELECTOR);
 		await expect(masterEditor).toBeVisible({ timeout: SYNC_TIMEOUT });
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'true');
-		// Action bar (above the tabs): Star enabled; Share + Quick-actions + Delete + Move present.
+		// Action bar (above the tabs): Star enabled; Quick-actions visible;
+		// Share/Move/Delete live in the pane ⋯ overflow (PLAN-2290 Phase 4 PR B) —
+		// open it (master is active; the menu is an activating control) and
+		// verify the rows, then dismiss.
 		await expect(col.locator('button.star-btn')).toBeEnabled();
-		await expect(col.locator('button.action-btn', { hasText: 'Share' })).toBeVisible();
 		await expect(col.locator('button.trigger-btn[title="Quick actions"]')).toBeVisible();
-		await expect(col.locator('button.delete-btn')).toBeVisible();
-		await expect(col.locator('button.action-btn', { hasText: 'Move to' })).toBeVisible();
+		await col.locator('button.pane-more-btn').click();
+		await expect(col.getByRole('menuitem', { name: 'Share…' })).toBeVisible();
+		await expect(col.getByRole('menuitem', { name: 'Move to collection…' })).toBeVisible();
+		await expect(col.getByRole('menuitem', { name: 'Delete…' })).toBeVisible();
+		await page.keyboard.press('Escape');
 		// Relationships tab: the per-link remove button (rendered but `display:none`
 		// until row-hover, so assert DOM presence) and the "+ Add relationship" opener.
 		await col.getByRole('tab', { name: 'Relationships' }).click();
@@ -354,10 +359,10 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await expect(col.locator('.compose')).toHaveCount(1);
 		// Star: still enabled (never gated on peeking anymore).
 		await expect(col.locator('button.star-btn')).toBeEnabled();
-		// Share + Delete + Move (action bar, above the tabs): all still present.
-		await expect(col.locator('button.action-btn', { hasText: 'Share' })).toBeVisible();
-		await expect(col.locator('button.delete-btn')).toBeVisible();
-		await expect(col.locator('button.action-btn', { hasText: 'Move to' })).toBeVisible();
+		// Share/Move/Delete live in the ⋯ overflow now: the BUG-2263 guarantee is
+		// that the trigger stays LIVE on the peeking side (opening it would
+		// activate this side, so assert enabled, not open).
+		await expect(col.locator('button.pane-more-btn')).toBeEnabled();
 		// Add-relationship + per-link remove: still present (side-independent single-item REST — no freeze).
 		await expect(col.locator('button.add-relationship-btn')).toHaveCount(1);
 		await expect(col.locator('button.link-delete-btn')).toHaveCount(1);

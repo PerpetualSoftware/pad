@@ -33,6 +33,8 @@
 	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
+	import Menu from '$lib/components/common/Menu.svelte';
+	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import ContentSkeleton from '$lib/components/common/ContentSkeleton.svelte';
 	import ContentError from '$lib/components/common/ContentError.svelte';
@@ -502,7 +504,12 @@
 	let deleting = $state(false);
 	let restoring = $state(false);
 	let rawMode = $state(false);
-	let showMoveMenu = $state(false);
+	// Pane ⋯ overflow (PLAN-2290 Phase 4 PR B): graph / move / share /
+	// delete consolidate here per the mock; 'move' is a drill-down view
+	// inside the same panel (LaneActionsMenu precedent).
+	let paneMenuOpen = $state(false);
+	let paneMenuTrigger = $state<HTMLElement | undefined>(undefined);
+	let paneMenuView = $state<'root' | 'move'>('root');
 	let moving = $state(false);
 	let itemLinks = $state<ItemLink[]>([]);
 	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
@@ -823,7 +830,8 @@
 				editingTitle = false;
 				shareDialogOpen = false;
 				editCollectionOpen = false;
-				showMoveMenu = false;
+				paneMenuOpen = false;
+				paneMenuView = 'root';
 				showAddLink = false;
 			});
 		} else if (ended) {
@@ -1377,7 +1385,8 @@
 		refreshing = false;
 		copied = false;
 		editingTitle = false;
-		showMoveMenu = false;
+		paneMenuOpen = false;
+		paneMenuView = 'root';
 		showAddLink = false;
 		clearTimeout(addLinkDebounceTimer);
 		addLinkSearch = '';
@@ -3918,7 +3927,8 @@
 	async function handleMove(targetSlug: string) {
 		if (!item || moving || !canEdit) return;
 		moving = true;
-		showMoveMenu = false;
+		paneMenuOpen = false;
+		paneMenuView = 'root';
 		// Capture FULL route identity (workspace, username, source
 		// slug, source item id, parent ref) at the moment the user
 		// kicked off the move. If the user navigates while the
@@ -4404,21 +4414,6 @@
 					/>
 				{/key}
 			{/if}
-			<button
-				class="action-btn"
-				onclick={() => jumpToSection('activity', 'item-timeline')}
-			>
-				Timeline
-			</button>
-			{#if graphFocusRef}
-				<button
-					class="action-btn"
-					title="View this item's dependency graph"
-					onclick={openGraph}
-				>
-					🕸 Graph
-				</button>
-			{/if}
 			{#if childTotal > 0}
 				<!--
 					Children jump badge (IDEA-2133). Mirrors the "📎 N" backlinks
@@ -4458,67 +4453,81 @@
 					📎 {backlinksCount}
 				</button>
 			{/if}
-			{#if canEdit}
-				<div class="move-wrapper">
-					<button class="action-btn" onclick={() => { showMoveMenu = !showMoveMenu; }} disabled={moving}>
-						{moving ? 'Moving...' : 'Move to...'}
+			{#if canEdit && confirmDelete}
+				<span class="delete-confirm">
+					Delete this item?
+					<button class="delete-confirm-btn yes" disabled={deleting} onclick={handleDelete}>
+						{deleting ? '...' : 'Yes'}
 					</button>
-					{#snippet moveOptions()}
+					<button class="delete-confirm-btn no" onclick={() => { confirmDelete = false; }}>
+						No
+					</button>
+				</span>
+			{/if}
+			<!-- Pane ⋯ overflow (PLAN-2290 Phase 4 PR B): graph / move / share /
+			     delete per the mock. Triggers stay LIVE while peeking (BUG-2263 —
+			     these dispatch side-independent REST/dialog actions); opening the
+			     menu on a peeking side activates it like any other control. -->
+			<div class="menu-anchor">
+				<button
+					class="action-btn pane-more-btn"
+					bind:this={paneMenuTrigger}
+					aria-haspopup="menu"
+					aria-expanded={paneMenuOpen}
+					aria-label="More item actions"
+					title="More"
+					disabled={moving}
+					onclick={() => {
+						paneMenuView = 'root';
+						paneMenuOpen = !paneMenuOpen;
+					}}
+				>⋯</button>
+				<Menu
+					open={paneMenuOpen}
+					onclose={() => { paneMenuOpen = false; paneMenuView = 'root'; }}
+					trigger={paneMenuTrigger}
+					mode="anchored"
+					sheetOnMobile
+					sheetTitle="Item actions"
+					ariaLabel="Item actions"
+				>
+					{#if paneMenuView === 'root'}
+						{#if graphFocusRef}
+							<MenuItem icon="🕸" onclick={() => { paneMenuOpen = false; openGraph(); }}>
+								Dependency graph
+							</MenuItem>
+						{/if}
+						{#if canEdit}
+							<MenuItem icon="⇄" hint="›" onclick={() => (paneMenuView = 'move')} disabled={moving}>
+								{moving ? 'Moving…' : 'Move to collection…'}
+							</MenuItem>
+						{/if}
+						{#if isOwner}
+							<MenuItem icon="⇗" onclick={() => { paneMenuOpen = false; shareDialogOpen = true; }}>
+								Share…
+							</MenuItem>
+						{/if}
+						{#if canEdit}
+							<div class="menu-divider" role="separator"></div>
+							<MenuItem icon="🗑" danger onclick={() => { paneMenuOpen = false; confirmDelete = true; }}>
+								Delete…
+							</MenuItem>
+						{/if}
+					{:else}
+						<MenuItem icon="‹" onclick={() => (paneMenuView = 'root')}>Back</MenuItem>
+						<div class="menu-divider" role="separator"></div>
 						{#each moveTargets as target (target.slug)}
-							<button class="move-option" onclick={() => handleMove(target.slug)}>
-								{#if target.icon}<span class="move-icon">{target.icon}</span>{/if}
+							<MenuItem
+								icon={target.icon || '📁'}
+								disabled={moving}
+								onclick={() => handleMove(target.slug)}
+							>
 								{target.name}
-							</button>
+							</MenuItem>
 						{/each}
-					{/snippet}
-					{#if viewport.isMobile && showMoveMenu}
-						<!--
-							Gate the mobile sheet on `showMoveMenu` so BottomSheet (and
-							its global keydown listener) isn't mounted when the menu is
-							closed. Same pattern fix as ReactionPicker.
-						-->
-						<BottomSheet
-							open={showMoveMenu}
-							onclose={() => (showMoveMenu = false)}
-							title="Move to…"
-						>
-							<div class="move-sheet-body">
-								{@render moveOptions()}
-							</div>
-						</BottomSheet>
-					{:else if showMoveMenu}
-						<div class="move-dropdown">
-							{@render moveOptions()}
-						</div>
 					{/if}
-				</div>
-			{/if}
-			<!-- Share opens a dialog that dispatches owner-only, item-scoped grant /
-			     share-link REST mutations — side-independent, so the trigger stays
-			     available on the peeking side too (BUG-2263). Any open dialog is still
-			     dismissed by the peek-begin transition when this side goes passive. -->
-			{#if isOwner}
-				<button class="action-btn" onclick={() => { shareDialogOpen = true; }}>
-					Share
-				</button>
-			{/if}
-			{#if canEdit}
-				{#if confirmDelete}
-					<span class="delete-confirm">
-						Delete this item?
-						<button class="delete-confirm-btn yes" disabled={deleting} onclick={handleDelete}>
-							{deleting ? '...' : 'Yes'}
-						</button>
-						<button class="delete-confirm-btn no" onclick={() => { confirmDelete = false; }}>
-							No
-						</button>
-					</span>
-				{:else}
-					<button class="action-btn delete-btn" onclick={() => { confirmDelete = true; }}>
-						Delete
-					</button>
-				{/if}
-			{/if}
+				</Menu>
+			</div>
 		</div>
 
 		<!-- Pane tabs (PLAN-2290 Phase 4). Panels below are CSS-hidden, never
@@ -6461,54 +6470,14 @@
 	.star-btn:hover {
 		color: var(--accent-amber);
 	}
-	.move-wrapper {
+	/* Pane ⋯ overflow anchor (PLAN-2290 Phase 4 PR B) — Menu's anchored
+	   mode positions against the nearest relative ancestor. */
+	.menu-anchor {
 		position: relative;
 	}
-	.move-dropdown {
-		position: absolute;
-		top: 100%;
-		right: 0;
-		margin-top: var(--space-1);
-		background: var(--bg-secondary);
-		border: 1px solid var(--border);
-		border-radius: var(--radius);
-		box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-		z-index: 100;
-		min-width: 180px;
-		padding: var(--space-1);
-	}
-	.move-option {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		width: 100%;
-		padding: var(--space-2) var(--space-3);
-		background: none;
-		border: none;
-		color: var(--text-primary);
-		font-size: 0.85em;
-		cursor: pointer;
-		border-radius: var(--radius-sm);
-		text-align: left;
-	}
-	.move-option:hover {
-		background: var(--bg-hover);
-	}
-	.move-icon {
-		font-size: 1.1em;
-	}
-	/* Inside the mobile BottomSheet the options sit in the normal document
-	   flow — give them a little breathing room vs the dropdown padding. */
-	.move-sheet-body {
-		padding: 0 var(--space-2) var(--space-3);
-	}
-	.move-sheet-body .move-option {
-		padding: var(--space-3);
-		font-size: 1em;
-	}
-	.delete-btn:hover {
-		color: var(--accent-orange);
-		border-color: var(--accent-orange);
+	.menu-divider {
+		border-top: 1px solid var(--border-subtle);
+		margin: 5px 4px;
 	}
 	.delete-confirm {
 		display: flex;
