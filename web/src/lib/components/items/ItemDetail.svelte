@@ -4562,7 +4562,13 @@
 						? `pane-panel-feed-${uid}`
 						: `pane-panel-${t.id}-${uid}`}
 					tabindex={activeTab === t.id ? 0 : -1}
-					onpointerdown={() => (activeTab = t.id)}
+					onpointerdown={(e) => {
+						// Mouse only: touch pointerdown fires on scroll-start, and a
+						// drag beginning on a tab must not switch panels (Codex).
+						// Mobile has no peeking master, so the click-swallow race
+						// this guards against doesn't exist there.
+						if (e.pointerType === 'mouse') activeTab = t.id;
+					}}
 					onclick={() => (activeTab = t.id)}
 				>
 					{t.label}
