@@ -36,7 +36,16 @@ function disabled(root: HTMLElement, testid: string): boolean {
 	return (root.querySelector(`[data-testid="${testid}"]`) as HTMLButtonElement | null)?.disabled ?? false;
 }
 
-// REST surfaces that stay LIVE on the peeking side (invisible freeze).
+// REST surfaces that stay LIVE on the peeking side (invisible freeze) AND are
+// gated on `canEdit` — the viewer test below asserts every entry is absent when
+// canEdit is false, so a control that survives for viewers does not belong here
+// (see `pane-more-btn`, asserted separately).
+//
+// Delete and Move now live inside the pane ⋯ overflow rather than the action
+// bar, so `delete-btn` / `move-btn` mirror the ROWS; the trigger that reaches
+// them is mirrored by `pane-more-btn`, asserted separately because it is not
+// canEdit-gated. Delete's confirm row (`delete-confirm-btn`) has a different
+// gate again and gets its own test below.
 const REST_LIVE_SURFACES = [
 	'delete-btn',
 	'move-btn',
@@ -54,6 +63,9 @@ describe('invisible master/pane freeze wiring (BUG-2263)', () => {
 		canRestore?: boolean;
 		isOwner?: boolean;
 		quickActionsPresent?: boolean;
+		moving?: boolean;
+		deleting?: boolean;
+		deleteViewArmed?: boolean;
 	}) {
 		root = target();
 		instance = mount(FreezeProbe, { target: root, props });
@@ -95,6 +107,12 @@ describe('invisible master/pane freeze wiring (BUG-2263)', () => {
 		for (const surface of REST_LIVE_SURFACES) {
 			expect(present(r, surface), `${surface} must stay live while peeking`).toBe(true);
 		}
+		// The ⋯ overflow trigger — the only route to delete/move since they moved
+		// into the menu — is present AND enabled on the peeking side. If this ever
+		// grew a `!peeking` gate, both surfaces would go dark on the passive side
+		// while the row assertions above stayed green.
+		expect(present(r, 'pane-more-btn')).toBe(true);
+		expect(disabled(r, 'pane-more-btn')).toBe(false);
 		// Title shows its editable affordance (not the viewer heading).
 		expect(present(r, 'title-readonly')).toBe(false);
 		// Archived restore, star (enabled), Share stay live.
@@ -131,6 +149,8 @@ describe('invisible master/pane freeze wiring (BUG-2263)', () => {
 		for (const surface of REST_LIVE_SURFACES) {
 			expect(present(r, surface), `${surface} must be live`).toBe(true);
 		}
+		expect(present(r, 'pane-more-btn')).toBe(true);
+		expect(disabled(r, 'pane-more-btn')).toBe(false);
 		expect(present(r, 'title-readonly')).toBe(false);
 		expect(present(r, 'archived-restore-btn')).toBe(true);
 		expect(disabled(r, 'star-btn')).toBe(false);
@@ -178,11 +198,93 @@ describe('invisible master/pane freeze wiring (BUG-2263)', () => {
 			}
 			// Star stays available to viewers.
 			expect(disabled(r, 'star-btn')).toBe(false);
+			// ...and so does the ⋯ trigger: it is not canEdit-gated, because it
+			// still carries the viewer-safe rows (Dependency graph, Share). Only
+			// the mutation ROWS inside it disappear — asserted by the loop above.
+			expect(present(r, 'pane-more-btn')).toBe(true);
 			unmount(instance!);
 			root!.remove();
 			instance = null;
 			root = null;
 		}
+	});
+
+	it('the ⋯ menu route to delete/move is gated by in-flight ops, not by peeking (TASK-2327)', () => {
+		// Delete and Move are reached through the ⋯ overflow, so the probe mirrors
+		// the trigger's own gate as well as the rows'. The in-flight guard is
+		// operation state, NOT freeze state — identical on the peeking and active
+		// sides.
+		for (const peeking of [false, true]) {
+			// A move in flight disables the trigger and the move row.
+			const r = render({ canEdit: true, peeking, moving: true });
+			expect(disabled(r, 'pane-more-btn'), `moving disables ⋯ (peeking=${peeking})`).toBe(true);
+			expect(disabled(r, 'move-btn')).toBe(true);
+			unmount(instance!);
+			root!.remove();
+			instance = null;
+			root = null;
+		}
+		// Idle: nothing is disabled, on either side.
+		for (const peeking of [false, true]) {
+			const r = render({ canEdit: true, peeking });
+			expect(disabled(r, 'pane-more-btn'), `⋯ enabled when idle (peeking=${peeking})`).toBe(false);
+			expect(disabled(r, 'move-btn')).toBe(false);
+			unmount(instance!);
+			root!.remove();
+			instance = null;
+			root = null;
+		}
+	});
+
+	it("the delete drill-down's confirm row refuses via `disabled`, and never survives into a peek (TASK-2327)", () => {
+		// Unlike every other control in this file, the confirm row is NOT
+		// canEdit-gated: it renders whenever the 'delete' sub-view is active and
+		// refuses via `disabled={deleting || !canEdit}`. Mirroring it as
+		// `{#if canEdit}` was a real mistake in the first draft of this probe
+		// (Codex) — it would have claimed the row vanishes on permission loss when
+		// the real component leaves it present but inert.
+
+		// Armed, active side, full permission: present and operable.
+		let r = render({ canEdit: true, peeking: false, deleteViewArmed: true });
+		expect(present(r, 'delete-confirm-btn')).toBe(true);
+		expect(disabled(r, 'delete-confirm-btn')).toBe(false);
+		unmount(instance!);
+		root!.remove();
+		instance = null;
+		root = null;
+
+		// Delete in flight: still present (so the pending state is visible), inert.
+		r = render({ canEdit: true, peeking: false, deleteViewArmed: true, deleting: true });
+		expect(present(r, 'delete-confirm-btn')).toBe(true);
+		expect(disabled(r, 'delete-confirm-btn')).toBe(true);
+		// The trigger stays enabled so the menu can still be dismissed.
+		expect(disabled(r, 'pane-more-btn')).toBe(false);
+		unmount(instance!);
+		root!.remove();
+		instance = null;
+		root = null;
+
+		// Permission lost mid-confirm: present but inert — NOT unmounted.
+		r = render({ canEdit: false, peeking: false, deleteViewArmed: true });
+		expect(present(r, 'delete-confirm-btn'), 'confirm row survives permission loss').toBe(true);
+		expect(disabled(r, 'delete-confirm-btn')).toBe(true);
+		// ...while the route IN is gone, so a viewer can never reach it fresh.
+		expect(present(r, 'delete-btn')).toBe(false);
+		unmount(instance!);
+		root!.remove();
+		instance = null;
+		root = null;
+
+		// The one place the freeze DOES touch delete, and in the opposite
+		// direction to the rest of this file: peek-begin force-disarms the view
+		// (ItemDetail's peek handler resets paneMenuOpen/paneMenuView), so an armed
+		// confirmation can never persist into a peek.
+		r = render({ canEdit: true, peeking: true, deleteViewArmed: true });
+		expect(present(r, 'delete-confirm-btn'), 'armed confirm must not survive a peek').toBe(false);
+		// The affordance itself is untouched — trigger and Delete… row stay live.
+		expect(present(r, 'pane-more-btn')).toBe(true);
+		expect(disabled(r, 'pane-more-btn')).toBe(false);
+		expect(present(r, 'delete-btn')).toBe(true);
 	});
 
 	it('archived restore rides `canRestore` alone (not peeking) — archived items force canEdit false', () => {

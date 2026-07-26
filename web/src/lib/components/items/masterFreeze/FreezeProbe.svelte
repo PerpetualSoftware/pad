@@ -24,12 +24,18 @@
 		canRestore = true,
 		isOwner = true,
 		quickActionsPresent = false,
+		moving = false,
+		deleting = false,
+		deleteViewArmed = false,
 	}: {
 		canEdit?: boolean;
 		peeking?: boolean;
 		canRestore?: boolean;
 		isOwner?: boolean;
 		quickActionsPresent?: boolean;
+		moving?: boolean;
+		deleting?: boolean;
+		deleteViewArmed?: boolean;
 	} = $props();
 
 	// The exact derived from ItemDetail.svelte — now scopes to content chrome only.
@@ -60,15 +66,58 @@
      `if (peeking) return` onclick guards are the backstop for a re-peek mid-flush. -->
 <button data-testid="mode-toggle">Rich / Markdown</button>
 
-<!-- REST mutation UI — gated on `canEdit` alone, present on both sides. -->
+<!-- REST mutation UI — gated on `canEdit` alone, present on both sides.
+
+     Delete and Move are NOT bar buttons any more. Both are rows inside the pane
+     ⋯ overflow (#1029 / TASK-2294 moved Move; TASK-2327 moved Delete's
+     confirmation there as a drill-down sub-view), so reaching either has TWO
+     parts and the probe mirrors both. Mirroring only the row is what let the
+     earlier `move-btn` drift sit here unnoticed: this file would stay green if
+     the TRIGGER ever grew a `!peeking` gate, even though that would take delete
+     AND move off the peeking side at once.
+
+       1. The ⋯ trigger — no `canEdit` and no `peeking` gate at all. It renders
+          on the peeking side like every other invisible-freeze control, and a
+          click activates that side first (host pointerdown-capture) before the
+          menu opens. Its only gate is `disabled={moving}`, an in-flight guard.
+          Note it is deliberately NOT in the test's REST_LIVE_SURFACES list:
+          that list asserts canEdit-gated controls, and the trigger stays present
+          for a true viewer (it still carries Dependency graph / Share).
+       2. The row inside it — `{#if canEdit}`, unchanged by the move into the
+          menu. -->
+<button data-testid="pane-more-btn" disabled={moving}>⋯</button>
 {#if canEdit}
-	<button data-testid="delete-btn">Delete</button>
+	<button data-testid="delete-btn">Delete…</button>
 {/if}
 {#if canEdit}
-	<button data-testid="move-btn">Move to…</button>
+	<button data-testid="move-btn" disabled={moving}>Move to collection…</button>
 {/if}
 {#if canEdit}
 	<button data-testid="add-relationship-btn">+ Add relationship</button>
+{/if}
+
+<!-- Delete's THIRD step: the ⋯ drill-down's confirm row (TASK-2327). Modelled
+     separately from `delete-btn` because its gate is genuinely different, and
+     getting this wrong is easy (Codex caught a first attempt that wrapped it in
+     `{#if canEdit}`):
+
+       - It is NOT canEdit-gated. It renders whenever the 'delete' sub-view is
+         the active view (`paneMenuView === 'delete'` — mirrored here by
+         `deleteViewArmed`) and REFUSES via `disabled={deleting || !canEdit}`.
+         So a mid-confirm permission loss leaves the row present but inert,
+         rather than yanking it out from under the cursor. A viewer never gets
+         here anyway — the route in (`delete-btn`) is canEdit-gated — but the
+         row's own guard is defence in depth and must be mirrored as written.
+
+       - It IS the one delete-related surface the freeze genuinely touches, and
+         in the opposite direction to everything else in this file: peek-begin
+         force-disarms it (`paneMenuOpen = false; paneMenuView = 'root'` in
+         ItemDetail's peek handler), so an ARMED confirmation can never survive
+         into a peek. That is a deliberate safety property, not the invisible
+         freeze — the affordance itself (trigger + Delete… row) stays live on
+         the peeking side like every other REST control above. -->
+{#if deleteViewArmed && !peeking}
+	<button data-testid="delete-confirm-btn" disabled={deleting || !canEdit}>Delete item</button>
 {/if}
 
 <!-- Editor bubble/link popover is CONTENT chrome — it only appears on an editor
