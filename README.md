@@ -171,7 +171,7 @@ make build
 cp pad ~/.local/bin/   # or /usr/local/bin/
 ```
 
-Requires Go 1.26+ and Node.js 22+.
+Requires Go 1.26+ and Node.js 22+. Alternatively, `nix develop` provides a shell with the exact Go and Node versions pinned — see the [Nix](#nix) section below.
 
 The `go install github.com/PerpetualSoftware/pad/cmd/pad@latest` path is not supported for the full Pad binary, because the web UI must be built and embedded during the source build.
 
@@ -199,6 +199,28 @@ docker run -p 7777:7777 -v pad-data:/data ghcr.io/perpetualsoftware/pad
 ```
 
 For multi-instance deployments, Pad supports Postgres + Redis via `docker-compose.yml` — see [docs/deployment.md](docs/deployment.md) for the full setup.
+
+### Nix
+
+Run without installing:
+
+```bash
+nix run github:PerpetualSoftware/pad
+```
+
+Or install into your profile:
+
+```bash
+nix profile install github:PerpetualSoftware/pad
+```
+
+A flake devShell (Go, Node, and friends, pinned to the same versions CI uses) is also available for contributors:
+
+```bash
+nix develop
+```
+
+> A `nixpkgs` package (`nix-shell -p pad` / `environment.systemPackages`) is planned but not yet merged upstream. Until then, use the `github:PerpetualSoftware/pad` flake reference above.
 
 ### Binary Download
 

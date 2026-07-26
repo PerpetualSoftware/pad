@@ -1,0 +1,38 @@
+name: Nix
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: nix-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# All third-party Actions are pinned to a 40-char commit SHA with a trailing
+# '# vX.Y.Z' comment so a compromised maintainer or moved tag cannot silently
+# execute attacker code in CI. Bump the SHA + comment together when updating.
+
+jobs:
+  nix:
+    name: Nix build & check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: DeterminateSystems/nix-installer-action@21a544727d0c62386e78b4befe52d19ad12692e3 # v22
+
+      - name: nix flake check
+        run: nix flake check --print-build-logs
+
+      - name: nix build
+        run: nix build .#default --print-build-logs
+
+      - name: Smoke test binary
+        run: |
+          ./result/bin/pad --version
+          ./result/bin/pad --help
