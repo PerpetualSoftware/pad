@@ -500,16 +500,20 @@
 	// is merely emptied or closed on the SAME item — this seq does (Codex review
 	// P2). Plain `let` (CONVE-1688): read/written in handlers only.
 	let addLinkSearchSeq = 0;
-	let confirmDelete = $state(false);
 	let deleting = $state(false);
 	let restoring = $state(false);
 	let rawMode = $state(false);
 	// Pane ⋯ overflow (PLAN-2290 Phase 4 PR B): graph / move / share /
-	// delete consolidate here per the mock; 'move' is a drill-down view
-	// inside the same panel (LaneActionsMenu precedent).
+	// delete consolidate here per the mock; 'move' and 'delete' are
+	// drill-down views inside the same panel (LaneActionsMenu precedent).
+	// 'delete' is the destructive-confirm step — it replaced the inline
+	// `.delete-confirm` band that used to live in `.meta-actions`, which
+	// couldn't survive a 360px pane (PLAN-2326 DR-6). It doubles as the
+	// armed-confirmation state, so it MUST be reset wherever an
+	// item-scoped control is dismissed (item switch, peek freeze, close).
 	let paneMenuOpen = $state(false);
 	let paneMenuTrigger = $state<HTMLElement | undefined>(undefined);
-	let paneMenuView = $state<'root' | 'move'>('root');
+	let paneMenuView = $state<'root' | 'move' | 'delete'>('root');
 	let moving = $state(false);
 	let itemLinks = $state<ItemLink[]>([]);
 	let workspaceMembers = $state<{ user_id: string; user_name: string; user_email: string; role: string }[]>([]);
@@ -1370,15 +1374,17 @@
 		// Reset item-scoped ephemeral UI so an armed / open control from the
 		// PREVIOUS item can't act on the newly-loaded one across the no-{#key}
 		// prop-update switch (PLAN-2105 / TASK-2112; coordinator P2).
-		// confirmDelete is the dangerous one — armed on A, switch to B, and a
-		// confirming click would delete B — but every open menu / dialog / drawer,
-		// the in-place title edit, and the add-relationship search box are
-		// item-scoped and must not survive the swap. The in-flight operation
-		// flags (deleting / moving / restoring) are cleared too: they gate the
-		// CURRENTLY-shown item's buttons, so B must start clean — the previous
-		// item's op continues under its own switch-fenced handler, whose finally
-		// settles the flag again harmlessly.
-		confirmDelete = false;
+		// The armed delete confirmation is the dangerous one — armed on A,
+		// switch to B, and a confirming click would delete B. It now lives in
+		// the ⋯ menu as `paneMenuView === 'delete'`, so the paneMenuOpen /
+		// paneMenuView reset below covers it (PLAN-2326 DR-6). Every open menu
+		// / dialog / drawer, the in-place title edit, and the add-relationship
+		// search box are likewise item-scoped and must not survive the swap.
+		// The in-flight operation flags (deleting / moving / restoring) are
+		// cleared too: they gate the CURRENTLY-shown item's buttons, so B must
+		// start clean — the previous item's op continues under its own
+		// switch-fenced handler, whose finally settles the flag again
+		// harmlessly.
 		deleting = false;
 		moving = false;
 		restoring = false;
@@ -3704,7 +3710,14 @@
 			if (switchedAway(targetItem, gen)) return;
 			toastStore.show('Failed to delete item', 'error');
 			deleting = false;
-			confirmDelete = false;
+			// Disarm and dismiss the ⋯ menu's delete drill-down: the toast
+			// carries the failure, and leaving a primed confirmation open over
+			// it invites a second blind click. The confirming row is unmounting
+			// here, so hand focus back to the trigger rather than letting it
+			// fall to <body> (PLAN-2326 DR-6).
+			paneMenuOpen = false;
+			paneMenuView = 'root';
+			paneMenuTrigger?.focus();
 		}
 	}
 
@@ -4453,17 +4466,6 @@
 					📎 {backlinksCount}
 				</button>
 			{/if}
-			{#if canEdit && confirmDelete}
-				<span class="delete-confirm">
-					Delete this item?
-					<button class="delete-confirm-btn yes" disabled={deleting} onclick={handleDelete}>
-						{deleting ? '...' : 'Yes'}
-					</button>
-					<button class="delete-confirm-btn no" onclick={() => { confirmDelete = false; }}>
-						No
-					</button>
-				</span>
-			{/if}
 			<!-- Pane ⋯ overflow (PLAN-2290 Phase 4 PR B): graph / move / share /
 			     delete per the mock. Triggers stay LIVE while peeking (BUG-2263 —
 			     these dispatch side-independent REST/dialog actions); opening the
@@ -4490,6 +4492,7 @@
 					sheetOnMobile
 					sheetTitle="Item actions"
 					ariaLabel="Item actions"
+					focusKey={paneMenuView}
 				>
 					{#if paneMenuView === 'root'}
 						{#if graphFocusRef}
@@ -4509,11 +4512,15 @@
 						{/if}
 						{#if canEdit}
 							<div class="menu-divider" role="separator"></div>
-							<MenuItem icon="🗑" danger onclick={() => { paneMenuOpen = false; confirmDelete = true; }}>
+							<!-- Drill down rather than close: the confirmation is a
+							     'delete' sub-view of THIS panel (PLAN-2326 DR-6), so
+							     the menu stays open and Menu's focusKey hands focus
+							     to the sub-view's first row. -->
+							<MenuItem icon="🗑" danger hint="›" onclick={() => (paneMenuView = 'delete')}>
 								Delete…
 							</MenuItem>
 						{/if}
-					{:else}
+					{:else if paneMenuView === 'move'}
 						<MenuItem icon="‹" onclick={() => (paneMenuView = 'root')}>Back</MenuItem>
 						<div class="menu-divider" role="separator"></div>
 						{#each moveTargets as target (target.slug)}
@@ -4525,6 +4532,44 @@
 								{target.name}
 							</MenuItem>
 						{/each}
+					{:else if paneMenuView === 'delete'}
+						<!--
+							Delete confirmation, as a drill-down view (PLAN-2326 DR-6).
+							Cancel comes FIRST so the focusKey handoff lands keyboard
+							focus on the non-destructive row — Enter on arrival must
+							never delete.
+
+							The prompt carries `role="presentation"`: a `role="menu"`
+							owns menuitem / separator / group children, and this says
+							explicitly that the prompt is none of them rather than
+							leaving an undeclared div among them (the `.menu-divider`
+							below is the separator case).
+
+							It is NOT what keeps the prompt out of Menu's arrow-key
+							walk — that selector is `[role^="menuitem"]`, so a bare div
+							was already excluded. The consequence that matters is the
+							same either way: the prompt is never announced on its own,
+							hence the aria-describedby pointing back at it from the
+							destructive row. `role="presentation"` drops the element's
+							own semantics but NOT its text, so that description still
+							computes — verified against the rendered a11y tree, where
+							the row reports name "Delete item" / description "Delete
+							this item?" and Cancel reports no description.
+						-->
+						<div class="menu-confirm-note" role="presentation" id="delete-confirm-note-{uid}">
+							Delete this item?
+						</div>
+						<MenuItem icon="‹" onclick={() => (paneMenuView = 'root')}>Cancel</MenuItem>
+						<div class="menu-divider" role="separator"></div>
+						<MenuItem
+							icon="🗑"
+							danger
+							describedBy="delete-confirm-note-{uid}"
+							disabled={deleting || !canEdit}
+							onclick={handleDelete}
+						>
+							{deleting ? 'Deleting…' : 'Delete item'}
+						</MenuItem>
 					{/if}
 				</Menu>
 			</div>
@@ -6148,7 +6193,8 @@
 		color: var(--text-secondary);
 	}
 	/* Archived banner (TASK-1829) — accent-bordered callout matching the
-	   .link-row.tone-* idiom; Restore mirrors .delete-confirm-btn.yes. */
+	   .link-row.tone-* idiom; Restore uses the same accent-orange
+	   outline-fills-on-hover treatment. */
 	.archived-banner {
 		display: flex;
 		align-items: center;
@@ -6479,38 +6525,15 @@
 		border-top: 1px solid var(--border-subtle);
 		margin: 5px 4px;
 	}
-	.delete-confirm {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		font-size: 0.85em;
-		color: var(--accent-orange);
+	/* Prompt line of the ⋯ menu's 'delete' drill-down (PLAN-2326 DR-6).
+	   Presentational only — the actionable rows beneath it are MenuItems,
+	   so Menu's `[role^="menuitem"]` arrow-key walk skips this. */
+	.menu-confirm-note {
+		padding: 6px 9px 4px;
+		font-size: 12.5px;
+		line-height: 1.35;
 		font-weight: 500;
-	}
-	.delete-confirm-btn {
-		padding: 2px var(--space-2);
-		border-radius: var(--radius);
-		font-size: 0.85em;
-		cursor: pointer;
-		border: 1px solid var(--border);
-		background: var(--bg-secondary);
-		color: var(--text-secondary);
-	}
-	.delete-confirm-btn.yes {
 		color: var(--accent-orange);
-		border-color: var(--accent-orange);
-	}
-	.delete-confirm-btn.yes:hover {
-		background: var(--accent-orange);
-		color: #fff;
-	}
-	.delete-confirm-btn.no:hover {
-		background: var(--bg-tertiary);
-		color: var(--text-primary);
-	}
-	.delete-confirm-btn:disabled {
-		opacity: 0.5;
-		cursor: not-allowed;
 	}
 	@media (max-width: 768px) {
 		.layout-balanced .fields-panel {

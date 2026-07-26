@@ -11,11 +11,24 @@
 		/** When defined the row is a menuitemradio with a trailing check. */
 		checked?: boolean;
 		disabled?: boolean;
+		/** id of an element describing this row — e.g. the prompt line above a
+		 *  destructive confirmation, which is presentational and otherwise
+		 *  never announced when the row takes focus (PLAN-2326). */
+		describedBy?: string;
 		onclick?: (e: MouseEvent) => void;
 		children: Snippet;
 	}
 
-	let { icon, hint, danger = false, checked, disabled = false, onclick, children }: Props = $props();
+	let {
+		icon,
+		hint,
+		danger = false,
+		checked,
+		disabled = false,
+		describedBy,
+		onclick,
+		children
+	}: Props = $props();
 </script>
 
 <button
@@ -24,6 +37,7 @@
 	class:danger
 	role={checked !== undefined ? 'menuitemradio' : 'menuitem'}
 	aria-checked={checked}
+	aria-describedby={describedBy}
 	{disabled}
 	{onclick}
 >

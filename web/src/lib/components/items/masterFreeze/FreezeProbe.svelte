@@ -24,12 +24,18 @@
 		canRestore = true,
 		isOwner = true,
 		quickActionsPresent = false,
+		moving = false,
+		deleting = false,
+		deleteViewArmed = false,
 	}: {
 		canEdit?: boolean;
 		peeking?: boolean;
 		canRestore?: boolean;
 		isOwner?: boolean;
 		quickActionsPresent?: boolean;
+		moving?: boolean;
+		deleting?: boolean;
+		deleteViewArmed?: boolean;
 	} = $props();
 
 	// The exact derived from ItemDetail.svelte — now scopes to content chrome only.
@@ -60,15 +66,62 @@
      `if (peeking) return` onclick guards are the backstop for a re-peek mid-flush. -->
 <button data-testid="mode-toggle">Rich / Markdown</button>
 
-<!-- REST mutation UI — gated on `canEdit` alone, present on both sides. -->
+<!-- REST mutation UI — gated on `canEdit` alone, present on both sides.
+
+     Delete and Move are NOT bar buttons any more. Both are rows inside the pane
+     ⋯ overflow (#1029 / TASK-2294 moved Move; TASK-2327 moved Delete's
+     confirmation there as a drill-down sub-view), so reaching either has TWO
+     parts and the probe mirrors both. Mirroring only the row is what let the
+     earlier `move-btn` drift sit here unnoticed: this file would stay green if
+     the TRIGGER ever grew a `!peeking` gate, even though that would take delete
+     AND move off the peeking side at once.
+
+       1. The ⋯ trigger — no `canEdit` and no `peeking` gate at all. It renders
+          on the peeking side like every other invisible-freeze control, and a
+          click activates that side first (host pointerdown-capture) before the
+          menu opens. Its only gate is `disabled={moving}`, an in-flight guard.
+          Note it is deliberately NOT in the test's REST_LIVE_SURFACES list:
+          that list asserts canEdit-gated controls, and the trigger stays present
+          for a true viewer (it still carries Dependency graph / Share).
+       2. The row inside it — `{#if canEdit}`, unchanged by the move into the
+          menu. -->
+<button data-testid="pane-more-btn" disabled={moving}>⋯</button>
 {#if canEdit}
-	<button data-testid="delete-btn">Delete</button>
+	<button data-testid="delete-btn">Delete…</button>
 {/if}
 {#if canEdit}
-	<button data-testid="move-btn">Move to…</button>
+	<button data-testid="move-btn" disabled={moving}>Move to collection…</button>
 {/if}
 {#if canEdit}
 	<button data-testid="add-relationship-btn">+ Add relationship</button>
+{/if}
+
+<!-- Delete's THIRD step: the ⋯ drill-down's confirm row (TASK-2327). Modelled
+     separately from `delete-btn` because its gate is genuinely different, and
+     getting this wrong is easy — Codex caught a first attempt that wrapped it
+     in `{#if canEdit}`. The real row is NOT canEdit-gated: it renders on
+     `paneMenuView === 'delete'` ALONE (mirrored here by `deleteViewArmed`) and
+     refuses via `disabled={deleting || !canEdit}`, so a mid-confirm permission
+     loss leaves it present but inert rather than yanking it out from under the
+     cursor. A viewer never reaches it — the route in (`delete-btn`) IS
+     canEdit-gated — but the row's own guard is defence in depth and has to be
+     mirrored as written.
+
+     DELIBERATELY NOT CLAIMED HERE: that an armed confirmation cannot survive
+     into a peek. That property is real, but it is an EMERGENT effect of
+     ItemDetail's peek-begin handler resetting `paneMenuOpen`/`paneMenuView`
+     (alongside editingTitle / shareDialogOpen / editCollectionOpen /
+     showAddLink, none of which this probe covers either) — it is NOT a gate on
+     this row. A second draft encoded it as `{#if deleteViewArmed && !peeking}`,
+     which is worse than no assertion at all: delete the reset from ItemDetail
+     and the probe stays green off its own hard-coded `!peeking`, mirroring
+     nothing. A static prop-driven mirror cannot express a transition, and e2e
+     can't discriminate it either — every click that causes a peek is also an
+     outside-click that closes the menu on its own. So the render condition is
+     mirrored exactly as written and the reset is left to ItemDetail's list.
+     Coverage for that reset is tracked separately (TASK-2337). -->
+{#if deleteViewArmed}
+	<button data-testid="delete-confirm-btn" disabled={deleting || !canEdit}>Delete item</button>
 {/if}
 
 <!-- Editor bubble/link popover is CONTENT chrome — it only appears on an editor

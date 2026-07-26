@@ -29,6 +29,13 @@
 		/** Extra containers that count as "inside" for outside-click
 		 *  (e.g. a nested portaled emoji picker). */
 		exempt?: () => (Element | null | undefined)[];
+		/** Changes to this value re-run the first-row focus handoff while the
+		 *  menu STAYS open. Drill-down menus (a sub-view swapped in place)
+		 *  unmount the focused MenuItem, which drops keyboard focus to
+		 *  <body>; pass the view identity here so focus follows the swap.
+		 *  Forwarded to BottomSheet in `sheetOnMobile` mode, which owns focus
+		 *  there. PLAN-2326 DR-8. */
+		focusKey?: string | number;
 		/** Return true to suppress outside-close for this event (e.g. while
 		 *  a drag interaction is in flight — cf. TopBar pill drags). */
 		suppressOutside?: () => boolean;
@@ -47,6 +54,7 @@
 		ariaLabel,
 		exempt,
 		suppressOutside,
+		focusKey,
 		children
 	}: Props = $props();
 
@@ -72,7 +80,15 @@
 
 	// Focus the first row on open (menus are keyboard surfaces); return
 	// focus to the trigger on close. Reads `open`/`panelEl`, writes neither.
+	//
+	// `focusKey` is read purely for dependency tracking: when a drill-down
+	// menu swaps its sub-view IN PLACE, `open` never changes, so without this
+	// read the effect wouldn't re-run and focus would be stranded on the
+	// unmounted MenuItem (PLAN-2326 DR-8). The effect body only performs DOM
+	// focus/placement — it writes no reactive state it also reads, so it
+	// cannot self-trigger (CONVE-1688).
 	$effect(() => {
+		focusKey;
 		if (open && !useSheet) {
 			tick().then(() => {
 				if (mode === 'portal') place();
@@ -145,7 +161,9 @@
 
 {#if useSheet}
 	{#if open}
-		<BottomSheet {open} onclose={onclose} title={sheetTitle}>
+		<!-- focusKey forwarded: the sheet owns focus on mobile, so the
+		     drill-down handoff (DR-8) has to be re-run there too. -->
+		<BottomSheet {open} onclose={onclose} title={sheetTitle} {focusKey}>
 			{@render children()}
 		</BottomSheet>
 	{/if}
