@@ -271,12 +271,60 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 		await expect(pane.locator('button.star-btn')).toBeVisible();
 		await expect(pane.locator('.strip-actions .badge-icon').first()).toBeVisible();
 
+		// ── TEMPORARY DIAGNOSTIC (TASK-2329) ──────────────────────────────────
+		// This test passes locally and failed twice on CI. The fit derivation
+		// rests on `tabs.scrollWidth === 321`, which is four English labels in
+		// whatever `--font-ui` resolves to — and that stack is
+		// `-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif`,
+		// every entry of which MISSES on Linux, so `system-ui` is resolved by
+		// fontconfig and differs between a dev box and ubuntu-latest. Dump the
+		// real numbers from whatever environment is running, rather than
+		// inferring them. Remove once the slack fix lands.
+		const diag = await pane.locator('.tab-strip').evaluate((strip) => {
+			const tabs = strip.querySelector('.pane-tabs') as HTMLElement;
+			const tabEls = Array.from(tabs.querySelectorAll<HTMLElement>('[role="tab"]'));
+			const cs = getComputedStyle(tabEls[0]);
+			// Width of each label's text alone, font-independent of padding.
+			const canvas = document.createElement('canvas');
+			const ctx = canvas.getContext('2d')!;
+			ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+			const scrollContainer = strip.closest('.item-pane, .item-page') as HTMLElement | null;
+			return {
+				stripW: +strip.getBoundingClientRect().width.toFixed(2),
+				tabsScrollW: tabs.scrollWidth,
+				tabsClientW: tabs.clientWidth,
+				slackPx: tabs.clientWidth - tabs.scrollWidth,
+				tabs: tabEls.map((t) => ({
+					text: (t.textContent || '').trim(),
+					w: +t.getBoundingClientRect().width.toFixed(2),
+					textOnly: +ctx.measureText((t.textContent || '').trim()).width.toFixed(2),
+					padL: getComputedStyle(t).paddingLeft,
+					padR: getComputedStyle(t).paddingRight,
+				})),
+				font: {
+					family: cs.fontFamily,
+					size: cs.fontSize,
+					weight: cs.fontWeight,
+					letterSpacing: cs.letterSpacing,
+				},
+				scrollbarPx: scrollContainer
+					? scrollContainer.offsetWidth - scrollContainer.clientWidth
+					: null,
+				dpr: devicePixelRatio,
+				ua: navigator.userAgent,
+			};
+		});
+		// eslint-disable-next-line no-console
+		console.log('TAB_FIT_DIAG ' + JSON.stringify(diag));
+
 		const layout = await stripLayout(pane);
 		expect(layout.split).toBe(true);
 		expect(layout.tabsOnOneRow).toBe(true);
-		// The whole point: FIT, not "reachable by scrolling". At 312px of strip
-		// the ≤330px padding rule trims the tabs from 321px to 297px.
-		expect(layout.tabsFit).toBe(true);
+		// The whole point: FIT, not "reachable by scrolling".
+		expect(
+			layout.tabsFit,
+			`tabs must fit without scrolling — measured scrollWidth ${diag.tabsScrollW} vs clientWidth ${diag.tabsClientW} (slack ${diag.slackPx}px) in font ${diag.font.family} @ ${diag.font.size}; per-tab ${JSON.stringify(diag.tabs.map((t) => [t.text, t.w]))}`,
+		).toBe(true);
 		expect(layout.tablistContainsActions).toBe(false);
 
 		// Every tab genuinely on screen and selectable.
