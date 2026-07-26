@@ -15,6 +15,12 @@
 		 *  destructive confirmation, which is presentational and otherwise
 		 *  never announced when the row takes focus (PLAN-2326). */
 		describedBy?: string;
+		/** Extra class on the row, for callers that need to address it from
+		 *  their own stylesheet — e.g. a container query that shows a row only
+		 *  at widths where the equivalent toolbar button is folded away
+		 *  (ItemDetail's Star row, TASK-2329). Reach it with `:global()`: the
+		 *  caller's scoping hash is not applied to this element. */
+		class?: string;
 		onclick?: (e: MouseEvent) => void;
 		children: Snippet;
 	}
@@ -26,6 +32,7 @@
 		checked,
 		disabled = false,
 		describedBy,
+		class: extraClass,
 		onclick,
 		children
 	}: Props = $props();
@@ -33,7 +40,7 @@
 
 <button
 	type="button"
-	class="mi"
+	class="mi {extraClass ?? ''}"
 	class:danger
 	role={checked !== undefined ? 'menuitemradio' : 'menuitem'}
 	aria-checked={checked}

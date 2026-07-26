@@ -539,9 +539,53 @@
 	// Stable per-instance suffix so tab/panel aria-controls pairs stay unique
 	// when TWO ItemDetail instances mount (full-page master + docked pane).
 	const uid = $props.id();
-	const PANE_TABS: Array<{ id: PaneTab; label: string }> = [
+
+	// ── Tablist overflow affordance (TASK-2329) ──────────────────────────
+	// `.pane-tabs` scrolls with `scrollbar-width: none`, so without this a
+	// cut-off tab is invisible AND unhinted — the exact defect this task
+	// exists to fix. CSS cannot ask "is this element scrolling", which is why
+	// this one measurement is scripted while every TIER rule stays a container
+	// query (DR-2 is about tier logic, and still holds).
+	//
+	// Writes only; nothing here reads these back, so there is no
+	// effect-self-write loop (CONVE-1688). `mask-image` is a paint effect, so
+	// flipping these cannot resize the element and cannot re-trigger the
+	// observer.
+	let tabsEl = $state<HTMLElement | null>(null);
+	let tabsAtStart = $state(true);
+	let tabsAtEnd = $state(true);
+	$effect(() => {
+		const el = tabsEl;
+		if (!el) return;
+		const measure = () => {
+			const max = el.scrollWidth - el.clientWidth;
+			// 1px tolerance: sub-pixel layout leaves scrollLeft fractionally
+			// short of `max` at the end of a scroll, and scrollWidth a hair
+			// over clientWidth when the content actually fits.
+			tabsAtStart = el.scrollLeft <= 1;
+			tabsAtEnd = max <= 1 || el.scrollLeft >= max - 1;
+		};
+		measure();
+		const ro = new ResizeObserver(measure);
+		ro.observe(el);
+		el.addEventListener('scroll', measure, { passive: true });
+		return () => {
+			ro.disconnect();
+			el.removeEventListener('scroll', measure);
+		};
+	});
+	// `short` is a NARROW-WIDTH VISIBLE label only (TASK-2329). The accessible
+	// name always stays `label`, pinned by `aria-label` on the tab, because
+	// roughly five specs address these tabs by
+	// `getByRole('tab', { name: 'Relationships' })` — the visible text may
+	// change with the container width, the accessible name may never.
+	//
+	// Only Relationships gets one. It is by far the longest label (98px of
+	// glyphs on CI's font vs 50-62 for the others) and the sole reason four
+	// tabs did not fit a 312px strip; the rest are already short.
+	const PANE_TABS: Array<{ id: PaneTab; label: string; short?: string }> = [
 		{ id: 'details', label: 'Details' },
-		{ id: 'relationships', label: 'Relationships' },
+		{ id: 'relationships', label: 'Relationships', short: 'Links' },
 		{ id: 'activity', label: 'Activity' },
 		{ id: 'versions', label: 'Versions' }
 	];
@@ -4368,6 +4412,10 @@
 			     unmounted — see the PaneTab block in the script. -->
 			<div
 				class="pane-tabs"
+				class:masked={!tabsAtStart || !tabsAtEnd}
+				style:--fade-l={tabsAtStart ? '0px' : '18px'}
+				style:--fade-r={tabsAtEnd ? '0px' : '18px'}
+				bind:this={tabsEl}
 				role="tablist"
 				aria-label="Item sections"
 				tabindex={-1}
@@ -4413,8 +4461,21 @@
 							if (e.pointerType === 'mouse') activeTab = t.id;
 						}}
 						onclick={() => (activeTab = t.id)}
+						aria-label={t.short ? t.label : undefined}
 					>
-						{t.label}
+						{#if t.short}
+							<!-- Two labels, one accessible name (TASK-2329). `aria-label`
+							     above pins the name to the FULL label, so
+							     `getByRole('tab', { name: 'Relationships' })` keeps
+							     resolving at every width — the ~5 specs that use it are
+							     untouched, and a screen reader never hears "Links".
+							     Only the VISIBLE text swaps, by container query. -->
+							<span class="tab-label-full">{t.label}</span><span class="tab-label-short"
+								>{t.short}</span
+							>
+						{:else}
+							{t.label}
+						{/if}
 					</button>
 				{/each}
 			</div>
@@ -4536,14 +4597,19 @@
 						sync without a separate API call.
 
 						Split into icon + count spans for TASK-2329's compact tier,
-						exactly as the children badge above. This badge has NO
-						`aria-label`, so its accessible name is computed from the
-						content — hence no `aria-hidden` on the icon and the literal
-						space between the spans: both would change the name.
+						exactly as the children badge above.
+
+						TASK-2328 left this badge without an `aria-label` so its
+						accessible name stayed the computed "📎 4". TASK-2329's
+						compact tier `display:none`s `.badge-icon`, which drops it
+						out of the accessibility tree too and would degrade that
+						name to a bare "4". An explicit label — mirroring the
+						children badge's — pins the name across BOTH tiers instead.
 					-->
 					<button
 						class="action-btn"
 						title="Mentioned in {backlinksCount} other item{backlinksCount === 1 ? '' : 's'}"
+						aria-label="Jump to Mentions — mentioned in {backlinksCount} other item{backlinksCount === 1 ? '' : 's'}"
 						onclick={() => jumpToSection('relationships', 'item-backlinks')}
 					>
 						<span class="badge-icon">📎</span> <span class="badge-count">{backlinksCount}</span>
@@ -4578,6 +4644,38 @@
 						focusKey={paneMenuView}
 					>
 						{#if paneMenuView === 'root'}
+							<!-- Star's stand-in for the FOLD band ONLY (TASK-2329).
+							     Between 560 and 639px of strip the `.star-btn`
+							     chip is `display: none`, which would leave the
+							     action with nowhere to go; PLAN-2326's premise is
+							     "zero affordances removed". Outside that band the
+							     chip is visible and this row is hidden, so the
+							     affordance exists in exactly one place at every
+							     width — never zero, never two, and never
+							     announced twice (`display: none` also drops it
+							     from the accessibility tree).
+
+							     Gated by `.strip-star-row` under the SAME
+							     container query that folds the chip; see the CSS.
+							     This Menu renders inside `.menu-anchor` ->
+							     `.strip-actions` -> `.tab-strip`, so it IS a
+							     descendant of the query container and the rule
+							     reaches it — on the anchored desktop panel and
+							     the mobile BottomSheet alike, neither of which
+							     portals out of the subtree. Unconditional in
+							     markup, like the chip: starring is a per-user
+							     REST toggle open to viewers too. -->
+							<MenuItem
+								class="strip-star-row"
+								icon={starredStore.isStarred(item.id) ? '★' : '☆'}
+								onclick={() => {
+									if (!item) return;
+									paneMenuOpen = false;
+									starredStore.toggle(wsSlug, item.slug, item.id);
+								}}
+							>
+								{starredStore.isStarred(item.id) ? 'Unstar' : 'Star'}
+							</MenuItem>
 							{#if graphFocusRef}
 								<MenuItem icon="🕸" onclick={() => { paneMenuOpen = false; openGraph(); }}>
 									Dependency graph
@@ -5544,32 +5642,85 @@
 		color: var(--text-muted);
 	}
 
-	/* ── Tab strip (PLAN-2326 / TASK-2328) ────────────────────────────────
-	   One band: the `.pane-tabs` tablist plus the right-aligned
-	   `.strip-actions` group, which before TASK-2328 was its own
-	   `.meta-actions` row above. The divider that used to belong to
-	   `.pane-tabs` lives here now so it runs the full width of the strip
-	   rather than stopping where the tabs do.
+	/* ── Tab strip (PLAN-2326 / TASK-2328, re-keyed by TASK-2329) ─────────
+	   The `.pane-tabs` tablist plus the `.strip-actions` group, which before
+	   TASK-2328 was its own `.meta-actions` row above. The divider that used
+	   to belong to `.pane-tabs` lives here now so it runs the full width of
+	   the strip rather than stopping where the tabs do.
 
-	   `container-type: inline-size` makes this the query container for
-	   TASK-2329's tier rule. It has to be here rather than on an ancestor:
-	   the docked pane's width is user-dragged and persisted, decoupled from
-	   the viewport, so a media query cannot see it (DR-2).
+	   ONE band when there is room, TWO when there is not. Combining them
+	   unconditionally does not work below ~560px and no amount of folding
+	   fixes it: the four tab labels are a fixed 321px, and even the most
+	   aggressive action group anyone proposed (⋯ alone, 38px) needs 359px
+	   against the 342px a 390px phone actually has. Measured on the widest
+	   common phone, 430px: 382px of strip, 179px of tab scrollport, two of
+	   four tabs clipped — under `scrollbar-width: none`, so with no hint
+	   they exist. Below 560 the actions therefore take a row of their own
+	   and the tablist gets the full width.
 
-	   Deliberately NO `overflow`, `contain`, `clip-path`, `transform`,
-	   `filter` or `will-change` on this element — it is an ancestor of both
-	   `.menu-anchor` and QuickActionsMenu's anchor, and any of those would
-	   clip the anchored panels they position. DR-9's scroll rule goes on
-	   `.pane-tabs`, which is their SIBLING. (`container-type` itself is
-	   safe: it applies layout/style/inline-size containment but not PAINT
-	   containment, so the panels still escape — DR-3, re-verified in
-	   Chromium against this markup, including the mobile BottomSheet's
-	   `position: fixed` overlay, which still resolves against the
-	   viewport.) */
+	   `container-type: inline-size` makes this the query container. It has
+	   to be here rather than on an ancestor: the docked pane's width is
+	   user-dragged and persisted, decoupled from the viewport, so a media
+	   query cannot see it (DR-2). A 360px pane on a 1920px monitor splits;
+	   the full page behind it does not.
+
+	   `flex-wrap` / `column-gap` / `row-gap` MUST live in THIS rule and not
+	   in the `@container` block below. A container query cannot style its
+	   own query container, and `.tab-strip` IS `item-tab-strip` — a
+	   `flex-wrap: wrap` written in there is silently dropped. Not inert:
+	   with `flex-basis: 100%` on `.strip-actions` while `nowrap` is still in
+	   force, `.pane-tabs` collapses to 0px.
+
+	   Deliberately NO `contain`, `transform`, `filter`, `perspective`,
+	   `will-change` or `clip-path` on this element. It is an ancestor of both
+	   `.menu-anchor` and QuickActionsMenu's anchor, and each of those breaks
+	   the anchored panels — but by DIFFERENT mechanisms, and being sloppy
+	   about which is which is how the audit went wrong once already:
+
+	     `transform` / `filter` / `perspective` / `will-change`
+	         make this a containing block for `position: fixed`, so the mobile
+	         BottomSheet would resolve against this 33px strip instead of the
+	         viewport. They do NOT add paint containment.
+	     `contain: layout` (and `strict` / `content`)
+	         same containing-block effect; `contain: paint` additionally clips.
+	     `clip-path`
+	         does NOT form that containing block, but DOES visually clip
+	         descendants — including fixed ones. Dangerous for a different
+	         reason, not the same one.
+	     `overflow`
+	         none of the above. NOT in this set, and not a problem here.
+
+	   That last one matters: the app already has five overflow ancestors above
+	   this strip — `.item-page`, `.item-page-host`, `.main-content`,
+	   `.app-shell`, `.app-layout`, all pre-existing scroll containers — and
+	   the panels are fine, because `overflow` alone forms no fixed containing
+	   block and the anchored panel is `position: absolute` sized to fit. So
+	   the rule is "do not add a containment/transform property HERE", not "no
+	   ancestor may ever scroll". Verified by walking the computed styles of
+	   the whole chain to `<html>` (nothing establishes a fixed containing
+	   block) and by corner hit-testing the open panel at 1440 plus the sheet
+	   at 430 and 360 (four corners owned, inside the viewport, every time).
+
+	   The horizontal scroll rule goes on `.pane-tabs`, which is the anchors'
+	   SIBLING, so it cannot clip them either way.
+
+	   `container-type: inline-size` is itself SAFE — and this is worth stating
+	   with its evidence, because reading the containment spec suggests
+	   otherwise: `container-type` implies layout containment, and layout
+	   containment is specified to make an element a containing block for fixed
+	   descendants. Chromium does not apply that here. Measured directly by
+	   injecting a `position: fixed; inset: 0` probe as a real child of this
+	   element at a 390px viewport: the probe laid out 390x844 (the full
+	   viewport), NOT 342x67 (the strip). Chromium also reports `contain: none`
+	   on this element despite `container-type`. Do NOT "fix" that by adding
+	   `contain: layout` — a three-way control confirmed that one DOES collapse
+	   a fixed child into the strip. */
 	.tab-strip {
 		display: flex;
 		align-items: center;
-		gap: var(--space-3);
+		column-gap: var(--space-3);
+		row-gap: var(--space-2);
+		flex-wrap: wrap;
 		container-type: inline-size;
 		container-name: item-tab-strip;
 		border-bottom: 1px solid var(--border-subtle);
@@ -5580,13 +5731,30 @@
 	.pane-tabs {
 		display: flex;
 		gap: 2px;
-		/* DR-9 width allocation: `.strip-actions` never shrinks, so the tab
-		   list scrolls horizontally instead of wrapping to a second row or
-		   crushing the actions. `min-width: 0` is what lets a flex item
-		   shrink below its content width at all. */
+		/* `.strip-actions` never shrinks, so whatever room is left goes to the
+		   tab list and it scrolls rather than crushing the actions.
+		   `min-width: 0` is what lets a flex item shrink below its content
+		   width at all. Above 560px the two share one row and the scroll is
+		   the overflow valve; below 560 the actions take their own row and
+		   the tablist gets the full width, at which point the four tabs fit
+		   outright at every phone width (the short `Links` label plus the
+		   ≤330px padding trim buy the slack). The scroll stays as the backstop
+		   for a future fifth tab, a longer label, a translation, or a font we
+		   have not measured.
+
+		   That backstop USED to be silent: `scrollbar-width: none` hides the
+		   only native signal that content is cut off, which is exactly the
+		   discoverability defect that started this whole episode (two of four
+		   tabs invisible at 430px with nothing to indicate it). The
+		   `background` below restores a signal without giving the scrollbar
+		   back — see the note on it. */
 		min-width: 0;
 		overflow-x: auto;
 		scrollbar-width: none;
+		/* Fade widths for the overflow affordance below — 0 unless the script
+		   has measured content past that edge. */
+		--fade-l: 0px;
+		--fade-r: 0px;
 		/* `overflow-x: auto` computes `overflow-y` to `auto` too, which would
 		   clip `.pane-tab`'s `margin-bottom: -1px` overlap and leave the
 		   active tab with a 1px accent sitting on 1px of divider instead of a
@@ -5602,9 +5770,49 @@
 		display: none;
 	}
 
-	/* `margin-left: auto` right-aligns the group however few tabs there are;
-	   `flex: 0 0 auto` is DR-9's other half — the actions hold their size and
-	   the tab list gives way. */
+	/* ── OVERFLOW AFFORDANCE (TASK-2329) ──────────────────────────────────
+	   `scrollbar-width: none` hides the only native signal that content is
+	   cut off — which IS the defect that started this episode: two of four
+	   tabs invisible at 430px with nothing to say so. The label fix means
+	   overflow now needs a font ~30% wider than CI's before it happens at
+	   all, but "needs an unusual font" is not "cannot happen" (translations,
+	   user zoom, a future fifth tab), so it must degrade visibly rather than
+	   silently truncate.
+
+	   A soft edge fade, applied ONLY on an edge that actually has more
+	   content past it, so at rest there is no mask at all.
+
+	   Why this is script-measured and not a container query: CSS cannot ask
+	   "is this element scrolling". That is the opposite situation to the tier
+	   rules, where CSS expresses the question natively and DR-2 rightly
+	   rejected JS — here JS is the only tool that can answer it. It reads
+	   `scrollWidth`/`clientWidth` and writes two booleans; it does not
+	   participate in the tier logic at all.
+
+	   A pure-CSS attempt came first and was rejected on measurement, not
+	   taste: the two-layer `background-attachment: local/scroll` scroll-shadow
+	   idiom is conditional by construction, but backgrounds paint BEHIND the
+	   tab text, and sampling the rendered edge pixels showed no legible
+	   signal in either theme. Recorded so nobody re-tries it.
+
+	   `mask-image` on `.pane-tabs` is safe: it is a paint effect (the -1px
+	   divider overlap still measures 0 in both tiers) and `.pane-tabs` is a
+	   SIBLING of `.menu-anchor`, so it cannot clip the anchored panels. */
+	.pane-tabs.masked {
+		mask-image: linear-gradient(
+			to right,
+			transparent 0,
+			#000 var(--fade-l),
+			#000 calc(100% - var(--fade-r)),
+			transparent 100%
+		);
+	}
+
+	/* Shared-row shape (>=560px of strip): `margin-left: auto` right-aligns
+	   the group however few tabs there are, and `flex: 0 0 auto` holds its
+	   size so the tab list is what gives way. Both are overridden in the
+	   split tier below, where the group owns a full row and right-aligns via
+	   `justify-content` instead. */
 	.strip-actions {
 		display: flex;
 		align-items: center;
@@ -5618,6 +5826,152 @@
 	   the floor is overridden HERE rather than removed from the base rule. */
 	.strip-actions .action-btn {
 		min-width: 0;
+	}
+
+	/* ── Tier rules, all keyed on the STRIP's own width ────────────────────
+	   Measured strip widths, which is what the three boundaries below are
+	   drawn against (worst-case item: both count badges + quick actions +
+	   owner rights):
+
+	     full page                     892-912px  (capped by
+	                                   --content-max-width; identical at 1440
+	                                   and 2560, so a viewport media query
+	                                   could never have keyed this)
+	     full page @1024 / @768            716-720px
+	     full page + a docked pane         526-678px
+	     docked pane (360-720px wide)      312-672px
+	     phone full page / overlay         312-382px
+
+	   Note the docked pane reaches 672, not the 592 the CSS `clamp(...640px)`
+	   implies: `PaneHost.svelte`'s JS `PANE_WIDTH_MAX = 720` is the real
+	   ceiling and it wins.
+
+   ── The two boundaries, DERIVED FROM MEASUREMENT ──
+	   Measured on the worst-case item above, with the tab labels at their
+	   natural 321px and a 12px column gap:
+
+	     action group, FOLDED (icons off, star off)   191px -> row needs 524px
+	     action group, FULL                           274px -> row needs 607px
+	     action group, FULL, badge counts inflated
+	       to an absurd "199/199" + "999"             301px -> row needs 634px
+
+	   So SPLIT below 560 (36px of slack over the folded row's 524), and FULL
+	   at 640 and up (6px over the absurd case, 33px over the real one). The
+	   fold band is what is left in between.
+
+	   640 rather than the 700 this task was scoped with: that figure was
+	   derived while Saved/Synced were still in the strip, and they were worth
+	   115px of the group. With them back in `.meta-info` the full row needs
+	   607px, not 722px, so a 700px boundary would have folded the star and
+	   the badge icons on the two widest surfaces that fold at all — a pane
+	   dragged to its 672px maximum and a 1440px full page with a pane docked
+	   (678px) — both of which have room to spare.
+
+	   ── The two blocks NEST, they do not abut (Codex) ──
+	   The obvious encoding is three adjacent bands: `max-width: 559`,
+	   `560..639`, `640+`. That leaves a hole. Container widths are not
+	   integers — the docked pane's default is `clamp(360px, 38%, 640px)` and
+	   `PaneHost`'s JS floors are `usable * 0.4` — so a strip can genuinely
+	   measure 559.5px, which matches NEITHER `max-width: 559px` NOR
+	   `min-width: 560px`, and silently falls back to the full shared row that
+	   needs 607px. A sub-pixel window, but a real one, and invisible to
+	   integer-width tests.
+
+	   Two things close it. First the blocks NEST: FOLD covers everything at
+	   or below the full threshold, and SPLIT is a strict SUBSET of it that
+	   both re-shapes the rows and UN-folds what the outer block hid. That
+	   alone bounds the damage — measured at 559.5px the strip folds instead
+	   of splitting, and the folded shared row needs only 524px, so the tabs
+	   still fit. Second the bounds are `.99`, not integers, so the leftover
+	   window is [559.99, 560), which no engine can land in: layout precision
+	   is 1/64px in Chromium and WebKit and 1/60px in Gecko, all coarser than
+	   0.01. Verified by forcing the strip to 559.50 / 559.99 / 639.50 /
+	   639.99 and checking the tier each time.
+
+	   (`(560px <= width < 640px)` range syntax would be exact and read
+	   better, but a browser that cannot parse it drops the whole block —
+	   which on a phone means the broken shared row comes back. `max-width`
+	   is universally supported wherever `@container` is.)
+
+	   ── FOLD, at or below 639px ──
+	   The two still share a row but it is tight, so the badge icons drop to
+	   bare counts and the star folds. The star folds by `display: none` with
+	   the node RETAINED (DR-11) — `.star-btn` must stay in the DOM for the
+	   BUG-2263 freeze assertions in pane-full-page-capstone.spec.ts.
+
+	   `.strip-star-row` is the `⋯` menu's stand-in for the folded chip, gated
+	   by the SAME query, inverted: hidden by default, shown only here.
+	   Symmetric by construction — the affordance exists in exactly one place
+	   at every width, never zero and never two, and `display: none` keeps the
+	   hidden one out of the accessibility tree so it is never announced
+	   alongside the visible chip.
+
+	   `:global()` because the row is a `MenuItem` child component: this
+	   component's scoping hash is not applied to its button. The Menu still
+	   renders INSIDE `.menu-anchor` -> `.strip-actions` -> `.tab-strip`
+	   (anchored panel and mobile BottomSheet alike — neither portals out), so
+	   it is a descendant of the query container and the rule reaches it.
+
+	   DESCENDED FROM `.menu-anchor` deliberately, not a bare
+	   `:global(.strip-star-row)`. MenuItem's own `.mi { display: flex }`
+	   carries that component's scoping hash, so it is (0,2,0) and a bare
+	   global class selector (0,1,0) loses to it — measured: the row rendered
+	   `display: flex` at every width, breaking the symmetry in the direction
+	   that shows the star TWICE. Prefixing with this component's own
+	   `.menu-anchor` makes every one of these rules (0,3,0), which wins
+	   deterministically and keeps the global reach inside our own subtree. */
+	.menu-anchor :global(.strip-star-row) {
+		display: none;
+	}
+
+	@container item-tab-strip (max-width: 639.99px) {
+		.badge-icon {
+			display: none;
+		}
+		.star-btn {
+			display: none;
+		}
+		.menu-anchor :global(.strip-star-row) {
+			display: flex;
+		}
+	}
+
+	/* ── SPLIT, at or below 559px — a strict subset of the FOLD block ──
+	   The actions take a row of their own and the tablist gets the full
+	   width. This is the fix for the phone case, where sharing a row is not
+	   survivable at any action-group size (see the note on `.tab-strip`).
+
+	   ABOVE the tabs, not below (`order: -1`, visual only — DOM order and
+	   therefore the tablist's roving tabindex are untouched). `.tab-strip`
+	   owns the bottom divider and `.pane-tab.on` overlaps it by 1px via
+	   `margin-bottom: -1px`; keeping the tablist as the LAST row preserves
+	   that overlap. Actions-below would orphan the active-tab underline
+	   ~31px above the divider.
+
+	   The three UN-FOLD declarations are what make the nesting work: with a
+	   row to themselves the actions have room, so the star and the badge
+	   icons come back and the menu row stands down. The values restore what
+	   the elements compute to outside the fold — `.badge-icon` is a plain
+	   inline `<span>`, and `.star-btn` is a flex item of `.strip-actions` so
+	   its used display is `block` regardless. Both measured, and asserted by
+	   the symmetry test in pane-tab-strip-tiers.spec.ts. */
+	@container item-tab-strip (max-width: 559.99px) {
+		.strip-actions {
+			order: -1;
+			flex: 0 0 100%;
+			margin-left: 0;
+			justify-content: flex-end;
+			flex-wrap: wrap;
+		}
+		.badge-icon {
+			display: inline;
+		}
+		.star-btn {
+			display: block;
+		}
+		.menu-anchor :global(.strip-star-row) {
+			display: none;
+		}
 	}
 
 	.pane-tab {
@@ -5641,6 +5995,74 @@
 	.pane-tab.on {
 		color: var(--text-primary);
 		border-bottom-color: var(--accent-primary, var(--accent-blue));
+	}
+
+	/* ── TAB PADDING, below 330px of strip ──
+	   At the 360px pane floor / a 360px phone the strip is 312px and the four
+	   tabs need 321px even with a full row to themselves. Trimming 11px -> 8px
+	   of horizontal padding buys 24px, which clears it (321 -> 297). Vertical
+	   padding is untouched so the strip's height and the active tab's 1px
+	   divider overlap do not move.
+
+	   ⚠ DO NOT MOVE THIS BLOCK ABOVE THE BASE `.pane-tab` RULE, and do not
+	   group it with the other `@container` blocks further up "for tidiness".
+
+	   A container query adds NO specificity. `.pane-tab` here and `.pane-tab`
+	   in the base rule are both (0,2,0) once Svelte's scoping hash is applied,
+	   so they tie and SOURCE ORDER is the only thing that decides. Placed
+	   before the base rule this whole block is silently discarded.
+
+	   The reason to spell that out: the failure is silent AND partial, so it
+	   does not look like a broken rule. The tabs still render, still scroll,
+	   and only the last one clips at 360px — which reads as "the 330 threshold
+	   is slightly off" rather than "these four declarations never applied at
+	   all". It cost a build to find and it is invisible to code review; the
+	   only thing that surfaces it is measuring `scrollWidth`, which stayed at
+	   321px inside a 312px strip instead of dropping to 297px. */
+	@container item-tab-strip (max-width: 330px) {
+		.pane-tab {
+			padding-left: 8px;
+			padding-right: 8px;
+		}
+	}
+
+	/* ── TAB LABELS: short form below 560px of strip ───────────────────────
+	   `Relationships` -> `Links`, visible text only. The accessible name is
+	   pinned to the full label by `aria-label` on the tab, so
+	   `getByRole('tab', { name: 'Relationships' })` — used by ~5 specs — keeps
+	   resolving, and a screen reader never hears "Links".
+
+	   This is what buys the fit REAL SLACK instead of a tuned zero. CI proved
+	   the previous derivation was environment-specific: `--font-ui` is
+	   `-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif`,
+	   every entry of which misses on Linux, so `system-ui` resolves through
+	   fontconfig to different font FILES on a dev box and on ubuntu-latest.
+	   Same declaration, 17.5% wider glyphs, measured:
+
+	                       dev box    CI      delta
+	     four tab labels     297px   337px    +40px
+	     strip at 360 pane   312px   312px
+	     slack                +15     -25     <-- CI overflowed by 25px
+
+	   Ten candidate families forced locally spanned 273-297px, so CI is wider
+	   than the entire local envelope — this was not findable without the
+	   runner. `Relationships` alone was 84px of glyphs locally and 98px on CI.
+	   Swapping it for `Links` takes 51px off the row (measured), which turns
+	   CI's -25px into roughly +34px and every local font into +60px or more.
+
+	   ⚠ Same ordering rule as the padding block above: these tie with the base
+	   `.tab-label-*` rules at (0,2,0), so the query MUST stay after them. */
+	.tab-label-short {
+		display: none;
+	}
+
+	@container item-tab-strip (max-width: 559.99px) {
+		.tab-label-full {
+			display: none;
+		}
+		.tab-label-short {
+			display: inline;
+		}
 	}
 
 	/* Hidden tab panels stay MOUNTED (collab editor, SSE feeds, backlink
@@ -5885,6 +6307,18 @@
 		border-radius: var(--radius-sm);
 		white-space: nowrap;
 		flex-shrink: 0;
+	}
+	/* SCREEN-HIDDEN since TASK-2329: the ref already renders in the
+	   breadcrumb tail on the full page and in `.pane-header-ref-text` inside
+	   the pane, so the chip was the second or third copy within ~40px.
+
+	   Kept in the DOM for PRINT, where it IS the document header's ref
+	   (`order: 2` flips it right of the title). The print block below
+	   restores `display` EXPLICITLY — same specificity, later in source, so
+	   it wins inside `@media print`. Without that reset this rule would
+	   survive into print and drop the ref from page 1 (BUG-626 / DR-5). */
+	.title-row .item-ref {
+		display: none;
 	}
 	.title {
 		display: block;
@@ -6698,6 +7132,14 @@
 			border: none;
 		}
 		.title-row .item-ref {
+			/* MANDATORY reset (TASK-2329 / DR-5). The chip is screen-hidden
+			   with `display: none` now, and this rule previously set every
+			   print property EXCEPT `display` — so without this line the
+			   screen hide survives into print and the ref disappears from the
+			   page-1 document header, regressing BUG-626. `block` is what the
+			   old `inline` computed to anyway once `.title-row`'s print
+			   `display: flex` blockified it, so print output is unchanged. */
+			display: block;
 			order: 2;
 			flex: 0 0 auto;
 			font-size: 10pt;
