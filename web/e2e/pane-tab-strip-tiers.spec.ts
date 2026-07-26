@@ -1,38 +1,44 @@
 import { test, expect } from './fixtures';
-import { browserLogin, seedDoc, SYNCED_BADGE_SELECTOR } from './lib/collab-helpers';
+import { browserLogin, SYNCED_BADGE_SELECTOR } from './lib/collab-helpers';
 import type { APIRequestContext, Locator, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
 
 /**
- * Tab-strip TIER rule (PLAN-2326 DR-7 / DR-9 / DR-10 / TASK-2329).
+ * Tab-strip TIER rules (PLAN-2326 / TASK-2329).
  *
- * The strip carries `container-type: inline-size` and a single
- * `@container item-tab-strip (max-width: 699px)` rule: below 700px of STRIP
- * width the badge icons drop to bare counts and the star folds away, node
- * retained.
+ * `.tab-strip` is `container-type: inline-size` and carries three rules keyed
+ * on its OWN width, not the viewport's:
  *
- * Two things are worth a real browser here, and neither is unit-testable:
+ *   < 560px   SPLIT — `.strip-actions` takes a full row of its own, `order:
+ *             -1` so it sits ABOVE the tablist, and the tabs get the full
+ *             width. Everything the shared row folded comes back.
+ *   560-699   FOLD  — still one row, but tight: badge icons drop to bare
+ *             counts and the star folds (node retained, DR-11).
+ *   <= 330px  the tabs' horizontal padding trims 11px -> 8px, the last 24px
+ *             needed to fit four tabs in a 312px strip.
  *
- *   1. The tier keys off the CONTAINER, not the viewport. This is the whole
- *      reason DR-2 chose `@container`: the docked pane's width is dragged by
- *      the user and persisted (`PaneHost.svelte` — `clamp(360px, 38%, 640px)`
- *      by CSS, `PANE_WIDTH_MIN 360` / `PANE_WIDTH_MAX 720` by JS), so it is
- *      decoupled from the viewport entirely. A `@media (min-width: 700px)`
- *      rule would sail through every assertion in test 1 — the viewport never
- *      changes size in it. Squeezing the FULL-PAGE master by opening a pane
- *      beside it drives the flip in place, at a fixed viewport, with no
- *      reload and no remount.
+ * Why the split exists at all: combining tabs and actions on one row is not
+ * survivable at phone widths and no amount of folding fixes it. The four tab
+ * labels are a fixed 321px, and even a hypothetical action group of nothing
+ * but `⋯` (38px) needs 359px against the 342px a 390px phone has. Measured on
+ * the WIDEST common phone before this change, 430px: 382px of strip, 179px of
+ * tab scrollport, two of four tabs clipped — under `scrollbar-width: none`,
+ * so with no hint they existed.
  *
- *   2. DR-9's width allocation actually holds at the 360px pane floor. Four
- *      tabs, two count badges, quick actions and the ⋯ overflow have to share
- *      a ~312px strip; `.strip-actions` is `flex: 0 0 auto` and `.pane-tabs`
- *      scrolls, so the contract is "one row, every tab still reachable" — not
- *      "everything fits". That is a layout property of the real box model.
+ * Three things here need a real browser:
  *
- * Measured strip widths this rule was calibrated against (TASK-2329):
- *   full page 892-912px (capped by `--content-max-width`, identical at 1440
- *   and 2560) · full page with a pane docked 526-678px · docked pane 312-672px
- *   · mobile overlay 342px. Only the pane-free full page reaches the full tier.
+ *   1. The rules key off the CONTAINER. The docked pane's width is dragged by
+ *      the user and persisted (`PaneHost.svelte`: `PANE_WIDTH_MIN 360` /
+ *      `PANE_WIDTH_MAX 720`), so it is decoupled from the viewport entirely,
+ *      and the full page's own strip is capped at 912px by
+ *      `--content-max-width` at ANY monitor size. Test 1 drives the split at
+ *      a FIXED viewport by squeezing the full-page master with a docked pane;
+ *      a `@media` rule would sail through every assertion in it.
+ *   2. Whether four tabs actually fit once they own a row. That is a box-model
+ *      fact, and the ≤330px padding trim is what makes it true at 360.
+ *   3. That the split did not break the active tab's 1px overlap of the
+ *      strip's bottom divider — the reason the actions go ABOVE rather than
+ *      below.
  *
  * Desktop-split concern, so the desktop project alone covers it.
  */
@@ -87,11 +93,47 @@ function masterCol(page: Page): Locator {
 	return page.locator('.item-page-host > .item-page');
 }
 
-/** Rendered width of a strip, straight off the box model. */
+/** Rendered width of the strip inside `scope`, straight off the box model. */
 async function stripWidth(scope: Locator): Promise<number> {
 	return Math.round(
 		await scope.locator('.tab-strip').evaluate((n) => n.getBoundingClientRect().width),
 	);
+}
+
+interface StripLayout {
+	/** true when `.strip-actions` sits on its own row above the tablist. */
+	split: boolean;
+	/** every tab shares one offsetTop — the tablist itself never wraps. */
+	tabsOnOneRow: boolean;
+	/** the tablist is not overflowing: all four labels are actually shown. */
+	tabsFit: boolean;
+	/** active tab's border-box bottom minus the strip's — 0 means it covers
+	 *  the 1px divider exactly, which is the designed overlap. */
+	underlineOffset: number;
+	/** the action group must never become a child of the tablist (DR-4). */
+	tablistContainsActions: boolean;
+}
+
+async function stripLayout(scope: Locator): Promise<StripLayout> {
+	return scope.locator('.tab-strip').evaluate((strip) => {
+		const tabs = strip.querySelector('.pane-tabs') as HTMLElement;
+		const acts = strip.querySelector('.strip-actions') as HTMLElement;
+		const tabEls = Array.from(tabs.querySelectorAll<HTMLElement>('[role="tab"]'));
+		const active = tabs.querySelector('.pane-tab.on');
+		const sr = strip.getBoundingClientRect();
+		const tr = tabs.getBoundingClientRect();
+		const ar = acts.getBoundingClientRect();
+		return {
+			split: ar.bottom <= tr.top + 1,
+			tabsOnOneRow:
+				new Set(tabEls.map((t) => Math.round(t.getBoundingClientRect().top))).size === 1,
+			tabsFit: tabs.scrollWidth <= tabs.clientWidth,
+			underlineOffset: active
+				? Math.round(active.getBoundingClientRect().bottom - sr.bottom)
+				: NaN,
+			tablistContainsActions: tabs.contains(acts),
+		};
+	});
 }
 
 test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
@@ -102,7 +144,7 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 		);
 	});
 
-	test('the tier keys off the STRIP CONTAINER, not the viewport: squeezing the full-page master with a docked pane flips it compact in place — and closing the pane flips it back (DR-2 / DR-10)', async ({
+	test('the SPLIT keys off the strip CONTAINER, not the viewport: docking a pane beside the full-page master splits its strip in place at a fixed viewport, and closing the pane rejoins it', async ({
 		page,
 		fixture,
 		request,
@@ -111,8 +153,7 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 		await browserLogin(page);
 
 		// Master with a CHILD (renders the 🌳 badge) plus a RELATED item to open
-		// in the pane. The child badge is what proves `.badge-icon` folds while
-		// `.badge-count` survives — a text-node split TASK-2328 made possible.
+		// in the pane.
 		const master = await seedDocWith(fixture, request, 'Tier master');
 		await seedDocWith(fixture, request, 'Tier child', { parent: master.id });
 		const related = await seedDocWith(fixture, request, 'Tier related');
@@ -125,10 +166,15 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 		const badgeIcon = col.locator('.strip-actions .badge-icon');
 		const badgeCount = col.locator('.strip-actions .badge-count');
 
-		// ── FULL tier. 892px of strip at this viewport, comfortably over 700. ──
+		// ── SHARED ROW. 892px of strip at this viewport, way over 699. ──
 		await expect(col.locator('.tab-strip')).toBeVisible();
 		await expect(badgeCount.first()).toBeVisible(); // children badge has arrived
 		expect(await stripWidth(col)).toBeGreaterThanOrEqual(700);
+		let layout = await stripLayout(col);
+		expect(layout.split).toBe(false);
+		expect(layout.tabsFit).toBe(true);
+		expect(layout.tablistContainsActions).toBe(false);
+		const sharedRowUnderline = layout.underlineOffset;
 		await expect(star).toBeVisible();
 		await expect(badgeIcon.first()).toBeVisible();
 
@@ -141,41 +187,41 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 			.click();
 		await expect(page.locator('.item-pane')).toBeVisible();
 
-		// The viewport is byte-identical to what it was in the full tier above.
+		// The viewport is byte-identical to what it was on the shared row above.
 		// A media query cannot distinguish these two states; a container query can.
 		expect(page.viewportSize()).toEqual(DESKTOP);
 
-		// ── COMPACT tier, driven purely by the container shrinking. ──
-		await expect(star).toBeHidden();
-		expect(await stripWidth(col)).toBeLessThan(700);
-		await expect(badgeIcon.first()).toBeHidden();
-		// DR-11: the star FOLDS, it is not removed. The BUG-2263 freeze
-		// assertions in pane-full-page-capstone.spec.ts depend on the node.
-		await expect(star).toHaveCount(1);
-		// The count survives the icon — the point of DR-9's span split.
-		await expect(badgeCount.first()).toBeVisible();
-		// The collab badge is untouched by the tier rule — it lives in
-		// `.meta-info`, outside the query container entirely. Asserted here
-		// only because SYNCED_BADGE_SELECTOR is load-bearing for four other
-		// suites and this is the narrowest surface any of them exercise.
-		await expect(col.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
-		// ⋯ never folds at any tier — it is the compact tier's escape hatch, and
-		// it carries the Star the strip just folded away.
-		await expect(col.locator('button.pane-more-btn')).toBeVisible();
-		await col.locator('button.pane-more-btn').click();
-		await expect(col.getByRole('menuitem', { name: /^(Star|Unstar)$/ })).toBeVisible();
-		await page.keyboard.press('Escape');
-
-		// ── Close the pane → the container widens again and the tier reverts.
-		//    A one-way rule would pass every assertion above. ──
-		await page.locator('.item-pane').getByRole('button', { name: 'Close pane' }).click();
-		await expect(page.locator('.item-pane')).toHaveCount(0);
-		expect(await stripWidth(col)).toBeGreaterThanOrEqual(700);
+		// ── SPLIT, driven purely by the container shrinking to ~526px. ──
+		await expect
+			.poll(async () => (await stripLayout(col)).split, { timeout: 5000 })
+			.toBe(true);
+		expect(await stripWidth(col)).toBeLessThan(560);
+		layout = await stripLayout(col);
+		expect(layout.tabsOnOneRow).toBe(true);
+		expect(layout.tabsFit).toBe(true);
+		expect(layout.tablistContainsActions).toBe(false);
+		// Actions ABOVE, not below: the strip owns the bottom divider and the
+		// active tab overlaps it by 1px. Keeping the tablist last preserves that,
+		// so the underline offset is unchanged from the shared row.
+		expect(layout.underlineOffset).toBe(sharedRowUnderline);
+		// Below 560 the actions have room again, so what the FOLD band hides is
+		// visible here. This is the behaviour a single <700 fold got wrong.
 		await expect(star).toBeVisible();
 		await expect(badgeIcon.first()).toBeVisible();
+		// The collab badge lives in `.meta-info`, outside the query container —
+		// asserted only because SYNCED_BADGE_SELECTOR is load-bearing for four
+		// other suites and this is the narrowest surface any of them exercises.
+		await expect(col.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
+
+		// ── Close the pane → the container widens and the rows rejoin. A
+		//    one-way rule would pass every assertion above. ──
+		await page.locator('.item-pane').getByRole('button', { name: 'Close pane' }).click();
+		await expect(page.locator('.item-pane')).toHaveCount(0);
+		await expect.poll(async () => (await stripLayout(col)).split, { timeout: 5000 }).toBe(false);
+		expect(await stripWidth(col)).toBeGreaterThanOrEqual(700);
 	});
 
-	test('worst case at the 360px pane floor — children + backlinks + quick actions + owner rights: the strip stays ONE row and every tab is still reachable through the scroll (DR-9)', async ({
+	test('worst case at the 360px pane floor — children + backlinks + quick actions + owner rights: actions take their own row and all four tabs FIT without scrolling', async ({
 		page,
 		fixture,
 		request,
@@ -192,9 +238,7 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 			content: `mentions [[${master.title}]] here`,
 		});
 
-		await page.goto(
-			`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${master.slug}`,
-		);
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${master.slug}`);
 		const pane = page.locator('.item-pane');
 		await expect(pane.locator('.tab-strip')).toBeVisible();
 
@@ -211,47 +255,91 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 			.poll(async () => Math.round(await pane.evaluate((n) => n.getBoundingClientRect().width)))
 			.toBe(360);
 
-		// Both badges present (the strip is at its most crowded).
+		// The strip is at its most crowded: both badges + quick actions + ⋯.
 		await expect(pane.locator('.strip-actions .badge-count')).toHaveCount(2);
 		await expect(pane.locator('button.trigger-btn[title="Quick actions"]')).toBeVisible();
 		await expect(pane.locator('button.pane-more-btn')).toBeVisible();
-		// Compact tier throughout.
-		await expect(pane.locator('button.star-btn')).toBeHidden();
-		await expect(pane.locator('button.star-btn')).toHaveCount(1);
-		await expect(pane.locator('.strip-actions .badge-icon').first()).toBeHidden();
+		// And the star is VISIBLE here, not folded — below 560 the actions own a
+		// row, so there is room for it. (A single <700 fold hid it on every
+		// phone; that was the bug this keying fixes.)
+		await expect(pane.locator('button.star-btn')).toBeVisible();
+		await expect(pane.locator('.strip-actions .badge-icon').first()).toBeVisible();
 
-		// ── ONE ROW. `.strip-actions` holds its size and `.pane-tabs` scrolls
-		//    rather than wrapping, so all four tabs share a single offsetTop. ──
-		const tabTops = await pane.locator('.pane-tabs').evaluate((n) => {
-			const tabs = Array.from(n.querySelectorAll<HTMLElement>('[role="tab"]'));
-			return Array.from(new Set(tabs.map((t) => Math.round(t.getBoundingClientRect().top))));
-		});
-		expect(tabTops).toHaveLength(1);
+		const layout = await stripLayout(pane);
+		expect(layout.split).toBe(true);
+		expect(layout.tabsOnOneRow).toBe(true);
+		// The whole point: FIT, not "reachable by scrolling". At 312px of strip
+		// the ≤330px padding rule trims the tabs from 321px to 297px.
+		expect(layout.tabsFit).toBe(true);
+		expect(layout.tablistContainsActions).toBe(false);
 
-		// ── EVERY TAB REACHABLE. The tablist is a scrollport narrower than its
-		//    content; each tab must scroll into it and take the selection. ──
+		// Every tab genuinely on screen and selectable.
 		const tabs = pane.getByRole('tab');
 		await expect(tabs).toHaveCount(4);
 		for (const name of ['Details', 'Relationships', 'Activity', 'Versions']) {
 			const tab = pane.getByRole('tab', { name });
-			await tab.scrollIntoViewIfNeeded();
 			await expect(tab).toBeInViewport();
 			await tab.click();
 			await expect(tab).toHaveAttribute('aria-selected', 'true');
 		}
 
-		// The ⋯ panel is anchored inside `.strip-actions`, a sibling of the
-		// scrolling tablist. Nothing on `.tab-strip` clips it — proving the
-		// "no overflow/contain on the container" constraint still holds at the
-		// narrowest width, where a clip would be most visible.
+		// `order: -1` is visual only — DOM order is untouched, so the tablist's
+		// arrow-key roving tabindex still walks exactly the four tabs.
+		await pane.locator('.pane-tab').first().focus();
+		const walk: string[] = [];
+		for (let i = 0; i < 4; i++) {
+			walk.push(await page.evaluate(() => (document.activeElement?.textContent || '').trim()));
+			await page.keyboard.press('ArrowRight');
+		}
+		expect(walk).toEqual(['Details', 'Relationships', 'Activity', 'Versions']);
+
+		// The ⋯ panel is anchored inside `.strip-actions`. Nothing on
+		// `.tab-strip` clips it — the "no overflow/contain on the container"
+		// constraint still holds at the narrowest width, where a clip would be
+		// most visible.
 		await pane.locator('button.pane-more-btn').click();
 		await expect(pane.getByRole('menuitem', { name: 'Move to collection…' })).toBeVisible();
+		await page.keyboard.press('Escape');
+	});
 
-		// ── The folded star's escape hatch actually WORKS here. This is the
-		//    width the mobile overlay always runs at, so "Star lives in ⋯" has
-		//    to be a working action, not just a rendered row. ──
+	test('the FOLD band (560-699px) still folds: a pane dragged to its 720px maximum keeps one row and drops the badge icons + star, with Star still reachable in the ⋯ menu', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		// A 720px pane (PANE_WIDTH_MAX) is a 672px strip — inside the fold band
+		// and the ONLY way to reach it from a docked pane.
+		await page.addInitScript(() => localStorage.setItem('pad-pane-width', '720'));
+		await page.setViewportSize({ width: 2000, height: 1000 });
+		await browserLogin(page);
+
+		const master = await seedDocWith(fixture, request, 'Tier fold');
+		await seedDocWith(fixture, request, 'Tier fold child', { parent: master.id });
+
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${master.slug}`);
+		const pane = page.locator('.item-pane');
+		await expect(pane.locator('.tab-strip')).toBeVisible();
+		await expect(pane.locator('.strip-actions .badge-count').first()).toBeVisible();
+
+		const width = await stripWidth(pane);
+		expect(width).toBeGreaterThanOrEqual(560);
+		expect(width).toBeLessThan(700);
+
+		const layout = await stripLayout(pane);
+		expect(layout.split).toBe(false);
+		expect(layout.tabsFit).toBe(true);
+
+		// Folded: icons gone, counts kept, star hidden but RETAINED (DR-11 — the
+		// BUG-2263 freeze assertions in pane-full-page-capstone.spec.ts need the
+		// node to exist).
+		await expect(pane.locator('.strip-actions .badge-icon').first()).toBeHidden();
+		await expect(pane.locator('.strip-actions .badge-count').first()).toBeVisible();
+		await expect(pane.locator('button.star-btn')).toBeHidden();
+		await expect(pane.locator('button.star-btn')).toHaveCount(1);
+
+		// The folded star still has a home, and it works.
+		await pane.locator('button.pane-more-btn').click();
 		await pane.getByRole('menuitem', { name: 'Star' }).click();
-		await expect(pane.getByRole('menuitem', { name: 'Star' })).toHaveCount(0); // menu closed
 		await pane.locator('button.pane-more-btn').click();
 		await expect(pane.getByRole('menuitem', { name: 'Unstar' })).toBeVisible();
 		await page.keyboard.press('Escape');

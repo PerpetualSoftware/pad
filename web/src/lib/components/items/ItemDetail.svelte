@@ -5573,32 +5573,53 @@
 		color: var(--text-muted);
 	}
 
-	/* ── Tab strip (PLAN-2326 / TASK-2328) ────────────────────────────────
-	   One band: the `.pane-tabs` tablist plus the right-aligned
-	   `.strip-actions` group, which before TASK-2328 was its own
-	   `.meta-actions` row above. The divider that used to belong to
-	   `.pane-tabs` lives here now so it runs the full width of the strip
-	   rather than stopping where the tabs do.
+	/* ── Tab strip (PLAN-2326 / TASK-2328, re-keyed by TASK-2329) ─────────
+	   The `.pane-tabs` tablist plus the `.strip-actions` group, which before
+	   TASK-2328 was its own `.meta-actions` row above. The divider that used
+	   to belong to `.pane-tabs` lives here now so it runs the full width of
+	   the strip rather than stopping where the tabs do.
 
-	   `container-type: inline-size` makes this the query container for
-	   TASK-2329's tier rule. It has to be here rather than on an ancestor:
-	   the docked pane's width is user-dragged and persisted, decoupled from
-	   the viewport, so a media query cannot see it (DR-2).
+	   ONE band when there is room, TWO when there is not. Combining them
+	   unconditionally does not work below ~560px and no amount of folding
+	   fixes it: the four tab labels are a fixed 321px, and even the most
+	   aggressive action group anyone proposed (⋯ alone, 38px) needs 359px
+	   against the 342px a 390px phone actually has. Measured on the widest
+	   common phone, 430px: 382px of strip, 179px of tab scrollport, two of
+	   four tabs clipped — under `scrollbar-width: none`, so with no hint
+	   they exist. Below 560 the actions therefore take a row of their own
+	   and the tablist gets the full width.
+
+	   `container-type: inline-size` makes this the query container. It has
+	   to be here rather than on an ancestor: the docked pane's width is
+	   user-dragged and persisted, decoupled from the viewport, so a media
+	   query cannot see it (DR-2). A 360px pane on a 1920px monitor splits;
+	   the full page behind it does not.
+
+	   `flex-wrap` / `column-gap` / `row-gap` MUST live in THIS rule and not
+	   in the `@container` block below. A container query cannot style its
+	   own query container, and `.tab-strip` IS `item-tab-strip` — a
+	   `flex-wrap: wrap` written in there is silently dropped. Not inert:
+	   with `flex-basis: 100%` on `.strip-actions` while `nowrap` is still in
+	   force, `.pane-tabs` collapses to 0px.
 
 	   Deliberately NO `overflow`, `contain`, `clip-path`, `transform`,
 	   `filter` or `will-change` on this element — it is an ancestor of both
 	   `.menu-anchor` and QuickActionsMenu's anchor, and any of those would
-	   clip the anchored panels they position. DR-9's scroll rule goes on
+	   clip the anchored panels they position. The scroll rule goes on
 	   `.pane-tabs`, which is their SIBLING. (`container-type` itself is
 	   safe: it applies layout/style/inline-size containment but not PAINT
 	   containment, so the panels still escape — DR-3, re-verified in
 	   Chromium against this markup, including the mobile BottomSheet's
-	   `position: fixed` overlay, which still resolves against the
-	   viewport.) */
+	   `position: fixed` overlay, which still resolves against the viewport.
+	   Chromium reports `contain: none` here despite `container-type`; that
+	   is expected — do NOT "fix" it by adding `contain: layout`, which DOES
+	   trap the sheet's `position: fixed`.) */
 	.tab-strip {
 		display: flex;
 		align-items: center;
-		gap: var(--space-3);
+		column-gap: var(--space-3);
+		row-gap: var(--space-2);
+		flex-wrap: wrap;
 		container-type: inline-size;
 		container-name: item-tab-strip;
 		border-bottom: 1px solid var(--border-subtle);
@@ -5609,10 +5630,15 @@
 	.pane-tabs {
 		display: flex;
 		gap: 2px;
-		/* DR-9 width allocation: `.strip-actions` never shrinks, so the tab
-		   list scrolls horizontally instead of wrapping to a second row or
-		   crushing the actions. `min-width: 0` is what lets a flex item
-		   shrink below its content width at all. */
+		/* `.strip-actions` never shrinks, so whatever room is left goes to the
+		   tab list and it scrolls rather than crushing the actions.
+		   `min-width: 0` is what lets a flex item shrink below its content
+		   width at all. Above 560px the two share one row and the scroll is
+		   the overflow valve; below 560 the actions take their own row and
+		   the tablist gets the full width, at which point the four tabs fit
+		   outright at every phone width (the ≤330px rule trims tab padding
+		   for the last 9px). The scroll stays as the backstop for a future
+		   fifth tab or a longer label. */
 		min-width: 0;
 		overflow-x: auto;
 		scrollbar-width: none;
@@ -5631,9 +5657,11 @@
 		display: none;
 	}
 
-	/* `margin-left: auto` right-aligns the group however few tabs there are;
-	   `flex: 0 0 auto` is DR-9's other half — the actions hold their size and
-	   the tab list gives way. */
+	/* Shared-row shape (>=560px of strip): `margin-left: auto` right-aligns
+	   the group however few tabs there are, and `flex: 0 0 auto` holds its
+	   size so the tab list is what gives way. Both are overridden in the
+	   split tier below, where the group owns a full row and right-aligns via
+	   `justify-content` instead. */
 	.strip-actions {
 		display: flex;
 		align-items: center;
@@ -5649,46 +5677,58 @@
 		min-width: 0;
 	}
 
-	/* ── Compact tier (PLAN-2326 DR-7 / DR-9 / DR-10) ──────────────────────
-	   `@container`, NOT `@media`: the docked pane is
-	   `flex: 0 0 var(--pane-width, clamp(360px, 38%, 640px))` — a width the
-	   user drags and we persist, decoupled from the viewport — so a 360px
-	   pane on a 1440px screen still matches `@media (min-width: 900px)`.
-	   Only the container knows how much room the strip actually has.
+	/* ── Tier rules, all keyed on the STRIP's own width ────────────────────
+	   Measured strip widths, which is what the three boundaries below are
+	   drawn against (worst-case item: both count badges + quick actions +
+	   owner rights):
 
-	   THRESHOLD — 700px, measured rather than assumed (DR-10). The strip's
-	   content box tops out at 912px on the full page at ANY monitor width
-	   (`--content-max-width: 960px` less 2x `--space-6` — verified identical
-	   at 1440 and 2560), so the mock's 900px boundary would have made the
-	   compact tier the near-universal state. Measured strip widths bracket
-	   700 cleanly:
+	     full page                     892-912px  (capped by
+	                                   --content-max-width; identical at 1440
+	                                   and 2560, so a viewport media query
+	                                   could never have keyed this)
+	     full page @1024 / @768            716-720px
+	     full page + a docked pane         526-678px
+	     docked pane (360-720px wide)      312-672px
+	     phone full page / overlay         312-382px
 
-	     full page                     892-912px -> full
-	     full page + docked pane       526-678px -> compact
-	     docked pane                   312-672px -> compact
-	     mobile overlay                    342px -> compact
+	   Note the docked pane reaches 672, not the 592 the CSS `clamp(...640px)`
+	   implies: `PaneHost.svelte`'s JS `PANE_WIDTH_MAX = 720` is the real
+	   ceiling and it wins.
 
-	   The pane's 672px ceiling is `PaneHost.svelte`'s JS `PANE_WIDTH_MAX =
-	   720` less the pane's 2x24px padding — a harder bound than the CSS
-	   `clamp()`'s 640, and the tightest margin the threshold has (28px). If
-	   that constant ever grows past ~750 a dragged-wide pane would enter the
-	   full tier, which is the correct outcome anyway: it would have the room.
+	   ── SPLIT, below 560px ──
+	   The actions take a row of their own and the tablist gets the full
+	   width. This is the fix for the phone case, where sharing a row is not
+	   survivable at any action-group size (see the note on `.tab-strip`).
+	   560 is the boundary because the shared row needs 321px of tabs plus a
+	   ~190px compact action group plus the 12px column gap.
 
-	   So the rule is "does the full tier fit", not "which surface is this":
-	   a full page whose master column has been squeezed by an open pane
-	   compacts too, which is the point of querying the container. (The full
-	   tier's own worst-case content measures ~722px — 321px of tabs plus the
-	   widest observed action group. 700 is 22px optimistic, which only bites
-	   in the ~30px-wide viewport band where a pane-squeezed master lands
-	   between the two; there the tab list just scrolls a few px, silently,
-	   exactly as DR-9 designed it to.)
+	   ABOVE the tabs, not below (`order: -1`, visual only — DOM order and
+	   therefore the tablist's roving tabindex are untouched). `.tab-strip`
+	   owns the bottom divider and `.pane-tab.on` overlaps it by 1px via
+	   `margin-bottom: -1px`; keeping the tablist as the LAST row preserves
+	   that overlap. Actions-below would orphan the active-tab underline
+	   ~31px above the divider. */
+	@container item-tab-strip (max-width: 559px) {
+		.strip-actions {
+			order: -1;
+			flex: 0 0 100%;
+			margin-left: 0;
+			justify-content: flex-end;
+			flex-wrap: wrap;
+		}
+	}
 
-	   TWO tiers, not the mock's three (DR-7): the `<600px` tier would have
-	   required duplicate badge markup outside this subtree.
+	/* ── FOLD, 560-699px ──
+	   Only in this band. Here the two still share a row but it is tight, so
+	   the badge icons drop to bare counts and the star folds. Below 560 they
+	   both come BACK: the actions have their own row and the space to show
+	   them. Above 699 everything fits outright.
 
 	   The star folds by `display: none` with the node RETAINED (DR-11) —
-	   `.star-btn` must stay in the DOM for the BUG-2263 freeze assertions. */
-	@container item-tab-strip (max-width: 699px) {
+	   `.star-btn` must stay in the DOM for the BUG-2263 freeze assertions in
+	   pane-full-page-capstone.spec.ts. Star is also a row in the `⋯` menu,
+	   so the action still has a home while the chip is folded. */
+	@container item-tab-strip (min-width: 560px) and (max-width: 699px) {
 		.badge-icon {
 			display: none;
 		}
@@ -5718,6 +5758,25 @@
 	.pane-tab.on {
 		color: var(--text-primary);
 		border-bottom-color: var(--accent-primary, var(--accent-blue));
+	}
+
+	/* ── TAB PADDING, below 330px of strip ──
+	   At the 360px pane floor / a 360px phone the strip is 312px and the four
+	   tabs need 321px even with a full row to themselves. Trimming 11px -> 8px
+	   of horizontal padding buys 24px, which clears it (321 -> 297). Vertical
+	   padding is untouched so the strip's height and the active tab's 1px
+	   divider overlap do not move.
+
+	   Placement is load-bearing: this MUST sit after the base `.pane-tab`
+	   rule. A container query adds no specificity, so the two `.pane-tab`
+	   selectors tie and source order decides — written above the base rule it
+	   is silently overridden and the tabs still overflow. (Caught by
+	   measurement: `scrollWidth` stayed 321 at a 312px strip.) */
+	@container item-tab-strip (max-width: 330px) {
+		.pane-tab {
+			padding-left: 8px;
+			padding-right: 8px;
+		}
 	}
 
 	/* Hidden tab panels stay MOUNTED (collab editor, SSE feeds, backlink
