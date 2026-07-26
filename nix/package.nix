@@ -74,7 +74,12 @@ buildGoModule {
     # for tests, since some (e.g. invocation_framing_test.go) locate the
     # repo root via runtime.Caller.
     export GOFLAGS=''${GOFLAGS//-trimpath/}
-    go test ./...
+    # ValidateWebhookURL does a real net.LookupIP as an SSRF guard;
+    # these four subtests exercise that path against example.com, which
+    # needs DNS/network the Nix build sandbox deliberately doesn't have.
+    # Everything else in the package (invalid schemes, private-IP
+    # rejection, etc.) needs no network and still runs.
+    go test -skip 'TestValidateWebhookURL/valid_(https|http|with_port|with_path)$' ./...
     runHook postCheck
   '';
 
