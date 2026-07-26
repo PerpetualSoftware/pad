@@ -539,9 +539,53 @@
 	// Stable per-instance suffix so tab/panel aria-controls pairs stay unique
 	// when TWO ItemDetail instances mount (full-page master + docked pane).
 	const uid = $props.id();
-	const PANE_TABS: Array<{ id: PaneTab; label: string }> = [
+
+	// ── Tablist overflow affordance (TASK-2329) ──────────────────────────
+	// `.pane-tabs` scrolls with `scrollbar-width: none`, so without this a
+	// cut-off tab is invisible AND unhinted — the exact defect this task
+	// exists to fix. CSS cannot ask "is this element scrolling", which is why
+	// this one measurement is scripted while every TIER rule stays a container
+	// query (DR-2 is about tier logic, and still holds).
+	//
+	// Writes only; nothing here reads these back, so there is no
+	// effect-self-write loop (CONVE-1688). `mask-image` is a paint effect, so
+	// flipping these cannot resize the element and cannot re-trigger the
+	// observer.
+	let tabsEl = $state<HTMLElement | null>(null);
+	let tabsAtStart = $state(true);
+	let tabsAtEnd = $state(true);
+	$effect(() => {
+		const el = tabsEl;
+		if (!el) return;
+		const measure = () => {
+			const max = el.scrollWidth - el.clientWidth;
+			// 1px tolerance: sub-pixel layout leaves scrollLeft fractionally
+			// short of `max` at the end of a scroll, and scrollWidth a hair
+			// over clientWidth when the content actually fits.
+			tabsAtStart = el.scrollLeft <= 1;
+			tabsAtEnd = max <= 1 || el.scrollLeft >= max - 1;
+		};
+		measure();
+		const ro = new ResizeObserver(measure);
+		ro.observe(el);
+		el.addEventListener('scroll', measure, { passive: true });
+		return () => {
+			ro.disconnect();
+			el.removeEventListener('scroll', measure);
+		};
+	});
+	// `short` is a NARROW-WIDTH VISIBLE label only (TASK-2329). The accessible
+	// name always stays `label`, pinned by `aria-label` on the tab, because
+	// roughly five specs address these tabs by
+	// `getByRole('tab', { name: 'Relationships' })` — the visible text may
+	// change with the container width, the accessible name may never.
+	//
+	// Only Relationships gets one. It is by far the longest label (98px of
+	// glyphs on CI's font vs 50-62 for the others) and the sole reason four
+	// tabs did not fit a 312px strip; the rest are already short.
+	const PANE_TABS: Array<{ id: PaneTab; label: string; short?: string }> = [
 		{ id: 'details', label: 'Details' },
-		{ id: 'relationships', label: 'Relationships' },
+		{ id: 'relationships', label: 'Relationships', short: 'Links' },
 		{ id: 'activity', label: 'Activity' },
 		{ id: 'versions', label: 'Versions' }
 	];
@@ -4368,6 +4412,10 @@
 			     unmounted — see the PaneTab block in the script. -->
 			<div
 				class="pane-tabs"
+				class:masked={!tabsAtStart || !tabsAtEnd}
+				style:--fade-l={tabsAtStart ? '0px' : '18px'}
+				style:--fade-r={tabsAtEnd ? '0px' : '18px'}
+				bind:this={tabsEl}
 				role="tablist"
 				aria-label="Item sections"
 				tabindex={-1}
@@ -4413,8 +4461,21 @@
 							if (e.pointerType === 'mouse') activeTab = t.id;
 						}}
 						onclick={() => (activeTab = t.id)}
+						aria-label={t.short ? t.label : undefined}
 					>
-						{t.label}
+						{#if t.short}
+							<!-- Two labels, one accessible name (TASK-2329). `aria-label`
+							     above pins the name to the FULL label, so
+							     `getByRole('tab', { name: 'Relationships' })` keeps
+							     resolving at every width — the ~5 specs that use it are
+							     untouched, and a screen reader never hears "Links".
+							     Only the VISIBLE text swaps, by container query. -->
+							<span class="tab-label-full">{t.label}</span><span class="tab-label-short"
+								>{t.short}</span
+							>
+						{:else}
+							{t.label}
+						{/if}
 					</button>
 				{/each}
 			</div>
@@ -5676,12 +5737,24 @@
 		   width at all. Above 560px the two share one row and the scroll is
 		   the overflow valve; below 560 the actions take their own row and
 		   the tablist gets the full width, at which point the four tabs fit
-		   outright at every phone width (the ≤330px rule trims tab padding
-		   for the last 9px). The scroll stays as the backstop for a future
-		   fifth tab or a longer label. */
+		   outright at every phone width (the short `Links` label plus the
+		   ≤330px padding trim buy the slack). The scroll stays as the backstop
+		   for a future fifth tab, a longer label, a translation, or a font we
+		   have not measured.
+
+		   That backstop USED to be silent: `scrollbar-width: none` hides the
+		   only native signal that content is cut off, which is exactly the
+		   discoverability defect that started this whole episode (two of four
+		   tabs invisible at 430px with nothing to indicate it). The
+		   `background` below restores a signal without giving the scrollbar
+		   back — see the note on it. */
 		min-width: 0;
 		overflow-x: auto;
 		scrollbar-width: none;
+		/* Fade widths for the overflow affordance below — 0 unless the script
+		   has measured content past that edge. */
+		--fade-l: 0px;
+		--fade-r: 0px;
 		/* `overflow-x: auto` computes `overflow-y` to `auto` too, which would
 		   clip `.pane-tab`'s `margin-bottom: -1px` overlap and leave the
 		   active tab with a 1px accent sitting on 1px of divider instead of a
@@ -5695,6 +5768,44 @@
 
 	.pane-tabs::-webkit-scrollbar {
 		display: none;
+	}
+
+	/* ── OVERFLOW AFFORDANCE (TASK-2329) ──────────────────────────────────
+	   `scrollbar-width: none` hides the only native signal that content is
+	   cut off — which IS the defect that started this episode: two of four
+	   tabs invisible at 430px with nothing to say so. The label fix means
+	   overflow now needs a font ~30% wider than CI's before it happens at
+	   all, but "needs an unusual font" is not "cannot happen" (translations,
+	   user zoom, a future fifth tab), so it must degrade visibly rather than
+	   silently truncate.
+
+	   A soft edge fade, applied ONLY on an edge that actually has more
+	   content past it, so at rest there is no mask at all.
+
+	   Why this is script-measured and not a container query: CSS cannot ask
+	   "is this element scrolling". That is the opposite situation to the tier
+	   rules, where CSS expresses the question natively and DR-2 rightly
+	   rejected JS — here JS is the only tool that can answer it. It reads
+	   `scrollWidth`/`clientWidth` and writes two booleans; it does not
+	   participate in the tier logic at all.
+
+	   A pure-CSS attempt came first and was rejected on measurement, not
+	   taste: the two-layer `background-attachment: local/scroll` scroll-shadow
+	   idiom is conditional by construction, but backgrounds paint BEHIND the
+	   tab text, and sampling the rendered edge pixels showed no legible
+	   signal in either theme. Recorded so nobody re-tries it.
+
+	   `mask-image` on `.pane-tabs` is safe: it is a paint effect (the -1px
+	   divider overlap still measures 0 in both tiers) and `.pane-tabs` is a
+	   SIBLING of `.menu-anchor`, so it cannot clip the anchored panels. */
+	.pane-tabs.masked {
+		mask-image: linear-gradient(
+			to right,
+			transparent 0,
+			#000 var(--fade-l),
+			#000 calc(100% - var(--fade-r)),
+			transparent 100%
+		);
 	}
 
 	/* Shared-row shape (>=560px of strip): `margin-left: auto` right-aligns
@@ -5912,6 +6023,45 @@
 		.pane-tab {
 			padding-left: 8px;
 			padding-right: 8px;
+		}
+	}
+
+	/* ── TAB LABELS: short form below 560px of strip ───────────────────────
+	   `Relationships` -> `Links`, visible text only. The accessible name is
+	   pinned to the full label by `aria-label` on the tab, so
+	   `getByRole('tab', { name: 'Relationships' })` — used by ~5 specs — keeps
+	   resolving, and a screen reader never hears "Links".
+
+	   This is what buys the fit REAL SLACK instead of a tuned zero. CI proved
+	   the previous derivation was environment-specific: `--font-ui` is
+	   `-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif`,
+	   every entry of which misses on Linux, so `system-ui` resolves through
+	   fontconfig to different font FILES on a dev box and on ubuntu-latest.
+	   Same declaration, 17.5% wider glyphs, measured:
+
+	                       dev box    CI      delta
+	     four tab labels     297px   337px    +40px
+	     strip at 360 pane   312px   312px
+	     slack                +15     -25     <-- CI overflowed by 25px
+
+	   Ten candidate families forced locally spanned 273-297px, so CI is wider
+	   than the entire local envelope — this was not findable without the
+	   runner. `Relationships` alone was 84px of glyphs locally and 98px on CI.
+	   Swapping it for `Links` takes 51px off the row (measured), which turns
+	   CI's -25px into roughly +34px and every local font into +60px or more.
+
+	   ⚠ Same ordering rule as the padding block above: these tie with the base
+	   `.tab-label-*` rules at (0,2,0), so the query MUST stay after them. */
+	.tab-label-short {
+		display: none;
+	}
+
+	@container item-tab-strip (max-width: 559.99px) {
+		.tab-label-full {
+			display: none;
+		}
+		.tab-label-short {
+			display: inline;
 		}
 	}
 

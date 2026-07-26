@@ -106,6 +106,13 @@ async function stripWidth(scope: Locator): Promise<number> {
 	);
 }
 
+/** How much slack the fit has, at minimum, before a tab starts to clip.
+ *  20px is the floor: CI's fonts render these four labels 17.5% wider than a
+ *  dev box's (measured — see the header comment), so a fit tuned to 0 on one
+ *  machine overflows by 25px on the other. Anything below this is a design
+ *  with no margin, not a passing test. */
+const MIN_SLACK_PX = 20;
+
 interface StripLayout {
 	/** true when `.strip-actions` sits on its own row above the tablist. */
 	split: boolean;
@@ -113,11 +120,21 @@ interface StripLayout {
 	tabsOnOneRow: boolean;
 	/** the tablist is not overflowing: all four labels are actually shown. */
 	tabsFit: boolean;
+	/** Room to spare, in px, measured as strip width minus tablist CONTENT
+	 *  width. NOT `clientWidth - scrollWidth`: `.pane-tabs` has no
+	 *  `flex-grow`, so while the content fits its clientWidth IS its content
+	 *  width and that difference is pinned at 0 — it looks like zero slack at
+	 *  every width and cannot distinguish "just fits" from "loads of room".
+	 *  Negative means overflowing. */
+	slackPx: number;
 	/** active tab's border-box bottom minus the strip's — 0 means it covers
 	 *  the 1px divider exactly, which is the designed overlap. */
 	underlineOffset: number;
 	/** the action group must never become a child of the tablist (DR-4). */
 	tablistContainsActions: boolean;
+	/** Diagnostic detail, printed in assertion messages so a failure on a
+	 *  machine we cannot attach a debugger to still hands over the numbers. */
+	diag: string;
 }
 
 async function stripLayout(scope: Locator): Promise<StripLayout> {
@@ -129,15 +146,26 @@ async function stripLayout(scope: Locator): Promise<StripLayout> {
 		const sr = strip.getBoundingClientRect();
 		const tr = tabs.getBoundingClientRect();
 		const ar = acts.getBoundingClientRect();
+		const cs = getComputedStyle(tabEls[0]);
 		return {
 			split: ar.bottom <= tr.top + 1,
 			tabsOnOneRow:
 				new Set(tabEls.map((t) => Math.round(t.getBoundingClientRect().top))).size === 1,
 			tabsFit: tabs.scrollWidth <= tabs.clientWidth,
+			slackPx: Math.round(sr.width - tabs.scrollWidth),
 			underlineOffset: active
 				? Math.round(active.getBoundingClientRect().bottom - sr.bottom)
 				: NaN,
 			tablistContainsActions: tabs.contains(acts),
+			diag:
+				`strip=${sr.width.toFixed(1)} content=${tabs.scrollWidth} port=${tabs.clientWidth}` +
+				` font="${cs.fontFamily}" @${cs.fontSize}/${cs.fontWeight}` +
+				` tabs=${JSON.stringify(
+					tabEls.map((t) => [
+						(t.textContent || '').trim(),
+						+t.getBoundingClientRect().width.toFixed(1),
+					]),
+				)}`,
 		};
 	});
 }
@@ -271,60 +299,31 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 		await expect(pane.locator('button.star-btn')).toBeVisible();
 		await expect(pane.locator('.strip-actions .badge-icon').first()).toBeVisible();
 
-		// ── TEMPORARY DIAGNOSTIC (TASK-2329) ──────────────────────────────────
-		// This test passes locally and failed twice on CI. The fit derivation
-		// rests on `tabs.scrollWidth === 321`, which is four English labels in
-		// whatever `--font-ui` resolves to — and that stack is
-		// `-apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif`,
-		// every entry of which MISSES on Linux, so `system-ui` is resolved by
-		// fontconfig and differs between a dev box and ubuntu-latest. Dump the
-		// real numbers from whatever environment is running, rather than
-		// inferring them. Remove once the slack fix lands.
-		const diag = await pane.locator('.tab-strip').evaluate((strip) => {
-			const tabs = strip.querySelector('.pane-tabs') as HTMLElement;
-			const tabEls = Array.from(tabs.querySelectorAll<HTMLElement>('[role="tab"]'));
-			const cs = getComputedStyle(tabEls[0]);
-			// Width of each label's text alone, font-independent of padding.
-			const canvas = document.createElement('canvas');
-			const ctx = canvas.getContext('2d')!;
-			ctx.font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
-			const scrollContainer = strip.closest('.item-pane, .item-page') as HTMLElement | null;
-			return {
-				stripW: +strip.getBoundingClientRect().width.toFixed(2),
-				tabsScrollW: tabs.scrollWidth,
-				tabsClientW: tabs.clientWidth,
-				slackPx: tabs.clientWidth - tabs.scrollWidth,
-				tabs: tabEls.map((t) => ({
-					text: (t.textContent || '').trim(),
-					w: +t.getBoundingClientRect().width.toFixed(2),
-					textOnly: +ctx.measureText((t.textContent || '').trim()).width.toFixed(2),
-					padL: getComputedStyle(t).paddingLeft,
-					padR: getComputedStyle(t).paddingRight,
-				})),
-				font: {
-					family: cs.fontFamily,
-					size: cs.fontSize,
-					weight: cs.fontWeight,
-					letterSpacing: cs.letterSpacing,
-				},
-				scrollbarPx: scrollContainer
-					? scrollContainer.offsetWidth - scrollContainer.clientWidth
-					: null,
-				dpr: devicePixelRatio,
-				ua: navigator.userAgent,
-			};
-		});
-		// eslint-disable-next-line no-console
-		console.log('TAB_FIT_DIAG ' + JSON.stringify(diag));
-
 		const layout = await stripLayout(pane);
 		expect(layout.split).toBe(true);
 		expect(layout.tabsOnOneRow).toBe(true);
-		// The whole point: FIT, not "reachable by scrolling".
+
+		// The whole point: the four tabs FIT, not "are reachable by scrolling".
+		//
+		// And they must fit with REAL MARGIN, which is why the slack is asserted
+		// rather than just `tabsFit`. The first version of this test asserted only
+		// `tabsFit`, passed locally with exactly 0px to spare, and failed on CI by
+		// 25px: `--font-ui` is `-apple-system, BlinkMacSystemFont, 'Segoe UI',
+		// system-ui, sans-serif`, every entry of which misses on Linux, so
+		// `system-ui` resolves through fontconfig to different font FILES on a dev
+		// box and on ubuntu-latest — the same declaration, 17.5% wider glyphs.
+		// A fit tuned until the numbers meet is not a fit; it is a coin flip on
+		// the next environment, font, zoom level or translation.
+		//
+		// Both messages print the measured widths and the resolved font, so a
+		// failure on a machine nobody can attach to still hands over the numbers
+		// instead of `true !== false`.
+		expect(layout.tabsFit, `tabs must fit without scrolling — ${layout.diag}`).toBe(true);
 		expect(
-			layout.tabsFit,
-			`tabs must fit without scrolling — measured scrollWidth ${diag.tabsScrollW} vs clientWidth ${diag.tabsClientW} (slack ${diag.slackPx}px) in font ${diag.font.family} @ ${diag.font.size}; per-tab ${JSON.stringify(diag.tabs.map((t) => [t.text, t.w]))}`,
-		).toBe(true);
+			layout.slackPx,
+			`fit must keep >=${MIN_SLACK_PX}px of slack so a wider font cannot clip a tab — ${layout.diag}`,
+		).toBeGreaterThanOrEqual(MIN_SLACK_PX);
+
 		expect(layout.tablistContainsActions).toBe(false);
 
 		// Every tab genuinely on screen and selectable.
@@ -339,13 +338,32 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 
 		// `order: -1` is visual only — DOM order is untouched, so the tablist's
 		// arrow-key roving tabindex still walks exactly the four tabs.
+		//
+		// Identified by ACCESSIBLE NAME, not `textContent`. At this width the
+		// Relationships tab carries both labels in the DOM — the full one for
+		// the accessible name, the short `Links` one visible — so `textContent`
+		// reads "RelationshipsLinks". The accessible name is the identity that
+		// matters and the thing ~5 other specs address these tabs by.
 		await pane.locator('.pane-tab').first().focus();
 		const walk: string[] = [];
 		for (let i = 0; i < 4; i++) {
-			walk.push(await page.evaluate(() => (document.activeElement?.textContent || '').trim()));
+			walk.push(
+				await page.evaluate(() => {
+					const a = document.activeElement;
+					return (a?.getAttribute('aria-label') || a?.textContent || '').trim();
+				}),
+			);
 			await page.keyboard.press('ArrowRight');
 		}
 		expect(walk).toEqual(['Details', 'Relationships', 'Activity', 'Versions']);
+
+		// The short label is VISIBLE text only — the accessible name never
+		// changes, at any width. This is the guarantee the ~5 specs using
+		// `getByRole('tab', { name: 'Relationships' })` depend on.
+		await expect(pane.getByRole('tab', { name: 'Relationships' })).toHaveCount(1);
+		await expect(pane.getByRole('tab', { name: 'Links' })).toHaveCount(0);
+		await expect(pane.locator('.pane-tabs .tab-label-short')).toBeVisible();
+		await expect(pane.locator('.pane-tabs .tab-label-full')).toBeHidden();
 
 		// The ⋯ panel is anchored inside `.strip-actions`. Nothing on
 		// `.tab-strip` clips it — the "no overflow/contain on the container"
@@ -400,6 +418,63 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 		await pane.locator('button.pane-more-btn').click();
 		await expect(pane.getByRole('menuitem', { name: 'Unstar' })).toBeVisible();
 		await page.keyboard.press('Escape');
+	});
+
+	test('overflow degrades VISIBLY: with the tabs fitting there is no mask at all, and if they ever do overflow a fade appears only on the edge that has more content', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		// The fit now carries 20px+ of slack, so overflow needs a font far wider
+		// than any we have measured. That makes this a fallback — but a
+		// load-bearing one: `.pane-tabs` scrolls with `scrollbar-width: none`,
+		// and a silently truncated tablist is precisely the defect this whole
+		// task exists to fix (two of four tabs invisible at 430px, unhinted).
+		// So overflow must be made visible, and the affordance must NOT appear
+		// when everything fits.
+		await page.setViewportSize({ width: 1440, height: 1000 });
+		await page.addInitScript(() => localStorage.setItem('pad-pane-width', '360'));
+		await browserLogin(page);
+		const master = await seedDocWith(fixture, request, 'Tier overflow');
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${master.slug}`);
+		const pane = page.locator('.item-pane');
+		const tabs = pane.locator('.pane-tabs');
+		await expect(pane.locator('.tab-strip')).toBeVisible();
+
+		// ── FITTING: no mask, both edges crisp. ──
+		expect((await stripLayout(pane)).tabsFit).toBe(true);
+		await expect(tabs).not.toHaveClass(/masked/);
+
+		// ── Force an overflow the only way that is environment-independent:
+		//    inflate the tab font well past anything real. ──
+		await page.addStyleTag({ content: '.pane-tab{font-size:1.75em !important;}' });
+		await expect(tabs).toHaveClass(/masked/);
+
+		const fadeAt = () =>
+			tabs.evaluate((el) => ({
+				left: getComputedStyle(el).getPropertyValue('--fade-l').trim(),
+				right: getComputedStyle(el).getPropertyValue('--fade-r').trim(),
+				scrollLeft: Math.round(el.scrollLeft),
+				max: el.scrollWidth - el.clientWidth,
+			}));
+
+		// At the start there is content to the RIGHT only.
+		await expect.poll(async () => (await fadeAt()).right).not.toBe('0px');
+		expect((await fadeAt()).left).toBe('0px');
+
+		// Scrolled to the end: content to the LEFT only.
+		await tabs.evaluate((el) => (el.scrollLeft = el.scrollWidth));
+		await expect.poll(async () => (await fadeAt()).left).not.toBe('0px');
+		expect((await fadeAt()).right).toBe('0px');
+
+		// Mid-scroll: content BOTH ways, so both edges fade.
+		await tabs.evaluate((el) => (el.scrollLeft = Math.round((el.scrollWidth - el.clientWidth) / 2)));
+		await expect.poll(async () => (await fadeAt()).left).not.toBe('0px');
+		expect((await fadeAt()).right).not.toBe('0px');
+
+		// The mask is a PAINT effect: the active tab still overlaps the strip's
+		// 1px divider exactly as it does with no mask.
+		expect((await stripLayout(pane)).underlineOffset).toBe(0);
 	});
 
 	test('the tier boundaries have no sub-pixel gap: a fractional strip width either side of 560 and 640 still lands in the right tier', async ({
