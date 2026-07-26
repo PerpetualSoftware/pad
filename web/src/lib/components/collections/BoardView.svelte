@@ -26,12 +26,17 @@
 		oncreate?: () => void;
 		/**
 		 * Create an item in this lane from the inline draft card
-		 * (TASK-1676), pre-filling the lane's group value. `navigate` true
-		 * (Enter) opens the new item; false (nav-guard Save) just lands it
-		 * in the lane. Throws on failure so the draft can be restored.
-		 * Gated behind `canEdit`. When wired, the `+`/menu open a draft.
+		 * (TASK-1676), pre-filling the lane's group value. Throws on failure
+		 * so the draft can be restored. Gated behind `canEdit`. When wired,
+		 * the `+`/menu open a draft.
+		 *
+		 * `reveal` reports INTENT, not a destination: true means "the user
+		 * submitted this draft, show them the item", false means "create it
+		 * quietly" (the page's nav-guard Save-all). What revealing does — and
+		 * whether the viewport gets one at all — is the page's call, so this
+		 * component stays unaware of the split pane (IDEA-2298).
 		 */
-		onCreateInColumn?: (groupValue: string, title: string, navigate: boolean) => Promise<unknown> | void;
+		onCreateInColumn?: (groupValue: string, title: string, reveal: boolean) => Promise<unknown> | void;
 		/**
 		 * Inline draft state (TASK-1676) — owned by the page (which holds
 		 * the leave guard + dialog) so a draft survives a board↔list view
@@ -149,9 +154,14 @@
 		const title = (draftText[col] ?? '').trim();
 		if (!title || savingDraft || !onCreateInColumn) return;
 		savingDraft = true;
-		// Clear optimistically BEFORE the create navigates, so the page's
-		// leave guard (fires when onCreateInColumn opens the new item)
-		// doesn't re-flag this lane.
+		// The composer closes on submit on EVERY viewport (IDEA-2298) — on
+		// desktop the pane takes focus anyway, so leaving it open for
+		// Trello-style rapid entry would just fight the pane for the cursor.
+		//
+		// Clear the text optimistically, BEFORE the await, so the page's
+		// unsaved-draft leave guard can't see this lane as dirty while the
+		// create is in flight. The desktop reveal is a same-pathname `?item=`
+		// push, which that guard skips regardless — belt and suspenders.
 		const prior = draftText[col];
 		delete draftText[col];
 		draftOpen[col] = false;
