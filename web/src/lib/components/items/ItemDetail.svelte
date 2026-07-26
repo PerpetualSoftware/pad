@@ -4353,281 +4353,310 @@
 			{/if}
 		</div>
 
-		<!-- Actions -->
-		<div class="meta-actions">
-			<!-- Star is a per-user, itemId-keyed REST toggle available to viewers too,
-			     and cannot collide across sides — so it is NOT frozen while peeking
-			     (BUG-2263). No canEdit or peeking gate. -->
-			<button
-				class="action-btn star-btn"
-				class:starred={starredStore.isStarred(item.id)}
-				onclick={() => { if (!item) return; starredStore.toggle(wsSlug, item.slug, item.id); }}
-				title={starredStore.isStarred(item.id) ? 'Unstar' : 'Star'}
+		<!-- Tab strip (PLAN-2326 / TASK-2328). One band: the tablist plus the
+		     right-aligned action group that used to sit in its own `.meta-actions`
+		     row above it.
+
+		     `.strip-actions` is a SIBLING of `.pane-tabs`, never a child.
+		     `role="tablist"` is on `.pane-tabs` ITSELF, so actions nested inside
+		     it would be non-tab children of a tablist (an a11y defect) and would
+		     fall in range of the arrow-key handler's `querySelectorAll(
+		     '[role="tab"]')` walk (DR-4). The tablist below is otherwise
+		     untouched — same role, aria-label, roving tabindex and handler. -->
+		<div class="tab-strip">
+			<!-- Pane tabs (PLAN-2290 Phase 4). Panels below are CSS-hidden, never
+			     unmounted — see the PaneTab block in the script. -->
+			<div
+				class="pane-tabs"
+				role="tablist"
+				aria-label="Item sections"
+				tabindex={-1}
+				onkeydown={(e) => {
+					if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+					const tabs = Array.from(
+						(e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]')
+					);
+					const idx = tabs.indexOf(document.activeElement as HTMLElement);
+					if (idx === -1) return;
+					e.preventDefault();
+					const next = e.key === 'ArrowRight'
+						? (idx + 1) % tabs.length
+						: (idx - 1 + tabs.length) % tabs.length;
+					// Automatic activation: panels are display-toggles (always
+					// mounted), so activating on arrow-focus is free and keeps the
+					// roving tabindex consistent (tabindex derives from activeTab).
+					activeTab = PANE_TABS[next].id;
+					tabs[next].focus();
+				}}
 			>
-				{starredStore.isStarred(item.id) ? '★' : '☆'}
-			</button>
-			<!-- Quick-actions menu: the prompt-copy actions are read-only and stay
-			     visible on the peeking side (invisible freeze, BUG-2263). But the
-			     owner "New / Manage actions" controls WRITE the whole collection
-			     `settings` JSON from this instance's local snapshot with no merge —
-			     and master + pane can be DIFFERENT items in the SAME collection, so
-			     two concurrent saves are last-write-wins. So `canEdit` (which gates
-			     ONLY those write controls) folds in `!peeking`: the collection-config
-			     writes are confined to the active side, the prompts stay on both. -->
-			{#if collection && (quickActions.length > 0 || isOwner)}
-				<!-- {#key itemSlug}: structural containment (PLAN-2105 / TASK-2112).
-				     Remount this item-scoped menu on every item switch so the
-				     child's OWN local state (open form, in-progress inputs) resets.
-				     Keyed on itemSlug (the URL/ref identity), NOT item.id, so it
-				     resets the instant the ref changes rather than waiting for B to
-				     load. NOTE: the remount does NOT cancel a destroyed instance's
-				     in-flight save promise — that promise still fires
-				     oncollectionupdated into this persistent parent (see the
-				     switch-safety note on the callback). -->
-				{#key itemSlug}
-					<QuickActionsMenu
-						actions={quickActions}
-						{item}
-						{collection}
-						scope="item"
-						{wsSlug}
-						canEdit={isOwner && !peeking}
-						onmanage={() => {
-							editCollectionSection = 'actions';
-							editCollectionOpen = true;
+				{#each PANE_TABS as t (t.id)}
+					<!-- pointerdown + click both activate (idempotent): pointerdown wins
+					     the race against the focus-follows activation cascade — on a
+					     peeking master the pointerdown-triggered re-render can swallow
+					     the subsequent click on slow machines (CI caught it; same
+					     same-click detach class as BUG-2281). click remains for
+					     keyboard (Enter/Space). -->
+					<button
+						class="pane-tab"
+						class:on={activeTab === t.id}
+						role="tab"
+						aria-selected={activeTab === t.id}
+						aria-controls={t.id === 'activity' || t.id === 'versions'
+							? `pane-panel-feed-${uid}`
+							: `pane-panel-${t.id}-${uid}`}
+						tabindex={activeTab === t.id ? 0 : -1}
+						onpointerdown={(e) => {
+							// Mouse only: touch pointerdown fires on scroll-start, and a
+							// drag beginning on a tab must not switch panels (Codex).
+							// Mobile has no peeking master, so the click-swallow race
+							// this guards against doesn't exist there.
+							if (e.pointerType === 'mouse') activeTab = t.id;
 						}}
-						oncollectionupdated={(updated) => {
-							// Switch-safety note (BUG-2280 — investigated, NOT a live
-							// bug; do NOT add a template-side {@const keyedSlug =
-							// itemSlug} "snapshot" fence here). A quick-action save can
-							// resolve AFTER an A->B switch and fire this callback from a
-							// destroyed {#key} instance, but it's already safe by two
-							// independent layers, so no parent fence is needed:
-							//   1. QuickActionsMenu's OWN child-side guard
-							//      (`collection?.id !== baseCollection.id`, captured
-							//      pre-await) drops the callback on a CROSS-collection
-							//      switch: a destroyed instance's `collection` prop reads
-							//      the LIVE parent value (B's collection), not a frozen
-							//      A — so the guard fails and oncollectionupdated is
-							//      never invoked. (A {@const} snapshot would NOT freeze
-							//      in Svelte 5 — it's a lazily-pulled derived that reads
-							//      the current itemSlug — so a keyedSlug fence here is a
-							//      no-op: the literal BUG-2129 trap. Verified empirically.)
-							//   2. On a SAME-collection switch the callback DOES fire,
-							//      but `updated` is that same collection, so assigning it
-							//      is correct; and loadData's collection write
-							//      (`collGen === collectionGen || collection?.id !==
-							//      collData.id`) forces the right collection regardless
-							//      of the collectionGen bump below.
-							// Bump the unified fence so an in-flight stale load/refresh
-							// can't revert this fresh write (Codex).
-							collectionGen++;
-							collection = updated;
-						}}
-					/>
-				{/key}
-			{/if}
-			{#if childTotal > 0}
-				<!--
-					Children jump badge (IDEA-2133). Mirrors the "📎 N" backlinks
-					badge below: surfaces the child completion count (done/total)
-					in the action bar and smooth-scrolls to the Children section.
-					Placed before the backlinks badge so the two jump affordances
-					match the page's reading order (children → backlinks →
-					timeline). Hidden when the item has no children. The count is
-					derived from computedOverrides — the same source the ChildItems
-					section header renders — so badge and section always agree.
-				-->
-				<button
-					class="action-btn"
-					title="{childTotal} child item{childTotal === 1 ? '' : 's'}, {childDone} done"
-					aria-label="Jump to Children — {childDone} of {childTotal} done"
-					onclick={() => jumpToSection('relationships', 'item-children')}
-				>
-					🌳 {childDone}/{childTotal}
-				</button>
-			{/if}
-			{#if backlinksCount > 0}
-				<!--
-					Mention badge (PLAN-1593 / TASK-1596). Surfaces the inbound
-					`[[...]]` reference count in the action bar so users can see
-					at a glance that this item is referenced from elsewhere AND
-					jump straight to the panel without scrolling. Hidden when
-					the count is 0 so items with no inbound links don't
-					advertise an empty surface. The count is driven by
-					BacklinksPanel's onCountChange callback so the two stay in
-					sync without a separate API call.
-				-->
-				<button
-					class="action-btn"
-					title="Mentioned in {backlinksCount} other item{backlinksCount === 1 ? '' : 's'}"
-					onclick={() => jumpToSection('relationships', 'item-backlinks')}
-				>
-					📎 {backlinksCount}
-				</button>
-			{/if}
-			<!-- Pane ⋯ overflow (PLAN-2290 Phase 4 PR B): graph / move / share /
-			     delete per the mock. Triggers stay LIVE while peeking (BUG-2263 —
-			     these dispatch side-independent REST/dialog actions); opening the
-			     menu on a peeking side activates it like any other control. -->
-			<div class="menu-anchor">
-				<button
-					class="action-btn pane-more-btn"
-					bind:this={paneMenuTrigger}
-					aria-haspopup="menu"
-					aria-expanded={paneMenuOpen}
-					aria-label="More item actions"
-					title="More"
-					disabled={moving}
-					onclick={() => {
-						paneMenuView = 'root';
-						paneMenuOpen = !paneMenuOpen;
-					}}
-				>⋯</button>
-				<Menu
-					open={paneMenuOpen}
-					onclose={() => { paneMenuOpen = false; paneMenuView = 'root'; }}
-					trigger={paneMenuTrigger}
-					mode="anchored"
-					sheetOnMobile
-					sheetTitle="Item actions"
-					ariaLabel="Item actions"
-					focusKey={paneMenuView}
-				>
-					{#if paneMenuView === 'root'}
-						{#if graphFocusRef}
-							<MenuItem icon="🕸" onclick={() => { paneMenuOpen = false; openGraph(); }}>
-								Dependency graph
-							</MenuItem>
-						{/if}
-						{#if canEdit}
-							<MenuItem icon="⇄" hint="›" onclick={() => (paneMenuView = 'move')} disabled={moving}>
-								{moving ? 'Moving…' : 'Move to collection…'}
-							</MenuItem>
-						{/if}
-						{#if isOwner}
-							<MenuItem icon="⇗" onclick={() => { paneMenuOpen = false; shareDialogOpen = true; }}>
-								Share…
-							</MenuItem>
-						{/if}
-						{#if canEdit}
-							<div class="menu-divider" role="separator"></div>
-							<!-- Drill down rather than close: the confirmation is a
-							     'delete' sub-view of THIS panel (PLAN-2326 DR-6), so
-							     the menu stays open and Menu's focusKey hands focus
-							     to the sub-view's first row. -->
-							<MenuItem icon="🗑" danger hint="›" onclick={() => (paneMenuView = 'delete')}>
-								Delete…
-							</MenuItem>
-						{/if}
-					{:else if paneMenuView === 'move'}
-						<MenuItem icon="‹" onclick={() => (paneMenuView = 'root')}>Back</MenuItem>
-						<div class="menu-divider" role="separator"></div>
-						{#each moveTargets as target (target.slug)}
-							<MenuItem
-								icon={target.icon || '📁'}
-								disabled={moving}
-								onclick={() => handleMove(target.slug)}
-							>
-								{target.name}
-							</MenuItem>
-						{/each}
-					{:else if paneMenuView === 'delete'}
-						<!--
-							Delete confirmation, as a drill-down view (PLAN-2326 DR-6).
-							Cancel comes FIRST so the focusKey handoff lands keyboard
-							focus on the non-destructive row — Enter on arrival must
-							never delete.
-
-							The prompt carries `role="presentation"`: a `role="menu"`
-							owns menuitem / separator / group children, and this says
-							explicitly that the prompt is none of them rather than
-							leaving an undeclared div among them (the `.menu-divider`
-							below is the separator case).
-
-							It is NOT what keeps the prompt out of Menu's arrow-key
-							walk — that selector is `[role^="menuitem"]`, so a bare div
-							was already excluded. The consequence that matters is the
-							same either way: the prompt is never announced on its own,
-							hence the aria-describedby pointing back at it from the
-							destructive row. `role="presentation"` drops the element's
-							own semantics but NOT its text, so that description still
-							computes — verified against the rendered a11y tree, where
-							the row reports name "Delete item" / description "Delete
-							this item?" and Cancel reports no description.
-						-->
-						<div class="menu-confirm-note" role="presentation" id="delete-confirm-note-{uid}">
-							Delete this item?
-						</div>
-						<MenuItem icon="‹" onclick={() => (paneMenuView = 'root')}>Cancel</MenuItem>
-						<div class="menu-divider" role="separator"></div>
-						<MenuItem
-							icon="🗑"
-							danger
-							describedBy="delete-confirm-note-{uid}"
-							disabled={deleting || !canEdit}
-							onclick={handleDelete}
-						>
-							{deleting ? 'Deleting…' : 'Delete item'}
-						</MenuItem>
-					{/if}
-				</Menu>
+						onclick={() => (activeTab = t.id)}
+					>
+						{t.label}
+					</button>
+				{/each}
 			</div>
-		</div>
 
-		<!-- Pane tabs (PLAN-2290 Phase 4). Panels below are CSS-hidden, never
-		     unmounted — see the PaneTab block in the script. -->
-		<div
-			class="pane-tabs"
-			role="tablist"
-			aria-label="Item sections"
-			tabindex={-1}
-			onkeydown={(e) => {
-				if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
-				const tabs = Array.from(
-					(e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]')
-				);
-				const idx = tabs.indexOf(document.activeElement as HTMLElement);
-				if (idx === -1) return;
-				e.preventDefault();
-				const next = e.key === 'ArrowRight'
-					? (idx + 1) % tabs.length
-					: (idx - 1 + tabs.length) % tabs.length;
-				// Automatic activation: panels are display-toggles (always
-				// mounted), so activating on arrow-focus is free and keeps the
-				// roving tabindex consistent (tabindex derives from activeTab).
-				activeTab = PANE_TABS[next].id;
-				tabs[next].focus();
-			}}
-		>
-			{#each PANE_TABS as t (t.id)}
-				<!-- pointerdown + click both activate (idempotent): pointerdown wins
-				     the race against the focus-follows activation cascade — on a
-				     peeking master the pointerdown-triggered re-render can swallow
-				     the subsequent click on slow machines (CI caught it; same
-				     same-click detach class as BUG-2281). click remains for
-				     keyboard (Enter/Space). -->
+			<!-- Relocated from the deleted `.meta-actions` band (TASK-2328).
+			     `.menu-anchor` below moves INTACT: it is the `position: relative`
+			     containing block for the anchored Menu, so lifting the `⋯` button
+			     out of it on its own would break the panel's positioning. -->
+			<div class="strip-actions">
+				<!-- Star is a per-user, itemId-keyed REST toggle available to viewers too,
+				     and cannot collide across sides — so it is NOT frozen while peeking
+				     (BUG-2263). No canEdit or peeking gate. -->
 				<button
-					class="pane-tab"
-					class:on={activeTab === t.id}
-					role="tab"
-					aria-selected={activeTab === t.id}
-					aria-controls={t.id === 'activity' || t.id === 'versions'
-						? `pane-panel-feed-${uid}`
-						: `pane-panel-${t.id}-${uid}`}
-					tabindex={activeTab === t.id ? 0 : -1}
-					onpointerdown={(e) => {
-						// Mouse only: touch pointerdown fires on scroll-start, and a
-						// drag beginning on a tab must not switch panels (Codex).
-						// Mobile has no peeking master, so the click-swallow race
-						// this guards against doesn't exist there.
-						if (e.pointerType === 'mouse') activeTab = t.id;
-					}}
-					onclick={() => (activeTab = t.id)}
+					class="action-btn star-btn"
+					class:starred={starredStore.isStarred(item.id)}
+					onclick={() => { if (!item) return; starredStore.toggle(wsSlug, item.slug, item.id); }}
+					title={starredStore.isStarred(item.id) ? 'Unstar' : 'Star'}
 				>
-					{t.label}
+					{starredStore.isStarred(item.id) ? '★' : '☆'}
 				</button>
-			{/each}
+				<!-- Quick-actions menu: the prompt-copy actions are read-only and stay
+				     visible on the peeking side (invisible freeze, BUG-2263). But the
+				     owner "New / Manage actions" controls WRITE the whole collection
+				     `settings` JSON from this instance's local snapshot with no merge —
+				     and master + pane can be DIFFERENT items in the SAME collection, so
+				     two concurrent saves are last-write-wins. So `canEdit` (which gates
+				     ONLY those write controls) folds in `!peeking`: the collection-config
+				     writes are confined to the active side, the prompts stay on both. -->
+				{#if collection && (quickActions.length > 0 || isOwner)}
+					<!-- {#key itemSlug}: structural containment (PLAN-2105 / TASK-2112).
+					     Remount this item-scoped menu on every item switch so the
+					     child's OWN local state (open form, in-progress inputs) resets.
+					     Keyed on itemSlug (the URL/ref identity), NOT item.id, so it
+					     resets the instant the ref changes rather than waiting for B to
+					     load. NOTE: the remount does NOT cancel a destroyed instance's
+					     in-flight save promise — that promise still fires
+					     oncollectionupdated into this persistent parent (see the
+					     switch-safety note on the callback). -->
+					{#key itemSlug}
+						<QuickActionsMenu
+							actions={quickActions}
+							{item}
+							{collection}
+							scope="item"
+							{wsSlug}
+							canEdit={isOwner && !peeking}
+							onmanage={() => {
+								editCollectionSection = 'actions';
+								editCollectionOpen = true;
+							}}
+							oncollectionupdated={(updated) => {
+								// Switch-safety note (BUG-2280 — investigated, NOT a live
+								// bug; do NOT add a template-side {@const keyedSlug =
+								// itemSlug} "snapshot" fence here). A quick-action save can
+								// resolve AFTER an A->B switch and fire this callback from a
+								// destroyed {#key} instance, but it's already safe by two
+								// independent layers, so no parent fence is needed:
+								//   1. QuickActionsMenu's OWN child-side guard
+								//      (`collection?.id !== baseCollection.id`, captured
+								//      pre-await) drops the callback on a CROSS-collection
+								//      switch: a destroyed instance's `collection` prop reads
+								//      the LIVE parent value (B's collection), not a frozen
+								//      A — so the guard fails and oncollectionupdated is
+								//      never invoked. (A {@const} snapshot would NOT freeze
+								//      in Svelte 5 — it's a lazily-pulled derived that reads
+								//      the current itemSlug — so a keyedSlug fence here is a
+								//      no-op: the literal BUG-2129 trap. Verified empirically.)
+								//   2. On a SAME-collection switch the callback DOES fire,
+								//      but `updated` is that same collection, so assigning it
+								//      is correct; and loadData's collection write
+								//      (`collGen === collectionGen || collection?.id !==
+								//      collData.id`) forces the right collection regardless
+								//      of the collectionGen bump below.
+								// Bump the unified fence so an in-flight stale load/refresh
+								// can't revert this fresh write (Codex).
+								collectionGen++;
+								collection = updated;
+							}}
+						/>
+					{/key}
+				{/if}
+				{#if childTotal > 0}
+					<!--
+						Children jump badge (IDEA-2133). Mirrors the "📎 N" backlinks
+						badge below: surfaces the child completion count (done/total)
+						in the action bar and smooth-scrolls to the Children section.
+						Placed before the backlinks badge so the two jump affordances
+						match the page's reading order (children → backlinks →
+						timeline). Hidden when the item has no children. The count is
+						derived from computedOverrides — the same source the ChildItems
+						section header renders — so badge and section always agree.
+
+						Icon and count are separate spans (TASK-2328 / DR-9) so
+						TASK-2329's compact tier can hide the icon and keep the count
+						— a container query cannot address half a text node. The
+						single space BETWEEN them is deliberate: it is the same text
+						node the pre-split markup rendered, so the computed
+						accessible name is byte-identical. `title` / `aria-label`
+						are untouched for the same reason.
+					-->
+					<button
+						class="action-btn"
+						title="{childTotal} child item{childTotal === 1 ? '' : 's'}, {childDone} done"
+						aria-label="Jump to Children — {childDone} of {childTotal} done"
+						onclick={() => jumpToSection('relationships', 'item-children')}
+					>
+						<span class="badge-icon">🌳</span> <span class="badge-count">{childDone}/{childTotal}</span>
+					</button>
+				{/if}
+				{#if backlinksCount > 0}
+					<!--
+						Mention badge (PLAN-1593 / TASK-1596). Surfaces the inbound
+						`[[...]]` reference count in the action bar so users can see
+						at a glance that this item is referenced from elsewhere AND
+						jump straight to the panel without scrolling. Hidden when
+						the count is 0 so items with no inbound links don't
+						advertise an empty surface. The count is driven by
+						BacklinksPanel's onCountChange callback so the two stay in
+						sync without a separate API call.
+
+						Split into icon + count spans for TASK-2329's compact tier,
+						exactly as the children badge above. This badge has NO
+						`aria-label`, so its accessible name is computed from the
+						content — hence no `aria-hidden` on the icon and the literal
+						space between the spans: both would change the name.
+					-->
+					<button
+						class="action-btn"
+						title="Mentioned in {backlinksCount} other item{backlinksCount === 1 ? '' : 's'}"
+						onclick={() => jumpToSection('relationships', 'item-backlinks')}
+					>
+						<span class="badge-icon">📎</span> <span class="badge-count">{backlinksCount}</span>
+					</button>
+				{/if}
+				<!-- Pane ⋯ overflow (PLAN-2290 Phase 4 PR B): graph / move / share /
+				     delete per the mock. Triggers stay LIVE while peeking (BUG-2263 —
+				     these dispatch side-independent REST/dialog actions); opening the
+				     menu on a peeking side activates it like any other control. -->
+				<div class="menu-anchor">
+					<button
+						class="action-btn pane-more-btn"
+						bind:this={paneMenuTrigger}
+						aria-haspopup="menu"
+						aria-expanded={paneMenuOpen}
+						aria-label="More item actions"
+						title="More"
+						disabled={moving}
+						onclick={() => {
+							paneMenuView = 'root';
+							paneMenuOpen = !paneMenuOpen;
+						}}
+					>⋯</button>
+					<Menu
+						open={paneMenuOpen}
+						onclose={() => { paneMenuOpen = false; paneMenuView = 'root'; }}
+						trigger={paneMenuTrigger}
+						mode="anchored"
+						sheetOnMobile
+						sheetTitle="Item actions"
+						ariaLabel="Item actions"
+						focusKey={paneMenuView}
+					>
+						{#if paneMenuView === 'root'}
+							{#if graphFocusRef}
+								<MenuItem icon="🕸" onclick={() => { paneMenuOpen = false; openGraph(); }}>
+									Dependency graph
+								</MenuItem>
+							{/if}
+							{#if canEdit}
+								<MenuItem icon="⇄" hint="›" onclick={() => (paneMenuView = 'move')} disabled={moving}>
+									{moving ? 'Moving…' : 'Move to collection…'}
+								</MenuItem>
+							{/if}
+							{#if isOwner}
+								<MenuItem icon="⇗" onclick={() => { paneMenuOpen = false; shareDialogOpen = true; }}>
+									Share…
+								</MenuItem>
+							{/if}
+							{#if canEdit}
+								<div class="menu-divider" role="separator"></div>
+								<!-- Drill down rather than close: the confirmation is a
+								     'delete' sub-view of THIS panel (PLAN-2326 DR-6), so
+								     the menu stays open and Menu's focusKey hands focus
+								     to the sub-view's first row. -->
+								<MenuItem icon="🗑" danger hint="›" onclick={() => (paneMenuView = 'delete')}>
+									Delete…
+								</MenuItem>
+							{/if}
+						{:else if paneMenuView === 'move'}
+							<MenuItem icon="‹" onclick={() => (paneMenuView = 'root')}>Back</MenuItem>
+							<div class="menu-divider" role="separator"></div>
+							{#each moveTargets as target (target.slug)}
+								<MenuItem
+									icon={target.icon || '📁'}
+									disabled={moving}
+									onclick={() => handleMove(target.slug)}
+								>
+									{target.name}
+								</MenuItem>
+							{/each}
+						{:else if paneMenuView === 'delete'}
+							<!--
+								Delete confirmation, as a drill-down view (PLAN-2326 DR-6).
+								Cancel comes FIRST so the focusKey handoff lands keyboard
+								focus on the non-destructive row — Enter on arrival must
+								never delete.
+
+								The prompt carries `role="presentation"`: a `role="menu"`
+								owns menuitem / separator / group children, and this says
+								explicitly that the prompt is none of them rather than
+								leaving an undeclared div among them (the `.menu-divider`
+								below is the separator case).
+
+								It is NOT what keeps the prompt out of Menu's arrow-key
+								walk — that selector is `[role^="menuitem"]`, so a bare div
+								was already excluded. The consequence that matters is the
+								same either way: the prompt is never announced on its own,
+								hence the aria-describedby pointing back at it from the
+								destructive row. `role="presentation"` drops the element's
+								own semantics but NOT its text, so that description still
+								computes — verified against the rendered a11y tree, where
+								the row reports name "Delete item" / description "Delete
+								this item?" and Cancel reports no description.
+							-->
+							<div class="menu-confirm-note" role="presentation" id="delete-confirm-note-{uid}">
+								Delete this item?
+							</div>
+							<MenuItem icon="‹" onclick={() => (paneMenuView = 'root')}>Cancel</MenuItem>
+							<div class="menu-divider" role="separator"></div>
+							<MenuItem
+								icon="🗑"
+								danger
+								describedBy="delete-confirm-note-{uid}"
+								disabled={deleting || !canEdit}
+								onclick={handleDelete}
+							>
+								{deleting ? 'Deleting…' : 'Delete item'}
+							</MenuItem>
+						{/if}
+					</Menu>
+				</div>
+			</div>
 		</div>
 
 		<div class="tab-panel" class:tab-hidden={activeTab !== 'details'} role="tabpanel" id="pane-panel-details-{uid}" aria-label="Details">
@@ -5515,12 +5544,80 @@
 		color: var(--text-muted);
 	}
 
+	/* ── Tab strip (PLAN-2326 / TASK-2328) ────────────────────────────────
+	   One band: the `.pane-tabs` tablist plus the right-aligned
+	   `.strip-actions` group, which before TASK-2328 was its own
+	   `.meta-actions` row above. The divider that used to belong to
+	   `.pane-tabs` lives here now so it runs the full width of the strip
+	   rather than stopping where the tabs do.
+
+	   `container-type: inline-size` makes this the query container for
+	   TASK-2329's tier rule. It has to be here rather than on an ancestor:
+	   the docked pane's width is user-dragged and persisted, decoupled from
+	   the viewport, so a media query cannot see it (DR-2).
+
+	   Deliberately NO `overflow`, `contain`, `clip-path`, `transform`,
+	   `filter` or `will-change` on this element — it is an ancestor of both
+	   `.menu-anchor` and QuickActionsMenu's anchor, and any of those would
+	   clip the anchored panels they position. DR-9's scroll rule goes on
+	   `.pane-tabs`, which is their SIBLING. (`container-type` itself is
+	   safe: it applies layout/style/inline-size containment but not PAINT
+	   containment, so the panels still escape — DR-3, re-verified in
+	   Chromium against this markup, including the mobile BottomSheet's
+	   `position: fixed` overlay, which still resolves against the
+	   viewport.) */
+	.tab-strip {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		container-type: inline-size;
+		container-name: item-tab-strip;
+		border-bottom: 1px solid var(--border-subtle);
+		margin: var(--space-4) 0;
+	}
+
 	/* ── Pane tabs (PLAN-2290 Phase 4) ────────────────────────────────── */
 	.pane-tabs {
 		display: flex;
 		gap: 2px;
-		border-bottom: 1px solid var(--border-subtle);
-		margin: var(--space-4) 0 var(--space-4);
+		/* DR-9 width allocation: `.strip-actions` never shrinks, so the tab
+		   list scrolls horizontally instead of wrapping to a second row or
+		   crushing the actions. `min-width: 0` is what lets a flex item
+		   shrink below its content width at all. */
+		min-width: 0;
+		overflow-x: auto;
+		scrollbar-width: none;
+		/* `overflow-x: auto` computes `overflow-y` to `auto` too, which would
+		   clip `.pane-tab`'s `margin-bottom: -1px` overlap and leave the
+		   active tab with a 1px accent sitting on 1px of divider instead of a
+		   solid 2px underline (measured). Extending the padding box by the
+		   same 1px keeps the overlap inside the scrollport; the negative
+		   margin pulls the outer box back so the strip's height and the
+		   divider's position are unchanged. */
+		padding-bottom: 1px;
+		margin-bottom: -1px;
+	}
+
+	.pane-tabs::-webkit-scrollbar {
+		display: none;
+	}
+
+	/* `margin-left: auto` right-aligns the group however few tabs there are;
+	   `flex: 0 0 auto` is DR-9's other half — the actions hold their size and
+	   the tab list gives way. */
+	.strip-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin-left: auto;
+		flex: 0 0 auto;
+	}
+
+	/* `.action-btn`'s 70px floor exists for the standalone graph-drawer
+	   controls, which are text buttons. In the strip these are icon-sized, so
+	   the floor is overridden HERE rather than removed from the base rule. */
+	.strip-actions .action-btn {
+		min-width: 0;
 	}
 
 	.pane-tab {
@@ -5557,7 +5654,14 @@
 		.tab-hidden {
 			display: block !important;
 		}
-		.pane-tabs {
+		/* All three named explicitly. Before TASK-2328 this rule hid
+		   `.pane-tabs` and the print block further down hid `.meta-actions`;
+		   the new `.tab-strip` wrapper inherits NEITHER, so hiding it is not
+		   free (DR-5). Its children are listed alongside it so the strip
+		   stays hidden even if the wrapper is later restyled. */
+		.tab-strip,
+		.pane-tabs,
+		.strip-actions {
 			display: none !important;
 		}
 	}
@@ -6421,14 +6525,9 @@
 		border-top: 1px solid var(--border);
 	}
 
-	/* History */
-	.meta-actions {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		margin-bottom: var(--space-6);
-		flex-wrap: wrap;
-	}
+	/* History. `.action-btn` is generic — the graph-drawer controls below use
+	   it too, which is why `.strip-actions` overrides `min-width` rather than
+	   this rule dropping it. */
 	.action-btn {
 		padding: var(--space-1) var(--space-3);
 		min-width: 70px;
@@ -6563,10 +6662,12 @@
 			padding: 0;
 		}
 
-		/* Hide interactive / screen-only chrome inside the item page. */
+		/* Hide interactive / screen-only chrome inside the item page.
+		   `.meta-actions` is gone (TASK-2328) — its contents now print-hide
+		   with `.tab-strip` / `.strip-actions` in the tab-strip print block
+		   above. */
 		.sticky-header,
 		.pane-header,
-		.meta-actions,
 		.editor-mode-toggle,
 		.add-relationship-section,
 		.save-status,
