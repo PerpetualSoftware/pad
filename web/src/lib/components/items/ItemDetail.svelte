@@ -6427,7 +6427,20 @@
 		align-items: center;
 		gap: var(--space-2);
 		margin-bottom: var(--space-6);
-		flex-wrap: wrap;
+		/* Single row at every container width. The band lives in the docked
+		   pane (user-draggable, 312-672px) as well as the full page, so the
+		   old `wrap` gave back a whole row of vertical space the moment the
+		   pane got narrow. Buttons compress instead — see the
+		   `.meta-actions .action-btn` flex rule below. */
+		flex-wrap: nowrap;
+		/* Query container for the narrow-width padding tightening below. Keyed
+		   off the BAND, not the viewport, because the docked pane's width is
+		   user-dragged and decoupled from it (PLAN-2326 DR-2). Safe here per
+		   DR-3: `inline-size` implies `contain: layout style inline-size` with
+		   no PAINT containment, so the ⋯ / ⚡ anchored menus still escape the
+		   band's box. Verified by measurement, not inference. */
+		container-type: inline-size;
+		container-name: item-action-bar;
 	}
 	.action-btn {
 		padding: var(--space-1) var(--space-3);
@@ -6439,7 +6452,14 @@
 		color: var(--text-secondary);
 		font-size: 0.85em;
 		cursor: pointer;
-		transition: all 0.1s;
+		/* Was `all 0.1s`, which is fine for a hover but wrong now that width
+		   and padding are width-derived: dragging the pane animated every
+		   button's padding, so the row visibly wobbled behind the drag and
+		   settled ~100ms late. Enumerate the hover properties instead. */
+		transition:
+			background 0.1s,
+			color 0.1s,
+			border-color 0.1s;
 		white-space: nowrap;
 	}
 	.action-btn:hover {
@@ -6450,6 +6470,50 @@
 		background: var(--accent-blue);
 		border-color: var(--accent-blue);
 		color: #fff;
+	}
+
+	/* Fluid action-bar buttons. Scoped to `.meta-actions` on purpose: the
+	   graph drawer's `.action-btn`s ("Close ✕", "Retry") are wider than 70px
+	   and must keep the plain `min-width` floor, not a 70px flex basis.
+
+	   `flex-basis: 70px` reproduces the old comfortable width when there is
+	   room, so nothing moves on a wide container. `flex-shrink: 1` lets the
+	   row compress when there isn't. `min-width: auto` (NOT 0) is what makes
+	   this safe — a flex item's automatic minimum is its content size, so
+	   shrinking stops at the label rather than clipping "🌳 12/34" down to
+	   nothing. Overriding the 70px floor above is the whole point; without
+	   this line the floor and the basis are the same number and nothing
+	   shrinks. */
+	.meta-actions .action-btn {
+		flex: 0 1 70px;
+		min-width: auto;
+	}
+	/* Both of these wrap a button in a plain div, which would otherwise be a
+	   block-layout flex item: the basis above only applies to a flex ITEM, so
+	   without `display: flex` here the ⋯ and ⚡ triggers sit at their
+	   block min-content width and refuse to participate in the compression.
+	   `.menu-anchor` keeps `position: relative` — Menu's anchored mode
+	   positions against it. */
+	.menu-anchor,
+	.meta-actions :global(.quick-actions-menu) {
+		display: flex;
+	}
+
+	/* Last resort before overflow. Once every control has shrunk to its own
+	   label the row can still exceed a 264px band (a 312px pane — the draggable
+	   minimum — with star + ⚡ + 🌳 + 📎 + ⋯ measured -3.4px, and -29.8px with a
+	   3-digit child count). Reclaiming 4px of padding per side per control buys
+	   ~40px, which clears both. Deliberately NOT `overflow-x: auto` here: a
+	   scrollport under `scrollbar-width: none` is what made controls silently
+	   unreachable the first time round (DR-12).
+
+	   Two-selector specificity (0,2,0) on purpose — `@container` contributes
+	   none of its own, so a bare `.action-btn` here would tie with the base
+	   rule above and be decided by source order. */
+	@container item-action-bar (max-width: 339.98px) {
+		.meta-actions .action-btn {
+			padding-inline: var(--space-2);
+		}
 	}
 
 	/* Per-item dependency graph drawer (PLAN-1780 / TASK-1784). Right-docked
