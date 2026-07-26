@@ -1800,14 +1800,29 @@
 
 	// Create an item in a board lane from the inline draft card
 	// (TASK-1676, refines TASK-1671 / IDEA-1159). Pre-fills the lane's
-	// group field so the item lands in that lane. `navigate` true (Enter
-	// in the draft) opens the new item; false (nav-guard "Save") just
-	// upserts it into the local index and stays put. Throws on failure so
+	// group field so the item lands in that lane. Throws on failure so
 	// BoardView can restore the draft. Returns the created item.
+	//
+	// `reveal` is the caller's INTENT — "the user just submitted this draft,
+	// show them the item" (Enter / "Add card") vs. "create it quietly" (the
+	// nav-guard's Save-all, which must never open anything on the way out).
+	// This page owns what revealing MEANS, so BoardView doesn't have to know
+	// the pane exists (IDEA-2298):
+	//   - desktop → open the split pane, exactly like clicking an existing card
+	//   - mobile  → nothing; the card appears in the lane and the user taps it
+	//     if they want it
+	// Either way the item is upserted into the local index so it renders in
+	// its lane immediately, and either way the draft composer closes
+	// (BoardView.submitDraft) — on desktop the pane takes focus.
+	//
+	// Deliberately NOT the `?new=1` full-page goto this used to do. That flow
+	// exists to drop you into the title editor of a fresh "Untitled" item
+	// (`createNewItem`), and re-opening the title editor on a title the user
+	// just finished typing is the inconsistency IDEA-2298 filed.
 	async function quickCreateInColumn(
 		groupValue: string,
 		title: string,
-		navigate: boolean
+		reveal: boolean
 	): Promise<Item | null> {
 		if (!wsSlug || !collSlug) return null;
 		const trimmed = title.trim();
@@ -1831,10 +1846,12 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			if (navigate) {
-				goto(`/${username}/${wsSlug}/${collSlug}/${itemUrlId(item)}?new=1`);
-			} else {
-				localIndex.upsert(wsSlug, item, epoch);
+			localIndex.upsert(wsSlug, item, epoch);
+			// Desktop reveal only — `openItemPane` is the same entry point a
+			// plain left-click on an existing card uses, so a created card and
+			// a clicked card land in the same place.
+			if (reveal && !viewport.isMobile) {
+				openItemPane(item);
 			}
 			return item;
 		} catch (err: any) {
