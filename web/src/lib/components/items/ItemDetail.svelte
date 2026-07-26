@@ -4328,29 +4328,22 @@
 			</div>
 		{/if}
 
-		<!-- Meta info -->
+		<!-- Provenance line. SCREEN-HIDDEN wholesale since TASK-2329 (DR-5):
+		     created/updated is provenance that the Activity and Versions tabs
+		     now own, and hiding the band whole — rather than its two spans —
+		     is what removes the stray `.meta-sep` "·" and the band's bottom
+		     margin along with it.
+
+		     It stays in the DOM because it is load-bearing for PRINT: the
+		     `@media print` block resets it to `display: block` and gives it
+		     the `border-bottom` that divides the page-1 document header from
+		     the properties card (BUG-626). The transient Saved / Synced
+		     indicators moved OUT of here into `.strip-actions` below — they
+		     are live status, not provenance, and print hides them anyway. -->
 		<div class="meta-info">
 			<span title={new Date(item.created_at).toLocaleString()}>Created {relativeTime(item.created_at)} by {item.created_by || 'unknown'}</span>
 			<span class="meta-sep">·</span>
 			<span title={new Date(item.updated_at).toLocaleString()}>Updated {relativeTime(item.updated_at)}</span>
-			<span class="save-status" class:saving={saveStatus === 'saving'} class:saved={saveStatus === 'saved'} class:visible={saveStatus !== 'idle'}>
-				{#if saveStatus === 'saving'}Saving...{:else}✓ Saved{/if}
-			</span>
-			{#if collabProvider}
-				<!-- Pending-sync indicator (TASK-1264). Visible only while
-				     the WS provider exists, which means: canEdit && !rawMode.
-				     Read-only / share-page / raw mode never see this badge.
-				     Colour map matches the four-state machine in
-				     wsProvider.svelte.ts: green=synced, yellow=connecting/
-				     reconnecting, red=offline. -->
-				<span
-					class="collab-state collab-state-{collabProvider.state}"
-					title={collabStateTitle(collabProvider.state)}
-				>
-					<span class="collab-state-dot" aria-hidden="true"></span>
-					<span class="collab-state-label">{collabStateLabel(collabProvider.state)}</span>
-				</span>
-			{/if}
 		</div>
 
 		<!-- Tab strip (PLAN-2326 / TASK-2328). One band: the tablist plus the
@@ -4424,6 +4417,37 @@
 			     containing block for the anchored Menu, so lifting the `⋯` button
 			     out of it on its own would break the panel's positioning. -->
 			<div class="strip-actions">
+				<!-- Saved / Synced, relocated out of `.meta-info` (TASK-2329).
+				     They lead the group so the icon controls stay flush right.
+
+				     `.collab-state-synced` keeps its class AND its visibility at
+				     every tier — it is `SYNCED_BADGE_SELECTOR` in
+				     `web/e2e/lib/collab-helpers.ts`, asserted visible across
+				     several suites including inside a narrow docked pane. Only
+				     its `.collab-state-label` word folds in the compact tier,
+				     and only visually — it stays in the accessibility tree, so
+				     the badge is never a colour-only status. The coloured dot
+				     (the primary signal) always renders. The
+				     badge's CSS was never scoped through `.meta-info`, so the
+				     move is purely positional. -->
+				<span class="save-status" class:saving={saveStatus === 'saving'} class:saved={saveStatus === 'saved'} class:visible={saveStatus !== 'idle'}>
+					{#if saveStatus === 'saving'}Saving...{:else}✓ Saved{/if}
+				</span>
+				{#if collabProvider}
+					<!-- Pending-sync indicator (TASK-1264). Visible only while
+					     the WS provider exists, which means: canEdit && !rawMode.
+					     Read-only / share-page / raw mode never see this badge.
+					     Colour map matches the four-state machine in
+					     wsProvider.svelte.ts: green=synced, yellow=connecting/
+					     reconnecting, red=offline. -->
+					<span
+						class="collab-state collab-state-{collabProvider.state}"
+						title={collabStateTitle(collabProvider.state)}
+					>
+						<span class="collab-state-dot" aria-hidden="true"></span>
+						<span class="collab-state-label">{collabStateLabel(collabProvider.state)}</span>
+					</span>
+				{/if}
 				<!-- Star is a per-user, itemId-keyed REST toggle available to viewers too,
 				     and cannot collide across sides — so it is NOT frozen while peeking
 				     (BUG-2263). No canEdit or peeking gate. -->
@@ -4536,14 +4560,19 @@
 						sync without a separate API call.
 
 						Split into icon + count spans for TASK-2329's compact tier,
-						exactly as the children badge above. This badge has NO
-						`aria-label`, so its accessible name is computed from the
-						content — hence no `aria-hidden` on the icon and the literal
-						space between the spans: both would change the name.
+						exactly as the children badge above.
+
+						TASK-2328 left this badge without an `aria-label` so its
+						accessible name stayed the computed "📎 4". TASK-2329's
+						compact tier `display:none`s `.badge-icon`, which drops it
+						out of the accessibility tree too and would degrade that
+						name to a bare "4". An explicit label — mirroring the
+						children badge's — pins the name across BOTH tiers instead.
 					-->
 					<button
 						class="action-btn"
 						title="Mentioned in {backlinksCount} other item{backlinksCount === 1 ? '' : 's'}"
+						aria-label="Jump to Mentions — mentioned in {backlinksCount} other item{backlinksCount === 1 ? '' : 's'}"
 						onclick={() => jumpToSection('relationships', 'item-backlinks')}
 					>
 						<span class="badge-icon">📎</span> <span class="badge-count">{backlinksCount}</span>
@@ -4578,6 +4607,30 @@
 						focusKey={paneMenuView}
 					>
 						{#if paneMenuView === 'root'}
+							<!-- Star also lives here, not only as the strip chip
+							     (TASK-2329, Codex round 2). The compact tier folds
+							     the chip away with `display: none`, and the mobile
+							     overlay is ALWAYS compact — so without this row
+							     starring would be unreachable on phones entirely.
+							     PLAN-2326's premise is "zero affordances removed",
+							     which a CSS fold only honours if the action still
+							     has a home. Rendered at every tier: a duplicate row
+							     in an overflow menu costs nothing, and hiding it in
+							     the full tier would mean container-querying inside
+							     the Menu — whose mobile form is a BottomSheet, i.e.
+							     exactly the surface that needs the row most.
+							     Unconditional, like the chip: starring is a
+							     per-user REST toggle open to viewers too. -->
+							<MenuItem
+								icon={starredStore.isStarred(item.id) ? '★' : '☆'}
+								onclick={() => {
+									if (!item) return;
+									paneMenuOpen = false;
+									starredStore.toggle(wsSlug, item.slug, item.id);
+								}}
+							>
+								{starredStore.isStarred(item.id) ? 'Unstar' : 'Star'}
+							</MenuItem>
 							{#if graphFocusRef}
 								<MenuItem icon="🕸" onclick={() => { paneMenuOpen = false; openGraph(); }}>
 									Dependency graph
@@ -5620,6 +5673,101 @@
 		min-width: 0;
 	}
 
+	/* Saved / Synced were relocated here out of `.meta-info` (TASK-2329). They
+	   each carried their own `margin-left` for spacing inside that band; the
+	   group's `gap` owns spacing now, so the margin would just double it.
+	   Overridden under `.strip-actions` rather than removed from the base
+	   rules so the badges keep their standalone styling. */
+	.strip-actions .save-status,
+	.strip-actions .collab-state {
+		margin-left: 0;
+	}
+
+	/* ── Compact tier (PLAN-2326 DR-7 / DR-9 / DR-10) ──────────────────────
+	   `@container`, NOT `@media`: the docked pane is
+	   `flex: 0 0 var(--pane-width, clamp(360px, 38%, 640px))` — a width the
+	   user drags and we persist, decoupled from the viewport — so a 360px
+	   pane on a 1440px screen still matches `@media (min-width: 900px)`.
+	   Only the container knows how much room the strip actually has.
+
+	   THRESHOLD — 700px, measured rather than assumed (DR-10). The strip's
+	   content box tops out at 912px on the full page at ANY monitor width
+	   (`--content-max-width: 960px` less 2x `--space-6` — verified identical
+	   at 1440 and 2560), so the mock's 900px boundary would have made the
+	   compact tier the near-universal state. Measured strip widths bracket
+	   700 cleanly:
+
+	     full page                     892-912px -> full
+	     full page + docked pane       526-678px -> compact
+	     docked pane                   312-672px -> compact
+	     mobile overlay                    342px -> compact
+
+	   The pane's 672px ceiling is `PaneHost.svelte`'s JS `PANE_WIDTH_MAX =
+	   720` less the pane's 2x24px padding — a harder bound than the CSS
+	   `clamp()`'s 640, and the tightest margin the threshold has (28px). If
+	   that constant ever grows past ~750 a dragged-wide pane would enter the
+	   full tier, which is the correct outcome anyway: it would have the room.
+
+	   So the rule is "does the full tier fit", not "which surface is this":
+	   a full page whose master column has been squeezed by an open pane
+	   compacts too, which is the point of querying the container. (The full
+	   tier's own worst-case content measures ~722px — 321px of tabs plus the
+	   widest observed action group. 700 is 22px optimistic, which only bites
+	   in the ~30px-wide viewport band where a pane-squeezed master lands
+	   between the two; there the tab list just scrolls a few px, silently,
+	   exactly as DR-9 designed it to.)
+
+	   TWO tiers, not the mock's three (DR-7): the `<600px` tier would have
+	   required duplicate badge markup outside this subtree.
+
+	   The star folds by `display: none` with the node RETAINED (DR-11) —
+	   `.star-btn` must stay in the DOM for the BUG-2263 freeze assertions.
+	   `.collab-state` itself never folds (it is `SYNCED_BADGE_SELECTOR`,
+	   asserted visible inside narrow panes); only its label word folds, and
+	   VISUALLY only — see the sr-only note on that rule. The coloured dot,
+	   the primary signal, always renders. */
+	@container item-tab-strip (max-width: 699px) {
+		.badge-icon {
+			display: none;
+		}
+		.star-btn {
+			display: none;
+		}
+		/* VISUALLY hidden, not `display: none` (Codex round 2). The dot is
+		   `aria-hidden`, so this label is the badge's ONLY textual state —
+		   `display: none` would drop it out of the accessibility tree and
+		   leave a colour-only indicator, which is exactly the failure mode
+		   the label exists to prevent. The clip-rect idiom takes it out of
+		   the visual flow (0 layout width, no paint) while keeping it
+		   readable by assistive tech. `clip-path` here is on a LEAF span —
+		   not on `.tab-strip` or any ancestor of `.menu-anchor`, where it
+		   would clip the anchored panels. */
+		.collab-state-label {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			padding: 0;
+			margin: -1px;
+			overflow: hidden;
+			clip: rect(0 0 0 0);
+			clip-path: inset(50%);
+			white-space: nowrap;
+			border: 0;
+		}
+		/* `.save-status` sits at `opacity: 0` when idle, which still RESERVES
+		   its ~48px. Harmless in the 912px full tier; in a 360px pane that is
+		   18% of the strip taken by something invisible, and every px here
+		   comes straight out of the tab list's scrollport (38px -> 94px with
+		   this rule). Dropping it from the flow costs no button movement: the
+		   group is right-aligned and `.save-status` LEADS it, so a save
+		   extends the group's left edge and nothing to its right shifts. The
+		   only casualty is the 0.2s fade-OUT at the end of the 2s `saved`
+		   window (`display: none` snaps); the fade-IN still plays. */
+		.save-status:not(.visible) {
+			display: none;
+		}
+	}
+
 	.pane-tab {
 		padding: 7px 11px 9px;
 		font-size: 0.92em;
@@ -5886,6 +6034,18 @@
 		white-space: nowrap;
 		flex-shrink: 0;
 	}
+	/* SCREEN-HIDDEN since TASK-2329: the ref already renders in the
+	   breadcrumb tail on the full page and in `.pane-header-ref-text` inside
+	   the pane, so the chip was the second or third copy within ~40px.
+
+	   Kept in the DOM for PRINT, where it IS the document header's ref
+	   (`order: 2` flips it right of the title). The print block below
+	   restores `display` EXPLICITLY — same specificity, later in source, so
+	   it wins inside `@media print`. Without that reset this rule would
+	   survive into print and drop the ref from page 1 (BUG-626 / DR-5). */
+	.title-row .item-ref {
+		display: none;
+	}
 	.title {
 		display: block;
 		font-size: 1.6em;
@@ -5970,15 +6130,20 @@
 		line-height: 1;
 	}
 
-	/* Meta */
+	/* Meta — the created/updated provenance line.
+
+	   SCREEN-HIDDEN WHOLESALE (TASK-2329 / DR-5). Hiding the band rather than
+	   its spans is deliberate: a spans-only hide would leave the `.meta-sep`
+	   "·" orphaned on its own row plus the band's bottom margin. Activity and
+	   Versions are the tabs that own provenance now.
+
+	   The element stays in the DOM because print needs it: the `@media print`
+	   block restores `display: block` and re-declares every property it cares
+	   about there (font-size, colour, margins, and the `border-bottom` that
+	   divides the page-1 document header from the properties card — BUG-626),
+	   so none of the old screen-side flex properties are missed. */
 	.meta-info {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		font-size: 0.8em;
-		color: var(--text-muted);
-		margin-bottom: var(--space-2);
-		flex-wrap: wrap;
+		display: none;
 	}
 	.meta-sep { color: var(--text-muted); }
 	.save-status {
@@ -6698,6 +6863,14 @@
 			border: none;
 		}
 		.title-row .item-ref {
+			/* MANDATORY reset (TASK-2329 / DR-5). The chip is screen-hidden
+			   with `display: none` now, and this rule previously set every
+			   print property EXCEPT `display` — so without this line the
+			   screen hide survives into print and the ref disappears from the
+			   page-1 document header, regressing BUG-626. `block` is what the
+			   old `inline` computed to anyway once `.title-row`'s print
+			   `display: flex` blockified it, so print output is unchanged. */
+			display: block;
 			order: 2;
 			flex: 0 0 auto;
 			font-size: 10pt;
@@ -6740,7 +6913,14 @@
 
 		/* Meta info subtitle (created / updated by). Border-bottom
 		   separates the page-1 document header block from the
-		   properties card below. BUG-626. */
+		   properties card below. BUG-626.
+
+		   `display: block` was already here before TASK-2329 and is what
+		   makes the band's wholesale SCREEN hide safe — it un-hides the
+		   provenance line for print. Do not drop it. Saved / Synced used to
+		   live inside this band and moved to `.strip-actions`; they were
+		   already print-hidden by the global selectors above, so the printed
+		   text is unchanged. */
 		.meta-info {
 			font-size: 9pt;
 			color: #555;

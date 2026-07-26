@@ -306,11 +306,18 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		const masterEditor = col.locator(EDITOR_SELECTOR);
 		await expect(masterEditor).toBeVisible({ timeout: SYNC_TIMEOUT });
 		await expect(masterEditor).toHaveAttribute('contenteditable', 'true');
-		// Action bar (above the tabs): Star enabled; Quick-actions visible;
+		// Tab strip (PLAN-2326): Star VISIBLE; Quick-actions visible;
 		// Share/Move/Delete live in the pane ⋯ overflow (PLAN-2290 Phase 4 PR B) —
 		// open it (master is active; the menu is an activating control) and
 		// verify the rows, then dismiss.
-		await expect(col.locator('button.star-btn')).toBeEnabled();
+		//
+		// `toBeVisible`, not `toBeEnabled` (PLAN-2326 DR-11): the star now folds
+		// via CSS in the strip's compact tier with the node RETAINED, so
+		// `toBeEnabled` — which only requires *attached* — would pass on a folded
+		// star and assert nothing. No pane is open yet, so the master strip is
+		// 892px at this suite's 1200px viewport: the FULL tier, where the star is
+		// genuinely visible and this is the stronger claim it reads as.
+		await expect(col.locator('button.star-btn')).toBeVisible();
 		await expect(col.locator('button.trigger-btn[title="Quick actions"]')).toBeVisible();
 		await col.locator('button.pane-more-btn').click();
 		await expect(col.getByRole('menuitem', { name: 'Share…' })).toBeVisible();
@@ -357,11 +364,23 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await expect(col.locator('.field-row', { hasText: 'Note' }).locator('.readonly-display')).toHaveCount(0);
 		// Comment composer: still present (not peeking-gated — ItemTimeline frozen={false}).
 		await expect(col.locator('.compose')).toHaveCount(1);
-		// Star: still enabled (never gated on peeking anymore).
+		// Star: still live while peeking (never gated on peeking anymore).
+		//
+		// Deliberately NOT `toBeVisible` here, unlike the pre-peek assertion
+		// above. With the pane docked, this master column's strip measures 526px
+		// at the suite's 1200px viewport, so PLAN-2326's compact tier CSS-folds
+		// the star. Visibility at this width is a TIER property, not a freeze
+		// property — asserting it would be testing the container query, and would
+		// go red the day the default pane width changes. What BUG-2263 owns is
+		// that peeking neither removes the node nor disables it; that is what is
+		// asserted. The reachability half of the guarantee is carried by the ⋯
+		// trigger below, which never folds at any tier.
+		await expect(col.locator('button.star-btn')).toHaveCount(1);
 		await expect(col.locator('button.star-btn')).toBeEnabled();
 		// Share/Move/Delete live in the ⋯ overflow now: the BUG-2263 guarantee is
 		// that the trigger stays LIVE on the peeking side (opening it would
-		// activate this side, so assert enabled, not open).
+		// activate this side, so assert reachable-but-unopened, not open).
+		await expect(col.locator('button.pane-more-btn')).toBeVisible();
 		await expect(col.locator('button.pane-more-btn')).toBeEnabled();
 		// Add-relationship + per-link remove: still present (side-independent single-item REST — no freeze).
 		await expect(col.locator('button.add-relationship-btn')).toHaveCount(1);
