@@ -6483,8 +6483,15 @@
 	   shrinking stops at the label rather than clipping "🌳 12/34" down to
 	   nothing. Overriding the 70px floor above is the whole point; without
 	   this line the floor and the basis are the same number and nothing
-	   shrinks. */
-	.meta-actions .action-btn {
+	   shrinks.
+
+	   Applies to the DIRECT-child buttons (star, 🌳, 📎) plus the ⚡ trigger's
+	   wrapper, so every labelled control in the band is one width. The ⚡ is
+	   the reason this list isn't just `.action-btn`: it belongs to
+	   QuickActionsMenu and never carried `.action-btn`, so it rendered 41x22
+	   against its neighbours' 70x26 — a different width AND height. */
+	.meta-actions > .action-btn,
+	.meta-actions > :global(.quick-actions-menu) {
 		flex: 0 1 70px;
 		min-width: auto;
 	}
@@ -6497,6 +6504,50 @@
 	.menu-anchor,
 	.meta-actions :global(.quick-actions-menu) {
 		display: flex;
+	}
+	/* Fill the wrapper the basis was applied to, and match `.action-btn`'s box
+	   metrics exactly — the trigger's own rule uses `2px` block padding, which
+	   is what made it 4px shorter than everything beside it.
+
+	   Specificity: the child component's scoped rule compiles to
+	   `.trigger-btn.svelte-<hash>` (0,2,0), so a bare `:global(.trigger-btn)`
+	   would TIE and be resolved by cross-file source order — unreliable. The
+	   child combinator takes this to 0,3,0 and wins outright. */
+	.meta-actions :global(.quick-actions-menu > .trigger-btn) {
+		flex: 1 1 auto;
+		min-width: auto;
+	}
+	/* One height for every control in the band, set in one place — the ⚡
+	   trigger's own rule used 2px block padding against `.action-btn`'s 4px,
+	   which is why it sat 4px shorter than its neighbours.
+
+	   `line-height` is pinned so glyph metrics can't leak into the height:
+	   "⋯" and "☆" resolved 1px apart, which `align-items: center` then showed
+	   as a misaligned row. 1.35 reproduces the line box the band had before
+	   this change (1.2 measured 24.3px tall overall).
+
+	   `--space-2` block padding is the requested ~30% taller: 16.1px line +
+	   16px padding + 2px border = 34.1px, against 26.1px at `--space-1`.
+	   Padding rather than a fixed height so the box still grows if the label
+	   ever wraps to a second line or the root font size changes. */
+	.meta-actions > .action-btn,
+	.meta-actions .pane-more-btn,
+	.meta-actions :global(.quick-actions-menu > .trigger-btn) {
+		line-height: 1.35;
+		padding-block: var(--space-2);
+	}
+	/* The overflow trigger is the deliberate exception to the uniform width
+	   (user's call): it's a control rather than a labelled value, so it sizes
+	   to its glyph instead of padding out to 70px.
+
+	   `min-width: auto` is required, not decorative: `.action-btn`'s base
+	   `min-width: 70px` reaches this button too (it is a grandchild, so the
+	   direct-child override above misses it), and a 70px floor kept it padded
+	   out to 70px no matter what flex-basis said. */
+	.meta-actions > .menu-anchor,
+	.meta-actions .pane-more-btn {
+		flex: 0 0 auto;
+		min-width: auto;
 	}
 
 	/* Last resort before overflow. Once every control has shrunk to its own
@@ -6511,7 +6562,8 @@
 	   none of its own, so a bare `.action-btn` here would tie with the base
 	   rule above and be decided by source order. */
 	@container item-action-bar (max-width: 339.98px) {
-		.meta-actions .action-btn {
+		.meta-actions .action-btn,
+		.meta-actions :global(.quick-actions-menu > .trigger-btn) {
 			padding-inline: var(--space-2);
 		}
 	}
