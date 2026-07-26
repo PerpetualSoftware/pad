@@ -12,10 +12,16 @@ import type { SuiteFixture } from './fixtures';
  *   < 560px   SPLIT — `.strip-actions` takes a full row of its own, `order:
  *             -1` so it sits ABOVE the tablist, and the tabs get the full
  *             width. Everything the shared row folded comes back.
- *   560-699   FOLD  — still one row, but tight: badge icons drop to bare
- *             counts and the star folds (node retained, DR-11).
+ *   560-639   FOLD  — still one row, but tight: badge icons drop to bare
+ *             counts and the star folds (node retained, DR-11) with its
+ *             affordance moving to a `.strip-star-row` in the ⋯ menu, gated
+ *             by the same query so exactly one of the two ever shows.
  *   <= 330px  the tabs' horizontal padding trims 11px -> 8px, the last 24px
  *             needed to fit four tabs in a 312px strip.
+ *
+ * The boundaries are measured, not chosen: the action group is 191px folded
+ * (row needs 524px), 274px full (607px), and 301px with absurd badge counts
+ * like "199/199" + "999" (634px).
  *
  * Why the split exists at all: combining tabs and actions on one row is not
  * survivable at phone widths and no amount of folding fixes it. The four tab
@@ -166,7 +172,7 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 		const badgeIcon = col.locator('.strip-actions .badge-icon');
 		const badgeCount = col.locator('.strip-actions .badge-count');
 
-		// ── SHARED ROW. 892px of strip at this viewport, way over 699. ──
+		// ── SHARED ROW. 892px of strip at this viewport, way over 640. ──
 		await expect(col.locator('.tab-strip')).toBeVisible();
 		await expect(badgeCount.first()).toBeVisible(); // children badge has arrived
 		expect(await stripWidth(col)).toBeGreaterThanOrEqual(700);
@@ -302,15 +308,16 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 		await page.keyboard.press('Escape');
 	});
 
-	test('the FOLD band (560-699px) still folds: a pane dragged to its 720px maximum keeps one row and drops the badge icons + star, with Star still reachable in the ⋯ menu', async ({
+	test('the FOLD band (560-639px) folds the badge icons + star, and the Star affordance moves into the ⋯ menu — exactly one of the two exists at any width', async ({
 		page,
 		fixture,
 		request,
 	}) => {
-		// A 720px pane (PANE_WIDTH_MAX) is a 672px strip — inside the fold band
-		// and the ONLY way to reach it from a docked pane.
-		await page.addInitScript(() => localStorage.setItem('pad-pane-width', '720'));
-		await page.setViewportSize({ width: 2000, height: 1000 });
+		// A 640px pane is a 592px strip: inside the fold band. The band is only
+		// reachable by dragging the pane to 608-687px, so it has to be set up
+		// rather than stumbled into.
+		await page.addInitScript(() => localStorage.setItem('pad-pane-width', '640'));
+		await page.setViewportSize({ width: 1800, height: 1000 });
 		await browserLogin(page);
 
 		const master = await seedDocWith(fixture, request, 'Tier fold');
@@ -323,7 +330,7 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 
 		const width = await stripWidth(pane);
 		expect(width).toBeGreaterThanOrEqual(560);
-		expect(width).toBeLessThan(700);
+		expect(width).toBeLessThan(640);
 
 		const layout = await stripLayout(pane);
 		expect(layout.split).toBe(false);
@@ -337,11 +344,111 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 		await expect(pane.locator('button.star-btn')).toBeHidden();
 		await expect(pane.locator('button.star-btn')).toHaveCount(1);
 
-		// The folded star still has a home, and it works.
+		// ...and the menu row takes over, gated by the SAME query. The folded
+		// star must have exactly one home: here.
 		await pane.locator('button.pane-more-btn').click();
+		await expect(page.locator('.strip-star-row')).toBeVisible();
 		await pane.getByRole('menuitem', { name: 'Star' }).click();
 		await pane.locator('button.pane-more-btn').click();
 		await expect(pane.getByRole('menuitem', { name: 'Unstar' })).toBeVisible();
 		await page.keyboard.press('Escape');
+	});
+
+	test('the tier boundaries have no sub-pixel gap: a fractional strip width either side of 560 and 640 still lands in the right tier', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		// Container widths are NOT integers — the docked pane's default is
+		// `clamp(360px, 38%, 640px)` and PaneHost's JS floors are `usable * 0.4`
+		// — so a strip can genuinely measure 559.5px. Encoded as three adjacent
+		// integer bands (`max-width: 559` / `560..639` / `640+`) that width
+		// matches NOTHING and silently falls back to the full shared row, which
+		// needs 607px. The fix is nested ranges plus `.99` bounds; this is the
+		// regression guard, and it needs fractional widths that no other test
+		// here produces.
+		await page.setViewportSize({ width: 1800, height: 1000 });
+		await browserLogin(page);
+		const master = await seedDocWith(fixture, request, 'Tier subpixel');
+		await seedDocWith(fixture, request, 'Tier subpixel child', { parent: master.id });
+		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${master.slug}`);
+		const pane = page.locator('.item-pane');
+		await expect(pane.locator('.tab-strip')).toBeVisible();
+
+		// pane width - 48px of padding = strip width.
+		const cases: Array<[number, 'split' | 'fold' | 'full']> = [
+			[607.5, 'split'], // strip 559.50 — was in the gap
+			[607.99, 'split'], // strip 559.99 — was in the gap
+			[608.5, 'fold'], // strip 560.50
+			[687.5, 'fold'], // strip 639.50 — was in the gap
+			[687.99, 'fold'], // strip 639.99 — was in the gap
+			[688.5, 'full'], // strip 640.50
+		];
+
+		for (const [paneWidth, expected] of cases) {
+			await page.addStyleTag({ content: `.item-pane{flex:0 0 ${paneWidth}px !important;}` });
+			const state = await expect
+				.poll(
+					async () =>
+						pane.locator('.tab-strip').evaluate((strip) => {
+							const tabs = strip.querySelector('.pane-tabs') as HTMLElement;
+							const acts = strip.querySelector('.strip-actions') as HTMLElement;
+							const split =
+								acts.getBoundingClientRect().bottom <= tabs.getBoundingClientRect().top + 1;
+							const starHidden =
+								getComputedStyle(strip.querySelector('.star-btn') as HTMLElement).display ===
+								'none';
+							return `${split ? 'split' : starHidden ? 'fold' : 'full'}|${
+								tabs.scrollWidth <= tabs.clientWidth
+							}`;
+						}),
+					{ timeout: 3000 },
+				)
+				.toBe(`${expected}|true`)
+				.then(() => expected);
+			expect(state).toBe(expected);
+		}
+	});
+
+	test('the Star affordance is never duplicated and never absent: the ⋯ menu row appears ONLY where the chip is folded', async ({
+		page,
+		fixture,
+		request,
+	}) => {
+		await browserLogin(page);
+		const master = await seedDocWith(fixture, request, 'Tier symmetry');
+		await seedDocWith(fixture, request, 'Tier symmetry child', { parent: master.id });
+		const paneUrl = `/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${master.slug}`;
+
+		// [label, viewport, stored pane width, expected tier]
+		const widths: Array<[string, { width: number; height: number }, number, 'split' | 'fold' | 'full']> = [
+			['360px pane (strip 312)', { width: 1440, height: 1000 }, 360, 'split'],
+			['448px pane (strip 400)', { width: 1440, height: 1000 }, 448, 'split'],
+			['620px pane (strip 572)', { width: 1600, height: 1000 }, 620, 'fold'],
+			['720px pane (strip 672)', { width: 2000, height: 1000 }, 720, 'full'],
+		];
+
+		for (const [label, viewport, paneWidth, tier] of widths) {
+			await page.setViewportSize(viewport);
+			await page.addInitScript((w) => localStorage.setItem('pad-pane-width', String(w)), paneWidth);
+			await page.goto(paneUrl);
+			const pane = page.locator('.item-pane');
+			await expect(pane.locator('.tab-strip')).toBeVisible();
+
+			const chip = pane.locator('button.star-btn');
+			const row = page.locator('.strip-star-row');
+			// Open the ⋯ so the row is mounted and measurable.
+			await pane.locator('button.pane-more-btn').click();
+			await expect(row).toHaveCount(1); // always in the DOM, gated by CSS only
+
+			if (tier === 'fold') {
+				await expect(chip, label).toBeHidden();
+				await expect(row, label).toBeVisible();
+			} else {
+				await expect(chip, label).toBeVisible();
+				await expect(row, label).toBeHidden();
+			}
+			await page.keyboard.press('Escape');
+		}
 	});
 });

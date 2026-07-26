@@ -4583,21 +4583,29 @@
 						focusKey={paneMenuView}
 					>
 						{#if paneMenuView === 'root'}
-							<!-- Star also lives here, not only as the strip chip
-							     (TASK-2329, Codex round 2). The compact tier folds
-							     the chip away with `display: none`, and the mobile
-							     overlay is ALWAYS compact — so without this row
-							     starring would be unreachable on phones entirely.
-							     PLAN-2326's premise is "zero affordances removed",
-							     which a CSS fold only honours if the action still
-							     has a home. Rendered at every tier: a duplicate row
-							     in an overflow menu costs nothing, and hiding it in
-							     the full tier would mean container-querying inside
-							     the Menu — whose mobile form is a BottomSheet, i.e.
-							     exactly the surface that needs the row most.
-							     Unconditional, like the chip: starring is a
-							     per-user REST toggle open to viewers too. -->
+							<!-- Star's stand-in for the FOLD band ONLY (TASK-2329).
+							     Between 560 and 639px of strip the `.star-btn`
+							     chip is `display: none`, which would leave the
+							     action with nowhere to go; PLAN-2326's premise is
+							     "zero affordances removed". Outside that band the
+							     chip is visible and this row is hidden, so the
+							     affordance exists in exactly one place at every
+							     width — never zero, never two, and never
+							     announced twice (`display: none` also drops it
+							     from the accessibility tree).
+
+							     Gated by `.strip-star-row` under the SAME
+							     container query that folds the chip; see the CSS.
+							     This Menu renders inside `.menu-anchor` ->
+							     `.strip-actions` -> `.tab-strip`, so it IS a
+							     descendant of the query container and the rule
+							     reaches it — on the anchored desktop panel and
+							     the mobile BottomSheet alike, neither of which
+							     portals out of the subtree. Unconditional in
+							     markup, like the chip: starring is a per-user
+							     REST toggle open to viewers too. -->
 							<MenuItem
+								class="strip-star-row"
 								icon={starredStore.isStarred(item.id) ? '★' : '☆'}
 								onclick={() => {
 									if (!item) return;
@@ -5695,20 +5703,116 @@
 	   implies: `PaneHost.svelte`'s JS `PANE_WIDTH_MAX = 720` is the real
 	   ceiling and it wins.
 
-	   ── SPLIT, below 560px ──
+   ── The two boundaries, DERIVED FROM MEASUREMENT ──
+	   Measured on the worst-case item above, with the tab labels at their
+	   natural 321px and a 12px column gap:
+
+	     action group, FOLDED (icons off, star off)   191px -> row needs 524px
+	     action group, FULL                           274px -> row needs 607px
+	     action group, FULL, badge counts inflated
+	       to an absurd "199/199" + "999"             301px -> row needs 634px
+
+	   So SPLIT below 560 (36px of slack over the folded row's 524), and FULL
+	   at 640 and up (6px over the absurd case, 33px over the real one). The
+	   fold band is what is left in between.
+
+	   640 rather than the 700 this task was scoped with: that figure was
+	   derived while Saved/Synced were still in the strip, and they were worth
+	   115px of the group. With them back in `.meta-info` the full row needs
+	   607px, not 722px, so a 700px boundary would have folded the star and
+	   the badge icons on the two widest surfaces that fold at all — a pane
+	   dragged to its 672px maximum and a 1440px full page with a pane docked
+	   (678px) — both of which have room to spare.
+
+	   ── The two blocks NEST, they do not abut (Codex) ──
+	   The obvious encoding is three adjacent bands: `max-width: 559`,
+	   `560..639`, `640+`. That leaves a hole. Container widths are not
+	   integers — the docked pane's default is `clamp(360px, 38%, 640px)` and
+	   `PaneHost`'s JS floors are `usable * 0.4` — so a strip can genuinely
+	   measure 559.5px, which matches NEITHER `max-width: 559px` NOR
+	   `min-width: 560px`, and silently falls back to the full shared row that
+	   needs 607px. A sub-pixel window, but a real one, and invisible to
+	   integer-width tests.
+
+	   Two things close it. First the blocks NEST: FOLD covers everything at
+	   or below the full threshold, and SPLIT is a strict SUBSET of it that
+	   both re-shapes the rows and UN-folds what the outer block hid. That
+	   alone bounds the damage — measured at 559.5px the strip folds instead
+	   of splitting, and the folded shared row needs only 524px, so the tabs
+	   still fit. Second the bounds are `.99`, not integers, so the leftover
+	   window is [559.99, 560), which no engine can land in: layout precision
+	   is 1/64px in Chromium and WebKit and 1/60px in Gecko, all coarser than
+	   0.01. Verified by forcing the strip to 559.50 / 559.99 / 639.50 /
+	   639.99 and checking the tier each time.
+
+	   (`(560px <= width < 640px)` range syntax would be exact and read
+	   better, but a browser that cannot parse it drops the whole block —
+	   which on a phone means the broken shared row comes back. `max-width`
+	   is universally supported wherever `@container` is.)
+
+	   ── FOLD, at or below 639px ──
+	   The two still share a row but it is tight, so the badge icons drop to
+	   bare counts and the star folds. The star folds by `display: none` with
+	   the node RETAINED (DR-11) — `.star-btn` must stay in the DOM for the
+	   BUG-2263 freeze assertions in pane-full-page-capstone.spec.ts.
+
+	   `.strip-star-row` is the `⋯` menu's stand-in for the folded chip, gated
+	   by the SAME query, inverted: hidden by default, shown only here.
+	   Symmetric by construction — the affordance exists in exactly one place
+	   at every width, never zero and never two, and `display: none` keeps the
+	   hidden one out of the accessibility tree so it is never announced
+	   alongside the visible chip.
+
+	   `:global()` because the row is a `MenuItem` child component: this
+	   component's scoping hash is not applied to its button. The Menu still
+	   renders INSIDE `.menu-anchor` -> `.strip-actions` -> `.tab-strip`
+	   (anchored panel and mobile BottomSheet alike — neither portals out), so
+	   it is a descendant of the query container and the rule reaches it.
+
+	   DESCENDED FROM `.menu-anchor` deliberately, not a bare
+	   `:global(.strip-star-row)`. MenuItem's own `.mi { display: flex }`
+	   carries that component's scoping hash, so it is (0,2,0) and a bare
+	   global class selector (0,1,0) loses to it — measured: the row rendered
+	   `display: flex` at every width, breaking the symmetry in the direction
+	   that shows the star TWICE. Prefixing with this component's own
+	   `.menu-anchor` makes every one of these rules (0,3,0), which wins
+	   deterministically and keeps the global reach inside our own subtree. */
+	.menu-anchor :global(.strip-star-row) {
+		display: none;
+	}
+
+	@container item-tab-strip (max-width: 639.99px) {
+		.badge-icon {
+			display: none;
+		}
+		.star-btn {
+			display: none;
+		}
+		.menu-anchor :global(.strip-star-row) {
+			display: flex;
+		}
+	}
+
+	/* ── SPLIT, at or below 559px — a strict subset of the FOLD block ──
 	   The actions take a row of their own and the tablist gets the full
 	   width. This is the fix for the phone case, where sharing a row is not
 	   survivable at any action-group size (see the note on `.tab-strip`).
-	   560 is the boundary because the shared row needs 321px of tabs plus a
-	   ~190px compact action group plus the 12px column gap.
 
 	   ABOVE the tabs, not below (`order: -1`, visual only — DOM order and
 	   therefore the tablist's roving tabindex are untouched). `.tab-strip`
 	   owns the bottom divider and `.pane-tab.on` overlaps it by 1px via
 	   `margin-bottom: -1px`; keeping the tablist as the LAST row preserves
 	   that overlap. Actions-below would orphan the active-tab underline
-	   ~31px above the divider. */
-	@container item-tab-strip (max-width: 559px) {
+	   ~31px above the divider.
+
+	   The three UN-FOLD declarations are what make the nesting work: with a
+	   row to themselves the actions have room, so the star and the badge
+	   icons come back and the menu row stands down. The values restore what
+	   the elements compute to outside the fold — `.badge-icon` is a plain
+	   inline `<span>`, and `.star-btn` is a flex item of `.strip-actions` so
+	   its used display is `block` regardless. Both measured, and asserted by
+	   the symmetry test in pane-tab-strip-tiers.spec.ts. */
+	@container item-tab-strip (max-width: 559.99px) {
 		.strip-actions {
 			order: -1;
 			flex: 0 0 100%;
@@ -5716,23 +5820,13 @@
 			justify-content: flex-end;
 			flex-wrap: wrap;
 		}
-	}
-
-	/* ── FOLD, 560-699px ──
-	   Only in this band. Here the two still share a row but it is tight, so
-	   the badge icons drop to bare counts and the star folds. Below 560 they
-	   both come BACK: the actions have their own row and the space to show
-	   them. Above 699 everything fits outright.
-
-	   The star folds by `display: none` with the node RETAINED (DR-11) —
-	   `.star-btn` must stay in the DOM for the BUG-2263 freeze assertions in
-	   pane-full-page-capstone.spec.ts. Star is also a row in the `⋯` menu,
-	   so the action still has a home while the chip is folded. */
-	@container item-tab-strip (min-width: 560px) and (max-width: 699px) {
 		.badge-icon {
-			display: none;
+			display: inline;
 		}
 		.star-btn {
+			display: block;
+		}
+		.menu-anchor :global(.strip-star-row) {
 			display: none;
 		}
 	}
