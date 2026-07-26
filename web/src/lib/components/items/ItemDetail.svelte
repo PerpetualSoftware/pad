@@ -6491,7 +6491,7 @@
 	   QuickActionsMenu and never carried `.action-btn`, so it rendered 41x22
 	   against its neighbours' 70x26 — a different width AND height. */
 	.meta-actions > .action-btn,
-	.meta-actions > :global(.quick-actions-menu) {
+	.meta-actions > :global(div.quick-actions-menu) {
 		flex: 0 1 70px;
 		min-width: auto;
 	}
@@ -6500,9 +6500,19 @@
 	   without `display: flex` here the ⋯ and ⚡ triggers sit at their
 	   block min-content width and refuse to participate in the compression.
 	   `.menu-anchor` keeps `position: relative` — Menu's anchored mode
-	   positions against it. */
+	   positions against it.
+
+	   The `div` qualifier on the ⚡ wrapper is load-bearing, not stylistic
+	   (Codex P2). QuickActionsMenu sets `.quick-actions-menu { display:
+	   inline-block }`, which Svelte scopes to `.quick-actions-menu.svelte-hash`
+	   — also (0,2,0). A bare `:global(.quick-actions-menu)` here would TIE it
+	   and be settled by cross-file stylesheet order, so a chunking change could
+	   silently restore `inline-block`: the wrapper would still take the 70px
+	   basis while the ⚡ inside it snapped back to intrinsic width, quietly
+	   undoing the uniform width and shrinking the touch target. The element
+	   selector takes this to (0,2,1) and wins outright. */
 	.menu-anchor,
-	.meta-actions :global(.quick-actions-menu) {
+	.meta-actions :global(div.quick-actions-menu) {
 		display: flex;
 	}
 	/* Fill the wrapper the basis was applied to, and match `.action-btn`'s box
