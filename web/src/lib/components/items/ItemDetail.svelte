@@ -4328,22 +4328,29 @@
 			</div>
 		{/if}
 
-		<!-- Provenance line. SCREEN-HIDDEN wholesale since TASK-2329 (DR-5):
-		     created/updated is provenance that the Activity and Versions tabs
-		     now own, and hiding the band whole — rather than its two spans —
-		     is what removes the stray `.meta-sep` "·" and the band's bottom
-		     margin along with it.
-
-		     It stays in the DOM because it is load-bearing for PRINT: the
-		     `@media print` block resets it to `display: block` and gives it
-		     the `border-bottom` that divides the page-1 document header from
-		     the properties card (BUG-626). The transient Saved / Synced
-		     indicators moved OUT of here into `.strip-actions` below — they
-		     are live status, not provenance, and print hides them anyway. -->
+		<!-- Meta info -->
 		<div class="meta-info">
 			<span title={new Date(item.created_at).toLocaleString()}>Created {relativeTime(item.created_at)} by {item.created_by || 'unknown'}</span>
 			<span class="meta-sep">·</span>
 			<span title={new Date(item.updated_at).toLocaleString()}>Updated {relativeTime(item.updated_at)}</span>
+			<span class="save-status" class:saving={saveStatus === 'saving'} class:saved={saveStatus === 'saved'} class:visible={saveStatus !== 'idle'}>
+				{#if saveStatus === 'saving'}Saving...{:else}✓ Saved{/if}
+			</span>
+			{#if collabProvider}
+				<!-- Pending-sync indicator (TASK-1264). Visible only while
+				     the WS provider exists, which means: canEdit && !rawMode.
+				     Read-only / share-page / raw mode never see this badge.
+				     Colour map matches the four-state machine in
+				     wsProvider.svelte.ts: green=synced, yellow=connecting/
+				     reconnecting, red=offline. -->
+				<span
+					class="collab-state collab-state-{collabProvider.state}"
+					title={collabStateTitle(collabProvider.state)}
+				>
+					<span class="collab-state-dot" aria-hidden="true"></span>
+					<span class="collab-state-label">{collabStateLabel(collabProvider.state)}</span>
+				</span>
+			{/if}
 		</div>
 
 		<!-- Tab strip (PLAN-2326 / TASK-2328). One band: the tablist plus the
@@ -4417,37 +4424,6 @@
 			     containing block for the anchored Menu, so lifting the `⋯` button
 			     out of it on its own would break the panel's positioning. -->
 			<div class="strip-actions">
-				<!-- Saved / Synced, relocated out of `.meta-info` (TASK-2329).
-				     They lead the group so the icon controls stay flush right.
-
-				     `.collab-state-synced` keeps its class AND its visibility at
-				     every tier — it is `SYNCED_BADGE_SELECTOR` in
-				     `web/e2e/lib/collab-helpers.ts`, asserted visible across
-				     several suites including inside a narrow docked pane. Only
-				     its `.collab-state-label` word folds in the compact tier,
-				     and only visually — it stays in the accessibility tree, so
-				     the badge is never a colour-only status. The coloured dot
-				     (the primary signal) always renders. The
-				     badge's CSS was never scoped through `.meta-info`, so the
-				     move is purely positional. -->
-				<span class="save-status" class:saving={saveStatus === 'saving'} class:saved={saveStatus === 'saved'} class:visible={saveStatus !== 'idle'}>
-					{#if saveStatus === 'saving'}Saving...{:else}✓ Saved{/if}
-				</span>
-				{#if collabProvider}
-					<!-- Pending-sync indicator (TASK-1264). Visible only while
-					     the WS provider exists, which means: canEdit && !rawMode.
-					     Read-only / share-page / raw mode never see this badge.
-					     Colour map matches the four-state machine in
-					     wsProvider.svelte.ts: green=synced, yellow=connecting/
-					     reconnecting, red=offline. -->
-					<span
-						class="collab-state collab-state-{collabProvider.state}"
-						title={collabStateTitle(collabProvider.state)}
-					>
-						<span class="collab-state-dot" aria-hidden="true"></span>
-						<span class="collab-state-label">{collabStateLabel(collabProvider.state)}</span>
-					</span>
-				{/if}
 				<!-- Star is a per-user, itemId-keyed REST toggle available to viewers too,
 				     and cannot collide across sides — so it is NOT frozen while peeking
 				     (BUG-2263). No canEdit or peeking gate. -->
@@ -5673,16 +5649,6 @@
 		min-width: 0;
 	}
 
-	/* Saved / Synced were relocated here out of `.meta-info` (TASK-2329). They
-	   each carried their own `margin-left` for spacing inside that band; the
-	   group's `gap` owns spacing now, so the margin would just double it.
-	   Overridden under `.strip-actions` rather than removed from the base
-	   rules so the badges keep their standalone styling. */
-	.strip-actions .save-status,
-	.strip-actions .collab-state {
-		margin-left: 0;
-	}
-
 	/* ── Compact tier (PLAN-2326 DR-7 / DR-9 / DR-10) ──────────────────────
 	   `@container`, NOT `@media`: the docked pane is
 	   `flex: 0 0 var(--pane-width, clamp(360px, 38%, 640px))` — a width the
@@ -5721,49 +5687,12 @@
 	   required duplicate badge markup outside this subtree.
 
 	   The star folds by `display: none` with the node RETAINED (DR-11) —
-	   `.star-btn` must stay in the DOM for the BUG-2263 freeze assertions.
-	   `.collab-state` itself never folds (it is `SYNCED_BADGE_SELECTOR`,
-	   asserted visible inside narrow panes); only its label word folds, and
-	   VISUALLY only — see the sr-only note on that rule. The coloured dot,
-	   the primary signal, always renders. */
+	   `.star-btn` must stay in the DOM for the BUG-2263 freeze assertions. */
 	@container item-tab-strip (max-width: 699px) {
 		.badge-icon {
 			display: none;
 		}
 		.star-btn {
-			display: none;
-		}
-		/* VISUALLY hidden, not `display: none` (Codex round 2). The dot is
-		   `aria-hidden`, so this label is the badge's ONLY textual state —
-		   `display: none` would drop it out of the accessibility tree and
-		   leave a colour-only indicator, which is exactly the failure mode
-		   the label exists to prevent. The clip-rect idiom takes it out of
-		   the visual flow (0 layout width, no paint) while keeping it
-		   readable by assistive tech. `clip-path` here is on a LEAF span —
-		   not on `.tab-strip` or any ancestor of `.menu-anchor`, where it
-		   would clip the anchored panels. */
-		.collab-state-label {
-			position: absolute;
-			width: 1px;
-			height: 1px;
-			padding: 0;
-			margin: -1px;
-			overflow: hidden;
-			clip: rect(0 0 0 0);
-			clip-path: inset(50%);
-			white-space: nowrap;
-			border: 0;
-		}
-		/* `.save-status` sits at `opacity: 0` when idle, which still RESERVES
-		   its ~48px. Harmless in the 912px full tier; in a 360px pane that is
-		   18% of the strip taken by something invisible, and every px here
-		   comes straight out of the tab list's scrollport (38px -> 94px with
-		   this rule). Dropping it from the flow costs no button movement: the
-		   group is right-aligned and `.save-status` LEADS it, so a save
-		   extends the group's left edge and nothing to its right shifts. The
-		   only casualty is the 0.2s fade-OUT at the end of the 2s `saved`
-		   window (`display: none` snaps); the fade-IN still plays. */
-		.save-status:not(.visible) {
 			display: none;
 		}
 	}
@@ -6130,20 +6059,15 @@
 		line-height: 1;
 	}
 
-	/* Meta — the created/updated provenance line.
-
-	   SCREEN-HIDDEN WHOLESALE (TASK-2329 / DR-5). Hiding the band rather than
-	   its spans is deliberate: a spans-only hide would leave the `.meta-sep`
-	   "·" orphaned on its own row plus the band's bottom margin. Activity and
-	   Versions are the tabs that own provenance now.
-
-	   The element stays in the DOM because print needs it: the `@media print`
-	   block restores `display: block` and re-declares every property it cares
-	   about there (font-size, colour, margins, and the `border-bottom` that
-	   divides the page-1 document header from the properties card — BUG-626),
-	   so none of the old screen-side flex properties are missed. */
+	/* Meta */
 	.meta-info {
-		display: none;
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: 0.8em;
+		color: var(--text-muted);
+		margin-bottom: var(--space-2);
+		flex-wrap: wrap;
 	}
 	.meta-sep { color: var(--text-muted); }
 	.save-status {
@@ -6913,14 +6837,7 @@
 
 		/* Meta info subtitle (created / updated by). Border-bottom
 		   separates the page-1 document header block from the
-		   properties card below. BUG-626.
-
-		   `display: block` was already here before TASK-2329 and is what
-		   makes the band's wholesale SCREEN hide safe — it un-hides the
-		   provenance line for print. Do not drop it. Saved / Synced used to
-		   live inside this band and moved to `.strip-actions`; they were
-		   already print-hidden by the global selectors above, so the printed
-		   text is unchanged. */
+		   properties card below. BUG-626. */
 		.meta-info {
 			font-size: 9pt;
 			color: #555;

@@ -8,9 +8,8 @@ import type { SuiteFixture } from './fixtures';
  *
  * The strip carries `container-type: inline-size` and a single
  * `@container item-tab-strip (max-width: 699px)` rule: below 700px of STRIP
- * width the badge icons drop to bare counts, the star folds away (node
- * retained), the collab badge keeps its dot but drops its label, and an idle
- * save-status leaves the flow.
+ * width the badge icons drop to bare counts and the star folds away, node
+ * retained.
  *
  * Two things are worth a real browser here, and neither is unit-testable:
  *
@@ -132,7 +131,6 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 		expect(await stripWidth(col)).toBeGreaterThanOrEqual(700);
 		await expect(star).toBeVisible();
 		await expect(badgeIcon.first()).toBeVisible();
-		await expect(col.locator('.collab-state-label')).toBeVisible();
 
 		// ── Squeeze it. Open the pane from the Relationships tab — same route,
 		//    same viewport, no reload: ONLY the master column's width changes. ──
@@ -156,16 +154,11 @@ test.describe('tab-strip tiers (PLAN-2326 / TASK-2329)', () => {
 		await expect(star).toHaveCount(1);
 		// The count survives the icon — the point of DR-9's span split.
 		await expect(badgeCount.first()).toBeVisible();
-		// The collab badge keeps its class AND its box (SYNCED_BADGE_SELECTOR is
-		// asserted visible by four other suites); only the label word folds —
-		// and VISUALLY only. The dot is `aria-hidden`, so the label is the
-		// badge's only textual state; it folds sr-only (clipped to a 1px box,
-		// still in the accessibility tree) rather than `display: none`, which
-		// would leave a colour-only status indicator.
+		// The collab badge is untouched by the tier rule — it lives in
+		// `.meta-info`, outside the query container entirely. Asserted here
+		// only because SYNCED_BADGE_SELECTOR is load-bearing for four other
+		// suites and this is the narrowest surface any of them exercise.
 		await expect(col.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
-		const foldedLabel = col.locator('.collab-state-label');
-		expect(Math.round((await foldedLabel.boundingBox())?.width ?? -1)).toBeLessThanOrEqual(1);
-		await expect(foldedLabel).toHaveText('Synced');
 		// ⋯ never folds at any tier — it is the compact tier's escape hatch, and
 		// it carries the Star the strip just folded away.
 		await expect(col.locator('button.pane-more-btn')).toBeVisible();
