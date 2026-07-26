@@ -236,7 +236,7 @@ describe('invisible master/pane freeze wiring (BUG-2263)', () => {
 		}
 	});
 
-	it("the delete drill-down's confirm row refuses via `disabled`, and never survives into a peek (TASK-2327)", () => {
+	it("the delete drill-down's confirm row refuses via `disabled` rather than unmounting (TASK-2327)", () => {
 		// Unlike every other control in this file, the confirm row is NOT
 		// canEdit-gated: it renders whenever the 'delete' sub-view is active and
 		// refuses via `disabled={deleting || !canEdit}`. Mirroring it as
@@ -275,13 +275,19 @@ describe('invisible master/pane freeze wiring (BUG-2263)', () => {
 		instance = null;
 		root = null;
 
-		// The one place the freeze DOES touch delete, and in the opposite
-		// direction to the rest of this file: peek-begin force-disarms the view
-		// (ItemDetail's peek handler resets paneMenuOpen/paneMenuView), so an armed
-		// confirmation can never persist into a peek.
+		// The row has NO peeking gate — `peeking` does not appear in its render
+		// condition, so the mirror must not invent one. What actually keeps an armed
+		// confirmation off the peeking side is ItemDetail's peek-begin handler
+		// resetting paneMenuOpen/paneMenuView, i.e. it drives `deleteViewArmed`
+		// false rather than gating the row. That combination (armed AND peeking) is
+		// therefore unreachable in the real component, and this assertion documents
+		// the render condition rather than the reachability — see FreezeProbe's
+		// comment for why encoding the reset as a gate here would be worse than
+		// asserting nothing, and TASK-2337 for the reset's own coverage.
 		r = render({ canEdit: true, peeking: true, deleteViewArmed: true });
-		expect(present(r, 'delete-confirm-btn'), 'armed confirm must not survive a peek').toBe(false);
-		// The affordance itself is untouched — trigger and Delete… row stay live.
+		expect(present(r, 'delete-confirm-btn'), 'render condition is paneMenuView alone').toBe(true);
+		// The affordance itself is untouched by peeking — trigger and Delete… row
+		// stay live, like every other REST control in this file.
 		expect(present(r, 'pane-more-btn')).toBe(true);
 		expect(disabled(r, 'pane-more-btn')).toBe(false);
 		expect(present(r, 'delete-btn')).toBe(true);

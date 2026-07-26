@@ -4537,13 +4537,28 @@
 							Delete confirmation, as a drill-down view (PLAN-2326 DR-6).
 							Cancel comes FIRST so the focusKey handoff lands keyboard
 							focus on the non-destructive row — Enter on arrival must
-							never delete. The prompt is a presentational div, not a
-							MenuItem, so it stays out of Menu's `[role^="menuitem"]`
-							arrow-key walk — which also means it is never announced on
-							its own, hence the aria-describedby on the destructive row
-							(Codex).
+							never delete.
+
+							The prompt carries `role="presentation"`: a `role="menu"`
+							owns menuitem / separator / group children, and this says
+							explicitly that the prompt is none of them rather than
+							leaving an undeclared div among them (the `.menu-divider`
+							below is the separator case).
+
+							It is NOT what keeps the prompt out of Menu's arrow-key
+							walk — that selector is `[role^="menuitem"]`, so a bare div
+							was already excluded. The consequence that matters is the
+							same either way: the prompt is never announced on its own,
+							hence the aria-describedby pointing back at it from the
+							destructive row. `role="presentation"` drops the element's
+							own semantics but NOT its text, so that description still
+							computes — verified against the rendered a11y tree, where
+							the row reports name "Delete item" / description "Delete
+							this item?" and Cancel reports no description.
 						-->
-						<div class="menu-confirm-note" id="delete-confirm-note-{uid}">Delete this item?</div>
+						<div class="menu-confirm-note" role="presentation" id="delete-confirm-note-{uid}">
+							Delete this item?
+						</div>
 						<MenuItem icon="‹" onclick={() => (paneMenuView = 'root')}>Cancel</MenuItem>
 						<div class="menu-divider" role="separator"></div>
 						<MenuItem

@@ -98,25 +98,29 @@
 
 <!-- Delete's THIRD step: the ⋯ drill-down's confirm row (TASK-2327). Modelled
      separately from `delete-btn` because its gate is genuinely different, and
-     getting this wrong is easy (Codex caught a first attempt that wrapped it in
-     `{#if canEdit}`):
+     getting this wrong is easy — Codex caught a first attempt that wrapped it
+     in `{#if canEdit}`. The real row is NOT canEdit-gated: it renders on
+     `paneMenuView === 'delete'` ALONE (mirrored here by `deleteViewArmed`) and
+     refuses via `disabled={deleting || !canEdit}`, so a mid-confirm permission
+     loss leaves it present but inert rather than yanking it out from under the
+     cursor. A viewer never reaches it — the route in (`delete-btn`) IS
+     canEdit-gated — but the row's own guard is defence in depth and has to be
+     mirrored as written.
 
-       - It is NOT canEdit-gated. It renders whenever the 'delete' sub-view is
-         the active view (`paneMenuView === 'delete'` — mirrored here by
-         `deleteViewArmed`) and REFUSES via `disabled={deleting || !canEdit}`.
-         So a mid-confirm permission loss leaves the row present but inert,
-         rather than yanking it out from under the cursor. A viewer never gets
-         here anyway — the route in (`delete-btn`) is canEdit-gated — but the
-         row's own guard is defence in depth and must be mirrored as written.
-
-       - It IS the one delete-related surface the freeze genuinely touches, and
-         in the opposite direction to everything else in this file: peek-begin
-         force-disarms it (`paneMenuOpen = false; paneMenuView = 'root'` in
-         ItemDetail's peek handler), so an ARMED confirmation can never survive
-         into a peek. That is a deliberate safety property, not the invisible
-         freeze — the affordance itself (trigger + Delete… row) stays live on
-         the peeking side like every other REST control above. -->
-{#if deleteViewArmed && !peeking}
+     DELIBERATELY NOT CLAIMED HERE: that an armed confirmation cannot survive
+     into a peek. That property is real, but it is an EMERGENT effect of
+     ItemDetail's peek-begin handler resetting `paneMenuOpen`/`paneMenuView`
+     (alongside editingTitle / shareDialogOpen / editCollectionOpen /
+     showAddLink, none of which this probe covers either) — it is NOT a gate on
+     this row. A second draft encoded it as `{#if deleteViewArmed && !peeking}`,
+     which is worse than no assertion at all: delete the reset from ItemDetail
+     and the probe stays green off its own hard-coded `!peeking`, mirroring
+     nothing. A static prop-driven mirror cannot express a transition, and e2e
+     can't discriminate it either — every click that causes a peek is also an
+     outside-click that closes the menu on its own. So the render condition is
+     mirrored exactly as written and the reset is left to ItemDetail's list.
+     Coverage for that reset is tracked separately (TASK-2337). -->
+{#if deleteViewArmed}
 	<button data-testid="delete-confirm-btn" disabled={deleting || !canEdit}>Delete item</button>
 {/if}
 
