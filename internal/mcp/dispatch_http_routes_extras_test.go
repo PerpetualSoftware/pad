@@ -1039,10 +1039,12 @@ func TestHTTPHandlerDispatcher_Integration_StarsRolesWebhooksWhoami(t *testing.T
 		t.Errorf("expected no webhooks initially; got %v", hooks)
 	}
 
+	// Literal IP (not a hostname) so ValidateWebhookURL passes without a
+	// DNS lookup — matches handlers_webhook_token_idor_test.go.
 	createHookRes, err := d.Dispatch(
 		WithDispatchInput(context.Background(), map[string]any{
 			"workspace": ws.Slug,
-			"url":       "https://example.com/hook",
+			"url":       "https://8.8.8.8/hook",
 			"events":    "item.created",
 		}),
 		[]string{"webhook", "create"},
