@@ -6550,15 +6550,17 @@
 	   as a misaligned row. 1.35 reproduces the line box the band had before
 	   this change (1.2 measured 24.3px tall overall).
 
-	   `--space-2` block padding is the requested ~30% taller: 16.1px line +
-	   16px padding + 2px border = 34.1px, against 26.1px at `--space-1`.
-	   Padding rather than a fixed height so the box still grows if the label
-	   ever wraps to a second line or the root font size changes. */
+	   `--space-1` keeps the band's original 26.1px control height (16.1px line +
+	   8px padding + 2px border) on every surface. A `--space-2` variant was
+	   tried at 34.1px (+30%) and rejected as too tall — desktop first, then
+	   mobile too, so there is deliberately no per-breakpoint split here. It is
+	   padding rather than a fixed height so the box still grows if a label ever
+	   wraps to a second line or the root font size changes. */
 	.meta-actions > .action-btn,
 	.meta-actions .pane-more-btn,
 	.meta-actions :global(.quick-actions-menu > .trigger-btn) {
 		line-height: 1.35;
-		padding-block: var(--space-2);
+		padding-block: var(--space-1);
 	}
 	/* The overflow trigger is the deliberate exception to the uniform width
 	   (user's call): it's a control rather than a labelled value, so it sizes
