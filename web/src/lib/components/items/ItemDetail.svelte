@@ -5610,18 +5610,50 @@
 	   with `flex-basis: 100%` on `.strip-actions` while `nowrap` is still in
 	   force, `.pane-tabs` collapses to 0px.
 
-	   Deliberately NO `overflow`, `contain`, `clip-path`, `transform`,
-	   `filter` or `will-change` on this element — it is an ancestor of both
-	   `.menu-anchor` and QuickActionsMenu's anchor, and any of those would
-	   clip the anchored panels they position. The scroll rule goes on
-	   `.pane-tabs`, which is their SIBLING. (`container-type` itself is
-	   safe: it applies layout/style/inline-size containment but not PAINT
-	   containment, so the panels still escape — DR-3, re-verified in
-	   Chromium against this markup, including the mobile BottomSheet's
-	   `position: fixed` overlay, which still resolves against the viewport.
-	   Chromium reports `contain: none` here despite `container-type`; that
-	   is expected — do NOT "fix" it by adding `contain: layout`, which DOES
-	   trap the sheet's `position: fixed`.) */
+	   Deliberately NO `contain`, `transform`, `filter`, `perspective`,
+	   `will-change` or `clip-path` on this element. It is an ancestor of both
+	   `.menu-anchor` and QuickActionsMenu's anchor, and each of those breaks
+	   the anchored panels — but by DIFFERENT mechanisms, and being sloppy
+	   about which is which is how the audit went wrong once already:
+
+	     `transform` / `filter` / `perspective` / `will-change`
+	         make this a containing block for `position: fixed`, so the mobile
+	         BottomSheet would resolve against this 33px strip instead of the
+	         viewport. They do NOT add paint containment.
+	     `contain: layout` (and `strict` / `content`)
+	         same containing-block effect; `contain: paint` additionally clips.
+	     `clip-path`
+	         does NOT form that containing block, but DOES visually clip
+	         descendants — including fixed ones. Dangerous for a different
+	         reason, not the same one.
+	     `overflow`
+	         none of the above. NOT in this set, and not a problem here.
+
+	   That last one matters: the app already has five overflow ancestors above
+	   this strip — `.item-page`, `.item-page-host`, `.main-content`,
+	   `.app-shell`, `.app-layout`, all pre-existing scroll containers — and
+	   the panels are fine, because `overflow` alone forms no fixed containing
+	   block and the anchored panel is `position: absolute` sized to fit. So
+	   the rule is "do not add a containment/transform property HERE", not "no
+	   ancestor may ever scroll". Verified by walking the computed styles of
+	   the whole chain to `<html>` (nothing establishes a fixed containing
+	   block) and by corner hit-testing the open panel at 1440 plus the sheet
+	   at 430 and 360 (four corners owned, inside the viewport, every time).
+
+	   The horizontal scroll rule goes on `.pane-tabs`, which is the anchors'
+	   SIBLING, so it cannot clip them either way.
+
+	   `container-type: inline-size` is itself SAFE — and this is worth stating
+	   with its evidence, because reading the containment spec suggests
+	   otherwise: `container-type` implies layout containment, and layout
+	   containment is specified to make an element a containing block for fixed
+	   descendants. Chromium does not apply that here. Measured directly by
+	   injecting a `position: fixed; inset: 0` probe as a real child of this
+	   element at a 390px viewport: the probe laid out 390x844 (the full
+	   viewport), NOT 342x67 (the strip). Chromium also reports `contain: none`
+	   on this element despite `container-type`. Do NOT "fix" that by adding
+	   `contain: layout` — a three-way control confirmed that one DOES collapse
+	   a fixed child into the strip. */
 	.tab-strip {
 		display: flex;
 		align-items: center;
@@ -5861,11 +5893,21 @@
 	   padding is untouched so the strip's height and the active tab's 1px
 	   divider overlap do not move.
 
-	   Placement is load-bearing: this MUST sit after the base `.pane-tab`
-	   rule. A container query adds no specificity, so the two `.pane-tab`
-	   selectors tie and source order decides — written above the base rule it
-	   is silently overridden and the tabs still overflow. (Caught by
-	   measurement: `scrollWidth` stayed 321 at a 312px strip.) */
+	   ⚠ DO NOT MOVE THIS BLOCK ABOVE THE BASE `.pane-tab` RULE, and do not
+	   group it with the other `@container` blocks further up "for tidiness".
+
+	   A container query adds NO specificity. `.pane-tab` here and `.pane-tab`
+	   in the base rule are both (0,2,0) once Svelte's scoping hash is applied,
+	   so they tie and SOURCE ORDER is the only thing that decides. Placed
+	   before the base rule this whole block is silently discarded.
+
+	   The reason to spell that out: the failure is silent AND partial, so it
+	   does not look like a broken rule. The tabs still render, still scroll,
+	   and only the last one clips at 360px — which reads as "the 330 threshold
+	   is slightly off" rather than "these four declarations never applied at
+	   all". It cost a build to find and it is invisible to code review; the
+	   only thing that surfaces it is measuring `scrollWidth`, which stayed at
+	   321px inside a 312px strip instead of dropping to 297px. */
 	@container item-tab-strip (max-width: 330px) {
 		.pane-tab {
 			padding-left: 8px;
