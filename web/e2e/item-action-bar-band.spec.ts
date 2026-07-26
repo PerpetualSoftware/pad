@@ -11,23 +11,30 @@ import type { SuiteFixture } from './fixtures';
  * labelled control shares one width and height (the ⋯ overflow trigger is the
  * deliberate exception — it sizes to its glyph).
  *
- * The reason this file exists rather than a unit test is the third assertion.
+ * The reason this file exists rather than a unit test is the sheet assertion.
  * `.meta-actions` carries `container-type: inline-size` so the narrow-width
  * padding rule can key off the BAND's width — the band lives in a docked pane
  * whose width is user-dragged and decoupled from the viewport, so a media query
- * cannot see it. Per the CSS Containment spec that ought to apply layout
- * containment and therefore make the band a containing block for
- * fixed-position descendants — and BOTH menus in the band render a
- * `position: fixed` BottomSheet on mobile, INSIDE the band, with no portal. If
- * that reading were what shipping engines implement, the mobile sheet would
- * collapse from the viewport into a ~342x34 strip: unusable.
+ * cannot see it. Both menus in the band render a non-portaled `position: fixed`
+ * BottomSheet on mobile, INSIDE that container.
  *
- * Measured in Chromium, it does not: the overlay resolves against the viewport
- * despite being a DOM descendant of the container. A Codex review raised this
- * as a P1 from the spec text and measurement refuted it. That makes it exactly
- * the class of thing to pin down in a test rather than argue about — if a
- * future engine version aligns to the stricter reading, this fails loudly
- * instead of silently shipping a broken mobile sheet.
+ * That is safe, but only narrowly: `container-type: inline-size` applies style
+ * and inline-size containment and NOT layout containment
+ * (css-conditional-5 §container-type). Layout containment is what makes an
+ * element a containing block for fixed-position descendants, so the sheet keeps
+ * resolving against the viewport. Add `contain: layout` to this band — or a
+ * transform/filter, which establish a containing block by a different route —
+ * and the sheet collapses into a ~342x34 strip instead.
+ *
+ * Hence a test rather than a comment: the invariant depends on the band NOT
+ * acquiring a property that a future styling change could plausibly add, and
+ * the failure mode is an unusable mobile sheet rather than anything visible on
+ * desktop. Mutation-tested by adding `contain: layout` to `.meta-actions`,
+ * which fails this spec on overlay width.
+ *
+ * (PLAN-2326's DR-3 asserts `container-type: inline-size` implies
+ * `contain: layout style inline-size`. It does not. A Codex review reached the
+ * opposite conclusion from the same wrong premise. Measure, don't infer.)
  *
  * jsdom computes no layout, so none of this is unit-testable.
  */
@@ -148,30 +155,55 @@ test('action bar: the mobile bottom sheet is not trapped by the band container',
 	const vp = page.viewportSize()!;
 	expect(bandBox.height).toBeLessThan(vp.height / 4);
 
-	await page.locator('button.pane-more-btn').click();
+	// Both menus in the band get their own pass. They share the Menu +
+	// BottomSheet path today, but they are separate wrappers with separate
+	// styling (.menu-anchor vs .quick-actions-menu), so asserting one does not
+	// establish the other.
+	for (const trigger of [
+		{ label: '⋯ overflow', sel: 'button.pane-more-btn' },
+		{ label: '⚡ quick actions', sel: 'button.trigger-btn[title="Quick actions"]' },
+	]) {
+		const btn = page.locator(trigger.sel);
+		if ((await btn.count()) === 0) {
+			// The ⚡ trigger only renders when the collection has quick actions or
+			// the viewer is an owner. Fail rather than skip silently: on this
+			// fixture the admin IS the owner, so absence means something changed.
+			throw new Error(`${trigger.label} trigger not present — expected it on an owner-viewed item`);
+		}
+		await btn.first().click();
 
-	const overlay = page.locator('.bs-overlay');
-	await expect(overlay).toBeVisible();
+		const overlay = page.locator('.bs-overlay');
+		await expect(overlay, `${trigger.label}: sheet opens`).toBeVisible();
 
-	// The overlay must be a DOM descendant of the container — otherwise this
-	// test proves nothing about containment (e.g. if BottomSheet ever starts
-	// portaling to <body>, delete this test rather than letting it pass
-	// vacuously).
-	expect(
-		await overlay.evaluate((el) => !!el.closest('.meta-actions')),
-		'sheet is rendered inside .meta-actions — if this fails, BottomSheet now portals and this test is moot',
-	).toBe(true);
+		// The overlay must be a DOM descendant of the container — otherwise this
+		// test proves nothing about containment (e.g. if BottomSheet ever starts
+		// portaling to <body>, delete this test rather than letting it pass
+		// vacuously).
+		expect(
+			await overlay.evaluate((el) => !!el.closest('.meta-actions')),
+			`${trigger.label}: sheet is rendered inside .meta-actions — if this fails, BottomSheet now portals and this test is moot`,
+		).toBe(true);
 
-	// The actual invariant: despite living inside the query container, the
-	// fixed overlay resolves against the viewport.
-	const box = (await overlay.boundingBox())!;
-	expect(Math.round(box.width), 'overlay spans the viewport width').toBe(vp.width);
-	expect(Math.round(box.height), 'overlay spans the viewport height').toBe(vp.height);
-	expect(Math.round(box.y), 'overlay starts at the top of the viewport, not at the band').toBe(0);
+		// The actual invariant: despite living inside the query container, the
+		// fixed overlay resolves against the viewport.
+		const box = (await overlay.boundingBox())!;
+		expect(Math.round(box.width), `${trigger.label}: overlay spans the viewport width`).toBe(vp.width);
+		expect(Math.round(box.height), `${trigger.label}: overlay spans the viewport height`).toBe(vp.height);
+		expect(
+			Math.round(box.y),
+			`${trigger.label}: overlay starts at the top of the viewport, not at the band`,
+		).toBe(0);
 
-	// And the sheet itself is a usable size, not a collapsed strip.
-	const sheet = page.locator('.bs-sheet');
-	await expect(sheet).toBeVisible();
-	const sheetBox = (await sheet.boundingBox())!;
-	expect(sheetBox.height, 'sheet is a real panel, not a collapsed strip').toBeGreaterThan(100);
+		// And the sheet itself is a usable size, not a collapsed strip.
+		const sheet = page.locator('.bs-sheet');
+		await expect(sheet).toBeVisible();
+		const sheetBox = (await sheet.boundingBox())!;
+		expect(
+			sheetBox.height,
+			`${trigger.label}: sheet is a real panel, not a collapsed strip`,
+		).toBeGreaterThan(100);
+
+		await page.keyboard.press('Escape');
+		await expect(overlay, `${trigger.label}: sheet closes for the next pass`).toHaveCount(0);
+	}
 });

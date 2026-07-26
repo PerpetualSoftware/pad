@@ -6435,10 +6435,24 @@
 		flex-wrap: nowrap;
 		/* Query container for the narrow-width padding tightening below. Keyed
 		   off the BAND, not the viewport, because the docked pane's width is
-		   user-dragged and decoupled from it (PLAN-2326 DR-2). Safe here per
-		   DR-3: `inline-size` implies `contain: layout style inline-size` with
-		   no PAINT containment, so the ⋯ / ⚡ anchored menus still escape the
-		   band's box. Verified by measurement, not inference. */
+		   user-dragged and decoupled from it (PLAN-2326 DR-2).
+
+		   Safe for the two menus this band contains, but NOT for the reason
+		   DR-3 gives. DR-3 says `inline-size` implies
+		   `contain: layout style inline-size`; that is wrong, and it's the
+		   dangerous direction to be wrong in. `container-type: inline-size`
+		   applies STYLE and INLINE-SIZE containment only — NOT layout
+		   containment (css-conditional-5 §container-type). Layout containment
+		   is the thing that would make this band a containing block for
+		   fixed-position descendants, and both menus render a non-portaled
+		   `position: fixed` BottomSheet on mobile, so under DR-3's reading the
+		   mobile sheet would collapse into a ~342x34 strip.
+
+		   It doesn't, and the absence of layout containment is why. Do not add
+		   `contain: layout` (or a transform/filter, which create a containing
+		   block by a different route) to this element — that WOULD trap the
+		   sheet. e2e/item-action-bar-band.spec.ts pins this and was
+		   mutation-tested against exactly that change. */
 		container-type: inline-size;
 		container-name: item-action-bar;
 	}
