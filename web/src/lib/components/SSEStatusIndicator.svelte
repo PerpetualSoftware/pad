@@ -94,6 +94,14 @@
 		background: transparent;
 		border: 2px solid currentColor;
 	}
+	/* Reconnecting takes a DASHED ring rather than leaning on its pulse to
+	   separate it from Offline: the pulse is switched off under
+	   prefers-reduced-motion, which would leave amber-vs-red as the only
+	   difference between the two. Three states, three shapes — filled, dashed
+	   ring, solid ring — independent of both hue and motion. */
+	.sse-state.compact.sse-state-reconnecting .sse-state-dot {
+		border-style: dashed;
+	}
 
 	.sse-state-dot {
 		width: 0.5em;
