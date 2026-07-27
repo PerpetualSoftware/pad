@@ -2948,8 +2948,13 @@
 
 					<!-- Realtime stream status (PLAN-1984 / TASK-2027): surfaces the
 					     already-computed SSE connection state so a stale board hints
-					     when live updates are down or unauthorized. -->
-					<SSEStatusIndicator />
+					     when live updates are down or unauthorized.
+					     Desktop only — at ≤768px the h1 is hidden, so leaving the badge
+					     here held .title-group open as a row containing nothing else
+					     (IDEA-2297). The mobile mount lives in .header-actions below. -->
+					{#if !viewport.isMobile}
+						<SSEStatusIndicator />
+					{/if}
 				</div>
 
 				<div class="header-actions">
@@ -3209,6 +3214,15 @@
 						<button class="new-btn" onclick={handleNewButtonClick} disabled={creatingNew}>
 							+ <span class="new-btn-label">New {singularName()}</span>
 						</button>
+					{/if}
+
+					<!-- Mobile mount of the realtime badge (IDEA-2297): dot-only, pushed
+					     to the far end of the action bar by .sse-mobile's auto margin
+					     so it shares the toolbar row instead of owning one. -->
+					{#if viewport.isMobile}
+						<span class="sse-mobile">
+							<SSEStatusIndicator compact />
+						</span>
 					{/if}
 				</div>
 			</div>
@@ -3691,6 +3705,54 @@
 		flex-wrap: wrap;
 	}
 
+	/* Mobile realtime badge (IDEA-2297). .header-actions is width:100% under
+	   768px, so the auto margin pushes the dot to the trailing edge — the
+	   "justified across from the toolbar" placement — without disturbing
+	   justify-content for the buttons themselves. */
+	.sse-mobile {
+		display: inline-flex;
+		align-items: center;
+		margin-left: auto;
+		flex-shrink: 0;
+		/* Without this the bare 8px dot sits flush against the content edge,
+		   while every control beside it insets its glyph by the same --space-3
+		   its box uses horizontally. Padding (not margin) so the dot's touch
+		   target still reaches the edge. */
+		padding-right: var(--space-3);
+	}
+
+	/* Uniform control height across the action bar (IDEA-2297). Before this the
+	   row mixed four heights: ⚡ trigger ~22px, New ~24px (no border), view
+	   dropdown ~26px, icon buttons 28px. 28px is the tallest, so nothing has to
+	   shrink, and the app-wide `* { box-sizing: border-box }` means the
+	   unbordered New button lands on the same box as its bordered siblings.
+	   .toolbar-icon-btn is already 28px. */
+	.view-dd-trigger,
+	.view-chip,
+	.new-btn {
+		height: 28px;
+	}
+	/* The ⚡ trigger belongs to QuickActionsMenu, whose own rule sets 2px block
+	   padding — the shortest control in the row. Normalize it HERE rather than
+	   in the component: ItemDetail's meta-actions band sizes the same trigger
+	   to its own metrics, and a height baked into the shared component would
+	   fight that. Same override pattern (and specificity reasoning) ItemDetail
+	   already uses — the child's scoped `.trigger-btn.svelte-<hash>` is (0,2,0),
+	   so a bare `:global(.trigger-btn)` would tie and be settled by cross-file
+	   source order; the child combinator takes this to (0,3,0) and wins.
+	   The wrapper needs `display: flex` for the same reason it does there —
+	   QuickActionsMenu sets `inline-block`, whose descender space would make
+	   the wrapper taller than the button it contains. The `div` qualifier is
+	   load-bearing: it breaks the (0,2,0) tie with the child's own rule. */
+	.header-actions :global(div.quick-actions-menu) {
+		display: flex;
+	}
+	.header-actions :global(.quick-actions-menu > .trigger-btn) {
+		height: 28px;
+		display: inline-flex;
+		align-items: center;
+	}
+
 	/* Toolbar consolidation (PLAN-2290 Phase 3): View dropdown + icon
 	   buttons + ⋯ menu replace the segmented toggle / sort select /
 	   labeled buttons row. */
@@ -4011,6 +4073,14 @@
 			display: none;
 		}
 
+		/* With the h1 hidden and the realtime badge moved into .header-actions
+		   (IDEA-2297), .title-group has no rendered children — but a 0-height
+		   flex item still collects .title-row's 12px column gap, which was the
+		   last of the wasted row. Take it out of layout entirely. */
+		.title-group {
+			display: none;
+		}
+
 		.title-row {
 			flex-direction: column;
 			align-items: flex-start;
@@ -4020,6 +4090,14 @@
 		.header-actions {
 			width: 100%;
 			justify-content: flex-start;
+			/* 4px instead of 12px between controls. The six controls total
+			   ~255px, so at 360px (a very common Android width) the content
+			   column has ~56px left — not enough for the dot plus its inset
+			   plus 12px gaps, and the dot wrapped onto a second line,
+			   re-creating the wasted row IDEA-2297 removed. Six gaps × 8px
+			   saved keeps the bar on one line down to ~340px. Only the gaps
+			   shrink — the controls stay 28px, so touch targets are unchanged. */
+			gap: var(--space-1);
 		}
 
 		.new-btn-label {
