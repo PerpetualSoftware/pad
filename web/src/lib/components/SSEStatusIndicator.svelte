@@ -80,6 +80,21 @@
 		height: 8px;
 	}
 
+	/* With the label clipped, hue would be the only thing separating Live from
+	   Offline — colour-alone conveyance (WCAG 1.4.1), and red/green is the
+	   exact pair dichromatic vision collapses. So healthy is a FILLED dot and
+	   every unhealthy state is a hollow ring: the distinction that actually
+	   matters ("is the stream up?") is carried by shape. Reconnecting is then
+	   separated from Offline by its pulse, and by hue for anyone who has
+	   reduced-motion on. Only compact mode needs this — the labelled variant
+	   already says which state it is in words. */
+	.sse-state.compact.sse-state-reconnecting .sse-state-dot,
+	.sse-state.compact.sse-state-disconnected .sse-state-dot,
+	.sse-state.compact.sse-state-unauthorized .sse-state-dot {
+		background: transparent;
+		border: 2px solid currentColor;
+	}
+
 	.sse-state-dot {
 		width: 0.5em;
 		height: 0.5em;
