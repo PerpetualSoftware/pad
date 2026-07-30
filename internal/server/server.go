@@ -1953,26 +1953,12 @@ func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]st
 // Writes a 404 and returns false if not visible; callers should invoke this
 // immediately after resolving a collection by slug/ID.
 func (s *Server) requireCollectionFullyVisible(w http.ResponseWriter, r *http.Request, workspaceID string, coll *models.Collection) bool {
-	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	visible, err := s.checkCollectionFullyVisible(r, workspaceID, coll.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return false
 	}
-	if visibleIDs != nil {
-		// Restricted (non-nil visibleIDs): narrow to full-access
-		// collections only when the caller's restricted visibility
-		// includes any item-level grants, so an item-grant-only
-		// collection can't qualify for collection-wide operations.
-		fullCollIDs, grantedItemIDs, gErr := s.guestResourceFilter(r, workspaceID)
-		if gErr != nil {
-			writeInternalError(w, gErr)
-			return false
-		}
-		if len(grantedItemIDs) > 0 {
-			visibleIDs = fullCollIDs
-		}
-	}
-	if !isCollectionVisible(coll.ID, visibleIDs) {
+	if !visible {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return false
 	}
@@ -2348,6 +2334,16 @@ func (s *Server) filterUserGrantsForCaller(r *http.Request, workspaceID string, 
 // grant-based permissions so grants can override the base role.
 // For guests, it resolves the effective permission from grants directly.
 // Returns true if the request should continue, false if it was rejected with a 403.
+//
+// NEVER call this with a workspace ID other than the one the current
+// request's URL resolved to. The `workspaceID` parameter makes it look
+// reusable for a second workspace; it is not. The editor/owner fast path
+// below reads workspaceRole(r), which RequireWorkspaceAccess populates only
+// for the URL's workspace, so passing workspace B's ID applies workspace A's
+// role — privilege escalation. Use AuthorizeCrossWorkspaceEdit
+// (authz_cross_workspace.go) for any other workspace; it also checks the
+// OAuth/MCP consent allow-list, which this helper does not (DR-10 of
+// PLAN-2357).
 func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, workspaceID string, itemID, collectionID string) bool {
 	role := workspaceRole(r)
 
