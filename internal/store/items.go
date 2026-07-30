@@ -410,6 +410,26 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 // its committed slug / item_number / seq (DR-14 fanout) without a second
 // round-trip after COMMIT.
 func (s *Store) createItemTx(tx *sql.Tx, workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
+	return s.createItemTxWithID(tx, newID(), workspaceID, collectionID, input)
+}
+
+// createItemTxWithID is createItemTx with the destination item's id supplied
+// by the caller instead of minted inside.
+//
+// It exists for exactly one caller: CopyItemAcrossWorkspaces (PLAN-2357 /
+// DR-9 / DR-11). The copy has to hand the attachment planner the destination
+// item id BEFORE the item row exists, because every cloned attachment row must
+// carry item_id from the outset — never transiently NULL, since a NULL-item_id
+// row is a permanent un-reclaimable orphan (see AttachmentCopyRequest.DryRun's
+// doc). Minting the id in the orchestration and passing it down is the only
+// way to satisfy both that ordering and DR-9a's "the version row and the
+// wiki-link index are built from the POST-rewrite content".
+//
+// An empty id is filled in, so a caller that has no opinion behaves exactly
+// like createItemTx. The id is NOT validated for uniqueness here — the items
+// primary key does that, and a collision (a caller re-using an id) surfaces as
+// a unique violation that rolls the caller's transaction back.
+func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
 	// Validate assignment scope before writing — parity with CreateItem, but
 	// read through the tx so it sees the caller's uncommitted membership /
 	// role writes and is serialized with them.
@@ -424,7 +444,9 @@ func (s *Store) createItemTx(tx *sql.Tx, workspaceID, collectionID string, input
 		return nil, err
 	}
 
-	id := newID()
+	if id == "" {
+		id = newID()
+	}
 	ts := now()
 
 	fields := input.Fields

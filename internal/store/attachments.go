@@ -74,6 +74,31 @@ func scanAttachment(row interface {
 // transfers the bytes and writes back Put's key — so this guard is what
 // turns "the caller must Put first" from a comment into an invariant.
 func (s *Store) CreateAttachment(a *models.Attachment) error {
+	return s.createAttachmentOn(s.db, a)
+}
+
+// CreateAttachmentTx inserts an attachment row inside an existing transaction.
+//
+// It exists for the cross-workspace copy (PLAN-2357 / DR-9 / DR-11), which has
+// to write the clone rows in the SAME transaction as the destination item —
+// otherwise a rollback after the self-committing CreateAttachment leaves live
+// attachment rows in workspace B pointing at an item that never existed, and a
+// failure between the two leaves the copied body's rewritten refs dangling.
+// RecordItemWorkspaceMoveTx is the shape this follows.
+//
+// Identical semantics to CreateAttachment, including the empty-storage_key
+// refusal and the "stamp now() when CreatedAt is zero" rule that
+// AttachmentCopyRow relies on (its rows carry a deliberately zero CreatedAt).
+// Ordering is the caller's contract: attachments has no parent_id foreign key,
+// so nothing stops a variant being inserted before its original — insert
+// AttachmentCopyPlan.Rows in the order the planner emitted them.
+func (s *Store) CreateAttachmentTx(tx *sql.Tx, a *models.Attachment) error {
+	return s.createAttachmentOn(tx, a)
+}
+
+// createAttachmentOn is the shared insert body, parameterized over the pool or
+// a transaction so CreateAttachment and CreateAttachmentTx cannot drift.
+func (s *Store) createAttachmentOn(ex sqlExecer, a *models.Attachment) error {
 	if a.StorageKey == "" {
 		return fmt.Errorf("create attachment: storage_key is required (write the blob via AttachmentStore.Put first)")
 	}
@@ -87,7 +112,7 @@ func (s *Store) CreateAttachment(a *models.Attachment) error {
 		ts = a.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 	}
 
-	_, err := s.db.Exec(s.q(`
+	_, err := ex.Exec(s.q(`
 		INSERT INTO attachments (`+attachmentColumns+`)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`),

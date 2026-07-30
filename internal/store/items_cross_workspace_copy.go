@@ -1,0 +1,896 @@
+package store
+
+import (
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"sort"
+	"strings"
+
+	"github.com/PerpetualSoftware/pad/internal/items"
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
+
+// Cross-workspace item copy — PLAN-2357 DR-9 / DR-9a / DR-11 / DR-12 / DR-14 /
+// DR-16 / DR-17.
+//
+// CopyItemAcrossWorkspaces is the one store operation that lands an item from
+// workspace A into workspace B. It cannot be assembled from existing
+// primitives: CreateItem, CreateAttachment and DeleteItem each open and commit
+// their own transaction, so composing them would leave a window in which the
+// destination item exists without its attachments, or the source is archived
+// with no destination to point at. Everything below runs in ONE transaction.
+//
+// AUTHORIZATION IS NOT HERE. This is a store primitive; it enforces data
+// invariants (scope, quota, seq, provenance) and nothing else. The four-step
+// visibility/edit ladder of DR-10a / DR-10b — source item visible, source edit,
+// destination collection visible, destination collection edit — belongs to the
+// HTTP layer (TASK-2358 / TASK-2365) and MUST run before this is called. A
+// caller that skips it has built an exfiltration path.
+//
+// FANOUT IS NOT HERE EITHER (DR-14). No activity row, no SSE publish, no
+// webhook. Emitting inside the transaction would leak an event for a copy that
+// then rolls back. The caller emits post-commit from CrossWorkspaceCopyResult.
+
+// ErrCopyCrossBackendAttachments is returned when the copy would have to move
+// attachment BYTES between storage backends.
+//
+// v1 refuses rather than transferring. Two reasons, both structural:
+//
+//   - The store has no handle on AttachmentStore. Blob backends are wired at
+//     the server layer and store-level code deliberately never touches the
+//     filesystem or object storage (see CreateAttachment's doc). Threading a
+//     backend registry into the store to serve one branch of one operation
+//     would invert that boundary for every other caller too.
+//   - Even with a handle, the Get/Put would run while this transaction holds
+//     BOTH workspaces' advisory locks. Every writer in both workspaces would
+//     block behind an unbounded network round-trip per attachment, and a
+//     partially-transferred set has no rollback (Put is not transactional).
+//     Doing it outside the transaction reintroduces exactly the atomicity hole
+//     DR-9 exists to close.
+//
+// Same-instance copies — the only shape that exists today, where source and
+// destination resolve through the same backend — are unaffected: storage is
+// content-addressed, so the clone is a row copy and NeedsByteTransfer is
+// false for every row. Callers signal cross-backend detection by setting
+// CrossWorkspaceCopyRequest.TargetBackend; leaving it empty disables the check
+// entirely, which is correct for a single-backend deployment.
+var ErrCopyCrossBackendAttachments = errors.New("copy item across workspaces: attachment bytes live in a different storage backend; cross-backend copy is not supported")
+
+// ItemLimitError reports a DR-16 item-count quota rejection. It carries the
+// LimitResult so the HTTP layer can render the same plan-limit payload
+// writePlanLimitError produces for handleCreateItem.
+type ItemLimitError struct {
+	Result *LimitResult
+}
+
+func (e *ItemLimitError) Error() string {
+	return fmt.Sprintf("copy item across workspaces: destination workspace is at its item limit (%d of %d)",
+		e.Result.Current, e.Result.Limit)
+}
+
+// FieldValidationError reports a DR-12 validation failure — the destination
+// fields, AFTER migration and AFTER overrides, do not satisfy the destination
+// collection's schema. Distinguished from a generic error so the caller can
+// answer with 400 rather than 500.
+type FieldValidationError struct {
+	Err error
+}
+
+func (e *FieldValidationError) Error() string {
+	return fmt.Sprintf("copy item across workspaces: %v", e.Err)
+}
+
+func (e *FieldValidationError) Unwrap() error { return e.Err }
+
+// CrossWorkspaceCopyRequest is the complete input to CopyItemAcrossWorkspaces.
+type CrossWorkspaceCopyRequest struct {
+	// SourceItemID is the item in workspace A. The source workspace is
+	// DERIVED from it rather than supplied — an item's workspace is not the
+	// caller's to assert.
+	SourceItemID string
+
+	// TargetWorkspaceID and TargetCollectionID name the destination. The
+	// collection is re-read in-tx under `workspace_id = TargetWorkspaceID AND
+	// deleted_at IS NULL`, so a collection from another workspace is a
+	// not-found, not a cross-workspace write.
+	TargetWorkspaceID  string
+	TargetCollectionID string
+
+	// FieldOverrides are merged over the migrated fields and then validated
+	// (DR-12 — MigrateFields computes its Errors before any override exists,
+	// so those errors are stale the moment an override lands).
+	FieldOverrides map[string]any
+
+	// Actor is the user performing the copy. It becomes every cloned
+	// attachment's uploaded_by (DR-11: never the source uploader, who may not
+	// be a member of B at all) and the provenance row's created_by.
+	Actor string
+
+	// CreatedBy and Source are items.created_by / items.source for the new
+	// row, matching CreateItem's vocabulary ("user"/"agent", "web"/"cli"/…).
+	// Both default the same way CreateItem defaults them.
+	CreatedBy string
+	Source    string
+
+	// ArchiveSource turns the copy into a move (DR-1): the source is
+	// soft-deleted in the same transaction, workspace A's seq advances, and
+	// the provenance row records that seq. A plain copy leaves A completely
+	// untouched — no write, no seq bump, nothing for A's watchers to see.
+	ArchiveSource bool
+
+	// TargetBackend is the storage-backend prefix workspace B writes through
+	// ("fs", "s3", …). Empty disables cross-backend detection — correct for a
+	// single-backend deployment. See ErrCopyCrossBackendAttachments.
+	TargetBackend string
+
+	// EnforceItemLimit turns on the DR-16 items_per_workspace check against
+	// the DESTINATION workspace, inside the transaction.
+	//
+	// It is a caller flag rather than an unconditional check for parity with
+	// enforcePlanLimit, which self-hosted mode short-circuits before touching
+	// the store (`if !s.cloudMode { return true }`). Enforcing unconditionally
+	// here would apply free-tier caps to any self-hosted user whose plan row
+	// says "free" — a limit that path has never had. Cloud callers set it;
+	// self-hosted callers do not.
+	EnforceItemLimit bool
+
+	// failAfterStage is a TEST-ONLY seam. It is unexported, so nothing outside
+	// internal/store can set it, and it is the only way to PROVE the rollback
+	// obligation the acceptance criteria state — "a failure at each stage
+	// leaves nothing in either workspace". Three of the four stages have no
+	// reachable natural failure once the lock protocol holds: the archive's
+	// row count and the provenance insert can only fail if something upstream
+	// is already broken. Without a seam those branches would be asserted by
+	// inspection rather than by a test that fails when the rollback breaks.
+	//
+	// See the copyStage* constants for the recognised values.
+	failAfterStage string
+}
+
+// Stage names for CrossWorkspaceCopyRequest.failAfterStage.
+const (
+	copyStageCreateItem  = "create_item"
+	copyStageAttachments = "attachments"
+	copyStageArchive     = "archive"
+	copyStageProvenance  = "provenance"
+)
+
+// injectedStageFailure returns a synthetic error when the request asked to
+// fail after the named stage. Always nil in production — failAfterStage is
+// unexported and no production caller can set it.
+func (req CrossWorkspaceCopyRequest) injectedStageFailure(stage string) error {
+	if req.failAfterStage == "" || req.failAfterStage != stage {
+		return nil
+	}
+	return fmt.Errorf("copy item across workspaces: injected failure after stage %q", stage)
+}
+
+// CrossWorkspaceCopyResult is what a committed copy produced. Everything the
+// post-commit fanout (TASK-2365) and the CLI/HTTP response need.
+type CrossWorkspaceCopyResult struct {
+	// Item is the destination item, read back inside the transaction, so its
+	// Seq is exactly the one this copy assigned in workspace B.
+	Item *models.Item
+
+	// Source is the source item as re-read UNDER LOCK — the snapshot that was
+	// actually copied, not the caller's pre-transaction read.
+	Source *models.Item
+
+	// SourceWorkspaceID is workspace A, derived from the source item.
+	SourceWorkspaceID string
+
+	// Move is the provenance row written in the same transaction.
+	Move *models.ItemWorkspaceMove
+
+	// SourceSeq is the seq the archive assigned in workspace A, nil on a plain
+	// copy (which does not write in A at all).
+	SourceSeq *int64
+
+	// AttachmentsCopied / BytesCopied describe the cloned attachment rows.
+	//
+	// CALLER OBLIGATION: when AttachmentsCopied > 0 the destination
+	// workspace's storage usage changed, and internal/server memoizes that for
+	// 30 seconds. The caller MUST invalidate the destination's
+	// storageInfoCache entry after a successful copy — the store has no handle
+	// on it — or the storage page reports stale usage for the rest of the
+	// window, right after the user watched the bytes land.
+	AttachmentsCopied int
+	BytesCopied       int64
+
+	// UnresolvableRefs are pad-attachment references in the copied body that
+	// resolved to nothing under the DR-11a scope. Never fatal; the literal
+	// text survives so the copy renders exactly as broken as the source did.
+	UnresolvableRefs []string
+
+	// DroppedFields are field keys MigrateFields could not carry into the
+	// destination schema. DroppedAssignee / DroppedAgentRole record the DR-8
+	// scrubs.
+	DroppedFields    []string
+	DroppedAssignee  bool
+	DroppedAgentRole bool
+}
+
+// CopyItemAcrossWorkspaces copies one item from its workspace into another,
+// atomically.
+//
+// THE LOCK ORDER. Changed only deliberately, and stated here because it is the
+// only place it is true:
+//
+//  1. Workspace A and B advisory locks, sorted and deduplicated BY THE
+//     hashtext LOCK KEY.
+//  2. Source and destination collection rows, sorted by collection ID, locked
+//     FOR UPDATE.
+//  3. Source item re-read under those locks.
+//
+// Three things that look like nits and are not:
+//
+//   - Sorting the workspace ID STRINGS does not order their hashes. Postgres
+//     locks hashtext(workspace_id), so two opposing movers sorting by ID could
+//     still take the two locks in opposite order and deadlock. Sort by the
+//     computed key. And deduplicate: two distinct workspaces can collide onto
+//     one key, in which case there is one lock to take.
+//   - BOTH collection rows, not just the destination. MigrateFields consumes
+//     both schemas, so pinning only the destination leaves half the input
+//     racy and lets a dry-run and the commit disagree about what carries.
+//     Sorted by collection ID for the same deadlock reason.
+//   - FOR UPDATE is not optional. A schema-only collection update does not
+//     necessarily take the workspace advisory lock, so merely READING the
+//     collections after the advisory locks leaves a window to reshape a schema
+//     before this transaction commits.
+//
+// pg_advisory_xact_lock and FOR UPDATE are dialect-gated. SQLite's DSN makes
+// every db.Begin() a BEGIN IMMEDIATE, so all writers already serialize and the
+// ordering concern is moot there — and FOR UPDATE is a syntax ERROR on SQLite,
+// so emitting it unconditionally would fail on exactly one backend.
+//
+// THE PIPELINE, in the order DR-11 requires and no other:
+//
+//	fresh source under lock -> migrate fields -> apply overrides -> validate
+//	  -> quota -> PlanAttachmentCopy(source content + FINAL destination fields)
+//	  -> rewrite content + fields via the plan's IDMap
+//	  -> createItemTxWithID in B (version row + wiki-link index therefore see
+//	     the POST-rewrite content, per DR-9a)
+//	  -> insert attachment rows, originals before variants, item_id set from
+//	     the outset
+//	  -> archive in A if requested, advancing A's seq
+//	  -> provenance row carrying that seq
+//
+// Enumerating attachment refs from the FINAL fields rather than the source's
+// raw fields is load-bearing: raw enumeration clones blobs referenced only by
+// fields MigrateFields DROPS, and those land in B invisible and beyond the
+// reach of the orphan sweep (which only considers item_id IS NULL rows).
+//
+// SEQ (DR-14). B always advances, via createItemTxWithID. A advances ONLY on
+// ArchiveSource — and a plain copy must not advance it at all, so A's cursor
+// stays put and A's watchers see nothing. The archive reproduces DeleteItem's
+// acquireWorkspaceSeqLock + nextWorkspaceSeqSubquery deliberately rather than
+// calling it, because DeleteItem opens its own transaction.
+//
+// WHAT DOES NOT CARRY (DR-17). The copy is unparented — ParentID is scrubbed —
+// and it has no item_links, no children, no comments, no versions beyond its
+// own initial one, no stars and no grants. Tags DO carry: items.tags is a
+// plain JSON array on the row with no workspace-scoped entity behind it.
+// AgentRoleID always clears (role slugs are workspace-local); AssignedUserID
+// carries only when the assignee is a member of the destination (DR-8).
+func (s *Store) CopyItemAcrossWorkspaces(req CrossWorkspaceCopyRequest) (*CrossWorkspaceCopyResult, error) {
+	if req.SourceItemID == "" {
+		return nil, fmt.Errorf("copy item across workspaces: source_item_id is required")
+	}
+	if req.TargetWorkspaceID == "" {
+		return nil, fmt.Errorf("copy item across workspaces: target_workspace_id is required")
+	}
+	if req.TargetCollectionID == "" {
+		return nil, fmt.Errorf("copy item across workspaces: target_collection_id is required")
+	}
+	if req.Actor == "" {
+		return nil, fmt.Errorf("copy item across workspaces: actor is required")
+	}
+
+	// Derive workspace A before opening the transaction. This read is used for
+	// NOTHING but the lock keys — every value the copy actually consumes is
+	// re-read under the locks below. An item cannot change workspace (no code
+	// path writes items.workspace_id), so a stale answer here is impossible in
+	// a way the in-tx re-read would not catch anyway.
+	sourceWorkspaceID, err := s.itemWorkspaceID(req.SourceItemID)
+	if err != nil {
+		return nil, err
+	}
+
+	result, err := s.copyItemAcrossWorkspacesTx(req, sourceWorkspaceID)
+	if err != nil {
+		// DR-9's observability obligation: the lock ordering is the one failure
+		// mode nothing else surfaces, so an UNEXPECTED rollback — a deadlock
+		// especially — is logged with both workspaces and the item.
+		//
+		// Expected, caller-facing REJECTIONS are excluded, and deliberately so.
+		// A validation failure, a quota rejection, a missing source and a
+		// cross-backend refusal are all 4xx answers the caller renders; they are
+		// not incidents, and logging them here would (a) make the signal this
+		// log exists for unfindable under routine bad requests, and (b) copy
+		// user-controlled field values into the operator log, since
+		// ValidateFields quotes the offending value verbatim. The quota
+		// rejection gets its own line, with bounded fields and no user content,
+		// at the point it is decided.
+		if isExpectedCopyRejection(err) {
+			return nil, err
+		}
+		deadlock := isDeadlockError(err)
+		attrs := []any{
+			"source_workspace_id", sourceWorkspaceID,
+			"target_workspace_id", req.TargetWorkspaceID,
+			"source_item_id", req.SourceItemID,
+			"archive_source", req.ArchiveSource,
+			"deadlock", deadlock,
+			"error", err,
+		}
+		// A deadlock is the one failure DR-9's lock ordering is meant to make
+		// impossible, so it is an ERROR: if the ordering is subtly wrong in
+		// production, nothing else surfaces it.
+		if deadlock {
+			slog.Error("cross-workspace item copy rolled back", attrs...)
+		} else {
+			slog.Warn("cross-workspace item copy rolled back", attrs...)
+		}
+		return nil, err
+	}
+	return result, nil
+}
+
+// itemWorkspaceID reads an item's workspace, including soft-deleted rows so a
+// copy of an already-archived source fails with a clear "not found" from the
+// in-tx re-read rather than a confusing nil here.
+func (s *Store) itemWorkspaceID(itemID string) (string, error) {
+	var workspaceID string
+	err := s.db.QueryRow(s.q(`SELECT workspace_id FROM items WHERE id = ?`), itemID).Scan(&workspaceID)
+	if err == sql.ErrNoRows {
+		return "", sql.ErrNoRows
+	}
+	if err != nil {
+		return "", fmt.Errorf("copy item across workspaces: resolve source workspace: %w", err)
+	}
+	return workspaceID, nil
+}
+
+func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, sourceWorkspaceID string) (*CrossWorkspaceCopyResult, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("copy item across workspaces: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback after commit is a no-op
+
+	// --- Step 1: both workspace advisory locks, ordered by lock KEY. ---
+	if _, err := s.acquireWorkspaceLocksOrdered(tx, sourceWorkspaceID, req.TargetWorkspaceID); err != nil {
+		return nil, err
+	}
+
+	// --- Step 2: both collection rows, FOR UPDATE, ordered by collection ID.
+	// Read the source item's collection first — we need its ID to lock it, and
+	// the workspace lock is already held so nothing can move the item now.
+	var sourceCollectionID string
+	if err := tx.QueryRow(s.q(`SELECT collection_id FROM items WHERE id = ?`), req.SourceItemID).Scan(&sourceCollectionID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, sql.ErrNoRows
+		}
+		return nil, fmt.Errorf("copy item across workspaces: read source collection id: %w", err)
+	}
+	if err := s.lockCollectionRows(tx, sourceCollectionID, req.TargetCollectionID); err != nil {
+		return nil, err
+	}
+
+	sourceColl, err := s.getCollectionInWorkspaceTx(tx, sourceCollectionID, sourceWorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if sourceColl == nil {
+		return nil, fmt.Errorf("copy item across workspaces: source collection not found")
+	}
+	targetColl, err := s.getCollectionInWorkspaceTx(tx, req.TargetCollectionID, req.TargetWorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	if targetColl == nil {
+		return nil, fmt.Errorf("copy item across workspaces: target collection not found")
+	}
+
+	// --- Step 3: re-read the source under lock. Copy THIS snapshot. ---
+	// Never the pre-transaction read: a concurrent edit or archive would
+	// otherwise race the copy and workspace B would get a torn — or
+	// already-archived — version. MoveItemWithPreCheck establishes the shape.
+	source, err := s.getItemTx(tx, req.SourceItemID)
+	if err != nil {
+		return nil, err
+	}
+	if source == nil {
+		// Deleted (or archived) between the pre-transaction read and the lock.
+		return nil, sql.ErrNoRows
+	}
+
+	// --- Quota (DR-16), inside the transaction, before any insert. ---
+	if req.EnforceItemLimit {
+		limit, err := s.CheckLimitTx(tx, req.TargetWorkspaceID, "items_per_workspace")
+		if err != nil {
+			return nil, fmt.Errorf("copy item across workspaces: check item limit: %w", err)
+		}
+		if !limit.Allowed {
+			slog.Warn("cross-workspace item copy rejected by item quota",
+				"target_workspace_id", req.TargetWorkspaceID,
+				"source_item_id", req.SourceItemID,
+				"current", limit.Current,
+				"limit", limit.Limit,
+				"plan", limit.Plan)
+			return nil, &ItemLimitError{Result: limit}
+		}
+	}
+
+	// --- Fields: migrate -> override -> validate (DR-12). ---
+	finalFields, dropped, err := migrateCopyFields(source.Fields, sourceColl.Schema, targetColl.Schema, req.FieldOverrides)
+	if err != nil {
+		return nil, err
+	}
+
+	// --- DR-8 / DR-17 scrubs against the DESTINATION workspace. ---
+	assignedUserID, droppedAssignee, err := s.carryAssigneeTx(tx, req.TargetWorkspaceID, source.AssignedUserID)
+	if err != nil {
+		return nil, err
+	}
+	droppedAgentRole := source.AgentRoleID != nil && *source.AgentRoleID != ""
+
+	// --- Attachments: plan INSIDE the transaction (staleness contract). ---
+	// The plan is a snapshot valid only in the critical section that produced
+	// it; caching one across the lock would let a soft-delete, an orphan-GC
+	// reclaim or a revoked membership slip between planning and inserting.
+	//
+	// The planner reads through s.db rather than this tx, and holds no lock on
+	// the attachment rows — its documented, deliberate shape (TASK-2354), so
+	// that the dry-run and the copy share ONE implementation and cannot drift.
+	// The residual window that leaves is bounded and harmless, and it is worth
+	// writing down why rather than re-litigating it:
+	//
+	//   - On SQLite there is no window at all. BEGIN IMMEDIATE means this
+	//     transaction holds the database's write lock, so a concurrent
+	//     SoftDeleteAttachment / HardDeleteAttachment simply blocks until the
+	//     copy commits.
+	//   - On Postgres a concurrent soft-delete CAN land between planning and
+	//     inserting. Routing the planner's reads through this tx would not
+	//     change that: READ COMMITTED takes a fresh snapshot per statement, so
+	//     the same committed delete would be just as visible. Only making every
+	//     attachment writer take the workspace advisory lock would close it,
+	//     which means putting a lock on the upload hot path for this.
+	//   - And the outcome of losing that race is benign. Soft-delete never
+	//     removes bytes, and the clone this transaction commits carries the
+	//     same content_hash — so it is itself a protecting row for
+	//     CountProtectingAttachmentsForHash, which is workspace-agnostic. The
+	//     orphan GC therefore cannot reclaim the blob out from under the copy.
+	//     What workspace B gets is a copy of something the user deleted in A a
+	//     moment after asking for the copy, which is defensible on its own.
+	//
+	// The destination item id is minted HERE, before the item row exists,
+	// because every clone must carry item_id from the outset — a
+	// NULL-item_id row that the copied body then references is a permanent,
+	// un-reclaimable orphan (see AttachmentCopyRequest.DryRun).
+	targetItemID := newID()
+	plan, err := s.PlanAttachmentCopy(AttachmentCopyRequest{
+		SourceWorkspaceID: sourceWorkspaceID,
+		TargetWorkspaceID: req.TargetWorkspaceID,
+		TargetItemID:      targetItemID,
+		UploadedBy:        req.Actor,
+		Content:           source.Content,
+		Fields:            finalFields,
+		TargetBackend:     req.TargetBackend,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if plan.CrossBackend {
+		return nil, ErrCopyCrossBackendAttachments
+	}
+	if len(plan.UnresolvableRefs) > 0 {
+		// DR-11a observability: a spike means either a data-integrity problem
+		// or someone probing the confused-deputy path. Never fatal.
+		slog.Info("cross-workspace item copy has unresolvable attachment refs",
+			"source_workspace_id", sourceWorkspaceID,
+			"target_workspace_id", req.TargetWorkspaceID,
+			"source_item_id", req.SourceItemID,
+			"unresolvable_refs", len(plan.UnresolvableRefs))
+	}
+
+	// --- Rewrite content AND fields with the plan's IDMap. ---
+	// Both go through remapAttachmentRefs over the exact representations the
+	// planner enumerated from (raw content; the fields' JSON encoding), so the
+	// rewrite covers precisely the reference set the plan cloned. Any other
+	// route risks covering a different set.
+	newContent := remapAttachmentRefs(source.Content, plan.IDMap)
+	finalFieldsJSON, err := json.Marshal(finalFields)
+	if err != nil {
+		return nil, fmt.Errorf("copy item across workspaces: encode destination fields: %w", err)
+	}
+	newFieldsJSON := remapAttachmentRefs(string(finalFieldsJSON), plan.IDMap)
+
+	// --- Create in B. Advances B's seq; writes the initial version row and
+	// the wiki-link index against the POST-rewrite content (DR-9a). ---
+	item, err := s.createItemTxWithID(tx, targetItemID, req.TargetWorkspaceID, req.TargetCollectionID, models.ItemCreate{
+		Title:   source.Title,
+		Content: newContent,
+		Fields:  newFieldsJSON,
+		Tags:    source.Tags,
+		// ParentID stays nil (DR-17): the source's parent lives in A, and
+		// DR-4 rules out dragging relatives along.
+		ParentID:       nil,
+		AssignedUserID: assignedUserID,
+		AgentRoleID:    nil,
+		CreatedBy:      req.CreatedBy,
+		Source:         req.Source,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := req.injectedStageFailure(copyStageCreateItem); err != nil {
+		return nil, err
+	}
+
+	// --- Attachment rows, in the planner's order (originals before their
+	// variants). attachments has no parent_id foreign key, so this ordering is
+	// a caller contract the database will not enforce. ---
+	for i := range plan.Rows {
+		row := plan.Rows[i].Attachment
+		if err := s.CreateAttachmentTx(tx, &row); err != nil {
+			return nil, fmt.Errorf("copy item across workspaces: clone attachment %s: %w", plan.Rows[i].SourceID, err)
+		}
+	}
+	if err := req.injectedStageFailure(copyStageAttachments); err != nil {
+		return nil, err
+	}
+
+	// --- Archive the source (move only), advancing A's seq (DR-14). ---
+	var sourceSeq *int64
+	archiveTS := now()
+	if req.ArchiveSource {
+		seq, err := s.archiveItemForCopyTx(tx, sourceWorkspaceID, req.SourceItemID, archiveTS)
+		if err != nil {
+			return nil, err
+		}
+		sourceSeq = &seq
+	}
+	if err := req.injectedStageFailure(copyStageArchive); err != nil {
+		return nil, err
+	}
+
+	// --- Provenance. Written last so it can carry the archive's seq, and in
+	// the same transaction so a rollback can never leave a pointer at an item
+	// that does not exist. ---
+	move, err := s.RecordItemWorkspaceMoveTx(tx, models.ItemWorkspaceMove{
+		SourceWorkspaceID: sourceWorkspaceID,
+		SourceItemID:      req.SourceItemID,
+		TargetWorkspaceID: req.TargetWorkspaceID,
+		TargetItemID:      item.ID,
+		ArchivedSource:    req.ArchiveSource,
+		SourceSeq:         sourceSeq,
+		CreatedBy:         req.Actor,
+		CreatedAt:         archiveTS,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := req.injectedStageFailure(copyStageProvenance); err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("copy item across workspaces: commit: %w", err)
+	}
+
+	return &CrossWorkspaceCopyResult{
+		Item:              item,
+		Source:            source,
+		SourceWorkspaceID: sourceWorkspaceID,
+		Move:              move,
+		SourceSeq:         sourceSeq,
+		AttachmentsCopied: len(plan.Rows),
+		BytesCopied:       plan.TotalBytes,
+		UnresolvableRefs:  plan.UnresolvableRefs,
+		DroppedFields:     dropped,
+		DroppedAssignee:   droppedAssignee,
+		DroppedAgentRole:  droppedAgentRole,
+	}, nil
+}
+
+// acquireWorkspaceLocksOrdered takes the workspace advisory locks for every
+// supplied workspace, in ascending lock-KEY order, with duplicates collapsed.
+// Returns the ordered key set actually locked (nil on SQLite).
+//
+// Sorting by lock key rather than by workspace ID is the entire point. Postgres
+// locks hashtext(workspace_id) — the same key acquireWorkspaceSeqLock uses, so
+// these acquisitions are re-entrant with the one createItemTxWithID takes later
+// — and hashtext does not preserve string order. An A->B copy and a B->A copy
+// sorting by ID would therefore be free to grab the two locks in opposite
+// order and deadlock, which is the one failure DR-9 exists to prevent.
+//
+// Deduplicating is not cosmetic either: hashtext is a 32-bit hash, so two
+// distinct workspaces CAN collide onto one key. When they do there is one lock
+// to take, not two. (Taking it twice would in fact be harmless — advisory xact
+// locks are re-entrant — but the returned key set is what tests assert on, and
+// "how many distinct locks does this transaction hold" should be answerable.)
+//
+// SQLite is a no-op: BEGIN IMMEDIATE already serializes every writer, so there
+// is no interleaving for an ordering to protect.
+func (s *Store) acquireWorkspaceLocksOrdered(tx *sql.Tx, workspaceIDs ...string) ([]int64, error) {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil, nil
+	}
+
+	keys := make([]int64, 0, len(workspaceIDs))
+	for _, id := range workspaceIDs {
+		if id == "" {
+			continue
+		}
+		var key int64
+		// hashtext returns int4; the ::bigint cast makes the value we sort and
+		// lock on identical to the one pg_advisory_xact_lock(bigint) resolves
+		// to when acquireWorkspaceSeqLock passes hashtext($1) directly.
+		if err := tx.QueryRow("SELECT hashtext($1)::bigint", id).Scan(&key); err != nil {
+			return nil, fmt.Errorf("compute workspace lock key for %q: %w", id, err)
+		}
+		keys = append(keys, key)
+	}
+
+	ordered := sortedDedupedLockKeys(keys)
+	for _, key := range ordered {
+		if _, err := tx.Exec("SELECT pg_advisory_xact_lock($1)", key); err != nil {
+			return nil, fmt.Errorf("acquire workspace lock %d: %w", key, err)
+		}
+	}
+	return ordered, nil
+}
+
+// sortedDedupedLockKeys returns keys in ascending order with duplicates
+// collapsed. Split out from the acquisition so the ordering contract is
+// testable without a database.
+func sortedDedupedLockKeys(keys []int64) []int64 {
+	if len(keys) == 0 {
+		return nil
+	}
+	sorted := append([]int64(nil), keys...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+	out := sorted[:1]
+	for _, k := range sorted[1:] {
+		if k != out[len(out)-1] {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// lockCollectionRows pins the source and destination collection rows FOR
+// UPDATE, in ascending collection-ID order with duplicates collapsed.
+//
+// BOTH rows, because MigrateFields consumes both schemas: pinning only the
+// destination leaves half the migration input free to change under the
+// transaction, so a dry-run and the commit that follows it can disagree about
+// which fields carry.
+//
+// FOR UPDATE rather than a plain read, because a schema-only collection update
+// does not necessarily take the workspace advisory lock — reading after the
+// advisory locks would still leave a window to reshape the schema before this
+// transaction commits.
+//
+// Sorted for the same reason the workspace locks are: two copies whose
+// collection sets overlap must take the overlap in one order. SQLite is a
+// no-op, and FOR UPDATE is a SYNTAX ERROR there — the dialect gate is not an
+// optimization.
+func (s *Store) lockCollectionRows(tx *sql.Tx, collectionIDs ...string) error {
+	if s.dialect.Driver() != DriverPostgres {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(collectionIDs))
+	ids := make([]string, 0, len(collectionIDs))
+	for _, id := range collectionIDs {
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		var got string
+		err := tx.QueryRow(s.q(`SELECT id FROM collections WHERE id = ? FOR UPDATE`), id).Scan(&got)
+		if err == sql.ErrNoRows {
+			// Not an error here — the scoped re-read below turns a missing or
+			// soft-deleted collection into the caller-facing "not found".
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("lock collection %q: %w", id, err)
+		}
+	}
+	return nil
+}
+
+// getCollectionInWorkspaceTx reads a live collection inside the transaction,
+// scoped to a workspace. The scope is the security boundary, not a hint: it is
+// what makes "target collection in another workspace" a not-found instead of a
+// cross-workspace write. Returns (nil, nil) when there is no such row.
+//
+// The IN-TX read is authoritative. A dry-run's schema snapshot is advisory —
+// it was taken without the FOR UPDATE pin above, so it can be stale by the
+// time the copy commits.
+func (s *Store) getCollectionInWorkspaceTx(tx *sql.Tx, collectionID, workspaceID string) (*models.Collection, error) {
+	var c models.Collection
+	var createdAt, updatedAt string
+	var deletedAt *string
+	var isDefault bool
+
+	err := tx.QueryRow(s.q(`
+		SELECT id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at, deleted_at
+		FROM collections
+		WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL
+	`), collectionID, workspaceID).Scan(
+		&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
+		&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
+		&createdAt, &updatedAt, &deletedAt,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("copy item across workspaces: read collection: %w", err)
+	}
+	c.IsDefault = isDefault
+	c.CreatedAt = parseTime(createdAt)
+	c.UpdatedAt = parseTime(updatedAt)
+	c.DeletedAt = parseTimePtr(deletedAt)
+	return &c, nil
+}
+
+// migrateCopyFields runs the DR-12 field pipeline: migrate the source fields
+// into the destination schema, merge the caller's overrides, then validate.
+//
+// The ORDER is the decision. MigrateFields computes result.Errors before any
+// override exists, so testing those errors after merging overrides in — which
+// is what the existing single-workspace move path does — reports required
+// fields an override has already satisfied, and never type-checks the override
+// itself. ValidateFields is re-run over the merged map instead: it enforces
+// required presence, applies schema defaults, and validates types and options.
+//
+// Returns the final field map (the planner's input, pre-rewrite) and the keys
+// migration dropped.
+func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON string, overrides map[string]any) (map[string]any, []string, error) {
+	var sourceSchema, targetSchema models.CollectionSchema
+	if err := json.Unmarshal([]byte(sourceSchemaJSON), &sourceSchema); err != nil {
+		return nil, nil, fmt.Errorf("copy item across workspaces: parse source schema: %w", err)
+	}
+	if err := json.Unmarshal([]byte(targetSchemaJSON), &targetSchema); err != nil {
+		return nil, nil, fmt.Errorf("copy item across workspaces: parse target schema: %w", err)
+	}
+
+	currentFields := map[string]any{}
+	if strings.TrimSpace(sourceFieldsJSON) != "" {
+		if err := json.Unmarshal([]byte(sourceFieldsJSON), &currentFields); err != nil {
+			// A source row with unparseable fields migrates as if it had none,
+			// matching handleMoveItem's tolerance. Refusing would strand the
+			// item in A with no way out.
+			currentFields = map[string]any{}
+		}
+	}
+
+	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields)
+	for k, v := range overrides {
+		migrated.Fields[k] = v
+	}
+	if err := items.ValidateFields(migrated.Fields, targetSchema); err != nil {
+		return nil, nil, &FieldValidationError{Err: err}
+	}
+	return migrated.Fields, migrated.Dropped, nil
+}
+
+// carryAssigneeTx implements DR-8's assignee rule: the source's assignee
+// carries only when that user is a member of the DESTINATION workspace, and
+// otherwise clears. Returns the value to write and whether it was dropped.
+//
+// createItemTxWithID would reject a non-member outright
+// (validateAssignmentScopeQ), so this is not belt-and-braces — it is the
+// difference between a copy that quietly drops an assignment and a copy that
+// refuses because someone left workspace B.
+func (s *Store) carryAssigneeTx(tx *sql.Tx, targetWorkspaceID string, sourceAssignee *string) (*string, bool, error) {
+	if sourceAssignee == nil || *sourceAssignee == "" {
+		return nil, false, nil
+	}
+	var count int
+	if err := tx.QueryRow(
+		s.q("SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ? AND user_id = ?"),
+		targetWorkspaceID, *sourceAssignee,
+	).Scan(&count); err != nil {
+		return nil, false, fmt.Errorf("copy item across workspaces: check destination membership: %w", err)
+	}
+	if count == 0 {
+		return nil, true, nil
+	}
+	carried := *sourceAssignee
+	return &carried, false, nil
+}
+
+// archiveItemForCopyTx soft-deletes the source inside the copy's transaction
+// and returns the workspace-A seq the archive assigned.
+//
+// This REPRODUCES DeleteItem rather than calling it: DeleteItem opens and
+// commits its own transaction, so calling it would put the archive outside the
+// copy's atomic boundary — a crash between the two would strand a live source
+// alongside a committed duplicate. The pieces that matter are the seq bump
+// (nextWorkspaceSeqSubquery under the workspace advisory lock) and the
+// `deleted_at IS NULL` guard that makes a concurrent archive a no-op rather
+// than a second tombstone.
+//
+// The lock re-acquisition is a no-op — acquireWorkspaceLocksOrdered already
+// holds workspace A's key and advisory xact locks are re-entrant — but taking
+// it explicitly keeps this function correct on its own terms rather than by
+// the grace of its only caller.
+//
+// The assigned seq is read back inside the transaction, under the still-held
+// lock, so the value handed to the provenance row is exactly the one A's
+// delta-sync clients will see on the tombstone.
+func (s *Store) archiveItemForCopyTx(tx *sql.Tx, workspaceID, itemID, ts string) (int64, error) {
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(s.q(`
+		UPDATE items SET deleted_at = ?, updated_at = ?, seq = `+nextWorkspaceSeqSubquery+`
+		WHERE id = ? AND deleted_at IS NULL
+	`), ts, ts, workspaceID, itemID)
+	if err != nil {
+		return 0, fmt.Errorf("copy item across workspaces: archive source: %w", err)
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("copy item across workspaces: archive source: %w", err)
+	}
+	if affected == 0 {
+		// The source was re-read live under the lock moments ago, so this
+		// cannot happen without the lock protocol being broken. Fail loudly
+		// rather than record a provenance row claiming a move that did not
+		// happen.
+		return 0, fmt.Errorf("copy item across workspaces: source item %s was not archived", itemID)
+	}
+	var seq int64
+	if err := tx.QueryRow(s.q(`SELECT seq FROM items WHERE id = ?`), itemID).Scan(&seq); err != nil {
+		return 0, fmt.Errorf("copy item across workspaces: read archive seq: %w", err)
+	}
+	return seq, nil
+}
+
+// isExpectedCopyRejection reports whether err is a refusal the CALLER is meant
+// to render — a 4xx — rather than an incident an operator should see.
+//
+// Kept as one predicate so the set is stated in a single place: field
+// validation (DR-12), the item quota (DR-16, which logs its own bounded line),
+// a source that is missing or already archived, and the v1 cross-backend
+// attachment refusal. Everything else — a DB error, a constraint violation, a
+// deadlock — is unexpected and gets logged.
+func isExpectedCopyRejection(err error) bool {
+	var validation *FieldValidationError
+	var limit *ItemLimitError
+	return errors.As(err, &validation) ||
+		errors.As(err, &limit) ||
+		errors.Is(err, sql.ErrNoRows) ||
+		errors.Is(err, ErrCopyCrossBackendAttachments)
+}
+
+// isDeadlockError reports whether err is Postgres' serialization deadlock
+// (SQLSTATE 40P01) or SQLite's equivalent lock timeout. String matching rather
+// than a driver type assertion because internal/store is driver-agnostic and
+// both drivers are behind database/sql here; the strings are stable parts of
+// each engine's user-facing error text.
+func isDeadlockError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "deadlock detected") ||
+		strings.Contains(msg, "40p01") ||
+		strings.Contains(msg, "database is locked")
+}
