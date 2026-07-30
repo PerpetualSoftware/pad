@@ -1125,12 +1125,22 @@ func (s *Store) backfillNullItemNumbers() error {
 
 // uniqueSlug generates a unique slug within a scope by appending -2, -3, etc.
 func (s *Store) uniqueSlug(table, scopeCol, scopeVal, baseSlug string) (string, error) {
+	return s.uniqueSlugQ(s.db, table, scopeCol, scopeVal, baseSlug)
+}
+
+// uniqueSlugQ is uniqueSlug parameterized over the query surface (rowQueryer)
+// so the collision scan can run either unlocked against *sql.DB or inside an
+// in-flight *sql.Tx. The transactional form is what createItemTx uses: it
+// allocates the slug under the same transaction — and the same workspace
+// advisory lock — that performs the INSERT, so the scan is read-your-writes
+// consistent and serialized against concurrent creators in that workspace.
+func (s *Store) uniqueSlugQ(q rowQueryer, table, scopeCol, scopeVal, baseSlug string) (string, error) {
 	slug := baseSlug
 	for i := 2; ; i++ {
 		var count int
 		// Check all rows including soft-deleted to respect the DB UNIQUE constraint
 		query := fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = ? AND slug = ?", table, scopeCol)
-		err := s.db.QueryRow(s.q(query), scopeVal, slug).Scan(&count)
+		err := q.QueryRow(s.q(query), scopeVal, slug).Scan(&count)
 		if err != nil {
 			return "", err
 		}
