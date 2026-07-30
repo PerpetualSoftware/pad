@@ -177,6 +177,15 @@ var purgeWorkspaceChildDeletes = []struct{ what, query string }{
 	{"item yjs op-log", `DELETE FROM item_yjs_updates WHERE item_id IN (SELECT id FROM items WHERE workspace_id = ?)`},
 	{"item wiki links", `DELETE FROM item_wiki_links WHERE source_item_id IN (SELECT id FROM items WHERE workspace_id = ?)`},
 	{"item collection moves", `DELETE FROM item_collection_moves WHERE workspace_id = ?`},
+	// item_workspace_moves spans TWO workspaces, so it needs clearing from
+	// both directions — a row survives only while both endpoints do. Split
+	// into two single-placeholder statements because the loop below binds
+	// exactly one arg per entry. Purging the source workspace drops the
+	// destination's back-pointer; purging the destination drops the archived
+	// source's "moved to" pointer. Both are correct: a pointer at a purged
+	// workspace is worse than no pointer. (PLAN-2357 DR-2.)
+	{"item workspace moves (source side)", `DELETE FROM item_workspace_moves WHERE source_workspace_id = ?`},
+	{"item workspace moves (target side)", `DELETE FROM item_workspace_moves WHERE target_workspace_id = ?`},
 	{"item grants", `DELETE FROM item_grants WHERE workspace_id = ?`},
 	{"status transitions", `DELETE FROM status_transitions WHERE workspace_id = ?`},
 	// --- items (self-ref parent_id NULLed by PurgeWorkspaceData first) ---
