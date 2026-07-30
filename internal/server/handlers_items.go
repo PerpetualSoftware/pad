@@ -800,6 +800,14 @@ func (s *Server) handleGetItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The archived-source "moved to" pointer (PLAN-2357 / TASK-2359). Wired
+	// HERE and nowhere else — deliberately not inside enrichItemForResponse,
+	// which also runs on create/update/restore/move. Returns nil unless the
+	// item is archived, was genuinely MOVED (not merely copied), and the
+	// caller independently passes a read check on the destination ITEM.
+	// See item_moved_to.go for the disclosure rule.
+	item.MovedTo = s.movedToDestinations(r, item)
+
 	writeJSON(w, http.StatusOK, item)
 }
 

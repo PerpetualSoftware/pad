@@ -1,6 +1,7 @@
 package store
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -510,8 +511,13 @@ func TestItemWorkspaceMoves_MovedToSameSecondUsesSourceSeq(t *testing.T) {
 	}
 }
 
-// firstArchived mirrors how the moved-to consumer (TASK-2359) reads the
-// forward set: the newest row whose source was archived.
+// firstArchived picks the newest row whose source was archived — the head of
+// what the moved-to pointer considers.
+//
+// It is a TEST helper for exercising the broad forward lookup's ordering, not
+// a mirror of the consumer: the real consumer (TASK-2359) queries
+// ListArchivedItemWorkspaceMovesBySource and ACL-filters the whole bounded
+// set per destination rather than taking the first entry.
 func firstArchived(moves []models.ItemWorkspaceMove) *models.ItemWorkspaceMove {
 	for i := range moves {
 		if moves[i].ArchivedSource {
@@ -612,5 +618,143 @@ func TestItemWorkspaceMoves_TargetDeleteCascades(t *testing.T) {
 	}
 	if got := f.s.countRows(t, `SELECT COUNT(*) FROM item_workspace_moves`); got != 0 {
 		t.Errorf("target hard-delete did not cascade; got %d rows, want 0", got)
+	}
+}
+
+// TestListArchivedItemWorkspaceMovesBySource covers the narrow, SQL-bounded
+// query the moved-to pointer reads (TASK-2359): archived_source rows only,
+// newest first, capped. The cap has to be real in SQL rather than applied by
+// the caller — otherwise a source with a long tail of plain copies pays to
+// load, sort, scan and allocate every one of them on every read of the source,
+// and none of them can ever contribute to the result.
+func TestListArchivedItemWorkspaceMovesBySource(t *testing.T) {
+	f := newMoveFixture(t, "ArchivedOnly")
+
+	// Two plain copies with LATER timestamps than either move, so a query that
+	// forgets the archived_source predicate returns them first and the
+	// ordering assertions below fail loudly.
+	for i, ts := range []string{"2026-05-09T00:00:00Z", "2026-05-10T00:00:00Z"} {
+		f.record(t, models.ItemWorkspaceMove{
+			SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
+			TargetWorkspaceID: f.dstWS.ID,
+			TargetItemID:      f.dest(t, f.dstWS, fmt.Sprintf("Copy %d", i)).ID,
+			ArchivedSource:    false, CreatedBy: f.actor, CreatedAt: ts,
+		})
+	}
+
+	older := f.dest(t, f.dstWS, "Older Move")
+	newer := f.dest(t, f.dst2WS, "Newer Move")
+	f.record(t, models.ItemWorkspaceMove{
+		SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
+		TargetWorkspaceID: f.dstWS.ID, TargetItemID: older.ID,
+		ArchivedSource: true, SourceSeq: seqPtr(10),
+		CreatedBy: f.actor, CreatedAt: "2026-05-01T00:00:00Z",
+	})
+	f.record(t, models.ItemWorkspaceMove{
+		SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
+		TargetWorkspaceID: f.dst2WS.ID, TargetItemID: newer.ID,
+		ArchivedSource: true, SourceSeq: seqPtr(20),
+		CreatedBy: f.actor, CreatedAt: "2026-05-02T00:00:00Z",
+	})
+
+	got, err := f.s.ListArchivedItemWorkspaceMovesBySource(f.source.ID, 10)
+	if err != nil {
+		t.Fatalf("ListArchivedItemWorkspaceMovesBySource: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want the 2 moves (the 2 copies must be excluded)", len(got))
+	}
+	if got[0].TargetItemID != newer.ID || got[1].TargetItemID != older.ID {
+		t.Errorf("expected newest-first [newer, older], got [%s, %s]", got[0].TargetItemID, got[1].TargetItemID)
+	}
+	for _, m := range got {
+		if !m.ArchivedSource {
+			t.Errorf("a plain copy leaked into the archived-only result: %+v", m)
+		}
+		if m.SourceSeq == nil {
+			t.Errorf("archived row lost its source_seq in the dialect round-trip: %+v", m)
+		}
+	}
+
+	// The cap keeps the newest, which is what a banner most wants.
+	capped, err := f.s.ListArchivedItemWorkspaceMovesBySource(f.source.ID, 1)
+	if err != nil {
+		t.Fatalf("capped lookup: %v", err)
+	}
+	if len(capped) != 1 || capped[0].TargetItemID != newer.ID {
+		t.Fatalf("limit=1 should return the newest move, got %+v", capped)
+	}
+
+	// A forgotten bound is the safe answer, not every row.
+	for _, limit := range []int{0, -1} {
+		none, err := f.s.ListArchivedItemWorkspaceMovesBySource(f.source.ID, limit)
+		if err != nil {
+			t.Fatalf("limit=%d: %v", limit, err)
+		}
+		if len(none) != 0 {
+			t.Errorf("limit=%d returned %d rows; a non-positive bound must return none", limit, len(none))
+		}
+	}
+
+	// And the broad forward lookup is untouched — it still sees everything.
+	all, err := f.s.ListItemWorkspaceMovesBySource(f.source.ID)
+	if err != nil {
+		t.Fatalf("forward lookup: %v", err)
+	}
+	if len(all) != 4 {
+		t.Errorf("the broad forward lookup should still return all 4 rows, got %d", len(all))
+	}
+}
+
+// TestListArchivedItemWorkspaceMovesBySource_SameSecondUsesSourceSeq is the
+// archived-only query's copy of DR-2a's decisive case. Two
+// archive→restore→move cycles inside one second tie on created_at — that tie
+// is the entire reason source_seq exists — so without the seq term the
+// ordering falls through to the id tiebreak and returns an arbitrary
+// destination. The ids below are fixed so "arbitrary" is deterministic and the
+// wrong answer is reproducible rather than a coin flip.
+func TestListArchivedItemWorkspaceMovesBySource_SameSecondUsesSourceSeq(t *testing.T) {
+	f := newMoveFixture(t, "ArchivedOrder")
+	earlier := f.dest(t, f.dstWS, "Earlier Move")
+	later := f.dest(t, f.dst2WS, "Later Move")
+
+	const sameSecond = "2026-06-01T12:00:00Z"
+
+	// The LATER move gets the lexically LOWEST id, so an ordering that lost
+	// the source_seq term would return `earlier` first.
+	f.record(t, models.ItemWorkspaceMove{
+		ID:                lexLowMoveID,
+		SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
+		TargetWorkspaceID: f.dst2WS.ID, TargetItemID: later.ID,
+		ArchivedSource: true, SourceSeq: seqPtr(200),
+		CreatedBy: f.actor, CreatedAt: sameSecond,
+	})
+	f.record(t, models.ItemWorkspaceMove{
+		ID:                lexHighMoveID,
+		SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
+		TargetWorkspaceID: f.dstWS.ID, TargetItemID: earlier.ID,
+		ArchivedSource: true, SourceSeq: seqPtr(100),
+		CreatedBy: f.actor, CreatedAt: sameSecond,
+	})
+
+	got, err := f.s.ListArchivedItemWorkspaceMovesBySource(f.source.ID, 10)
+	if err != nil {
+		t.Fatalf("ListArchivedItemWorkspaceMovesBySource: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d rows, want 2 (restore-then-move-again must NOT be deduped)", len(got))
+	}
+	if got[0].TargetItemID != later.ID {
+		t.Errorf("head is %q, want the higher-seq move %q — the ordering is not seq-driven",
+			got[0].TargetItemID, later.ID)
+	}
+	// And the cap keeps the seq-newest one, which is the case the bound
+	// actually has to get right.
+	capped, err := f.s.ListArchivedItemWorkspaceMovesBySource(f.source.ID, 1)
+	if err != nil {
+		t.Fatalf("capped lookup: %v", err)
+	}
+	if len(capped) != 1 || capped[0].TargetItemID != later.ID {
+		t.Fatalf("limit=1 should keep the higher-seq move, got %+v", capped)
 	}
 }

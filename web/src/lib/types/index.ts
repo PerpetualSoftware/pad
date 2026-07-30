@@ -544,6 +544,32 @@ export interface TagCount {
 	count: number;
 }
 
+/**
+ * One destination an archived item was moved to (PLAN-2357 / TASK-2359).
+ *
+ * Displayable by construction — slugs and refs, never UUIDs — so a banner can
+ * link to the destination without a second request.
+ *
+ * The list is ACL-filtered per destination and newest-first, but it carries no
+ * "current" marker and cannot promise its head is the most recent move: such a
+ * marker would announce that a newer destination exists and is being withheld.
+ * Word any UI as provenance ("this item was moved; copies exist at …"), not as
+ * a current location.
+ */
+export interface ItemMovedTo {
+	workspace_slug: string;
+	workspace_name?: string;
+	/** Completes the /{username}/{workspace}/… route; may be absent. */
+	workspace_owner_username?: string;
+	collection_slug?: string;
+	/** Issue ID, e.g. "TASK-14". */
+	ref?: string;
+	item_slug: string;
+	title: string;
+	/** RFC3339 UTC timestamp of the move. */
+	moved_at?: string;
+}
+
 export interface Item {
 	id: string;
 	workspace_id: string;
@@ -594,6 +620,13 @@ export interface Item {
 	// Structural local-first projection. Unrestricted index/delta responses
 	// always include it; restricted callers omit it entirely.
 	is_unparented?: boolean;
+	// Destination(s) an ARCHIVED item was moved to by a cross-workspace move
+	// (PLAN-2357 / TASK-2359). Present ONLY on the single-item GET response,
+	// and only for destinations the caller was independently authorized to
+	// read — the server omits the key entirely otherwise, so `undefined`
+	// means "nothing to show", never "there is one you may not see". Do not
+	// render a distinction between the two; there isn't one.
+	moved_to?: ItemMovedTo[];
 	derived_closure?: ItemDerivedClosure;
 	code_context?: ItemCodeContext;
 	convention?: ItemConventionMetadata;
@@ -607,9 +640,16 @@ export interface Item {
 // the local-first read model (PLAN-1343) can hydrate a workspace-wide index
 // without paying the body cost on bootstrap.
 //
-// Derived from `Item` via `Omit<…, 'content'>` so adding a new column to
-// `Item` automatically flows into the index row without a second edit.
-export type ItemIndexRow = Omit<Item, 'content'>;
+// Derived from `Item` via `Omit<…>` so adding a new column to `Item`
+// automatically flows into the index row without a second edit.
+//
+// `moved_to` is omitted alongside `content` for a different reason: it is not
+// a column at all but a per-caller, ACL-gated block the server populates on
+// the single-item GET and nowhere else (PLAN-2357 / TASK-2359). Leaving it in
+// would advertise a field the index and delta endpoints never emit, and invite
+// a consumer to read it from a cached index row where its absence means
+// nothing.
+export type ItemIndexRow = Omit<Item, 'content' | 'moved_to'>;
 
 export interface ItemIndexResponse {
 	items: ItemIndexRow[];
