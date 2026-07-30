@@ -150,6 +150,24 @@ type Server struct {
 	// guarding.
 	storageInfoCache *storageInfoCache
 
+	// copyItemFn indirects Store.CopyItemAcrossWorkspaces for the
+	// cross-workspace copy endpoint (PLAN-2357 / TASK-2365).
+	//
+	// It exists because DR-13 forbids the endpoint from ever transparently
+	// retrying a mutating copy — there is no idempotency key in v1, so a
+	// retry after a post-commit failure duplicates the item — and the only
+	// falsifiable way to assert "called exactly once" is to count the calls.
+	// Several tests also use it to inject the store's typed errors and to
+	// land a concurrent mutation deterministically between the handler's
+	// authorization and the store call. See handleCopyItem and
+	// TestCopyEndpoint_DoesNotRetryOnAmbiguousError.
+	//
+	// It is nil on every production path — nothing outside package server can
+	// set it, no constructor or setter assigns it, and only _test.go files do
+	// (Codex round 6: it is compiled into the binary, so "test-only" describes
+	// the convention, not a compiler-enforced guarantee).
+	copyItemFn func(store.CrossWorkspaceCopyRequest) (*store.CrossWorkspaceCopyResult, error)
+
 	// importBundleMaxBytes caps a single workspace import bundle.
 	// 0 → defaultImportBundleMaxBytes (2 GiB). Set via
 	// SetImportBundleMaxBytes from cmd/pad/main.go using the
@@ -1460,6 +1478,14 @@ func (s *Server) setupRouter() {
 						// map), not because it mutates. The mutating
 						// sibling lands at /copy in TASK-2365.
 						r.Post("/copy/preflight", s.handleCopyItemPreflight)
+						// Cross-workspace copy, the MUTATION (PLAN-2357 /
+						// TASK-2365). Same request shape as the preflight
+						// above; with archive_source it is the move. Post-
+						// commit fanout is asymmetric — see
+						// handlers_items_copy.go. Registered after the more
+						// specific /copy/preflight, though chi's trie makes
+						// the order immaterial.
+						r.Post("/copy", s.handleCopyItem)
 						// Export a single playbook/convention item as a
 						// portable artifact (Markdown + YAML frontmatter).
 						// Gated by per-item visibility, not the workspace-

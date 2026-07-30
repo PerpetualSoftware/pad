@@ -67,14 +67,18 @@ import (
 //  1. Fields are matched as raw JSON, where a reference can sit in a bare
 //     string value with no markdown syntax around it at all.
 //  2. The rewrite step the planner feeds (remapAttachmentRefs, the same
-//     helper the bundle importer uses) is a plain strings.ReplaceAll over
-//     "pad-attachment:<old>". Enumerating with a NARROWER pattern than the
+//     helper the bundle importer uses) tokenizes with THIS REGEX and
+//     rewrites a match only when its captured id is a map key exactly. The
+//     two therefore agree on where a reference starts and ends by
+//     construction rather than by coincidence — which is the property that
+//     matters, and which a plain strings.ReplaceAll did not have (Codex
+//     round 26: it rewrote a mapped id sitting as the PREFIX of a longer,
+//     unresolvable one). Enumerating with a NARROWER pattern than the
 //     rewriter uses would leave behind a reference the rewriter never
 //     remaps — the copy would keep pointing at workspace A's UUID, which
-//     403s on download (handleGetAttachment, handlers_attachments.go). Matching the
-//     rewriter's reach exactly is the property that matters, so references
-//     inside fenced code blocks are enumerated too: they get rewritten
-//     either way, so they must be cloned either way.
+//     403s on download (handleGetAttachment, handlers_attachments.go). So
+//     references inside fenced code blocks are enumerated too: they get
+//     rewritten either way, so they must be cloned either way.
 //
 // The id capture stops at anything that cannot appear in a UUID —
 // whitespace, ')', '"', '.' — so `(pad-attachment:UUID)` and a
@@ -219,8 +223,9 @@ type AttachmentCopyRow struct {
 type AttachmentCopyPlan struct {
 	// IDMap maps every cloned source attachment UUID to its new UUID.
 	// It covers variant rows as well as originals — a superset of the
-	// references found, which is harmless for a ReplaceAll rewrite and
-	// makes the map a complete old→new record of the clone.
+	// references found, which is harmless (remapAttachmentRefs only
+	// rewrites ids it actually encounters as whole tokens) and makes the
+	// map a complete old→new record of the clone.
 	//
 	// Applying it is the caller's job, and remapAttachmentRefs (this
 	// package, already used by the bundle importer) is the helper to use:
@@ -230,15 +235,19 @@ type AttachmentCopyPlan struct {
 	// map. Rewriting the two payloads by any other route risks covering a
 	// different set of references than the plan does.
 	//
-	// Map iteration order is undefined, as always in Go, and applying the
-	// pairs in any order yields the same text — but only because no
-	// attachment id is a prefix of another. That holds because every id
-	// comes from newID() (CreateAttachment generates it; no handler or
-	// import path supplies one), so ids are fixed-length UUIDs. It is the
-	// same assumption RemapAttachmentReferencesInWorkspace already states
-	// and relies on for the bundle importer; if ids ever stop being
-	// UUID-shaped, both rewrites need a boundary-aware replacement, not
-	// just this one.
+	// ORDER-INDEPENDENT, and no longer for a reason that could stop being
+	// true. remapAttachmentRefs walks the text once with attachmentRefRE
+	// and looks each captured id up in this map, so a pair is applied only
+	// where a whole reference matches it exactly — never inside another
+	// id, and never to text a previous pair produced.
+	//
+	// It used to depend on "no attachment id is a prefix of another",
+	// which held only because every id comes from newID() and is a
+	// fixed-length UUID. That assumption was doing real work and it was
+	// already violated by user-authored text (`pad-attachment:<id>x` is
+	// one longer, unresolvable id whose prefix a substring replace
+	// happily rewrote — Codex round 26). The dependency is gone, not
+	// merely restated.
 	IDMap map[string]string
 
 	// Rows are the rows to create, each original immediately followed by

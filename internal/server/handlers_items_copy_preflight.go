@@ -46,13 +46,13 @@ import (
 // literal `"key": null` into items.fields — a value this preview reports
 // as unset. Delete, then validate.
 //
-// KNOWN DIVERGENCE, for whoever wires the mutating endpoint (TASK-2365).
-// Store.migrateCopyFields (internal/store/items_cross_workspace_copy.go,
-// TASK-2363) currently does `migrated.Fields[k] = v` for every override
-// including a nil one, so a null override that this preflight shows as
-// unset would be written as JSON null by the copy. The two must agree —
-// DR-6's whole point is one answer, two consumers — and deleting is the
-// correct half to keep. Reconcile there, not by weakening this.
+// RECONCILED in TASK-2365. Store.migrateCopyFields
+// (internal/store/items_cross_workspace_copy.go) used to do
+// `migrated.Fields[k] = v` for every override including a nil one, so a
+// null override this preflight showed as unset was written as JSON null
+// by the copy. It now deletes the key, matching the loop below.
+// TestCopyEndpoint_PreflightAndCopyAgreeOnNullOverride runs both paths
+// over one input and fails if they drift apart again.
 //
 // What a nulled key becomes therefore depends on the destination schema,
 // not on the null: validation re-applies any DEFAULT the key has, so a
@@ -92,6 +92,11 @@ import (
 //	                           foreign, or hidden from the caller
 //	403 forbidden            — destination collection visible but the
 //	                           caller may not create into it
+//	403 actor_required       — there is nobody to attribute the copy to (no
+//	                           authenticated user AND a source item with no
+//	                           creator). Shared verbatim with the mutating
+//	                           copy so the preview cannot promise something
+//	                           the copy would refuse.
 //
 // NON-MUTATION is part of the contract (DR-15), scoped to the COPY's own
 // domain: the handler creates no item, no attachment rows and no
@@ -484,6 +489,26 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Who the copy would be attributed to, resolved through the SAME function
+	// the mutating copy uses and refused here on the same terms. Nothing is
+	// written on this path, so a placeholder would work — and that is exactly
+	// the trap: an earlier version supplied a `"preflight"` literal as a last
+	// resort, so this endpoint happily previewed a copy the mutation would
+	// refuse outright for want of an actor (Codex round 4).
+	//
+	// Placed HERE, immediately after the fourth authorization check and
+	// BEFORE any field or override handling, because the mutating copy checks
+	// it in the same position. Leaving it down by the attachment planner made
+	// the two disagree about a request that fails BOTH ways — no actor and a
+	// malformed override — with the preview reporting the override and the
+	// copy the actor (Codex round 5). Agreement is about the ORDER of
+	// refusals, not just the set.
+	actorID := copyActorID(r, item)
+	if actorID == "" {
+		writeCopyActorRequired(w)
+		return
+	}
+
 	// ---- Everything below this line is authorized and read-only -------
 	//
 	// SNAPSHOT CAVEAT. What follows is a sequence of independent, unlocked
@@ -527,15 +552,19 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// value that never lands. Rejected before anything else is computed
 	// so the 400 cannot depend on the source item's contents.
 	//
-	// KNOWN DIVERGENCE, for whoever wires the mutating endpoint
-	// (TASK-2365). Store.migrateCopyFields (TASK-2363) merges every
+	// RECONCILED in TASK-2365. Store.migrateCopyFields used to merge every
 	// override unconditionally, and ValidateFields ignores keys the schema
-	// does not declare, so the copy would PERSIST an undeclared override
-	// as an orphan key on the new item. The preflight is the stricter of
-	// the two, which is the safe direction — it refuses rather than
-	// promising something odd — but the two must agree (DR-6), and the
-	// gate belongs on the store side too.
-	if bad := unknownOverrideKeys(input.FieldOverrides, targetDefs); len(bad) > 0 {
+	// does not declare, so the copy PERSISTED an undeclared override as an
+	// orphan key on the new item while this preflight refused the same
+	// request. The gate now exists on both sides
+	// (store.UndeclaredOverrideError, surfaced by the copy endpoint as the
+	// same 400 malformed_override this emits);
+	// TestCopyEndpoint_PreflightAndCopyAgreeOnUndeclaredOverride pins it.
+	// items.UndeclaredOverrideKeys, the SAME function the store's copy path
+	// calls. It moved into internal/items in TASK-2365 because two
+	// implementations of "which keys are undeclared" is precisely the DR-6
+	// divergence this pair of endpoints exists to prevent (Codex round 17).
+	if bad := items.UndeclaredOverrideKeys(input.FieldOverrides, targetSchema.Fields); len(bad) > 0 {
 		writeError(w, http.StatusBadRequest, "malformed_override",
 			"Destination collection has no field(s): "+summarizeKeys(bad))
 		return
@@ -631,7 +660,12 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 
 	resp := ItemCopyPreflight{
 		Source: ItemCopyPreflightSource{
-			WorkspaceSlug:  workspaceSlugFromRequest(r),
+			// The CANONICAL slug from the resolved workspace, never the URL
+			// parameter: /workspaces/{slug} also accepts a UUID, and echoing
+			// that back in a field a client uses to build a web route hands
+			// it a link that does not resolve (Codex round 14). Same reason
+			// the destination reports dst.WorkspaceSlug().
+			WorkspaceSlug:  src.WorkspaceSlug(),
 			CollectionSlug: sourceColl.Slug,
 			Ref:            item.Ref,
 			Slug:           item.Slug,
@@ -900,7 +934,7 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		SourceWorkspaceID: item.WorkspaceID,
 		TargetWorkspaceID: dst.WorkspaceID(),
 		DryRun:            true,
-		UploadedBy:        preflightActorID(r, item),
+		UploadedBy:        actorID,
 		Content:           item.Content,
 		Fields:            final,
 	})
@@ -915,42 +949,6 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	resp.Valid = len(resp.Fields.NeedsValue) == 0
 
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// preflightActorID supplies PlanAttachmentCopy's required UploadedBy.
-// Nothing is written, so the value never reaches a row — but the planner
-// refuses an empty one, and on a fresh install (no users yet) there is no
-// current user. Falling back to the source item's creator keeps the
-// preflight callable in that state without inventing an identity.
-func preflightActorID(r *http.Request, item *models.Item) string {
-	if id := currentUserID(r); id != "" {
-		return id
-	}
-	if item.CreatedBy != "" {
-		return item.CreatedBy
-	}
-	return "preflight"
-}
-
-// workspaceSlugFromRequest returns the source workspace slug as the caller
-// addressed it. Echoing the URL rather than re-reading the row keeps the
-// response free of a lookup that could only ever repeat what the router
-// already resolved.
-func workspaceSlugFromRequest(r *http.Request) string {
-	return chi.URLParam(r, "slug")
-}
-
-// unknownOverrideKeys returns the override keys the destination schema
-// does not declare, sorted so the 400's message is stable.
-func unknownOverrideKeys(overrides map[string]any, targetDefs map[string]models.FieldDef) []string {
-	var bad []string
-	for k := range overrides {
-		if _, ok := targetDefs[k]; !ok {
-			bad = append(bad, k)
-		}
-	}
-	sort.Strings(bad)
-	return bad
 }
 
 // sortedDroppedKeys orders MigrateFields' Dropped slice deterministically:

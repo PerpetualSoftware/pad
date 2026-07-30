@@ -28,7 +28,19 @@ import (
 // visibility/edit ladder of DR-10a / DR-10b — source item visible, source edit,
 // destination collection visible, destination collection edit — belongs to the
 // HTTP layer (TASK-2358 / TASK-2365) and MUST run before this is called. A
-// caller that skips it has built an exfiltration path.
+// caller that skips it has built an exfiltration path. The one concession is
+// CrossWorkspaceCopyRequest.PreCheck: a hook that lets the HTTP layer re-check
+// its verdict against the UNDER-LOCK snapshots (DR-9), still without this
+// package knowing what a permission is. Read that field's doc before assuming
+// what it guarantees — the production hook compares resource IDENTITY and does
+// not re-evaluate grants.
+//
+// FIELD SEMANTICS ARE SHARED WITH THE PREFLIGHT (DR-6). migrateCopyFields and
+// handleCopyItemPreflight must agree on what a copy would persist, key for key
+// — the preview lying about the copy is the failure the shared-endpoint design
+// exists to prevent. TASK-2364 shipped with two known disagreements in the
+// override merge (null overrides, undeclared overrides); TASK-2365 closed both
+// on the preflight's side. See migrateCopyFields.
 //
 // FANOUT IS NOT HERE EITHER (DR-14). No activity row, no SSE publish, no
 // webhook. Emitting inside the transaction would leak an event for a copy that
@@ -59,6 +71,30 @@ import (
 // entirely, which is correct for a single-backend deployment.
 var ErrCopyCrossBackendAttachments = errors.New("copy item across workspaces: attachment bytes live in a different storage backend; cross-backend copy is not supported")
 
+// ErrCopySourceCollectionMissing / ErrCopyTargetCollectionMissing are returned
+// when a collection that existed when the caller was authorized is gone by the
+// time this transaction re-reads it under the locks — soft-deleted, or (for the
+// destination) never in the workspace the caller named.
+//
+// SENTINELS RATHER THAN fmt.Errorf, because the distinction is caller-facing.
+// Both are pre-write rejections: nothing has been inserted and nothing can
+// have committed. Reporting them as an anonymous failure would make the HTTP
+// layer answer with its AMBIGUOUS-outcome 500 ("the copy may or may not have
+// landed — check the destination"), which is both wrong and actively unhelpful
+// — it sends the user hunting for an item that provably does not exist, over a
+// condition that has a precise answer. The window is the same one
+// AuthorizeCrossWorkspaceEdit warns about on both entry points; it is narrow,
+// not impossible.
+//
+// They are deliberately NOT collapsed into one: the two sides get different
+// responses under the disclosure posture — the source is a bare "Item not
+// found", the destination the shared collection_not_found — and a single
+// sentinel would force the handler to guess.
+var (
+	ErrCopySourceCollectionMissing = errors.New("copy item across workspaces: source collection not found")
+	ErrCopyTargetCollectionMissing = errors.New("copy item across workspaces: target collection not found")
+)
+
 // ItemLimitError reports a DR-16 item-count quota rejection. It carries the
 // LimitResult so the HTTP layer can render the same plan-limit payload
 // writePlanLimitError produces for handleCreateItem.
@@ -84,6 +120,50 @@ func (e *FieldValidationError) Error() string {
 }
 
 func (e *FieldValidationError) Unwrap() error { return e.Err }
+
+// UndeclaredOverrideError reports field overrides naming keys the DESTINATION
+// collection's schema does not declare (TASK-2365, reconciling the second of
+// TASK-2364's two KNOWN DIVERGENCES).
+//
+// Before this existed, migrateCopyFields merged every override
+// unconditionally and ValidateFields ignores keys the schema does not
+// declare — so the copy PERSISTED an undeclared override as an orphan key on
+// the new item while the preflight refused the identical request with a 400
+// `malformed_override`. That is exactly the DR-6 disagreement the shared
+// preflight exists to prevent: the preview said "no", the copy said "yes, and
+// here is a field your schema has never heard of".
+//
+// The preflight is the stricter and safer side, so the gate moved here rather
+// than the rejection being removed there. Silently dropping the keys instead
+// would be worse than either: a client that asked for a value would get an
+// item without it and no way to tell.
+//
+// Keys is sorted, so the message is stable for the same input.
+type UndeclaredOverrideError struct {
+	Keys []string
+}
+
+func (e *UndeclaredOverrideError) Error() string {
+	return fmt.Sprintf("copy item across workspaces: destination collection has no field(s): %s",
+		strings.Join(e.Keys, ", "))
+}
+
+// CopyPreCheckError wraps a refusal from CrossWorkspaceCopyRequest.PreCheck.
+//
+// It exists purely so the rollback is classified as a caller-facing rejection
+// rather than an incident: an authorization re-check that fires is a 403 or a
+// 404 the HTTP layer renders, not something an operator should be paged about.
+// The wrapped error is the caller's own, and Unwrap lets them recover it with
+// errors.As to choose the status.
+type CopyPreCheckError struct {
+	Err error
+}
+
+func (e *CopyPreCheckError) Error() string {
+	return fmt.Sprintf("copy item across workspaces: pre-check refused: %v", e.Err)
+}
+
+func (e *CopyPreCheckError) Unwrap() error { return e.Err }
 
 // CrossWorkspaceCopyRequest is the complete input to CopyItemAcrossWorkspaces.
 type CrossWorkspaceCopyRequest struct {
@@ -125,6 +205,41 @@ type CrossWorkspaceCopyRequest struct {
 	// ("fs", "s3", …). Empty disables cross-backend detection — correct for a
 	// single-backend deployment. See ErrCopyCrossBackendAttachments.
 	TargetBackend string
+
+	// PreCheck, when non-nil, runs INSIDE the transaction once every input has
+	// been re-read under the locks and before anything is written. Returning
+	// an error rolls the whole copy back.
+	//
+	// It exists for one caller and one reason: TASK-2358's authorization
+	// verdict is explicitly NOT ATOMIC, and PLAN-2357 DR-9 requires the
+	// mutating copy to re-read both sides and re-check inside its
+	// transaction. The four-check ladder itself stays at the HTTP layer —
+	// this store op still enforces data invariants only (see the file header)
+	// — but the SNAPSHOTS it judges have to be the locked ones, because the
+	// item can be moved into a different (possibly hidden) collection between
+	// the handler's check and the lock.
+	//
+	// WHAT THE ONE PRODUCTION HOOK ACTUALLY DOES, stated here because a future
+	// caller must not assume more: it compares IDENTITY ONLY — that the locked
+	// source item and destination collection are the same ones the handler's
+	// ladder was run against. It does NOT re-read membership or grants, and
+	// nothing in this transaction makes authorization state atomic with the
+	// copy. See server.copyResourceInvariantPreCheck for why that is the
+	// honest boundary (an I/O-performing hook here also risks pool starvation
+	// while this transaction holds both workspaces' locks).
+	//
+	// `source` is the under-lock re-read of the source item; `targetColl` is
+	// the under-lock, workspace-scoped destination collection. Both are
+	// DETACHED DEEP COPIES of what the rest of the pipeline consumes (see
+	// detachedSnapshot) — read them; retaining or mutating them, including
+	// through their pointer and slice fields, changes nothing.
+	//
+	// Return any error to refuse. It is wrapped in CopyPreCheckError for you,
+	// so a refusal is classified as a caller-facing rejection rather than an
+	// operator-visible incident (see isExpectedCopyRejection); recover your
+	// own error type with errors.As. The established shape is
+	// MoveItemWithPreCheck / UpdateItemWithPreCheck.
+	PreCheck func(tx *sql.Tx, source *models.Item, targetColl *models.Collection) error
 
 	// EnforceItemLimit turns on the DR-16 items_per_workspace check against
 	// the DESTINATION workspace, inside the transaction.
@@ -178,6 +293,19 @@ type CrossWorkspaceCopyResult struct {
 	// Source is the source item as re-read UNDER LOCK — the snapshot that was
 	// actually copied, not the caller's pre-transaction read.
 	Source *models.Item
+
+	// SourceCollection / TargetCollection are the two collection rows as read
+	// under the FOR UPDATE pin — the schemas the migration actually consumed.
+	//
+	// Returned rather than left to the caller to re-read, for the same reason
+	// Source is: the caller's pre-transaction copies are advisory and both can
+	// be stale by the time this commits. The item can have been MOVED into
+	// another collection in A, and either collection can have been renamed.
+	// A caller that builds its response or its fanout from the pre-transaction
+	// rows attributes the events to a collection the copy did not use, and
+	// hands the client a slug that no longer resolves (Codex round 1 P2).
+	SourceCollection *models.Collection
+	TargetCollection *models.Collection
 
 	// SourceWorkspaceID is workspace A, derived from the source item.
 	SourceWorkspaceID string
@@ -385,14 +513,14 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		return nil, err
 	}
 	if sourceColl == nil {
-		return nil, fmt.Errorf("copy item across workspaces: source collection not found")
+		return nil, ErrCopySourceCollectionMissing
 	}
 	targetColl, err := s.getCollectionInWorkspaceTx(tx, req.TargetCollectionID, req.TargetWorkspaceID)
 	if err != nil {
 		return nil, err
 	}
 	if targetColl == nil {
-		return nil, fmt.Errorf("copy item across workspaces: target collection not found")
+		return nil, ErrCopyTargetCollectionMissing
 	}
 
 	// --- Step 3: re-read the source under lock. Copy THIS snapshot. ---
@@ -406,6 +534,56 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	if source == nil {
 		// Deleted (or archived) between the pre-transaction read and the lock.
 		return nil, sql.ErrNoRows
+	}
+
+	// --- Caller's in-tx re-check (DR-9), against the LOCKED snapshots and
+	// before anything is written or any quota is consumed. ---
+	//
+	// DETACHED SNAPSHOTS, not the canonical pointers. The very objects handed
+	// over here go on to drive migration, attachment planning and the insert,
+	// and are returned in the result for the post-commit fanout — so a hook
+	// that mutated one, or retained it and mutated it later, would silently
+	// rewrite what this transaction copies or what its events say (Codex
+	// round 10). A hook has no business needing more than a read, and
+	// detachedSnapshot makes that structural rather than a convention —
+	// including for every pointer- and slice-backed field, which a plain
+	// struct copy would have left aliased (Codex rounds 11 and 12).
+	//
+	// The refusal is WRAPPED here rather than left to the hook. The doc on
+	// PreCheck used to ask callers to wrap it themselves, which meant a
+	// caller who forgot turned an intended 403 into an operator-visible
+	// rollback incident. Guaranteeing it in one place removes the trap;
+	// errors.As still recovers the caller's own error type through Unwrap.
+	if req.PreCheck != nil {
+		sourceSnapshot, err := detachedSnapshot(source)
+		if err != nil {
+			return nil, err
+		}
+		targetCollSnapshot, err := detachedSnapshot(targetColl)
+		if err != nil {
+			return nil, err
+		}
+		if err := req.PreCheck(tx, sourceSnapshot, targetCollSnapshot); err != nil {
+			return nil, &CopyPreCheckError{Err: err}
+		}
+	}
+
+	// --- Fields: migrate -> override -> validate (DR-12). ---
+	//
+	// BEFORE THE QUOTA, and the order is a contract rather than a preference
+	// (Codex round 18). This is pure computation over rows already read, so
+	// running it first costs nothing and changes no invariant — the quota
+	// still runs inside the transaction and still runs before any insert,
+	// which is all DR-16 requires. What it buys is agreement with the
+	// preflight: the preflight has no quota check at all, so with the checks
+	// the other way round a malformed request into a quota-full cloud
+	// workspace got 403 plan_limit_exceeded from the copy and 400
+	// malformed_override from its own preview. A bad request is a bad request
+	// whether or not the destination happens to be full, and a client told
+	// "you are out of room" cannot fix an override it was never told about.
+	finalFields, dropped, err := migrateCopyFields(source.Fields, sourceColl.Schema, targetColl.Schema, req.FieldOverrides)
+	if err != nil {
+		return nil, err
 	}
 
 	// --- Quota (DR-16), inside the transaction, before any insert. ---
@@ -423,12 +601,6 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 				"plan", limit.Plan)
 			return nil, &ItemLimitError{Result: limit}
 		}
-	}
-
-	// --- Fields: migrate -> override -> validate (DR-12). ---
-	finalFields, dropped, err := migrateCopyFields(source.Fields, sourceColl.Schema, targetColl.Schema, req.FieldOverrides)
-	if err != nil {
-		return nil, err
 	}
 
 	// --- DR-8 / DR-17 scrubs against the DESTINATION workspace. ---
@@ -585,6 +757,8 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	return &CrossWorkspaceCopyResult{
 		Item:              item,
 		Source:            source,
+		SourceCollection:  sourceColl,
+		TargetCollection:  targetColl,
 		SourceWorkspaceID: sourceWorkspaceID,
 		Move:              move,
 		SourceSeq:         sourceSeq,
@@ -595,6 +769,41 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		DroppedAssignee:   droppedAssignee,
 		DroppedAgentRole:  droppedAgentRole,
 	}, nil
+}
+
+// detachedSnapshot returns a deep copy of v that a PreCheck hook can neither
+// mutate nor retain into anything the copy depends on.
+//
+// WHY NOT `out := *src`. Struct assignment copies the POINTER and SLICE
+// fields, so a hook doing `*source.AssignedUserID = "someone-else"` reaches
+// straight through into carryAssigneeTx and puts a different user on the
+// copied item (Codex round 11).
+//
+// WHY NOT FIELD-BY-FIELD CLONING. That was the first fix, and it was wrong in
+// the way hand-maintained lists are always wrong: models.Item carries a dozen
+// reference-backed fields — ParentID, AssignedUserID, AgentRoleID, ItemNumber,
+// DeletedAt, IsUnparented, DerivedClosure, CodeContext, Convention, MovedTo,
+// ImplementationNotes, DecisionLog — several of which getItemTx hydrates, and
+// the enumeration missed four of them (Codex round 12). Worse, it would go
+// stale silently the next time a field is added to the model, in a way no test
+// would notice.
+//
+// A JSON round-trip is total by construction and stays correct as the models
+// grow. It is legitimate here specifically because models.Item and
+// models.Collection are API DTOs: every field carries a JSON tag and none is
+// `json:"-"`, so nothing is lost. The cost — one marshal plus one unmarshal —
+// is paid once per copy, only when a hook is installed, against a transaction
+// that already holds two workspaces' advisory locks.
+func detachedSnapshot[T any](src *T) (*T, error) {
+	raw, err := json.Marshal(src)
+	if err != nil {
+		return nil, fmt.Errorf("copy item across workspaces: snapshot for pre-check: %w", err)
+	}
+	var out T
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("copy item across workspaces: snapshot for pre-check: %w", err)
+	}
+	return &out, nil
 }
 
 // acquireWorkspaceLocksOrdered takes the workspace advisory locks for every
@@ -758,6 +967,33 @@ func (s *Store) getCollectionInWorkspaceTx(tx *sql.Tx, collectionID, workspaceID
 // itself. ValidateFields is re-run over the merged map instead: it enforces
 // required presence, applies schema defaults, and validates types and options.
 //
+// THE OVERRIDE MERGE IS THE PREFLIGHT'S, EXACTLY (TASK-2365). Both of
+// TASK-2364's KNOWN DIVERGENCES lived in this loop and both are closed here,
+// on the side the preflight already took:
+//
+//   - an UNDECLARED key is refused (UndeclaredOverrideError), not merged into
+//     items.fields as an orphan the destination schema never mentions;
+//   - a NULL value DELETES the key rather than assigning nil. ValidateFields
+//     treats a nil value as absent for the required check but LEAVES IT IN THE
+//     MAP, so assigning nil persisted a literal `"key": null` that the preview
+//     reported as unset. Deleting also lets the destination schema's DEFAULT
+//     re-apply, which is what the preflight shows.
+//
+// Anything added to this loop has a counterpart in
+// handleCopyItemPreflight's, and TestCopyEndpoint_PreflightAndCopyAgree*
+// fails when the two drift.
+//
+// NOT BYTE-FAITHFUL, and deliberately not fixed here (Codex round 26).
+// Decoding items.fields into map[string]any and re-encoding it turns every
+// JSON number into a float64, so an integer past 2^53 is rounded, and key
+// order, escaping and number formatting are normalised rather than preserved.
+// That is how EVERY field write in Pad works — handleMoveItem, handleUpdateItem
+// and items.ValidateFields all operate on map[string]any — and, decisively,
+// the preflight does the identical round-trip, so the preview and the copy
+// AGREE. Making the copy alone byte-faithful would break that agreement, which
+// is the one thing this pipeline exists to preserve. It belongs with BUG-2367,
+// as a change to the field model for all callers at once.
+//
 // Returns the final field map (the planner's input, pre-rewrite) and the keys
 // migration dropped.
 func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON string, overrides map[string]any) (map[string]any, []string, error) {
@@ -767,6 +1003,13 @@ func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON stri
 	}
 	if err := json.Unmarshal([]byte(targetSchemaJSON), &targetSchema); err != nil {
 		return nil, nil, fmt.Errorf("copy item across workspaces: parse target schema: %w", err)
+	}
+
+	// Refused BEFORE the source item's fields are even parsed, so the
+	// rejection cannot depend on the source's contents — same ordering the
+	// preflight uses for the same reason.
+	if bad := items.UndeclaredOverrideKeys(overrides, targetSchema.Fields); len(bad) > 0 {
+		return nil, nil, &UndeclaredOverrideError{Keys: bad}
 	}
 
 	currentFields := map[string]any{}
@@ -781,6 +1024,15 @@ func migrateCopyFields(sourceFieldsJSON, sourceSchemaJSON, targetSchemaJSON stri
 
 	migrated := items.MigrateFields(currentFields, sourceSchema.Fields, targetSchema.Fields)
 	for k, v := range overrides {
+		if v == nil {
+			// An explicit null means "leave this unset". DELETE rather than
+			// assign nil: ValidateFields leaves a nil value in the map, so
+			// assignment persists a literal `"key": null` the preflight
+			// reported as unset — and suppresses the schema default that the
+			// preflight shows re-applying.
+			delete(migrated.Fields, k)
+			continue
+		}
 		migrated.Fields[k] = v
 	}
 	if err := items.ValidateFields(migrated.Fields, targetSchema); err != nil {
@@ -867,16 +1119,24 @@ func (s *Store) archiveItemForCopyTx(tx *sql.Tx, workspaceID, itemID, ts string)
 // to render — a 4xx — rather than an incident an operator should see.
 //
 // Kept as one predicate so the set is stated in a single place: field
-// validation (DR-12), the item quota (DR-16, which logs its own bounded line),
-// a source that is missing or already archived, and the v1 cross-backend
-// attachment refusal. Everything else — a DB error, a constraint violation, a
-// deadlock — is unexpected and gets logged.
+// validation (DR-12), an undeclared field override, the item quota (DR-16,
+// which logs its own bounded line), a source that is missing or already
+// archived, a caller-supplied PreCheck refusal (the HTTP layer's in-tx
+// authorization re-check, which is a 403/404 the caller renders), and the v1
+// cross-backend attachment refusal. Everything else — a DB error, a constraint
+// violation, a deadlock — is unexpected and gets logged.
 func isExpectedCopyRejection(err error) bool {
 	var validation *FieldValidationError
+	var undeclared *UndeclaredOverrideError
 	var limit *ItemLimitError
+	var precheck *CopyPreCheckError
 	return errors.As(err, &validation) ||
+		errors.As(err, &undeclared) ||
 		errors.As(err, &limit) ||
+		errors.As(err, &precheck) ||
 		errors.Is(err, sql.ErrNoRows) ||
+		errors.Is(err, ErrCopySourceCollectionMissing) ||
+		errors.Is(err, ErrCopyTargetCollectionMissing) ||
 		errors.Is(err, ErrCopyCrossBackendAttachments)
 }
 

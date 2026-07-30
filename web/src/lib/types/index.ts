@@ -811,6 +811,91 @@ export interface ItemCopyPreflight {
 	warnings: ItemCopyPreflightWarnings;
 }
 
+// --- Cross-workspace copy, the MUTATION (PLAN-2357 / TASK-2365) ------------
+//
+//   POST /api/v1/workspaces/{ws}/items/{itemSlug}/copy
+//
+// Same request shape as the preflight above — send ItemCopyPreflightRequest
+// to both, so a dialog can preview and then commit without rebuilding it.
+// Override semantics are identical too: an undeclared key is a 400, and a
+// `null` value unsets rather than writing null.
+//
+// ⚠ NEVER RETRY THIS CALL AUTOMATICALLY (PLAN-2357 DR-13). There is no
+// idempotency key in v1, so a retry after a request that already committed
+// creates a DUPLICATE item — and a client that timed out cannot tell which
+// happened. On 500 `copy_failed` the server is explicitly telling you the
+// outcome is unknown: show the message, and send the user to look at the
+// destination. The shared api client only retries GET/HEAD; keep it that way.
+//
+// Error statuses beyond the preflight's set:
+//   403 `plan_limit_exceeded`  — destination workspace at its item cap;
+//                                carries {feature, limit, current, plan}
+//   403 `actor_required`       — nothing to attribute the copy to
+//   409 `conflict`             — unique-constraint collision in the
+//                                destination (slug / title / invocation slug)
+//   500 `copy_failed`          — AMBIGUOUS; see the warning above
+
+/** Identity of the item that was copied, and whether it survived. */
+export interface ItemCopyResultSource {
+	/** Canonical slug, never the UUID form the URL may have used. */
+	workspace_slug: string;
+	collection_slug: string;
+	ref?: string;
+	slug: string;
+	title: string;
+	/** True only on the move path. A plain copy leaves the source untouched. */
+	archived: boolean;
+	/**
+	 * The source workspace's committed seq for the ARCHIVE. Present only on
+	 * a move — a plain copy does not write in the source at all and must not
+	 * advance its cursor.
+	 */
+	seq?: number;
+}
+
+/** Where the copy landed. `workspace_slug` + `ref` is the navigation pair. */
+export interface ItemCopyResultDestination {
+	workspace_slug: string;
+	workspace_name: string;
+	collection_slug: string;
+	collection_name: string;
+	ref?: string;
+	slug: string;
+	/** The destination workspace's committed seq — never the source's. */
+	seq?: number;
+}
+
+/**
+ * What the copy actually dropped and cloned — the after-the-fact counterpart
+ * to the preflight's warnings. Deliberately narrower: the relationship
+ * counters are preview-only, because they describe the SOURCE's relatives,
+ * which the copy did not touch and which the user already saw before
+ * agreeing.
+ */
+export interface ItemCopyResultWarnings {
+	/** Destination-schema keys migration could not carry. Never null. */
+	dropped_fields: string[];
+	dropped_assignee: boolean;
+	dropped_agent_role: boolean;
+	attachment_count: number;
+	attachment_bytes: number;
+	unresolvable_ref_count: number;
+}
+
+/** The 201 response. */
+export interface ItemCopyResult {
+	source: ItemCopyResultSource;
+	destination: ItemCopyResultDestination;
+	/** Echoes the request; `source.archived` is what actually happened. */
+	archive_source: boolean;
+	/**
+	 * The destination item as committed. Not enriched with relations — a
+	 * fresh copy has none: the parent is scrubbed and no links carry.
+	 */
+	item: Item;
+	warnings: ItemCopyResultWarnings;
+}
+
 export interface ItemIndexResponse {
 	items: ItemIndexRow[];
 	total: number;

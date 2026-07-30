@@ -513,6 +513,18 @@ func (s *Store) getCollectionSlugTx(tx *sql.Tx, collectionID string) (string, er
 	return slug, nil
 }
 
+// IsUniqueViolation is the exported form of isUniqueViolation, for HTTP
+// handlers that have to turn a store error into a 409 without re-implementing
+// the heuristic.
+//
+// Exported in TASK-2365 rather than duplicated at the call site: the
+// cross-workspace copy endpoint needs exactly this test, and a second copy of
+// the same two magic strings is a place for the two to drift (Codex round 8).
+// It is a string match rather than a SQLSTATE/driver-type check because
+// internal/store is driver-agnostic and both drivers sit behind database/sql;
+// the strings are stable parts of each engine's user-facing error text.
+func IsUniqueViolation(err error) bool { return isUniqueViolation(err) }
+
 // isUniqueViolation checks whether an error is a unique constraint violation.
 // Works for both SQLite (UNIQUE constraint failed) and PostgreSQL (duplicate key).
 func isUniqueViolation(err error) bool {

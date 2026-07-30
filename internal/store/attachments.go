@@ -816,10 +816,11 @@ func (s *Store) WorkspaceItemSlugMap(workspaceID string) (map[string]string, err
 // workspace's ids.
 //
 // Implementation: a single transaction that loads every item's
-// content+fields, runs strings.ReplaceAll for each pair, and
-// writes back only when something changed. ReplaceAll is safe
-// because attachment UUIDs don't appear as substrings of other
-// UUIDs (RFC4122 hex, length 36, all unique by construction).
+// content+fields, runs remapAttachmentRefs over each, and writes
+// back only when something changed. That helper tokenizes with
+// attachmentRefRE and matches whole ids — NOT strings.ReplaceAll,
+// which used to rewrite a mapped id sitting as the PREFIX of a
+// longer one (Codex round 26). See its doc.
 //
 // FTS reindex via the existing rebuild helper happens AFTER the
 // transaction commits — direct UPDATE bypasses the SQLite FTS
@@ -883,18 +884,34 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 // RemapAttachmentReferencesInWorkspace which also handles the FTS
 // reindex.
 //
-// The "pad-attachment:" prefix is part of the search key so we don't
-// accidentally rewrite a UUID that happens to appear in unrelated
-// content (e.g. an item title that mentions an attachment id by
-// accident — unlikely but free to guard against).
+// IT TOKENIZES WITH attachmentRefRE, the SAME pattern the copy
+// planner enumerates references with, and rewrites only when the
+// captured id matches a map key EXACTLY.
+//
+// A plain strings.ReplaceAll over "pad-attachment:"+old was the
+// obvious implementation and was subtly wrong (Codex round 26). The
+// regex is greedy — `pad-attachment:<uuid>x` captures `<uuid>x`, one
+// id, which resolves to nothing and is deliberately left alone — but a
+// substring replace happily rewrote the `<uuid>` PREFIX inside it,
+// producing text that matched neither what the planner enumerated nor
+// what the user wrote. PLAN-2357 DR-11a is explicit that an
+// unresolvable reference keeps its literal text "so the copy renders
+// exactly as broken as the source did", and
+// items_cross_workspace_copy.go claims the rewrite "covers precisely
+// the reference set the plan cloned". Sharing the tokenizer is what
+// makes both true rather than nearly true.
 func remapAttachmentRefs(s string, oldToNew map[string]string) string {
-	for old, fresh := range oldToNew {
-		if old == "" || fresh == "" || old == fresh {
-			continue
-		}
-		s = strings.ReplaceAll(s, "pad-attachment:"+old, "pad-attachment:"+fresh)
+	if len(oldToNew) == 0 || !strings.Contains(s, attachmentRefPrefix) {
+		return s
 	}
-	return s
+	return attachmentRefRE.ReplaceAllStringFunc(s, func(match string) string {
+		id := strings.TrimPrefix(match, attachmentRefPrefix)
+		fresh, ok := oldToNew[id]
+		if !ok || fresh == "" || fresh == id {
+			return match
+		}
+		return attachmentRefPrefix + fresh
+	})
 }
 
 // WorkspaceAttachmentsForExport returns every original (non-derived,

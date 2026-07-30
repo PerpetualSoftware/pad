@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -998,5 +999,339 @@ func TestSortedDedupedLockKeys(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- Collections that vanish under the lock (TASK-2365) ---------------------
+
+// TestCopyAcrossWorkspaces_CollectionMissingSentinels pins the DETECTION half
+// of the pre-write rejection the HTTP layer maps to a 404.
+//
+// Both are reachable through the same narrow window: the caller is authorized
+// against a live collection, and it is soft-deleted before this transaction
+// re-reads it under the locks. They must come back as the exported sentinels
+// rather than anonymous errors, because the HTTP layer's fallback is DR-13's
+// "the copy may or may not have landed" 500 — a message that would send the
+// user hunting for an item nothing ever tried to create.
+//
+// A foreign target collection takes the SAME sentinel as an absent one:
+// getCollectionInWorkspaceTx is workspace-scoped, and that scope is the
+// security boundary which makes "a collection in someone else's workspace" a
+// not-found rather than a cross-workspace write.
+func TestCopyAcrossWorkspaces_CollectionMissingSentinels(t *testing.T) {
+	t.Run("source collection soft-deleted under the lock", func(t *testing.T) {
+		f := newCopyFixture(t)
+		src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Orphaned", "body")
+		if err := f.s.DeleteCollection(f.colA.ID, ""); err != nil {
+			t.Fatalf("DeleteCollection: %v", err)
+		}
+		req := f.req()
+		req.SourceItemID = src.ID
+		_, err := f.s.CopyItemAcrossWorkspaces(req)
+		if !errors.Is(err, ErrCopySourceCollectionMissing) {
+			t.Fatalf("err = %v, want ErrCopySourceCollectionMissing", err)
+		}
+	})
+
+	t.Run("target collection soft-deleted under the lock", func(t *testing.T) {
+		f := newCopyFixture(t)
+		src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Homeless", "body")
+		if err := f.s.DeleteCollection(f.colB.ID, ""); err != nil {
+			t.Fatalf("DeleteCollection: %v", err)
+		}
+		req := f.req()
+		req.SourceItemID = src.ID
+		_, err := f.s.CopyItemAcrossWorkspaces(req)
+		if !errors.Is(err, ErrCopyTargetCollectionMissing) {
+			t.Fatalf("err = %v, want ErrCopyTargetCollectionMissing", err)
+		}
+	})
+
+	t.Run("target collection in another workspace", func(t *testing.T) {
+		f := newCopyFixture(t)
+		src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Confused Deputy", "body")
+		req := f.req()
+		req.SourceItemID = src.ID
+		req.TargetCollectionID = f.colC.ID // live, but in workspace C
+		_, err := f.s.CopyItemAcrossWorkspaces(req)
+		if !errors.Is(err, ErrCopyTargetCollectionMissing) {
+			t.Fatalf("err = %v, want ErrCopyTargetCollectionMissing", err)
+		}
+	})
+
+	// All of them are caller-facing rejections, so the copy must NOT log them
+	// as incidents alongside genuine deadlocks and DB failures.
+	t.Run("classified as expected rejections", func(t *testing.T) {
+		for _, err := range []error{ErrCopySourceCollectionMissing, ErrCopyTargetCollectionMissing} {
+			if !isExpectedCopyRejection(err) {
+				t.Errorf("%v is logged as an incident; it is a 404 the caller renders", err)
+			}
+		}
+	})
+}
+
+// TestCopyAcrossWorkspaces_BadRequestBeatsQuota pins the ORDER of the two
+// refusals, which is a DR-6 agreement question rather than a preference.
+//
+// The preflight has no quota check at all — it documents the destination
+// workspace's item quota as one of the things `valid` deliberately does not
+// evaluate — so if the copy tested the quota first, a malformed request into a
+// full cloud workspace would come back 403 plan_limit_exceeded from the copy
+// and 400 malformed_override from its own preview (Codex round 18). A client
+// told "you are out of room" cannot fix an override it was never told about.
+//
+// Moving field validation ahead of the quota costs nothing and weakens
+// nothing: it is pure computation over rows already read, and the quota still
+// runs inside the transaction before any insert, which is all DR-16 asks.
+func TestCopyAcrossWorkspaces_BadRequestBeatsQuota(t *testing.T) {
+	// A cap of 1, already consumed, so the destination is genuinely full.
+	f := newQuotaFixture(t, 1)
+	if _, err := f.s.CreateItem(f.wsB.ID, f.colB.ID, models.ItemCreate{Title: "Occupant"}); err != nil {
+		t.Fatalf("CreateItem(occupant): %v", err)
+	}
+	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Doomed", "body")
+
+	// Control: with a well-formed request the quota IS what refuses.
+	quotaReq := f.req()
+	quotaReq.SourceItemID = src.ID
+	quotaReq.EnforceItemLimit = true
+	if _, err := f.s.CopyItemAcrossWorkspaces(quotaReq); err == nil {
+		t.Fatal("fixture precondition: the destination is not actually full")
+	} else {
+		var limitErr *ItemLimitError
+		if !errors.As(err, &limitErr) {
+			t.Fatalf("control: err = %v, want *ItemLimitError", err)
+		}
+	}
+
+	// The real assertion: the same full destination, plus an undeclared
+	// override, must report the OVERRIDE.
+	badReq := f.req()
+	badReq.SourceItemID = src.ID
+	badReq.EnforceItemLimit = true
+	badReq.FieldOverrides = map[string]any{"not_a_field": "x"}
+
+	_, err := f.s.CopyItemAcrossWorkspaces(badReq)
+	var undeclared *UndeclaredOverrideError
+	if !errors.As(err, &undeclared) {
+		t.Fatalf("err = %v (%T), want *UndeclaredOverrideError — a bad request must be reported as a "+
+			"bad request whether or not the destination happens to be full", err, err)
+	}
+	var limitErr *ItemLimitError
+	if errors.As(err, &limitErr) {
+		t.Error("the quota refusal shadowed the malformed override")
+	}
+}
+
+// --- The attachment-ref rewrite (TASK-2365) ---------------------------------
+
+// TestRemapAttachmentRefsTokenizesLikeThePlanner pins the property that makes
+// items_cross_workspace_copy.go's claim true — that the rewrite "covers
+// precisely the reference set the plan cloned".
+//
+// The rewrite and the planner must AGREE ON WHERE A REFERENCE ENDS. The
+// planner's regex is greedy, so `pad-attachment:<uuid>x` is ONE id, `<uuid>x`,
+// which resolves to nothing and is deliberately left alone (DR-11a: an
+// unresolvable ref keeps its literal text "so the copy renders exactly as
+// broken as the source did"). A naive strings.ReplaceAll over
+// "pad-attachment:"+old rewrote the `<uuid>` prefix inside it anyway (Codex
+// round 26), producing text matching neither the plan nor the user's input.
+func TestRemapAttachmentRefsTokenizesLikeThePlanner(t *testing.T) {
+	const (
+		oldID = "11111111-2222-4333-8444-555555555555"
+		newID = "99999999-8888-4777-8666-555555555555"
+	)
+	idMap := map[string]string{oldID: newID}
+
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			"a plain reference is rewritten",
+			"![a](pad-attachment:" + oldID + ")",
+			"![a](pad-attachment:" + newID + ")",
+		},
+		{
+			"a JSON-encoded reference is rewritten",
+			`{"cover":"pad-attachment:` + oldID + `"}`,
+			`{"cover":"pad-attachment:` + newID + `"}`,
+		},
+		{
+			// The one this test exists for.
+			"a LONGER id that merely starts with a mapped one is left alone",
+			"pad-attachment:" + oldID + "x",
+			"pad-attachment:" + oldID + "x",
+		},
+		{
+			"both forms in one body are handled independently",
+			"ok pad-attachment:" + oldID + " broken pad-attachment:" + oldID + "x",
+			"ok pad-attachment:" + newID + " broken pad-attachment:" + oldID + "x",
+		},
+		{
+			"a bare id outside the prefix is never touched",
+			"the id is " + oldID + " on its own",
+			"the id is " + oldID + " on its own",
+		},
+		{
+			"an unmapped reference survives verbatim",
+			"pad-attachment:00000000-0000-4000-8000-000000000000",
+			"pad-attachment:00000000-0000-4000-8000-000000000000",
+		},
+		{"no references at all", "just prose", "just prose"},
+		{"empty", "", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := remapAttachmentRefs(tc.in, idMap); got != tc.want {
+				t.Fatalf("got  %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+
+	// An empty map is a no-op even over text full of references.
+	busy := "pad-attachment:" + oldID
+	if got := remapAttachmentRefs(busy, nil); got != busy {
+		t.Fatalf("nil map rewrote %q to %q", busy, got)
+	}
+}
+
+// --- The PreCheck hook (TASK-2365) ------------------------------------------
+
+// TestCopyAcrossWorkspaces_PreCheckRefusalIsWrapped pins two guarantees the
+// hook's callers depend on and cannot verify themselves.
+//
+// The WRAPPING is the one that matters operationally: a hook refusal is a
+// 403/404 the HTTP layer renders, not an incident, and asking every caller to
+// remember to wrap it made "forgot to wrap" a silent way to page an operator
+// over a routine permission denial (Codex round 10). The caller's own error
+// type still comes back out through errors.As.
+func TestCopyAcrossWorkspaces_PreCheckRefusalIsWrapped(t *testing.T) {
+	f := newCopyFixture(t)
+	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Refused", "body")
+
+	sentinel := errors.New("caller's own refusal")
+	req := f.req()
+	req.SourceItemID = src.ID
+	req.PreCheck = func(_ *sql.Tx, _ *models.Item, _ *models.Collection) error { return sentinel }
+
+	_, err := f.s.CopyItemAcrossWorkspaces(req)
+	var wrapped *CopyPreCheckError
+	if !errors.As(err, &wrapped) {
+		t.Fatalf("err = %v (%T), want it wrapped in *CopyPreCheckError", err, err)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("the caller's own error is not recoverable through the wrapper: %v", err)
+	}
+	if !isExpectedCopyRejection(err) {
+		t.Error("a hook refusal is logged as an incident; it is a status the caller renders")
+	}
+	// And nothing was written.
+	if items, lErr := f.s.ListItems(f.wsB.ID, models.ItemListParams{}); lErr != nil || len(items) != 0 {
+		t.Fatalf("the refused copy left %d item(s) in the destination (err=%v)", len(items), lErr)
+	}
+}
+
+// TestCopyAcrossWorkspaces_PreCheckGetsCopies — the hook is handed DETACHED
+// snapshots, so a hook that mutates (or retains and later mutates) what it was
+// given cannot rewrite what the transaction actually copies, nor what the
+// post-commit fanout says about it.
+//
+// Three shapes are exercised, because three different implementations fail at
+// different ones:
+//
+//   - VALUE fields (Title, Content, the collection's Slug) — a plain struct
+//     copy already handles these;
+//   - a POINTER field written THROUGH (`*source.AssignedUserID = x`) — a plain
+//     struct copy aliases it, and it reaches carryAssigneeTx (Codex round 11);
+//   - a SLICE field appended to and mutated in place (ImplementationNotes) —
+//     hand-enumerated pointer cloning misses these entirely (Codex round 12),
+//     and they ride out on the source's move webhook payload.
+//
+// The last two are the ones that make this test worth having; assert on all
+// three so a regression in any implementation strategy is caught.
+func TestCopyAcrossWorkspaces_PreCheckGetsCopies(t *testing.T) {
+	f := newCopyFixture(t)
+
+	// The assignee must be a member of BOTH workspaces, or DR-8 drops it and
+	// the pointer half of this test proves nothing.
+	assignee := createTestUser(t, f.s, "assignee@example.com", "Assignee", "pw-assignee")
+	intruder := createTestUser(t, f.s, "intruder@example.com", "Intruder", "pw-intruder")
+	for _, ws := range []*models.Workspace{f.wsA, f.wsB} {
+		for _, u := range []string{assignee.ID, intruder.ID} {
+			if err := f.s.AddWorkspaceMember(ws.ID, u, "editor"); err != nil {
+				t.Fatalf("AddWorkspaceMember: %v", err)
+			}
+		}
+	}
+
+	// implementation_notes hydrates Item.ImplementationNotes (a SLICE) via
+	// hydrateItemComputedMetadata, which getItemTx runs — so the hook is
+	// handed a slice header sharing the store's backing array unless the
+	// snapshot is a genuine deep copy.
+	src, err := f.s.CreateItem(f.wsA.ID, f.colA.ID, models.ItemCreate{
+		Title: "Original Title", Content: "body", AssignedUserID: &assignee.ID,
+		Fields: `{"implementation_notes":[{"summary":"original note"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	var heldItem *models.Item
+	var heldColl *models.Collection
+	req := f.req()
+	req.SourceItemID = src.ID
+	req.PreCheck = func(_ *sql.Tx, source *models.Item, targetColl *models.Collection) error {
+		heldItem, heldColl = source, targetColl
+		source.Title = "Hijacked"
+		source.Content = "hijacked body"
+		targetColl.Slug = "hijacked-slug"
+		if source.AssignedUserID == nil {
+			t.Fatal("fixture precondition: the hook was handed an unassigned item")
+		}
+		// THE POINTER CASE: writing THROUGH the pointer, not replacing it.
+		*source.AssignedUserID = intruder.ID
+		// THE SLICE CASE: mutating the shared backing array in place.
+		if len(source.ImplementationNotes) == 0 {
+			t.Fatal("fixture precondition: the hook was handed no implementation notes")
+		}
+		source.ImplementationNotes[0].Summary = "hijacked note"
+		return nil
+	}
+
+	res := f.copy(t, req)
+
+	if res.Item.Title != "Original Title" {
+		t.Errorf("the copy's title is %q; a PreCheck mutation reached the insert", res.Item.Title)
+	}
+	if res.Item.Content != "body" {
+		t.Errorf("the copy's content is %q; a PreCheck mutation reached the insert", res.Item.Content)
+	}
+	if res.TargetCollection.Slug == "hijacked-slug" {
+		t.Error("a PreCheck mutation reached the collection snapshot the caller fans out on")
+	}
+	if res.Item.AssignedUserID == nil || *res.Item.AssignedUserID != assignee.ID {
+		t.Errorf("the copy is assigned to %v, want %s — a PreCheck write THROUGH a pointer field "+
+			"reached the insert, so the snapshot is only shallow",
+			res.Item.AssignedUserID, assignee.ID)
+	}
+	// res.Source is what the caller fans out on for the source's move webhook,
+	// so a slice mutation that reached it would be published.
+	if len(res.Source.ImplementationNotes) == 0 ||
+		res.Source.ImplementationNotes[0].Summary != "original note" {
+		t.Errorf("the source snapshot's notes are %+v; a PreCheck mutation of a SLICE field "+
+			"reached the result the caller fans out on", res.Source.ImplementationNotes)
+	}
+	if heldItem == res.Source || heldColl == res.TargetCollection {
+		t.Error("the hook was handed the canonical pointers, not copies")
+	}
+	if heldItem.AssignedUserID == res.Source.AssignedUserID {
+		t.Error("the hook's item aliases the canonical item's AssignedUserID pointer")
+	}
+	if len(heldItem.ImplementationNotes) > 0 && len(res.Source.ImplementationNotes) > 0 &&
+		&heldItem.ImplementationNotes[0] == &res.Source.ImplementationNotes[0] {
+		t.Error("the hook's item shares the canonical item's ImplementationNotes backing array")
 	}
 }
