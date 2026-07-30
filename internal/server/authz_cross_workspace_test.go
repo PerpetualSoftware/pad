@@ -1065,3 +1065,75 @@ func TestCrossWorkspace_FailsClosedOnStoreError(t *testing.T) {
 		}
 	}
 }
+
+// TestCrossWorkspace_WriteCollectionNotFoundRefusesForeignVerdicts pins the
+// enforced half of WriteCollectionNotFound's precondition (PLAN-2357 /
+// TASK-2364). The collapse to a 404 collection_not_found is only safe for
+// a denial the caller provoked by NAMING a collection; applied to an
+// item-scoped or workspace-only verdict it would turn a deliberately
+// indistinguishable 403 into a distinctive response about a collection the
+// caller never mentioned. The flag makes that misuse impossible rather
+// than merely discouraged.
+func TestCrossWorkspace_WriteCollectionNotFoundRefusesForeignVerdicts(t *testing.T) {
+	f := newCrossWSFixture(t)
+	u := f.member("wcnf@example.com", "wcnfuser", "editor", f.wsA)
+	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, u.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember B: %v", err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.wsB.ID, u.ID, "specific", []string{f.collB.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+	r := f.request(u, reqOpts{wsRoleCtx: "editor", wsIDCtx: f.wsA.ID})
+
+	// Collection-scoped denial on the hidden collection: collapses to 404.
+	collVerdict := f.srv.AuthorizeCrossWorkspaceEdit(r, f.wsB.Slug, CrossWorkspaceCollectionScope(f.hiddenB.ID))
+	assertDenied(t, collVerdict, CrossWorkspaceCollectionNotVisible, "hidden collection")
+	rec := httptest.NewRecorder()
+	collVerdict.WriteCollectionNotFound(rec)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("collection-scoped denial: got %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "collection_not_found") {
+		t.Errorf("collection-scoped denial body = %s, want collection_not_found", rec.Body.String())
+	}
+
+	// An ITEM scope can reach the very reasons the collapse switches on —
+	// CrossWorkspaceScopeMismatch here (an item from workspace A handed in
+	// alongside workspace B), and CrossWorkspaceCollectionNotVisible when
+	// the item's own collection is archived. Neither may produce the
+	// collection-shaped 404: the caller named an ITEM. This is the leg
+	// that actually falsifies the guard — without it these become
+	// "collection_not_found" for a collection nobody mentioned.
+	itemVerdict := f.srv.AuthorizeCrossWorkspaceEdit(r, f.wsB.Slug, CrossWorkspaceItemScope(f.itemA))
+	assertDenied(t, itemVerdict, CrossWorkspaceScopeMismatch, "foreign item scope")
+	rec = httptest.NewRecorder()
+	itemVerdict.WriteCollectionNotFound(rec)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("item-scoped scope_mismatch: got %d, want WriteDenied's 403: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "collection_not_found") {
+		t.Errorf("item-scoped denial leaked the collection-shaped response: %s", rec.Body.String())
+	}
+
+	// And the plain hidden-item denial, for completeness.
+	hiddenItemVerdict := f.srv.AuthorizeCrossWorkspaceEdit(r, f.wsB.Slug, CrossWorkspaceItemScope(f.hiddenIB))
+	assertDenied(t, hiddenItemVerdict, CrossWorkspaceItemNotVisible, "hidden item scope")
+	rec = httptest.NewRecorder()
+	hiddenItemVerdict.WriteCollectionNotFound(rec)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("item-scoped denial: got %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+
+	// Workspace-only verdicts likewise fall through to WriteDenied.
+	stranger := mustUser(t, f.srv, "wcnf-stranger@example.com", "wcnfstranger", "")
+	sr := f.request(stranger, reqOpts{wsRoleCtx: "editor", wsIDCtx: f.wsA.ID})
+	wsVerdict := f.srv.AuthorizeCrossWorkspaceEdit(sr, f.wsB.ID, CrossWorkspaceWorkspaceOnlyScope())
+	if wsVerdict.Allowed {
+		t.Fatalf("fixture: expected the stranger to be denied")
+	}
+	rec = httptest.NewRecorder()
+	wsVerdict.WriteCollectionNotFound(rec)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("workspace-only denial: got %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+}

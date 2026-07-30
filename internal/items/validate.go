@@ -34,12 +34,75 @@ func compilePattern(pat string) (*regexp.Regexp, error) {
 	return re, nil
 }
 
+// FieldIssueKind classifies a single field-level validation failure.
+//
+// The two kinds want different treatment from a caller that is building a
+// user-facing form rather than just rejecting a request: a IssueRequired
+// field needs a value supplied, while a IssueInvalid field HAS a value and
+// it is wrong. PLAN-2357's copy preflight buckets them separately, and the
+// distinction is impossible to recover from ValidateFields' joined error
+// string without parsing English.
+type FieldIssueKind string
+
+const (
+	// IssueRequired — the schema declares the field required, it is absent
+	// (or nil) in the map, and the schema supplies no default to fill it.
+	IssueRequired FieldIssueKind = "required"
+
+	// IssueInvalid — the field HAS a value and that value fails the
+	// schema's type / options / pattern / range rules.
+	IssueInvalid FieldIssueKind = "invalid"
+)
+
+// FieldIssue is one field-level validation failure, attributable to a key.
+type FieldIssue struct {
+	// Key is the schema field key the failure belongs to. Always set —
+	// that is the point of this type.
+	Key string
+	// Kind is IssueRequired or IssueInvalid.
+	Kind FieldIssueKind
+	// Message is the human-readable explanation. For IssueInvalid it is
+	// validateFieldType's error text verbatim, so it stays in step with
+	// the single-error path.
+	Message string
+}
+
 // ValidateFields checks field values against the collection schema.
 // It validates required fields are present, types are correct, and select
 // values are within the allowed options. It applies defaults for missing
 // optional fields, mutating the fields map in place.
+//
+// It is a thin wrapper over ValidateFieldsDetailed that joins the issues
+// into the historical single-error string. Both share one traversal so the
+// two surfaces can never disagree about what is valid.
 func ValidateFields(fields map[string]any, schema models.CollectionSchema) error {
-	var errs []string
+	issues := ValidateFieldsDetailed(fields, schema)
+	if len(issues) == 0 {
+		return nil
+	}
+	errs := make([]string, 0, len(issues))
+	for _, iss := range issues {
+		errs = append(errs, iss.Message)
+	}
+	return fmt.Errorf("field validation failed: %s", strings.Join(errs, "; "))
+}
+
+// ValidateFieldsDetailed is ValidateFields with per-field attribution:
+// it returns one FieldIssue per failure instead of a joined error, and
+// applies schema defaults to `fields` in place exactly as ValidateFields
+// does (the mutation is the same traversal, not a second pass).
+//
+// Issues come back in SCHEMA ORDER, which makes the result deterministic
+// for a given (fields, schema) pair — repeated calls with equal input
+// produce byte-identical output. PLAN-2357's dry-run preflight leans on
+// that: it is specified to be safe to call repeatedly and to return
+// identical results, and a map-iteration-ordered issue list would break
+// that promise on every other call.
+//
+// A nil return means valid. Callers that only need the boolean should
+// keep using ValidateFields.
+func ValidateFieldsDetailed(fields map[string]any, schema models.CollectionSchema) []FieldIssue {
+	var issues []FieldIssue
 
 	for _, def := range schema.Fields {
 		val, exists := fields[def.Key]
@@ -51,7 +114,11 @@ func ValidateFields(fields map[string]any, schema models.CollectionSchema) error
 					fields[def.Key] = def.Default
 					continue
 				}
-				errs = append(errs, fmt.Sprintf("field %q is required", def.Key))
+				issues = append(issues, FieldIssue{
+					Key:     def.Key,
+					Kind:    IssueRequired,
+					Message: fmt.Sprintf("field %q is required", def.Key),
+				})
 				continue
 			}
 			if def.Default != nil {
@@ -62,14 +129,15 @@ func ValidateFields(fields map[string]any, schema models.CollectionSchema) error
 
 		// Validate by type
 		if err := validateFieldType(def, val); err != nil {
-			errs = append(errs, err.Error())
+			issues = append(issues, FieldIssue{
+				Key:     def.Key,
+				Kind:    IssueInvalid,
+				Message: err.Error(),
+			})
 		}
 	}
 
-	if len(errs) > 0 {
-		return fmt.Errorf("field validation failed: %s", strings.Join(errs, "; "))
-	}
-	return nil
+	return issues
 }
 
 // ValidatePartialFields validates ONLY the keys present in `patch` against

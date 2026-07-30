@@ -158,6 +158,13 @@ type CrossWorkspaceAccess struct {
 	// Err carries the underlying store error for
 	// CrossWorkspaceLookupFailed. Nil otherwise.
 	Err error `json:"-"`
+
+	// collectionScoped records that the verdict was computed against a
+	// CrossWorkspaceCollectionScope. It exists so WriteCollectionNotFound
+	// can REFUSE to collapse a denial it was not built for, rather than
+	// trusting its doc comment — see that method. Unexported and never
+	// serialized; nothing outside this file sets it.
+	collectionScoped bool
 }
 
 // WorkspaceID is a nil-safe accessor for the resolved workspace's ID.
@@ -233,6 +240,66 @@ func (a CrossWorkspaceAccess) WriteDenied(w http.ResponseWriter) {
 	default:
 		writeError(w, http.StatusForbidden, "forbidden",
 			"You do not have access to the requested workspace")
+	}
+}
+
+// crossWorkspaceCollectionNotFoundCode / Message are the ONE answer given
+// for a destination collection that is absent, soft-deleted, in another
+// workspace, or simply hidden from the caller. Exported as constants so a
+// handler's own "GetCollectionBySlug returned nil" branch and this writer
+// cannot drift apart — if the two ever produce different bytes, the
+// difference is the disclosure.
+const (
+	crossWorkspaceCollectionNotFoundCode    = "collection_not_found"
+	crossWorkspaceCollectionNotFoundMessage = "Destination collection not found"
+)
+
+// WriteCollectionNotFound is the denial writer for a
+// CrossWorkspaceCollectionScope check on a workspace the caller has
+// ALREADY been authorized into (i.e. a WriteDenied on a
+// CrossWorkspaceWorkspaceOnlyScope has already passed).
+//
+// It exists because PLAN-2357's DR-15 requires the copy preflight to
+// distinguish "destination workspace not accessible" (403) from
+// "collection not found" (404) — and the naive way to do that leaks. If
+// an absent collection 404s while a collection that exists but is hidden
+// 403s, a restricted member of workspace B can enumerate the collections
+// they were deliberately excluded from, one slug at a time. So:
+//
+//   - collection absent, soft-deleted, foreign to the workspace, or
+//     hidden from the caller → an identical 404 collection_not_found,
+//     byte-for-byte the same response the handler emits when
+//     GetCollectionBySlug returns nil;
+//   - anything else (no workspace access, token not allow-listed, lookup
+//     failure) → delegated to WriteDenied unchanged.
+//
+// PRECONDITION, same as WriteDenied's: only call this where the caller
+// supplied the destination themselves. It acknowledges the workspace, and
+// that acknowledgement is only safe because the workspace-level check ran
+// first and already decided the caller belongs there.
+//
+// The other half of the precondition IS enforced: the collapse only fires
+// on a verdict produced by a CrossWorkspaceCollectionScope. Handed a
+// verdict from an item or workspace-only scope it falls through to
+// WriteDenied, so a future caller cannot use it to turn a normally hidden
+// denial into the distinctive collection_not_found response for a
+// collection the caller never named (Codex round 7).
+//
+// Note the asymmetry with the SOURCE side, which uses WriteHidden: the
+// source item is addressed through the request's own workspace URL, so a
+// 404 is the natural shape there and there is no destination the caller
+// named to acknowledge.
+func (a CrossWorkspaceAccess) WriteCollectionNotFound(w http.ResponseWriter) {
+	if !a.collectionScoped {
+		a.WriteDenied(w)
+		return
+	}
+	switch a.Reason {
+	case CrossWorkspaceCollectionNotVisible, CrossWorkspaceScopeMismatch:
+		writeError(w, http.StatusNotFound,
+			crossWorkspaceCollectionNotFoundCode, crossWorkspaceCollectionNotFoundMessage)
+	default:
+		a.WriteDenied(w)
 	}
 }
 
@@ -427,6 +494,19 @@ func crossWorkspaceDeny(reason CrossWorkspaceDenialReason, ws *models.Workspace,
 }
 
 func (s *Server) authorizeCrossWorkspace(r *http.Request, workspaceSlugOrID string, scope CrossWorkspaceScope, needEdit bool) CrossWorkspaceAccess {
+	// Stamped onto every verdict below, allow or deny, so
+	// WriteCollectionNotFound can tell a collection-scoped denial from any
+	// other kind. Done in one place, on the way out, rather than at each
+	// return — a missed stamp would silently re-open the hole the flag
+	// exists to close.
+	verdict := func(a CrossWorkspaceAccess) CrossWorkspaceAccess {
+		a.collectionScoped = scope.collectionID != ""
+		return a
+	}
+	return verdict(s.authorizeCrossWorkspaceInner(r, workspaceSlugOrID, scope, needEdit))
+}
+
+func (s *Server) authorizeCrossWorkspaceInner(r *http.Request, workspaceSlugOrID string, scope CrossWorkspaceScope, needEdit bool) CrossWorkspaceAccess {
 	// 1. Scope well-formedness. A zero CrossWorkspaceScope names
 	//    nothing; refuse rather than silently degrade to a
 	//    workspace-level check.

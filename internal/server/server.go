@@ -1450,6 +1450,16 @@ func (s *Server) setupRouter() {
 						r.Delete("/", s.handleDeleteItem)
 						r.Post("/restore", s.handleRestoreItem)
 						r.Post("/move", s.handleMoveItem)
+						// Cross-workspace copy PREFLIGHT (PLAN-2357 /
+						// TASK-2364). Reports what a copy into another
+						// workspace would carry, drop and need, and
+						// leaves no trace a copy would have left — see
+						// handlers_items_copy_preflight.go for the exact
+						// scope of that guarantee. POST because the
+						// request carries a body (destination + override
+						// map), not because it mutates. The mutating
+						// sibling lands at /copy in TASK-2365.
+						r.Post("/copy/preflight", s.handleCopyItemPreflight)
 						// Export a single playbook/convention item as a
 						// portable artifact (Markdown + YAML frontmatter).
 						// Gated by per-item visibility, not the workspace-

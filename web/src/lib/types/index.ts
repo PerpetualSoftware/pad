@@ -651,6 +651,166 @@ export interface Item {
 // nothing.
 export type ItemIndexRow = Omit<Item, 'content' | 'moved_to'>;
 
+// ─── Cross-workspace copy preflight (PLAN-2357 / TASK-2364) ──────────────────
+//
+//   POST /api/v1/workspaces/{ws}/items/{itemSlug}/copy/preflight
+//
+// The URL's workspace is the SOURCE; the destination is named in the body.
+// The server owns the bucketing (DR-6) — do NOT reimplement any of this in
+// TypeScript, or the dialog and the CLI will disagree the first time a
+// migration rule changes. Call the endpoint again whenever the user changes
+// the destination or an override: it leaves no trace a copy would have left
+// (no item, no attachment rows, no provenance row, neither workspace's seq
+// advances, no activity/SSE/webhook) and is safe to call repeatedly. It is
+// still an ordinary authenticated request, so the usual middleware effects
+// — rate-limit budget, request metrics, last-active timestamp — apply.
+//
+// Error statuses worth branching on (envelope: `{error:{code,message}}`):
+//   400 `malformed_override`   — an override names a field the destination
+//                                schema does not declare
+//   400 `invalid_override`     — an override's VALUE is rejected by the
+//                                destination schema
+//   403 `forbidden` / `permission_denied` — destination workspace not
+//                                accessible to the caller
+//   404 `collection_not_found` — destination collection absent OR hidden
+//                                (deliberately indistinguishable)
+//   409 `archived`             — source item exists and is visible, but is
+//                                archived
+//   404 `not_found`            — source item absent or not visible
+export interface ItemCopyPreflightRequest {
+	/** Destination workspace slug (a UUID is also accepted). */
+	target_workspace: string;
+	/** Destination collection slug. */
+	target_collection: string;
+	/**
+	 * Destination-schema field key → value. A `null` value means "leave this
+	 * key unset": the key is removed before validation, not written as null.
+	 * What it becomes then depends on the destination schema — a field with
+	 * a default comes back in `carried` with `from: "default"`, a REQUIRED
+	 * field with no default lands in `needs_value`, and an optional one with
+	 * no default is simply absent. Keys the destination schema does not
+	 * declare are rejected with 400 `malformed_override`.
+	 */
+	field_overrides?: Record<string, unknown>;
+	/** The MOVE path: copy, then archive the source. Default false. */
+	archive_source?: boolean;
+}
+
+/** Where the value in a `carried` row came from. */
+export type ItemCopyPreflightOrigin = 'migrated' | 'override' | 'default';
+
+export interface ItemCopyPreflightCarried {
+	key: string;
+	label?: string;
+	type?: string;
+	/** Final value — after migration, overrides and destination defaults. */
+	value: unknown;
+	from: ItemCopyPreflightOrigin;
+}
+
+export interface ItemCopyPreflightDropped {
+	key: string;
+	label?: string;
+	/** `assignment` covers the assignee / agent-role pair, not a schema field. */
+	kind: 'field' | 'assignment';
+	reason:
+		| 'no_target_field'
+		| 'incompatible_type'
+		/** The item carries a key its own source schema no longer declares. */
+		| 'undeclared_source_field'
+		| 'assignee_not_a_member'
+		| 'agent_role_not_portable';
+}
+
+export interface ItemCopyPreflightNeedsValue {
+	key: string;
+	label?: string;
+	type?: string;
+	options?: string[];
+	required: boolean;
+	reason: 'missing_required' | 'invalid_value';
+	message?: string;
+}
+
+/**
+ * The three bucket names are the contract (DR-15) — renaming one is a
+ * breaking change. All three arrays are always present, never null.
+ */
+export interface ItemCopyPreflightFields {
+	carried: ItemCopyPreflightCarried[];
+	dropped: ItemCopyPreflightDropped[];
+	needs_value: ItemCopyPreflightNeedsValue[];
+}
+
+/**
+ * DR-15's full warning set. None of it blocks the copy — it is what the user
+ * is entitled to know before agreeing (DR-17: "none of this may be silent").
+ */
+export interface ItemCopyPreflightWarnings {
+	/** Live children of the source. Never copied (DR-4). */
+	child_count: number;
+	/** `child_count > 0 && archive_source` — the move path orphans them. */
+	children_orphaned: boolean;
+	/**
+	 * The source has a parent; the copy is unparented (DR-17). Covers both
+	 * the `parent` item_links edge and the legacy `parent_id` column, since
+	 * the copy scrubs both.
+	 */
+	dropped_parent: boolean;
+	/**
+	 * Dependency edges by `link_type`, e.g. `{ blocks: 2 }`. Hierarchy types
+	 * (`parent` / `implements` / legacy `plan`) are excluded — they are
+	 * reported by `child_count` and `dropped_parent`. Always present; `{}`
+	 * means no dependency edges. None of these carry.
+	 */
+	outgoing_links: Record<string, number>;
+	incoming_links: Record<string, number>;
+	/** False when the assignee IS a member of the destination (DR-8). */
+	dropped_assignee: boolean;
+	/** Role slugs are workspace-local, so an agent role never carries (DR-8). */
+	dropped_agent_role: boolean;
+	/** Reported, not enforced (DR-16). Includes thumbnail variants. */
+	attachment_count: number;
+	/**
+	 * Serialized from a Go int64 as a JSON number. Safe as a JS `number`:
+	 * the value is a sum of per-attachment byte counts for ONE item, so
+	 * exceeding Number.MAX_SAFE_INTEGER (~9 PB) is not reachable.
+	 */
+	attachment_bytes: number;
+	/** `pad-attachment:` refs that resolve to nothing (DR-11a). Not fatal. */
+	unresolvable_ref_count: number;
+}
+
+export interface ItemCopyPreflight {
+	source: {
+		workspace_slug: string;
+		collection_slug: string;
+		ref?: string;
+		slug: string;
+		title: string;
+	};
+	destination: {
+		workspace_slug: string;
+		workspace_name: string;
+		collection_slug: string;
+		collection_name: string;
+	};
+	/** Echoes the request, and selects `warnings.children_orphaned`. */
+	archive_source: boolean;
+	/**
+	 * True when `fields.needs_value` is empty — i.e. the field mapping is
+	 * complete. Gate the confirm button on it.
+	 *
+	 * It is NOT a promise that the copy will succeed: unique-slug
+	 * collisions, the destination's item quota, cross-backend attachment
+	 * transfer and any concurrent change are all decided inside the
+	 * mutating copy's transaction. Always handle that call's error path.
+	 */
+	valid: boolean;
+	fields: ItemCopyPreflightFields;
+	warnings: ItemCopyPreflightWarnings;
+}
+
 export interface ItemIndexResponse {
 	items: ItemIndexRow[];
 	total: number;

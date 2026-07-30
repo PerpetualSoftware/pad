@@ -1,6 +1,7 @@
 package items
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -411,4 +412,88 @@ func TestValidatePartialFields_AllowsDeletingOptionalField(t *testing.T) {
 	if err := ValidatePartialFields(patch, schema); err != nil {
 		t.Fatalf("deleting an optional field via null should be allowed, got: %v", err)
 	}
+}
+
+// --- ValidateFieldsDetailed (PLAN-2357 / TASK-2364) --------------------
+
+// TestValidateFieldsDetailed_AttributesAndOrders pins the two properties
+// the copy preflight depends on: every failure is attributable to a KEY
+// with a kind, and the order is schema order (not map order), so a caller
+// that is specified to return identical results on repeated calls can.
+func TestValidateFieldsDetailed_AttributesAndOrders(t *testing.T) {
+	schema := models.CollectionSchema{Fields: []models.FieldDef{
+		{Key: "alpha", Type: "text", Required: true},
+		{Key: "beta", Type: "select", Options: []string{"x", "y"}},
+		{Key: "gamma", Type: "text", Required: true},
+		{Key: "delta", Type: "text", Default: "d"},
+	}}
+
+	var last []FieldIssue
+	for i := 0; i < 20; i++ {
+		fields := map[string]any{"beta": "nope"}
+		issues := ValidateFieldsDetailed(fields, schema)
+		if len(issues) != 3 {
+			t.Fatalf("got %d issues, want 3: %+v", len(issues), issues)
+		}
+		want := []struct {
+			key  string
+			kind FieldIssueKind
+		}{
+			{"alpha", IssueRequired},
+			{"beta", IssueInvalid},
+			{"gamma", IssueRequired},
+		}
+		for j, w := range want {
+			if issues[j].Key != w.key || issues[j].Kind != w.kind {
+				t.Fatalf("issue %d = %+v, want key=%s kind=%s", j, issues[j], w.key, w.kind)
+			}
+			if issues[j].Message == "" {
+				t.Errorf("issue %d carries no message", j)
+			}
+		}
+		// Defaults are still applied in place, exactly as ValidateFields does.
+		if fields["delta"] != "d" {
+			t.Errorf("default not applied: %+v", fields)
+		}
+		if last != nil && !sameIssues(last, issues) {
+			t.Fatalf("run %d differed from the previous run: %+v vs %+v", i, last, issues)
+		}
+		last = issues
+	}
+}
+
+// TestValidateFields_DelegatesToDetailed — the joined-error surface must
+// stay in step with the structured one; they share a traversal so they can
+// never disagree about validity.
+func TestValidateFields_DelegatesToDetailed(t *testing.T) {
+	schema := models.CollectionSchema{Fields: []models.FieldDef{
+		{Key: "alpha", Type: "text", Required: true},
+	}}
+
+	if err := ValidateFields(map[string]any{"alpha": "ok"}, schema); err != nil {
+		t.Fatalf("valid map reported an error: %v", err)
+	}
+	err := ValidateFields(map[string]any{}, schema)
+	if err == nil {
+		t.Fatal("missing required field did not error")
+	}
+	issues := ValidateFieldsDetailed(map[string]any{}, schema)
+	if len(issues) != 1 || issues[0].Kind != IssueRequired {
+		t.Fatalf("detailed issues = %+v", issues)
+	}
+	if !strings.Contains(err.Error(), issues[0].Message) {
+		t.Errorf("joined error %q does not contain the detailed message %q", err, issues[0].Message)
+	}
+}
+
+func sameIssues(a, b []FieldIssue) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

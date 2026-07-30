@@ -1781,10 +1781,42 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		result.Fields[k] = v
 	}
 
-	// Check for required field errors (after overrides)
-	if len(result.Errors) > 0 {
-		writeError(w, http.StatusBadRequest, "missing_required_fields",
-			fmt.Sprintf("Required fields missing: %s", strings.Join(result.Errors, ", ")))
+	// Validate AFTER the overrides are applied — PLAN-2357 DR-12.
+	//
+	// The comment above the old check claimed "after overrides" but the
+	// value it tested, result.Errors, is computed by MigrateFields BEFORE
+	// any override exists (migrate.go:62). So an override that SATISFIED a
+	// required destination field still 400'd, and an override with an
+	// invalid value was never type-checked at all — it went straight into
+	// the item. Both halves are fixed by running the validator over the
+	// MERGED map instead; ValidateFieldsDetailed also injects destination
+	// defaults, which is why result.Fields is what gets serialized below.
+	//
+	// Dormant until now — handleMove passes field_overrides: undefined
+	// (ItemDetail.svelte), so no override ever reached the stale check.
+	// PLAN-2357's copy dialog is the first caller to send them, which is
+	// what makes this the PR that has to fix it rather than file it.
+	//
+	// The required-field branch keeps the historical
+	// `missing_required_fields` code and message shape, because CLI and
+	// web callers key off it; genuinely invalid VALUES get their own
+	// `invalid_fields` code rather than being mislabelled as missing.
+	if issues := items.ValidateFieldsDetailed(result.Fields, targetSchema); len(issues) > 0 {
+		var missing, invalid []string
+		for _, iss := range issues {
+			if iss.Kind == items.IssueRequired {
+				missing = append(missing, fmt.Sprintf("required field %q has no value", iss.Key))
+			} else {
+				invalid = append(invalid, iss.Message)
+			}
+		}
+		if len(missing) > 0 {
+			writeError(w, http.StatusBadRequest, "missing_required_fields",
+				fmt.Sprintf("Required fields missing: %s", strings.Join(missing, ", ")))
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid_fields",
+			fmt.Sprintf("Invalid field value(s): %s", strings.Join(invalid, "; ")))
 		return
 	}
 
