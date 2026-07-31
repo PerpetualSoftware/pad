@@ -12,6 +12,9 @@ import type {
 	BulkItemsResponse,
 	ItemChangeRow,
 	ItemChangesResponse,
+	ItemCopyPreflight,
+	ItemCopyPreflightRequest,
+	ItemCopyResult,
 	ItemCreate,
 	TagCount,
 	ItemIndexResponse,
@@ -1267,6 +1270,55 @@ export const api = {
 					})
 				}
 			),
+
+		/**
+		 * Cross-workspace copy DRY RUN (PLAN-2357 / TASK-2365).
+		 *
+		 * Read-only and safe to call repeatedly: it writes nothing, emits no
+		 * activity/SSE/webhook, and advances neither workspace's seq. Call it
+		 * again whenever the destination or an override changes. It is still an
+		 * ordinary authenticated request, so it spends rate-limit budget —
+		 * callers debounce/coalesce (see CopyItemDialog's single-flight runner).
+		 *
+		 * `signal` lets a superseded preview abort in flight; an aborted request
+		 * rejects with a DOMException, which callers discard behind their own
+		 * generation fence rather than surfacing.
+		 *
+		 * See `ItemCopyPreflight` in $lib/types for the response contract and
+		 * the error codes worth branching on.
+		 */
+		copyPreflight: (
+			ws: string,
+			slug: string,
+			req: ItemCopyPreflightRequest,
+			opts?: { signal?: AbortSignal }
+		) =>
+			request<ItemCopyPreflight>(`/workspaces/${ws}/items/${slug}/copy/preflight`, {
+				method: 'POST',
+				body: JSON.stringify(req),
+				signal: opts?.signal
+			}),
+
+		/**
+		 * Cross-workspace copy — the MUTATION (PLAN-2357 / TASK-2365). With
+		 * `archive_source: true` it is the MOVE.
+		 *
+		 * ⚠ NEVER RETRY THIS CALL (DR-13). There is no idempotency key, so a
+		 * retry after a request that already committed creates a DUPLICATE item,
+		 * and a caller that lost the response cannot tell which happened. On a
+		 * 500 `copy_failed` — or on ANY unstructured transport failure once this
+		 * call has been dispatched — the outcome is unknown: tell the user to
+		 * check the destination workspace, and do not offer a retry.
+		 *
+		 * Deliberately no `signal` param: aborting tells you nothing about
+		 * whether the server committed, and the shared `request` never retries
+		 * non-idempotent methods, which is what keeps this aligned with DR-13.
+		 */
+		copy: (ws: string, slug: string, req: ItemCopyPreflightRequest) =>
+			request<ItemCopyResult>(`/workspaces/${ws}/items/${slug}/copy`, {
+				method: 'POST',
+				body: JSON.stringify(req)
+			}),
 
 		/**
 		 * Inbound `[[...]]` references to an item — the "Mentioned in"

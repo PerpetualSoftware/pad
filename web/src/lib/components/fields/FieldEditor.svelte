@@ -25,9 +25,19 @@ handlers — onchange is never called.
 		value: any;
 		onchange: (value: any) => void;
 		readonly?: boolean;
+		/**
+		 * Accessible name for the rendered control. Optional: on the item
+		 * detail page the visible field label sits beside the control in a
+		 * `.field-row`, so the default (undefined → no `aria-label`) leaves
+		 * that markup exactly as it was. Consumers that render the control
+		 * WITHOUT an associated <label> — e.g. the cross-workspace copy
+		 * dialog's needs-a-value rows — pass the field name here so the
+		 * input/trigger is not announced as an unnamed edit field or button.
+		 */
+		ariaLabel?: string;
 	}
 
-	let { field, value, onchange, readonly = false }: Props = $props();
+	let { field, value, onchange, readonly = false, ariaLabel }: Props = $props();
 
 	// ── Viewport detection ───────────────────────────────────────────────
 	// On mobile the absolute-positioned select dropdown can clip at the
@@ -362,6 +372,7 @@ handlers — onchange is never called.
 			bind:this={triggerEl}
 			class="select-trigger"
 			type="button"
+			aria-label={ariaLabel}
 			aria-haspopup="listbox"
 			aria-expanded={dropdownOpen}
 			onclick={toggleDropdown}
@@ -426,6 +437,7 @@ handlers — onchange is never called.
 		<button
 			class="select-trigger date-trigger"
 			type="button"
+			aria-label={ariaLabel}
 			onclick={() => dateInputEl?.showPicker()}
 		>
 			{#if value}
@@ -482,6 +494,7 @@ handlers — onchange is never called.
 		<input
 			class="number-input"
 			type="text"
+			aria-label={ariaLabel}
 			inputmode="numeric"
 			value={value ?? ''}
 			oninput={handleNumberInput}
@@ -512,6 +525,7 @@ handlers — onchange is never called.
 		<input
 			class="field-input url-input"
 			type="url"
+			aria-label={ariaLabel}
 			value={value ?? ''}
 			oninput={handleTextInput}
 			onblur={flushPendingSave}
@@ -548,6 +562,7 @@ handlers — onchange is never called.
 	<input
 		class="field-input"
 		type="text"
+		aria-label={ariaLabel}
 		value={value ?? ''}
 		oninput={handleTextInput}
 		onblur={flushPendingSave}

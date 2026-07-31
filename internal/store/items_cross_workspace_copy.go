@@ -941,31 +941,11 @@ func (s *Store) lockCollectionRows(tx *sql.Tx, collectionIDs ...string) error {
 // it was taken without the FOR UPDATE pin above, so it can be stale by the
 // time the copy commits.
 func (s *Store) getCollectionInWorkspaceTx(tx *sql.Tx, collectionID, workspaceID string) (*models.Collection, error) {
-	var c models.Collection
-	var createdAt, updatedAt string
-	var deletedAt *string
-	var isDefault bool
-
-	err := tx.QueryRow(s.q(`
-		SELECT id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at, deleted_at
-		FROM collections
-		WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL
-	`), collectionID, workspaceID).Scan(
-		&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
-		&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
-		&createdAt, &updatedAt, &deletedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+	c, err := s.scanCollectionRow(tx, getCollectionInWorkspaceQuery, collectionID, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("copy item across workspaces: read collection: %w", err)
 	}
-	c.IsDefault = isDefault
-	c.CreatedAt = parseTime(createdAt)
-	c.UpdatedAt = parseTime(updatedAt)
-	c.DeletedAt = parseTimePtr(deletedAt)
-	return &c, nil
+	return c, nil
 }
 
 // migrateCopyFields runs the DR-12 field pipeline: migrate the source fields

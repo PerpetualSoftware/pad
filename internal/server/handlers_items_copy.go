@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"runtime/debug"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -295,86 +293,32 @@ func (e *copyPreCheckDenial) Error() string {
 // handleCopyItem copies one item into another workspace, optionally
 // archiving the source. See the file header for the full contract.
 func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
-	sourceWorkspaceID, ok := s.getWorkspaceID(w, r)
+	// Resolution plus the four-step authorization ladder, DR-10a/DR-10b —
+	// ONE implementation, shared with handleCopyItemPreflight, ordering
+	// included. Diverging here would let a caller preview a copy they cannot
+	// perform, or worse, perform one they cannot preview; the whole point of
+	// the shared helper is that neither handler owns the sequence.
+	//
+	// The actor refusal lives in there too, rather than being left to the
+	// store, which answers a bare "actor is required" that would be mapped to
+	// the ambiguous 500 and send the user hunting for an item nothing ever
+	// tried to create.
+	ac, ok := s.resolveAuthorizedCopy(w, r)
 	if !ok {
 		return
 	}
+	sourceWorkspaceID := ac.sourceWorkspaceID
+	item := ac.item
+	input := ac.input
+	src := ac.source
+	dst := ac.destination
+	targetColl := ac.targetCollection
+	actorID := ac.actorID
 
-	itemSlug := chi.URLParam(r, "itemSlug")
-	item, err := s.store.ResolveItem(sourceWorkspaceID, itemSlug)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if item == nil {
-		// ResolveItem filters soft-deleted rows, so this covers "absent" AND
-		// "archived"; writeItemResolveError separates them exactly as the
-		// preflight, move and update paths do.
-		s.writeItemResolveError(w, r, sourceWorkspaceID, itemSlug)
-		return
-	}
-
-	// ---- Authorization, DR-10a/DR-10b, four checks in order --------------
-	//
-	// Identical to the preflight's, statement for statement, including the
-	// early return between the source and destination halves: a destination
-	// verdict built for a caller who could not read the source is itself a
-	// disclosure. Diverging here would let a caller preview a copy they
-	// cannot perform, or worse, perform one they cannot preview.
-	src := s.AuthorizeCrossWorkspaceEdit(r, sourceWorkspaceID, CrossWorkspaceItemScope(item))
-	if !src.Allowed {
-		src.WriteHidden(w, "Item")
-		return
-	}
-
-	var input itemCopyPreflightRequest
-	if err := decodeJSON(r, &input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
-		return
-	}
-	if input.TargetWorkspace == "" {
-		writeError(w, http.StatusBadRequest, "missing_field", "target_workspace is required")
-		return
-	}
-	if input.TargetCollection == "" {
-		writeError(w, http.StatusBadRequest, "missing_field", "target_collection is required")
-		return
-	}
-
-	dstWS := s.AuthorizeCrossWorkspaceEdit(r, input.TargetWorkspace, CrossWorkspaceWorkspaceOnlyScope())
-	if !dstWS.Allowed {
-		dstWS.WriteDenied(w)
-		return
-	}
-
-	targetColl, err := s.store.GetCollectionBySlug(dstWS.WorkspaceID(), input.TargetCollection)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if targetColl == nil {
-		writeError(w, http.StatusNotFound,
-			crossWorkspaceCollectionNotFoundCode, crossWorkspaceCollectionNotFoundMessage)
-		return
-	}
-
-	dst := s.AuthorizeCrossWorkspaceEdit(r, input.TargetWorkspace, CrossWorkspaceCollectionScope(targetColl.ID))
-	if !dst.Allowed {
-		dst.WriteCollectionNotFound(w)
-		return
-	}
-
-	// Refused HERE rather than left to the store, which answers a bare
-	// "actor is required" that would be mapped to the ambiguous 500 and send
-	// the user hunting for an item nothing ever tried to create. The
-	// preflight applies the identical guard, so the preview cannot promise a
-	// copy this would refuse (Codex round 4).
-	actorID := copyActorID(r, item)
-	if actorID == "" {
-		writeCopyActorRequired(w)
-		return
-	}
-
+	// SEPARATE from actorID, and deliberately not folded into the shared
+	// resolution: actorFromRequest carries actor/source AUDIT metadata used
+	// only by this mutating path and its post-commit events. The preflight
+	// has no counterpart, because it writes nothing to attribute.
 	actor, actorSource := actorFromRequest(r)
 
 	// ---- The copy. ONE call, no retry (DR-13). ---------------------------

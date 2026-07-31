@@ -13,8 +13,9 @@ import (
 
 // Tests for CopyItemAcrossWorkspaces — PLAN-2357 / TASK-2363.
 //
-// The concurrency and lock-ordering tests live at the bottom and are
-// Postgres-only by construction (see requirePostgresForConcurrency).
+// The concurrency and lock-ordering tests live in
+// items_cross_workspace_copy_pg_test.go and are Postgres-only by
+// construction (see requirePostgresForConcurrency).
 
 // copyFixture is workspace A (source), workspace B (destination), and a third
 // workspace C used for the confused-deputy negative cases.
@@ -228,12 +229,17 @@ func TestCopyItemAcrossWorkspaces_PlainCopyLandsInDestination(t *testing.T) {
 	if res.Move.SourceSeq != nil {
 		t.Errorf("plain copy recorded source_seq=%d, want nil", *res.Move.SourceSeq)
 	}
-	back, err := f.s.GetItemWorkspaceMoveByTarget(res.Item.ID)
-	if err != nil || back == nil {
-		t.Fatalf("back-pointer lookup failed: %v", err)
+	// The row the result reports is really committed, and it names the source.
+	// Read straight from the table: the only production read of this table is
+	// the archived-only moved-to lookup, which by design cannot see a copy.
+	var gotSource string
+	if err := f.s.db.QueryRow(f.s.q(
+		`SELECT source_item_id FROM item_workspace_moves WHERE target_item_id = ?`,
+	), res.Item.ID).Scan(&gotSource); err != nil {
+		t.Fatalf("read back the provenance row: %v", err)
 	}
-	if back.SourceItemID != src.ID {
-		t.Errorf("back-pointer source = %s, want %s", back.SourceItemID, src.ID)
+	if gotSource != src.ID {
+		t.Errorf("provenance row source = %s, want %s", gotSource, src.ID)
 	}
 }
 
@@ -554,8 +560,9 @@ func TestCopyItemAcrossWorkspaces_AttachmentsClonedAndRefsRewritten(t *testing.T
 	}
 
 	// A reference in the body, one inside a fenced code block (the rewriter
-	// is a plain ReplaceAll, so a fenced ref gets rewritten either way and
-	// must therefore be cloned either way), and one in the fields.
+	// tokenizes with attachmentRefRE and is markdown-blind, so a fenced ref
+	// gets rewritten either way and must therefore be cloned either way), and
+	// one in the fields.
 	content := fmt.Sprintf("![d](pad-attachment:%s)\n\n```\nsee pad-attachment:%s\n```\n", orig.ID, thumb.ID)
 	src, err := f.s.CreateItem(f.wsA.ID, srcColl.ID, models.ItemCreate{
 		Title:   "Has attachments",
@@ -585,7 +592,9 @@ func TestCopyItemAcrossWorkspaces_AttachmentsClonedAndRefsRewritten(t *testing.T
 	}
 
 	// No workspace-A UUID survives the rewrite, anywhere — body or fields,
-	// fenced or not. A surviving ref renders broken AND 403s on download.
+	// fenced or not. A surviving ref renders broken AND 404s on download —
+	// handlers_attachments.go answers a cross-workspace id with not_found
+	// rather than forbidden, deliberately.
 	for _, oldID := range []string{orig.ID, thumb.ID} {
 		if strings.Contains(res.Item.Content, oldID) {
 			t.Errorf("copied content still references workspace-A attachment %s", oldID)
@@ -624,6 +633,7 @@ func TestCopyItemAcrossWorkspaces_AttachmentsClonedAndRefsRewritten(t *testing.T
 	if newOriginal == nil {
 		t.Fatal("no cloned original in workspace B")
 	}
+	var newVariant *models.Attachment
 	for i := range rows {
 		a := rows[i]
 		if a.ParentID == nil {
@@ -634,13 +644,54 @@ func TestCopyItemAcrossWorkspaces_AttachmentsClonedAndRefsRewritten(t *testing.T
 		if *a.ParentID != newOriginal.ID {
 			t.Errorf("cloned variant parent_id = %s, want the new original %s", *a.ParentID, newOriginal.ID)
 		}
+		cp := a
+		newVariant = &cp
+	}
+	if newVariant == nil {
+		t.Fatal("no cloned variant in workspace B")
 	}
 
-	// The rewritten refs actually resolve in B.
-	for _, id := range []string{newOriginal.ID} {
-		if !strings.Contains(res.Item.Content, "pad-attachment:"+id) {
-			t.Errorf("copied content does not reference the new original %s", id)
-		}
+	// The whole rewrite, not a spot check on the original's id.
+	//
+	// TASK-2372: the old assertion was "no workspace-A id survives" plus "the
+	// new ORIGINAL's id appears", which a rewrite that DROPPED the variant
+	// reference passes — the thumb row is cloned, the old id is gone, the
+	// original resolves, and the copy renders with a missing thumbnail. An
+	// exact old->new comparison of the entire body is the form chosen: it
+	// pins every reference at its own location, including a fenced one, and
+	// for this fixture rules out extra, missing or reordered text as well.
+	// (An offset-aware per-reference assertion would pin the references just
+	// as tightly, but only whole-body equality also catches the body being
+	// otherwise altered, so that is the form kept.)
+	//
+	// MUTATION C (re-runnable; round-5 amendment). In
+	// items_cross_workspace_copy.go, immediately after
+	// `newContent := remapAttachmentRefs(source.Content, plan.IDMap)`, insert:
+	//
+	//	for _, row := range plan.Rows { // MUTATION C
+	//		if row.Attachment.ParentID != nil {
+	//			newContent = strings.ReplaceAll(newContent, attachmentRefPrefix+row.Attachment.ID, "")
+	//		}
+	//	}
+	//
+	// The variant row is still cloned and still reparented; only its
+	// reference is stripped from the rewritten body. Recorded observation
+	// (2026-07-31, against this commit's production code): this test fails on
+	// "copied content = ... want the exact old->new rewrite", and a full
+	// `go test ./internal/store/` run reported that one failure and no other.
+	// That exclusivity is a recorded result, not something the source can
+	// establish — re-run it rather than trust it:
+	//
+	//	go test ./internal/store/ -run AttachmentsClonedAndRefsRewritten -count=1
+	wantContent := fmt.Sprintf("![d](pad-attachment:%s)\n\n```\nsee pad-attachment:%s\n```\n", newOriginal.ID, newVariant.ID)
+	if res.Item.Content != wantContent {
+		t.Errorf("copied content = %q,\nwant the exact old->new rewrite %q", res.Item.Content, wantContent)
+	}
+	// The field-borne reference is rewritten to the same new original. Fields
+	// are compared by substring rather than whole-string because the JSON
+	// re-encode is free to reorder keys and apply schema defaults.
+	if !strings.Contains(res.Item.Fields, "pad-attachment:"+newOriginal.ID) {
+		t.Errorf("copied fields = %q, want a reference to the new original %s", res.Item.Fields, newOriginal.ID)
 	}
 
 	// Workspace A keeps its rows, untouched.
