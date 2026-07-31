@@ -20,7 +20,10 @@
 -- shape. That table's `seq` is a workspace delta-sync cursor; `source_seq`
 -- here is a per-source move ordinal with an entirely different job (below).
 CREATE TABLE IF NOT EXISTS item_workspace_moves (
-    id                  TEXT    PRIMARY KEY,
+    -- NOT NULL is explicit: unlike Postgres, SQLite does not imply it for a
+    -- TEXT PRIMARY KEY (the long-standing quirk it keeps for compatibility),
+    -- so without this the two dialects disagree about a NULL id.
+    id                  TEXT    PRIMARY KEY NOT NULL,
     source_workspace_id TEXT    NOT NULL REFERENCES workspaces(id),
     source_item_id      TEXT    NOT NULL,
     target_workspace_id TEXT    NOT NULL REFERENCES workspaces(id),
@@ -29,7 +32,15 @@ CREATE TABLE IF NOT EXISTS item_workspace_moves (
     -- "moved to" banner; copy rows are back-pointer material only. Written
     -- through dialect.BoolToInt, hence INTEGER here and BOOLEAN in the
     -- Postgres counterpart.
-    archived_source     INTEGER NOT NULL,
+    --
+    -- The CHECK is what makes those two equivalent AT REST. Postgres' BOOLEAN
+    -- admits exactly two values; a bare SQLite INTEGER admits any. That gap is
+    -- not cosmetic: a stray 2 scans as true through BoolToInt, yet the partial
+    -- index below is `WHERE archived_source = 1`, so the row would be treated
+    -- as a move by the reader and excluded from the index the "moved to"
+    -- lookup uses — an internally contradictory provenance row that the
+    -- Postgres schema cannot represent.
+    archived_source     INTEGER NOT NULL CHECK (archived_source IN (0, 1)),
     -- NULLABLE, and it exists for exactly one reason: deterministic ordering
     -- of one source's moves. A source can be moved, restored, and moved
     -- again, so the banner must pick the NEWEST archived_source row — and

@@ -758,3 +758,47 @@ func TestListArchivedItemWorkspaceMovesBySource_SameSecondUsesSourceSeq(t *testi
 		t.Fatalf("limit=1 should keep the higher-seq move, got %+v", capped)
 	}
 }
+
+// TestItemWorkspaceMoves_ArchivedSourceIsConstrainedAtRest pins the CHECK that
+// makes migration 077 (SQLite) equivalent to 055 (Postgres) at rest.
+//
+// Postgres' BOOLEAN admits exactly two values; a bare SQLite INTEGER admits
+// any. The gap is not cosmetic: a stray 2 scans as true through BoolToInt,
+// while the partial index the "moved to" lookup relies on is
+// `WHERE archived_source = 1` — so the row reads as a move but is invisible to
+// the query that finds moves. That is a state the Postgres schema cannot
+// represent, and the dialects must not disagree about it.
+//
+// Every id below is a REAL row from the fixture. An earlier version of this
+// test used placeholder strings and passed against a schema with no CHECK at
+// all, because the insert was rejected by the foreign keys long before the
+// constraint under test was reached.
+func TestItemWorkspaceMoves_ArchivedSourceIsConstrainedAtRest(t *testing.T) {
+	f := newMoveFixture(t, "AtRestCheck")
+	if f.s.dialect.Driver() == DriverPostgres {
+		t.Skip("Postgres enforces this with BOOLEAN; the CHECK exists to match it on SQLite")
+	}
+	target := f.dest(t, f.dstWS, "Copy")
+
+	_, err := f.s.db.Exec(`
+		INSERT INTO item_workspace_moves
+			(id, source_workspace_id, source_item_id, target_workspace_id,
+			 target_item_id, archived_source, source_seq, created_by, created_at)
+		VALUES (?, ?, ?, ?, ?, 2, 1, ?, '2026-01-01T00:00:00Z')
+	`, "chk-1", f.srcWS.ID, f.source.ID, f.dstWS.ID, target.ID, f.actor)
+	if err == nil {
+		t.Fatal("archived_source = 2 was accepted; the CHECK constraint is missing, " +
+			"so SQLite can hold a provenance row Postgres cannot represent")
+	}
+
+	// Prove the insert is otherwise valid, so the rejection above is the CHECK
+	// and not some unrelated constraint.
+	if _, err := f.s.db.Exec(`
+		INSERT INTO item_workspace_moves
+			(id, source_workspace_id, source_item_id, target_workspace_id,
+			 target_item_id, archived_source, source_seq, created_by, created_at)
+		VALUES (?, ?, ?, ?, ?, 1, 1, ?, '2026-01-01T00:00:00Z')
+	`, "chk-2", f.srcWS.ID, f.source.ID, f.dstWS.ID, target.ID, f.actor); err != nil {
+		t.Fatalf("the same row with archived_source = 1 must insert cleanly: %v", err)
+	}
+}
