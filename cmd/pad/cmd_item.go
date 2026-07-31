@@ -1311,6 +1311,18 @@ blocked-by / related), the assignee when they are not a member of the
 destination workspace, and the agent role (role slugs are workspace-local).
 --dry-run reports all of it before anything happens.
 
+The content is copied as written, with two exceptions worth knowing:
+
+  - pad-attachment: references that resolve to a LIVE attachment in the source
+    workspace are repointed at the copied attachments (originals and their
+    thumbnail variants). Any other reference — an id from another workspace, a
+    soft-deleted one, or one that never existed — is left in the text
+    unchanged and reported as unresolvable; it does not become a copy.
+  - [[wiki-links]] are NOT rewritten. The copy is re-resolved in the
+    DESTINATION workspace, so a link can end up pointing at a different item
+    there, or at nothing at all. An explicit [[workspace::REF]] link stays a
+    genuine cross-workspace reference to the original.
+
 --dry-run calls a read-only preview endpoint and changes nothing. Without it,
 the preview still runs first: if any destination field needs a value you have
 not supplied, the copy is refused before any mutating request is sent.

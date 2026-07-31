@@ -172,6 +172,14 @@ pad item copy <ref> --to-workspace <slug> --collection <slug> [--dry-run] [--arc
                               # --dry-run previews the field mapping + warnings.
                               # Refuses rather than guessing when a destination field needs a value,
                               # and NEVER retries the mutating call (no idempotency key — PLAN-2357 DR-13).
+                              # Content semantics: markdown is copied verbatim except `pad-attachment:`
+                              # refs that resolve to a LIVE attachment in the SOURCE workspace — those are
+                              # repointed at the clones (+ variants). Foreign / soft-deleted / dangling ids
+                              # are left literal and counted as unresolvable, never cloned.
+                              # `[[wiki-links]]` are NOT rewritten — they re-resolve in the DESTINATION,
+                              # so a link can silently retarget to a different item or break;
+                              # `[[workspace::REF]]` stays a genuine cross-workspace reference.
+                              # The web dialog (item pane ⋯ → "Copy or move to workspace…") says the same.
 pad item search "query"
 pad project dashboard         # Project dashboard
 pad project next              # Recommended next task
