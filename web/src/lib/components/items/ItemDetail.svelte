@@ -4374,6 +4374,55 @@
 			</div>
 		{/if}
 
+		<!--
+			Moved-to PROVENANCE banner (PLAN-2357 / TASK-2359, DR-2a).
+
+			Wording is deliberate: "was moved to", never "lives at". The server
+			returns the ACL-FILTERED set of destinations, newest-first, with no
+			"current" marker — a marker would itself announce that a newer
+			destination exists and is being withheld, which is the leak the
+			set-return exists to avoid. So this is history, not a redirect.
+
+			Renders ONLY what the server supplied. `moved_to` is absent (key
+			omitted) whenever there is nothing this caller may see, and there is
+			no client-side reconstruction or second lookup — absent means
+			"nothing to show", and it must not be distinguishable from "there is
+			one you may not see", because there isn't a distinction.
+		-->
+		{#if item.moved_to && item.moved_to.length > 0}
+			<div class="moved-banner" role="status">
+				<span class="moved-icon" aria-hidden="true">⧉</span>
+				<div class="moved-text">
+					<strong
+						>This item was moved to {item.moved_to.length === 1
+							? 'another workspace'
+							: 'other workspaces'}</strong
+					>
+					<ul class="moved-list">
+						{#each item.moved_to as dest (dest.workspace_slug + '/' + dest.item_slug)}
+							{@const href =
+								dest.workspace_owner_username && dest.collection_slug
+									? `/${dest.workspace_owner_username}/${dest.workspace_slug}/${dest.collection_slug}/${dest.item_slug}`
+									: null}
+							<li>
+								{#if href}
+									<a {href}>{dest.ref ? `${dest.ref} — ` : ''}{dest.title}</a>
+								{:else}
+									<span>{dest.ref ? `${dest.ref} — ` : ''}{dest.title}</span>
+								{/if}
+								<span class="moved-ws">in {dest.workspace_name ?? dest.workspace_slug}</span>
+								{#if dest.moved_at}
+									<span class="moved-when" title={new Date(dest.moved_at).toLocaleString()}
+										>{relativeTime(dest.moved_at)}</span
+									>
+								{/if}
+							</li>
+						{/each}
+					</ul>
+				</div>
+			</div>
+		{/if}
+
 		<!-- Title -->
 		<div class="title-row">
 			{#if formatItemRef(item)}
@@ -6413,6 +6462,43 @@
 	.archived-restore-btn:disabled {
 		opacity: 0.5;
 		cursor: not-allowed;
+	}
+	.moved-banner {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--space-3);
+		margin-bottom: var(--space-4);
+		padding: var(--space-3);
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-left: 3px solid var(--accent);
+		border-radius: var(--radius);
+	}
+	.moved-icon {
+		flex-shrink: 0;
+		color: var(--accent);
+	}
+	.moved-text {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+		font-size: 0.9em;
+		color: var(--text-secondary);
+		min-width: 0;
+	}
+	.moved-text strong {
+		color: var(--text-primary);
+	}
+	.moved-list {
+		margin: 0;
+		padding-left: var(--space-4);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-1);
+	}
+	.moved-ws,
+	.moved-when {
+		color: var(--text-muted);
 	}
 	.link-row {
 		display: flex;
