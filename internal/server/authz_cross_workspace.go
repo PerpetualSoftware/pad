@@ -426,12 +426,33 @@ func (sc CrossWorkspaceScope) permCollectionID() string {
 // or a transaction, and every input can change underneath you: the
 // item can be moved into a hidden collection or archived, the
 // collection can be soft-deleted, the caller's membership or grants
-// can be revoked, the workspace itself can be soft-deleted. A MUTATING
-// caller must re-read both sides inside its write transaction and
-// re-apply the check there (PLAN-2357 DR-9 requires exactly that of
-// the copy path; see UpdateItemWithPreCheck / MoveItemWithPreCheck for
-// the established shape). For a read path a stale verdict is a much
-// smaller problem, but do not cache one across requests.
+// can be revoked, the workspace itself can be soft-deleted. For a read
+// path a stale verdict is a much smaller problem, but do not cache one
+// across requests.
+//
+// WHAT A MUTATING CALLER OWES, stated precisely, because the obvious
+// phrasing — "re-apply this check inside your write transaction" — is
+// wrong and was corrected here after PLAN-2357's final review.
+//
+// A mutating caller must re-read the RESOURCE IDENTITY it authorized
+// (the item and the collections) inside its write transaction and
+// refuse if any of it moved, because those are the inputs whose change
+// turns an authorized request into a different, unauthorized one. See
+// copyResourceInvariantPreCheck in handlers_items_copy.go for the
+// worked example, and UpdateItemWithPreCheck / MoveItemWithPreCheck
+// for the established shape.
+//
+// It must NOT re-run this helper inside the transaction. These
+// functions read through s.store rather than the caller's tx, so under
+// Postgres READ COMMITTED each statement takes its own snapshot: the
+// "re-check" would judge locked resources against authorization state
+// read at several unsynchronised moments, and membership can still be
+// revoked and committed between those reads and the caller's COMMIT.
+// It would read as a write-time guarantee while providing none, which
+// is worse for the product than the honest boundary. The honest
+// boundary is that authorization is evaluated once, at the start of a
+// request measured in milliseconds — the same window every other write
+// path in Pad has.
 //
 // See the file header for why requireEditPermission and friends cannot
 // be used here.
