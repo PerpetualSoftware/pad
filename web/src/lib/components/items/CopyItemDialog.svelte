@@ -690,7 +690,19 @@ user hunting for an item that provably does not exist.
 		'archived',
 		'plan_limit_exceeded',
 		'rate_limited',
-		'unauthorized'
+		'unauthorized',
+		// Rejected by the middleware stack BEFORE handleCopyItem runs, so they
+		// provably cannot have created anything (final review round 2):
+		'csrf_error', // 403 — CSRF check failed at the perimeter
+		'email_not_verified', // 403 — unverified email may not mutate content
+		// 500 internal_error is pre-write ON THIS ROUTE specifically: the only
+		// writeInternalError call sites reachable here are in
+		// resolveAuthorizedCopy (handlers_items_copy_resolve.go:128,184), both
+		// before the store call. A post-commit panic deliberately does NOT
+		// emit it — afterCopyCommit logs and lets the response stand — and
+		// chi's Recoverer returns a bodiless 500, which has no code and so
+		// still falls through to outcome-unknown below.
+		'internal_error'
 	]);
 
 	function planLimitMessage(e: unknown): string {
