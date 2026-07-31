@@ -7,8 +7,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -471,125 +469,23 @@ func buildHierarchyLinkTypes() map[string]bool {
 // handleCopyItemPreflight answers "what would this cross-workspace copy
 // do?" without doing any of it. See the file header for the full contract.
 func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request) {
-	sourceWorkspaceID, ok := s.getWorkspaceID(w, r)
+	// Resolution plus the four-step authorization ladder, DR-10a/DR-10b —
+	// ONE implementation, shared with handleCopyItem, ordering included.
+	// See resolveAuthorizedCopy for why each step sits where it does; the
+	// dry run and the mutation must agree about the ORDER of refusals, not
+	// merely the set, and the only way to guarantee that is to have one
+	// copy of the sequence.
+	ac, ok := s.resolveAuthorizedCopy(w, r)
 	if !ok {
 		return
 	}
-
-	itemSlug := chi.URLParam(r, "itemSlug")
-	item, err := s.store.ResolveItem(sourceWorkspaceID, itemSlug)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if item == nil {
-		// ResolveItem filters soft-deleted rows, so this covers "absent"
-		// AND "archived". writeItemResolveError separates them the same
-		// way the move and update paths do — 409 archived when the caller
-		// can independently SEE the archived row, 404 otherwise — so the
-		// distinction is never made for someone who could not see it.
-		s.writeItemResolveError(w, r, sourceWorkspaceID, itemSlug)
-		return
-	}
-
-	// ---- Authorization, DR-10a/DR-10b, four checks in order -----------
-	//
-	// Checks 1 and 2 (source item visibility, then source edit) compose
-	// out of one AuthorizeCrossWorkspaceEdit call with an item scope; 3
-	// and 4 (destination collection visibility, then destination edit)
-	// out of one with a collection scope. The early return between them
-	// is part of the ordering, not style: a destination verdict built for
-	// a caller who could not read the source is itself a disclosure.
-	//
-	// The helper is used for the SOURCE too, even though it is the
-	// request's own workspace, because it derives the role from
-	// membership rather than from workspaceRole(r) — the same answer the
-	// front door gives, computed without the context value the
-	// destination half must not touch. One code path, one ordering.
-	src := s.AuthorizeCrossWorkspaceEdit(r, sourceWorkspaceID, CrossWorkspaceItemScope(item))
-	if !src.Allowed {
-		// WriteHidden: absence and forbidden-ness are one 404. A preflight
-		// that confirmed a hidden item exists would be the leak DR-10b is
-		// about.
-		src.WriteHidden(w, "Item")
-		return
-	}
-
-	// decodeJSON, not json.NewDecoder: it wraps the body in a
-	// MaxBytesReader so field_overrides cannot be used to make the server
-	// allocate a multi-GB map on an endpoint that is designed to be called
-	// repeatedly from a live UI (Codex round 7).
-	var input itemCopyPreflightRequest
-	if err := decodeJSON(r, &input); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_body", "Invalid JSON body")
-		return
-	}
-	if input.TargetWorkspace == "" {
-		writeError(w, http.StatusBadRequest, "missing_field", "target_workspace is required")
-		return
-	}
-	if input.TargetCollection == "" {
-		writeError(w, http.StatusBadRequest, "missing_field", "target_collection is required")
-		return
-	}
-
-	// Check 3, part one: workspace-level access to the destination. This
-	// is the narrow legitimate use of the workspace-only scope — an early
-	// reject BEFORE the collection is known, because resolving a
-	// collection slug requires the destination workspace's ID and doing
-	// that lookup first would answer a question about a workspace the
-	// caller may have no business addressing.
-	dstWS := s.AuthorizeCrossWorkspaceEdit(r, input.TargetWorkspace, CrossWorkspaceWorkspaceOnlyScope())
-	if !dstWS.Allowed {
-		// WriteDenied, not WriteHidden: the caller named this workspace
-		// themselves, so acknowledging the refusal tells them nothing they
-		// did not already assert. It still refuses to separate "absent"
-		// from "forbidden".
-		dstWS.WriteDenied(w)
-		return
-	}
-
-	targetColl, err := s.store.GetCollectionBySlug(dstWS.WorkspaceID(), input.TargetCollection)
-	if err != nil {
-		writeInternalError(w, err)
-		return
-	}
-	if targetColl == nil {
-		writeError(w, http.StatusNotFound,
-			crossWorkspaceCollectionNotFoundCode, crossWorkspaceCollectionNotFoundMessage)
-		return
-	}
-
-	// Checks 3 (collection visibility) and 4 (collection edit). The
-	// collection-scoped denial is written by WriteCollectionNotFound,
-	// which collapses "hidden" onto the same 404 the nil branch above
-	// emits — otherwise a restricted member of the destination could
-	// enumerate the collections they were excluded from.
-	dst := s.AuthorizeCrossWorkspaceEdit(r, input.TargetWorkspace, CrossWorkspaceCollectionScope(targetColl.ID))
-	if !dst.Allowed {
-		dst.WriteCollectionNotFound(w)
-		return
-	}
-
-	// Who the copy would be attributed to, resolved through the SAME function
-	// the mutating copy uses and refused here on the same terms. Nothing is
-	// written on this path, so a placeholder would work — and that is exactly
-	// the trap: an earlier version supplied a `"preflight"` literal as a last
-	// resort, so this endpoint happily previewed a copy the mutation would
-	// refuse outright for want of an actor (Codex round 4).
-	//
-	// Placed HERE, immediately after the fourth authorization check and
-	// BEFORE any field or override handling, because the mutating copy checks
-	// it in the same position. Leaving it down by the attachment planner made
-	// the two disagree about a request that fails BOTH ways — no actor and a
-	// malformed override — with the preview reporting the override and the
-	// copy the actor (Codex round 5). Agreement is about the ORDER of
-	// refusals, not just the set.
-	actorID := copyActorID(r, item)
-	if actorID == "" {
-		writeCopyActorRequired(w)
-		return
-	}
+	sourceWorkspaceID := ac.sourceWorkspaceID
+	item := ac.item
+	input := ac.input
+	src := ac.source
+	dst := ac.destination
+	targetColl := ac.targetCollection
+	actorID := ac.actorID
 
 	// ---- Everything below this line is authorized and read-only -------
 	//
