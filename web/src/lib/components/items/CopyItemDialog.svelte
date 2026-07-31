@@ -217,6 +217,12 @@ user hunting for an item that provably does not exist.
 	 * rejects with 400 `malformed_override`.
 	 */
 	let previewGen = 0;
+	// Bumped by every override edit. SEPARATE from previewGen on purpose:
+	// previewGen cancels in-flight preflights, and an override edit must NOT do
+	// that — the debounce + single-flight runner already collapse rapid edits.
+	// What an override edit MUST do is supersede an in-progress confirm, whose
+	// request was built from the OLD values (final-review P1).
+	let overrideGen = 0;
 
 	// ── Derived ───────────────────────────────────────────────────────────
 
@@ -503,6 +509,10 @@ user hunting for an item that provably does not exist.
 		overrides = { ...overrides, [key]: value };
 		retainedValues = { ...retainedValues, [key]: value };
 		staleReview = '';
+		// Supersede any confirm currently flushing/re-checking: its captured
+		// request carries the pre-edit values, and dispatching it would copy
+		// something the user can see is no longer what they entered.
+		overrideGen++;
 		schedulePreflight();
 	}
 
@@ -739,8 +749,10 @@ user hunting for an item that provably does not exist.
 		// abandons this attempt; the new destination re-previews and Confirm
 		// re-enables.
 		const pgen = previewGen;
+		const ogen = overrideGen;
 		const req = buildRequest();
-		const superseded = () => gen !== flowGen || pgen !== previewGen;
+		const superseded = () =>
+			gen !== flowGen || pgen !== previewGen || ogen !== overrideGen;
 		const reviewed = reviewFingerprint(preflight);
 		preparing = true;
 		submitError = '';
@@ -1116,7 +1128,7 @@ user hunting for an item that provably does not exist.
 														field={toFieldDef(row)}
 														ariaLabel={row.label || row.key}
 														value={overrides[row.key]}
-														readonly={submitting}
+														readonly={submitting || preparing}
 														onchange={(v) => handleOverrideChange(row.key, v)}
 													/>
 													{#if row.message}
