@@ -150,6 +150,24 @@ type Server struct {
 	// guarding.
 	storageInfoCache *storageInfoCache
 
+	// copyItemFn indirects Store.CopyItemAcrossWorkspaces for the
+	// cross-workspace copy endpoint (PLAN-2357 / TASK-2365).
+	//
+	// It exists because DR-13 forbids the endpoint from ever transparently
+	// retrying a mutating copy — there is no idempotency key in v1, so a
+	// retry after a post-commit failure duplicates the item — and the only
+	// falsifiable way to assert "called exactly once" is to count the calls.
+	// Several tests also use it to inject the store's typed errors and to
+	// land a concurrent mutation deterministically between the handler's
+	// authorization and the store call. See handleCopyItem and
+	// TestCopyEndpoint_DoesNotRetryOnAmbiguousError.
+	//
+	// It is nil on every production path — nothing outside package server can
+	// set it, no constructor or setter assigns it, and only _test.go files do
+	// (Codex round 6: it is compiled into the binary, so "test-only" describes
+	// the convention, not a compiler-enforced guarantee).
+	copyItemFn func(store.CrossWorkspaceCopyRequest) (*store.CrossWorkspaceCopyResult, error)
+
 	// importBundleMaxBytes caps a single workspace import bundle.
 	// 0 → defaultImportBundleMaxBytes (2 GiB). Set via
 	// SetImportBundleMaxBytes from cmd/pad/main.go using the
@@ -1450,6 +1468,24 @@ func (s *Server) setupRouter() {
 						r.Delete("/", s.handleDeleteItem)
 						r.Post("/restore", s.handleRestoreItem)
 						r.Post("/move", s.handleMoveItem)
+						// Cross-workspace copy PREFLIGHT (PLAN-2357 /
+						// TASK-2364). Reports what a copy into another
+						// workspace would carry, drop and need, and
+						// leaves no trace a copy would have left — see
+						// handlers_items_copy_preflight.go for the exact
+						// scope of that guarantee. POST because the
+						// request carries a body (destination + override
+						// map), not because it mutates. The mutating
+						// sibling lands at /copy in TASK-2365.
+						r.Post("/copy/preflight", s.handleCopyItemPreflight)
+						// Cross-workspace copy, the MUTATION (PLAN-2357 /
+						// TASK-2365). Same request shape as the preflight
+						// above; with archive_source it is the move. Post-
+						// commit fanout is asymmetric — see
+						// handlers_items_copy.go. Registered after the more
+						// specific /copy/preflight, though chi's trie makes
+						// the order immaterial.
+						r.Post("/copy", s.handleCopyItem)
 						// Export a single playbook/convention item as a
 						// portable artifact (Markdown + YAML frontmatter).
 						// Gated by per-item visibility, not the workspace-
@@ -1953,26 +1989,12 @@ func (s *Server) visibleCollectionIDs(r *http.Request, workspaceID string) ([]st
 // Writes a 404 and returns false if not visible; callers should invoke this
 // immediately after resolving a collection by slug/ID.
 func (s *Server) requireCollectionFullyVisible(w http.ResponseWriter, r *http.Request, workspaceID string, coll *models.Collection) bool {
-	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
+	visible, err := s.checkCollectionFullyVisible(r, workspaceID, coll.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return false
 	}
-	if visibleIDs != nil {
-		// Restricted (non-nil visibleIDs): narrow to full-access
-		// collections only when the caller's restricted visibility
-		// includes any item-level grants, so an item-grant-only
-		// collection can't qualify for collection-wide operations.
-		fullCollIDs, grantedItemIDs, gErr := s.guestResourceFilter(r, workspaceID)
-		if gErr != nil {
-			writeInternalError(w, gErr)
-			return false
-		}
-		if len(grantedItemIDs) > 0 {
-			visibleIDs = fullCollIDs
-		}
-	}
-	if !isCollectionVisible(coll.ID, visibleIDs) {
+	if !visible {
 		writeError(w, http.StatusNotFound, "not_found", "Collection not found")
 		return false
 	}
@@ -2348,6 +2370,16 @@ func (s *Server) filterUserGrantsForCaller(r *http.Request, workspaceID string, 
 // grant-based permissions so grants can override the base role.
 // For guests, it resolves the effective permission from grants directly.
 // Returns true if the request should continue, false if it was rejected with a 403.
+//
+// NEVER call this with a workspace ID other than the one the current
+// request's URL resolved to. The `workspaceID` parameter makes it look
+// reusable for a second workspace; it is not. The editor/owner fast path
+// below reads workspaceRole(r), which RequireWorkspaceAccess populates only
+// for the URL's workspace, so passing workspace B's ID applies workspace A's
+// role — privilege escalation. Use AuthorizeCrossWorkspaceEdit
+// (authz_cross_workspace.go) for any other workspace; it also checks the
+// OAuth/MCP consent allow-list, which this helper does not (DR-10 of
+// PLAN-2357).
 func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, workspaceID string, itemID, collectionID string) bool {
 	role := workspaceRole(r)
 

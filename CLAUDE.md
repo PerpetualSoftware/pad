@@ -66,6 +66,8 @@ REST API at `/api/v1/`. Key endpoints:
 - `GET/POST /workspaces/{ws}/collections` — collection CRUD
 - `GET/POST /workspaces/{ws}/collections/{coll}/items` — item CRUD
 - `GET/PATCH/DELETE /workspaces/{ws}/items/{slug}` — item by slug
+- `POST /workspaces/{ws}/items/{slug}/copy/preflight` — cross-workspace copy dry run: what would carry / drop / need a value, plus the full warning set. Read-only and safe to call repeatedly (PLAN-2357)
+- `POST /workspaces/{ws}/items/{slug}/copy` — cross-workspace copy; with `archive_source` it is the move. Same request shape as the preflight. **Never retry it automatically** — there is no idempotency key, so a retry duplicates the item
 - `GET /workspaces/{ws}/dashboard` — computed project overview (active items, plans, attention, blockers)
 - `GET /workspaces/{ws}/activity` — workspace activity feed (enriched with item titles + change details)
 - `GET/POST/DELETE /workspaces/{ws}/webhooks` — webhook management
@@ -165,6 +167,11 @@ pad item show <ref>           # e.g. pad item show TASK-5
 pad item update <ref> [--status X] [--priority X]
 pad item delete <ref>
 pad item move <ref> <target-collection>
+pad item copy <ref> --to-workspace <slug> --collection <slug> [--dry-run] [--archive-source] [--field k=v]
+                              # Cross-workspace copy; --archive-source makes it a move.
+                              # --dry-run previews the field mapping + warnings.
+                              # Refuses rather than guessing when a destination field needs a value,
+                              # and NEVER retries the mutating call (no idempotency key — PLAN-2357 DR-13).
 pad item search "query"
 pad project dashboard         # Project dashboard
 pad project next              # Recommended next task

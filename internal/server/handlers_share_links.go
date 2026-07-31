@@ -369,6 +369,37 @@ func (s *Server) requireShareLinkTargetVisible(w http.ResponseWriter, r *http.Re
 	}
 }
 
+// publicShareItemDTO projects an item down to the fields an ANONYMOUS visitor
+// may see. It is an explicit allow-list and must stay one: this payload is
+// served to whoever holds the link, with no membership, no grants and no
+// consent scope behind it.
+//
+// It exists as a named function rather than an inline literal so the
+// projection can be exercised directly — a test can hand it an item with
+// privileged fields already populated and assert they do not come out the
+// other side. Inline, the only reachable test was an end-to-end one against
+// whatever the store happened to return, which passes vacuously whenever the
+// fixture cannot populate the field under suspicion.
+//
+// NEVER replace this with the item itself. In particular it must never carry
+// models.Item.MovedTo, the ACL-gated cross-workspace destination pointer
+// (PLAN-2357 / TASK-2359): that block is revealed only after authorizing a
+// specific caller's read access to the destination ITEM, and an anonymous
+// share-link visitor has no identity to authorize. Swapping this for
+// `writeJSON(w, ..., item)` would publish destinations on every public share
+// link. TestMovedTo_ShareLinkNeverCarriesPointer pins both the key set and
+// that specific omission.
+func publicShareItemDTO(item *models.Item) map[string]interface{} {
+	return map[string]interface{}{
+		"title":           item.Title,
+		"content":         item.Content,
+		"fields":          item.Fields,
+		"ref":             item.Ref,
+		"collection_name": item.CollectionName,
+		"collection_icon": item.CollectionIcon,
+	}
+}
+
 // handleResolveShareLink is the /s/{token} route. It resolves a share link
 // token and returns the shared content. Anonymous users are ALWAYS read-only (D8).
 func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) {
@@ -497,15 +528,8 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"type": "item",
-			"item": map[string]interface{}{
-				"title":           item.Title,
-				"content":         item.Content,
-				"fields":          item.Fields,
-				"ref":             item.Ref,
-				"collection_name": item.CollectionName,
-				"collection_icon": item.CollectionIcon,
-			},
+			"type":       "item",
+			"item":       publicShareItemDTO(item),
 			"permission": "view",
 			"share_link": map[string]interface{}{
 				"target_type": link.TargetType,

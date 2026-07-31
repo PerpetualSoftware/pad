@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -61,6 +62,30 @@ type LimitResult struct {
 //  2. Platform plan_limits[plan][feature] — DB-stored defaults for the tier
 //  3. Hardcoded fallback — safety net if DB config is missing
 func (s *Store) CheckLimit(workspaceID, feature string) (*LimitResult, error) {
+	return s.checkLimitOn(s.db, workspaceID, feature)
+}
+
+// CheckLimitTx is CheckLimit with the usage count read through the caller's
+// transaction instead of an independent connection (PLAN-2357 / DR-16).
+//
+// The distinction is the whole point: a limit check that counts on the pool
+// cannot see the caller's own uncommitted inserts, and — more importantly —
+// it is not serialized with a concurrent transaction holding the workspace's
+// advisory lock. Two copies into a workspace one item below its cap would then
+// both read "under the limit" and both commit. Counting inside the transaction,
+// after the destination workspace lock is held, makes the second copy's COUNT
+// wait for the first to commit and observe it.
+//
+// Only the COUNT moves onto the tx. The workspace-owner and user lookups stay
+// on the pool: neither is written by the copy path, and routing them through
+// the tx would only widen what a failed probe poisons.
+func (s *Store) CheckLimitTx(tx *sql.Tx, workspaceID, feature string) (*LimitResult, error) {
+	return s.checkLimitOn(tx, workspaceID, feature)
+}
+
+// checkLimitOn is the shared body of CheckLimit / CheckLimitTx, parameterized
+// over the surface the feature COUNT runs on.
+func (s *Store) checkLimitOn(counter rowQueryer, workspaceID, feature string) (*LimitResult, error) {
 	// 1. Look up workspace → owner_id
 	var ownerID string
 	err := s.db.QueryRow(s.q(`SELECT owner_id FROM workspaces WHERE id = ?`), workspaceID).Scan(&ownerID)
@@ -95,7 +120,7 @@ func (s *Store) CheckLimit(workspaceID, feature string) (*LimitResult, error) {
 	}
 
 	// 4. Get current count for the feature
-	current, err := s.featureCount(workspaceID, ownerID, feature)
+	current, err := s.featureCountOn(counter, workspaceID, ownerID, feature)
 	if err != nil {
 		return nil, fmt.Errorf("check limit: count %s: %w", feature, err)
 	}
@@ -172,18 +197,20 @@ func (s *Store) resolveLimit(plan, feature, overridesJSON string) int {
 	return hardcodedLimit(plan, feature)
 }
 
-// featureCount returns the current count for a workspace-scoped feature.
-func (s *Store) featureCount(workspaceID, ownerID, feature string) (int, error) {
+// featureCountOn returns the current count for a workspace-scoped feature,
+// parameterized over the query surface so the same COUNTs serve both
+// CheckLimit (the pool) and CheckLimitTx (a caller's transaction).
+func (s *Store) featureCountOn(q rowQueryer, workspaceID, ownerID, feature string) (int, error) {
 	var count int
 	var err error
 
 	switch feature {
 	case "items_per_workspace":
-		err = s.db.QueryRow(s.q(`SELECT COUNT(*) FROM items WHERE workspace_id = ? AND deleted_at IS NULL`), workspaceID).Scan(&count)
+		err = q.QueryRow(s.q(`SELECT COUNT(*) FROM items WHERE workspace_id = ? AND deleted_at IS NULL`), workspaceID).Scan(&count)
 	case "members_per_workspace":
-		err = s.db.QueryRow(s.q(`SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ?`), workspaceID).Scan(&count)
+		err = q.QueryRow(s.q(`SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ?`), workspaceID).Scan(&count)
 	case "webhooks":
-		err = s.db.QueryRow(s.q(`SELECT COUNT(*) FROM webhooks WHERE workspace_id = ?`), workspaceID).Scan(&count)
+		err = q.QueryRow(s.q(`SELECT COUNT(*) FROM webhooks WHERE workspace_id = ?`), workspaceID).Scan(&count)
 	default:
 		return 0, fmt.Errorf("unknown workspace feature: %s", feature)
 	}

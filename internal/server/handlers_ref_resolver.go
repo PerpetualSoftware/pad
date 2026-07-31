@@ -143,6 +143,14 @@ func (s *Server) refResolverNotFound(w http.ResponseWriter, _ *http.Request) {
 //
 // The returned (false, err) pair is reserved for genuine DB errors; the
 // caller still maps both to a 404 to honor the no-leak contract.
+//
+// Note this route does NOT consult the OAuth/MCP token consent allow-list,
+// and — because it is registered inside the full middleware stack — it IS
+// reachable by PATs and CLI session bearers. What keeps that acceptable is
+// that it discloses nothing but a 302 to a URL the caller can already read.
+// Do not copy it as a template for a cross-workspace surface that returns
+// data: use AuthorizeCrossWorkspaceRead (authz_cross_workspace.go), which
+// checks the allow-list.
 func (s *Server) resolverItemVisible(r *http.Request, ws *models.Workspace, item *models.Item) (bool, error) {
 	user := currentUser(r)
 
@@ -171,7 +179,10 @@ func (s *Server) resolverItemVisible(r *http.Request, ws *models.Workspace, item
 	// bearer signal so a bearer-borne platform admin doesn't get a
 	// cross-workspace owner bypass (BUG-1618).
 	authIsBearer := isBearerAuth(r)
-	role := s.resolverWorkspaceRole(ws, user, authIsBearer)
+	role, err := s.resolverWorkspaceRole(ws, user, authIsBearer)
+	if err != nil {
+		return false, err
+	}
 	if role == "" {
 		// Not a member, no grants, not admin/owner. Not visible.
 		return false, nil
@@ -199,13 +210,30 @@ func (s *Server) resolverItemVisible(r *http.Request, ws *models.Workspace, item
 // keep the owner bypass so the web-UI affordance is preserved. The
 // workspace owner check is unconditional regardless of auth surface
 // (BUG-1618).
-func (s *Server) resolverWorkspaceRole(ws *models.Workspace, user *models.User, authIsBearer bool) string {
+//
+// A non-nil error is a genuine store failure, never "no role". Callers MUST
+// fail closed on it. Pre-TASK-2358 this helper swallowed both lookup errors
+// and silently continued to the next branch, which is how a transient DB
+// blip could downgrade a member to the guest-grants path. The resolver route
+// maps error and "" alike to a 404, so its visible behavior is unchanged.
+//
+// NOT reusable for a second workspace, despite the shape. The ws.OwnerID
+// short-circuit below fires on every auth surface (BUG-1618, a deliberate
+// widening for this cookie-only redirect route), whereas
+// RequireWorkspaceAccess requires an actual workspace_members row for every
+// bearer caller. Cross-workspace callers use Server.crossWorkspaceRole
+// (authz_cross_workspace.go), which tracks the middleware instead so it can
+// never grant more than the front door.
+func (s *Server) resolverWorkspaceRole(ws *models.Workspace, user *models.User, authIsBearer bool) (string, error) {
 	if ws.OwnerID == user.ID || (user.Role == "admin" && !authIsBearer) {
-		return "owner"
+		return "owner", nil
 	}
 	member, err := s.store.GetWorkspaceMember(ws.ID, user.ID)
-	if err == nil && member != nil {
-		return member.Role
+	if err != nil {
+		return "", err
+	}
+	if member != nil {
+		return member.Role, nil
 	}
 	// Bearer-borne platform admin who isn't a member gets NO grant-based
 	// fallback — the membership-only stance (BUG-1616/1617/1618). Without
@@ -215,14 +243,17 @@ func (s *Server) resolverWorkspaceRole(ws *models.Workspace, user *models.User, 
 	// for every item in the workspace. RequireWorkspaceAccess denies
 	// bearer-admin non-members before checking grants for the same reason.
 	if user.Role == "admin" && authIsBearer {
-		return ""
+		return "", nil
 	}
 	// Not a member — guest path requires at least one grant.
 	hasGrants, err := s.store.UserHasGrantsInWorkspace(ws.ID, user.ID)
-	if err == nil && hasGrants {
-		return "guest"
+	if err != nil {
+		return "", err
 	}
-	return ""
+	if hasGrants {
+		return "guest", nil
+	}
+	return "", nil
 }
 
 // resolverOwnerUsername returns the workspace owner's username — the

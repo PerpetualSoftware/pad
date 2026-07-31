@@ -544,6 +544,32 @@ export interface TagCount {
 	count: number;
 }
 
+/**
+ * One destination an archived item was moved to (PLAN-2357 / TASK-2359).
+ *
+ * Displayable by construction — slugs and refs, never UUIDs — so a banner can
+ * link to the destination without a second request.
+ *
+ * The list is ACL-filtered per destination and newest-first, but it carries no
+ * "current" marker and cannot promise its head is the most recent move: such a
+ * marker would announce that a newer destination exists and is being withheld.
+ * Word any UI as provenance ("this item was moved; copies exist at …"), not as
+ * a current location.
+ */
+export interface ItemMovedTo {
+	workspace_slug: string;
+	workspace_name?: string;
+	/** Completes the /{username}/{workspace}/… route; may be absent. */
+	workspace_owner_username?: string;
+	collection_slug?: string;
+	/** Issue ID, e.g. "TASK-14". */
+	ref?: string;
+	item_slug: string;
+	title: string;
+	/** RFC3339 UTC timestamp of the move. */
+	moved_at?: string;
+}
+
 export interface Item {
 	id: string;
 	workspace_id: string;
@@ -594,6 +620,13 @@ export interface Item {
 	// Structural local-first projection. Unrestricted index/delta responses
 	// always include it; restricted callers omit it entirely.
 	is_unparented?: boolean;
+	// Destination(s) an ARCHIVED item was moved to by a cross-workspace move
+	// (PLAN-2357 / TASK-2359). Present ONLY on the single-item GET response,
+	// and only for destinations the caller was independently authorized to
+	// read — the server omits the key entirely otherwise, so `undefined`
+	// means "nothing to show", never "there is one you may not see". Do not
+	// render a distinction between the two; there isn't one.
+	moved_to?: ItemMovedTo[];
 	derived_closure?: ItemDerivedClosure;
 	code_context?: ItemCodeContext;
 	convention?: ItemConventionMetadata;
@@ -607,9 +640,286 @@ export interface Item {
 // the local-first read model (PLAN-1343) can hydrate a workspace-wide index
 // without paying the body cost on bootstrap.
 //
-// Derived from `Item` via `Omit<…, 'content'>` so adding a new column to
-// `Item` automatically flows into the index row without a second edit.
-export type ItemIndexRow = Omit<Item, 'content'>;
+// Derived from `Item` via `Omit<…>` so adding a new column to `Item`
+// automatically flows into the index row without a second edit.
+//
+// `moved_to` is omitted alongside `content` for a different reason: it is not
+// a column at all but a per-caller, ACL-gated block the server populates on
+// the single-item GET and nowhere else (PLAN-2357 / TASK-2359). Leaving it in
+// would advertise a field the index and delta endpoints never emit, and invite
+// a consumer to read it from a cached index row where its absence means
+// nothing.
+export type ItemIndexRow = Omit<Item, 'content' | 'moved_to'>;
+
+// ─── Cross-workspace copy preflight (PLAN-2357 / TASK-2364) ──────────────────
+//
+//   POST /api/v1/workspaces/{ws}/items/{itemSlug}/copy/preflight
+//
+// The URL's workspace is the SOURCE; the destination is named in the body.
+// The server owns the bucketing (DR-6) — do NOT reimplement any of this in
+// TypeScript, or the dialog and the CLI will disagree the first time a
+// migration rule changes. Call the endpoint again whenever the user changes
+// the destination or an override: it leaves no trace a copy would have left
+// (no item, no attachment rows, no provenance row, neither workspace's seq
+// advances, no activity/SSE/webhook) and is safe to call repeatedly. It is
+// still an ordinary authenticated request, so the usual middleware effects
+// — rate-limit budget, request metrics, last-active timestamp — apply.
+//
+// Error statuses worth branching on (envelope: `{error:{code,message}}`):
+//   400 `malformed_override`   — an override names a field the destination
+//                                schema does not declare
+//   400 `invalid_override`     — an override's VALUE is rejected by the
+//                                destination schema
+//   403 `forbidden` / `permission_denied` — destination workspace not
+//                                accessible to the caller
+//   404 `collection_not_found` — destination collection absent OR hidden
+//                                (deliberately indistinguishable)
+//   409 `archived`             — source item exists and is visible, but is
+//                                archived
+//   404 `not_found`            — source item absent or not visible
+export interface ItemCopyPreflightRequest {
+	/** Destination workspace slug (a UUID is also accepted). */
+	target_workspace: string;
+	/** Destination collection slug. */
+	target_collection: string;
+	/**
+	 * Destination-schema field key → value. A `null` value means "leave this
+	 * key unset": the key is removed before validation, not written as null.
+	 * What it becomes then depends on the destination schema — a field with
+	 * a default comes back in `carried` with `from: "default"`, a REQUIRED
+	 * field with no default lands in `needs_value`, and an optional one with
+	 * no default is simply absent. Keys the destination schema does not
+	 * declare are rejected with 400 `malformed_override`.
+	 */
+	field_overrides?: Record<string, unknown>;
+	/** The MOVE path: copy, then archive the source. Default false. */
+	archive_source?: boolean;
+}
+
+/** Where the value in a `carried` row came from. */
+export type ItemCopyPreflightOrigin = 'migrated' | 'override' | 'default';
+
+export interface ItemCopyPreflightCarried {
+	key: string;
+	label?: string;
+	type?: string;
+	/** Final value — after migration, overrides and destination defaults. */
+	value: unknown;
+	from: ItemCopyPreflightOrigin;
+}
+
+export interface ItemCopyPreflightDropped {
+	key: string;
+	label?: string;
+	/** `assignment` covers the assignee / agent-role pair, not a schema field. */
+	kind: 'field' | 'assignment';
+	reason:
+		| 'no_target_field'
+		| 'incompatible_type'
+		/** The item carries a key its own source schema no longer declares. */
+		| 'undeclared_source_field'
+		| 'assignee_not_a_member'
+		| 'agent_role_not_portable';
+}
+
+export interface ItemCopyPreflightNeedsValue {
+	key: string;
+	label?: string;
+	type?: string;
+	options?: string[];
+	required: boolean;
+	reason: 'missing_required' | 'invalid_value';
+	message?: string;
+}
+
+/**
+ * The three bucket names are the contract (DR-15) — renaming one is a
+ * breaking change. All three arrays are always present, never null.
+ */
+export interface ItemCopyPreflightFields {
+	carried: ItemCopyPreflightCarried[];
+	dropped: ItemCopyPreflightDropped[];
+	needs_value: ItemCopyPreflightNeedsValue[];
+}
+
+/**
+ * DR-15's full warning set. None of it blocks the copy — it is what the user
+ * is entitled to know before agreeing (DR-17: "none of this may be silent").
+ */
+export interface ItemCopyPreflightWarnings {
+	/** Live children of the source. Never copied (DR-4). */
+	child_count: number;
+	/** `child_count > 0 && archive_source` — the move path orphans them. */
+	children_orphaned: boolean;
+	/**
+	 * The source has a parent; the copy is unparented (DR-17). Covers both
+	 * the `parent` item_links edge and the legacy `parent_id` column, since
+	 * the copy scrubs both.
+	 */
+	dropped_parent: boolean;
+	/**
+	 * Dependency edges by `link_type`, e.g. `{ blocks: 2 }`. Hierarchy types
+	 * (`parent` / `implements` / legacy `plan`) are excluded — they are
+	 * reported by `child_count` and `dropped_parent`. Always present; `{}`
+	 * means no dependency edges. None of these carry.
+	 */
+	outgoing_links: Record<string, number>;
+	incoming_links: Record<string, number>;
+	/** False when the assignee IS a member of the destination (DR-8). */
+	dropped_assignee: boolean;
+	/** Role slugs are workspace-local, so an agent role never carries (DR-8). */
+	dropped_agent_role: boolean;
+	/** Reported, not enforced (DR-16). Includes thumbnail variants. */
+	attachment_count: number;
+	/**
+	 * Serialized from a Go int64 as a JSON number. Safe as a JS `number`:
+	 * the value is a sum of per-attachment byte counts for ONE item, so
+	 * exceeding Number.MAX_SAFE_INTEGER (~9 PB) is not reachable.
+	 */
+	attachment_bytes: number;
+	/** `pad-attachment:` refs that resolve to nothing (DR-11a). Not fatal. */
+	unresolvable_ref_count: number;
+	/**
+	 * The five relationship counters above — `child_count`,
+	 * `children_orphaned`, `dropped_parent`, `outgoing_links` and
+	 * `incoming_links` — are a FLOOR, not a total: at least one of the
+	 * source's relationships hangs off an item this caller may not see, and
+	 * the server does not count what it will not show (TASK-2369).
+	 *
+	 * Render it as a qualifier ON those counters, not as a sixth warning —
+	 * the point is that `0` and `0 that you can see` must stop looking
+	 * alike, or a restricted user runs a move believing nothing is stranded.
+	 *
+	 * ONE EXCEPTION: do NOT qualify `children_orphaned` unless
+	 * `archive_source` is true. A plain copy archives nothing, so no child —
+	 * visible or hidden — can be orphaned by it, and `false` is the complete
+	 * answer there. Qualifying it anyway invents a risk the operation does
+	 * not carry. The other four are qualified in both modes.
+	 *
+	 * A bare boolean by design. How many are hidden, of what type and in
+	 * which collection are exactly the facts the ACL filter exists to
+	 * withhold; do not try to infer a count from it.
+	 *
+	 * False for an unrestricted caller and for a restricted caller with
+	 * nothing hidden — so the common case must stay unqualified.
+	 */
+	relationships_partial: boolean;
+}
+
+export interface ItemCopyPreflight {
+	source: {
+		workspace_slug: string;
+		collection_slug: string;
+		ref?: string;
+		slug: string;
+		title: string;
+	};
+	destination: {
+		workspace_slug: string;
+		workspace_name: string;
+		collection_slug: string;
+		collection_name: string;
+	};
+	/** Echoes the request, and selects `warnings.children_orphaned`. */
+	archive_source: boolean;
+	/**
+	 * True when `fields.needs_value` is empty — i.e. the field mapping is
+	 * complete. Gate the confirm button on it.
+	 *
+	 * It is NOT a promise that the copy will succeed: unique-slug
+	 * collisions, the destination's item quota, cross-backend attachment
+	 * transfer and any concurrent change are all decided inside the
+	 * mutating copy's transaction. Always handle that call's error path.
+	 */
+	valid: boolean;
+	fields: ItemCopyPreflightFields;
+	warnings: ItemCopyPreflightWarnings;
+}
+
+// --- Cross-workspace copy, the MUTATION (PLAN-2357 / TASK-2365) ------------
+//
+//   POST /api/v1/workspaces/{ws}/items/{itemSlug}/copy
+//
+// Same request shape as the preflight above — send ItemCopyPreflightRequest
+// to both, so a dialog can preview and then commit without rebuilding it.
+// Override semantics are identical too: an undeclared key is a 400, and a
+// `null` value unsets rather than writing null.
+//
+// ⚠ NEVER RETRY THIS CALL AUTOMATICALLY (PLAN-2357 DR-13). There is no
+// idempotency key in v1, so a retry after a request that already committed
+// creates a DUPLICATE item — and a client that timed out cannot tell which
+// happened. On 500 `copy_failed` the server is explicitly telling you the
+// outcome is unknown: show the message, and send the user to look at the
+// destination. The shared api client only retries GET/HEAD; keep it that way.
+//
+// Error statuses beyond the preflight's set:
+//   403 `plan_limit_exceeded`  — destination workspace at its item cap;
+//                                carries {feature, limit, current, plan}
+//   403 `actor_required`       — nothing to attribute the copy to
+//   409 `conflict`             — unique-constraint collision in the
+//                                destination (slug / title / invocation slug)
+//   500 `copy_failed`          — AMBIGUOUS; see the warning above
+
+/** Identity of the item that was copied, and whether it survived. */
+export interface ItemCopyResultSource {
+	/** Canonical slug, never the UUID form the URL may have used. */
+	workspace_slug: string;
+	collection_slug: string;
+	ref?: string;
+	slug: string;
+	title: string;
+	/** True only on the move path. A plain copy leaves the source untouched. */
+	archived: boolean;
+	/**
+	 * The source workspace's committed seq for the ARCHIVE. Present only on
+	 * a move — a plain copy does not write in the source at all and must not
+	 * advance its cursor.
+	 */
+	seq?: number;
+}
+
+/** Where the copy landed. `workspace_slug` + `ref` is the navigation pair. */
+export interface ItemCopyResultDestination {
+	workspace_slug: string;
+	workspace_name: string;
+	collection_slug: string;
+	collection_name: string;
+	ref?: string;
+	slug: string;
+	/** The destination workspace's committed seq — never the source's. */
+	seq?: number;
+}
+
+/**
+ * What the copy actually dropped and cloned — the after-the-fact counterpart
+ * to the preflight's warnings. Deliberately narrower: the relationship
+ * counters are preview-only, because they describe the SOURCE's relatives,
+ * which the copy did not touch and which the user already saw before
+ * agreeing.
+ */
+export interface ItemCopyResultWarnings {
+	/** Destination-schema keys migration could not carry. Never null. */
+	dropped_fields: string[];
+	dropped_assignee: boolean;
+	dropped_agent_role: boolean;
+	attachment_count: number;
+	attachment_bytes: number;
+	unresolvable_ref_count: number;
+}
+
+/** The 201 response. */
+export interface ItemCopyResult {
+	source: ItemCopyResultSource;
+	destination: ItemCopyResultDestination;
+	/** Echoes the request; `source.archived` is what actually happened. */
+	archive_source: boolean;
+	/**
+	 * The destination item as committed. Not enriched with relations — a
+	 * fresh copy has none: the parent is scrubbed and no links carry.
+	 */
+	item: Item;
+	warnings: ItemCopyResultWarnings;
+}
 
 export interface ItemIndexResponse {
 	items: ItemIndexRow[];

@@ -81,6 +81,19 @@ type Item struct {
 	// omitted for a restricted caller (nil).
 	IsUnparented *bool `json:"is_unparented,omitempty"`
 
+	// MovedTo names the destination(s) an ARCHIVED item was moved to by a
+	// cross-workspace move (PLAN-2357 / TASK-2359). Populated on the single-item
+	// GET response only, and only for destinations the caller has independently
+	// been authorized to READ — see (*server.Server).movedToDestinations.
+	//
+	// `omitempty` is load-bearing, not cosmetic. A caller who may not read the
+	// destination must receive a response byte-identical to one for an archived
+	// item that was never moved: no key, no null, no empty array. A
+	// structurally distinguishable response is itself the disclosure the ACL
+	// gate exists to prevent. Never populate this from a list, search, activity
+	// or share-link path, and never emit a placeholder when the gate denies.
+	MovedTo []ItemMovedTo `json:"moved_to,omitempty"`
+
 	DerivedClosure      *ItemDerivedClosure      `json:"derived_closure,omitempty"`
 	CodeContext         *ItemCodeContext         `json:"code_context,omitempty"`
 	Convention          *ItemConventionMetadata  `json:"convention,omitempty"`
@@ -94,6 +107,40 @@ func (item *Item) ComputeRef() {
 	if item.CollectionPrefix != "" && item.ItemNumber != nil {
 		item.Ref = fmt.Sprintf("%s-%d", item.CollectionPrefix, *item.ItemNumber)
 	}
+}
+
+// ItemMovedTo is one destination an archived item was moved to, rendered in
+// DISPLAYABLE terms. It deliberately carries no UUIDs: the consumer must be
+// able to render (and link to) the destination without a second call, and
+// exposing internal IDs of a resource in another workspace buys nothing the
+// slug/ref pair does not already give.
+//
+// Every field describes a resource the caller has already been authorized to
+// read, and authorization is all-or-nothing per entry: an entry is never
+// partially REDACTED, it is dropped. (Individual fields may still be empty for
+// ordinary reasons — a workspace with no resolvable owner username, an item
+// whose collection has no prefix — which is what the omitempty tags are for.
+// Absence here never means "withheld".)
+type ItemMovedTo struct {
+	// WorkspaceSlug is the destination workspace's CANONICAL slug — the same
+	// value the token consent allow-list was tested against.
+	WorkspaceSlug string `json:"workspace_slug"`
+	WorkspaceName string `json:"workspace_name,omitempty"`
+	// WorkspaceOwnerUsername completes the /{username}/{workspace}/... web
+	// route. Empty when the join did not resolve one; the consumer degrades to
+	// a non-linked label rather than guessing.
+	WorkspaceOwnerUsername string `json:"workspace_owner_username,omitempty"`
+
+	CollectionSlug string `json:"collection_slug,omitempty"`
+	// Ref is the destination item's issue ID ("TASK-5"). Empty only for the
+	// rare item whose collection has no prefix or number.
+	Ref      string `json:"ref,omitempty"`
+	ItemSlug string `json:"item_slug"`
+	Title    string `json:"title"`
+
+	// MovedAt is when the move was recorded (RFC3339 UTC), matching the
+	// provenance row's created_at.
+	MovedAt string `json:"moved_at,omitempty"`
 }
 
 type ItemRelationRef struct {

@@ -38,21 +38,41 @@ type ItemSearchResult struct {
 // validateAssignmentScope checks that the assigned user and agent role belong to the
 // same workspace as the item. This prevents cross-workspace assignment leaks.
 func (s *Store) validateAssignmentScope(workspaceID string, assignedUserID, agentRoleID *string) error {
+	return s.validateAssignmentScopeQ(s.db, workspaceID, assignedUserID, agentRoleID)
+}
+
+// validateAssignmentScopeQ is validateAssignmentScope parameterized over the
+// query surface so the same two checks can run inside a caller's transaction
+// (createItemTx) instead of on an independent connection. Behaviour and error
+// strings are identical to the *sql.DB form; only the connection the two
+// existence probes run on differs.
+//
+// It deliberately re-issues the membership / agent-role probes as COUNT
+// queries rather than calling IsWorkspaceMember / GetAgentRole, which are
+// hard-wired to s.db. The predicates mirror those methods exactly, including
+// GetAgentRole's `id = ? OR slug = ?` acceptance.
+func (s *Store) validateAssignmentScopeQ(q rowQueryer, workspaceID string, assignedUserID, agentRoleID *string) error {
 	if assignedUserID != nil && *assignedUserID != "" {
-		isMember, err := s.IsWorkspaceMember(workspaceID, *assignedUserID)
-		if err != nil {
-			return fmt.Errorf("validate assigned user: %w", err)
+		var count int
+		if err := q.QueryRow(
+			s.q("SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ? AND user_id = ?"),
+			workspaceID, *assignedUserID,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("validate assigned user: %w", fmt.Errorf("check workspace membership: %w", err))
 		}
-		if !isMember {
+		if count == 0 {
 			return fmt.Errorf("assigned user is not a member of this workspace")
 		}
 	}
 	if agentRoleID != nil && *agentRoleID != "" {
-		role, err := s.GetAgentRole(workspaceID, *agentRoleID)
-		if err != nil {
-			return fmt.Errorf("validate agent role: %w", err)
+		var count int
+		if err := q.QueryRow(
+			s.q("SELECT COUNT(*) FROM agent_roles WHERE workspace_id = ? AND (id = ? OR slug = ?)"),
+			workspaceID, *agentRoleID, *agentRoleID,
+		).Scan(&count); err != nil {
+			return fmt.Errorf("validate agent role: %w", fmt.Errorf("get agent role: %w", err))
 		}
-		if role == nil {
+		if count == 0 {
 			return fmt.Errorf("agent role does not belong to this workspace")
 		}
 	}
@@ -154,66 +174,83 @@ func (s *Store) acquireWorkspaceParentLinkLock(tx *sql.Tx, workspaceID string) e
 }
 
 func (s *Store) CreateItem(workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
-	// Validate assignment scope before writing
-	if err := s.validateAssignmentScope(workspaceID, input.AssignedUserID, input.AgentRoleID); err != nil {
-		return nil, err
-	}
-
-	id := newID()
-	ts := now()
-
-	fields := input.Fields
-	if fields == "" {
-		fields = "{}"
-	}
-	tags := input.Tags
-	if tags == "" {
-		tags = "[]"
-	}
-	createdBy := input.CreatedBy
-	if createdBy == "" {
-		createdBy = "user"
-	}
-	source := input.Source
-	if source == "" {
-		source = "web"
-	}
-
-	baseSlug := slugify(input.Title)
-	if baseSlug == "" {
-		baseSlug = "untitled"
-	}
-	slug, err := s.uniqueSlug("items", "workspace_id", workspaceID, baseSlug)
-	if err != nil {
-		return nil, fmt.Errorf("unique slug: %w", err)
-	}
-
-	// Retry loop: if a concurrent insert claims the same item_number we
-	// roll back and re-read MAX(item_number) on the next attempt.
+	// Retry loop: if a concurrent insert claims the same item_number — or the
+	// same slug — we roll back and re-derive both on the next attempt.
+	//
+	// Re-deriving matters. Before TASK-2362 the slug was allocated ONCE,
+	// outside the transaction, and every retry re-submitted that same stale
+	// value: two concurrent creates of the same title had the loser burn all
+	// ten attempts on a slug the winner had already committed and then fail
+	// with a unique-constraint error. tryCreateItem now allocates inside the
+	// transaction, under the workspace lock, so each attempt sees the losing
+	// scan's outcome and picks the next free suffix.
 	var lastErr error
 	for attempt := 0; attempt < maxItemNumberRetries; attempt++ {
-		lastErr = s.tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, tags, createdBy, source, input)
-		if lastErr == nil {
-			return s.GetItem(id)
+		item, err := s.tryCreateItem(workspaceID, collectionID, input)
+		if err == nil {
+			return item, nil
 		}
-		// Only retry on unique-constraint violations (item_number conflict)
-		if !isUniqueViolation(lastErr) {
-			return nil, fmt.Errorf("insert item: %w", lastErr)
+		lastErr = err
+		// Only retry on unique-constraint violations (item_number / slug).
+		// Everything else — including assignment-scope rejections — is
+		// returned as-is.
+		if !isUniqueViolation(err) {
+			return nil, err
 		}
 	}
 	return nil, fmt.Errorf("insert item after %d retries: %w", maxItemNumberRetries, lastErr)
 }
 
 // tryCreateItem attempts a single transactional insert of an item with the
-// next available workspace-global item_number. The item_number is computed
-// atomically via a subquery in the INSERT to avoid races between concurrent
-// inserts reading the same MAX(item_number).
-func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, tags, createdBy, source string, input models.ItemCreate) error {
+// next available workspace-global item_number and a freshly-allocated unique
+// slug. The item_number is computed atomically via a subquery in the INSERT to
+// avoid races between concurrent inserts reading the same MAX(item_number).
+//
+// It is a thin BEGIN/COMMIT wrapper around createItemTx, which is also what
+// the cross-workspace copy path calls with its own transaction — so the two
+// creation paths share one implementation and cannot drift.
+//
+// Two deliberate behaviour changes from the pre-TASK-2362 shape, neither
+// observable to any current caller (nothing in internal/server or cmd/pad
+// string-matches these):
+//
+//   - Each retry attempt now derives a fresh item id and timestamp, because
+//     both are generated inside createItemTx. Previously one id/timestamp was
+//     minted before the loop and re-submitted. The discarded id was never
+//     returned to anyone, and a retried attempt arguably SHOULD carry the
+//     time it actually succeeded.
+//   - The item is read back inside the transaction rather than after COMMIT.
+//     A read-back miss now rolls the create back with an error instead of
+//     returning (nil, nil) over a committed row — the old shape handed callers
+//     a nil item and a nil error for an item that existed.
+func (s *Store) tryCreateItem(workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("insert item: %w", err)
 	}
 	defer tx.Rollback()
+
+	item, err := s.createItemTx(tx, workspaceID, collectionID, input)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("insert item: %w", err)
+	}
+	return item, nil
+}
+
+// insertItemTx is the write half of item creation: the items INSERT
+// (item_number, workspace seq, content-flush watermarks), the initial
+// item_versions row, wiki-link indexing + broken-title resolution, and the
+// create-time status_transitions row. It neither begins nor commits — the
+// caller owns the transaction boundary.
+//
+// Every creation side effect lives in this one place. Its only caller is
+// createItemTx, which both CreateItem and the cross-workspace copy path
+// (PLAN-2357 / DR-9a) go through, so the two paths cannot drift.
+func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts, fields, tags, createdBy, source string, input models.ItemCreate) error {
+	var err error
 
 	// PostgreSQL: take an advisory lock keyed on the workspace to serialize
 	// item_number assignment. This eliminates the race between concurrent
@@ -322,7 +359,147 @@ func (s *Store) tryCreateItem(id, workspaceID, collectionID, slug, ts, fields, t
 		}
 	}
 
-	return tx.Commit()
+	return nil
+}
+
+// createItemTx is the tx-taking form of item creation (PLAN-2357 / DR-9a) and
+// the single implementation behind BOTH CreateItem and the cross-workspace
+// copy path. It performs the ENTIRE create pipeline — defaults,
+// assignment-scope validation, workspace-scoped unique slug allocation,
+// item_number, workspace seq, content-flush watermarks, the initial
+// item_versions row, wiki-link indexing plus broken-title resolution in the
+// destination workspace, and the create-time status_transitions row — inside a
+// transaction the caller owns.
+//
+// It exists because CreateItem opens and commits its own transaction, so the
+// cross-workspace copy path (which must create in B, remap attachments, write
+// provenance and optionally archive the source atomically) cannot call it. A
+// raw `INSERT INTO items` in its place would silently break version history,
+// wiki-links, reporting, delta sync and slug uniqueness — none of which fail
+// loudly. Making CreateItem go through this same function rather than a
+// parallel copy is what keeps the two from drifting.
+//
+// CONTENT MUST ALREADY BE FINAL. Wiki-link indexing and the initial version
+// row are written from input.Content as given, so a caller doing attachment-ref
+// rewriting (DR-11) must rewrite BEFORE calling — otherwise the indexed body
+// and the first version both carry the source workspace's attachment UUIDs.
+//
+// TRUST BOUNDARY — this helper TRUSTS its caller, matching the pre-extraction
+// tryCreateItem:
+//   - collectionID is NOT checked to belong to workspaceID, nor to be live.
+//     DR-9 puts that on the caller, which re-reads and row-locks the
+//     destination collection (FOR UPDATE on Postgres) inside the same tx; a
+//     check here would be a second, weaker read of an already-pinned row.
+//   - input.ParentID is NOT checked to belong to workspaceID, and no parent
+//     cycle walk runs. Callers that set it must validate it; the copy path
+//     scrubs it to nil (DR-17 — the copy is unparented).
+//
+// What it does NOT trust: input.AssignedUserID and input.AgentRoleID are
+// validated against workspaceID, exactly as CreateItem does.
+//
+// NO RETRY ON UNIQUE VIOLATION. CreateItem wraps this in a retry loop by
+// re-running the whole transaction; a caller-owned transaction can't do that,
+// because a failed statement poisons it (Postgres) and an internal retry would
+// need a savepoint the caller can't see. Retrying is near-redundant anyway:
+// the workspace advisory lock (Postgres) / BEGIN IMMEDIATE (SQLite) serializes
+// item_number and slug allocation per workspace for the transaction's whole
+// lifetime. A caller-owned transaction that wants the retry must re-run its
+// own transaction.
+//
+// Returns the created item read back inside the tx, so the caller can consume
+// its committed slug / item_number / seq (DR-14 fanout) without a second
+// round-trip after COMMIT.
+func (s *Store) createItemTx(tx *sql.Tx, workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
+	return s.createItemTxWithID(tx, newID(), workspaceID, collectionID, input)
+}
+
+// createItemTxWithID is createItemTx with the destination item's id supplied
+// by the caller instead of minted inside.
+//
+// It exists for exactly one caller: CopyItemAcrossWorkspaces (PLAN-2357 /
+// DR-9 / DR-11). The copy has to hand the attachment planner the destination
+// item id BEFORE the item row exists, because every cloned attachment row must
+// carry item_id from the outset — never transiently NULL, since a NULL-item_id
+// row is a permanent un-reclaimable orphan (see AttachmentCopyRequest.DryRun's
+// doc). Minting the id in the orchestration and passing it down is the only
+// way to satisfy both that ordering and DR-9a's "the version row and the
+// wiki-link index are built from the POST-rewrite content".
+//
+// An empty id is filled in, so a caller that has no opinion behaves exactly
+// like createItemTx. The id is NOT validated for uniqueness here — the items
+// primary key does that, and a collision (a caller re-using an id) surfaces as
+// a unique violation that rolls the caller's transaction back.
+func (s *Store) createItemTxWithID(tx *sql.Tx, id, workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
+	// Validate assignment scope before writing — parity with CreateItem, but
+	// read through the tx so it sees the caller's uncommitted membership /
+	// role writes and is serialized with them.
+	//
+	// On SQLite this (and the slug scan below) now runs under the db-wide
+	// BEGIN IMMEDIATE write lock, where pre-extraction CreateItem ran it on
+	// the pool before opening its transaction. Both probes are single indexed
+	// COUNT lookups and only run when an assignee / agent role is actually
+	// set, and the widening is the same tradeoff store.go's DSN comment
+	// already accepts for UpdateItem's in-lock slug-collision check.
+	if err := s.validateAssignmentScopeQ(tx, workspaceID, input.AssignedUserID, input.AgentRoleID); err != nil {
+		return nil, err
+	}
+
+	if id == "" {
+		id = newID()
+	}
+	ts := now()
+
+	fields := input.Fields
+	if fields == "" {
+		fields = "{}"
+	}
+	tags := input.Tags
+	if tags == "" {
+		tags = "[]"
+	}
+	createdBy := input.CreatedBy
+	if createdBy == "" {
+		createdBy = "user"
+	}
+	source := input.Source
+	if source == "" {
+		source = "web"
+	}
+
+	// Take the workspace advisory lock BEFORE allocating the slug (Postgres;
+	// no-op on SQLite, where BEGIN IMMEDIATE already holds the write lock from
+	// the transaction's first statement). The slug scan is a read-modify-write
+	// on the workspace's slug space, so it must run under the same lock that
+	// serializes the workspace's creators — otherwise two concurrent creates of
+	// the same title both scan "foo" as free and one fails the unique
+	// constraint. Same lock key insertItemTx takes below; advisory xact locks
+	// are re-entrant within a transaction, so taking it twice — or a third time
+	// from an outer orchestrator holding both workspaces' locks — is harmless.
+	if err := s.acquireWorkspaceSeqLock(tx, workspaceID); err != nil {
+		return nil, err
+	}
+
+	baseSlug := slugify(input.Title)
+	if baseSlug == "" {
+		baseSlug = "untitled"
+	}
+	slug, err := s.uniqueSlugQ(tx, "items", "workspace_id", workspaceID, baseSlug)
+	if err != nil {
+		return nil, fmt.Errorf("unique slug: %w", err)
+	}
+
+	if err := s.insertItemTx(tx, id, workspaceID, collectionID, slug, ts, fields, tags, createdBy, source, input); err != nil {
+		return nil, fmt.Errorf("insert item: %w", err)
+	}
+
+	item, err := s.getItemTx(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if item == nil {
+		return nil, fmt.Errorf("created item %s not readable in transaction", id)
+	}
+	return item, nil
 }
 
 // getCollectionSlugTx reads collections.slug for a collection_id
@@ -335,6 +512,18 @@ func (s *Store) getCollectionSlugTx(tx *sql.Tx, collectionID string) (string, er
 	}
 	return slug, nil
 }
+
+// IsUniqueViolation is the exported form of isUniqueViolation, for HTTP
+// handlers that have to turn a store error into a 409 without re-implementing
+// the heuristic.
+//
+// Exported in TASK-2365 rather than duplicated at the call site: the
+// cross-workspace copy endpoint needs exactly this test, and a second copy of
+// the same two magic strings is a place for the two to drift (Codex round 8).
+// It is a string match rather than a SQLSTATE/driver-type check because
+// internal/store is driver-agnostic and both drivers sit behind database/sql;
+// the strings are stable parts of each engine's user-facing error text.
+func IsUniqueViolation(err error) bool { return isUniqueViolation(err) }
 
 // isUniqueViolation checks whether an error is a unique constraint violation.
 // Works for both SQLite (UNIQUE constraint failed) and PostgreSQL (duplicate key).
