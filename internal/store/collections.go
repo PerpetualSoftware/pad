@@ -83,17 +83,71 @@ func (s *Store) CreateCollection(workspaceID string, input models.CollectionCrea
 	return s.GetCollection(id)
 }
 
-func (s *Store) GetCollection(id string) (*models.Collection, error) {
+// collectionColumns is the ONE full-row projection of the collections table.
+// Every accessor that hydrates a COMPLETE models.Collection from a single row
+// selects exactly this list, in this order, and scans it through
+// scanCollectionRow — so adding a stored column to those accessors is a single
+// edit rather than a hunt for copies that silently drift apart (TASK-2368).
+//
+// SCOPE: the single-row accessors — GetCollection, GetCollectionAnyState, and
+// the transactional getCollectionInWorkspaceTx. ListCollections is
+// deliberately NOT folded in and remains a separate projection: it is an
+// aggregate multi-row query with table-aliased columns, a trailing
+// COUNT(i.id), and no deleted_at (its WHERE already excludes deleted rows).
+// Sharing a list across those shapes would need a second, count-aware scanner
+// and would reshape a hot aggregate for no correctness gain.
+//
+// SO IF YOU ARE ADDING A STORED COLLECTION COLUMN, this list is one of four
+// edits, not the only one. The others are ListCollections (above), and
+// ExportWorkspace / ImportWorkspace in export.go, which carry their own
+// projection over models.CollectionExport — a portability format, deliberately
+// not this model: it omits workspace_id and deleted_at because an import
+// assigns a fresh workspace and an export skips deleted rows. A column added
+// here but not there hydrates everywhere and still vanishes on export/import.
+const collectionColumns = `id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at, deleted_at`
+
+// collectionSelect is the shared prefix each single-row accessor completes
+// with its own predicate. Assembled from constants, so the full statement is
+// built at COMPILE time — no per-call concatenation on GetCollection's hot
+// path, and no runtime-assembled SQL fragment for s.q to rewrite.
+const collectionSelect = `SELECT ` + collectionColumns + ` FROM collections WHERE `
+
+const (
+	getCollectionQuery            = collectionSelect + `id = ? AND deleted_at IS NULL`
+	getCollectionAnyStateQuery    = collectionSelect + `id = ?`
+	getCollectionInWorkspaceQuery = collectionSelect + `id = ? AND workspace_id = ? AND deleted_at IS NULL`
+)
+
+// scanCollectionRow reads one collection row through q and hydrates the model.
+// The WHERE predicate is the only per-caller difference — scope and
+// deleted-state are the callers' decisions, and for the transactional copy
+// path the workspace scope is a security boundary, not a hint. Callers pass a
+// full constant statement rather than a fragment, so there is no dynamic SQL
+// here for a future caller to interpolate into.
+//
+// Parameterized over rowQueryer (the uniqueSlugQ / validateAssignmentScopeQ
+// pattern from TASK-2362) so the same read runs against *sql.DB or inside a
+// caller's *sql.Tx, under the locks that transaction already holds. The read
+// executes on whatever q is given and never falls back to s.db, so it cannot
+// escape the caller's transaction — but rowQueryer accepts both, so CHOOSING
+// the wrong one is a semantic error the compiler will not catch. A caller that
+// needs the read under its own locks must pass its tx; getCollectionInWorkspaceTx
+// is the existing example, and its *sql.Tx signature is what enforces that at
+// its call sites.
+//
+// s.q rewrites the placeholders for the active dialect here, so every caller
+// gets that for free and none may skip it.
+//
+// A MISS IS NOT AN ERROR: sql.ErrNoRows returns (nil, nil), matching every
+// caller's contract. Real failures are returned unwrapped so each accessor can
+// apply its own distinct error prefix.
+func (s *Store) scanCollectionRow(q rowQueryer, query string, args ...any) (*models.Collection, error) {
 	var c models.Collection
 	var createdAt, updatedAt string
 	var deletedAt *string
 	var isDefault bool
 
-	err := s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at, deleted_at
-		FROM collections
-		WHERE id = ? AND deleted_at IS NULL
-	`), id).Scan(
+	err := q.QueryRow(s.q(query), args...).Scan(
 		&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
 		&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
 		&createdAt, &updatedAt, &deletedAt,
@@ -102,7 +156,7 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get collection: %w", err)
+		return nil, err
 	}
 
 	c.IsDefault = isDefault
@@ -110,6 +164,14 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 	c.UpdatedAt = parseTime(updatedAt)
 	c.DeletedAt = parseTimePtr(deletedAt)
 	return &c, nil
+}
+
+func (s *Store) GetCollection(id string) (*models.Collection, error) {
+	c, err := s.scanCollectionRow(s.db, getCollectionQuery, id)
+	if err != nil {
+		return nil, fmt.Errorf("get collection: %w", err)
+	}
+	return c, nil
 }
 
 // GetCollectionAnyState is GetCollection without the
@@ -124,31 +186,11 @@ func (s *Store) GetCollection(id string) (*models.Collection, error) {
 // doneFiltersForWorkspace, both of which already include soft-deleted
 // collections for exactly this reason.
 func (s *Store) GetCollectionAnyState(id string) (*models.Collection, error) {
-	var c models.Collection
-	var createdAt, updatedAt string
-	var deletedAt *string
-	var isDefault bool
-
-	err := s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, name, slug, prefix, icon, description, schema, settings, sort_order, is_default, is_system, created_at, updated_at, deleted_at
-		FROM collections
-		WHERE id = ?
-	`), id).Scan(
-		&c.ID, &c.WorkspaceID, &c.Name, &c.Slug, &c.Prefix, &c.Icon, &c.Description,
-		&c.Schema, &c.Settings, &c.SortOrder, &isDefault, &c.IsSystem,
-		&createdAt, &updatedAt, &deletedAt,
-	)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+	c, err := s.scanCollectionRow(s.db, getCollectionAnyStateQuery, id)
 	if err != nil {
 		return nil, fmt.Errorf("get collection (any state): %w", err)
 	}
-	c.IsDefault = isDefault
-	c.CreatedAt = parseTime(createdAt)
-	c.UpdatedAt = parseTime(updatedAt)
-	c.DeletedAt = parseTimePtr(deletedAt)
-	return &c, nil
+	return c, nil
 }
 
 func (s *Store) GetCollectionBySlug(workspaceID, slug string) (*models.Collection, error) {

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -770,4 +771,200 @@ func collectionSlugs(colls []models.Collection) []string {
 		out = append(out, c.Slug)
 	}
 	return out
+}
+
+// TestCollectionAccessorsShareOneHydration is the TASK-2368 outcome guard.
+//
+// Three accessors read a full collection row — GetCollection,
+// GetCollectionAnyState and the transactional getCollectionInWorkspaceTx used
+// by the cross-workspace copy. They used to carry three verbatim copies of the
+// same 15-column projection and scan block, so a column added to the model in
+// one place drifted silently in the other two. They now share
+// collectionColumns + scanCollectionRow, and the WHERE predicate is the only
+// per-caller difference.
+//
+// Equality alone would pass just as well with three copies (it tests
+// behaviour that was already true), so this also pins the two properties the
+// duplication actually threatened: every scanned column is populated with a
+// DISTINCT non-zero value, so a mis-ordered or dropped column in a future edit
+// shows up as a mismatch rather than two zero values agreeing; and the
+// predicates that differ still differ — soft-delete state and workspace scope
+// are checked below.
+func TestCollectionAccessorsShareOneHydration(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Hydration")
+	other := createTestWorkspace(t, s, "Elsewhere")
+
+	created, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:        "Distinctive",
+		Slug:        "distinctive",
+		Prefix:      "DIST",
+		Icon:        "sparkles",
+		Description: "every scanned column carries a distinct value",
+		Schema:      `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"]}]}`,
+		Settings:    `{"board_group_by":"status"}`,
+		IsDefault:   true,
+		IsSystem:    true,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	// sort_order is 0 on insert, and created_at/updated_at are stamped equal;
+	// give all three distinct known values so a dropped or transposed column
+	// cannot pass by matching another column's value.
+	const (
+		wantCreatedAt = "2021-03-04T05:06:07Z"
+		wantUpdatedAt = "2022-08-09T10:11:12Z"
+	)
+	if _, err := s.db.Exec(
+		s.q(`UPDATE collections SET sort_order = ?, created_at = ?, updated_at = ? WHERE id = ?`),
+		7, wantCreatedAt, wantUpdatedAt, created.ID,
+	); err != nil {
+		t.Fatalf("set distinct column values: %v", err)
+	}
+
+	readTx := func(t *testing.T, collectionID, workspaceID string) *models.Collection {
+		t.Helper()
+		tx, err := s.db.Begin()
+		if err != nil {
+			t.Fatalf("Begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		c, err := s.getCollectionInWorkspaceTx(tx, collectionID, workspaceID)
+		if err != nil {
+			t.Fatalf("getCollectionInWorkspaceTx: %v", err)
+		}
+		return c
+	}
+
+	get, err := s.GetCollection(created.ID)
+	if err != nil {
+		t.Fatalf("GetCollection: %v", err)
+	}
+	anyState, err := s.GetCollectionAnyState(created.ID)
+	if err != nil {
+		t.Fatalf("GetCollectionAnyState: %v", err)
+	}
+	inTx := readTx(t, created.ID, ws.ID)
+
+	if get == nil || anyState == nil || inTx == nil {
+		t.Fatalf("live collection missed by an accessor: get=%v anyState=%v inTx=%v", get, anyState, inTx)
+	}
+
+	// Every column is checked against a LITERAL expected value, not against
+	// another accessor's output. Cross-accessor equality alone cannot catch a
+	// mutation in the shared projection or scan — transposing `slug` and
+	// `prefix` in collectionColumns while leaving the scan destinations put
+	// would make all three agree on the same wrong answer. Every value here is
+	// distinct and non-zero, so a transposition or a jointly-dropped
+	// column/destination pair lands as a mismatch rather than two zero values
+	// agreeing.
+	for _, tc := range []struct {
+		field     string
+		got, want any
+	}{
+		{"ID", get.ID, created.ID},
+		{"WorkspaceID", get.WorkspaceID, ws.ID},
+		{"Name", get.Name, "Distinctive"},
+		{"Slug", get.Slug, "distinctive"},
+		{"Prefix", get.Prefix, "DIST"},
+		{"Icon", get.Icon, "sparkles"},
+		{"Description", get.Description, "every scanned column carries a distinct value"},
+		{"SortOrder", get.SortOrder, 7},
+		{"IsDefault", get.IsDefault, true},
+		{"IsSystem", get.IsSystem, true},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("hydrated %s = %#v, want %#v — the shared projection and scan destinations disagree", tc.field, tc.got, tc.want)
+		}
+	}
+	// Schema and Settings are compared SEMANTICALLY: Postgres stores them as
+	// JSONB and re-serializes on readback, so key order and spacing differ from
+	// the literals the fixture sent. They still pin the two columns against
+	// each other — the two documents share no keys, so a transposition fails.
+	sameJSON := func(t *testing.T, field, got, want string) {
+		t.Helper()
+		var g, w any
+		if err := json.Unmarshal([]byte(got), &g); err != nil {
+			t.Errorf("hydrated %s is not valid JSON (%q): %v", field, got, err)
+			return
+		}
+		if err := json.Unmarshal([]byte(want), &w); err != nil {
+			t.Fatalf("fixture %s is not valid JSON: %v", field, err)
+		}
+		if !reflect.DeepEqual(g, w) {
+			t.Errorf("hydrated %s = %s, want %s — the shared projection and scan destinations disagree", field, got, want)
+		}
+	}
+	sameJSON(t, "Schema", get.Schema, `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","done"]}]}`)
+	sameJSON(t, "Settings", get.Settings, `{"board_group_by":"status"}`)
+
+	// The two timestamps are set to DIFFERENT instants above, so transposing
+	// created_at and updated_at fails here rather than passing on two equal
+	// stamps. deleted_at is the one column with no distinct live value; it is
+	// pinned instead by the soft-delete branch at the end, which is the only
+	// state in which it is non-nil.
+	if got := get.CreatedAt.UTC().Format(time.RFC3339); got != wantCreatedAt {
+		t.Errorf("hydrated CreatedAt = %s, want %s", got, wantCreatedAt)
+	}
+	if got := get.UpdatedAt.UTC().Format(time.RFC3339); got != wantUpdatedAt {
+		t.Errorf("hydrated UpdatedAt = %s, want %s", got, wantUpdatedAt)
+	}
+	if get.DeletedAt != nil {
+		t.Errorf("live collection hydrated DeletedAt = %v, want nil", get.DeletedAt)
+	}
+
+	if !reflect.DeepEqual(get, anyState) {
+		t.Errorf("GetCollectionAnyState hydration differs from GetCollection:\n get      = %+v\n anyState = %+v", get, anyState)
+	}
+	if !reflect.DeepEqual(get, inTx) {
+		t.Errorf("getCollectionInWorkspaceTx hydration differs from GetCollection:\n get  = %+v\n inTx = %+v", get, inTx)
+	}
+
+	// A miss is not an error, at every accessor — the copy path's sentinels
+	// depend on (nil, nil) rather than a wrapped ErrNoRows.
+	if c, err := s.GetCollection("no-such-collection"); err != nil || c != nil {
+		t.Errorf("GetCollection(miss) = (%v, %v), want (nil, nil)", c, err)
+	}
+	if c, err := s.GetCollectionAnyState("no-such-collection"); err != nil || c != nil {
+		t.Errorf("GetCollectionAnyState(miss) = (%v, %v), want (nil, nil)", c, err)
+	}
+	if c := readTx(t, "no-such-collection", ws.ID); c != nil {
+		t.Errorf("getCollectionInWorkspaceTx(miss) = %v, want nil", c)
+	}
+
+	// The transactional read stays WORKSPACE-SCOPED. That scope is the
+	// security boundary which makes a foreign collection a not-found rather
+	// than a cross-workspace write, so it must survive the unification.
+	if c := readTx(t, created.ID, other.ID); c != nil {
+		t.Errorf("getCollectionInWorkspaceTx read a collection from another workspace: %+v", c)
+	}
+
+	// The deleted-state predicates still differ: only GetCollectionAnyState
+	// sees a soft-deleted row, and it is the only one that can hydrate
+	// DeletedAt.
+	// DeleteCollection refuses a default collection, and the fixture is one so
+	// is_default is exercised above; clear the flag rather than weaken it.
+	if _, err := s.db.Exec(s.q(`UPDATE collections SET is_default = ? WHERE id = ?`), s.dialect.BoolToInt(false), created.ID); err != nil {
+		t.Fatalf("clear is_default: %v", err)
+	}
+	if err := s.DeleteCollection(created.ID, ""); err != nil {
+		t.Fatalf("DeleteCollection: %v", err)
+	}
+	if c, err := s.GetCollection(created.ID); err != nil || c != nil {
+		t.Errorf("GetCollection(soft-deleted) = (%v, %v), want (nil, nil)", c, err)
+	}
+	if c := readTx(t, created.ID, ws.ID); c != nil {
+		t.Errorf("getCollectionInWorkspaceTx(soft-deleted) = %+v, want nil", c)
+	}
+	deleted, err := s.GetCollectionAnyState(created.ID)
+	if err != nil {
+		t.Fatalf("GetCollectionAnyState(soft-deleted): %v", err)
+	}
+	if deleted == nil {
+		t.Fatal("GetCollectionAnyState(soft-deleted) = nil; it must ignore deleted_at")
+	}
+	if deleted.DeletedAt == nil {
+		t.Error("GetCollectionAnyState(soft-deleted).DeletedAt is nil; the deleted_at column is not being hydrated")
+	}
 }
