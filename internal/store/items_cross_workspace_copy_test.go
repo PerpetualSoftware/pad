@@ -1335,3 +1335,44 @@ func TestCopyAcrossWorkspaces_PreCheckGetsCopies(t *testing.T) {
 		t.Error("the hook's item shares the canonical item's ImplementationNotes backing array")
 	}
 }
+
+// TestCopyRollbackErrorClassification pins the distinction between a genuine
+// deadlock and SQLite writer contention.
+//
+// These two must never collapse into one signal. DR-9's lock ordering is meant
+// to make 40P01 impossible, so a deadlock in production means the ordering is
+// wrong and nothing else will surface it. SQLite's "database is locked" is the
+// opposite: an expected saturation mode under burst load against a
+// single-writer database with a 30-second busy timeout. Classifying both as
+// deadlock=true at ERROR — which this code did until PLAN-2357's final review —
+// leaves an operator unable to tell a lock-ordering bug from ordinary load.
+func TestCopyRollbackErrorClassification(t *testing.T) {
+	cases := []struct {
+		name        string
+		err         error
+		deadlock    bool
+		lockTimeout bool
+	}{
+		{"nil", nil, false, false},
+		{"postgres 40P01 by name", errors.New("pq: deadlock detected"), true, false},
+		{"postgres 40P01 by code", errors.New("ERROR: something (SQLSTATE 40P01)"), true, false},
+		{"sqlite busy timeout", errors.New("database is locked"), false, true},
+		{"sqlite busy timeout wrapped", fmt.Errorf("copy item: %w", errors.New("database is locked")), false, true},
+		{"unrelated", errors.New("no such column: bogus"), false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isDeadlockError(tc.err); got != tc.deadlock {
+				t.Errorf("isDeadlockError = %v, want %v", got, tc.deadlock)
+			}
+			if got := isLockTimeoutError(tc.err); got != tc.lockTimeout {
+				t.Errorf("isLockTimeoutError = %v, want %v", got, tc.lockTimeout)
+			}
+			// The log site reports at most one of the two, so an operator
+			// never sees a line claiming both.
+			if isDeadlockError(tc.err) && isLockTimeoutError(tc.err) {
+				t.Error("an error classified as BOTH deadlock and lock timeout")
+			}
+		})
+	}
+}

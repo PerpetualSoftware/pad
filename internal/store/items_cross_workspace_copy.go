@@ -445,18 +445,29 @@ func (s *Store) CopyItemAcrossWorkspaces(req CrossWorkspaceCopyRequest) (*CrossW
 		if isExpectedCopyRejection(err) {
 			return nil, err
 		}
+		// A genuine deadlock and SQLite writer contention are reported
+		// SEPARATELY and at different severities, because conflating them
+		// destroys the only signal this log exists to carry.
+		//
+		// SQLite is single-writer with a 30-second busy timeout (see store.go),
+		// so "database is locked" is an expected saturation mode under burst
+		// load — it says the box is busy, not that the lock ordering is wrong.
+		// Postgres' 40P01 says the opposite: DR-9's ordering is meant to make
+		// it impossible, so if it appears in production the ordering is subtly
+		// wrong and nothing else will surface it. Logging both as
+		// deadlock=true at ERROR would leave an operator at 3am unable to tell
+		// a lock-ordering bug from ordinary load.
 		deadlock := isDeadlockError(err)
+		lockTimeout := !deadlock && isLockTimeoutError(err)
 		attrs := []any{
 			"source_workspace_id", sourceWorkspaceID,
 			"target_workspace_id", req.TargetWorkspaceID,
 			"source_item_id", req.SourceItemID,
 			"archive_source", req.ArchiveSource,
 			"deadlock", deadlock,
+			"lock_timeout", lockTimeout,
 			"error", err,
 		}
-		// A deadlock is the one failure DR-9's lock ordering is meant to make
-		// impossible, so it is an ERROR: if the ordering is subtly wrong in
-		// production, nothing else surfaces it.
 		if deadlock {
 			slog.Error("cross-workspace item copy rolled back", attrs...)
 		} else {
@@ -1151,17 +1162,34 @@ func isExpectedCopyRejection(err error) bool {
 		IsUniqueViolation(err)
 }
 
-// isDeadlockError reports whether err is Postgres' serialization deadlock
-// (SQLSTATE 40P01) or SQLite's equivalent lock timeout. String matching rather
-// than a driver type assertion because internal/store is driver-agnostic and
-// both drivers are behind database/sql here; the strings are stable parts of
-// each engine's user-facing error text.
+// isDeadlockError reports whether err is a genuine deadlock — Postgres'
+// SQLSTATE 40P01. It deliberately does NOT match SQLite's "database is
+// locked"; see isLockTimeoutError for why the two must stay apart.
+//
+// String matching rather than a driver type assertion because internal/store
+// is driver-agnostic and both drivers are behind database/sql here; the
+// strings are stable parts of each engine's user-facing error text.
 func isDeadlockError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "deadlock detected") ||
-		strings.Contains(msg, "40p01") ||
-		strings.Contains(msg, "database is locked")
+		strings.Contains(msg, "40p01")
+}
+
+// isLockTimeoutError reports whether err is SQLite's writer-contention
+// timeout.
+//
+// This is a SATURATION signal, not a correctness one. The SQLite DSN makes
+// every transaction BEGIN IMMEDIATE with a 30-second busy timeout (store.go),
+// so a single writer holding the lock through a burst produces "database is
+// locked" on ordinary, correct traffic. A deadlock means the opposite — that
+// DR-9's lock ordering, which is supposed to make 40P01 impossible, is wrong.
+// An operator has to be able to tell those apart from the log line alone.
+func isLockTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "database is locked")
 }
