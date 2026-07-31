@@ -1599,12 +1599,20 @@ func (c *Client) handleResponse(resp *http.Response, result interface{}) error {
 }
 
 func (c *Client) parseError(resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body)
+	return parseErrorBody(resp.StatusCode, body)
+}
+
+// parseErrorBody decodes an error response whose body has already been
+// read. Split out of parseError so callers that need the raw bytes for
+// their own purposes (see client_items_copy.go) produce byte-identical
+// error values rather than a second, subtly different vocabulary.
+func parseErrorBody(status int, body []byte) error {
 	var errResp struct {
 		Error APIError `json:"error"`
 	}
-	body, _ := io.ReadAll(resp.Body)
 	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error.Message != "" {
 		return &errResp.Error
 	}
-	return fmt.Errorf("API error: %d %s", resp.StatusCode, string(body))
+	return fmt.Errorf("API error: %d %s", status, string(body))
 }

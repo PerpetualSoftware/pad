@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -1258,6 +1259,709 @@ Examples:
 	cmd.Flags().StringArray("field", nil, "set field values in target collection (key=value)")
 	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard when the move would write a terminal done-field value")
 	return cmd
+}
+
+// --- cross-workspace copy (PLAN-2357 / TASK-2366) ---
+
+// itemCopyOptions is everything `pad item copy` reads off its flags.
+// Extracted from the cobra command so runItemCopy is testable without a
+// live server, a config file or a workspace on disk.
+type itemCopyOptions struct {
+	Ref              string
+	TargetWorkspace  string
+	TargetCollection string
+	DryRun           bool
+	ArchiveSource    bool
+	Fields           []string
+	// Format is the effective --format value ("table" or "json").
+	Format string
+}
+
+// itemCopyDeps is the seam the command's logic is tested through. Copy is
+// the MUTATING call; the refuse-to-guess test asserts it is never invoked.
+type itemCopyDeps struct {
+	// Schema returns the destination collection's schema so --field values
+	// parse to their declared types. A lookup failure must degrade to an
+	// empty schema (every value stays a string) rather than fail the
+	// command — the server is the authority on the destination anyway.
+	Schema func(wsSlug, collSlug string) models.CollectionSchema
+	// Preflight runs the dry-run endpoint. Non-mutating.
+	Preflight func(cli.ItemCopyRequest) (*cli.ItemCopyPreflight, json.RawMessage, error)
+	// Copy runs the mutating endpoint. Never called on a dry run, and
+	// never called when the preflight reports unresolved needs_value.
+	Copy func(cli.ItemCopyRequest) (*cli.ItemCopyResult, json.RawMessage, error)
+}
+
+func itemCopyCmd() *cobra.Command {
+	opts := itemCopyOptions{}
+	cmd := &cobra.Command{
+		Use:   "copy <ref> --to-workspace <slug> --collection <slug>",
+		Short: "Copy an item into another workspace",
+		Long: `Copy an item into a different workspace, choosing the destination collection.
+
+Fields are migrated into the destination collection's schema: matching keys with
+compatible types carry across, incompatible ones are dropped, and destination
+fields that end up required-but-empty must be supplied with --field.
+
+With --archive-source the source is archived after a successful copy — that is
+the MOVE path. The archived source records where it went.
+
+What never carries: child items, the parent link, dependency links (blocks /
+blocked-by / related), the assignee when they are not a member of the
+destination workspace, and the agent role (role slugs are workspace-local).
+--dry-run reports all of it before anything happens.
+
+--dry-run calls a read-only preview endpoint and changes nothing. Without it,
+the preview still runs first: if any destination field needs a value you have
+not supplied, the copy is refused before any mutating request is sent.
+
+A copy is attempted at most once per invocation and is NEVER retried
+automatically. There is no idempotency key, so a blind re-run after an
+ambiguous failure would create a duplicate item — on such a failure the
+command tells you to check the destination workspace instead.
+
+Items can be referenced by issue ID (e.g. TASK-5) or slug.
+
+Examples:
+  pad item copy IDEA-12 --to-workspace pad-web --collection tasks --dry-run
+  pad item copy IDEA-12 --to-workspace pad-web --collection tasks
+  pad item copy TASK-5 --to-workspace pad-web --collection tasks --archive-source
+  pad item copy TASK-5 --to-workspace pad-web --collection tasks --field priority=high`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+
+			opts.Ref = args[0]
+			opts.Format = formatFlag
+
+			deps := itemCopyDeps{
+				Schema: func(wsSlug, collSlug string) models.CollectionSchema {
+					var schema models.CollectionSchema
+					if coll, err := client.GetCollection(wsSlug, collSlug); err == nil {
+						_ = json.Unmarshal([]byte(coll.Schema), &schema)
+					}
+					return schema
+				},
+				Preflight: func(req cli.ItemCopyRequest) (*cli.ItemCopyPreflight, json.RawMessage, error) {
+					return client.CopyItemPreflight(ws, opts.Ref, req)
+				},
+				Copy: func(req cli.ItemCopyRequest) (*cli.ItemCopyResult, json.RawMessage, error) {
+					return client.CopyItem(ws, opts.Ref, req)
+				},
+			}
+			return runItemCopy(opts, deps, os.Stdout, os.Stderr)
+		},
+	}
+	cmd.Flags().StringVar(&opts.TargetWorkspace, "to-workspace", "", "destination workspace slug (required)")
+	cmd.Flags().StringVar(&opts.TargetCollection, "collection", "", "destination collection slug (required)")
+	cmd.Flags().BoolVar(&opts.DryRun, "dry-run", false, "report what the copy would do, without doing any of it")
+	cmd.Flags().BoolVar(&opts.ArchiveSource, "archive-source", false, "archive the source after a successful copy (the move path)")
+	cmd.Flags().StringArrayVarP(&opts.Fields, "field", "f", nil, "set a destination field value (repeatable): --field key=value")
+	_ = cmd.MarkFlagRequired("to-workspace")
+	_ = cmd.MarkFlagRequired("collection")
+	return cmd
+}
+
+// runItemCopy is the whole command, minus flag binding.
+//
+// Order of operations is load-bearing:
+//
+//  1. Build the request (the SAME body both endpoints take).
+//  2. Always run the preflight — it is read-only.
+//  3. On --dry-run, render it and stop.
+//  4. If the preflight reports unresolved needs_value, REFUSE. No mutating
+//     request is sent; the user is shown exactly which fields to supply.
+//     This mirrors the web dialog's disabled confirm button — nobody
+//     should round-trip into an error they could have been shown.
+//  5. Otherwise perform the copy, exactly once (DR-13).
+func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writer) error {
+	if strings.TrimSpace(opts.TargetWorkspace) == "" {
+		return fmt.Errorf("--to-workspace is required")
+	}
+	if strings.TrimSpace(opts.TargetCollection) == "" {
+		return fmt.Errorf("--collection is required")
+	}
+
+	targetWorkspace := strings.TrimSpace(opts.TargetWorkspace)
+	targetCollection := normalizeCollectionSlug(strings.TrimSpace(opts.TargetCollection))
+
+	req := cli.ItemCopyRequest{
+		TargetWorkspace:  targetWorkspace,
+		TargetCollection: targetCollection,
+		ArchiveSource:    opts.ArchiveSource,
+	}
+
+	if len(opts.Fields) > 0 {
+		// Type the values against the DESTINATION collection's schema —
+		// the overrides are destination-schema keys, so the source's
+		// schema would be the wrong authority.
+		var schema models.CollectionSchema
+		if deps.Schema != nil {
+			schema = deps.Schema(targetWorkspace, targetCollection)
+		}
+		overrides := map[string]any{}
+		for _, kv := range opts.Fields {
+			idx := strings.Index(kv, "=")
+			if idx <= 0 {
+				// Unlike `pad item create`, a malformed --field here is a
+				// hard error rather than a silent skip: this command's
+				// whole refusal contract is "you were told what to
+				// supply", and silently dropping the thing the user
+				// supplied would make the refusal a lie.
+				return fmt.Errorf("invalid --field %q: expected key=value", kv)
+			}
+			overrides[kv[:idx]] = parseFieldFlag(schema, kv[:idx], kv[idx+1:])
+		}
+		req.FieldOverrides = overrides
+	}
+
+	pre, rawPre, err := deps.Preflight(req)
+	if err != nil {
+		return err
+	}
+
+	if opts.DryRun {
+		// A write failure on the dry run IS the failure — nothing
+		// happened, and reporting nothing while exiting 0 would let a
+		// script believe it saw an empty preview.
+		if opts.Format == "json" {
+			return cli.PrintRawJSON(stdout, rawPre)
+		}
+		return renderItemCopyPreflight(stdout, pre)
+	}
+
+	if len(pre.Fields.NeedsValue) > 0 {
+		// The preflight was sent WITH the overrides, so a non-empty
+		// needs_value here means the user supplied nothing that resolves
+		// these keys. Refuse — no mutating request.
+		if opts.Format == "json" {
+			// Still the endpoint's own contract: needs_value names the
+			// unresolved fields, so a script gets a machine-readable
+			// refusal rather than a bare exit code.
+			_ = cli.PrintRawJSON(stdout, rawPre)
+		} else {
+			// The returned write error is deliberately dropped: the
+			// command is already about to exit non-zero, and a stderr
+			// that cannot be written to has nowhere to report that.
+			_ = renderItemCopyNeedsValue(stderr, pre, req.FieldOverrides)
+		}
+		return fmt.Errorf("copy refused: %s in %s/%s %s a value (use --field key=value)",
+			pluralize(len(pre.Fields.NeedsValue), "field", "fields"),
+			targetWorkspace, targetCollection,
+			map[bool]string{true: "needs", false: "need"}[len(pre.Fields.NeedsValue) == 1])
+	}
+	if !pre.Valid {
+		// needs_value is empty but the server still says the mapping is
+		// incomplete. That is a contract violation rather than a user
+		// error, and guessing past it is the one thing this command must
+		// not do — so refuse without naming fields we do not have.
+		return fmt.Errorf("copy refused: the destination reported the field mapping as incomplete without naming a field; re-run with --dry-run --format json and report this")
+	}
+
+	res, rawRes, err := deps.Copy(req)
+	if err != nil {
+		if cli.CopyCommitted(err) {
+			// The server confirmed the copy and only the RESULT was lost
+			// (an unreadable or undecodable 2xx body). Same rule as the
+			// write-failure path below: this is a reporting failure, and
+			// a non-zero exit here would tell a script the copy did not
+			// happen — the DR-13 duplicate, one indirection removed.
+			fmt.Fprintf(stderr, "The copy SUCCEEDED, but its result could not be read: %v\n", err)
+			fmt.Fprintf(stderr, "Do not re-run — the item is in %q. Find it with:\n", targetWorkspace)
+			fmt.Fprintf(stderr, "  pad item list %s --workspace %s\n", targetCollection, targetWorkspace)
+			if opts.Format == "json" && len(rawRes) > 0 {
+				// Whatever bytes did arrive are still the server's, and
+				// a script may be able to use them.
+				_ = cli.PrintRawJSON(stdout, rawRes)
+			}
+			return nil
+		}
+		if cli.CopyOutcomeUnknown(err) {
+			// DR-13. Do NOT suggest re-running.
+			fmt.Fprintf(stderr, "The copy failed with an UNKNOWN outcome: %v\n\n", err)
+			fmt.Fprintf(stderr, "The item may or may not have been created in workspace %q.\n", targetWorkspace)
+			if opts.ArchiveSource {
+				fmt.Fprintf(stderr, "The source may or may not have been archived.\n")
+			}
+			fmt.Fprintf(stderr, "This command never retries automatically: there is no idempotency key,\n")
+			fmt.Fprintf(stderr, "so a blind re-run would create a DUPLICATE item.\n\n")
+			fmt.Fprintf(stderr, "Check the destination first:\n")
+			fmt.Fprintf(stderr, "  pad item list %s --workspace %s\n", targetCollection, targetWorkspace)
+			return fmt.Errorf("copy outcome unknown: check workspace %q before re-running", targetWorkspace)
+		}
+		return err
+	}
+
+	// THE COPY HAS COMMITTED. From here on a failure to WRITE THE REPORT
+	// must not become a non-zero exit.
+	//
+	// This is the DR-13 hazard in its subtlest form: a script that sees a
+	// non-zero exit from `pad item copy` will reasonably conclude the copy
+	// did not happen, and the obvious recovery is to run it again — which
+	// duplicates the item. A full disk or a closed pipe on stdout says
+	// nothing whatsoever about the destination workspace. So the write
+	// error is reported on stderr and the exit code stays 0, which is the
+	// honest answer to "did the copy succeed?".
+	var writeErr error
+	if opts.Format == "json" {
+		writeErr = cli.PrintRawJSON(stdout, rawRes)
+	} else {
+		writeErr = renderItemCopyResult(stdout, res)
+	}
+	if writeErr != nil {
+		fmt.Fprintf(stderr, "The copy SUCCEEDED, but its report could not be written: %v\n", writeErr)
+		fmt.Fprintf(stderr, "Do not re-run — the item is in %q. Find it with:\n", targetWorkspace)
+		fmt.Fprintf(stderr, "  pad item list %s --workspace %s\n", targetCollection, targetWorkspace)
+	}
+
+	// PARTIAL OUTCOME. archive_source is what was ASKED for; source.archived
+	// is what HAPPENED, and the server's contract is that they agree on
+	// every successful response. When they do not, the requested operation
+	// did not fully complete, and exit 0 would tell automation that a MOVE
+	// finished while the source is still sitting there (Codex round 8).
+	//
+	// This is the opposite call from the write-failure branch above, and the
+	// difference is the whole distinction: there, the operation succeeded
+	// and only the report was lost, so a non-zero exit would have been a
+	// lie. Here the operation is genuinely incomplete.
+	//
+	// Exiting non-zero is safe with respect to DR-13 for the same reason the
+	// unknown-outcome branch is: the message says what exists and what to do
+	// instead of re-running, and the copy half must never be repeated.
+	if res.ArchiveSource != res.Source.Archived {
+		srcRef := itemCopyRef(res.Source.Ref, res.Source.Slug)
+		destRef := itemCopyRef(res.Destination.Ref, res.Destination.Slug)
+		fmt.Fprintf(stderr, "\nPARTIAL: the copy landed but the source's archive state is not what was asked for.\n")
+		fmt.Fprintf(stderr, "  the copy EXISTS as %s in %q — do not re-run, that would duplicate it\n", destRef, res.Destination.WorkspaceSlug)
+		if res.ArchiveSource {
+			fmt.Fprintf(stderr, "  --archive-source was given, but %s in %q is NOT archived\n", srcRef, res.Source.WorkspaceSlug)
+			fmt.Fprintf(stderr, "  archive it separately:\n    pad item delete %s --workspace %s\n", srcRef, res.Source.WorkspaceSlug)
+		} else {
+			fmt.Fprintf(stderr, "  --archive-source was NOT given, but %s in %q was archived anyway\n", srcRef, res.Source.WorkspaceSlug)
+			fmt.Fprintf(stderr, "  restore it:\n    pad item restore %s --workspace %s\n", srcRef, res.Source.WorkspaceSlug)
+		}
+		return fmt.Errorf("copy completed but the source archive state is wrong: asked archive_source=%v, source.archived=%v", res.ArchiveSource, res.Source.Archived)
+	}
+	return nil
+}
+
+// itemCopyWriter records the first write error and stops writing after it,
+// so a renderer can stay a straight line of Fprintf calls and still report
+// whether its output actually landed.
+type itemCopyWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *itemCopyWriter) Write(p []byte) (int, error) {
+	if e.err != nil {
+		return 0, e.err
+	}
+	n, err := e.w.Write(p)
+	if err != nil {
+		e.err = err
+	}
+	return n, err
+}
+
+// pluralize renders "1 field" / "2 fields".
+func pluralize(n int, singular, plural string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, singular)
+	}
+	return fmt.Sprintf("%d %s", n, plural)
+}
+
+// itemCopyDroppedReasons / itemCopyNeedsValueReasons translate the wire
+// vocabulary into a sentence. An UNKNOWN code falls through to the code
+// itself rather than to a generic phrase — a reason the CLI does not know
+// about must still reach the user verbatim.
+var itemCopyDroppedReasons = map[string]string{
+	"no_target_field":         "the destination collection has no such field",
+	"incompatible_type":       "the value cannot be converted to the destination's field",
+	"undeclared_source_field": "the source item's own collection schema no longer declares this key",
+	"assignee_not_a_member":   "the assignee is not a member of the destination workspace",
+	"agent_role_not_portable": "agent roles are workspace-local and never carry",
+}
+
+var itemCopyNeedsValueReasons = map[string]string{
+	"missing_required": "required, with no value to carry and no default",
+	"invalid_value":    "the carried value is not valid in the destination",
+}
+
+func itemCopyReason(table map[string]string, code string) string {
+	if s, ok := table[code]; ok {
+		return s
+	}
+	if code == "" {
+		return "(no reason given)"
+	}
+	return code
+}
+
+// renderItemCopyPreflight writes the human-readable dry run.
+//
+// EVERY bucket header and EVERY warning line is printed unconditionally,
+// including the empty and zero cases. Omitting a zero would make "no
+// attachments" indistinguishable from "this CLI does not report
+// attachments", and the entire point of DR-17 is that none of this is
+// silent.
+func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
+	w := &itemCopyWriter{w: out}
+	fmt.Fprintf(w, "Copy preview — dry run. Nothing was changed.\n\n")
+	writeItemCopyHeader(w, p)
+
+	fmt.Fprintf(w, "\nFields\n")
+
+	fmt.Fprintf(w, "  carried (%d)\n", len(p.Fields.Carried))
+	if len(p.Fields.Carried) == 0 {
+		fmt.Fprintf(w, "    (none)\n")
+	}
+	for _, f := range p.Fields.Carried {
+		fmt.Fprintf(w, "    %-20s %s = %s  [from %s]\n",
+			itemCopyLine(f.Key), itemCopyTypeLabel(f.Type, f.Label), itemCopyValue(f.Value), itemCopyLine(f.From))
+	}
+
+	fmt.Fprintf(w, "  dropped (%d)\n", len(p.Fields.Dropped))
+	if len(p.Fields.Dropped) == 0 {
+		fmt.Fprintf(w, "    (none)\n")
+	}
+	for _, f := range p.Fields.Dropped {
+		fmt.Fprintf(w, "    %-20s %s (%s) — %s\n",
+			itemCopyLine(f.Key), itemCopyTypeLabel("", f.Label), itemCopyLine(f.Kind),
+			itemCopyReason(itemCopyDroppedReasons, f.Reason))
+	}
+
+	fmt.Fprintf(w, "  needs_value (%d)\n", len(p.Fields.NeedsValue))
+	if len(p.Fields.NeedsValue) == 0 {
+		fmt.Fprintf(w, "    (none)\n")
+	}
+	for _, f := range p.Fields.NeedsValue {
+		required := "optional"
+		if f.Required {
+			required = "required"
+		}
+		fmt.Fprintf(w, "    %-20s %s %s — %s\n",
+			itemCopyLine(f.Key), itemCopyTypeLabel(f.Type, f.Label), required,
+			itemCopyReason(itemCopyNeedsValueReasons, f.Reason))
+		if len(f.Options) > 0 {
+			fmt.Fprintf(w, "    %-20s   options: %s\n", "", itemCopyList(f.Options))
+		}
+		if f.Message != "" {
+			fmt.Fprintf(w, "    %-20s   %s\n", "", itemCopyLine(f.Message))
+		}
+	}
+
+	fmt.Fprintf(w, "\nWarnings\n")
+	warn := p.Warnings
+	fmt.Fprintf(w, "  %-32s %d\n", "child items (not copied)", warn.ChildCount)
+	fmt.Fprintf(w, "  %-32s %s\n", "children orphaned by the move", yesNo(warn.ChildrenOrphaned))
+	fmt.Fprintf(w, "  %-32s %s\n", "parent dropped", yesNo(warn.DroppedParent))
+	fmt.Fprintf(w, "  %-32s %s\n", "outgoing links dropped", itemCopyLinkSummary(warn.OutgoingLinks))
+	fmt.Fprintf(w, "  %-32s %s\n", "incoming links dropped", itemCopyLinkSummary(warn.IncomingLinks))
+	fmt.Fprintf(w, "  %-32s %s\n", "assignee dropped", yesNo(warn.DroppedAssignee))
+	fmt.Fprintf(w, "  %-32s %s\n", "agent role dropped", yesNo(warn.DroppedAgentRole))
+	fmt.Fprintf(w, "  %-32s %s\n", "attachments cloned", itemCopyAttachmentSummary(warn.AttachmentCount, warn.AttachmentBytes))
+	fmt.Fprintf(w, "  %-32s %d\n", "unresolvable attachment refs", warn.UnresolvableRefCount)
+
+	fmt.Fprintln(w)
+	if len(p.Fields.NeedsValue) > 0 {
+		fmt.Fprintf(w, "%s still %s a value. Supply with --field key=value, then re-run without --dry-run.\n",
+			pluralize(len(p.Fields.NeedsValue), "field", "fields"),
+			map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1])
+		return w.err
+	}
+	// `valid` is the server's own gate, and it means only that
+	// needs_value is empty — never restate it as "this will succeed".
+	fmt.Fprintf(w, "The field mapping is complete. Re-run without --dry-run to perform the %s.\n",
+		itemCopyModeNoun(p.ArchiveSource))
+	return w.err
+}
+
+// renderItemCopyNeedsValue is the refusal. It names every unresolved field
+// and shows the exact flags to add.
+//
+// No MUTATING request was sent. The read-only preflight has of course
+// already run — that is where this information came from — so do not read
+// this as "the command touched nothing".
+//
+// Returns the first write error for symmetry with the other two renderers.
+// The caller has nowhere better to send it (this IS the stderr path) and
+// already exits non-zero, but a renderer that silently swallows write
+// failures is the kind of thing that gets copied into one that matters.
+// overrides is what the user actually supplied, so the refusal can tell the
+// two cases apart. They read completely differently and demand different
+// next actions (Codex round 8): a field nobody supplied needs a --field
+// added, whereas a field the user DID supply and the destination rejected
+// needs a DIFFERENT value — and telling that user "no --field supplied one"
+// would send them looking for a bug in their own command line.
+func renderItemCopyNeedsValue(out io.Writer, p *cli.ItemCopyPreflight, overrides map[string]any) error {
+	w := &itemCopyWriter{w: out}
+
+	supplied := func(key string) (any, bool) {
+		if overrides == nil || strings.TrimSpace(key) == "" {
+			return nil, false
+		}
+		v, ok := overrides[key]
+		return v, ok
+	}
+	rejected := 0
+	for _, f := range p.Fields.NeedsValue {
+		if _, ok := supplied(f.Key); ok {
+			rejected++
+		}
+	}
+
+	verb := map[bool]string{true: "needs", false: "need"}[len(p.Fields.NeedsValue) == 1]
+	switch {
+	case rejected == 0:
+		fmt.Fprintf(w, "Refusing to %s: %s in %s/%s %s a value, and no --field supplied one.\n",
+			itemCopyModeNoun(p.ArchiveSource),
+			pluralize(len(p.Fields.NeedsValue), "field", "fields"),
+			p.Destination.WorkspaceSlug, p.Destination.CollectionSlug, verb)
+	case rejected == len(p.Fields.NeedsValue):
+		fmt.Fprintf(w, "Refusing to %s: the --field %s you supplied %s rejected by %s/%s.\n",
+			itemCopyModeNoun(p.ArchiveSource),
+			map[bool]string{true: "value", false: "values"}[rejected == 1],
+			map[bool]string{true: "was", false: "were"}[rejected == 1],
+			p.Destination.WorkspaceSlug, p.Destination.CollectionSlug)
+	default:
+		fmt.Fprintf(w, "Refusing to %s: %s in %s/%s still %s a value (%d supplied with --field and rejected).\n",
+			itemCopyModeNoun(p.ArchiveSource),
+			pluralize(len(p.Fields.NeedsValue), "field", "fields"),
+			p.Destination.WorkspaceSlug, p.Destination.CollectionSlug, verb, rejected)
+	}
+	fmt.Fprintf(w, "No copy was attempted.\n\n")
+	for _, f := range p.Fields.NeedsValue {
+		required := "optional"
+		if f.Required {
+			required = "required"
+		}
+		fmt.Fprintf(w, "  %-20s %s %s — %s\n",
+			itemCopyLine(f.Key), itemCopyTypeLabel(f.Type, f.Label), required,
+			itemCopyReason(itemCopyNeedsValueReasons, f.Reason))
+		if v, ok := supplied(f.Key); ok {
+			fmt.Fprintf(w, "  %-20s   you supplied %s — the destination rejected it\n", "", itemCopyValue(v))
+		}
+		if len(f.Options) > 0 {
+			fmt.Fprintf(w, "  %-20s   options: %s\n", "", itemCopyList(f.Options))
+		}
+		if f.Message != "" {
+			fmt.Fprintf(w, "  %-20s   %s\n", "", itemCopyLine(f.Message))
+		}
+	}
+	// An entry with an EMPTY key cannot be supplied: `--field =value` is
+	// rejected by this command's own parser, and the server has nothing to
+	// match it against either. Printing `--field =<value>` would hand the
+	// user a command that cannot work, so say what is actually wrong
+	// instead (Codex round 6). Empty keys are not currently rejected by
+	// collection-schema validation, so this is reachable.
+	unnamed := 0
+	var toAdd, toFix []string
+	for _, f := range p.Fields.NeedsValue {
+		if strings.TrimSpace(f.Key) == "" {
+			unnamed++
+			continue
+		}
+		if _, ok := supplied(f.Key); ok {
+			toFix = append(toFix, itemCopyLine(f.Key))
+			continue
+		}
+		toAdd = append(toAdd, itemCopyLine(f.Key))
+	}
+	if len(toAdd) > 0 {
+		fmt.Fprintf(w, "\nAdd:")
+		for _, k := range toAdd {
+			fmt.Fprintf(w, " --field %s=<value>", k)
+		}
+		fmt.Fprintln(w)
+	}
+	if len(toFix) > 0 {
+		// A different instruction on purpose — repeating "Add: --field
+		// size=<value>" at a user who already passed --field size=xl is
+		// how a CLI teaches someone that it is not listening.
+		fmt.Fprintf(w, "\nCorrect:")
+		for _, k := range toFix {
+			fmt.Fprintf(w, " --field %s=<a valid value>", k)
+		}
+		fmt.Fprintln(w)
+	}
+	if unnamed > 0 {
+		fmt.Fprintf(w, "\n%s came back with an empty key and cannot be supplied with --field.\n",
+			pluralize(unnamed, "field", "fields"))
+		fmt.Fprintf(w, "That is a problem with the destination collection's schema, not something\nthis command can resolve — fix the schema in %s/%s.\n",
+			p.Destination.WorkspaceSlug, p.Destination.CollectionSlug)
+	}
+	return w.err
+}
+
+// renderItemCopyResult writes the outcome of a completed copy.
+func renderItemCopyResult(out io.Writer, r *cli.ItemCopyResult) error {
+	w := &itemCopyWriter{w: out}
+	verb := "Copied"
+	if r.Source.Archived {
+		verb = "Moved"
+	}
+	fmt.Fprintf(w, "%s %s → %s %s\n\n",
+		verb,
+		itemCopyRef(r.Source.Ref, r.Source.Slug),
+		r.Destination.WorkspaceSlug,
+		itemCopyRef(r.Destination.Ref, r.Destination.Slug))
+
+	fmt.Fprintf(w, "  %-13s %s/%s  %s  %q\n", "Source",
+		r.Source.WorkspaceSlug, r.Source.CollectionSlug,
+		itemCopyRef(r.Source.Ref, r.Source.Slug), r.Source.Title)
+	// Archived is what HAPPENED; archive_source is what was ASKED for.
+	// Report the fact, and flag a disagreement rather than hiding it.
+	fmt.Fprintf(w, "  %-13s %s\n", "  archived", yesNo(r.Source.Archived))
+	if r.ArchiveSource != r.Source.Archived {
+		fmt.Fprintf(w, "  %-13s --archive-source was %s but the source is %sarchived\n", "  WARNING",
+			yesNo(r.ArchiveSource), map[bool]string{true: "", false: "not "}[r.Source.Archived])
+	}
+	fmt.Fprintf(w, "  %-13s %s/%s  %s  %s\n", "Destination",
+		r.Destination.WorkspaceSlug, r.Destination.CollectionSlug,
+		itemCopyRef(r.Destination.Ref, r.Destination.Slug), r.Destination.Slug)
+
+	fmt.Fprintf(w, "\nWarnings\n")
+	warn := r.Warnings
+	dropped := "(none)"
+	if len(warn.DroppedFields) > 0 {
+		dropped = itemCopyList(warn.DroppedFields)
+	}
+	fmt.Fprintf(w, "  %-32s %s\n", "fields dropped", dropped)
+	fmt.Fprintf(w, "  %-32s %s\n", "assignee dropped", yesNo(warn.DroppedAssignee))
+	fmt.Fprintf(w, "  %-32s %s\n", "agent role dropped", yesNo(warn.DroppedAgentRole))
+	fmt.Fprintf(w, "  %-32s %s\n", "attachments cloned", itemCopyAttachmentSummary(warn.AttachmentCount, warn.AttachmentBytes))
+	fmt.Fprintf(w, "  %-32s %d\n", "unresolvable attachment refs", warn.UnresolvableRefCount)
+	return w.err
+}
+
+func writeItemCopyHeader(w io.Writer, p *cli.ItemCopyPreflight) {
+	fmt.Fprintf(w, "  %-13s %s/%s  %s  %q\n", "Source",
+		p.Source.WorkspaceSlug, p.Source.CollectionSlug,
+		itemCopyRef(p.Source.Ref, p.Source.Slug), p.Source.Title)
+	fmt.Fprintf(w, "  %-13s %s/%s  (%s / %s)\n", "Destination",
+		p.Destination.WorkspaceSlug, p.Destination.CollectionSlug,
+		p.Destination.WorkspaceName, p.Destination.CollectionName)
+	mode := "copy — the source is left untouched"
+	if p.ArchiveSource {
+		mode = "move — copy, then archive the source"
+	}
+	fmt.Fprintf(w, "  %-13s %s\n", "Mode", mode)
+}
+
+func itemCopyModeNoun(archiveSource bool) string {
+	if archiveSource {
+		return "move"
+	}
+	return "copy"
+}
+
+// itemCopyRef prefers the issue ID and falls back to the slug, which is
+// always present. `ref` is omitempty on the wire.
+func itemCopyRef(ref, slug string) string {
+	if ref != "" {
+		return ref
+	}
+	return slug
+}
+
+// itemCopyTypeLabel renders the "(Label, type)" annotation, tolerating
+// either or both being absent (both are omitempty on the wire).
+func itemCopyTypeLabel(fieldType, label string) string {
+	label = itemCopyLine(label)
+	fieldType = itemCopyLine(fieldType)
+	switch {
+	case label != "" && fieldType != "":
+		return fmt.Sprintf("(%s, %s)", label, fieldType)
+	case label != "":
+		return fmt.Sprintf("(%s)", label)
+	case fieldType != "":
+		return fmt.Sprintf("(%s)", fieldType)
+	default:
+		return "()"
+	}
+}
+
+// itemCopyLine makes a server-supplied string safe to drop into a table
+// row. Schema keys, labels, option values, link types and validator
+// messages are all user-authored and travel through the server verbatim, so
+// a newline in one of them could forge a row and a control character could
+// scramble the terminal. Anything carrying a control character is rendered
+// in Go quoted form; everything else — overwhelmingly the common case — is
+// passed through byte-for-byte, because quoting every string would make the
+// ordinary output harder to read for no benefit.
+func itemCopyLine(s string) string {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return strconv.Quote(s)
+		}
+	}
+	return s
+}
+
+// itemCopyList renders a list of server-supplied strings.
+//
+// Every element is quoted, unconditionally — unlike itemCopyLine, which
+// quotes only when it must. The separator is the whole problem here: a
+// select option or schema key may legitimately contain ", ", and joined
+// bare it would read as two entries. `"ready, waiting"` has to be
+// distinguishable from `ready`, `waiting`, because in a needs_value block
+// the user is about to retype one of them into --field.
+func itemCopyList(items []string) string {
+	parts := make([]string, len(items))
+	for i, s := range items {
+		parts[i] = strconv.Quote(s)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// itemCopyValue renders a carried field value without lying about it: a
+// JSON null renders as an explicit marker, strings are quoted so an empty
+// string is visible, and structured values keep their JSON form.
+func itemCopyValue(v any) string {
+	if v == nil {
+		return "(null)"
+	}
+	if s, ok := v.(string); ok {
+		return fmt.Sprintf("%q", s)
+	}
+	if b, err := json.Marshal(v); err == nil {
+		return string(b)
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// itemCopyLinkSummary renders a link-type→count map as "2 (blocks 1,
+// related 1)". An empty or absent map renders "0", never a blank — a
+// missing count and a zero count must not look the same.
+func itemCopyLinkSummary(m map[string]int) string {
+	total := 0
+	keys := make([]string, 0, len(m))
+	for k, v := range m {
+		total += v
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return "0"
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s %d", itemCopyLine(k), m[k]))
+	}
+	return fmt.Sprintf("%d (%s)", total, strings.Join(parts, ", "))
+}
+
+// itemCopyAttachmentSummary renders count + bytes. The exact byte count is
+// always shown alongside the human-readable form so the rounding in
+// "1.2 MiB" can never be mistaken for the real number.
+func itemCopyAttachmentSummary(count int, bytes int64) string {
+	if count == 0 && bytes == 0 {
+		return "0"
+	}
+	return fmt.Sprintf("%d (%s, %d bytes)", count, humanBytes(bytes), bytes)
 }
 
 // --- artifact export / import ---
