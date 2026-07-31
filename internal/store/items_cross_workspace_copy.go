@@ -1122,9 +1122,19 @@ func (s *Store) archiveItemForCopyTx(tx *sql.Tx, workspaceID, itemID, ts string)
 // validation (DR-12), an undeclared field override, the item quota (DR-16,
 // which logs its own bounded line), a source that is missing or already
 // archived, a caller-supplied PreCheck refusal (the HTTP layer's in-tx
-// authorization re-check, which is a 403/404 the caller renders), and the v1
-// cross-backend attachment refusal. Everything else — a DB error, a constraint
-// violation, a deadlock — is unexpected and gets logged.
+// authorization re-check, which is a 403/404 the caller renders), the v1
+// cross-backend attachment refusal, and a unique-constraint violation.
+//
+// The unique violation is here because the HTTP layer maps it to a
+// caller-facing 409 (writeCopyError in handlers_items_copy.go), so it is a
+// routine answer, not an incident — a workspace-unique field such as a
+// playbook's invocation_slug colliding in the destination reaches this path on
+// ordinary input. Classifying it as unexpected would fire an operator warning
+// per 409 and bury the deadlock signal this log exists to surface. The two
+// classifications must agree; they disagreed until PLAN-2357's final review.
+//
+// Everything else — a DB error, a deadlock, any other constraint violation —
+// is unexpected and gets logged.
 func isExpectedCopyRejection(err error) bool {
 	var validation *FieldValidationError
 	var undeclared *UndeclaredOverrideError
@@ -1137,7 +1147,8 @@ func isExpectedCopyRejection(err error) bool {
 		errors.Is(err, sql.ErrNoRows) ||
 		errors.Is(err, ErrCopySourceCollectionMissing) ||
 		errors.Is(err, ErrCopyTargetCollectionMissing) ||
-		errors.Is(err, ErrCopyCrossBackendAttachments)
+		errors.Is(err, ErrCopyCrossBackendAttachments) ||
+		IsUniqueViolation(err)
 }
 
 // isDeadlockError reports whether err is Postgres' serialization deadlock
