@@ -29,7 +29,7 @@
 	import { relativeTime, wikiLinksToMarkdown, markdownToWikiLinks, cleanBrokenLinks, unescapeDocLinks } from '$lib/utils/markdown';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { editorStore } from '$lib/stores/editor.svelte';
-	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget, ResolvedItemIdentity } from '$lib/types';
+	import type { Item, Collection, CollectionSettings, QuickAction, ItemLink, AgentRole, PaneTarget, ResolvedItemIdentity, ItemCopyResult } from '$lib/types';
 	import { parseFields, parseSchema, parseSettings, parseTags, formatItemRef, itemUrlId, getTerminalOptions } from '$lib/types';
 	import QuickActionsMenu from '$lib/components/common/QuickActionsMenu.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
@@ -40,6 +40,7 @@
 	import ContentError from '$lib/components/common/ContentError.svelte';
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
+	import CopyItemDialog from '$lib/components/items/CopyItemDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
 	import { isSamePaneTarget, breadcrumbParentTarget } from '$lib/collections/paneTarget';
@@ -1399,6 +1400,11 @@
 		addLinkResults = [];
 		addLinkLoading = false;
 		shareDialogOpen = false;
+		// The copy dialog is {#key itemSlug}-remounted, but `open` is owned
+		// HERE — leaving it true would tear down A's dialog and immediately
+		// re-open a fresh one pointed at B, silently retargeting a mutation the
+		// user set up for A.
+		copyDialogOpen = false;
 		editCollectionOpen = false;
 		showGraph = false;
 		backlinksCount = 0;
@@ -3690,6 +3696,105 @@
 		// for this narrow case.
 	}
 
+	// ── Cross-workspace copy / move dialog (PLAN-2373 / TASK-2355) ──────────
+
+	let copyDialogOpen = $state(false);
+
+	/**
+	 * Close the copy dialog and put focus back on the ⋯ pane-menu trigger.
+	 *
+	 * Modal restores focus to whatever was focused when it OPENED, and only if
+	 * that node is still connected — but the launcher here is a menu item that
+	 * the menu unmounts on close, so the generic restore lands on nothing. The
+	 * ⋯ button is the stable anchor, and this runs on EVERY close path (Escape,
+	 * backdrop, Cancel, success, failure) because it is the dialog's only
+	 * `onclose`.
+	 *
+	 * The `await tick()` matters: while the native dialog is still open the rest
+	 * of the document is inert, so focusing the trigger before Modal's effect
+	 * has run `close()` would be a no-op.
+	 */
+	async function closeCopyDialog() {
+		copyDialogOpen = false;
+		await tick();
+		paneMenuTrigger?.focus();
+	}
+
+	/**
+	 * Foreground-flush whatever the user has typed into `items.content` before a
+	 * copy previews or commits. Resolves false when the flush FAILED, which
+	 * blocks the copy: the cross-workspace copy reads `items.content`, and under
+	 * live collab that can lag the authoritative Y.Doc by the full 5s debounce.
+	 * Silently copying content the user just typed but that never reached the
+	 * server is the worst outcome this dialog can produce.
+	 *
+	 * Mirrors `flushCollabBeforeRestore`'s fences (captured ctx, id agreement)
+	 * and adds the raw-markdown path, which has its own pending-save queue.
+	 */
+	async function flushContentBeforeCopy(): Promise<boolean> {
+		if (!item) return false;
+		// Raw markdown mode: no collab provider; drain the debounced PATCH queue.
+		if (rawMode) return await flushRawIfPending();
+		// No LIVE collab editor to drain (non-collab item, viewer, editor not
+		// mounted): items.content is already canonical.
+		if (!collabProvider || !editorInstance || editorInstance.isDestroyed) return true;
+		const ctx = activeCollabContext;
+		if (!ctx || ctx.itemId !== item.id) return true;
+		let md: string | null = null;
+		try {
+			const raw = (editorInstance.storage as any).markdown?.getMarkdown?.();
+			if (typeof raw === 'string') md = raw;
+		} catch {
+			// Live read failed — fall through to the per-edit shadow.
+		}
+		if (md == null) md = lastEditorMarkdown;
+		if (md == null) return true;
+		const result = await collabFlusher.flush(ctx, md, false);
+		// 'deduped' — the server already has this markdown. 'skipped' —
+		// force-refresh recovery, where the local Y.Doc is the stale side and
+		// items.content is canonical, so the copy would read the right thing
+		// either way. Only an attempted-and-rejected PATCH is a loss.
+		return result !== 'failed';
+	}
+
+	/**
+	 * A cross-workspace copy (or move) committed. The parent owns the feedback.
+	 *
+	 * Deliberately does NOT wait for SSE: the browser holds one workspace's SSE
+	 * connection at a time, so while we sit in the source workspace we can never
+	 * receive the destination's `item_created`. A plain copy changes nothing
+	 * here and needs no invalidation at all; a move re-fetches the source so its
+	 * archived + provenance banners render now rather than on the next load.
+	 */
+	async function handleCopied(result: ItemCopyResult) {
+		const dest = result.destination;
+		const label = dest.ref ?? dest.slug;
+		toastStore.show(
+			result.source.archived
+				? `Moved to ${dest.workspace_name} as ${label}`
+				: `Copied to ${dest.workspace_name} as ${label}`,
+			'success',
+		);
+		if (!result.source.archived) return;
+		const targetItem = item;
+		if (!targetItem) return;
+		const gen = loadGeneration;
+		const ws = wsSlug;
+		const slug = itemSlug;
+		try {
+			const refreshed = await api.items.get(ws, slug);
+			if (switchedAway(targetItem, gen)) return;
+			// Don't clobber a NEWER snapshot: an SSE/sync update (or another
+			// client restoring the source) can land while this GET is in flight,
+			// and `seq` is the workspace-scoped mutation cursor stamped on every
+			// write. Equal seq is fine to adopt — it's the same revision.
+			if ((item?.seq ?? 0) > (refreshed.seq ?? 0)) return;
+			item = adoptServerItem(refreshed);
+		} catch {
+			// Non-fatal: the archived state surfaces on the next load.
+		}
+	}
+
 	async function handleDelete() {
 		if (!item || !canEdit) return;
 		// Capture identity before the await. The DELETE targets `targetItem.id`
@@ -3937,8 +4042,26 @@
 		}
 	}
 
-	async function handleMove(targetSlug: string) {
-		if (!item || moving || !canEdit) return;
+	/**
+	 * Move the item to another collection IN THIS WORKSPACE.
+	 *
+	 * Two call sites: the pane menu's move drill-down (fire-and-forget), and
+	 * CopyItemDialog when the chosen destination workspace IS this one (DR-18) —
+	 * which finally passes `fieldOverrides`, closing the intra-workspace dead
+	 * end where the server's `missing_required_fields` refusal became an
+	 * unactionable toast because this call site hardcoded `undefined`.
+	 *
+	 * The outcome is RETURNED (rather than only toasted) so the dialog can
+	 * decide whether to close; the toasts, the open-children force retry, and
+	 * `navIfStillCurrent`'s route-identity fencing are unchanged.
+	 */
+	async function handleMove(
+		targetSlug: string,
+		fieldOverrides?: Record<string, unknown>,
+	): Promise<{ status: 'ok' | 'cancelled' | 'failed'; message?: string }> {
+		if (!item || moving || !canEdit) {
+			return { status: 'failed', message: moving ? 'A move is already in progress.' : undefined };
+		}
 		moving = true;
 		paneMenuOpen = false;
 		paneMenuView = 'root';
@@ -3962,7 +4085,7 @@
 		const gen = loadGeneration;
 		const stillOnSource = () => !switchedAway(sourceItem, gen);
 		const doMove = (force: boolean) =>
-			api.items.move(sourceWs, sourceSlug, targetSlug, undefined, force ? { force: true } : undefined);
+			api.items.move(sourceWs, sourceSlug, targetSlug, fieldOverrides, force ? { force: true } : undefined);
 		// After the modal resolves, only honor the success path's
 		// navigation/toast if the page is STILL on the source item.
 		// We check both `item.id` (cheap object-identity guard) AND
@@ -3989,6 +4112,7 @@
 			const moved = await doMove(false);
 			if (stillOnSource()) toastStore.show(`Moved to ${targetSlug}`, 'success');
 			navIfStillCurrent(moved.slug);
+			return { status: 'ok' };
 		} catch (e: any) {
 			// BUG-1538 / Codex review round 1: the server's
 			// open-children guard also fires on POST /move when the
@@ -3998,7 +4122,7 @@
 			if (isOpenChildrenError(e)) {
 				// Don't open the confirm dialog (or fire its forced retry) if the
 				// pane already switched away from the source item.
-				if (!stillOnSource()) return;
+				if (!stillOnSource()) return { status: 'cancelled' };
 				let forced;
 				try {
 					forced = await confirmOpenChildrenOrThrow(e, parentRef, () => {
@@ -4008,17 +4132,21 @@
 				} catch (retryErr: any) {
 					console.error('Forced move failed:', retryErr);
 					if (stillOnSource()) toastStore.show(retryErr?.message ?? 'Failed to move item', 'error');
-					return; // outer finally still resets `moving`
+					// outer finally still resets `moving`
+					return { status: 'failed', message: retryErr?.message ?? 'Failed to move item' };
 				}
 				if (forced) {
 					if (stillOnSource()) toastStore.show(`Moved to ${targetSlug}`, 'success');
 					navIfStillCurrent(forced.slug);
-				} else if (stillOnSource()) {
+					return { status: 'ok' };
+				}
+				if (stillOnSource()) {
 					toastStore.show('Move cancelled', 'info');
 				}
-				return;
+				return { status: 'cancelled' };
 			}
 			if (stillOnSource()) toastStore.show(e.message ?? 'Failed to move item', 'error');
+			return { status: 'failed', message: e?.message ?? 'Failed to move item' };
 		} finally {
 			// Guard against clobbering a NEWER item's move: a superseded move's
 			// finally must not clear the flag the current item's handler set.
@@ -4503,6 +4631,21 @@
 						{#if canEdit}
 							<MenuItem icon="⇄" hint="›" onclick={() => (paneMenuView = 'move')} disabled={moving}>
 								{moving ? 'Moving…' : 'Move to collection…'}
+							</MenuItem>
+							<!-- Launcher only — the review step itself is a Modal (PLAN-2373).
+							     Stays `canEdit`-gated like the move row: that correctly admits
+							     an item-edit-grant guest, which the server also admits. The
+							     DESTINATION side is gated separately, inside the dialog. -->
+							<MenuItem
+								icon="⧉"
+								onclick={() => {
+									paneMenuOpen = false;
+									paneMenuView = 'root';
+									copyDialogOpen = true;
+								}}
+								disabled={moving}
+							>
+								Copy or move to workspace…
 							</MenuItem>
 						{/if}
 						{#if isOwner}
@@ -5316,6 +5459,32 @@
 		{/key}
 
 	</div>
+
+	{#if item}
+		<!--
+			Cross-workspace copy / move dialog (PLAN-2373 / TASK-2355).
+
+			{#key itemSlug}: this pane is persistent (no {#key} of its own), so
+			remount the dialog on an item switch — its destination selection,
+			entered override values and preview all belong to ONE source item.
+			Note the dialog itself is NOT wrapped in {#if open}: Modal is always
+			mounted and driven by its `open` prop (its consumer contract).
+		-->
+		{#key itemSlug}
+			<CopyItemDialog
+				open={copyDialogOpen}
+				onclose={closeCopyDialog}
+				sourceWsSlug={wsSlug}
+				sourceCollectionSlug={effectiveCollSlug}
+				{item}
+				sourceRef={formatItemRef(item) || item.slug}
+				sourceUnavailable={isArchived}
+				flushContent={flushContentBeforeCopy}
+				onmove={handleMove}
+				oncopied={handleCopied}
+			/>
+		{/key}
+	{/if}
 
 	{#if isOwner && item}
 		<!-- {#key itemSlug}: remount the item-scoped share dialog on switch. -->
