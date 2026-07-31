@@ -17,18 +17,23 @@ const itemWorkspaceMoveColumns = `id, source_workspace_id, source_item_id,
 	target_workspace_id, target_item_id, archived_source, source_seq,
 	created_by, created_at`
 
-// itemWorkspaceMoveOrder is the shared newest-first ordering.
+// itemWorkspaceMoveOrder is the newest-first ordering.
 //
-// created_at leads because the forward lookup returns copies AND moves, and
-// copies carry no source_seq at all — ordering by seq first would bury every
-// copy behind every move regardless of recency. created_at is UTC RFC3339
-// TEXT, so lexicographic order is chronological order.
+// created_at leads because source_seq is only as trustworthy as whatever the
+// caller passed: imports, backfills and hand-repaired rows can carry a high
+// seq with an old created_at, and under a seq-primary order such a row
+// silently becomes the head. created_at is UTC RFC3339 TEXT, so lexicographic
+// order is chronological order.
 //
 // source_seq breaks the ties created_at cannot: it is second-precision, and
 // archive → restore → move again inside one second is legal (DR-2a). Within a
 // single second the higher source_seq is unambiguously the later move.
 // COALESCE rather than "NULLS LAST" because SQLite and Postgres disagree on
 // default NULL placement in DESC order; -1 sorts below every real seq on both.
+// The COALESCE is defensive rather than load-bearing today — the one
+// production query using this ordering reads archived rows only, and
+// RecordItemWorkspaceMoveTx requires a seq on those — but it costs nothing and
+// keeps the ordering total if the predicate ever widens.
 //
 // id is a final tiebreak so the ordering is total and the result set is
 // stable across calls.
@@ -108,54 +113,21 @@ func (s *Store) RecordItemWorkspaceMoveTx(tx *sql.Tx, m models.ItemWorkspaceMove
 	return &m, nil
 }
 
-// ListItemWorkspaceMovesBySource returns every destination one source item was
-// copied or moved to, newest first.
-//
-// A SET, not a row: one source can be copied into several workspaces, and can
-// additionally be moved after being restored. The caller decides how to render
-// multiples.
-//
-// This is the BROAD lookup — copies and moves alike — for callers that want
-// the whole provenance picture. The archived-source "moved to" pointer is not
-// one of them: it reads only ArchivedSource rows (DR-2a) and needs a bound on
-// how many it will authorize, so it uses
-// ListArchivedItemWorkspaceMovesBySource instead of filtering this result.
-func (s *Store) ListItemWorkspaceMovesBySource(sourceItemID string) ([]models.ItemWorkspaceMove, error) {
-	rows, err := s.db.Query(s.q(`
-		SELECT `+itemWorkspaceMoveColumns+`
-		FROM item_workspace_moves
-		WHERE source_item_id = ?`+itemWorkspaceMoveOrder,
-	), sourceItemID)
-	if err != nil {
-		return nil, fmt.Errorf("list item workspace moves by source: %w", err)
-	}
-	defer rows.Close()
-
-	moves := []models.ItemWorkspaceMove{}
-	for rows.Next() {
-		m, err := scanItemWorkspaceMove(rows)
-		if err != nil {
-			return nil, fmt.Errorf("list item workspace moves by source: %w", err)
-		}
-		moves = append(moves, *m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list item workspace moves by source: %w", err)
-	}
-	return moves, nil
-}
-
 // ListArchivedItemWorkspaceMovesBySource returns at most `limit` MOVE rows for
 // one source — rows with archived_source true — newest first.
 //
-// The narrow counterpart to ListItemWorkspaceMovesBySource, for the one
-// consumer that wants moves and only moves: the archived-source "moved to"
-// pointer (PLAN-2357 DR-2a / TASK-2359). Its reason to exist is that the
-// caller bounds how many destinations it will AUTHORIZE, and that bound is
-// only meaningful if the row set it authorizes over is bounded too. Filtering
-// in Go instead would leave a source with a long tail of plain COPIES loading,
-// scanning and allocating every one of them on every read of the source, while
-// none of them can ever contribute to the result.
+// It serves the one consumer that wants moves and only moves: the
+// archived-source "moved to" pointer (PLAN-2357 DR-2a / TASK-2359). The
+// archived_source predicate and the LIMIT are both pushed into SQL rather than
+// applied by the caller, because the caller bounds how many destinations it
+// will AUTHORIZE, and that bound is only meaningful if the row set it
+// authorizes over is bounded too. Filtering in Go over an unfiltered forward
+// lookup instead would leave a source with a long tail of plain COPIES
+// loading, scanning and allocating every one of them on every read of the
+// source, while none of them can ever contribute to the result. A broad
+// copies-and-moves forward lookup existed alongside this one until TASK-2374
+// and was deleted unused; a "copied from" affordance that wanted it back would
+// need its own dual-sided disclosure design (DR-20) before the query matters.
 //
 // What the LIMIT bounds is rows RETURNED — materialized, scanned into structs,
 // and handed to the caller's per-row authorization. It is not a promise about
@@ -167,21 +139,21 @@ func (s *Store) ListItemWorkspaceMovesBySource(sourceItemID string) ([]models.It
 // source are inherently tiny — one per copy or move of a single item — so the
 // equality lookup on idx_item_workspace_moves_source is the part that matters.
 //
-// The ordering is itemWorkspaceMoveOrder, shared VERBATIM with the broad
-// forward lookup, and that is a deliberate refusal to specialize. Ordering
+// The ordering is itemWorkspaceMoveOrder, and leading with created_at rather
+// than source_seq is a deliberate refusal to specialize. Ordering
 // archived-only rows by `source_seq DESC` alone would match the partial
 // index's columns and reads as strictly better — source_seq is NOT NULL for a
 // move (RecordItemWorkspaceMoveTx enforces it) and is workspace-A-monotonic
-// when the copy path supplies the seq the archive assigned. But the STORE
-// cannot enforce that it is that seq: the column takes whatever the caller
-// passes, there is no production writer yet to establish the habit, and
-// imports, backfills and hand-repaired rows can carry a high seq with an old
+// when the copy path supplies the seq the archive assigned — which the one
+// production writer, CopyItemAcrossWorkspaces, does. But the STORE cannot
+// enforce that it is that seq: the column takes whatever the caller passes, no
+// constraint ties it to the source workspace's sequence, and imports,
+// backfills and hand-repaired rows can carry a high seq with an old
 // created_at. Under a seq-primary order such a row silently becomes the head —
 // and with the cap, evicts the genuinely newest destination. Leading with
 // created_at makes the pathological case merely mis-tiebroken instead of
-// inverted, and keeps two queries over the same rows from disagreeing about
-// what "newest" means. source_seq stays as the second term, which is the tie
-// DR-2a actually needs it for.
+// inverted. source_seq stays as the second term, which is the tie DR-2a
+// actually needs it for.
 //
 // A non-positive limit returns no rows rather than every row: this is a bound,
 // and a caller that forgot to set one should get the safe answer.
@@ -213,31 +185,6 @@ func (s *Store) ListArchivedItemWorkspaceMovesBySource(sourceItemID string, limi
 		return nil, fmt.Errorf("list archived item workspace moves by source: %w", err)
 	}
 	return moves, nil
-}
-
-// GetItemWorkspaceMoveByTarget returns where a destination item came from, or
-// (nil, nil) when the item was not produced by a cross-workspace copy.
-//
-// One row, unlike the forward lookup, and that is enforced rather than
-// assumed: a destination item is created by exactly one copy operation whose
-// provenance row is written in the same transaction, and
-// uq_item_workspace_moves_target makes a second row naming the same target
-// impossible. No ordering or LIMIT is needed as a result.
-func (s *Store) GetItemWorkspaceMoveByTarget(targetItemID string) (*models.ItemWorkspaceMove, error) {
-	row := s.db.QueryRow(s.q(`
-		SELECT `+itemWorkspaceMoveColumns+`
-		FROM item_workspace_moves
-		WHERE target_item_id = ?`,
-	), targetItemID)
-
-	m, err := scanItemWorkspaceMove(row)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get item workspace move by target: %w", err)
-	}
-	return m, nil
 }
 
 // scanner (api_tokens.go) is satisfied by both *sql.Row and *sql.Rows.

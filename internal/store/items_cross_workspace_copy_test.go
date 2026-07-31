@@ -229,12 +229,17 @@ func TestCopyItemAcrossWorkspaces_PlainCopyLandsInDestination(t *testing.T) {
 	if res.Move.SourceSeq != nil {
 		t.Errorf("plain copy recorded source_seq=%d, want nil", *res.Move.SourceSeq)
 	}
-	back, err := f.s.GetItemWorkspaceMoveByTarget(res.Item.ID)
-	if err != nil || back == nil {
-		t.Fatalf("back-pointer lookup failed: %v", err)
+	// The row the result reports is really committed, and it names the source.
+	// Read straight from the table: the only production read of this table is
+	// the archived-only moved-to lookup, which by design cannot see a copy.
+	var gotSource string
+	if err := f.s.db.QueryRow(f.s.q(
+		`SELECT source_item_id FROM item_workspace_moves WHERE target_item_id = ?`,
+	), res.Item.ID).Scan(&gotSource); err != nil {
+		t.Fatalf("read back the provenance row: %v", err)
 	}
-	if back.SourceItemID != src.ID {
-		t.Errorf("back-pointer source = %s, want %s", back.SourceItemID, src.ID)
+	if gotSource != src.ID {
+		t.Errorf("provenance row source = %s, want %s", gotSource, src.ID)
 	}
 }
 

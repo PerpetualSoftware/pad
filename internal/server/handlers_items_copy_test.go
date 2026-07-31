@@ -1651,9 +1651,9 @@ func TestCopyEndpoint_MoveArchivesTheSource(t *testing.T) {
 	if live, err := f.srv.store.GetItem(f.source.ID); err != nil || live != nil {
 		t.Errorf("the source is still live after a move (err=%v)", err)
 	}
-	moves, err := f.srv.store.ListItemWorkspaceMovesBySource(f.source.ID)
+	moves, err := f.srv.store.ListArchivedItemWorkspaceMovesBySource(f.source.ID, 10)
 	if err != nil {
-		t.Fatalf("ListItemWorkspaceMovesBySource: %v", err)
+		t.Fatalf("ListArchivedItemWorkspaceMovesBySource: %v", err)
 	}
 	if len(moves) != 1 || moves[0].TargetItemID != res.Item.ID || !moves[0].ArchivedSource {
 		t.Fatalf("provenance rows = %+v, want one archived pointer at %s", moves, res.Item.ID)

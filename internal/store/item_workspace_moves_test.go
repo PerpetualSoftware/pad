@@ -67,10 +67,44 @@ func (f moveFixture) record(t *testing.T, m models.ItemWorkspaceMove) *models.It
 
 func seqPtr(v int64) *int64 { return &v }
 
-// TestRecordItemWorkspaceMoveTx_RoundTrip covers insert-in-tx plus both
-// lookups, and asserts every column survives the dialect round-trip —
-// notably archived_source (INTEGER on SQLite, BOOLEAN on Postgres) and the
-// nullable source_seq.
+// bySource reads back every provenance row for one source, newest first.
+//
+// A test-local query rather than a store accessor: the only production read of
+// this table is the archived-only "moved to" lookup, and the write-path tests
+// below have to see plain COPIES too — rows that lookup deliberately excludes.
+// A broad forward accessor existed for exactly this until TASK-2374 and was
+// deleted with no non-test caller; keeping the breadth here, where it is
+// actually wanted, is the honest place for it.
+func (f moveFixture) bySource(t *testing.T, sourceItemID string) []models.ItemWorkspaceMove {
+	t.Helper()
+
+	rows, err := f.s.db.Query(f.s.q(`
+		SELECT `+itemWorkspaceMoveColumns+`
+		FROM item_workspace_moves
+		WHERE source_item_id = ?`+itemWorkspaceMoveOrder,
+	), sourceItemID)
+	if err != nil {
+		t.Fatalf("read back provenance rows: %v", err)
+	}
+	defer rows.Close()
+
+	moves := []models.ItemWorkspaceMove{}
+	for rows.Next() {
+		m, err := scanItemWorkspaceMove(rows)
+		if err != nil {
+			t.Fatalf("scan provenance row: %v", err)
+		}
+		moves = append(moves, *m)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read back provenance rows: %v", err)
+	}
+	return moves
+}
+
+// TestRecordItemWorkspaceMoveTx_RoundTrip covers insert-in-tx and asserts
+// every column survives the dialect round-trip — notably archived_source
+// (INTEGER on SQLite, BOOLEAN on Postgres) and the nullable source_seq.
 func TestRecordItemWorkspaceMoveTx_RoundTrip(t *testing.T) {
 	f := newMoveFixture(t, "RoundTrip")
 	target := f.dest(t, f.dstWS, "Copy")
@@ -91,14 +125,11 @@ func TestRecordItemWorkspaceMoveTx_RoundTrip(t *testing.T) {
 		t.Fatal("CreatedAt not generated")
 	}
 
-	forward, err := f.s.ListItemWorkspaceMovesBySource(f.source.ID)
-	if err != nil {
-		t.Fatalf("ListItemWorkspaceMovesBySource: %v", err)
+	readBack := f.bySource(t, f.source.ID)
+	if len(readBack) != 1 {
+		t.Fatalf("read back: got %d rows, want 1", len(readBack))
 	}
-	if len(forward) != 1 {
-		t.Fatalf("forward lookup: got %d rows, want 1", len(forward))
-	}
-	got := forward[0]
+	got := readBack[0]
 	if got.ID != stored.ID {
 		t.Errorf("ID: got %q, want %q", got.ID, stored.ID)
 	}
@@ -121,25 +152,17 @@ func TestRecordItemWorkspaceMoveTx_RoundTrip(t *testing.T) {
 		t.Errorf("CreatedAt: got %q, want %q", got.CreatedAt, stored.CreatedAt)
 	}
 
-	// Back lookup finds the same row from the destination side.
-	back, err := f.s.GetItemWorkspaceMoveByTarget(target.ID)
+	// The row is a MOVE, so the production archived-only lookup must see it
+	// with every column intact — the write path exists to feed that read.
+	moves, err := f.s.ListArchivedItemWorkspaceMovesBySource(f.source.ID, 10)
 	if err != nil {
-		t.Fatalf("GetItemWorkspaceMoveByTarget: %v", err)
+		t.Fatalf("ListArchivedItemWorkspaceMovesBySource: %v", err)
 	}
-	if back == nil {
-		t.Fatal("back lookup returned nil for a recorded target")
+	if len(moves) != 1 || moves[0].ID != stored.ID {
+		t.Fatalf("archived lookup = %+v, want the recorded row %s", moves, stored.ID)
 	}
-	if back.ID != stored.ID || back.SourceItemID != f.source.ID {
-		t.Errorf("back lookup returned wrong row: %+v", back)
-	}
-
-	// A target with no provenance is (nil, nil), not an error.
-	none, err := f.s.GetItemWorkspaceMoveByTarget(f.source.ID)
-	if err != nil {
-		t.Fatalf("GetItemWorkspaceMoveByTarget (absent): %v", err)
-	}
-	if none != nil {
-		t.Errorf("expected nil for an item that was never a copy target, got %+v", none)
+	if moves[0].SourceSeq == nil || *moves[0].SourceSeq != 42 {
+		t.Errorf("archived lookup lost source_seq: %v", moves[0].SourceSeq)
 	}
 }
 
@@ -159,18 +182,25 @@ func TestRecordItemWorkspaceMoveTx_CopyLeavesSeqNull(t *testing.T) {
 		CreatedBy:         f.actor,
 	})
 
-	forward, err := f.s.ListItemWorkspaceMovesBySource(f.source.ID)
-	if err != nil {
-		t.Fatalf("forward lookup: %v", err)
+	stored := f.bySource(t, f.source.ID)
+	if len(stored) != 1 {
+		t.Fatalf("got %d rows, want 1", len(stored))
 	}
-	if len(forward) != 1 {
-		t.Fatalf("got %d rows, want 1", len(forward))
-	}
-	if forward[0].ArchivedSource {
+	if stored[0].ArchivedSource {
 		t.Error("ArchivedSource: got true, want false for a plain copy")
 	}
-	if forward[0].SourceSeq != nil {
-		t.Errorf("SourceSeq: got %v, want nil for a plain copy", *forward[0].SourceSeq)
+	if stored[0].SourceSeq != nil {
+		t.Errorf("SourceSeq: got %v, want nil for a plain copy", *stored[0].SourceSeq)
+	}
+
+	// And the copy is invisible to the moved-to lookup — a copy did not move
+	// the source anywhere (DR-2a).
+	moves, err := f.s.ListArchivedItemWorkspaceMovesBySource(f.source.ID, 10)
+	if err != nil {
+		t.Fatalf("ListArchivedItemWorkspaceMovesBySource: %v", err)
+	}
+	if len(moves) != 0 {
+		t.Errorf("a plain copy surfaced as a moved-to pointer: %+v", moves)
 	}
 }
 
@@ -184,82 +214,6 @@ const (
 	lexHighMoveID = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 	lexLowMoveID  = "00000000-0000-0000-0000-000000000000"
 )
-
-// TestListItemWorkspaceMovesBySource_MultipleDestinationsNewestFirst covers
-// the "forward lookup returns a SET" contract: one source copied into several
-// workspaces yields several rows, newest first — and only that source's rows.
-func TestListItemWorkspaceMovesBySource_MultipleDestinationsNewestFirst(t *testing.T) {
-	f := newMoveFixture(t, "MultiDest")
-	first := f.dest(t, f.dstWS, "First")
-	second := f.dest(t, f.dst2WS, "Second")
-
-	// The OLDER row gets the lexically HIGHER id, so the created_at ordering
-	// is the only thing that can put `second` in front.
-	f.record(t, models.ItemWorkspaceMove{
-		ID:                lexHighMoveID,
-		SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
-		TargetWorkspaceID: f.dstWS.ID, TargetItemID: first.ID,
-		CreatedBy: f.actor, CreatedAt: "2026-01-01T00:00:00Z",
-	})
-	f.record(t, models.ItemWorkspaceMove{
-		ID:                lexLowMoveID,
-		SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
-		TargetWorkspaceID: f.dst2WS.ID, TargetItemID: second.ID,
-		CreatedBy: f.actor, CreatedAt: "2026-01-02T00:00:00Z",
-	})
-
-	// A row belonging to a DIFFERENT source in the same workspace. Without it
-	// the lookup's WHERE clause could be deleted entirely and every
-	// assertion here would still hold.
-	otherSource := createTestItem(t, f.s, f.srcWS.ID,
-		createTestCollection(t, f.s, f.srcWS.ID, "Other Src").ID, "Other Source", "")
-	otherTarget := f.dest(t, f.dstWS, "Other Target")
-	f.record(t, models.ItemWorkspaceMove{
-		SourceWorkspaceID: f.srcWS.ID, SourceItemID: otherSource.ID,
-		TargetWorkspaceID: f.dstWS.ID, TargetItemID: otherTarget.ID,
-		CreatedBy: f.actor, CreatedAt: "2026-01-03T00:00:00Z",
-	})
-
-	forward, err := f.s.ListItemWorkspaceMovesBySource(f.source.ID)
-	if err != nil {
-		t.Fatalf("forward lookup: %v", err)
-	}
-	if len(forward) != 2 {
-		t.Fatalf("got %d rows, want 2 (the other source's row must be excluded)", len(forward))
-	}
-	for _, m := range forward {
-		if m.SourceItemID != f.source.ID {
-			t.Errorf("forward lookup leaked a row for source %q", m.SourceItemID)
-		}
-	}
-	if forward[0].TargetItemID != second.ID {
-		t.Errorf("newest-first violated: first row targets %q, want the later copy %q",
-			forward[0].TargetItemID, second.ID)
-	}
-	if forward[1].TargetItemID != first.ID {
-		t.Errorf("second row targets %q, want the earlier copy %q", forward[1].TargetItemID, first.ID)
-	}
-
-	// Each destination resolves back to its OWN row — asserting the target
-	// too, so a lookup ignoring its WHERE clause is caught here as well.
-	backCases := map[*models.Item]string{first: f.source.ID, second: f.source.ID, otherTarget: otherSource.ID}
-	for target, wantSource := range backCases {
-		back, err := f.s.GetItemWorkspaceMoveByTarget(target.ID)
-		if err != nil {
-			t.Fatalf("back lookup for %s: %v", target.ID, err)
-		}
-		if back == nil {
-			t.Errorf("back lookup for %s returned nil", target.ID)
-			continue
-		}
-		if back.TargetItemID != target.ID {
-			t.Errorf("back lookup for %s returned a row targeting %q", target.ID, back.TargetItemID)
-		}
-		if back.SourceItemID != wantSource {
-			t.Errorf("back lookup for %s resolved to source %q, want %q", target.ID, back.SourceItemID, wantSource)
-		}
-	}
-}
 
 // TestRecordItemWorkspaceMoveTx_RollbackLeavesNoRow proves the row is bound to
 // the caller's transaction: this is the whole reason the helper is tx-taking
@@ -283,19 +237,13 @@ func TestRecordItemWorkspaceMoveTx_RollbackLeavesNoRow(t *testing.T) {
 		t.Fatalf("rollback: %v", err)
 	}
 
-	forward, err := f.s.ListItemWorkspaceMovesBySource(f.source.ID)
-	if err != nil {
-		t.Fatalf("forward lookup: %v", err)
+	if got := f.bySource(t, f.source.ID); len(got) != 0 {
+		t.Errorf("rolled-back tx left %d provenance rows behind", len(got))
 	}
-	if len(forward) != 0 {
-		t.Errorf("rolled-back tx left %d provenance rows behind", len(forward))
-	}
-	back, err := f.s.GetItemWorkspaceMoveByTarget(target.ID)
-	if err != nil {
-		t.Fatalf("back lookup: %v", err)
-	}
-	if back != nil {
-		t.Errorf("rolled-back tx left a back-pointer: %+v", back)
+	// Asserted table-wide too, so a row written against some other source
+	// (i.e. a rollback that committed the wrong thing) is caught as well.
+	if got := f.s.countRows(t, `SELECT COUNT(*) FROM item_workspace_moves`); got != 0 {
+		t.Errorf("rolled-back tx left %d rows in item_workspace_moves", got)
 	}
 }
 
@@ -410,123 +358,6 @@ func TestItemWorkspaceMoves_TargetIsUnique(t *testing.T) {
 	}
 }
 
-// TestItemWorkspaceMoves_MovedToIgnoresCopies is DR-2a's first acceptance
-// criterion: copy twice, then move. The archived source advertises the MOVE
-// target only — neither copy claims the source went anywhere.
-func TestItemWorkspaceMoves_MovedToIgnoresCopies(t *testing.T) {
-	f := newMoveFixture(t, "MovedToIgnoresCopies")
-	copyA := f.dest(t, f.dstWS, "Copy A")
-	copyB := f.dest(t, f.dst2WS, "Copy B")
-	moveTarget := f.dest(t, f.dstWS, "Move Target")
-
-	// Two plain copies FIRST, then the move — and the copies carry LATER
-	// created_at values than the move, so a naive "newest row wins" that
-	// forgets to filter on archived_source picks a copy and fails here.
-	f.record(t, models.ItemWorkspaceMove{
-		SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
-		TargetWorkspaceID: f.dstWS.ID, TargetItemID: copyA.ID,
-		ArchivedSource: false, CreatedBy: f.actor, CreatedAt: "2026-03-02T00:00:00Z",
-	})
-	f.record(t, models.ItemWorkspaceMove{
-		SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
-		TargetWorkspaceID: f.dst2WS.ID, TargetItemID: copyB.ID,
-		ArchivedSource: false, CreatedBy: f.actor, CreatedAt: "2026-03-03T00:00:00Z",
-	})
-	f.record(t, models.ItemWorkspaceMove{
-		SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
-		TargetWorkspaceID: f.dstWS.ID, TargetItemID: moveTarget.ID,
-		ArchivedSource: true, SourceSeq: seqPtr(10),
-		CreatedBy: f.actor, CreatedAt: "2026-03-01T00:00:00Z",
-	})
-
-	forward, err := f.s.ListItemWorkspaceMovesBySource(f.source.ID)
-	if err != nil {
-		t.Fatalf("forward lookup: %v", err)
-	}
-	if len(forward) != 3 {
-		t.Fatalf("got %d rows, want 3", len(forward))
-	}
-
-	movedTo := firstArchived(forward)
-	if movedTo == nil {
-		t.Fatal("no archived_source row found; the move produced no moved-to pointer")
-	}
-	if movedTo.TargetItemID != moveTarget.ID {
-		t.Errorf("moved-to resolved to %q, want the move target %q", movedTo.TargetItemID, moveTarget.ID)
-	}
-}
-
-// TestItemWorkspaceMoves_MovedToSameSecondUsesSourceSeq is the criterion that
-// justifies source_seq existing at all: two restore→move cycles inside the
-// SAME second. created_at is second-precision RFC3339, so it ties, and only
-// source_seq can say which destination is the later one. Without the seq
-// ordering this test passes or fails by luck.
-func TestItemWorkspaceMoves_MovedToSameSecondUsesSourceSeq(t *testing.T) {
-	f := newMoveFixture(t, "SameSecond")
-	earlier := f.dest(t, f.dstWS, "Earlier Move")
-	later := f.dest(t, f.dst2WS, "Later Move")
-
-	const sameSecond = "2026-04-01T12:00:00Z"
-
-	// Insert the LATER move first so row insertion order can't be what makes
-	// the assertion pass — and give it the lexically LOWEST id while the
-	// earlier move gets the highest. created_at is identical, so with the
-	// source_seq term removed from the ordering the query falls through to
-	// `id DESC` and returns `earlier` DETERMINISTICALLY. That is the point:
-	// with random UUIDs this test would still pass half the time against a
-	// query that had lost the very ordering it exists to prove.
-	f.record(t, models.ItemWorkspaceMove{
-		ID:                lexLowMoveID,
-		SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
-		TargetWorkspaceID: f.dst2WS.ID, TargetItemID: later.ID,
-		ArchivedSource: true, SourceSeq: seqPtr(200),
-		CreatedBy: f.actor, CreatedAt: sameSecond,
-	})
-	f.record(t, models.ItemWorkspaceMove{
-		ID:                lexHighMoveID,
-		SourceWorkspaceID: f.srcWS.ID, SourceItemID: f.source.ID,
-		TargetWorkspaceID: f.dstWS.ID, TargetItemID: earlier.ID,
-		ArchivedSource: true, SourceSeq: seqPtr(100),
-		CreatedBy: f.actor, CreatedAt: sameSecond,
-	})
-
-	forward, err := f.s.ListItemWorkspaceMovesBySource(f.source.ID)
-	if err != nil {
-		t.Fatalf("forward lookup: %v", err)
-	}
-	if len(forward) != 2 {
-		t.Fatalf("got %d rows, want 2 (restore-then-move-again must NOT be deduped)", len(forward))
-	}
-
-	movedTo := firstArchived(forward)
-	if movedTo == nil {
-		t.Fatal("no archived_source row found")
-	}
-	if movedTo.TargetItemID != later.ID {
-		t.Errorf("same-second tie resolved to %q, want the higher-seq destination %q",
-			movedTo.TargetItemID, later.ID)
-	}
-	if movedTo.SourceSeq == nil || *movedTo.SourceSeq != 200 {
-		t.Errorf("moved-to row carries seq %v, want 200", movedTo.SourceSeq)
-	}
-}
-
-// firstArchived picks the newest row whose source was archived — the head of
-// what the moved-to pointer considers.
-//
-// It is a TEST helper for exercising the broad forward lookup's ordering, not
-// a mirror of the consumer: the real consumer (TASK-2359) queries
-// ListArchivedItemWorkspaceMovesBySource and ACL-filters the whole bounded
-// set per destination rather than taking the first entry.
-func firstArchived(moves []models.ItemWorkspaceMove) *models.ItemWorkspaceMove {
-	for i := range moves {
-		if moves[i].ArchivedSource {
-			return &moves[i]
-		}
-	}
-	return nil
-}
-
 // TestPurgeWorkspaceData_ClearsItemWorkspaceMovesBothDirections covers the FK
 // hazard the two-workspace shape introduces: item_workspace_moves references
 // workspaces(id) twice with RESTRICT, so a purge that cleared only one
@@ -623,7 +454,15 @@ func TestItemWorkspaceMoves_TargetDeleteCascades(t *testing.T) {
 
 // TestListArchivedItemWorkspaceMovesBySource covers the narrow, SQL-bounded
 // query the moved-to pointer reads (TASK-2359): archived_source rows only,
-// newest first, capped. The cap has to be real in SQL rather than applied by
+// newest first, capped.
+//
+// It is also where DR-2a's first acceptance criterion now lives — copy twice,
+// then move; the archived source advertises the MOVE target only. That
+// criterion had a second home asserted through the broad forward lookup until
+// TASK-2374 deleted it; this is the version that runs against the query
+// production actually reads.
+//
+// The cap has to be real in SQL rather than applied by
 // the caller — otherwise a source with a long tail of plain copies pays to
 // load, sort, scan and allocate every one of them on every read of the source,
 // and none of them can ever contribute to the result.
@@ -696,18 +535,18 @@ func TestListArchivedItemWorkspaceMovesBySource(t *testing.T) {
 		}
 	}
 
-	// And the broad forward lookup is untouched — it still sees everything.
-	all, err := f.s.ListItemWorkspaceMovesBySource(f.source.ID)
-	if err != nil {
-		t.Fatalf("forward lookup: %v", err)
-	}
-	if len(all) != 4 {
-		t.Errorf("the broad forward lookup should still return all 4 rows, got %d", len(all))
+	// The two copies are still on disk — the lookup filtered them out, it did
+	// not fail to write them, so the exclusion above is a real exclusion.
+	if got := f.s.countRows(t,
+		`SELECT COUNT(*) FROM item_workspace_moves WHERE source_item_id = ?`,
+		f.source.ID); got != 4 {
+		t.Errorf("the source has %d provenance rows on disk, want all 4", got)
 	}
 }
 
 // TestListArchivedItemWorkspaceMovesBySource_SameSecondUsesSourceSeq is the
-// archived-only query's copy of DR-2a's decisive case. Two
+// sole surviving home of DR-2a's decisive case (the broad forward lookup's
+// duplicate went with TASK-2374's deletion). Two
 // archive→restore→move cycles inside one second tie on created_at — that tie
 // is the entire reason source_seq exists — so without the seq term the
 // ordering falls through to the id tiebreak and returns an arbitrary
