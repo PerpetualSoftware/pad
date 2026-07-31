@@ -174,6 +174,17 @@ type ItemCopyPreflightWarnings struct {
 	AttachmentCount      int            `json:"attachment_count"`
 	AttachmentBytes      int64          `json:"attachment_bytes"`
 	UnresolvableRefCount int            `json:"unresolvable_ref_count"`
+	// RelationshipsPartial marks ChildCount, ChildrenOrphaned,
+	// DroppedParent, OutgoingLinks and IncomingLinks as a FLOOR rather
+	// than a total: at least one relationship hangs off an item this
+	// caller may not see and was not counted (TASK-2369). A bare bool by
+	// design — how many, of what type and where are exactly what the
+	// server's ACL filter withholds.
+	//
+	// ChildrenOrphaned is the exception when rendering: a plain copy
+	// archives nothing, so `false` is complete there however much is
+	// hidden. renderItemCopyPreflight qualifies that line only on a move.
+	RelationshipsPartial bool `json:"relationships_partial"`
 }
 
 // ItemCopyPreflight is the dry-run's 200 response.

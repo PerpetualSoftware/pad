@@ -779,6 +779,31 @@ export interface ItemCopyPreflightWarnings {
 	attachment_bytes: number;
 	/** `pad-attachment:` refs that resolve to nothing (DR-11a). Not fatal. */
 	unresolvable_ref_count: number;
+	/**
+	 * The five relationship counters above — `child_count`,
+	 * `children_orphaned`, `dropped_parent`, `outgoing_links` and
+	 * `incoming_links` — are a FLOOR, not a total: at least one of the
+	 * source's relationships hangs off an item this caller may not see, and
+	 * the server does not count what it will not show (TASK-2369).
+	 *
+	 * Render it as a qualifier ON those counters, not as a sixth warning —
+	 * the point is that `0` and `0 that you can see` must stop looking
+	 * alike, or a restricted user runs a move believing nothing is stranded.
+	 *
+	 * ONE EXCEPTION: do NOT qualify `children_orphaned` unless
+	 * `archive_source` is true. A plain copy archives nothing, so no child —
+	 * visible or hidden — can be orphaned by it, and `false` is the complete
+	 * answer there. Qualifying it anyway invents a risk the operation does
+	 * not carry. The other four are qualified in both modes.
+	 *
+	 * A bare boolean by design. How many are hidden, of what type and in
+	 * which collection are exactly the facts the ACL filter exists to
+	 * withhold; do not try to infer a count from it.
+	 *
+	 * False for an unrestricted caller and for a restricted caller with
+	 * nothing hidden — so the common case must stay unqualified.
+	 */
+	relationships_partial: boolean;
 }
 
 export interface ItemCopyPreflight {

@@ -347,6 +347,52 @@ type ItemCopyPreflightWarnings struct {
 	// scope (DR-11a). They are not cloned and do not block the copy; the
 	// copy renders exactly as broken as the source does.
 	UnresolvableRefCount int `json:"unresolvable_ref_count"`
+
+	// RelationshipsPartial says the relationship counters above —
+	// ChildCount, ChildrenOrphaned, DroppedParent, OutgoingLinks and
+	// IncomingLinks — are a FLOOR rather than a total, because at least
+	// one of the source's relationships is attached to an item this
+	// caller may not see and was therefore not counted (TASK-2369).
+	//
+	// ONE EXCEPTION for a client rendering this: ChildrenOrphaned is
+	// COMPLETE on a plain copy however much is hidden. A copy archives
+	// nothing, so no child — visible or not — can be orphaned by it, and
+	// `false` is the whole truth there. Qualify that one only when
+	// ArchiveSource is true; the other four are qualified in both modes.
+	//
+	// The ACL filtering that causes this is correct and stays (see the
+	// relationship block below). What is not acceptable is rendering
+	// "none" and "unknown, some hidden from you" identically: a caller
+	// with edit rights on the source but no visibility of its relatives
+	// would otherwise read `children_orphaned: false` and run a MOVE
+	// believing nothing is stranded, while hidden children are orphaned
+	// in place. DR-17: "none of this may be silent."
+	//
+	// It is deliberately a BARE BOOLEAN. How many relationships are
+	// hidden, of what type, and in which collection are exactly the facts
+	// the ACL filter exists to withhold — a marker that varied with the
+	// hidden count would reinstate the leak DR-10a, DR-10b and the
+	// moved-to pointer each closed separately.
+	// TestCopyPreflight_PartialMarkerDoesNotLeakHiddenCount pins that:
+	// two workspaces differing only in how much is hidden must produce
+	// byte-identical warning blocks.
+	//
+	// FALSE for an unrestricted caller, and false for a restricted caller
+	// with nothing hidden. A marker on the common case is noise everyone
+	// learns to ignore, which would make the product worse rather than
+	// better.
+	//
+	// ACCEPTED DISCLOSURE, on the record. A conditional marker is by
+	// construction one bit the caller did not previously have: "at least
+	// one relationship exists that you may not see." /children, /links and
+	// /items all return empty for such a caller either way, so this
+	// endpoint is the only place that bit is available. It is the price of
+	// the fix and it is worth paying — the alternative is telling someone
+	// about to run a MOVE that nothing will be stranded when something
+	// will. It carries no count, no type, no identity and no collection,
+	// which is what keeps it one bit rather than a window. Pinned by
+	// TestCopyPreflight_PartialMarkerForAnItemGrantOnlyGuest.
+	RelationshipsPartial bool `json:"relationships_partial"`
 }
 
 // legacyHierarchyLinkTypes are hierarchy link types store.ChildLinkTypes
@@ -356,13 +402,49 @@ type ItemCopyPreflightWarnings struct {
 // duplication).
 //
 // A LONE "plan" edge — one with no accompanying "parent" row — is
-// therefore counted as neither a child nor a dependency. That is
-// deliberate: GetChildItems does not consider it a child, so calling it
-// one here would make child_count disagree with every other surface, and
-// calling it a dependency would report a blocker that does not exist.
-// Under-reporting a legacy duplicate is the safe direction, and the
-// condition is not reachable through any current write path.
+// invisible to GetChildItems, whose join is restricted to
+// store.ChildLinkTypes. An earlier revision of this file left it counted
+// as neither a child nor a dependency, on the reasoning that
+// under-reporting a legacy duplicate is the safe direction.
+//
+// That reasoning does not survive the MOVE path (TASK-2369). Archiving
+// the source makes it unavailable to a child on the far end of a lone
+// "plan" edge just as surely as it does to one on a "parent" edge, and
+// reporting `child_count: 0` / `children_orphaned: false` tells the user
+// nothing is stranded when something is. So BOTH directions are now
+// accounted for:
+//
+//   - OUTGOING (source_id == the item): the item's own parent edge.
+//     Already reported as DroppedParent by the hierarchy branch below,
+//     which keys off hierarchyLinkTypes and so has always included
+//     "plan".
+//   - INCOMING (target_id == the item): a CHILD. Folded into
+//     countedChildren by the hierarchy branch below, deduplicated
+//     against the two mechanisms GetChildItems and the parent_id column
+//     already cover.
+//
+// It is still not reported as a DEPENDENCY, which would announce a
+// blocker that does not exist.
+//
+// Not reachable through any current write path — models.ItemLinkType has
+// no "plan" alias, so CreateItemLink rejects it — but it is reachable in
+// rows written before the rename, which is exactly the population a
+// legacy alias exists for.
 var legacyHierarchyLinkTypes = []string{"plan"}
+
+// storeChildLinkTypes is the store's own child-link set as a lookup —
+// the complement of legacyHierarchyLinkTypes within hierarchyLinkTypes.
+// A hierarchy link type NOT in here is one GetChildItems cannot see, and
+// so is one this handler has to count for itself.
+var storeChildLinkTypes = buildStoreChildLinkTypes()
+
+func buildStoreChildLinkTypes() map[string]bool {
+	out := map[string]bool{}
+	for _, t := range store.ChildLinkTypes() {
+		out[t] = true
+	}
+	return out
+}
 
 // hierarchyLinkTypes are the link types that express parent/child rather
 // than dependency, and so are reported by child_count / dropped_parent
@@ -795,6 +877,12 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// counted. That is the correct side to err on: the alternative reports
 	// a loss the caller was never entitled to know about, and the same
 	// asymmetry already exists everywhere else these relationships surface.
+	//
+	// What is NOT acceptable is leaving that trade invisible. Every point
+	// below that drops a relationship for visibility reasons also sets
+	// Warnings.RelationshipsPartial, so "none" and "none that you can see"
+	// stop rendering identically (TASK-2369). The marker is a bare bool by
+	// design — see its doc comment on ItemCopyPreflightWarnings.
 	relVisibleIDs, err := s.visibleCollectionIDs(r, sourceWorkspaceID)
 	if err != nil {
 		writeInternalError(w, err)
@@ -845,14 +933,16 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	countedChildren := make(map[string]bool, len(children)+len(columnChildren))
 	for _, set := range [][]models.Item{children, columnChildren} {
 		for i := range set {
-			if countedChildren[set[i].ID] || !relVisible(&set[i]) {
+			if countedChildren[set[i].ID] {
+				continue
+			}
+			if !relVisible(&set[i]) {
+				resp.Warnings.RelationshipsPartial = true
 				continue
 			}
 			countedChildren[set[i].ID] = true
 		}
 	}
-	resp.Warnings.ChildCount = len(countedChildren)
-	resp.Warnings.ChildrenOrphaned = len(countedChildren) > 0 && input.ArchiveSource
 
 	links, err := s.store.GetItemLinks(item.ID)
 	if err != nil {
@@ -860,27 +950,57 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	for _, link := range links {
-		if relVisibleIDs != nil {
-			// Judge the OTHER end of the edge, the same way
-			// handleGetItemLinks does.
-			otherID := link.TargetID
-			if otherID == item.ID {
-				otherID = link.SourceID
-			}
-			other, oErr := s.store.GetItem(otherID)
-			if oErr != nil {
+		// The far end of the edge — the item whose visibility decides
+		// whether this relationship may be counted, and, for a lone
+		// legacy child edge, the child itself.
+		otherID := link.TargetID
+		if otherID == item.ID {
+			otherID = link.SourceID
+		}
+		// A lone legacy hierarchy edge pointing AT this item is a child
+		// GetChildItems' join cannot see, so this handler has to resolve
+		// and count it itself (see legacyHierarchyLinkTypes).
+		//
+		// COST: this is the one case that makes an UNRESTRICTED caller pay
+		// for a per-link GetItem, which restricted callers already paid
+		// (Codex round 4). Accepted rather than batched, because the
+		// predicate is exactly "there is a legacy 'plan' row here": a
+		// workspace with none — every workspace created since the rename,
+		// since NormalizeItemLinkType has no 'plan' alias and no write path
+		// can produce one — issues zero extra queries, and one that does
+		// pays a bounded number of primary-key lookups in exchange for a
+		// data-loss warning it was previously not given at all. Batching
+		// would mean a new store method for a population that cannot grow.
+		legacyChildEdge := hierarchyLinkTypes[link.LinkType] &&
+			!storeChildLinkTypes[link.LinkType] &&
+			link.TargetID == item.ID &&
+			otherID != item.ID
+
+		var other *models.Item
+		if relVisibleIDs != nil || legacyChildEdge {
+			other, err = s.store.GetItem(otherID)
+			if err != nil {
 				// DELIBERATE divergence from handleGetItemLinks, which
 				// swallows this error and omits the link. Omitting a row
 				// from a LIST is a partial answer; omitting it from a
 				// COUNT is a wrong one, and the user is being asked to
 				// agree to a loss on the strength of that number. Fail
 				// loudly rather than under-report.
-				writeInternalError(w, oErr)
+				writeInternalError(w, err)
 				return
 			}
-			// A nil `other` (the row vanished between the two reads) is
-			// skipped by relVisible, matching /links.
+		}
+		if relVisibleIDs != nil {
+			if other == nil {
+				// The counterpart row is gone — GetItem excludes
+				// soft-deleted items, and the row can also have vanished
+				// between the two reads. Omit it unmarked, exactly as
+				// /links does: nobody is losing a relationship that no
+				// longer exists, so this is not a visibility gap.
+				continue
+			}
 			if !relVisible(other) {
+				resp.Warnings.RelationshipsPartial = true
 				continue
 			}
 		}
@@ -888,6 +1008,14 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 			if link.SourceID == item.ID {
 				// The source's own parent edge — the copy is unparented.
 				resp.Warnings.DroppedParent = true
+			}
+			// `other != nil` covers liveness (GetItem excludes
+			// soft-deleted rows, so a dead counterpart is not a child).
+			// The workspace guard is the same one the parent_id column
+			// branch applies: item_links carries no workspace predicate
+			// on the far end.
+			if legacyChildEdge && other != nil && other.WorkspaceID == sourceWorkspaceID {
+				countedChildren[other.ID] = true
 			}
 			continue
 		}
@@ -899,6 +1027,12 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	// Counted after the link scan, not before it: the scan is what folds
+	// in lone legacy hierarchy edges (TASK-2369), and reading the totals
+	// early would report those children as zero.
+	resp.Warnings.ChildCount = len(countedChildren)
+	resp.Warnings.ChildrenOrphaned = len(countedChildren) > 0 && input.ArchiveSource
+
 	// The legacy items.parent_id column, which the item_links scan above
 	// cannot see. models.ItemCreate accepts `parent_id` on the create
 	// route and CreateItem inserts it verbatim, so this is API-reachable
@@ -908,14 +1042,30 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	// key constrains it to items(id) but says nothing about WHICH
 	// workspace, and GetItem is id-global with no workspace predicate, so
 	// a value pointing outside the source must not be honoured.
-	if !resp.Warnings.DroppedParent && item.ParentID != nil && *item.ParentID != "" {
+	//
+	// Evaluated even when DroppedParent is ALREADY true. The obvious
+	// short-circuit ("we have already decided to warn, so skip the second
+	// mechanism") is wrong once the marker exists: the two mechanisms can
+	// name DIFFERENT items — SetParentLink does not touch items.parent_id,
+	// so an item created with a hidden parent_id and later given a visible
+	// `parent` link carries both — and skipping the column then leaves a
+	// withheld relationship unmarked while dropped_parent reports the
+	// visible one (Codex round 1).
+	if item.ParentID != nil && *item.ParentID != "" {
 		legacyParent, pErr := s.store.GetItem(*item.ParentID)
 		if pErr != nil {
 			writeInternalError(w, pErr)
 			return
 		}
-		if legacyParent != nil && legacyParent.WorkspaceID == sourceWorkspaceID && relVisible(legacyParent) {
-			resp.Warnings.DroppedParent = true
+		if legacyParent != nil && legacyParent.WorkspaceID == sourceWorkspaceID {
+			if relVisible(legacyParent) {
+				resp.Warnings.DroppedParent = true
+			} else {
+				// A real parent the copy will scrub, withheld because the
+				// caller cannot see it. Not naming it is right; leaving
+				// dropped_parent reading a flat "no" is not.
+				resp.Warnings.RelationshipsPartial = true
+			}
 		}
 	}
 

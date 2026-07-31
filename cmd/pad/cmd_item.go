@@ -1475,6 +1475,12 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 				// a script may be able to use them.
 				_ = cli.PrintRawJSON(stdout, rawRes)
 			}
+			// This branch is a SUCCESS — it returns nil — so it owes the
+			// same advisory as the reported one (Codex round 6). The
+			// requested archive_source stands in for the result's own
+			// `archived`: a committed 2xx means the whole operation
+			// landed, and it is only the report that was lost.
+			writeItemCopyPartialRelationshipsAfter(stderr, pre.Warnings.RelationshipsPartial, opts.ArchiveSource)
 			return nil
 		}
 		if cli.CopyOutcomeUnknown(err) {
@@ -1514,6 +1520,19 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 		fmt.Fprintf(stderr, "Do not re-run — the item is in %q. Find it with:\n", targetWorkspace)
 		fmt.Fprintf(stderr, "  pad item list %s --workspace %s\n", targetCollection, targetWorkspace)
 	}
+
+	// --dry-run is OPTIONAL, and the destructive path is the one that
+	// matters. The preflight told us the relationship picture was
+	// incomplete; the RESULT block cannot say so (ItemCopyResultWarnings is
+	// deliberately narrower and carries no relationship counters), so a
+	// restricted user who went straight to the mutation would otherwise be
+	// the only person this whole task does not reach — on the one run where
+	// it is too late to reconsider (Codex round 5).
+	//
+	// STDERR on purpose, and after the report: `--format json` stdout is
+	// the server's response byte for byte, and a machine-readable contract
+	// is not the place to splice in advice.
+	writeItemCopyPartialRelationshipsAfter(stderr, pre.Warnings.RelationshipsPartial, res.Source.Archived)
 
 	// PARTIAL OUTCOME. archive_source is what was ASKED for; source.archived
 	// is what HAPPENED, and the server's contract is that they agree on
@@ -1655,15 +1674,52 @@ func renderItemCopyPreflight(out io.Writer, p *cli.ItemCopyPreflight) error {
 
 	fmt.Fprintf(w, "\nWarnings\n")
 	warn := p.Warnings
-	fmt.Fprintf(w, "  %-32s %d\n", "child items (not copied)", warn.ChildCount)
-	fmt.Fprintf(w, "  %-32s %s\n", "children orphaned by the move", yesNo(warn.ChildrenOrphaned))
-	fmt.Fprintf(w, "  %-32s %s\n", "parent dropped", yesNo(warn.DroppedParent))
-	fmt.Fprintf(w, "  %-32s %s\n", "outgoing links dropped", itemCopyLinkSummary(warn.OutgoingLinks))
-	fmt.Fprintf(w, "  %-32s %s\n", "incoming links dropped", itemCopyLinkSummary(warn.IncomingLinks))
+	// The five relationship counters are the ones the server ACL-filters,
+	// so they are the five that carry the qualifier when it does. Without
+	// it a restricted caller reads "0 / no / no / none / none" and cannot
+	// tell it apart from a genuinely unrelated item (TASK-2369).
+	rel := ""
+	if warn.RelationshipsPartial {
+		rel = "  (visible to you only)"
+	}
+	// …with ONE exception. `children orphaned by the move` is complete on a
+	// plain copy whatever is hidden: a copy archives nothing, so no child —
+	// visible or not — can be orphaned by it, and `no` is the whole truth.
+	// Qualifying it there would invent a risk the operation does not carry
+	// (Codex round 5).
+	orphanRel := ""
+	if warn.RelationshipsPartial && p.ArchiveSource {
+		orphanRel = rel
+	}
+	fmt.Fprintf(w, "  %-32s %d%s\n", "child items (not copied)", warn.ChildCount, rel)
+	fmt.Fprintf(w, "  %-32s %s%s\n", "children orphaned by the move", yesNo(warn.ChildrenOrphaned), orphanRel)
+	fmt.Fprintf(w, "  %-32s %s%s\n", "parent dropped", yesNo(warn.DroppedParent), rel)
+	fmt.Fprintf(w, "  %-32s %s%s\n", "outgoing links dropped", itemCopyLinkSummary(warn.OutgoingLinks), rel)
+	fmt.Fprintf(w, "  %-32s %s%s\n", "incoming links dropped", itemCopyLinkSummary(warn.IncomingLinks), rel)
 	fmt.Fprintf(w, "  %-32s %s\n", "assignee dropped", yesNo(warn.DroppedAssignee))
 	fmt.Fprintf(w, "  %-32s %s\n", "agent role dropped", yesNo(warn.DroppedAgentRole))
 	fmt.Fprintf(w, "  %-32s %s\n", "attachments cloned", itemCopyAttachmentSummary(warn.AttachmentCount, warn.AttachmentBytes))
 	fmt.Fprintf(w, "  %-32s %d\n", "unresolvable attachment refs", warn.UnresolvableRefCount)
+
+	// Printed ONLY when the server says something was withheld. An
+	// unrestricted caller — the overwhelming majority — sees the block
+	// exactly as it read before, because a caveat on every preview is a
+	// caveat nobody reads.
+	if warn.RelationshipsPartial {
+		fmt.Fprintf(w, "\n  The relationship counts above are INCOMPLETE. Some of this item's\n")
+		fmt.Fprintf(w, "  children, parent or dependency links are on items you do not have access to,\n")
+		fmt.Fprintf(w, "  so they are not counted — read each qualified line as a floor, not a total.\n")
+		if p.ArchiveSource {
+			// CONDITIONAL, deliberately. The marker is type-agnostic: it
+			// can be set by a hidden parent or a hidden dependency edge
+			// with no hidden child anywhere. Asserting "those hidden
+			// children" would put a fact in the user's head the server
+			// never stated — the same class of mistake as the flat "no"
+			// this whole block exists to replace (Codex round 2).
+			fmt.Fprintf(w, "  Any of them that are children will be orphaned by this move, unlisted.\n")
+		}
+		fmt.Fprintf(w, "  Ask someone with full access to the workspace to review before you continue.\n")
+	}
 
 	fmt.Fprintln(w)
 	if len(p.Fields.NeedsValue) > 0 {
@@ -1835,6 +1891,35 @@ func renderItemCopyResult(out io.Writer, r *cli.ItemCopyResult) error {
 	fmt.Fprintf(w, "  %-32s %s\n", "attachments cloned", itemCopyAttachmentSummary(warn.AttachmentCount, warn.AttachmentBytes))
 	fmt.Fprintf(w, "  %-32s %d\n", "unresolvable attachment refs", warn.UnresolvableRefCount)
 	return w.err
+}
+
+// writeItemCopyPartialRelationshipsAfter is the post-commit counterpart to
+// the dry run's INCOMPLETE block: the same fact, in the past tense, for the
+// user who skipped --dry-run.
+//
+// It takes `archived` — what actually HAPPENED — rather than what was
+// asked for, because by this point the two can disagree and the orphaning
+// sentence is only true of the archive.
+//
+// Called from BOTH successful exits — the reported one and the
+// committed-but-unreported one. Deliberately NOT from the
+// outcome-unknown or deterministic-failure paths: neither committed
+// anything the user needs to reconsider, and the unknown-outcome message
+// has one job (do not re-run) that extra advice would dilute.
+//
+// A no-op when nothing was withheld, which is the overwhelming majority of
+// runs.
+func writeItemCopyPartialRelationshipsAfter(w io.Writer, partial, archived bool) {
+	if !partial {
+		return
+	}
+	fmt.Fprintf(w, "\nNote: some of this item's relationships are on items you do not have access to,\n")
+	fmt.Fprintf(w, "so they were never counted or listed. None of them carried to the copy — a copy\n")
+	fmt.Fprintf(w, "gets no parent and no dependency links.\n")
+	if archived {
+		fmt.Fprintf(w, "Any of them that are children are now orphaned in the source workspace.\n")
+	}
+	fmt.Fprintf(w, "Ask someone with full access to the workspace to review.\n")
 }
 
 func writeItemCopyHeader(w io.Writer, p *cli.ItemCopyPreflight) {

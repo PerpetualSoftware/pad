@@ -433,6 +433,345 @@ func TestRunItemCopy_DryRunArchiveSourceReportsWithoutPerforming(t *testing.T) {
 	}
 }
 
+// ── the incomplete-relationships marker (TASK-2369) ──────────────────────
+
+// TestRunItemCopy_DryRunPartialRelationshipsAreQualified — a restricted
+// caller must not read "0 / no / no / 0 / 0" and conclude the item has no
+// relationships when the server has told them the counts are a floor.
+func TestRunItemCopy_DryRunPartialRelationshipsAreQualified(t *testing.T) {
+	// The MOVE path, where all five counters are incomplete. (The plain
+	// copy differs on exactly one line — see
+	// TestRunItemCopy_OrphanLineIsQualifiedOnlyOnTheMovePath.)
+	pre := emptyPreflight()
+	pre.ArchiveSource = true
+	pre.Warnings.RelationshipsPartial = true
+	d := &recordingDeps{t: t, preflight: pre, forbidCopy: true}
+	opts := baseOpts()
+	opts.DryRun = true
+	opts.ArchiveSource = true
+
+	var out, errOut bytes.Buffer
+	if err := runItemCopy(opts, d.deps(), &out, &errOut); err != nil {
+		t.Fatalf("runItemCopy: %v", err)
+	}
+	got := out.String()
+
+	for _, w := range []string{
+		// The five ACL-filtered counters carry the qualifier …
+		"child items (not copied)         0  (visible to you only)",
+		"children orphaned by the move    no  (visible to you only)",
+		"parent dropped                   no  (visible to you only)",
+		"outgoing links dropped           0  (visible to you only)",
+		"incoming links dropped           0  (visible to you only)",
+		// … and the block says, in words, what to do about it.
+		"The relationship counts above are INCOMPLETE.",
+		"read each qualified line as a floor, not a total.",
+		"Ask someone with full access",
+	} {
+		if !strings.Contains(got, w) {
+			t.Errorf("output missing %q\n--- got ---\n%s", w, got)
+		}
+	}
+	// The warnings that are NOT ACL-filtered must stay unqualified —
+	// blanket-qualifying the block would be its own kind of lie.
+	for _, w := range []string{
+		"assignee dropped                 no\n",
+		"agent role dropped               no\n",
+		"attachments cloned               0\n",
+		"unresolvable attachment refs     0\n",
+	} {
+		if !strings.Contains(got, w) {
+			t.Errorf("a non-relationship warning was qualified or dropped: missing %q\n--- got ---\n%s", w, got)
+		}
+	}
+	// It must not disclose how much is hidden — there is no count to
+	// render, and inventing an adjective for one is the same mistake.
+	for _, forbidden := range []string{"1 hidden", "hidden item", "hidden children (", "at least"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("output hints at the hidden volume via %q\n--- got ---\n%s", forbidden, got)
+		}
+	}
+}
+
+// The move path says the one extra thing that matters — that whatever is
+// hidden gets orphaned unlisted — WITHOUT claiming any of it is a child.
+// The marker is type-agnostic; it fires just as readily for a hidden
+// parent or a hidden dependency edge with no hidden child anywhere, and a
+// sentence that asserts hidden children would put a fact in the user's
+// head the server never stated (Codex round 2).
+func TestRunItemCopy_DryRunPartialOnTheMovePathDoesNotAssertHiddenChildren(t *testing.T) {
+	pre := emptyPreflight()
+	pre.ArchiveSource = true
+	pre.Warnings.RelationshipsPartial = true
+	d := &recordingDeps{t: t, preflight: pre, forbidCopy: true}
+	opts := baseOpts()
+	opts.DryRun = true
+	opts.ArchiveSource = true
+
+	var out, errOut bytes.Buffer
+	if err := runItemCopy(opts, d.deps(), &out, &errOut); err != nil {
+		t.Fatalf("runItemCopy: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "Any of them that are children will be orphaned by this move, unlisted.") {
+		t.Errorf("the move path must name the orphaning consequence\n--- got ---\n%s", got)
+	}
+	// The assertive forms. Each states as fact something the marker does
+	// not carry.
+	for _, forbidden := range []string{
+		"Those hidden children", "hidden children will", "The hidden children",
+	} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("the move-path line asserts hidden CHILDREN exist via %q — the marker is type-agnostic\n--- got ---\n%s",
+				forbidden, got)
+		}
+	}
+
+	// And the copy path (no archive) must not mention orphaning at all —
+	// there is nothing to orphan.
+	pre2 := emptyPreflight()
+	pre2.Warnings.RelationshipsPartial = true
+	d2 := &recordingDeps{t: t, preflight: pre2, forbidCopy: true}
+	opts2 := baseOpts()
+	opts2.DryRun = true
+	var out2, errOut2 bytes.Buffer
+	if err := runItemCopy(opts2, d2.deps(), &out2, &errOut2); err != nil {
+		t.Fatalf("runItemCopy: %v", err)
+	}
+	if strings.Contains(out2.String(), "orphaned by this move") {
+		t.Errorf("a plain copy must not talk about orphaning\n--- got ---\n%s", out2.String())
+	}
+}
+
+// TestRunItemCopy_DryRunUnmarkedRelationshipsStayClean is the other half:
+// the common case must read exactly as it did before TASK-2369, or the
+// qualifier becomes noise everyone learns to ignore.
+func TestRunItemCopy_DryRunUnmarkedRelationshipsStayClean(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		pre  *cli.ItemCopyPreflight
+	}{
+		{"nothing to report", emptyPreflight()},
+		{"a full, fully visible graph", func() *cli.ItemCopyPreflight {
+			p := fullPreflight()
+			p.Fields.NeedsValue = nil
+			p.ArchiveSource = false
+			return p
+		}()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.pre.Warnings.RelationshipsPartial {
+				t.Fatal("fixture bug: this case must NOT be marked partial")
+			}
+			d := &recordingDeps{t: t, preflight: tc.pre, forbidCopy: true}
+			opts := baseOpts()
+			opts.DryRun = true
+
+			var out, errOut bytes.Buffer
+			if err := runItemCopy(opts, d.deps(), &out, &errOut); err != nil {
+				t.Fatalf("runItemCopy: %v", err)
+			}
+			got := out.String()
+			for _, forbidden := range []string{"visible to you only", "INCOMPLETE", "Ask someone with full access"} {
+				if strings.Contains(got, forbidden) {
+					t.Errorf("the unmarked common case rendered the partial caveat %q\n--- got ---\n%s", forbidden, got)
+				}
+			}
+		})
+	}
+}
+
+// `children orphaned by the move` is COMPLETE on a plain copy whatever is
+// hidden — a copy archives nothing, so no child can be orphaned by it.
+// Qualifying it there would invent a risk the operation does not carry,
+// and would contradict the explanatory block two lines below, which
+// correctly scopes orphaning to a move (Codex round 5).
+func TestRunItemCopy_OrphanLineIsQualifiedOnlyOnTheMovePath(t *testing.T) {
+	render := func(t *testing.T, archive bool) string {
+		t.Helper()
+		pre := emptyPreflight()
+		pre.ArchiveSource = archive
+		pre.Warnings.RelationshipsPartial = true
+		d := &recordingDeps{t: t, preflight: pre, forbidCopy: true}
+		opts := baseOpts()
+		opts.DryRun = true
+		opts.ArchiveSource = archive
+		var out, errOut bytes.Buffer
+		if err := runItemCopy(opts, d.deps(), &out, &errOut); err != nil {
+			t.Fatalf("runItemCopy: %v", err)
+		}
+		return out.String()
+	}
+
+	copyOut := render(t, false)
+	if !strings.Contains(copyOut, "children orphaned by the move    no\n") {
+		t.Errorf("a plain copy must leave the orphan line unqualified\n--- got ---\n%s", copyOut)
+	}
+	// The other four still carry it — they are incomplete either way.
+	for _, w := range []string{
+		"child items (not copied)         0  (visible to you only)",
+		"parent dropped                   no  (visible to you only)",
+		"outgoing links dropped           0  (visible to you only)",
+		"incoming links dropped           0  (visible to you only)",
+	} {
+		if !strings.Contains(copyOut, w) {
+			t.Errorf("a plain copy dropped a qualifier it should keep: missing %q\n--- got ---\n%s", w, copyOut)
+		}
+	}
+
+	moveOut := render(t, true)
+	if !strings.Contains(moveOut, "children orphaned by the move    no  (visible to you only)") {
+		t.Errorf("a move MUST qualify the orphan line — hidden children are stranded unlisted\n--- got ---\n%s", moveOut)
+	}
+}
+
+// --dry-run is optional, and the destructive path is the one that matters.
+// A restricted user who goes straight to the mutation must still be told
+// the relationship picture was incomplete — on the one run where it is too
+// late to reconsider (Codex round 5).
+func TestRunItemCopy_MutatingPathCarriesThePartialMarker(t *testing.T) {
+	run := func(t *testing.T, format string, archive bool) (string, string) {
+		t.Helper()
+		pre := emptyPreflight()
+		pre.ArchiveSource = archive
+		pre.Warnings.RelationshipsPartial = true
+		d := &recordingDeps{
+			t: t, preflight: pre,
+			result: &cli.ItemCopyResult{
+				Source: cli.ItemCopyResultSource{
+					WorkspaceSlug: "docapp", CollectionSlug: "ideas", Ref: "IDEA-12", Slug: "x",
+					Title: "X", Archived: archive,
+				},
+				Destination: cli.ItemCopyResultDestination{
+					WorkspaceSlug: "pad-web", CollectionSlug: "tasks", Ref: "TASK-9", Slug: "x",
+				},
+				ArchiveSource: archive,
+				Warnings:      cli.ItemCopyResultWarnings{DroppedFields: []string{}},
+			},
+			resultRaw: json.RawMessage(`{"ok":true}`),
+		}
+		opts := baseOpts()
+		opts.Format = format
+		opts.ArchiveSource = archive
+		var out, errOut bytes.Buffer
+		if err := runItemCopy(opts, d.deps(), &out, &errOut); err != nil {
+			t.Fatalf("runItemCopy: %v", err)
+		}
+		if len(d.copyCalls) != 1 {
+			t.Fatalf("expected exactly one mutating call; got %d", len(d.copyCalls))
+		}
+		return out.String(), errOut.String()
+	}
+
+	t.Run("table, copy", func(t *testing.T) {
+		_, stderr := run(t, "table", false)
+		if !strings.Contains(stderr, "some of this item's relationships are on items you do not have access to") {
+			t.Errorf("the mutating path swallowed the marker\n--- stderr ---\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "Ask someone with full access") {
+			t.Errorf("the note must stay actionable\n--- stderr ---\n%s", stderr)
+		}
+		// Nothing was archived, so nothing was orphaned.
+		if strings.Contains(stderr, "orphaned") {
+			t.Errorf("a plain copy orphans nothing\n--- stderr ---\n%s", stderr)
+		}
+	})
+
+	t.Run("table, move", func(t *testing.T) {
+		_, stderr := run(t, "table", true)
+		if !strings.Contains(stderr, "are now orphaned in the source workspace") {
+			t.Errorf("a completed move must say hidden children are now orphaned\n--- stderr ---\n%s", stderr)
+		}
+	})
+
+	t.Run("json keeps stdout byte-exact", func(t *testing.T) {
+		stdout, stderr := run(t, "json", true)
+		// PrintRawJSON re-indents but does not re-key: the note must not
+		// have found its way into the document.
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(stdout), &doc); err != nil {
+			t.Fatalf("stdout is not the server's JSON: %v\n%s", err, stdout)
+		}
+		if len(doc) != 1 || doc["ok"] != true {
+			t.Errorf("--format json stdout must stay the server's response; got %q", stdout)
+		}
+		if strings.Contains(stdout, "access") {
+			t.Errorf("the advisory note leaked into the machine-readable body:\n%s", stdout)
+		}
+		if !strings.Contains(stderr, "you do not have access to") {
+			t.Errorf("the note belongs on stderr for json callers too\n--- stderr ---\n%s", stderr)
+		}
+	})
+
+	// The committed-but-unreported branch returns nil — it is a SUCCESS —
+	// so it owes the same advisory. It is also the branch where the user
+	// has the least information already (Codex round 6).
+	t.Run("committed but unreported", func(t *testing.T) {
+		pre := emptyPreflight()
+		pre.ArchiveSource = true
+		pre.Warnings.RelationshipsPartial = true
+		d := &recordingDeps{
+			t: t, preflight: pre,
+			copyErr: fmt.Errorf("read body: %w", cli.ErrCopyCommitted),
+		}
+		opts := baseOpts()
+		opts.ArchiveSource = true
+		var out, errOut bytes.Buffer
+		if err := runItemCopy(opts, d.deps(), &out, &errOut); err != nil {
+			t.Fatalf("a committed copy must exit zero: %v", err)
+		}
+		stderr := errOut.String()
+		if !strings.Contains(stderr, "The copy SUCCEEDED, but its result could not be read") {
+			t.Fatalf("fixture is not on the committed-but-unreported branch:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "you do not have access to") {
+			t.Errorf("the committed-but-unreported success path swallowed the marker\n--- stderr ---\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "are now orphaned in the source workspace") {
+			t.Errorf("a committed MOVE must still name the orphaning\n--- stderr ---\n%s", stderr)
+		}
+	})
+
+	// The outcome-unknown branch must NOT get it: nothing is known to have
+	// committed, and that message has one job — do not re-run.
+	t.Run("outcome unknown stays focused", func(t *testing.T) {
+		pre := emptyPreflight()
+		pre.Warnings.RelationshipsPartial = true
+		d := &recordingDeps{
+			t: t, preflight: pre,
+			copyErr: fmt.Errorf("timeout: %w", cli.ErrCopyOutcomeUnknown),
+		}
+		var out, errOut bytes.Buffer
+		if err := runItemCopy(baseOpts(), d.deps(), &out, &errOut); err == nil {
+			t.Fatal("an unknown outcome must exit non-zero")
+		}
+		if strings.Contains(errOut.String(), "you do not have access to") {
+			t.Errorf("the unknown-outcome message must stay focused on 'do not re-run'\n--- stderr ---\n%s", errOut.String())
+		}
+	})
+
+	t.Run("unmarked runs say nothing", func(t *testing.T) {
+		pre := emptyPreflight()
+		d := &recordingDeps{
+			t: t, preflight: pre,
+			result: &cli.ItemCopyResult{
+				Source:      cli.ItemCopyResultSource{WorkspaceSlug: "docapp", CollectionSlug: "ideas", Slug: "x"},
+				Destination: cli.ItemCopyResultDestination{WorkspaceSlug: "pad-web", CollectionSlug: "tasks", Slug: "x"},
+				Warnings:    cli.ItemCopyResultWarnings{DroppedFields: []string{}},
+			},
+		}
+		var out, errOut bytes.Buffer
+		if err := runItemCopy(baseOpts(), d.deps(), &out, &errOut); err != nil {
+			t.Fatalf("runItemCopy: %v", err)
+		}
+		// Empty, not "missing one phrase": a regression that printed any
+		// OTHER line of the advisory would slip past a substring check.
+		if errOut.String() != "" {
+			t.Errorf("the common case must print nothing on stderr at all\n--- stderr ---\n%q", errOut.String())
+		}
+	})
+}
+
 // ── --format json fidelity ───────────────────────────────────────────────
 
 func TestRunItemCopy_DryRunJSONIsTheServerResponse(t *testing.T) {

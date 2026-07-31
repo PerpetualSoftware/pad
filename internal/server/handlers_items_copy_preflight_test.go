@@ -1485,3 +1485,483 @@ func TestCopyPreflight_LegacyParentIDColumnIsReported(t *testing.T) {
 		t.Error("a parent_id pointing outside the source workspace must not be reported as a dropped parent")
 	}
 }
+
+// --- TASK-2369: the ACL filter must be visible, and must not leak -------
+
+// mustLegacyPlanLink writes an item_links row carrying the pre-rename
+// "plan" link_type directly.
+//
+// It has to go in by hand: models.NormalizeItemLinkType has no "plan"
+// alias, so CreateItemLink rejects it — and that is exactly why the row
+// matters. It exists only in workspaces that predate the rename, where no
+// current code path can produce it and none can repair it either.
+//
+// The values are interpolated rather than bound because the two drivers
+// disagree about placeholder syntax and Store.q is unexported. Every one
+// of them is server-generated, so there is nothing here a caller could
+// influence.
+func mustLegacyPlanLink(t *testing.T, srv *Server, wsID, childID, parentID string) {
+	t.Helper()
+	_, err := srv.store.DB().Exec(fmt.Sprintf(
+		`INSERT INTO item_links (id, workspace_id, source_id, target_id, link_type, created_by, created_at)
+		 VALUES ('legacy-plan-%s-%s', '%s', '%s', '%s', 'plan', 'user', '2024-01-01T00:00:00Z')`,
+		childID, parentID, wsID, childID, parentID))
+	if err != nil {
+		t.Fatalf("insert legacy 'plan' link: %v", err)
+	}
+}
+
+// TestCopyPreflight_LoneLegacyPlanChildIsCounted is P2 of TASK-2369.
+//
+// GetChildItems joins on store.ChildLinkTypes, which does not include the
+// legacy "plan" alias, so a child reachable ONLY by a lone "plan" edge was
+// invisible to child_count. On the move path that rendered as
+// `children_orphaned: false` for a child archiving the source does in fact
+// strand — the quiet data loss DR-17 forbids.
+func TestCopyPreflight_LoneLegacyPlanChildIsCounted(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+
+	child := mustItem(t, f.srv, f.wsA.ID, f.collA.ID, "Legacy plan child")
+	mustLegacyPlanLink(t, f.srv, f.wsA.ID, child.ID, f.source.ID)
+
+	// Sanity: the store genuinely cannot see it, so the handler is the
+	// only thing that can report it. If this ever stops holding, the
+	// double-count guard below is what keeps the fix honest.
+	kids, err := f.srv.store.GetChildItems(f.source.ID)
+	if err != nil {
+		t.Fatalf("GetChildItems: %v", err)
+	}
+	if len(kids) != 0 {
+		t.Fatalf("fixture: GetChildItems should not walk 'plan'; got %d", len(kids))
+	}
+
+	body := f.baseBody()
+	body["archive_source"] = true
+	w := f.ok(body).Warnings
+	if w.ChildCount != 1 {
+		t.Errorf("child_count = %d, want 1 — a child reachable only by a lone legacy 'plan' edge", w.ChildCount)
+	}
+	if !w.ChildrenOrphaned {
+		t.Error("children_orphaned must be true on the move path for a legacy 'plan' child")
+	}
+	// It is a CHILD, not a dependency: reporting it under a link map would
+	// announce a blocker that does not exist.
+	if len(w.OutgoingLinks) != 0 || len(w.IncomingLinks) != 0 {
+		t.Errorf("legacy 'plan' edge leaked into the dependency maps: out=%v in=%v",
+			w.OutgoingLinks, w.IncomingLinks)
+	}
+	// Nothing is hidden from the owner, so the common case stays unmarked.
+	if w.RelationshipsPartial {
+		t.Error("relationships_partial must be false for an unrestricted caller with nothing hidden")
+	}
+
+	// Deduplication: the same edge ALSO carrying a real `parent` row — the
+	// duplication GetChildItemsTx's DISTINCT exists for — counts once.
+	if _, err := f.srv.store.SetParentLink(f.wsA.ID, child.ID, f.source.ID, f.owner.ID); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+	if got := f.ok(body).Warnings.ChildCount; got != 1 {
+		t.Errorf("child_count = %d, want 1 — a 'plan' edge duplicating a 'parent' row must not double-count", got)
+	}
+}
+
+// TestCopyPreflight_LoneLegacyPlanParentIsReported is the other direction
+// of the same edge: OUTGOING, it is the item's own parent, and the copy is
+// unparented whichever alias expressed it.
+func TestCopyPreflight_LoneLegacyPlanParentIsReported(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+
+	parent := mustItem(t, f.srv, f.wsA.ID, f.collA.ID, "Legacy plan parent")
+	mustLegacyPlanLink(t, f.srv, f.wsA.ID, f.source.ID, parent.ID)
+
+	w := f.ok(f.baseBody()).Warnings
+	if !w.DroppedParent {
+		t.Error("dropped_parent must be true for a parent expressed by a lone legacy 'plan' edge")
+	}
+	if w.ChildCount != 0 {
+		t.Errorf("child_count = %d, want 0 — an OUTGOING 'plan' edge is a parent, not a child", w.ChildCount)
+	}
+}
+
+// TestCopyPreflight_LegacyPlanChildIsStillACLFiltered — the new legacy
+// accounting must not become a back door around the visibility filter the
+// rest of the block applies. A hidden legacy child stays uncounted; it is
+// the marker, not the number, that admits it exists.
+func TestCopyPreflight_LegacyPlanChildIsStillACLFiltered(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+	secretA := mustSchemaCollection(t, f.srv, f.wsA.ID, "Secret A", srcSchemaJSON)
+	u := f.restrictedEditor("legacy-acl@example.com", "legacyacl",
+		[]string{f.collA.ID}, []string{f.collB.ID})
+
+	child := mustItem(t, f.srv, f.wsA.ID, secretA.ID, "Hidden legacy child")
+	mustLegacyPlanLink(t, f.srv, f.wsA.ID, child.ID, f.source.ID)
+
+	if got := f.ok(f.baseBody()).Warnings.ChildCount; got != 1 {
+		t.Fatalf("owner: child_count = %d, want 1", got)
+	}
+	assertCounts(t, f, u, 0)
+	assertPartial(t, f, u, true, "a legacy 'plan' child in a collection the caller cannot see")
+}
+
+// assertPartial runs the preflight as u and checks relationships_partial.
+func assertPartial(t *testing.T, f *copyPreflightFixture, u *models.User, want bool, why string) {
+	t.Helper()
+	if got := restrictedWarnings(t, f, u).RelationshipsPartial; got != want {
+		t.Errorf("relationships_partial = %v, want %v — %s", got, want, why)
+	}
+}
+
+// assertCounts pins the privacy half of the contract: the numbers stay at
+// the VISIBLE total even though the marker admits there is more.
+func assertCounts(t *testing.T, f *copyPreflightFixture, u *models.User, wantChildren int) {
+	t.Helper()
+	if got := restrictedWarnings(t, f, u).ChildCount; got != wantChildren {
+		t.Errorf("child_count = %d, want %d — the marker must not start disclosing hidden items",
+			got, wantChildren)
+	}
+}
+
+func restrictedWarnings(t *testing.T, f *copyPreflightFixture, u *models.User) ItemCopyPreflightWarnings {
+	t.Helper()
+	rr := f.call(u, reqOpts{wsRoleCtx: "editor"}, f.baseBody())
+	if rr.Code != http.StatusOK {
+		t.Fatalf("preflight: %d %s", rr.Code, rr.Body.String())
+	}
+	var resp ItemCopyPreflight
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse preflight: %v", err)
+	}
+	return resp.Warnings
+}
+
+// TestCopyPreflight_NoPartialMarkerOnTheCommonCase — the half of P1 that is
+// easy to lose. Closing the finding by marking every preview would make the
+// product worse: a caveat that is always there is a caveat nobody reads, and
+// the one time it means something it would be invisible.
+func TestCopyPreflight_NoPartialMarkerOnTheCommonCase(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+	s := f.srv.store
+	openA := mustSchemaCollection(t, f.srv, f.wsA.ID, "Open A", srcSchemaJSON)
+	restricted := f.restrictedEditor("clean-case@example.com", "cleancase",
+		[]string{f.collA.ID, openA.ID}, []string{f.collB.ID})
+
+	// (a) An unrestricted owner, with no relationships at all.
+	if f.ok(f.baseBody()).Warnings.RelationshipsPartial {
+		t.Fatal("owner, no relationships: relationships_partial must be false")
+	}
+	// (b) A restricted caller, with no relationships at all.
+	assertPartial(t, f, restricted, false, "a restricted caller with nothing related to hide")
+
+	// (c) A restricted caller who can see every relationship there is —
+	//     the case that separates "is the caller restricted" from "was
+	//     anything actually withheld". A marker keyed off the former
+	//     would fire here.
+	child := mustItem(t, f.srv, f.wsA.ID, openA.ID, "Visible child")
+	if _, err := s.SetParentLink(f.wsA.ID, child.ID, f.source.ID, f.owner.ID); err != nil {
+		t.Fatalf("SetParentLink(child): %v", err)
+	}
+	parent := mustItem(t, f.srv, f.wsA.ID, openA.ID, "Visible parent")
+	if _, err := s.SetParentLink(f.wsA.ID, f.source.ID, parent.ID, f.owner.ID); err != nil {
+		t.Fatalf("SetParentLink(parent): %v", err)
+	}
+	blockee := mustItem(t, f.srv, f.wsA.ID, openA.ID, "Visible blockee")
+	if _, err := s.CreateItemLink(f.wsA.ID,
+		models.ItemLinkCreate{TargetID: blockee.ID, LinkType: "blocks", CreatedBy: f.owner.ID},
+		f.source.ID); err != nil {
+		t.Fatalf("CreateItemLink: %v", err)
+	}
+
+	w := restrictedWarnings(t, f, restricted)
+	if w.RelationshipsPartial {
+		t.Error("a restricted caller who can see every relationship must get NO partial marker")
+	}
+	if w.ChildCount != 1 || !w.DroppedParent || w.OutgoingLinks["blocks"] != 1 {
+		t.Errorf("fixture is not exercising real relationships: %+v", w)
+	}
+
+	// (d) An unrestricted owner looking at the same graph. Same answer,
+	//     for a different reason, and it must stay unmarked too.
+	if f.ok(f.baseBody()).Warnings.RelationshipsPartial {
+		t.Error("owner with a fully visible relationship graph: relationships_partial must be false")
+	}
+}
+
+// TestCopyPreflight_PartialMarkerSurfacesHiddenRelationships is P1 of
+// TASK-2369. The ACL filtering is correct and stays; what changes is that
+// "none" and "none that you can see" stop rendering identically.
+//
+// Each of the four channels the filter runs through gets its OWN fixture,
+// so a marker set by an earlier step can never stand in for one a later
+// step failed to set.
+func TestCopyPreflight_PartialMarkerSurfacesHiddenRelationships(t *testing.T) {
+	// setup returns a fixture whose restricted editor can see only the
+	// source's collection, plus the hidden collection to seed into.
+	setup := func(t *testing.T, tag string) (*copyPreflightFixture, *models.Collection, *models.User) {
+		t.Helper()
+		f := newCopyPreflightFixture(t)
+		secret := mustSchemaCollection(t, f.srv, f.wsA.ID, "Secret", srcSchemaJSON)
+		u := f.restrictedEditor(tag+"@example.com", tag,
+			[]string{f.collA.ID}, []string{f.collB.ID})
+		return f, secret, u
+	}
+
+	t.Run("hidden child", func(t *testing.T) {
+		f, secret, u := setup(t, "hidchild")
+		kid := mustItem(t, f.srv, f.wsA.ID, secret.ID, "Hidden child")
+		if _, err := f.srv.store.SetParentLink(f.wsA.ID, kid.ID, f.source.ID, f.owner.ID); err != nil {
+			t.Fatalf("SetParentLink: %v", err)
+		}
+		assertPartial(t, f, u, true, "a child in a collection the caller cannot see")
+		assertCounts(t, f, u, 0)
+	})
+
+	t.Run("hidden child via the parent_id column", func(t *testing.T) {
+		f, secret, u := setup(t, "hidcolchild")
+		if _, err := f.srv.store.CreateItem(f.wsA.ID, secret.ID, models.ItemCreate{
+			Title: "Hidden column child", Fields: `{"status":"open"}`,
+			ParentID: &f.source.ID, CreatedBy: f.owner.ID,
+		}); err != nil {
+			t.Fatalf("CreateItem: %v", err)
+		}
+		assertPartial(t, f, u, true, "a column-linked child in a collection the caller cannot see")
+		assertCounts(t, f, u, 0)
+	})
+
+	t.Run("hidden dependency edge", func(t *testing.T) {
+		f, secret, u := setup(t, "hidlink")
+		blockee := mustItem(t, f.srv, f.wsA.ID, secret.ID, "Hidden blockee")
+		if _, err := f.srv.store.CreateItemLink(f.wsA.ID,
+			models.ItemLinkCreate{TargetID: blockee.ID, LinkType: "blocks", CreatedBy: f.owner.ID},
+			f.source.ID); err != nil {
+			t.Fatalf("CreateItemLink: %v", err)
+		}
+		assertPartial(t, f, u, true, "a dependency edge into a collection the caller cannot see")
+		if got := restrictedWarnings(t, f, u).OutgoingLinks; len(got) != 0 {
+			t.Errorf("outgoing_links = %v, want empty — the hidden edge must stay uncounted", got)
+		}
+	})
+
+	t.Run("hidden parent link", func(t *testing.T) {
+		f, secret, u := setup(t, "hidparent")
+		parent := mustItem(t, f.srv, f.wsA.ID, secret.ID, "Hidden parent")
+		if _, err := f.srv.store.SetParentLink(f.wsA.ID, f.source.ID, parent.ID, f.owner.ID); err != nil {
+			t.Fatalf("SetParentLink: %v", err)
+		}
+		assertPartial(t, f, u, true, "a parent in a collection the caller cannot see")
+		if restrictedWarnings(t, f, u).DroppedParent {
+			t.Error("dropped_parent must stay false — the marker replaces the disclosure, it does not add one")
+		}
+	})
+
+	// The obvious short-circuit — "dropped_parent is already true, skip the
+	// column" — leaves a withheld relationship unmarked, because the two
+	// mechanisms can name DIFFERENT items. SetParentLink does not touch
+	// items.parent_id, so both can be live at once (Codex round 1).
+	t.Run("hidden parent_id column behind a visible parent link", func(t *testing.T) {
+		f, secret, u := setup(t, "hidcolbehind")
+		hiddenParent := mustItem(t, f.srv, f.wsA.ID, secret.ID, "Hidden column parent")
+		withColumn, err := f.srv.store.CreateItem(f.wsA.ID, f.collA.ID, models.ItemCreate{
+			Title: "Two parents", Fields: `{"status":"open"}`,
+			ParentID: &hiddenParent.ID, CreatedBy: f.owner.ID,
+		})
+		if err != nil {
+			t.Fatalf("CreateItem: %v", err)
+		}
+		visibleParent := mustItem(t, f.srv, f.wsA.ID, f.collA.ID, "Visible link parent")
+		if _, err := f.srv.store.SetParentLink(f.wsA.ID, withColumn.ID, visibleParent.ID, f.owner.ID); err != nil {
+			t.Fatalf("SetParentLink: %v", err)
+		}
+		// Fixture guard: the link must not have cleared the column, or the
+		// case this test exists for cannot arise.
+		reread, err := f.srv.store.GetItem(withColumn.ID)
+		if err != nil || reread == nil || reread.ParentID == nil || *reread.ParentID != hiddenParent.ID {
+			t.Fatalf("fixture: expected the parent_id column to survive SetParentLink; got %+v (err=%v)", reread, err)
+		}
+		f.source = withColumn
+
+		w := restrictedWarnings(t, f, u)
+		if !w.DroppedParent {
+			t.Error("dropped_parent must be true — the caller CAN see the linked parent")
+		}
+		if !w.RelationshipsPartial {
+			t.Error("relationships_partial must be true — a SECOND parent, in the column, is hidden from the caller")
+		}
+	})
+
+	t.Run("hidden parent via the legacy parent_id column", func(t *testing.T) {
+		f, secret, u := setup(t, "hidcolparent")
+		parent := mustItem(t, f.srv, f.wsA.ID, secret.ID, "Hidden column parent")
+		withColumn, err := f.srv.store.CreateItem(f.wsA.ID, f.collA.ID, models.ItemCreate{
+			Title: "Has parent_id", Fields: `{"status":"open"}`,
+			ParentID: &parent.ID, CreatedBy: f.owner.ID,
+		})
+		if err != nil {
+			t.Fatalf("CreateItem: %v", err)
+		}
+		f.source = withColumn
+		assertPartial(t, f, u, true, "a legacy parent_id column pointing into a hidden collection")
+		if restrictedWarnings(t, f, u).DroppedParent {
+			t.Error("dropped_parent must stay false for a column parent the caller cannot see")
+		}
+	})
+}
+
+// TestCopyPreflight_PartialMarkerForAnItemGrantOnlyGuest pins the
+// narrowest caller this endpoint accepts: a GUEST with no membership in
+// the source workspace at all, whose sole claim is an edit grant on the
+// source item.
+//
+// Two things are being pinned at once.
+//
+// FIRST, the guest path really is filtered. relVisible composes
+// visibleCollectionIDs with isItemVisibleToGuest, and a guest whose
+// collection list came back nil would silently be treated as unrestricted
+// — the filter AND the marker would both switch off, and every other test
+// here uses collection_access="specific" rather than a grant, so none of
+// them would notice.
+//
+// SECOND, and deliberately: this caller CAN learn one bit they cannot
+// learn from /children, /links or /items, all of which return empty for
+// them either way — namely that at least one relationship exists which
+// they may not see. That single bit is the accepted price of TASK-2369.
+// It carries no count, no type, no identity and no collection, and the
+// alternative is telling someone about to run a MOVE that nothing will be
+// stranded when something will. Recorded here so the trade is a decision
+// on the record rather than an oversight (Codex round 9).
+func TestCopyPreflight_PartialMarkerForAnItemGrantOnlyGuest(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+	secret := mustSchemaCollection(t, f.srv, f.wsA.ID, "Secret", srcSchemaJSON)
+
+	guest := mustUser(t, f.srv, "grantpartial@example.com", "grantpartial", "")
+	if _, err := f.srv.store.CreateItemGrant(f.wsA.ID, f.source.ID, guest.ID, "edit", f.owner.ID); err != nil {
+		t.Fatalf("CreateItemGrant: %v", err)
+	}
+	if err := f.srv.store.AddWorkspaceMember(f.wsB.ID, guest.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember B: %v", err)
+	}
+
+	guestWarnings := func() ItemCopyPreflightWarnings {
+		t.Helper()
+		rr := f.call(guest, reqOpts{wsRoleCtx: "guest"}, f.baseBody())
+		if rr.Code != http.StatusOK {
+			t.Fatalf("guest preflight: %d %s", rr.Code, rr.Body.String())
+		}
+		var resp ItemCopyPreflight
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("parse: %v", err)
+		}
+		return resp.Warnings
+	}
+
+	// Nothing related yet: no marker. The guest is the caller most likely
+	// to trip a "restricted therefore partial" shortcut.
+	if guestWarnings().RelationshipsPartial {
+		t.Fatal("an item-grant guest with no relationships must get no marker")
+	}
+
+	kid := mustItem(t, f.srv, f.wsA.ID, secret.ID, "Hidden child")
+	if _, err := f.srv.store.SetParentLink(f.wsA.ID, kid.ID, f.source.ID, f.owner.ID); err != nil {
+		t.Fatalf("SetParentLink: %v", err)
+	}
+
+	w := guestWarnings()
+	if !w.RelationshipsPartial {
+		t.Error("the guest path did not mark a hidden child — is the guest being treated as unrestricted?")
+	}
+	if w.ChildCount != 0 {
+		t.Errorf("child_count = %d, want 0 — a grant on the source is not a grant on its children", w.ChildCount)
+	}
+	// The owner sees the same child as a real one, so the fixture is not
+	// passing because the child failed to exist.
+	if got := f.ok(f.baseBody()).Warnings.ChildCount; got != 1 {
+		t.Fatalf("owner: child_count = %d, want 1 — fixture is not exercising a real child", got)
+	}
+}
+
+// TestCopyPreflight_PartialMarkerDoesNotLeakHiddenCount is the negative
+// test TASK-2369 asks for by name, and the reason the marker is a bare
+// boolean rather than a count.
+//
+// Two workspaces are built identically except for how much is hidden from
+// the caller: one has a single hidden child; the other has three hidden
+// children, two hidden dependency edges of two different link types, and a
+// hidden parent. If ANY channel of the answer varied with that — a number,
+// a map key, an array length, bucket ordering, or the serialized byte
+// length — a restricted caller could binary-search the hidden graph, which
+// is the leak DR-10a, DR-10b and the moved-to pointer each closed
+// separately.
+//
+// The assertion is byte equality over the WHOLE warnings block rather than
+// a field-by-field comparison, precisely so a future field that does vary
+// fails here instead of shipping.
+func TestCopyPreflight_PartialMarkerDoesNotLeakHiddenCount(t *testing.T) {
+	build := func(t *testing.T, tag string, seed func(f *copyPreflightFixture, secret *models.Collection)) []byte {
+		t.Helper()
+		f := newCopyPreflightFixture(t)
+		secret := mustSchemaCollection(t, f.srv, f.wsA.ID, "Secret", srcSchemaJSON)
+		u := f.restrictedEditor("leak"+tag+"@example.com", "leak"+tag,
+			[]string{f.collA.ID}, []string{f.collB.ID})
+		seed(f, secret)
+
+		rr := f.call(u, reqOpts{wsRoleCtx: "editor"}, f.baseBody())
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: preflight %d: %s", tag, rr.Code, rr.Body.String())
+		}
+		var envelope struct {
+			Warnings json.RawMessage `json:"warnings"`
+		}
+		if err := json.Unmarshal(rr.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("%s: parse: %v", tag, err)
+		}
+		var w ItemCopyPreflightWarnings
+		if err := json.Unmarshal(envelope.Warnings, &w); err != nil {
+			t.Fatalf("%s: parse warnings: %v", tag, err)
+		}
+		// Falsifiability: if the fixture stopped hiding anything, byte
+		// equality would pass for the wrong reason.
+		if !w.RelationshipsPartial {
+			t.Fatalf("%s: fixture is not exercising the marker at all", tag)
+		}
+		return envelope.Warnings
+	}
+
+	one := build(t, "one", func(f *copyPreflightFixture, secret *models.Collection) {
+		kid := mustItem(t, f.srv, f.wsA.ID, secret.ID, "Hidden child")
+		if _, err := f.srv.store.SetParentLink(f.wsA.ID, kid.ID, f.source.ID, f.owner.ID); err != nil {
+			t.Fatalf("SetParentLink: %v", err)
+		}
+	})
+
+	many := build(t, "many", func(f *copyPreflightFixture, secret *models.Collection) {
+		for i := 0; i < 3; i++ {
+			kid := mustItem(t, f.srv, f.wsA.ID, secret.ID, fmt.Sprintf("Hidden child %d", i))
+			if _, err := f.srv.store.SetParentLink(f.wsA.ID, kid.ID, f.source.ID, f.owner.ID); err != nil {
+				t.Fatalf("SetParentLink: %v", err)
+			}
+		}
+		for _, lt := range []string{"blocks", "related"} {
+			other := mustItem(t, f.srv, f.wsA.ID, secret.ID, "Hidden "+lt)
+			if _, err := f.srv.store.CreateItemLink(f.wsA.ID,
+				models.ItemLinkCreate{TargetID: other.ID, LinkType: lt, CreatedBy: f.owner.ID},
+				f.source.ID); err != nil {
+				t.Fatalf("CreateItemLink(%s): %v", lt, err)
+			}
+		}
+		parent := mustItem(t, f.srv, f.wsA.ID, secret.ID, "Hidden parent")
+		if _, err := f.srv.store.SetParentLink(f.wsA.ID, f.source.ID, parent.ID, f.owner.ID); err != nil {
+			t.Fatalf("SetParentLink(parent): %v", err)
+		}
+		kid := mustItem(t, f.srv, f.wsA.ID, secret.ID, "Hidden legacy child")
+		mustLegacyPlanLink(t, f.srv, f.wsA.ID, kid.ID, f.source.ID)
+	})
+
+	if !bytes.Equal(one, many) {
+		t.Fatalf("the warning block varies with the number and type of HIDDEN relationships:\n one:  %s\n many: %s",
+			one, many)
+	}
+	// Called out separately because byte length is the channel a
+	// field-by-field comparison would miss.
+	if len(one) != len(many) {
+		t.Fatalf("warning block byte length leaks the hidden count: %d vs %d", len(one), len(many))
+	}
+}
