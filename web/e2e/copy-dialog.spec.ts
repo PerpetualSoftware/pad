@@ -145,6 +145,66 @@ test.describe('cross-workspace copy dialog (PLAN-2373 / TASK-2355)', () => {
 		// navigates, so there is no stable node left to restore to.
 	});
 
+	test('the dialog reopens after a destination change and cancel (BUG: wedged scheduler)', async ({
+		page,
+		fixture,
+		request,
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'viewport driven explicitly');
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+		const { slug } = await seedDoc(fixture, request, 'Copy dialog reopen');
+		const dest = await seedDestination(request, fixture, 'reopen', {
+			name: 'Notes',
+			slug: 'notes',
+			fields: [],
+		});
+		await page.goto(itemUrl(fixture, slug));
+
+		// EVERY other test in this file opens the dialog exactly once, which is
+		// precisely why this shipped. The reset that runs on open writes
+		// `destWs` and then reads it back; tracked, that is a self-dependency
+		// that invalidates the effect performing it and wedges Svelte's
+		// scheduler. It cannot bite on the FIRST open — `destWs` already equals
+		// the source workspace there, so the write is a no-op. It needs a real
+		// destination change, a close, and a REOPEN.
+		//
+		// The failure is silent: no console error (a production build reports
+		// none), the dialog simply never appears, and every other control on the
+		// pane dies with it because the aborted flush strands unrelated
+		// reactivity. So this test asserts the pane is still ALIVE afterwards,
+		// not merely that the dialog came back.
+		await openCopyDialog(page);
+		const dialog = copyDialog(page);
+
+		const collectionsLoaded = page.waitForResponse(
+			(r) => r.url().includes(`/workspaces/${dest.wsSlug}/collections`) && r.status() === 200,
+		);
+		await dialog.getByLabel('Workspace', { exact: true }).selectOption(dest.wsSlug);
+		await collectionsLoaded;
+
+		await dialog.getByRole('button', { name: 'Cancel' }).click();
+		await expect(dialog).toBeHidden();
+
+		// Reopen. Before the fix this silently did nothing.
+		await openCopyDialog(page);
+		await expect(dialog).toBeVisible();
+
+		// The reset must actually have run: the destination is back to the
+		// current workspace, not still pointing at the previous choice.
+		await expect(dialog.getByLabel('Workspace', { exact: true })).toHaveValue(
+			fixture.workspaceSlug,
+		);
+
+		// And the rest of the pane still responds — the part a "did the dialog
+		// open?" assertion alone would miss.
+		await dialog.getByRole('button', { name: 'Cancel' }).click();
+		await expect(dialog).toBeHidden();
+		const more = paneMoreBtn(page);
+		await more.click();
+		await expect(page.getByRole('menuitem', { name: 'Copy or move to workspace…' })).toBeVisible();
+	});
+
 	test('a required destination field gates Confirm until supplied, then the copy commits', async ({
 		page,
 		fixture,
