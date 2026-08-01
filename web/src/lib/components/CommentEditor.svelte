@@ -22,7 +22,7 @@
 	import Placeholder from '@tiptap/extension-placeholder';
 	import { Markdown } from 'tiptap-markdown';
 	import { api } from '$lib/api/client';
-	import { notifyAttachmentUploaded } from '$lib/attachments/events';
+	import { notifyAttachmentUploaded, toUploadedAttachment } from '$lib/attachments/events';
 	import { unescapeDocLinks } from '$lib/utils/markdown';
 	import { AttachmentImage } from './editor/attachment-image';
 	import { AttachmentChip } from './editor/attachment-chip';
@@ -150,12 +150,7 @@
 							// attachment strip — announce it like the body editor
 							// does, or the strip stays stale until reload
 							// (PLAN-2382 / TASK-2385).
-							notifyAttachmentUploaded(uploadItemId, {
-								id: result.id,
-								filename: result.filename,
-								mime_type: result.mime,
-								size_bytes: result.size,
-							});
+							notifyAttachmentUploaded(uploadItemId, toUploadedAttachment(result));
 							return result;
 						} finally {
 							pendingUploads -= 1;

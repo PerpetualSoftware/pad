@@ -28,11 +28,10 @@
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import {
-		notifyAttachmentDeleted,
+		announceAttachmentDeleted,
 		registerAttachmentDeletionListener,
 		registerAttachmentUploadListener,
 	} from '$lib/attachments/events';
-	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 
 	interface Props {
 		wsSlug: string;
@@ -307,15 +306,10 @@
 
 		try {
 			await api.attachments.delete(wsSlug, att.id);
-			// Tell any live editor NodeView the attachment is gone. An <img>
-			// that already loaded never re-requests, so without this the body
-			// keeps showing a healthy image the server no longer has until the
-			// next reload (Codex round 12).
-			notifyAttachmentDeleted(att.id);
-			// Drop the cached HEAD metadata too, so a surface that re-resolves
-			// this reference later (file chips, read-only renders) doesn't get
-			// a cache hit describing a row that no longer exists.
-			invalidateAttachmentMetadata(wsSlug, att.id);
+			// Tell the live views and drop the cached metadata. An <img> that
+			// already loaded never re-requests, so without this the body keeps
+			// showing a healthy image the server no longer has until reload.
+			announceAttachmentDeleted(wsSlug, att.id);
 		} catch (err) {
 			if (switchedAway(gen, reqItemId ?? '')) return;
 
@@ -331,8 +325,7 @@
 				// gone, so it gets the same broadcast — otherwise an editor
 				// NodeView or another mounted strip in this tab stays stale
 				// precisely when we have proof it should not (Codex round 19).
-				notifyAttachmentDeleted(att.id);
-				invalidateAttachmentMetadata(wsSlug, att.id);
+				announceAttachmentDeleted(wsSlug, att.id);
 				return;
 			}
 

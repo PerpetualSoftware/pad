@@ -586,7 +586,7 @@
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { api } from '$lib/api/client';
-	import { notifyAttachmentUploaded } from '$lib/attachments/events';
+	import { notifyAttachmentUploaded, toUploadedAttachment } from '$lib/attachments/events';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
 	import { SLASH_ITEMS } from './block-types';
@@ -983,12 +983,7 @@
 					// Only announce when the server actually persisted an
 					// association — a free-floating upload leaves item_id NULL
 					// and an optimistic tile for it would vanish on refresh.
-					notifyAttachmentUploaded(uploadItemId, {
-						id: result.id,
-						filename: result.filename,
-						mime_type: result.mime,
-						size_bytes: result.size,
-					});
+					notifyAttachmentUploaded(uploadItemId, toUploadedAttachment(result));
 					return result;
 				},
 				onError: (filename, message) => {

@@ -19,6 +19,9 @@
  * (the strip treats a 404 on delete as authoritative for exactly that reason).
  */
 
+import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
+import type { AttachmentUploadResult } from '$lib/types';
+
 const listeners = new Set<(uuid: string) => void>();
 
 /**
@@ -41,6 +44,25 @@ export function notifyAttachmentDeleted(uuid: string): void {
 }
 
 /**
+ * The full "this attachment is gone" reconciliation: tell the live views AND
+ * drop the cached HEAD metadata, so a surface that re-resolves the reference
+ * later doesn't get a hit describing a deleted row.
+ *
+ * Every delete surface needs both, and a 404 is just as authoritative as a
+ * 204 — four call sites were repeating the pair, which is one omission away
+ * from a surface that silently stops propagating. Prefer this over calling
+ * the two halves separately.
+ *
+ * (Imports the metadata cache from components/editor: the cache predates this
+ * module and moving it is a bigger change than this cleanup warrants.)
+ */
+export function announceAttachmentDeleted(workspaceSlug: string, uuid: string): void {
+	if (!uuid) return;
+	notifyAttachmentDeleted(uuid);
+	invalidateAttachmentMetadata(workspaceSlug, uuid);
+}
+
+/**
  * Uploads (TASK-2385).
  *
  * The editor's paste / drag-drop upload plugin is the only thing that knows a
@@ -60,6 +82,20 @@ export interface UploadedAttachment {
 	filename: string;
 	mime_type: string;
 	size_bytes: number;
+}
+
+/**
+ * Narrow an upload response to what subscribers need. Both upload paths (body
+ * editor, comment composer) were hand-mapping the same four fields, which is
+ * how the two drift apart.
+ */
+export function toUploadedAttachment(result: AttachmentUploadResult): UploadedAttachment {
+	return {
+		id: result.id,
+		filename: result.filename,
+		mime_type: result.mime,
+		size_bytes: result.size,
+	};
 }
 
 const uploadListeners = new Set<(itemId: string, attachment: UploadedAttachment) => void>();

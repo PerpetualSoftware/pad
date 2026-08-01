@@ -2,8 +2,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { api, PadApiError } from '$lib/api/client';
-	import { notifyAttachmentDeleted } from '$lib/attachments/events';
-	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
+	import { announceAttachmentDeleted } from '$lib/attachments/events';
 	import type {
 		AttachmentListItem,
 		AttachmentListFilters,
@@ -154,8 +153,7 @@
 			// <img>/chip NodeViews for this attachment, and an already-loaded
 			// image never re-requests, so without this they keep presenting a
 			// row the server no longer has (Codex round 14).
-			notifyAttachmentDeleted(att.id);
-			invalidateAttachmentMetadata(wsSlug, att.id);
+			announceAttachmentDeleted(wsSlug, att.id);
 			toastStore.show(`Deleted ${att.filename}`, 'success');
 			await reload();
 		} catch (err) {
@@ -165,8 +163,7 @@
 			// an error for something that is in fact already done
 			// (Codex round 20; matches the attachment strip's handling).
 			if (err instanceof PadApiError && err.code === 'not_found') {
-				notifyAttachmentDeleted(att.id);
-				invalidateAttachmentMetadata(wsSlug, att.id);
+				announceAttachmentDeleted(wsSlug, att.id);
 				toastStore.show(`${att.filename} was already deleted`, 'info');
 				await reload();
 				return;

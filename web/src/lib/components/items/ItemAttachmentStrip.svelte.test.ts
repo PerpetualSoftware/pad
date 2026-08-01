@@ -50,7 +50,10 @@ function broadcastUpload(itemId: string, a: UploadedAttachment) {
 }
 
 vi.mock('$lib/attachments/events', () => ({
-	notifyAttachmentDeleted: (uuid: string) => notifyDeletedMock(uuid),
+	announceAttachmentDeleted: (ws: string, uuid: string) => {
+		notifyDeletedMock(uuid);
+		invalidateMock(ws, uuid);
+	},
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
 		deletionListeners.add(fn);
 		return () => deletionListeners.delete(fn);
@@ -61,10 +64,9 @@ vi.mock('$lib/attachments/events', () => ({
 	},
 }));
 
+// announceAttachmentDeleted bundles the notify + cache-invalidate pair; the
+// mock above splits them back out so tests can assert each half.
 const invalidateMock = vi.fn<(ws: string, uuid: string) => void>();
-vi.mock('$lib/components/editor/attachment-metadata', () => ({
-	invalidateAttachmentMetadata: (ws: string, uuid: string) => invalidateMock(ws, uuid),
-}));
 
 vi.mock('$lib/stores/toast.svelte', () => ({
 	toastStore: { show: (message: string, kind?: string) => toastMock(message, kind) },
