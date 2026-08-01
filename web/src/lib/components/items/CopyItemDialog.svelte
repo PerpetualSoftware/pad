@@ -43,7 +43,7 @@ their own recovery paths; swallowing those into outcome-unknown would send the
 user hunting for an item that provably does not exist.
 -->
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import FieldEditor from '$lib/components/fields/FieldEditor.svelte';
 	import { api, PadApiError } from '$lib/api/client';
@@ -305,12 +305,28 @@ user hunting for an item that provably does not exist.
 	let prevOpen = false;
 
 	$effect.pre(() => {
-		if (open && !prevOpen) {
-			resetForOpen();
-		} else if (!open && prevOpen) {
-			cancelPending();
-		}
-		prevOpen = open;
+		// `open` is the ONLY dependency this effect may have. Both branches are
+		// untracked because they write ~18 pieces of $state and read some of
+		// them back — `resetForOpen` writes `destWs` and then reads it again to
+		// kick off the collection load. Tracked, that is a self-dependency: the
+		// write invalidates the effect that performed it, the flush aborts, and
+		// Svelte's scheduler is left wedged (CONVE-1688).
+		//
+		// It survived review because it only bites on the SECOND open. On the
+		// first, `destWs` already equals `sourceWsSlug`, so the reset is a
+		// no-op write and nothing invalidates. Change the destination once and
+		// reopen, and the reset becomes a real change — the dialog silently
+		// fails to open and every other control on the pane dies with it, with
+		// no console error because a production build reports nothing.
+		const isOpen = open;
+		untrack(() => {
+			if (isOpen && !prevOpen) {
+				resetForOpen();
+			} else if (!isOpen && prevOpen) {
+				cancelPending();
+			}
+			prevOpen = isOpen;
+		});
 	});
 
 	$effect(() => {
