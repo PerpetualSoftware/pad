@@ -41,6 +41,7 @@
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import CopyItemDialog from '$lib/components/items/CopyItemDialog.svelte';
+	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
 	import { isSamePaneTarget, breadcrumbParentTarget } from '$lib/collections/paneTarget';
@@ -4991,6 +4992,18 @@
 				{/if}
 			</div>
 			{/key}
+
+			<!-- Attachment strip (PLAN-2382 / TASK-2383) — deliberately OUTSIDE
+			     the {#key itemSlug} above, so it owns its own generation fence
+			     for the A→B switch rather than remounting. Renders nothing when
+			     the item has no attachments.
+			     itemMatchesRef, not a bare `item?.id`: loadData deliberately
+			     RETAINS the previous item while the new ref's request is in
+			     flight, so `item.id` alone still reads A mid-switch and A's
+			     tiles would linger under B. Gating on the same switch boundary
+			     the collab lifecycle uses nulls the prop the instant the ref
+			     changes (Codex round 1). -->
+			<ItemAttachmentStrip {wsSlug} {username} itemId={itemMatchesRef ? item?.id : null} />
 
 			<!-- Content editor — OUTSIDE the {#key itemSlug} above: the collab
 			     Editor, EditorBubbleMenu, provider, collabKey and SSE stay
