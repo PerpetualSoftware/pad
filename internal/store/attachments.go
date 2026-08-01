@@ -375,6 +375,12 @@ func mimeInPredicate(mimes []string) (string, []any, bool) {
 // with item fields nulled out — the attachment is still visible
 // (a deleted item could still be restored), but the link target
 // isn't reachable.
+//
+// Both joins are scoped to the attachment's own workspace, so an
+// attachment whose item_id points at another workspace's item lists
+// with NULL item/collection metadata rather than leaking a foreign
+// title (TASK-2399). The row itself still lists — it consumes quota
+// and must remain visible and repairable.
 func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListFilters) ([]AttachmentListItem, int, error) {
 	// Build the WHERE clause incrementally. Every branch parameter
 	// goes through the placeholder slice — no string concatenation of
@@ -452,10 +458,17 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 	// them and the collection-level visibility predicate
 	// (i.collection_id IN ...) must keep working. The handler's
 	// delete path uses GetItemIncludeDeleted for the same reason.
+	//
+	// The workspace predicate belongs in the ON clause, NOT in WHERE:
+	// in WHERE the LEFT JOIN degenerates into an inner join and a row
+	// whose item_id points at another workspace's item would vanish
+	// from the listing entirely — hiding quota-consuming rows and
+	// making them unrepairable. In ON, a mismatched parent simply
+	// yields NULL item metadata and the row survives (TASK-2399).
 	var total int
 	if err := s.db.QueryRow(s.q(`
 		SELECT COUNT(*) FROM attachments a
-		LEFT JOIN items i ON i.id = a.item_id
+		LEFT JOIN items i ON i.id = a.item_id AND i.workspace_id = a.workspace_id
 		WHERE `+where), args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count workspace attachments: %w", err)
 	}
@@ -489,13 +502,27 @@ func (s *Store) WorkspaceAttachments(workspaceID string, filters AttachmentListF
 	// ACL predicate sees a non-NULL i.collection_id. The response
 	// surfaces deleted_at on the joined item via item_deleted so the
 	// UI can render a "(deleted)" tag instead of a clickable link.
+	//
+	// Same workspace scoping as the count query above, and for the
+	// same reason — the two must stay consistent or a restricted
+	// user's count would diverge from their results. Collections are
+	// reached through the now-scoped item join, so a foreign parent
+	// nulls out the collection columns too.
+	//
+	// The collections join carries its own workspace predicate as
+	// well: items.collection_id has no composite workspace foreign
+	// key (migrations/005_collections.sql), so an item can reference
+	// a collection in another workspace and would otherwise surface
+	// that collection's slug/name here. Same ON-clause rule — a
+	// mismatch nulls the collection columns, it does not drop the
+	// row.
 	q := `
 		SELECT ` + aliasedAttachmentColumns + `,
 		       i.title, i.slug, i.deleted_at,
 		       c.slug, c.name
 		FROM attachments a
-		LEFT JOIN items i       ON i.id = a.item_id
-		LEFT JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN items i       ON i.id = a.item_id AND i.workspace_id = a.workspace_id
+		LEFT JOIN collections c ON c.id = i.collection_id AND c.workspace_id = i.workspace_id
 		WHERE ` + where + `
 		ORDER BY ` + orderBy + `
 		LIMIT ? OFFSET ?`
