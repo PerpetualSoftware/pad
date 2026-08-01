@@ -1856,6 +1856,12 @@ export interface AttachmentListResponse {
 export interface AttachmentListFilters {
 	category?: 'image' | 'video' | 'audio' | 'document' | 'text' | 'archive' | 'other';
 	item?: 'attached' | 'unattached';
+	/**
+	 * UUID of a specific parent item — returns only that item's attachments.
+	 * Mutually exclusive with `item: 'unattached'`; combining the two yields
+	 * an empty result set (see handlers_storage.go's handler doc).
+	 */
+	item_id?: string;
 	collection?: string;
 	sort?:
 		| 'size'

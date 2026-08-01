@@ -22,6 +22,7 @@
 	import Placeholder from '@tiptap/extension-placeholder';
 	import { Markdown } from 'tiptap-markdown';
 	import { api } from '$lib/api/client';
+	import { notifyAttachmentUploaded, toUploadedAttachment } from '$lib/attachments/events';
 	import { unescapeDocLinks } from '$lib/utils/markdown';
 	import { AttachmentImage } from './editor/attachment-image';
 	import { AttachmentChip } from './editor/attachment-chip';
@@ -142,7 +143,15 @@
 						}
 						pendingUploads += 1;
 						try {
-							return await api.attachments.upload(wsSlug, file, itemId);
+							const uploadItemId = itemId;
+							const result = await api.attachments.upload(wsSlug, file, uploadItemId);
+							// A comment upload carries item context too, so the
+							// server associates it and it belongs in that item's
+							// attachment strip — announce it like the body editor
+							// does, or the strip stays stale until reload
+							// (PLAN-2382 / TASK-2385).
+							notifyAttachmentUploaded(uploadItemId, toUploadedAttachment(result));
+							return result;
 						} finally {
 							pendingUploads -= 1;
 						}

@@ -2222,6 +2222,7 @@ export const api = {
 			const params = new URLSearchParams();
 			if (filters.category) params.set('category', filters.category);
 			if (filters.item) params.set('item', filters.item);
+			if (filters.item_id) params.set('item_id', filters.item_id);
 			if (filters.collection) params.set('collection', filters.collection);
 			if (filters.sort) params.set('sort', filters.sort);
 			if (filters.limit !== undefined) params.set('limit', String(filters.limit));

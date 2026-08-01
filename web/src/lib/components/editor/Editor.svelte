@@ -586,6 +586,7 @@
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { api } from '$lib/api/client';
+	import { notifyAttachmentUploaded, toUploadedAttachment } from '$lib/attachments/events';
 	import { BlockDragHandle } from './block-drag-handle';
 	import { HtmlBlock, captureHtmlBlockSnapshot, flipHtmlBlockToSource } from './extensions/htmlBlock';
 	import { SLASH_ITEMS } from './block-types';
@@ -972,7 +973,18 @@
 						// than leaving a silent stuck spinner.
 						throw new Error('No workspace context — drop a file from inside a workspace.');
 					}
-					return api.attachments.upload(wsSlug, file, itemId);
+					// Capture the item id at upload START. The promise outlives an
+					// A→B switch even though the <Editor> itself is keyed on
+					// item.id, and AttachmentUploadResult carries no item_id, so
+					// this is the only point where the association is known
+					// (PLAN-2382 / TASK-2385).
+					const uploadItemId = itemId;
+					const result = await api.attachments.upload(wsSlug, file, uploadItemId);
+					// Only announce when the server actually persisted an
+					// association — a free-floating upload leaves item_id NULL
+					// and an optimistic tile for it would vanish on refresh.
+					notifyAttachmentUploaded(uploadItemId, toUploadedAttachment(result));
+					return result;
 				},
 				onError: (filename, message) => {
 					// Surface upload failures to the user. The editor's

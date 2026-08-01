@@ -33,6 +33,7 @@ import {
 	type AttachmentVariant,
 	fetchAttachmentMetadata
 } from './attachment-metadata';
+import { registerAttachmentDeletionListener } from '$lib/attachments/events';
 
 const PAD_ATTACHMENT_PREFIX = 'pad-attachment:';
 
@@ -297,6 +298,29 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				iconEl.textContent = iconForFilename(currentFilename);
 			};
 
+			/**
+			 * A deleted attachment leaves this chip looking perfectly valid —
+			 * unlike an <img>, a link makes no request until clicked, so
+			 * nothing tells it the target is gone and the user gets a 404 in a
+			 * new tab (Codex round 13). The strip broadcasts deletions, so mark
+			 * the chip dead in place instead: same .attachment-missing
+			 * treatment the markdown renderer uses for a missing reference.
+			 */
+			let deleted = false;
+			const markDeleted = (): void => {
+				deleted = true;
+				wrapper.classList.add('attachment-missing');
+				wrapper.removeAttribute('href');
+				wrapper.removeAttribute('download');
+				wrapper.title = 'This attachment has been deleted';
+				sizeEl.textContent = '';
+				iconEl.textContent = '📎';
+			};
+
+			const disposeDeletionListener = registerAttachmentDeletionListener((deletedUuid) => {
+				if (deletedUuid === currentUuid) markDeleted();
+			});
+
 			refreshHref();
 			refreshFilenameDom();
 			refreshIcon();
@@ -312,6 +336,14 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			wrapper.addEventListener('click', (event) => {
 				if (event.detail > 1) return; // double-click → fall through
 				if (!currentUuid) return;
+				// Removing href is not enough: this handler opens the URL
+				// itself, so a deleted chip would still open a 404 in a new tab
+				// (Codex round 14). Swallow the click instead.
+				if (deleted) {
+					event.preventDefault();
+					event.stopPropagation();
+					return;
+				}
 				event.preventDefault();
 				event.stopPropagation();
 				if (typeof window !== 'undefined') {
@@ -369,6 +401,10 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 
 					if (newUuid !== currentUuid) {
 						currentUuid = newUuid;
+						// New target ⇒ the old deletion no longer applies.
+						deleted = false;
+						wrapper.classList.remove('attachment-missing');
+						wrapper.removeAttribute('title');
 						// New uuid ⇒ stale MIME / size; reset until HEAD probe
 						// returns for the new identifier.
 						currentMime = null;
@@ -389,6 +425,9 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 					}
 
 					return true;
+				},
+				destroy() {
+					disposeDeletionListener();
 				},
 			};
 		};
