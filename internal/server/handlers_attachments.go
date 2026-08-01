@@ -41,12 +41,109 @@ const defaultAttachmentMaxBytes = 25 << 20 // 25 MiB
 // the desired behavior for large uploads.
 const multipartParseMemory = 1 << 20 // 1 MiB
 
+// multipartValues reads a field's values from the parsed multipart form
+// ONLY. Unlike (*http.Request).FormValue it does not fall back to the
+// URL query string, which keeps the two item_id input channels distinct
+// so they can be resolved and cross-checked independently.
+func multipartValues(r *http.Request, key string) []string {
+	if r.MultipartForm == nil {
+		return nil
+	}
+	return r.MultipartForm.Value[key]
+}
+
+// maxUploadItemIDValues bounds how many item_id values one input channel
+// may carry. Every distinct value costs a ResolveItem lookup, and semantic
+// aliases of the same item (TASK-7 / task-7 / TASK-0007 all resolve alike)
+// defeat exact-string deduplication — so the count is capped rather than
+// relying on dedup to bound the work. No real client sends more than one.
+const maxUploadItemIDValues = 8
+
+// resolveUploadItemID resolves every distinct non-empty value a single
+// item_id input channel carried, and returns the one item they all denote.
+//
+// A channel can legitimately carry several spellings of the same item (a
+// UUID and a ref resolve identically), and net/http silently keeps only the
+// first of a repeated field — so rather than first-wins, every value is
+// resolved and they must agree. Returns (nil, true) when the channel
+// carried no value at all (absent and explicitly-empty are the same thing,
+// compared after TrimSpace); (nil, false) means a response was already
+// written and the caller must return.
+//
+// Each resolved item is visibility-gated HERE, before the values are
+// compared. That ordering matters: requireItemVisible writes a 404, so an
+// item the caller cannot see is indistinguishable from one that does not
+// exist. Comparing first would leak a hidden item's existence through the
+// 400-vs-404 split (send a visible id plus the id being probed: a conflict
+// means it exists, a 404 means it does not).
+func (s *Server) resolveUploadItemID(w http.ResponseWriter, r *http.Request, workspaceID string, raw []string) (*models.Item, bool) {
+	if len(raw) > maxUploadItemIDValues {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			fmt.Sprintf("At most %d item_id values are accepted", maxUploadItemIDValues))
+		return nil, false
+	}
+
+	var resolved *models.Item
+	seen := make(map[string]struct{}, len(raw))
+	for _, value := range raw {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, dup := seen[value]; dup {
+			continue
+		}
+		seen[value] = struct{}{}
+
+		item, err := s.store.ResolveItem(workspaceID, value)
+		if err != nil {
+			writeInternalError(w, err)
+			return nil, false
+		}
+		if item == nil {
+			// Deliberately identical to requireItemVisible's 404 below
+			// (server.go). A distinct code/message here would restore the
+			// existence oracle the visibility-before-compare ordering was
+			// added to close: "hidden" and "does not exist" must be
+			// indistinguishable to the caller.
+			writeError(w, http.StatusNotFound, "not_found", "Item not found")
+			return nil, false
+		}
+		if !s.requireItemVisible(w, r, workspaceID, item) {
+			return nil, false
+		}
+		if resolved == nil {
+			resolved = item
+			continue
+		}
+		if item.ID != resolved.ID {
+			writeError(w, http.StatusBadRequest, "item_id_conflict",
+				"Conflicting item_id values refer to different items")
+			return nil, false
+		}
+	}
+	return resolved, true
+}
+
+// requireUploadItemEdit applies the edit gate to an upload's resolved
+// parent item. Visibility was already established by resolveUploadItemID;
+// this adds the 403 for an item the caller can see but not edit.
+//
+// Note that requireEditPermission's editor/owner fast path does not consult
+// collection visibility on its own — the visibility gate ahead of it is what
+// stops a member with collection_access="specific" attaching to an item in a
+// collection hidden from them.
+func (s *Server) requireUploadItemEdit(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item) bool {
+	return s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID)
+}
+
 // handleUploadAttachment accepts a multipart upload and writes it into
 // the attachments table + the configured AttachmentStore.
 //
 // Flow:
-//  1. Auth: editor+ role on the workspace (already gated by the route's
-//     RequireWorkspaceAccess middleware; we additionally require editor).
+//  1. Auth: grant-aware edit permission on the associated item, or —
+//     for an upload with no item context — editor+ role on the workspace
+//     (on top of the route's RequireWorkspaceAccess middleware).
 //  2. Cap the body via MaxBytesReader to attachmentMaxBytes(s).
 //  3. Stream the multipart "file" part into a temp file, sha256ing as
 //     we go so we never hold the whole payload in RAM.
@@ -74,31 +171,28 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// editor, comment composer) gate their affordance on grant-aware edit
 	// permission, so a guest holding an item/collection edit grant via a
 	// share link — but no workspace editor role — must be able to attach
-	// (BUG-1661). When the caller supplies an ?item_id we authorize against
-	// that item's grant chain via requireEditPermission. Free-floating
-	// uploads (new-item creation, storage settings) carry no item context,
-	// so they keep the flat workspace editor-role gate.
+	// (BUG-1661). When the caller associates the upload with an item we
+	// authorize against that item's grant chain via requireEditPermission.
+	// Free-floating uploads (new-item creation, storage settings) carry no
+	// item context, so they keep the flat workspace editor-role gate.
 	//
-	// We read item_id from the query string here (before spooling the
-	// multipart body) so a denied upload trips early; the value is also
-	// re-read from the form below for association. A bogus/unresolvable
-	// item_id falls back to the editor-role check rather than leaking item
-	// existence.
-	if authItemID := strings.TrimSpace(r.URL.Query().Get("item_id")); authItemID != "" {
-		item, err := s.store.ResolveItem(workspaceID, authItemID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if item != nil {
-			if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
-				return
-			}
-		} else if !requireMinRole(w, r, "editor") {
-			return
-		}
-	} else if !requireMinRole(w, r, "editor") {
+	// item_id arrives on TWO channels: the query string (the web client
+	// sends both, web/src/lib/api/client.ts) and the multipart form (the
+	// CLI sends form-only, internal/cli/client.go). Only the query channel
+	// can be read before the body is spooled, so authorization is split:
+	// the query value is resolved and authorized here (cheap, so a doomed
+	// upload never spools), and the form value is resolved after parsing
+	// (see below). The no-item editor gate is DEFERRED until after parsing
+	// — firing it here would 403 a form-only item-grant guest before the
+	// association is even known (PLAN-2391 DR-2).
+	resolvedItem, ok := s.resolveUploadItemID(w, r, workspaceID, r.URL.Query()["item_id"])
+	if !ok {
 		return
+	}
+	if resolvedItem != nil {
+		if !s.requireUploadItemEdit(w, r, workspaceID, resolvedItem) {
+			return
+		}
 	}
 	// Attribution: prefer the logged-in user. On a fresh install (no
 	// users yet) RequireWorkspaceAccess grants implicit owner access
@@ -119,6 +213,19 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// is exceeded, which we surface as 413 below.
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(1<<16)) // +64KiB headroom for multipart envelope
 
+	// ParseMultipartForm spills anything past multipartParseMemory to a
+	// temp file under TMPDIR. file.Close() below closes the handle but
+	// does NOT remove that file — only RemoveAll does. Registered before
+	// the parse call (and nil-guarded) so it also covers the partial form
+	// a failed parse can leave behind, and so it runs on EVERY exit path
+	// including success (PLAN-2391 DR-2). Defers are LIFO, so this runs
+	// after the `defer file.Close()` registered below it.
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+
 	if err := r.ParseMultipartForm(multipartParseMemory); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
@@ -137,19 +244,57 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 	defer file.Close()
 
-	// Optional ?item_id=<slug-or-id> associates the attachment with an
-	// item at upload time. The editor will normally upload first,
-	// receive the UUID, insert the markdown reference, and then PATCH
-	// the item — at which point the attachment can be associated via a
-	// follow-up call. For now the parameter is optional and stored
-	// verbatim if supplied.
-	itemID := strings.TrimSpace(r.URL.Query().Get("item_id"))
-	if itemID == "" {
-		itemID = strings.TrimSpace(r.FormValue("item_id"))
+	// Second item_id channel: the multipart form. Resolved in-workspace
+	// just like the query channel. Two raw strings can legitimately denote
+	// the SAME item (query "TASK-12", form "<uuid>"), so the comparison is
+	// on the resolved canonical IDs — not on the caller's spelling. Absent
+	// and explicitly-empty both mean "no value". Deliberately reads
+	// r.MultipartForm.Value rather than r.FormValue, which merges the query
+	// string back in and would collapse the two channels into one.
+	formItem, ok := s.resolveUploadItemID(w, r, workspaceID, multipartValues(r, "item_id"))
+	if !ok {
+		return
 	}
+	if formItem != nil {
+		switch {
+		case resolvedItem == nil:
+			// Form-only association (the CLI's shape): authorize through
+			// this item's grant chain now that we know what it is.
+			if !s.requireUploadItemEdit(w, r, workspaceID, formItem) {
+				return
+			}
+			resolvedItem = formItem
+		case formItem.ID != resolvedItem.ID:
+			writeError(w, http.StatusBadRequest, "item_id_conflict",
+				"Query and form item_id refer to different items")
+			return
+		}
+	}
+
+	// No item context at all → the flat workspace editor-role gate. This
+	// is the gate that used to fire before parsing; it can only run here,
+	// once both channels are known to be empty.
+	//
+	// Accepted cost of moving it (PLAN-2391 DR-2): a caller below editor
+	// now spools the body before being rejected here, where previously a
+	// free-floating viewer was turned away pre-parse. Bounded by
+	// attachmentMaxBytes (25 MiB default) and reachable only by an
+	// authenticated workspace member, so it is temp-disk/CPU pressure —
+	// never an attachment-write bypass, since no row and no blob are
+	// written on this path. The gate CANNOT move back: the form channel
+	// is unreadable until the body is parsed, and firing early is exactly
+	// the bug that 403'd form-only item-grant guests.
+	if resolvedItem == nil && !requireMinRole(w, r, "editor") {
+		return
+	}
+
+	// Persist the canonical UUID, never the caller's string — ResolveItem
+	// accepts a UUID, a ref, or a slug, and a ref stored in item_id is a
+	// malformed row (PLAN-2391 DR-2).
 	var itemIDPtr *string
-	if itemID != "" {
-		itemIDPtr = &itemID
+	if resolvedItem != nil {
+		canonicalItemID := resolvedItem.ID
+		itemIDPtr = &canonicalItemID
 	}
 
 	// Sanitize the filename: strip path components so a client can't
