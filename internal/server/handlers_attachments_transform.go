@@ -12,6 +12,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // transformRequest is the body shape for POST /transform. Operation
@@ -62,10 +63,13 @@ type transformResponse struct {
 // Phase 1 supports two operations: "rotate" (TASK-879) and "crop"
 // (TASK-880). Both follow the same flow:
 //
-//  1. Auth: editor+ on the workspace.
+//  1. Reject if attachment storage or the image processor isn't wired
+//     (a libvips build that hasn't shipped Phase 2 yet, or a self-host
+//     that opted out). These are build/config facts, so they answer
+//     ahead of everything data-dependent — see the note at the checks.
 //  2. Load the parent attachment row (cross-workspace = 404).
-//  3. Reject if no image processor is wired (libvips build that
-//     hasn't shipped Phase 2 yet, or a self-host that opted out).
+//  3. Auth: item visibility, then grant-aware edit permission on the
+//     parent item — see the authorization note below.
 //  4. Decode the original — defends against unsupported MIMEs and
 //     oversized inputs via the processor's Decode rules.
 //  5. Apply the operation. Each op validates its own params.
@@ -76,19 +80,58 @@ type transformResponse struct {
 //     so identical transforms collapse onto the same blob).
 //  8. Insert a NEW attachments row owned by the same workspace /
 //     uploaded_by / item as the parent. The original is left in
-//     place — orphan GC reclaims it past the grace period
-//     (TASK-886) once the editor swaps its reference.
+//     place, and whether it is ever reclaimed depends on the branch.
+//     The orphan GC selects rows that are soft-deleted OR have
+//     item_id IS NULL past the grace period (store.OrphanedAttachments):
+//     an ORPHAN original stays GC-eligible, but an ITEM-BOUND one does
+//     not — the editor swapping its node's UUID does not touch that
+//     row, which remains live and item-bound, so the pre-rotate blob
+//     survives until someone deletes it explicitly. Pre-existing
+//     (TASK-886 era) and unchanged here; recorded because the comment
+//     used to claim GC reclaimed it unconditionally.
 //  9. Return the new row's ID/URL/dimensions so the editor can
 //     update its node attrs without a follow-up GET.
+//
+// Authorization (PLAN-2391 DR-10/DR-14). The handler used to open with a
+// flat requireMinRole("editor") and never look at the attachment's parent
+// item at all, so a member whose collection access excluded that item could
+// transform its attachment given only the attachment id — reading the source
+// blob and getting back output metadata for an item they cannot see. The
+// order now mirrors the blob read path exactly:
+//
+//	load the attachment -> workspace identity -> load the parent item ->
+//	parent workspace identity -> item visibility -> edit permission
+//
+// Every denial in that chain goes through writeAttachmentNotFound, so
+// "no such attachment", "foreign parent", "archived parent" and "parent not
+// visible to you" are byte-identical; a distinguishable code or message
+// would be an existence oracle.
+//
+// Edit permission is requireEditPermission, not the flat editor role: an
+// item- or collection-grant editor can already ATTACH to the item
+// (BUG-1661, handleUploadAttachment), so refusing them a rotate on what
+// they uploaded would be an inconsistency, not a boundary. Orphan rows carry
+// no item context to authorize against, so they keep the flat editor gate
+// AND — matching the DELETE path — require unrestricted workspace access:
+// a restricted member cannot see orphans in the storage listing, so they
+// must not be able to transform one either.
+//
+// The parent item is loaded with GetItem, not GetItemIncludeDeleted, so an
+// archived parent 404s here the same way it does on the read path (DR-13).
+// That check is point-in-time; the enforcement that actually holds is the
+// item lock CreateAttachmentForLiveItem takes around the insert (DR-14).
 func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
 	if s.attachments == nil {
 		writeError(w, http.StatusServiceUnavailable, "attachments_disabled",
 			"Attachment storage is not configured on this server")
 		return
 	}
+	// The two 503s stay ahead of the authorization chain even though the
+	// role gate no longer precedes them. They describe the server BUILD, not
+	// this workspace's data: the answer is the same for every caller and
+	// every attachment id, so they distinguish nothing an authorized-vs-not
+	// caller could learn. Everything below this point is data-dependent and
+	// is ordered accordingly.
 	if s.imageProcessor == nil {
 		writeError(w, http.StatusServiceUnavailable, "image_processor_disabled",
 			"Image transformation is not available on this build (the libvips backend has not shipped yet)")
@@ -114,8 +157,80 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 	// 403 vs 404 here would let a member of workspace B enumerate
 	// attachment IDs in workspace A.
 	if parent == nil || parent.WorkspaceID != workspaceID || parent.DeletedAt != nil {
-		writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+		writeAttachmentNotFound(w)
 		return
+	}
+
+	// Item-level authorization, before the source blob is read and before
+	// any work is done. See the ordering note on the handler.
+	if parent.ItemID != nil {
+		// GetItem, not GetItemIncludeDeleted (DR-13): an archived parent
+		// resolves to nil and the transform is refused.
+		item, err := s.store.GetItem(*parent.ItemID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		// Workspace identity FIRST. attachments.item_id has no FK or
+		// same-workspace constraint, so a row here can name an item in
+		// another workspace, and neither check below catches that on its
+		// own: checkItemVisible admits any collection id for an
+		// unrestricted caller, and requireEditPermission's grant lookup
+		// matches by item id. Without this guard a grant on a foreign item
+		// would authorize transforming THIS workspace's bytes. It also
+		// rejects a malformed non-null item_id that resolves nowhere.
+		if item == nil || item.WorkspaceID != workspaceID {
+			writeAttachmentNotFound(w)
+			return
+		}
+		// checkItemVisible (the predicate), not requireItemVisible — the
+		// latter writes its own "Item not found" body, which would make a
+		// visibility denial distinguishable from a lookup miss.
+		visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if !visible {
+			writeAttachmentNotFound(w)
+			return
+		}
+		// Only now the permission check. A 403 past this point is safe:
+		// the caller can already see the item and read its attachment's
+		// bytes, so refusing the WRITE reveals nothing about existence.
+		if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+			return
+		}
+	} else {
+		// Orphan rows keep the flat workspace editor gate — no item to
+		// authorize against. The viewer predicate runs first, and denies
+		// with the shared 404: the row has already been loaded here, so a
+		// 403 to a caller who cannot even READ an orphan would confirm
+		// that this id names a live orphan in this workspace while a bad
+		// id answers 404. A viewer, who can read orphans, gets the honest
+		// 403 from the editor gate below.
+		if !requireRole(r, "viewer") {
+			writeAttachmentNotFound(w)
+			return
+		}
+		// ...and, like the DELETE path (PLAN-2382 DR-4), full-access only.
+		// An orphan belongs to no collection, so collection visibility
+		// cannot gate it — and the storage LISTING already hides orphans
+		// from restricted members (handlers_storage.go). Without this a
+		// restricted editor who guesses an orphan's UUID gets confirmation
+		// it exists plus a derived row, which is the same disclosure this
+		// task closes for item-bound rows. Ahead of the editor gate so a
+		// restricted caller never gets the 403 that would confirm it.
+		if fullCollIDs, grantedItemIDs, gErr := s.guestResourceFilter(r, workspaceID); gErr != nil {
+			writeInternalError(w, gErr)
+			return
+		} else if fullCollIDs != nil || grantedItemIDs != nil {
+			writeAttachmentNotFound(w)
+			return
+		}
+		if !requireMinRole(w, r, "editor") {
+			return
+		}
 	}
 
 	var req transformRequest
@@ -192,8 +307,10 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 
 	// Inherit attribution + item linkage from the parent. The new
 	// row is a peer (NOT a derived/variant row — that's only for
-	// thumbnails) so ParentID and Variant stay nil; the editor
-	// swaps its reference and the original ages into orphan GC.
+	// thumbnails) so ParentID and Variant stay nil; the editor swaps
+	// its reference and — if the parent was an ORPHAN — the original
+	// ages into orphan GC. An item-bound original does not: see step 8
+	// on the handler.
 	//
 	// UploadedBy inherits from the parent — same policy as the
 	// thumbnail pipeline. A user who rotates someone else's upload
@@ -213,7 +330,35 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 		Width:       &tw,
 		Height:      &th,
 	}
-	if err := s.store.CreateAttachment(row); err != nil {
+	// CreateAttachmentForLiveItem, not CreateAttachment (PLAN-2391 DR-14).
+	// The parent-item check above is point-in-time: item deletion commits in
+	// its own transaction, and everything between that check and here — the
+	// blob read, decode, transform, encode, Put — is unbounded work, so the
+	// item can be archived mid-flight. The store re-checks the parent under
+	// a row lock inside the insert's transaction, so the row is either
+	// written against a live item or not written at all. Transform is
+	// user-initiated and low volume; the lock is affordable and the window
+	// is not accepted here (thumbnail derivation, TASK-2404, makes the
+	// opposite trade).
+	//
+	// The refusal is the shared 404: the blob it would have produced is
+	// unreadable under DR-13 anyway, and the caller must not be able to
+	// tell "your item was archived just now" from "no such attachment".
+	//
+	// The already-written blob is left on disk. It carries no row, so no
+	// quota is charged for it (usage is derived from live rows) — but note
+	// that the orphan GC walks attachment ROWS, so a rowless blob is not
+	// reclaimed by it either. That is the pre-existing shape of every
+	// Put-then-insert failure window in this codebase (upload and thumbnail
+	// derivation have the same one); this refusal makes it reachable on one
+	// more, rare path rather than introducing it. Deleting the blob here
+	// would be wrong without the GC's dedupe guard: the same content hash
+	// may already back another live row.
+	if err := s.store.CreateAttachmentForLiveItem(row); err != nil {
+		if errors.Is(err, store.ErrAttachmentParentItemGone) {
+			writeAttachmentNotFound(w)
+			return
+		}
 		writeInternalError(w, fmt.Errorf("create transformed row: %w", err))
 		return
 	}

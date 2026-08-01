@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -94,6 +95,87 @@ func (s *Store) CreateAttachment(a *models.Attachment) error {
 // AttachmentCopyPlan.Rows in the order the planner emitted them.
 func (s *Store) CreateAttachmentTx(tx *sql.Tx, a *models.Attachment) error {
 	return s.createAttachmentOn(tx, a)
+}
+
+// ErrAttachmentParentItemGone reports that the item an attachment is being
+// written against is no longer a live item of the attachment's workspace —
+// archived, hard-gone, or never in this workspace at all.
+//
+// It is a caller-facing sentinel, not an internal failure: handlers turn it
+// into the same not-found response every other attachment denial writes, so
+// it must not be wrapped in a way that hides it from errors.Is.
+var ErrAttachmentParentItemGone = errors.New("attachment parent item is not live in this workspace")
+
+// CreateAttachmentForLiveItem inserts an attachment row, refusing when its
+// item_id does not name a LIVE item of the same workspace — re-checked and
+// pinned inside the insert's own transaction.
+//
+// Why a transaction rather than a check in the handler (PLAN-2391 DR-14):
+// producing an attachment is check-then-work. A handler that validates the
+// parent up front and inserts afterwards leaves a window — item deletion
+// commits in a separate transaction (DeleteItem) and can land in the middle,
+// so the insert writes a quota-counted live row hanging off an item that is
+// already archived, whose bytes the read gate (DR-13) then refuses to serve.
+// Locking the item row for the duration of the insert closes the window
+// instead of narrowing it.
+//
+// Postgres takes the row lock with FOR NO KEY UPDATE; a concurrent DeleteItem
+// blocks on it and, once this transaction commits, its UPDATE ... WHERE
+// deleted_at IS NULL still matches, so archival is delayed but never lost. In
+// the other interleaving DeleteItem commits first, and the re-read —
+// re-evaluated after the lock is released — no longer matches the deleted_at
+// IS NULL predicate, so this call fails closed.
+//
+// FOR NO KEY UPDATE rather than FOR UPDATE: it is the exact strength needed
+// and no more. DeleteItem's UPDATE touches no key column, so Postgres takes
+// FOR NO KEY UPDATE for it, and two FOR NO KEY UPDATE holders conflict — the
+// archival still blocks. What it does NOT block is FOR KEY SHARE, the lock an
+// INSERT into any of the many tables with a `REFERENCES items(id)` foreign key
+// takes on the parent row (comments, stars, the Yjs op-log — the last of which
+// writes continuously while someone is editing the item). Plain FOR UPDATE
+// would stall those for the duration of this transaction to buy nothing.
+//
+// SQLite skips the lock: its DSN sets _txlock=immediate, so every db.Begin()
+// is a BEGIN IMMEDIATE and writers already serialize, and the row-locking
+// clause is a syntax error there — the dialect gate is not an optimization.
+//
+// An orphan row (nil/empty ItemID) has no parent to pin and takes the plain
+// insert path, identical to CreateAttachment.
+func (s *Store) CreateAttachmentForLiveItem(a *models.Attachment) error {
+	if a.ItemID == nil || *a.ItemID == "" {
+		return s.createAttachmentOn(s.db, a)
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin create attachment tx: %w", err)
+	}
+	defer tx.Rollback() // no-op after Commit
+
+	query := `SELECT workspace_id FROM items WHERE id = ? AND deleted_at IS NULL`
+	if s.dialect.Driver() == DriverPostgres {
+		query += ` FOR NO KEY UPDATE`
+	}
+	var itemWorkspaceID string
+	switch err := tx.QueryRow(s.q(query), *a.ItemID).Scan(&itemWorkspaceID); {
+	case err == sql.ErrNoRows:
+		// Missing or archived — indistinguishable on purpose.
+		return ErrAttachmentParentItemGone
+	case err != nil:
+		return fmt.Errorf("lock attachment parent item: %w", err)
+	}
+	// Workspace identity is part of the invariant, not a redundant check:
+	// attachments.item_id carries no FK or same-workspace constraint, so a
+	// malformed association naming a live item in ANOTHER workspace would
+	// otherwise pass the liveness re-check and write a cross-workspace row.
+	if itemWorkspaceID != a.WorkspaceID {
+		return ErrAttachmentParentItemGone
+	}
+
+	if err := s.createAttachmentOn(tx, a); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // createAttachmentOn is the shared insert body, parameterized over the pool or
