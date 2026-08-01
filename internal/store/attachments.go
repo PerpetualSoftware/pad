@@ -150,12 +150,22 @@ func (s *Store) GetAttachment(id string) (*models.Attachment, error) {
 // ?variant=thumb-sm — TASK-878 will populate these rows; TASK-872
 // implements the lookup so the handler degrades gracefully when no
 // thumbnail exists yet.
-func (s *Store) GetAttachmentVariant(parentID, variant string) (*models.Attachment, error) {
+//
+// workspaceID scopes the lookup (PLAN-2391 DR-16). parent_id has no FK or
+// same-workspace constraint, so a variant row in workspace B can carry a
+// parent_id belonging to workspace A — the copy planner demonstrates that
+// shape (internal/store/attachments_copy_plan_test.go). Without the scope,
+// the download handler authorizes A's original and then serves B's child,
+// which defeats the entire item-visibility gate. The scope lives here rather
+// than in the handler because the OTHER caller — thumbnail derivation — has
+// its own stake in it: an unscoped "does this variant already exist?" probe
+// would let a foreign row suppress generation of a legitimate local one.
+func (s *Store) GetAttachmentVariant(workspaceID, parentID, variant string) (*models.Attachment, error) {
 	a, err := scanAttachment(s.db.QueryRow(s.q(`
 		SELECT `+attachmentColumns+` FROM attachments
-		WHERE parent_id = ? AND variant = ? AND deleted_at IS NULL
+		WHERE workspace_id = ? AND parent_id = ? AND variant = ? AND deleted_at IS NULL
 		LIMIT 1
-	`), parentID, variant))
+	`), workspaceID, parentID, variant))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

@@ -492,9 +492,40 @@ func renderModeString(m attachments.RenderMode) string {
 	}
 }
 
+// writeAttachmentNotFound is the single denial writer for the blob read
+// path. Every authorization-dependent refusal — attachment missing, wrong
+// workspace, soft-deleted, foreign parent item, archived parent, parent not
+// visible to the caller — emits this exact response. Byte-identical bodies
+// are the point: a distinguishable error code or message would turn the
+// response into an existence oracle for rows and items the caller may not
+// see (the house rule TASK-2400 established).
+func writeAttachmentNotFound(w http.ResponseWriter) {
+	writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+}
+
 // handleGetAttachment streams an attachment back to the caller. Auth is
-// enforced by the route's RequireWorkspaceAccess middleware; we
-// additionally require viewer+ here.
+// enforced by the route's RequireWorkspaceAccess middleware; this handler
+// then authorizes per-attachment.
+//
+// Authorization (PLAN-2391 DR-10), in this exact order:
+//
+//  1. Load the attachment; 404 unless it is live and belongs to the
+//     request workspace.
+//  2. Item-bound rows: load the parent, verify the parent's workspace
+//     identity, then requireItemVisible. Item visibility IS blob-read
+//     permission — a guest holding an item or collection grant can fetch
+//     the bytes rendered inside the item they were shared. The handler
+//     used to open with a flat requireMinRole("viewer"), and roleLevel
+//     ("guest") is 0, so every grant-based guest was 403'd before any
+//     item-level check ran (BUG-2386) and inline images broke for them.
+//  3. Orphan (item_id IS NULL) rows keep the flat viewer+ gate — there is
+//     no item context to authorize against.
+//
+// The parent is loaded with GetItem, not GetItemIncludeDeleted (DR-13): a
+// soft-deleted parent 404s here. Archiving an item hides it, so its bytes
+// should not stay downloadable behind a URL. The DELETE path deliberately
+// diverges — it keeps GetItemIncludeDeleted so an owner can still reclaim
+// quota from an archived item's attachments.
 //
 // The handler:
 //   - Looks up the row by ID (TASK-871's UUID), refusing with 404 if it
@@ -518,9 +549,19 @@ func renderModeString(m attachments.RenderMode) string {
 //   - Sets a short Cache-Control: private, max-age=3600. Phase 3 will
 //     revisit for CDN caching.
 func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "viewer") {
-		return
-	}
+	// FIRST statement, before any lookup or gate. Every denial below is
+	// authorization-dependent, and an unlabelled 404 is heuristically
+	// cacheable BY URL — a CDN or browser could retain it and go on
+	// denying a caller who has since been granted access. writeError →
+	// writeJSON calls WriteHeader immediately, so a header set after the
+	// first denial path never reaches the wire. Overwritten with the
+	// positive directive only once authorization has succeeded.
+	//
+	// Scope note: middleware can reject before this handler ever runs
+	// (missing auth, no workspace access). Those denials are outside this
+	// header's coverage.
+	w.Header().Set("Cache-Control", "private, no-store")
+
 	if s.attachments == nil {
 		writeError(w, http.StatusServiceUnavailable, "attachments_disabled",
 			"Attachment storage is not configured on this server")
@@ -545,7 +586,61 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	// Cross-workspace defense: 404 (not 403) so an attacker can't
 	// distinguish "exists in another workspace" from "doesn't exist".
 	if att == nil || att.WorkspaceID != workspaceID || att.DeletedAt != nil {
-		writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+		writeAttachmentNotFound(w)
+		return
+	}
+
+	// Item-level authorization (PLAN-2391 DR-10). Runs BEFORE the variant
+	// lookup and before any byte access.
+	if att.ItemID != nil {
+		// GetItem, not GetItemIncludeDeleted — DR-13. A soft-deleted
+		// parent resolves to nil here and the blob 404s.
+		item, err := s.store.GetItem(*att.ItemID)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		// Workspace identity FIRST, before visibility. attachments.item_id
+		// has no FK or same-workspace constraint, and neither downstream
+		// check catches a foreign parent on its own: checkItemVisible
+		// admits any collection id when the caller is unrestricted, and
+		// item-grant lookup matches by item_id. Without this guard a view
+		// grant on a foreign item would authorize reading THIS workspace's
+		// bytes. Mirrors the delete path (handlers_storage.go).
+		if item == nil || item.WorkspaceID != workspaceID {
+			writeAttachmentNotFound(w)
+			return
+		}
+		// checkItemVisible rather than requireItemVisible: same rule set
+		// (requireItemVisible is a thin wrapper over it), but this handler
+		// writes its own denial so that "no such attachment", "foreign
+		// parent", "archived parent", and "item not visible to you" are
+		// byte-identical responses. requireItemVisible's own 404 body says
+		// "Item not found", which would distinguish the visibility denial
+		// from the lookup miss and leak existence.
+		visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if !visible {
+			writeAttachmentNotFound(w)
+			return
+		}
+	} else if !requireRole(r, "viewer") {
+		// Orphan attachments carry no item context to authorize against,
+		// so they keep the flat workspace viewer-role gate — same strength
+		// as before, only the denial SHAPE changes.
+		//
+		// requireRole (the write-free predicate) rather than requireMinRole
+		// (which writes its own 403): the attachment row has already been
+		// loaded by this point, so a 403 here would mean "this id names a
+		// live orphan in this workspace" while a bad id answers 404. That
+		// split is an existence oracle for orphan UUIDs — one the old code
+		// didn't have only because its flat role gate ran BEFORE the
+		// lookup. Reordering the gate reintroduced it; routing the denial
+		// through the shared 404 writer closes it again.
+		writeAttachmentNotFound(w)
 		return
 	}
 
@@ -561,7 +656,12 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 				"Unknown variant — supported: thumb-sm, thumb-md")
 			return
 		}
-		if derived, dErr := s.store.GetAttachmentVariant(att.ID, variant); dErr != nil {
+		// Workspace-scoped (DR-16). parent_id alone is not a trustworthy
+		// scope: a variant row in another workspace can carry this
+		// attachment's id as its parent, and serving that child after
+		// authorizing this parent would defeat the gate above. The scope
+		// lives in the store method so the derivation worker gets it too.
+		if derived, dErr := s.store.GetAttachmentVariant(workspaceID, att.ID, variant); dErr != nil {
 			writeInternalError(w, dErr)
 			return
 		} else if derived != nil {
@@ -594,6 +694,10 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	// Headers come BEFORE ServeContent / io.Copy so they make it onto
 	// the wire even when the response is a 304 / 206.
 	w.Header().Set("Content-Type", att.MimeType)
+	// Authorization has succeeded — replace the no-store denial directive
+	// set at the top of the handler with the positive one. Known and
+	// accepted: this one-hour positive browser cache outlives a permission
+	// revocation (PLAN-2391 DR-10).
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 

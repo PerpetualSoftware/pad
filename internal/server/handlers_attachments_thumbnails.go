@@ -99,7 +99,7 @@ func (s *Server) deriveThumbnails(parentID string) {
 			*parent.Width <= spec.MaxLong && *parent.Height <= spec.MaxLong {
 			continue
 		}
-		if existing, err := s.store.GetAttachmentVariant(parent.ID, spec.Variant); err == nil && existing != nil {
+		if existing, err := s.store.GetAttachmentVariant(parent.WorkspaceID, parent.ID, spec.Variant); err == nil && existing != nil {
 			continue
 		}
 
