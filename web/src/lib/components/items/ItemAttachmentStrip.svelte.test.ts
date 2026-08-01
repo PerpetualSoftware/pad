@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import type { AttachmentListItem, AttachmentListResponse } from '$lib/types';
+import type { UploadedAttachment } from '$lib/attachments/events';
 
 // TASK-2383. The strip is mounted OUTSIDE ItemDetail's `{#key itemSlug}`
 // block, so it PERSISTS across an A→B item switch — the no-{#key} bug class
@@ -43,11 +44,20 @@ const deletionListeners = new Set<(uuid: string) => void>();
 function broadcastDeletion(uuid: string) {
 	for (const fn of deletionListeners) fn(uuid);
 }
-vi.mock('$lib/attachments/deletion', () => ({
+const uploadListeners = new Set<(itemId: string, a: UploadedAttachment) => void>();
+function broadcastUpload(itemId: string, a: UploadedAttachment) {
+	for (const fn of uploadListeners) fn(itemId, a);
+}
+
+vi.mock('$lib/attachments/events', () => ({
 	notifyAttachmentDeleted: (uuid: string) => notifyDeletedMock(uuid),
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
 		deletionListeners.add(fn);
 		return () => deletionListeners.delete(fn);
+	},
+	registerAttachmentUploadListener: (fn: (itemId: string, a: UploadedAttachment) => void) => {
+		uploadListeners.add(fn);
+		return () => uploadListeners.delete(fn);
 	},
 }));
 
@@ -641,6 +651,132 @@ describe('ItemAttachmentStrip', () => {
 		expect(tiles()).toHaveLength(1);
 		expect(String(toastMock.mock.calls[0][0])).toContain("don't have permission");
 		confirmSpy.mockRestore();
+	});
+
+	// ── Upload refresh (TASK-2385) ────────────────────────────────────────
+
+	const uploaded = (id: string): UploadedAttachment => ({
+		id,
+		filename: `${id}.png`,
+		mime_type: 'image/png',
+		size_bytes: 4096,
+	});
+
+	it('shows a dropped file immediately, without a refetch', async () => {
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		mountStrip('item-a');
+		await settle();
+		expect(tiles()).toHaveLength(1);
+
+		broadcastUpload('item-a', uploaded('new1'));
+		flushSync();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names).toHaveLength(2);
+		expect(names[0]).toContain('new1.png'); // newest first
+		expect(listMock).toHaveBeenCalledOnce(); // no refetch
+	});
+
+	it('renders the strip from empty when the first upload lands', async () => {
+		// The strip renders nothing at all when empty, so this covers the
+		// transition from no-element to mounted.
+		listMock.mockResolvedValue(response([]));
+		mountStrip('item-a');
+		await settle();
+		expect(target.querySelector('.attachment-strip')).toBeNull();
+
+		broadcastUpload('item-a', uploaded('first'));
+		flushSync();
+
+		expect(target.querySelector('.attachment-strip')).not.toBeNull();
+		expect(tiles()).toHaveLength(1);
+	});
+
+	it('survives an in-flight list() that predates the upload', async () => {
+		// The GET was issued before the drop, so its response can't contain the
+		// new row. Assigning it verbatim would erase the tile we just showed
+		// (Codex review of TASK-2385).
+		const pending = deferred<AttachmentListResponse>();
+		listMock.mockReturnValue(pending.promise);
+		mountStrip('item-a');
+		flushSync();
+
+		broadcastUpload('item-a', uploaded('dropped'));
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+
+		pending.resolve(response([att({ id: 'old1' })]));
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names).toHaveLength(2);
+		expect(names.some((n) => n.includes('dropped.png'))).toBe(true);
+		expect(names.some((n) => n.includes('old1.png'))).toBe(true);
+	});
+
+	it('does not double-count an upload the refetch also returns', async () => {
+		const pending = deferred<AttachmentListResponse>();
+		listMock.mockReturnValue(pending.promise);
+		mountStrip('item-a');
+		flushSync();
+
+		broadcastUpload('item-a', uploaded('both'));
+		flushSync();
+
+		// The response DOES include it (the GET went out after all).
+		pending.resolve(response([att({ id: 'both' })]));
+		await settle();
+
+		expect(tiles()).toHaveLength(1);
+	});
+
+	it('keeps an optimistic upload when the in-flight list() FAILS', async () => {
+		// The upload succeeded; only the listing failed. Clearing the strip
+		// would hide a row the editor and server both have (Codex round 2).
+		let failList!: (err: Error) => void;
+		listMock.mockReturnValue(
+			new Promise<AttachmentListResponse>((_, reject) => {
+				failList = reject;
+			})
+		);
+		mountStrip('item-a');
+		flushSync();
+
+		broadcastUpload('item-a', uploaded('survivor'));
+		flushSync();
+
+		failList(new Error('offline'));
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names).toHaveLength(1);
+		expect(names[0]).toContain('survivor.png');
+	});
+
+	it('ignores an upload announced for a DIFFERENT item', async () => {
+		// Two panes can be open at once; a drop in the other one must not
+		// appear here.
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		mountStrip('item-a');
+		await settle();
+
+		broadcastUpload('item-b', uploaded('elsewhere'));
+		flushSync();
+
+		expect(tiles()).toHaveLength(1);
+	});
+
+	it('does not duplicate an upload already present in the list', async () => {
+		// The same id can arrive twice — a re-broadcast, or an upload that the
+		// completed fetch already included.
+		listMock.mockResolvedValue(response([att({ id: 'dupe' })]));
+		mountStrip('item-a');
+		await settle();
+
+		broadcastUpload('item-a', uploaded('dupe'));
+		flushSync();
+
+		expect(tiles()).toHaveLength(1);
 	});
 
 	it('drops a tile when another surface broadcasts its deletion', async () => {

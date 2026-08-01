@@ -36,7 +36,7 @@ import {
 	mimeToFormat
 } from './attachment-metadata';
 import { openCropModal, type CropResult } from './attachment-crop-modal';
-import { registerAttachmentDeletionListener } from '$lib/attachments/deletion';
+import { registerAttachmentDeletionListener } from '$lib/attachments/events';
 import type { AttachmentTransformRequest, AttachmentTransformResult } from '$lib/types';
 
 // Re-export the shared types so existing call sites keep working.

@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { api, PadApiError } from '$lib/api/client';
-	import { notifyAttachmentDeleted } from '$lib/attachments/deletion';
+	import { notifyAttachmentDeleted } from '$lib/attachments/events';
 	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import type {
 		AttachmentListItem,

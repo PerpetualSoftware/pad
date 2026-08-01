@@ -7,10 +7,13 @@
 	 * the body (DR-1): an attachment cut from the content keeps its item_id,
 	 * and surfacing exactly those orphans is the point of the strip.
 	 *
-	 * The list is fetched once per (workspace, item) and does NOT live-refresh:
-	 * there is no upload signal from the editor up to ItemDetail today, and
-	 * threading one is TASK-2385 (phase 3). A file dropped into the body shows
-	 * up on the next load of the item until then.
+	 * The list is fetched once per (workspace, item), then kept current through
+	 * the in-process attachment event bus ($lib/attachments/events): uploads
+	 * from the body editor or a comment composer appear immediately, and a
+	 * delete from any surface removes the tile. What it does NOT see is
+	 * anything originating outside this browser process — another user, or
+	 * another tab. Those show up only on the next load, which is why a 404 on
+	 * delete is treated as authoritative rather than as an error.
 	 *
 	 * Switch-safety: the mount point is OUTSIDE ItemDetail's `{#key itemSlug}`
 	 * block, so this component PERSISTS across an A→B item switch. Every
@@ -27,7 +30,8 @@
 	import {
 		notifyAttachmentDeleted,
 		registerAttachmentDeletionListener,
-	} from '$lib/attachments/deletion';
+		registerAttachmentUploadListener,
+	} from '$lib/attachments/events';
 	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 
 	interface Props {
@@ -73,7 +77,30 @@
 	// Tiles shown before the `+N` chip. Expanding scrolls within one row.
 	const COLLAPSED_TILES = 8;
 
-	let attachments = $state<AttachmentListItem[]>([]);
+	/**
+	 * Only what a tile renders. Deliberately narrower than AttachmentListItem:
+	 * a just-uploaded row arrives from the upload response, which carries no
+	 * storage_key / content_hash / created_at, and inventing placeholders for
+	 * columns nothing displays would be worse than not modelling them
+	 * (TASK-2385).
+	 */
+	interface StripAttachment {
+		id: string;
+		filename: string;
+		mime_type: string;
+		size_bytes: number;
+	}
+
+	function toStripAttachment(row: AttachmentListItem): StripAttachment {
+		return {
+			id: row.id,
+			filename: row.filename,
+			mime_type: row.mime_type,
+			size_bytes: row.size_bytes,
+		};
+	}
+
+	let attachments = $state<StripAttachment[]>([]);
 	let expanded = $state(false);
 	let lightbox = $state<{ images: LightboxImage[]; index: number } | null>(null);
 
@@ -89,6 +116,12 @@
 	// load — tombstones are meaningless once we refetch.
 	let deletedIds = new Set<string>();
 
+	// Uploads announced while this item's list was still loading. The GET may
+	// have been issued BEFORE the upload happened, so its response won't
+	// contain the new row — assigning it verbatim would erase the tile we just
+	// showed (Codex review of TASK-2385). Merged back on top of every response.
+	let pendingUploads: StripAttachment[] = [];
+
 	$effect(() => {
 		const reqItemId = itemId;
 		const reqWsSlug = wsSlug;
@@ -102,6 +135,7 @@
 			expanded = false;
 			lightbox = null;
 			deletedIds = new Set();
+			pendingUploads = [];
 		});
 
 		if (!reqItemId || !reqWsSlug) return;
@@ -113,7 +147,14 @@
 					limit: MAX_FETCH,
 				});
 				if (switchedAway(gen, reqItemId)) return;
-				attachments = (res.attachments ?? []).filter((a) => !deletedIds.has(a.id));
+				const rows = (res.attachments ?? [])
+					.filter((a) => !deletedIds.has(a.id))
+					.map(toStripAttachment);
+				const seen = new Set(rows.map((a) => a.id));
+				const missed = pendingUploads.filter(
+					(a) => !seen.has(a.id) && !deletedIds.has(a.id)
+				);
+				attachments = [...missed, ...rows];
 			} catch {
 				// A failed fetch renders as "no attachments" — the strip is a
 				// secondary affordance and an error banner above the editor
@@ -124,7 +165,10 @@
 				// pre-existing (inline images are already broken for them) and
 				// is tracked as BUG-2386, not absorbed here — PLAN-2382 DR-4b.
 				if (switchedAway(gen, reqItemId)) return;
-				attachments = [];
+				// Keep anything uploaded while this request was in flight: the
+				// upload SUCCEEDED, so dropping it would hide a row the editor
+				// and server both have, until a remount (Codex review round 2).
+				attachments = pendingUploads.filter((a) => !deletedIds.has(a.id));
 			}
 		})();
 
@@ -147,6 +191,25 @@
 		return registerAttachmentDeletionListener((deletedUuid) => {
 			deletedIds.add(deletedUuid);
 			attachments = attachments.filter((a) => a.id !== deletedUuid);
+		});
+	});
+
+	// Uploads announced by the editor's paste / drag-drop plugin. Scoped to THIS
+	// item — the bus carries the id the server actually associated, so a file
+	// dropped into another pane's editor doesn't appear here (TASK-2385).
+	$effect(() => {
+		return registerAttachmentUploadListener((uploadItemId, uploaded) => {
+			if (uploadItemId !== itemId) return;
+			// Idempotence guard for the bus itself: the same event can reach us
+			// twice (a re-broadcast, or an upload announced while the initial
+			// list() was in flight and then present in its response). NOT about
+			// content dedupe — identical bytes share a blob but still get their
+			// own attachment row and id.
+			if (!pendingUploads.some((a) => a.id === uploaded.id)) {
+				pendingUploads = [uploaded, ...pendingUploads];
+			}
+			if (attachments.some((a) => a.id === uploaded.id)) return;
+			attachments = [uploaded, ...attachments];
 		});
 	});
 
@@ -174,13 +237,13 @@
 			.map((a) => ({ id: a.id, alt: a.filename }))
 	);
 
-	function openLightbox(att: AttachmentListItem) {
+	function openLightbox(att: StripAttachment) {
 		const index = lightboxImages.findIndex((img) => img.id === att.id);
 		if (index < 0) return;
 		lightbox = { images: lightboxImages, index };
 	}
 
-	function tileLabel(att: AttachmentListItem): string {
+	function tileLabel(att: StripAttachment): string {
 		return `${att.filename} (${formatBytes(att.size_bytes)})`;
 	}
 
@@ -213,7 +276,7 @@
 	 * covers all three, but none of it is visible client-side — so the wording
 	 * stays honest about what we actually checked.
 	 */
-	function confirmMessage(att: AttachmentListItem): string {
+	function confirmMessage(att: StripAttachment): string {
 		if (referencedIds().has(att.id)) {
 			return (
 				`Delete ${att.filename}?\n\n` +
@@ -228,7 +291,7 @@
 		);
 	}
 
-	async function handleDelete(att: AttachmentListItem) {
+	async function handleDelete(att: StripAttachment) {
 		if (!canDelete) return;
 		if (typeof window !== 'undefined' && !window.confirm(confirmMessage(att))) return;
 

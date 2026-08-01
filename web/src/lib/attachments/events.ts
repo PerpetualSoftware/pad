@@ -1,5 +1,5 @@
 /**
- * App-wide attachment deletion bus (PLAN-2382 / TASK-2384).
+ * App-wide attachment event bus (PLAN-2382).
  *
  * An attachment can be deleted from more than one surface — the item detail
  * attachment strip, Settings → Storage — while other surfaces are mounted and
@@ -14,7 +14,7 @@
  * editor concern — the strip both emits and consumes it and never touches
  * Tiptap (Codex round 18).
  *
- * Scope: this process only. It does NOT cover another user's deletes or
+ * Scope: this process only. It does NOT cover another user's changes or
  * another browser tab — surfaces still need their own reconciliation for that
  * (the strip treats a 404 on delete as authoritative for exactly that reason).
  */
@@ -38,4 +38,44 @@ export function registerAttachmentDeletionListener(fn: (uuid: string) => void): 
 export function notifyAttachmentDeleted(uuid: string): void {
 	if (!uuid) return;
 	for (const fn of listeners) fn(uuid);
+}
+
+/**
+ * Uploads (TASK-2385).
+ *
+ * The editor's paste / drag-drop upload plugin is the only thing that knows a
+ * file just landed, and nothing above it is watching — so an attachment
+ * dropped into the body wouldn't appear in the item attachment strip until the
+ * next load. Rather than thread a callback down through two <Editor> branches,
+ * the upload closure announces here and the strip picks it up, mirroring the
+ * deletion direction above.
+ *
+ * `itemId` is REQUIRED and is the association the server actually persisted:
+ * an upload made without item context leaves attachments.item_id NULL, so
+ * showing an optimistic tile for it would be a lie that vanishes on refresh.
+ * Emitters must skip those rather than pass a placeholder.
+ */
+export interface UploadedAttachment {
+	id: string;
+	filename: string;
+	mime_type: string;
+	size_bytes: number;
+}
+
+const uploadListeners = new Set<(itemId: string, attachment: UploadedAttachment) => void>();
+
+export function registerAttachmentUploadListener(
+	fn: (itemId: string, attachment: UploadedAttachment) => void
+): () => void {
+	uploadListeners.add(fn);
+	return () => uploadListeners.delete(fn);
+}
+
+/** Announce a persisted upload. No-op without an item association. */
+export function notifyAttachmentUploaded(
+	itemId: string | null | undefined,
+	attachment: UploadedAttachment
+): void {
+	if (!itemId || !attachment?.id) return;
+	for (const fn of uploadListeners) fn(itemId, attachment);
 }

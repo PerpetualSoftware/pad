@@ -33,7 +33,7 @@ import {
 	type AttachmentVariant,
 	fetchAttachmentMetadata
 } from './attachment-metadata';
-import { registerAttachmentDeletionListener } from '$lib/attachments/deletion';
+import { registerAttachmentDeletionListener } from '$lib/attachments/events';
 
 const PAD_ATTACHMENT_PREFIX = 'pad-attachment:';
 
