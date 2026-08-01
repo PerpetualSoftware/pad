@@ -36,6 +36,7 @@ import {
 	mimeToFormat
 } from './attachment-metadata';
 import { openCropModal, type CropResult } from './attachment-crop-modal';
+import { registerAttachmentDeletionListener } from '$lib/attachments/deletion';
 import type { AttachmentTransformRequest, AttachmentTransformResult } from '$lib/types';
 
 // Re-export the shared types so existing call sites keep working.
@@ -248,10 +249,113 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			let currentUuid = (node.attrs.uuid as string | null) ?? '';
 			let currentAlt = (node.attrs.alt as string | null) ?? '';
 			if (currentUuid) {
-				img.src = opts.getDownloadUrl(currentUuid, 'thumb-md');
 				img.setAttribute('data-attachment-id', currentUuid);
 			}
 			if (currentAlt) img.alt = currentAlt;
+
+			// Missing-attachment placeholder (PLAN-2382 / TASK-2384).
+			//
+			// The markdown render path already degrades a deleted attachment to
+			// an explicit placeholder (markdown/attachments.ts::renderAttachmentMissing)
+			// rather than a broken-image glyph, because the glyph reads as a
+			// transient network failure when the state is actually permanent.
+			// The live NodeView had no equivalent: it assigned img.src and left
+			// the browser to paint whatever a 404 produces.
+			//
+			// That gap became user-visible when the item attachment strip gained
+			// a delete affordance — deleting an image still referenced in the
+			// body must show the placeholder IMMEDIATELY, not after a reload.
+			const missing = document.createElement('span');
+			missing.className = 'attachment-missing';
+			missing.title = 'This attachment could not be loaded — it may have been deleted. Click to retry.';
+			missing.style.display = 'none';
+
+			// Latched by a confirmed deletion (not by a mere load failure).
+			// Deletion is authoritative: a load still in flight when it lands
+			// must not be allowed to paint the image back (Codex round 15).
+			let deleted = false;
+
+			function showMissing() {
+				missing.textContent = `📎 ${currentAlt || 'Attachment unavailable'}`;
+				// Distinct copy per cause: a confirmed deletion is permanent and
+				// retry is blocked, so don't invite one.
+				missing.title = deleted
+					? 'This attachment has been deleted'
+					: 'This attachment could not be loaded — it may have been deleted. Click to retry.';
+				missing.style.cursor = deleted ? 'default' : 'pointer';
+				if (currentUuid) missing.setAttribute('data-attachment-id', currentUuid);
+				missing.style.display = '';
+				img.style.display = 'none';
+			}
+
+			// Re-armed on every uuid swap in update() below, so a rotate/crop
+			// (or a peer's op) that points the node at a live attachment clears
+			// a stale placeholder instead of latching it.
+			function resetMissing() {
+				if (deleted) return;
+				missing.style.display = 'none';
+				img.style.display = '';
+			}
+
+			// Load events carry no identity, and this NodeView outlives a uuid
+			// swap (rotate/crop, or a collab peer's op). Comparing img.src at
+			// event time cannot distinguish a QUEUED stale event, because the
+			// src has already been swapped to the new uuid by then — the check
+			// passes and a late failure for the OLD image hides the healthy new
+			// one (Codex round 7 caught this in the round-3 fix).
+			//
+			// Instead, every load gets its own listener pair, detached when the
+			// src changes. Removing a listener before the event is dispatched
+			// to it prevents its invocation even if the event was already
+			// queued, so a superseded load simply has no callback left to run.
+			let detachLoadListeners = () => {};
+
+			function loadImage(url: string) {
+				detachLoadListeners();
+				const onError = () => showMissing();
+				const onLoad = () => resetMissing();
+				img.addEventListener('error', onError, { once: true });
+				img.addEventListener('load', onLoad, { once: true });
+				detachLoadListeners = () => {
+					img.removeEventListener('error', onError);
+					img.removeEventListener('load', onLoad);
+				};
+				img.src = url;
+			}
+
+			if (currentUuid) loadImage(opts.getDownloadUrl(currentUuid, 'thumb-md'));
+
+			const disposeDeletionListener = registerAttachmentDeletionListener((deletedUuid) => {
+				if (deletedUuid !== currentUuid) return;
+				deleted = true;
+				// Drop the in-flight request's listeners: its `load` would
+				// otherwise fire after the delete and restore the image.
+				detachLoadListeners();
+				showMissing();
+			});
+
+			missing.setAttribute('role', 'button');
+			missing.setAttribute('tabindex', '0');
+			missing.style.cursor = 'pointer';
+
+			function retryLoad() {
+				// A confirmed deletion is not retryable — only a transient load
+				// failure is.
+				if (!currentUuid || deleted) return;
+				resetMissing();
+				// The cache-busting query is what makes a retry after a
+				// transient failure actually reach the network instead of
+				// replaying the failed cache entry.
+				const base = opts.getDownloadUrl(currentUuid, 'thumb-md');
+				loadImage(`${base}${base.includes('?') ? '&' : '?'}retry=${Date.now()}`);
+			}
+			missing.addEventListener('click', retryLoad);
+			missing.addEventListener('keydown', (event) => {
+				if (event.key === 'Enter' || event.key === ' ') {
+					event.preventDefault();
+					retryLoad();
+				}
+			});
 
 			img.addEventListener('click', (event) => {
 				// In a contenteditable, ProseMirror handles selection on
@@ -433,6 +537,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			};
 
 			wrapper.appendChild(img);
+			wrapper.appendChild(missing);
 			return {
 				dom: wrapper,
 				// Refresh the live <img> in place when attrs change. Without
@@ -459,10 +564,19 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 							invalidateAttachmentMetadata(opts.workspaceSlug, currentUuid);
 						}
 						currentUuid = newUuid;
+						// The old uuid's state — whether a 404 placeholder or a
+						// confirmed deletion — says nothing about the new one.
+						deleted = false;
+						resetMissing();
 						if (newUuid) {
-							img.src = opts.getDownloadUrl(newUuid, 'thumb-md');
+							loadImage(opts.getDownloadUrl(newUuid, 'thumb-md'));
 							img.setAttribute('data-attachment-id', newUuid);
 						} else {
+							// Detach explicitly: this branch clears the src without
+							// going through loadImage(), so the previous load's
+							// listeners would survive and a queued error could show
+							// the placeholder on a now-empty node (Codex round 8).
+							detachLoadListeners();
 							img.removeAttribute('src');
 							img.removeAttribute('data-attachment-id');
 						}
@@ -510,6 +624,8 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					if (toolbar) toolbar.classList.add('attachment-image-toolbar-hidden');
 				},
 				destroy() {
+					detachLoadListeners();
+					disposeDeletionListener();
 					// Tear down the refresher subscription so the
 					// module-level registry doesn't pile up stale
 					// callbacks across editor lifecycles (e.g. SPA

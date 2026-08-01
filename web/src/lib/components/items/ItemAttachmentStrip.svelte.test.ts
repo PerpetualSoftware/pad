@@ -10,15 +10,54 @@ import type { AttachmentListItem, AttachmentListResponse } from '$lib/types';
 
 const listMock =
 	vi.fn<(ws: string, filters: Record<string, unknown>) => Promise<AttachmentListResponse>>();
+const deleteMock = vi.fn<(ws: string, id: string) => Promise<void>>();
+const toastMock = vi.fn<(message: string, kind?: string) => void>();
+
+class FakeApiError extends Error {
+	code: string;
+	constructor(code: string) {
+		super(code);
+		this.code = code;
+	}
+}
 
 vi.mock('$lib/api/client', () => ({
+	PadApiError: FakeApiError,
 	api: {
 		attachments: {
 			list: (ws: string, filters: Record<string, unknown>) => listMock(ws, filters),
 			downloadUrl: (ws: string, id: string, variant?: string) =>
 				`/api/v1/workspaces/${ws}/attachments/${id}${variant ? `?variant=${variant}` : ''}`,
+			delete: (ws: string, id: string) => deleteMock(ws, id),
 		},
 	},
+}));
+
+const notifyDeletedMock = vi.fn<(uuid: string) => void>();
+// A stand-in registry: registerAttachmentDeletionListener is real enough to
+// drive the strip's own subscription (broadcastDeletion invokes it), while
+// notifyAttachmentDeleted is a pure spy — it records the emit WITHOUT fanning
+// out, so a test can assert what the strip announces separately from what it
+// receives.
+const deletionListeners = new Set<(uuid: string) => void>();
+function broadcastDeletion(uuid: string) {
+	for (const fn of deletionListeners) fn(uuid);
+}
+vi.mock('$lib/attachments/deletion', () => ({
+	notifyAttachmentDeleted: (uuid: string) => notifyDeletedMock(uuid),
+	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
+		deletionListeners.add(fn);
+		return () => deletionListeners.delete(fn);
+	},
+}));
+
+const invalidateMock = vi.fn<(ws: string, uuid: string) => void>();
+vi.mock('$lib/components/editor/attachment-metadata', () => ({
+	invalidateAttachmentMetadata: (ws: string, uuid: string) => invalidateMock(ws, uuid),
+}));
+
+vi.mock('$lib/stores/toast.svelte', () => ({
+	toastStore: { show: (message: string, kind?: string) => toastMock(message, kind) },
 }));
 
 const { default: ItemAttachmentStrip } = await import('./ItemAttachmentStrip.svelte');
@@ -53,10 +92,20 @@ function deferred<T>() {
 // Reactive props object so a test can flip itemId the way ItemDetail's
 // persistent (un-{#key}'d) mount point does. Declared once at the top level
 // because `$state(...)` may only initialize a declaration.
-const props = $state<{ wsSlug: string; username: string; itemId: string | null }>({
+const props = $state<{
+	wsSlug: string;
+	username: string;
+	itemId: string | null;
+	canDelete: boolean;
+	itemContent: string | null;
+	liveContent: (() => string | null) | null;
+}>({
 	wsSlug: 'ws',
 	username: 'dave',
 	itemId: null,
+	canDelete: false,
+	itemContent: null,
+	liveContent: null,
 });
 
 describe('ItemAttachmentStrip', () => {
@@ -65,9 +114,17 @@ describe('ItemAttachmentStrip', () => {
 
 	beforeEach(() => {
 		listMock.mockReset();
+		deleteMock.mockReset();
+		deleteMock.mockResolvedValue(undefined);
+		toastMock.mockReset();
+		notifyDeletedMock.mockReset();
+		invalidateMock.mockReset();
 		props.wsSlug = 'ws';
 		props.username = 'dave';
 		props.itemId = null;
+		props.canDelete = false;
+		props.itemContent = null;
+		props.liveContent = null;
 		target = document.body.appendChild(document.createElement('div'));
 	});
 
@@ -306,5 +363,358 @@ describe('ItemAttachmentStrip', () => {
 		await settle();
 
 		expect(target.querySelector('.attachment-strip')).toBeNull();
+	});
+
+	// ── Delete (TASK-2384) ────────────────────────────────────────────────
+	//
+	// The affordance is gated on ItemDetail's `mutationsEnabled`
+	// (canEdit && !peeking) per PLAN-2382 DR-6, and the confirm text has to
+	// stay honest about what was actually checked (DR-5): "referenced in this
+	// item's content" is knowable client-side; "unused anywhere" is not.
+
+	function deleteButtons(): HTMLButtonElement[] {
+		return Array.from(target.querySelectorAll<HTMLButtonElement>('.att-delete'));
+	}
+
+	it('offers no delete control when canDelete is false', async () => {
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		props.canDelete = false;
+		mountStrip('item-a');
+		await settle();
+
+		expect(tiles()).toHaveLength(1);
+		expect(deleteButtons()).toHaveLength(0);
+	});
+
+	it('renders a keyboard-reachable delete control per tile when canDelete', async () => {
+		listMock.mockResolvedValue(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		const buttons = deleteButtons();
+		expect(buttons).toHaveLength(2);
+		expect(buttons[0].getAttribute('aria-label')).toBe('Delete a1.png');
+		// Actually focusable — not merely present. The earlier assertion checked
+		// the `hidden` PROPERTY, which a `visibility: hidden` rule never sets,
+		// so it passed while the control was in fact unreachable by keyboard
+		// (Codex round 4). jsdom doesn't apply the component's scoped CSS, so
+		// this can't catch a future regression to visibility/display on its own
+		// — the browser-level guarantee is the TASK-2385 e2e.
+		buttons[0].focus();
+		expect(document.activeElement).toBe(buttons[0]);
+		expect(buttons[0].disabled).toBe(false);
+	});
+
+	it('warns that the attachment is still used in this item content', async () => {
+		// A canonical UUID: attachmentRefsIn() is anchored to that shape (the
+		// ids the upload endpoint returns), so the reference scan only matches
+		// real ids — a short fixture id would silently miss.
+		const uuid = '0f9c2f7a-1b2c-4d5e-8f90-1a2b3c4d5e6f';
+		listMock.mockResolvedValue(response([att({ id: uuid })]));
+		props.canDelete = true;
+		props.itemContent = `text ![shot](pad-attachment:${uuid}) more`;
+		mountStrip('item-a');
+		await settle();
+
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+		deleteButtons()[0].click();
+		await settle();
+
+		expect(confirmSpy).toHaveBeenCalledOnce();
+		expect(confirmSpy.mock.calls[0][0]).toContain("still used in this item's content");
+		// Declined → nothing deleted, tile stays.
+		expect(deleteMock).not.toHaveBeenCalled();
+		expect(tiles()).toHaveLength(1);
+		confirmSpy.mockRestore();
+	});
+
+	it('never claims an unreferenced attachment is unused', async () => {
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		props.canDelete = true;
+		props.itemContent = 'no references here';
+		mountStrip('item-a');
+		await settle();
+
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+		deleteButtons()[0].click();
+		await settle();
+
+		const message = String(confirmSpy.mock.calls[0][0]);
+		// Comment bodies and other items are NOT scanned client-side (DR-5),
+		// so the copy must hedge rather than assert non-use.
+		expect(message).toContain('may still be referenced');
+		expect(message).not.toContain('not used');
+		confirmSpy.mockRestore();
+	});
+
+	it('removes the tile optimistically and calls the API on confirm', async () => {
+		listMock.mockResolvedValue(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		deleteButtons()[0].click();
+		await settle();
+
+		expect(deleteMock).toHaveBeenCalledWith('ws', 'a1');
+		expect(tiles()).toHaveLength(1);
+		expect(toastMock).not.toHaveBeenCalled();
+		// An <img> already painted in the editor never re-requests, so the
+		// NodeView has to be told or the body keeps showing a deleted image
+		// until reload (Codex round 12).
+		expect(notifyDeletedMock).toHaveBeenCalledWith('a1');
+		expect(invalidateMock).toHaveBeenCalledWith('ws', 'a1');
+		confirmSpy.mockRestore();
+	});
+
+	it('rolls the tile back and toasts when the delete fails', async () => {
+		listMock.mockResolvedValue(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		deleteMock.mockRejectedValue(new Error('403'));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		deleteButtons()[0].click();
+		await settle();
+
+		expect(tiles()).toHaveLength(2);
+		// Nothing was deleted server-side, so the editor must NOT be told.
+		expect(notifyDeletedMock).not.toHaveBeenCalled();
+		expect(toastMock).toHaveBeenCalledOnce();
+		expect(String(toastMock.mock.calls[0][0])).toContain('a1.png');
+		confirmSpy.mockRestore();
+	});
+
+	it('does not roll a failed delete back into a DIFFERENT item strip', async () => {
+		// A→B switch while A's delete is in flight. The rollback must not
+		// resurrect A's tile under B, and B must not get A's error toast.
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		// A REJECTING deferred: resolving it would skip the catch entirely and
+		// the test would pass against a broken rollback (Codex round 2 P3).
+		let failDelete!: (err: Error) => void;
+		deleteMock.mockReturnValue(
+			new Promise<void>((_, reject) => {
+				failDelete = reject;
+			})
+		);
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		deleteButtons()[0].click();
+		flushSync();
+		expect(tiles()).toHaveLength(0); // optimistic removal happened
+
+		// Switch to B before the delete settles.
+		listMock.mockResolvedValue(response([att({ id: 'b1' })]));
+		props.itemId = 'item-b';
+		flushSync();
+		await settle();
+
+		failDelete(new Error('403'));
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label'));
+		expect(names.some((n) => n?.includes('a1.png'))).toBe(false);
+		expect(names.some((n) => n?.includes('b1.png'))).toBe(true);
+		expect(toastMock).not.toHaveBeenCalled();
+		confirmSpy.mockRestore();
+	});
+
+	it('rolls back only the failed row, never resurrecting a concurrent success', async () => {
+		// Delete A (will fail) then B (succeeds). A snapshot-based rollback
+		// would restore the whole pre-delete array and bring B back from the
+		// dead (Codex round 2 P2).
+		listMock.mockResolvedValue(
+			response([att({ id: 'a1' }), att({ id: 'b1' }), att({ id: 'c1' })])
+		);
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		let failFirst!: (err: Error) => void;
+		deleteMock.mockReturnValueOnce(
+			new Promise<void>((_, reject) => {
+				failFirst = reject;
+			})
+		);
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+		deleteButtons()[0].click(); // a1 — in flight, will fail
+		flushSync();
+		deleteButtons()[0].click(); // now b1 — resolves immediately
+		await settle();
+
+		failFirst(new Error('boom'));
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('a1.png'))).toBe(true); // restored
+		expect(names.some((n) => n.includes('b1.png'))).toBe(false); // stays deleted
+		// ...and restored at its original position, not appended.
+		expect(names[0]).toContain('a1.png');
+		confirmSpy.mockRestore();
+	});
+
+	it('still announces the deletion when the delete 404s', async () => {
+		// A 404 proves the row is gone just as well as a 204 does, so the other
+		// local surfaces need telling either way (Codex round 19).
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		deleteMock.mockRejectedValue(new FakeApiError('not_found'));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		deleteButtons()[0].click();
+		await settle();
+
+		expect(notifyDeletedMock).toHaveBeenCalledWith('a1');
+		expect(invalidateMock).toHaveBeenCalledWith('ws', 'a1');
+		confirmSpy.mockRestore();
+	});
+
+	it('does not roll back a failed delete that another surface already announced', async () => {
+		// Our DELETE fails, but someone else confirmed the same uuid is gone
+		// while it was in flight. The tombstone wins — restoring the tile would
+		// contradict a deletion we know landed (Codex round 18/19).
+		listMock.mockResolvedValue(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		let failDelete!: (err: Error) => void;
+		deleteMock.mockReturnValue(
+			new Promise<void>((_, reject) => {
+				failDelete = reject;
+			})
+		);
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		deleteButtons()[0].click();
+		flushSync();
+
+		broadcastDeletion('a1');
+		flushSync();
+
+		failDelete(new Error('500'));
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('a1.png'))).toBe(false);
+		confirmSpy.mockRestore();
+	});
+
+	it('keeps the tile removed when the delete 404s (already gone)', async () => {
+		// Someone else deleted it and this strip has no live subscription, so
+		// the tile was stale before the click. Restoring it would leave a dead
+		// tile whose download and delete both fail (Codex round 6).
+		listMock.mockResolvedValue(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		deleteMock.mockRejectedValue(new FakeApiError('not_found'));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		deleteButtons()[0].click();
+		await settle();
+
+		expect(tiles()).toHaveLength(1);
+		expect(toastMock).not.toHaveBeenCalled();
+		confirmSpy.mockRestore();
+	});
+
+	it('names permission as the reason on a 403, and restores the tile', async () => {
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		deleteMock.mockRejectedValue(new FakeApiError('forbidden'));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		deleteButtons()[0].click();
+		await settle();
+
+		expect(tiles()).toHaveLength(1);
+		expect(String(toastMock.mock.calls[0][0])).toContain("don't have permission");
+		confirmSpy.mockRestore();
+	});
+
+	it('drops a tile when another surface broadcasts its deletion', async () => {
+		// Settings → Storage, or the OTHER strip in a split pane. Both mount
+		// concurrently, so a strip that only updated its own deletes would keep
+		// showing a downloadable tile for a row that is gone (Codex round 17).
+		listMock.mockResolvedValue(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		mountStrip('item-a');
+		await settle();
+		expect(tiles()).toHaveLength(2);
+
+		broadcastDeletion('a2');
+		flushSync();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names).toHaveLength(1);
+		expect(names[0]).toContain('a1.png');
+	});
+
+	it('does not let an in-flight fetch resurrect an already-deleted row', async () => {
+		// The list request is still in flight when another surface announces a
+		// deletion; the response must not paint the dead row back
+		// (Codex round 18).
+		const pending = deferred<AttachmentListResponse>();
+		listMock.mockReturnValue(pending.promise);
+		mountStrip('item-a');
+		flushSync();
+
+		broadcastDeletion('a2');
+		flushSync();
+
+		pending.resolve(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names).toHaveLength(1);
+		expect(names[0]).toContain('a1.png');
+	});
+
+	it('warns using UNFLUSHED editor content, not just the persisted body', async () => {
+		// The image was inserted seconds ago: it's in the live editor markdown
+		// but not yet in item.content. The warning must still fire.
+		const uuid = '11111111-2222-4333-8444-555555555555';
+		listMock.mockResolvedValue(response([att({ id: uuid })]));
+		props.canDelete = true;
+		props.itemContent = 'persisted body with no refs';
+		props.liveContent = () => `just typed ![new](pad-attachment:${uuid})`;
+		mountStrip('item-a');
+		await settle();
+
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+		deleteButtons()[0].click();
+		await settle();
+
+		expect(String(confirmSpy.mock.calls[0][0])).toContain("still used in this item's content");
+		confirmSpy.mockRestore();
+	});
+
+	it('falls back to persisted content when the live read throws', async () => {
+		const uuid = '99999999-8888-4777-8666-555555555555';
+		listMock.mockResolvedValue(response([att({ id: uuid })]));
+		props.canDelete = true;
+		props.itemContent = `persisted ![x](pad-attachment:${uuid})`;
+		props.liveContent = () => {
+			throw new Error('editor destroyed');
+		};
+		mountStrip('item-a');
+		await settle();
+
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+		deleteButtons()[0].click();
+		await settle();
+
+		expect(String(confirmSpy.mock.calls[0][0])).toContain("still used in this item's content");
+		confirmSpy.mockRestore();
 	});
 });

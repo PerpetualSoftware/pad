@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { api } from '$lib/api/client';
+	import { api, PadApiError } from '$lib/api/client';
+	import { notifyAttachmentDeleted } from '$lib/attachments/deletion';
+	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import type {
 		AttachmentListItem,
 		AttachmentListFilters,
@@ -147,9 +149,28 @@
 		if (!ok) return;
 		try {
 			await api.attachments.delete(wsSlug, att.id);
+			// Same broadcast the item attachment strip does (PLAN-2382 /
+			// TASK-2384): an editor open in another tab-pane still holds live
+			// <img>/chip NodeViews for this attachment, and an already-loaded
+			// image never re-requests, so without this they keep presenting a
+			// row the server no longer has (Codex round 14).
+			notifyAttachmentDeleted(att.id);
+			invalidateAttachmentMetadata(wsSlug, att.id);
 			toastStore.show(`Deleted ${att.filename}`, 'success');
 			await reload();
 		} catch (err) {
+			// A 404 is authoritative that the row is gone — the list was simply
+			// stale (another tab, another user). Treat it exactly like a
+			// success: broadcast, invalidate, and refresh, rather than showing
+			// an error for something that is in fact already done
+			// (Codex round 20; matches the attachment strip's handling).
+			if (err instanceof PadApiError && err.code === 'not_found') {
+				notifyAttachmentDeleted(att.id);
+				invalidateAttachmentMetadata(wsSlug, att.id);
+				toastStore.show(`${att.filename} was already deleted`, 'info');
+				await reload();
+				return;
+			}
 			const msg = err instanceof Error ? err.message : 'Failed to delete attachment';
 			toastStore.show(msg, 'error');
 		}

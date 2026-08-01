@@ -270,9 +270,14 @@ func effectiveOffset(n int) int {
 //
 //	DELETE /api/v1/workspaces/{ws}/attachments/{attachmentID}
 //
-// Auth: editor+. Delete is destructive (the bytes go away after GC) —
-// view-only members shouldn't be able to remove attachments other
-// users uploaded.
+// Auth: per-attachment, not a flat role gate (PLAN-2382 / TASK-2384).
+// An ITEM-BOUND attachment requires edit permission on its parent item —
+// workspace editor+, or a viewer/guest holding an item- or
+// collection-level edit grant, matching what upload already allows
+// (BUG-1661) and what the item-detail UI offers. An ORPHAN attachment has
+// no item to authorize against and keeps the flat editor+ gate. Either
+// way delete is destructive (the bytes go away after GC), so a plain
+// view-only member still can't remove what others uploaded.
 //
 // Cross-workspace requests get 404 (not 403) to avoid leaking which
 // IDs exist in other workspaces. Same pattern as the download
@@ -281,9 +286,15 @@ func effectiveOffset(n int) int {
 // Returns 204 on success. The storage-usage cache is invalidated
 // eagerly so the bar drops within a refresh cycle.
 func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "editor") {
-		return
-	}
+	// NOTE: deliberately no top-level requireMinRole("editor") here.
+	// Authorization is decided per-attachment below, because the surfaces
+	// that offer delete (the item-detail attachment strip) gate their
+	// affordance on grant-aware edit permission — a viewer holding an
+	// item- or collection-level `edit` grant can edit the item and upload
+	// attachments to it (BUG-1661), so they must be able to delete them
+	// too. A flat role gate here would render the control and 403 the
+	// click. Item-bound attachments go through requireEditPermission;
+	// orphans keep the flat editor-role gate (PLAN-2382 DR-4).
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -330,6 +341,23 @@ func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.
 			writeInternalError(w, err)
 			return
 		}
+		// Workspace identity FIRST, before visibility or permission.
+		//
+		// attachments.item_id has no FK or same-workspace constraint, and the
+		// upload handler associates the raw ?item_id string (it authorizes
+		// against a workspace-scoped ResolveItem, but stores the value
+		// verbatim), so a row in workspace A can carry an item id belonging to
+		// workspace B. Neither downstream check catches that on its own:
+		// checkItemVisible admits any collection id when the caller is
+		// unrestricted, and ResolveUserPermission matches item grants by
+		// item_id alone with no workspace scoping (store/grants.go). Without
+		// this guard, an edit grant on a foreign item would authorize deleting
+		// an attachment in THIS workspace. 404, not 403 — same non-disclosure
+		// posture as the rest of the handler.
+		if item != nil && item.WorkspaceID != workspaceID {
+			writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+			return
+		}
 		if item == nil || !s.requireItemVisible(w, r, workspaceID, item) {
 			// requireItemVisible already wrote a 404 on its denial path.
 			// Two cases land us here: the item was hard-deleted out from
@@ -339,7 +367,20 @@ func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.
 			}
 			return
 		}
+		// Edit permission on the PARENT ITEM, checked strictly AFTER
+		// visibility. Order matters: an attachment on an item the caller
+		// can't see must keep returning 404 (non-disclosure), not the 403
+		// this would emit — otherwise the response distinguishes "exists
+		// but you lack edit" from "not visible to you".
+		if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+			return
+		}
 	} else {
+		// Orphan attachments carry no item context to authorize against,
+		// so they keep the flat workspace editor-role gate.
+		if !requireMinRole(w, r, "editor") {
+			return
+		}
 		// Orphan attachments (item_id IS NULL) are not associated with
 		// any collection, so collection-level visibility doesn't apply.
 		// Restricted members shouldn't reach here because the LIST

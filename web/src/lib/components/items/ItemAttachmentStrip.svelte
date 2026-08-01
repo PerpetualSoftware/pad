@@ -18,18 +18,54 @@
 	 * item id, per the no-{#key} bug class from PLAN-2105 / TASK-2112.
 	 */
 	import { untrack } from 'svelte';
-	import { api } from '$lib/api/client';
+	import { api, PadApiError } from '$lib/api/client';
 	import type { AttachmentListItem } from '$lib/types';
 	import { categoryIcon, formatBytes, isImage } from '$lib/attachments/display';
 	import Lightbox, { type LightboxImage } from '$lib/components/common/Lightbox.svelte';
+	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	import {
+		notifyAttachmentDeleted,
+		registerAttachmentDeletionListener,
+	} from '$lib/attachments/deletion';
+	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 
 	interface Props {
 		wsSlug: string;
 		username: string;
 		/** Parent item UUID. Null/undefined while the item is still loading. */
 		itemId: string | null | undefined;
+		/**
+		 * Whether to offer the delete affordance. ItemDetail passes its
+		 * `mutationsEnabled` (= canEdit && !peeking), so a read-only viewer
+		 * and a peeking master both see tiles without a delete control
+		 * (PLAN-2382 DR-6; the BUG-2264 / BUG-2265 active-side-only precedent).
+		 */
+		canDelete?: boolean;
+		/**
+		 * The item's markdown, used ONLY to warn when a delete would break a
+		 * live reference in this body (DR-5). Never used to filter the strip —
+		 * that's item_id by design (DR-1).
+		 */
+		itemContent?: string | null;
+		/**
+		 * Optional accessor for the editor's LIVE markdown. `itemContent` is
+		 * the persisted body, and the editor deliberately doesn't write back to
+		 * `item` on every keystroke — so an image inserted seconds ago isn't in
+		 * it yet, and the in-use warning would wrongly stay silent for exactly
+		 * the attachment a user is most likely to delete by mistake
+		 * (Codex round 2). Consulted at confirm time only.
+		 */
+		liveContent?: (() => string | null) | null;
 	}
-	let { wsSlug, username, itemId }: Props = $props();
+	let {
+		wsSlug,
+		username,
+		itemId,
+		canDelete = false,
+		itemContent = null,
+		liveContent = null,
+	}: Props = $props();
 
 	// Hard bound on what the strip will ever hold (DR-9). Past this the strip
 	// links out to Settings → Storage rather than paginating in place.
@@ -45,6 +81,14 @@
 	// so an in-flight response for item A can never write under item B.
 	let loadGeneration = 0;
 
+	// Ids confirmed deleted while this item's list was loading. A deletion
+	// broadcast only filters the CURRENT array, so a list() response that was
+	// already in flight would otherwise land afterwards and resurrect the row
+	// (Codex round 18). Every response is filtered through this, and a failed
+	// optimistic delete won't roll back an id that's in here. Cleared per item
+	// load — tombstones are meaningless once we refetch.
+	let deletedIds = new Set<string>();
+
 	$effect(() => {
 		const reqItemId = itemId;
 		const reqWsSlug = wsSlug;
@@ -57,6 +101,7 @@
 			attachments = [];
 			expanded = false;
 			lightbox = null;
+			deletedIds = new Set();
 		});
 
 		if (!reqItemId || !reqWsSlug) return;
@@ -68,7 +113,7 @@
 					limit: MAX_FETCH,
 				});
 				if (switchedAway(gen, reqItemId)) return;
-				attachments = res.attachments ?? [];
+				attachments = (res.attachments ?? []).filter((a) => !deletedIds.has(a.id));
 			} catch {
 				// A failed fetch renders as "no attachments" — the strip is a
 				// secondary affordance and an error banner above the editor
@@ -90,6 +135,19 @@
 		return () => {
 			loadGeneration++;
 		};
+	});
+
+	// Deletions broadcast on the shared registry — from Settings → Storage, or
+	// from ANOTHER strip (the split-pane host mounts two ItemDetails, so two
+	// strips can show the same attachment). Dropping the row here keeps every
+	// mounted strip agreeing with the editors, which already subscribe
+	// (Codex round 17). Emitting our own delete re-enters this harmlessly: the
+	// row is already gone, and the filter is idempotent.
+	$effect(() => {
+		return registerAttachmentDeletionListener((deletedUuid) => {
+			deletedIds.add(deletedUuid);
+			attachments = attachments.filter((a) => a.id !== deletedUuid);
+		});
 	});
 
 	// Mirrors ItemDetail's `switchedAway`: the generation catches a newer load,
@@ -125,6 +183,117 @@
 	function tileLabel(att: AttachmentListItem): string {
 		return `${att.filename} (${formatBytes(att.size_bytes)})`;
 	}
+
+	/**
+	 * Ids referenced by THIS item's body. A hit means deleting leaves the
+	 * missing-attachment placeholder in the content, which the user deserves to
+	 * know before confirming.
+	 *
+	 * Read at confirm time rather than derived, so it sees unflushed editor
+	 * edits: the live markdown is preferred and the persisted content is the
+	 * fallback (a read can fail, or the editor may not be mounted at all on a
+	 * read-only surface).
+	 */
+	function referencedIds(): Set<string> {
+		let live: string | null = null;
+		try {
+			live = liveContent?.() ?? null;
+		} catch {
+			live = null;
+		}
+		return new Set(attachmentRefsIn(live ?? itemContent ?? ''));
+	}
+
+	/**
+	 * Confirm text for a delete (DR-5).
+	 *
+	 * The "not referenced here" arm deliberately does NOT claim the attachment
+	 * is unused: a reference can live in another item's content, in an item's
+	 * fields JSON, or in any comment. The server's AttachmentReferenced scan
+	 * covers all three, but none of it is visible client-side — so the wording
+	 * stays honest about what we actually checked.
+	 */
+	function confirmMessage(att: AttachmentListItem): string {
+		if (referencedIds().has(att.id)) {
+			return (
+				`Delete ${att.filename}?\n\n` +
+				"It's still used in this item's content — deleting it will leave a " +
+				'"missing attachment" placeholder where it appears.'
+			);
+		}
+		return (
+			`Delete ${att.filename}?\n\n` +
+			"It isn't referenced in this item's content, but it may still be " +
+			'referenced by another item or a comment. This cannot be undone.'
+		);
+	}
+
+	async function handleDelete(att: AttachmentListItem) {
+		if (!canDelete) return;
+		if (typeof window !== 'undefined' && !window.confirm(confirmMessage(att))) return;
+
+		// Capture identity BEFORE the await: a switch mid-delete must not roll
+		// the tile back into a DIFFERENT item's strip, and must not toast over
+		// it. The DELETE itself still lands — it targets an id, not a view.
+		const gen = loadGeneration;
+		const reqItemId = itemId;
+		const index = attachments.findIndex((a) => a.id === att.id);
+
+		// Optimistic removal.
+		attachments = attachments.filter((a) => a.id !== att.id);
+
+		try {
+			await api.attachments.delete(wsSlug, att.id);
+			// Tell any live editor NodeView the attachment is gone. An <img>
+			// that already loaded never re-requests, so without this the body
+			// keeps showing a healthy image the server no longer has until the
+			// next reload (Codex round 12).
+			notifyAttachmentDeleted(att.id);
+			// Drop the cached HEAD metadata too, so a surface that re-resolves
+			// this reference later (file chips, read-only renders) doesn't get
+			// a cache hit describing a row that no longer exists.
+			invalidateAttachmentMetadata(wsSlug, att.id);
+		} catch (err) {
+			if (switchedAway(gen, reqItemId ?? '')) return;
+
+			// A 404 means it's ALREADY gone. The in-process deletion bus covers
+			// other surfaces in THIS tab, but not another user, another tab, or
+			// a notification we missed — so the tile can still be stale by the
+			// time it's clicked. Rolling back would restore a dead tile whose
+			// download and delete both fail, and keep failing until navigation
+			// (Codex round 6). Treat it as the success it effectively is.
+			const code = err instanceof PadApiError ? err.code : null;
+			if (code === 'not_found') {
+				// A 404 is just as authoritative as a 204 about the row being
+				// gone, so it gets the same broadcast — otherwise an editor
+				// NodeView or another mounted strip in this tab stays stale
+				// precisely when we have proof it should not (Codex round 19).
+				notifyAttachmentDeleted(att.id);
+				invalidateAttachmentMetadata(wsSlug, att.id);
+				return;
+			}
+
+			// Someone else announced this deletion while our own call was in
+			// flight — the row is gone regardless of why ours failed, so don't
+			// bring it back (Codex round 18).
+			if (deletedIds.has(att.id)) return;
+
+			// Everything else is a genuine failure: put the row back where it
+			// was. Re-insert ONLY this row — restoring a whole pre-delete
+			// snapshot would resurrect rows a concurrent delete removed
+			// successfully (delete A then B, B succeeds, A fails, A's snapshot
+			// brings B back — Codex round 2).
+			const restored = attachments.slice();
+			restored.splice(Math.max(0, Math.min(index, restored.length)), 0, att);
+			attachments = restored;
+			toastStore.show(
+				code === 'forbidden'
+					? `You don't have permission to delete ${att.filename}.`
+					: `Couldn't delete ${att.filename}.`,
+				'error'
+			);
+		}
+	}
 </script>
 
 {#if attachments.length > 0}
@@ -132,32 +301,51 @@
 		<div class="fields-header">Attachments · {attachments.length}</div>
 		<div class="strip-row">
 			{#each visible as att (att.id)}
-				{#if isImage(att.mime_type)}
-					<button
-						type="button"
-						class="att-tile"
-						title={tileLabel(att)}
-						aria-label={tileLabel(att)}
-						onclick={() => openLightbox(att)}
-					>
-						<img
-							src={api.attachments.downloadUrl(wsSlug, att.id, 'thumb-sm')}
-							alt=""
-							loading="lazy"
-						/>
-					</button>
-				{:else}
-					<a
-						class="att-tile"
-						href={api.attachments.downloadUrl(wsSlug, att.id)}
-						download={att.filename}
-						title={tileLabel(att)}
-						aria-label={tileLabel(att)}
-					>
-						<span class="att-icon" aria-hidden="true">{categoryIcon(att.mime_type)}</span>
-						<span class="att-name" aria-hidden="true">{att.filename}</span>
-					</a>
-				{/if}
+				<!-- The delete control can't nest inside the tile's own button /
+				     anchor, so each tile gets a positioned wrapper. -->
+				<div class="att-cell">
+					{#if isImage(att.mime_type)}
+						<button
+							type="button"
+							class="att-tile"
+							title={tileLabel(att)}
+							aria-label={tileLabel(att)}
+							onclick={() => openLightbox(att)}
+						>
+							<img
+								src={api.attachments.downloadUrl(wsSlug, att.id, 'thumb-sm')}
+								alt=""
+								loading="lazy"
+							/>
+						</button>
+					{:else}
+						<a
+							class="att-tile"
+							href={api.attachments.downloadUrl(wsSlug, att.id)}
+							download={att.filename}
+							title={tileLabel(att)}
+							aria-label={tileLabel(att)}
+						>
+							<span class="att-icon" aria-hidden="true">{categoryIcon(att.mime_type)}</span>
+							<span class="att-name" aria-hidden="true">{att.filename}</span>
+						</a>
+					{/if}
+
+					{#if canDelete}
+						<!-- Always in the DOM (never hover-gated in markup) so it's
+						     keyboard reachable; CSS reveals it on hover / focus-within
+						     and it stays visible whenever it has focus. -->
+						<button
+							type="button"
+							class="att-delete"
+							title="Delete {att.filename}"
+							aria-label="Delete {att.filename}"
+							onclick={() => handleDelete(att)}
+						>
+							×
+						</button>
+					{/if}
+				</div>
 			{/each}
 
 			{#if overflowCount > 0}
@@ -218,6 +406,52 @@
 		gap: var(--space-2);
 		overflow-x: auto;
 		padding-bottom: var(--space-1);
+	}
+
+	.att-cell {
+		position: relative;
+		flex: 0 0 auto;
+		display: flex;
+	}
+
+	.att-delete {
+		position: absolute;
+		top: -8px;
+		right: -8px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		/* 24x24 is the WCAG 2.2 minimum target size for a non-inline control
+		   (2.5.8) — an 18px hit area failed it (Codex round 2). */
+		width: 24px;
+		height: 24px;
+		padding: 0;
+		border: 1px solid var(--border);
+		border-radius: 50%;
+		background: var(--bg-primary, #fff);
+		color: var(--text-muted);
+		font-size: 0.8em;
+		line-height: 1;
+		cursor: pointer;
+		/* Revealed on hover, or when anything in the tile has focus — which
+		   includes the delete button itself, so tabbing to it makes it appear.
+		   opacity (NOT visibility/display): `visibility: hidden` removes the
+		   control from the tab order entirely, which silently made the
+		   "keyboard reachable" claim false (Codex round 4). pointer-events
+		   keeps the invisible control from swallowing clicks aimed at the tile
+		   without affecting keyboard focus. */
+		opacity: 0;
+		pointer-events: none;
+		transition: opacity 0.1s;
+	}
+	.att-cell:hover .att-delete,
+	.att-cell:focus-within .att-delete {
+		opacity: 1;
+		pointer-events: auto;
+	}
+	.att-delete:hover {
+		color: var(--accent-red, #c00);
+		border-color: var(--accent-red, #c00);
 	}
 
 	.att-tile {

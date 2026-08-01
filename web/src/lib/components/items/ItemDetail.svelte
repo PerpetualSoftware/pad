@@ -5003,7 +5003,31 @@
 			     tiles would linger under B. Gating on the same switch boundary
 			     the collab lifecycle uses nulls the prop the instant the ref
 			     changes (Codex round 1). -->
-			<ItemAttachmentStrip {wsSlug} {username} itemId={itemMatchesRef ? item?.id : null} />
+			<!-- canDelete uses mutationsEnabled, NOT raw canEdit: a peeking master
+			     is a complete read-only freeze, so it shows tiles without the
+			     delete control (PLAN-2382 DR-6). itemContent feeds the
+			     "still used in this item's content" confirm only — the strip's
+			     contents are keyed on item_id, never on body refs (DR-1). -->
+			<ItemAttachmentStrip
+				{wsSlug}
+				{username}
+				itemId={itemMatchesRef ? item?.id : null}
+				canDelete={mutationsEnabled}
+				itemContent={itemMatchesRef ? item?.content : null}
+				liveContent={() => {
+					// The persisted item.content lags the editor by design (it's
+					// written on flush, not per keystroke), so an image inserted
+					// moments ago wouldn't trip the "still used" warning. Read the
+					// live editor when it's genuinely alive; the strip falls back
+					// to item.content otherwise.
+					if (!editorInstance || editorInstance.isDestroyed) return null;
+					try {
+						return (editorInstance.storage as any).markdown?.getMarkdown?.() ?? null;
+					} catch {
+						return null;
+					}
+				}}
+			/>
 
 			<!-- Content editor — OUTSIDE the {#key itemSlug} above: the collab
 			     Editor, EditorBubbleMenu, provider, collabKey and SSE stay
