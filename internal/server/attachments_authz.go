@@ -169,6 +169,20 @@ func (s *Server) attachmentCallerIsRestricted(r *http.Request, workspaceID strin
 // loads, which the per-row callback shape cannot express; it is bounded in
 // practice by the attachments that actually exist in the source workspace,
 // since an unresolvable reference never reaches this function at all.
+//
+// RESIDUAL, and the more consequential one: these queries go through the
+// connection POOL, and on the mutating path the planner runs inside a
+// transaction holding advisory locks on BOTH workspaces. Enough concurrent
+// copies could therefore occupy every pooled connection with lock-waiters
+// while the lock HOLDER waits for a spare — starvation presenting as a
+// hang. The memo above is what keeps this bounded rather than per-row. The
+// hazard is not new (PlanAttachmentCopy already reads through the pool
+// under the same locks, attachments_copy_plan.go) and the real fix is to
+// make the lock-held reads transaction-bound, which means threading the
+// *sql.Tx through the planner and giving this callback a tx-aware form.
+// Tracked as BUG-2409; deliberately NOT done here, because it is a change
+// to the store's transaction plumbing rather than to this authorization
+// rule.
 func (s *Server) attachmentCopyAuthorizer(r *http.Request, workspaceID string) func(models.Attachment) (bool, error) {
 	type verdict struct {
 		allowed bool
