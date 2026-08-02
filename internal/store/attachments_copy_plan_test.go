@@ -950,3 +950,143 @@ func TestPlanAttachmentCopy_ManyRefsChunked(t *testing.T) {
 		t.Errorf("TotalBytes = %d, want %d", plan.TotalBytes, len(want))
 	}
 }
+
+// --- the caller's authorization hook (TASK-2408) ---------------------------
+//
+// DR-11a's scope is the workspace; the workspace is not the caller. The
+// planner therefore consults an AttachmentAuthorizer supplied by the
+// server, and a denial must be INDISTINGUISHABLE from a row that was never
+// there — same bucket, same counts — because the preflight publishes those
+// counts to anyone who can edit the source item.
+
+// TestPlanAttachmentCopy_DeniedRefIsExactlyDangling is the anti-oracle
+// claim at the planner's own level: the plan produced for a live-but-denied
+// reference equals, field for field, the plan produced for a UUID that
+// names nothing at all.
+func TestPlanAttachmentCopy_DeniedRefIsExactlyDangling(t *testing.T) {
+	f := newPlanFixture(t)
+	secret := f.attach(t, f.wsA, "secret.png", 4096)
+	f.variant(t, f.wsA, secret, models.AttachmentVariantThumbMd, 20)
+
+	denied := f.plan(t, withAuthorizer(f.req(imageRef(secret.ID), nil), denyAll))
+
+	missing := newID()
+	dangling := f.plan(t, f.req(imageRef(missing), nil))
+
+	if len(denied.Rows) != 0 || denied.TotalBytes != 0 {
+		t.Fatalf("a denied reference was planned: %d rows, %d bytes", len(denied.Rows), denied.TotalBytes)
+	}
+	if len(denied.IDMap) != 0 {
+		t.Errorf("IDMap = %v, want empty — a denied reference must not be rewritten", denied.IDMap)
+	}
+	if len(denied.UnresolvableRefs) != 1 || denied.UnresolvableRefs[0] != secret.ID {
+		t.Errorf("UnresolvableRefs = %v, want exactly the denied ref", denied.UnresolvableRefs)
+	}
+	if len(dangling.UnresolvableRefs) != len(denied.UnresolvableRefs) ||
+		len(dangling.Rows) != len(denied.Rows) ||
+		dangling.TotalBytes != denied.TotalBytes ||
+		dangling.CrossBackend != denied.CrossBackend {
+		t.Errorf("a denied reference is distinguishable from a dangling one:\n denied:   %+v\n dangling: %+v",
+			denied, dangling)
+	}
+}
+
+// TestPlanAttachmentCopy_DeniedParentSinksTheVariantRef is the one-level-down
+// case, mirroring TestPlanAttachmentCopy_RefToVariantWithForeignParent: a
+// reference naming a VARIANT whose original the caller may not see cannot
+// smuggle that original in as its clone root.
+func TestPlanAttachmentCopy_DeniedParentSinksTheVariantRef(t *testing.T) {
+	f := newPlanFixture(t)
+	orig := f.attach(t, f.wsA, "shot.png", 1000)
+	thumb := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 10)
+
+	// Everything is visible EXCEPT the original.
+	req := withAuthorizer(f.req(imageRef(thumb.ID), nil), func(a models.Attachment) (bool, error) {
+		return a.ID != orig.ID, nil
+	})
+	plan := f.plan(t, req)
+
+	if len(plan.Rows) != 0 {
+		t.Fatalf("planned %v; a variant whose parent is denied must clone nothing", sourceIDs(plan))
+	}
+	if len(plan.UnresolvableRefs) != 1 || plan.UnresolvableRefs[0] != thumb.ID {
+		t.Errorf("UnresolvableRefs = %v, want the variant reference", plan.UnresolvableRefs)
+	}
+}
+
+// TestPlanAttachmentCopy_DeniedVariantDropsOnlyItself is the other
+// direction, and the reason variants are authorized individually rather
+// than inherited from an authorized root: a derived row that (through the
+// malformed item_id data PLAN-2397 repairs) belongs somewhere the caller
+// cannot see drops out on its own, without taking the legitimate original
+// with it.
+func TestPlanAttachmentCopy_DeniedVariantDropsOnlyItself(t *testing.T) {
+	f := newPlanFixture(t)
+	orig := f.attach(t, f.wsA, "shot.png", 1000)
+	sm := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 10)
+	md := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbMd, 20)
+
+	req := withAuthorizer(f.req(imageRef(orig.ID), nil), func(a models.Attachment) (bool, error) {
+		return a.ID != md.ID, nil
+	})
+	plan := f.plan(t, req)
+
+	assertSourceSet(t, plan, orig.ID, sm.ID)
+	if plan.TotalBytes != 1010 {
+		t.Errorf("TotalBytes = %d, want 1010 — the denied variant's bytes must not be counted", plan.TotalBytes)
+	}
+	if len(plan.UnresolvableRefs) != 0 {
+		t.Errorf("UnresolvableRefs = %v, want none — the REFERENCE resolved fine", plan.UnresolvableRefs)
+	}
+}
+
+// TestPlanAttachmentCopy_AuthorizerErrorIsFatal: a failed membership lookup
+// must not read as "you may not see this". Silently denying would turn a
+// transient database error into a copy that quietly drops the user's
+// images.
+func TestPlanAttachmentCopy_AuthorizerErrorIsFatal(t *testing.T) {
+	f := newPlanFixture(t)
+	a := f.attach(t, f.wsA, "shot.png", 10)
+
+	req := withAuthorizer(f.req(imageRef(a.ID), nil), func(models.Attachment) (bool, error) {
+		return false, fmt.Errorf("membership lookup exploded")
+	})
+	if _, err := f.s.PlanAttachmentCopy(req); err == nil {
+		t.Fatal("PlanAttachmentCopy swallowed the authorizer's error")
+	}
+}
+
+// TestPlanAttachmentCopy_AuthorizerSeesEveryClonedRow pins the coverage
+// claim itself: every row the plan emits was offered to the authorizer.
+// The gate is only worth what it is asked about.
+func TestPlanAttachmentCopy_AuthorizerSeesEveryClonedRow(t *testing.T) {
+	f := newPlanFixture(t)
+	orig := f.attach(t, f.wsA, "shot.png", 1000)
+	sm := f.variant(t, f.wsA, orig, models.AttachmentVariantThumbSm, 10)
+	other := f.attach(t, f.wsA, "spec.pdf", 50)
+
+	seen := map[string]bool{}
+	req := withAuthorizer(f.req(imageRef(sm.ID)+fileRef(other.ID), nil), func(a models.Attachment) (bool, error) {
+		seen[a.ID] = true
+		return true, nil
+	})
+	plan := f.plan(t, req)
+
+	for _, row := range plan.Rows {
+		if !seen[row.SourceID] {
+			t.Errorf("row %s was cloned without ever being authorized", row.SourceID)
+		}
+	}
+	// Including the PARENT pulled in by the variant reference, which is not
+	// itself a reference the caller wrote.
+	if !seen[orig.ID] {
+		t.Error("the variant's parent was adopted as a clone root without being authorized")
+	}
+}
+
+func withAuthorizer(req AttachmentCopyRequest, auth AttachmentAuthorizer) AttachmentCopyRequest {
+	req.Authorize = auth
+	return req
+}
+
+func denyAll(models.Attachment) (bool, error) { return false, nil }

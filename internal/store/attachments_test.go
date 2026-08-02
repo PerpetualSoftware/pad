@@ -325,6 +325,268 @@ func TestWorkspaceAttachments_SurfacesSoftDeletedParents(t *testing.T) {
 	}
 }
 
+// TestWorkspaceAttachments_ForeignParentYieldsNullMetadata pins
+// TASK-2399 (PLAN-2391 DR-3): an attachment whose item_id points at
+// an item in ANOTHER workspace must not borrow that item's title,
+// slug, or collection through the LEFT JOINs.
+//
+// The workspace predicate lives in the JOIN's ON clause, not in
+// WHERE. That distinction is the whole point of this test: in WHERE
+// the LEFT JOIN degenerates into an inner join and the malformed row
+// would vanish from the listing entirely — hiding a row that still
+// consumes quota and that the PLAN-2397 repair needs to be able to
+// see. In ON, the row survives with NULL metadata.
+//
+// Count and result queries must agree — a restricted caller's total
+// must match the rows they actually get back.
+func TestWorkspaceAttachments_ForeignParentYieldsNullMetadata(t *testing.T) {
+	s := testStore(t)
+
+	wsA, wsB := newID(), newID()
+	collA, collB := newID(), newID()
+	itemA, itemB := newID(), newID()
+	ts := time.Now().UTC().Format(time.RFC3339)
+
+	for _, w := range []struct{ id, slug string }{{wsA, "ws-a"}, {wsB, "ws-b"}} {
+		if _, err := s.db.Exec(s.q(`INSERT INTO workspaces (id, slug, name, settings, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)`),
+			w.id, w.slug, w.slug, "{}", ts, ts); err != nil {
+			t.Fatalf("insert workspace %s: %v", w.slug, err)
+		}
+	}
+	for _, c := range []struct{ id, ws, slug, name string }{
+		{collA, wsA, "tasks", "Tasks"},
+		{collB, wsB, "secrets", "Secrets"},
+	} {
+		if _, err := s.db.Exec(s.q(`INSERT INTO collections (id, workspace_id, name, slug, schema, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`),
+			c.id, c.ws, c.name, c.slug, `{"fields":[]}`, ts, ts); err != nil {
+			t.Fatalf("insert collection %s: %v", c.slug, err)
+		}
+	}
+	for _, it := range []struct{ id, ws, coll, title, slug string }{
+		{itemA, wsA, collA, "Local Task", "local-task"},
+		{itemB, wsB, collB, "Foreign Secret", "foreign-secret"},
+	} {
+		if _, err := s.db.Exec(s.q(`INSERT INTO items (id, workspace_id, collection_id, title, slug, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`),
+			it.id, it.ws, it.coll, it.title, it.slug, ts, ts); err != nil {
+			t.Fatalf("insert item %s: %v", it.slug, err)
+		}
+	}
+
+	// Two attachments in workspace A: one well-formed, one whose
+	// item_id points at workspace B's item (the malformed row the
+	// upload invariant in TASK-2400 stops from being created, and
+	// that the PLAN-2397 repair has to be able to find).
+	mkAttach := func(itemID *string, filename string) string {
+		t.Helper()
+		a := &models.Attachment{
+			WorkspaceID: wsA,
+			ItemID:      itemID,
+			UploadedBy:  "system",
+			StorageKey:  "fs:" + newID(),
+			ContentHash: newID(),
+			MimeType:    "image/png",
+			SizeBytes:   100,
+			Filename:    filename,
+		}
+		if err := s.CreateAttachment(a); err != nil {
+			t.Fatalf("CreateAttachment(%s): %v", filename, err)
+		}
+		return a.ID
+	}
+	mkAttach(&itemA, "local.png")
+	mkAttach(&itemB, "malformed.png")
+
+	byName := func(rows []AttachmentListItem) map[string]AttachmentListItem {
+		m := make(map[string]AttachmentListItem, len(rows))
+		for _, r := range rows {
+			m[r.Filename] = r
+		}
+		return m
+	}
+
+	// 1. Full-access viewer sees BOTH rows — the malformed one must
+	//    not be filtered out by the workspace-scoped join.
+	rows, total, err := s.WorkspaceAttachments(wsA, AttachmentListFilters{})
+	if err != nil {
+		t.Fatalf("admin list: %v", err)
+	}
+	if total != 2 || len(rows) != 2 {
+		t.Fatalf("admin: total=%d rows=%d, want 2/2 (foreign-parent row must still list)", total, len(rows))
+	}
+
+	got := byName(rows)
+	local, ok := got["local.png"]
+	if !ok {
+		t.Fatalf("admin: local.png missing from %v", got)
+	}
+	if local.ItemTitle == nil || *local.ItemTitle != "Local Task" {
+		t.Errorf("local row: item_title=%v, want Local Task", local.ItemTitle)
+	}
+	if local.CollectionSlug == nil || *local.CollectionSlug != "tasks" {
+		t.Errorf("local row: collection_slug=%v, want tasks", local.CollectionSlug)
+	}
+
+	bad, ok := got["malformed.png"]
+	if !ok {
+		t.Fatalf("admin: malformed.png missing — the workspace predicate must be in ON, not WHERE")
+	}
+	if bad.ItemTitle != nil {
+		t.Errorf("foreign-parent row: item_title=%q, want nil (leaked another workspace's title)", *bad.ItemTitle)
+	}
+	if bad.ItemSlug != nil {
+		t.Errorf("foreign-parent row: item_slug=%q, want nil", *bad.ItemSlug)
+	}
+	if bad.CollectionSlug != nil {
+		t.Errorf("foreign-parent row: collection_slug=%q, want nil", *bad.CollectionSlug)
+	}
+	if bad.ItemDeleted {
+		t.Errorf("foreign-parent row: item_deleted=true, want false")
+	}
+	// The raw (malformed) association is still reported so the
+	// repair in PLAN-2397 can act on it.
+	if bad.ItemID == nil || *bad.ItemID != itemB {
+		t.Errorf("foreign-parent row: item_id=%v, want %s (raw value must survive for repair)", bad.ItemID, itemB)
+	}
+
+	// 2. A restricted caller scoped to workspace A's collection sees
+	//    only the well-formed row — the foreign parent contributes no
+	//    collection_id, so it fails the visibility predicate. Count
+	//    and rows must agree (they're separate queries).
+	rows, total, err = s.WorkspaceAttachments(wsA, AttachmentListFilters{
+		Restricted:        true,
+		FullCollectionIDs: []string{collA},
+	})
+	if err != nil {
+		t.Fatalf("restricted-collA list: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("restricted-collA: total=%d rows=%d, want 1/1", total, len(rows))
+	}
+	if rows[0].Filename != "local.png" {
+		t.Errorf("restricted-collA: filename=%q, want local.png", rows[0].Filename)
+	}
+
+	// 3. Naming the FOREIGN collection must not surface the malformed
+	//    row either — the collection columns are reached through the
+	//    scoped item join, so there is nothing to match.
+	rows, total, err = s.WorkspaceAttachments(wsA, AttachmentListFilters{
+		Restricted:        true,
+		FullCollectionIDs: []string{collB},
+	})
+	if err != nil {
+		t.Fatalf("restricted-collB list: %v", err)
+	}
+	if total != 0 || len(rows) != 0 {
+		t.Errorf("restricted-collB: total=%d rows=%d, want 0/0", total, len(rows))
+	}
+
+	// 4. The CollectionID filter goes through the same scoped join.
+	rows, total, err = s.WorkspaceAttachments(wsA, AttachmentListFilters{CollectionID: collB})
+	if err != nil {
+		t.Fatalf("collection-filter list: %v", err)
+	}
+	if total != 0 || len(rows) != 0 {
+		t.Errorf("collection-filter (foreign collection): total=%d rows=%d, want 0/0", total, len(rows))
+	}
+
+	// 5. Count/result consistency for an item-grant caller. The grant
+	//    predicate matches on a.item_id directly, so a grant naming
+	//    the foreign item still selects the malformed row — but the
+	//    two queries must at least agree with each other. Scoping the
+	//    grant LOOKUP by workspace is DR-5 (a separate task); this
+	//    only pins that the count doesn't diverge from the rows.
+	rows, total, err = s.WorkspaceAttachments(wsA, AttachmentListFilters{
+		Restricted:     true,
+		GrantedItemIDs: []string{itemB},
+	})
+	if err != nil {
+		t.Fatalf("item-grant list: %v", err)
+	}
+	if total != len(rows) {
+		t.Errorf("item-grant: total=%d but got %d rows — count and result queries diverged", total, len(rows))
+	}
+	for _, r := range rows {
+		if r.ItemTitle != nil {
+			t.Errorf("item-grant: foreign-parent row leaked item_title=%q", *r.ItemTitle)
+		}
+	}
+}
+
+// TestWorkspaceAttachments_ForeignCollectionYieldsNullCollectionMetadata
+// covers the second hop of the same leak (TASK-2399, found in review):
+// items.collection_id has no composite workspace foreign key
+// (migrations/005_collections.sql), so a local item can reference a
+// collection in another workspace. Reaching collections through the
+// now workspace-scoped item join is not enough on its own — the
+// collections join needs its own workspace predicate, or the listing
+// renders a foreign collection's slug.
+//
+// Again the predicate belongs in ON: the row must still list, with
+// only the collection columns nulled.
+func TestWorkspaceAttachments_ForeignCollectionYieldsNullCollectionMetadata(t *testing.T) {
+	s := testStore(t)
+
+	wsA, wsB := newID(), newID()
+	collA, collB := newID(), newID()
+	itemA := newID()
+	ts := time.Now().UTC().Format(time.RFC3339)
+
+	for _, w := range []struct{ id, slug string }{{wsA, "ws-a"}, {wsB, "ws-b"}} {
+		if _, err := s.db.Exec(s.q(`INSERT INTO workspaces (id, slug, name, settings, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?)`),
+			w.id, w.slug, w.slug, "{}", ts, ts); err != nil {
+			t.Fatalf("insert workspace %s: %v", w.slug, err)
+		}
+	}
+	for _, c := range []struct{ id, ws, slug, name string }{
+		{collA, wsA, "tasks", "Tasks"},
+		{collB, wsB, "secrets", "Secrets"},
+	} {
+		if _, err := s.db.Exec(s.q(`INSERT INTO collections (id, workspace_id, name, slug, schema, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`),
+			c.id, c.ws, c.name, c.slug, `{"fields":[]}`, ts, ts); err != nil {
+			t.Fatalf("insert collection %s: %v", c.slug, err)
+		}
+	}
+	// A workspace-A item pointing at workspace B's collection.
+	if _, err := s.db.Exec(s.q(`INSERT INTO items (id, workspace_id, collection_id, title, slug, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`),
+		itemA, wsA, collB, "Local Task", "local-task", ts, ts); err != nil {
+		t.Fatalf("insert item: %v", err)
+	}
+	if err := s.CreateAttachment(&models.Attachment{
+		WorkspaceID: wsA,
+		ItemID:      &itemA,
+		UploadedBy:  "system",
+		StorageKey:  "fs:" + newID(),
+		ContentHash: newID(),
+		MimeType:    "image/png",
+		SizeBytes:   100,
+		Filename:    "cross-coll.png",
+	}); err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+
+	rows, total, err := s.WorkspaceAttachments(wsA, AttachmentListFilters{})
+	if err != nil {
+		t.Fatalf("admin list: %v", err)
+	}
+	if total != 1 || len(rows) != 1 {
+		t.Fatalf("admin: total=%d rows=%d, want 1/1 (the row must still list)", total, len(rows))
+	}
+	// The item itself is local, so its metadata is legitimate.
+	if rows[0].ItemTitle == nil || *rows[0].ItemTitle != "Local Task" {
+		t.Errorf("item_title=%v, want Local Task (the item is in this workspace)", rows[0].ItemTitle)
+	}
+	// The collection is not.
+	if rows[0].CollectionSlug != nil {
+		t.Errorf("collection_slug=%q, want nil (leaked another workspace's collection)", *rows[0].CollectionSlug)
+	}
+}
+
 // TestWorkspaceAttachments_CategoryFilters covers the document/text/
 // archive/other filter buckets per Codex P2 from PR #303 round 1:
 // the earlier prefix-only mapping silently passed those filters

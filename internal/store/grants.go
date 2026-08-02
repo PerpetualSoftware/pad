@@ -288,11 +288,22 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 	}
 
 	// 2. Item-level grant?
+	//
+	// Scoped by workspace_id (PLAN-2391 DR-5). The grant rows already carry
+	// the workspace they were minted in (CreateItemGrant, and the same
+	// scoping listUserItemGrants uses), and every caller passes the
+	// workspace the item was resolved in — so this narrows nothing
+	// legitimate. What it closes is a caller handing us an itemID from a
+	// FOREIGN workspace alongside the request's own workspaceID: without
+	// the predicate, that foreign item's grant resolved and answered for
+	// the wrong workspace. That is the shape of the delete escalation
+	// PLAN-2382 fixed at the handler (internal/server/handlers_storage.go);
+	// this closes it at the lookup so the next caller need not remember.
 	if itemID != "" {
 		var perm string
 		err := s.db.QueryRow(s.q(
-			"SELECT permission FROM item_grants WHERE item_id = ? AND user_id = ?"),
-			itemID, userID).Scan(&perm)
+			"SELECT permission FROM item_grants WHERE workspace_id = ? AND item_id = ? AND user_id = ?"),
+			workspaceID, itemID, userID).Scan(&perm)
 		if err == nil {
 			return perm, nil
 		}
@@ -302,11 +313,16 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 	}
 
 	// 3. Collection-level grant?
+	//
+	// Workspace-scoped for the same reason as the item grant above — the
+	// defect and its safety argument are identical, so the two are fixed
+	// together rather than leaving a second unscoped lookup three lines
+	// below the one DR-5 names.
 	if collectionID != "" {
 		var perm string
 		err := s.db.QueryRow(s.q(
-			"SELECT permission FROM collection_grants WHERE collection_id = ? AND user_id = ?"),
-			collectionID, userID).Scan(&perm)
+			"SELECT permission FROM collection_grants WHERE workspace_id = ? AND collection_id = ? AND user_id = ?"),
+			workspaceID, collectionID, userID).Scan(&perm)
 		if err == nil {
 			return perm, nil
 		}

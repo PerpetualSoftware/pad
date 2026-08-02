@@ -11,12 +11,15 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // testServerWithAttachments returns a fresh test server with the
@@ -128,17 +131,37 @@ func TestUpload_HappyPathPNG(t *testing.T) {
 // non-empty, rides in the ?item_id query string so the handler authorizes
 // via the item's grant chain (BUG-1661).
 func uploadAsGuest(srv *Server, wsID, itemID string, guest *models.User, body []byte) *httptest.ResponseRecorder {
+	return uploadAsGuestChannels(srv, wsID, itemID, "", guest, body)
+}
+
+// uploadAsGuestChannels is uploadAsGuest with independent control over the
+// two item_id input channels: queryItemID rides the query string (the web
+// client's shape) and formItemID rides the multipart form (the CLI's).
+// Either, both, or neither may be empty.
+func uploadAsGuestChannels(srv *Server, wsID, queryItemID, formItemID string, guest *models.User, body []byte) *httptest.ResponseRecorder {
+	var queryIDs, formIDs []string
+	if queryItemID != "" {
+		queryIDs = []string{queryItemID}
+	}
+	if formItemID != "" {
+		formIDs = []string{formItemID}
+	}
+	return uploadAsGuestRepeated(srv, wsID, queryIDs, formIDs, guest, body)
+}
+
+// uploadAsGuestRepeated is uploadAsGuestChannels with an arbitrary number of
+// item_id values on each channel.
+func uploadAsGuestRepeated(srv *Server, wsID string, queryIDs, formIDs []string, guest *models.User, body []byte) *httptest.ResponseRecorder {
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
+	for _, id := range formIDs {
+		mw.WriteField("item_id", id)
+	}
 	part, _ := mw.CreateFormFile("file", "shot.png")
 	part.Write(body)
 	mw.Close()
 
-	path := "/api/v1/workspaces/" + wsID + "/attachments"
-	if itemID != "" {
-		path += "?item_id=" + itemID
-	}
-	req := httptest.NewRequest("POST", path, &buf)
+	req := httptest.NewRequest("POST", uploadPathWithItemIDs("/api/v1/workspaces/"+wsID+"/attachments", queryIDs), &buf)
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 	req.RemoteAddr = "127.0.0.1:1234"
 
@@ -151,6 +174,19 @@ func uploadAsGuest(srv *Server, wsID, itemID string, guest *models.User, body []
 	rr := httptest.NewRecorder()
 	srv.handleUploadAttachment(rr, req)
 	return rr
+}
+
+// uploadPathWithItemIDs appends any number of item_id query parameters.
+func uploadPathWithItemIDs(path string, ids []string) string {
+	for i, id := range ids {
+		if i == 0 {
+			path += "?"
+		} else {
+			path += "&"
+		}
+		path += "item_id=" + url.QueryEscape(id)
+	}
+	return path
 }
 
 // TestUpload_GrantBasedEditorCanAttach covers BUG-1661: a guest holding an
@@ -207,6 +243,440 @@ func TestUpload_GrantBasedEditorCanAttach(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("free-floating guest upload: status = %d, want 403; body = %s", rr.Code, rr.Body.String())
 	}
+
+	// The regression PLAN-2391 DR-2 exists for: the CLI sends item_id in
+	// the multipart FORM only. The no-item editor gate used to fire before
+	// the body was parsed, so this guest was 403'd before the association
+	// that authorizes them was ever read.
+	rr = uploadAsGuestChannels(srv, ws.ID, "", item.ID, guest, realPNG())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("form-only granted upload: status = %d, want 201; body = %s", rr.Code, rr.Body.String())
+	}
+	if got := attachmentItemID(t, srv, uploadedAttachmentID(t, rr)); got != item.ID {
+		t.Errorf("form-only upload stored item_id = %q, want %q", got, item.ID)
+	}
+
+	// Both channels, agreeing (the web client's shape).
+	rr = uploadAsGuestChannels(srv, ws.ID, item.ID, item.ID, guest, realPNG())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("both-channel granted upload: status = %d, want 201; body = %s", rr.Code, rr.Body.String())
+	}
+
+	// An item this guest holds NO grant on answers 404 — the same answer an
+	// item_id that doesn't exist gets, so the status split can't be used as
+	// an existence oracle for items the caller can't see.
+	ungranted, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title: "Not granted", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	for _, tc := range []struct{ name, query, form string }{
+		{"query channel", ungranted.ID, ""},
+		{"form channel", "", ungranted.ID},
+	} {
+		rr = uploadAsGuestChannels(srv, ws.ID, tc.query, tc.form, guest, realPNG())
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("ungranted item upload (%s): status = %d, want 404; body = %s",
+				tc.name, rr.Code, rr.Body.String())
+		}
+	}
+
+	// Pairing a granted id with a probe id must not turn the conflict
+	// rejection into an existence oracle: a hidden item and a nonexistent
+	// one both answer 404, never 400.
+	for _, tc := range []struct {
+		name  string
+		probe string
+	}{
+		{"hidden item", ungranted.ID},
+		{"nonexistent item", "no-such-item"},
+	} {
+		rr = uploadAsGuestRepeated(srv, ws.ID, nil, []string{item.ID, tc.probe}, guest, realPNG())
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("granted id + %s: status = %d, want 404; body = %s",
+				tc.name, rr.Code, rr.Body.String())
+		}
+	}
+}
+
+// TestUpload_RejectsTooManyItemIDValues pins the bound on per-channel
+// item_id values. Exact-string dedup can't bound the ResolveItem lookups on
+// its own — TASK-7, task-7 and TASK-0007 are distinct strings that resolve
+// to the same item — so the count is capped outright.
+func TestUpload_RejectsTooManyItemIDValues(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	slug, item := uploadItemFixture(t, srv, "Flood")
+
+	ids := make([]string, maxUploadItemIDValues+1)
+	for i := range ids {
+		ids[i] = item.ID
+	}
+
+	rr := uploadRepeatedItemIDs(srv, slug, ids, nil, realPNG())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("flooded query item_id: status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	rr = uploadRepeatedItemIDs(srv, slug, nil, ids, realPNG())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("flooded form item_id: status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+
+	// The cap itself is still accepted.
+	rr = uploadRepeatedItemIDs(srv, slug, nil, ids[:maxUploadItemIDValues], realPNG())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("at-cap form item_id: status = %d, want 201; body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+// uploadedAttachmentID pulls the new attachment's id out of a 201 upload
+// response body.
+func uploadedAttachmentID(t *testing.T, rr *httptest.ResponseRecorder) string {
+	t.Helper()
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode upload response: %v body=%s", err, rr.Body.String())
+	}
+	if resp.ID == "" {
+		t.Fatalf("upload response missing id: %s", rr.Body.String())
+	}
+	return resp.ID
+}
+
+// attachmentItemID reads back the persisted item_id for an attachment,
+// returning "" for a NULL association.
+func attachmentItemID(t *testing.T, srv *Server, attachmentID string) string {
+	t.Helper()
+	att, err := srv.store.GetAttachment(attachmentID)
+	if err != nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+	if att == nil {
+		t.Fatalf("attachment %s not found", attachmentID)
+	}
+	if att.ItemID == nil {
+		return ""
+	}
+	return *att.ItemID
+}
+
+// uploadItemFixture creates a workspace + collection + item for the
+// item_id-invariant tests, returning the workspace slug and the item.
+func uploadItemFixture(t *testing.T, srv *Server, wsName string) (string, *models.Item) {
+	t.Helper()
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: wsName})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Tasks", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	item, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title: "Target", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	return ws.Slug, item
+}
+
+// uploadChannels drives the real route (no users exist in these tests, so
+// RequireWorkspaceAccess grants implicit owner) with independent control
+// over the query-string and multipart-form item_id channels.
+func uploadChannels(srv *Server, slug, queryItemID, formItemID string, body []byte) *httptest.ResponseRecorder {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	if formItemID != "" {
+		mw.WriteField("item_id", formItemID)
+	}
+	part, _ := mw.CreateFormFile("file", "shot.png")
+	part.Write(body)
+	mw.Close()
+
+	path := "/api/v1/workspaces/" + slug + "/attachments"
+	if queryItemID != "" {
+		path += "?item_id=" + queryItemID
+	}
+	req := httptest.NewRequest("POST", path, &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	return rr
+}
+
+// TestUpload_ItemIDStoredAsCanonicalUUID covers PLAN-2391 DR-2: ResolveItem
+// accepts a UUID, a ref, or a slug, so the caller's spelling must never be
+// what lands in attachments.item_id — the resolved UUID must.
+func TestUpload_ItemIDStoredAsCanonicalUUID(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	slug, item := uploadItemFixture(t, srv, "Canonical")
+
+	cases := []struct {
+		name        string
+		query, form string
+	}{
+		{"query slug", item.Slug, ""},
+		{"form slug", "", item.Slug},
+		{"different spellings, same item", item.Slug, item.ID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := uploadChannels(srv, slug, tc.query, tc.form, realPNG())
+			if rr.Code != http.StatusCreated {
+				t.Fatalf("status = %d, want 201; body = %s", rr.Code, rr.Body.String())
+			}
+			if got := attachmentItemID(t, srv, uploadedAttachmentID(t, rr)); got != item.ID {
+				t.Errorf("stored item_id = %q, want canonical %q", got, item.ID)
+			}
+		})
+	}
+}
+
+// TestUpload_RejectsUnresolvableItemID pins the status contract: an item_id
+// that does not resolve in the request workspace is a 404 on either channel
+// — including a well-formed UUID belonging to another workspace, which is
+// exactly the malformed cross-workspace row BUG-2387 leaks through.
+func TestUpload_RejectsUnresolvableItemID(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	slug, _ := uploadItemFixture(t, srv, "Home")
+	_, foreign := uploadItemFixture(t, srv, "Foreign")
+
+	cases := []struct {
+		name        string
+		query, form string
+	}{
+		{"query garbage", "no-such-item", ""},
+		{"form garbage", "", "no-such-item"},
+		{"query cross-workspace uuid", foreign.ID, ""},
+		{"form cross-workspace uuid", "", foreign.ID},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := countAttachments(t, srv, slug)
+			rr := uploadChannels(srv, slug, tc.query, tc.form, realPNG())
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404; body = %s", rr.Code, rr.Body.String())
+			}
+			if after := countAttachments(t, srv, slug); after != before {
+				t.Errorf("attachment rows = %d, want unchanged at %d", after, before)
+			}
+		})
+	}
+}
+
+// TestUpload_HiddenAndMissingItemsAreIndistinguishable pins the existence
+// oracle closed. resolveUploadItemID visibility-gates each resolved item
+// BEFORE comparing channels, so a caller cannot use the 400-vs-404 split to
+// probe for items they cannot see. That ordering is only half the fix: the
+// two 404s must also be byte-identical, or the error code/message leaks the
+// same bit ("item_not_found" => it really is absent; "not_found" => it
+// exists but is hidden from you).
+//
+// Found by the Codex review of TASK-2400 after the ordering fix landed.
+func TestUpload_HiddenAndMissingItemsAreIndistinguishable(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Oracle"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace: %v", err)
+	}
+	col, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Tasks", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	hidden, err := srv.store.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title: "Hidden", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	// A guest with NO grant on the item: it exists, but is invisible to them.
+	guest, err := srv.store.CreateUser(models.UserCreate{
+		Email:    "prober@test.com",
+		Name:     "Prober",
+		Password: "correct-horse-battery-staple",
+		Role:     "member",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+
+	existsButHidden := uploadAsGuestChannels(srv, ws.ID, hidden.ID, "", guest, realPNG())
+	doesNotExist := uploadAsGuestChannels(srv, ws.ID, "00000000-0000-4000-8000-000000000000", "", guest, realPNG())
+
+	if existsButHidden.Code != http.StatusNotFound || doesNotExist.Code != http.StatusNotFound {
+		t.Fatalf("status: hidden = %d, missing = %d; want 404 for both",
+			existsButHidden.Code, doesNotExist.Code)
+	}
+	if existsButHidden.Body.String() != doesNotExist.Body.String() {
+		t.Errorf("404 bodies differ, leaking item existence:\n hidden  = %s\n missing = %s",
+			existsButHidden.Body.String(), doesNotExist.Body.String())
+	}
+}
+
+// TestUpload_RejectsConflictingItemIDChannels covers the other half of the
+// status contract: two channels that each resolve, but to DIFFERENT items,
+// is malformed input → 400. (Two spellings of the same item is not a
+// conflict — see TestUpload_ItemIDStoredAsCanonicalUUID.)
+func TestUpload_RejectsConflictingItemIDChannels(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	slug, item := uploadItemFixture(t, srv, "Conflict")
+	other, err := srv.store.CreateItem(item.WorkspaceID, item.CollectionID, models.ItemCreate{
+		Title: "Other", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	before := countAttachments(t, srv, slug)
+	rr := uploadChannels(srv, slug, item.ID, other.ID, realPNG())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	if after := countAttachments(t, srv, slug); after != before {
+		t.Errorf("attachment rows = %d, want unchanged at %d", after, before)
+	}
+}
+
+// TestUpload_RejectsRepeatedConflictingItemID covers the within-channel
+// case: net/http keeps only the first value of a repeated field, so a
+// first-wins read would authorize and associate item A while silently
+// discarding a second, different item_id the caller also sent. Every value
+// on a channel is resolved, and they must agree.
+func TestUpload_RejectsRepeatedConflictingItemID(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	slug, item := uploadItemFixture(t, srv, "Repeated")
+	other, err := srv.store.CreateItem(item.WorkspaceID, item.CollectionID, models.ItemCreate{
+		Title: "Other", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	// Repeated in the query string.
+	before := countAttachments(t, srv, slug)
+	rr := uploadRepeatedItemIDs(srv, slug, []string{item.ID, other.ID}, nil, realPNG())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("repeated query item_id: status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+
+	// Repeated in the multipart form.
+	rr = uploadRepeatedItemIDs(srv, slug, nil, []string{item.ID, other.ID}, realPNG())
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("repeated form item_id: status = %d, want 400; body = %s", rr.Code, rr.Body.String())
+	}
+	if after := countAttachments(t, srv, slug); after != before {
+		t.Errorf("attachment rows = %d, want unchanged at %d", after, before)
+	}
+
+	// Two spellings of the SAME item repeated on one channel is agreement,
+	// not conflict.
+	rr = uploadRepeatedItemIDs(srv, slug, nil, []string{item.ID, item.Slug}, realPNG())
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("repeated same-item form item_id: status = %d, want 201; body = %s", rr.Code, rr.Body.String())
+	}
+	if got := attachmentItemID(t, srv, uploadedAttachmentID(t, rr)); got != item.ID {
+		t.Errorf("stored item_id = %q, want %q", got, item.ID)
+	}
+}
+
+// uploadRepeatedItemIDs drives the upload route with an arbitrary number of
+// item_id values on each channel.
+func uploadRepeatedItemIDs(srv *Server, slug string, queryIDs, formIDs []string, body []byte) *httptest.ResponseRecorder {
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for _, id := range formIDs {
+		mw.WriteField("item_id", id)
+	}
+	part, _ := mw.CreateFormFile("file", "shot.png")
+	part.Write(body)
+	mw.Close()
+
+	req := httptest.NewRequest("POST", uploadPathWithItemIDs("/api/v1/workspaces/"+slug+"/attachments", queryIDs), &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.RemoteAddr = "127.0.0.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	return rr
+}
+
+// countAttachments counts live attachment rows in a workspace.
+func countAttachments(t *testing.T, srv *Server, slug string) int {
+	t.Helper()
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("GetWorkspaceBySlug(%q): %v", slug, err)
+	}
+	_, total, err := srv.store.WorkspaceAttachments(ws.ID, store.AttachmentListFilters{Limit: 200})
+	if err != nil {
+		t.Fatalf("WorkspaceAttachments: %v", err)
+	}
+	return total
+}
+
+// TestUpload_RemovesMultipartSpool covers the third leg of PLAN-2391 DR-2:
+// file.Close() closes the spooled multipart temp file but never removes it
+// — only r.MultipartForm.RemoveAll() does, and it has to run on EVERY exit
+// path, success included.
+//
+// This needs a deliberate fixture: net/http only spills to disk past
+// multipartParseMemory (1 MiB), so the tiny in-memory bodies the other
+// upload tests use would pass whether or not the leak is fixed. TMPDIR is
+// redirected at a dedicated dir so the assertion is "nothing at all is
+// left behind" rather than a fragile diff against the shared system temp.
+func TestUpload_RemovesMultipartSpool(t *testing.T) {
+	// Build the fixture BEFORE redirecting TMPDIR — t.TempDir() resolves
+	// against os.TempDir() at call time, so the store/blob dirs would
+	// otherwise land inside spoolDir and defeat the emptiness assertion.
+	srv, _ := testServerWithAttachments(t)
+	slug, item := uploadItemFixture(t, srv, "Spool")
+
+	spoolDir := t.TempDir()
+	t.Setenv("TMPDIR", spoolDir)
+
+	// > multipartParseMemory so net/http spills the part to disk. The
+	// MIME sniff only reads the first 512 bytes, so a real PNG header
+	// with a large zero tail is accepted.
+	big := append(realPNG(), make([]byte, 2*multipartParseMemory)...)
+
+	assertSpoolDirEmpty := func(t *testing.T, when string) {
+		t.Helper()
+		entries, err := os.ReadDir(spoolDir)
+		if err != nil {
+			t.Fatalf("ReadDir(%s): %v", spoolDir, err)
+		}
+		if len(entries) != 0 {
+			names := make([]string, 0, len(entries))
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			t.Fatalf("%s: temp dir not empty, leftover files: %v", when, names)
+		}
+	}
+
+	// Success path — the leak PLAN-2391 DR-2 notes exists here too.
+	rr := uploadChannels(srv, slug, item.ID, "", big)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("spooled upload: status = %d, want 201; body = %s", rr.Code, rr.Body.String())
+	}
+	assertSpoolDirEmpty(t, "after successful upload")
+
+	// Post-parse rejection path — the form item_id can only be judged
+	// after the body has already been spooled.
+	rr = uploadChannels(srv, slug, "", "no-such-item", big)
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("spooled rejection: status = %d, want 404; body = %s", rr.Code, rr.Body.String())
+	}
+	assertSpoolDirEmpty(t, "after post-parse rejection")
 }
 
 func TestUpload_RejectsExeAsPNG(t *testing.T) {

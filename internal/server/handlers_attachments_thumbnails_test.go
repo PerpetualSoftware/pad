@@ -18,6 +18,23 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
+// variantRow looks up a derived variant of parentID. GetAttachmentVariant is
+// workspace-scoped (PLAN-2391 DR-16), so the scope is read back off the
+// parent row rather than threaded through every call site — these tests care
+// about derivation behaviour, not about the scope itself, which
+// TestDownload_ForeignVariantIsNotServed pins directly.
+func variantRow(t *testing.T, srv *Server, parentID, variant string) (*models.Attachment, error) {
+	t.Helper()
+	parent, err := srv.store.GetAttachment(parentID)
+	if err != nil {
+		t.Fatalf("GetAttachment(%s): %v", parentID, err)
+	}
+	if parent == nil {
+		t.Fatalf("GetAttachment(%s): parent row missing", parentID)
+	}
+	return srv.store.GetAttachmentVariant(parent.WorkspaceID, parentID, variant)
+}
+
 // makeIntegrationPNG returns a real PNG large enough that both
 // thumb-sm (256px) and thumb-md (1024px) variants must scale down.
 // Filled with a stripe pattern so the encoder doesn't reduce it to a
@@ -81,7 +98,7 @@ func TestThumbnails_GeneratedOnPNGUpload(t *testing.T) {
 	srv.Stop()
 
 	for _, variant := range []string{models.AttachmentVariantThumbSm, models.AttachmentVariantThumbMd} {
-		row, err := srv.store.GetAttachmentVariant(resp.ID, variant)
+		row, err := variantRow(t, srv, resp.ID, variant)
 		if err != nil {
 			t.Fatalf("GetAttachmentVariant(%s): %v", variant, err)
 		}
@@ -140,7 +157,7 @@ func TestThumbnails_GeneratedOnJPEGUpload(t *testing.T) {
 	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
 
 	srv.Stop()
-	row, err := srv.store.GetAttachmentVariant(resp.ID, models.AttachmentVariantThumbSm)
+	row, err := variantRow(t, srv, resp.ID, models.AttachmentVariantThumbSm)
 	if err != nil || row == nil {
 		t.Fatalf("thumb-sm missing: row=%v err=%v", row, err)
 	}
@@ -167,7 +184,7 @@ func TestThumbnails_SkippedForSmallSourceImage(t *testing.T) {
 
 	srv.Stop()
 	for _, variant := range []string{models.AttachmentVariantThumbSm, models.AttachmentVariantThumbMd} {
-		if row, _ := srv.store.GetAttachmentVariant(resp.ID, variant); row != nil {
+		if row, _ := variantRow(t, srv, resp.ID, variant); row != nil {
 			t.Errorf("variant %q should be skipped for small source, got row %s", variant, row.ID)
 		}
 	}

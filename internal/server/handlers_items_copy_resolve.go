@@ -6,6 +6,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // authorizedCopy is everything a cross-workspace copy request resolves to
@@ -37,6 +38,13 @@ type authorizedCopy struct {
 
 	// targetCollection is the resolved destination collection.
 	targetCollection *models.Collection
+
+	// attachmentAuth is the per-attachment visibility check both consumers
+	// hand to the planner (TASK-2408). It lives HERE, on the shared
+	// resolution, for the same reason the ladder above does: the preflight
+	// and the copy must decide "which references are unresolvable" with one
+	// function, or the preview stops predicting the copy. Never nil.
+	attachmentAuth store.AttachmentAuthorizer
 
 	// actorID is who the copy is attributed to — see copyActorID. It is
 	// NOT the actor/source audit pair from actorFromRequest, which is a
@@ -210,6 +218,12 @@ func (s *Server) resolveAuthorizedCopy(w http.ResponseWriter, r *http.Request) (
 		return out, false
 	}
 	out.actorID = actorID
+
+	// Built against the SOURCE workspace: it authorizes the rows the
+	// planner resolves, and the planner resolves only source-workspace
+	// rows. Cheap to build (it queries nothing until called) so it is
+	// created unconditionally rather than lazily by each consumer.
+	out.attachmentAuth = s.attachmentCopyAuthorizer(r, sourceWorkspaceID)
 
 	return out, true
 }

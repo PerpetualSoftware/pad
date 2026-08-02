@@ -19,6 +19,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 
 	// Stdlib decoders for width/height probing on the formats Phase 1
 	// has to inspect server-side. WebP/AVIF/HEIC are not in the stdlib;
@@ -41,12 +42,109 @@ const defaultAttachmentMaxBytes = 25 << 20 // 25 MiB
 // the desired behavior for large uploads.
 const multipartParseMemory = 1 << 20 // 1 MiB
 
+// multipartValues reads a field's values from the parsed multipart form
+// ONLY. Unlike (*http.Request).FormValue it does not fall back to the
+// URL query string, which keeps the two item_id input channels distinct
+// so they can be resolved and cross-checked independently.
+func multipartValues(r *http.Request, key string) []string {
+	if r.MultipartForm == nil {
+		return nil
+	}
+	return r.MultipartForm.Value[key]
+}
+
+// maxUploadItemIDValues bounds how many item_id values one input channel
+// may carry. Every distinct value costs a ResolveItem lookup, and semantic
+// aliases of the same item (TASK-7 / task-7 / TASK-0007 all resolve alike)
+// defeat exact-string deduplication — so the count is capped rather than
+// relying on dedup to bound the work. No real client sends more than one.
+const maxUploadItemIDValues = 8
+
+// resolveUploadItemID resolves every distinct non-empty value a single
+// item_id input channel carried, and returns the one item they all denote.
+//
+// A channel can legitimately carry several spellings of the same item (a
+// UUID and a ref resolve identically), and net/http silently keeps only the
+// first of a repeated field — so rather than first-wins, every value is
+// resolved and they must agree. Returns (nil, true) when the channel
+// carried no value at all (absent and explicitly-empty are the same thing,
+// compared after TrimSpace); (nil, false) means a response was already
+// written and the caller must return.
+//
+// Each resolved item is visibility-gated HERE, before the values are
+// compared. That ordering matters: requireItemVisible writes a 404, so an
+// item the caller cannot see is indistinguishable from one that does not
+// exist. Comparing first would leak a hidden item's existence through the
+// 400-vs-404 split (send a visible id plus the id being probed: a conflict
+// means it exists, a 404 means it does not).
+func (s *Server) resolveUploadItemID(w http.ResponseWriter, r *http.Request, workspaceID string, raw []string) (*models.Item, bool) {
+	if len(raw) > maxUploadItemIDValues {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			fmt.Sprintf("At most %d item_id values are accepted", maxUploadItemIDValues))
+		return nil, false
+	}
+
+	var resolved *models.Item
+	seen := make(map[string]struct{}, len(raw))
+	for _, value := range raw {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, dup := seen[value]; dup {
+			continue
+		}
+		seen[value] = struct{}{}
+
+		item, err := s.store.ResolveItem(workspaceID, value)
+		if err != nil {
+			writeInternalError(w, err)
+			return nil, false
+		}
+		if item == nil {
+			// Deliberately identical to requireItemVisible's 404 below
+			// (server.go). A distinct code/message here would restore the
+			// existence oracle the visibility-before-compare ordering was
+			// added to close: "hidden" and "does not exist" must be
+			// indistinguishable to the caller.
+			writeError(w, http.StatusNotFound, "not_found", "Item not found")
+			return nil, false
+		}
+		if !s.requireItemVisible(w, r, workspaceID, item) {
+			return nil, false
+		}
+		if resolved == nil {
+			resolved = item
+			continue
+		}
+		if item.ID != resolved.ID {
+			writeError(w, http.StatusBadRequest, "item_id_conflict",
+				"Conflicting item_id values refer to different items")
+			return nil, false
+		}
+	}
+	return resolved, true
+}
+
+// requireUploadItemEdit applies the edit gate to an upload's resolved
+// parent item. Visibility was already established by resolveUploadItemID;
+// this adds the 403 for an item the caller can see but not edit.
+//
+// Note that requireEditPermission's editor/owner fast path does not consult
+// collection visibility on its own — the visibility gate ahead of it is what
+// stops a member with collection_access="specific" attaching to an item in a
+// collection hidden from them.
+func (s *Server) requireUploadItemEdit(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item) bool {
+	return s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID)
+}
+
 // handleUploadAttachment accepts a multipart upload and writes it into
 // the attachments table + the configured AttachmentStore.
 //
 // Flow:
-//  1. Auth: editor+ role on the workspace (already gated by the route's
-//     RequireWorkspaceAccess middleware; we additionally require editor).
+//  1. Auth: grant-aware edit permission on the associated item, or —
+//     for an upload with no item context — editor+ role on the workspace
+//     (on top of the route's RequireWorkspaceAccess middleware).
 //  2. Cap the body via MaxBytesReader to attachmentMaxBytes(s).
 //  3. Stream the multipart "file" part into a temp file, sha256ing as
 //     we go so we never hold the whole payload in RAM.
@@ -74,31 +172,28 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// editor, comment composer) gate their affordance on grant-aware edit
 	// permission, so a guest holding an item/collection edit grant via a
 	// share link — but no workspace editor role — must be able to attach
-	// (BUG-1661). When the caller supplies an ?item_id we authorize against
-	// that item's grant chain via requireEditPermission. Free-floating
-	// uploads (new-item creation, storage settings) carry no item context,
-	// so they keep the flat workspace editor-role gate.
+	// (BUG-1661). When the caller associates the upload with an item we
+	// authorize against that item's grant chain via requireEditPermission.
+	// Free-floating uploads (new-item creation, storage settings) carry no
+	// item context, so they keep the flat workspace editor-role gate.
 	//
-	// We read item_id from the query string here (before spooling the
-	// multipart body) so a denied upload trips early; the value is also
-	// re-read from the form below for association. A bogus/unresolvable
-	// item_id falls back to the editor-role check rather than leaking item
-	// existence.
-	if authItemID := strings.TrimSpace(r.URL.Query().Get("item_id")); authItemID != "" {
-		item, err := s.store.ResolveItem(workspaceID, authItemID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if item != nil {
-			if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
-				return
-			}
-		} else if !requireMinRole(w, r, "editor") {
-			return
-		}
-	} else if !requireMinRole(w, r, "editor") {
+	// item_id arrives on TWO channels: the query string (the web client
+	// sends both, web/src/lib/api/client.ts) and the multipart form (the
+	// CLI sends form-only, internal/cli/client.go). Only the query channel
+	// can be read before the body is spooled, so authorization is split:
+	// the query value is resolved and authorized here (cheap, so a doomed
+	// upload never spools), and the form value is resolved after parsing
+	// (see below). The no-item editor gate is DEFERRED until after parsing
+	// — firing it here would 403 a form-only item-grant guest before the
+	// association is even known (PLAN-2391 DR-2).
+	resolvedItem, ok := s.resolveUploadItemID(w, r, workspaceID, r.URL.Query()["item_id"])
+	if !ok {
 		return
+	}
+	if resolvedItem != nil {
+		if !s.requireUploadItemEdit(w, r, workspaceID, resolvedItem) {
+			return
+		}
 	}
 	// Attribution: prefer the logged-in user. On a fresh install (no
 	// users yet) RequireWorkspaceAccess grants implicit owner access
@@ -119,6 +214,19 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// is exceeded, which we surface as 413 below.
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(1<<16)) // +64KiB headroom for multipart envelope
 
+	// ParseMultipartForm spills anything past multipartParseMemory to a
+	// temp file under TMPDIR. file.Close() below closes the handle but
+	// does NOT remove that file — only RemoveAll does. Registered before
+	// the parse call (and nil-guarded) so it also covers the partial form
+	// a failed parse can leave behind, and so it runs on EVERY exit path
+	// including success (PLAN-2391 DR-2). Defers are LIFO, so this runs
+	// after the `defer file.Close()` registered below it.
+	defer func() {
+		if r.MultipartForm != nil {
+			_ = r.MultipartForm.RemoveAll()
+		}
+	}()
+
 	if err := r.ParseMultipartForm(multipartParseMemory); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
@@ -137,19 +245,57 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	}
 	defer file.Close()
 
-	// Optional ?item_id=<slug-or-id> associates the attachment with an
-	// item at upload time. The editor will normally upload first,
-	// receive the UUID, insert the markdown reference, and then PATCH
-	// the item — at which point the attachment can be associated via a
-	// follow-up call. For now the parameter is optional and stored
-	// verbatim if supplied.
-	itemID := strings.TrimSpace(r.URL.Query().Get("item_id"))
-	if itemID == "" {
-		itemID = strings.TrimSpace(r.FormValue("item_id"))
+	// Second item_id channel: the multipart form. Resolved in-workspace
+	// just like the query channel. Two raw strings can legitimately denote
+	// the SAME item (query "TASK-12", form "<uuid>"), so the comparison is
+	// on the resolved canonical IDs — not on the caller's spelling. Absent
+	// and explicitly-empty both mean "no value". Deliberately reads
+	// r.MultipartForm.Value rather than r.FormValue, which merges the query
+	// string back in and would collapse the two channels into one.
+	formItem, ok := s.resolveUploadItemID(w, r, workspaceID, multipartValues(r, "item_id"))
+	if !ok {
+		return
 	}
+	if formItem != nil {
+		switch {
+		case resolvedItem == nil:
+			// Form-only association (the CLI's shape): authorize through
+			// this item's grant chain now that we know what it is.
+			if !s.requireUploadItemEdit(w, r, workspaceID, formItem) {
+				return
+			}
+			resolvedItem = formItem
+		case formItem.ID != resolvedItem.ID:
+			writeError(w, http.StatusBadRequest, "item_id_conflict",
+				"Query and form item_id refer to different items")
+			return
+		}
+	}
+
+	// No item context at all → the flat workspace editor-role gate. This
+	// is the gate that used to fire before parsing; it can only run here,
+	// once both channels are known to be empty.
+	//
+	// Accepted cost of moving it (PLAN-2391 DR-2): a caller below editor
+	// now spools the body before being rejected here, where previously a
+	// free-floating viewer was turned away pre-parse. Bounded by
+	// attachmentMaxBytes (25 MiB default) and reachable only by an
+	// authenticated workspace member, so it is temp-disk/CPU pressure —
+	// never an attachment-write bypass, since no row and no blob are
+	// written on this path. The gate CANNOT move back: the form channel
+	// is unreadable until the body is parsed, and firing early is exactly
+	// the bug that 403'd form-only item-grant guests.
+	if resolvedItem == nil && !requireMinRole(w, r, "editor") {
+		return
+	}
+
+	// Persist the canonical UUID, never the caller's string — ResolveItem
+	// accepts a UUID, a ref, or a slug, and a ref stored in item_id is a
+	// malformed row (PLAN-2391 DR-2).
 	var itemIDPtr *string
-	if itemID != "" {
-		itemIDPtr = &itemID
+	if resolvedItem != nil {
+		canonicalItemID := resolvedItem.ID
+		itemIDPtr = &canonicalItemID
 	}
 
 	// Sanitize the filename: strip path components so a client can't
@@ -240,7 +386,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, fmt.Errorf("rewind upload temp for store.Put: %w", err))
 		return
 	}
-	store, err := s.attachments.Resolve(attachments.FSPrefix + ":" + hash)
+	blobStore, err := s.attachments.Resolve(attachments.FSPrefix + ":" + hash)
 	if err != nil {
 		writeInternalError(w, fmt.Errorf("resolve attachment store: %w", err))
 		return
@@ -254,7 +400,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// CreateAttachment call below (whether it succeeds or fails).
 	releaseInFlight := s.markUploadInFlight(hash)
 	defer releaseInFlight()
-	storageKey, err := store.Put(r.Context(), hash, entry.MIME, tmp)
+	storageKey, err := blobStore.Put(r.Context(), hash, entry.MIME, tmp)
 	if err != nil {
 		writeInternalError(w, fmt.Errorf("attachment store.Put: %w", err))
 		return
@@ -273,11 +419,32 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		Width:       width,
 		Height:      height,
 	}
-	if err := s.store.CreateAttachment(att); err != nil {
+	// CreateAttachmentForLiveItem, not CreateAttachment: the parent item was
+	// validated near the top of this handler, but everything since — spooling
+	// the body to a temp file, hashing it, probing dimensions, store.Put —
+	// is unbounded work, and item deletion commits in its own transaction.
+	// Without the re-check under a row lock inside the insert, an item
+	// archived during the upload window leaves a quota-counted live row bound
+	// to an archived parent whose bytes the read gate (DR-13) then refuses to
+	// serve. Same invariant, same helper, and for the same reason as the
+	// transform path (PLAN-2391 DR-14).
+	//
+	// Derivation is the deliberate exception and stays on the unlocked path —
+	// see the comment on thumbnailParentItemLive for that trade.
+	if err := s.store.CreateAttachmentForLiveItem(att); err != nil {
+		if errors.Is(err, store.ErrAttachmentParentItemGone) {
+			// The same 404 every other attachment denial writes. The caller
+			// must not be able to tell "your item was archived mid-upload"
+			// from "no such attachment", and the row would be unreadable
+			// under DR-13 regardless.
+			writeAttachmentNotFound(w)
+			return
+		}
 		// Note: the blob is now an orphan on disk. Orphan GC (TASK-886)
 		// will reclaim it past the grace period; we do NOT delete it
 		// here because the same hash may still be used by a concurrent
-		// upload that succeeded its DB insert.
+		// upload that succeeded its DB insert. The refusal above lands in
+		// the same shape — BUG-2406 tracks the rowless-blob reclaim.
 		writeInternalError(w, fmt.Errorf("create attachment row: %w", err))
 		return
 	}
@@ -347,9 +514,40 @@ func renderModeString(m attachments.RenderMode) string {
 	}
 }
 
+// writeAttachmentNotFound is the single denial writer for the blob read
+// path. Every authorization-dependent refusal — attachment missing, wrong
+// workspace, soft-deleted, foreign parent item, archived parent, parent not
+// visible to the caller — emits this exact response. Byte-identical bodies
+// are the point: a distinguishable error code or message would turn the
+// response into an existence oracle for rows and items the caller may not
+// see (the house rule TASK-2400 established).
+func writeAttachmentNotFound(w http.ResponseWriter) {
+	writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+}
+
 // handleGetAttachment streams an attachment back to the caller. Auth is
-// enforced by the route's RequireWorkspaceAccess middleware; we
-// additionally require viewer+ here.
+// enforced by the route's RequireWorkspaceAccess middleware; this handler
+// then authorizes per-attachment.
+//
+// Authorization (PLAN-2391 DR-10), in this exact order:
+//
+//  1. Load the attachment; 404 unless it is live and belongs to the
+//     request workspace.
+//  2. Item-bound rows: load the parent, verify the parent's workspace
+//     identity, then requireItemVisible. Item visibility IS blob-read
+//     permission — a guest holding an item or collection grant can fetch
+//     the bytes rendered inside the item they were shared. The handler
+//     used to open with a flat requireMinRole("viewer"), and roleLevel
+//     ("guest") is 0, so every grant-based guest was 403'd before any
+//     item-level check ran (BUG-2386) and inline images broke for them.
+//  3. Orphan (item_id IS NULL) rows keep the flat viewer+ gate — there is
+//     no item context to authorize against.
+//
+// The parent is loaded with GetItem, not GetItemIncludeDeleted (DR-13): a
+// soft-deleted parent 404s here. Archiving an item hides it, so its bytes
+// should not stay downloadable behind a URL. The DELETE path deliberately
+// diverges — it keeps GetItemIncludeDeleted so an owner can still reclaim
+// quota from an archived item's attachments.
 //
 // The handler:
 //   - Looks up the row by ID (TASK-871's UUID), refusing with 404 if it
@@ -373,9 +571,19 @@ func renderModeString(m attachments.RenderMode) string {
 //   - Sets a short Cache-Control: private, max-age=3600. Phase 3 will
 //     revisit for CDN caching.
 func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
-	if !requireMinRole(w, r, "viewer") {
-		return
-	}
+	// FIRST statement, before any lookup or gate. Every denial below is
+	// authorization-dependent, and an unlabelled 404 is heuristically
+	// cacheable BY URL — a CDN or browser could retain it and go on
+	// denying a caller who has since been granted access. writeError →
+	// writeJSON calls WriteHeader immediately, so a header set after the
+	// first denial path never reaches the wire. Overwritten with the
+	// positive directive only once authorization has succeeded.
+	//
+	// Scope note: middleware can reject before this handler ever runs
+	// (missing auth, no workspace access). Those denials are outside this
+	// header's coverage.
+	w.Header().Set("Cache-Control", "private, no-store")
+
 	if s.attachments == nil {
 		writeError(w, http.StatusServiceUnavailable, "attachments_disabled",
 			"Attachment storage is not configured on this server")
@@ -400,7 +608,77 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	// Cross-workspace defense: 404 (not 403) so an attacker can't
 	// distinguish "exists in another workspace" from "doesn't exist".
 	if att == nil || att.WorkspaceID != workspaceID || att.DeletedAt != nil {
-		writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+		writeAttachmentNotFound(w)
+		return
+	}
+
+	// Item-level authorization (PLAN-2391 DR-10). Runs BEFORE the variant
+	// lookup and before any byte access.
+	//
+	// includeArchived=false — DR-13. A soft-deleted parent reports Gone and
+	// the blob 404s. The delete path is the one caller that passes true.
+	item, parentOutcome, err := s.resolveAttachmentParentItem(att, false)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	switch parentOutcome {
+	case attachmentParentOK:
+		// checkItemVisible rather than requireItemVisible: same rule set
+		// (requireItemVisible is a thin wrapper over it), but this handler
+		// writes its own denial so that "no such attachment", "foreign
+		// parent", "archived parent", and "item not visible to you" are
+		// byte-identical responses. requireItemVisible's own 404 body says
+		// "Item not found", which would distinguish the visibility denial
+		// from the lookup miss and leak existence.
+		visible, vErr := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
+		if vErr != nil {
+			writeInternalError(w, vErr)
+			return
+		}
+		if !visible {
+			writeAttachmentNotFound(w)
+			return
+		}
+	case attachmentParentOrphan:
+		// Orphan attachments carry no item context to authorize against.
+		//
+		// Full-access only, matching the transform and DELETE paths
+		// (PLAN-2382 DR-4) — and ahead of the role check, for the reason
+		// those paths document: an orphan belongs to no collection, so
+		// collection visibility cannot gate it, and the storage LISTING
+		// already hides orphans from restricted members. Reading one must
+		// not confirm it exists to a member the listing hides it from.
+		// This gate was missing here while transform and DELETE both had
+		// it, so a restricted editor or viewer who guessed an orphan's
+		// UUID could download it.
+		restricted, rErr := s.attachmentCallerIsRestricted(r, workspaceID)
+		if rErr != nil {
+			writeInternalError(w, rErr)
+			return
+		}
+		if restricted {
+			writeAttachmentNotFound(w)
+			return
+		}
+		// Then the flat workspace viewer-role gate — same strength as
+		// before this handler grew per-attachment authorization, only the
+		// denial SHAPE changed.
+		//
+		// requireRole (the write-free predicate) rather than requireMinRole
+		// (which writes its own 403): the attachment row has already been
+		// loaded by this point, so a 403 here would mean "this id names a
+		// live orphan in this workspace" while a bad id answers 404. That
+		// split is an existence oracle for orphan UUIDs — one the old code
+		// didn't have only because its flat role gate ran BEFORE the
+		// lookup. Reordering the gate reintroduced it; routing the denial
+		// through the shared 404 writer closes it again.
+		if !requireRole(r, "viewer") {
+			writeAttachmentNotFound(w)
+			return
+		}
+	default: // Gone, Foreign
+		writeAttachmentNotFound(w)
 		return
 	}
 
@@ -416,7 +694,12 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 				"Unknown variant — supported: thumb-sm, thumb-md")
 			return
 		}
-		if derived, dErr := s.store.GetAttachmentVariant(att.ID, variant); dErr != nil {
+		// Workspace-scoped (DR-16). parent_id alone is not a trustworthy
+		// scope: a variant row in another workspace can carry this
+		// attachment's id as its parent, and serving that child after
+		// authorizing this parent would defeat the gate above. The scope
+		// lives in the store method so the derivation worker gets it too.
+		if derived, dErr := s.store.GetAttachmentVariant(workspaceID, att.ID, variant); dErr != nil {
 			writeInternalError(w, dErr)
 			return
 		} else if derived != nil {
@@ -449,6 +732,10 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 	// Headers come BEFORE ServeContent / io.Copy so they make it onto
 	// the wire even when the response is a 304 / 206.
 	w.Header().Set("Content-Type", att.MimeType)
+	// Authorization has succeeded — replace the no-store denial directive
+	// set at the top of the handler with the positive one. Known and
+	// accepted: this one-hour positive browser cache outlives a permission
+	// revocation (PLAN-2391 DR-10).
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 

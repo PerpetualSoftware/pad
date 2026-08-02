@@ -38,6 +38,9 @@ var thumbnailSpecs = []struct {
 //
 // Skip cases (logged but not failed):
 //   - Original row missing or already deleted (race with delete).
+//   - Parent ITEM soft-deleted, or item_id malformed so it resolves
+//     to nothing in this workspace (PLAN-2391 DR-14 — see the note
+//     at the check).
 //   - Source format not supported by the configured processor (e.g.
 //     pure-Go on a WebP upload — the original survives, the user
 //     just sees the original at native resolution).
@@ -64,6 +67,9 @@ func (s *Server) deriveThumbnails(parentID string) {
 		// Original was deleted between upload completion and our
 		// goroutine running. Nothing to do — the orphan blob (if any)
 		// will be cleaned up by orphan GC.
+		return
+	}
+	if !s.thumbnailParentItemLive(parent) {
 		return
 	}
 
@@ -99,7 +105,7 @@ func (s *Server) deriveThumbnails(parentID string) {
 			*parent.Width <= spec.MaxLong && *parent.Height <= spec.MaxLong {
 			continue
 		}
-		if existing, err := s.store.GetAttachmentVariant(parent.ID, spec.Variant); err == nil && existing != nil {
+		if existing, err := s.store.GetAttachmentVariant(parent.WorkspaceID, parent.ID, spec.Variant); err == nil && existing != nil {
 			continue
 		}
 
@@ -122,6 +128,74 @@ func (s *Server) deriveThumbnails(parentID string) {
 	// thumbnail bytes; the upload handler already invalidated when
 	// inserting the original, but thumbnail rows land later.
 	s.storageInfoCache.invalidate(parent.WorkspaceID)
+}
+
+// thumbnailParentItemLive reports whether it is worth deriving variants
+// for parent — i.e. whether parent is an orphan (no item at all) or is
+// bound to an item that is live and in parent's own workspace.
+//
+// Why derivation cares about the ITEM at all (PLAN-2391 DR-14). Each
+// derived row copies parent.ItemID, so a variant of an archived item's
+// attachment is quota-counted storage that nobody can ever read: DR-13
+// makes the blob path 404 for a soft-deleted parent item, so the bytes
+// are written, charged, and refused. The same holds for a malformed
+// item_id — the column carries no FK and no same-workspace constraint,
+// so a row can name an item in another workspace or no item at all
+// (that invariant is fixed at the source by TASK-2400 and repaired for
+// existing rows by PLAN-2397), and such a row is likewise unreadable.
+// Deriving for either is pure waste, so skip both.
+//
+// THE POST-CHECK WINDOW IS DELIBERATELY ACCEPTED — this is not an
+// oversight, please don't file it as a bug. The check is point-in-time:
+// item deletion commits in its own transaction (store.DeleteItem), and
+// everything between here and persistThumbnail's insert — the blob read,
+// decode, resize, encode, Put — is unbounded work. So an item archived
+// mid-flight can still get a variant row written against it.
+//
+// Transform (TASK-2402) closes its equivalent window with an item row
+// lock inside the insert (store.CreateAttachmentForLiveItem). Derivation
+// deliberately makes the OPPOSITE trade and does NOT use it: transform is
+// user-initiated and low-volume, whereas derivation is a background worker
+// that fans out from EVERY image upload, so an item lock on this path is
+// disproportionate to the harm. And the harm is small: what leaks through
+// the window is a thumbnail — a small derived file, unreadable under DR-13
+// for exactly as long as its item stays archived, and tombstoned by the
+// delete cascade along with its parent attachment. If profiling later shows
+// the lock is cheap here, tightening this is a follow-up, not a defect.
+// The invariant itself lives in resolveAttachmentParentItem, shared with the
+// blob read, transform and delete paths (includeArchived=false, so "live"
+// means exactly what the read path means by it). Only the REACTION is local:
+// this is background work with no HTTP response, so there is no 404 shape to
+// match — each malformed outcome gets its own WARN so it stays greppable ahead
+// of PLAN-2397's repair, which is the opposite of what the HTTP paths need.
+func (s *Server) thumbnailParentItemLive(parent *models.Attachment) bool {
+	item, outcome, err := s.resolveAttachmentParentItem(parent, false)
+	if err != nil {
+		slog.Warn("thumbnails: get parent item failed",
+			"attachment_id", parent.ID, "item_id", derefOrEmpty(parent.ItemID), "error", err)
+		return false
+	}
+	switch outcome {
+	case attachmentParentOrphan, attachmentParentOK:
+		return true
+	case attachmentParentForeign:
+		slog.Warn("thumbnails: skipped, parent item belongs to another workspace",
+			"attachment_id", parent.ID, "item_id", derefOrEmpty(parent.ItemID),
+			"attachment_workspace_id", parent.WorkspaceID, "item_workspace_id", item.WorkspaceID)
+		return false
+	default: // attachmentParentGone
+		slog.Warn("thumbnails: skipped, parent item is archived or unresolvable",
+			"attachment_id", parent.ID, "item_id", derefOrEmpty(parent.ItemID))
+		return false
+	}
+}
+
+// derefOrEmpty renders a nullable id for a log field.
+func derefOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // openOriginalForThumbnail resolves the parent row's storage key

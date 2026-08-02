@@ -49,6 +49,7 @@ func deleteAsUser(srv *Server, wsID, attachmentID string, user *models.User, rol
 type authzFixture struct {
 	wsID   string
 	itemID string
+	colID  string
 	attID  string
 	orphan string
 }
@@ -100,7 +101,7 @@ func newDeleteAuthzFixture(t *testing.T, srv *Server) authzFixture {
 		t.Fatalf("CreateAttachment orphan: %v", err)
 	}
 
-	return authzFixture{wsID: ws.ID, itemID: item.ID, attID: bound.ID, orphan: orphan.ID}
+	return authzFixture{wsID: ws.ID, itemID: item.ID, colID: col.ID, attID: bound.ID, orphan: orphan.ID}
 }
 
 func mkUser(t *testing.T, srv *Server, email string) *models.User {
@@ -273,5 +274,257 @@ func TestDeleteAttachment_OrphanStillRequiresEditorRole(t *testing.T) {
 	rr = deleteAsUser(srv, f.wsID, f.orphan, editor, "editor")
 	if rr.Code != http.StatusNoContent {
 		t.Fatalf("orphan delete by editor: status = %d, want 204; body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestDeleteAttachment_DenialBodiesAreByteIdentical pins the non-disclosure
+// invariant on the DELETE path at the level it actually has to hold: the
+// RESPONSE BODY, not just the status code.
+//
+// Every test above asserts 404 and stops there, which let a real oracle sit
+// in plain sight — invisible parents were routed through requireItemVisible,
+// whose body says "Item not found", while a missing or foreign attachment
+// said "Attachment not found". Same status, different bytes: enough to sort
+// "this id names an attachment on an item you can't see" from "this id names
+// nothing". The read and transform paths closed the same oracle class by
+// funnelling every denial through writeAttachmentNotFound; this path now
+// shares that writer, and this test is what keeps it shared.
+//
+// The four denials compared are the ones a prober can actually reach.
+func TestDeleteAttachment_DenialBodiesAreByteIdentical(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	f := newDeleteAuthzFixture(t, srv)
+
+	// An attachment in f.wsID whose item_id points into ANOTHER workspace.
+	otherWS, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "DenialForeign"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace foreign: %v", err)
+	}
+	otherCol, err := srv.store.CreateCollection(otherWS.ID, models.CollectionCreate{
+		Name: "Tasks", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection foreign: %v", err)
+	}
+	otherItem, err := srv.store.CreateItem(otherWS.ID, otherCol.ID, models.ItemCreate{
+		Title: "Foreign", Fields: `{}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateItem foreign: %v", err)
+	}
+	foreignParent := &models.Attachment{
+		WorkspaceID: f.wsID,
+		ItemID:      &otherItem.ID,
+		UploadedBy:  "system",
+		StorageKey:  "fs:denial-foreign",
+		ContentHash: "authzhash-denial-foreign",
+		MimeType:    "image/png",
+		SizeBytes:   64,
+		Filename:    "foreign-parent.png",
+	}
+	if err := srv.store.CreateAttachment(foreignParent); err != nil {
+		t.Fatalf("CreateAttachment foreignParent: %v", err)
+	}
+
+	// A second collection in f.wsID, so a restricted member can hold
+	// "specific" collection access to something real while still being
+	// restricted — that is the axis the orphan gate keys on.
+	sideCol, err := srv.store.CreateCollection(f.wsID, models.CollectionCreate{
+		Name: "Side", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection side: %v", err)
+	}
+
+	// The baseline: a plain lookup miss, taken as a full-access owner so it
+	// is unambiguously "no such attachment" and not itself an authz denial.
+	owner := mkUser(t, srv, "denial-owner@test.com")
+	if err := srv.store.AddWorkspaceMember(f.wsID, owner.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember owner: %v", err)
+	}
+	baseline := deleteAsUser(srv, f.wsID, "00000000-0000-0000-0000-000000000000", owner, "owner")
+	if baseline.Code != http.StatusNotFound {
+		t.Fatalf("baseline lookup miss: status = %d, want 404; body = %s",
+			baseline.Code, baseline.Body.String())
+	}
+
+	// An unrestricted-but-nonmember caller: the item is invisible to them, so
+	// this is the requireItemVisible path that used to answer "Item not found".
+	stranger := mkUser(t, srv, "denial-stranger@test.com")
+
+	// A restricted editor probing the orphan.
+	restricted := mkUser(t, srv, "denial-restricted@test.com")
+	if err := srv.store.AddWorkspaceMember(f.wsID, restricted.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember restricted: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(f.wsID, restricted.ID, "specific",
+		[]string{sideCol.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	for _, tc := range []struct {
+		label string
+		attID string
+		user  *models.User
+		role  string
+	}{
+		{"invisible parent item", f.attID, stranger, "guest"},
+		{"foreign parent item", foreignParent.ID, owner, "owner"},
+		{"orphan as restricted editor", f.orphan, restricted, "editor"},
+	} {
+		rr := deleteAsUser(srv, f.wsID, tc.attID, tc.user, tc.role)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404; body = %s", tc.label, rr.Code, rr.Body.String())
+			continue
+		}
+		if got, want := rr.Body.String(), baseline.Body.String(); got != want {
+			t.Errorf("%s: body = %q, lookup-miss body = %q — must be byte-identical, "+
+				"otherwise the response distinguishes a real attachment from a bad id",
+				tc.label, got, want)
+		}
+	}
+}
+
+// TestDeleteAttachment_OrphanRefusedToRestrictedMember covers the ORDER of the
+// orphan gate, which is load-bearing rather than cosmetic.
+//
+// attachmentCallerIsRestricted's contract says callers must apply it AHEAD of
+// any role gate that would answer 403. This path did the opposite until the
+// convergence review of PLAN-2391: requireMinRole("editor") ran first, and it
+// is only reachable once the row has been loaded — so a restricted member who
+// guessed a live orphan's UUID got 403 while a bad UUID got 404, confirming
+// the row exists. The blob read had the same bug in a different shape; both
+// are the same oracle.
+//
+// Both restricted roles are covered because the flat editor gate would answer
+// differently for each (403 for a viewer, success for an editor) — and NEITHER
+// may be distinguishable from the lookup miss.
+func TestDeleteAttachment_OrphanRefusedToRestrictedMember(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	f := newDeleteAuthzFixture(t, srv)
+
+	// Lookup-miss baseline, taken as an unrestricted OWNER so it is a genuine
+	// "no such attachment" rather than itself a restriction or role denial.
+	owner := mkUser(t, srv, "del-orphan-baseline@test.com")
+	if err := srv.store.AddWorkspaceMember(f.wsID, owner.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember baseline: %v", err)
+	}
+	missing := deleteAsUser(srv, f.wsID, "00000000-0000-0000-0000-000000000000", owner, "owner")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("baseline missing attachment: status = %d, want 404", missing.Code)
+	}
+
+	for _, role := range []string{"editor", "viewer"} {
+		user := mkUser(t, srv, "del-orphan-restricted-"+role+"@test.com")
+		if err := srv.store.AddWorkspaceMember(f.wsID, user.ID, role); err != nil {
+			t.Fatalf("AddWorkspaceMember %s: %v", role, err)
+		}
+		// Restricted to the item's OWN collection on purpose: the member
+		// retains real access in this workspace, so an orphan denial cannot
+		// be explained away as blanket loss of access.
+		if err := srv.store.SetMemberCollectionAccess(f.wsID, user.ID, "specific",
+			[]string{f.colID}); err != nil {
+			t.Fatalf("SetMemberCollectionAccess %s: %v", role, err)
+		}
+
+		rr := deleteAsUser(srv, f.wsID, f.orphan, user, role)
+		if rr.Code == http.StatusNoContent {
+			t.Fatalf("orphan DELETE by a restricted %s succeeded — a member the storage "+
+				"listing hides orphans from must not be able to delete one by guessing "+
+				"its UUID", role)
+		}
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("restricted %s orphan DELETE: status = %d, want 404 — a 403 here is "+
+				"reachable only for rows that exist, which confirms the orphan is real",
+				role, rr.Code)
+		}
+		if got, want := rr.Body.String(), missing.Body.String(); got != want {
+			t.Errorf("restricted %s orphan DELETE body = %q, lookup-miss body = %q — "+
+				"must be byte-identical", role, got, want)
+		}
+	}
+}
+
+// TestDeleteAttachment_DerivedRowIsNotAnOracle covers WHERE the derived-row
+// refusal sits relative to authorization.
+//
+// Deleting a thumbnail directly is a usage error and answers 400. But that
+// 400 is reachable only for a row that exists and is live, so emitting it
+// before the gates let anyone probe a guessed UUID: 400 meant "a live
+// thumbnail lives here", while an absent, foreign, or deleted id answered the
+// shared 404. Hidden-parent and restricted callers got the 400 too, learning
+// about a row they cannot see. Fifth instance of this branch's existence
+// oracle, found by the convergence sweep of PLAN-2391.
+//
+// The 400 is still correct FOR AN AUTHORIZED CALLER — asserted here so the
+// fix cannot regress into blanket-404ing a legitimate mistake.
+func TestDeleteAttachment_DerivedRowIsNotAnOracle(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	f := newDeleteAuthzFixture(t, srv)
+
+	variant := "thumb-md"
+	derived := &models.Attachment{
+		WorkspaceID: f.wsID,
+		ItemID:      &f.itemID,
+		ParentID:    &f.attID,
+		Variant:     &variant,
+		UploadedBy:  "system",
+		StorageKey:  "fs:authz-derived",
+		ContentHash: "authzhash-derived",
+		MimeType:    "image/png",
+		SizeBytes:   32,
+		Filename:    "bound.thumb-md.png",
+	}
+	if err := srv.store.CreateAttachment(derived); err != nil {
+		t.Fatalf("CreateAttachment derived: %v", err)
+	}
+
+	// An owner IS authorized, so they get the honest usage error.
+	owner := mkUser(t, srv, "derived-owner@test.com")
+	if err := srv.store.AddWorkspaceMember(f.wsID, owner.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember owner: %v", err)
+	}
+	authorized := deleteAsUser(srv, f.wsID, derived.ID, owner, "owner")
+	if authorized.Code != http.StatusBadRequest {
+		t.Fatalf("authorized derived delete: status = %d, want 400 — the usage error "+
+			"must survive for someone entitled to act on the row", authorized.Code)
+	}
+
+	// The lookup-miss baseline, same caller so only the id differs.
+	missing := deleteAsUser(srv, f.wsID, "00000000-0000-0000-0000-000000000000", owner, "owner")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("baseline missing: status = %d, want 404", missing.Code)
+	}
+
+	// A restricted member must NOT be able to tell the live derived row from
+	// a nonexistent one.
+	restricted := mkUser(t, srv, "derived-restricted@test.com")
+	if err := srv.store.AddWorkspaceMember(f.wsID, restricted.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember restricted: %v", err)
+	}
+	otherCol, err := srv.store.CreateCollection(f.wsID, models.CollectionCreate{
+		Name: "Other", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(f.wsID, restricted.ID, "specific",
+		[]string{otherCol.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	probe := deleteAsUser(srv, f.wsID, derived.ID, restricted, "editor")
+	if probe.Code == http.StatusBadRequest {
+		t.Fatalf("restricted derived delete returned 400 — that answer is reachable only " +
+			"for a live row, so it confirms the thumbnail exists to someone who cannot " +
+			"see its parent")
+	}
+	if probe.Code != http.StatusNotFound {
+		t.Errorf("restricted derived delete: status = %d, want 404", probe.Code)
+	}
+	probeMissing := deleteAsUser(srv, f.wsID, "00000000-0000-0000-0000-000000000000", restricted, "editor")
+	if got, want := probe.Body.String(), probeMissing.Body.String(); got != want {
+		t.Errorf("restricted derived denial body = %q, lookup-miss body = %q — "+
+			"must be byte-identical", got, want)
 	}
 }

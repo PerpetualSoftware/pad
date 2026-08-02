@@ -206,6 +206,16 @@ type CrossWorkspaceCopyRequest struct {
 	// single-backend deployment. See ErrCopyCrossBackendAttachments.
 	TargetBackend string
 
+	// AttachmentAuthorizer is the caller's per-attachment visibility check,
+	// handed straight to the planner (TASK-2408). It is the SAME value the
+	// preflight passes — both come out of resolveAuthorizedCopy — so the two
+	// endpoints agree about which references are unresolvable for the same
+	// reason they agree about everything else: one path, not two.
+	//
+	// See store.AttachmentAuthorizer for what nil means and why this is a
+	// callback rather than a pre-filtered id set.
+	AttachmentAuthorizer AttachmentAuthorizer
+
 	// PreCheck, when non-nil, runs INSIDE the transaction once every input has
 	// been re-read under the locks and before anything is written. Returning
 	// an error rolls the whole copy back.
@@ -663,6 +673,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		Content:           source.Content,
 		Fields:            finalFields,
 		TargetBackend:     req.TargetBackend,
+		Authorize:         req.AttachmentAuthorizer,
 	})
 	if err != nil {
 		return nil, err
