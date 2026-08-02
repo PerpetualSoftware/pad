@@ -19,6 +19,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 
 	// Stdlib decoders for width/height probing on the formats Phase 1
 	// has to inspect server-side. WebP/AVIF/HEIC are not in the stdlib;
@@ -385,7 +386,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		writeInternalError(w, fmt.Errorf("rewind upload temp for store.Put: %w", err))
 		return
 	}
-	store, err := s.attachments.Resolve(attachments.FSPrefix + ":" + hash)
+	blobStore, err := s.attachments.Resolve(attachments.FSPrefix + ":" + hash)
 	if err != nil {
 		writeInternalError(w, fmt.Errorf("resolve attachment store: %w", err))
 		return
@@ -399,7 +400,7 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 	// CreateAttachment call below (whether it succeeds or fails).
 	releaseInFlight := s.markUploadInFlight(hash)
 	defer releaseInFlight()
-	storageKey, err := store.Put(r.Context(), hash, entry.MIME, tmp)
+	storageKey, err := blobStore.Put(r.Context(), hash, entry.MIME, tmp)
 	if err != nil {
 		writeInternalError(w, fmt.Errorf("attachment store.Put: %w", err))
 		return
@@ -418,11 +419,32 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		Width:       width,
 		Height:      height,
 	}
-	if err := s.store.CreateAttachment(att); err != nil {
+	// CreateAttachmentForLiveItem, not CreateAttachment: the parent item was
+	// validated near the top of this handler, but everything since — spooling
+	// the body to a temp file, hashing it, probing dimensions, store.Put —
+	// is unbounded work, and item deletion commits in its own transaction.
+	// Without the re-check under a row lock inside the insert, an item
+	// archived during the upload window leaves a quota-counted live row bound
+	// to an archived parent whose bytes the read gate (DR-13) then refuses to
+	// serve. Same invariant, same helper, and for the same reason as the
+	// transform path (PLAN-2391 DR-14).
+	//
+	// Derivation is the deliberate exception and stays on the unlocked path —
+	// see the comment on thumbnailParentItemLive for that trade.
+	if err := s.store.CreateAttachmentForLiveItem(att); err != nil {
+		if errors.Is(err, store.ErrAttachmentParentItemGone) {
+			// The same 404 every other attachment denial writes. The caller
+			// must not be able to tell "your item was archived mid-upload"
+			// from "no such attachment", and the row would be unreadable
+			// under DR-13 regardless.
+			writeAttachmentNotFound(w)
+			return
+		}
 		// Note: the blob is now an orphan on disk. Orphan GC (TASK-886)
 		// will reclaim it past the grace period; we do NOT delete it
 		// here because the same hash may still be used by a concurrent
-		// upload that succeeded its DB insert.
+		// upload that succeeded its DB insert. The refusal above lands in
+		// the same shape — BUG-2406 tracks the rowless-blob reclaim.
 		writeInternalError(w, fmt.Errorf("create attachment row: %w", err))
 		return
 	}
@@ -592,25 +614,16 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 
 	// Item-level authorization (PLAN-2391 DR-10). Runs BEFORE the variant
 	// lookup and before any byte access.
-	if att.ItemID != nil {
-		// GetItem, not GetItemIncludeDeleted — DR-13. A soft-deleted
-		// parent resolves to nil here and the blob 404s.
-		item, err := s.store.GetItem(*att.ItemID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		// Workspace identity FIRST, before visibility. attachments.item_id
-		// has no FK or same-workspace constraint, and neither downstream
-		// check catches a foreign parent on its own: checkItemVisible
-		// admits any collection id when the caller is unrestricted, and
-		// item-grant lookup matches by item_id. Without this guard a view
-		// grant on a foreign item would authorize reading THIS workspace's
-		// bytes. Mirrors the delete path (handlers_storage.go).
-		if item == nil || item.WorkspaceID != workspaceID {
-			writeAttachmentNotFound(w)
-			return
-		}
+	//
+	// includeArchived=false — DR-13. A soft-deleted parent reports Gone and
+	// the blob 404s. The delete path is the one caller that passes true.
+	item, parentOutcome, err := s.resolveAttachmentParentItem(att, false)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	switch parentOutcome {
+	case attachmentParentOK:
 		// checkItemVisible rather than requireItemVisible: same rule set
 		// (requireItemVisible is a thin wrapper over it), but this handler
 		// writes its own denial so that "no such attachment", "foreign
@@ -618,19 +631,39 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 		// byte-identical responses. requireItemVisible's own 404 body says
 		// "Item not found", which would distinguish the visibility denial
 		// from the lookup miss and leak existence.
-		visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
-		if err != nil {
-			writeInternalError(w, err)
+		visible, vErr := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
+		if vErr != nil {
+			writeInternalError(w, vErr)
 			return
 		}
 		if !visible {
 			writeAttachmentNotFound(w)
 			return
 		}
-	} else if !requireRole(r, "viewer") {
-		// Orphan attachments carry no item context to authorize against,
-		// so they keep the flat workspace viewer-role gate — same strength
-		// as before, only the denial SHAPE changes.
+	case attachmentParentOrphan:
+		// Orphan attachments carry no item context to authorize against.
+		//
+		// Full-access only, matching the transform and DELETE paths
+		// (PLAN-2382 DR-4) — and ahead of the role check, for the reason
+		// those paths document: an orphan belongs to no collection, so
+		// collection visibility cannot gate it, and the storage LISTING
+		// already hides orphans from restricted members. Reading one must
+		// not confirm it exists to a member the listing hides it from.
+		// This gate was missing here while transform and DELETE both had
+		// it, so a restricted editor or viewer who guessed an orphan's
+		// UUID could download it.
+		restricted, rErr := s.attachmentCallerIsRestricted(r, workspaceID)
+		if rErr != nil {
+			writeInternalError(w, rErr)
+			return
+		}
+		if restricted {
+			writeAttachmentNotFound(w)
+			return
+		}
+		// Then the flat workspace viewer-role gate — same strength as
+		// before this handler grew per-attachment authorization, only the
+		// denial SHAPE changed.
 		//
 		// requireRole (the write-free predicate) rather than requireMinRole
 		// (which writes its own 403): the attachment row has already been
@@ -640,6 +673,11 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 		// didn't have only because its flat role gate ran BEFORE the
 		// lookup. Reordering the gate reintroduced it; routing the denial
 		// through the shared 404 writer closes it again.
+		if !requireRole(r, "viewer") {
+			writeAttachmentNotFound(w)
+			return
+		}
+	default: // Gone, Foreign
 		writeAttachmentNotFound(w)
 		return
 	}

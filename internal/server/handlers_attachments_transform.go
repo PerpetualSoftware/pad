@@ -163,32 +163,23 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 
 	// Item-level authorization, before the source blob is read and before
 	// any work is done. See the ordering note on the handler.
-	if parent.ItemID != nil {
-		// GetItem, not GetItemIncludeDeleted (DR-13): an archived parent
-		// resolves to nil and the transform is refused.
-		item, err := s.store.GetItem(*parent.ItemID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		// Workspace identity FIRST. attachments.item_id has no FK or
-		// same-workspace constraint, so a row here can name an item in
-		// another workspace, and neither check below catches that on its
-		// own: checkItemVisible admits any collection id for an
-		// unrestricted caller, and requireEditPermission's grant lookup
-		// matches by item id. Without this guard a grant on a foreign item
-		// would authorize transforming THIS workspace's bytes. It also
-		// rejects a malformed non-null item_id that resolves nowhere.
-		if item == nil || item.WorkspaceID != workspaceID {
-			writeAttachmentNotFound(w)
-			return
-		}
+	// includeArchived=false (DR-13): an archived parent reports Gone and the
+	// transform is refused. Foreign and dangling item_ids are refused by the
+	// same switch — the helper separates those outcomes, this handler
+	// deliberately collapses them into one response.
+	item, parentOutcome, err := s.resolveAttachmentParentItem(parent, false)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	switch parentOutcome {
+	case attachmentParentOK:
 		// checkItemVisible (the predicate), not requireItemVisible — the
 		// latter writes its own "Item not found" body, which would make a
 		// visibility denial distinguishable from a lookup miss.
-		visible, err := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
-		if err != nil {
-			writeInternalError(w, err)
+		visible, vErr := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
+		if vErr != nil {
+			writeInternalError(w, vErr)
 			return
 		}
 		if !visible {
@@ -201,7 +192,7 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 		if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 			return
 		}
-	} else {
+	case attachmentParentOrphan:
 		// Orphan rows keep the flat workspace editor gate — no item to
 		// authorize against. The viewer predicate runs first, and denies
 		// with the shared 404: the row has already been loaded here, so a
@@ -213,24 +204,25 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 			writeAttachmentNotFound(w)
 			return
 		}
-		// ...and, like the DELETE path (PLAN-2382 DR-4), full-access only.
-		// An orphan belongs to no collection, so collection visibility
-		// cannot gate it — and the storage LISTING already hides orphans
-		// from restricted members (handlers_storage.go). Without this a
-		// restricted editor who guesses an orphan's UUID gets confirmation
-		// it exists plus a derived row, which is the same disclosure this
-		// task closes for item-bound rows. Ahead of the editor gate so a
-		// restricted caller never gets the 403 that would confirm it.
-		if fullCollIDs, grantedItemIDs, gErr := s.guestResourceFilter(r, workspaceID); gErr != nil {
-			writeInternalError(w, gErr)
+		// ...and, like the read and DELETE paths (PLAN-2382 DR-4),
+		// full-access only. See attachmentCallerIsRestricted for why.
+		// Ahead of the editor gate so a restricted caller never gets the
+		// 403 that would confirm the row exists.
+		restricted, rErr := s.attachmentCallerIsRestricted(r, workspaceID)
+		if rErr != nil {
+			writeInternalError(w, rErr)
 			return
-		} else if fullCollIDs != nil || grantedItemIDs != nil {
+		}
+		if restricted {
 			writeAttachmentNotFound(w)
 			return
 		}
 		if !requireMinRole(w, r, "editor") {
 			return
 		}
+	default: // Gone, Foreign
+		writeAttachmentNotFound(w)
+		return
 	}
 
 	var req transformRequest

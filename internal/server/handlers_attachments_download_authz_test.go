@@ -514,6 +514,72 @@ func TestDownload_OrphanKeepsFlatViewerGate(t *testing.T) {
 	assertBlobServed(t, rr, http.MethodGet, f.orphanBody, "orphan as viewer")
 }
 
+// TestDownload_OrphanRefusedToRestrictedMember — an orphan belongs to no
+// collection, so collection visibility cannot gate it, and the storage
+// LISTING already hides orphans from restricted members. Reading one must not
+// confirm it exists to a member the listing hides it from.
+//
+// This gate was present on transform and DELETE but MISSING here: the read
+// path checked only the workspace role, and roleLevel("editor") clears
+// viewer, so a restricted editor who guessed an orphan's UUID got the bytes.
+// The role check alone cannot catch it — a restricted member holds a real
+// workspace role; "restricted" is a separate axis (collection_access).
+//
+// Both restricted roles are covered because the flat gate admits both.
+func TestDownload_OrphanRefusedToRestrictedMember(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	f := newDownloadAuthzFixture(t, srv)
+
+	// The lookup-miss baseline, taken as an unrestricted viewer so it is a
+	// genuine "no such attachment" and not itself a restriction denial.
+	unrestricted := mkUser(t, srv, "orphan-restricted-baseline@test.com")
+	if err := srv.store.AddWorkspaceMember(f.wsID, unrestricted.ID, "viewer"); err != nil {
+		t.Fatalf("AddWorkspaceMember baseline: %v", err)
+	}
+	missing := downloadAs(srv, http.MethodGet, f.wsID,
+		"00000000-0000-0000-0000-000000000000", "", unrestricted, "viewer")
+	assertBlobDenied(t, missing, http.MethodGet, "nonexistent attachment")
+
+	for _, role := range []string{"editor", "viewer"} {
+		user := mkUser(t, srv, "orphan-restricted-"+role+"@test.com")
+		if err := srv.store.AddWorkspaceMember(f.wsID, user.ID, role); err != nil {
+			t.Fatalf("AddWorkspaceMember %s: %v", role, err)
+		}
+		// Restricted TO THE ITEM'S OWN COLLECTION on purpose. The member can
+		// see the item and read its attachment (asserted below), so the
+		// orphan denial cannot be explained away as blanket loss of access —
+		// it isolates the orphan rule from collection visibility.
+		if err := srv.store.SetMemberCollectionAccess(f.wsID, user.ID, "specific",
+			[]string{f.colID}); err != nil {
+			t.Fatalf("SetMemberCollectionAccess %s: %v", role, err)
+		}
+
+		for _, method := range []string{http.MethodGet, http.MethodHead} {
+			rr := downloadAs(srv, method, f.wsID, f.orphanID, "", user, role)
+			if rr.Code == http.StatusOK {
+				t.Fatalf("%s orphan read by a restricted %s succeeded — a member the "+
+					"storage listing hides orphans from must not be able to download "+
+					"one by guessing its UUID", method, role)
+			}
+			assertBlobDenied(t, rr, method, "orphan as restricted "+role)
+			if method == http.MethodGet {
+				if got, want := rr.Body.String(), missing.Body.String(); got != want {
+					t.Errorf("restricted %s orphan denial body = %q, lookup-miss body = %q — "+
+						"must be byte-identical", role, got, want)
+				}
+			}
+		}
+
+		// Control: the restriction is scoped to orphans, not a blanket
+		// denial. The same caller still reads the item-bound attachment in
+		// the collection they DO have access to — so a fixture that had
+		// broken all reads would fail here rather than pass the assertions
+		// above vacuously.
+		rr := downloadAs(srv, http.MethodGet, f.wsID, f.origID, "", user, role)
+		assertBlobServed(t, rr, http.MethodGet, f.origBody, "item-bound as restricted "+role)
+	}
+}
+
 // TestDownload_ViewerStillReadsItemBoundAttachment — the gate replaced a
 // role check with a visibility check; an ordinary unrestricted viewer must
 // still be served.

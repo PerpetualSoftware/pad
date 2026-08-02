@@ -311,7 +311,7 @@ func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.
 		return
 	}
 	if att == nil || att.WorkspaceID != workspaceID || att.DeletedAt != nil {
-		writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+		writeAttachmentNotFound(w)
 		return
 	}
 	// Refuse to delete derived (thumbnail) rows directly — they're
@@ -327,44 +327,34 @@ func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.
 	// Item-level visibility check. An editor with restricted collection
 	// access shouldn't be able to delete attachments in collections
 	// they can't see — even if they obtain the attachment ID some
-	// other way. Mirrors requireItemVisible's logic but operates on
-	// the attachment's parent item id rather than a fully-loaded item.
+	// other way.
 	//
-	// GetItemIncludeDeleted is used (not GetItem) because the storage
-	// list intentionally surfaces attachments whose parent item is
-	// soft-deleted — they're still consuming quota and the user
-	// needs a path to delete the blob. The collection_id stays set
-	// after a soft delete, so the visibility predicate still works.
-	if att.ItemID != nil {
-		item, err := s.store.GetItemIncludeDeleted(*att.ItemID)
-		if err != nil {
-			writeInternalError(w, err)
+	// includeArchived=true here, and NOWHERE else: the storage list
+	// intentionally surfaces attachments whose parent item is soft-deleted
+	// — they're still consuming quota and the user needs a path to delete
+	// the blob. The collection_id stays set after a soft delete, so the
+	// visibility predicate still works. The read and transform paths pass
+	// false, where an archived parent means "refuse" (DR-13).
+	item, parentOutcome, err := s.resolveAttachmentParentItem(att, true)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	switch parentOutcome {
+	case attachmentParentOK:
+		// checkItemVisible (the predicate), not requireItemVisible: the
+		// latter writes its own "Item not found" body, which would make an
+		// invisible parent distinguishable from a missing attachment — the
+		// same existence oracle the read and transform paths closed by
+		// funnelling every denial through writeAttachmentNotFound. This
+		// path now shares that writer.
+		visible, vErr := s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
+		if vErr != nil {
+			writeInternalError(w, vErr)
 			return
 		}
-		// Workspace identity FIRST, before visibility or permission.
-		//
-		// attachments.item_id has no FK or same-workspace constraint, and the
-		// upload handler associates the raw ?item_id string (it authorizes
-		// against a workspace-scoped ResolveItem, but stores the value
-		// verbatim), so a row in workspace A can carry an item id belonging to
-		// workspace B. Neither downstream check catches that on its own:
-		// checkItemVisible admits any collection id when the caller is
-		// unrestricted, and ResolveUserPermission matches item grants by
-		// item_id alone with no workspace scoping (store/grants.go). Without
-		// this guard, an edit grant on a foreign item would authorize deleting
-		// an attachment in THIS workspace. 404, not 403 — same non-disclosure
-		// posture as the rest of the handler.
-		if item != nil && item.WorkspaceID != workspaceID {
-			writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
-			return
-		}
-		if item == nil || !s.requireItemVisible(w, r, workspaceID, item) {
-			// requireItemVisible already wrote a 404 on its denial path.
-			// Two cases land us here: the item was hard-deleted out from
-			// under us (item == nil) or the user can't see it.
-			if item == nil {
-				writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
-			}
+		if !visible {
+			writeAttachmentNotFound(w)
 			return
 		}
 		// Edit permission on the PARENT ITEM, checked strictly AFTER
@@ -375,29 +365,42 @@ func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.
 		if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 			return
 		}
-	} else {
+	case attachmentParentOrphan:
 		// Orphan attachments carry no item context to authorize against,
 		// so they keep the flat workspace editor-role gate.
 		if !requireMinRole(w, r, "editor") {
 			return
 		}
-		// Orphan attachments (item_id IS NULL) are not associated with
-		// any collection, so collection-level visibility doesn't apply.
-		// Restricted members shouldn't reach here because the LIST
-		// endpoint hides orphans from them, but a direct DELETE with a
-		// guessed UUID could — gate orphans on full-access editors.
-		if fullCollIDs, grantedItemIDs, gErr := s.guestResourceFilter(r, workspaceID); gErr != nil {
-			writeInternalError(w, gErr)
-			return
-		} else if fullCollIDs != nil || grantedItemIDs != nil {
-			writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+		// ...and full access only (PLAN-2382 DR-4) — see
+		// attachmentCallerIsRestricted. The LIST endpoint hides orphans
+		// from restricted members, but a direct DELETE with a guessed UUID
+		// could still reach here.
+		restricted, rErr := s.attachmentCallerIsRestricted(r, workspaceID)
+		if rErr != nil {
+			writeInternalError(w, rErr)
 			return
 		}
+		if restricted {
+			writeAttachmentNotFound(w)
+			return
+		}
+	default: // Gone (hard-deleted out from under us), Foreign
+		// Foreign matters even with includeArchived: a row in workspace A
+		// can carry an item id belonging to workspace B (the upload handler
+		// authorizes against a workspace-scoped ResolveItem but stores the
+		// raw value), and neither downstream check catches it —
+		// checkItemVisible admits any collection id for an unrestricted
+		// caller, and ResolveUserPermission matches item grants by item_id
+		// alone with no workspace scoping (store/grants.go). Without this,
+		// an edit grant on a foreign item would authorize deleting an
+		// attachment in THIS workspace.
+		writeAttachmentNotFound(w)
+		return
 	}
 
 	if err := s.store.SoftDeleteAttachment(id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			writeError(w, http.StatusNotFound, "not_found", "Attachment not found")
+			writeAttachmentNotFound(w)
 			return
 		}
 		writeInternalError(w, err)

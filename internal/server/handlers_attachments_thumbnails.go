@@ -162,35 +162,40 @@ func (s *Server) deriveThumbnails(parentID string) {
 // for exactly as long as its item stays archived, and tombstoned by the
 // delete cascade along with its parent attachment. If profiling later shows
 // the lock is cheap here, tightening this is a follow-up, not a defect.
+// The invariant itself lives in resolveAttachmentParentItem, shared with the
+// blob read, transform and delete paths (includeArchived=false, so "live"
+// means exactly what the read path means by it). Only the REACTION is local:
+// this is background work with no HTTP response, so there is no 404 shape to
+// match — each malformed outcome gets its own WARN so it stays greppable ahead
+// of PLAN-2397's repair, which is the opposite of what the HTTP paths need.
 func (s *Server) thumbnailParentItemLive(parent *models.Attachment) bool {
-	if parent.ItemID == nil {
-		return true // orphan row: nothing to check.
-	}
-	// GetItem, not GetItemIncludeDeleted: a soft-deleted item resolves
-	// to nil, which is exactly the "archived" case we skip. Same call
-	// the blob read path uses, so the two agree on what "live" means.
-	item, err := s.store.GetItem(*parent.ItemID)
+	item, outcome, err := s.resolveAttachmentParentItem(parent, false)
 	if err != nil {
 		slog.Warn("thumbnails: get parent item failed",
-			"attachment_id", parent.ID, "item_id", *parent.ItemID, "error", err)
+			"attachment_id", parent.ID, "item_id", derefOrEmpty(parent.ItemID), "error", err)
 		return false
 	}
-	if item == nil {
-		slog.Warn("thumbnails: skipped, parent item is archived or unresolvable",
-			"attachment_id", parent.ID, "item_id", *parent.ItemID)
-		return false
-	}
-	// Workspace identity, checked separately from resolution: an item_id
-	// that resolves to a FOREIGN workspace's item is malformed for this
-	// row, and a variant derived under it would be as unreadable as one
-	// under an archived item.
-	if item.WorkspaceID != parent.WorkspaceID {
+	switch outcome {
+	case attachmentParentOrphan, attachmentParentOK:
+		return true
+	case attachmentParentForeign:
 		slog.Warn("thumbnails: skipped, parent item belongs to another workspace",
-			"attachment_id", parent.ID, "item_id", *parent.ItemID,
+			"attachment_id", parent.ID, "item_id", derefOrEmpty(parent.ItemID),
 			"attachment_workspace_id", parent.WorkspaceID, "item_workspace_id", item.WorkspaceID)
 		return false
+	default: // attachmentParentGone
+		slog.Warn("thumbnails: skipped, parent item is archived or unresolvable",
+			"attachment_id", parent.ID, "item_id", derefOrEmpty(parent.ItemID))
+		return false
 	}
-	return true
+}
+
+// derefOrEmpty renders a nullable id for a log field.
+func derefOrEmpty(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // openOriginalForThumbnail resolves the parent row's storage key
