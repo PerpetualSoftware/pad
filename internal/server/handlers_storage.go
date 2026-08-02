@@ -367,14 +367,20 @@ func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.
 		}
 	case attachmentParentOrphan:
 		// Orphan attachments carry no item context to authorize against,
-		// so they keep the flat workspace editor-role gate.
-		if !requireMinRole(w, r, "editor") {
-			return
-		}
-		// ...and full access only (PLAN-2382 DR-4) — see
-		// attachmentCallerIsRestricted. The LIST endpoint hides orphans
-		// from restricted members, but a direct DELETE with a guessed UUID
-		// could still reach here.
+		// so they keep the flat workspace editor-role gate — but the
+		// full-access check comes FIRST (PLAN-2382 DR-4).
+		//
+		// Order is the whole point, and getting it backwards is a live
+		// oracle rather than a style nit: requireMinRole answers 403, and
+		// it is only reachable once the row has been loaded, so a
+		// restricted caller who guesses an orphan's UUID would get 403
+		// where a bad UUID gets 404 — confirming the row exists. That is
+		// exactly what attachmentCallerIsRestricted's contract warns
+		// about ("callers MUST apply it AHEAD of any role gate that would
+		// answer 403"), and this path violated it until the convergence
+		// review of PLAN-2391 caught it. The LIST endpoint hides orphans
+		// from restricted members; a direct DELETE with a guessed UUID is
+		// how they would otherwise still be probed.
 		restricted, rErr := s.attachmentCallerIsRestricted(r, workspaceID)
 		if rErr != nil {
 			writeInternalError(w, rErr)
@@ -382,6 +388,9 @@ func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.
 		}
 		if restricted {
 			writeAttachmentNotFound(w)
+			return
+		}
+		if !requireMinRole(w, r, "editor") {
 			return
 		}
 	default: // Gone (hard-deleted out from under us), Foreign

@@ -49,6 +49,7 @@ func deleteAsUser(srv *Server, wsID, attachmentID string, user *models.User, rol
 type authzFixture struct {
 	wsID   string
 	itemID string
+	colID  string
 	attID  string
 	orphan string
 }
@@ -100,7 +101,7 @@ func newDeleteAuthzFixture(t *testing.T, srv *Server) authzFixture {
 		t.Fatalf("CreateAttachment orphan: %v", err)
 	}
 
-	return authzFixture{wsID: ws.ID, itemID: item.ID, attID: bound.ID, orphan: orphan.ID}
+	return authzFixture{wsID: ws.ID, itemID: item.ID, colID: col.ID, attID: bound.ID, orphan: orphan.ID}
 }
 
 func mkUser(t *testing.T, srv *Server, email string) *models.User {
@@ -380,6 +381,66 @@ func TestDeleteAttachment_DenialBodiesAreByteIdentical(t *testing.T) {
 			t.Errorf("%s: body = %q, lookup-miss body = %q — must be byte-identical, "+
 				"otherwise the response distinguishes a real attachment from a bad id",
 				tc.label, got, want)
+		}
+	}
+}
+
+// TestDeleteAttachment_OrphanRefusedToRestrictedMember covers the ORDER of the
+// orphan gate, which is load-bearing rather than cosmetic.
+//
+// attachmentCallerIsRestricted's contract says callers must apply it AHEAD of
+// any role gate that would answer 403. This path did the opposite until the
+// convergence review of PLAN-2391: requireMinRole("editor") ran first, and it
+// is only reachable once the row has been loaded — so a restricted member who
+// guessed a live orphan's UUID got 403 while a bad UUID got 404, confirming
+// the row exists. The blob read had the same bug in a different shape; both
+// are the same oracle.
+//
+// Both restricted roles are covered because the flat editor gate would answer
+// differently for each (403 for a viewer, success for an editor) — and NEITHER
+// may be distinguishable from the lookup miss.
+func TestDeleteAttachment_OrphanRefusedToRestrictedMember(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	f := newDeleteAuthzFixture(t, srv)
+
+	// Lookup-miss baseline, taken as an unrestricted OWNER so it is a genuine
+	// "no such attachment" rather than itself a restriction or role denial.
+	owner := mkUser(t, srv, "del-orphan-baseline@test.com")
+	if err := srv.store.AddWorkspaceMember(f.wsID, owner.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember baseline: %v", err)
+	}
+	missing := deleteAsUser(srv, f.wsID, "00000000-0000-0000-0000-000000000000", owner, "owner")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("baseline missing attachment: status = %d, want 404", missing.Code)
+	}
+
+	for _, role := range []string{"editor", "viewer"} {
+		user := mkUser(t, srv, "del-orphan-restricted-"+role+"@test.com")
+		if err := srv.store.AddWorkspaceMember(f.wsID, user.ID, role); err != nil {
+			t.Fatalf("AddWorkspaceMember %s: %v", role, err)
+		}
+		// Restricted to the item's OWN collection on purpose: the member
+		// retains real access in this workspace, so an orphan denial cannot
+		// be explained away as blanket loss of access.
+		if err := srv.store.SetMemberCollectionAccess(f.wsID, user.ID, "specific",
+			[]string{f.colID}); err != nil {
+			t.Fatalf("SetMemberCollectionAccess %s: %v", role, err)
+		}
+
+		rr := deleteAsUser(srv, f.wsID, f.orphan, user, role)
+		if rr.Code == http.StatusNoContent {
+			t.Fatalf("orphan DELETE by a restricted %s succeeded — a member the storage "+
+				"listing hides orphans from must not be able to delete one by guessing "+
+				"its UUID", role)
+		}
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("restricted %s orphan DELETE: status = %d, want 404 — a 403 here is "+
+				"reachable only for rows that exist, which confirms the orphan is real",
+				role, rr.Code)
+		}
+		if got, want := rr.Body.String(), missing.Body.String(); got != want {
+			t.Errorf("restricted %s orphan DELETE body = %q, lookup-miss body = %q — "+
+				"must be byte-identical", role, got, want)
 		}
 	}
 }
