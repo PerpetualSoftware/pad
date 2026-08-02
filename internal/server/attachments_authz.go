@@ -122,3 +122,118 @@ func (s *Server) attachmentCallerIsRestricted(r *http.Request, workspaceID strin
 	}
 	return fullCollIDs != nil || grantedItemIDs != nil, nil
 }
+
+// attachmentCopyAuthorizer builds the per-row visibility check the
+// cross-workspace copy planner applies to every attachment reference it
+// resolves in the SOURCE workspace (TASK-2408 / BUG-2407).
+//
+// It is the read path's rule, not a weaker cousin of it: the same
+// resolveAttachmentParentItem outcomes, the same includeArchived=false
+// (DR-13 — an archived parent is not readable, so it is not copyable), the
+// same checkItemVisible, and the same orphan gate in the same ORDER, ahead
+// of the role check. handleGetAttachment is the sibling to compare against
+// line for line; the only difference is the shape of the denial, and that
+// difference is forced: this one has no response to write, so it answers
+// false and the planner turns that into "unresolvable".
+//
+// workspaceID is the SOURCE workspace, which is also the request's own
+// workspace — the planner never resolves anything outside it, so
+// guestResourceFilter and workspaceRole(r), both of which describe the
+// caller's standing in the request workspace, are the right inputs. The
+// destination side is authorized separately and earlier, by the ladder in
+// resolveAuthorizedCopy.
+//
+// MEMOIZED PER PARENT ITEM, which is not an optimization detail but the
+// difference between one query and N. With workspaceID and the caller
+// fixed, the verdict is a pure function of the row's item_id: nothing
+// below reads any other column. So the ordinary body — one item's images
+// plus two thumbnail variants each — costs ONE item load and ONE
+// visibility query instead of three per image, and the planner cannot turn
+// a long reference list into an N+1 storm inside the copy's transaction,
+// where both workspace advisory locks are held (Codex round 4). The
+// restricted-ness verdict, a membership query used only by the orphan
+// branch, is resolved once for the same reason. Errors are memoized too: a
+// database that is failing should be asked once, not once per row.
+//
+// The memo therefore pins the caller's ACLs for the duration of ONE
+// planner pass, which is the same point-in-time semantics the rest of this
+// file has (resolveAttachmentParentItem's "do not read a passing check as
+// a lock") and the same the plan itself has (PlanAttachmentCopy's
+// STALENESS CONTRACT): a grant revoked mid-pass may not be observed by the
+// remaining rows. Nothing is cached ACROSS requests — the closure is built
+// per call of resolveAuthorizedCopy, so the preflight and the copy each
+// re-derive every verdict from scratch.
+//
+// RESIDUAL: the query count is still linear in the number of DISTINCT
+// parent items referenced. Bounding that would mean batching the item
+// loads, which the per-row callback shape cannot express; it is bounded in
+// practice by the attachments that actually exist in the source workspace,
+// since an unresolvable reference never reaches this function at all.
+func (s *Server) attachmentCopyAuthorizer(r *http.Request, workspaceID string) func(models.Attachment) (bool, error) {
+	type verdict struct {
+		allowed bool
+		err     error
+	}
+	var (
+		restricted      bool
+		restrictedKnown bool
+		byParentItem    = map[string]verdict{}
+	)
+
+	decide := func(att models.Attachment) (bool, error) {
+		item, outcome, err := s.resolveAttachmentParentItem(&att, false)
+		if err != nil {
+			return false, err
+		}
+		switch outcome {
+		case attachmentParentOK:
+			return s.checkItemVisible(workspaceID, item, currentUser(r), workspaceRole(r), isBearerAuth(r))
+		case attachmentParentOrphan:
+			// The orphan rule (PLAN-2382 DR-4), and the restriction check
+			// BEFORE the role check for the reason every sibling path
+			// documents: a denial reachable only for rows that exist is
+			// itself the oracle. Here both denials collapse into the same
+			// "unresolvable" count anyway, but keeping the order identical
+			// to the read path is what makes the two comparable.
+			if !restrictedKnown {
+				isRestricted, err := s.attachmentCallerIsRestricted(r, workspaceID)
+				if err != nil {
+					return false, err
+				}
+				restricted = isRestricted
+				restrictedKnown = true
+			}
+			if restricted {
+				return false, nil
+			}
+			return requireRole(r, "viewer"), nil
+		default: // Gone (missing, hard-deleted, or ARCHIVED parent), Foreign
+			return false, nil
+		}
+	}
+
+	return func(att models.Attachment) (bool, error) {
+		// Defense in depth: the planner scopes every query to the source
+		// workspace already, so this cannot fire today. It costs nothing
+		// and means the authorizer is safe to hand to any future caller
+		// without re-deriving that guarantee.
+		//
+		// Checked BEFORE the memo, because the memo is keyed by item_id
+		// alone and is only sound while every row belongs to workspaceID.
+		if att.WorkspaceID != workspaceID {
+			return false, nil
+		}
+
+		// Orphans are not memoized: they have no item_id to key on, and
+		// their branch runs no per-row query anyway.
+		if att.ItemID == nil || *att.ItemID == "" {
+			return decide(att)
+		}
+		if v, ok := byParentItem[*att.ItemID]; ok {
+			return v.allowed, v.err
+		}
+		allowed, err := decide(att)
+		byParentItem[*att.ItemID] = verdict{allowed: allowed, err: err}
+		return allowed, err
+	}
+}

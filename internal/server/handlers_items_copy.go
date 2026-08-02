@@ -342,6 +342,11 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 		// call sites get it together.
 		TargetBackend: "",
 
+		// The SAME authorizer the preflight passed (TASK-2408): both read
+		// it off the shared resolution, so whatever the preview called
+		// unresolvable, this copy refuses to clone.
+		AttachmentAuthorizer: ac.attachmentAuth,
+
 		// s.cloudMode, NEVER an unconditional true: EnforceItemLimit mirrors
 		// enforcePlanLimit's `if !s.cloudMode { return true }` gate, and
 		// forcing it on would apply free-tier item caps to self-hosted users

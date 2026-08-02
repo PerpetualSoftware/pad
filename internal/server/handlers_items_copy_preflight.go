@@ -983,6 +983,13 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		UploadedBy:        actorID,
 		Content:           item.Content,
 		Fields:            final,
+
+		// The caller's own visibility, applied to every reference the
+		// planner resolves (TASK-2408). A reference the caller cannot see
+		// lands in UnresolvableRefs, so it is reported here exactly as a
+		// dangling or foreign id is — no count distinguishes them — and
+		// the copy will not clone it, because it is the same authorizer.
+		Authorize: ac.attachmentAuth,
 	})
 	if err != nil {
 		writeInternalError(w, err)

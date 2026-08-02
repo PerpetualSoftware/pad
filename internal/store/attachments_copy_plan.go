@@ -168,7 +168,58 @@ type AttachmentCopyRequest struct {
 	// ':'. Empty means "same backend as the source", the same-instance
 	// case, and disables cross-backend detection.
 	TargetBackend string
+
+	// Authorize is the CALLER's per-row authorization decision (TASK-2408).
+	// See AttachmentAuthorizer.
+	Authorize AttachmentAuthorizer
 }
+
+// AttachmentAuthorizer answers one question about one already-scoped
+// attachment row: may the caller who asked for this copy see it?
+//
+// It exists because DR-11a's scope is the WORKSPACE, and the workspace is
+// not the caller. Every lookup in the planner carries `workspace_id =
+// SourceWorkspaceID AND deleted_at IS NULL`, which stops a foreign blob
+// from being cloned — but a restricted member of the source workspace can
+// still edit some item they DO hold, paste `pad-attachment:<uuid>` for an
+// attachment hanging off an item they CANNOT see, and copy that item into
+// a workspace they own. The clone lands with them as uploader and the
+// bytes are then readable through the ordinary blob endpoint. The scope
+// held; the visibility check was simply never made (BUG-2407).
+//
+// It is a CALLBACK, and deliberately so. The rule it applies is the read
+// path's — resolve the parent item, reject a foreign or non-live one,
+// check item visibility, apply the orphan rule — and every input to that
+// rule (the *http.Request, the session user, the role, the per-collection
+// grants) lives in package server. The store has none of them and must not
+// grow them. Neither, though, can the check happen BEFORE planning: the
+// mutating copy re-reads the source item's content under its own locks and
+// computes the destination fields inside its transaction, so a reference
+// set enumerated by the caller beforehand is not the set the planner will
+// actually resolve. Authorizing the rows the planner ACTUALLY resolved, in
+// the planner's own pass, is the only shape that keeps the dry run and the
+// copy on one path — which is the property DR-11 spends this whole file
+// protecting.
+//
+// A false verdict is applied by DELETING the row from the resolution map,
+// so it is indistinguishable from a row that was never there: the
+// reference lands in UnresolvableRefs beside dangling, soft-deleted and
+// foreign ids, and attachment_count / attachment_bytes /
+// unresolvable_ref_count read identically. That equivalence is the point —
+// a preflight that answered differently for "hidden" than for "absent"
+// would be an existence oracle for attachment UUIDs, which is precisely
+// the class of hole PLAN-2391 has been closing.
+//
+// An error is fatal to the plan, never a silent denial: a failed
+// membership lookup must not read as "you may not see this".
+//
+// NIL MEANS NO CALLER-LEVEL AUTHORIZATION — every row that passes the
+// workspace scope is cloned. That is correct only for callers with no user
+// to authorize against (store-level tests). BOTH HTTP entry points, the
+// preflight and the copy, set it from the one place their shared
+// authorization ladder runs (server.resolveAuthorizedCopy), so a new
+// endpoint cannot reach the planner without going past it.
+type AttachmentAuthorizer func(models.Attachment) (bool, error)
 
 // AttachmentCopyRow is one attachment row to create in workspace B, plus
 // the source-side facts the caller needs in order to move bytes if it has
@@ -326,9 +377,19 @@ func (s *Store) PlanAttachmentCopy(req AttachmentCopyRequest) (*AttachmentCopyPl
 		return plan, nil
 	}
 
-	// Pass 1 — resolve the referenced ids, scoped.
+	// Pass 1 — resolve the referenced ids, scoped, then authorized.
+	//
+	// The authorization filter runs on EVERY resolution pass below, and
+	// always immediately after the load: a denied row is deleted from the
+	// map, so from this point on "the caller may not see it" and "it does
+	// not exist" are the same fact, expressed the same way, and every
+	// downstream classification treats them identically without knowing
+	// the difference exists (TASK-2408).
 	resolved, err := s.attachmentsByIDInWorkspace(req.SourceWorkspaceID, refs)
 	if err != nil {
+		return nil, err
+	}
+	if err := filterAuthorizedAttachments(resolved, req.Authorize); err != nil {
 		return nil, err
 	}
 
@@ -359,6 +420,12 @@ func (s *Store) PlanAttachmentCopy(req AttachmentCopyRequest) (*AttachmentCopyPl
 	if len(missingParents) > 0 {
 		parents, err := s.attachmentsByIDInWorkspace(req.SourceWorkspaceID, missingParents)
 		if err != nil {
+			return nil, err
+		}
+		// A parent the caller cannot see is not a clone root, exactly as a
+		// parent in another workspace is not: the reference below finds no
+		// entry and becomes unresolvable.
+		if err := filterAuthorizedAttachments(parents, req.Authorize); err != nil {
 			return nil, err
 		}
 		for id, a := range parents {
@@ -413,6 +480,29 @@ func (s *Store) PlanAttachmentCopy(req AttachmentCopyRequest) (*AttachmentCopyPl
 	if err != nil {
 		return nil, err
 	}
+	// Variants are authorized individually rather than inherited from the
+	// root. For well-formed data the two are the same answer — a derived
+	// row carries its parent's item_id — so this costs nothing on the
+	// legitimate path. For the malformed rows PLAN-2397 exists to repair
+	// (item_id pointing at another item, or at nothing) inheritance would
+	// be the confused-deputy escalation one level down, which is the exact
+	// mistake the DR-11a scope comment warns about for the workspace.
+	// A denied variant drops out of the plan; its root still clones.
+	if req.Authorize != nil {
+		for parentID, variants := range variantsByParent {
+			kept := variants[:0]
+			for _, v := range variants {
+				ok, err := req.Authorize(v)
+				if err != nil {
+					return nil, fmt.Errorf("plan attachment copy: authorize variant: %w", err)
+				}
+				if ok {
+					kept = append(kept, v)
+				}
+			}
+			variantsByParent[parentID] = kept
+		}
+	}
 
 	for _, root := range roots {
 		newRootID := plan.appendRow(req, root, nil)
@@ -421,6 +511,30 @@ func (s *Store) PlanAttachmentCopy(req AttachmentCopyRequest) (*AttachmentCopyPl
 		}
 	}
 	return plan, nil
+}
+
+// filterAuthorizedAttachments removes from rows every entry the caller's
+// authorizer denies. A nil authorizer keeps everything (see
+// AttachmentAuthorizer).
+//
+// Deletion, rather than a parallel "denied" set, is what makes a denial
+// unobservable: the planner's classification asks only whether an id is
+// present in the map, so the denied reference takes the identical branch a
+// dangling one takes and produces identical counts.
+func filterAuthorizedAttachments(rows map[string]models.Attachment, authorize AttachmentAuthorizer) error {
+	if authorize == nil {
+		return nil
+	}
+	for id, a := range rows {
+		ok, err := authorize(a)
+		if err != nil {
+			return fmt.Errorf("plan attachment copy: authorize %s: %w", id, err)
+		}
+		if !ok {
+			delete(rows, id)
+		}
+	}
+	return nil
 }
 
 // appendRow builds one destination row from a source attachment and adds
