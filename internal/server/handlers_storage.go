@@ -314,16 +314,6 @@ func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.
 		writeAttachmentNotFound(w)
 		return
 	}
-	// Refuse to delete derived (thumbnail) rows directly — they're
-	// auto-managed and deleting the original cascades. A direct
-	// delete here would leave the original without thumbnails until
-	// a future "regenerate" job runs.
-	if att.ParentID != nil {
-		writeError(w, http.StatusBadRequest, "derived_attachment",
-			"Cannot delete a thumbnail directly — delete the original.")
-		return
-	}
-
 	// Item-level visibility check. An editor with restricted collection
 	// access shouldn't be able to delete attachments in collections
 	// they can't see — even if they obtain the attachment ID some
@@ -404,6 +394,25 @@ func (s *Server) handleDeleteWorkspaceAttachment(w http.ResponseWriter, r *http.
 		// an edit grant on a foreign item would authorize deleting an
 		// attachment in THIS workspace.
 		writeAttachmentNotFound(w)
+		return
+	}
+
+	// Refuse to delete derived (thumbnail) rows directly — they're
+	// auto-managed and deleting the original cascades. A direct delete
+	// here would leave the original without thumbnails until a future
+	// "regenerate" job runs.
+	//
+	// Deliberately AFTER authorization, not before. This 400 is
+	// reachable only for a row that exists and is live, so emitting it
+	// ahead of the gates let a caller distinguish a guessed live
+	// thumbnail id (400) from an absent, foreign, or deleted one (the
+	// shared 404) — and hidden-parent and restricted callers got the 400
+	// too. Same existence oracle as the read and orphan paths; the
+	// classification is a usage error, so it may only be reported to
+	// someone already authorized to act on the row.
+	if att.ParentID != nil {
+		writeError(w, http.StatusBadRequest, "derived_attachment",
+			"Cannot delete a thumbnail directly — delete the original.")
 		return
 	}
 

@@ -444,3 +444,87 @@ func TestDeleteAttachment_OrphanRefusedToRestrictedMember(t *testing.T) {
 		}
 	}
 }
+
+// TestDeleteAttachment_DerivedRowIsNotAnOracle covers WHERE the derived-row
+// refusal sits relative to authorization.
+//
+// Deleting a thumbnail directly is a usage error and answers 400. But that
+// 400 is reachable only for a row that exists and is live, so emitting it
+// before the gates let anyone probe a guessed UUID: 400 meant "a live
+// thumbnail lives here", while an absent, foreign, or deleted id answered the
+// shared 404. Hidden-parent and restricted callers got the 400 too, learning
+// about a row they cannot see. Fifth instance of this branch's existence
+// oracle, found by the convergence sweep of PLAN-2391.
+//
+// The 400 is still correct FOR AN AUTHORIZED CALLER — asserted here so the
+// fix cannot regress into blanket-404ing a legitimate mistake.
+func TestDeleteAttachment_DerivedRowIsNotAnOracle(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	f := newDeleteAuthzFixture(t, srv)
+
+	variant := "thumb-md"
+	derived := &models.Attachment{
+		WorkspaceID: f.wsID,
+		ItemID:      &f.itemID,
+		ParentID:    &f.attID,
+		Variant:     &variant,
+		UploadedBy:  "system",
+		StorageKey:  "fs:authz-derived",
+		ContentHash: "authzhash-derived",
+		MimeType:    "image/png",
+		SizeBytes:   32,
+		Filename:    "bound.thumb-md.png",
+	}
+	if err := srv.store.CreateAttachment(derived); err != nil {
+		t.Fatalf("CreateAttachment derived: %v", err)
+	}
+
+	// An owner IS authorized, so they get the honest usage error.
+	owner := mkUser(t, srv, "derived-owner@test.com")
+	if err := srv.store.AddWorkspaceMember(f.wsID, owner.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember owner: %v", err)
+	}
+	authorized := deleteAsUser(srv, f.wsID, derived.ID, owner, "owner")
+	if authorized.Code != http.StatusBadRequest {
+		t.Fatalf("authorized derived delete: status = %d, want 400 — the usage error "+
+			"must survive for someone entitled to act on the row", authorized.Code)
+	}
+
+	// The lookup-miss baseline, same caller so only the id differs.
+	missing := deleteAsUser(srv, f.wsID, "00000000-0000-0000-0000-000000000000", owner, "owner")
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("baseline missing: status = %d, want 404", missing.Code)
+	}
+
+	// A restricted member must NOT be able to tell the live derived row from
+	// a nonexistent one.
+	restricted := mkUser(t, srv, "derived-restricted@test.com")
+	if err := srv.store.AddWorkspaceMember(f.wsID, restricted.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember restricted: %v", err)
+	}
+	otherCol, err := srv.store.CreateCollection(f.wsID, models.CollectionCreate{
+		Name: "Other", Schema: `{"fields":[]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(f.wsID, restricted.ID, "specific",
+		[]string{otherCol.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	probe := deleteAsUser(srv, f.wsID, derived.ID, restricted, "editor")
+	if probe.Code == http.StatusBadRequest {
+		t.Fatalf("restricted derived delete returned 400 — that answer is reachable only " +
+			"for a live row, so it confirms the thumbnail exists to someone who cannot " +
+			"see its parent")
+	}
+	if probe.Code != http.StatusNotFound {
+		t.Errorf("restricted derived delete: status = %d, want 404", probe.Code)
+	}
+	probeMissing := deleteAsUser(srv, f.wsID, "00000000-0000-0000-0000-000000000000", restricted, "editor")
+	if got, want := probe.Body.String(), probeMissing.Body.String(); got != want {
+		t.Errorf("restricted derived denial body = %q, lookup-miss body = %q — "+
+			"must be byte-identical", got, want)
+	}
+}
