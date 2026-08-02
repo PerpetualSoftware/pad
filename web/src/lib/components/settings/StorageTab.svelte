@@ -11,7 +11,8 @@
 		WorkspaceStorageInfo
 	} from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { categoryIcon, formatBytes, isImage } from '$lib/attachments/display';
+	import { iconForAttachment, formatBytes, isImage } from '$lib/attachments/display';
+	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
 
 	// ── Props ────────────────────────────────────────────────────────────────
 	interface Props {
@@ -45,8 +46,10 @@
 	let sortValue = $state<SortValue>('created_at_desc');
 
 	// ── Helpers ──────────────────────────────────────────────────────────────
-	// formatBytes / categoryIcon / isImage live in $lib/attachments/display
-	// (extracted in TASK-2383 so the item attachment strip shares them).
+	// formatBytes / iconForAttachment / isImage live in $lib/attachments/display
+	// (extracted in TASK-2383 so the item attachment strip shares them;
+	// categoryIcon became iconForAttachment in TASK-2417, which also moved the
+	// glyph to the shared SVG set in $lib/attachments/icons).
 
 	function formatDate(iso: string): string {
 		try {
@@ -344,7 +347,9 @@
 									loading="lazy"
 								/>
 							{:else}
-								<span aria-hidden="true">{categoryIcon(att.mime_type)}</span>
+								<span class="att-file-icon">
+									<AttachmentIcon id={iconForAttachment(att.mime_type, att.filename)} />
+								</span>
 							{/if}
 						</a>
 
@@ -589,6 +594,15 @@
 		font-size: 1.4em;
 		overflow: hidden;
 		text-decoration: none;
+	}
+
+	/* File-type icon (TASK-2417). Monochrome and currentColor-driven, so it
+	   themes with light/dark and stays visible under forced-colors. */
+	.att-file-icon {
+		display: flex;
+		color: var(--text-secondary);
+		font-size: 24px;
+		line-height: 1;
 	}
 
 	.att-thumb img {

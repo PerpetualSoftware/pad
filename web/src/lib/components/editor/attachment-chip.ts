@@ -23,7 +23,14 @@
  * (cached module-globally) to read Content-Type and Content-Length from
  * the existing GET handler — no new API endpoint needed. The fetched
  * MIME upgrades the icon from the filename-extension guess to the
- * canonical category icon, and the size is rendered alongside the name.
+ * canonical file-type icon, and the size is rendered alongside the name.
+ *
+ * Icon and byte formatting are the shared attachment helpers'
+ * (`$lib/attachments/display` + `$lib/attachments/icons`) as of TASK-2417 —
+ * this file used to carry its own `iconForMime` / `iconForFilename` /
+ * `formatBytes`. The one behavior that stayed local is hiding an unknown or
+ * zero size: the shared formatter renders "0 B", and per PLAN-2392 DR-3b the
+ * call site keeps that conditional rather than the helper growing a mode.
  */
 
 import { Node, mergeAttributes } from '@tiptap/core';
@@ -34,6 +41,8 @@ import {
 	fetchAttachmentMetadata
 } from './attachment-metadata';
 import { registerAttachmentDeletionListener } from '$lib/attachments/events';
+import { formatBytes, iconForAttachment } from '$lib/attachments/display';
+import { iconSvg } from '$lib/attachments/icons/index';
 
 const PAD_ATTACHMENT_PREFIX = 'pad-attachment:';
 
@@ -59,89 +68,6 @@ declare module '@tiptap/core' {
 			setAttachmentChip: (options: { uuid: string; filename: string }) => ReturnType;
 		};
 	}
-}
-
-/**
- * Map a MIME type to a category icon. Mirrors the server-side category
- * enum in `internal/attachments/mime.go`. When MIME is unknown (HEAD
- * failed or hasn't returned yet), falls back to a filename-extension
- * heuristic — same buckets, same icons, just a coarser source.
- */
-function iconForMime(mime: string): string {
-	const m = mime.toLowerCase();
-	if (m.startsWith('image/')) return '🖼️';
-	if (m.startsWith('video/')) return '🎥';
-	if (m.startsWith('audio/')) return '🎵';
-	if (m === 'application/pdf') return '📑';
-	if (
-		m === 'application/zip' ||
-		m === 'application/x-tar' ||
-		m === 'application/gzip' ||
-		m === 'application/x-bzip2' ||
-		m === 'application/x-7z-compressed'
-	)
-		return '🗜️';
-	if (
-		m === 'application/msword' ||
-		m === 'application/rtf' ||
-		m.includes('wordprocessingml') ||
-		m.includes('opendocument.text')
-	)
-		return '📄';
-	if (
-		m === 'application/vnd.ms-excel' ||
-		m.includes('spreadsheetml') ||
-		m.includes('opendocument.spreadsheet') ||
-		m === 'text/csv' ||
-		m === 'text/tab-separated-values'
-	)
-		return '📊';
-	if (
-		m === 'application/vnd.ms-powerpoint' ||
-		m.includes('presentationml') ||
-		m.includes('opendocument.presentation')
-	)
-		return '📽️';
-	if (
-		m === 'text/plain' ||
-		m === 'text/markdown' ||
-		m === 'application/json' ||
-		m === 'application/xml' ||
-		m === 'text/xml' ||
-		m === 'application/yaml' ||
-		m === 'text/yaml' ||
-		m === 'application/toml'
-	)
-		return '📝';
-	return '';
-}
-
-function iconForFilename(filename: string): string {
-	const ext = filename.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? '';
-	if (['pdf'].includes(ext)) return '📑';
-	if (['zip', 'tar', 'gz', '7z', 'bz2'].includes(ext)) return '🗜️';
-	if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) return '📄';
-	if (['xls', 'xlsx', 'ods', 'csv', 'tsv'].includes(ext)) return '📊';
-	if (['ppt', 'pptx', 'odp'].includes(ext)) return '📽️';
-	if (['mp4', 'webm', 'mov', 'mkv', 'avi'].includes(ext)) return '🎥';
-	if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(ext)) return '🎵';
-	if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'heic', 'heif'].includes(ext)) return '🖼️';
-	if (['txt', 'md', 'json', 'yaml', 'yml', 'xml', 'toml', 'html', 'js', 'ts'].includes(ext)) return '📝';
-	return '📎';
-}
-
-/** Format a byte count as a human-readable string ("832 B", "1.2 MB", "5 GB"). */
-function formatBytes(n: number): string {
-	if (!Number.isFinite(n) || n <= 0) return '';
-	if (n < 1024) return `${n} B`;
-	const units = ['KB', 'MB', 'GB', 'TB'];
-	let val = n / 1024;
-	let i = 0;
-	while (val >= 1024 && i < units.length - 1) {
-		val /= 1024;
-		i++;
-	}
-	return `${val < 10 ? val.toFixed(1) : Math.round(val).toString()} ${units[i]}`;
 }
 
 export const AttachmentChip = Node.create<AttachmentChipOptions>({
@@ -282,20 +208,15 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				nameEl.textContent = currentFilename || 'attachment';
 			};
 
-			// Icon resolution mirrors the original logic: prefer the MIME
-			// category icon when HEAD has resolved AND it produced a
-			// non-empty result (iconForMime returns '' for unknown MIME).
-			// Otherwise fall back to the filename-extension heuristic so
-			// the chip is never left iconless.
+			// Icon resolution is the shared mapper's (TASK-2417): MIME first,
+			// filename-extension second, generic file last, so the chip is
+			// never left iconless and never shows a "❓". `currentMime` is
+			// null until the HEAD probe resolves, which is exactly the
+			// filename-fallback case the mapper's second argument exists for.
+			// innerHTML (not textContent) because the icons are SVG now;
+			// iconSvg() interpolates only repo constants.
 			const refreshIcon = (): void => {
-				if (currentMime) {
-					const refined = iconForMime(currentMime);
-					if (refined) {
-						iconEl.textContent = refined;
-						return;
-					}
-				}
-				iconEl.textContent = iconForFilename(currentFilename);
+				iconEl.innerHTML = iconSvg(iconForAttachment(currentMime, currentFilename));
 			};
 
 			/**
@@ -305,6 +226,14 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			 * new tab (Codex round 13). The strip broadcasts deletions, so mark
 			 * the chip dead in place instead: same .attachment-missing
 			 * treatment the markdown renderer uses for a missing reference.
+			 *
+			 * The dead state is carried by the .attachment-missing CLASS, not by
+			 * the icon (TASK-2417). It used to swap the glyph to a paperclip,
+			 * which the SVG set can't reproduce without inventing a "missing"
+			 * icon that is a state rather than a format family — and a later
+			 * filename update calls refreshIcon() and would quietly overwrite it
+			 * anyway. app.css styles .file-chip.attachment-missing instead, so
+			 * type and state are independent and neither clobbers the other.
 			 */
 			let deleted = false;
 			const markDeleted = (): void => {
@@ -314,8 +243,12 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				wrapper.removeAttribute('download');
 				wrapper.title = 'This attachment has been deleted';
 				sizeEl.textContent = '';
-				iconEl.textContent = '📎';
 			};
+
+			// Set by destroy(). A HEAD probe outlives the NodeView that started
+			// it, and writing to detached DOM after teardown is at best wasted
+			// work — same fence shape as the `forUuid` check below.
+			let destroyed = false;
 
 			const disposeDeletionListener = registerAttachmentDeletionListener((deletedUuid) => {
 				if (deletedUuid === currentUuid) markDeleted();
@@ -375,10 +308,17 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 					this.options.getDownloadUrl,
 				).then((meta) => {
 					if (!meta) return;
+					if (destroyed) return; // NodeView torn down while HEAD was in flight
+					if (deleted) return; // the target is gone; don't un-mark the chip
 					if (currentUuid !== forUuid) return; // superseded
 					currentMime = meta.mime;
 					refreshIcon();
-					const size = formatBytes(meta.size);
+					// The shared formatter renders "0 B" and doesn't guard
+					// non-finite input; a chip with no known size should show
+					// nothing at all, so the conditional lives here rather
+					// than in the helper (PLAN-2392 DR-3b).
+					const size =
+						Number.isFinite(meta.size) && meta.size > 0 ? formatBytes(meta.size) : '';
 					sizeEl.textContent = size ? `· ${size}` : '';
 				});
 			};
@@ -427,6 +367,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 					return true;
 				},
 				destroy() {
+					destroyed = true;
 					disposeDeletionListener();
 				},
 			};

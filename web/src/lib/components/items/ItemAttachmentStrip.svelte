@@ -23,7 +23,8 @@
 	import { untrack } from 'svelte';
 	import { api, PadApiError } from '$lib/api/client';
 	import type { AttachmentListItem } from '$lib/types';
-	import { categoryIcon, formatBytes, isImage } from '$lib/attachments/display';
+	import { iconForAttachment, formatBytes, isImage } from '$lib/attachments/display';
+	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
 	import Lightbox, { type LightboxImage } from '$lib/components/common/Lightbox.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -382,7 +383,9 @@
 							title={tileLabel(att)}
 							aria-label={tileLabel(att)}
 						>
-							<span class="att-icon" aria-hidden="true">{categoryIcon(att.mime_type)}</span>
+							<span class="att-icon">
+								<AttachmentIcon id={iconForAttachment(att.mime_type, att.filename)} />
+							</span>
 							<span class="att-name" aria-hidden="true">{att.filename}</span>
 						</a>
 					{/if}
@@ -539,8 +542,11 @@
 		border-radius: 2px;
 	}
 
+	/* File-type icon (TASK-2417). Monochrome and currentColor-driven, so it
+	   themes with light/dark and stays visible under forced-colors. */
 	.att-icon {
-		font-size: 1.1em;
+		display: flex;
+		font-size: 1.4em;
 		line-height: 1;
 	}
 

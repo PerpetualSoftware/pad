@@ -372,10 +372,35 @@ input:focus, textarea:focus {
 	border-color: color-mix(in srgb, var(--accent-blue) 35%, var(--border));
 	text-decoration: none;
 }
+/* The editor NodeView renders an SVG file-type icon here (TASK-2417); the
+   read-only markdown render path still emits a text glyph, so these rules
+   have to work for both. currentColor keeps the SVG themed and
+   forced-colors safe. */
 .file-chip-icon {
 	flex-shrink: 0;
+	display: flex;
+	align-items: center;
 	font-size: 1.05em;
 	line-height: 1;
+}
+.file-chip-icon > svg {
+	color: var(--text-secondary);
+}
+
+/* Deleted / missing target. The chip used to signal this by swapping its
+   glyph to a paperclip; the icon now says what KIND of file it is, so the
+   dead state gets its own treatment on the chip instead (TASK-2417). The
+   compound selector keeps this off the markdown renderer's bare
+   .attachment-missing span, which has its own inline marker. */
+.file-chip.attachment-missing {
+	color: var(--text-muted);
+	border-style: dashed;
+	cursor: default;
+	text-decoration: line-through;
+}
+.file-chip.attachment-missing:hover {
+	background: var(--bg-tertiary);
+	border-color: var(--border-subtle);
 }
 .file-chip-name {
 	overflow: hidden;
