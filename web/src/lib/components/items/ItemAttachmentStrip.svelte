@@ -27,6 +27,7 @@
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
 	import Lightbox, { type LightboxImage } from '$lib/components/common/Lightbox.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
+	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import {
 		announceAttachmentDeleted,
@@ -71,11 +72,23 @@
 		liveContent = null,
 	}: Props = $props();
 
-	// Hard bound on what the strip will ever hold (DR-9). Past this the strip
-	// links out to Settings → Storage rather than paginating in place.
+	// Hard bound on what the strip will ever hold (DR-9 / DR-11). Past this the
+	// strip links out to Settings → Storage rather than paginating in place.
+	//
+	// This is a real bound, not just a fetch `limit`: EVERY path that grows the
+	// in-memory list runs through `capped()` — the load-time merge, the upload
+	// event, and the pending-upload buffer that feeds the merge. Bounding only
+	// the merged output would still let a long paste session grow
+	// `pendingUploads` without limit, and that list also feeds the lightbox
+	// (PLAN-2392 DR-11).
 	const MAX_FETCH = 50;
 	// Tiles shown before the `+N` chip. Expanding scrolls within one row.
 	const COLLAPSED_TILES = 8;
+	// Grace period before a load paints a "Loading attachments…" row. Most
+	// fetches land well inside it, so the common no-attachments item still
+	// renders nothing at all (DR-18) instead of flashing a block above the
+	// editor — while a genuinely slow load is still distinguishable from empty.
+	const LOADING_DELAY_MS = 200;
 
 	/**
 	 * Only what a tile renders. Deliberately narrower than AttachmentListItem:
@@ -100,9 +113,46 @@
 		};
 	}
 
+	/** Trim to the hard bound, newest-first order preserved (DR-11). */
+	function capped(list: StripAttachment[]): StripAttachment[] {
+		return list.length > MAX_FETCH ? list.slice(0, MAX_FETCH) : list;
+	}
+
 	let attachments = $state<StripAttachment[]>([]);
 	let expanded = $state(false);
 	let lightbox = $state<{ images: LightboxImage[]; index: number } | null>(null);
+
+	// Three distinguishable states, not two (DR-10). `loadFailed` is what stops
+	// a fetch failure from rendering as "no attachments"; `showLoading` is the
+	// delayed in-flight marker. Empty stays invisible — no section at all.
+	let loadFailed = $state(false);
+	/**
+	 * Item whose load produced the CURRENTLY PAINTED error. Retry validates
+	 * against this rather than the live `itemId`: props update synchronously
+	 * but effects flush later, so a click landing in that window would
+	 * otherwise record a retry for the item the user just moved TO and carry
+	 * the old item's rows across the switch (Codex round 11).
+	 */
+	let loadFailedFor: string | null = null;
+	let showLoading = $state(false);
+	/**
+	 * How many of this item's attachments exist BEYOND the ones the strip
+	 * holds — the response's `total` minus what it returned, plus anything the
+	 * MAX_FETCH cap shed. Deliberately a delta rather than an absolute total:
+	 * the strip mutates `attachments` locally (delete, upload) and a stored
+	 * absolute would drift, advertising a "View all (N)" for rows that are no
+	 * longer there. Zero means the strip holds everything (DR-18).
+	 */
+	let beyondStripCount = $state(0);
+	/** Bumped by Retry to re-run the load effect. */
+	let retryNonce = $state(0);
+	/**
+	 * Item id whose load was triggered by an explicit Retry, consumed by the
+	 * next effect run. Plain (non-reactive) on purpose: it must not itself
+	 * re-trigger the effect, and it is keyed by item id so a switch between the
+	 * click and the flush doesn't apply the retry to a different item.
+	 */
+	let retryRequestedFor: string | null = null;
 
 	// Monotonic load generation — bumped on every (re)run of the fetch effect
 	// so an in-flight response for item A can never write under item B.
@@ -125,20 +175,55 @@
 	$effect(() => {
 		const reqItemId = itemId;
 		const reqWsSlug = wsSlug;
+		// Read (and discard) so Retry re-runs this effect. The value never
+		// matters — only the dependency does.
+		void retryNonce;
 		const gen = ++loadGeneration;
+
+		// Claim the retry marker whether or not this run goes on to fetch, so a
+		// stale claim can't leak into a later, unrelated load. Read BEFORE the
+		// reset below, which branches on it.
+		const isRetry = retryRequestedFor !== null && retryRequestedFor === reqItemId;
+		retryRequestedFor = null;
 
 		// Clear synchronously on switch. Without this, A's tiles stay painted
 		// under B for the duration of B's request (or forever, if B has none).
 		// untrack: this effect must not depend on the state it writes.
+		//
+		// A Retry is the SAME item reloading, not a switch, so it keeps what
+		// the failure deliberately preserved — uploads that succeeded while the
+		// list request was in flight, and the tombstones for rows confirmed
+		// deleted. Wiping them would make a second failure lose rows the server
+		// and the editor both have (Codex round 1).
 		untrack(() => {
-			attachments = [];
-			expanded = false;
-			lightbox = null;
-			deletedIds = new Set();
-			pendingUploads = [];
+			if (!isRetry) {
+				attachments = [];
+				expanded = false;
+				lightbox = null;
+				deletedIds = new Set();
+				pendingUploads = [];
+				beyondStripCount = 0;
+			}
+			loadFailed = false;
+			loadFailedFor = null;
+			showLoading = false;
 		});
 
 		if (!reqItemId || !reqWsSlug) return;
+
+		// Delayed loading marker (see LOADING_DELAY_MS). Fenced like every other
+		// deferred write in this component.
+		let loadingTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+			loadingTimer = null;
+			if (switchedAway(gen, reqItemId)) return;
+			showLoading = true;
+		}, LOADING_DELAY_MS);
+		function stopLoadingMarker() {
+			if (loadingTimer !== null) {
+				clearTimeout(loadingTimer);
+				loadingTimer = null;
+			}
+		}
 
 		void (async () => {
 			try {
@@ -147,18 +232,58 @@
 					limit: MAX_FETCH,
 				});
 				if (switchedAway(gen, reqItemId)) return;
-				const rows = (res.attachments ?? [])
-					.filter((a) => !deletedIds.has(a.id))
-					.map(toStripAttachment);
+				const raw = res.attachments ?? [];
+				const rows = raw.filter((a) => !deletedIds.has(a.id)).map(toStripAttachment);
 				const seen = new Set(rows.map((a) => a.id));
 				const missed = pendingUploads.filter(
 					(a) => !seen.has(a.id) && !deletedIds.has(a.id)
 				);
-				attachments = [...missed, ...rows];
+				// Cap the MERGE, not just the response: `missed` rides on top of
+				// up to MAX_FETCH server rows (DR-11).
+				const merged = [...missed, ...rows];
+				attachments = capped(merged);
+				// The continuation count is anchored on the server's `total` —
+				// one authority, corrected — rather than summed from
+				// independent per-source deltas, which double-counted uploads
+				// the response also reported (Codex rounds 1 and 3).
+				//
+				// `res.total` counts every live row at query time. Three
+				// corrections:
+				//   - subtract rows the page returned that we know are deleted;
+				//     `total` predates those deletions. Only rows IN the page
+				//     are countable — `deletedIds` is a workspace-wide bus and
+				//     may hold ids belonging to other items.
+				//   - add the uploads this page did NOT return: the GET can have
+				//     been issued before they existed, so `total` predates them
+				//     (Codex round 5).
+				//   - floor it at what we actually hold, in case an upload beat
+				//     the count.
+				//
+				// Acknowledged approximation: uploads the PENDING BUFFER's own
+				// cap shed (>MAX_FETCH uploads during a single in-flight
+				// request) are not counted — we can't tell whether `total`
+				// already includes them, and counting them unconditionally
+				// double-counts the ordinary case where the response does
+				// (Codex rounds 3 and 5 pull in opposite directions here). The
+				// next successful load corrects it.
+				const reportedTotal = Math.max(0, (res.total ?? raw.length) - (raw.length - rows.length));
+				const trueTotal = Math.max(reportedTotal + missed.length, merged.length);
+				beyondStripCount = Math.max(0, trueTotal - attachments.length);
+				if (isRetry) {
+					// A retry is the user telling us the outage is over. The
+					// per-attachment HEAD cache latches `null` on failure and
+					// lives for the page lifetime, so chips and inline images
+					// for these same rows would stay poisoned from the same
+					// outage — drop their entries now that we have real ids
+					// (DR-10). Dropping a healthy entry is harmless: the cache
+					// holds immutable data and nothing refetches eagerly.
+					for (const a of attachments) invalidateAttachmentMetadata(reqWsSlug, a.id);
+				}
 			} catch {
-				// A failed fetch renders as "no attachments" — the strip is a
-				// secondary affordance and an error banner above the editor
-				// would be louder than the feature is worth.
+				// A failed fetch is NOT "no attachments" — it renders as a
+				// distinguishable, retryable error (DR-10). It used to be
+				// swallowed, which made a broken strip and an empty one
+				// identical.
 				//
 				// Item-grant GUESTS land here: the list endpoint is viewer+ and
 				// roleLevel("guest") is below viewer, so they 403. That gap is
@@ -168,18 +293,49 @@
 				// Keep anything uploaded while this request was in flight: the
 				// upload SUCCEEDED, so dropping it would hide a row the editor
 				// and server both have, until a remount (Codex review round 2).
-				attachments = pendingUploads.filter((a) => !deletedIds.has(a.id));
+				attachments = capped(pendingUploads.filter((a) => !deletedIds.has(a.id)));
+				loadFailed = true;
+				loadFailedFor = reqItemId;
+			} finally {
+				stopLoadingMarker();
+				if (!switchedAway(gen, reqItemId)) showLoading = false;
 			}
 		})();
 
 		// Teardown invalidates the captured generation too, so a request still
 		// in flight when the component is destroyed loses the fence instead of
 		// writing into a dead instance (Codex round 4). The api wrapper has no
-		// abort signal, so this is the only lever.
+		// abort signal, so this is the only lever. The pending loading timer
+		// goes with it — otherwise it fires into a dead instance.
 		return () => {
 			loadGeneration++;
+			stopLoadingMarker();
 		};
 	});
+
+	/**
+	 * Re-run the load after a failure (DR-10).
+	 *
+	 * Invalidates the shared per-attachment metadata cache for everything the
+	 * strip currently knows BEFORE refetching: `fetchAttachmentMetadata` caches
+	 * `null` on a failed HEAD for the page lifetime, so a retry that doesn't
+	 * clear it replays the cached failure on every surface that probed during
+	 * the outage. The rows the refetch returns get the same treatment (see the
+	 * `isRetry` arm above) — at failure time this list holds only whatever was
+	 * uploaded while the request was in flight.
+	 */
+	function retryLoad() {
+		if (!itemId || !wsSlug) return;
+		// The painted error must belong to the item that is current NOW. If the
+		// parent has already swapped `itemId` and this effect hasn't flushed yet, the
+		// click is stale: the incoming item's own load is already on its way,
+		// and honouring the retry would preserve the previous item's rows
+		// across the switch (Codex round 11).
+		if (loadFailedFor !== itemId) return;
+		for (const a of attachments) invalidateAttachmentMetadata(wsSlug, a.id);
+		retryRequestedFor = itemId;
+		retryNonce++;
+	}
 
 	// Deletions broadcast on the shared registry — from Settings → Storage, or
 	// from ANOTHER strip (the split-pane host mounts two ItemDetails, so two
@@ -187,6 +343,14 @@
 	// mounted strip agreeing with the editors, which already subscribe
 	// (Codex round 17). Emitting our own delete re-enters this harmlessly: the
 	// row is already gone, and the filter is idempotent.
+	//
+	// A deletion of a row the strip HOLDS shrinks `attachments`, and the
+	// continuation count (a delta) stays correct on its own. A deletion of a
+	// row PAST the bound can't be reconciled — this bus is workspace-wide, so
+	// an id we don't hold may belong to another item entirely, and decrementing
+	// on it would corrupt this item's count. The continuation can therefore
+	// overstate by one until the next load; that is the safe direction, and it
+	// self-corrects (Codex round 5).
 	$effect(() => {
 		return registerAttachmentDeletionListener((deletedUuid) => {
 			deletedIds.add(deletedUuid);
@@ -206,10 +370,18 @@
 			// content dedupe — identical bytes share a blob but still get their
 			// own attachment row and id.
 			if (!pendingUploads.some((a) => a.id === uploaded.id)) {
-				pendingUploads = [uploaded, ...pendingUploads];
+				// Capped like everything else (DR-11): this buffer is merged on
+				// top of a full page of server rows, so leaving it unbounded
+				// leaves the merge unbounded too.
+				pendingUploads = capped([uploaded, ...pendingUploads]);
 			}
 			if (attachments.some((a) => a.id === uploaded.id)) return;
-			attachments = [uploaded, ...attachments];
+			// Newest-first, so the cap sheds the oldest rows — but they still
+			// exist, so they move into the continuation's count rather than
+			// vanishing from it.
+			const next = [uploaded, ...attachments];
+			beyondStripCount += Math.max(0, next.length - MAX_FETCH);
+			attachments = capped(next);
 		});
 	});
 
@@ -225,9 +397,39 @@
 	// (DR-9) — otherwise an item with >50 attachments advertises a count that
 	// expanding cannot reveal.
 	let overflowCount = $derived(attachments.length - visible.length);
-	// At the bound we can't know whether more exist, so point at the one
-	// surface that can page through everything.
-	let atBound = $derived(attachments.length >= MAX_FETCH);
+	/** Whether anything exists beyond what the strip holds. */
+	let hasMoreThanStrip = $derived(beyondStripCount > 0);
+	/** The item's true attachment count, strip + everything past the bound. */
+	let continuationTotal = $derived(attachments.length + beyondStripCount);
+	/**
+	 * Header count (DR-18). When the strip holds everything, the fetched rows
+	 * ARE the total. When it doesn't — at the fetch bound — it says `50+`
+	 * rather than a precise figure expanding can never reach (DR-9); the exact
+	 * number rides on the "View all" link, which goes somewhere that can
+	 * actually show them.
+	 */
+	let headerCount = $derived(
+		!hasMoreThanStrip
+			? String(attachments.length)
+			: attachments.length > 0
+				? `${attachments.length}+`
+				: // Nothing held but rows exist past the bound (every held row
+					// deleted, say). We know the figure exactly here, so say it.
+					String(continuationTotal)
+	);
+	/** Whether the header has a count worth showing at all. */
+	let showCount = $derived(attachments.length > 0 || hasMoreThanStrip);
+	/**
+	 * Item-scoped continuation (DR-18): `attachment_item` is read by the
+	 * settings route and seeds StorageTab's `item_id` filter, so "View all"
+	 * lands on THIS item's attachments rather than dumping the user into the
+	 * workspace-wide list.
+	 */
+	let storageHref = $derived(
+		itemId
+			? `/${username}/${wsSlug}/settings?attachment_item=${encodeURIComponent(itemId)}#storage`
+			: `/${username}/${wsSlug}/settings#storage`
+	);
 
 	// Image tiles in strip order, so the lightbox's ←/→ page through the
 	// item's images (DR-8 — the existing Lightbox, not a second one).
@@ -298,19 +500,24 @@
 		// Capture identity BEFORE the await: a switch mid-delete must not roll
 		// the tile back into a DIFFERENT item's strip, and must not toast over
 		// it. The DELETE itself still lands — it targets an id, not a view.
+		// `wsSlug` is captured for the same reason: it is reactive, and the
+		// broadcast + metadata-cache key must name the workspace the DELETE
+		// actually targeted, not whichever one is current when it resolves
+		// (Codex round 6).
 		const gen = loadGeneration;
 		const reqItemId = itemId;
+		const reqWsSlug = wsSlug;
 		const index = attachments.findIndex((a) => a.id === att.id);
 
 		// Optimistic removal.
 		attachments = attachments.filter((a) => a.id !== att.id);
 
 		try {
-			await api.attachments.delete(wsSlug, att.id);
+			await api.attachments.delete(reqWsSlug, att.id);
 			// Tell the live views and drop the cached metadata. An <img> that
 			// already loaded never re-requests, so without this the body keeps
 			// showing a healthy image the server no longer has until reload.
-			announceAttachmentDeleted(wsSlug, att.id);
+			announceAttachmentDeleted(reqWsSlug, att.id);
 		} catch (err) {
 			if (switchedAway(gen, reqItemId ?? '')) return;
 
@@ -326,7 +533,7 @@
 				// gone, so it gets the same broadcast — otherwise an editor
 				// NodeView or another mounted strip in this tab stays stale
 				// precisely when we have proof it should not (Codex round 19).
-				announceAttachmentDeleted(wsSlug, att.id);
+				announceAttachmentDeleted(reqWsSlug, att.id);
 				return;
 			}
 
@@ -340,9 +547,15 @@
 			// snapshot would resurrect rows a concurrent delete removed
 			// successfully (delete A then B, B succeeds, A fails, A's snapshot
 			// brings B back — Codex round 2).
+			//
+			// Through capped() like every other growth path: an upload landing
+			// while the delete was in flight can have taken the list back to
+			// MAX_FETCH, so a bare re-insert would push it to 51
+			// (Codex round 1).
 			const restored = attachments.slice();
 			restored.splice(Math.max(0, Math.min(index, restored.length)), 0, att);
-			attachments = restored;
+			beyondStripCount += Math.max(0, restored.length - MAX_FETCH);
+			attachments = capped(restored);
 			toastStore.show(
 				code === 'forbidden'
 					? `You don't have permission to delete ${att.filename}.`
@@ -353,77 +566,110 @@
 	}
 </script>
 
-{#if attachments.length > 0}
+<!--
+	Three states, and only three (DR-10 / DR-18):
+	  loading  — a slow fetch, past the grace delay
+	  failed   — a distinguishable error with Retry
+	  loaded   — the tiles
+	An item with NO attachments renders no element at all; an empty wrapper
+	would still take the parent flex column's gap and leave a hole above the
+	editor, and an "Attachments — none" block on every un-attached item is
+	noise on the primary authoring surface.
+-->
+{#if showLoading || loadFailed || attachments.length > 0 || hasMoreThanStrip}
 	<section class="attachment-strip" aria-label="Attachments">
-		<div class="fields-header">Attachments · {attachments.length}</div>
-		<div class="strip-row">
-			{#each visible as att (att.id)}
-				<!-- The delete control can't nest inside the tile's own button /
-				     anchor, so each tile gets a positioned wrapper. -->
-				<div class="att-cell">
-					{#if isImage(att.mime_type)}
+		<div class="fields-header">
+			Attachments{showCount ? ` · ${headerCount}` : ''}
+		</div>
+
+		{#if showLoading && attachments.length === 0}
+			<div class="att-status" aria-live="polite">Loading attachments…</div>
+		{:else}
+			{#if loadFailed}
+				<div class="att-error" role="status">
+					<span class="att-error-mark" aria-hidden="true">⚠</span>
+					<span>Couldn't load attachments.</span>
+					<button type="button" class="att-retry" onclick={retryLoad}>Retry</button>
+				</div>
+			{/if}
+			{#if attachments.length > 0 || hasMoreThanStrip}
+				<div class="strip-row">
+					{#each visible as att (att.id)}
+						<!-- The delete control can't nest inside the tile's own button /
+						     anchor, so each tile gets a positioned wrapper. -->
+						<div class="att-cell">
+							{#if isImage(att.mime_type)}
+								<button
+									type="button"
+									class="att-tile"
+									title={tileLabel(att)}
+									aria-label={tileLabel(att)}
+									onclick={() => openLightbox(att)}
+								>
+									<img
+										src={api.attachments.downloadUrl(wsSlug, att.id, 'thumb-sm')}
+										alt=""
+										loading="lazy"
+									/>
+								</button>
+							{:else}
+								<a
+									class="att-tile"
+									href={api.attachments.downloadUrl(wsSlug, att.id)}
+									download={att.filename}
+									title={tileLabel(att)}
+									aria-label={tileLabel(att)}
+								>
+									<span class="att-icon">
+										<AttachmentIcon id={iconForAttachment(att.mime_type, att.filename)} />
+									</span>
+									<span class="att-name" aria-hidden="true">{att.filename}</span>
+								</a>
+							{/if}
+
+							{#if canDelete}
+								<!-- Always in the DOM (never hover-gated in markup) so it's
+								     keyboard reachable; CSS reveals it on hover / focus-within
+								     and it stays visible whenever it has focus. -->
+								<button
+									type="button"
+									class="att-delete"
+									title="Delete {att.filename}"
+									aria-label="Delete {att.filename}"
+									onclick={() => handleDelete(att)}
+								>
+									×
+								</button>
+							{/if}
+						</div>
+					{/each}
+
+					{#if overflowCount > 0}
 						<button
 							type="button"
-							class="att-tile"
-							title={tileLabel(att)}
-							aria-label={tileLabel(att)}
-							onclick={() => openLightbox(att)}
+							class="att-more att-more-expand"
+							onclick={() => (expanded = true)}
+							aria-label="Show {overflowCount} more attachment{overflowCount === 1 ? '' : 's'}"
 						>
-							<img
-								src={api.attachments.downloadUrl(wsSlug, att.id, 'thumb-sm')}
-								alt=""
-								loading="lazy"
-							/>
+							+{overflowCount}
 						</button>
-					{:else}
+					{/if}
+
+					{#if hasMoreThanStrip}
+						<!-- Item-scoped continuation (DR-18): always offered when there
+						     is more than the strip holds, not only once expanded, and
+						     scoped to this item rather than the workspace-wide list. -->
 						<a
-							class="att-tile"
-							href={api.attachments.downloadUrl(wsSlug, att.id)}
-							download={att.filename}
-							title={tileLabel(att)}
-							aria-label={tileLabel(att)}
+							class="att-more att-more-link"
+							href={storageHref}
+							title="View all attachments for this item"
 						>
-							<span class="att-icon">
-								<AttachmentIcon id={iconForAttachment(att.mime_type, att.filename)} />
-							</span>
-							<span class="att-name" aria-hidden="true">{att.filename}</span>
+							View all ({continuationTotal})
 						</a>
 					{/if}
-
-					{#if canDelete}
-						<!-- Always in the DOM (never hover-gated in markup) so it's
-						     keyboard reachable; CSS reveals it on hover / focus-within
-						     and it stays visible whenever it has focus. -->
-						<button
-							type="button"
-							class="att-delete"
-							title="Delete {att.filename}"
-							aria-label="Delete {att.filename}"
-							onclick={() => handleDelete(att)}
-						>
-							×
-						</button>
-					{/if}
 				</div>
-			{/each}
-
-			{#if overflowCount > 0}
-				<button
-					type="button"
-					class="att-more"
-					onclick={() => (expanded = true)}
-					aria-label="Show {overflowCount} more attachment{overflowCount === 1 ? '' : 's'}"
-				>
-					+{overflowCount}
-				</button>
 			{/if}
-
-			{#if atBound && expanded}
-				<a class="att-more att-more-link" href="/{username}/{wsSlug}/settings#storage">
-					All files
-				</a>
-			{/if}
-		</div>
+		{/if}
 	</section>
 {/if}
 
@@ -455,6 +701,41 @@
 		color: var(--text-muted);
 		padding: var(--space-2) 0;
 		margin-bottom: var(--space-1);
+	}
+
+	/* Loading / failed rows. Deliberately compact — the strip is a secondary
+	   affordance, so a failure states itself and offers a retry without
+	   turning into a banner (DR-10). */
+	.att-status,
+	.att-error {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: 0.8em;
+		color: var(--text-muted);
+	}
+	/* The TEXT stays on --text-primary: --accent-red is #ef4444 in the light
+	   theme, roughly 3.5:1 on the page background, which fails AA for
+	   normal-size body text (Codex round 2). The red is carried by the
+	   decorative mark instead, where the 3:1 non-text threshold applies. */
+	.att-error {
+		color: var(--text-primary);
+	}
+	.att-error-mark {
+		color: var(--accent-red, #c00);
+	}
+
+	.att-retry {
+		padding: 2px var(--space-2);
+		border: 1px solid currentColor;
+		border-radius: var(--radius-sm, 4px);
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		cursor: pointer;
+	}
+	.att-retry:hover {
+		background: var(--bg-secondary, transparent);
 	}
 
 	/* Single row, always — never wraps to a second line. */

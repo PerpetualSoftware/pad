@@ -136,9 +136,19 @@ test.describe('item attachment strip', () => {
 		await browserLogin(page);
 
 		const doc = await seedDoc(fixture, request, 'Strip host empty');
+		// Arm BEFORE navigating: absence is only meaningful once the strip's
+		// list request has actually answered. Without this the assertion can
+		// pass while the fetch is still in flight — and since TASK-2418 a slow
+		// fetch deliberately paints a loading row, which would make the timing
+		// visible rather than merely unproven.
+		const listSettled = page.waitForResponse(
+			(r) => r.request().method() === 'GET' && r.url().includes('/attachments?'),
+			{ timeout: 15_000 }
+		);
 		await page.goto(itemUrl(fixture, doc.slug));
 		// Wait for the editor so we know the page settled before asserting absence.
 		await expect(page.locator('.editor-content .ProseMirror').first()).toBeVisible();
+		await listSettled;
 		await expect(page.locator(STRIP)).toHaveCount(0);
 	});
 
@@ -164,12 +174,22 @@ test.describe('item attachment strip', () => {
 			await route.fallback();
 		});
 
+		// `listCalls` counts REQUESTS (the route handler runs at request time),
+		// so it can't tell us the load finished — wait on the RESPONSE for
+		// that. Armed before navigating, per the empty-item test above.
+		const listSettled = page.waitForResponse(
+			(r) => r.request().method() === 'GET' && r.url().includes('/attachments?'),
+			{ timeout: 15_000 }
+		);
 		await page.goto(itemUrl(fixture, doc.slug));
 		await expect(page.locator('.editor-content .ProseMirror').first()).toBeVisible();
-		await expect(page.locator(STRIP)).toHaveCount(0);
-		// Let the initial GET settle before the drop, so the count below is a
-		// clean baseline AND the fetch-vs-upload merge isn't what we're relying on.
+		// Let the initial GET settle FIRST, so the count below is a clean
+		// baseline, the fetch-vs-upload merge isn't what we're relying on, and
+		// the absence assertion isn't racing the in-flight load (which since
+		// TASK-2418 paints a loading row when it is slow).
+		await listSettled;
 		await expect.poll(() => listCalls, { timeout: 10_000 }).toBeGreaterThan(0);
+		await expect(page.locator(STRIP)).toHaveCount(0);
 		const callsBeforeDrop = listCalls;
 
 		// TASK-2385: the upload announces on the attachment event bus and the

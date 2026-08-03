@@ -68,6 +68,14 @@ vi.mock('$lib/attachments/events', () => ({
 // mock above splits them back out so tests can assert each half.
 const invalidateMock = vi.fn<(ws: string, uuid: string) => void>();
 
+// The strip also reaches the shared HEAD-metadata cache directly, on Retry
+// (PLAN-2392 DR-10) — a separate spy from the events bus's, so the two can be
+// asserted independently.
+const invalidateMetadataMock = vi.fn<(ws: string, uuid: string) => void>();
+vi.mock('$lib/components/editor/attachment-metadata', () => ({
+	invalidateAttachmentMetadata: (ws: string, uuid: string) => invalidateMetadataMock(ws, uuid),
+}));
+
 vi.mock('$lib/stores/toast.svelte', () => ({
 	toastStore: { show: (message: string, kind?: string) => toastMock(message, kind) },
 }));
@@ -131,6 +139,7 @@ describe('ItemAttachmentStrip', () => {
 		toastMock.mockReset();
 		notifyDeletedMock.mockReset();
 		invalidateMock.mockReset();
+		invalidateMetadataMock.mockReset();
 		props.wsSlug = 'ws';
 		props.username = 'dave';
 		props.itemId = null;
@@ -270,27 +279,154 @@ describe('ItemAttachmentStrip', () => {
 		await settle();
 
 		expect(tiles()).toHaveLength(8);
-		const more = target.querySelector<HTMLElement>('.att-more');
+		const more = target.querySelector<HTMLElement>('.att-more-expand');
 		expect(more?.textContent?.trim()).toBe('+4');
 
 		more?.click();
 		flushSync();
 		expect(tiles()).toHaveLength(12);
-		expect(target.querySelector('.att-more')).toBeNull();
+		expect(target.querySelector('.att-more-expand')).toBeNull();
 	});
 
-	it('links out to Settings → Storage once expanded at the 50-row bound', async () => {
+	it('offers an item-scoped "View all" continuation at the 50-row bound', async () => {
+		// PLAN-2392 DR-18: the continuation is offered WITHOUT expanding first,
+		// carries the item's real total, and lands on this item's attachments
+		// rather than the workspace-wide Storage list.
 		const rows = Array.from({ length: 50 }, (_, i) => att({ id: `a${i}` }));
 		listMock.mockResolvedValue({ attachments: rows, total: 120, limit: 50, offset: 0 });
 		mountStrip('item-a');
 		await settle();
 
-		expect(target.querySelector<HTMLElement>('.att-more')?.textContent?.trim()).toBe('+42');
-		target.querySelector<HTMLElement>('.att-more')?.click();
+		// The header can't claim 120 — expanding reaches only the 50 fetched —
+		// so it says "50+" and the exact figure lives on the link.
+		expect(target.querySelector('.fields-header')?.textContent?.trim()).toBe(
+			'Attachments · 50+'
+		);
+		expect(target.querySelector<HTMLElement>('.att-more-expand')?.textContent?.trim()).toBe(
+			'+42'
+		);
+
+		const link = target.querySelector<HTMLAnchorElement>('a.att-more-link');
+		expect(link?.textContent?.trim()).toBe('View all (120)');
+		expect(link?.getAttribute('href')).toBe('/dave/ws/settings?attachment_item=item-a#storage');
+	});
+
+	it('never grows the in-memory list past the 50-row bound (DR-11)', async () => {
+		// The documented cap used to bound only the fetch `limit`; the upload
+		// path prepended unconditionally, so a long paste session grew the list
+		// (and the lightbox set) without limit.
+		const rows = Array.from({ length: 50 }, (_, i) => att({ id: `a${i}` }));
+		listMock.mockResolvedValue({ attachments: rows, total: 50, limit: 50, offset: 0 });
+		mountStrip('item-a');
+		await settle();
+
+		for (let i = 0; i < 20; i++) broadcastUpload('item-a', uploaded(`paste-${i}`));
 		flushSync();
 
-		const link = target.querySelector<HTMLAnchorElement>('a.att-more');
-		expect(link?.getAttribute('href')).toBe('/dave/ws/settings#storage');
+		const more = target.querySelector<HTMLElement>('.att-more-expand');
+		more?.click();
+		flushSync();
+		expect(tiles()).toHaveLength(50);
+		// Newest-first, so the cap sheds the oldest rows, not the fresh ones.
+		expect(tiles()[0].getAttribute('aria-label')).toContain('paste-19.png');
+	});
+
+	it('bounds the pending-upload buffer too, not just the merged result', async () => {
+		// Uploads announced while the list request is in flight go into
+		// `pendingUploads`, which was itself unbounded — so bounding only the
+		// merge still let the buffer grow across a long paste session
+		// (DR-11, Codex rounds 4 and 6). Proven through the merge: 60 pending
+		// uploads must yield 50 rows, not 60 (and not 110 once rows land).
+		const pending = deferred<AttachmentListResponse>();
+		listMock.mockReturnValue(pending.promise);
+		mountStrip('item-a');
+		flushSync();
+
+		for (let i = 0; i < 60; i++) broadcastUpload('item-a', uploaded(`p${i}`));
+		flushSync();
+
+		// The GET was issued before the uploads existed, so both its page and
+		// its `total` predate them.
+		pending.resolve({
+			attachments: [att({ id: 'server1' }), att({ id: 'server2' })],
+			total: 2,
+			limit: 50,
+			offset: 0,
+		});
+		await settle();
+
+		target.querySelector<HTMLElement>('.att-more-expand')?.click();
+		flushSync();
+		expect(tiles()).toHaveLength(50);
+		// The rows the merge cap shed still exist, so the continuation counts
+		// them rather than pretending the strip holds everything. The 10 the
+		// PENDING buffer shed are the documented approximation — counting them
+		// would double-count the ordinary case where the response's `total`
+		// already includes the uploads; the next load corrects it.
+		expect(
+			target.querySelector<HTMLAnchorElement>('a.att-more-link')?.textContent?.trim()
+		).toBe('View all (52)');
+	});
+
+	it('still offers the continuation when every held row is deleted', async () => {
+		// 50 held + 70 past the bound. Deleting the held ones must not hide the
+		// section outright — there are still 70 attachments on this item, and
+		// the link is the only way to reach them (Codex round 5).
+		const rows = Array.from({ length: 50 }, (_, i) => att({ id: `a${i}` }));
+		listMock.mockResolvedValue({ attachments: rows, total: 120, limit: 50, offset: 0 });
+		mountStrip('item-a');
+		await settle();
+
+		for (const r of rows) broadcastDeletion(r.id);
+		flushSync();
+
+		expect(tiles()).toHaveLength(0);
+		expect(target.querySelector('.attachment-strip')).not.toBeNull();
+		expect(target.querySelector('.fields-header')?.textContent?.trim()).toBe('Attachments · 70');
+		expect(
+			target.querySelector<HTMLAnchorElement>('a.att-more-link')?.textContent?.trim()
+		).toBe('View all (70)');
+	});
+
+	it('does not double-count uploads the response already reported', async () => {
+		// The GET went out after the uploads, so its `total` already includes
+		// them. Adding a separate "pending overflow" on top produced
+		// "View all (70)" for 60 real attachments (Codex round 3).
+		const rows = Array.from({ length: 50 }, (_, i) => att({ id: `u${i}` }));
+		listMock.mockResolvedValue({ attachments: rows, total: 60, limit: 50, offset: 0 });
+		mountStrip('item-a');
+		await settle();
+
+		for (let i = 0; i < 10; i++) broadcastUpload('item-a', uploaded(`u${i}`));
+		flushSync();
+
+		expect(
+			target.querySelector<HTMLAnchorElement>('a.att-more-link')?.textContent?.trim()
+		).toBe('View all (60)');
+	});
+
+	it('does not count a row deleted while the request was in flight', async () => {
+		// `total` predates the deletion, so trusting it verbatim advertised
+		// "View all (2)" for a single remaining attachment (Codex round 3).
+		const pending = deferred<AttachmentListResponse>();
+		listMock.mockReturnValue(pending.promise);
+		mountStrip('item-a');
+		flushSync();
+
+		broadcastDeletion('gone');
+		flushSync();
+
+		pending.resolve({
+			attachments: [att({ id: 'gone' }), att({ id: 'stays' })],
+			total: 2,
+			limit: 50,
+			offset: 0,
+		});
+		await settle();
+
+		expect(tiles()).toHaveLength(1);
+		expect(target.querySelector('a.att-more-link')).toBeNull();
+		expect(target.querySelector('.fields-header')?.textContent?.trim()).toBe('Attachments · 1');
 	});
 
 	it('never paints item A attachments under item B (generation fence)', async () => {
@@ -369,13 +505,189 @@ describe('ItemAttachmentStrip', () => {
 		expect(target.querySelector('.attachment-strip')).toBeNull();
 	});
 
-	it('renders nothing when the fetch fails', async () => {
+	// ── Load failure (PLAN-2392 DR-10) ────────────────────────────────────
+	//
+	// This deliberately REPLACES the old "renders nothing when the fetch
+	// fails" expectation. Swallowing the error made a broken strip and an
+	// empty one indistinguishable, which is exactly what DR-10 forbids.
+
+	function errorRow(): HTMLElement | null {
+		return target.querySelector<HTMLElement>('.att-error');
+	}
+
+	it('shows a loading row for a slow fetch — loading, empty and failed differ', async () => {
+		vi.useFakeTimers();
+		try {
+			const pending = deferred<AttachmentListResponse>();
+			listMock.mockReturnValue(pending.promise);
+			mountStrip('item-a');
+			flushSync();
+
+			// Inside the grace period the strip is still invisible, so the
+			// common no-attachments item never flashes a block above the editor.
+			expect(target.querySelector('.attachment-strip')).toBeNull();
+
+			vi.advanceTimersByTime(250);
+			flushSync();
+			expect(target.querySelector('.att-status')?.textContent).toContain('Loading attachments');
+			expect(errorRow()).toBeNull();
+
+			pending.resolve(response([]));
+			await Promise.resolve();
+			await Promise.resolve();
+			flushSync();
+			// Empty: back to nothing at all (DR-18).
+			expect(target.querySelector('.attachment-strip')).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('drops the loading row when the item switches away mid-load', async () => {
+		vi.useFakeTimers();
+		try {
+			listMock.mockReturnValue(deferred<AttachmentListResponse>().promise);
+			mountStrip('item-a');
+			flushSync();
+
+			props.itemId = null;
+			flushSync();
+			// A's timer must not fire into B's (here: no) item.
+			vi.advanceTimersByTime(250);
+			flushSync();
+			expect(target.querySelector('.attachment-strip')).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('renders a distinguishable, retryable error when the fetch fails', async () => {
 		listMock.mockRejectedValue(new Error('boom'));
 		mountStrip('item-a');
 		await settle();
 
+		expect(target.querySelector('.attachment-strip')).not.toBeNull();
+		expect(errorRow()?.textContent).toContain("Couldn't load attachments");
+		expect(errorRow()?.querySelector('.att-retry')).not.toBeNull();
+		// Failed is not empty: no tiles, but the section is present and says so.
+		expect(tiles()).toHaveLength(0);
+	});
+
+	it('refetches on Retry and clears the error on success', async () => {
+		listMock.mockRejectedValueOnce(new Error('offline'));
+		mountStrip('item-a');
+		await settle();
+		expect(errorRow()).not.toBeNull();
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'back' })]));
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		flushSync();
+		await settle();
+
+		expect(listMock).toHaveBeenCalledTimes(2);
+		expect(errorRow()).toBeNull();
+		expect(tiles()).toHaveLength(1);
+		// The per-attachment HEAD cache latches `null` on failure for the page
+		// lifetime, so a Retry that doesn't clear it replays the cached failure
+		// on every other surface that probed during the same outage (DR-10).
+		expect(invalidateMetadataMock).toHaveBeenCalledWith('ws', 'back');
+	});
+
+	it('shows the error again when Retry fails too', async () => {
+		listMock.mockRejectedValue(new Error('still offline'));
+		mountStrip('item-a');
+		await settle();
+
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		flushSync();
+		await settle();
+
+		expect(listMock).toHaveBeenCalledTimes(2);
+		expect(errorRow()).not.toBeNull();
+	});
+
+	it('keeps optimistic uploads across a Retry that fails again', async () => {
+		// A Retry is the same item reloading, not a switch — so it must not
+		// wipe the rows the first failure deliberately preserved. The upload
+		// succeeded; only the listing didn't.
+		listMock.mockRejectedValue(new Error('offline'));
+		mountStrip('item-a');
+		await settle();
+		broadcastUpload('item-a', uploaded('survivor'));
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		flushSync();
+		await settle();
+
+		expect(errorRow()).not.toBeNull();
+		expect(tiles()).toHaveLength(1);
+		expect(tiles()[0].getAttribute('aria-label')).toContain('survivor.png');
+	});
+
+	it('ignores a Retry click that lands after the item already switched', async () => {
+		// Props update synchronously, effects flush later — so a click can land
+		// on item A's still-painted Retry when `itemId` already reads B. Taking
+		// it at face value would record a retry for B and preserve A's rows
+		// across the switch (Codex round 11).
+		listMock.mockRejectedValueOnce(new Error('offline'));
+		mountStrip('item-a');
+		await settle();
+		broadcastUpload('item-a', uploaded('a-only'));
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'b1' })]));
+		props.itemId = 'item-b';
+		// No flushSync between the switch and the click: that IS the window.
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		flushSync();
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('a-only'))).toBe(false);
+		expect(names.some((n) => n.includes('b1.png'))).toBe(true);
+		expect(errorRow()).toBeNull();
+	});
+
+	it('does not carry a failure across an item switch', async () => {
+		listMock.mockRejectedValueOnce(new Error('boom'));
+		mountStrip('item-a');
+		await settle();
+		expect(errorRow()).not.toBeNull();
+
+		listMock.mockResolvedValueOnce(response([]));
+		props.itemId = 'item-b';
+		flushSync();
+		await settle();
+
+		// B has no attachments: no error, and no section at all (DR-18).
 		expect(target.querySelector('.attachment-strip')).toBeNull();
 	});
+
+	it('does not paint item A failure under item B (generation fence)', async () => {
+		let failA!: (err: Error) => void;
+		listMock.mockReturnValueOnce(
+			new Promise<AttachmentListResponse>((_, reject) => {
+				failA = reject;
+			})
+		);
+		mountStrip('item-a');
+		await settle();
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'b1' })]));
+		props.itemId = 'item-b';
+		flushSync();
+		await settle();
+
+		failA(new Error('late failure'));
+		await settle();
+
+		expect(errorRow()).toBeNull();
+		expect(tiles()).toHaveLength(1);
+	});
+
 
 	// ── Delete (TASK-2384) ────────────────────────────────────────────────
 	//
@@ -753,6 +1065,9 @@ describe('ItemAttachmentStrip', () => {
 		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
 		expect(names).toHaveLength(1);
 		expect(names[0]).toContain('survivor.png');
+		// ...and the failure is still stated alongside it (DR-10) — the tile
+		// isn't a claim that the list loaded.
+		expect(errorRow()).not.toBeNull();
 	});
 
 	it('ignores an upload announced for a DIFFERENT item', async () => {

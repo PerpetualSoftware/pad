@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api, PadApiError } from '$lib/api/client';
 	import { announceAttachmentDeleted } from '$lib/attachments/events';
@@ -12,14 +12,36 @@
 	} from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { iconForAttachment, formatBytes, isImage } from '$lib/attachments/display';
+	import {
+		buildStorageFilters,
+		hasActiveStorageFilters,
+		type StorageFilterSelections
+	} from '$lib/attachments/storageFilters';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
 
 	// ── Props ────────────────────────────────────────────────────────────────
 	interface Props {
 		wsSlug: string;
 		collections: Collection[];
+		/**
+		 * Parent-item UUID to scope the list to — the item attachment strip's
+		 * "View all (N)" continuation passes it via `?attachment_item=`
+		 * (PLAN-2392 DR-18). Seeds the filter, and re-seeds whenever the
+		 * deep-link CHANGES, so following a second item's link while this tab
+		 * is already mounted retargets instead of keeping the old scope
+		 * (Codex round 3). Clearing the scope in the UI rewrites the URL, which
+		 * is why this can go back to '' without fighting the user.
+		 */
+		initialItemId?: string;
+		/**
+		 * Called when the user clears the item scope, so the OWNER of the URL
+		 * can drop `?attachment_item=`. It lives up there because only a real
+		 * navigation updates `page.url` — which is what `initialItemId` is
+		 * derived from (Codex round 4).
+		 */
+		onClearScope?: () => void;
 	}
-	let { wsSlug, collections }: Props = $props();
+	let { wsSlug, collections, initialItemId = '', onClearScope }: Props = $props();
 
 	// ── State ────────────────────────────────────────────────────────────────
 	let loading = $state(true);
@@ -42,6 +64,20 @@
 
 	let filterCategory = $state<CategoryValue>('');
 	let filterItem = $state<ItemValue>('');
+	/**
+	 * Scope to a single parent item. Seeded from `initialItemId` (the strip's
+	 * "View all" handoff) and cleared by the user. Mutually exclusive with the
+	 * attached/unattached selector — combining `item_id` with `item=unattached`
+	 * yields an empty set server-side — so while it is set, that selector is
+	 * disabled and not sent.
+	 */
+	// untrack: the initializer takes the value at mount; ongoing changes are
+	// handled by the re-seed effect below (reading a prop directly in an
+	// initializer otherwise warns about capturing only the initial value).
+	let filterItemId = $state<string>(untrack(() => initialItemId));
+	// Last deep-link value applied, so the re-seed effect fires only on a
+	// genuine change and never fights a scope the user cleared by hand.
+	let seededItemId = untrack(() => initialItemId);
 	let filterCollection = $state<string>('');
 	let sortValue = $state<SortValue>('created_at_desc');
 
@@ -87,16 +123,82 @@
 
 	// ── Data loading ─────────────────────────────────────────────────────────
 
-	function buildFilters(): AttachmentListFilters {
-		const f: AttachmentListFilters = {
+	function selections(): StorageFilterSelections {
+		return {
 			limit,
 			offset,
-			sort: sortValue
+			sort: sortValue,
+			category: filterCategory,
+			item: filterItem,
+			itemId: filterItemId,
+			collection: filterCollection
 		};
-		if (filterCategory) f.category = filterCategory;
-		if (filterItem) f.item = filterItem;
-		if (filterCollection) f.collection = filterCollection;
-		return f;
+	}
+
+	function buildFilters(): AttachmentListFilters {
+		return buildStorageFilters(selections());
+	}
+
+	// Drives the empty-state wording: "nothing matches" is honest when a filter
+	// is narrowing the list (including a foreign or stale `attachment_item`
+	// uuid, which is indistinguishable from an item with no attachments);
+	// "nothing uploaded yet" is only true unfiltered (Codex round 2).
+	let anyFilterActive = $derived(
+		hasActiveStorageFilters({
+			limit,
+			offset,
+			category: filterCategory,
+			item: filterItem,
+			itemId: filterItemId,
+			collection: filterCollection
+		})
+	);
+
+	/**
+	 * Label for the item-scope chip. The rows themselves carry the item title,
+	 * so the chip names the item once the first page lands and falls back to a
+	 * generic phrasing before that (or when the item has no live attachments
+	 * left, which is exactly when the list is empty anyway).
+	 */
+	let scopedItemTitle = $derived(
+		attachments.find((a) => a.item_id === filterItemId)?.item_title ?? ''
+	);
+
+	// Re-seed when the deep-link changes under a MOUNTED tab (same route, new
+	// `?attachment_item=`). Without it, the second "View all" link a user
+	// follows from the same settings page silently keeps the first item's
+	// scope (Codex round 3).
+	$effect(() => {
+		const incoming = initialItemId;
+		untrack(() => {
+			if (incoming === seededItemId) return;
+			seededItemId = incoming;
+			filterItemId = incoming;
+			retargetScope();
+		});
+	});
+
+	/**
+	 * Refetch after the item scope changed. Clears the rendered rows first:
+	 * the `listGen` fence stops a stale RESPONSE from landing, but on its own
+	 * it would leave the previous item's rows on screen while the new request
+	 * runs — indefinitely if that request fails (Codex round 5).
+	 */
+	function retargetScope() {
+		attachments = [];
+		total = 0;
+		onFiltersChanged();
+	}
+
+	function clearItemScope() {
+		filterItemId = '';
+		// Pre-claim the incoming '' so the re-seed effect treats the resulting
+		// URL change as already applied and doesn't fire a second fetch.
+		seededItemId = '';
+		// Drop the deep-link too, or a tab switch / reload / restored route
+		// re-applies a scope the user just dismissed (Codex rounds 2-4).
+		onClearScope?.();
+		retargetScope();
 	}
 
 	async function loadUsage() {
@@ -108,16 +210,38 @@
 		}
 	}
 
+	// Every list load shares one generation, so a slower earlier request can
+	// never overwrite a newer one's rows/total/offset — the deep-link re-seed
+	// can now start a load while onMount's or a filter change's is still in
+	// flight (Codex round 4).
+	let listGen = 0;
+	// A list request is in flight. Only meaningful once the tab's initial
+	// `loading` gate is down — it keeps a scope retarget (which clears the
+	// rows) from flashing "no attachments match" before the new page lands.
+	let listLoading = $state(false);
+	// The last list request failed. Without it a failure renders as "no
+	// attachments match", which is the same misleading empty-vs-broken
+	// conflation DR-10 removed from the item strip (Codex round 6).
+	let listError = $state(false);
+
 	async function loadList() {
+		const gen = ++listGen;
+		listLoading = true;
+		listError = false;
 		try {
 			const resp: AttachmentListResponse = await api.attachments.list(wsSlug, buildFilters());
+			if (gen !== listGen) return;
 			attachments = resp.attachments ?? [];
 			total = resp.total ?? 0;
 			limit = resp.limit ?? limit;
 			offset = resp.offset ?? offset;
 		} catch (err) {
+			if (gen !== listGen) return;
+			listError = true;
 			const msg = err instanceof Error ? err.message : 'Failed to load attachments';
 			toastStore.show(msg, 'error');
+		} finally {
+			if (gen === listGen) listLoading = false;
 		}
 	}
 
@@ -276,6 +400,10 @@
 					class="role-select"
 					bind:value={filterItem}
 					onchange={onFiltersChanged}
+					disabled={!!filterItemId}
+					title={filterItemId
+						? 'Scoped to one item — clear the scope to filter by attached/unattached'
+						: undefined}
 				>
 					<option value="">All</option>
 					<option value="attached">Attached</option>
@@ -324,10 +452,36 @@
 			</label>
 		</div>
 
+		<!-- Item scope (PLAN-2392 DR-18): set by the item strip's "View all"
+		     link. Always visible while active, so the list is never silently
+		     filtered. -->
+		{#if filterItemId}
+			<div class="item-scope">
+				<span>
+					Showing attachments for
+					<strong>{scopedItemTitle || 'one item'}</strong>
+				</span>
+				<button type="button" class="scope-clear" onclick={clearItemScope}>
+					Show all attachments
+				</button>
+			</div>
+		{/if}
+
 		<!-- Attachment list -->
-		{#if total === 0}
+		{#if listLoading && attachments.length === 0}
+			<p class="empty-text">Loading attachments…</p>
+		{:else if listError}
 			<p class="empty-text">
-				No attachments yet — paste or drag a file into any item to upload one.
+				Couldn't load attachments.
+				<button type="button" class="scope-clear" onclick={() => loadList()}>Retry</button>
+			</p>
+		{:else if total === 0}
+			<p class="empty-text">
+				{#if anyFilterActive}
+					No attachments match the current filters.
+				{:else}
+					No attachments yet — paste or drag a file into any item to upload one.
+				{/if}
 			</p>
 		{:else}
 			<div class="att-list">
@@ -566,6 +720,30 @@
 		gap: var(--space-2);
 		font-size: 0.8em;
 		color: var(--text-secondary);
+	}
+
+	.item-scope {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-2);
+		margin-bottom: var(--space-3);
+		font-size: 0.85em;
+		color: var(--text-secondary);
+	}
+
+	.scope-clear {
+		padding: 2px var(--space-2);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm, 4px);
+		background: transparent;
+		color: var(--text-secondary);
+		font: inherit;
+		cursor: pointer;
+	}
+	.scope-clear:hover {
+		color: var(--text-primary);
+		border-color: var(--accent, var(--border));
 	}
 
 	.att-list {

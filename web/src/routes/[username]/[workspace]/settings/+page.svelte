@@ -18,6 +18,32 @@
 
 	let wsSlug = $derived(page.params.workspace ?? '');
 	let username = $derived(page.params.username ?? '');
+	/**
+	 * Item-scoped handoff from the item attachment strip's "View all (N)" link
+	 * (PLAN-2392 DR-18): `?attachment_item=<uuid>#storage`. Passed straight
+	 * through to StorageTab, which seeds its `item_id` filter from it — without
+	 * it, "item-scoped" would just be a workspace-wide list.
+	 */
+	let attachmentItemId = $derived(page.url.searchParams.get('attachment_item') ?? '');
+
+	/**
+	 * Drop the item scope from the URL when StorageTab's "Show all" is used.
+	 * A real (replacing) navigation rather than history.replaceState: only a
+	 * navigation updates `page.url`, and this route derives the prop from it —
+	 * with a bare history write the scope would come straight back on the next
+	 * tab switch or remount (Codex round 4). The route has no load function,
+	 * so this is a cheap client-side URL swap.
+	 */
+	function clearAttachmentItem() {
+		const url = new URL(page.url);
+		if (!url.searchParams.has('attachment_item')) return;
+		url.searchParams.delete('attachment_item');
+		void goto(`${url.pathname}${url.search}${url.hash}`, {
+			replaceState: true,
+			noScroll: true,
+			keepFocus: true,
+		});
+	}
 	let loading = $state(true);
 	let collections = $state<Collection[]>([]);
 	let wsName = $state('');
@@ -831,7 +857,12 @@
 			</section>
 		{:else if activeTab === 'storage'}
 			<section class="section">
-				<StorageTab {wsSlug} {collections} />
+				<StorageTab
+					{wsSlug}
+					{collections}
+					initialItemId={attachmentItemId}
+					onClearScope={clearAttachmentItem}
+				/>
 			</section>
 		{:else if activeTab === 'danger'}
 			<section class="section">
