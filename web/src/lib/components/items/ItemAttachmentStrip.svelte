@@ -16,9 +16,34 @@
 	 * delete is treated as authoritative rather than as an error.
 	 *
 	 * Switch-safety: the mount point is OUTSIDE ItemDetail's `{#key itemSlug}`
-	 * block, so this component PERSISTS across an A→B item switch. Every
-	 * await-then-write path is fenced on a load generation + the requested
-	 * item id, per the no-{#key} bug class from PLAN-2105 / TASK-2112.
+	 * block, so this component PERSISTS across an A→B item switch, per the
+	 * no-{#key} bug class from PLAN-2105 / TASK-2112.
+	 *
+	 * THE FENCE MODEL. Identity is the PAIR (workspace, item) everywhere — see
+	 * `viewKey`. There are exactly three fences, because there are exactly
+	 * three distinct questions, each asked at a different moment:
+	 *
+	 *   1. `switchedAway(gen, item, ws)` — "is this RESPONSE still current?"
+	 *      Guards every await-then-write inside the load effect, against the
+	 *      REQUEST generation. A Retry supersedes its own predecessor here.
+	 *   2. `viewChanged(gen, item, ws)` — "may this async CONTINUATION still
+	 *      reconcile local state?" Guards mutation continuations, against the
+	 *      VIEW generation, which a Retry deliberately does not bump: a delete
+	 *      of a row still on screen must roll back and toast even if the user
+	 *      hit Retry while it was in flight.
+	 *   3. PAINT-TIME identity — "does the CONTROL the user clicked belong to
+	 *      what is on screen?" Props update synchronously and effects flush
+	 *      later, so in between, the DOM still shows the previous view. Every
+	 *      entry point reached from a rendered control validates against an
+	 *      identity RECORDED WHEN THE EFFECT PAINTED (`paintedView`), never
+	 *      against the live props. Both control entry points use it —
+	 *      `handleDelete` for a tile, `retryLoad` for the error row. This fence
+	 *      has to be at ENTRY: the other two run after an await, and no fence
+	 *      can unsend a request.
+	 *
+	 * (1) and (2) compare a captured generation AND the pair, because a
+	 * generation counter alone misses A→B→A and the pair alone misses A→B→A.
+	 * (3) is a pure pair compare: it asks about the DOM, not about ordering.
 	 */
 	import { onDestroy, untrack } from 'svelte';
 	import { api, PadApiError } from '$lib/api/client';
@@ -130,16 +155,6 @@
 	// a fetch failure from rendering as "no attachments"; `showLoading` is the
 	// delayed in-flight marker. Empty stays invisible — no section at all.
 	let loadFailed = $state(false);
-	/**
-	 * VIEW (see `viewKey`) whose load produced the CURRENTLY PAINTED error.
-	 * Retry validates against this rather than the live props: they update
-	 * synchronously but effects flush later, so a click landing in that window
-	 * would otherwise record a retry for the view the user just moved TO and
-	 * carry the old one's rows across the switch (Codex round 11). Keyed by
-	 * workspace AND item — an item-only key let a workspace change in that same
-	 * window claim the stale error (Codex confirm round).
-	 */
-	let loadFailedFor: string | null = null;
 	let showLoading = $state(false);
 	/**
 	 * How many of this item's attachments exist BEYOND the ones the strip
@@ -169,6 +184,19 @@
 	function viewKey(ws: string, id: string): string {
 		return `${ws}\u0000${id}`;
 	}
+
+	/**
+	 * VIEW the currently painted tiles belong to — written by the load effect,
+	 * so it lags the live props by exactly the prop-update → effect-flush
+	 * window. That lag is the point: it is the only thing that can answer "was
+	 * this control rendered for the view that is on screen NOW?", which the
+	 * live props cannot (they already read the NEW view while the OLD tiles are
+	 * still mounted). Entry fence for `handleDelete` — the `viewChanged` check
+	 * in its catch runs after the await and cannot unsend a DELETE aimed at the
+	 * wrong item or workspace (final review round 2). Non-reactive on purpose:
+	 * read at click time, it must not re-trigger the render it describes.
+	 */
+	let paintedView: string | null = null;
 
 	// Two generations, because "which request is this?" and "which item is on
 	// screen?" are different questions and a Retry answers them differently
@@ -236,6 +264,11 @@
 		// deleted. Wiping them would make a second failure lose rows the server
 		// and the editor both have (Codex round 1).
 		untrack(() => {
+			// Whatever this run paints — rows, error row, or nothing — belongs to
+			// this (workspace, item). Recorded unconditionally: a Retry repaints
+			// the SAME view, so the value is unchanged, and a run that bails
+			// below on a missing id must still stop claiming the previous view.
+			paintedView = reqItemId && reqWsSlug ? viewKey(reqWsSlug, reqItemId) : null;
 			if (!isRetry) {
 				// The view itself changed (new item / workspace), so in-flight
 				// mutations captured against the old one must stop reconciling.
@@ -248,7 +281,6 @@
 				beyondStripCount = 0;
 			}
 			loadFailed = false;
-			loadFailedFor = null;
 			showLoading = false;
 		});
 
@@ -258,7 +290,7 @@
 		// deferred write in this component.
 		let loadingTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
 			loadingTimer = null;
-			if (switchedAway(gen, reqItemId)) return;
+			if (switchedAway(gen, reqItemId, reqWsSlug)) return;
 			showLoading = true;
 		}, LOADING_DELAY_MS);
 		function stopLoadingMarker() {
@@ -274,7 +306,7 @@
 					item_id: reqItemId,
 					limit: MAX_FETCH,
 				});
-				if (switchedAway(gen, reqItemId)) return;
+				if (switchedAway(gen, reqItemId, reqWsSlug)) return;
 				const raw = res.attachments ?? [];
 				const rows = raw.filter((a) => !deletedIds.has(a.id)).map(toStripAttachment);
 				const seen = new Set(rows.map((a) => a.id));
@@ -332,16 +364,15 @@
 				// roleLevel("guest") is below viewer, so they 403. That gap is
 				// pre-existing (inline images are already broken for them) and
 				// is tracked as BUG-2386, not absorbed here — PLAN-2382 DR-4b.
-				if (switchedAway(gen, reqItemId)) return;
+				if (switchedAway(gen, reqItemId, reqWsSlug)) return;
 				// Keep anything uploaded while this request was in flight: the
 				// upload SUCCEEDED, so dropping it would hide a row the editor
 				// and server both have, until a remount (Codex review round 2).
 				attachments = capped(pendingUploads.filter((a) => !deletedIds.has(a.id)));
 				loadFailed = true;
-				loadFailedFor = viewKey(reqWsSlug, reqItemId);
 			} finally {
 				stopLoadingMarker();
-				if (!switchedAway(gen, reqItemId)) showLoading = false;
+				if (!switchedAway(gen, reqItemId, reqWsSlug)) showLoading = false;
 			}
 		})();
 
@@ -380,12 +411,18 @@
 	 */
 	function retryLoad() {
 		if (!itemId || !wsSlug) return;
-		// The painted error must belong to the item that is current NOW. If the
-		// parent has already swapped `itemId` and this effect hasn't flushed yet, the
-		// click is stale: the incoming item's own load is already on its way,
-		// and honouring the retry would preserve the previous item's rows
-		// across the switch (Codex round 11).
-		if (loadFailedFor !== viewKey(wsSlug, itemId)) return;
+		// The same ENTRY fence the delete control uses (fence 3): the painted
+		// error must belong to the view that is on screen NOW. If the parent has
+		// already swapped `itemId` or `wsSlug` and this effect hasn't flushed
+		// yet, the click is stale — the incoming view's own load is already on
+		// its way, and honouring the retry would preserve the previous view's
+		// rows across the switch (Codex round 11).
+		//
+		// `loadFailed` is only ever set by a response that passed `switchedAway`
+		// under the run that also wrote `paintedView`, so the two together say
+		// exactly what a separate `loadFailedFor` field used to: WHICH view's
+		// failure is painted. One paint-time identity, not two kept in step.
+		if (!loadFailed || paintedView !== viewKey(wsSlug, itemId)) return;
 		for (const a of attachments) invalidateAttachmentMetadata(wsSlug, a.id);
 		retryRequestedFor = viewKey(wsSlug, itemId);
 		retryNonce++;
@@ -437,6 +474,15 @@
 	$effect(() => {
 		return registerAttachmentUploadListener((uploadItemId, uploaded) => {
 			if (uploadItemId !== itemId) return;
+			// Tombstones outrank uploads. The upload bus can re-announce (a
+			// delayed or duplicated event), and the load path already filters
+			// every response through `deletedIds` for exactly this reason —
+			// without the same guard here, a re-announced upload for a row the
+			// user has since deleted resurrects it in BOTH buffers, and
+			// `pendingUploads` then keeps re-merging it onto every subsequent
+			// response (final review round 2). A confirmed deletion is
+			// authoritative; a repeat of an older upload event is not.
+			if (deletedIds.has(uploaded.id)) return;
 			// Idempotence guard for the bus itself: the same event can reach us
 			// twice (a re-broadcast, or an upload announced while the initial
 			// list() was in flight and then present in its response). NOT about
@@ -459,10 +505,25 @@
 	});
 
 	// Mirrors ItemDetail's `switchedAway`: the generation catches a newer load,
-	// the id compare closes the A→B→A gap where generations could otherwise
-	// line up.
-	function switchedAway(gen: number, reqItemId: string): boolean {
-		return gen !== loadGeneration || itemId !== reqItemId;
+	// the identity compare closes the A→B→A gap where generations could
+	// otherwise line up.
+	//
+	// Identity is the (workspace, item) PAIR, exactly as `viewChanged` and
+	// `viewKey` treat it. Requests already capture the workspace they were
+	// issued against; checking only the item let a same-item workspace switch
+	// pass this fence, so a superseded response, failure or loading timer could
+	// write into the new view during the prop-update → effect-flush window
+	// (final review round 2).
+	//
+	// Deliberately untested, unlike the other two fences: a workspace change is
+	// a dependency of the load effect, and Svelte's scheduler always flushes
+	// that re-run — which clears every one of these fields — before a pending
+	// response continuation gets to write. So the omission has no observable
+	// symptom to pin a test to. It is fixed because "the next effect run happens
+	// to overwrite it" is a scheduling accident, not a fence, and because
+	// identity being the (workspace, item) pair should not have exceptions.
+	function switchedAway(gen: number, reqItemId: string, reqWsSlug: string): boolean {
+		return gen !== loadGeneration || itemId !== reqItemId || wsSlug !== reqWsSlug;
 	}
 
 	/**
@@ -578,7 +639,24 @@
 
 	async function handleDelete(att: StripAttachment) {
 		if (!canDelete) return;
+
+		const reqItemId = itemId;
+		const reqWsSlug = wsSlug;
+		if (!reqItemId || !reqWsSlug) return;
+		// ENTRY fence (fence 3 — see the header). The clicked tile was painted
+		// for `paintedView`; the live props may already name a different view,
+		// because they update synchronously and the load effect that repaints
+		// these tiles flushes later. In that window a click on a stale tile
+		// would send a DELETE while the user is looking at another item or
+		// workspace — and the `viewChanged` check in the catch below runs after
+		// the request, so it can suppress the rollback but cannot unsend the
+		// request (final review round 2). The only fix is to refuse here,
+		// before the confirm and before the call.
+		if (paintedView !== viewKey(reqWsSlug, reqItemId)) return;
+
 		if (typeof window !== 'undefined' && !window.confirm(confirmMessage(att))) return;
+		// window.confirm blocks the thread, so nothing can have moved between
+		// the fence above and here.
 
 		// Capture identity BEFORE the await: a switch mid-delete must not roll
 		// the tile back into a DIFFERENT item's strip, and must not toast over
@@ -588,8 +666,6 @@
 		// actually targeted, not whichever one is current when it resolves
 		// (Codex round 6).
 		const gen = viewGeneration;
-		const reqItemId = itemId;
-		const reqWsSlug = wsSlug;
 		const index = attachments.findIndex((a) => a.id === att.id);
 
 		// Optimistic removal.
@@ -602,8 +678,6 @@
 			// showing a healthy image the server no longer has until reload.
 			announceAttachmentDeleted(reqWsSlug, att.id);
 		} catch (err) {
-			if (viewChanged(gen, reqItemId ?? '', reqWsSlug)) return;
-
 			// A 404 means it's ALREADY gone. The in-process deletion bus covers
 			// other surfaces in THIS tab, but not another user, another tab, or
 			// a notification we missed — so the tile can still be stale by the
@@ -616,9 +690,20 @@
 				// gone, so it gets the same broadcast — otherwise an editor
 				// NodeView or another mounted strip in this tab stays stale
 				// precisely when we have proof it should not (Codex round 19).
+				//
+				// Deliberately AHEAD of the view fence, unlike everything below
+				// it: this is a GLOBAL side effect keyed by (workspace, id), not
+				// a write into this view's local state. A view switch says
+				// nothing about whether the row is gone — and if the broadcast
+				// is skipped, no later event replaces it, so every other mounted
+				// surface stays stale on proof we already have (final review
+				// round 2). The rollback, the toast and the tombstone check
+				// below stay fenced: those DO touch what is on screen.
 				announceAttachmentDeleted(reqWsSlug, att.id);
 				return;
 			}
+
+			if (viewChanged(gen, reqItemId, reqWsSlug)) return;
 
 			// Someone else announced this deletion while our own call was in
 			// flight — the row is gone regardless of why ours failed, so don't

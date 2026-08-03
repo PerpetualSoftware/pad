@@ -817,6 +817,55 @@ describe('ItemAttachmentStrip', () => {
 		confirmSpy.mockRestore();
 	});
 
+	it('refuses a delete click that lands after the ITEM already switched', async () => {
+		// The most serious hole the final review found. Props update
+		// synchronously and the load effect repaints later, so a click can land
+		// on item A's still-mounted tile when `itemId` already reads B — and
+		// unlike the rollback, a DELETE cannot be taken back once sent. The
+		// fence therefore has to be at ENTRY, against the identity the tile was
+		// PAINTED under, not against the live props (which already say B).
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+		expect(deleteButtons()).toHaveLength(1);
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'b1' })]));
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		props.itemId = 'item-b';
+		// No flushSync between the switch and the click: that IS the window.
+		deleteButtons()[0].click();
+		await settle();
+
+		// Not even prompted — the tile the user aimed at no longer exists.
+		expect(confirmSpy).not.toHaveBeenCalled();
+		expect(deleteMock).not.toHaveBeenCalled();
+		expect(notifyDeletedMock).not.toHaveBeenCalled();
+		expect(tiles()[0].getAttribute('aria-label')).toContain('b1.png');
+		confirmSpy.mockRestore();
+	});
+
+	it('refuses a delete click that lands after the WORKSPACE already switched', async () => {
+		// Same window, one prop over. `wsSlug` is reactive and the strip
+		// survives a workspace change, so an item-only entry fence would send
+		// the DELETE to the NEW workspace for the OLD workspace's row.
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'ws2-row' })]));
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		props.wsSlug = 'ws2';
+		deleteButtons()[0].click();
+		await settle();
+
+		expect(confirmSpy).not.toHaveBeenCalled();
+		expect(deleteMock).not.toHaveBeenCalled();
+		expect(tiles()[0].getAttribute('aria-label')).toContain('ws2-row.png');
+		confirmSpy.mockRestore();
+	});
+
 	it('rolls the tile back and toasts when the delete fails', async () => {
 		listMock.mockResolvedValue(response([att({ id: 'a1' }), att({ id: 'a2' })]));
 		deleteMock.mockRejectedValue(new Error('403'));
@@ -923,6 +972,46 @@ describe('ItemAttachmentStrip', () => {
 
 		expect(notifyDeletedMock).toHaveBeenCalledWith('a1');
 		expect(invalidateMock).toHaveBeenCalledWith('ws', 'a1');
+		confirmSpy.mockRestore();
+	});
+
+	it('still announces a 404 delete when the view switched under it', async () => {
+		// A 404 is proof the row is gone — a fact about the WORKSPACE, not about
+		// this view. Fencing the whole catch block on `viewChanged` meant a
+		// switch mid-delete swallowed that proof, leaving every other mounted
+		// surface (editor NodeViews, the other pane's strip, the HEAD cache)
+		// stale with nothing left to correct them (final review round 2). Only
+		// the LOCAL reconciliation — rollback, toast — is view-scoped.
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		let failDelete!: (err: Error) => void;
+		deleteMock.mockReturnValue(
+			new Promise<void>((_, reject) => {
+				failDelete = reject;
+			})
+		);
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		deleteButtons()[0].click();
+		flushSync();
+
+		listMock.mockResolvedValue(response([att({ id: 'b1' })]));
+		props.itemId = 'item-b';
+		flushSync();
+		await settle();
+
+		failDelete(new FakeApiError('not_found'));
+		await settle();
+
+		expect(notifyDeletedMock).toHaveBeenCalledWith('a1');
+		expect(invalidateMock).toHaveBeenCalledWith('ws', 'a1');
+		// ...and still nothing local: no rollback into B's strip, no toast.
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('a1.png'))).toBe(false);
+		expect(names.some((n) => n.includes('b1.png'))).toBe(true);
+		expect(toastMock).not.toHaveBeenCalled();
 		confirmSpy.mockRestore();
 	});
 
@@ -1241,6 +1330,34 @@ describe('ItemAttachmentStrip', () => {
 		flushSync();
 
 		expect(tiles()).toHaveLength(1);
+	});
+
+	it('does not let a re-announced upload resurrect a deleted row', async () => {
+		// The load path filters every response through the tombstones; the
+		// upload path did not, so a delayed or duplicated upload event for a row
+		// the user has since deleted put it straight back — into `attachments`
+		// AND into `pendingUploads`, which then re-merges it onto every later
+		// response (final review round 2). A confirmed deletion outranks a
+		// repeat of an older upload event.
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		mountStrip('item-a');
+		await settle();
+
+		broadcastUpload('item-a', uploaded('late'));
+		flushSync();
+		expect(tiles()).toHaveLength(2);
+
+		broadcastDeletion('late');
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+
+		// The bus re-announces the same upload after the deletion.
+		broadcastUpload('item-a', uploaded('late'));
+		flushSync();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names).toHaveLength(1);
+		expect(names.some((n) => n.includes('late.png'))).toBe(false);
 	});
 
 	it('drops a tile when another surface broadcasts its deletion', async () => {
