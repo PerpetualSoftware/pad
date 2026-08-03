@@ -3,6 +3,7 @@
 	import { page } from '$app/state';
 	import { api, PadApiError } from '$lib/api/client';
 	import { announceAttachmentDeleted } from '$lib/attachments/events';
+	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import type {
 		AttachmentListItem,
 		AttachmentListFilters,
@@ -143,16 +144,10 @@
 	// is narrowing the list (including a foreign or stale `attachment_item`
 	// uuid, which is indistinguishable from an item with no attachments);
 	// "nothing uploaded yet" is only true unfiltered (Codex round 2).
-	let anyFilterActive = $derived(
-		hasActiveStorageFilters({
-			limit,
-			offset,
-			category: filterCategory,
-			item: filterItem,
-			itemId: filterItemId,
-			collection: filterCollection
-		})
-	);
+	// One projection, not two: re-listing the fields here let the two drift
+	// (final-review P3). `selections()` reads the same $state, so the derived
+	// still tracks every filter.
+	let anyFilterActive = $derived(hasActiveStorageFilters(selections()));
 
 	/**
 	 * Label for the item-scope chip. The rows themselves carry the item title,
@@ -224,24 +219,47 @@
 	// conflation DR-10 removed from the item strip (Codex round 6).
 	let listError = $state(false);
 
-	async function loadList() {
+	/**
+	 * @param opts.retry - This load is an explicit Retry after a failure, so it
+	 * carries the same cache-invalidation duty the item strip's Retry does
+	 * (PLAN-2392 DR-10, final-review P2). `fetchAttachmentMetadata` latches
+	 * `null` on a failed HEAD for the page lifetime, so the outage that broke
+	 * this list also poisoned every chip and inline image that probed during
+	 * it. Dropping a healthy entry is harmless — the cache holds immutable data
+	 * and nothing refetches eagerly.
+	 */
+	async function loadList(opts: { retry?: boolean } = {}) {
 		const gen = ++listGen;
 		listLoading = true;
 		listError = false;
+		// `wsSlug` is reactive and this tab stays mounted across a workspace
+		// change, so the request's workspace is captured and re-checked: the
+		// generation alone can't tell a superseded workspace from the current
+		// one, and both the rows and the metadata-cache keys are workspace
+		// scoped (Codex fresh-angle round 2).
+		const reqWsSlug = wsSlug;
+		if (opts.retry) {
+			for (const a of attachments) invalidateAttachmentMetadata(reqWsSlug, a.id);
+		}
 		try {
-			const resp: AttachmentListResponse = await api.attachments.list(wsSlug, buildFilters());
-			if (gen !== listGen) return;
+			const resp: AttachmentListResponse = await api.attachments.list(reqWsSlug, buildFilters());
+			if (gen !== listGen || reqWsSlug !== wsSlug) return;
 			attachments = resp.attachments ?? [];
+			if (opts.retry) {
+				// The rows the refetch returned get the same treatment — at
+				// failure time the list held the stale page, or nothing at all.
+				for (const a of attachments) invalidateAttachmentMetadata(reqWsSlug, a.id);
+			}
 			total = resp.total ?? 0;
 			limit = resp.limit ?? limit;
 			offset = resp.offset ?? offset;
 		} catch (err) {
-			if (gen !== listGen) return;
+			if (gen !== listGen || reqWsSlug !== wsSlug) return;
 			listError = true;
 			const msg = err instanceof Error ? err.message : 'Failed to load attachments';
 			toastStore.show(msg, 'error');
 		} finally {
-			if (gen === listGen) listLoading = false;
+			if (gen === listGen && reqWsSlug === wsSlug) listLoading = false;
 		}
 	}
 
@@ -473,7 +491,9 @@
 		{:else if listError}
 			<p class="empty-text">
 				Couldn't load attachments.
-				<button type="button" class="scope-clear" onclick={() => loadList()}>Retry</button>
+				<button type="button" class="scope-clear" onclick={() => loadList({ retry: true })}>
+					Retry
+				</button>
 			</p>
 		{:else if total === 0}
 			<p class="empty-text">

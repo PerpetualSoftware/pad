@@ -20,7 +20,7 @@
 	 * await-then-write path is fenced on a load generation + the requested
 	 * item id, per the no-{#key} bug class from PLAN-2105 / TASK-2112.
 	 */
-	import { untrack } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { api, PadApiError } from '$lib/api/client';
 	import type { AttachmentListItem } from '$lib/types';
 	import { iconForAttachment, formatBytes, isImage } from '$lib/attachments/display';
@@ -89,6 +89,10 @@
 	// renders nothing at all (DR-18) instead of flashing a block above the
 	// editor — while a genuinely slow load is still distinguishable from empty.
 	const LOADING_DELAY_MS = 200;
+	// Hard bound on the deletion tombstone set (see `deletedIds`). Generous
+	// relative to MAX_FETCH — a tombstone is one id, and shedding one too eagerly
+	// costs a resurrected row — but finite.
+	const MAX_TOMBSTONES = 500;
 
 	/**
 	 * Only what a tile renders. Deliberately narrower than AttachmentListItem:
@@ -127,11 +131,13 @@
 	// delayed in-flight marker. Empty stays invisible — no section at all.
 	let loadFailed = $state(false);
 	/**
-	 * Item whose load produced the CURRENTLY PAINTED error. Retry validates
-	 * against this rather than the live `itemId`: props update synchronously
-	 * but effects flush later, so a click landing in that window would
-	 * otherwise record a retry for the item the user just moved TO and carry
-	 * the old item's rows across the switch (Codex round 11).
+	 * VIEW (see `viewKey`) whose load produced the CURRENTLY PAINTED error.
+	 * Retry validates against this rather than the live props: they update
+	 * synchronously but effects flush later, so a click landing in that window
+	 * would otherwise record a retry for the view the user just moved TO and
+	 * carry the old one's rows across the switch (Codex round 11). Keyed by
+	 * workspace AND item — an item-only key let a workspace change in that same
+	 * window claim the stale error (Codex confirm round).
 	 */
 	let loadFailedFor: string | null = null;
 	let showLoading = $state(false);
@@ -153,10 +159,31 @@
 	 * click and the flush doesn't apply the retry to a different item.
 	 */
 	let retryRequestedFor: string | null = null;
+	/**
+	 * View identity key. `itemId` alone isn't it: `wsSlug` is reactive and the
+	 * strip stays mounted across a workspace change, so keying on the item
+	 * would classify that as a same-view Retry — leaving the previous
+	 * workspace's rows painted and its in-flight mutations still reconciling
+	 * (Codex fresh-angle round 2).
+	 */
+	function viewKey(ws: string, id: string): string {
+		return `${ws}\u0000${id}`;
+	}
 
-	// Monotonic load generation — bumped on every (re)run of the fetch effect
-	// so an in-flight response for item A can never write under item B.
+	// Two generations, because "which request is this?" and "which item is on
+	// screen?" are different questions and a Retry answers them differently
+	// (final-review P2).
+	//
+	// REQUEST generation — bumped on every (re)run of the fetch effect,
+	// including a Retry, so a superseded list() response can never write.
 	let loadGeneration = 0;
+	// VIEW generation — bumped only when the view actually changes: a different
+	// (item, workspace), or unmount. A Retry is the SAME item reloading, so it
+	// leaves this alone. Mutations fence on this: a delete of a row still on
+	// screen must reconcile (roll back, toast, broadcast) even if the user hit
+	// Retry while it was in flight. Fencing them on the request generation made
+	// a Retry masquerade as an item switch and swallowed the failure.
+	let viewGeneration = 0;
 
 	// Ids confirmed deleted while this item's list was loading. A deletion
 	// broadcast only filters the CURRENT array, so a list() response that was
@@ -164,6 +191,18 @@
 	// (Codex round 18). Every response is filtered through this, and a failed
 	// optimistic delete won't roll back an id that's in here. Cleared per item
 	// load — tombstones are meaningless once we refetch.
+	//
+	// Bounded like every other buffer here (DR-11): it survives a Retry, and
+	// the deletion bus is workspace-wide, so a long-lived pane watching a busy
+	// Storage tab would otherwise accumulate ids forever. Oldest are shed
+	// first — a tombstone only has to outlive the one in-flight list() that
+	// could resurrect its row, so the newest entries are the load-bearing ones.
+	//
+	// Accepted cost of bounding at all: MAX_TOMBSTONES *later* deletions during
+	// a single in-flight list() would evict an earlier one and let that row be
+	// painted back. That takes 500 deletions inside one request's latency, and
+	// the row disappears again on the next load. Unbounded growth is the worse
+	// failure — it is permanent.
 	let deletedIds = new Set<string>();
 
 	// Uploads announced while this item's list was still loading. The GET may
@@ -183,7 +222,8 @@
 		// Claim the retry marker whether or not this run goes on to fetch, so a
 		// stale claim can't leak into a later, unrelated load. Read BEFORE the
 		// reset below, which branches on it.
-		const isRetry = retryRequestedFor !== null && retryRequestedFor === reqItemId;
+		const isRetry =
+			retryRequestedFor !== null && retryRequestedFor === viewKey(reqWsSlug, reqItemId ?? '');
 		retryRequestedFor = null;
 
 		// Clear synchronously on switch. Without this, A's tiles stay painted
@@ -197,6 +237,9 @@
 		// and the editor both have (Codex round 1).
 		untrack(() => {
 			if (!isRetry) {
+				// The view itself changed (new item / workspace), so in-flight
+				// mutations captured against the old one must stop reconciling.
+				viewGeneration++;
 				attachments = [];
 				expanded = false;
 				lightbox = null;
@@ -295,7 +338,7 @@
 				// and server both have, until a remount (Codex review round 2).
 				attachments = capped(pendingUploads.filter((a) => !deletedIds.has(a.id)));
 				loadFailed = true;
-				loadFailedFor = reqItemId;
+				loadFailedFor = viewKey(reqWsSlug, reqItemId);
 			} finally {
 				stopLoadingMarker();
 				if (!switchedAway(gen, reqItemId)) showLoading = false;
@@ -307,10 +350,21 @@
 		// writing into a dead instance (Codex round 4). The api wrapper has no
 		// abort signal, so this is the only lever. The pending loading timer
 		// goes with it — otherwise it fires into a dead instance.
+		//
+		// Only the REQUEST generation, deliberately: this cleanup also runs
+		// before every re-run of the effect, Retry included, and bumping the
+		// view generation here would put the Retry bug straight back. Unmount
+		// is handled by onDestroy below, which runs only on destroy.
 		return () => {
 			loadGeneration++;
 			stopLoadingMarker();
 		};
+	});
+
+	// Destroy invalidates the VIEW too — an in-flight delete that resolves
+	// after the component is gone must not toast or write.
+	onDestroy(() => {
+		viewGeneration++;
 	});
 
 	/**
@@ -331,9 +385,9 @@
 		// click is stale: the incoming item's own load is already on its way,
 		// and honouring the retry would preserve the previous item's rows
 		// across the switch (Codex round 11).
-		if (loadFailedFor !== itemId) return;
+		if (loadFailedFor !== viewKey(wsSlug, itemId)) return;
 		for (const a of attachments) invalidateAttachmentMetadata(wsSlug, a.id);
-		retryRequestedFor = itemId;
+		retryRequestedFor = viewKey(wsSlug, itemId);
 		retryNonce++;
 	}
 
@@ -353,10 +407,29 @@
 	// self-corrects (Codex round 5).
 	$effect(() => {
 		return registerAttachmentDeletionListener((deletedUuid) => {
-			deletedIds.add(deletedUuid);
+			rememberDeleted(deletedUuid);
 			attachments = attachments.filter((a) => a.id !== deletedUuid);
 		});
 	});
+
+	/**
+	 * Record a tombstone, shedding the oldest once past MAX_TOMBSTONES. A Set
+	 * iterates in insertion order, so the first entries out are the ones least
+	 * likely to still be racing a list() response.
+	 */
+	function rememberDeleted(id: string) {
+		// Re-announcing an id refreshes its age: Set.add() on an existing key is
+		// a no-op for ordering, so without the delete the second announcement
+		// would leave it as eviction-eligible as the first did.
+		deletedIds.delete(id);
+		deletedIds.add(id);
+		let excess = deletedIds.size - MAX_TOMBSTONES;
+		if (excess <= 0) return;
+		for (const oldest of deletedIds) {
+			deletedIds.delete(oldest);
+			if (--excess <= 0) break;
+		}
+	}
 
 	// Uploads announced by the editor's paste / drag-drop plugin. Scoped to THIS
 	// item — the bus carries the id the server actually associated, so a file
@@ -390,6 +463,16 @@
 	// line up.
 	function switchedAway(gen: number, reqItemId: string): boolean {
 		return gen !== loadGeneration || itemId !== reqItemId;
+	}
+
+	/**
+	 * The mutation fence. Same shape as `switchedAway`, but against the VIEW
+	 * generation — a Retry re-runs the load without changing what is on screen,
+	 * so an in-flight delete for this item must still reconcile (final-review
+	 * P2). The id compare closes the A→B→A gap the counter alone can miss.
+	 */
+	function viewChanged(gen: number, reqItemId: string, reqWsSlug: string): boolean {
+		return gen !== viewGeneration || itemId !== reqItemId || wsSlug !== reqWsSlug;
 	}
 
 	let visible = $derived(expanded ? attachments : attachments.slice(0, COLLAPSED_TILES));
@@ -504,7 +587,7 @@
 		// broadcast + metadata-cache key must name the workspace the DELETE
 		// actually targeted, not whichever one is current when it resolves
 		// (Codex round 6).
-		const gen = loadGeneration;
+		const gen = viewGeneration;
 		const reqItemId = itemId;
 		const reqWsSlug = wsSlug;
 		const index = attachments.findIndex((a) => a.id === att.id);
@@ -519,7 +602,7 @@
 			// showing a healthy image the server no longer has until reload.
 			announceAttachmentDeleted(reqWsSlug, att.id);
 		} catch (err) {
-			if (switchedAway(gen, reqItemId ?? '')) return;
+			if (viewChanged(gen, reqItemId ?? '', reqWsSlug)) return;
 
 			// A 404 means it's ALREADY gone. The in-process deletion bus covers
 			// other surfaces in THIS tab, but not another user, another tab, or
@@ -552,10 +635,19 @@
 			// while the delete was in flight can have taken the list back to
 			// MAX_FETCH, so a bare re-insert would push it to 51
 			// (Codex round 1).
-			const restored = attachments.slice();
-			restored.splice(Math.max(0, Math.min(index, restored.length)), 0, att);
-			beyondStripCount += Math.max(0, restored.length - MAX_FETCH);
-			attachments = capped(restored);
+			//
+			// Skipped entirely when the row is already back: a reload that
+			// landed while the delete was in flight (a Retry, or the pending-
+			// upload buffer being re-merged after a second failure) can have
+			// restored it, and a blind splice would duplicate the id — which
+			// the keyed `{#each}` rejects outright. The toast still fires: the
+			// delete genuinely failed either way.
+			if (!attachments.some((a) => a.id === att.id)) {
+				const restored = attachments.slice();
+				restored.splice(Math.max(0, Math.min(index, restored.length)), 0, att);
+				beyondStripCount += Math.max(0, restored.length - MAX_FETCH);
+				attachments = capped(restored);
+			}
 			toastStore.show(
 				code === 'forbidden'
 					? `You don't have permission to delete ${att.filename}.`

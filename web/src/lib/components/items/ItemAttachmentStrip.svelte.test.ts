@@ -651,6 +651,30 @@ describe('ItemAttachmentStrip', () => {
 		expect(errorRow()).toBeNull();
 	});
 
+	it('ignores a Retry click that lands after the WORKSPACE already switched', async () => {
+		// Same stale-click window as the item-switch case, one prop over: the
+		// painted error belongs to the old workspace, so honouring the click
+		// would carry its rows (and its tombstones) into the new one.
+		listMock.mockRejectedValueOnce(new Error('offline'));
+		mountStrip('item-a');
+		await settle();
+		broadcastUpload('item-a', uploaded('ws1-only'));
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'ws2-row' })]));
+		props.wsSlug = 'ws2';
+		// No flushSync between the switch and the click: that IS the window.
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		flushSync();
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('ws1-only'))).toBe(false);
+		expect(names.some((n) => n.includes('ws2-row.png'))).toBe(true);
+		expect(errorRow()).toBeNull();
+	});
+
 	it('does not carry a failure across an item switch', async () => {
 		listMock.mockRejectedValueOnce(new Error('boom'));
 		mountStrip('item-a');
@@ -967,6 +991,129 @@ describe('ItemAttachmentStrip', () => {
 		confirmSpy.mockRestore();
 	});
 
+	it('still rolls back and toasts when a Retry re-ran the load mid-delete', async () => {
+		// A Retry is the SAME item reloading, not a switch. Fencing mutations on
+		// the load generation made a Retry look like an A→B switch, so a delete
+		// failure landing during one was swallowed — no rollback, no toast, no
+		// broadcast (final-review P2). Reachable because a failed load still
+		// paints rows uploaded while it was in flight, delete control and all.
+		listMock.mockRejectedValue(new Error('offline'));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+		broadcastUpload('item-a', uploaded('survivor'));
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+		expect(errorRow()).not.toBeNull();
+
+		let failDelete!: (err: Error) => void;
+		deleteMock.mockReturnValue(
+			new Promise<void>((_, reject) => {
+				failDelete = reject;
+			})
+		);
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		deleteButtons()[0].click();
+		flushSync();
+		expect(tiles()).toHaveLength(0); // optimistic removal
+
+		// Retry while the delete is still in flight.
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		flushSync();
+		await settle();
+
+		failDelete(new Error('500'));
+		await settle();
+
+		expect(tiles()).toHaveLength(1);
+		expect(tiles()[0].getAttribute('aria-label')).toContain('survivor.png');
+		expect(toastMock).toHaveBeenCalledOnce();
+		expect(String(toastMock.mock.calls[0][0])).toContain('survivor.png');
+		expect(notifyDeletedMock).not.toHaveBeenCalled();
+		confirmSpy.mockRestore();
+	});
+
+	it('suppresses a failed delete when the WORKSPACE changed under it', async () => {
+		// `wsSlug` is reactive and the strip survives a workspace change, so
+		// view identity is (workspace, item) — keying it on the item alone would
+		// read that switch as a same-item Retry and roll A's row into B's strip
+		// (Codex fresh-angle round 2).
+		listMock.mockRejectedValue(new Error('offline'));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+		broadcastUpload('item-a', uploaded('survivor'));
+		flushSync();
+
+		let failDelete!: (err: Error) => void;
+		deleteMock.mockReturnValue(
+			new Promise<void>((_, reject) => {
+				failDelete = reject;
+			})
+		);
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		deleteButtons()[0].click();
+		flushSync();
+		expect(tiles()).toHaveLength(0);
+
+		// Retry clicked, THEN the workspace swapped before the effect flushed —
+		// the window where an item-keyed retry marker is claimed by the wrong
+		// view.
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		listMock.mockResolvedValue(response([att({ id: 'other-ws' })]));
+		props.wsSlug = 'ws2';
+		flushSync();
+		await settle();
+
+		failDelete(new Error('500'));
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('survivor.png'))).toBe(false);
+		expect(names.some((n) => n.includes('other-ws.png'))).toBe(true);
+		expect(toastMock).not.toHaveBeenCalled();
+		confirmSpy.mockRestore();
+	});
+
+	it('still suppresses a failed delete after an A→B→A round trip', async () => {
+		// The view generation, not just the id compare, is what closes this:
+		// `itemId` reads 'item-a' again by the time the delete rejects, but the
+		// row belongs to a view that has since been torn down and refetched —
+		// restoring it would resurrect a row A's newer load didn't return
+		// (PLAN-2105 / TASK-2112).
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		let failDelete!: (err: Error) => void;
+		deleteMock.mockReturnValue(
+			new Promise<void>((_, reject) => {
+				failDelete = reject;
+			})
+		);
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		deleteButtons()[0].click();
+		flushSync();
+
+		listMock.mockResolvedValue(response([att({ id: 'b1' })]));
+		props.itemId = 'item-b';
+		flushSync();
+		await settle();
+
+		listMock.mockResolvedValue(response([]));
+		props.itemId = 'item-a';
+		flushSync();
+		await settle();
+
+		failDelete(new Error('500'));
+		await settle();
+
+		expect(tiles()).toHaveLength(0);
+		expect(toastMock).not.toHaveBeenCalled();
+		confirmSpy.mockRestore();
+	});
+
 	// ── Upload refresh (TASK-2385) ────────────────────────────────────────
 
 	const uploaded = (id: string): UploadedAttachment => ({
@@ -1131,6 +1278,35 @@ describe('ItemAttachmentStrip', () => {
 		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
 		expect(names).toHaveLength(1);
 		expect(names[0]).toContain('a1.png');
+	});
+
+	it('bounds the tombstone set, shedding the oldest ids first', async () => {
+		// The tombstones survive a Retry and ride a workspace-wide bus, so the
+		// set needs the same hard bound as the list buffers (final-review P3).
+		// The newest tombstone is the one that can still be racing an in-flight
+		// response, so the cap sheds from the other end.
+		listMock.mockRejectedValueOnce(new Error('offline'));
+		mountStrip('item-a');
+		await settle();
+
+		broadcastDeletion('oldest');
+		for (let i = 0; i < 500; i++) broadcastDeletion(`bulk-${i}`);
+		broadcastDeletion('newest');
+		flushSync();
+
+		// Retry keeps the tombstones (an item switch would clear them).
+		listMock.mockResolvedValueOnce(
+			response([att({ id: 'oldest' }), att({ id: 'newest' }), att({ id: 'live' })])
+		);
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		flushSync();
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('newest.png'))).toBe(false);
+		expect(names.some((n) => n.includes('live.png'))).toBe(true);
+		// Shed by the cap, so it is no longer suppressed — the safe direction.
+		expect(names.some((n) => n.includes('oldest.png'))).toBe(true);
 	});
 
 	it('warns using UNFLUSHED editor content, not just the persisted body', async () => {
