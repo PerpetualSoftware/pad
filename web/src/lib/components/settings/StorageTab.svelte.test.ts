@@ -15,6 +15,8 @@ import type {
 const listMock =
 	vi.fn<(ws: string, filters: Record<string, unknown>) => Promise<AttachmentListResponse>>();
 const usageMock = vi.fn<(ws: string) => Promise<WorkspaceStorageInfo>>();
+const deleteMock = vi.fn<(ws: string, id: string) => Promise<void>>();
+const announceMock = vi.fn<(ws: string, id: string) => void>();
 const toastMock = vi.fn<(message: string, kind?: string) => void>();
 
 class FakeApiError extends Error {
@@ -33,7 +35,7 @@ vi.mock('$lib/api/client', () => ({
 			storageUsage: (ws: string) => usageMock(ws),
 			downloadUrl: (ws: string, id: string, variant?: string) =>
 				`/api/v1/workspaces/${ws}/attachments/${id}${variant ? `?variant=${variant}` : ''}`,
-			delete: vi.fn(),
+			delete: (ws: string, id: string) => deleteMock(ws, id),
 		},
 	},
 }));
@@ -43,7 +45,7 @@ vi.mock('$app/state', () => ({
 }));
 
 vi.mock('$lib/attachments/events', () => ({
-	announceAttachmentDeleted: vi.fn(),
+	announceAttachmentDeleted: (ws: string, id: string) => announceMock(ws, id),
 }));
 
 vi.mock('$lib/components/editor/attachment-metadata', () => ({
@@ -106,6 +108,9 @@ describe('StorageTab workspace switching', () => {
 		listMock.mockResolvedValue(response([]));
 		usageMock.mockReset();
 		usageMock.mockResolvedValue(usage(1));
+		deleteMock.mockReset();
+		deleteMock.mockResolvedValue(undefined);
+		announceMock.mockReset();
 		toastMock.mockReset();
 		props.wsSlug = 'ws-a';
 		props.initialItemId = '';
@@ -254,6 +259,158 @@ describe('StorageTab workspace switching', () => {
 		expect(text()).not.toContain('Loading storage…');
 		expect(text()).toContain('fresh-a.pdf');
 		expect(text()).not.toContain('stale-a.pdf');
+	});
+
+	it('fences a delete on the workspace it was issued for', async () => {
+		// The delete used the LIVE `wsSlug` after its own await, so an A→B switch
+		// mid-request let A's success handling announce the deletion and reload
+		// against B — a success toast for a row the user is no longer looking at,
+		// and a refetch of B's list on A's completion (final review round 4).
+		//
+		// The broadcast is deliberately NOT fenced: it is a global side effect
+		// keyed by (workspace, id), and a switch says nothing about whether the
+		// row is gone.
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'from-a.pdf' })]));
+		mountTab();
+		await settle();
+		expect(rows()).toHaveLength(1);
+
+		const slowDelete = deferred<void>();
+		deleteMock.mockReturnValueOnce(slowDelete.promise);
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		target.querySelector<HTMLButtonElement>('.btn-remove')?.click();
+		flushSync();
+		expect(deleteMock).toHaveBeenCalledWith('ws-a', 'a1');
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'b1', filename: 'from-b.pdf' })]));
+		props.wsSlug = 'ws-b';
+		flushSync();
+		await settle();
+		expect(text()).toContain('from-b.pdf');
+		toastMock.mockClear();
+		const listCalls = listMock.mock.calls.length;
+
+		slowDelete.resolve();
+		await settle();
+
+		// Announced against the workspace the DELETE targeted...
+		expect(announceMock).toHaveBeenCalledWith('ws-a', 'a1');
+		// ...but no toast over B, and no reload of B on A's completion.
+		expect(toastMock).not.toHaveBeenCalled();
+		expect(listMock.mock.calls.length).toBe(listCalls);
+		expect(text()).toContain('from-b.pdf');
+		confirmSpy.mockRestore();
+	});
+
+	it('still suppresses a delete continuation after an A→B→A round trip', async () => {
+		// The identity is back to ws-a by the time the delete resolves, so an
+		// identity compare alone lets it through. Only a view GENERATION can tell
+		// "never left" from "left and came back" — which is why the mutation
+		// fence is not the paint token (Codex round 3).
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'from-a.pdf' })]));
+		mountTab();
+		await settle();
+
+		const slowDelete = deferred<void>();
+		deleteMock.mockReturnValueOnce(slowDelete.promise);
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		target.querySelector<HTMLButtonElement>('.btn-remove')?.click();
+		flushSync();
+		expect(deleteMock).toHaveBeenCalledWith('ws-a', 'a1');
+
+		props.wsSlug = 'ws-b';
+		flushSync();
+		await settle();
+		props.wsSlug = 'ws-a';
+		flushSync();
+		await settle();
+
+		toastMock.mockClear();
+		const listCalls = listMock.mock.calls.length;
+		slowDelete.resolve();
+		await settle();
+
+		expect(announceMock).toHaveBeenCalledWith('ws-a', 'a1');
+		// No toast: it belongs to the view that was on screen when the delete
+		// started, and the user has been elsewhere since.
+		expect(toastMock).not.toHaveBeenCalled();
+		// But the tab IS showing ws-a again, and the list it repainted on the way
+		// back can have raced the DELETE — so the corrective refetch still runs,
+		// against ws-a (Codex round 4).
+		expect(listMock.mock.calls.length).toBe(listCalls + 1);
+		expect(listMock).toHaveBeenLastCalledWith('ws-a', expect.anything());
+		confirmSpy.mockRestore();
+	});
+
+	it('does not toast or refetch for a delete that resolves after unmount', async () => {
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'from-a.pdf' })]));
+		mountTab();
+		await settle();
+
+		const slowDelete = deferred<void>();
+		deleteMock.mockReturnValueOnce(slowDelete.promise);
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		target.querySelector<HTMLButtonElement>('.btn-remove')?.click();
+		flushSync();
+
+		unmount(instance!);
+		instance = undefined;
+		toastMock.mockClear();
+		const listCalls = listMock.mock.calls.length;
+
+		slowDelete.resolve();
+		await settle();
+
+		// The broadcast still fires — other surfaces need the proof — but
+		// nothing writes into a dead instance.
+		expect(announceMock).toHaveBeenCalledWith('ws-a', 'a1');
+		expect(toastMock).not.toHaveBeenCalled();
+		expect(listMock.mock.calls.length).toBe(listCalls);
+		confirmSpy.mockRestore();
+	});
+
+	it('does not toast for a list or usage request that fails after unmount', async () => {
+		// The loaders are plain async functions, not effects, so nothing retires
+		// their tokens on destroy unless onDestroy does it — and an error toast
+		// for a tab that is gone is a global side effect the user still sees
+		// (Codex round 5).
+		const slowList = deferred<AttachmentListResponse>();
+		const slowUsage = deferred<WorkspaceStorageInfo>();
+		listMock.mockReturnValueOnce(slowList.promise);
+		usageMock.mockReturnValueOnce(slowUsage.promise);
+		mountTab();
+		await settle();
+
+		unmount(instance!);
+		instance = undefined;
+		toastMock.mockReset();
+
+		slowList.reject(new Error('list blew up'));
+		slowUsage.reject(new Error('usage blew up'));
+		await settle();
+
+		expect(toastMock).not.toHaveBeenCalled();
+	});
+
+	it('refuses a delete click that lands after the workspace already switched', async () => {
+		// Props update synchronously and the reload effect flushes later, so a
+		// click can land on the previous workspace's still-painted row while
+		// `wsSlug` already reads the next one. No fence after the await can
+		// unsend that request, so the entry fence has to refuse it.
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'from-a.pdf' })]));
+		mountTab();
+		await settle();
+
+		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		props.wsSlug = 'ws-b';
+		// No flushSync between the switch and the click: that IS the window.
+		target.querySelector<HTMLButtonElement>('.btn-remove')?.click();
+		flushSync();
+		await settle();
+
+		expect(deleteMock).not.toHaveBeenCalled();
+		expect(confirmSpy).not.toHaveBeenCalled();
+		confirmSpy.mockRestore();
 	});
 
 	it('ignores a superseded usage response and its error toast', async () => {

@@ -1264,6 +1264,115 @@ describe('ItemAttachmentStrip', () => {
 		expect(names.some((n) => n.includes('old1.png'))).toBe(true);
 	});
 
+	it('lets a later load retire a pending upload deleted outside this tab', async () => {
+		// `pendingUploads` was retained forever and no successful response ever
+		// consumed it, so it re-merged onto EVERY later load. The event bus is
+		// process-local, so a deletion from another tab or another user, followed
+		// by a load that legitimately returns no row, resurrected the tile — and
+		// kept resurrecting it (final review round 4).
+		//
+		// The rule: a response is authoritative about the entries the buffer
+		// already held when that request went OUT. Entries announced while it was
+		// in flight are the buffer's actual purpose and stay.
+		listMock.mockRejectedValueOnce(new Error('offline'));
+		mountStrip('item-a');
+		await settle();
+		expect(errorRow()).not.toBeNull();
+
+		// Uploaded during the outage: buffered, and rightly shown.
+		broadcastUpload('item-a', uploaded('elsewhere-deleted'));
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+
+		// Retry. The GET goes out AFTER the upload, so the server's answer is
+		// authoritative — and it says the row is gone, because another tab
+		// deleted it.
+		listMock.mockResolvedValueOnce(response([att({ id: 'still-here' })]));
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		flushSync();
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('elsewhere-deleted'))).toBe(false);
+		expect(names.some((n) => n.includes('still-here.png'))).toBe(true);
+	});
+
+	it('does not retire a pending upload on a TRUNCATED page', async () => {
+		// The request is bounded at 50 rows, so a FULL page is not proof of
+		// absence — a still-live row can simply be past it. Retiring it there
+		// would delete a good tile permanently, which is worse than the
+		// resurrection the retirement rule exists to fix (Codex round 2).
+		listMock.mockRejectedValueOnce(new Error('offline'));
+		mountStrip('item-a');
+		await settle();
+
+		broadcastUpload('item-a', uploaded('past-the-bound'));
+		flushSync();
+
+		// The retry's page comes back FULL, and the server says there are more.
+		const full = Array.from({ length: 50 }, (_, i) => att({ id: `s${i}` }));
+		listMock.mockResolvedValueOnce({ attachments: full, total: 60, limit: 50, offset: 0 });
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		flushSync();
+		await settle();
+
+		target.querySelector<HTMLElement>('.att-more-expand')?.click();
+		flushSync();
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('past-the-bound.png'))).toBe(true);
+	});
+
+	it('treats a page that holds every live row as complete, even at the bound', async () => {
+		// `total` is the server's own count and `offset` is always 0 here, so a
+		// page of exactly MAX_FETCH rows with `total: 50` HAS reached everything.
+		// Reading "full page" as "truncated" would leave an externally deleted
+		// upload buffered — resurrectable indefinitely (Codex round 3).
+		listMock.mockRejectedValueOnce(new Error('offline'));
+		mountStrip('item-a');
+		await settle();
+
+		broadcastUpload('item-a', uploaded('elsewhere-deleted'));
+		flushSync();
+
+		const full = Array.from({ length: 50 }, (_, i) => att({ id: `s${i}` }));
+		listMock.mockResolvedValueOnce({ attachments: full, total: 50, limit: 50, offset: 0 });
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		flushSync();
+		await settle();
+
+		target.querySelector<HTMLElement>('.att-more-expand')?.click();
+		flushSync();
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('elsewhere-deleted'))).toBe(false);
+		expect(names).toHaveLength(50);
+	});
+
+	it('still keeps an upload announced while THIS request was in flight', async () => {
+		// The other side of the same rule, and the reason the buffer exists at
+		// all: this GET was issued BEFORE the upload, so its silence about the
+		// row proves nothing and the tile must survive the response. Pins the
+		// consumption above to entries the request could actually have covered.
+		listMock.mockRejectedValueOnce(new Error('offline'));
+		mountStrip('item-a');
+		await settle();
+
+		const pending = deferred<AttachmentListResponse>();
+		listMock.mockReturnValueOnce(pending.promise);
+		target.querySelector<HTMLButtonElement>('.att-retry')?.click();
+		flushSync();
+
+		// Announced AFTER the retry's request went out.
+		broadcastUpload('item-a', uploaded('mid-flight'));
+		flushSync();
+
+		pending.resolve(response([att({ id: 'server-row' })]));
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('mid-flight.png'))).toBe(true);
+		expect(names.some((n) => n.includes('server-row.png'))).toBe(true);
+	});
+
 	it('does not double-count an upload the refetch also returns', async () => {
 		const pending = deferred<AttachmentListResponse>();
 		listMock.mockReturnValue(pending.promise);

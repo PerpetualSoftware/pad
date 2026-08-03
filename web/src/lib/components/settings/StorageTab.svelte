@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api, PadApiError } from '$lib/api/client';
 	import { announceAttachmentDeleted } from '$lib/attachments/events';
@@ -19,6 +19,7 @@
 		type StorageFilterSelections
 	} from '$lib/attachments/storageFilters';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
+	import { viewIdentity, createFence, createPaintFence } from '$lib/attachments/viewFence';
 
 	// ── Props ────────────────────────────────────────────────────────────────
 	interface Props {
@@ -159,9 +160,41 @@
 		attachments.find((a) => a.item_id === filterItemId)?.item_title ?? ''
 	);
 
-	// The workspace whose view is currently loaded. A plain `let` (not `$state`)
-	// so writing it from the effect below can't re-trigger it.
-	let loadedWsSlug: string | null = null;
+	// ── View identity + fences (PLAN-2392, shared with the item attachment
+	// strip) ─────────────────────────────────────────────────────────────────
+	//
+	// This tab lives at `/{user}/{ws}/settings` — ONE SvelteKit route — so a
+	// workspace switch changes `wsSlug` under a MOUNTED component and every
+	// request, continuation and rendered control has to say which workspace it
+	// belongs to. `$lib/attachments/viewFence` owns that invariant; see its
+	// header. The identity is stated ONCE here, so no individual fence can
+	// restate a shorter one, and each request reads its workspace back off its
+	// own token rather than off the live prop.
+	const view = viewIdentity(() => ({ ws: wsSlug }));
+	/**
+	 * Fence 2 — the view generation. Mutations fence on this rather than on the
+	 * paint alone: a paint token has no generation, so an A→B→A round trip (or
+	 * an unmount) leaves an identity that still matches and a stale continuation
+	 * would sail through (Codex round 3).
+	 */
+	const viewFence = createFence(view);
+	/** Fence 3 — the workspace whose view is currently painted (and loaded). */
+	const paint = createPaintFence(view);
+
+	// Destroy invalidates EVERY fence and un-paints. The strip gets its request
+	// fence invalidated for free (its load lives in an $effect, whose teardown
+	// runs on destroy); this tab's loaders are plain async functions, so nothing
+	// else retires their tokens — and a list or usage request that fails after
+	// unmount would otherwise raise an error toast for a tab that is gone
+	// (Codex round 5). "Nothing is painted any more" is exactly what the paint
+	// fence is for, so no separate destroyed flag is needed.
+	onDestroy(() => {
+		viewFence.invalidate();
+		listFence.invalidate();
+		usageFence.invalidate();
+		workspaceViewFence.invalidate();
+		paint.record(null);
+	});
 
 	/**
 	 * The tab's only load trigger. It owns BOTH transitions, in one effect and
@@ -187,11 +220,20 @@
 	 * deep-link branch can't fire a second one behind it.
 	 */
 	$effect(() => {
-		const ws = wsSlug;
+		// Captured outside `untrack` so `wsSlug` (via the identity) and
+		// `initialItemId` are this effect's dependencies.
+		const here = view.capture();
 		const incoming = initialItemId;
+		if (!here.key) return;
 		untrack(() => {
-			if (ws !== loadedWsSlug) {
-				loadedWsSlug = ws;
+			if (!paint.isCurrent()) {
+				paint.record(here);
+				// The view itself changed, so in-flight mutations captured
+				// against the old one must stop reconciling. Bumped here, not
+				// derived from the paint: an A→B→A round trip lands back on an
+				// identity that MATCHES, and only a generation can tell that
+				// apart from never having left (Codex round 3).
+				viewFence.invalidate();
 				// Everything workspace-scoped is meaningless in the new
 				// workspace and must not survive the switch: the rows and
 				// usage figure obviously, but also the two workspace-scoped
@@ -218,7 +260,7 @@
 
 	/**
 	 * Refetch after the item scope changed. Clears the rendered rows first:
-	 * the `listGen` fence stops a stale RESPONSE from landing, but on its own
+	 * the list fence stops a stale RESPONSE from landing, but on its own
 	 * it would leave the previous item's rows on screen while the new request
 	 * runs — indefinitely if that request fails (Codex round 5).
 	 */
@@ -239,34 +281,35 @@
 		retargetScope();
 	}
 
-	let usageGen = 0;
+	/**
+	 * Fence 1, usage channel. Both halves matter, for the same reasons as the
+	 * list's. The workspace check: this tab stays mounted across a workspace
+	 * change, so a figure fetched for the workspace the user just left must not
+	 * paint over the one they switched to (nor raise its error toast). The
+	 * generation check: on an A→B→A round trip the workspace matches again, so
+	 * only the generation can tell the first A request from the current one
+	 * (Codex round 1).
+	 */
+	const usageFence = createFence(view);
 
 	async function loadUsage() {
-		// Both halves of the list load's fence, for the same reasons. The
-		// workspace check: this tab stays mounted across a workspace change, so a
-		// figure fetched for the workspace the user just left must not paint over
-		// the one they switched to (nor raise its error toast). The generation
-		// check: on an A→B→A round trip the workspace matches again, so only the
-		// generation can tell the first A request from the current one
-		// (Codex round 1).
-		const gen = ++usageGen;
-		const reqWsSlug = wsSlug;
+		const req = usageFence.restart();
 		try {
-			const next = await api.attachments.storageUsage(reqWsSlug);
-			if (gen !== usageGen || reqWsSlug !== wsSlug) return;
+			const next = await api.attachments.storageUsage(req.value.ws);
+			if (req.stale()) return;
 			usage = next;
 		} catch (err) {
-			if (gen !== usageGen || reqWsSlug !== wsSlug) return;
+			if (req.stale()) return;
 			const msg = err instanceof Error ? err.message : 'Failed to load storage usage';
 			toastStore.show(msg, 'error');
 		}
 	}
 
-	// Every list load shares one generation, so a slower earlier request can
-	// never overwrite a newer one's rows/total/offset — the deep-link re-seed
-	// can now start a load while onMount's or a filter change's is still in
-	// flight (Codex round 4).
-	let listGen = 0;
+	// Every list load shares one fence, so a slower earlier request can never
+	// overwrite a newer one's rows/total/offset — the deep-link re-seed can
+	// start a load while onMount's or a filter change's is still in flight
+	// (Codex round 4).
+	const listFence = createFence(view);
 	// A list request is in flight. Only meaningful once the tab's initial
 	// `loading` gate is down — it keeps a scope retarget (which clears the
 	// rows) from flashing "no attachments match" before the new page lands.
@@ -286,21 +329,21 @@
 	 * and nothing refetches eagerly.
 	 */
 	async function loadList(opts: { retry?: boolean } = {}) {
-		const gen = ++listGen;
-		listLoading = true;
-		listError = false;
 		// `wsSlug` is reactive and this tab stays mounted across a workspace
 		// change, so the request's workspace is captured and re-checked: the
 		// generation alone can't tell a superseded workspace from the current
 		// one, and both the rows and the metadata-cache keys are workspace
 		// scoped (Codex fresh-angle round 2).
-		const reqWsSlug = wsSlug;
+		const req = listFence.restart();
+		const reqWsSlug = req.value.ws;
+		listLoading = true;
+		listError = false;
 		if (opts.retry) {
 			for (const a of attachments) invalidateAttachmentMetadata(reqWsSlug, a.id);
 		}
 		try {
 			const resp: AttachmentListResponse = await api.attachments.list(reqWsSlug, buildFilters());
-			if (gen !== listGen || reqWsSlug !== wsSlug) return;
+			if (req.stale()) return;
 			attachments = resp.attachments ?? [];
 			if (opts.retry) {
 				// The rows the refetch returned get the same treatment — at
@@ -311,12 +354,12 @@
 			limit = resp.limit ?? limit;
 			offset = resp.offset ?? offset;
 		} catch (err) {
-			if (gen !== listGen || reqWsSlug !== wsSlug) return;
+			if (req.stale()) return;
 			listError = true;
 			const msg = err instanceof Error ? err.message : 'Failed to load attachments';
 			toastStore.show(msg, 'error');
 		} finally {
-			if (gen === listGen && reqWsSlug === wsSlug) listLoading = false;
+			if (!req.stale()) listLoading = false;
 		}
 	}
 
@@ -328,11 +371,10 @@
 	 * Load (or reload) everything the tab shows for the current workspace, behind
 	 * the whole-tab `loading` gate. Used on mount and on every workspace change.
 	 */
-	let viewGen = 0;
+	const workspaceViewFence = createFence(view);
 
 	async function loadWorkspaceView() {
-		const gen = ++viewGen;
-		const reqWsSlug = wsSlug;
+		const req = workspaceViewFence.restart();
 		loading = true;
 		try {
 			await Promise.all([loadList(), loadUsage()]);
@@ -343,7 +385,7 @@
 			// finishes with `wsSlug` back at A while A's current load is still in
 			// flight (Codex round 1). It can't strand: whatever supersedes a load
 			// is itself a load, and the newest one's `finally` always runs.
-			if (gen === viewGen && reqWsSlug === wsSlug) loading = false;
+			if (!req.stale()) loading = false;
 		}
 	}
 
@@ -359,18 +401,53 @@
 	// ── Actions ──────────────────────────────────────────────────────────────
 
 	async function handleDelete(att: AttachmentListItem) {
+		// ENTRY fence (fence 3). The clicked row was painted for the workspace
+		// this tab has LOADED, which during the prop-update → effect-flush window
+		// is not necessarily the one `wsSlug` already names. Taking the workspace
+		// off the paint means the DELETE targets the row the user actually
+		// clicked; refusing when the paint is stale is the only lever that works
+		// at all, because every check below runs after the await and no fence can
+		// unsend a request.
+		const painted = paint.painted();
+		if (!painted || !paint.isCurrent()) return;
+		const reqWsSlug = painted.value.ws;
+		// Fence 2 for everything after the await. Deliberately NOT the paint
+		// token: that carries an identity but no generation, so an A→B→A round
+		// trip (or an unmount) would leave it matching again and let a stale
+		// continuation toast and refetch (Codex round 3).
+		const req = viewFence.begin();
+
 		const ok = confirm(
 			`Delete ${att.filename}? The blob is reclaimed by garbage collection after a grace period.`
 		);
 		if (!ok) return;
 		try {
-			await api.attachments.delete(wsSlug, att.id);
+			await api.attachments.delete(reqWsSlug, att.id);
 			// Same broadcast the item attachment strip does (PLAN-2382 /
 			// TASK-2384): an editor open in another tab-pane still holds live
 			// <img>/chip NodeViews for this attachment, and an already-loaded
 			// image never re-requests, so without this they keep presenting a
 			// row the server no longer has (Codex round 14).
-			announceAttachmentDeleted(wsSlug, att.id);
+			//
+			// Deliberately AHEAD of the fence, like the strip's: this is a GLOBAL
+			// side effect keyed by (workspace, id), not a write into this view's
+			// local state, and a workspace switch says nothing about whether the
+			// row is gone. Skipping it would leave every other mounted surface
+			// stale on proof we already have.
+			announceAttachmentDeleted(reqWsSlug, att.id);
+			// The toast DOES belong to a view: after an A→B switch mid-request it
+			// would announce A's deletion over B (final review round 4).
+			if (req.stale()) {
+				// The refetch does NOT. This tab holds no tombstones and does not
+				// subscribe to the deletion bus, so a list request that raced the
+				// DELETE can have repainted the row — and on an A→B→A round trip
+				// the fence above suppresses the only thing that heals it. A
+				// refetch is a request for the truth about what is ON SCREEN, not
+				// a write into a view the user left, so it is gated on the paint
+				// rather than on the generation (Codex round 4).
+				if (paint.isCurrent() && !painted.changed()) await reload();
+				return;
+			}
 			toastStore.show(`Deleted ${att.filename}`, 'success');
 			await reload();
 		} catch (err) {
@@ -380,11 +457,19 @@
 			// an error for something that is in fact already done
 			// (Codex round 20; matches the attachment strip's handling).
 			if (err instanceof PadApiError && err.code === 'not_found') {
-				announceAttachmentDeleted(wsSlug, att.id);
+				announceAttachmentDeleted(reqWsSlug, att.id);
+				if (req.stale()) {
+					// Same reasoning as the success arm: a 404 is just as
+					// authoritative that the row is gone, so the on-screen list
+					// still deserves the correction.
+					if (paint.isCurrent() && !painted.changed()) await reload();
+					return;
+				}
 				toastStore.show(`${att.filename} was already deleted`, 'info');
 				await reload();
 				return;
 			}
+			if (req.stale()) return;
 			const msg = err instanceof Error ? err.message : 'Failed to delete attachment';
 			toastStore.show(msg, 'error');
 		}

@@ -19,31 +19,22 @@
 	 * block, so this component PERSISTS across an A→B item switch, per the
 	 * no-{#key} bug class from PLAN-2105 / TASK-2112.
 	 *
-	 * THE FENCE MODEL. Identity is the PAIR (workspace, item) everywhere — see
-	 * `viewKey`. There are exactly three fences, because there are exactly
-	 * three distinct questions, each asked at a different moment:
+	 * THE FENCE MODEL lives in `$lib/attachments/viewFence`, which owns the
+	 * whole invariant — read its header for why there are exactly three fences
+	 * and why they cannot be collapsed. This component supplies the identity
+	 * once (`view`, the PAIR (workspace, item)) and builds all three from it:
 	 *
-	 *   1. `switchedAway(gen, item, ws)` — "is this RESPONSE still current?"
-	 *      Guards every await-then-write inside the load effect, against the
-	 *      REQUEST generation. A Retry supersedes its own predecessor here.
-	 *   2. `viewChanged(gen, item, ws)` — "may this async CONTINUATION still
-	 *      reconcile local state?" Guards mutation continuations, against the
-	 *      VIEW generation, which a Retry deliberately does not bump: a delete
-	 *      of a row still on screen must roll back and toast even if the user
-	 *      hit Retry while it was in flight.
-	 *   3. PAINT-TIME identity — "does the CONTROL the user clicked belong to
-	 *      what is on screen?" Props update synchronously and effects flush
-	 *      later, so in between, the DOM still shows the previous view. Every
-	 *      entry point reached from a rendered control validates against an
-	 *      identity RECORDED WHEN THE EFFECT PAINTED (`paintedView`), never
-	 *      against the live props. Both control entry points use it —
-	 *      `handleDelete` for a tile, `retryLoad` for the error row. This fence
-	 *      has to be at ENTRY: the other two run after an await, and no fence
-	 *      can unsend a request.
-	 *
-	 * (1) and (2) compare a captured generation AND the pair, because a
-	 * generation counter alone misses A→B→A and the pair alone misses A→B→A.
-	 * (3) is a pure pair compare: it asks about the DOM, not about ordering.
+	 *   1. `loadFence` — "is this RESPONSE still current?" Restarted per
+	 *      request; guards every await-then-write inside the load effect.
+	 *   2. `viewFence` — "may this async CONTINUATION still reconcile local
+	 *      state?" Invalidated only when the view really changes, so a Retry
+	 *      (the same view reloading) leaves it alone: a delete of a row still
+	 *      on screen must roll back and toast even if the user hit Retry while
+	 *      it was in flight.
+	 *   3. `paint` — "does the CONTROL the user clicked belong to what is on
+	 *      screen?" Both control entry points fence on it — `handleDelete` for
+	 *      a tile, `retryLoad` for the error row — at ENTRY, because the other
+	 *      two run after an await and no fence can unsend a request.
 	 */
 	import { onDestroy, untrack } from 'svelte';
 	import { api, PadApiError } from '$lib/api/client';
@@ -59,6 +50,7 @@
 		registerAttachmentDeletionListener,
 		registerAttachmentUploadListener,
 	} from '$lib/attachments/events';
+	import { viewIdentity, createFence, createPaintFence } from '$lib/attachments/viewFence';
 
 	interface Props {
 		wsSlug: string;
@@ -175,43 +167,36 @@
 	 */
 	let retryRequestedFor: string | null = null;
 	/**
-	 * View identity key. `itemId` alone isn't it: `wsSlug` is reactive and the
-	 * strip stays mounted across a workspace change, so keying on the item
-	 * would classify that as a same-view Retry — leaving the previous
-	 * workspace's rows painted and its in-flight mutations still reconciling
-	 * (Codex fresh-angle round 2).
+	 * The ONE statement of what names this view. `itemId` alone isn't it:
+	 * `wsSlug` is reactive and the strip stays mounted across a workspace
+	 * change, so keying on the item would classify that as a same-view Retry —
+	 * leaving the previous workspace's rows painted and its in-flight mutations
+	 * still reconciling (Codex fresh-angle round 2). Declared once here so no
+	 * individual fence call site can restate a shorter identity; every fence
+	 * below derives from it, and every captured workspace is read back off a
+	 * token rather than off the live prop.
 	 */
-	function viewKey(ws: string, id: string): string {
-		return `${ws}\u0000${id}`;
-	}
-
+	const view = viewIdentity(() => ({ ws: wsSlug, item: itemId }));
+	/** Fence 1 — request generation. Restarted on every (re)run of the load effect. */
+	const loadFence = createFence(view);
 	/**
-	 * VIEW the currently painted tiles belong to — written by the load effect,
-	 * so it lags the live props by exactly the prop-update → effect-flush
-	 * window. That lag is the point: it is the only thing that can answer "was
-	 * this control rendered for the view that is on screen NOW?", which the
-	 * live props cannot (they already read the NEW view while the OLD tiles are
-	 * still mounted). Entry fence for `handleDelete` — the `viewChanged` check
-	 * in its catch runs after the await and cannot unsend a DELETE aimed at the
-	 * wrong item or workspace (final review round 2). Non-reactive on purpose:
-	 * read at click time, it must not re-trigger the render it describes.
+	 * Fence 2 — view generation. Invalidated only when the view actually
+	 * changes: a different (item, workspace), or unmount. A Retry is the SAME
+	 * item reloading, so it leaves this alone: a delete of a row still on screen
+	 * must reconcile (roll back, toast) even if the user hit Retry while it was
+	 * in flight. Fencing mutations on the REQUEST generation instead made a
+	 * Retry masquerade as an item switch and swallowed the failure.
 	 */
-	let paintedView: string | null = null;
+	const viewFence = createFence(view);
+	/**
+	 * Fence 3 — the view the currently painted tiles belong to. Recorded by the
+	 * load effect, so it lags the live props by exactly the prop-update →
+	 * effect-flush window; that lag is what makes it the only thing that can
+	 * answer "was this control rendered for the view that is on screen NOW?"
+	 */
+	const paint = createPaintFence(view);
 
-	// Two generations, because "which request is this?" and "which item is on
-	// screen?" are different questions and a Retry answers them differently
-	// (final-review P2).
-	//
-	// REQUEST generation — bumped on every (re)run of the fetch effect,
-	// including a Retry, so a superseded list() response can never write.
-	let loadGeneration = 0;
-	// VIEW generation — bumped only when the view actually changes: a different
-	// (item, workspace), or unmount. A Retry is the SAME item reloading, so it
-	// leaves this alone. Mutations fence on this: a delete of a row still on
-	// screen must reconcile (roll back, toast, broadcast) even if the user hit
-	// Retry while it was in flight. Fencing them on the request generation made
-	// a Retry masquerade as an item switch and swallowed the failure.
-	let viewGeneration = 0;
+
 
 	// Ids confirmed deleted while this item's list was loading. A deletion
 	// broadcast only filters the CURRENT array, so a list() response that was
@@ -240,18 +225,19 @@
 	let pendingUploads: StripAttachment[] = [];
 
 	$effect(() => {
-		const reqItemId = itemId;
-		const reqWsSlug = wsSlug;
+		// Restarting the request fence supersedes any response still in flight
+		// AND captures the identity this run belongs to. Reading the identity
+		// here is what makes (workspace, item) the effect's dependencies.
+		const req = loadFence.restart();
+		const { ws: reqWsSlug, item: reqItemId } = req.value;
 		// Read (and discard) so Retry re-runs this effect. The value never
 		// matters — only the dependency does.
 		void retryNonce;
-		const gen = ++loadGeneration;
 
 		// Claim the retry marker whether or not this run goes on to fetch, so a
 		// stale claim can't leak into a later, unrelated load. Read BEFORE the
 		// reset below, which branches on it.
-		const isRetry =
-			retryRequestedFor !== null && retryRequestedFor === viewKey(reqWsSlug, reqItemId ?? '');
+		const isRetry = retryRequestedFor !== null && retryRequestedFor === req.key;
 		retryRequestedFor = null;
 
 		// Clear synchronously on switch. Without this, A's tiles stay painted
@@ -267,12 +253,13 @@
 			// Whatever this run paints — rows, error row, or nothing — belongs to
 			// this (workspace, item). Recorded unconditionally: a Retry repaints
 			// the SAME view, so the value is unchanged, and a run that bails
-			// below on a missing id must still stop claiming the previous view.
-			paintedView = reqItemId && reqWsSlug ? viewKey(reqWsSlug, reqItemId) : null;
+			// below on a missing id must still stop claiming the previous view
+			// (an un-addressable token records nothing).
+			paint.record(req);
 			if (!isRetry) {
 				// The view itself changed (new item / workspace), so in-flight
 				// mutations captured against the old one must stop reconciling.
-				viewGeneration++;
+				viewFence.invalidate();
 				attachments = [];
 				expanded = false;
 				lightbox = null;
@@ -290,7 +277,7 @@
 		// deferred write in this component.
 		let loadingTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
 			loadingTimer = null;
-			if (switchedAway(gen, reqItemId, reqWsSlug)) return;
+			if (req.stale()) return;
 			showLoading = true;
 		}, LOADING_DELAY_MS);
 		function stopLoadingMarker() {
@@ -301,18 +288,56 @@
 		}
 
 		void (async () => {
+			// Ids the pending buffer ALREADY held when this request went out. A
+			// response can be authoritative about exactly these — the row existed
+			// before the GET, so its absence is proof the row is gone (deleted by
+			// another tab or another user, which the in-process event bus cannot
+			// see). Merging them back in resurrected such rows, and because
+			// nothing ever consumed the buffer it did so on every subsequent
+			// load, forever (final review round 4).
+			//
+			// Entries announced AFTER this point are the buffer's actual purpose
+			// and are never touched: the GET may predate them, so their absence
+			// from the response says nothing.
+			const pendingAtRequest = new Set(pendingUploads.map((a) => a.id));
 			try {
 				const res = await api.attachments.list(reqWsSlug, {
 					item_id: reqItemId,
 					limit: MAX_FETCH,
 				});
-				if (switchedAway(gen, reqItemId, reqWsSlug)) return;
+				if (req.stale()) return;
 				const raw = res.attachments ?? [];
 				const rows = raw.filter((a) => !deletedIds.has(a.id)).map(toStripAttachment);
 				const seen = new Set(rows.map((a) => a.id));
+				// ...but only a COMPLETE page is authoritative about absence. The
+				// request is bounded at MAX_FETCH, so a truncated page may simply
+				// not reach a row that is still perfectly alive — and retiring a
+				// live upload would delete a good tile permanently, which is a
+				// worse failure than the resurrection this is fixing (Codex
+				// round 2). `total` is the server's own statement of how many
+				// live rows there are and `offset` is always 0 here, so a page
+				// that holds all of them IS complete even when it is exactly
+				// MAX_FETCH long (Codex round 3). Only when the response omits
+				// `total` does the page length have to stand in for it.
+				const pageIsComplete =
+					typeof res.total === 'number' ? res.total <= raw.length : raw.length < MAX_FETCH;
+				const covered = pageIsComplete ? pendingAtRequest : new Set<string>();
 				const missed = pendingUploads.filter(
-					(a) => !seen.has(a.id) && !deletedIds.has(a.id)
+					(a) => !seen.has(a.id) && !deletedIds.has(a.id) && !covered.has(a.id)
 				);
+				// Consume what this response covered. The exclusion above already
+				// makes every LATER load ignore these ids (a later request's own
+				// snapshot would contain them too), so this is the retention half
+				// of the fix rather than a second correctness gate: without it the
+				// buffer only ever grows, holding rows that nothing will ever read
+				// again. Deliberately not separately observable — a mutation that
+				// deletes this line survives the suite, and that is expected.
+				//
+				// Only on SUCCESS, and only for what the page COVERED: a failure
+				// is not authoritative, the catch arm below still needs the buffer
+				// to repaint the rows a failed listing would otherwise hide, and a
+				// truncated page proves nothing about what it didn't reach.
+				pendingUploads = pendingUploads.filter((a) => !covered.has(a.id));
 				// Cap the MERGE, not just the response: `missed` rides on top of
 				// up to MAX_FETCH server rows (DR-11).
 				const merged = [...missed, ...rows];
@@ -364,7 +389,7 @@
 				// roleLevel("guest") is below viewer, so they 403. That gap is
 				// pre-existing (inline images are already broken for them) and
 				// is tracked as BUG-2386, not absorbed here — PLAN-2382 DR-4b.
-				if (switchedAway(gen, reqItemId, reqWsSlug)) return;
+				if (req.stale()) return;
 				// Keep anything uploaded while this request was in flight: the
 				// upload SUCCEEDED, so dropping it would hide a row the editor
 				// and server both have, until a remount (Codex review round 2).
@@ -372,7 +397,7 @@
 				loadFailed = true;
 			} finally {
 				stopLoadingMarker();
-				if (!switchedAway(gen, reqItemId, reqWsSlug)) showLoading = false;
+				if (!req.stale()) showLoading = false;
 			}
 		})();
 
@@ -387,7 +412,7 @@
 		// view generation here would put the Retry bug straight back. Unmount
 		// is handled by onDestroy below, which runs only on destroy.
 		return () => {
-			loadGeneration++;
+			loadFence.invalidate();
 			stopLoadingMarker();
 		};
 	});
@@ -395,7 +420,7 @@
 	// Destroy invalidates the VIEW too — an in-flight delete that resolves
 	// after the component is gone must not toast or write.
 	onDestroy(() => {
-		viewGeneration++;
+		viewFence.invalidate();
 	});
 
 	/**
@@ -410,7 +435,6 @@
 	 * uploaded while the request was in flight.
 	 */
 	function retryLoad() {
-		if (!itemId || !wsSlug) return;
 		// The same ENTRY fence the delete control uses (fence 3): the painted
 		// error must belong to the view that is on screen NOW. If the parent has
 		// already swapped `itemId` or `wsSlug` and this effect hasn't flushed
@@ -418,13 +442,19 @@
 		// its way, and honouring the retry would preserve the previous view's
 		// rows across the switch (Codex round 11).
 		//
-		// `loadFailed` is only ever set by a response that passed `switchedAway`
-		// under the run that also wrote `paintedView`, so the two together say
-		// exactly what a separate `loadFailedFor` field used to: WHICH view's
-		// failure is painted. One paint-time identity, not two kept in step.
-		if (!loadFailed || paintedView !== viewKey(wsSlug, itemId)) return;
-		for (const a of attachments) invalidateAttachmentMetadata(wsSlug, a.id);
-		retryRequestedFor = viewKey(wsSlug, itemId);
+		// `loadFailed` is only ever set by a response that passed the request
+		// fence under the run that also recorded the paint, so the two together
+		// say exactly what a separate `loadFailedFor` field used to: WHICH
+		// view's failure is painted. One paint-time identity, not two kept in
+		// step.
+		if (!loadFailed || !paint.isCurrent()) return;
+		const painted = paint.painted();
+		if (!painted) return;
+		// Workspace read back off the PAINTED identity, not the live prop:
+		// `isCurrent()` has just established they agree, and taking it from the
+		// token is what stops the two from ever drifting apart again.
+		for (const a of attachments) invalidateAttachmentMetadata(painted.value.ws, a.id);
+		retryRequestedFor = painted.key;
 		retryNonce++;
 	}
 
@@ -503,38 +533,6 @@
 			attachments = capped(next);
 		});
 	});
-
-	// Mirrors ItemDetail's `switchedAway`: the generation catches a newer load,
-	// the identity compare closes the A→B→A gap where generations could
-	// otherwise line up.
-	//
-	// Identity is the (workspace, item) PAIR, exactly as `viewChanged` and
-	// `viewKey` treat it. Requests already capture the workspace they were
-	// issued against; checking only the item let a same-item workspace switch
-	// pass this fence, so a superseded response, failure or loading timer could
-	// write into the new view during the prop-update → effect-flush window
-	// (final review round 2).
-	//
-	// Deliberately untested, unlike the other two fences: a workspace change is
-	// a dependency of the load effect, and Svelte's scheduler always flushes
-	// that re-run — which clears every one of these fields — before a pending
-	// response continuation gets to write. So the omission has no observable
-	// symptom to pin a test to. It is fixed because "the next effect run happens
-	// to overwrite it" is a scheduling accident, not a fence, and because
-	// identity being the (workspace, item) pair should not have exceptions.
-	function switchedAway(gen: number, reqItemId: string, reqWsSlug: string): boolean {
-		return gen !== loadGeneration || itemId !== reqItemId || wsSlug !== reqWsSlug;
-	}
-
-	/**
-	 * The mutation fence. Same shape as `switchedAway`, but against the VIEW
-	 * generation — a Retry re-runs the load without changing what is on screen,
-	 * so an in-flight delete for this item must still reconcile (final-review
-	 * P2). The id compare closes the A→B→A gap the counter alone can miss.
-	 */
-	function viewChanged(gen: number, reqItemId: string, reqWsSlug: string): boolean {
-		return gen !== viewGeneration || itemId !== reqItemId || wsSlug !== reqWsSlug;
-	}
 
 	let visible = $derived(expanded ? attachments : attachments.slice(0, COLLAPSED_TILES));
 	// Overflow is derived from the FETCHED ROWS, never the response's `total`
@@ -640,32 +638,30 @@
 	async function handleDelete(att: StripAttachment) {
 		if (!canDelete) return;
 
-		const reqItemId = itemId;
-		const reqWsSlug = wsSlug;
-		if (!reqItemId || !reqWsSlug) return;
 		// ENTRY fence (fence 3 — see the header). The clicked tile was painted
-		// for `paintedView`; the live props may already name a different view,
-		// because they update synchronously and the load effect that repaints
-		// these tiles flushes later. In that window a click on a stale tile
-		// would send a DELETE while the user is looking at another item or
-		// workspace — and the `viewChanged` check in the catch below runs after
-		// the request, so it can suppress the rollback but cannot unsend the
-		// request (final review round 2). The only fix is to refuse here,
-		// before the confirm and before the call.
-		if (paintedView !== viewKey(reqWsSlug, reqItemId)) return;
+		// for `paint`'s identity; the live props may already name a different
+		// view, because they update synchronously and the load effect that
+		// repaints these tiles flushes later. In that window a click on a stale
+		// tile would send a DELETE while the user is looking at another item or
+		// workspace — and the view-fence check in the catch below runs after the
+		// request, so it can suppress the rollback but cannot unsend the request
+		// (final review round 2). The only fix is to refuse here, before the
+		// confirm and before the call.
+		if (!paint.isCurrent()) return;
 
 		if (typeof window !== 'undefined' && !window.confirm(confirmMessage(att))) return;
 		// window.confirm blocks the thread, so nothing can have moved between
 		// the fence above and here.
 
-		// Capture identity BEFORE the await: a switch mid-delete must not roll
-		// the tile back into a DIFFERENT item's strip, and must not toast over
-		// it. The DELETE itself still lands — it targets an id, not a view.
-		// `wsSlug` is captured for the same reason: it is reactive, and the
-		// broadcast + metadata-cache key must name the workspace the DELETE
-		// actually targeted, not whichever one is current when it resolves
-		// (Codex round 6).
-		const gen = viewGeneration;
+		// Capture identity BEFORE the await (fence 2): a switch mid-delete must
+		// not roll the tile back into a DIFFERENT item's strip, and must not
+		// toast over it. The DELETE itself still lands — it targets an id, not a
+		// view. The workspace comes off the token for the same reason: it is
+		// reactive, and the request + broadcast + metadata-cache key must name
+		// the workspace the DELETE actually targeted, not whichever one is
+		// current when it resolves (Codex round 6).
+		const req = viewFence.begin();
+		const reqWsSlug = req.value.ws;
 		const index = attachments.findIndex((a) => a.id === att.id);
 
 		// Optimistic removal.
@@ -703,7 +699,7 @@
 				return;
 			}
 
-			if (viewChanged(gen, reqItemId, reqWsSlug)) return;
+			if (req.stale()) return;
 
 			// Someone else announced this deletion while our own call was in
 			// flight — the row is gone regardless of why ours failed, so don't
