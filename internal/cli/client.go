@@ -1612,6 +1612,9 @@ func parseErrorBody(status int, body []byte) error {
 		Error APIError `json:"error"`
 	}
 	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error.Message != "" {
+		if errResp.Error.Code == "csrf_error" {
+			errResp.Error.Message = "Session authentication error. Run 'pad auth login' to re-authenticate."
+		}
 		return &errResp.Error
 	}
 	return fmt.Errorf("API error: %d %s", status, string(body))
