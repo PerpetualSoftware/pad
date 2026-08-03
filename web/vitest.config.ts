@@ -35,6 +35,7 @@ function canResolve(id: string): boolean {
 const projectRoot = fileURLToPath(new URL('.', import.meta.url));
 const $lib = fileURLToPath(new URL('./src/lib', import.meta.url));
 const appEnvironmentMock = fileURLToPath(new URL('./src/test/mocks/app-environment.ts', import.meta.url));
+const appStateMock = fileURLToPath(new URL('./src/test/mocks/app-state.ts', import.meta.url));
 
 // Agent worktrees symlink `web/node_modules` to the main checkout's
 // node_modules rather than `npm install`-ing a copy (installing clobbers a
@@ -90,8 +91,13 @@ export default defineConfig(async () => {
 			resolve: {
 				alias: {
 					$lib,
-					// No SvelteKit plugin in this project, so provide `$app/environment`.
+					// No SvelteKit plugin in this project, so provide `$app/environment`
+					// and `$app/state` — without a provider these don't just come back
+					// undefined, they fail to RESOLVE, which is a load-time error for
+					// any component that imports them (and one `vi.mock` can't rescue,
+					// since resolution happens first).
 					'$app/environment': appEnvironmentMock,
+					'$app/state': appStateMock,
 				},
 			},
 			server: nodeModulesRealPath

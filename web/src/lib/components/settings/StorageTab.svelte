@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
+	import { untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api, PadApiError } from '$lib/api/client';
 	import { announceAttachmentDeleted } from '$lib/attachments/events';
@@ -159,13 +159,56 @@
 		attachments.find((a) => a.item_id === filterItemId)?.item_title ?? ''
 	);
 
-	// Re-seed when the deep-link changes under a MOUNTED tab (same route, new
-	// `?attachment_item=`). Without it, the second "View all" link a user
-	// follows from the same settings page silently keeps the first item's
-	// scope (Codex round 3).
+	// The workspace whose view is currently loaded. A plain `let` (not `$state`)
+	// so writing it from the effect below can't re-trigger it.
+	let loadedWsSlug: string | null = null;
+
+	/**
+	 * The tab's only load trigger. It owns BOTH transitions, in one effect and
+	 * one dependency set, because they can arrive in the same flush and the
+	 * order matters:
+	 *
+	 *  - **Workspace change.** `/{user}/{ws}/settings` is one SvelteKit route,
+	 *    so switching workspaces changes `wsSlug` under a MOUNTED tab. Without
+	 *    a reactive reload the previous workspace's rows and usage figure stay
+	 *    on screen, and a list request that was in flight across the switch is
+	 *    dropped by `loadList`'s workspace fence — which, with no successor
+	 *    request, would strand `listLoading` at true forever (final review P1).
+	 *    Since this fires on mount too, it REPLACES the old `onMount` load
+	 *    rather than sitting alongside it — an effect plus `onMount` would
+	 *    fetch the first page twice.
+	 *  - **Deep-link change.** A new `?attachment_item=` on the same route
+	 *    (a second "View all" followed from an already-open settings page)
+	 *    retargets the scope instead of silently keeping the first item's
+	 *    (Codex round 3).
+	 *
+	 * A workspace change subsumes the deep-link branch: it re-seeds the scope
+	 * from the incoming link itself, so a single load covers both and the
+	 * deep-link branch can't fire a second one behind it.
+	 */
 	$effect(() => {
+		const ws = wsSlug;
 		const incoming = initialItemId;
 		untrack(() => {
+			if (ws !== loadedWsSlug) {
+				loadedWsSlug = ws;
+				// Everything workspace-scoped is meaningless in the new
+				// workspace and must not survive the switch: the rows and
+				// usage figure obviously, but also the two workspace-scoped
+				// filter values — an item uuid and a collection uuid from the
+				// old workspace would silently filter the new list down to
+				// nothing. Category / attached / sort / page size are plain
+				// preferences with no workspace identity, so they carry over.
+				seededItemId = incoming;
+				filterItemId = incoming;
+				filterCollection = '';
+				offset = 0;
+				attachments = [];
+				total = 0;
+				usage = null;
+				void loadWorkspaceView();
+				return;
+			}
 			if (incoming === seededItemId) return;
 			seededItemId = incoming;
 			filterItemId = incoming;
@@ -196,10 +239,24 @@
 		retargetScope();
 	}
 
+	let usageGen = 0;
+
 	async function loadUsage() {
+		// Both halves of the list load's fence, for the same reasons. The
+		// workspace check: this tab stays mounted across a workspace change, so a
+		// figure fetched for the workspace the user just left must not paint over
+		// the one they switched to (nor raise its error toast). The generation
+		// check: on an A→B→A round trip the workspace matches again, so only the
+		// generation can tell the first A request from the current one
+		// (Codex round 1).
+		const gen = ++usageGen;
+		const reqWsSlug = wsSlug;
 		try {
-			usage = await api.attachments.storageUsage(wsSlug);
+			const next = await api.attachments.storageUsage(reqWsSlug);
+			if (gen !== usageGen || reqWsSlug !== wsSlug) return;
+			usage = next;
 		} catch (err) {
+			if (gen !== usageGen || reqWsSlug !== wsSlug) return;
 			const msg = err instanceof Error ? err.message : 'Failed to load storage usage';
 			toastStore.show(msg, 'error');
 		}
@@ -267,13 +324,28 @@
 		await Promise.all([loadList(), loadUsage()]);
 	}
 
-	onMount(async () => {
+	/**
+	 * Load (or reload) everything the tab shows for the current workspace, behind
+	 * the whole-tab `loading` gate. Used on mount and on every workspace change.
+	 */
+	let viewGen = 0;
+
+	async function loadWorkspaceView() {
+		const gen = ++viewGen;
+		const reqWsSlug = wsSlug;
+		loading = true;
 		try {
 			await Promise.all([loadList(), loadUsage()]);
 		} finally {
-			loading = false;
+			// Only the NEWEST load lowers the gate; a superseded one doing it
+			// would reveal the next workspace's half-loaded view. The workspace
+			// check alone isn't enough — on an A→B→A round trip the first A load
+			// finishes with `wsSlug` back at A while A's current load is still in
+			// flight (Codex round 1). It can't strand: whatever supersedes a load
+			// is itself a load, and the newest one's `finally` always runs.
+			if (gen === viewGen && reqWsSlug === wsSlug) loading = false;
 		}
-	});
+	}
 
 	// Filter / sort changes reset to the first page and refetch. Using an
 	// explicit handler instead of an $effect keeps the side-effect tied to
