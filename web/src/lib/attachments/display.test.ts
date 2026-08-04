@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	canBrowserPreview,
 	canOpenInViewer,
+	describeAttachmentType,
 	formatBytes,
 	iconForAttachment,
 	isImage
@@ -275,5 +276,43 @@ describe('canBrowserPreview — PLAN-2392 DR-5', () => {
 		for (const mime of VIEWER_TYPES) {
 			expect(canOpenInViewer(mime) && canBrowserPreview(mime)).toBe(true);
 		}
+	});
+});
+
+/**
+ * The panel's type line (PLAN-2392 DR-2 / TASK-2423). Built on
+ * `iconForAttachment` so the words and the icon beside them can never
+ * disagree about what a file is.
+ */
+describe('describeAttachmentType', () => {
+	it('drops an extension that merely repeats the family', () => {
+		expect(describeAttachmentType('application/pdf', 'spec.pdf')).toBe('PDF');
+	});
+
+	it('keeps an extension that names the specific format', () => {
+		expect(describeAttachmentType('image/png', 'shot.png')).toBe('PNG image');
+		expect(
+			describeAttachmentType(
+				'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+				'budget.xlsx'
+			)
+		).toBe('XLSX spreadsheet');
+		expect(describeAttachmentType('application/zip', 'logs.zip')).toBe('ZIP archive');
+	});
+
+	it('falls back to the family alone without a usable filename', () => {
+		expect(describeAttachmentType('application/pdf', null)).toBe('PDF');
+		expect(describeAttachmentType('image/webp', 'no-extension')).toBe('Image');
+	});
+
+	it('never returns an empty string — a panel with nothing known still says something', () => {
+		// The chip entry point can open the panel with no MIME and no filename
+		// at all; an empty answer would render as a stray separator.
+		expect(describeAttachmentType(null, null)).toBe('File');
+		expect(describeAttachmentType('', '')).toBe('File');
+	});
+
+	it('reads the filename when the stored MIME is uselessly generic', () => {
+		expect(describeAttachmentType('application/octet-stream', 'notes.md')).toBe('MD text');
 	});
 });
