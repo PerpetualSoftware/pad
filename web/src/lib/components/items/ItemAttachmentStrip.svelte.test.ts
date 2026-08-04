@@ -49,11 +49,17 @@ function broadcastUpload(itemId: string, a: UploadedAttachment) {
 	for (const fn of uploadListeners) fn(itemId, a);
 }
 
+// TASK-2424: the strip is now also an EMITTER on the open-panel channel, so
+// the mocked module has to carry that export too (a vi.mock factory replaces
+// the whole module — a missing export is an import error, not a silent hole).
+const panelOpenMock = vi.fn<(event: Record<string, unknown>) => void>();
+
 vi.mock('$lib/attachments/events', () => ({
 	announceAttachmentDeleted: (ws: string, uuid: string) => {
 		notifyDeletedMock(uuid);
 		invalidateMock(ws, uuid);
 	},
+	notifyAttachmentPanelOpen: (event: Record<string, unknown>) => panelOpenMock(event),
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
 		deletionListeners.add(fn);
 		return () => deletionListeners.delete(fn);
@@ -119,6 +125,7 @@ const props = $state<{
 	canDelete: boolean;
 	itemContent: string | null;
 	liveContent: (() => string | null) | null;
+	hostToken: string;
 }>({
 	wsSlug: 'ws',
 	username: 'dave',
@@ -126,6 +133,7 @@ const props = $state<{
 	canDelete: false,
 	itemContent: null,
 	liveContent: null,
+	hostToken: 'host-1',
 });
 
 describe('ItemAttachmentStrip', () => {
@@ -140,6 +148,8 @@ describe('ItemAttachmentStrip', () => {
 		notifyDeletedMock.mockReset();
 		invalidateMock.mockReset();
 		invalidateMetadataMock.mockReset();
+		panelOpenMock.mockReset();
+		props.hostToken = 'host-1';
 		props.wsSlug = 'ws';
 		props.username = 'dave';
 		props.itemId = null;
@@ -201,7 +211,12 @@ describe('ItemAttachmentStrip', () => {
 		expect(target.querySelector('.fields-header')?.textContent).toBe('Attachments · 2');
 	});
 
-	it('labels tiles with filename + human size and links non-images to a download', async () => {
+	// TASK-2424 (PLAN-2392 DR-1 / DR-12) deliberately falsifies the previous
+	// version of this test, which pinned the non-image tile as an
+	// `<a href download>`: a tap used to put the file straight in Downloads.
+	// The tile is now a real button that opens the options panel, and Download
+	// is a deliberate choice inside it.
+	it('renders non-image tiles as panel-trigger buttons, not download links', async () => {
 		listMock.mockResolvedValue(
 			response([
 				att({ id: 'doc', mime_type: 'application/pdf', filename: 'spec.pdf', size_bytes: 1536 }),
@@ -211,11 +226,105 @@ describe('ItemAttachmentStrip', () => {
 		await settle();
 
 		const tile = tiles()[0];
-		expect(tile.tagName).toBe('A');
-		expect(tile.getAttribute('aria-label')).toBe('spec.pdf (1.5 KB)');
-		expect(tile.getAttribute('title')).toBe('spec.pdf (1.5 KB)');
-		expect(tile.getAttribute('href')).toBe('/api/v1/workspaces/ws/attachments/doc');
-		expect(tile.getAttribute('download')).toBe('spec.pdf');
+		expect(tile.tagName).toBe('BUTTON');
+		expect(tile.getAttribute('type')).toBe('button');
+		// Nothing downloads on tap any more.
+		expect(tile.getAttribute('href')).toBeNull();
+		expect(tile.getAttribute('download')).toBeNull();
+		// The accessible name carries filename, TYPE and the ACTION (DR-12) —
+		// the only signpost for the changed behaviour, since DR-1 adds no `⋯`.
+		expect(tile.getAttribute('aria-label')).toBe('Options for spec.pdf, PDF, 1.5 KB');
+		expect(tile.getAttribute('title')).toBe('spec.pdf, PDF, 1.5 KB');
+	});
+
+	it('emits the open-panel event with the anchor and all three metadata fields', async () => {
+		listMock.mockResolvedValue(
+			response([
+				att({ id: 'doc', mime_type: 'application/pdf', filename: 'spec.pdf', size_bytes: 1536 }),
+			])
+		);
+		mountStrip('item-a');
+		await settle();
+
+		const tile = tiles()[0];
+		tile.click();
+		flushSync();
+
+		expect(panelOpenMock).toHaveBeenCalledTimes(1);
+		expect(panelOpenMock).toHaveBeenCalledWith({
+			attachmentId: 'doc',
+			// Routing: which ItemDetail mount shows the panel (DR-8).
+			itemId: 'item-a',
+			hostToken: 'host-1',
+			anchor: tile,
+			// The strip always has all three from its list row, unlike a chip.
+			filename: 'spec.pdf',
+			mime_type: 'application/pdf',
+			size_bytes: 1536,
+		});
+	});
+
+	it('activates exactly once per key press — no keydown handler racing the click', async () => {
+		listMock.mockResolvedValue(
+			response([att({ id: 'doc', mime_type: 'application/pdf', filename: 'spec.pdf' })])
+		);
+		mountStrip('item-a');
+		await settle();
+
+		const tile = tiles()[0] as HTMLButtonElement;
+		// DR-12 wants Enter AND Space to activate, exactly once each. A native
+		// <button> is how that is guaranteed: the UA converts both keys into a
+		// single `click` and already suppresses Space's page scroll. The thing
+		// a test can actually falsify is the failure mode DR-12 names — a
+		// hand-rolled keydown handler firing ALONGSIDE the UA's click, opening
+		// the panel twice. jsdom does not synthesise the activation click, so
+		// the key press alone must produce nothing...
+		for (const key of ['Enter', ' ']) {
+			const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+			tile.dispatchEvent(event);
+			flushSync();
+			expect(panelOpenMock).not.toHaveBeenCalled();
+			// ...and Space must not be swallowed as a scroll suppressor either:
+			// the UA's own default handling is what we are relying on.
+			expect(event.defaultPrevented).toBe(false);
+		}
+		// The UA's click is then the one and only activation path.
+		tile.click();
+		flushSync();
+		expect(panelOpenMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('renders an SVG as a FILE tile and keeps it out of the viewer (DR-16)', async () => {
+		// `isImage` would say yes to this — the viewer takes an exact raster
+		// allowlist instead, because SVG can carry active content.
+		listMock.mockResolvedValue(
+			response([
+				att({ id: 'svg', mime_type: 'image/svg+xml', filename: 'logo.svg' }),
+				att({ id: 'png', mime_type: 'image/png', filename: 'shot.png' }),
+			])
+		);
+		mountStrip('item-a');
+		await settle();
+
+		const [svgTile, pngTile] = tiles();
+		// The SVG got the file path: an icon + name, no thumbnail request.
+		expect(svgTile.querySelector('img')).toBeNull();
+		expect(svgTile.getAttribute('aria-label')).toContain('Options for logo.svg');
+
+		svgTile.click();
+		flushSync();
+		expect(document.querySelector('.lightbox-backdrop')).toBeNull();
+		expect(panelOpenMock).toHaveBeenCalledTimes(1);
+
+		// ...and it isn't a member of the lightbox's set either, so the PNG's
+		// viewer holds ONE image rather than paging into the SVG (the counter
+		// only renders for a multi-image set, so its absence IS the assertion).
+		panelOpenMock.mockClear();
+		pngTile.click();
+		flushSync();
+		expect(panelOpenMock).not.toHaveBeenCalled();
+		expect(document.querySelector('.lightbox-backdrop')).not.toBeNull();
+		expect(document.querySelector('.lightbox-counter')).toBeNull();
 	});
 
 	it('renders images as thumb-sm buttons that open the lightbox', async () => {
