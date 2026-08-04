@@ -559,6 +559,29 @@ describe('AttachmentPanelHost', () => {
 		expect(announceMock).not.toHaveBeenCalled();
 	});
 
+	it('closes when another surface deletes the attachment it is showing', async () => {
+		// The strip already reconciles on this channel. Without it here, a panel
+		// opened from a peeked pane keeps offering Download and Delete for a row
+		// the other pane just removed (final review round 2). It CLOSES rather
+		// than latching the missing state: unlike a 404 found while opening,
+		// where the user asked about this file and deserves the answer, this is
+		// an answer to a question nobody asked.
+		const { notifyAttachmentDeleted } = await import('$lib/attachments/events');
+		mountHost(propsA);
+		notifyAttachmentPanelOpen(openEvent());
+		await settle();
+		expect(panel()).not.toBeNull();
+
+		// A DIFFERENT attachment going away must not disturb it.
+		notifyAttachmentDeleted(ATT_ID_2);
+		await settle();
+		expect(panel()).not.toBeNull();
+
+		notifyAttachmentDeleted(ATT_ID);
+		await settle();
+		expect(panel()).toBeNull();
+	});
+
 	it('probes even when the event carries full metadata, if the parent is archived', async () => {
 		// The strip's event carries all three fields, which normally lets the
 		// panel skip the fetch. On an archived parent that would leave Open,

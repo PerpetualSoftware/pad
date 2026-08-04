@@ -425,6 +425,60 @@ describe('StorageTab workspace switching', () => {
 		expect(confirmPanel()).toBeNull();
 	});
 
+	it('sends one DELETE even if the row is confirmed twice while the first is in flight', async () => {
+		// `confirm()` blocked the thread, so a second confirmation could not be
+		// raised while a request was in flight. An in-app one can — and unlike
+		// the item strip, this list does not remove the row optimistically, so
+		// the same row stays clickable throughout. Two DELETEs for one row means
+		// the second 404s and the user sees a success AND an "already deleted"
+		// for a single action (final review round 2).
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'doc.pdf' })]));
+		mountTab();
+		await settle();
+
+		const slowDelete = deferred<void>();
+		deleteMock.mockReturnValueOnce(slowDelete.promise);
+		deleteAndConfirm();
+		expect(deleteMock).toHaveBeenCalledTimes(1);
+
+		deleteAndConfirm();
+		expect(deleteMock).toHaveBeenCalledTimes(1);
+
+		// Fail it: the row stays in the list, which is exactly the case where a
+		// guard that is never released would strand it as undeletable forever.
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'doc.pdf' })]));
+		slowDelete.reject(new Error('network'));
+		await settle();
+		expect(rows()).toHaveLength(1);
+
+		deleteMock.mockResolvedValueOnce(undefined);
+		listMock.mockResolvedValueOnce(response([]));
+		deleteAndConfirm();
+		expect(deleteMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('treats a 404 as authoritative, exactly like a success', async () => {
+		// The 404 arm claims parity with the success arm — same broadcast, same
+		// refresh — and nothing tested it: the shared descriptor's 404 test
+		// covers a different implementation (final review round 2).
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'gone.pdf' })]));
+		mountTab();
+		await settle();
+
+		deleteMock.mockRejectedValueOnce(new FakeApiError('not_found'));
+		listMock.mockResolvedValueOnce(response([]));
+		deleteAndConfirm();
+		await settle();
+
+		// Broadcast like a success, so other surfaces reconcile...
+		expect(announceMock).toHaveBeenCalledWith('ws-a', 'a1');
+		// ...told as information, not as a failure...
+		expect(toastMock).toHaveBeenCalledWith(expect.stringContaining('already deleted'), 'info');
+		expect(toastMock).not.toHaveBeenCalledWith(expect.anything(), 'error');
+		// ...and the stale row is gone from the list.
+		expect(rows()).toHaveLength(0);
+	});
+
 	it('ignores a superseded usage response and its error toast', async () => {
 		const slowA = deferred<WorkspaceStorageInfo>();
 		usageMock.mockReturnValueOnce(slowA.promise);

@@ -40,6 +40,7 @@
 	import AttachmentDetailsPanel from './AttachmentDetailsPanel.svelte';
 	import {
 		isAttachmentPanelEventForHost,
+	registerAttachmentDeletionListener,
 		registerAttachmentPanelListener,
 		type AttachmentPanelOpenEvent,
 	} from '$lib/attachments/events';
@@ -128,6 +129,21 @@
 			// panel is created by this same assignment, so it would seed its
 			// reload stamp from the ALREADY-incremented value and see no change.
 			request = event;
+		});
+	});
+
+	// Someone else deleted the attachment this panel is about — the other pane's
+	// strip, or the panel in a peeked ItemDetail. The strip already reconciles
+	// on this channel; without it here, the panel keeps offering Download and
+	// Delete for a row that is gone (orchestrator's full-diff review round 2).
+	//
+	// Close rather than latch the missing state: unlike a 404 discovered while
+	// opening — where the user asked about THIS file and deserves an answer —
+	// this is an answer to a question nobody asked, and leaving a tombstone
+	// panel on screen would be stranger than dismissing it.
+	$effect(() => {
+		return registerAttachmentDeletionListener((deletedUuid) => {
+			if (request?.attachmentId === deletedUuid) request = null;
 		});
 	});
 

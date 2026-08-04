@@ -459,11 +459,26 @@
 	 * does not, and the workspace can change while it is up — so the fence is
 	 * re-checked at the point that actually sends the request.
 	 */
+	/**
+	 * Ids with a DELETE in flight. A plain Set, not `$state`: nothing renders
+	 * from it, and it is read by the guard in `confirmDelete` which needs the
+	 * value as of right now rather than a reactive snapshot.
+	 */
+	const deletingIds = new Set<string>();
+
 	function confirmDelete() {
 		const pending = pendingDelete;
 		pendingDelete = null;
 		if (!pending) return;
 		if (!paint.isCurrent()) return;
+		// One delete at a time. `confirm()` blocked the thread, so a second
+		// confirmation could not be raised while the first request was in
+		// flight; an in-app one can, and this list does not remove the row
+		// optimistically the way the item strip does, so the same row stays
+		// clickable throughout. Two DELETEs for one row means the second gets a
+		// 404 and the user sees a success and an "already deleted" for a single
+		// action (orchestrator's full-diff review round 2).
+		if (deletingIds.has(pending.att.id)) return;
 		void handleDelete(pending.att);
 	}
 
@@ -484,6 +499,7 @@
 		// continuation toast and refetch (Codex round 3).
 		const req = viewFence.begin();
 
+		deletingIds.add(att.id);
 		try {
 			await api.attachments.delete(reqWsSlug, att.id);
 			// Same broadcast the item attachment strip does (PLAN-2382 /
@@ -535,6 +551,10 @@
 			if (req.stale()) return;
 			const msg = err instanceof Error ? err.message : 'Failed to delete attachment';
 			toastStore.show(msg, 'error');
+		} finally {
+			// Every arm above returns from inside the try/catch, so the release
+			// has to be here or a failed delete would block the row forever.
+			deletingIds.delete(att.id);
 		}
 	}
 
