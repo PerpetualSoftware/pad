@@ -133,8 +133,13 @@
 		).then((m) => {
 			// A transient failure (5xx / network) is not evidence about the
 			// row, and the helper deliberately doesn't cache it — so drop the
-			// probed mark too, or this panel would never ask again for the
-			// rest of the session (PLAN-2392 DR-17). A `missing` result IS
+			// probed mark too, or this panel could never ask again for the
+			// rest of the mount (PLAN-2392 DR-17). Note what this does and
+			// does not buy: clearing the mark makes the attachment eligible
+			// again on the NEXT run of the probe effect (a new comment, an
+			// edit, a remount), it does not schedule a retry of its own. A
+			// proactive retry belongs with the timeline's deletion
+			// subscription in phase 3c, not here. A `missing` result IS
 			// authoritative: leave the mark set and leave `attMeta` without an
 			// entry, which is what the renderer already degrades to a missing
 			// placeholder on.

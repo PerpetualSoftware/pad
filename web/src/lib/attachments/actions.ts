@@ -24,10 +24,13 @@
  * The union is discriminated on `element`, so a renderer that switches on it
  * gets `href` or `run` narrowed for free and cannot reach for the wrong one.
  *
- * `canPreview` is INJECTED rather than imported (see `AttachmentActionContext`):
- * the "what can this MIME do" predicate lives in the display helpers, and
- * taking it as context keeps this module free of that dependency and trivially
- * testable.
+ * "Can the browser preview this?" is answered by importing `canBrowserPreview`
+ * from the display helpers, NOT by taking a predicate from the caller. DR-16
+ * puts every "what can this MIME do" question in one module precisely so a
+ * single call site cannot be given a looser answer — an injected predicate
+ * that admitted `image/svg+xml` would reopen the hole the exact-allowlist
+ * decision exists to close. (It was injected while this module and the
+ * predicate were built in parallel; collapsed at integration.)
  *
  * Not here, deliberately: `state_generation` and Undo. This plan's delete
  * behaves exactly like today's tile delete; the generation token, the event
@@ -37,6 +40,7 @@
 
 import { api } from '$lib/api/client';
 import { announceAttachmentDeleted } from '$lib/attachments/events';
+import { canBrowserPreview } from '$lib/attachments/display';
 import { copyToClipboard } from '$lib/utils/clipboard';
 
 export type AttachmentActionId = 'open' | 'download' | 'copy-link' | 'delete';
@@ -60,14 +64,6 @@ export interface AttachmentActionContext {
 	 * or a pane whose mutation gate is closed. Delete is disabled without it.
 	 */
 	mutationsEnabled: boolean;
-	/**
-	 * "Can the browser preview this MIME natively?" — the predicate that
-	 * decides whether Open exists at all (DR-19's Open note). Injected by the
-	 * host rather than imported here so this module owns actions and the
-	 * display helpers own MIME capability. Hosts pass the shared
-	 * `canBrowserPreview`.
-	 */
-	canPreview: (mime: string) => boolean;
 	/**
 	 * Origin for the absolute copy-link URL. Defaults to `location.origin`;
 	 * present so the URL builder is testable outside a DOM.
@@ -162,7 +158,7 @@ export const ATTACHMENT_ACTIONS: readonly AttachmentAction[] = [
 		// Only for what a browser previews natively. Never a Pad-rendered
 		// preview, and never offered for a .zip or an office document —
 		// those get Download only.
-		applies: (ctx) => ctx.canPreview(ctx.attachment.mime_type),
+		applies: (ctx) => canBrowserPreview(ctx.attachment.mime_type),
 		enabled: addressable,
 		href: (ctx) => api.attachments.downloadUrl(ctx.workspaceSlug, ctx.attachment.id),
 		target: '_blank',

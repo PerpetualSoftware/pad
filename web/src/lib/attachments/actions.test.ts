@@ -37,18 +37,15 @@ const { ATTACHMENT_ACTIONS, attachmentActionsFor, attachmentLinkUrl } = await im
 
 type Ctx = AttachmentActionContext;
 
-// A browser-preview predicate with the DR-19 shape: PDFs and plain text yes,
-// archives no. The real one is the shared display helper; the descriptors take
-// it as context precisely so this test doesn't need it.
-const PREVIEWABLE = new Set(['application/pdf', 'text/plain', 'image/png']);
-const canPreview = (mime: string) => PREVIEWABLE.has(mime);
+// The descriptors import the real `canBrowserPreview` (DR-16 keeps every
+// "what can this MIME do" question in one module), so these cases assert
+// against the shipping predicate rather than a stand-in.
 
 function ctx(overrides: Partial<Ctx> = {}): Ctx {
 	return {
 		workspaceSlug: 'ws',
 		attachment: { id: 'att-1', filename: 'report.pdf', mime_type: 'application/pdf' },
 		mutationsEnabled: true,
-		canPreview,
 		origin: 'https://pad.example',
 		...overrides,
 	};
@@ -91,6 +88,20 @@ describe('attachment action descriptors', () => {
 		// Not "present but disabled" — a greyed Open would imply a preview
 		// Pad could give and won't.
 		expect(action('open').applies(zip)).toBe(false);
+	});
+
+	it('does not offer Open for an SVG, even though it is labelled image/*', () => {
+		// DR-16: the predicate is an exact allowlist, not an `image/` prefix,
+		// and the descriptors reach it directly — a caller cannot hand them a
+		// looser one. An SVG can carry active content, so it gets Download only.
+		const svg = ctx({
+			attachment: { id: 'att-3', filename: 'diagram.svg', mime_type: 'image/svg+xml' },
+		});
+		expect(attachmentActionsFor(svg).map((a) => a.id)).toEqual([
+			'download',
+			'copy-link',
+			'delete',
+		]);
 	});
 
 	it('offers Open for a PDF, as a new-tab anchor', () => {
