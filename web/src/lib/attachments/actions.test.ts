@@ -132,6 +132,21 @@ describe('attachment action descriptors', () => {
 		expect(download.download?.(c)).toBe('report.pdf');
 	});
 
+	it('keeps the download attribute even when the row has no filename', () => {
+		// Returning undefined here DROPS the attribute, which turns Download
+		// back into a navigation — and the server sends an inline disposition
+		// for most types, so the file would open instead of saving. Reachable
+		// whenever a chip's metadata is still partial. `download=""` forces the
+		// save and lets the browser name it.
+		const nameless = ctx({
+			attachment: { id: 'att-4', filename: '', mime_type: 'application/pdf' },
+		});
+		const download = action('download');
+		if (download.element !== 'anchor') throw new Error('unreachable');
+		expect(download.download?.(nameless)).toBe('');
+		expect(download.download?.(nameless)).not.toBeUndefined();
+	});
+
 	it('copies an absolute same-origin URL and labels itself as workspace-scoped (DR-5a)', async () => {
 		const c = ctx();
 		const copy = action('copy-link');
@@ -183,12 +198,17 @@ describe('attachment action descriptors', () => {
 		expect(onCopied).not.toHaveBeenCalled();
 	});
 
-	it('disables Delete when mutations are off, and refuses to run anyway', async () => {
+	it('omits Delete when mutations are off, and refuses to run anyway', async () => {
 		const readOnly = ctx({ mutationsEnabled: false });
 		const del = action('delete');
 		if (del.element !== 'button') throw new Error('unreachable');
 
-		expect(del.applies(readOnly)).toBe(true);
+		// ABSENT, not disabled: the strip hides its delete control outright in
+		// the same state, and one object must not offer different affordances
+		// for one permission depending on which surface you meet it through.
+		expect(del.applies(readOnly)).toBe(false);
+		expect(attachmentActionsFor(readOnly).map((a) => a.id)).not.toContain('delete');
+		// `enabled` remains the second gate, and `run` re-checks a third time.
 		expect(del.enabled(readOnly)).toBe(false);
 		expect(del.enabled(ctx())).toBe(true);
 		expect(del.danger).toBe(true);

@@ -279,9 +279,16 @@
 			return { id: attachmentId, filename: filename ?? '', mime_type: mime };
 		},
 		get mutationsEnabled() {
-			// A row the server says is gone is not deletable, and offering it
-			// would produce a 404 the user can do nothing about.
-			return mutationsEnabled && !missing;
+			// PERMISSION only — "may this user delete here", which is the host's
+			// answer and nothing else. Deliberately NOT `&& !missing`: that
+			// conflates permission with reachability, and once the descriptor
+			// started using this to decide whether Delete EXISTS, a gone row
+			// lost the row entirely while Open and Download stayed present and
+			// disabled beside it. Reachability is enforced where it belongs —
+			// the render site disables every action while `missing`, and a
+			// delete that races a deletion elsewhere 404s, which the descriptor
+			// already treats as authoritative.
+			return mutationsEnabled;
 		},
 		confirmDelete: () => confirmDelete(),
 		onDeleted: (id) => {

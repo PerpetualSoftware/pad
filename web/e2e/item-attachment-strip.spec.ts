@@ -97,13 +97,18 @@ async function uploadTextTo(
  * listens for a real `drop` with a DataTransfer, so we build one in the page
  * rather than driving the (nonexistent) file input.
  */
-async function dropFileIntoEditor(page: Page, filename: string, base64: string): Promise<void> {
+async function dropFileIntoEditor(
+	page: Page,
+	filename: string,
+	base64: string,
+	mimeType = 'image/png'
+): Promise<void> {
 	const target = page.locator('.editor-content .ProseMirror').first();
 	await target.waitFor({ state: 'visible' });
 	await target.evaluate(
-		(el, { filename, base64 }) => {
+		(el, { filename, base64, mimeType }) => {
 			const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-			const file = new File([bytes], filename, { type: 'image/png' });
+			const file = new File([bytes], filename, { type: mimeType });
 			const dt = new DataTransfer();
 			dt.items.add(file);
 			const rect = el.getBoundingClientRect();
@@ -117,7 +122,7 @@ async function dropFileIntoEditor(page: Page, filename: string, base64: string):
 				})
 			);
 		},
-		{ filename, base64 }
+		{ filename, base64, mimeType }
 	);
 }
 
@@ -360,5 +365,45 @@ test.describe('item attachment strip', () => {
 			await page.keyboard.press('Escape');
 			await expect(page.locator('[role="menu"]')).toHaveCount(0);
 		}
+	});
+
+	test('an editor file chip opens the same panel as a strip tile (PLAN-2392 DR-2)', async ({
+		page,
+		fixture,
+		request
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop-only surface');
+
+		// The chip half of "the same panel wherever you meet an attachment".
+		// Unit coverage stops at the seam on both sides — the chip's tests mock
+		// the event bus and the host's inject events directly — so only a real
+		// page proves a real NodeView reaches a real host through the real bus.
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		const doc = await seedDoc(fixture, request, 'Chip panel wiring');
+		await page.goto(itemUrl(fixture, doc.slug));
+
+		// Drop a NON-image so the editor renders a file chip rather than an
+		// inline image.
+		await dropFileIntoEditor(
+			page,
+			'handbook.txt',
+			Buffer.from('chapter one\n').toString('base64'),
+			'text/plain'
+		);
+
+		const chip = page.locator('.editor-content .ProseMirror button.file-chip').first();
+		await expect(chip).toBeVisible();
+		// A button, not a link: an anchor left the URL reachable by middle-click,
+		// straight past the panel (DR-12).
+		await expect(chip).toHaveJSProperty('tagName', 'BUTTON');
+
+		await chip.click();
+		const panel = page.locator('[role="menu"]').filter({ hasText: 'handbook.txt' });
+		await expect(panel).toBeVisible();
+		const download = panel.getByRole('menuitem', { name: 'Download' });
+		await expect(download).toHaveJSProperty('tagName', 'A');
+		await expect(download).toHaveAttribute('download', 'handbook.txt');
 	});
 });

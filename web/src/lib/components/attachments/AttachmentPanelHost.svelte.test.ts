@@ -207,8 +207,11 @@ describe('AttachmentPanelHost', () => {
 		const panels = document.querySelectorAll('[role="menu"]');
 		expect(panels).toHaveLength(1);
 		// host-2 is the peeked pane in this fixture (mutationsEnabled false), so
-		// the panel that opened must be the one WITHOUT a live Delete.
-		expect((row('Delete') as HTMLButtonElement | undefined)?.disabled).toBe(true);
+		// the panel that opened must be the one with NO Delete at all — absent
+		// rather than disabled, matching the strip in the same state.
+		expect(row('Delete')).toBeUndefined();
+		// ...and it is genuinely the panel, not an empty menu.
+		expect(row('Download')).toBeDefined();
 	});
 
 	it('ignores an event for a different item on its own token', () => {
@@ -337,10 +340,12 @@ describe('AttachmentPanelHost', () => {
 		expect((row('Delete') as HTMLButtonElement).disabled).toBe(false);
 
 		// Peek freezes this side; the event said nothing about permission and
-		// must not be able to.
+		// must not be able to. Delete goes ABSENT, not disabled — the strip
+		// hides its delete control outright in the same state, and two views of
+		// one object must not show different affordances for one permission.
 		propsA.mutationsEnabled = false;
 		flushSync();
-		expect((row('Delete') as HTMLButtonElement).disabled).toBe(true);
+		expect(row('Delete')).toBeUndefined();
 	});
 
 	it('deletes through an in-app drill-down confirmation, Cancel first', async () => {

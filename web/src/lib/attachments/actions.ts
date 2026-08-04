@@ -184,7 +184,13 @@ export const ATTACHMENT_ACTIONS: readonly AttachmentAction[] = [
 		// A REAL download attribute, not decoration: without it the inline
 		// disposition the server sends for most types would open the file
 		// instead of saving it (DR-16).
-		download: (ctx) => ctx.attachment.filename || undefined,
+		//
+		// ALWAYS present, empty string included. A nameless row returned
+		// undefined here, which drops the attribute entirely and turns Download
+		// back into a navigation — the exact regression this action exists to
+		// prevent, reachable whenever a chip's metadata is partial. `download=""`
+		// still forces the save; the browser just picks the name (round 8).
+		download: (ctx) => ctx.attachment.filename || '',
 	} satisfies AnchorAttachmentAction,
 	{
 		id: 'copy-link',
@@ -211,7 +217,13 @@ export const ATTACHMENT_ACTIONS: readonly AttachmentAction[] = [
 		icon: '🗑',
 		element: 'button',
 		danger: true,
-		applies: () => true,
+		// ABSENT, not disabled, where the caller cannot mutate — a peeked pane,
+		// a read-only viewer. The strip hides its delete control outright in
+		// exactly the same state, and two views of one object showing different
+		// affordances for one permission is the divergence this plan kept
+		// tripping over. `enabled` stays as the second gate: a renderer that
+		// ignores `applies` still cannot activate it, and `run` re-checks again.
+		applies: (ctx) => ctx.mutationsEnabled,
 		enabled: (ctx) => ctx.mutationsEnabled && addressable(ctx),
 		async run(ctx) {
 			// Belt and braces: a renderer that draws a disabled row can still
