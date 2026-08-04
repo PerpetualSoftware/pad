@@ -20,6 +20,8 @@
 		 *  destructive confirmation, which is presentational and otherwise
 		 *  never announced when the row takes focus (PLAN-2326). */
 		describedBy?: string;
+		/** Native tooltip. Explanation, never the only place a fact is stated. */
+		title?: string;
 		/** Renders the row as an anchor instead of a button (PLAN-2392 DR-5):
 		 *  Download must be a real `<a download>` and Open needs new-tab /
 		 *  middle-click semantics. Ignored while `disabled` — see below. */
@@ -44,6 +46,7 @@
 		checked,
 		disabled = false,
 		describedBy,
+		title,
 		href,
 		download,
 		target,
@@ -96,6 +99,7 @@
 		{target}
 		{rel}
 		{role}
+		{title}
 		aria-checked={checked}
 		aria-describedby={describedBy}
 		{onclick}
@@ -109,6 +113,7 @@
 		class="mi"
 		class:danger
 		{role}
+		{title}
 		aria-checked={checked}
 		aria-describedby={describedBy}
 		{disabled}

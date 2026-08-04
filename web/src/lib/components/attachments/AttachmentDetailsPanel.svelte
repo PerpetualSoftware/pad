@@ -121,6 +121,15 @@
 		 * (DR-14).
 		 */
 		revalidateToken?: number;
+		/**
+		 * The parent item is archived, so attachment reads will 404 — the server
+		 * refuses them for an archived parent. The seed metadata the event
+		 * carried is therefore not trustworthy as evidence the file is
+		 * REACHABLE, and the panel must probe even when it looks complete, so it
+		 * lands in the authoritative missing state rather than offering a
+		 * Download that fails on click (DR-14).
+		 */
+		parentArchived?: boolean;
 		onclose: () => void;
 		onDeleted?: (attachmentId: string) => void;
 	}
@@ -137,6 +146,7 @@
 		itemContent = null,
 		liveContent = null,
 		revalidateToken = 0,
+		parentArchived = false,
 		onclose,
 		onDeleted,
 	}: Props = $props();
@@ -282,6 +292,7 @@
 		const seedMime = mimeType;
 		const seedSize = sizeBytes;
 		const reloadStamp = `${revalidateToken}:${forceReload}`;
+		const archivedParent = parentArchived;
 
 		let forced = false;
 		untrack(() => {
@@ -304,6 +315,12 @@
 			// An un-addressable token records nothing, which correctly stops the
 			// panel's controls claiming the previous subject.
 			paint.record(req);
+			// An archived parent makes this a REACHABILITY question, and the
+			// metadata cache can hold an `ok` observed before the archive — the
+			// same reason existence probes elsewhere revalidate rather than
+			// read. So force it, which also routes through the invalidate-then-
+			// fetch path instead of replaying a stale success.
+			if (archivedParent) forced = true;
 			if (reloadStamp !== seenReload) {
 				seenReload = reloadStamp;
 				forced = true;
@@ -320,7 +337,11 @@
 
 		if (!isOpen || req.key === null) return;
 		// Nothing to complete: the strip's entry point always has all three.
-		if (!forced && seedMime && seedSize !== null && seedSize !== undefined) return;
+		// Unless the parent is archived — then "complete" and "reachable" are
+		// different claims, and only a probe settles the second one.
+		if (!forced && !archivedParent && seedMime && seedSize !== null && seedSize !== undefined) {
+			return;
+		}
 
 		loading = true;
 		loadFailed = false;
@@ -545,6 +566,7 @@
 					download={action.download?.(ctx)}
 					target={action.target}
 					rel={action.rel}
+					title={action.description}
 					disabled={!action.enabled(ctx) || missing}
 					onclick={closeAfterNavigation}
 				>
@@ -554,6 +576,7 @@
 				<MenuItem
 					icon={action.icon}
 					danger={action.danger}
+					title={action.description}
 					disabled={!action.enabled(ctx) || missing || busy}
 					onclick={() => runAction(action)}
 				>

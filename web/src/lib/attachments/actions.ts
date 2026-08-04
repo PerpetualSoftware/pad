@@ -1,11 +1,19 @@
 /**
- * Attachment actions — defined once, rendered twice (PLAN-2392 DR-5).
+ * Attachment actions — defined once, rendered by whoever needs them
+ * (PLAN-2392 DR-5).
  *
  * "The panel and the viewer share one action list" is a promise with no source
  * of truth unless the list IS the source of truth. So the actions live here as
- * descriptors: the options panel draws them as a menu/sheet, the image viewer
- * draws them as an inline toolbar, and neither owns the set. Adding an action
- * means adding one descriptor here.
+ * descriptors: a surface renders them, none of them owns the set, and adding an
+ * action means adding one descriptor here.
+ *
+ * TODAY THERE IS ONE CONSUMER: the options panel, which draws them as a
+ * menu/sheet. The unified image viewer — the second renderer, an inline
+ * toolbar over the same list — arrives in phase 3a, which is also what will
+ * consume the `address` option now threaded onto the image NodeView. Stated
+ * plainly because "rendered twice" read as a description of the present and
+ * was not one; a list with a single consumer is a shape held open on purpose,
+ * and worth re-justifying if 3a ever stops coming.
  *
  * TWO DESCRIPTOR SHAPES, not one, because the ELEMENT is part of the contract
  * (DR-5, round 35/36):

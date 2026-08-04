@@ -20,7 +20,9 @@
 	} from '$lib/attachments/storageFilters';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
 	import Menu from '$lib/components/common/Menu.svelte';
-	import AttachmentDeleteConfirm from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
+	import AttachmentDeleteConfirm, {
+		workspaceAttachmentDeletePrompt,
+	} from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
 	import { viewIdentity, createFence, createPaintFence } from '$lib/attachments/viewFence';
 
 	// ── Props ────────────────────────────────────────────────────────────────
@@ -435,7 +437,7 @@
 		pendingDelete = {
 			att,
 			anchor,
-			prompt: `Delete ${att.filename}? The blob is reclaimed by garbage collection after a grace period.`,
+			prompt: workspaceAttachmentDeletePrompt(att.filename),
 		};
 	}
 

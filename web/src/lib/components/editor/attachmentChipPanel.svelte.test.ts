@@ -68,6 +68,27 @@ describe('editor chip → options panel', () => {
 	// panel rather than navigating, and an anchor left the URL reachable by
 	// middle-click straight past the panel (orchestrator review of TASK-2424).
 	// `renderHTML` — the clipboard / read-only shape — is still an <a download>.
+	/**
+	 * Repoint the existing chip node at a different attachment via a
+	 * transaction, which drives the NodeView's `update()` hook — the path a
+	 * collaborative peer's edit takes. Replacing the content instead would
+	 * destroy and rebuild the NodeView and prove nothing about `update()`.
+	 */
+	function repointChip(uuid: string, filename: string) {
+		const ed = (editor ??= makeEditor(target));
+		let pos = -1;
+		ed.state.doc.descendants((node, at) => {
+			if (node.type.name === 'attachmentChip') {
+				pos = at;
+				return false;
+			}
+			return true;
+		});
+		if (pos < 0) throw new Error('no chip node in the document');
+		const tr = ed.state.tr.setNodeMarkup(pos, undefined, { uuid, filename });
+		ed.view.dispatch(tr);
+	}
+
 	function chip(): HTMLButtonElement {
 		editor ??= makeEditor(target);
 		const el = target.querySelector<HTMLButtonElement>('button.file-chip');
@@ -150,6 +171,26 @@ describe('editor chip → options panel', () => {
 		// Type comes from the filename here, since no HEAD probe ran; size is
 		// omitted rather than reported as a confident "0 B".
 		expect(chip().getAttribute('aria-label')).toBe('Options for spec.pdf, PDF');
+	});
+
+	it('comes back to life when the node is repointed at a different attachment', () => {
+		// `disabled` is what makes a dead chip inert, so the uuid-swap path has
+		// to undo it along with everything else markDeleted() set. Leaving it
+		// would produce a chip that ANNOUNCES itself as live and does nothing —
+		// worse than the dead one, which at least says so. Reachable through a
+		// collaborative peer's edit or a ProseMirror node replacement.
+		const el = chip();
+		for (const fn of deletionListeners) fn('uuid-1');
+		expect(el.disabled).toBe(true);
+
+		repointChip('uuid-2', 'other.pdf');
+
+		const live = chip();
+		expect(live.disabled).toBe(false);
+		expect(live.classList.contains('attachment-missing')).toBe(false);
+		live.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+		expect(panelOpenMock).toHaveBeenCalledTimes(1);
+		expect(panelOpenMock.mock.calls[0][0]).toMatchObject({ attachmentId: 'uuid-2' });
 	});
 
 	it('offers no URL for a middle-click to bypass the panel with', () => {

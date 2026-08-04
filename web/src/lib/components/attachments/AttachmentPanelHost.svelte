@@ -110,6 +110,23 @@
 	$effect(() => {
 		return registerAttachmentPanelListener((event) => {
 			if (!isAttachmentPanelEventForHost(event, { itemId, hostToken })) return;
+			// Opening on an ALREADY-archived parent, not just archiving with the
+			// panel open (orchestrator's full-diff review). The transition
+			// handler below cannot see this case, and the strip's event carries
+			// complete metadata — which is exactly what lets the panel skip its
+			// probe — so Open, Download and Copy link would render enabled and
+			// point at endpoints that 404, because attachment reads refuse an
+			// archived parent (handlers_attachments.go).
+			//
+			// So the panel is TOLD the seeds can't be trusted (see its
+			// `parentArchived` prop) and probes anyway: the 404 comes back as the
+			// authoritative `missing` state it already knows how to show, and the
+			// actions go inert through the path that exists for it. One state
+			// machine, not a second archived-specific one.
+			//
+			// Deliberately a prop rather than bumping `revalidateToken` here: the
+			// panel is created by this same assignment, so it would seed its
+			// reload stamp from the ALREADY-incremented value and see no change.
 			request = event;
 		});
 	});
@@ -159,6 +176,7 @@
 		{itemContent}
 		{liveContent}
 		{revalidateToken}
+		parentArchived={parentArchived === true}
 		onclose={closeRequest(request)}
 	/>
 {/if}

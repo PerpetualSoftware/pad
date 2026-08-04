@@ -28,13 +28,18 @@
 	the app's existing behaviours on both surfaces rather than a second
 	implementation.
 
-	The PROMPT TEXT is `attachmentDeletePrompt` below, shared for the same
-	reason the markup is: the hedged arm's honesty is the substance of DR-5, and
-	two copies of it drift.
+	The PROMPT TEXT lives in this module too, but note there are TWO builders,
+	not one: `attachmentDeletePrompt` for an item surface, which can check the
+	body it has and must hedge about the ones it cannot, and
+	`workspaceAttachmentDeletePrompt` for the workspace-wide storage list, where
+	a reference check would be meaningless and the honest thing to say is what
+	happens to the blob. Different questions, so different copy — deliberately.
+	What must not drift is that BOTH are written here, next to each other, where
+	a change to one is read alongside the other.
 -->
 <script lang="ts" module>
 	/**
-	 * The two arms of the delete warning — the only place either is written.
+	 * The two arms of the ITEM-surface delete warning.
 	 *
 	 * `referencedHere` can only ever speak for the body the caller has. So the
 	 * "not referenced" arm deliberately does NOT claim the attachment is
@@ -50,6 +55,18 @@
 		return referencedHere
 			? `Delete ${displayName}? It's still used in this item's content — deleting it will leave a "missing attachment" placeholder where it appears.`
 			: `Delete ${displayName}? It isn't referenced in this item's content, but it may still be referenced by another item or a comment. This cannot be undone.`;
+	}
+
+	/**
+	 * The storage-list prompt (Settings → Storage).
+	 *
+	 * No reference arm, and that is not an omission: this list is workspace-
+	 * wide and includes attachments with no parent item at all, so "still used
+	 * in this item's content" has nothing to be true or false about. What IS
+	 * worth saying here is what actually happens to the bytes.
+	 */
+	export function workspaceAttachmentDeletePrompt(filename: string): string {
+		return `Delete ${filename}? The blob is reclaimed by garbage collection after a grace period.`;
 	}
 </script>
 

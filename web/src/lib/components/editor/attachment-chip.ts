@@ -508,8 +508,15 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 
 					if (newUuid !== currentUuid) {
 						currentUuid = newUuid;
-						// New target ⇒ the old deletion no longer applies.
+						// New target ⇒ the old deletion no longer applies. Undoing
+						// EVERY part of markDeleted() matters: `disabled` is what
+						// makes a dead chip inert, so leaving it set here would
+						// give a live chip that announces itself as live and does
+						// nothing — worse than the dead one, which at least says
+						// so. Reachable via a peer's uuid swap or a ProseMirror
+						// node replacement (orchestrator's full-diff review).
 						deleted = false;
+						wrapper.disabled = false;
 						wrapper.classList.remove('attachment-missing');
 						wrapper.removeAttribute('title');
 						// New uuid ⇒ stale MIME / size; reset until HEAD probe

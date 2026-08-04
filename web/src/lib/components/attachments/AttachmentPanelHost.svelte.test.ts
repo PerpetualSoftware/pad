@@ -448,21 +448,22 @@ describe('AttachmentPanelHost', () => {
 	});
 
 	it('revalidates an open panel when the parent item is restored (DR-14)', async () => {
-		// Opened while the parent was already archived: the fetch 404s, so the
-		// panel latches the authoritative missing state.
+		// Opened while the parent was already archived: reads 404, so the panel
+		// latches the authoritative missing state. It goes through the
+		// INVALIDATING path — reachability is an existence question and the
+		// cache can hold an `ok` from before the archive.
 		propsA.parentArchived = true;
-		fetchMetaMock.mockResolvedValue({ status: 'missing' });
+		revalidateMetaMock.mockResolvedValue({ status: 'missing' });
 		mountHost(propsA);
 		notifyAttachmentPanelOpen(openEvent({ mime_type: null, size_bytes: null }));
 		await settle();
 		expect(panel()?.textContent).toContain('This file is no longer available.');
 
 		// Restore does NOT assume the previous state still holds — it re-reads
-		// through the invalidating path, and the panel comes back to life.
+		// through the same path, and the panel comes back to life.
 		revalidateMetaMock.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 1536 });
 		propsA.parentArchived = false;
 		await settle();
-		expect(revalidateMetaMock).toHaveBeenCalledTimes(1);
 		expect(panel()?.textContent).not.toContain('This file is no longer available.');
 		expect((row('Download') as HTMLElement).tagName).toBe('A');
 	});
@@ -558,6 +559,28 @@ describe('AttachmentPanelHost', () => {
 		expect(announceMock).not.toHaveBeenCalled();
 	});
 
+	it('probes even when the event carries full metadata, if the parent is archived', async () => {
+		// The strip's event carries all three fields, which normally lets the
+		// panel skip the fetch. On an archived parent that would leave Open,
+		// Download and Copy link enabled against endpoints that 404 — attachment
+		// reads refuse an archived parent — so opening here must probe anyway
+		// and land in the authoritative missing state.
+		propsA.parentArchived = true;
+		mountHost(propsA);
+		revalidateMetaMock.mockResolvedValue({ status: 'missing' });
+
+		notifyAttachmentPanelOpen(openEvent());
+		await settle();
+
+		expect(revalidateMetaMock).toHaveBeenCalled();
+		expect(panel()?.textContent).toContain('This file is no longer available.');
+		// Inert, per the established missing-state contract: a disabled anchor
+		// renders as a disabled button, so it cannot be activated or navigated.
+		const download = row('Download') as HTMLButtonElement;
+		expect(download.tagName).toBe('BUTTON');
+		expect(download.disabled).toBe(true);
+	});
+
 	it('shows a retryable error when the restore revalidation fails, instead of a dead end', async () => {
 		// The reachable shape of DR-14's restore path: archiving CLOSES an open
 		// panel, so a forced revalidation only ever lands on a panel opened
@@ -565,9 +588,7 @@ describe('AttachmentPanelHost', () => {
 		// legitimately 404s.
 		propsA.parentArchived = true;
 		mountHost(propsA);
-		fetchMetaMock.mockResolvedValue({ status: 'missing' });
-		// Metadata gaps, so the panel actually probes — a chip's event, not the
-		// strip's (which carries all three and skips the fetch).
+		revalidateMetaMock.mockResolvedValue({ status: 'missing' });
 		const partial = { mime_type: null, size_bytes: null };
 		notifyAttachmentPanelOpen(openEvent(partial));
 		await settle();
