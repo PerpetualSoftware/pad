@@ -879,6 +879,10 @@
 		// hosts publish one shape, and so nobody has to know which of them is
 		// remounted and which is reused (see hostAddress.ts).
 		const readHostAddress = (): AttachmentHostAddress => ({
+			// `wsSlug` is resolved once at mount here (from the route), unlike the
+			// composer's live prop — reading it through the same reader keeps ONE
+			// shape for both hosts rather than a per-host special case.
+			workspaceSlug: wsSlug,
 			itemId: itemId ?? '',
 			hostToken
 		});

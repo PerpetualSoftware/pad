@@ -8,8 +8,10 @@
 // one activation fires. A hand-built element would pin none of it.
 //
 // The bus is mocked so the emission can be asserted as a payload rather than
-// through a host component, and the metadata HEAD probe is disabled (no
-// workspace slug) so nothing is asynchronous.
+// through a host component, and the metadata probe is mocked so tests stay
+// synchronous AND so the workspace it probes under can be asserted directly —
+// at the module boundary rather than at fetch level, since the metadata cache
+// is module-global and would dedupe across tests.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
@@ -25,9 +27,15 @@ vi.mock('$lib/attachments/events', () => ({
 	},
 }));
 
+const probeMock = vi.fn<(ws: string, uuid: string) => Promise<unknown>>();
+vi.mock('./attachment-metadata', () => ({
+	fetchAttachmentMetadata: (ws: string, uuid: string) => probeMock(ws, uuid),
+	invalidateAttachmentMetadata: () => {},
+}));
+
 const { AttachmentChip } = await import('./attachment-chip');
 
-const ADDRESS = { itemId: 'item-A', hostToken: 'apanel-1' };
+const ADDRESS = { workspaceSlug: '', itemId: 'item-A', hostToken: 'apanel-1' };
 
 function makeEditor(element: HTMLElement, address = () => ADDRESS): Editor {
 	return new Editor({
@@ -35,9 +43,10 @@ function makeEditor(element: HTMLElement, address = () => ADDRESS): Editor {
 		extensions: [
 			StarterKit,
 			AttachmentChip.configure({
-				// No workspace slug ⇒ no HEAD probe, so MIME and size stay null —
-				// which is a LEGITIMATE state the event has to carry (DR-2), not a
-				// test shortcut.
+				// The default address carries no workspace ⇒ no probe, so MIME and
+				// size stay null — a LEGITIMATE state the event has to carry
+				// (DR-2), not a test shortcut. The workspace test below supplies
+				// one.
 				workspaceSlug: '',
 				getDownloadUrl: (uuid: string) => `/api/v1/workspaces/ws/attachments/${uuid}`,
 				address,
@@ -171,6 +180,29 @@ describe('editor chip → options panel', () => {
 		// Type comes from the filename here, since no HEAD probe ran; size is
 		// omitted rather than reported as a confident "0 B".
 		expect(chip().getAttribute('aria-label')).toBe('Options for spec.pdf, PDF');
+	});
+
+	it('probes under the CURRENT workspace after a pane workspace switch', async () => {
+		// The pane switches workspace without remounting its editors, and the
+		// workspace keys the metadata cache — so a value baked in at configure
+		// time makes a mounted chip ask the PREVIOUS workspace about this
+		// workspace's attachment, and cache the answer under the wrong key
+		// (final review round 3).
+		probeMock.mockResolvedValue({ status: 'transient' });
+		let ws = 'ws-a';
+		editor = makeEditor(target, () => ({ ...ADDRESS, workspaceSlug: ws }));
+		chip();
+		await Promise.resolve();
+		expect(probeMock.mock.calls.map((c) => c[0])).toContain('ws-a');
+
+		probeMock.mockClear();
+		ws = 'ws-b';
+		repointChip('uuid-3', 'moved.pdf');
+		await Promise.resolve();
+
+		const probedWorkspaces = probeMock.mock.calls.map((c) => c[0]);
+		expect(probedWorkspaces).toContain('ws-b');
+		expect(probedWorkspaces).not.toContain('ws-a');
 	});
 
 	it('comes back to life when the node is repointed at a different attachment', () => {

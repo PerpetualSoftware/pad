@@ -360,8 +360,12 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 * placeholder permanently unlatchable.
 			 */
 			function probeForMissing(forUuid: string) {
-				if (!forUuid || !opts.workspaceSlug || deleted || destroyed) return;
-				void revalidateAttachmentMetadata(opts.workspaceSlug, forUuid, opts.getDownloadUrl).then(
+				// Workspace off the READER, not the static option — it keys the
+				// metadata cache and this editor can outlive a workspace switch
+				// (final review round 3).
+				const probeWs = opts.address().workspaceSlug;
+				if (!forUuid || !probeWs || deleted || destroyed) return;
+				void revalidateAttachmentMetadata(probeWs, forUuid, opts.getDownloadUrl).then(
 					(result) => {
 						if (result.status === 'missing') latchMissing(forUuid);
 					}
@@ -463,9 +467,10 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// (e.g. SSR / preview surfaces) — the toolbar's state
 				// falls back to the supportedFormats list alone, with
 				// the MIME left null.
-				if (currentUuid && opts.workspaceSlug) {
+				const toolbarProbeWs = opts.address().workspaceSlug;
+				if (currentUuid && toolbarProbeWs) {
 					const probeUuid = currentUuid;
-					fetchAttachmentMetadata(opts.workspaceSlug, probeUuid, opts.getDownloadUrl).then(
+					fetchAttachmentMetadata(toolbarProbeWs, probeUuid, opts.getDownloadUrl).then(
 						(result) => {
 							// Bail if the NodeView was torn down, or if its uuid
 							// changed (rotate/peer op) while the probe was in
@@ -648,8 +653,9 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// (e.g. on the same image rendered elsewhere) will
 						// re-fetch. Triggers for any source of the change:
 						// local rotate via swapNodeUuid OR a peer Yjs op.
-						if (currentUuid && opts.workspaceSlug) {
-							invalidateAttachmentMetadata(opts.workspaceSlug, currentUuid);
+						const swapWs = opts.address().workspaceSlug;
+						if (currentUuid && swapWs) {
+							invalidateAttachmentMetadata(swapWs, currentUuid);
 						}
 						currentUuid = newUuid;
 						// The old uuid's state — whether a 404 placeholder or a
@@ -673,10 +679,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// state stays correct across the swap.
 						toolbarMime = null;
 						refresh();
-						if (toolbar && newUuid && opts.workspaceSlug) {
+						const updateProbeWs = opts.address().workspaceSlug;
+						if (toolbar && newUuid && updateProbeWs) {
 							const probeUuid = newUuid;
 							fetchAttachmentMetadata(
-								opts.workspaceSlug,
+								updateProbeWs,
 								probeUuid,
 								opts.getDownloadUrl
 							).then((result) => {

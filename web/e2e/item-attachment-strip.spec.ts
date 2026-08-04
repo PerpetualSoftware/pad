@@ -68,6 +68,31 @@ async function uploadTo(
 }
 
 /**
+ * Upload a NON-image bound to `itemId`. `text/plain` is in the server's
+ * allowlist and is one of the types the panel offers Open for, so the tile it
+ * produces is a file tile — the one that opens the options panel.
+ */
+async function uploadTextTo(
+	fixture: SuiteFixture,
+	request: APIRequestContext,
+	itemId: string,
+	filename: string
+): Promise<string> {
+	const ws = fixture.workspaceSlug;
+	const resp = await request.post(
+		`/api/v1/workspaces/${ws}/attachments?item_id=${encodeURIComponent(itemId)}`,
+		{
+			headers: { Authorization: `Bearer ${fixture.apiToken}` },
+			multipart: {
+				file: { name: filename, mimeType: 'text/plain', buffer: Buffer.from('notes\n') }
+			}
+		}
+	);
+	if (!resp.ok()) throw new Error(`upload failed (${resp.status()}): ${await resp.text()}`);
+	return ((await resp.json()) as { id: string }).id;
+}
+
+/**
  * Drop a file onto the live editor, the way a user does. The upload plugin
  * listens for a real `drop` with a DataTransfer, so we build one in the page
  * rather than driving the (nonexistent) file input.
@@ -275,5 +300,65 @@ test.describe('item attachment strip', () => {
 
 		await expect(masterHost.locator(TILE)).toHaveCount(1);
 		await expect(masterStrip).toHaveCount(0);
+	});
+
+	test('a file tile opens the options panel, from mouse and from the keyboard (PLAN-2392 phase 2)', async ({
+		page,
+		fixture,
+		request
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop-only surface');
+
+		// The ONE test that exercises the real producer→host wiring end to end.
+		// The unit suites necessarily stop short of it: the strip's tests mock
+		// the event bus, and the panel host's tests emit on the bus directly, so
+		// between them a broken `hostToken` thread through ItemDetail would pass
+		// everything (final review round 3). Only a real page has a real
+		// ItemDetail minting a real token.
+		//
+		// It is also the only place "activates exactly once per key press"
+		// (DR-12) can actually be demonstrated: jsdom does not synthesise a
+		// button's activation click, so the unit test can only prove the
+		// narrower "no handler races the UA click".
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		const doc = await seedDoc(fixture, request, 'Panel wiring');
+		await uploadTextTo(fixture, request, doc.id, 'notes.txt');
+
+		await page.goto(itemUrl(fixture, doc.slug));
+		const tile = page.locator(TILE).first();
+		await expect(tile).toBeVisible();
+
+		// A file tile is a real button naming its action, not a download link —
+		// the whole point of the change (DR-1, DR-12).
+		await expect(tile).toHaveJSProperty('tagName', 'BUTTON');
+		await expect(tile).toHaveAttribute('aria-label', /^Options for notes\.txt/);
+
+		await tile.click();
+		const panel = page.locator('[role="menu"]').filter({ hasText: 'notes.txt' });
+		await expect(panel).toBeVisible();
+		// Download is a REAL anchor carrying the filename: the server sends an
+		// inline disposition for most types, so a plain navigation would view
+		// rather than save (DR-16).
+		const download = panel.getByRole('menuitem', { name: 'Download' });
+		await expect(download).toHaveJSProperty('tagName', 'A');
+		await expect(download).toHaveAttribute('download', 'notes.txt');
+		// text/plain is browser-previewable, so Open is offered.
+		await expect(panel.getByRole('menuitem', { name: 'Open in new tab' })).toBeVisible();
+
+		await page.keyboard.press('Escape');
+		await expect(panel).toHaveCount(0);
+
+		// Keyboard activation, for real this time: focus the tile and press each
+		// key. Exactly one panel opens per press — two would mean a hand-rolled
+		// handler firing alongside the UA's activation click.
+		for (const key of ['Enter', ' ']) {
+			await tile.focus();
+			await page.keyboard.press(key);
+			await expect(page.locator('[role="menu"]')).toHaveCount(1);
+			await page.keyboard.press('Escape');
+			await expect(page.locator('[role="menu"]')).toHaveCount(0);
+		}
 	});
 });

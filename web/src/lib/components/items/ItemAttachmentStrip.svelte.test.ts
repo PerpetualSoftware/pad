@@ -264,7 +264,13 @@ describe('ItemAttachmentStrip', () => {
 		});
 	});
 
-	it('activates exactly once per key press — no keydown handler racing the click', async () => {
+	it('adds no keydown handler that would race the UA activation click', async () => {
+		// NAMED for what it can prove. "Activates exactly once per key press" is
+		// the requirement (DR-12), but jsdom does not synthesise a button's
+		// activation click, so no jsdom test can demonstrate it — the browser
+		// suite does (web/e2e/item-attachment-strip.spec.ts). What IS falsifiable
+		// here is the failure mode DR-12 names: a hand-rolled keydown handler
+		// firing ALONGSIDE the UA's click and opening the panel twice.
 		listMock.mockResolvedValue(
 			response([att({ id: 'doc', mime_type: 'application/pdf', filename: 'spec.pdf' })])
 		);

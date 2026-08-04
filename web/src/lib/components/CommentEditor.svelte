@@ -133,6 +133,7 @@
 	 * writing the new value in afterwards either (see hostAddress.ts).
 	 */
 	const readHostAddress = (): AttachmentHostAddress => ({
+		workspaceSlug: wsSlug,
 		itemId: itemId ?? '',
 		hostToken
 	});

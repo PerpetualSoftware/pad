@@ -32,6 +32,14 @@
  */
 
 export interface AttachmentHostAddress {
+	/**
+	 * Workspace the editor is currently in. Read through the reader for the
+	 * same reason as the other two: the pane switches workspace without
+	 * remounting, and this value keys the attachment metadata CACHE — a stale
+	 * one makes a mounted chip probe under the previous workspace's key, which
+	 * is a cross-workspace answer to a question about this one.
+	 */
+	workspaceSlug: string;
 	/** UUID of the item being edited. Empty when there is no item context. */
 	itemId: string;
 	/** Identity of the `ItemDetail` mount that owns this editor. */
@@ -42,7 +50,11 @@ export interface AttachmentHostAddress {
 export type AttachmentHostAddressReader = () => AttachmentHostAddress;
 
 /** The no-context address: an editor with no host cannot address a panel. */
-export const UNADDRESSED: AttachmentHostAddress = { itemId: '', hostToken: '' };
+export const UNADDRESSED: AttachmentHostAddress = {
+	workspaceSlug: '',
+	itemId: '',
+	hostToken: '',
+};
 
 /** Default option value — an editor mounted without a host addresses nothing. */
 export const readUnaddressed: AttachmentHostAddressReader = () => UNADDRESSED;
@@ -51,7 +63,13 @@ export const readUnaddressed: AttachmentHostAddressReader = () => UNADDRESSED;
  * Whether an address can reach a host at all. Both halves are required: a
  * missing token would make the event ambiguous between concurrently-mounted
  * hosts, which is the exact failure DR-8 exists to prevent.
+ *
+ * Deliberately takes only the two ROUTING fields, not a whole address: the
+ * workspace is carried alongside them for cache keying and says nothing about
+ * whether an event can find its host.
  */
-export function isAddressable(address: AttachmentHostAddress | null | undefined): boolean {
+export function isAddressable(
+	address: Pick<AttachmentHostAddress, 'itemId' | 'hostToken'> | null | undefined
+): boolean {
 	return Boolean(address?.itemId && address?.hostToken);
 }

@@ -454,9 +454,14 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			// not trample state for a NEW uuid that landed via update()
 			// while we were awaiting HEAD.
 			const probeMetadata = (forUuid: string): void => {
-				if (!forUuid || !this.options.workspaceSlug) return;
+				// Workspace off the READER, not the static option: this editor can
+				// outlive a workspace switch, and this value keys the metadata
+				// cache — stale, it asks the previous workspace about this
+				// workspace's attachment (final review round 3).
+				const probeWs = this.options.address().workspaceSlug;
+				if (!forUuid || !probeWs) return;
 				fetchAttachmentMetadata(
-					this.options.workspaceSlug,
+					probeWs,
 					forUuid,
 					this.options.getDownloadUrl,
 				).then((result) => {

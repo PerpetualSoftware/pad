@@ -22,11 +22,17 @@ describe('attachment host address', () => {
 		// A→B item switch and its `itemId` prop just changes underneath.
 		let itemId = 'item-A';
 		const hostToken = 'apanel-1';
-		const read: AttachmentHostAddressReader = () => ({ itemId, hostToken });
+		let workspaceSlug = 'ws-a';
+		const read: AttachmentHostAddressReader = () => ({ workspaceSlug, itemId, hostToken });
 
-		expect(read()).toEqual({ itemId: 'item-A', hostToken: 'apanel-1' });
+		expect(read()).toEqual({ workspaceSlug: 'ws-a', itemId: 'item-A', hostToken: 'apanel-1' });
 		itemId = 'item-B';
-		expect(read()).toEqual({ itemId: 'item-B', hostToken: 'apanel-1' });
+		expect(read()).toEqual({ workspaceSlug: 'ws-a', itemId: 'item-B', hostToken: 'apanel-1' });
+
+		// The workspace rides along for the same reason: it keys the metadata
+		// cache, and the pane switches workspace without remounting.
+		workspaceSlug = 'ws-b';
+		expect(read().workspaceSlug).toBe('ws-b');
 	});
 
 	it('treats a half-address as unaddressable, in both directions', () => {
@@ -45,7 +51,11 @@ describe('attachment host address', () => {
 	});
 
 	it('carries the configured reader through to the extension options', () => {
-		const address: AttachmentHostAddress = { itemId: 'item-A', hostToken: 'apanel-1' };
+		const address: AttachmentHostAddress = {
+			workspaceSlug: 'ws-a',
+			itemId: 'item-A',
+			hostToken: 'apanel-1',
+		};
 		const ext = AttachmentChip.configure({ address: () => address });
 		expect(ext.options.address()).toEqual(address);
 
