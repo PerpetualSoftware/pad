@@ -39,7 +39,12 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { api, PadApiError } from '$lib/api/client';
 	import type { AttachmentListItem } from '$lib/types';
-	import { iconForAttachment, formatBytes, isImage } from '$lib/attachments/display';
+	import {
+		iconForAttachment,
+		formatBytes,
+		canOpenInViewer,
+		describeAttachmentType,
+	} from '$lib/attachments/display';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
 	import Lightbox, { type LightboxImage } from '$lib/components/common/Lightbox.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
@@ -47,6 +52,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import {
 		announceAttachmentDeleted,
+		notifyAttachmentPanelOpen,
 		registerAttachmentDeletionListener,
 		registerAttachmentUploadListener,
 	} from '$lib/attachments/events';
@@ -585,9 +591,16 @@
 
 	// Image tiles in strip order, so the lightbox's ←/→ page through the
 	// item's images (DR-8 — the existing Lightbox, not a second one).
+	//
+	// Gated on `canOpenInViewer`, NOT `isImage` (PLAN-2392 DR-16): the viewer
+	// takes an exact raster allowlist, so an `image/svg+xml` row — legacy,
+	// mislabelled, or sniffed from XML — renders as a FILE tile and never
+	// reaches the viewer, because SVG can carry active content. Both this list
+	// and the tile branch below read the same predicate, so a file tile can
+	// never be a member of the lightbox's set.
 	let lightboxImages = $derived<LightboxImage[]>(
 		attachments
-			.filter((a) => isImage(a.mime_type))
+			.filter((a) => canOpenInViewer(a.mime_type))
 			.map((a) => ({ id: a.id, alt: a.filename }))
 	);
 
@@ -597,8 +610,49 @@
 		lightbox = { images: lightboxImages, index };
 	}
 
+	/** What the file IS — the tooltip, and the base of the accessible name. */
 	function tileLabel(att: StripAttachment): string {
-		return `${att.filename} (${formatBytes(att.size_bytes)})`;
+		return `${att.filename}, ${describeAttachmentType(att.mime_type, att.filename)}, ${formatBytes(att.size_bytes)}`;
+	}
+
+	/**
+	 * The accessible name: `tileLabel` plus the ACTION the tile performs
+	 * (PLAN-2392 DR-12). A file tile no longer downloads on tap, so a name
+	 * that says only what the file is would leave a screen-reader user with
+	 * no way to know what activating it does — and this is the only signpost
+	 * for the changed behavior, since DR-1 deliberately adds no `⋯` control.
+	 */
+	function tileActionLabel(att: StripAttachment): string {
+		const action = canOpenInViewer(att.mime_type) ? 'View' : 'Options for';
+		return `${action} ${tileLabel(att)}`;
+	}
+
+	/**
+	 * A file tile opens the options panel instead of downloading (DR-1).
+	 *
+	 * ENTRY-fenced for the same reason `handleDelete` is: the clicked tile was
+	 * painted for `paint`'s identity, while `itemId` is live and may already
+	 * name a different view. `itemId` is the event's ROUTING field — which
+	 * `ItemDetail` mount shows the panel — so a stale click would open this
+	 * attachment's panel over a different item's pane.
+	 *
+	 * `anchor` is the tile itself: the panel positions against it and returns
+	 * focus to it on close, which is what makes keyboard activation land
+	 * somewhere sensible.
+	 */
+	function openOptions(att: StripAttachment, anchor: HTMLElement | null) {
+		if (!paint.isCurrent()) return;
+		notifyAttachmentPanelOpen({
+			attachmentId: att.id,
+			itemId: itemId ?? '',
+			hostToken,
+			anchor,
+			// The strip always has all three from its list row — unlike an
+			// editor chip, whose HEAD probe may not have resolved (DR-2).
+			filename: att.filename,
+			mime_type: att.mime_type,
+			size_bytes: att.size_bytes,
+		});
 	}
 
 	/**
@@ -778,15 +832,15 @@
 			{#if attachments.length > 0 || hasMoreThanStrip}
 				<div class="strip-row">
 					{#each visible as att (att.id)}
-						<!-- The delete control can't nest inside the tile's own button /
-						     anchor, so each tile gets a positioned wrapper. -->
+						<!-- The delete control can't nest inside the tile's own
+						     button, so each tile gets a positioned wrapper. -->
 						<div class="att-cell">
-							{#if isImage(att.mime_type)}
+							{#if canOpenInViewer(att.mime_type)}
 								<button
 									type="button"
 									class="att-tile"
 									title={tileLabel(att)}
-									aria-label={tileLabel(att)}
+									aria-label={tileActionLabel(att)}
 									onclick={() => openLightbox(att)}
 								>
 									<img
@@ -796,18 +850,30 @@
 									/>
 								</button>
 							{:else}
-								<a
+								<!--
+									A real <button>, not an <a download> (DR-1 / DR-12).
+									Tapping a file opens its options panel; nothing is
+									downloaded until the user picks Download there.
+
+									Deliberately a native button rather than an anchor with
+									an overridden activation: the UA gives us Enter AND
+									Space, Space's page-scroll already suppressed, and
+									EXACTLY ONE `click` per activation from either key —
+									which a hand-rolled keydown handler alongside a click
+									handler is precisely how you get twice (DR-12).
+								-->
+								<button
+									type="button"
 									class="att-tile"
-									href={api.attachments.downloadUrl(wsSlug, att.id)}
-									download={att.filename}
 									title={tileLabel(att)}
-									aria-label={tileLabel(att)}
+									aria-label={tileActionLabel(att)}
+									onclick={(e) => openOptions(att, e.currentTarget)}
 								>
 									<span class="att-icon">
 										<AttachmentIcon id={iconForAttachment(att.mime_type, att.filename)} />
 									</span>
 									<span class="att-name" aria-hidden="true">{att.filename}</span>
-								</a>
+								</button>
 							{/if}
 
 							{#if canDelete}
@@ -994,6 +1060,12 @@
 		text-decoration: none;
 		overflow: hidden;
 		cursor: pointer;
+		/* Both tiles are <button>s as of TASK-2424, and the file tile is the
+		   one with TEXT in it. Without this the UA's button font (13.33px
+		   Arial) replaces the inherited one, and `.att-name`'s 0.6em would be
+		   measured against it — a visibly smaller, differently-faced filename
+		   than the anchor rendered. */
+		font: inherit;
 	}
 	.att-tile:hover {
 		border-color: var(--accent, var(--border));
