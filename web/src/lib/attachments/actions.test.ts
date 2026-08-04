@@ -220,6 +220,29 @@ describe('attachment action descriptors', () => {
 		expect(announceMock).not.toHaveBeenCalled();
 	});
 
+	it('still deletes when an async confirmation says yes and nothing moved', async () => {
+		// The guard rails above only prove the descriptor ABANDONS a delete in
+		// the bad cases. Without this, a regression that dropped every
+		// async-confirmed delete — which is what the in-app confirm will
+		// use — would pass the whole suite.
+		const del = action('delete');
+		if (del.element !== 'button') throw new Error('unreachable');
+		const order: string[] = [];
+		deleteMock.mockImplementation(async () => {
+			order.push('delete');
+		});
+		announceMock.mockImplementation(() => {
+			order.push('announce');
+		});
+
+		await del.run(ctx({ confirmDelete: async () => true }));
+
+		expect(deleteMock).toHaveBeenCalledWith('ws', 'att-1');
+		// The broadcast must follow the server's confirmation, never precede
+		// it — subscribers latch it as authoritative.
+		expect(order).toEqual(['delete', 'announce']);
+	});
+
 	it('deletes the attachment the user confirmed, not whatever the context holds later', async () => {
 		// An in-app confirmation is a whole UI interaction, so the surface can
 		// switch items underneath it — the pane this renders in is built around

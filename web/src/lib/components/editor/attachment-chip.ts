@@ -41,6 +41,10 @@ import {
 	fetchAttachmentMetadata
 } from './attachment-metadata';
 import { registerAttachmentDeletionListener } from '$lib/attachments/events';
+import {
+	type AttachmentHostAddressReader,
+	readUnaddressed
+} from '$lib/attachments/hostAddress';
 import { formatBytes, iconForAttachment } from '$lib/attachments/display';
 import { iconSvg } from '$lib/attachments/icons/index';
 
@@ -57,19 +61,12 @@ export interface AttachmentChipOptions {
 	/** Workspace slug used by the metadata HEAD fetcher. Empty disables the fetch. */
 	workspaceSlug: string;
 	/**
-	 * UUID of the item this editor is editing. Half of the open-panel event's
-	 * address (PLAN-2392 DR-8). Empty when the editor has no item context —
-	 * the chip then can't address a panel host and stays on its plain
-	 * behaviour.
+	 * Reads the host address (item + owning `ItemDetail` mount) to stamp on
+	 * open-panel events (PLAN-2392 DR-8). A reader rather than two strings
+	 * because one host is reused across an item switch and Tiptap options
+	 * cannot be written after configure — see `$lib/attachments/hostAddress`.
 	 */
-	itemId: string;
-	/**
-	 * Identity of the `ItemDetail` mount that owns this editor — the other
-	 * half of the address. `ItemDetail` is mounted more than once at a time
-	 * (master + peeked pane), so `itemId` alone would let both hosts consume
-	 * one chip's event. Empty disables panel addressing (DR-8).
-	 */
-	hostToken: string;
+	address: AttachmentHostAddressReader;
 }
 
 declare module '@tiptap/core' {
@@ -98,8 +95,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			HTMLAttributes: {},
 			getDownloadUrl: (uuid: string) => `${PAD_ATTACHMENT_PREFIX}${uuid}`,
 			workspaceSlug: '',
-			itemId: '',
-			hostToken: '',
+			address: readUnaddressed,
 		};
 	},
 

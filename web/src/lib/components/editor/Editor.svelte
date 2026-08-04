@@ -598,6 +598,7 @@
 		notifyAttachmentImageCapabilitiesChanged,
 	} from './attachment-image';
 	import { AttachmentChip } from './attachment-chip';
+	import type { AttachmentHostAddress } from '$lib/attachments/hostAddress';
 	import { AttachmentUpload } from './attachment-upload';
 
 	let {
@@ -872,6 +873,16 @@
 		const getAttachmentUrl = (uuid: string, variant?: AttachmentVariant) =>
 			wsSlug ? api.attachments.downloadUrl(wsSlug, uuid, variant) : `pad-attachment:${uuid}`;
 
+		// Reads the CURRENT host address at emit time (PLAN-2392 DR-8). This
+		// editor is remounted per item behind a {#key}, so a captured value
+		// would in fact be correct here — it is a reader anyway so both editor
+		// hosts publish one shape, and so nobody has to know which of them is
+		// remounted and which is reused (see hostAddress.ts).
+		const readHostAddress = (): AttachmentHostAddress => ({
+			itemId: itemId ?? '',
+			hostToken
+		});
+
 		// When a Y.Doc is supplied, the Collaboration extension owns
 		// undo/redo (Yjs maintains its own history that survives peer
 		// edits correctly) and StarterKit's undoRedo would fight it.
@@ -929,8 +940,7 @@
 				// editor construction, which is correct: both are fixed for
 				// the life of a mount — ItemDetail remounts this editor per
 				// item ({#key item.id}) and mints one token per ItemDetail.
-				itemId: itemId ?? '',
-				hostToken,
+				address: readHostAddress,
 				// Initial supportedFormats is empty — server capabilities
 				// are fetched async below. The toolbar starts disabled
 				// for all formats until capabilities resolve, then
@@ -954,8 +964,7 @@
 			AttachmentChip.configure({
 				getDownloadUrl: getAttachmentUrl,
 				workspaceSlug: wsSlug,
-				itemId: itemId ?? '',
-				hostToken,
+				address: readHostAddress,
 			}),
 			// When a Y.Doc is provided, register the Collaboration
 			// extension so the y-tiptap binding takes over document

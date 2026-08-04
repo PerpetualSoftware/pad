@@ -38,6 +38,10 @@ import {
 } from './attachment-metadata';
 import { openCropModal, type CropResult } from './attachment-crop-modal';
 import { registerAttachmentDeletionListener } from '$lib/attachments/events';
+import {
+	type AttachmentHostAddressReader,
+	readUnaddressed
+} from '$lib/attachments/hostAddress';
 import type { AttachmentTransformRequest, AttachmentTransformResult } from '$lib/types';
 
 // Re-export the shared types so existing call sites keep working.
@@ -104,18 +108,12 @@ export interface AttachmentImageOptions {
 	 */
 	workspaceSlug: string;
 	/**
-	 * UUID of the item this editor is editing. Half of the panel / viewer
-	 * event address (PLAN-2392 DR-8). Empty when the editor has no item
-	 * context.
+	 * Reads the host address (item + owning `ItemDetail` mount) to stamp on
+	 * panel / viewer events (PLAN-2392 DR-8). A reader rather than two
+	 * strings — see `$lib/attachments/hostAddress` for why writing options
+	 * after configure cannot work.
 	 */
-	itemId: string;
-	/**
-	 * Identity of the `ItemDetail` mount that owns this editor — the other
-	 * half of the address. `ItemDetail` is mounted more than once at a time
-	 * (master + peeked pane), so `itemId` alone would let both hosts consume
-	 * one NodeView's event. Empty disables addressing (DR-8).
-	 */
-	hostToken: string;
+	address: AttachmentHostAddressReader;
 	/**
 	 * Image formats the server-side processor supports. Drives the
 	 * rotate toolbar's enabled state per attachment: a button is
@@ -175,8 +173,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			HTMLAttributes: {},
 			getDownloadUrl: (uuid: string) => `${PAD_ATTACHMENT_PREFIX}${uuid}`,
 			workspaceSlug: '',
-			itemId: '',
-			hostToken: '',
+			address: readUnaddressed,
 			supportedFormats: [] as string[],
 			transform: async () => {
 				throw new Error('AttachmentImage: configure({ transform }) is required to use rotate/crop');
@@ -470,9 +467,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					const probeUuid = currentUuid;
 					fetchAttachmentMetadata(opts.workspaceSlug, probeUuid, opts.getDownloadUrl).then(
 						(result) => {
-							// Bail if the NodeView's uuid changed (rotate/peer
-							// op) while the probe was in flight — otherwise
-							// we'd cache stale MIME state for the new image.
+							// Bail if the NodeView was torn down, or if its uuid
+							// changed (rotate/peer op) while the probe was in
+							// flight — otherwise we'd touch detached DOM, or
+							// cache stale MIME state for the new image.
+							if (destroyed) return;
 							if (currentUuid !== probeUuid) return;
 							// A 404 here is the same authoritative signal the
 							// load path acts on (DR-17), and this probe may
@@ -491,6 +490,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			};
 
 			const swapNodeUuid = (newId: string): void => {
+				// A transform that resolves after teardown has no position left
+				// to dispatch against — `editor.isDestroyed` is false whenever
+				// the editor outlives this one NodeView, which is the common
+				// case (the node was replaced, the doc was re-rendered).
+				if (destroyed) return;
 				// Master-freeze / R12 (TASK-2172): runRotate/runCrop gate editability
 				// at CLICK time, but the transform awaits a network round-trip during
 				// which the master can begin peeking — flipping the editor read-only
@@ -664,6 +668,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 								probeUuid,
 								opts.getDownloadUrl
 							).then((result) => {
+								if (destroyed) return;
 								if (currentUuid !== probeUuid) return;
 								if (result.status === 'missing') latchMissing(probeUuid);
 								if (!toolbar) return;

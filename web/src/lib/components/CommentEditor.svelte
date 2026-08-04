@@ -27,6 +27,7 @@
 	import { AttachmentImage } from './editor/attachment-image';
 	import { AttachmentChip } from './editor/attachment-chip';
 	import { AttachmentUpload } from './editor/attachment-upload';
+	import type { AttachmentHostAddress } from '$lib/attachments/hostAddress';
 
 	interface Props {
 		/** Initial markdown body. Parsed as markdown on mount. */
@@ -121,6 +122,21 @@
 		}
 	}
 
+	/**
+	 * Reads the CURRENT host address at emit time (PLAN-2392 DR-8).
+	 *
+	 * This composer is reused across a no-{#key} item switch — the same reason
+	 * `doSubmit` above captures its item before awaiting — so a value baked
+	 * into the extension config at mount would address the PREVIOUS item after
+	 * a switch, and the host would correctly ignore the event. Tiptap's
+	 * `options` getter returns a fresh spread per access, so there is no
+	 * writing the new value in afterwards either (see hostAddress.ts).
+	 */
+	const readHostAddress = (): AttachmentHostAddress => ({
+		itemId: itemId ?? '',
+		hostToken
+	});
+
 	const attachmentUrl = (uuid: string, variant?: 'thumb-sm' | 'thumb-md' | 'original') =>
 		wsSlug ? api.attachments.downloadUrl(wsSlug, uuid, variant) : `pad-attachment:${uuid}`;
 
@@ -140,8 +156,7 @@
 					getDownloadUrl: attachmentUrl,
 					workspaceSlug: wsSlug,
 					// Panel / viewer addressing (PLAN-2392 DR-8).
-					itemId: itemId ?? '',
-					hostToken,
+					address: readHostAddress,
 					// Rotate/crop stays disabled in comments — keep it lean.
 					supportedFormats: [] as string[],
 					transform: async () => {
@@ -151,8 +166,7 @@
 				AttachmentChip.configure({
 					getDownloadUrl: attachmentUrl,
 					workspaceSlug: wsSlug,
-					itemId: itemId ?? '',
-					hostToken
+					address: readHostAddress
 				}),
 				AttachmentUpload.configure({
 					// Wrap upload so the host can track in-flight uploads and gate
@@ -204,37 +218,6 @@
 			}
 		});
 		empty = editor.isEmpty;
-	});
-
-	/**
-	 * Keep the attachment NodeViews' addressing current (PLAN-2392 DR-8).
-	 *
-	 * The extensions are configured once, inside `onMount`, which captures
-	 * whatever `itemId` / `hostToken` were at that moment. That is fine for the
-	 * body editor — it is remounted per item behind a `{#key}` — but this
-	 * composer is deliberately REUSED across a no-{#key} item switch (see
-	 * `doSubmit` above, which exists for the same reason). Left alone, a chip
-	 * in the composer would keep emitting events addressed to the PREVIOUS
-	 * item, and the host, which matches on both fields, would correctly ignore
-	 * them — a tap that silently does nothing.
-	 *
-	 * Mutating the live extension options is the established shape here;
-	 * `Editor.svelte` pushes `supportedFormats` the same way once server
-	 * capabilities resolve. The NodeViews read these at emit time, so a write
-	 * is enough — nothing needs to re-render.
-	 */
-	$effect(() => {
-		const nextItemId = itemId ?? '';
-		const nextToken = hostToken;
-		if (!editor || editor.isDestroyed) return;
-		for (const name of ['attachmentChip', 'attachmentImage']) {
-			const ext = editor.extensionManager.extensions.find(
-				(e: { name: string }) => e.name === name
-			);
-			if (!ext) continue;
-			ext.options.itemId = nextItemId;
-			ext.options.hostToken = nextToken;
-		}
 	});
 
 	onDestroy(() => {

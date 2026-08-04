@@ -21,6 +21,7 @@
 
 import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 import type { AttachmentUploadResult } from '$lib/types';
+import { isAddressable } from '$lib/attachments/hostAddress';
 
 const listeners = new Set<(uuid: string) => void>();
 
@@ -188,9 +189,13 @@ export function isAttachmentPanelEventForHost(
 	host: { itemId: string | null | undefined; hostToken: string | null | undefined }
 ): boolean {
 	if (!event) return false;
-	if (!host?.itemId || !host?.hostToken) return false;
-	if (!event.itemId || !event.hostToken) return false;
-	return event.itemId === host.itemId && event.hostToken === host.hostToken;
+	// Both sides must be fully addressable before a comparison means anything:
+	// two empty tokens are not a match, they are two absences. `isAddressable`
+	// is the single statement of that rule (see hostAddress.ts).
+	const from = { itemId: event.itemId, hostToken: event.hostToken };
+	const to = { itemId: host?.itemId ?? '', hostToken: host?.hostToken ?? '' };
+	if (!isAddressable(from) || !isAddressable(to)) return false;
+	return from.itemId === to.itemId && from.hostToken === to.hostToken;
 }
 
 const panelListeners = new Set<(event: AttachmentPanelOpenEvent) => void>();
