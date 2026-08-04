@@ -19,6 +19,8 @@
 		type StorageFilterSelections
 	} from '$lib/attachments/storageFilters';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
+	import Menu from '$lib/components/common/Menu.svelte';
+	import AttachmentDeleteConfirm from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
 	import { viewIdentity, createFence, createPaintFence } from '$lib/attachments/viewFence';
 
 	// ── Props ────────────────────────────────────────────────────────────────
@@ -49,6 +51,22 @@
 	let loading = $state(true);
 	let usage = $state<WorkspaceStorageInfo | null>(null);
 	let attachments = $state<AttachmentListItem[]>([]);
+	/**
+	 * The delete confirmation currently on screen (PLAN-2392 DR-18 /
+	 * TASK-2425). This row used to raise a browser-native `confirm()`; every
+	 * attachment delete now goes through the same in-app drill-down — Cancel
+	 * first, destructive row last, prompt back-referenced by
+	 * `aria-describedby`. The WORDING stays this surface's own: the strip's
+	 * "referenced in this item's content" check has no meaning in a
+	 * workspace-wide list, and what matters here is the GC grace period.
+	 */
+	let pendingDelete = $state<{
+		att: AttachmentListItem;
+		anchor: HTMLElement | null;
+		prompt: string;
+	} | null>(null);
+	const uid = $props.id();
+	const promptId = `storage-delete-note-${uid}`;
 	let total = $state(0);
 	let limit = $state(50);
 	let offset = $state(0);
@@ -248,6 +266,10 @@
 				attachments = [];
 				total = 0;
 				usage = null;
+				// A confirmation left up for a row from the previous workspace
+				// goes with it: the button it is anchored to has just been
+				// unmounted, and `confirmDelete`'s fence would refuse it anyway.
+				pendingDelete = null;
 				void loadWorkspaceView();
 				return;
 			}
@@ -400,6 +422,49 @@
 
 	// ── Actions ──────────────────────────────────────────────────────────────
 
+	/**
+	 * Open the delete confirmation (PLAN-2392 DR-18 / TASK-2425).
+	 *
+	 * ENTRY fence, for the same reason `handleDelete` re-takes it below: the
+	 * clicked row was painted for the workspace this tab has LOADED, which
+	 * during the prop-update → effect-flush window is not necessarily the one
+	 * `wsSlug` already names.
+	 */
+	function requestDelete(att: AttachmentListItem, anchor: HTMLElement | null) {
+		if (!paint.isCurrent()) return;
+		pendingDelete = {
+			att,
+			anchor,
+			prompt: `Delete ${att.filename}? The blob is reclaimed by garbage collection after a grace period.`,
+		};
+	}
+
+	/** Escape / outside-click. `Menu` handles the Escape refocus itself. */
+	function dismissDelete() {
+		pendingDelete = null;
+	}
+
+	/** The Cancel row — returns focus to the button it was anchored to. */
+	function cancelDelete() {
+		const anchor = pendingDelete?.anchor;
+		pendingDelete = null;
+		anchor?.focus();
+	}
+
+	/**
+	 * The user confirmed. `confirm()` blocked the thread, so the entry fence
+	 * was still true by definition when it returned; an in-app confirmation
+	 * does not, and the workspace can change while it is up — so the fence is
+	 * re-checked at the point that actually sends the request.
+	 */
+	function confirmDelete() {
+		const pending = pendingDelete;
+		pendingDelete = null;
+		if (!pending) return;
+		if (!paint.isCurrent()) return;
+		void handleDelete(pending.att);
+	}
+
 	async function handleDelete(att: AttachmentListItem) {
 		// ENTRY fence (fence 3). The clicked row was painted for the workspace
 		// this tab has LOADED, which during the prop-update → effect-flush window
@@ -417,10 +482,6 @@
 		// continuation toast and refetch (Codex round 3).
 		const req = viewFence.begin();
 
-		const ok = confirm(
-			`Delete ${att.filename}? The blob is reclaimed by garbage collection after a grace period.`
-		);
-		if (!ok) return;
 		try {
 			await api.attachments.delete(reqWsSlug, att.id);
 			// Same broadcast the item attachment strip does (PLAN-2382 /
@@ -716,7 +777,7 @@
 							<button
 								type="button"
 								class="btn btn-small btn-remove"
-								onclick={() => handleDelete(att)}
+								onclick={(e) => requestDelete(att, e.currentTarget)}
 							>
 								Delete
 							</button>
@@ -750,6 +811,33 @@
 		{/if}
 	{/if}
 </div>
+
+<!--
+	The delete confirmation (PLAN-2392 DR-18 / TASK-2425) — the same in-app
+	drill-down the item strip and the options panel show, anchored to the row's
+	own Delete button. Props are read through `?.` because `Menu` places itself
+	in a `tick().then()` that can run after this block is torn down.
+-->
+{#if pendingDelete}
+	<Menu
+		open
+		onclose={dismissDelete}
+		trigger={pendingDelete?.anchor ?? undefined}
+		mode="portal"
+		width={272}
+		sheetOnMobile
+		sheetTitle="Delete {pendingDelete?.att.filename ?? ''}"
+		ariaLabel="Delete {pendingDelete?.att.filename ?? ''}"
+		focusKey={pendingDelete?.att.id}
+	>
+		<AttachmentDeleteConfirm
+			prompt={pendingDelete?.prompt ?? ''}
+			{promptId}
+			oncancel={cancelDelete}
+			onconfirm={confirmDelete}
+		/>
+	</Menu>
+{/if}
 
 <style>
 	/* ── Local copies of the parent settings page primitives ────────────────

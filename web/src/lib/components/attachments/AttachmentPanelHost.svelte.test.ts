@@ -350,7 +350,7 @@ describe('AttachmentPanelHost', () => {
 		await settle();
 
 		// The confirmation is a sub-view of the panel, not a window.confirm.
-		const prompt = document.querySelector('.ap-note-warn');
+		const prompt = document.querySelector('.attachment-delete-prompt');
 		expect(prompt?.getAttribute('role')).toBe('presentation');
 		expect(prompt?.textContent).toContain("still used in this item's content");
 		const confirmRows = rows();
@@ -381,7 +381,7 @@ describe('AttachmentPanelHost', () => {
 
 		row('Delete')!.click();
 		await settle();
-		expect(document.querySelector('.ap-note-warn')?.textContent).toContain(
+		expect(document.querySelector('.attachment-delete-prompt')?.textContent).toContain(
 			"isn't referenced in this item's content"
 		);
 	});
@@ -397,7 +397,7 @@ describe('AttachmentPanelHost', () => {
 
 		row('Delete')!.click();
 		await settle();
-		expect(document.querySelector('.ap-note-warn')?.textContent).toContain(
+		expect(document.querySelector('.attachment-delete-prompt')?.textContent).toContain(
 			"still used in this item's content"
 		);
 	});

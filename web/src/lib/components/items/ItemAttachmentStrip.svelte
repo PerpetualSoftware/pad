@@ -32,9 +32,11 @@
 	 *      on screen must roll back and toast even if the user hit Retry while
 	 *      it was in flight.
 	 *   3. `paint` — "does the CONTROL the user clicked belong to what is on
-	 *      screen?" Both control entry points fence on it — `handleDelete` for
+	 *      screen?" Both control entry points fence on it — `requestDelete` for
 	 *      a tile, `retryLoad` for the error row — at ENTRY, because the other
-	 *      two run after an await and no fence can unsend a request.
+	 *      two run after an await and no fence can unsend a request. The delete
+	 *      confirmation no longer blocks the thread (DR-18 / TASK-2425), so
+	 *      `confirmDelete` re-checks the same fence on the far side of it.
 	 */
 	import { onDestroy, untrack } from 'svelte';
 	import { api, PadApiError } from '$lib/api/client';
@@ -46,6 +48,10 @@
 		describeAttachmentType,
 	} from '$lib/attachments/display';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
+	import Menu from '$lib/components/common/Menu.svelte';
+	import AttachmentDeleteConfirm, {
+		attachmentDeletePrompt,
+	} from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
 	import Lightbox, { type LightboxImage } from '$lib/components/common/Lightbox.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
@@ -158,6 +164,27 @@
 	let attachments = $state<StripAttachment[]>([]);
 	let expanded = $state(false);
 	let lightbox = $state<{ images: LightboxImage[]; index: number } | null>(null);
+	/**
+	 * The delete confirmation currently on screen, if any (PLAN-2392 DR-18 /
+	 * TASK-2425). One at a time: opening a second supersedes the first, which
+	 * is what a `<Menu>` anchored to a single trigger can represent anyway.
+	 *
+	 * `anchor` is the tile's own `×` — the menu positions against it and
+	 * returns focus to it on Cancel / Escape, which is what keeps the control
+	 * keyboard-usable end to end.
+	 *
+	 * `prompt` is captured at OPEN time, not derived: the warning reads the
+	 * editor's live markdown, and re-deriving it while the confirmation is up
+	 * would let the message change under the user as they type.
+	 */
+	let pendingDelete = $state<{
+		att: StripAttachment;
+		anchor: HTMLElement | null;
+		prompt: string;
+	} | null>(null);
+
+	const uid = $props.id();
+	const promptId = `attachment-delete-note-${uid}`;
 
 	// Three distinguishable states, not two (DR-10). `loadFailed` is what stops
 	// a fetch failure from rendering as "no attachments"; `showLoading` is the
@@ -279,6 +306,12 @@
 				attachments = [];
 				expanded = false;
 				lightbox = null;
+				// A confirmation left up for a row the user is no longer looking
+				// at must go with it — confirming it after the switch would
+				// DELETE the previous view's attachment from behind the new one
+				// (the entry fence re-check in `confirmDelete` refuses it, but
+				// leaving the prompt on screen at all is the wrong picture).
+				pendingDelete = null;
 				deletedIds = new Set();
 				pendingUploads = [];
 				beyondStripCount = 0;
@@ -492,6 +525,10 @@
 		return registerAttachmentDeletionListener((deletedUuid) => {
 			rememberDeleted(deletedUuid);
 			attachments = attachments.filter((a) => a.id !== deletedUuid);
+			// The tile this confirmation is anchored to just went away, so the
+			// menu would be left pointing at a detached element — and the
+			// question it is asking has already been answered by someone else.
+			if (pendingDelete?.att.id === deletedUuid) pendingDelete = null;
 		});
 	});
 
@@ -630,7 +667,7 @@
 	/**
 	 * A file tile opens the options panel instead of downloading (DR-1).
 	 *
-	 * ENTRY-fenced for the same reason `handleDelete` is: the clicked tile was
+	 * ENTRY-fenced for the same reason `requestDelete` is: the clicked tile was
 	 * painted for `paint`'s identity, while `itemId` is live and may already
 	 * name a different view. `itemId` is the event's ROUTING field — which
 	 * `ItemDetail` mount shows the panel — so a stale click would open this
@@ -676,30 +713,17 @@
 	}
 
 	/**
-	 * Confirm text for a delete (DR-5).
+	 * Open the delete confirmation for a tile (DR-18 / TASK-2425).
 	 *
-	 * The "not referenced here" arm deliberately does NOT claim the attachment
-	 * is unused: a reference can live in another item's content, in an item's
-	 * fields JSON, or in any comment. The server's AttachmentReferenced scan
-	 * covers all three, but none of it is visible client-side — so the wording
-	 * stays honest about what we actually checked.
+	 * This used to raise a browser-native `window.confirm`, which meant one
+	 * object had two confirmation styles — the options panel already drilled
+	 * down to an in-app sub-view. Both surfaces now render the SAME
+	 * `AttachmentDeleteConfirm`, wording included; only the container differs
+	 * (the panel's own menu there, a menu anchored to the `×` here).
+	 *
+	 * The delete REQUEST path below is untouched by that change.
 	 */
-	function confirmMessage(att: StripAttachment): string {
-		if (referencedIds().has(att.id)) {
-			return (
-				`Delete ${att.filename}?\n\n` +
-				"It's still used in this item's content — deleting it will leave a " +
-				'"missing attachment" placeholder where it appears.'
-			);
-		}
-		return (
-			`Delete ${att.filename}?\n\n` +
-			"It isn't referenced in this item's content, but it may still be " +
-			'referenced by another item or a comment. This cannot be undone.'
-		);
-	}
-
-	async function handleDelete(att: StripAttachment) {
+	function requestDelete(att: StripAttachment, anchor: HTMLElement | null) {
 		if (!canDelete) return;
 
 		// ENTRY fence (fence 3 — see the header). The clicked tile was painted
@@ -713,10 +737,51 @@
 		// confirm and before the call.
 		if (!paint.isCurrent()) return;
 
-		if (typeof window !== 'undefined' && !window.confirm(confirmMessage(att))) return;
-		// window.confirm blocks the thread, so nothing can have moved between
-		// the fence above and here.
+		pendingDelete = {
+			att,
+			anchor,
+			prompt: attachmentDeletePrompt(att.filename, referencedIds().has(att.id)),
+		};
+	}
 
+	/** Dismissal that isn't an explicit Cancel — Escape, or a click outside. */
+	function dismissDelete() {
+		pendingDelete = null;
+	}
+
+	/**
+	 * The Cancel row. Returns focus to the `×` the confirmation was anchored
+	 * to: `window.confirm` restored it for free, and the control is
+	 * opacity-hidden unless its cell has focus-within, so a keyboard user who
+	 * cancels would otherwise be dropped on <body> with the control they came
+	 * from now invisible.
+	 *
+	 * Deliberately NOT wired to `Menu`'s `onclose`: Escape already refocuses
+	 * the trigger inside `Menu`, and an outside click must not have focus
+	 * yanked back off whatever the user just clicked.
+	 */
+	function cancelDelete() {
+		const anchor = pendingDelete?.anchor;
+		pendingDelete = null;
+		anchor?.focus();
+	}
+
+	/**
+	 * The user confirmed. `window.confirm` blocked the thread, so the entry
+	 * fence taken when the `×` was clicked was still true by definition when it
+	 * returned; an in-app confirmation does NOT block, and the user can switch
+	 * item or workspace while it is up. So the fence — and the permission — are
+	 * re-checked HERE, at the point that actually sends the request.
+	 */
+	function confirmDelete() {
+		const pending = pendingDelete;
+		pendingDelete = null;
+		if (!pending) return;
+		if (!canDelete || !paint.isCurrent()) return;
+		void performDelete(pending.att);
+	}
+
+	async function performDelete(att: StripAttachment) {
 		// Capture identity BEFORE the await (fence 2): a switch mid-delete must
 		// not roll the tile back into a DIFFERENT item's strip, and must not
 		// toast over it. The DELETE itself still lands — it targets an id, not a
@@ -885,7 +950,7 @@
 									class="att-delete"
 									title="Delete {att.filename}"
 									aria-label="Delete {att.filename}"
-									onclick={() => handleDelete(att)}
+									onclick={(e) => requestDelete(att, e.currentTarget)}
 								>
 									×
 								</button>
@@ -920,6 +985,43 @@
 			{/if}
 		{/if}
 	</section>
+{/if}
+
+<!--
+	The delete confirmation (DR-18). The same `Menu` presentation the options
+	panel uses — popover on desktop, BottomSheet at the mobile breakpoint — so
+	ESC ordering, outside-click, portal placement and focus return are the
+	app's existing behaviours rather than a second implementation. Focus
+	returns to the `×` the menu is anchored to, and Cancel is its first row, so
+	Enter on arrival can never delete.
+-->
+{#if pendingDelete}
+	<!--
+		Every prop below is read through `?.` even though the block only exists
+		while `pendingDelete` is set: `Menu` places itself in a `tick().then()`,
+		which can run AFTER the confirmation was dismissed and this block torn
+		down, and a prop expression is re-evaluated on every read. Reading
+		`pendingDelete.anchor` there throws an unhandled rejection — real, and
+		observed in the suite.
+	-->
+	<Menu
+		open
+		onclose={dismissDelete}
+		trigger={pendingDelete?.anchor ?? undefined}
+		mode="portal"
+		width={272}
+		sheetOnMobile
+		sheetTitle="Delete {pendingDelete?.att.filename ?? ''}"
+		ariaLabel="Delete {pendingDelete?.att.filename ?? ''}"
+		focusKey={pendingDelete?.att.id}
+	>
+		<AttachmentDeleteConfirm
+			prompt={pendingDelete?.prompt ?? ''}
+			{promptId}
+			oncancel={cancelDelete}
+			onconfirm={confirmDelete}
+		/>
+	</Menu>
 {/if}
 
 {#if lightbox}
