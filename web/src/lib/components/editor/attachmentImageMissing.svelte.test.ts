@@ -122,6 +122,28 @@ describe('inline image missing placeholder', () => {
 		document.querySelector('dialog.attachment-image-lightbox')?.remove();
 	});
 
+	it('inertizes the transform toolbar when the attachment is deleted', async () => {
+		// A confirmed deletion inertizes the WHOLE node. Rotate and crop against
+		// a row that is gone can only 404, and leaving them live is the same
+		// dead-control gap the placeholder's role/tabindex removal closes.
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png' });
+		editor = makeEditor(target);
+		editor.commands.setNodeSelection(1);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		const buttons = () =>
+			Array.from(
+				target.querySelectorAll<HTMLButtonElement>('.attachment-image-toolbar-btn')
+			);
+		expect(buttons().length).toBeGreaterThan(0);
+
+		for (const fn of deletionListeners) fn('uuid-1');
+
+		expect(buttons().every((b) => b.disabled)).toBe(true);
+		expect(buttons()[0].title).toBe('This attachment has been deleted');
+	});
+
 	it('is a focusable button while the failure is merely transient', () => {
 		editor = makeEditor(target);
 		failLoad();

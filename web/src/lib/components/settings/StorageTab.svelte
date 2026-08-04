@@ -533,7 +533,7 @@
 				if (paint.isCurrent() && !painted.changed()) await reload();
 				return;
 			}
-			toastStore.show(`Deleted ${att.filename}`, 'success');
+			toastStore.show(`Deleted ${displayFilename(att.filename)}`, 'success');
 			await reload();
 		} catch (err) {
 			// A 404 is authoritative that the row is gone — the list was simply
@@ -550,7 +550,7 @@
 					if (paint.isCurrent() && !painted.changed()) await reload();
 					return;
 				}
-				toastStore.show(`${att.filename} was already deleted`, 'info');
+				toastStore.show(`${displayFilename(att.filename)} was already deleted`, 'info');
 				await reload();
 				return;
 			}
@@ -775,7 +775,7 @@
 							{#if isImage(att.mime_type)}
 								<img
 									src={api.attachments.downloadUrl(wsSlug, att.id, 'thumb-sm')}
-									alt={att.filename}
+									alt={displayFilename(att.filename)}
 									loading="lazy"
 								/>
 							{:else}
@@ -787,7 +787,9 @@
 
 						<div class="att-meta">
 							<div class="att-line1">
-								<span class="att-filename" title={att.filename}>{att.filename}</span>
+								<span class="att-filename" title={displayFilename(att.filename)}
+									>{displayFilename(att.filename)}</span
+								>
 							</div>
 							<div class="att-line2">
 								<span class="att-size">{formatBytes(att.size_bytes)}</span>
@@ -868,8 +870,8 @@
 		mode="portal"
 		width={272}
 		sheetOnMobile
-		sheetTitle="Delete {pendingDelete?.att.filename ?? ''}"
-		ariaLabel="Delete {pendingDelete?.att.filename ?? ''}"
+		sheetTitle="Delete {displayFilename(pendingDelete?.att.filename)}"
+		ariaLabel="Delete {displayFilename(pendingDelete?.att.filename)}"
 		focusKey={pendingDelete?.att.id}
 	>
 		<AttachmentDeleteConfirm

@@ -417,6 +417,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// otherwise fire after the delete and restore the image.
 				detachLoadListeners();
 				showMissing();
+				refresh();
 			});
 
 			// role/tabindex are set by showMissing(), which knows whether this is
@@ -482,7 +483,21 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			let toolbar: HTMLElement | null = null;
 			let unregisterRefresher: (() => void) | null = null;
 			const refresh = () => {
-				if (toolbar) refreshToolbarState(toolbar, knownMime, opts.supportedFormats);
+				if (!toolbar) return;
+				// A confirmed deletion inertizes the WHOLE node, not just its
+				// placeholder: rotate and crop against a row that is gone can
+				// only 404, and leaving them live is the same dead-control gap
+				// the placeholder's role/tabindex removal closes (round 7).
+				if (deleted) {
+					toolbar
+						.querySelectorAll<HTMLButtonElement>('.attachment-image-toolbar-btn')
+						.forEach((btn) => {
+							btn.disabled = true;
+							btn.title = 'This attachment has been deleted';
+						});
+					return;
+				}
+				refreshToolbarState(toolbar, knownMime, opts.supportedFormats);
 			};
 			const ensureToolbar = (): HTMLElement => {
 				if (toolbar) return toolbar;
@@ -907,7 +922,13 @@ function refreshToolbarState(
 	const btns = toolbar.querySelectorAll<HTMLButtonElement>('.attachment-image-toolbar-btn');
 	const noProcessor = supportedFormats.length === 0;
 	const format = mime ? mimeToFormat(mime) : null;
-	const knownUnsupported = !!format && !supportedFormats.includes(format);
+	// A KNOWN mime that maps to no processor format is unsupported, not
+	// unknown. `mimeToFormat` returns null both for "never asked" and for
+	// "asked, and this is not something the processor handles" — treating the
+	// second as the first left Crop enabled for e.g. image/svg+xml, which
+	// hands the original to the crop modal for a transform the server will
+	// refuse (final review round 7).
+	const knownUnsupported = !!mime && (!format || !supportedFormats.includes(format));
 
 	btns.forEach((btn) => {
 		// Re-derive the original tooltip from the dataset. We keep the
@@ -924,7 +945,9 @@ function refreshToolbarState(
 		}
 		if (knownUnsupported) {
 			btn.disabled = true;
-			btn.title = `Image editing for ${mime} requires libvips (this build supports ${supportedFormats.join(', ')})`;
+			btn.title = format
+				? `Image editing for ${mime} requires libvips (this build supports ${supportedFormats.join(', ')})`
+				: `Image editing isn't available for ${mime}`;
 			return;
 		}
 		btn.disabled = false;

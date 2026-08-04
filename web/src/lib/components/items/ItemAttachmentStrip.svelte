@@ -639,7 +639,7 @@
 	let lightboxImages = $derived<LightboxImage[]>(
 		attachments
 			.filter((a) => canOpenInViewer(a.mime_type))
-			.map((a) => ({ id: a.id, alt: a.filename }))
+			.map((a) => ({ id: a.id, alt: displayFilename(a.filename) }))
 	);
 
 	function openLightbox(att: StripAttachment) {
@@ -861,8 +861,8 @@
 			}
 			toastStore.show(
 				code === 'forbidden'
-					? `You don't have permission to delete ${att.filename}.`
-					: `Couldn't delete ${att.filename}.`,
+					? `You don't have permission to delete ${displayFilename(att.filename)}.`
+					: `Couldn't delete ${displayFilename(att.filename)}.`,
 				'error'
 			);
 		}
@@ -1012,8 +1012,8 @@
 		mode="portal"
 		width={272}
 		sheetOnMobile
-		sheetTitle="Delete {pendingDelete?.att.filename ?? ''}"
-		ariaLabel="Delete {pendingDelete?.att.filename ?? ''}"
+		sheetTitle="Delete {displayFilename(pendingDelete?.att.filename)}"
+		ariaLabel="Delete {displayFilename(pendingDelete?.att.filename)}"
 		focusKey={pendingDelete?.att.id}
 	>
 		<AttachmentDeleteConfirm
