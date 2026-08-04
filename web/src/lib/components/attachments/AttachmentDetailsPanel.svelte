@@ -223,6 +223,16 @@
 	let deleteSignal = 0;
 
 	const displayName = $derived(displayFilename(filename));
+	/**
+	 * An archived parent's reachability probe is still in flight.
+	 *
+	 * Normally the panel offers its actions immediately — that is DR-2's whole
+	 * point, and waiting on a probe would make a tap feel broken. But when the
+	 * parent is archived we already know reads are refused; the probe is only
+	 * confirming it. Offering Download and Open in that window hands the user
+	 * an action whose sole outcome is a 404 (final review round 6).
+	 */
+	const unreachablePending = $derived(parentArchived && loading && !missing);
 	// The event's value wins when it has one — it came from a list row, which
 	// is at least as good as a HEAD and is available before any fetch.
 	const mime = $derived(mimeType || fetchedMime || '');
@@ -587,7 +597,7 @@
 					target={action.target}
 					rel={action.rel}
 					title={action.description}
-					disabled={!action.enabled(ctx) || missing}
+					disabled={!action.enabled(ctx) || missing || unreachablePending}
 					onclick={closeAfterNavigation}
 				>
 					{action.label}
@@ -597,7 +607,7 @@
 					icon={action.icon}
 					danger={action.danger}
 					title={action.description}
-					disabled={!action.enabled(ctx) || missing || busy}
+					disabled={!action.enabled(ctx) || missing || busy || unreachablePending}
 					onclick={() => runAction(action)}
 				>
 					{busy && action.id === 'delete' ? 'Deleting…' : action.label}

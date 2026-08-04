@@ -938,7 +938,7 @@
 									<span class="att-icon">
 										<AttachmentIcon id={iconForAttachment(att.mime_type, att.filename)} />
 									</span>
-									<span class="att-name" aria-hidden="true">{att.filename}</span>
+									<span class="att-name" aria-hidden="true">{displayFilename(att.filename)}</span>
 								</button>
 							{/if}
 
@@ -949,8 +949,8 @@
 								<button
 									type="button"
 									class="att-delete"
-									title="Delete {att.filename}"
-									aria-label="Delete {att.filename}"
+									title="Delete {displayFilename(att.filename)}"
+									aria-label="Delete {displayFilename(att.filename)}"
 									onclick={(e) => requestDelete(att, e.currentTarget)}
 								>
 									×

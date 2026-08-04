@@ -12,7 +12,13 @@
 		WorkspaceStorageInfo
 	} from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { iconForAttachment, formatBytes, isImage } from '$lib/attachments/display';
+	import {
+		iconForAttachment,
+		formatBytes,
+		isImage,
+		canOpenInViewer,
+		displayFilename,
+	} from '$lib/attachments/display';
 	import {
 		buildStorageFilters,
 		hasActiveStorageFilters,
@@ -747,12 +753,24 @@
 			<div class="att-list">
 				{#each attachments as att (att.id)}
 					<div class="att-row card">
-						<a
+						<!-- DR-16: the THUMBNAIL still renders for anything image-ish
+						     (it is an <img> either way), but the link that hands the
+						     ORIGINAL to the browser is gated on the exact raster
+						     allowlist — `image/svg+xml` can carry active content and
+						     the download handler defaults unknown types to an inline
+						     disposition. A non-allowlisted row keeps the row, loses
+						     the open-in-new-tab. -->
+						<svelte:element
+							this={canOpenInViewer(att.mime_type) ? 'a' : 'div'}
 							class="att-thumb"
-							href={api.attachments.downloadUrl(wsSlug, att.id)}
-							target="_blank"
-							rel="noopener"
-							aria-label="Open {att.filename}"
+							href={canOpenInViewer(att.mime_type)
+								? api.attachments.downloadUrl(wsSlug, att.id)
+								: undefined}
+							target={canOpenInViewer(att.mime_type) ? '_blank' : undefined}
+							rel={canOpenInViewer(att.mime_type) ? 'noopener' : undefined}
+							aria-label={canOpenInViewer(att.mime_type)
+								? `Open ${displayFilename(att.filename)}`
+								: undefined}
 						>
 							{#if isImage(att.mime_type)}
 								<img
@@ -765,7 +783,7 @@
 									<AttachmentIcon id={iconForAttachment(att.mime_type, att.filename)} />
 								</span>
 							{/if}
-						</a>
+						</svelte:element>
 
 						<div class="att-meta">
 							<div class="att-line1">
@@ -800,6 +818,8 @@
 								type="button"
 								class="btn btn-small btn-remove"
 								onclick={(e) => requestDelete(att, e.currentTarget)}
+								title="Delete {displayFilename(att.filename)}"
+								aria-label="Delete {displayFilename(att.filename)}"
 							>
 								Delete
 							</button>

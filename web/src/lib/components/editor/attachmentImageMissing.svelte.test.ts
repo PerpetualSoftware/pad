@@ -44,7 +44,10 @@ function makeEditor(element: HTMLElement): Editor {
 			AttachmentImage.configure({
 				workspaceSlug: '',
 				getDownloadUrl: (uuid: string) => `/api/v1/workspaces/ws/attachments/${uuid}`,
-				address: () => ({ workspaceSlug: '', itemId: 'item-A', hostToken: 'apanel-1' }),
+				// A workspace IS supplied: the MIME probe is what the viewer gate
+				// reads, and with an empty one it never runs (which is itself the
+				// documented "unknown ⇒ keep today's behaviour" path).
+				address: () => ({ workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-1' }),
 				supportedFormats: [],
 				transform: async () => {
 					throw new Error('not used');
@@ -84,6 +87,40 @@ describe('inline image missing placeholder', () => {
 		if (!img) throw new Error('image NodeView did not render');
 		img.dispatchEvent(new Event('error'));
 	}
+
+	it('refuses to open a probed non-raster type in the viewer (DR-16)', async () => {
+		// The allowlist gates EVERY open-the-viewer path, not just the strip's:
+		// image/svg+xml can carry active content, and a node being labelled
+		// image/* is not sufficient reason to hand it to a viewer.
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml' });
+		editor = makeEditor(target);
+		const img = target.querySelector<HTMLImageElement>('img[data-attachment-id]');
+		if (!img) throw new Error('image NodeView did not render');
+
+		// Select the node so the lazy MIME probe runs, then let it settle.
+		editor.commands.setNodeSelection(1);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		img.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+		expect(document.querySelector('dialog.attachment-image-lightbox')).toBeNull();
+	});
+
+	it('still opens an allowlisted raster type', async () => {
+		// The gate must not cost the common case: a PNG opens as it always did.
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png' });
+		editor = makeEditor(target);
+		const img = target.querySelector<HTMLImageElement>('img[data-attachment-id]');
+		if (!img) throw new Error('image NodeView did not render');
+
+		editor.commands.setNodeSelection(1);
+		await Promise.resolve();
+		await Promise.resolve();
+
+		img.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+		expect(document.querySelector('dialog.attachment-image-lightbox')).not.toBeNull();
+		document.querySelector('dialog.attachment-image-lightbox')?.remove();
+	});
 
 	it('is a focusable button while the failure is merely transient', () => {
 		editor = makeEditor(target);

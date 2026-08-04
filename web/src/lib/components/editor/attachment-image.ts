@@ -28,6 +28,7 @@
 
 import { Node, mergeAttributes } from '@tiptap/core';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
+import { canOpenInViewer } from '$lib/attachments/display';
 import {
 	type AttachmentUrlBuilder,
 	type AttachmentVariant,
@@ -441,6 +442,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				}
 			});
 
+			// The MIME this node's attachment is KNOWN to have, from a HEAD probe. Null
+			// until one has answered — the probe is lazy (toolbar construction, uuid
+			// swap), so "null" means "not yet asked", never "not an image".
+			let knownMime: string | null = null;
+
 			img.addEventListener('click', (event) => {
 				// In a contenteditable, ProseMirror handles selection on
 				// mousedown; intercept click so a single click opens the
@@ -452,6 +458,20 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				event.preventDefault();
 				event.stopPropagation();
 				if (!currentUuid) return;
+				// DR-16: the EXACT raster allowlist gates every open-the-viewer
+				// path, not just the strip's — `image/svg+xml` can carry active
+				// content, and a node being labelled image/* is not sufficient
+				// reason to hand it to a viewer.
+				//
+				// Gated on what is POSITIVELY KNOWN, deliberately: this node's
+				// MIME comes from a lazy HEAD probe, so at click time it is often
+				// simply unasked. Refusing on unknown would stop ordinary images
+				// opening — a certain regression traded for a marginal risk — so
+				// an unprobed node keeps today's behaviour and a probed
+				// non-allowlisted one is refused. Phase 3a's unified viewer
+				// threads `mime_type` onto the image list itself (DR-16), which
+				// is what turns this into a complete gate.
+				if (knownMime && !canOpenInViewer(knownMime)) return;
 				const fullUrl = opts.getDownloadUrl(currentUuid, 'original');
 				openImageLightbox(fullUrl, currentAlt);
 			});
@@ -460,10 +480,9 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// selected — so non-selected images don't carry the DOM
 			// cost. Subsequent selections reuse the same toolbar.
 			let toolbar: HTMLElement | null = null;
-			let toolbarMime: string | null = null;
 			let unregisterRefresher: (() => void) | null = null;
 			const refresh = () => {
-				if (toolbar) refreshToolbarState(toolbar, toolbarMime, opts.supportedFormats);
+				if (toolbar) refreshToolbarState(toolbar, knownMime, opts.supportedFormats);
 			};
 			const ensureToolbar = (): HTMLElement => {
 				if (toolbar) return toolbar;
@@ -503,7 +522,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 							if (!toolbar) return;
 							// `transient` leaves the MIME unknown rather than
 							// wrong: gating falls back to supportedFormats.
-							toolbarMime = result.status === 'ok' ? result.mime : null;
+							knownMime = result.status === 'ok' ? result.mime : null;
 							refresh();
 						}
 					);
@@ -695,7 +714,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// Toolbar's MIME probe was for the old uuid; reset
 						// gating to "still loading" + re-probe so per-format
 						// state stays correct across the swap.
-						toolbarMime = null;
+						knownMime = null;
 						refresh();
 						const updateProbeWs = opts.address().workspaceSlug;
 						if (toolbar && newUuid && updateProbeWs) {
@@ -709,7 +728,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 								if (currentUuid !== probeUuid) return;
 								if (result.status === 'missing') latchMissing(probeUuid);
 								if (!toolbar) return;
-								toolbarMime = result.status === 'ok' ? result.mime : null;
+								knownMime = result.status === 'ok' ? result.mime : null;
 								refresh();
 							});
 						}

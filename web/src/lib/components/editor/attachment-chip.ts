@@ -57,7 +57,12 @@ import {
 	type AttachmentHostAddressReader,
 	readUnaddressed
 } from '$lib/attachments/hostAddress';
-import { describeAttachmentType, formatBytes, iconForAttachment } from '$lib/attachments/display';
+import {
+	describeAttachmentType,
+	displayFilename,
+	formatBytes,
+	iconForAttachment,
+} from '$lib/attachments/display';
 import { iconSvg } from '$lib/attachments/icons/index';
 
 const PAD_ATTACHMENT_PREFIX = 'pad-attachment:';
@@ -184,7 +189,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				target: '_blank',
 				rel: 'noopener noreferrer',
 			}),
-			filename || 'attachment',
+			displayFilename(filename),
 		];
 	},
 
@@ -255,7 +260,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				} else {
 					wrapper.removeAttribute('data-filename');
 				}
-				nameEl.textContent = currentFilename || 'attachment';
+				nameEl.textContent = displayFilename(currentFilename);
 			};
 
 			// Icon resolution is the shared mapper's (TASK-2417): MIME first,
@@ -288,7 +293,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			 * read after it is initialised.)
 			 */
 			const refreshAccessibleName = (): void => {
-				const name = currentFilename || 'attachment';
+				const name = displayFilename(currentFilename);
 				if (deleted) {
 					wrapper.setAttribute('aria-label', `${name} — this attachment has been deleted`);
 					return;
