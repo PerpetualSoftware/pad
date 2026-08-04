@@ -290,6 +290,9 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// Deletion is authoritative: a load still in flight when it lands
 			// must not be allowed to paint the image back (Codex round 15).
 			let deleted = false;
+			// True once the NodeView is torn down. Async continuations (HEAD
+			// probes, transform results) must not touch DOM after that.
+			let destroyed = false;
 
 			function showMissing() {
 				missing.textContent = `📎 ${currentAlt || 'Attachment unavailable'}`;
@@ -337,7 +340,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 * roll back, so undo restores a node pointing at nothing.
 			 */
 			function latchMissing(forUuid: string) {
-				if (deleted) return;
+				if (destroyed || deleted) return;
 				if (!forUuid || currentUuid !== forUuid) return;
 				deleted = true;
 				// Same reason the deletion listener does this: an in-flight
@@ -360,7 +363,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 * placeholder permanently unlatchable.
 			 */
 			function probeForMissing(forUuid: string) {
-				if (!forUuid || !opts.workspaceSlug || deleted) return;
+				if (!forUuid || !opts.workspaceSlug || deleted || destroyed) return;
 				void revalidateAttachmentMetadata(opts.workspaceSlug, forUuid, opts.getDownloadUrl).then(
 					(result) => {
 						if (result.status === 'missing') latchMissing(forUuid);
@@ -695,6 +698,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					if (toolbar) toolbar.classList.add('attachment-image-toolbar-hidden');
 				},
 				destroy() {
+					// Set FIRST: every async continuation below fences on it, and
+					// a HEAD probe in flight at teardown would otherwise resolve
+					// into detached DOM (the chip NodeView has carried this flag
+					// since it was written; the image one did not).
+					destroyed = true;
 					detachLoadListeners();
 					disposeDeletionListener();
 					// Tear down the refresher subscription so the

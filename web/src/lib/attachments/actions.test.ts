@@ -220,6 +220,50 @@ describe('attachment action descriptors', () => {
 		expect(announceMock).not.toHaveBeenCalled();
 	});
 
+	it('deletes the attachment the user confirmed, not whatever the context holds later', async () => {
+		// An in-app confirmation is a whole UI interaction, so the surface can
+		// switch items underneath it — the pane this renders in is built around
+		// a no-{#key} A→B switch. The descriptor must act on what was confirmed.
+		const live: Ctx = ctx();
+		const del = action('delete');
+		if (del.element !== 'button') throw new Error('unreachable');
+
+		await del.run({
+			...live,
+			confirmDelete: async () => {
+				live.attachment = { id: 'att-OTHER', filename: 'other.pdf', mime_type: 'application/pdf' };
+				return true;
+			},
+			get attachment() {
+				return live.attachment;
+			},
+		} as Ctx);
+
+		// Identity moved while the confirmation was open, so the delete is
+		// abandoned rather than aimed at the newly-shown attachment.
+		expect(deleteMock).not.toHaveBeenCalled();
+		expect(announceMock).not.toHaveBeenCalled();
+	});
+
+	it('abandons the delete if mutation rights are lost while the confirmation is open', async () => {
+		const live: Ctx = ctx();
+		const del = action('delete');
+		if (del.element !== 'button') throw new Error('unreachable');
+
+		await del.run({
+			...live,
+			confirmDelete: async () => {
+				live.mutationsEnabled = false;
+				return true;
+			},
+			get mutationsEnabled() {
+				return live.mutationsEnabled;
+			},
+		} as Ctx);
+
+		expect(deleteMock).not.toHaveBeenCalled();
+	});
+
 	it('treats a 404 as authoritative: broadcasts and does not throw', async () => {
 		deleteMock.mockRejectedValue(Object.assign(new Error('gone'), { code: 'not_found' }));
 		const onDeleted = vi.fn();

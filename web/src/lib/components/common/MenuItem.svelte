@@ -60,6 +60,20 @@
 	// skips rows with `[role^="menuitem"]:not(:disabled)` (Menu.svelte:130),
 	// which no anchor can ever match.
 	const asAnchor = $derived(href !== undefined && !disabled);
+
+	/**
+	 * A native anchor activates on Enter but NOT on Space, while every other
+	 * row in this menu is a <button>, which activates on both. `role="menuitem"`
+	 * doesn't add the behavior — it only changes what is announced — so without
+	 * this, Space would silently do nothing on exactly the rows a keyboard user
+	 * is most likely to try it on (Download, Open).
+	 */
+	function anchorKeydown(e: KeyboardEvent) {
+		if (e.key !== ' ' && e.key !== 'Spacebar') return;
+		// Space scrolls the page by default; the menu is the active surface.
+		e.preventDefault();
+		(e.currentTarget as HTMLAnchorElement).click();
+	}
 </script>
 
 {#snippet body()}
@@ -85,6 +99,7 @@
 		aria-checked={checked}
 		aria-describedby={describedBy}
 		{onclick}
+		onkeydown={anchorKeydown}
 	>
 		{@render body()}
 	</a>

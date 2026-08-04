@@ -126,6 +126,27 @@ describe('MenuItem.svelte', () => {
 		expect(el.hasAttribute('download')).toBe(false);
 	});
 
+	it('activates an anchor row on Space, like every other row in the menu', async () => {
+		// A native anchor activates on Enter but not Space, and role="menuitem"
+		// does not add the behavior — so without an explicit handler, Space
+		// would silently do nothing on Download and Open while working on
+		// every button row beside them.
+		const onclick = vi.fn();
+		render(MenuItem, {
+			props: { href: '/api/v1/workspaces/ws/attachments/att-1', onclick, children: label },
+		});
+		await tick();
+
+		const el = row() as HTMLAnchorElement;
+		const evt = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+		el.dispatchEvent(evt);
+		await tick();
+
+		expect(onclick).toHaveBeenCalledTimes(1);
+		// Space scrolls the page by default; the open menu is the active surface.
+		expect(evt.defaultPrevented).toBe(true);
+	});
+
 	it('renders a disabled anchor as a disabled button so keyboard nav skips it', async () => {
 		render(MenuItem, {
 			props: { href: '/api/v1/workspaces/ws/attachments/att-1', disabled: true, children: label },

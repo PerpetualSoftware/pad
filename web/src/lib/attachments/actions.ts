@@ -208,13 +208,27 @@ export const ATTACHMENT_ACTIONS: readonly AttachmentAction[] = [
 			// Belt and braces: a renderer that draws a disabled row can still
 			// be asked to run it by a stray keyboard activation.
 			if (!ctx.mutationsEnabled || !addressable(ctx)) return;
-			if (ctx.confirmDelete && !(await ctx.confirmDelete(ctx.attachment))) return;
 
-			// Capture identity before the await: the surface may switch views
-			// mid-flight, and the broadcast + metadata-cache key must name the
-			// workspace the DELETE actually targeted.
+			// Snapshot identity BEFORE the confirmation, not after. `ctx` may be
+			// a live object owned by a surface that survives an item switch (the
+			// no-{#key} pane is built around exactly that), and `confirmDelete`
+			// is allowed to be async — an in-app confirmation is a whole UI
+			// interaction, so the user has all the time in the world to switch
+			// items or lose their mutation rights while it is up. Reading
+			// `ctx.attachment.id` after the await could name a DIFFERENT
+			// attachment than the one the user was shown.
 			const ws = ctx.workspaceSlug;
 			const id = ctx.attachment.id;
+			const subject = { ...ctx.attachment };
+
+			if (ctx.confirmDelete && !(await ctx.confirmDelete(subject))) return;
+
+			// Re-check the gate on the way out of the confirmation: permission
+			// can be revoked while it is open (a pane being peeked closes the
+			// mutation gate), and identity must still agree with what was
+			// confirmed.
+			if (!ctx.mutationsEnabled) return;
+			if (ctx.workspaceSlug !== ws || ctx.attachment.id !== id) return;
 			try {
 				await api.attachments.delete(ws, id);
 			} catch (err) {

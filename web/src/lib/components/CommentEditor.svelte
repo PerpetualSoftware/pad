@@ -206,6 +206,37 @@
 		empty = editor.isEmpty;
 	});
 
+	/**
+	 * Keep the attachment NodeViews' addressing current (PLAN-2392 DR-8).
+	 *
+	 * The extensions are configured once, inside `onMount`, which captures
+	 * whatever `itemId` / `hostToken` were at that moment. That is fine for the
+	 * body editor — it is remounted per item behind a `{#key}` — but this
+	 * composer is deliberately REUSED across a no-{#key} item switch (see
+	 * `doSubmit` above, which exists for the same reason). Left alone, a chip
+	 * in the composer would keep emitting events addressed to the PREVIOUS
+	 * item, and the host, which matches on both fields, would correctly ignore
+	 * them — a tap that silently does nothing.
+	 *
+	 * Mutating the live extension options is the established shape here;
+	 * `Editor.svelte` pushes `supportedFormats` the same way once server
+	 * capabilities resolve. The NodeViews read these at emit time, so a write
+	 * is enough — nothing needs to re-render.
+	 */
+	$effect(() => {
+		const nextItemId = itemId ?? '';
+		const nextToken = hostToken;
+		if (!editor || editor.isDestroyed) return;
+		for (const name of ['attachmentChip', 'attachmentImage']) {
+			const ext = editor.extensionManager.extensions.find(
+				(e: { name: string }) => e.name === name
+			);
+			if (!ext) continue;
+			ext.options.itemId = nextItemId;
+			ext.options.hostToken = nextToken;
+		}
+	});
+
 	onDestroy(() => {
 		editor?.destroy();
 	});
