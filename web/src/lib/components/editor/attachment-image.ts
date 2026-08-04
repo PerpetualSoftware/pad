@@ -302,6 +302,21 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					? 'This attachment has been deleted'
 					: 'This attachment could not be loaded — it may have been deleted. Click to retry.';
 				missing.style.cursor = deleted ? 'default' : 'pointer';
+				// And the INTERACTIVE SEMANTICS go with the copy, not just the
+				// cursor (DR-12; final review round 5). A confirmed deletion
+				// makes `retryLoad` a no-op, so leaving role=button + tabindex
+				// hands a keyboard or screen-reader user a focus stop that
+				// announces itself as a button and does nothing — the same dead
+				// stop the file chip's `disabled` closes, on the surface next to
+				// it. A transient failure IS retryable and keeps both.
+				if (deleted) {
+					if (document.activeElement === missing) missing.blur();
+					missing.removeAttribute('role');
+					missing.removeAttribute('tabindex');
+				} else {
+					missing.setAttribute('role', 'button');
+					missing.setAttribute('tabindex', '0');
+				}
 				if (currentUuid) missing.setAttribute('data-attachment-id', currentUuid);
 				missing.style.display = '';
 				img.style.display = 'none';
@@ -403,8 +418,8 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				showMissing();
 			});
 
-			missing.setAttribute('role', 'button');
-			missing.setAttribute('tabindex', '0');
+			// role/tabindex are set by showMissing(), which knows whether this is
+			// a retryable failure or a confirmed deletion. Hidden and inert here.
 			missing.style.cursor = 'pointer';
 
 			function retryLoad() {
