@@ -310,9 +310,50 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// queued, so a superseded load simply has no callback left to run.
 			let detachLoadListeners = () => {};
 
+			/**
+			 * Latch the permanent placeholder for a row the server says is
+			 * gone. Same end state as the deletion broadcast, reached by a
+			 * different route: the broadcast only fires for a delete that
+			 * happened in THIS tab's session, while this covers a node whose
+			 * row was already gone when it rendered — which is exactly what
+			 * editor undo produces (PLAN-2392 DR-17). Tiptap/Yjs history
+			 * owns the document; the delete was a REST row mutation it can't
+			 * roll back, so undo restores a node pointing at nothing.
+			 */
+			function latchMissing(forUuid: string) {
+				if (deleted) return;
+				if (!forUuid || currentUuid !== forUuid) return;
+				deleted = true;
+				// Same reason the deletion listener does this: an in-flight
+				// load's `load` event would otherwise paint the image back.
+				detachLoadListeners();
+				showMissing();
+			}
+
+			/**
+			 * An <img> `error` event carries no status code, so a deleted row
+			 * and a network blip are indistinguishable at that layer — which
+			 * is why every load failure has to stay retryable by default. A
+			 * HEAD probe is what tells them apart: only a 404 latches, and a
+			 * `transient` result leaves the retryable placeholder exactly as
+			 * it was (and is not cached, so Retry re-issues the HEAD).
+			 */
+			function probeForMissing(forUuid: string) {
+				if (!forUuid || !opts.workspaceSlug || deleted) return;
+				void fetchAttachmentMetadata(opts.workspaceSlug, forUuid, opts.getDownloadUrl).then(
+					(result) => {
+						if (result.status === 'missing') latchMissing(forUuid);
+					}
+				);
+			}
+
 			function loadImage(url: string) {
 				detachLoadListeners();
-				const onError = () => showMissing();
+				const forUuid = currentUuid;
+				const onError = () => {
+					showMissing();
+					probeForMissing(forUuid);
+				};
 				const onLoad = () => resetMissing();
 				img.addEventListener('error', onError, { once: true });
 				img.addEventListener('load', onLoad, { once: true });
@@ -404,12 +445,19 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				if (currentUuid && opts.workspaceSlug) {
 					const probeUuid = currentUuid;
 					fetchAttachmentMetadata(opts.workspaceSlug, probeUuid, opts.getDownloadUrl).then(
-						(meta) => {
+						(result) => {
 							// Bail if the NodeView's uuid changed (rotate/peer
 							// op) while the probe was in flight — otherwise
 							// we'd cache stale MIME state for the new image.
-							if (!toolbar || currentUuid !== probeUuid) return;
-							toolbarMime = meta?.mime ?? null;
+							if (currentUuid !== probeUuid) return;
+							// A 404 here is the same authoritative signal the
+							// load path acts on (DR-17), and this probe may
+							// well beat the <img> to it.
+							if (result.status === 'missing') latchMissing(probeUuid);
+							if (!toolbar) return;
+							// `transient` leaves the MIME unknown rather than
+							// wrong: gating falls back to supportedFormats.
+							toolbarMime = result.status === 'ok' ? result.mime : null;
 							refresh();
 						}
 					);
@@ -591,9 +639,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 								opts.workspaceSlug,
 								probeUuid,
 								opts.getDownloadUrl
-							).then((meta) => {
-								if (!toolbar || currentUuid !== probeUuid) return;
-								toolbarMime = meta?.mime ?? null;
+							).then((result) => {
+								if (currentUuid !== probeUuid) return;
+								if (result.status === 'missing') latchMissing(probeUuid);
+								if (!toolbar) return;
+								toolbarMime = result.status === 'ok' ? result.mime : null;
 								refresh();
 							});
 						}

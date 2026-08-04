@@ -221,3 +221,52 @@ export function iconForAttachment(
 export function isImage(mime: string): boolean {
 	return mime.startsWith('image/');
 }
+
+/**
+ * The exact raster types the in-app image viewer may open (PLAN-2392
+ * DR-16). Deliberately an allowlist and NOT an `image/` prefix test:
+ * `image/svg+xml` carries active content, and a legacy row, a
+ * mislabelled upload or an extensionless SVG sniffed as XML can all
+ * arrive wearing an `image/*` label. Formats a browser may not decode
+ * at all (`image/tiff`, `image/heic`) are excluded for the separate
+ * reason that a viewer that silently shows nothing is worse than the
+ * file panel.
+ *
+ * `isImage` survives unchanged as the general "is this a picture"
+ * predicate (icon choice, grouping); this is the narrower question of
+ * what may be handed to the viewer.
+ */
+const VIEWER_MIMES: ReadonlySet<string> = new Set([
+	'image/png',
+	'image/jpeg',
+	'image/gif',
+	'image/webp',
+	'image/avif'
+]);
+
+/**
+ * Additional types a browser renders honestly in a new tab (PLAN-2392
+ * DR-5). PDF and plain text only — every other `text/*` subtype
+ * (markdown, CSV, XML) is downloaded or rendered inconsistently across
+ * browsers, and office documents, archives and the types the server
+ * force-downloads (HTML, JS) never preview. Those surfaces offer
+ * Download alone.
+ */
+const BROWSER_PREVIEW_MIMES: ReadonlySet<string> = new Set([
+	'application/pdf',
+	'text/plain'
+]);
+
+/** May this MIME be opened in the in-app image viewer? (DR-16) */
+export function canOpenInViewer(mime: string | null | undefined): boolean {
+	return VIEWER_MIMES.has(normalizeMime(mime));
+}
+
+/**
+ * May this MIME be handed to the browser to display — the viewer's
+ * raster set plus PDF and plain text? (DR-5)
+ */
+export function canBrowserPreview(mime: string | null | undefined): boolean {
+	const m = normalizeMime(mime);
+	return VIEWER_MIMES.has(m) || BROWSER_PREVIEW_MIMES.has(m);
+}

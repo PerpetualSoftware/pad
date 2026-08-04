@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { formatBytes, iconForAttachment, isImage } from './display';
+import {
+	canBrowserPreview,
+	canOpenInViewer,
+	formatBytes,
+	iconForAttachment,
+	isImage
+} from './display';
 import { ATTACHMENT_ICON_IDS, ATTACHMENT_ICON_PATHS, iconSvg } from './icons/index';
 import familyFixture from './mime-families.json';
 
@@ -181,5 +187,93 @@ describe('isImage', () => {
 	it('still answers the general "is this a picture" question', () => {
 		expect(isImage('image/png')).toBe(true);
 		expect(isImage('application/pdf')).toBe(false);
+	});
+
+	// The DR-16 point in one assertion: isImage is deliberately looser than
+	// the viewer gate, which is why the gate has to be its own helper.
+	it('is looser than the viewer gate — it accepts what canOpenInViewer refuses', () => {
+		expect(isImage('image/svg+xml')).toBe(true);
+		expect(canOpenInViewer('image/svg+xml')).toBe(false);
+	});
+});
+
+const VIEWER_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif'];
+
+describe('canOpenInViewer — PLAN-2392 DR-16', () => {
+	it('accepts exactly the five safe raster types', () => {
+		for (const mime of VIEWER_TYPES) expect(canOpenInViewer(mime)).toBe(true);
+	});
+
+	// The whole reason this isn't `startsWith('image/')`: SVG carries active
+	// content, and TIFF/HEIC are types a browser may simply not decode.
+	it('refuses image/* types outside the allowlist', () => {
+		expect(canOpenInViewer('image/svg+xml')).toBe(false);
+		expect(canOpenInViewer('image/tiff')).toBe(false);
+		expect(canOpenInViewer('image/heic')).toBe(false);
+		expect(canOpenInViewer('image/bmp')).toBe(false);
+		expect(canOpenInViewer('image/jxl')).toBe(false);
+	});
+
+	it('refuses non-image types and a missing MIME', () => {
+		expect(canOpenInViewer('application/pdf')).toBe(false);
+		expect(canOpenInViewer('text/xml')).toBe(false);
+		expect(canOpenInViewer('')).toBe(false);
+		expect(canOpenInViewer(null)).toBe(false);
+		expect(canOpenInViewer(undefined)).toBe(false);
+	});
+
+	it('normalizes case and parameters before matching', () => {
+		expect(canOpenInViewer('IMAGE/PNG')).toBe(true);
+		expect(canOpenInViewer('image/jpeg; charset=binary')).toBe(true);
+		expect(canOpenInViewer('  image/webp  ')).toBe(true);
+	});
+
+	// A prefix test would let `image/svg+xml; charset=utf-8` through some
+	// naive normalizations; pin that it doesn't.
+	it('does not admit a disallowed type by dressing it in parameters', () => {
+		expect(canOpenInViewer('image/svg+xml; charset=utf-8')).toBe(false);
+	});
+});
+
+describe('canBrowserPreview — PLAN-2392 DR-5', () => {
+	it('accepts PDF, plain text and the whole viewer raster set', () => {
+		expect(canBrowserPreview('application/pdf')).toBe(true);
+		expect(canBrowserPreview('text/plain')).toBe(true);
+		for (const mime of VIEWER_TYPES) expect(canBrowserPreview(mime)).toBe(true);
+	});
+
+	it('refuses the other text/* subtypes browsers handle inconsistently', () => {
+		expect(canBrowserPreview('text/markdown')).toBe(false);
+		expect(canBrowserPreview('text/csv')).toBe(false);
+		expect(canBrowserPreview('text/xml')).toBe(false);
+		expect(canBrowserPreview('application/xml')).toBe(false);
+	});
+
+	it('refuses office documents, archives and force-downloaded types', () => {
+		expect(canBrowserPreview('application/msword')).toBe(false);
+		expect(
+			canBrowserPreview(
+				'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+			)
+		).toBe(false);
+		expect(canBrowserPreview('application/zip')).toBe(false);
+		expect(canBrowserPreview('text/html')).toBe(false);
+		expect(canBrowserPreview('application/javascript')).toBe(false);
+		expect(canBrowserPreview('image/svg+xml')).toBe(false);
+	});
+
+	it('refuses a missing MIME and normalizes like the viewer gate', () => {
+		expect(canBrowserPreview(null)).toBe(false);
+		expect(canBrowserPreview(undefined)).toBe(false);
+		expect(canBrowserPreview('')).toBe(false);
+		expect(canBrowserPreview('TEXT/PLAIN; charset=utf-8')).toBe(true);
+	});
+
+	// Superset relationship, stated once so a future edit to either set
+	// can't silently break it.
+	it('is a superset of the viewer gate', () => {
+		for (const mime of VIEWER_TYPES) {
+			expect(canOpenInViewer(mime) && canBrowserPreview(mime)).toBe(true);
+		}
 	});
 });

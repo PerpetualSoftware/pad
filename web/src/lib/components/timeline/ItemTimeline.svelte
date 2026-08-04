@@ -120,7 +120,18 @@
 		fetchAttachmentMetadata(wsSlug, uuid, (id, variant) =>
 			attachmentDownloadUrl(wsSlug, id, variant)
 		).then((m) => {
-			if (!m) return;
+			// A transient failure (5xx / network) is not evidence about the
+			// row, and the helper deliberately doesn't cache it — so drop the
+			// probed mark too, or this panel would never ask again for the
+			// rest of the session (PLAN-2392 DR-17). A `missing` result IS
+			// authoritative: leave the mark set and leave `attMeta` without an
+			// entry, which is what the renderer already degrades to a missing
+			// placeholder on.
+			if (m.status === 'transient') {
+				probed.delete(uuid);
+				return;
+			}
+			if (m.status !== 'ok') return;
 			if (reqWs !== wsSlug) return;
 			const next = new Map(attMeta);
 			// filename is left empty — the markdown alt text is the chip/img

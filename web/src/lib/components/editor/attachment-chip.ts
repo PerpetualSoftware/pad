@@ -306,19 +306,30 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 					this.options.workspaceSlug,
 					forUuid,
 					this.options.getDownloadUrl,
-				).then((meta) => {
-					if (!meta) return;
+				).then((result) => {
 					if (destroyed) return; // NodeView torn down while HEAD was in flight
 					if (deleted) return; // the target is gone; don't un-mark the chip
 					if (currentUuid !== forUuid) return; // superseded
-					currentMime = meta.mime;
+					// A transient failure says nothing about whether the row
+					// exists — keep the filename-guess icon and stay
+					// retryable (PLAN-2392 DR-17).
+					if (result.status === 'transient') return;
+					// A 404 IS authoritative. This is the path editor undo
+					// takes: undo restores the chip node, but the delete was a
+					// REST row mutation Tiptap's history can't roll back, so
+					// the chip must render dead rather than link to a 404.
+					if (result.status === 'missing') {
+						markDeleted();
+						return;
+					}
+					currentMime = result.mime;
 					refreshIcon();
 					// The shared formatter renders "0 B" and doesn't guard
 					// non-finite input; a chip with no known size should show
 					// nothing at all, so the conditional lives here rather
 					// than in the helper (PLAN-2392 DR-3b).
 					const size =
-						Number.isFinite(meta.size) && meta.size > 0 ? formatBytes(meta.size) : '';
+						Number.isFinite(result.size) && result.size > 0 ? formatBytes(result.size) : '';
 					sizeEl.textContent = size ? `· ${size}` : '';
 				});
 			};

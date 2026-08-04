@@ -14,9 +14,9 @@
  *     immutable (the row is content-addressed; transforms produce
  *     NEW rows), so there's no staleness concern.
  *
- * Skipped silently when no workspace context is available (e.g.
- * headless rendering / SSR) — callers see `null` and degrade UI
- * accordingly without raising errors.
+ * Callers never see an exception: every failure is reported through the
+ * discriminated result below, so a surface with no workspace context
+ * (headless rendering / SSR) simply doesn't call this at all.
  */
 
 /** Variants the download URL builder must support. Mirrors AttachmentImage. */
@@ -30,38 +30,83 @@ export interface AttachmentMetadata {
 	size: number;
 }
 
-const cache = new Map<string, Promise<AttachmentMetadata | null>>();
+/**
+ * The outcome of a metadata probe (PLAN-2392 DR-17).
+ *
+ * The three arms exist because callers need to tell "the row is gone"
+ * apart from "the request didn't make it", and the old `null` return
+ * collapsed both:
+ *
+ *   - `ok`        — the HEAD succeeded; `mime` / `size` are usable.
+ *   - `missing`   — the server answered 404. AUTHORITATIVE: the row is
+ *                   gone, and a caller may latch a permanent
+ *                   missing-attachment placeholder on it. This is what
+ *                   keeps editor undo from resurrecting a deleted
+ *                   attachment as a live-looking node.
+ *   - `transient` — any other non-2xx (5xx, 401/403 mid-session, a
+ *                   proxy hiccup) or a network throw. Says NOTHING
+ *                   about whether the row exists; callers keep whatever
+ *                   they were showing and stay retryable.
+ */
+export type AttachmentMetadataResult =
+	| ({ status: 'ok' } & AttachmentMetadata)
+	| { status: 'missing' }
+	| { status: 'transient' };
+
+const cache = new Map<string, Promise<AttachmentMetadataResult>>();
 
 /**
  * Fetch (or read from cache) the MIME + size for an attachment. The
  * server registers HEAD alongside GET (TASK-877); chi doesn't auto-
  * route HEAD on GET handlers, so this must use HEAD — a GET would
  * pull the entire blob across the wire.
+ *
+ * Caching is per-arm (PLAN-2392 DR-17). `ok` and `missing` are both
+ * durable facts about a content-addressed row, so they're kept for the
+ * page lifetime. A `transient` result is NOT — it's evicted the moment
+ * it settles, so a blip can't make a live attachment look permanently
+ * unreadable for the rest of the session. The entry is still installed
+ * BEFORE the request settles, so concurrent callers for the same key
+ * share one in-flight HEAD either way; only the settled failure is
+ * dropped.
  */
 export function fetchAttachmentMetadata(
 	workspaceSlug: string,
 	uuid: string,
 	getDownloadUrl: AttachmentUrlBuilder
-): Promise<AttachmentMetadata | null> {
+): Promise<AttachmentMetadataResult> {
 	const key = `${workspaceSlug}:${uuid}`;
 	const existing = cache.get(key);
 	if (existing) return existing;
-	const promise: Promise<AttachmentMetadata | null> = (async () => {
+	const promise: Promise<AttachmentMetadataResult> = (async () => {
 		try {
 			const resp = await fetch(getDownloadUrl(uuid), {
 				method: 'HEAD',
 				credentials: 'same-origin'
 			});
-			if (!resp.ok) return null;
+			if (resp.status === 404) return { status: 'missing' as const };
+			if (!resp.ok) return { status: 'transient' as const };
 			const ctype = resp.headers.get('content-type') ?? '';
 			const mime = ctype.split(';')[0].trim();
 			const len = parseInt(resp.headers.get('content-length') ?? '0', 10);
-			return { mime, size: Number.isFinite(len) && len >= 0 ? len : 0 };
+			return {
+				status: 'ok' as const,
+				mime,
+				size: Number.isFinite(len) && len >= 0 ? len : 0
+			};
 		} catch {
-			return null;
+			return { status: 'transient' as const };
 		}
 	})();
 	cache.set(key, promise);
+	// Evict a transient failure once it settles. The identity check keeps
+	// this from deleting a NEWER entry installed by an invalidate-then-
+	// refetch that raced this promise's resolution.
+	void promise.then((result) => {
+		if (result.status === 'transient' && cache.get(key) === promise) {
+			cache.delete(key);
+		}
+	});
 	return promise;
 }
 
