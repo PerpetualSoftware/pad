@@ -49,11 +49,17 @@ function broadcastUpload(itemId: string, a: UploadedAttachment) {
 	for (const fn of uploadListeners) fn(itemId, a);
 }
 
+// TASK-2424: the strip is now also an EMITTER on the open-panel channel, so
+// the mocked module has to carry that export too (a vi.mock factory replaces
+// the whole module — a missing export is an import error, not a silent hole).
+const panelOpenMock = vi.fn<(event: Record<string, unknown>) => void>();
+
 vi.mock('$lib/attachments/events', () => ({
 	announceAttachmentDeleted: (ws: string, uuid: string) => {
 		notifyDeletedMock(uuid);
 		invalidateMock(ws, uuid);
 	},
+	notifyAttachmentPanelOpen: (event: Record<string, unknown>) => panelOpenMock(event),
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
 		deletionListeners.add(fn);
 		return () => deletionListeners.delete(fn);
@@ -119,6 +125,7 @@ const props = $state<{
 	canDelete: boolean;
 	itemContent: string | null;
 	liveContent: (() => string | null) | null;
+	hostToken: string;
 }>({
 	wsSlug: 'ws',
 	username: 'dave',
@@ -126,6 +133,7 @@ const props = $state<{
 	canDelete: false,
 	itemContent: null,
 	liveContent: null,
+	hostToken: 'host-1',
 });
 
 describe('ItemAttachmentStrip', () => {
@@ -140,6 +148,8 @@ describe('ItemAttachmentStrip', () => {
 		notifyDeletedMock.mockReset();
 		invalidateMock.mockReset();
 		invalidateMetadataMock.mockReset();
+		panelOpenMock.mockReset();
+		props.hostToken = 'host-1';
 		props.wsSlug = 'ws';
 		props.username = 'dave';
 		props.itemId = null;
@@ -201,7 +211,12 @@ describe('ItemAttachmentStrip', () => {
 		expect(target.querySelector('.fields-header')?.textContent).toBe('Attachments · 2');
 	});
 
-	it('labels tiles with filename + human size and links non-images to a download', async () => {
+	// TASK-2424 (PLAN-2392 DR-1 / DR-12) deliberately falsifies the previous
+	// version of this test, which pinned the non-image tile as an
+	// `<a href download>`: a tap used to put the file straight in Downloads.
+	// The tile is now a real button that opens the options panel, and Download
+	// is a deliberate choice inside it.
+	it('renders non-image tiles as panel-trigger buttons, not download links', async () => {
 		listMock.mockResolvedValue(
 			response([
 				att({ id: 'doc', mime_type: 'application/pdf', filename: 'spec.pdf', size_bytes: 1536 }),
@@ -211,11 +226,111 @@ describe('ItemAttachmentStrip', () => {
 		await settle();
 
 		const tile = tiles()[0];
-		expect(tile.tagName).toBe('A');
-		expect(tile.getAttribute('aria-label')).toBe('spec.pdf (1.5 KB)');
-		expect(tile.getAttribute('title')).toBe('spec.pdf (1.5 KB)');
-		expect(tile.getAttribute('href')).toBe('/api/v1/workspaces/ws/attachments/doc');
-		expect(tile.getAttribute('download')).toBe('spec.pdf');
+		expect(tile.tagName).toBe('BUTTON');
+		expect(tile.getAttribute('type')).toBe('button');
+		// Nothing downloads on tap any more.
+		expect(tile.getAttribute('href')).toBeNull();
+		expect(tile.getAttribute('download')).toBeNull();
+		// The accessible name carries filename, TYPE and the ACTION (DR-12) —
+		// the only signpost for the changed behaviour, since DR-1 adds no `⋯`.
+		expect(tile.getAttribute('aria-label')).toBe('Options for spec.pdf, PDF, 1.5 KB');
+		expect(tile.getAttribute('title')).toBe('spec.pdf, PDF, 1.5 KB');
+	});
+
+	it('emits the open-panel event with the anchor and all three metadata fields', async () => {
+		listMock.mockResolvedValue(
+			response([
+				att({ id: 'doc', mime_type: 'application/pdf', filename: 'spec.pdf', size_bytes: 1536 }),
+			])
+		);
+		mountStrip('item-a');
+		await settle();
+
+		const tile = tiles()[0];
+		tile.click();
+		flushSync();
+
+		expect(panelOpenMock).toHaveBeenCalledTimes(1);
+		expect(panelOpenMock).toHaveBeenCalledWith({
+			attachmentId: 'doc',
+			// Routing: which ItemDetail mount shows the panel (DR-8).
+			itemId: 'item-a',
+			hostToken: 'host-1',
+			anchor: tile,
+			// The strip always has all three from its list row, unlike a chip.
+			filename: 'spec.pdf',
+			mime_type: 'application/pdf',
+			size_bytes: 1536,
+		});
+	});
+
+	it('adds no keydown handler that would race the UA activation click', async () => {
+		// NAMED for what it can prove. "Activates exactly once per key press" is
+		// the requirement (DR-12), but jsdom does not synthesise a button's
+		// activation click, so no jsdom test can demonstrate it — the browser
+		// suite does (web/e2e/item-attachment-strip.spec.ts). What IS falsifiable
+		// here is the failure mode DR-12 names: a hand-rolled keydown handler
+		// firing ALONGSIDE the UA's click and opening the panel twice.
+		listMock.mockResolvedValue(
+			response([att({ id: 'doc', mime_type: 'application/pdf', filename: 'spec.pdf' })])
+		);
+		mountStrip('item-a');
+		await settle();
+
+		const tile = tiles()[0] as HTMLButtonElement;
+		// DR-12 wants Enter AND Space to activate, exactly once each. A native
+		// <button> is how that is guaranteed: the UA converts both keys into a
+		// single `click` and already suppresses Space's page scroll. The thing
+		// a test can actually falsify is the failure mode DR-12 names — a
+		// hand-rolled keydown handler firing ALONGSIDE the UA's click, opening
+		// the panel twice. jsdom does not synthesise the activation click, so
+		// the key press alone must produce nothing...
+		for (const key of ['Enter', ' ']) {
+			const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
+			tile.dispatchEvent(event);
+			flushSync();
+			expect(panelOpenMock).not.toHaveBeenCalled();
+			// ...and Space must not be swallowed as a scroll suppressor either:
+			// the UA's own default handling is what we are relying on.
+			expect(event.defaultPrevented).toBe(false);
+		}
+		// The UA's click is then the one and only activation path.
+		tile.click();
+		flushSync();
+		expect(panelOpenMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('renders an SVG as a FILE tile and keeps it out of the viewer (DR-16)', async () => {
+		// `isImage` would say yes to this — the viewer takes an exact raster
+		// allowlist instead, because SVG can carry active content.
+		listMock.mockResolvedValue(
+			response([
+				att({ id: 'svg', mime_type: 'image/svg+xml', filename: 'logo.svg' }),
+				att({ id: 'png', mime_type: 'image/png', filename: 'shot.png' }),
+			])
+		);
+		mountStrip('item-a');
+		await settle();
+
+		const [svgTile, pngTile] = tiles();
+		// The SVG got the file path: an icon + name, no thumbnail request.
+		expect(svgTile.querySelector('img')).toBeNull();
+		expect(svgTile.getAttribute('aria-label')).toContain('Options for logo.svg');
+
+		svgTile.click();
+		flushSync();
+		expect(document.querySelector('.lightbox-backdrop')).toBeNull();
+		expect(panelOpenMock).toHaveBeenCalledTimes(1);
+
+		// ...and it isn't a member of the lightbox's set either, so the PNG's
+		// viewer holds ONE image rather than paging into the SVG (the counter
+		// only renders for a multi-image set, so its absence IS the assertion).
+		panelOpenMock.mockClear();
+		pngTile.click();
+		flushSync();
+		expect(panelOpenMock).not.toHaveBeenCalled();
+		expect(document.querySelector('.lightbox-backdrop')).not.toBeNull();
+		expect(document.querySelector('.lightbox-counter')).toBeNull();
 	});
 
 	it('renders images as thumb-sm buttons that open the lightbox', async () => {
@@ -713,15 +828,61 @@ describe('ItemAttachmentStrip', () => {
 	});
 
 
-	// ── Delete (TASK-2384) ────────────────────────────────────────────────
+	// ── Delete (TASK-2384, confirmation reworked in TASK-2425) ────────────
 	//
 	// The affordance is gated on ItemDetail's `mutationsEnabled`
 	// (canEdit && !peeking) per PLAN-2382 DR-6, and the confirm text has to
 	// stay honest about what was actually checked (DR-5): "referenced in this
 	// item's content" is knowable client-side; "unused anywhere" is not.
+	//
+	// TASK-2425 (PLAN-2392 DR-18) replaced the browser-native `window.confirm`
+	// these tests used to spy on with the SAME in-app drill-down the options
+	// panel shows — so they now drive the real rows. That is not a cosmetic
+	// change to the tests: the native confirm blocked the thread, so nothing
+	// could move between the entry fence and the request, while the in-app one
+	// leaves a window in which the user can switch item or workspace. Every
+	// fence and rollback assertion below is preserved, and the confirmation is
+	// driven through the rows a user would actually click.
 
 	function deleteButtons(): HTMLButtonElement[] {
 		return Array.from(target.querySelectorAll<HTMLButtonElement>('.att-delete'));
+	}
+
+	/** Portaled to <body> like every other Menu, so queried document-wide. */
+	function confirmPanel(): HTMLElement | null {
+		return document.querySelector<HTMLElement>('[role="menu"]');
+	}
+
+	function confirmRows(): HTMLElement[] {
+		return Array.from(document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]'));
+	}
+
+	/** By VISIBLE label — MenuItem's icon span is part of `textContent`. */
+	function confirmRow(label: string): HTMLElement | undefined {
+		return confirmRows().find(
+			(el) => el.querySelector('.mi-label')?.textContent?.trim() === label
+		);
+	}
+
+	function promptText(): string {
+		return document.querySelector('.attachment-delete-prompt')?.textContent ?? '';
+	}
+
+	/** Click a tile's `×`. Opens the confirmation; sends nothing. */
+	function openConfirm(index = 0) {
+		deleteButtons()[index].click();
+		flushSync();
+	}
+
+	/** The destructive row — the only thing that issues a DELETE. */
+	function clickConfirm() {
+		confirmRow('Delete file')!.click();
+		flushSync();
+	}
+
+	function clickCancel() {
+		confirmRow('Cancel')!.click();
+		flushSync();
 	}
 
 	it('offers no delete control when canDelete is false', async () => {
@@ -754,6 +915,54 @@ describe('ItemAttachmentStrip', () => {
 		expect(buttons[0].disabled).toBe(false);
 	});
 
+	it('confirms in-app, never with a browser dialog, Cancel first (DR-18)', async () => {
+		// The shape the item menu establishes and the options panel already
+		// used: prompt as `role="presentation"` (a role="menu" owns only
+		// menuitem / separator / group children), an aria-describedby
+		// back-reference from the destructive row so the otherwise-unannounced
+		// prompt is read out, Cancel FIRST so the menu's focus handoff can
+		// never land Enter on Delete.
+		const nativeConfirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		openConfirm();
+
+		expect(nativeConfirm).not.toHaveBeenCalled();
+		const prompt = document.querySelector('.attachment-delete-prompt');
+		expect(prompt?.getAttribute('role')).toBe('presentation');
+		const rows = confirmRows();
+		const labelOf = (el: HTMLElement) => el.querySelector('.mi-label')?.textContent?.trim();
+		expect(labelOf(rows[0])).toBe('Cancel');
+		expect(labelOf(rows[rows.length - 1])).toBe('Delete file');
+		expect(rows[rows.length - 1].getAttribute('aria-describedby')).toBe(prompt?.id);
+		// Opening the confirmation is not a delete.
+		expect(deleteMock).not.toHaveBeenCalled();
+		nativeConfirm.mockRestore();
+	});
+
+	it('cancelling sends nothing, keeps the tile, and refocuses the × control', async () => {
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		const closeBtn = deleteButtons()[0];
+		openConfirm();
+		clickCancel();
+		await settle();
+
+		expect(deleteMock).not.toHaveBeenCalled();
+		expect(tiles()).toHaveLength(1);
+		expect(confirmPanel()).toBeNull();
+		// `window.confirm` restored focus for free. The control is also
+		// opacity-hidden unless its cell has focus-within, so dropping focus to
+		// <body> would make the affordance vanish under a keyboard user.
+		expect(document.activeElement).toBe(closeBtn);
+	});
+
 	it('warns that the attachment is still used in this item content', async () => {
 		// A canonical UUID: attachmentRefsIn() is anchored to that shape (the
 		// ids the upload endpoint returns), so the reference scan only matches
@@ -765,16 +974,14 @@ describe('ItemAttachmentStrip', () => {
 		mountStrip('item-a');
 		await settle();
 
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-		deleteButtons()[0].click();
-		await settle();
+		openConfirm();
 
-		expect(confirmSpy).toHaveBeenCalledOnce();
-		expect(confirmSpy.mock.calls[0][0]).toContain("still used in this item's content");
+		expect(promptText()).toContain("still used in this item's content");
 		// Declined → nothing deleted, tile stays.
+		clickCancel();
+		await settle();
 		expect(deleteMock).not.toHaveBeenCalled();
 		expect(tiles()).toHaveLength(1);
-		confirmSpy.mockRestore();
 	});
 
 	it('never claims an unreferenced attachment is unused', async () => {
@@ -784,16 +991,13 @@ describe('ItemAttachmentStrip', () => {
 		mountStrip('item-a');
 		await settle();
 
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-		deleteButtons()[0].click();
-		await settle();
+		openConfirm();
 
-		const message = String(confirmSpy.mock.calls[0][0]);
+		const message = promptText();
 		// Comment bodies and other items are NOT scanned client-side (DR-5),
 		// so the copy must hedge rather than assert non-use.
 		expect(message).toContain('may still be referenced');
 		expect(message).not.toContain('not used');
-		confirmSpy.mockRestore();
 	});
 
 	it('removes the tile optimistically and calls the API on confirm', async () => {
@@ -802,19 +1006,62 @@ describe('ItemAttachmentStrip', () => {
 		mountStrip('item-a');
 		await settle();
 
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		deleteButtons()[0].click();
+		openConfirm();
+		clickConfirm();
 		await settle();
 
 		expect(deleteMock).toHaveBeenCalledWith('ws', 'a1');
 		expect(tiles()).toHaveLength(1);
 		expect(toastMock).not.toHaveBeenCalled();
+		// The confirmation goes with the row it was asking about.
+		expect(confirmPanel()).toBeNull();
 		// An <img> already painted in the editor never re-requests, so the
 		// NodeView has to be told or the body keeps showing a deleted image
 		// until reload (Codex round 12).
 		expect(notifyDeletedMock).toHaveBeenCalledWith('a1');
 		expect(invalidateMock).toHaveBeenCalledWith('ws', 'a1');
-		confirmSpy.mockRestore();
+	});
+
+	it('abandons an open confirmation when the item switches under it', async () => {
+		// The in-app confirmation does NOT block the thread the way
+		// `window.confirm` did, so this window exists at all only as of
+		// TASK-2425: the prompt can still be up when the strip repaints for a
+		// different item. Leaving it there would delete the PREVIOUS item's
+		// attachment from behind the new one.
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		openConfirm();
+		expect(confirmPanel()).not.toBeNull();
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'b1' })]));
+		props.itemId = 'item-b';
+		flushSync();
+		await settle();
+
+		expect(confirmPanel()).toBeNull();
+		expect(deleteMock).not.toHaveBeenCalled();
+	});
+
+	it('drops an open confirmation when another surface deletes that row', async () => {
+		// The tile the confirmation is anchored to has just been unmounted, so
+		// the menu would be left pointing at a detached element — and the
+		// question it is asking has already been answered.
+		listMock.mockResolvedValue(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		openConfirm();
+		expect(confirmPanel()).not.toBeNull();
+
+		broadcastDeletion('a1');
+		flushSync();
+
+		expect(confirmPanel()).toBeNull();
+		expect(deleteMock).not.toHaveBeenCalled();
 	});
 
 	it('refuses a delete click that lands after the ITEM already switched', async () => {
@@ -831,18 +1078,16 @@ describe('ItemAttachmentStrip', () => {
 		expect(deleteButtons()).toHaveLength(1);
 
 		listMock.mockResolvedValueOnce(response([att({ id: 'b1' })]));
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
 		props.itemId = 'item-b';
 		// No flushSync between the switch and the click: that IS the window.
 		deleteButtons()[0].click();
 		await settle();
 
 		// Not even prompted — the tile the user aimed at no longer exists.
-		expect(confirmSpy).not.toHaveBeenCalled();
+		expect(confirmPanel()).toBeNull();
 		expect(deleteMock).not.toHaveBeenCalled();
 		expect(notifyDeletedMock).not.toHaveBeenCalled();
 		expect(tiles()[0].getAttribute('aria-label')).toContain('b1.png');
-		confirmSpy.mockRestore();
 	});
 
 	it('refuses a delete click that lands after the WORKSPACE already switched', async () => {
@@ -855,15 +1100,37 @@ describe('ItemAttachmentStrip', () => {
 		await settle();
 
 		listMock.mockResolvedValueOnce(response([att({ id: 'ws2-row' })]));
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
 		props.wsSlug = 'ws2';
 		deleteButtons()[0].click();
 		await settle();
 
-		expect(confirmSpy).not.toHaveBeenCalled();
+		expect(confirmPanel()).toBeNull();
 		expect(deleteMock).not.toHaveBeenCalled();
 		expect(tiles()[0].getAttribute('aria-label')).toContain('ws2-row.png');
-		confirmSpy.mockRestore();
+	});
+
+	it('refuses a CONFIRMATION that lands after the item already switched', async () => {
+		// The window `window.confirm` did not have: it blocked the thread, so
+		// the entry fence taken when the `×` was clicked was still true by
+		// definition when it returned. An in-app confirmation can sit on screen
+		// across a switch, so the fence is re-checked at the point that
+		// actually sends the request (TASK-2425).
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' })]));
+		props.canDelete = true;
+		mountStrip('item-a');
+		await settle();
+
+		openConfirm();
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'b1' })]));
+		props.itemId = 'item-b';
+		// No flushSync: the prompt is still up and the props already read B.
+		clickConfirm();
+		await settle();
+
+		expect(deleteMock).not.toHaveBeenCalled();
+		expect(notifyDeletedMock).not.toHaveBeenCalled();
+		expect(tiles()[0].getAttribute('aria-label')).toContain('b1.png');
 	});
 
 	it('rolls the tile back and toasts when the delete fails', async () => {
@@ -873,8 +1140,8 @@ describe('ItemAttachmentStrip', () => {
 		mountStrip('item-a');
 		await settle();
 
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		deleteButtons()[0].click();
+		openConfirm();
+		clickConfirm();
 		await settle();
 
 		expect(tiles()).toHaveLength(2);
@@ -882,7 +1149,6 @@ describe('ItemAttachmentStrip', () => {
 		expect(notifyDeletedMock).not.toHaveBeenCalled();
 		expect(toastMock).toHaveBeenCalledOnce();
 		expect(String(toastMock.mock.calls[0][0])).toContain('a1.png');
-		confirmSpy.mockRestore();
 	});
 
 	it('does not roll a failed delete back into a DIFFERENT item strip', async () => {
@@ -901,9 +1167,8 @@ describe('ItemAttachmentStrip', () => {
 				failDelete = reject;
 			})
 		);
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		deleteButtons()[0].click();
-		flushSync();
+		openConfirm();
+		clickConfirm();
 		expect(tiles()).toHaveLength(0); // optimistic removal happened
 
 		// Switch to B before the delete settles.
@@ -919,7 +1184,6 @@ describe('ItemAttachmentStrip', () => {
 		expect(names.some((n) => n?.includes('a1.png'))).toBe(false);
 		expect(names.some((n) => n?.includes('b1.png'))).toBe(true);
 		expect(toastMock).not.toHaveBeenCalled();
-		confirmSpy.mockRestore();
 	});
 
 	it('rolls back only the failed row, never resurrecting a concurrent success', async () => {
@@ -939,11 +1203,10 @@ describe('ItemAttachmentStrip', () => {
 				failFirst = reject;
 			})
 		);
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-
-		deleteButtons()[0].click(); // a1 — in flight, will fail
-		flushSync();
-		deleteButtons()[0].click(); // now b1 — resolves immediately
+		openConfirm(); // a1 — in flight, will fail
+		clickConfirm();
+		openConfirm(); // now b1 — resolves immediately
+		clickConfirm();
 		await settle();
 
 		failFirst(new Error('boom'));
@@ -954,7 +1217,6 @@ describe('ItemAttachmentStrip', () => {
 		expect(names.some((n) => n.includes('b1.png'))).toBe(false); // stays deleted
 		// ...and restored at its original position, not appended.
 		expect(names[0]).toContain('a1.png');
-		confirmSpy.mockRestore();
 	});
 
 	it('still announces the deletion when the delete 404s', async () => {
@@ -966,13 +1228,12 @@ describe('ItemAttachmentStrip', () => {
 		mountStrip('item-a');
 		await settle();
 
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		deleteButtons()[0].click();
+		openConfirm();
+		clickConfirm();
 		await settle();
 
 		expect(notifyDeletedMock).toHaveBeenCalledWith('a1');
 		expect(invalidateMock).toHaveBeenCalledWith('ws', 'a1');
-		confirmSpy.mockRestore();
 	});
 
 	it('still announces a 404 delete when the view switched under it', async () => {
@@ -993,9 +1254,8 @@ describe('ItemAttachmentStrip', () => {
 				failDelete = reject;
 			})
 		);
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		deleteButtons()[0].click();
-		flushSync();
+		openConfirm();
+		clickConfirm();
 
 		listMock.mockResolvedValue(response([att({ id: 'b1' })]));
 		props.itemId = 'item-b';
@@ -1012,7 +1272,6 @@ describe('ItemAttachmentStrip', () => {
 		expect(names.some((n) => n.includes('a1.png'))).toBe(false);
 		expect(names.some((n) => n.includes('b1.png'))).toBe(true);
 		expect(toastMock).not.toHaveBeenCalled();
-		confirmSpy.mockRestore();
 	});
 
 	it('does not roll back a failed delete that another surface already announced', async () => {
@@ -1030,9 +1289,8 @@ describe('ItemAttachmentStrip', () => {
 				failDelete = reject;
 			})
 		);
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		deleteButtons()[0].click();
-		flushSync();
+		openConfirm();
+		clickConfirm();
 
 		broadcastDeletion('a1');
 		flushSync();
@@ -1042,7 +1300,6 @@ describe('ItemAttachmentStrip', () => {
 
 		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
 		expect(names.some((n) => n.includes('a1.png'))).toBe(false);
-		confirmSpy.mockRestore();
 	});
 
 	it('keeps the tile removed when the delete 404s (already gone)', async () => {
@@ -1055,13 +1312,12 @@ describe('ItemAttachmentStrip', () => {
 		mountStrip('item-a');
 		await settle();
 
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		deleteButtons()[0].click();
+		openConfirm();
+		clickConfirm();
 		await settle();
 
 		expect(tiles()).toHaveLength(1);
 		expect(toastMock).not.toHaveBeenCalled();
-		confirmSpy.mockRestore();
 	});
 
 	it('names permission as the reason on a 403, and restores the tile', async () => {
@@ -1071,13 +1327,12 @@ describe('ItemAttachmentStrip', () => {
 		mountStrip('item-a');
 		await settle();
 
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		deleteButtons()[0].click();
+		openConfirm();
+		clickConfirm();
 		await settle();
 
 		expect(tiles()).toHaveLength(1);
 		expect(String(toastMock.mock.calls[0][0])).toContain("don't have permission");
-		confirmSpy.mockRestore();
 	});
 
 	it('still rolls back and toasts when a Retry re-ran the load mid-delete', async () => {
@@ -1101,9 +1356,8 @@ describe('ItemAttachmentStrip', () => {
 				failDelete = reject;
 			})
 		);
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		deleteButtons()[0].click();
-		flushSync();
+		openConfirm();
+		clickConfirm();
 		expect(tiles()).toHaveLength(0); // optimistic removal
 
 		// Retry while the delete is still in flight.
@@ -1119,7 +1373,6 @@ describe('ItemAttachmentStrip', () => {
 		expect(toastMock).toHaveBeenCalledOnce();
 		expect(String(toastMock.mock.calls[0][0])).toContain('survivor.png');
 		expect(notifyDeletedMock).not.toHaveBeenCalled();
-		confirmSpy.mockRestore();
 	});
 
 	it('suppresses a failed delete when the WORKSPACE changed under it', async () => {
@@ -1140,9 +1393,8 @@ describe('ItemAttachmentStrip', () => {
 				failDelete = reject;
 			})
 		);
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		deleteButtons()[0].click();
-		flushSync();
+		openConfirm();
+		clickConfirm();
 		expect(tiles()).toHaveLength(0);
 
 		// Retry clicked, THEN the workspace swapped before the effect flushed —
@@ -1161,7 +1413,6 @@ describe('ItemAttachmentStrip', () => {
 		expect(names.some((n) => n.includes('survivor.png'))).toBe(false);
 		expect(names.some((n) => n.includes('other-ws.png'))).toBe(true);
 		expect(toastMock).not.toHaveBeenCalled();
-		confirmSpy.mockRestore();
 	});
 
 	it('still suppresses a failed delete after an A→B→A round trip', async () => {
@@ -1181,9 +1432,8 @@ describe('ItemAttachmentStrip', () => {
 				failDelete = reject;
 			})
 		);
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		deleteButtons()[0].click();
-		flushSync();
+		openConfirm();
+		clickConfirm();
 
 		listMock.mockResolvedValue(response([att({ id: 'b1' })]));
 		props.itemId = 'item-b';
@@ -1200,7 +1450,6 @@ describe('ItemAttachmentStrip', () => {
 
 		expect(tiles()).toHaveLength(0);
 		expect(toastMock).not.toHaveBeenCalled();
-		confirmSpy.mockRestore();
 	});
 
 	// ── Upload refresh (TASK-2385) ────────────────────────────────────────
@@ -1546,12 +1795,9 @@ describe('ItemAttachmentStrip', () => {
 		mountStrip('item-a');
 		await settle();
 
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-		deleteButtons()[0].click();
-		await settle();
+		openConfirm();
 
-		expect(String(confirmSpy.mock.calls[0][0])).toContain("still used in this item's content");
-		confirmSpy.mockRestore();
+		expect(promptText()).toContain("still used in this item's content");
 	});
 
 	it('falls back to persisted content when the live read throws', async () => {
@@ -1565,11 +1811,8 @@ describe('ItemAttachmentStrip', () => {
 		mountStrip('item-a');
 		await settle();
 
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
-		deleteButtons()[0].click();
-		await settle();
+		openConfirm();
 
-		expect(String(confirmSpy.mock.calls[0][0])).toContain("still used in this item's content");
-		confirmSpy.mockRestore();
+		expect(promptText()).toContain("still used in this item's content");
 	});
 });

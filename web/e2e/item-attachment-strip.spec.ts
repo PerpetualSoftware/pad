@@ -68,17 +68,47 @@ async function uploadTo(
 }
 
 /**
+ * Upload a NON-image bound to `itemId`. `text/plain` is in the server's
+ * allowlist and is one of the types the panel offers Open for, so the tile it
+ * produces is a file tile — the one that opens the options panel.
+ */
+async function uploadTextTo(
+	fixture: SuiteFixture,
+	request: APIRequestContext,
+	itemId: string,
+	filename: string
+): Promise<string> {
+	const ws = fixture.workspaceSlug;
+	const resp = await request.post(
+		`/api/v1/workspaces/${ws}/attachments?item_id=${encodeURIComponent(itemId)}`,
+		{
+			headers: { Authorization: `Bearer ${fixture.apiToken}` },
+			multipart: {
+				file: { name: filename, mimeType: 'text/plain', buffer: Buffer.from('notes\n') }
+			}
+		}
+	);
+	if (!resp.ok()) throw new Error(`upload failed (${resp.status()}): ${await resp.text()}`);
+	return ((await resp.json()) as { id: string }).id;
+}
+
+/**
  * Drop a file onto the live editor, the way a user does. The upload plugin
  * listens for a real `drop` with a DataTransfer, so we build one in the page
  * rather than driving the (nonexistent) file input.
  */
-async function dropFileIntoEditor(page: Page, filename: string, base64: string): Promise<void> {
+async function dropFileIntoEditor(
+	page: Page,
+	filename: string,
+	base64: string,
+	mimeType = 'image/png'
+): Promise<void> {
 	const target = page.locator('.editor-content .ProseMirror').first();
 	await target.waitFor({ state: 'visible' });
 	await target.evaluate(
-		(el, { filename, base64 }) => {
+		(el, { filename, base64, mimeType }) => {
 			const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-			const file = new File([bytes], filename, { type: 'image/png' });
+			const file = new File([bytes], filename, { type: mimeType });
 			const dt = new DataTransfer();
 			dt.items.add(file);
 			const rect = el.getBoundingClientRect();
@@ -92,7 +122,7 @@ async function dropFileIntoEditor(page: Page, filename: string, base64: string):
 				})
 			);
 		},
-		{ filename, base64 }
+		{ filename, base64, mimeType }
 	);
 }
 
@@ -209,14 +239,27 @@ test.describe('item attachment strip', () => {
 		const del = page.locator(DELETE_BTN).first();
 		await del.focus();
 		await expect(del).toBeFocused();
+		// WCAG 2.2 target size (2.5.8), from PLAN-2382. Only a real browser
+		// applies the scoped CSS, so this is the only place it can be checked.
+		const box = await del.boundingBox();
+		expect(box?.width).toBeGreaterThanOrEqual(24);
+		expect(box?.height).toBeGreaterThanOrEqual(24);
 
-		page.once('dialog', (dialog) => {
-			// The attachment IS embedded in the body (the drop inserted it), so
-			// the confirm must say so rather than hedging.
-			expect(dialog.message()).toContain("still used in this item's content");
-			void dialog.accept();
-		});
+		// TASK-2425 / DR-18: the confirmation is the app's own drill-down, not
+		// a browser dialog. A native `confirm()` would hang this click until
+		// Playwright auto-dismissed it, so the absence of a dialog handler is
+		// itself part of the assertion.
 		await del.click();
+		const confirmMenu = page.locator('[role="menu"]');
+		await expect(confirmMenu).toBeVisible();
+		// The attachment IS embedded in the body (the drop inserted it), so the
+		// prompt must say so rather than hedging.
+		await expect(confirmMenu.locator('.attachment-delete-prompt')).toContainText(
+			"still used in this item's content"
+		);
+		// Cancel is first, so the focus handoff can never land Enter on Delete.
+		await expect(confirmMenu.getByRole('menuitem').first()).toContainText('Cancel');
+		await confirmMenu.getByRole('menuitem', { name: 'Delete file' }).click();
 
 		await expect(page.locator(TILE)).toHaveCount(0);
 		// ...and the strip disappears entirely once empty.
@@ -262,5 +305,105 @@ test.describe('item attachment strip', () => {
 
 		await expect(masterHost.locator(TILE)).toHaveCount(1);
 		await expect(masterStrip).toHaveCount(0);
+	});
+
+	test('a file tile opens the options panel, from mouse and from the keyboard (PLAN-2392 phase 2)', async ({
+		page,
+		fixture,
+		request
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop-only surface');
+
+		// The ONE test that exercises the real producer→host wiring end to end.
+		// The unit suites necessarily stop short of it: the strip's tests mock
+		// the event bus, and the panel host's tests emit on the bus directly, so
+		// between them a broken `hostToken` thread through ItemDetail would pass
+		// everything (final review round 3). Only a real page has a real
+		// ItemDetail minting a real token.
+		//
+		// It is also the only place "activates exactly once per key press"
+		// (DR-12) can actually be demonstrated: jsdom does not synthesise a
+		// button's activation click, so the unit test can only prove the
+		// narrower "no handler races the UA click".
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		const doc = await seedDoc(fixture, request, 'Panel wiring');
+		await uploadTextTo(fixture, request, doc.id, 'notes.txt');
+
+		await page.goto(itemUrl(fixture, doc.slug));
+		const tile = page.locator(TILE).first();
+		await expect(tile).toBeVisible();
+
+		// A file tile is a real button naming its action, not a download link —
+		// the whole point of the change (DR-1, DR-12).
+		await expect(tile).toHaveJSProperty('tagName', 'BUTTON');
+		await expect(tile).toHaveAttribute('aria-label', /^Options for notes\.txt/);
+
+		await tile.click();
+		const panel = page.locator('[role="menu"]').filter({ hasText: 'notes.txt' });
+		await expect(panel).toBeVisible();
+		// Download is a REAL anchor carrying the filename: the server sends an
+		// inline disposition for most types, so a plain navigation would view
+		// rather than save (DR-16).
+		const download = panel.getByRole('menuitem', { name: 'Download' });
+		await expect(download).toHaveJSProperty('tagName', 'A');
+		await expect(download).toHaveAttribute('download', 'notes.txt');
+		// text/plain is browser-previewable, so Open is offered.
+		await expect(panel.getByRole('menuitem', { name: 'Open in new tab' })).toBeVisible();
+
+		await page.keyboard.press('Escape');
+		await expect(panel).toHaveCount(0);
+
+		// Keyboard activation, for real this time: focus the tile and press each
+		// key. Exactly one panel opens per press — two would mean a hand-rolled
+		// handler firing alongside the UA's activation click.
+		for (const key of ['Enter', ' ']) {
+			await tile.focus();
+			await page.keyboard.press(key);
+			await expect(page.locator('[role="menu"]')).toHaveCount(1);
+			await page.keyboard.press('Escape');
+			await expect(page.locator('[role="menu"]')).toHaveCount(0);
+		}
+	});
+
+	test('an editor file chip opens the same panel as a strip tile (PLAN-2392 DR-2)', async ({
+		page,
+		fixture,
+		request
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop-only surface');
+
+		// The chip half of "the same panel wherever you meet an attachment".
+		// Unit coverage stops at the seam on both sides — the chip's tests mock
+		// the event bus and the host's inject events directly — so only a real
+		// page proves a real NodeView reaches a real host through the real bus.
+		await page.setViewportSize(DESKTOP);
+		await browserLogin(page);
+
+		const doc = await seedDoc(fixture, request, 'Chip panel wiring');
+		await page.goto(itemUrl(fixture, doc.slug));
+
+		// Drop a NON-image so the editor renders a file chip rather than an
+		// inline image.
+		await dropFileIntoEditor(
+			page,
+			'handbook.txt',
+			Buffer.from('chapter one\n').toString('base64'),
+			'text/plain'
+		);
+
+		const chip = page.locator('.editor-content .ProseMirror button.file-chip').first();
+		await expect(chip).toBeVisible();
+		// A button, not a link: an anchor left the URL reachable by middle-click,
+		// straight past the panel (DR-12).
+		await expect(chip).toHaveJSProperty('tagName', 'BUTTON');
+
+		await chip.click();
+		const panel = page.locator('[role="menu"]').filter({ hasText: 'handbook.txt' });
+		await expect(panel).toBeVisible();
+		const download = panel.getByRole('menuitem', { name: 'Download' });
+		await expect(download).toHaveJSProperty('tagName', 'A');
+		await expect(download).toHaveAttribute('download', 'handbook.txt');
 	});
 });

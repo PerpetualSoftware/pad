@@ -598,12 +598,14 @@
 		notifyAttachmentImageCapabilitiesChanged,
 	} from './attachment-image';
 	import { AttachmentChip } from './attachment-chip';
+	import type { AttachmentHostAddress } from '$lib/attachments/hostAddress';
 	import { AttachmentUpload } from './attachment-upload';
 
 	let {
 		content = '',
 		editable = true,
 		itemId,
+		hostToken = '',
 		ydoc,
 		awareness,
 		collabUser,
@@ -621,6 +623,16 @@
 		 * fall back to the workspace editor-role gate.
 		 */
 		itemId?: string;
+		/**
+		 * Identity of the `ItemDetail` mount that owns this editor
+		 * (PLAN-2392 DR-8 / TASK-2421). Passed straight through to the
+		 * attachment NodeViews so a chip / image can address the ONE host
+		 * that owns it — `ItemDetail` runs as a master plus a peeked pane,
+		 * and `itemId` alone would let both consume the same event. Empty
+		 * (the default, for editors mounted outside an ItemDetail) disables
+		 * panel addressing rather than broadcasting.
+		 */
+		hostToken?: string;
 		/**
 		 * Optional Yjs document to bind this editor to via the Tiptap
 		 * Collaboration extension (PLAN-1248). When set, the y-tiptap
@@ -861,6 +873,28 @@
 		const getAttachmentUrl = (uuid: string, variant?: AttachmentVariant) =>
 			wsSlug ? api.attachments.downloadUrl(wsSlug, uuid, variant) : `pad-attachment:${uuid}`;
 
+		// Reads the CURRENT host address at emit time (PLAN-2392 DR-8). This
+		// editor is remounted per item behind a {#key}, so a captured value
+		// would in fact be correct here — it is a reader anyway so both editor
+		// hosts publish one shape, and so nobody has to know which of them is
+		// remounted and which is reused (see hostAddress.ts).
+		const readHostAddress = (): AttachmentHostAddress => ({
+			// `wsSlug` is resolved once at mount here (from the route), unlike the
+			// composer's live prop — reading it through the same reader keeps ONE
+			// shape for both hosts rather than a per-host special case.
+			//
+			// That is SAFE here for a reason worth stating, because it is not the
+			// reader that provides it: both <Editor> mounts sit inside
+			// `{#key item.id...}` in ItemDetail, and a workspace switch
+			// necessarily lands on a different item, so this component is
+			// remounted and re-reads the route. If that key is ever removed, this
+			// snapshot goes stale and must become live like the composer's
+			// (final review round 4).
+			workspaceSlug: wsSlug,
+			itemId: itemId ?? '',
+			hostToken
+		});
+
 		// When a Y.Doc is supplied, the Collaboration extension owns
 		// undo/redo (Yjs maintains its own history that survives peer
 		// edits correctly) and StarterKit's undoRedo would fight it.
@@ -914,6 +948,11 @@
 			AttachmentImage.configure({
 				getDownloadUrl: getAttachmentUrl,
 				workspaceSlug: wsSlug,
+				// Panel / viewer addressing (PLAN-2392 DR-8). Read once at
+				// editor construction, which is correct: both are fixed for
+				// the life of a mount — ItemDetail remounts this editor per
+				// item ({#key item.id}) and mints one token per ItemDetail.
+				address: readHostAddress,
 				// Initial supportedFormats is empty — server capabilities
 				// are fetched async below. The toolbar starts disabled
 				// for all formats until capabilities resolve, then
@@ -934,7 +973,11 @@
 					}
 				},
 			}),
-			AttachmentChip.configure({ getDownloadUrl: getAttachmentUrl, workspaceSlug: wsSlug }),
+			AttachmentChip.configure({
+				getDownloadUrl: getAttachmentUrl,
+				workspaceSlug: wsSlug,
+				address: readHostAddress,
+			}),
 			// When a Y.Doc is provided, register the Collaboration
 			// extension so the y-tiptap binding takes over document
 			// state. Without ydoc this slot is empty and the editor

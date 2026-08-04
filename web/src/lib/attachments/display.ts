@@ -25,6 +25,24 @@ import { GENERIC_ICON_ID, isAttachmentIconId, type AttachmentIconId } from './ic
 // non-finite input — deliberately (DR-3b). A surface that would rather show
 // nothing than "0 B" (the editor chip) keeps that conditional at its own call
 // site; the helper does not grow a mode.
+/**
+ * A filename safe to put in a sentence.
+ *
+ * `filename` is nominally always present, but a row can carry an empty one —
+ * an upload with no name, a legacy row — and every surface then renders the
+ * gap differently: a blank tile, an accessible name that says nothing, and a
+ * confirmation reading "Delete ?", which is the one place it actually matters
+ * because the user is being asked to approve something unnamed (final review
+ * round 4).
+ *
+ * Deliberately generic rather than clever: the id is not a name, and inventing
+ * one from the MIME would claim knowledge the row does not have.
+ */
+export function displayFilename(filename: string | null | undefined): string {
+	const trimmed = (filename ?? '').trim();
+	return trimmed || 'Untitled file';
+}
+
 export function formatBytes(bytes: number): string {
 	if (bytes < 0) return `${bytes} B`;
 	const KB = 1024;
@@ -220,4 +238,93 @@ export function iconForAttachment(
 
 export function isImage(mime: string): boolean {
 	return mime.startsWith('image/');
+}
+
+/** Human label per icon family, for the "what IS this file" line. */
+const FAMILY_LABELS: Record<AttachmentIconId, string> = {
+	image: 'Image',
+	video: 'Video',
+	audio: 'Audio',
+	document: 'Document',
+	spreadsheet: 'Spreadsheet',
+	presentation: 'Presentation',
+	pdf: 'PDF',
+	archive: 'Archive',
+	text: 'Text',
+	generic: 'File',
+};
+
+/**
+ * A short, human file-type description — "PDF", "PNG image", "XLSX
+ * spreadsheet", "File" (PLAN-2392 DR-2 / DR-18).
+ *
+ * Built on `iconForAttachment` on purpose: the icon and the words beside it
+ * must never disagree about what a file is, and reading the family from the
+ * same mapper is the only way to guarantee that. The raw MIME is deliberately
+ * NOT what surfaces show — `application/vnd.openxmlformats-officedocument.
+ * spreadsheetml.sheet` is not a type a human reads — but it stays available
+ * to call sites for a `title`.
+ *
+ * The extension is dropped when it merely repeats the family ("PDF · PDF")
+ * and kept when it adds the specific format ("PNG image"). With neither a
+ * usable MIME nor an extension the answer is the family fallback, "File" —
+ * never an empty string, so the line never renders as a stray separator.
+ */
+export function describeAttachmentType(
+	mime: string | null | undefined,
+	filename?: string | null,
+): string {
+	const family = FAMILY_LABELS[iconForAttachment(mime, filename)];
+	const ext = extensionOf(filename).toUpperCase();
+	if (!ext || ext === family.toUpperCase()) return family;
+	return `${ext} ${family.toLowerCase()}`;
+}
+
+/**
+ * The exact raster types the in-app image viewer may open (PLAN-2392
+ * DR-16). Deliberately an allowlist and NOT an `image/` prefix test:
+ * `image/svg+xml` carries active content, and a legacy row, a
+ * mislabelled upload or an extensionless SVG sniffed as XML can all
+ * arrive wearing an `image/*` label. Formats a browser may not decode
+ * at all (`image/tiff`, `image/heic`) are excluded for the separate
+ * reason that a viewer that silently shows nothing is worse than the
+ * file panel.
+ *
+ * `isImage` survives unchanged as the general "is this a picture"
+ * predicate (icon choice, grouping); this is the narrower question of
+ * what may be handed to the viewer.
+ */
+const VIEWER_MIMES: ReadonlySet<string> = new Set([
+	'image/png',
+	'image/jpeg',
+	'image/gif',
+	'image/webp',
+	'image/avif'
+]);
+
+/**
+ * Additional types a browser renders honestly in a new tab (PLAN-2392
+ * DR-5). PDF and plain text only — every other `text/*` subtype
+ * (markdown, CSV, XML) is downloaded or rendered inconsistently across
+ * browsers, and office documents, archives and the types the server
+ * force-downloads (HTML, JS) never preview. Those surfaces offer
+ * Download alone.
+ */
+const BROWSER_PREVIEW_MIMES: ReadonlySet<string> = new Set([
+	'application/pdf',
+	'text/plain'
+]);
+
+/** May this MIME be opened in the in-app image viewer? (DR-16) */
+export function canOpenInViewer(mime: string | null | undefined): boolean {
+	return VIEWER_MIMES.has(normalizeMime(mime));
+}
+
+/**
+ * May this MIME be handed to the browser to display — the viewer's
+ * raster set plus PDF and plain text? (DR-5)
+ */
+export function canBrowserPreview(mime: string | null | undefined): boolean {
+	const m = normalizeMime(mime);
+	return VIEWER_MIMES.has(m) || BROWSER_PREVIEW_MIMES.has(m);
 }

@@ -42,6 +42,8 @@
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import CopyItemDialog from '$lib/components/items/CopyItemDialog.svelte';
 	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
+	import AttachmentPanelHost from '$lib/components/attachments/AttachmentPanelHost.svelte';
+	import { createAttachmentHostToken } from '$lib/attachments/events';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
 	import { isSamePaneTarget, breadcrumbParentTarget } from '$lib/collections/paneTarget';
@@ -772,6 +774,43 @@
 	// (unit-tested). `peeking` defaults false → `mutationsEnabled === canEdit` for
 	// every non-host caller (byte-identical).
 	let mutationsEnabled = $derived(computeMutationsEnabled(canEdit, peeking));
+
+	// PLAN-2392 DR-8 (TASK-2421): this mount's identity on the module-global
+	// attachment event bus. The pane host mounts ItemDetail MORE THAN ONCE at
+	// a time (a master plus a peeked pane), so an open-panel event addressed
+	// only by `itemId` would be consumed by BOTH — two panels for one tap, and
+	// one of them permissioned by the wrong host's `mutationsEnabled`.
+	//
+	// ONE token per host, not one per component: it is passed to every
+	// attachment surface this host owns — the strip, the body Editor, and
+	// every CommentEditor under ItemTimeline — so all of them address THIS
+	// mount and nothing else does. Deliberately a plain `const`, not `$state`
+	// or `$derived`: it must be stable for the whole mount, including across
+	// the no-{#key} A→B item switch this pane is built around. (The `itemId`
+	// half of the address changes with the item; the token does not, and does
+	// not need to — the pair is what disambiguates.)
+	const attachmentHostToken = createAttachmentHostToken();
+
+	/**
+	 * The editor's LIVE markdown, or null when there is no live editor to
+	 * read. Consumed by every attachment surface that warns "this file is
+	 * still used in this item's content" — the strip's tile delete and the
+	 * options panel's (TASK-2423).
+	 *
+	 * The persisted `item.content` lags the editor by design (written on
+	 * flush, not per keystroke), so an image inserted moments ago wouldn't
+	 * trip that warning for exactly the attachment a user is most likely to
+	 * delete by mistake. Callers fall back to `item.content` when this
+	 * returns null.
+	 */
+	function liveEditorMarkdown(): string | null {
+		if (!editorInstance || editorInstance.isDestroyed) return null;
+		try {
+			return (editorInstance.storage as any).markdown?.getMarkdown?.() ?? null;
+		} catch {
+			return null;
+		}
+	}
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
 			loadData();
@@ -5012,21 +5051,34 @@
 				{wsSlug}
 				{username}
 				itemId={itemMatchesRef ? item?.id : null}
+				hostToken={attachmentHostToken}
 				canDelete={mutationsEnabled}
 				itemContent={itemMatchesRef ? item?.content : null}
-				liveContent={() => {
-					// The persisted item.content lags the editor by design (it's
-					// written on flush, not per keystroke), so an image inserted
-					// moments ago wouldn't trip the "still used" warning. Read the
-					// live editor when it's genuinely alive; the strip falls back
-					// to item.content otherwise.
-					if (!editorInstance || editorInstance.isDestroyed) return null;
-					try {
-						return (editorInstance.storage as any).markdown?.getMarkdown?.() ?? null;
-					} catch {
-						return null;
-					}
-				}}
+				liveContent={liveEditorMarkdown}
+			/>
+
+			<!-- The attachment options panel's host (PLAN-2392 DR-8 / TASK-2423).
+			     ONE per ItemDetail mount, and the only consumer of the open-panel
+			     channel for this mount's token — the panel it opens is
+			     permissioned by THIS host's `mutationsEnabled`, never by the
+			     emitting strip tile / editor chip, and never by the timeline's
+			     `canEdit` (which ignores `peeking`).
+			     Sits beside the strip, OUTSIDE the {#key itemSlug} block, for the
+			     same reason: it must not remount on an A→B switch — it closes the
+			     panel itself when `itemId` changes.
+			     parentArchived (DR-14): an archived parent's attachment fetch
+			     404s, so an open panel would keep offering an Open and a Download
+			     that both fail. `isArchived` follows the SSE item_archived /
+			     item_restored refetches above, so archive closes the panel and
+			     restore revalidates it. -->
+			<AttachmentPanelHost
+				{wsSlug}
+				itemId={itemMatchesRef ? item?.id : null}
+				hostToken={attachmentHostToken}
+				{mutationsEnabled}
+				itemContent={itemMatchesRef ? item?.content : null}
+				liveContent={liveEditorMarkdown}
+				parentArchived={itemMatchesRef && isArchived}
 			/>
 
 			<!-- Content editor — OUTSIDE the {#key itemSlug} above: the collab
@@ -5276,6 +5328,7 @@
 								onUpdate={handleContentUpdate}
 								editable={false}
 								itemId={item.id}
+								hostToken={attachmentHostToken}
 								onEditor={(e) => editorInstance = e}
 								onImportInserted={handleImportInserted}
 							/>
@@ -5333,6 +5386,7 @@
 									onUpdate={handleContentUpdate}
 									editable={!peeking}
 									itemId={item.id}
+									hostToken={attachmentHostToken}
 									ydoc={ydoc}
 									awareness={collabProvider?.awareness}
 									collabUser={collabUserState}
@@ -5535,6 +5589,7 @@
 				onRestore={handleVersionRestore}
 				flushBeforeRestore={flushCollabBeforeRestore}
 				itemId={item.id}
+				hostToken={attachmentHostToken}
 				collectionId={item.collection_id}
 				frozen={false}
 				restoreFrozen={peeking}

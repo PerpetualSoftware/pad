@@ -141,6 +141,27 @@ describe('StorageTab workspace switching', () => {
 		return target.textContent ?? '';
 	}
 
+	/**
+	 * The delete confirmation is an in-app drill-down as of TASK-2425
+	 * (PLAN-2392 DR-18) — the same one the item strip and the options panel
+	 * show — rather than a browser-native `confirm()`. It is portaled to
+	 * <body> like every other Menu, so it is queried document-wide.
+	 */
+	function confirmPanel(): HTMLElement | null {
+		return document.querySelector<HTMLElement>('[role="menu"]');
+	}
+
+	/** Click a row's Delete, then the destructive row of the confirmation. */
+	function deleteAndConfirm(index = 0) {
+		Array.from(target.querySelectorAll<HTMLButtonElement>('.btn-remove'))[index].click();
+		flushSync();
+		const confirmRow = Array.from(
+			document.querySelectorAll<HTMLElement>('[role="menu"] [role="menuitem"]')
+		).find((el) => el.querySelector('.mi-label')?.textContent?.trim() === 'Delete file');
+		confirmRow!.click();
+		flushSync();
+	}
+
 	it('loads exactly once on mount', async () => {
 		mountTab();
 		await settle();
@@ -277,9 +298,7 @@ describe('StorageTab workspace switching', () => {
 
 		const slowDelete = deferred<void>();
 		deleteMock.mockReturnValueOnce(slowDelete.promise);
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		target.querySelector<HTMLButtonElement>('.btn-remove')?.click();
-		flushSync();
+		deleteAndConfirm();
 		expect(deleteMock).toHaveBeenCalledWith('ws-a', 'a1');
 
 		listMock.mockResolvedValueOnce(response([att({ id: 'b1', filename: 'from-b.pdf' })]));
@@ -299,7 +318,6 @@ describe('StorageTab workspace switching', () => {
 		expect(toastMock).not.toHaveBeenCalled();
 		expect(listMock.mock.calls.length).toBe(listCalls);
 		expect(text()).toContain('from-b.pdf');
-		confirmSpy.mockRestore();
 	});
 
 	it('still suppresses a delete continuation after an A→B→A round trip', async () => {
@@ -313,9 +331,7 @@ describe('StorageTab workspace switching', () => {
 
 		const slowDelete = deferred<void>();
 		deleteMock.mockReturnValueOnce(slowDelete.promise);
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		target.querySelector<HTMLButtonElement>('.btn-remove')?.click();
-		flushSync();
+		deleteAndConfirm();
 		expect(deleteMock).toHaveBeenCalledWith('ws-a', 'a1');
 
 		props.wsSlug = 'ws-b';
@@ -339,7 +355,6 @@ describe('StorageTab workspace switching', () => {
 		// against ws-a (Codex round 4).
 		expect(listMock.mock.calls.length).toBe(listCalls + 1);
 		expect(listMock).toHaveBeenLastCalledWith('ws-a', expect.anything());
-		confirmSpy.mockRestore();
 	});
 
 	it('does not toast or refetch for a delete that resolves after unmount', async () => {
@@ -349,9 +364,7 @@ describe('StorageTab workspace switching', () => {
 
 		const slowDelete = deferred<void>();
 		deleteMock.mockReturnValueOnce(slowDelete.promise);
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-		target.querySelector<HTMLButtonElement>('.btn-remove')?.click();
-		flushSync();
+		deleteAndConfirm();
 
 		unmount(instance!);
 		instance = undefined;
@@ -366,7 +379,6 @@ describe('StorageTab workspace switching', () => {
 		expect(announceMock).toHaveBeenCalledWith('ws-a', 'a1');
 		expect(toastMock).not.toHaveBeenCalled();
 		expect(listMock.mock.calls.length).toBe(listCalls);
-		confirmSpy.mockRestore();
 	});
 
 	it('does not toast for a list or usage request that fails after unmount', async () => {
@@ -401,7 +413,6 @@ describe('StorageTab workspace switching', () => {
 		mountTab();
 		await settle();
 
-		const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
 		props.wsSlug = 'ws-b';
 		// No flushSync between the switch and the click: that IS the window.
 		target.querySelector<HTMLButtonElement>('.btn-remove')?.click();
@@ -409,8 +420,63 @@ describe('StorageTab workspace switching', () => {
 		await settle();
 
 		expect(deleteMock).not.toHaveBeenCalled();
-		expect(confirmSpy).not.toHaveBeenCalled();
-		confirmSpy.mockRestore();
+		// Not even prompted — the row the user aimed at belongs to a workspace
+		// this tab is no longer showing.
+		expect(confirmPanel()).toBeNull();
+	});
+
+	it('sends one DELETE even if the row is confirmed twice while the first is in flight', async () => {
+		// `confirm()` blocked the thread, so a second confirmation could not be
+		// raised while a request was in flight. An in-app one can — and unlike
+		// the item strip, this list does not remove the row optimistically, so
+		// the same row stays clickable throughout. Two DELETEs for one row means
+		// the second 404s and the user sees a success AND an "already deleted"
+		// for a single action (final review round 2).
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'doc.pdf' })]));
+		mountTab();
+		await settle();
+
+		const slowDelete = deferred<void>();
+		deleteMock.mockReturnValueOnce(slowDelete.promise);
+		deleteAndConfirm();
+		expect(deleteMock).toHaveBeenCalledTimes(1);
+
+		deleteAndConfirm();
+		expect(deleteMock).toHaveBeenCalledTimes(1);
+
+		// Fail it: the row stays in the list, which is exactly the case where a
+		// guard that is never released would strand it as undeletable forever.
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'doc.pdf' })]));
+		slowDelete.reject(new Error('network'));
+		await settle();
+		expect(rows()).toHaveLength(1);
+
+		deleteMock.mockResolvedValueOnce(undefined);
+		listMock.mockResolvedValueOnce(response([]));
+		deleteAndConfirm();
+		expect(deleteMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('treats a 404 as authoritative, exactly like a success', async () => {
+		// The 404 arm claims parity with the success arm — same broadcast, same
+		// refresh — and nothing tested it: the shared descriptor's 404 test
+		// covers a different implementation (final review round 2).
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1', filename: 'gone.pdf' })]));
+		mountTab();
+		await settle();
+
+		deleteMock.mockRejectedValueOnce(new FakeApiError('not_found'));
+		listMock.mockResolvedValueOnce(response([]));
+		deleteAndConfirm();
+		await settle();
+
+		// Broadcast like a success, so other surfaces reconcile...
+		expect(announceMock).toHaveBeenCalledWith('ws-a', 'a1');
+		// ...told as information, not as a failure...
+		expect(toastMock).toHaveBeenCalledWith(expect.stringContaining('already deleted'), 'info');
+		expect(toastMock).not.toHaveBeenCalledWith(expect.anything(), 'error');
+		// ...and the stale row is gone from the list.
+		expect(rows()).toHaveLength(0);
 	});
 
 	it('ignores a superseded usage response and its error toast', async () => {

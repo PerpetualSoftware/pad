@@ -21,6 +21,7 @@
 
 import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 import type { AttachmentUploadResult } from '$lib/types';
+import { isAddressable } from '$lib/attachments/hostAddress';
 
 const listeners = new Set<(uuid: string) => void>();
 
@@ -114,4 +115,135 @@ export function notifyAttachmentUploaded(
 ): void {
 	if (!itemId || !attachment?.id) return;
 	for (const fn of uploadListeners) fn(itemId, attachment);
+}
+
+/**
+ * Attachment options panel (PLAN-2392 DR-2 / DR-8, TASK-2421).
+ *
+ * Tapping a file — a strip tile or an inline editor chip — opens a metadata +
+ * options panel instead of downloading it. The panel is a Svelte component
+ * owned by an `ItemDetail` host; the emitters include Tiptap NodeViews, which
+ * are imperative DOM and cannot mount Svelte themselves. So they signal
+ * through this bus, exactly as the deletion / upload channels above.
+ *
+ * ADDRESSING (DR-8) is the whole reason this channel carries two identity
+ * fields rather than one. The bus is module-global, but `ItemDetail` is
+ * mounted MORE THAN ONCE at a time — the pane host runs a master pane plus a
+ * peeked pane, both showing attachment surfaces. Matching on `itemId` alone
+ * is not enough (both panes can show the same item), and matching on the
+ * token alone is not enough either (a host must not open a panel for an
+ * attachment belonging to a different item). A host consumes an event only
+ * when BOTH are its own — see `isAttachmentPanelEventForHost`.
+ *
+ * Permission never travels on the event: the host supplies `mutationsEnabled`
+ * from its own `computeMutationsEnabled(canEdit, peeking)`. A NodeView has no
+ * mutation context and must not be trusted to assert one.
+ *
+ * The three metadata fields are NULLABLE. A chip knows only what its options
+ * give it and fills these from an asynchronous HEAD probe that may not have
+ * completed, or may have failed. The panel opens immediately with whatever is
+ * known and fetches the rest itself (DR-2 round 36). The strip, by contrast,
+ * always populates all three from its list row.
+ */
+export interface AttachmentPanelOpenEvent {
+	/** UUID of the attachment whose options are being opened. */
+	attachmentId: string;
+	/**
+	 * UUID of the item whose `ItemDetail` mount should SHOW the panel.
+	 *
+	 * This is ROUTING, not ownership, and the difference is load-bearing:
+	 * it names the host that displays the panel, and it does NOT assert that
+	 * the attachment belongs to that item. The two can genuinely differ — the
+	 * comment composer is reused across an item switch, so a chip sitting in
+	 * an unsubmitted draft can be tapped while the pane shows a different
+	 * item, and it will (correctly) route to the host in front of the user.
+	 *
+	 * Nothing downstream should read it as a permission or an ownership
+	 * claim. Attachment authorization is the SERVER's, per attachment, against
+	 * that attachment's own parent item — `handlers_storage.go` checks
+	 * visibility and then edit permission on the parent it resolves itself,
+	 * and the delete endpoint (`DELETE /workspaces/{ws}/attachments/{id}`) is
+	 * never told which item the client thought it was acting from. What the
+	 * host supplies locally (`mutationsEnabled`) decides whether to OFFER a
+	 * mutation; the server decides whether to perform it.
+	 *
+	 * The one place the distinction leaks into UX: a panel whose "still used
+	 * in this item's content" check runs against the HOST's content can only
+	 * speak for that item, so it must keep the hedged wording ("may still be
+	 * referenced by another item or a comment") rather than claiming the
+	 * attachment is unreferenced.
+	 */
+	itemId: string;
+	/** Identity of the `ItemDetail` mount that owns the emitting surface. */
+	hostToken: string;
+	/**
+	 * The element the panel positions against and returns focus to on close.
+	 * Null when the emitter has no stable element to offer (the panel then
+	 * falls back to its own placement / focus handling).
+	 */
+	anchor: HTMLElement | null;
+	filename: string | null;
+	mime_type: string | null;
+	size_bytes: number | null;
+}
+
+/**
+ * Mint the identity for ONE `ItemDetail` mount. Call it once per host and
+ * pass the result to every attachment surface that host owns — the strip, the
+ * body `Editor`, every `CommentEditor`. One token per host, NOT one per
+ * component: surfaces of the same host must be indistinguishable to the
+ * panel, while the master and peeked panes must never be.
+ */
+export function createAttachmentHostToken(): string {
+	const c = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
+	if (c && typeof c.randomUUID === 'function') return `apanel-${c.randomUUID()}`;
+	return `apanel-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * "Is this event mine?" — the single predicate every panel host must use.
+ *
+ * Both fields must match. An empty / null token on EITHER side never matches
+ * anything: a surface that was never given a token (an older call site, an
+ * editor mounted outside a host) must not be able to address every host at
+ * once, and a host without a token must not consume unaddressed events.
+ */
+export function isAttachmentPanelEventForHost(
+	event: AttachmentPanelOpenEvent,
+	host: { itemId: string | null | undefined; hostToken: string | null | undefined }
+): boolean {
+	if (!event) return false;
+	// Both sides must be fully addressable before a comparison means anything:
+	// two empty tokens are not a match, they are two absences. `isAddressable`
+	// is the single statement of that rule (see hostAddress.ts).
+	const from = { itemId: event.itemId, hostToken: event.hostToken };
+	const to = { itemId: host?.itemId ?? '', hostToken: host?.hostToken ?? '' };
+	if (!isAddressable(from) || !isAddressable(to)) return false;
+	return from.itemId === to.itemId && from.hostToken === to.hostToken;
+}
+
+const panelListeners = new Set<(event: AttachmentPanelOpenEvent) => void>();
+
+/**
+ * Subscribe to open-panel requests. Returns a dispose function — call it from
+ * the host's teardown, or the listener leaks and fires into a dead component.
+ * Listeners receive EVERY emission; filter with
+ * `isAttachmentPanelEventForHost`.
+ */
+export function registerAttachmentPanelListener(
+	fn: (event: AttachmentPanelOpenEvent) => void
+): () => void {
+	panelListeners.add(fn);
+	return () => panelListeners.delete(fn);
+}
+
+/**
+ * Request that the owning host open the options panel for an attachment.
+ * No-op when the event can't address a host — an emission missing any of the
+ * three identity fields would either reach nobody or, worse, invite a
+ * "matches anything" reading of the predicate.
+ */
+export function notifyAttachmentPanelOpen(event: AttachmentPanelOpenEvent): void {
+	if (!event?.attachmentId || !event.itemId || !event.hostToken) return;
+	for (const fn of panelListeners) fn(event);
 }

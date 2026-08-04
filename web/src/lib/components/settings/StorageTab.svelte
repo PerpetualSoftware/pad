@@ -12,13 +12,23 @@
 		WorkspaceStorageInfo
 	} from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { iconForAttachment, formatBytes, isImage } from '$lib/attachments/display';
+	import {
+		iconForAttachment,
+		formatBytes,
+		isImage,
+		canOpenInViewer,
+		displayFilename,
+	} from '$lib/attachments/display';
 	import {
 		buildStorageFilters,
 		hasActiveStorageFilters,
 		type StorageFilterSelections
 	} from '$lib/attachments/storageFilters';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
+	import Menu from '$lib/components/common/Menu.svelte';
+	import AttachmentDeleteConfirm, {
+		workspaceAttachmentDeletePrompt,
+	} from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
 	import { viewIdentity, createFence, createPaintFence } from '$lib/attachments/viewFence';
 
 	// ── Props ────────────────────────────────────────────────────────────────
@@ -49,6 +59,22 @@
 	let loading = $state(true);
 	let usage = $state<WorkspaceStorageInfo | null>(null);
 	let attachments = $state<AttachmentListItem[]>([]);
+	/**
+	 * The delete confirmation currently on screen (PLAN-2392 DR-18 /
+	 * TASK-2425). This row used to raise a browser-native `confirm()`; every
+	 * attachment delete now goes through the same in-app drill-down — Cancel
+	 * first, destructive row last, prompt back-referenced by
+	 * `aria-describedby`. The WORDING stays this surface's own: the strip's
+	 * "referenced in this item's content" check has no meaning in a
+	 * workspace-wide list, and what matters here is the GC grace period.
+	 */
+	let pendingDelete = $state<{
+		att: AttachmentListItem;
+		anchor: HTMLElement | null;
+		prompt: string;
+	} | null>(null);
+	const uid = $props.id();
+	const promptId = `storage-delete-note-${uid}`;
 	let total = $state(0);
 	let limit = $state(50);
 	let offset = $state(0);
@@ -248,6 +274,10 @@
 				attachments = [];
 				total = 0;
 				usage = null;
+				// A confirmation left up for a row from the previous workspace
+				// goes with it: the button it is anchored to has just been
+				// unmounted, and `confirmDelete`'s fence would refuse it anyway.
+				pendingDelete = null;
 				void loadWorkspaceView();
 				return;
 			}
@@ -400,6 +430,64 @@
 
 	// ── Actions ──────────────────────────────────────────────────────────────
 
+	/**
+	 * Open the delete confirmation (PLAN-2392 DR-18 / TASK-2425).
+	 *
+	 * ENTRY fence, for the same reason `handleDelete` re-takes it below: the
+	 * clicked row was painted for the workspace this tab has LOADED, which
+	 * during the prop-update → effect-flush window is not necessarily the one
+	 * `wsSlug` already names.
+	 */
+	function requestDelete(att: AttachmentListItem, anchor: HTMLElement | null) {
+		if (!paint.isCurrent()) return;
+		pendingDelete = {
+			att,
+			anchor,
+			prompt: workspaceAttachmentDeletePrompt(att.filename),
+		};
+	}
+
+	/** Escape / outside-click. `Menu` handles the Escape refocus itself. */
+	function dismissDelete() {
+		pendingDelete = null;
+	}
+
+	/** The Cancel row — returns focus to the button it was anchored to. */
+	function cancelDelete() {
+		const anchor = pendingDelete?.anchor;
+		pendingDelete = null;
+		anchor?.focus();
+	}
+
+	/**
+	 * The user confirmed. `confirm()` blocked the thread, so the entry fence
+	 * was still true by definition when it returned; an in-app confirmation
+	 * does not, and the workspace can change while it is up — so the fence is
+	 * re-checked at the point that actually sends the request.
+	 */
+	/**
+	 * Ids with a DELETE in flight. A plain Set, not `$state`: nothing renders
+	 * from it, and it is read by the guard in `confirmDelete` which needs the
+	 * value as of right now rather than a reactive snapshot.
+	 */
+	const deletingIds = new Set<string>();
+
+	function confirmDelete() {
+		const pending = pendingDelete;
+		pendingDelete = null;
+		if (!pending) return;
+		if (!paint.isCurrent()) return;
+		// One delete at a time. `confirm()` blocked the thread, so a second
+		// confirmation could not be raised while the first request was in
+		// flight; an in-app one can, and this list does not remove the row
+		// optimistically the way the item strip does, so the same row stays
+		// clickable throughout. Two DELETEs for one row means the second gets a
+		// 404 and the user sees a success and an "already deleted" for a single
+		// action (orchestrator's full-diff review round 2).
+		if (deletingIds.has(pending.att.id)) return;
+		void handleDelete(pending.att);
+	}
+
 	async function handleDelete(att: AttachmentListItem) {
 		// ENTRY fence (fence 3). The clicked row was painted for the workspace
 		// this tab has LOADED, which during the prop-update → effect-flush window
@@ -417,10 +505,7 @@
 		// continuation toast and refetch (Codex round 3).
 		const req = viewFence.begin();
 
-		const ok = confirm(
-			`Delete ${att.filename}? The blob is reclaimed by garbage collection after a grace period.`
-		);
-		if (!ok) return;
+		deletingIds.add(att.id);
 		try {
 			await api.attachments.delete(reqWsSlug, att.id);
 			// Same broadcast the item attachment strip does (PLAN-2382 /
@@ -448,7 +533,7 @@
 				if (paint.isCurrent() && !painted.changed()) await reload();
 				return;
 			}
-			toastStore.show(`Deleted ${att.filename}`, 'success');
+			toastStore.show(`Deleted ${displayFilename(att.filename)}`, 'success');
 			await reload();
 		} catch (err) {
 			// A 404 is authoritative that the row is gone — the list was simply
@@ -465,13 +550,17 @@
 					if (paint.isCurrent() && !painted.changed()) await reload();
 					return;
 				}
-				toastStore.show(`${att.filename} was already deleted`, 'info');
+				toastStore.show(`${displayFilename(att.filename)} was already deleted`, 'info');
 				await reload();
 				return;
 			}
 			if (req.stale()) return;
 			const msg = err instanceof Error ? err.message : 'Failed to delete attachment';
 			toastStore.show(msg, 'error');
+		} finally {
+			// Every arm above returns from inside the try/catch, so the release
+			// has to be here or a failed delete would block the row forever.
+			deletingIds.delete(att.id);
 		}
 	}
 
@@ -664,17 +753,29 @@
 			<div class="att-list">
 				{#each attachments as att (att.id)}
 					<div class="att-row card">
-						<a
+						<!-- DR-16: the THUMBNAIL still renders for anything image-ish
+						     (it is an <img> either way), but the link that hands the
+						     ORIGINAL to the browser is gated on the exact raster
+						     allowlist — `image/svg+xml` can carry active content and
+						     the download handler defaults unknown types to an inline
+						     disposition. A non-allowlisted row keeps the row, loses
+						     the open-in-new-tab. -->
+						<svelte:element
+							this={canOpenInViewer(att.mime_type) ? 'a' : 'div'}
 							class="att-thumb"
-							href={api.attachments.downloadUrl(wsSlug, att.id)}
-							target="_blank"
-							rel="noopener"
-							aria-label="Open {att.filename}"
+							href={canOpenInViewer(att.mime_type)
+								? api.attachments.downloadUrl(wsSlug, att.id)
+								: undefined}
+							target={canOpenInViewer(att.mime_type) ? '_blank' : undefined}
+							rel={canOpenInViewer(att.mime_type) ? 'noopener' : undefined}
+							aria-label={canOpenInViewer(att.mime_type)
+								? `Open ${displayFilename(att.filename)}`
+								: undefined}
 						>
 							{#if isImage(att.mime_type)}
 								<img
 									src={api.attachments.downloadUrl(wsSlug, att.id, 'thumb-sm')}
-									alt={att.filename}
+									alt={displayFilename(att.filename)}
 									loading="lazy"
 								/>
 							{:else}
@@ -682,11 +783,13 @@
 									<AttachmentIcon id={iconForAttachment(att.mime_type, att.filename)} />
 								</span>
 							{/if}
-						</a>
+						</svelte:element>
 
 						<div class="att-meta">
 							<div class="att-line1">
-								<span class="att-filename" title={att.filename}>{att.filename}</span>
+								<span class="att-filename" title={displayFilename(att.filename)}
+									>{displayFilename(att.filename)}</span
+								>
 							</div>
 							<div class="att-line2">
 								<span class="att-size">{formatBytes(att.size_bytes)}</span>
@@ -716,7 +819,9 @@
 							<button
 								type="button"
 								class="btn btn-small btn-remove"
-								onclick={() => handleDelete(att)}
+								onclick={(e) => requestDelete(att, e.currentTarget)}
+								title="Delete {displayFilename(att.filename)}"
+								aria-label="Delete {displayFilename(att.filename)}"
 							>
 								Delete
 							</button>
@@ -750,6 +855,33 @@
 		{/if}
 	{/if}
 </div>
+
+<!--
+	The delete confirmation (PLAN-2392 DR-18 / TASK-2425) — the same in-app
+	drill-down the item strip and the options panel show, anchored to the row's
+	own Delete button. Props are read through `?.` because `Menu` places itself
+	in a `tick().then()` that can run after this block is torn down.
+-->
+{#if pendingDelete}
+	<Menu
+		open
+		onclose={dismissDelete}
+		trigger={pendingDelete?.anchor ?? undefined}
+		mode="portal"
+		width={272}
+		sheetOnMobile
+		sheetTitle="Delete {displayFilename(pendingDelete?.att.filename)}"
+		ariaLabel="Delete {displayFilename(pendingDelete?.att.filename)}"
+		focusKey={pendingDelete?.att.id}
+	>
+		<AttachmentDeleteConfirm
+			prompt={pendingDelete?.prompt ?? ''}
+			{promptId}
+			oncancel={cancelDelete}
+			onconfirm={confirmDelete}
+		/>
+	</Menu>
+{/if}
 
 <style>
 	/* ── Local copies of the parent settings page primitives ────────────────
