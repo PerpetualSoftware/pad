@@ -604,6 +604,7 @@
 		content = '',
 		editable = true,
 		itemId,
+		hostToken = '',
 		ydoc,
 		awareness,
 		collabUser,
@@ -621,6 +622,16 @@
 		 * fall back to the workspace editor-role gate.
 		 */
 		itemId?: string;
+		/**
+		 * Identity of the `ItemDetail` mount that owns this editor
+		 * (PLAN-2392 DR-8 / TASK-2421). Passed straight through to the
+		 * attachment NodeViews so a chip / image can address the ONE host
+		 * that owns it — `ItemDetail` runs as a master plus a peeked pane,
+		 * and `itemId` alone would let both consume the same event. Empty
+		 * (the default, for editors mounted outside an ItemDetail) disables
+		 * panel addressing rather than broadcasting.
+		 */
+		hostToken?: string;
 		/**
 		 * Optional Yjs document to bind this editor to via the Tiptap
 		 * Collaboration extension (PLAN-1248). When set, the y-tiptap
@@ -914,6 +925,12 @@
 			AttachmentImage.configure({
 				getDownloadUrl: getAttachmentUrl,
 				workspaceSlug: wsSlug,
+				// Panel / viewer addressing (PLAN-2392 DR-8). Read once at
+				// editor construction, which is correct: both are fixed for
+				// the life of a mount — ItemDetail remounts this editor per
+				// item ({#key item.id}) and mints one token per ItemDetail.
+				itemId: itemId ?? '',
+				hostToken,
 				// Initial supportedFormats is empty — server capabilities
 				// are fetched async below. The toolbar starts disabled
 				// for all formats until capabilities resolve, then
@@ -934,7 +951,12 @@
 					}
 				},
 			}),
-			AttachmentChip.configure({ getDownloadUrl: getAttachmentUrl, workspaceSlug: wsSlug }),
+			AttachmentChip.configure({
+				getDownloadUrl: getAttachmentUrl,
+				workspaceSlug: wsSlug,
+				itemId: itemId ?? '',
+				hostToken,
+			}),
 			// When a Y.Doc is provided, register the Collaboration
 			// extension so the y-tiptap binding takes over document
 			// state. Without ydoc this slot is empty and the editor

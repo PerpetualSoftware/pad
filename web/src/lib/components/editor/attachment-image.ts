@@ -104,6 +104,19 @@ export interface AttachmentImageOptions {
 	 */
 	workspaceSlug: string;
 	/**
+	 * UUID of the item this editor is editing. Half of the panel / viewer
+	 * event address (PLAN-2392 DR-8). Empty when the editor has no item
+	 * context.
+	 */
+	itemId: string;
+	/**
+	 * Identity of the `ItemDetail` mount that owns this editor — the other
+	 * half of the address. `ItemDetail` is mounted more than once at a time
+	 * (master + peeked pane), so `itemId` alone would let both hosts consume
+	 * one NodeView's event. Empty disables addressing (DR-8).
+	 */
+	hostToken: string;
+	/**
 	 * Image formats the server-side processor supports. Drives the
 	 * rotate toolbar's enabled state per attachment: a button is
 	 * disabled (with tooltip) when the image's MIME isn't in this
@@ -162,6 +175,8 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			HTMLAttributes: {},
 			getDownloadUrl: (uuid: string) => `${PAD_ATTACHMENT_PREFIX}${uuid}`,
 			workspaceSlug: '',
+			itemId: '',
+			hostToken: '',
 			supportedFormats: [] as string[],
 			transform: async () => {
 				throw new Error('AttachmentImage: configure({ transform }) is required to use rotate/crop');

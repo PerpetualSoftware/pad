@@ -68,9 +68,20 @@
 		 * callers, so existing usage is unaffected.
 		 */
 		flushBeforeRestore?: () => Promise<void>;
+		/**
+		 * Identity of the `ItemDetail` mount that owns this timeline
+		 * (PLAN-2392 DR-8 / TASK-2421). Forwarded verbatim to every
+		 * CommentEditor this timeline mounts — the composer here, and the
+		 * edit/reply composers inside TimelineCommentCard — so an attachment
+		 * chip in a comment body can address the ONE host that owns it. A
+		 * master and a peeked pane are both mounted on the same module-global
+		 * bus, so `itemId` alone is not an address. Empty (the default, for
+		 * callers outside an ItemDetail) disables addressing.
+		 */
+		hostToken?: string;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '' }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -482,6 +493,7 @@
 			<CommentEditor
 				{wsSlug}
 				{itemId}
+				{hostToken}
 				placeholder="Write a comment… (paste or drop an image to attach)"
 				submitLabel="Comment"
 				{submitting}
@@ -520,6 +532,7 @@
 								{canEdit}
 								{frozen}
 								{isAdmin}
+								{hostToken}
 								{attachmentResolver}
 								onDelete={handleDelete}
 								onReply={handleReply}

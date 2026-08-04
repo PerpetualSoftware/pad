@@ -56,6 +56,20 @@ export interface AttachmentChipOptions {
 	getDownloadUrl: AttachmentUrlBuilder;
 	/** Workspace slug used by the metadata HEAD fetcher. Empty disables the fetch. */
 	workspaceSlug: string;
+	/**
+	 * UUID of the item this editor is editing. Half of the open-panel event's
+	 * address (PLAN-2392 DR-8). Empty when the editor has no item context —
+	 * the chip then can't address a panel host and stays on its plain
+	 * behaviour.
+	 */
+	itemId: string;
+	/**
+	 * Identity of the `ItemDetail` mount that owns this editor — the other
+	 * half of the address. `ItemDetail` is mounted more than once at a time
+	 * (master + peeked pane), so `itemId` alone would let both hosts consume
+	 * one chip's event. Empty disables panel addressing (DR-8).
+	 */
+	hostToken: string;
 }
 
 declare module '@tiptap/core' {
@@ -84,6 +98,8 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			HTMLAttributes: {},
 			getDownloadUrl: (uuid: string) => `${PAD_ATTACHMENT_PREFIX}${uuid}`,
 			workspaceSlug: '',
+			itemId: '',
+			hostToken: '',
 		};
 	},
 
