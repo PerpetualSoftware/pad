@@ -498,6 +498,96 @@ describe('AttachmentPanelHost', () => {
 		);
 	});
 
+	// --- stale-continuation regressions (orchestrator review) -----------------
+	// All three are the same shape: something the panel started keeps running
+	// after the host has moved on, and lands on whatever is on screen by then.
+
+	it("a delete resolving after an item switch does not close the panel opened since", async () => {
+		mountHost(propsA);
+		let releaseDelete: (() => void) | undefined;
+		deleteMock.mockImplementation(
+			() => new Promise<void>((resolve) => (releaseDelete = () => resolve()))
+		);
+
+		// Attachment A: confirm the delete, leaving the request in flight.
+		notifyAttachmentPanelOpen(openEvent());
+		await settle();
+		(row('Delete') as HTMLElement).click();
+		await settle();
+		(row('Delete file') as HTMLElement).click();
+		await settle();
+
+		// The host switches items, destroying that panel...
+		propsA.itemId = 'item-b';
+		flushSync();
+		expect(panel()).toBeNull();
+
+		// ...and a panel opens on a DIFFERENT attachment for the new item.
+		notifyAttachmentPanelOpen(
+			openEvent({ itemId: 'item-b', attachmentId: ATT_ID_2, filename: 'notes.txt' })
+		);
+		await settle();
+		expect(panel()?.textContent).toContain('notes.txt');
+
+		// Now the first delete finally lands.
+		releaseDelete?.();
+		await settle();
+
+		// It must not dismiss the panel the user just opened.
+		expect(panel()).not.toBeNull();
+		expect(panel()?.textContent).toContain('notes.txt');
+	});
+
+	it('resolves a confirmation left on screen when the host tears the panel down', async () => {
+		mountHost(propsA);
+		notifyAttachmentPanelOpen(openEvent());
+		await settle();
+		(row('Delete') as HTMLElement).click();
+		await settle();
+		expect(panel()?.textContent).toContain('Delete file');
+
+		// Archive destroys the child mid-confirmation. The descriptor is
+		// awaiting that promise; leaving it unresolved strands the await (and
+		// the closure it holds) forever.
+		propsA.parentArchived = true;
+		await settle();
+		expect(panel()).toBeNull();
+
+		// Nothing was deleted, and no late continuation runs.
+		expect(deleteMock).not.toHaveBeenCalled();
+		expect(announceMock).not.toHaveBeenCalled();
+	});
+
+	it('shows a retryable error when the restore revalidation fails, instead of a dead end', async () => {
+		// The reachable shape of DR-14's restore path: archiving CLOSES an open
+		// panel, so a forced revalidation only ever lands on a panel opened
+		// while the parent was ALREADY archived — where the attachment fetch
+		// legitimately 404s.
+		propsA.parentArchived = true;
+		mountHost(propsA);
+		fetchMetaMock.mockResolvedValue({ status: 'missing' });
+		// Metadata gaps, so the panel actually probes — a chip's event, not the
+		// strip's (which carries all three and skips the fetch).
+		const partial = { mime_type: null, size_bytes: null };
+		notifyAttachmentPanelOpen(openEvent(partial));
+		await settle();
+		expect(panel()?.textContent).toContain('This file is no longer available.');
+		// Authoritative-missing offers no Retry, by design.
+		expect(row('Retry')).toBeUndefined();
+
+		// The item is restored, so that 404 no longer necessarily holds — but
+		// the revalidation itself fails transiently. Leaving `missing` latched
+		// would show "no longer available" with no way to ask again: the exact
+		// empty-vs-broken dead end DR-10 exists to prevent.
+		revalidateMetaMock.mockResolvedValue({ status: 'transient' });
+		propsA.parentArchived = false;
+		await settle();
+
+		expect(revalidateMetaMock).toHaveBeenCalled();
+		expect(panel()?.textContent).not.toContain('This file is no longer available.');
+		expect(row('Retry')).toBeDefined();
+	});
+
 	it('keeps the full filename in the accessible name while the visible row truncates', async () => {
 		const long = `${'a'.repeat(200)}.pdf`;
 		mountHost(propsA);

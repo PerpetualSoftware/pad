@@ -71,6 +71,27 @@
 	}: Props = $props();
 
 	let request = $state<AttachmentPanelOpenEvent | null>(null);
+
+	/**
+	 * Builds a close handler BOUND to the request it was rendered for, so a
+	 * stale one cannot close a newer panel.
+	 *
+	 * The child is destroyed by nulling `request` (item switch, archive), but a
+	 * continuation it already started — a delete resolving, a deferred close
+	 * after a download — can still call back afterwards. Unbound, that call
+	 * would clear whatever request is current BY THEN, dismissing a panel the
+	 * user just opened on a different attachment.
+	 *
+	 * The child fences its own continuations too; this is the same invariant
+	 * enforced at the boundary, where it holds no matter what any future child
+	 * does with its internals.
+	 */
+	function closeRequest(target: AttachmentPanelOpenEvent | null): () => void {
+		return () => {
+			if (target && request !== target) return;
+			request = null;
+		};
+	}
 	let revalidateToken = $state(0);
 
 	// Plain `let`, not $state: written and read only inside `untrack`ed effect
@@ -138,6 +159,6 @@
 		{itemContent}
 		{liveContent}
 		{revalidateToken}
-		onclose={() => (request = null)}
+		onclose={closeRequest(request)}
 	/>
 {/if}

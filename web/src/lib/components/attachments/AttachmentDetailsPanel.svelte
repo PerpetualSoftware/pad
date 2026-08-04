@@ -61,7 +61,7 @@
 	entry points at once in PLAN-2411 (DR-19).
 -->
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
@@ -188,6 +188,13 @@
 	/** Resolver for the in-app confirmation currently on screen, if any. */
 	let pendingConfirm: ((confirmed: boolean) => void) | null = null;
 	/**
+	 * Teardown latch and the deferred-close timer. Plain `let`, not `$state`:
+	 * nothing renders from them, and they are read by continuations that must
+	 * see the CURRENT value rather than a reactive snapshot.
+	 */
+	let destroyed = false;
+	let deferredClose: ReturnType<typeof setTimeout> | undefined;
+	/**
 	 * Counts confirmed deletes. `run()` resolves the same way whether the row
 	 * was deleted or the user CANCELLED the confirmation, so closing on a
 	 * resolved delete would dismiss the panel out from under a cancel — this is
@@ -298,6 +305,14 @@
 			if (reloadStamp !== seenReload) {
 				seenReload = reloadStamp;
 				forced = true;
+				// A forced revalidation exists because the previous answer may no
+				// longer hold — the parent was just restored (DR-14). So drop the
+				// latched `missing` NOW rather than only on an `ok`: if this
+				// revalidation comes back transient, the render must fall through
+				// to the retryable error. Leaving it latched shows "no longer
+				// available" with no way to ask again, which is the exact
+				// empty-vs-broken confusion DR-10 exists to prevent.
+				missing = false;
 			}
 		});
 
@@ -422,6 +437,33 @@
 		}
 	}
 
+	/**
+	 * Teardown (PLAN-2392, orchestrator review).
+	 *
+	 * The host destroys this component by nulling its request — on an item
+	 * switch, on archive, on close. Without this, a delete that resolves after
+	 * that point still runs its continuation and calls `onclose()`, which
+	 * closes whatever panel the host has open BY THEN: attachment A's delete
+	 * dismissing the panel the user just opened on B. And a confirmation left
+	 * on screen at teardown would never resolve, stranding the descriptor's
+	 * `await` forever.
+	 *
+	 * So teardown does what a subject change does: invalidate the fences so
+	 * every in-flight continuation reads stale, and reject any pending
+	 * confirmation.
+	 */
+	onDestroy(() => {
+		destroyed = true;
+		clearTimeout(deferredClose);
+		deferredClose = undefined;
+		viewFence.invalidate();
+		loadFence.invalidate();
+		paint.record(null);
+		const resolve = pendingConfirm;
+		pendingConfirm = null;
+		resolve?.(false);
+	});
+
 	function handleClose() {
 		// A confirmation still on screen when the panel closes is a rejection:
 		// leaving the promise unresolved would strand the descriptor's `await`
@@ -437,7 +479,20 @@
 	 * some browsers — the download would silently not happen.
 	 */
 	function closeAfterNavigation() {
-		setTimeout(() => handleClose(), 0);
+		// Fenced like every other continuation: the timer outlives the click, so
+		// by the time it fires the panel may have been reopened on a DIFFERENT
+		// attachment (tap a chip, tap another). Closing then would dismiss a
+		// panel the user just opened. Cleared on teardown so it cannot fire into
+		// a destroyed component either.
+		const token = viewFence.begin();
+		clearTimeout(deferredClose);
+		deferredClose = setTimeout(() => {
+			deferredClose = undefined;
+			if (destroyed) return;
+			if (token.stale()) return;
+			if (!paint.isCurrent()) return;
+			handleClose();
+		}, 0);
 	}
 </script>
 
