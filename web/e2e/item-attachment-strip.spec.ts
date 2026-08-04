@@ -209,14 +209,27 @@ test.describe('item attachment strip', () => {
 		const del = page.locator(DELETE_BTN).first();
 		await del.focus();
 		await expect(del).toBeFocused();
+		// WCAG 2.2 target size (2.5.8), from PLAN-2382. Only a real browser
+		// applies the scoped CSS, so this is the only place it can be checked.
+		const box = await del.boundingBox();
+		expect(box?.width).toBeGreaterThanOrEqual(24);
+		expect(box?.height).toBeGreaterThanOrEqual(24);
 
-		page.once('dialog', (dialog) => {
-			// The attachment IS embedded in the body (the drop inserted it), so
-			// the confirm must say so rather than hedging.
-			expect(dialog.message()).toContain("still used in this item's content");
-			void dialog.accept();
-		});
+		// TASK-2425 / DR-18: the confirmation is the app's own drill-down, not
+		// a browser dialog. A native `confirm()` would hang this click until
+		// Playwright auto-dismissed it, so the absence of a dialog handler is
+		// itself part of the assertion.
 		await del.click();
+		const confirmMenu = page.locator('[role="menu"]');
+		await expect(confirmMenu).toBeVisible();
+		// The attachment IS embedded in the body (the drop inserted it), so the
+		// prompt must say so rather than hedging.
+		await expect(confirmMenu.locator('.attachment-delete-prompt')).toContainText(
+			"still used in this item's content"
+		);
+		// Cancel is first, so the focus handoff can never land Enter on Delete.
+		await expect(confirmMenu.getByRole('menuitem').first()).toContainText('Cancel');
+		await confirmMenu.getByRole('menuitem', { name: 'Delete file' }).click();
 
 		await expect(page.locator(TILE)).toHaveCount(0);
 		// ...and the strip disappears entirely once empty.

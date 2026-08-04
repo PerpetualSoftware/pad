@@ -39,15 +39,14 @@
 	                  refetching — a plain refetch would replay the cached
 	                  failure and look broken (DR-10).
 
-	THE DELETE CONFIRMATION IS AN IN-APP DRILL-DOWN (DR-18), copying the item
-	menu's shape exactly: the prompt is `role="presentation"` with an
-	`aria-describedby` back-reference from the destructive row, Cancel comes
-	FIRST so the focus handoff can never land Enter on Delete, and the
-	contextual "still used in this item's content" warning is carried through
-	from the strip. It is wired as the descriptor's `confirmDelete` promise
-	rather than as a bespoke delete path, so the descriptor's own
-	identity-snapshot and permission re-check across the confirmation stay in
-	force.
+	THE DELETE CONFIRMATION IS AN IN-APP DRILL-DOWN (DR-18) — and it is the
+	SAME one the strip's tile shows, `AttachmentDeleteConfirm`, rows and prompt
+	text both. This panel supplies the sub-view slot; the confirmation owns the
+	shape (prompt as `role="presentation"`, `aria-describedby` back-reference,
+	Cancel first, destructive row last) and the two warning arms. It is wired as
+	the descriptor's `confirmDelete` promise rather than as a bespoke delete
+	path, so the descriptor's own identity-snapshot and permission re-check
+	across the confirmation stay in force.
 
 	SWITCH-SAFETY. The host swaps this component's props from one attachment
 	to another without a `{#key}` remount (a second tap while the panel is
@@ -65,6 +64,9 @@
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
+	import AttachmentDeleteConfirm, {
+		attachmentDeletePrompt,
+	} from './AttachmentDeleteConfirm.svelte';
 	import {
 		attachmentActionsFor,
 		type AttachmentActionContext,
@@ -382,20 +384,16 @@
 	 * it resolves, which is the whole reason it is wired this way rather than
 	 * as a bespoke "confirm, then call the API" path here.
 	 *
-	 * The "not referenced here" arm deliberately does NOT claim the attachment
-	 * is unused, and stays hedged word-for-word with the strip's. Two
-	 * independent reasons: a reference can live in another item's content, in
-	 * fields JSON, or in any comment — the server's scan covers all three and
-	 * none of it is visible client-side — and the body this checks is the
+	 * The wording comes from the shared `attachmentDeletePrompt` — the same
+	 * two arms the strip's tile shows (DR-18). The hedged arm matters here for
+	 * one EXTRA reason beyond the shared one: the body this checks is the
 	 * HOST's, which is not necessarily the attachment's parent item. The
 	 * open-panel event's `itemId` is ROUTING, not ownership: a chip in a reused
 	 * comment composer's unsubmitted draft correctly routes to the host in
 	 * front of the user even after an item switch.
 	 */
 	function confirmDelete(): Promise<boolean> {
-		deletePrompt = referencedHere()
-			? `Delete ${displayName}? It's still used in this item's content — deleting it will leave a "missing attachment" placeholder where it appears.`
-			: `Delete ${displayName}? It isn't referenced in this item's content, but it may still be referenced by another item or a comment. This cannot be undone.`;
+		deletePrompt = attachmentDeletePrompt(displayName, referencedHere());
 		return new Promise<boolean>((resolve) => {
 			// Supersede any confirmation already up — two open at once would
 			// leave one resolver dangling forever.
@@ -565,18 +563,16 @@
 		{/each}
 	{:else}
 		<!--
-			Delete confirmation as a drill-down sub-view (DR-18), the same shape
-			as the item menu's: the prompt is presentational, so it is never
-			announced on its own — hence the aria-describedby back-reference
-			from the destructive row — and Cancel comes FIRST so the focusKey
-			handoff can never land Enter on Delete.
+			Delete confirmation as a drill-down sub-view (DR-18). The shape and
+			the wording live in the shared component, which the strip's tile
+			renders too — one confirmation for one object.
 		-->
-		<div class="ap-note ap-note-warn" role="presentation" id={promptId}>{deletePrompt}</div>
-		<MenuItem icon="‹" onclick={() => settleConfirm(false)}>Cancel</MenuItem>
-		<div class="menu-divider" role="separator"></div>
-		<MenuItem icon="🗑" danger describedBy={promptId} onclick={() => settleConfirm(true)}>
-			Delete file
-		</MenuItem>
+		<AttachmentDeleteConfirm
+			prompt={deletePrompt}
+			{promptId}
+			oncancel={() => settleConfirm(false)}
+			onconfirm={() => settleConfirm(true)}
+		/>
 	{/if}
 </Menu>
 
@@ -636,14 +632,7 @@
 		padding-inline: 9px;
 		font-size: 12px;
 		line-height: 1.35;
-		/* Wraps rather than ellipsizes: the delete prompt carries the filename
-		   and must stay readable in full. */
 		overflow-wrap: anywhere;
-	}
-
-	.ap-note-warn {
-		font-weight: 500;
-		color: var(--accent-orange);
 	}
 
 	.ap-note-error {

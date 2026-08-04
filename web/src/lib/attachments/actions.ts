@@ -70,10 +70,11 @@ export interface AttachmentActionContext {
 	 */
 	origin?: string;
 	/**
-	 * Confirmation gate for Delete. The surface owns the wording and the
-	 * modality (the strip uses `window.confirm`), so a descriptor never
-	 * invents one — but when supplied, returning false aborts before any
-	 * request is sent.
+	 * Confirmation gate for Delete. The surface owns the modality, so a
+	 * descriptor never invents one — but when supplied, returning false aborts
+	 * before any request is sent. Every surface now resolves this through the
+	 * shared `AttachmentDeleteConfirm` drill-down (DR-18); the native
+	 * `window.confirm` the strip used to raise is gone.
 	 */
 	confirmDelete?: (attachment: AttachmentActionSubject) => boolean | Promise<boolean>;
 	/** Called after the server confirms the row is gone (204 or 404). */
