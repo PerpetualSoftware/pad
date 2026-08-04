@@ -64,9 +64,13 @@ describe('editor chip → options panel', () => {
 		target.remove();
 	});
 
-	function chip(): HTMLAnchorElement {
+	// The live NodeView chip is a BUTTON, not an anchor: it opens the options
+	// panel rather than navigating, and an anchor left the URL reachable by
+	// middle-click straight past the panel (orchestrator review of TASK-2424).
+	// `renderHTML` — the clipboard / read-only shape — is still an <a download>.
+	function chip(): HTMLButtonElement {
 		editor ??= makeEditor(target);
-		const el = target.querySelector<HTMLAnchorElement>('a.file-chip');
+		const el = target.querySelector<HTMLButtonElement>('button.file-chip');
 		if (!el) throw new Error('chip NodeView did not render');
 		return el;
 	}
@@ -148,13 +152,32 @@ describe('editor chip → options panel', () => {
 		expect(chip().getAttribute('aria-label')).toBe('Options for spec.pdf, PDF');
 	});
 
+	it('offers no URL for a middle-click to bypass the panel with', () => {
+		// This is why the chip is a button. As an <a href download>, only the
+		// primary click ran the handler: middle-click and aux-click still opened
+		// or downloaded the file — exactly the accidental download the panel
+		// exists to prevent, reachable straight past it. A button has no URL to
+		// activate, so the bypass cannot exist rather than being intercepted.
+		const el = chip();
+		expect(el.tagName).toBe('BUTTON');
+		expect(el.hasAttribute('href')).toBe(false);
+		expect(el.hasAttribute('download')).toBe(false);
+		// type=button: inside a form, a default submit button would be worse
+		// than a link.
+		expect(el.getAttribute('type')).toBe('button');
+
+		el.dispatchEvent(new MouseEvent('auxclick', { bubbles: true, cancelable: true, button: 1 }));
+		expect(panelOpenMock).not.toHaveBeenCalled();
+	});
+
 	it('a deleted chip is inert AND unfocusable, not a dead focus stop', () => {
 		const el = chip();
 		for (const fn of deletionListeners) fn('uuid-1');
 
-		// No href ⇒ not tabbable, and no tabindex is ever set to put the stop
-		// back. The name says what happened rather than promising options.
-		expect(el.hasAttribute('href')).toBe(false);
+		// `disabled` ⇒ not focusable and no events delivered at all, and no
+		// tabindex is ever set to put the stop back. The name says what
+		// happened rather than promising options.
+		expect(el.disabled).toBe(true);
 		expect(el.hasAttribute('tabindex')).toBe(false);
 		expect(el.getAttribute('aria-label')).toBe('spec.pdf — this attachment has been deleted');
 		expect(el.classList.contains('attachment-missing')).toBe(true);
@@ -163,7 +186,5 @@ describe('editor chip → options panel', () => {
 		el.dispatchEvent(click);
 		el.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }));
 		expect(panelOpenMock).not.toHaveBeenCalled();
-		// Still swallowed: the anchor must not navigate to a 404 either.
-		expect(click.defaultPrevented).toBe(true);
 	});
 });

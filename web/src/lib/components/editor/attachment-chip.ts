@@ -198,10 +198,21 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			// chip doesn't know rather than waiting for it.
 			let currentSize: number | null = null;
 
-			const wrapper = document.createElement('a');
+			// A BUTTON, not an anchor (DR-12; orchestrator review of TASK-2424).
+			// A live chip opens the options panel — it does not navigate — so an
+			// anchor was announcing it as a link and, worse, left the URL
+			// reachable by paths the click handler never sees: middle-click and
+			// aux-click would still open or download it, straight past the
+			// affordance that exists to stop a tap doing that. Button semantics
+			// remove the bypass by construction rather than intercepting it, and
+			// match the strip's file tile, which is the same control.
+			//
+			// `renderHTML` stays an `<a download>`: that is the clipboard /
+			// non-NodeView shape, where a real link IS the honest representation
+			// and there is no panel to open.
+			const wrapper = document.createElement('button');
+			wrapper.type = 'button';
 			wrapper.className = 'file-chip';
-			wrapper.target = '_blank';
-			wrapper.rel = 'noopener noreferrer';
 			wrapper.contentEditable = 'false';
 
 			const iconEl = document.createElement('span');
@@ -217,23 +228,25 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 
 			wrapper.append(iconEl, nameEl, sizeEl);
 
+			// The id is the chip's identity for the deletion bus and for the
+			// panel event; the download URL is the PANEL's business now, so the
+			// element carries no href to be aux-clicked.
 			const refreshHref = (): void => {
 				if (currentUuid) {
-					wrapper.href = this.options.getDownloadUrl(currentUuid);
 					wrapper.setAttribute('data-attachment-id', currentUuid);
 				} else {
-					wrapper.removeAttribute('href');
 					wrapper.removeAttribute('data-attachment-id');
 				}
 			};
 
+			// `data-filename` only: a `download` attribute means nothing on a
+			// button, and the actual download is the panel's Download action,
+			// which sets it on a real anchor (DR-16).
 			const refreshFilenameDom = (): void => {
 				if (currentFilename) {
 					wrapper.setAttribute('data-filename', currentFilename);
-					wrapper.download = currentFilename;
 				} else {
 					wrapper.removeAttribute('data-filename');
-					wrapper.removeAttribute('download');
 				}
 				nameEl.textContent = currentFilename || 'attachment';
 			};
@@ -300,14 +313,20 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			const markDeleted = (): void => {
 				deleted = true;
 				wrapper.classList.add('attachment-missing');
-				// Dropping `href` is what makes the dead chip UNFOCUSABLE, not
-				// merely unclickable (DR-12): an anchor without an href is not
-				// tabbable, so a keyboard user isn't handed a focus stop whose
-				// Enter and Space do nothing. `tabindex` is deliberately never
-				// set on this element for the same reason — it would put the
-				// stop back.
-				wrapper.removeAttribute('href');
-				wrapper.removeAttribute('download');
+				// `disabled` is what makes the dead chip genuinely INERT (DR-12),
+				// not merely unclickable: a disabled button is unfocusable and
+				// receives no click or keydown at all, so a keyboard user is
+				// never handed a focus stop whose Enter and Space do nothing.
+				// `tabindex` is deliberately never set for the same reason.
+				//
+				// Blur it explicitly first: a chip the user is focused on RIGHT
+				// NOW (they tabbed to it, then another surface deleted the row)
+				// stays focused in some browsers even once disabled, which would
+				// strand focus on an element that no longer responds.
+				if (typeof document !== 'undefined' && document.activeElement === wrapper) {
+					wrapper.blur();
+				}
+				wrapper.disabled = true;
 				wrapper.title = 'This attachment has been deleted';
 				currentSize = null;
 				sizeEl.textContent = '';
@@ -410,9 +429,15 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				if (event.key !== 'Enter' && !isSpace) return;
 				// A modified key is a shortcut, not an activation.
 				if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
-				if (!currentUuid || deleted) return;
+				// Suppress BEFORE the deleted/no-uuid bail, not after. A disabled
+				// button gets no keydown, so this is belt-and-braces — but if a
+				// dead chip ever did receive one, returning early would let Enter
+				// through to ProseMirror's keymap and split the paragraph the
+				// chip sits in, which is a destructive answer to pressing Enter
+				// on something inert.
 				event.preventDefault();
 				event.stopPropagation();
+				if (!currentUuid || deleted) return;
 				openPanel();
 			});
 

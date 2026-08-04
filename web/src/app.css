@@ -349,6 +349,12 @@ input:focus, textarea:focus {
    attachments. Used by both the editor's AttachmentChip node and the
    read-only markdown render path (TASK-874). Styles target the same
    class names from both surfaces so the visual matches edge to edge. */
+/* Two elements share this class: the editor NodeView renders a <button> (a
+   live chip opens the options panel, it does not navigate — PLAN-2392 DR-12),
+   while the read-only markdown path and the clipboard shape render an <a
+   download>. So it carries the button reset explicitly: without `font:
+   inherit` the UA's 13.33px Arial would replace the inherited font and shrink
+   the chip, and `text-align` keeps the label left-aligned in the button. */
 .file-chip {
 	display: inline-flex;
 	align-items: center;
@@ -356,6 +362,8 @@ input:focus, textarea:focus {
 	max-width: 100%;
 	padding: 4px 10px;
 	margin: 0 1px;
+	font: inherit;
+	text-align: start;
 	background: var(--bg-tertiary);
 	border: 1px solid var(--border-subtle);
 	border-radius: 6px;
@@ -397,6 +405,14 @@ input:focus, textarea:focus {
 	border-style: dashed;
 	cursor: default;
 	text-decoration: line-through;
+}
+/* The NodeView marks a dead chip `disabled`, which is what makes it inert and
+   unfocusable; keep it looking the same as the read-only path's missing chip
+   rather than inheriting the UA's disabled-button greying. */
+.file-chip:disabled {
+	color: var(--text-muted);
+	cursor: default;
+	opacity: 1;
 }
 .file-chip.attachment-missing:hover {
 	background: var(--bg-tertiary);
