@@ -222,6 +222,46 @@ export function isImage(mime: string): boolean {
 	return mime.startsWith('image/');
 }
 
+/** Human label per icon family, for the "what IS this file" line. */
+const FAMILY_LABELS: Record<AttachmentIconId, string> = {
+	image: 'Image',
+	video: 'Video',
+	audio: 'Audio',
+	document: 'Document',
+	spreadsheet: 'Spreadsheet',
+	presentation: 'Presentation',
+	pdf: 'PDF',
+	archive: 'Archive',
+	text: 'Text',
+	generic: 'File',
+};
+
+/**
+ * A short, human file-type description — "PDF", "PNG image", "XLSX
+ * spreadsheet", "File" (PLAN-2392 DR-2 / DR-18).
+ *
+ * Built on `iconForAttachment` on purpose: the icon and the words beside it
+ * must never disagree about what a file is, and reading the family from the
+ * same mapper is the only way to guarantee that. The raw MIME is deliberately
+ * NOT what surfaces show — `application/vnd.openxmlformats-officedocument.
+ * spreadsheetml.sheet` is not a type a human reads — but it stays available
+ * to call sites for a `title`.
+ *
+ * The extension is dropped when it merely repeats the family ("PDF · PDF")
+ * and kept when it adds the specific format ("PNG image"). With neither a
+ * usable MIME nor an extension the answer is the family fallback, "File" —
+ * never an empty string, so the line never renders as a stray separator.
+ */
+export function describeAttachmentType(
+	mime: string | null | undefined,
+	filename?: string | null,
+): string {
+	const family = FAMILY_LABELS[iconForAttachment(mime, filename)];
+	const ext = extensionOf(filename).toUpperCase();
+	if (!ext || ext === family.toUpperCase()) return family;
+	return `${ext} ${family.toLowerCase()}`;
+}
+
 /**
  * The exact raster types the in-app image viewer may open (PLAN-2392
  * DR-16). Deliberately an allowlist and NOT an `image/` prefix test:
