@@ -408,6 +408,28 @@
 		})();
 	});
 
+	/**
+	 * Permission withdrawn while the confirmation is open.
+	 *
+	 * The pane can go peeked (or a role can change) between opening the
+	 * confirmation and answering it. Blocking the eventual request is not
+	 * enough: the user is left looking at a live "Delete file" button for an
+	 * action that can no longer happen, on a surface that is supposed to offer
+	 * no delete at all in that state. So the confirmation is abandoned as a
+	 * rejection, exactly as a subject change abandons it.
+	 *
+	 * Plain latch + `untrack` for the writes: as `$state` this effect would
+	 * depend on what it writes, which aborts the flush and strands unrelated
+	 * reactivity (CONVE-1688).
+	 */
+	$effect(() => {
+		const mayMutate = mutationsEnabled;
+		untrack(() => {
+			if (mayMutate || view !== 'delete') return;
+			settleConfirm(false);
+		});
+	});
+
 	function retry() {
 		// ENTRY fence: the clicked row was painted for `paint`'s identity, and
 		// the live props may already name a different attachment.

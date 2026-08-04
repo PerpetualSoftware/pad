@@ -522,6 +522,23 @@
 	// on it would corrupt this item's count. The continuation can therefore
 	// overstate by one until the next load; that is the safe direction, and it
 	// self-corrects (Codex round 5).
+	/**
+	 * Permission withdrawn while the tile's confirmation is open.
+	 *
+	 * `canDelete` is the host's `mutationsEnabled`, so it flips the moment this
+	 * side goes peeked. The delete CONTROL disappears with it (the `{#if
+	 * canDelete}` below), but an already-open confirmation would linger — a
+	 * live "Delete file" prompt anchored to a control that is no longer there.
+	 * Same rejection the panel does, for the same reason.
+	 */
+	$effect(() => {
+		const mayDelete = canDelete;
+		untrack(() => {
+			if (mayDelete) return;
+			pendingDelete = null;
+		});
+	});
+
 	$effect(() => {
 		return registerAttachmentDeletionListener((deletedUuid) => {
 			rememberDeleted(deletedUuid);

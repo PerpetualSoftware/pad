@@ -348,6 +348,29 @@ describe('AttachmentPanelHost', () => {
 		expect(row('Delete')).toBeUndefined();
 	});
 
+	it('abandons an open confirmation when permission is withdrawn mid-decision', async () => {
+		// The pane can go peeked between opening the confirmation and answering
+		// it. Blocking the eventual request is not enough — the user is left
+		// looking at a live "Delete file" for an action that can no longer
+		// happen, on a surface meant to offer no delete at all in that state.
+		mountHost(propsA);
+		notifyAttachmentPanelOpen(openEvent());
+		await settle();
+		row('Delete')!.click();
+		await settle();
+		expect(row('Delete file')).toBeDefined();
+
+		propsA.mutationsEnabled = false;
+		await settle();
+
+		expect(row('Delete file')).toBeUndefined();
+		// Rejected, not merely hidden: nothing was sent.
+		expect(deleteMock).not.toHaveBeenCalled();
+		// And Delete is gone from the actions entirely, as in a peeked pane.
+		expect(row('Delete')).toBeUndefined();
+		expect(row('Download')).toBeDefined();
+	});
+
 	it('deletes through an in-app drill-down confirmation, Cancel first', async () => {
 		propsA.itemContent = `body with ![x](pad-attachment:${ATT_ID}) inline`;
 		mountHost(propsA);
