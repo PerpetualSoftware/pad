@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
 	fetchAttachmentMetadata,
 	invalidateAttachmentMetadata,
+	revalidateAttachmentMetadata,
 	mimeToFormat
 } from './attachment-metadata';
 
@@ -207,6 +208,52 @@ describe('fetchAttachmentMetadata — caching is per-arm', () => {
 			mime: 'image/avif',
 			size: 3
 		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe('revalidateAttachmentMetadata — existence probes ignore the cache', () => {
+	// The orchestrator's Codex pass on TASK-2420 caught this: `ok` is cached
+	// for the page lifetime (correctly — MIME and size are durable facts about
+	// a content-addressed row), but that makes the cache structurally unable
+	// to answer "is this row still there?". An <img> whose load just failed
+	// holds evidence that the cached observation is stale.
+	it('re-issues the HEAD and observes a 404 that a cached ok would have hidden', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValueOnce(
+			head(200, { 'content-type': 'image/png', 'content-length': '10' })
+		);
+		expect(await fetchAttachmentMetadata('ws', uuid, url)).toEqual({
+			status: 'ok',
+			mime: 'image/png',
+			size: 10
+		});
+
+		// The row is deleted by someone else; the cached `ok` still says live.
+		expect(await fetchAttachmentMetadata('ws', uuid, url)).toMatchObject({ status: 'ok' });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		fetchMock.mockResolvedValueOnce(head(404));
+		expect(await revalidateAttachmentMetadata('ws', uuid, url)).toEqual({ status: 'missing' });
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('leaves the authoritative missing result cached for later readers', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValueOnce(head(404));
+		expect(await revalidateAttachmentMetadata('ws', uuid, url)).toEqual({ status: 'missing' });
+
+		expect(await fetchAttachmentMetadata('ws', uuid, url)).toEqual({ status: 'missing' });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not cache a transient revalidation, so a retry probes again', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValueOnce(head(500));
+		expect(await revalidateAttachmentMetadata('ws', uuid, url)).toEqual({ status: 'transient' });
+
+		fetchMock.mockResolvedValueOnce(head(404));
+		expect(await revalidateAttachmentMetadata('ws', uuid, url)).toEqual({ status: 'missing' });
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 });

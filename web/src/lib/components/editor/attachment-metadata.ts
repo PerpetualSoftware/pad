@@ -122,6 +122,34 @@ export function invalidateAttachmentMetadata(workspaceSlug: string, uuid: string
 }
 
 /**
+ * Ask the server about this attachment RIGHT NOW, ignoring anything
+ * already cached.
+ *
+ * `fetchAttachmentMetadata` answers "what is this attachment?" and a
+ * cached `ok` is a perfectly good answer — MIME and size are durable
+ * facts about a content-addressed row. But an EXISTENCE probe asks a
+ * different question, "is this row still there?", and a page-lifetime
+ * cache structurally cannot answer it: the cached `ok` is a memory of
+ * an earlier observation, so a row deleted since would still read as
+ * live and a permanent placeholder would never latch (found by the
+ * orchestrator's Codex pass on TASK-2420).
+ *
+ * The callers that need this are the ones holding contrary evidence —
+ * an <img> whose load just failed, or a user pressing Retry (DR-10,
+ * which requires invalidating before refetching for exactly this
+ * reason). Use `fetchAttachmentMetadata` for everything else; this one
+ * costs a round trip every call by design.
+ */
+export function revalidateAttachmentMetadata(
+	workspaceSlug: string,
+	uuid: string,
+	getDownloadUrl: AttachmentUrlBuilder
+): Promise<AttachmentMetadataResult> {
+	invalidateAttachmentMetadata(workspaceSlug, uuid);
+	return fetchAttachmentMetadata(workspaceSlug, uuid, getDownloadUrl);
+}
+
+/**
  * Map a MIME type to its canonical short format name as the server's
  * Capabilities reports it ("png" / "jpeg" / "gif" / "bmp" / "tiff" /
  * "webp" / "avif" / "heic"). Returns `null` for non-image MIMEs and

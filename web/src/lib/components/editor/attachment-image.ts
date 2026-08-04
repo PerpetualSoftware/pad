@@ -33,6 +33,7 @@ import {
 	type AttachmentVariant,
 	fetchAttachmentMetadata,
 	invalidateAttachmentMetadata,
+	revalidateAttachmentMetadata,
 	mimeToFormat
 } from './attachment-metadata';
 import { openCropModal, type CropResult } from './attachment-crop-modal';
@@ -337,10 +338,15 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 * HEAD probe is what tells them apart: only a 404 latches, and a
 			 * `transient` result leaves the retryable placeholder exactly as
 			 * it was (and is not cached, so Retry re-issues the HEAD).
+			 *
+			 * It REVALIDATES rather than reading the cache: the failed load is
+			 * evidence that whatever we last observed about this row is out of
+			 * date, and a cached `ok` from before the deletion would make the
+			 * placeholder permanently unlatchable.
 			 */
 			function probeForMissing(forUuid: string) {
 				if (!forUuid || !opts.workspaceSlug || deleted) return;
-				void fetchAttachmentMetadata(opts.workspaceSlug, forUuid, opts.getDownloadUrl).then(
+				void revalidateAttachmentMetadata(opts.workspaceSlug, forUuid, opts.getDownloadUrl).then(
 					(result) => {
 						if (result.status === 'missing') latchMissing(forUuid);
 					}
