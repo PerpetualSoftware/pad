@@ -70,7 +70,14 @@ export interface AttachmentChipOptions {
 	HTMLAttributes: Record<string, unknown>;
 	/** Build the download URL — usually `api.attachments.downloadUrl` from the editor's mount context. */
 	getDownloadUrl: AttachmentUrlBuilder;
-	/** Workspace slug used by the metadata HEAD fetcher. Empty disables the fetch. */
+	/**
+	 * Workspace slug for anything resolved at CONFIGURE time.
+	 *
+	 * NOT the metadata probe's workspace — that reads `address().workspaceSlug`,
+	 * because an editor can outlive a pane workspace switch and this value would
+	 * key the cache under the previous one. Kept for callers that legitimately
+	 * want the mount-time value; a probe is not one of them.
+	 */
 	workspaceSlug: string;
 	/**
 	 * Reads the host address (item + owning `ItemDetail` mount) to stamp on

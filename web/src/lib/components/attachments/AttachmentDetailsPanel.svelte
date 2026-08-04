@@ -74,6 +74,7 @@
 	} from '$lib/attachments/actions';
 	import {
 		describeAttachmentType,
+		displayFilename,
 		formatBytes,
 		iconForAttachment,
 	} from '$lib/attachments/display';
@@ -151,6 +152,13 @@
 		onDeleted,
 	}: Props = $props();
 
+	/**
+	 * How long a metadata read may hang before the panel calls it a failure.
+	 * Generous: this is the "something is wrong" threshold, not a latency
+	 * budget — a slow answer that arrives still wins.
+	 */
+	const METADATA_SLOW_MS = 10_000;
+
 	const uid = $props.id();
 	const promptId = `attachment-delete-note-${uid}`;
 
@@ -214,7 +222,7 @@
 	 */
 	let deleteSignal = 0;
 
-	const displayName = $derived(filename?.trim() || 'Attachment');
+	const displayName = $derived(displayFilename(filename));
 	// The event's value wins when it has one — it came from a list row, which
 	// is at least as good as a HEAD and is available before any fetch.
 	const mime = $derived(mimeType || fetchedMime || '');
@@ -345,6 +353,17 @@
 
 		loading = true;
 		loadFailed = false;
+		// A HEAD that never settles is not a failure the fetch layer can report:
+		// no rejection arrives, so without this the panel sits on "Reading
+		// details…" forever with no Retry — indistinguishable to the user from
+		// a hang, and the exact loading-vs-failed confusion DR-10 exists to
+		// prevent. The request is NOT aborted: if it does eventually answer, it
+		// is still the truth and still allowed to correct the error state.
+		const slowTimer = setTimeout(() => {
+			if (req.stale()) return;
+			loading = false;
+			loadFailed = true;
+		}, METADATA_SLOW_MS);
 		void (async () => {
 			// The workspace comes off the TOKEN, not the live prop: the request
 			// must name the workspace it was issued for even if the panel has
@@ -352,6 +371,7 @@
 			const result = forced
 				? await revalidateAttachmentMetadata(req.value.ws, req.value.att, downloadUrl)
 				: await fetchAttachmentMetadata(req.value.ws, req.value.att, downloadUrl);
+			clearTimeout(slowTimer);
 			if (req.stale()) return;
 			loading = false;
 			if (result.status === 'ok') {

@@ -266,7 +266,10 @@ describe('AttachmentPanelHost', () => {
 
 		// Painted before the fetch settles — never a blank sheet, never a wait.
 		expect(panel()).not.toBeNull();
-		expect(panel()?.textContent).toContain('Attachment');
+		// One word for a nameless file across every surface (`displayFilename`):
+		// the panel used to say "Attachment" while the tile and the delete
+		// prompt said something else.
+		expect(panel()?.textContent).toContain('Untitled file');
 		expect(panel()?.textContent).toContain('Reading details…');
 
 		resolveMeta({ status: 'ok', mime: 'application/pdf', size: 1024 });
@@ -580,6 +583,32 @@ describe('AttachmentPanelHost', () => {
 		notifyAttachmentDeleted(ATT_ID);
 		await settle();
 		expect(panel()).toBeNull();
+	});
+
+	it('calls a hung metadata read a failure rather than loading forever', async () => {
+		// A HEAD that never settles produces no rejection, so nothing downstream
+		// ever fires: without a deadline the panel sits on "Reading details…"
+		// with no Retry, which to the user is indistinguishable from a hang
+		// (final review round 4).
+		vi.useFakeTimers();
+		try {
+			mountHost(propsA);
+			fetchMetaMock.mockReturnValue(new Promise(() => {}));
+			notifyAttachmentPanelOpen(openEvent({ mime_type: null, size_bytes: null }));
+			await settle();
+			expect(panel()?.textContent).toContain('Reading details');
+
+			await vi.advanceTimersByTimeAsync(10_000);
+			flushSync();
+
+			expect(panel()?.textContent).not.toContain('Reading details');
+			expect(panel()?.textContent).toContain("Couldn't load the file details.");
+			expect(row('Retry')).toBeDefined();
+			// It still shows what it already knew — never a blank sheet (DR-10).
+			expect(panel()?.textContent).toContain('spec.pdf');
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('probes even when the event carries full metadata, if the parent is archived', async () => {

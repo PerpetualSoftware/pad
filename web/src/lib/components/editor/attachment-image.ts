@@ -101,10 +101,13 @@ export interface AttachmentImageOptions {
 	 */
 	getDownloadUrl: AttachmentUrlBuilder;
 	/**
-	 * Workspace slug used for HEAD-probing the image's MIME (so the
-	 * rotate toolbar can gate buttons on the processor's supported
-	 * formats). Empty string disables the probe — the toolbar still
-	 * shows but skips per-format gating.
+	 * Workspace slug resolved at CONFIGURE time.
+	 *
+	 * The MIME probes that gate the rotate toolbar read
+	 * `address().workspaceSlug` instead: this editor can outlive a pane
+	 * workspace switch, and that value keys the metadata cache. An empty
+	 * address workspace disables the probe — the toolbar still shows, but
+	 * skips per-format gating.
 	 */
 	workspaceSlug: string;
 	/**

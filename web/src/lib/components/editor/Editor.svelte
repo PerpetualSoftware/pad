@@ -882,6 +882,14 @@
 			// `wsSlug` is resolved once at mount here (from the route), unlike the
 			// composer's live prop — reading it through the same reader keeps ONE
 			// shape for both hosts rather than a per-host special case.
+			//
+			// That is SAFE here for a reason worth stating, because it is not the
+			// reader that provides it: both <Editor> mounts sit inside
+			// `{#key item.id...}` in ItemDetail, and a workspace switch
+			// necessarily lands on a different item, so this component is
+			// remounted and re-reads the route. If that key is ever removed, this
+			// snapshot goes stale and must become live like the composer's
+			// (final review round 4).
 			workspaceSlug: wsSlug,
 			itemId: itemId ?? '',
 			hostToken

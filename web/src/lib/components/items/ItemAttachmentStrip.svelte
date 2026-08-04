@@ -46,6 +46,7 @@
 		formatBytes,
 		canOpenInViewer,
 		describeAttachmentType,
+		displayFilename,
 	} from '$lib/attachments/display';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
 	import Menu from '$lib/components/common/Menu.svelte';
@@ -649,7 +650,7 @@
 
 	/** What the file IS — the tooltip, and the base of the accessible name. */
 	function tileLabel(att: StripAttachment): string {
-		return `${att.filename}, ${describeAttachmentType(att.mime_type, att.filename)}, ${formatBytes(att.size_bytes)}`;
+		return `${displayFilename(att.filename)}, ${describeAttachmentType(att.mime_type, att.filename)}, ${formatBytes(att.size_bytes)}`;
 	}
 
 	/**

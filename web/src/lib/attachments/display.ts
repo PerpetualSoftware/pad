@@ -25,6 +25,24 @@ import { GENERIC_ICON_ID, isAttachmentIconId, type AttachmentIconId } from './ic
 // non-finite input — deliberately (DR-3b). A surface that would rather show
 // nothing than "0 B" (the editor chip) keeps that conditional at its own call
 // site; the helper does not grow a mode.
+/**
+ * A filename safe to put in a sentence.
+ *
+ * `filename` is nominally always present, but a row can carry an empty one —
+ * an upload with no name, a legacy row — and every surface then renders the
+ * gap differently: a blank tile, an accessible name that says nothing, and a
+ * confirmation reading "Delete ?", which is the one place it actually matters
+ * because the user is being asked to approve something unnamed (final review
+ * round 4).
+ *
+ * Deliberately generic rather than clever: the id is not a name, and inventing
+ * one from the MIME would claim knowledge the row does not have.
+ */
+export function displayFilename(filename: string | null | undefined): string {
+	const trimmed = (filename ?? '').trim();
+	return trimmed || 'Untitled file';
+}
+
 export function formatBytes(bytes: number): string {
 	if (bytes < 0) return `${bytes} B`;
 	const KB = 1024;
