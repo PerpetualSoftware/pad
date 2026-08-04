@@ -1,0 +1,73 @@
+{
+	"$comment": "Shared MIME -> icon-family map (PLAN-2392 DR-3a). Single source of truth for both sides: web/src/lib/attachments/display.ts imports it as its mapping table, and internal/attachments/mime_families_test.go asserts that EVERY MIME on the server upload allowlist (internal/attachments/mime.go) appears here. Add a MIME to the server allowlist without adding it here and the Go test fails; the web test asserts one representative MIME per family still renders the expected icon. This file lives inside the web root because vitest's server.fs.allow permits only the web root and node_modules, while Go can read across the repo freely. Entries are the allowlisted MIMEs only — anything else falls back to the type prefix, then the filename extension, then the generic-file icon (DR-3a: never a question mark).",
+	"families": [
+		"image",
+		"video",
+		"audio",
+		"document",
+		"spreadsheet",
+		"presentation",
+		"pdf",
+		"archive",
+		"text",
+		"generic"
+	],
+	"mime": {
+		"image/png": "image",
+		"image/jpeg": "image",
+		"image/gif": "image",
+		"image/webp": "image",
+		"image/avif": "image",
+		"image/heic": "image",
+		"image/heif": "image",
+
+		"video/mp4": "video",
+		"video/webm": "video",
+		"video/quicktime": "video",
+		"video/x-matroska": "video",
+		"video/x-msvideo": "video",
+
+		"audio/mpeg": "audio",
+		"audio/wav": "audio",
+		"audio/ogg": "audio",
+		"audio/webm": "audio",
+		"audio/flac": "audio",
+		"audio/aac": "audio",
+		"audio/mp4": "audio",
+
+		"application/pdf": "pdf",
+
+		"application/msword": "document",
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document": "document",
+		"application/vnd.oasis.opendocument.text": "document",
+		"application/rtf": "document",
+
+		"application/vnd.ms-excel": "spreadsheet",
+		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "spreadsheet",
+		"application/vnd.oasis.opendocument.spreadsheet": "spreadsheet",
+		"text/csv": "spreadsheet",
+		"text/tab-separated-values": "spreadsheet",
+
+		"application/vnd.ms-powerpoint": "presentation",
+		"application/vnd.openxmlformats-officedocument.presentationml.presentation": "presentation",
+		"application/vnd.oasis.opendocument.presentation": "presentation",
+
+		"application/zip": "archive",
+		"application/x-tar": "archive",
+		"application/gzip": "archive",
+		"application/x-bzip2": "archive",
+		"application/x-7z-compressed": "archive",
+
+		"text/plain": "text",
+		"text/markdown": "text",
+		"text/html": "text",
+		"text/xml": "text",
+		"text/javascript": "text",
+		"text/yaml": "text",
+		"application/json": "text",
+		"application/xml": "text",
+		"application/yaml": "text",
+		"application/toml": "text",
+		"application/javascript": "text"
+	}
+}
