@@ -38,6 +38,14 @@
 		attachmentResolver?: AttachmentResolver;
 		/** True when the current user is a platform admin (can edit any comment). */
 		isAdmin?: boolean;
+		/**
+		 * Identity of the `ItemDetail` mount that owns this card
+		 * (PLAN-2392 DR-8 / TASK-2421). Forwarded to the edit / reply
+		 * CommentEditors so their attachment chips address the ONE host that
+		 * owns them — master and peeked panes share a module-global bus.
+		 * Empty (the default) disables addressing.
+		 */
+		hostToken?: string;
 		onDelete: (commentId: string) => void;
 		onReply: (commentId: string, body: string) => void | Promise<void>;
 		/** Edits a comment/reply body. Should throw on failure so the editor keeps the draft. */
@@ -46,7 +54,7 @@
 		onRemoveReaction: (commentId: string, emoji: string) => void;
 	}
 
-	let { comment, wsSlug, username = '', items, currentUserId = '', canEdit = true, frozen = false, attachmentResolver, isAdmin = false, onDelete, onReply, onEdit, onReaction, onRemoveReaction }: Props = $props();
+	let { comment, wsSlug, username = '', items, currentUserId = '', canEdit = true, frozen = false, attachmentResolver, isAdmin = false, hostToken = '', onDelete, onReply, onEdit, onReaction, onRemoveReaction }: Props = $props();
 
 	let showReplyForm = $state(false);
 	let submittingReply = $state(false);
@@ -222,6 +230,7 @@
 			<CommentEditor
 				{wsSlug}
 				itemId={comment.item_id}
+				{hostToken}
 				content={comment.body}
 				placeholder="Edit comment…"
 				submitLabel="Save"
@@ -272,6 +281,7 @@
 			<CommentEditor
 				{wsSlug}
 				itemId={comment.item_id}
+				{hostToken}
 				placeholder="Write a reply… (paste or drop an image to attach)"
 				submitLabel="Reply"
 				autofocus
@@ -327,6 +337,7 @@
 							<CommentEditor
 								{wsSlug}
 								itemId={comment.item_id}
+								{hostToken}
 								content={reply.body}
 								placeholder="Edit reply…"
 								submitLabel="Save"

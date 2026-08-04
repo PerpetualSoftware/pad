@@ -79,6 +79,15 @@
 		 * (Codex round 2). Consulted at confirm time only.
 		 */
 		liveContent?: (() => string | null) | null;
+		/**
+		 * Identity of the `ItemDetail` mount that owns this strip
+		 * (PLAN-2392 DR-8 / TASK-2421). The strip is an EMITTER on the
+		 * open-panel channel, and the channel is module-global while
+		 * ItemDetail is mounted more than once (master + peeked pane) — so a
+		 * tile's event has to name its host, not just its item. Empty
+		 * disables addressing rather than broadcasting to every host.
+		 */
+		hostToken?: string;
 	}
 	let {
 		wsSlug,
@@ -87,6 +96,7 @@
 		canDelete = false,
 		itemContent = null,
 		liveContent = null,
+		hostToken = '',
 	}: Props = $props();
 
 	// Hard bound on what the strip will ever hold (DR-9 / DR-11). Past this the

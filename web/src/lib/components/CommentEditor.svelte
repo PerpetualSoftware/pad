@@ -42,6 +42,17 @@
 		 * it uploads fall back to the workspace editor-role gate.
 		 */
 		itemId?: string;
+		/**
+		 * Identity of the `ItemDetail` mount that owns this composer
+		 * (PLAN-2392 DR-8 / TASK-2421). Threaded down from ItemDetail through
+		 * ItemTimeline (and TimelineCommentCard for edits/replies) so an
+		 * attachment chip in a comment body can address the ONE host that
+		 * owns it — a master and a peeked pane are both mounted, and `itemId`
+		 * alone would let both consume the same event. Empty (the default,
+		 * for composers mounted outside an ItemDetail) disables addressing
+		 * rather than broadcasting.
+		 */
+		hostToken?: string;
 		/** Label for the submit button (e.g. "Comment", "Reply", "Save"). */
 		submitLabel?: string;
 		/** External busy flag (network in flight in the host). */
@@ -62,6 +73,7 @@
 		placeholder = 'Write a comment…',
 		wsSlug,
 		itemId,
+		hostToken = '',
 		submitLabel = 'Comment',
 		submitting = false,
 		autofocus = false,
@@ -127,13 +139,21 @@
 				AttachmentImage.configure({
 					getDownloadUrl: attachmentUrl,
 					workspaceSlug: wsSlug,
+					// Panel / viewer addressing (PLAN-2392 DR-8).
+					itemId: itemId ?? '',
+					hostToken,
 					// Rotate/crop stays disabled in comments — keep it lean.
 					supportedFormats: [] as string[],
 					transform: async () => {
 						throw new Error('Image transforms are not available in comments.');
 					}
 				}),
-				AttachmentChip.configure({ getDownloadUrl: attachmentUrl, workspaceSlug: wsSlug }),
+				AttachmentChip.configure({
+					getDownloadUrl: attachmentUrl,
+					workspaceSlug: wsSlug,
+					itemId: itemId ?? '',
+					hostToken
+				}),
 				AttachmentUpload.configure({
 					// Wrap upload so the host can track in-flight uploads and gate
 					// submit — the plugin doesn't expose its placeholder count.

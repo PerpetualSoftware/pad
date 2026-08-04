@@ -42,6 +42,7 @@
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import CopyItemDialog from '$lib/components/items/CopyItemDialog.svelte';
 	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
+	import { createAttachmentHostToken } from '$lib/attachments/events';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
 	import { isSamePaneTarget, breadcrumbParentTarget } from '$lib/collections/paneTarget';
@@ -772,6 +773,22 @@
 	// (unit-tested). `peeking` defaults false → `mutationsEnabled === canEdit` for
 	// every non-host caller (byte-identical).
 	let mutationsEnabled = $derived(computeMutationsEnabled(canEdit, peeking));
+
+	// PLAN-2392 DR-8 (TASK-2421): this mount's identity on the module-global
+	// attachment event bus. The pane host mounts ItemDetail MORE THAN ONCE at
+	// a time (a master plus a peeked pane), so an open-panel event addressed
+	// only by `itemId` would be consumed by BOTH — two panels for one tap, and
+	// one of them permissioned by the wrong host's `mutationsEnabled`.
+	//
+	// ONE token per host, not one per component: it is passed to every
+	// attachment surface this host owns — the strip, the body Editor, and
+	// every CommentEditor under ItemTimeline — so all of them address THIS
+	// mount and nothing else does. Deliberately a plain `const`, not `$state`
+	// or `$derived`: it must be stable for the whole mount, including across
+	// the no-{#key} A→B item switch this pane is built around. (The `itemId`
+	// half of the address changes with the item; the token does not, and does
+	// not need to — the pair is what disambiguates.)
+	const attachmentHostToken = createAttachmentHostToken();
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
 			loadData();
@@ -5012,6 +5029,7 @@
 				{wsSlug}
 				{username}
 				itemId={itemMatchesRef ? item?.id : null}
+				hostToken={attachmentHostToken}
 				canDelete={mutationsEnabled}
 				itemContent={itemMatchesRef ? item?.content : null}
 				liveContent={() => {
@@ -5276,6 +5294,7 @@
 								onUpdate={handleContentUpdate}
 								editable={false}
 								itemId={item.id}
+								hostToken={attachmentHostToken}
 								onEditor={(e) => editorInstance = e}
 								onImportInserted={handleImportInserted}
 							/>
@@ -5333,6 +5352,7 @@
 									onUpdate={handleContentUpdate}
 									editable={!peeking}
 									itemId={item.id}
+									hostToken={attachmentHostToken}
 									ydoc={ydoc}
 									awareness={collabProvider?.awareness}
 									collabUser={collabUserState}
@@ -5535,6 +5555,7 @@
 				onRestore={handleVersionRestore}
 				flushBeforeRestore={flushCollabBeforeRestore}
 				itemId={item.id}
+				hostToken={attachmentHostToken}
 				collectionId={item.collection_id}
 				frozen={false}
 				restoreFrozen={peeking}
