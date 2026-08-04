@@ -2,8 +2,13 @@
 	import type { Snippet } from 'svelte';
 
 	interface Props {
-		/** Leading icon/emoji. */
+		/** Leading icon/emoji. Interpolated as TEXT — markup would render
+		 *  literally; pass `iconSnippet` for an SVG icon instead. */
 		icon?: string;
+		/** Leading icon as markup (an SVG icon component). Wins over `icon`
+		 *  when both are set; the slot is decorative either way (PLAN-2392
+		 *  DR-3b). */
+		iconSnippet?: Snippet;
 		/** Right-aligned hint (shortcut, count). */
 		hint?: string;
 		/** Red row for destructive actions. */
@@ -15,37 +20,88 @@
 		 *  destructive confirmation, which is presentational and otherwise
 		 *  never announced when the row takes focus (PLAN-2326). */
 		describedBy?: string;
+		/** Renders the row as an anchor instead of a button (PLAN-2392 DR-5):
+		 *  Download must be a real `<a download>` and Open needs new-tab /
+		 *  middle-click semantics. Ignored while `disabled` — see below. */
+		href?: string;
+		/** `download` attribute for the anchor branch — the filename to save
+		 *  as. Only meaningful with `href`. */
+		download?: string;
+		/** Anchor `target` (Open sets `_blank`). Only meaningful with `href`. */
+		target?: string;
+		/** Anchor `rel` (pair `noopener noreferrer` with `target="_blank"`).
+		 *  Only meaningful with `href`. */
+		rel?: string;
 		onclick?: (e: MouseEvent) => void;
 		children: Snippet;
 	}
 
 	let {
 		icon,
+		iconSnippet,
 		hint,
 		danger = false,
 		checked,
 		disabled = false,
 		describedBy,
+		href,
+		download,
+		target,
+		rel,
 		onclick,
 		children
 	}: Props = $props();
+
+	const role = $derived(checked !== undefined ? 'menuitemradio' : 'menuitem');
+
+	// A disabled anchor is not a thing: `<a>` ignores `disabled`, is still
+	// focusable and still navigates. Falling back to a disabled <button> keeps
+	// the semantics honest AND keeps Menu's keyboard navigation correct — it
+	// skips rows with `[role^="menuitem"]:not(:disabled)` (Menu.svelte:130),
+	// which no anchor can ever match.
+	const asAnchor = $derived(href !== undefined && !disabled);
 </script>
 
-<button
-	type="button"
-	class="mi"
-	class:danger
-	role={checked !== undefined ? 'menuitemradio' : 'menuitem'}
-	aria-checked={checked}
-	aria-describedby={describedBy}
-	{disabled}
-	{onclick}
->
-	{#if icon}<span class="mi-icon" aria-hidden="true">{icon}</span>{/if}
+{#snippet body()}
+	{#if iconSnippet}
+		<span class="mi-icon" aria-hidden="true">{@render iconSnippet()}</span>
+	{:else if icon}
+		<span class="mi-icon" aria-hidden="true">{icon}</span>
+	{/if}
 	<span class="mi-label">{@render children()}</span>
 	{#if hint}<span class="mi-hint">{hint}</span>{/if}
 	{#if checked}<span class="mi-check" aria-hidden="true">✓</span>{/if}
-</button>
+{/snippet}
+
+{#if asAnchor}
+	<a
+		class="mi"
+		class:danger
+		{href}
+		{download}
+		{target}
+		{rel}
+		{role}
+		aria-checked={checked}
+		aria-describedby={describedBy}
+		{onclick}
+	>
+		{@render body()}
+	</a>
+{:else}
+	<button
+		type="button"
+		class="mi"
+		class:danger
+		{role}
+		aria-checked={checked}
+		aria-describedby={describedBy}
+		{disabled}
+		{onclick}
+	>
+		{@render body()}
+	</button>
+{/if}
 
 <style>
 	.mi {
@@ -53,6 +109,11 @@
 		align-items: center;
 		gap: 9px;
 		width: 100%;
+		/* The anchor branch is not a button: it needs the border-box sizing
+		   and the link-color/underline reset spelled out, or a row renders
+		   wider than the panel and in the link palette. */
+		box-sizing: border-box;
+		text-decoration: none;
 		padding: 7px 9px;
 		border: none;
 		border-radius: var(--radius-sm);
