@@ -554,6 +554,12 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					if (currentUuid !== startUuid) return;
 					swapNodeUuid(result.id);
 				} catch (err) {
+					// Same fence as the success path: a failure that lands after
+					// teardown, or after the node moved to a different image,
+					// belongs to work the user has already navigated away from.
+					// Reporting it would alert about attachment A while they are
+					// looking at B.
+					if (destroyed || currentUuid !== startUuid) return;
 					const msg = err instanceof Error ? err.message : 'Rotation failed';
 					if (opts.onError) opts.onError(msg);
 					else if (typeof console !== 'undefined') console.error('[attachmentImage] rotate', err);
@@ -606,6 +612,12 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					if (currentUuid !== startUuid) return;
 					swapNodeUuid(result.id);
 				} catch (err) {
+					// Same fence as the success path: a failure that lands after
+					// teardown, or after the node moved to a different image,
+					// belongs to work the user has already navigated away from.
+					// Reporting it would alert about attachment A while they are
+					// looking at B.
+					if (destroyed || currentUuid !== startUuid) return;
 					const msg = err instanceof Error ? err.message : 'Crop failed';
 					if (opts.onError) opts.onError(msg);
 					else if (typeof console !== 'undefined') console.error('[attachmentImage] crop', err);

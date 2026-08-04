@@ -148,7 +148,31 @@ export function notifyAttachmentUploaded(
 export interface AttachmentPanelOpenEvent {
 	/** UUID of the attachment whose options are being opened. */
 	attachmentId: string;
-	/** UUID of the item the emitting surface belongs to. */
+	/**
+	 * UUID of the item whose `ItemDetail` mount should SHOW the panel.
+	 *
+	 * This is ROUTING, not ownership, and the difference is load-bearing:
+	 * it names the host that displays the panel, and it does NOT assert that
+	 * the attachment belongs to that item. The two can genuinely differ — the
+	 * comment composer is reused across an item switch, so a chip sitting in
+	 * an unsubmitted draft can be tapped while the pane shows a different
+	 * item, and it will (correctly) route to the host in front of the user.
+	 *
+	 * Nothing downstream should read it as a permission or an ownership
+	 * claim. Attachment authorization is the SERVER's, per attachment, against
+	 * that attachment's own parent item — `handlers_storage.go` checks
+	 * visibility and then edit permission on the parent it resolves itself,
+	 * and the delete endpoint (`DELETE /workspaces/{ws}/attachments/{id}`) is
+	 * never told which item the client thought it was acting from. What the
+	 * host supplies locally (`mutationsEnabled`) decides whether to OFFER a
+	 * mutation; the server decides whether to perform it.
+	 *
+	 * The one place the distinction leaks into UX: a panel whose "still used
+	 * in this item's content" check runs against the HOST's content can only
+	 * speak for that item, so it must keep the hedged wording ("may still be
+	 * referenced by another item or a comment") rather than claiming the
+	 * attachment is unreferenced.
+	 */
 	itemId: string;
 	/** Identity of the `ItemDetail` mount that owns the emitting surface. */
 	hostToken: string;
