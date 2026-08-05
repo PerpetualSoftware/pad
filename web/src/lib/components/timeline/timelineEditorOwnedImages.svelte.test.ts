@@ -21,12 +21,20 @@
 // this file exists rather than another stand-in.
 //
 // The two viewers are distinguishable, which is what makes "exactly once"
-// observable: the NodeView opens its own `dialog.attachment-image-lightbox`,
-// the timeline opens the `Lightbox` component (`.lightbox-backdrop`).
+// observable: the NodeView emits an open-viewer REQUEST on the shared channel
+// (TASK-2433 deleted its hand-rolled `<dialog>`; an `AttachmentViewerHost` owned
+// by `ItemDetail` mounts the one `Lightbox` in response, and no `ItemDetail` is
+// mounted here), while the timeline mounts `Lightbox` itself
+// (`.lightbox-backdrop`). Requests are counted off the REAL bus, addressability
+// filter included — this file's whole premise is that nothing is restated.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount, tick } from 'svelte';
 import type { Comment, TimelineEntry, TimelineResponse } from '$lib/types';
 import { __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
+import {
+	isAttachmentViewerEventForHost,
+	registerAttachmentViewerListener,
+} from '$lib/attachments/events';
 import { _resetEscapeStackForTests } from '$lib/stores/escapeStack';
 
 const PNG = '11111111-1111-4111-8111-111111111111';
@@ -129,6 +137,11 @@ const props = $state({
 	currentContent: '',
 	itemId: 'item-a',
 	collectionId: 'coll-1',
+	// The identity `ItemDetail` mints per mount and threads down to every
+	// CommentEditor. Without it the NodeView's events are unaddressable and the
+	// channel drops them — which would make every `node: 1` below unreachable
+	// for a reason that has nothing to do with the delegation under test.
+	hostToken: 'host-1',
 	visibleKinds: undefined as Array<'comment' | 'activity' | 'version'> | undefined,
 });
 
@@ -156,12 +169,37 @@ function bodyImage(): HTMLElement {
 	return el;
 }
 
-/** Viewers currently open, counted per owner so a double-open is visible. */
+/** Open-viewer requests the NodeView put on the bus, in this test's lifetime. */
+let nodeRequests: unknown[] = [];
+let disposeViewerListener: (() => void) | null = null;
+
+/**
+ * Counted per owner so a double-open is visible. NOTE THE ASYMMETRY, which is
+ * the shape of the change rather than a shortcut: `timeline` counts viewers
+ * actually mounted, because ItemTimeline still mounts `Lightbox` itself, while
+ * `node` counts open-viewer REQUESTS addressed to this host, because the
+ * NodeView no longer mounts anything — an `ItemDetail`-owned
+ * `AttachmentViewerHost` does, and no `ItemDetail` is mounted in this file.
+ * A request that would reach that host is the strongest statement available
+ * here; the request-to-viewer half is
+ * `editor/attachmentImageViewerHost.svelte.test.ts`'s.
+ */
 function viewers() {
 	return {
-		node: document.querySelectorAll('dialog.attachment-image-lightbox').length,
+		node: nodeRequests.length,
 		timeline: document.querySelectorAll('.lightbox-backdrop').length,
 	};
+}
+
+/**
+ * Activation resolves the image's MIME before emitting (TASK-2433), so it is
+ * asynchronous even on a cache hit. Counting without this reads 0 whatever the
+ * implementation does — the exact shape of vacuous green this phase keeps
+ * producing.
+ */
+async function flushActivation() {
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	flushSync();
 }
 
 function press(el: HTMLElement, key: string, mods: KeyboardEventInit = {}) {
@@ -193,6 +231,20 @@ describe('ItemTimeline vs. a live editor inside it', () => {
 		commentUpdateMock.mockReset();
 		commentUpdateMock.mockResolvedValue(undefined);
 		props.visibleKinds = undefined;
+		nodeRequests = [];
+		// The REAL channel, not a mock: an event that fails its addressability
+		// check reaches no host at runtime either, and counting pre-filter
+		// emissions would score a misaddressed request as a viewer the user can
+		// see. `hostToken` is set on the props for the same reason.
+		disposeViewerListener = registerAttachmentViewerListener((event) => {
+			// Addressed to THIS host, by the same predicate `AttachmentViewerHost`
+			// uses. A raw count would score a misaddressed request as a viewer the
+			// user can see, when at runtime it reaches nobody.
+			if (!isAttachmentViewerEventForHost(event, { itemId: 'item-a', hostToken: 'host-1' })) {
+				return;
+			}
+			nodeRequests.push(event);
+		});
 		host = document.body.appendChild(document.createElement('div'));
 		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
 		await settle();
@@ -201,10 +253,11 @@ describe('ItemTimeline vs. a live editor inside it', () => {
 	afterEach(() => {
 		if (app) unmount(app);
 		app = null;
+		disposeViewerListener?.();
+		disposeViewerListener = null;
+		nodeRequests = [];
 		host.remove();
-		document
-			.querySelectorAll('dialog.attachment-image-lightbox, .lightbox-backdrop')
-			.forEach((d) => d.remove());
+		document.querySelectorAll('.lightbox-backdrop').forEach((d) => d.remove());
 	});
 
 	it('mounts a live editor whose image already carries the NodeView contract', async () => {
@@ -233,6 +286,7 @@ describe('ItemTimeline vs. a live editor inside it', () => {
 		expect(viewers()).toEqual({ node: 0, timeline: 0 });
 
 		press(editorImage(), 'Enter');
+		await flushActivation();
 
 		expect(viewers()).toEqual({ node: 1, timeline: 0 });
 	});
@@ -240,12 +294,14 @@ describe('ItemTimeline vs. a live editor inside it', () => {
 	it('opens exactly one viewer on Space inside the editor', async () => {
 		await enterEditMode();
 		press(editorImage(), ' ');
+		await flushActivation();
 		expect(viewers()).toEqual({ node: 1, timeline: 0 });
 	});
 
 	it('opens exactly one viewer on a click inside the editor', async () => {
 		await enterEditMode();
 		click(editorImage());
+		await flushActivation();
 		expect(viewers()).toEqual({ node: 1, timeline: 0 });
 	});
 
@@ -263,6 +319,7 @@ describe('ItemTimeline vs. a live editor inside it', () => {
 
 		press(img, 'Enter', { metaKey: true });
 		await settle();
+		await flushActivation();
 
 		expect(viewers()).toEqual({ node: 0, timeline: 0 });
 		expect(commentUpdateMock).toHaveBeenCalledTimes(1);
@@ -282,6 +339,7 @@ describe('ItemTimeline vs. a live editor inside it', () => {
 		img.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
 		img.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 2 }));
 		flushSync();
+		await flushActivation();
 
 		expect(viewers()).toEqual({ node: 1, timeline: 0 });
 	});
@@ -316,9 +374,21 @@ describe('ItemTimeline vs. a live editor inside it', () => {
 		expect(img.getAttribute('role')).toBe('button');
 		expect(img.getAttribute('tabindex')).toBe('0');
 		expect(img.getAttribute('aria-label')).toBe('View image: a sketch');
-		// And it still activates — semantics without activation is the dead stop
-		// in its other direction.
+		// Activation, however, is now gated on a RESOLVED MIME (TASK-2433), and
+		// this fixture's whole point is an image whose probe never resolves one:
+		// `Lightbox` fails closed on `mime_type: null`, so emitting for it would
+		// be a request that opens nothing. It stays shut here — and the dead
+		// focus stop that leaves (announced as a button, refuses to open) is
+		// exactly what TASK-2434's four-branch matrix is for, where a transient
+		// probe becomes retryable rather than silent.
 		press(img, 'Enter');
+		await flushActivation();
+		expect(viewers()).toEqual({ node: 0, timeline: 0 });
+
+		// The control, so the assertion above is not just "activation is broken":
+		// the PROBED image in the same live editor still opens.
+		press(editorImage(PNG), 'Enter');
+		await flushActivation();
 		expect(viewers()).toEqual({ node: 1, timeline: 0 });
 	});
 
@@ -334,11 +404,13 @@ describe('ItemTimeline vs. a live editor inside it', () => {
 		expect(img.getAttribute('tabindex')).toBe('0');
 
 		click(img);
+		await flushActivation();
 		expect(viewers()).toEqual({ node: 0, timeline: 1 });
 	});
 
 	it('still opens its OWN rendered thumbnail by keyboard', async () => {
 		press(bodyImage(), 'Enter');
+		await flushActivation();
 		expect(viewers()).toEqual({ node: 0, timeline: 1 });
 	});
 
@@ -346,9 +418,11 @@ describe('ItemTimeline vs. a live editor inside it', () => {
 		// The modifier guard is not scoped to editor-owned DOM: a shortcut is a
 		// shortcut wherever it is pressed.
 		press(bodyImage(), 'Enter', { metaKey: true });
+		await flushActivation();
 		expect(viewers()).toEqual({ node: 0, timeline: 0 });
 
 		press(bodyImage(), 'Enter');
+		await flushActivation();
 		expect(viewers()).toEqual({ node: 0, timeline: 1 });
 	});
 });

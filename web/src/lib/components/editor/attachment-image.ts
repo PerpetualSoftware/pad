@@ -38,7 +38,7 @@ import {
 	mimeToFormat
 } from './attachment-metadata';
 import { openCropModal, type CropResult } from './attachment-crop-modal';
-import { registerAttachmentDeletionListener } from '$lib/attachments/events';
+import { notifyViewerOpen, registerAttachmentDeletionListener } from '$lib/attachments/events';
 import {
 	type AttachmentHostAddressReader,
 	readUnaddressed
@@ -304,6 +304,19 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// without a temporal-dead-zone hazard.
 			let knownMime: string | null = null;
 
+			// True while an activation's MIME resolution is in flight. See
+			// activate() for why one is enough — and why "exactly once" now needs
+			// a latch rather than only the key-repeat guard.
+			//
+			// The counter is what makes RELEASING it safe. The latch is dropped in
+			// two places — the resolution's own finalizer, and a uuid swap, which
+			// must not leave the NEW image latched behind the old one's request —
+			// and an unconditional finalizer would let a superseded activation
+			// release a latch that a LATER one is holding. Each activation stamps
+			// its own number and releases only if it is still the current holder.
+			let activating = false;
+			let activationSeq = 0;
+
 			/**
 			 * DR-12: the inline body image is an activation target, so it carries a
 			 * button's semantics — but ONLY while it is actually one.
@@ -536,8 +549,9 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 * property of the MOUSE rather than of activation: a keyboard path that
 			 * opened on its own would have bypassed it entirely. One function owns
 			 * the gate so there is exactly one place a route can be added to and
-			 * exactly one place the gate can be strengthened (the viewer bus and its
-			 * fence land on this same seam in the tasks that follow).
+			 * exactly one place the gate can be strengthened — which is what
+			 * TASK-2433 then did on this same seam: the viewer bus, the MIME
+			 * resolution and the address fence all live inside this one function.
 			 *
 			 * The gate itself is `canActivate()`, shared with the semantics pass so
 			 * an image can never be openable and un-announced, or announced and
@@ -548,16 +562,135 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 * node being labelled image/* is not sufficient reason to hand it to a
 			 * viewer.
 			 *
-			 * Gated on what is POSITIVELY KNOWN, deliberately: this node's MIME comes
-			 * from a lazy HEAD probe, so at activation time it is often simply
-			 * unasked. Refusing on unknown would stop ordinary images opening — a
-			 * certain regression traded for a marginal risk — so an unprobed node
-			 * keeps today's behaviour and a probed non-allowlisted one is refused.
+			 * THE MIME IS RESOLVED BEFORE ANYTHING IS EMITTED (TASK-2433, revising
+			 * the decomposition's "keep the positively-known gate"). `Lightbox`
+			 * FAILS CLOSED on an unresolved MIME as of TASK-2431 — it filters the
+			 * set it was handed and admits only allowlisted entries — so an event
+			 * carrying `mime_type: null` is not "let the viewer decide", it is a
+			 * viewer that mounts and renders no image. The producer's half of that
+			 * contract is this function: either the cache answers (the common
+			 * case — the toolbar probe and the strip both warm the same entry) or
+			 * we await one HEAD, and we emit ONLY on a positively-known
+			 * allowlisted answer.
+			 *
+			 * The channel enforces the same rule at the boundary as of TASK-2433 —
+			 * `notifyViewerOpen` takes a set whose `mime_type` is non-nullable and
+			 * refuses one that is not allowlisted — so this is no longer the only
+			 * thing between a forgetful producer and an image that quietly does not
+			 * open. It is still where the answer is OBTAINED, and the payload needs
+			 * it either way.
+			 *
+			 * What that COSTS, deliberately and temporarily: an image whose probe
+			 * comes back `transient` (or whose surface has no workspace to probe
+			 * with) keeps its button semantics and does not open. That is a dead
+			 * focus stop, and it is TASK-2434's — the four-branch matrix
+			 * (ok → viewer, unsafe → panel redirect, missing → inert placeholder,
+			 * transient → retryable) is what makes this gate TOTAL. This task is
+			 * the surface swap, and the swap must not be the thing that reopens
+			 * the hole TASK-2431 closed.
+			 *
+			 * It also closes a mid-phase bypass Codex found: the old gate read
+			 * `knownMime` only when truthy, so a click landing before the lazy
+			 * probe resolved opened the original file in the legacy dialog, and a
+			 * later `unsafe` answer did not close it.
 			 */
 			function activate(): void {
 				if (!canActivate()) return;
-				const fullUrl = opts.getDownloadUrl(currentUuid, 'original');
-				openImageLightbox(fullUrl, currentAlt);
+				// One activation at a time. The MIME resolution is asynchronous
+				// even on a cache hit (a settled promise still resolves on a
+				// microtask), so two gestures inside one tick would otherwise both
+				// clear the gate and emit — and "fires exactly once" has to survive
+				// the await that was just introduced, not only the key repeat.
+				if (activating) return;
+				const forUuid = currentUuid;
+				// The address the GESTURE happened at. The workspace half is what
+				// keys the metadata cache and what the viewer reads every image URL
+				// from, so probing under one workspace and emitting under another
+				// would serve ws1's click from ws2's endpoint. Snapshot once, then
+				// re-check at emit (below) rather than re-reading and trusting it.
+				const from = opts.address();
+				// No workspace ⇒ no probe ⇒ nothing can be positively known. An
+				// SSR/preview surface simply does not open a viewer.
+				if (!from.workspaceSlug) return;
+				activating = true;
+				const seq = ++activationSeq;
+				void fetchAttachmentMetadata(from.workspaceSlug, forUuid, opts.getDownloadUrl)
+					.then((result) => {
+						// Everything the gate asserted at gesture time has to still
+						// hold at emit time: the NodeView can be torn down, the node
+						// can be pointed at a different attachment (rotate/crop, a
+						// peer's op), and the deletion broadcast can land — all
+						// inside the await window.
+						if (destroyed || currentUuid !== forUuid) return;
+						// And this must still be the CURRENT activation. Comparing
+						// the uuid is not enough on its own: the node can be pointed
+						// away and back again (a rotate the user undoes, a peer's op
+						// reverted), and then a request from before the round trip
+						// finds its own uuid in place and emits for a gesture two
+						// swaps ago.
+						if (activationSeq !== seq) return;
+						if (!canActivate()) return;
+						// `transient` and `missing` are both "not positively known".
+						if (result.status !== 'ok') return;
+						// DR-16, restated on the resolved answer rather than on the
+						// absence of one: `image/svg+xml` can carry active content.
+						if (!canOpenInViewer(result.mime)) return;
+						// The host may have MOVED while the HEAD was in flight — the
+						// comment composer is deliberately reused across an item
+						// switch (see hostAddress.ts), so its address is live. The
+						// gesture belonged to the old address: emitting there opens a
+						// viewer over a pane the user has left, and emitting at the
+						// new one attributes the gesture to a different item. Neither
+						// is what the user did, so drop it.
+						const to = opts.address();
+						if (
+							to.workspaceSlug !== from.workspaceSlug ||
+							to.itemId !== from.itemId ||
+							to.hostToken !== from.hostToken
+						) {
+							return;
+						}
+						notifyViewerOpen({
+							attachmentId: forUuid,
+							workspaceSlug: from.workspaceSlug,
+							itemId: from.itemId,
+							hostToken: from.hostToken,
+							// A single-image set: this NodeView knows about ITS node
+							// and nothing else. The body's other images are a set the
+							// editor could offer, but assembling one here would make
+							// ←/→ page through a list this surface does not own.
+							images: [
+								{
+									id: forUuid,
+									alt: currentAlt,
+									// The node's attrs carry no filename and the HEAD
+									// metadata does not either — the same absence
+									// `applyImageSemantics` names its fallback for.
+									filename: null,
+									mime_type: result.mime,
+									size_bytes: result.size,
+									// 3b's pixel-based loading policy wants these; the
+									// HEAD probe has no source for them today.
+									width: null,
+									height: null,
+								},
+							],
+							index: 0,
+							// Where the viewer aims focus on close. The <img> is a real
+							// focus stop as of TASK-2432, so this is a stable target
+							// rather than whatever happened to hold focus at open —
+							// though `Lightbox` still falls back to the body if the
+							// element has since become unfocusable or detached.
+							invoker: img,
+						});
+					})
+					.finally(() => {
+						// Only if this activation is still the one holding the latch.
+						// A uuid swap bumps the counter, so a stale resolution
+						// landing afterwards cannot unlock the request that
+						// replaced it.
+						if (activationSeq === seq) activating = false;
+					});
 			}
 
 			img.addEventListener('click', (event) => {
@@ -851,6 +984,20 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// The old uuid's state — whether a 404 placeholder or a
 						// confirmed deletion — says nothing about the new one.
 						deleted = false;
+						// Nor does an activation still resolving for it. That
+						// request is already fenced (its continuation compares
+						// `currentUuid`), so the latch is guarding nothing but the
+						// NEW image — and this NodeView deliberately outlives the
+						// swap, so a HEAD that never settles would leave the image
+						// in front of the user permanently unopenable.
+						//
+						// The bump is what retires any request still resolving for
+						// the old attachment: its continuation checks the generation
+						// before emitting, so a swap AWAY AND BACK cannot let it
+						// find its own uuid in place and open a viewer for a gesture
+						// the user made two swaps ago.
+						activationSeq += 1;
+						activating = false;
 						resetMissing();
 						if (newUuid) {
 							loadImage(opts.getDownloadUrl(newUuid, 'thumb-md'));
@@ -1103,38 +1250,22 @@ function refreshToolbarState(
 	});
 }
 
-/**
- * Open a centered <dialog> showing the full-resolution attachment.
- * Closes on backdrop click, the close button, or the Esc key.
+/*
+ * THERE IS NO LIGHTBOX IN THIS FILE, AND THERE MUST NOT BE ONE AGAIN.
+ *
+ * `openImageLightbox` / `closeLightbox` used to live here: a hand-rolled
+ * `<dialog>` this NodeView appended to `document.body` and `showModal()`d.
+ * TASK-2433 deleted them. Inline images now emit on the viewer channel
+ * (`notifyViewerOpen`, in activate() above) and the `AttachmentViewerHost` that
+ * `ItemDetail` owns mounts the `Lightbox` for THIS route — which is where the
+ * modal contract lives: the lease-stacked backdrop, the focus trap and restore,
+ * the Escape ordering, and the DR-16 filter re-applied over the whole set. (The
+ * strip and the timeline still mount `Lightbox` themselves, by decision rather
+ * than omission — see the channel's own note in `$lib/attachments/events`.)
+ *
+ * A NodeView cannot mount a Svelte component, which is the entire reason the
+ * bus exists. Re-adding an imperative overlay here would not be a shortcut, it
+ * would be a second viewer with none of that contract — so
+ * `attachmentImageNoOverlay.test.ts` asserts, statically, that this file
+ * creates no dialog and calls no `showModal`.
  */
-function openImageLightbox(fullUrl: string, alt: string): void {
-	if (typeof document === 'undefined') return;
-	const dialog = document.createElement('dialog');
-	dialog.className = 'attachment-image-lightbox';
-
-	const closeBtn = document.createElement('button');
-	closeBtn.type = 'button';
-	closeBtn.className = 'attachment-image-lightbox-close';
-	closeBtn.setAttribute('aria-label', 'Close image preview');
-	closeBtn.textContent = '×';
-	closeBtn.addEventListener('click', () => closeLightbox(dialog));
-
-	const img = document.createElement('img');
-	img.className = 'attachment-image-lightbox-img';
-	img.src = fullUrl;
-	if (alt) img.alt = alt;
-	// Prevent clicks on the image itself from bubbling to the backdrop
-	// handler below (which closes the dialog).
-	img.addEventListener('click', (event) => event.stopPropagation());
-
-	dialog.append(closeBtn, img);
-	dialog.addEventListener('click', () => closeLightbox(dialog));
-	dialog.addEventListener('close', () => dialog.remove());
-
-	document.body.appendChild(dialog);
-	dialog.showModal();
-}
-
-function closeLightbox(dialog: HTMLDialogElement): void {
-	if (dialog.open) dialog.close();
-}

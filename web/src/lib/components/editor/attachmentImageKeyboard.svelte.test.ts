@@ -6,15 +6,27 @@
 // no name. This spec pins the button contract that closes that, and — more
 // importantly — pins the two ways the contract is easy to get WRONG:
 //
-//   - activation firing TWICE. A keyed remount or a fast dialog can hide a
-//     duplicate visually, so every activation assertion here is a COUNT
-//     (`dialog.attachment-image-lightbox` elements in the document), never a
-//     truthiness check. `toBe(1)` fails on 2; `not.toBeNull()` does not.
+//   - activation firing TWICE. A duplicate is easy to hide visually, so every
+//     activation assertion here is a COUNT of open-viewer REQUESTS on the bus,
+//     never a truthiness check. `toBe(1)` fails on 2; `not.toBeNull()` does not.
+//     Counting requests rather than DOM is also what survived TASK-2433: the
+//     NodeView no longer opens anything itself, so a spec that counted overlays
+//     would now assert 0 forever and pass against an implementation that emits
+//     nothing at all.
 //
 //   - the KEYBOARD path bypassing the MIME gate. The gate used to live inside
 //     the click handler, which made it a property of the mouse. Both routes now
 //     call one `activate()`, and the refusal is asserted through the KEYBOARD,
 //     which is the assertion that would have caught a second emitter.
+//
+// THIS FILE IS THE PRODUCER LAYER, and its counts are counts of REQUESTS on the
+// bus, not of viewers on screen: `notifyViewerOpen` is mocked, so "opens once"
+// here means "asks once". That is the right layer for the keyboard contract —
+// which is about how many times activation fires, and under which gestures —
+// but it is deliberately blind to whether anything is listening. The end of the
+// route (real bus → real `AttachmentViewerHost` → real `Lightbox`, and a real
+// viewer in the document) is pinned next door in
+// `attachmentImageViewerHost.svelte.test.ts`.
 //
 // Driven through a REAL Tiptap editor, like the placeholder spec next door: the
 // semantics live on imperative NodeView DOM and a hand-built element would pin
@@ -25,18 +37,38 @@ import StarterKit from '@tiptap/starter-kit';
 import { isEditorOwnedImage } from '$lib/attachments/editorOwnedImage';
 
 const deletionListeners = new Set<(uuid: string) => void>();
+// Open-viewer requests, captured RAW — before the channel's addressability
+// filter, so what is asserted is what THIS NodeView produced.
+const emitted: Array<Record<string, unknown>> = [];
 vi.mock('$lib/attachments/events', () => ({
 	notifyAttachmentPanelOpen: () => {},
+	notifyViewerOpen: (event: Record<string, unknown>) => {
+		emitted.push(event);
+	},
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
 		deletionListeners.add(fn);
 		return () => deletionListeners.delete(fn);
 	},
 }));
 
-const probeMock = vi.fn(async () => ({ status: 'transient' as const }));
+// The probe's full result union, spelled out. Without it `vi.fn` infers the
+// type of the DEFAULT implementation alone, and every `mockResolvedValue` for a
+// different arm is a type error — invisible under `npm run check`, which
+// excludes `*.svelte.test.ts`, and a trap for whoever widens that exclude.
+type ProbeResult =
+	| { status: 'ok'; mime: string; size: number }
+	| { status: 'missing' }
+	| { status: 'transient' };
+
+// Args are passed through so a test can answer PER ATTACHMENT — the uuid-swap
+// case below needs one image's probe to still be in flight while another's
+// answers.
+const probeMock = vi.fn<(ws?: string, uuid?: string) => Promise<ProbeResult>>(async () => ({
+	status: 'transient',
+}));
 vi.mock('./attachment-metadata', () => ({
-	fetchAttachmentMetadata: () => probeMock(),
-	revalidateAttachmentMetadata: () => probeMock(),
+	fetchAttachmentMetadata: (ws: string, uuid: string) => probeMock(ws, uuid),
+	revalidateAttachmentMetadata: (ws: string, uuid: string) => probeMock(ws, uuid),
 	invalidateAttachmentMetadata: () => {},
 	mimeToFormat: () => null,
 }));
@@ -44,6 +76,14 @@ vi.mock('./attachment-metadata', () => ({
 const { AttachmentImage } = await import('./attachment-image');
 
 const BODY_CONTENT = '<p><img data-attachment-id="uuid-1" src="/api/v1/x" alt="A diagram"></p>';
+
+/**
+ * The address every editor below reads through. MUTABLE, because the real
+ * reader is: `CommentEditor` is deliberately reused across an item switch and
+ * its address changes under a mounted NodeView (see hostAddress.ts). Activation
+ * now spans an await, so that switch can land mid-flight.
+ */
+let address = { workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-1' };
 
 /** The item-body configuration (Editor.svelte): transforms enabled. */
 function makeEditor(element: HTMLElement, content: string = BODY_CONTENT): Editor {
@@ -55,7 +95,7 @@ function makeEditor(element: HTMLElement, content: string = BODY_CONTENT): Edito
 				workspaceSlug: 'ws',
 				getDownloadUrl: (uuid: string, variant?: string) =>
 					`/api/v1/workspaces/ws/attachments/${uuid}?variant=${variant ?? 'thumb-md'}`,
-				address: () => ({ workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-1' }),
+				address: () => address,
 				supportedFormats: ['png'],
 				transform: async () => {
 					throw new Error('not used');
@@ -81,7 +121,7 @@ function makeCommentEditor(element: HTMLElement): Editor {
 			AttachmentImage.configure({
 				getDownloadUrl: (uuid: string) => `/api/v1/workspaces/ws/attachments/${uuid}`,
 				workspaceSlug: 'ws',
-				address: () => ({ workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-1' }),
+				address: () => address,
 				supportedFormats: [] as string[],
 				transform: async () => {
 					throw new Error('Image transforms are not available in comments.');
@@ -93,9 +133,25 @@ function makeCommentEditor(element: HTMLElement): Editor {
 	});
 }
 
-/** How many times activation actually fired. One dialog per open. */
+/** How many times activation actually fired. One request per open. */
 function openCount(): number {
-	return document.querySelectorAll('dialog.attachment-image-lightbox').length;
+	return emitted.length;
+}
+
+/**
+ * Activation resolves the image's MIME BEFORE emitting (TASK-2433), so it is
+ * asynchronous even on a cache hit. Every post-gesture count goes through here;
+ * a synchronous read would be 0 regardless of what the implementation did.
+ */
+async function opened(): Promise<number> {
+	// TWO turns of the macrotask queue, not one. A count read too early is
+	// conservative for the "opens once" cases (an emission that had not
+	// happened yet reads as 0 and FAILS the assertion) but not for the "opens
+	// nothing" ones, where an implementation that emitted one tick later would
+	// pass. The second await closes that.
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	return emitted.length;
 }
 
 /**
@@ -126,9 +182,13 @@ function timelineDelegation(
 		// not the only surface that could ever delegate over one.
 		if (opts.ownership && isEditorOwnedImage(img)) return;
 		onFire();
-		const dialog = document.createElement('dialog');
-		dialog.className = 'attachment-image-lightbox';
-		document.body.appendChild(dialog);
+		// A stand-in for the timeline's OWN viewer, deliberately a different
+		// element from anything the NodeView produces: these tests are about
+		// two viewers from one gesture, which is only observable if the two
+		// are distinguishable.
+		const stub = document.createElement('div');
+		stub.className = 'timeline-viewer-stub';
+		document.body.appendChild(stub);
 	};
 }
 
@@ -139,8 +199,16 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 
 	beforeEach(() => {
 		deletionListeners.clear();
+		address = { workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-1' };
 		probeMock.mockClear();
-		probeMock.mockResolvedValue({ status: 'transient' as const });
+		// The ORDINARY case is an image whose MIME resolves to an allowlisted
+		// raster type, and as of TASK-2433 that is a PRECONDITION of opening at
+		// all: activation resolves the MIME first and emits only on a positive
+		// answer, because `Lightbox` fails closed on an unresolved one. A
+		// `transient` default would make every "opens exactly once" test below
+		// assert 0 for a reason that has nothing to do with the keyboard.
+		probeMock.mockResolvedValue({ status: 'ok' as const, mime: 'image/png', size: 4096 });
+		emitted.length = 0;
 		host = document.body.appendChild(document.createElement('div'));
 		target = host.appendChild(document.createElement('div'));
 	});
@@ -149,7 +217,8 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		editor?.destroy();
 		editor = undefined;
 		host.remove();
-		document.querySelectorAll('dialog.attachment-image-lightbox').forEach((d) => d.remove());
+		emitted.length = 0;
+		document.querySelectorAll('.timeline-viewer-stub').forEach((d) => d.remove());
 	});
 
 	function image(): HTMLImageElement {
@@ -200,7 +269,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		expect(image().getAttribute('aria-label')).toBe('View attachment image');
 	});
 
-	it('opens on Enter, exactly once', () => {
+	it('opens on Enter, exactly once', async () => {
 		editor = makeEditor(target);
 		expect(openCount()).toBe(0);
 
@@ -209,22 +278,60 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		// A COUNT, not a truthiness check: a second emitter (a keyboard path that
 		// activated on its own AND a synthesized click) shows up here as 2 and is
 		// invisible to `not.toBeNull()`.
-		expect(openCount()).toBe(1);
+		expect(await opened()).toBe(1);
 	});
 
-	it('opens on Space exactly once and suppresses the page scroll', () => {
+	it('emits the viewer request the deleted dialog used to open', async () => {
+		// TASK-2433 deleted this NodeView's hand-rolled `<dialog>`. Every other
+		// test in this file counts activations, and a count is satisfied by an
+		// emission of any shape — so exactly one test has to pin the CONTENT, or
+		// "the dialog is gone" would be provable by an implementation that
+		// replaced it with nothing.
+		editor = makeEditor(target);
+		const img = image();
+
+		press(img, 'Enter');
+		await opened();
+
+		expect(emitted).toEqual([
+			{
+				attachmentId: 'uuid-1',
+				workspaceSlug: 'ws',
+				itemId: 'item-A',
+				hostToken: 'apanel-1',
+				images: [
+					{
+						id: 'uuid-1',
+						alt: 'A diagram',
+						filename: null,
+						mime_type: 'image/png',
+						size_bytes: 4096,
+						width: null,
+						height: null,
+					},
+				],
+				index: 0,
+				// The focus-restore target. The <img> is a real focus stop as of
+				// TASK-2432, so the keyboard path has a stable one to offer —
+				// which is the whole reason `invoker` is on the event.
+				invoker: img,
+			},
+		]);
+	});
+
+	it('opens on Space exactly once and suppresses the page scroll', async () => {
 		editor = makeEditor(target);
 		expect(openCount()).toBe(0);
 
 		const ev = press(image(), ' ');
 
-		expect(openCount()).toBe(1);
+		expect(await opened()).toBe(1);
 		// Unhandled Space scrolls the document — and inside a contenteditable it
 		// would also be taken as text input against the selected atom.
 		expect(ev.defaultPrevented).toBe(true);
 	});
 
-	it('accepts the legacy "Spacebar" key name too', () => {
+	it('accepts the legacy "Spacebar" key name too', async () => {
 		// Same alias the file chip next door accepts — older engines report Space
 		// under this name, and an image that ignored it would be inert there.
 		editor = makeEditor(target);
@@ -232,22 +339,22 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 
 		const ev = press(image(), 'Spacebar');
 
-		expect(openCount()).toBe(1);
+		expect(await opened()).toBe(1);
 		expect(ev.defaultPrevented).toBe(true);
 	});
 
-	it('opens on a mouse click, exactly once', () => {
+	it('opens on a mouse click, exactly once', async () => {
 		editor = makeEditor(target);
 		expect(openCount()).toBe(0);
 		click(image());
-		expect(openCount()).toBe(1);
+		expect(await opened()).toBe(1);
 	});
 
 	// Both activation keys, because the propagation stop is per-key: a handler
 	// that stopped for Enter and not Space would pass an Enter-only test and
 	// still double-open on the key most people press.
 	for (const key of ['Enter', ' ']) {
-		it(`does not double-open when ${key === ' ' ? 'Space' : key} lands inside a delegated container`, () => {
+		it(`does not double-open when ${key === ' ' ? 'Space' : key} lands inside a delegated container`, async () => {
 			// ItemTimeline delegates thumbnail click/keydown across its whole entry
 			// list, and that list CONTAINS live CommentEditor instances whose bodies
 			// render this NodeView — an `img[data-attachment-id]`, which is exactly
@@ -269,7 +376,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 			press(image(), key);
 
 			expect(delegated).toBe(0);
-			expect(openCount()).toBe(1);
+			expect(await opened()).toBe(1);
 		});
 	}
 
@@ -283,7 +390,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		['Shift+Enter', { shiftKey: true }],
 		['Alt+Space', { altKey: true }],
 	] as const) {
-		it(`treats ${label} as a shortcut, not an activation`, () => {
+		it(`treats ${label} as a shortcut, not an activation`, async () => {
 			let seen = 0;
 			let timelineOpened = 0;
 			host.addEventListener('keydown', () => (seen += 1));
@@ -305,7 +412,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 			// instead of the handler under test.
 			const solo = new KeyboardEvent('keydown', { key, cancelable: true, ...mods });
 			image().dispatchEvent(solo);
-			expect(openCount()).toBe(0);
+			expect(await opened()).toBe(0);
 			expect(solo.defaultPrevented).toBe(false);
 
 			// Then bubbling, for the other half: the event must still REACH the
@@ -314,12 +421,12 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 			// just as thoroughly as one that opened a viewer.
 			press(image(), key, mods);
 			expect(seen).toBe(1);
-			expect(openCount()).toBe(0);
+			expect(await opened()).toBe(0);
 			expect(timelineOpened).toBe(0);
 		});
 	}
 
-	it('opens once for a HELD key, not once per repeat', () => {
+	it('opens once for a HELD key, not once per repeat', async () => {
 		// Every repeat is another keydown. Without a guard, leaning on Enter
 		// stacks a viewer per repeat — "exactly once" has to mean once per
 		// gesture. A truthiness check would not see this at all.
@@ -334,14 +441,14 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		press(img, 'Enter');
 		for (let i = 0; i < 4; i++) press(img, 'Enter', { repeat: true });
 
-		expect(openCount()).toBe(1);
+		expect(await opened()).toBe(1);
 		// And the repeats stay suppressed: they belong to the activation the
 		// user made once, so letting them escape would hand the surrounding
 		// surface four keypresses that never happened.
 		expect(delegated).toBe(0);
 	});
 
-	it('still reaches the delegated container for keys it does not handle', () => {
+	it('still reaches the delegated container for keys it does not handle', async () => {
 		// The propagation stop is scoped to the activation keys; swallowing
 		// everything would break Escape, Tab-adjacent handlers and the editor's
 		// own key handling on the surrounding surface.
@@ -355,19 +462,22 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		// Nor is it swallowed: an Escape the node consumed would never reach the
 		// surface that closes a pane or a dialog.
 		expect(ev.defaultPrevented).toBe(false);
-		expect(openCount()).toBe(0);
+		expect(await opened()).toBe(0);
 	});
 
 	it('refuses a probed non-raster type through the KEYBOARD, not just the mouse', async () => {
 		// The gate used to live inside the click handler. A keyboard path that
 		// emitted on its own would have sailed straight past it, so the refusal
 		// is asserted on the route that would have bypassed it.
-		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml' });
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml' , size: 4096 });
 		editor = makeEditor(target);
 
-		// BEFORE the probe answers, this is an ordinary activatable button (the
-		// documented "unknown ⇒ keep today's behaviour" path). Pinning that here
-		// is what makes the refusal below attributable to the RESOLVED MIME
+		// BEFORE the probe answers, this still LOOKS like an ordinary button:
+		// the semantics pass keeps role/tabindex while the MIME is merely
+		// unasked, because "not yet asked" is not "not viewable". (Activation
+		// itself no longer trusts that — TASK-2433 made it resolve the MIME
+		// first — but the two are separate claims and this one is the premise.)
+		// Pinning it here is what makes the refusal below attributable to the RESOLVED MIME
 		// rather than to any other inertness route — an empty uuid, a latched
 		// deletion, a hidden image — all of which would already be true now.
 		expect(image().getAttribute('role')).toBe('button');
@@ -376,7 +486,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		expect(probeMock).toHaveBeenCalled();
 
 		press(image(), 'Enter');
-		expect(openCount()).toBe(0);
+		expect(await opened()).toBe(0);
 
 		// And it stops being a focus stop at all, rather than announcing itself
 		// as a button that does nothing.
@@ -385,10 +495,265 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		expect(image().getAttribute('aria-label')).toBeNull();
 	});
 
+	it('refuses an UNPROBED non-raster type — the gesture that beats the lazy probe', async () => {
+		// The bypass this task's revised gate closes, and the one the test above
+		// cannot see: `settleProbe()` selects the node, which builds the toolbar
+		// and runs the lazy HEAD, so by then `canActivate()` already knows the
+		// MIME and refuses before activation does any work of its own. An
+		// UNSELECTED body image — the state every image is in until the user
+		// touches it — has `knownMime === null`, and the old gate read it only
+		// when truthy: the click sailed past and opened the ORIGINAL file.
+		//
+		// So: never selected, no toolbar, nothing probed. The refusal here can
+		// only come from activation resolving the MIME itself before emitting.
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml' , size: 4096 });
+		editor = makeEditor(target);
+
+		// The premise: nothing has asked yet, so the image still looks openable.
+		expect(probeMock).not.toHaveBeenCalled();
+		expect(image().getAttribute('role')).toBe('button');
+
+		press(image(), 'Enter');
+		expect(await opened()).toBe(0);
+		click(image());
+		expect(await opened()).toBe(0);
+		// And it did ask — a refusal reached by never probing at all would be
+		// the same count for the wrong reason.
+		expect(probeMock).toHaveBeenCalled();
+	});
+
+	it('emits once when two gestures land inside one resolution window', async () => {
+		// Resolving the MIME before emitting introduced an await where there was
+		// none, and "fires exactly once" has to survive it: two activations
+		// entering that window would each clear the gate and each emit, which is
+		// two viewers from one user intent. The key-repeat guard does not cover
+		// this — these are two distinct, unrepeated gestures.
+		editor = makeEditor(target);
+		const img = image();
+
+		press(img, 'Enter');
+		press(img, 'Enter');
+		click(img);
+
+		expect(await opened()).toBe(1);
+
+		// And the latch RELEASES: a gesture after the window closes opens again,
+		// so this is not "the second one is swallowed forever".
+		press(img, 'Enter');
+		expect(await opened()).toBe(2);
+	});
+
+	it('drops the request when the attachment is deleted mid-resolution', async () => {
+		// The await opened a window, and everything the gate checked at gesture
+		// time can stop being true inside it. A deletion is the sharpest case:
+		// it is authoritative, it arrives from another surface at any moment, and
+		// a request emitted after it opens a viewer on a row that is gone.
+		editor = makeEditor(target);
+		const img = image();
+
+		press(img, 'Enter');
+		// Same tick as the gesture, before the HEAD resolves.
+		for (const fn of deletionListeners) fn('uuid-1');
+
+		expect(await opened()).toBe(0);
+	});
+
+	it('never probes, and never emits, on a surface with no workspace', async () => {
+		// An SSR / preview surface configures the extension with the unaddressed
+		// reader. There is no workspace to probe under, so nothing can be
+		// positively known — and the rule is "emit only on a positive answer",
+		// not "emit when we could not check".
+		address = { workspaceSlug: '', itemId: 'item-A', hostToken: 'apanel-1' };
+		editor = makeEditor(target);
+
+		press(image(), 'Enter');
+		click(image());
+
+		expect(await opened()).toBe(0);
+		// Not merely refused after asking — never asked. A probe keyed on an
+		// empty workspace is a cache entry under the wrong key.
+		expect(probeMock).not.toHaveBeenCalled();
+	});
+
+	it('does not emit for a row the probe says is GONE', async () => {
+		// `missing` is authoritative and distinct from `transient`: one is "the
+		// row is not there", the other is "we could not tell". Neither is a
+		// positively-known MIME, so neither opens — but they are separate
+		// branches of the result union and a gate written as
+		// `status === 'transient'` would let this one through.
+		probeMock.mockResolvedValue({ status: 'missing' });
+		editor = makeEditor(target);
+
+		press(image(), 'Enter');
+
+		expect(await opened()).toBe(0);
+	});
+
+	it('drops the request when the NodeView is torn down mid-resolution', async () => {
+		// The await outlives the editor: an item switch or a pane remount
+		// destroys the view while the HEAD is in flight, and a request emitted
+		// afterwards asks a host to open a viewer for a surface that is gone.
+		editor = makeEditor(target);
+
+		press(image(), 'Enter');
+		editor.destroy();
+		editor = undefined;
+
+		expect(await opened()).toBe(0);
+	});
+
+	// Each field SEPARATELY, because the fence is three comparisons and a test
+	// that moved only one leaves the other two free to be deleted. The workspace
+	// is what every image URL is read from, `itemId` is which pane shows the
+	// viewer, and `hostToken` is which of two concurrently-mounted panes it is.
+	for (const [label, moved] of [
+		['workspace', { workspaceSlug: 'ws2', itemId: 'item-A', hostToken: 'apanel-1' }],
+		['item', { workspaceSlug: 'ws', itemId: 'item-B', hostToken: 'apanel-1' }],
+		['owning mount', { workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-2' }],
+	] as const) {
+		it(`drops the request when the ${label} moves mid-resolution`, async () => {
+			// `CommentEditor` is reused across an item switch — its address
+			// changes under a mounted NodeView. The gesture belonged to the OLD
+			// address: emitting there opens a viewer over a pane the user has
+			// left, and emitting at the new one attributes the gesture to a
+			// different item.
+			editor = makeCommentEditor(target);
+
+			press(image(), 'Enter');
+			address = { ...moved };
+
+			expect(await opened()).toBe(0);
+
+			// The control: with the address settled, the very next gesture emits
+			// — so the drop above is the fence, not a composer that stopped
+			// working.
+			press(image(), 'Enter');
+			expect(await opened()).toBe(1);
+			expect(emitted[0].workspaceSlug).toBe(moved.workspaceSlug);
+			expect(emitted[0].itemId).toBe(moved.itemId);
+			expect(emitted[0].hostToken).toBe(moved.hostToken);
+		});
+	}
+
+	it('does not leave the NEW image dead when a swap lands mid-resolution', async () => {
+		// The one-at-a-time latch is per NodeView, and this NodeView deliberately
+		// SURVIVES a uuid swap (rotate/crop, or a peer's op) rather than being
+		// recreated. So a latch taken for the old attachment would still be held
+		// when the new one is clicked — and since a HEAD has no timeout, an
+		// activation that never settles would leave the image in front of the
+		// user permanently unopenable.
+		const pending = new Promise<never>(() => {});
+		probeMock.mockImplementation((_ws?: string, uuid?: string) =>
+			uuid === 'uuid-1'
+				? (pending as unknown as Promise<{ status: 'transient' }>)
+				: Promise.resolve({ status: 'ok', mime: 'image/png', size: 4096 } as never)
+		);
+		editor = makeEditor(target);
+
+		press(image(), 'Enter');
+		expect(await opened()).toBe(0);
+
+		// The swap the NodeView is built to survive.
+		editor.commands.setNodeSelection(1);
+		editor.commands.updateAttributes('attachmentImage', { uuid: 'uuid-2' });
+		await opened();
+
+		press(image(), 'Enter');
+		const requests = await opened();
+		expect(requests).toBe(1);
+		expect(emitted[0].attachmentId).toBe('uuid-2');
+	});
+
+	it('does not let a superseded activation unlock the one that replaced it', async () => {
+		// The other half of the swap fix, and the one it is easy to get wrong:
+		// the latch is released in TWO places now — the resolution's finalizer
+		// and the swap — so an unconditional release lets the OLD image's HEAD,
+		// landing late, unlock a request the NEW image is still holding. Two
+		// gestures then both emit, which is the duplicate the latch exists to
+		// prevent.
+		// ONE promise per attachment, handed to every caller — the real cache
+		// does exactly this (`fetchAttachmentMetadata` installs the in-flight
+		// promise and shares it), and it is load-bearing here: a fresh promise
+		// per call would leave the duplicate activation's continuation pending
+		// forever, hiding the very duplicate this test is about.
+		let releaseOld: () => void = () => {};
+		let releaseNew: () => void = () => {};
+		const oldProbe = new Promise((resolve) => {
+			releaseOld = () => resolve({ status: 'ok', mime: 'image/png', size: 1 });
+		});
+		const newProbe = new Promise((resolve) => {
+			releaseNew = () => resolve({ status: 'ok', mime: 'image/png', size: 4096 });
+		});
+		probeMock.mockImplementation(
+			(_ws?: string, uuid?: string) => (uuid === 'uuid-1' ? oldProbe : newProbe) as never
+		);
+		editor = makeEditor(target);
+
+		// A's activation goes in flight and is then superseded by a swap.
+		press(image(), 'Enter');
+		editor.commands.setNodeSelection(1);
+		editor.commands.updateAttributes('attachmentImage', { uuid: 'uuid-2' });
+		await opened();
+
+		// B's activation takes the latch...
+		press(image(), 'Enter');
+		await opened();
+		// ...and A's late answer must not hand it back.
+		releaseOld();
+		await opened();
+
+		// A second gesture while B is still resolving. With the latch correctly
+		// held this is a no-op; with it wrongly released, this starts a SECOND
+		// resolution and both emit.
+		press(image(), 'Enter');
+		releaseNew();
+
+		expect(await opened()).toBe(1);
+		expect(emitted[0].attachmentId).toBe('uuid-2');
+	});
+
+	it('drops a request whose image was swapped AWAY AND BACK', async () => {
+		// Comparing the uuid alone is not enough, and this is the interleaving
+		// that shows it: a rotate the user immediately undoes, or a peer's op
+		// reverted, puts the ORIGINAL attachment back under a request that is
+		// still resolving for it. It would then find its own uuid in place and
+		// open a viewer for a gesture made two swaps ago — against an image the
+		// user has since acted on twice.
+		let releaseFirst: () => void = () => {};
+		const firstProbe = new Promise((resolve) => {
+			releaseFirst = () => resolve({ status: 'ok', mime: 'image/png', size: 1 });
+		});
+		probeMock.mockImplementation(
+			(_ws?: string, uuid?: string) =>
+				(uuid === 'uuid-1'
+					? firstProbe
+					: Promise.resolve({ status: 'ok', mime: 'image/png', size: 4096 })) as never
+		);
+		editor = makeEditor(target);
+
+		press(image(), 'Enter');
+		expect(await opened()).toBe(0);
+
+		editor.commands.setNodeSelection(1);
+		editor.commands.updateAttributes('attachmentImage', { uuid: 'uuid-2' });
+		await opened();
+		editor.commands.setNodeSelection(1);
+		editor.commands.updateAttributes('attachmentImage', { uuid: 'uuid-1' });
+		await opened();
+		// The premise: the ORIGINAL attachment really is back under the node.
+		// Without it the stale request would be blocked by the uuid comparison
+		// and this test would pass for the wrong reason.
+		expect(image().getAttribute('data-attachment-id')).toBe('uuid-1');
+
+		releaseFirst();
+
+		expect(await opened()).toBe(0);
+	});
+
 	it('still opens an allowlisted raster type after the probe resolves', async () => {
 		// The control for the refusal above: same code path, same probe, same
 		// number of awaits — only the MIME differs.
-		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png' });
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png' , size: 4096 });
 		editor = makeEditor(target);
 		await settleProbe();
 		expect(probeMock).toHaveBeenCalled();
@@ -396,10 +761,10 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		expect(image().getAttribute('role')).toBe('button');
 		expect(openCount()).toBe(0);
 		press(image(), 'Enter');
-		expect(openCount()).toBe(1);
+		expect(await opened()).toBe(1);
 	});
 
-	it('makes a deleted image inert rather than a dead focus stop', () => {
+	it('makes a deleted image inert rather than a dead focus stop', async () => {
 		editor = makeEditor(target);
 		const img = image();
 		expect(img.getAttribute('role')).toBe('button');
@@ -414,7 +779,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		// no longer exists.
 		press(img, 'Enter');
 		click(img);
-		expect(openCount()).toBe(0);
+		expect(await opened()).toBe(0);
 	});
 
 	it('does not strand focus on an image that just went inert', () => {
@@ -430,7 +795,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		expect(document.activeElement).not.toBe(img);
 	});
 
-	it('gives a comment editor the same contract as an item body', () => {
+	it('gives a comment editor the same contract as an item body', async () => {
 		// CommentEditor.svelte configures AttachmentImage independently, so
 		// "works in the body" is not evidence it works in a comment.
 		editor = makeCommentEditor(target);
@@ -442,10 +807,10 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 
 		expect(openCount()).toBe(0);
 		press(img, 'Enter');
-		expect(openCount()).toBe(1);
+		expect(await opened()).toBe(1);
 	});
 
-	it('will not ACTIVATE while the image is showing a load-failure placeholder', () => {
+	it('will not ACTIVATE while the image is showing a load-failure placeholder', async () => {
 		// Attributes are not the contract — activation is. Stripping role and
 		// tabindex hides the image from Tab, but a stale event still in flight, a
 		// synthetic one, or focus that predates the failure all reach the
@@ -460,7 +825,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		press(img, ' ');
 		click(img);
 
-		expect(openCount()).toBe(0);
+		expect(await opened()).toBe(0);
 	});
 
 	it('is not a focus stop while the image is showing a load-failure placeholder', () => {

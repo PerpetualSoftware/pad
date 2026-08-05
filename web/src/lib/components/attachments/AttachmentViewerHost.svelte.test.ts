@@ -40,13 +40,30 @@ vi.mock('$lib/attachments/events', async (importOriginal) => {
 
 const { notifyViewerOpen } = await import('$lib/attachments/events');
 type ViewerEvent = import('$lib/attachments/events').AttachmentViewerOpenEvent;
+// What `notifyViewerOpen` ACCEPTS, which is narrower than what it delivers: a
+// producer must have resolved the MIME (TASK-2433), so the emitter's set is
+// `ViewerReadyImage` while the host still consumes the nullable event shape.
+// The fixture below is an emitter, so it is typed as the request.
+//
+// This file is `*.svelte.test.ts`, which `tsconfig.json` EXCLUDES, so
+// `npm run check` would not have caught the mismatch — a reason to keep the
+// annotation honest by hand rather than a reason it does not matter.
+type ViewerRequest = import('$lib/attachments/events').ViewerOpenRequest;
+type ViewerReadyImage = import('$lib/attachments/events').ViewerReadyImage;
 type LightboxImage = import('$lib/attachments/events').LightboxImage;
 const { default: AttachmentViewerHost } = await import('./AttachmentViewerHost.svelte');
 
 const ATT_ID = '11111111-2222-4333-8444-555555555555';
 const ATT_ID_2 = '99999999-8888-4777-8666-555555555555';
 
-function image(over: Partial<LightboxImage> = {}): LightboxImage {
+/**
+ * A member of an emitted set, in the PRODUCER's shape: `notifyViewerOpen`
+ * requires a resolved MIME (TASK-2433). The cast is confined here and the
+ * default IS a resolved allowlisted type, so the assertion holds for
+ * everything this returns; overrides stay in the nullable shape so a case that
+ * wants an unresolved one is written — and read — as a deliberate exception.
+ */
+function image(over: Partial<LightboxImage> = {}): ViewerReadyImage {
 	return {
 		id: ATT_ID,
 		alt: 'a diagram',
@@ -56,10 +73,10 @@ function image(over: Partial<LightboxImage> = {}): LightboxImage {
 		width: 800,
 		height: 600,
 		...over,
-	};
+	} as ViewerReadyImage;
 }
 
-function openEvent(over: Partial<ViewerEvent> = {}): ViewerEvent {
+function openEvent(over: Partial<ViewerRequest> = {}): ViewerRequest {
 	return {
 		attachmentId: ATT_ID,
 		workspaceSlug: 'ws',

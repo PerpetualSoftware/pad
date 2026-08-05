@@ -21,11 +21,21 @@ const { notifyViewerOpen } = await import('$lib/attachments/events');
 const { lightboxStubCalls } = await import('./fixtures/lightboxStub');
 const { default: AttachmentViewerHost } = await import('./AttachmentViewerHost.svelte');
 type ViewerEvent = import('$lib/attachments/events').AttachmentViewerOpenEvent;
+// What `notifyViewerOpen` ACCEPTS, which is narrower than what it delivers: a
+// producer must have resolved the MIME (TASK-2433), so the emitter's set is
+// `ViewerReadyImage` while the host still consumes the nullable event shape.
+// The fixture below is an emitter, so it is typed as the request.
+//
+// This file is `*.svelte.test.ts`, which `tsconfig.json` EXCLUDES, so
+// `npm run check` would not have caught the mismatch — a reason to keep the
+// annotation honest by hand rather than a reason it does not matter.
+type ViewerRequest = import('$lib/attachments/events').ViewerOpenRequest;
+type ViewerReadyImage = import('$lib/attachments/events').ViewerReadyImage;
 
 const ATT_ID = '11111111-2222-4333-8444-555555555555';
 const ATT_ID_2 = '99999999-8888-4777-8666-555555555555';
 
-function openEvent(over: Partial<ViewerEvent> = {}): ViewerEvent {
+function openEvent(over: Partial<ViewerRequest> = {}): ViewerRequest {
 	return {
 		attachmentId: ATT_ID,
 		workspaceSlug: 'ws',
