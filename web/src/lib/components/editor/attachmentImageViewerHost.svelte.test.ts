@@ -24,6 +24,11 @@ import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
 import { _resetEscapeStackForTests } from '$lib/stores/escapeStack';
+import {
+	isAttachmentPanelEventForHost,
+	registerAttachmentPanelListener,
+	type AttachmentPanelOpenEvent,
+} from '$lib/attachments/events';
 
 const UUID = '11111111-1111-4111-8111-111111111111';
 const ITEM_ID = 'item-A';
@@ -42,6 +47,9 @@ vi.mock('./attachment-metadata', () => ({
 const { AttachmentImage } = await import('./attachment-image');
 const { default: AttachmentViewerHost } = await import(
 	'$lib/components/attachments/AttachmentViewerHost.svelte'
+);
+const { default: AttachmentPanelHost } = await import(
+	'$lib/components/attachments/AttachmentPanelHost.svelte'
 );
 
 let address = { workspaceSlug: 'ws', itemId: ITEM_ID, hostToken: HOST_TOKEN };
@@ -192,6 +200,91 @@ describe('inline image → viewer host → Lightbox', () => {
 		await settle();
 
 		expect(viewers()).toHaveLength(0);
+	});
+
+	it('REDIRECTS a non-allowlisted type into the real panel host', async () => {
+		// The whole route for the redirect arm, with nothing between the NodeView
+		// and the panel stubbed: the real bus, the real `AttachmentPanelHost`, the
+		// real panel it mounts. The producer specs next door mock the bus, so a
+		// host that stopped consuming — or an address that could not route —
+		// would leave them green and leave the user with an image that does
+		// nothing, which is the exact failure this task replaced.
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 100 } as never);
+		mountHost({ itemId: ITEM_ID, hostToken: HOST_TOKEN });
+		const panelHost = mount(AttachmentPanelHost, {
+			target: hostTarget,
+			props: {
+				wsSlug: 'ws',
+				itemId: ITEM_ID,
+				hostToken: HOST_TOKEN,
+				mutationsEnabled: false,
+			},
+		}) as Record<string, unknown>;
+		try {
+			editor = makeEditor(editorTarget);
+
+			image().dispatchEvent(
+				new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })
+			);
+			await settle();
+
+			// No viewer — the security half.
+			expect(viewers()).toHaveLength(0);
+			// And a real panel on screen, for the attachment that was activated —
+			// the completeness half. A redirect nobody consumes is still a tap
+			// that does nothing.
+			const panel = document.body.querySelector<HTMLElement>('[role="menu"] .ap-header');
+			expect(panel).not.toBeNull();
+			// And it is about THIS attachment, not merely present: the MIME the
+			// probe returned and a download target carrying the uuid. A panel that
+			// opened on the wrong row would satisfy a presence check.
+			expect(panel?.querySelector('.ap-meta')?.getAttribute('title')).toBe('image/svg+xml');
+			expect(
+				document.body.querySelector<HTMLAnchorElement>('[role="menu"] a[download]')?.getAttribute('href')
+			).toContain(UUID);
+		} finally {
+			unmount(panelHost);
+		}
+	});
+
+	it('REDIRECTS a non-allowlisted type onto the real panel channel', async () => {
+		// TASK-2434's redirect, asserted through the REAL bus rather than a mock.
+		// The producer specs next door mock `notifyAttachmentPanelOpen`, so they
+		// see the call and are blind to what the channel does with it — and the
+		// channel drops any emission it judges unaddressable. An event that never
+		// leaves the bus is indistinguishable, from the producer's side, from the
+		// silent refusal this task replaced.
+		const seen: AttachmentPanelOpenEvent[] = [];
+		const dispose = registerAttachmentPanelListener((e) => seen.push(e));
+		try {
+			probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 100 } as never);
+			mountHost({ itemId: ITEM_ID, hostToken: HOST_TOKEN });
+			editor = makeEditor(editorTarget);
+
+			image().dispatchEvent(
+				new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })
+			);
+			await settle();
+
+			// No viewer — the security half.
+			expect(viewers()).toHaveLength(0);
+			// And it went SOMEWHERE — the completeness half.
+			expect(seen).toHaveLength(1);
+			expect(seen[0].attachmentId).toBe(UUID);
+			expect(seen[0].mime_type).toBe('image/svg+xml');
+			// Addressed well enough for a host to claim it. The channel's own
+			// predicate, not a re-implementation of it: a payload that reached a
+			// raw subscriber but that no host would match is still a tap that
+			// does nothing.
+			expect(
+				isAttachmentPanelEventForHost(seen[0], { itemId: ITEM_ID, hostToken: HOST_TOKEN })
+			).toBe(true);
+			expect(
+				isAttachmentPanelEventForHost(seen[0], { itemId: ITEM_ID, hostToken: 'another-mount' })
+			).toBe(false);
+		} finally {
+			dispose();
+		}
 	});
 
 	it('does not open for a MIME the viewer would filter back out', async () => {

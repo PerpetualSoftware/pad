@@ -40,8 +40,16 @@ const deletionListeners = new Set<(uuid: string) => void>();
 // Open-viewer requests, captured RAW — before the channel's addressability
 // filter, so what is asserted is what THIS NodeView produced.
 const emitted: Array<Record<string, unknown>> = [];
+// Open-the-PANEL requests, same treatment. TASK-2434 makes this NodeView a
+// producer on BOTH channels — a non-allowlisted MIME is redirected to the
+// options panel rather than refused — so a spec that captured only the viewer
+// channel could not tell a redirect from a silent drop, which is exactly the
+// distinction the matrix is about.
+const panelEmitted: Array<Record<string, unknown>> = [];
 vi.mock('$lib/attachments/events', () => ({
-	notifyAttachmentPanelOpen: () => {},
+	notifyAttachmentPanelOpen: (event: Record<string, unknown>) => {
+		panelEmitted.push(event);
+	},
 	notifyViewerOpen: (event: Record<string, unknown>) => {
 		emitted.push(event);
 	},
@@ -66,9 +74,16 @@ type ProbeResult =
 const probeMock = vi.fn<(ws?: string, uuid?: string) => Promise<ProbeResult>>(async () => ({
 	status: 'transient',
 }));
+// The load-failure path's REVALIDATION, separable from the cached read above.
+// It delegates to `probeMock` by default, so for almost every test the two are
+// one mock and answer alike. Exactly one test needs them to differ: proving
+// that a 404 reaching the ACTIVATION branch upgrades an already-hidden
+// placeholder requires the error path's own probe not to be the thing that
+// latches it, or the assertion could not tell the two routes apart.
+const revalidateMock = vi.fn<(ws?: string, uuid?: string) => Promise<ProbeResult>>();
 vi.mock('./attachment-metadata', () => ({
 	fetchAttachmentMetadata: (ws: string, uuid: string) => probeMock(ws, uuid),
-	revalidateAttachmentMetadata: (ws: string, uuid: string) => probeMock(ws, uuid),
+	revalidateAttachmentMetadata: (ws: string, uuid: string) => revalidateMock(ws, uuid),
 	invalidateAttachmentMetadata: () => {},
 	mimeToFormat: () => null,
 }));
@@ -133,7 +148,15 @@ function makeCommentEditor(element: HTMLElement): Editor {
 	});
 }
 
-/** How many times activation actually fired. One request per open. */
+/**
+ * How many times activation asked for the VIEWER. One request per open.
+ *
+ * Deliberately not "how many times activation fired": since TASK-2434 an
+ * activation can instead land on the panel channel, which `panelEmitted`
+ * counts. Reading this as a count of activations would make every redirect
+ * look like a dropped gesture — the exact confusion the two arrays exist to
+ * keep apart.
+ */
 function openCount(): number {
 	return emitted.length;
 }
@@ -208,7 +231,10 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		// `transient` default would make every "opens exactly once" test below
 		// assert 0 for a reason that has nothing to do with the keyboard.
 		probeMock.mockResolvedValue({ status: 'ok' as const, mime: 'image/png', size: 4096 });
+		revalidateMock.mockClear();
+		revalidateMock.mockImplementation((ws?: string, uuid?: string) => probeMock(ws, uuid));
 		emitted.length = 0;
+		panelEmitted.length = 0;
 		host = document.body.appendChild(document.createElement('div'));
 		target = host.appendChild(document.createElement('div'));
 	});
@@ -218,6 +244,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		editor = undefined;
 		host.remove();
 		emitted.length = 0;
+		panelEmitted.length = 0;
 		document.querySelectorAll('.timeline-viewer-stub').forEach((d) => d.remove());
 	});
 
@@ -465,7 +492,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		expect(await opened()).toBe(0);
 	});
 
-	it('refuses a probed non-raster type through the KEYBOARD, not just the mouse', async () => {
+	it('keeps a probed non-raster type OUT of the viewer through the KEYBOARD, not just the mouse', async () => {
 		// The gate used to live inside the click handler. A keyboard path that
 		// emitted on its own would have sailed straight past it, so the refusal
 		// is asserted on the route that would have bypassed it.
@@ -488,12 +515,570 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		press(image(), 'Enter');
 		expect(await opened()).toBe(0);
 
-		// And it stops being a focus stop at all, rather than announcing itself
-		// as a button that does nothing.
-		expect(image().getAttribute('role')).toBeNull();
-		expect(image().getAttribute('tabindex')).toBeNull();
-		expect(image().getAttribute('aria-label')).toBeNull();
+		// TASK-2434: it is a REDIRECT, not a refusal. Asserting only "the viewer
+		// did not open" would be satisfied by an implementation that dropped the
+		// gesture on the floor — which is what this used to do, and the dead
+		// focus stop the matrix exists to close.
+		expect(panelEmitted).toHaveLength(1);
+		// So it stays a real control, and it says where it goes.
+		expect(image().getAttribute('role')).toBe('button');
+		expect(image().getAttribute('tabindex')).toBe('0');
+		expect(image().getAttribute('aria-label')).toBe('Attachment options: A diagram');
 	});
+
+	it('redirects a non-allowlisted MIME to the panel, with the whole payload', async () => {
+		// The `ok` + not-allowlisted arm of the matrix, asserted on what is
+		// EMITTED. A count alone is satisfied by an event of any shape, and the
+		// panel's routing fields are exactly what a producer gets wrong: the
+		// address decides which of two mounted hosts opens it, and the three
+		// metadata fields are what the panel renders before its own fetch lands.
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 1234 });
+		editor = makeEditor(target);
+		const img = image();
+
+		press(img, 'Enter');
+		expect(await opened()).toBe(0);
+
+		expect(panelEmitted).toEqual([
+			{
+				attachmentId: 'uuid-1',
+				itemId: 'item-A',
+				hostToken: 'apanel-1',
+				anchor: img,
+				// No filename anywhere on this surface — the node's attrs carry
+				// none and the HEAD does not either. Null, not a fabricated one.
+				filename: null,
+				mime_type: 'application/pdf',
+				size_bytes: 1234,
+			},
+		]);
+		// It ASKED. A payload alone is satisfiable by an implementation that
+		// skipped the probe and assumed a MIME — which is precisely the gate
+		// this whole path exists to close.
+		expect(probeMock).toHaveBeenCalled();
+		// And the pending affordance is cleared on THIS branch too. The
+		// finalizer is shared, but a clear moved into the viewer branch would
+		// leave every redirect permanently `aria-busy`.
+		expect(img.getAttribute('aria-busy')).toBeNull();
+		expect(img.style.cursor).toBe('');
+	});
+
+	it('keeps redirecting on every activation, not just the first', async () => {
+		// The regression the semantics rewrite exists to prevent, and the one an
+		// attribute-only assertion would miss entirely. Activation now WRITES the
+		// resolved MIME onto the node. If the activation gate still refused a
+		// known non-allowlisted MIME — as it did before this task — the first tap
+		// would open the panel and every tap after it would silently do nothing,
+		// because the gate would be reading the answer the first tap recorded.
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 10 });
+		editor = makeEditor(target);
+		const img = image();
+
+		press(img, 'Enter');
+		await opened();
+		expect(panelEmitted).toHaveLength(1);
+
+		// The premise: the MIME really is on the node now (the label proves it,
+		// and it is the same state the gate would have been reading).
+		expect(img.getAttribute('aria-label')).toBe('Attachment options: A diagram');
+
+		press(img, 'Enter');
+		await opened();
+		click(img);
+		await opened();
+
+		expect(panelEmitted).toHaveLength(3);
+		expect(await opened()).toBe(0);
+		// The LAST one, not just the count: a redirect that kept firing with a
+		// payload frozen at the first gesture would be a count of three and a
+		// panel that opens on whatever the node used to be.
+		expect(panelEmitted[2]).toMatchObject({
+			attachmentId: 'uuid-1',
+			itemId: 'item-A',
+			hostToken: 'apanel-1',
+			anchor: img,
+			mime_type: 'image/svg+xml',
+			size_bytes: 10,
+		});
+	});
+
+	it('never opens the panel for a MIME the viewer WILL take', async () => {
+		// The other direction of the redirect, which a one-sided spec would leave
+		// free: an implementation that emitted BOTH events would satisfy every
+		// panel assertion above and open two surfaces from one gesture.
+		editor = makeEditor(target);
+
+		press(image(), 'Enter');
+
+		expect(await opened()).toBe(1);
+		expect(panelEmitted).toEqual([]);
+		// Reached by ASKING, not by assuming: an implementation that skipped the
+		// probe for images it liked the look of would pass the two assertions
+		// above and be exactly the bypass TASK-2433 closed.
+		expect(probeMock).toHaveBeenCalled();
+	});
+
+	it('latches the permanent placeholder on an authoritative 404, and opens nothing', async () => {
+		// The `missing` arm. `missing` is the ONLY result that may latch (DR-17),
+		// and the latch is what keeps editor undo from resurrecting a deleted
+		// attachment as a live-looking node.
+		probeMock.mockResolvedValue({ status: 'missing' });
+		editor = makeEditor(target);
+		const img = image();
+
+		press(img, 'Enter');
+		await opened();
+
+		expect(await opened()).toBe(0);
+		expect(panelEmitted).toEqual([]);
+
+		const placeholder = target.querySelector<HTMLElement>('.attachment-missing');
+		expect(img.style.display).toBe('none');
+		expect(placeholder?.style.display).not.toBe('none');
+		// PERMANENT, and the copy says so: a deleted row is not retryable, so the
+		// placeholder is deliberately NOT a control. A retryable placeholder here
+		// would invite a click that can only 404.
+		expect(placeholder?.title).toBe('This attachment has been deleted');
+		expect(placeholder?.getAttribute('role')).toBeNull();
+		expect(placeholder?.getAttribute('tabindex')).toBeNull();
+		// And the latch holds against BOTH ways back. A click cannot retry it...
+		placeholder?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(img.style.display).toBe('none');
+		// ...and neither can a `load` that was already in flight when the 404
+		// landed. The implementation stops that twice over — the latch detaches
+		// the listener AND `resetMissing` refuses to run once `deleted` — so this
+		// pins the OUTCOME rather than either mechanism, which is the honest
+		// claim to make about a guard with a redundant partner.
+		img.dispatchEvent(new Event('load'));
+		expect(img.style.display).toBe('none');
+		expect(img.getAttribute('aria-busy')).toBeNull();
+	});
+
+	it('leaves a transient failure RETRYABLE — no open, no latch', async () => {
+		// The `transient` arm, and the dead focus stop TASK-2433 left behind: it
+		// emitted nothing and did nothing, so a focused image announced itself as
+		// a button and silently swallowed every press.
+		probeMock.mockResolvedValue({ status: 'transient' });
+		editor = makeEditor(target);
+		const img = image();
+		img.focus();
+
+		press(img, 'Enter');
+		await opened();
+
+		expect(await opened()).toBe(0);
+		expect(panelEmitted).toEqual([]);
+
+		const placeholder = target.querySelector<HTMLElement>('.attachment-missing');
+		expect(img.style.display).toBe('none');
+		expect(placeholder?.style.display).not.toBe('none');
+		// RETRYABLE, not latched — the copy, the semantics and the focus all say
+		// the same thing. This is the assertion that separates it from `missing`:
+		// an implementation that treated the two alike would pass every "did not
+		// open" check above and permanently strand a row that is perfectly fine.
+		expect(placeholder?.title).toContain('Click to retry');
+		expect(placeholder?.getAttribute('role')).toBe('button');
+		expect(placeholder?.getAttribute('tabindex')).toBe('0');
+		// The keypress that reported the failure must not drop focus to <body>.
+		expect(document.activeElement).toBe(placeholder);
+
+		// And the latch really is absent: Retry restores the image, which
+		// `missing` above cannot do.
+		expect(img.getAttribute('aria-busy')).toBeNull();
+		const srcBefore = img.getAttribute('src');
+		placeholder?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(img.style.display).toBe('');
+		expect(placeholder?.style.display).toBe('none');
+		// Retry means a NEW REQUEST, not just an un-hidden element: without the
+		// cache-busting query the browser replays the failed entry and the retry
+		// is theatre. Restoring the DOM alone would pass the two lines above.
+		expect(img.getAttribute('src')).not.toBe(srcBefore);
+		expect(img.getAttribute('src')).toContain('retry=');
+	});
+
+	it('does not let a transient failure latch permanently across a recovery', async () => {
+		// DR-17's rule stated over TIME rather than over one result: only an
+		// authoritative 404 latches, so a blip followed by a healthy probe must
+		// leave the image fully openable again. An implementation that reused the
+		// `missing` path for `transient` would fail here and NOWHERE else — every
+		// single-shot assertion above would still pass.
+		probeMock.mockResolvedValue({ status: 'transient' });
+		editor = makeEditor(target);
+		const img = image();
+
+		press(img, 'Enter');
+		await opened();
+		const placeholder = target.querySelector<HTMLElement>('.attachment-missing');
+		// The premise, and it is load-bearing: without it this passes against an
+		// implementation whose `transient` arm does nothing at all — there would
+		// be no latch to survive, and the recovery below would prove nothing.
+		expect(img.style.display).toBe('none');
+		expect(placeholder?.getAttribute('role')).toBe('button');
+		placeholder?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 4096 });
+		press(img, 'Enter');
+
+		expect(await opened()).toBe(1);
+	});
+
+	it('shows a pending affordance while the MIME is still resolving', async () => {
+		// A cold probe is a round trip, and a click that does nothing for its
+		// duration reads as broken. Deliberately minimal: `aria-busy` and a
+		// cursor, no new chrome.
+		let release: () => void = () => {};
+		probeMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve({ status: 'ok', mime: 'image/png', size: 4096 });
+				})
+		);
+		editor = makeEditor(target);
+		const img = image();
+		expect(img.getAttribute('aria-busy')).toBeNull();
+
+		press(img, 'Enter');
+
+		// Set SYNCHRONOUSLY with the gesture — a pending state that waits for a
+		// tick is not covering the wait it exists for.
+		expect(img.getAttribute('aria-busy')).toBe('true');
+		expect(img.style.cursor).toBe('progress');
+
+		release();
+		expect(await opened()).toBe(1);
+		// And cleared, or the image announces itself as permanently busy.
+		expect(img.getAttribute('aria-busy')).toBeNull();
+		expect(img.style.cursor).toBe('');
+	});
+
+	it('clears the pending affordance when a swap supersedes the request', async () => {
+		// The finalizer only runs for the request that still holds the latch, so
+		// a swap has to clear the pending state itself — otherwise a HEAD that
+		// never settles leaves the NEW image permanently `aria-busy`.
+		probeMock.mockImplementation(() => new Promise<never>(() => {}));
+		editor = makeEditor(target);
+		press(image(), 'Enter');
+		expect(image().getAttribute('aria-busy')).toBe('true');
+
+		// The SAME element across the swap: this NodeView deliberately survives a
+		// uuid change, and reacquiring by selector would let a destroy/recreate
+		// implementation pass without ever clearing anything.
+		const before = image();
+		editor.commands.setNodeSelection(1);
+		editor.commands.updateAttributes('attachmentImage', { uuid: 'uuid-2' });
+
+		expect(image()).toBe(before);
+		expect(before.getAttribute('aria-busy')).toBeNull();
+		expect(before.style.cursor).toBe('');
+	});
+
+	it('opens NOTHING when a delete lands mid-probe and the answer comes back ok', async () => {
+		// The race the uuid comparison structurally cannot catch: a delete does
+		// not change which attachment the node points at, so `forUuid` is still
+		// current when the probe resolves — with a perfectly valid `ok` describing
+		// a row the server has since dropped.
+		//
+		// The implementation states this TWICE — an explicit `deleted` re-check
+		// and `canActivate()`'s hidden-placeholder clause — and mutation testing
+		// confirms this spec fails only when BOTH are gone. That is the honest
+		// claim: it pins the BEHAVIOUR, not either line. (The two are equivalent
+		// today only because every path that sets `deleted` also hides the image;
+		// nothing enforces that, which is why the check is stated on its own
+		// terms rather than inferred from the placeholder.)
+		//
+		// A test that let the probe resolve BEFORE the delete would pass against
+		// an implementation with no `deleted` check at all, so the ordering here
+		// is the whole point: the answer is held until after the broadcast.
+		let release: () => void = () => {};
+		probeMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve({ status: 'ok', mime: 'image/png', size: 4096 });
+				})
+		);
+		editor = makeEditor(target);
+		const img = image();
+
+		press(img, 'Enter');
+		for (const fn of deletionListeners) fn('uuid-1');
+		// The premise: the node still points at the very attachment the probe is
+		// about. Without this the drop could be the uuid fence doing the work.
+		expect(img.getAttribute('data-attachment-id')).toBe('uuid-1');
+		release();
+
+		expect(await opened()).toBe(0);
+		// BOTH channels. A `deleted` check placed after the allowlist branch
+		// would still leak the redirect.
+		expect(panelEmitted).toEqual([]);
+	});
+
+	it('opens NO PANEL either when a delete lands mid-probe on a non-raster type', async () => {
+		// The same race down the redirect branch, which is new surface: the
+		// `missing`/`transient`/`ok` split gave the continuation three more places
+		// to act on a row that is gone.
+		let release: () => void = () => {};
+		probeMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve({ status: 'ok', mime: 'image/svg+xml', size: 10 });
+				})
+		);
+		editor = makeEditor(target);
+
+		press(image(), 'Enter');
+		for (const fn of deletionListeners) fn('uuid-1');
+		release();
+
+		await opened();
+		expect(panelEmitted).toEqual([]);
+		expect(await opened()).toBe(0);
+
+		// THE CONTROL, and it is the whole test: `expect no panel` is satisfied
+		// by an implementation that has no redirect at all — the pre-TASK-2434
+		// binary refusal passes it outright. So prove the branch works on an
+		// undeleted node under the identical probe.
+		editor.destroy();
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 10 });
+		editor = makeEditor(target);
+		press(image(), 'Enter');
+		await opened();
+		expect(panelEmitted).toHaveLength(1);
+	});
+
+	// The address fence, restated on the PANEL branch. It is a second emission
+	// site with its own copy of the captured address, so the three comparisons
+	// have to hold for it independently — a fence that only guarded the viewer
+	// would let a redirect open a panel over a pane the user has left.
+	for (const [label, moved] of [
+		['workspace', { workspaceSlug: 'ws2', itemId: 'item-A', hostToken: 'apanel-1' }],
+		['item', { workspaceSlug: 'ws', itemId: 'item-B', hostToken: 'apanel-1' }],
+		['owning mount', { workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-2' }],
+	] as const) {
+		it(`drops the PANEL redirect when the ${label} moves mid-resolution`, async () => {
+			probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 10 });
+			editor = makeCommentEditor(target);
+
+			press(image(), 'Enter');
+			address = { ...moved };
+
+			await opened();
+			expect(panelEmitted).toEqual([]);
+
+			// The control: settled, the next gesture DOES redirect — so the drop
+			// above is the fence, not a branch that never worked.
+			press(image(), 'Enter');
+			await opened();
+			expect(panelEmitted).toHaveLength(1);
+			expect(panelEmitted[0].itemId).toBe(moved.itemId);
+			expect(panelEmitted[0].hostToken).toBe(moved.hostToken);
+		});
+	}
+
+	it('emits with the address CAPTURED at the gesture, even if the reader mutates in place', async () => {
+		// The fence holds three PRIMITIVES, not the object the reader returned.
+		// Both live readers build a fresh object literal per call, so holding the
+		// reference would be safe — for that reason alone, which no interface
+		// states. This pins the independence: a reader that hands back ONE object
+		// and mutates it in place would, if the fence held the reference, rewrite
+		// the snapshot it compares against and pass unconditionally.
+		const shared = { workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-1' };
+		address = shared;
+		let release: () => void = () => {};
+		probeMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve({ status: 'ok', mime: 'image/png', size: 4096 });
+				})
+		);
+		editor = makeCommentEditor(target);
+
+		press(image(), 'Enter');
+		// The host "moves" by mutating the object the reader keeps handing out.
+		shared.itemId = 'item-B';
+		shared.hostToken = 'apanel-2';
+		release();
+
+		// Dropped. Holding the reference would compare item-B against item-B.
+		expect(await opened()).toBe(0);
+	});
+
+	it('DOES emit when the address leaves and returns (A→B→A) — documented, accepted', async () => {
+		// The fence compares VALUES, so an address that round-trips reads as
+		// unchanged. Reachable: the pane's `ItemDetail` has no `{#key}`
+		// (PLAN-2105 / TASK-2112), so an A→B→A item switch keeps one host token
+		// and the composer it owns is reused across it.
+		//
+		// PINNED AS THE CURRENT BEHAVIOUR, not asserted as ideal. It is accepted
+		// because the outcome differs from what the fence prevents — the user is
+		// back on the pane, and the gesture is not re-attributed: the same node,
+		// the same attachment, the same host. Contrast the uuid A→B→A case below,
+		// which IS dropped, because there the SUBJECT of the gesture changed.
+		//
+		// Telling A→B→A from A needs an epoch on `AttachmentHostAddress` that
+		// every host bumps; this NodeView only READS the address, so a B between
+		// the two reads is invisible to it by construction. When that epoch
+		// lands, this expectation flips to 0 and this comment is its changelog.
+		let release: () => void = () => {};
+		probeMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve({ status: 'ok', mime: 'image/png', size: 4096 });
+				})
+		);
+		editor = makeCommentEditor(target);
+		const original = { ...address };
+
+		press(image(), 'Enter');
+		address = { workspaceSlug: 'ws', itemId: 'item-B', hostToken: 'apanel-1' };
+		address = { ...original };
+		release();
+
+		expect(await opened()).toBe(1);
+		// And it emits at A — not at the B it passed through.
+		expect(emitted[0].itemId).toBe(original.itemId);
+		expect(emitted[0].hostToken).toBe(original.hostToken);
+	});
+
+	it('UPGRADES an already-hidden retryable placeholder when a 404 arrives', async () => {
+		// The transient→missing transition, and the only DR-17 boundary that had
+		// no test. The mutant it exists for is exact: an implementation that
+		// processed `missing` only when `canActivate()` is true would pass every
+		// other test in this file, because the placeholder-showing state is
+		// precisely where `canActivate()` is already false. That is why the
+		// `missing` branch deliberately runs BEFORE the presentability check — a
+		// 404 is authoritative whatever the node happens to be showing.
+		//
+		// Reaching that state takes care. An activation cannot START while the
+		// placeholder is up (the gesture-time gate refuses), and Retry UN-hides
+		// the image — so a naive "fail, retry, 404" sequence lands the 404 on a
+		// VISIBLE image and tests nothing new. The image has to go behind the
+		// placeholder DURING the await, which is what the load `error` does.
+		let release: () => void = () => {};
+		probeMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve({ status: 'missing' });
+				})
+		);
+		// The error path runs its OWN revalidation, which latches on a 404 too.
+		// Keeping it transient is what makes the latch below attributable to the
+		// activation branch rather than to the load failure's probe.
+		revalidateMock.mockResolvedValue({ status: 'transient' });
+		editor = makeEditor(target);
+		const img = image();
+
+		press(img, 'Enter');
+		img.dispatchEvent(new Event('error'));
+		await opened();
+
+		const placeholder = target.querySelector<HTMLElement>('.attachment-missing');
+		// The premise, and the whole point: hidden, and still RETRYABLE. Without
+		// both, the 404 below would be landing on a state some other test covers.
+		expect(img.style.display).toBe('none');
+		expect(placeholder?.getAttribute('role')).toBe('button');
+		expect(placeholder?.title).toContain('Click to retry');
+
+		// The 404 lands while the placeholder is up.
+		release();
+		await opened();
+
+		// Upgraded: permanent, inert, no longer inviting a retry that can only
+		// 404 again.
+		expect(placeholder?.title).toBe('This attachment has been deleted');
+		expect(placeholder?.getAttribute('role')).toBeNull();
+		expect(placeholder?.getAttribute('tabindex')).toBeNull();
+		// And the latch holds — a retry click cannot undo an authoritative 404.
+		placeholder?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(img.style.display).toBe('none');
+		expect(await opened()).toBe(0);
+		expect(panelEmitted).toEqual([]);
+	});
+
+	it('opens nothing when a load failure hides the image mid-probe and the MIME is FINE', async () => {
+		// The post-await `canActivate()` guard, which nothing else reaches. The
+		// spec below ("will not ACTIVATE while the image is showing a
+		// load-failure placeholder") fails the load FIRST and gestures after, so
+		// it is stopped by the GESTURE-time gate and would pass with the
+		// post-await check deleted entirely.
+		//
+		// This is the other order, and it is the reachable one: the gesture lands
+		// on a healthy image, the load fails while the HEAD is in flight, and the
+		// HEAD comes back with a perfectly good `image/png`. Nothing is deleted
+		// and nothing is missing — the only reason not to open is that there is
+		// no longer an image on screen to open. Emitting here would put a viewer
+		// over a placeholder.
+		let release: () => void = () => {};
+		probeMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve({ status: 'ok', mime: 'image/png', size: 4096 });
+				})
+		);
+		// The error path's own revalidation stays transient, so the placeholder
+		// remains the RETRYABLE one — this test is about a healthy MIME meeting a
+		// hidden image, not about a latch.
+		revalidateMock.mockResolvedValue({ status: 'transient' });
+		editor = makeEditor(target);
+		const img = image();
+
+		press(img, 'Enter');
+		img.dispatchEvent(new Event('error'));
+		const placeholder = target.querySelector<HTMLElement>('.attachment-missing');
+		// The premise: hidden, retryable, NOT deleted — so every other guard in
+		// the continuation (uuid, generation, `deleted`) is satisfied and only
+		// presentability is left to do the work.
+		expect(img.style.display).toBe('none');
+		expect(placeholder?.getAttribute('role')).toBe('button');
+
+		release();
+		await opened();
+
+		expect(await opened()).toBe(0);
+		expect(panelEmitted).toEqual([]);
+		// And it stayed retryable: refusing to open must not cost the user the
+		// retry affordance.
+		expect(placeholder?.getAttribute('role')).toBe('button');
+	});
+
+	it('emits SYNCHRONOUSLY with the fence check, not on a later turn', async () => {
+		// The fence's correctness rests on the check and the emit being
+		// adjacent: anything queued between them — a timer, a microtask hop — is
+		// a new window for the address to go stale across, which is the whole
+		// hazard the fence exists for. Nothing else in this file would notice a
+		// refactor that queued delivery, because every other assertion goes
+		// through `opened()`, which waits two MACROtask turns and would happily
+		// observe a `setTimeout(0)` emission.
+		//
+		// So: resolve the probe and read the count after a bounded number of
+		// MICROtasks. A delivery queued behind a timer cannot be observed here;
+		// a synchronous one always is.
+		let release: () => void = () => {};
+		probeMock.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					release = () => resolve({ status: 'ok', mime: 'image/png', size: 4096 });
+				})
+		);
+		editor = makeEditor(target);
+
+		press(image(), 'Enter');
+		release();
+
+		// Three microtasks is generous for the implementation's own `.then`
+		// chain and still strictly inside the current macrotask.
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(emitted).toHaveLength(1);
+	});
+
+	// NOTE, deliberately not a test: "stamps the CAPTURED address rather than a
+	// re-read one" is UNOBSERVABLE from outside this function, and writing a test
+	// that appears to prove it would be worse than leaving the gap named. The
+	// fence refuses to emit whenever the two differ, so every emission happens in
+	// a state where captured and re-read are equal — a spec that moved the address
+	// away and back would assert the same values under either implementation. The
+	// enforceable half is the drop, and that is asserted per field above.
 
 	it('refuses an UNPROBED non-raster type — the gesture that beats the lazy probe', async () => {
 		// The bypass this task's revised gate closes, and the one the test above
@@ -520,6 +1105,10 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		// And it did ask — a refusal reached by never probing at all would be
 		// the same count for the wrong reason.
 		expect(probeMock).toHaveBeenCalled();
+		// TASK-2434: and neither gesture was DROPPED. Asserting only "no viewer"
+		// is satisfied by the silent return this task replaced; the unprobed
+		// gesture has to reach the panel exactly as the probed one does.
+		expect(panelEmitted).toHaveLength(2);
 	});
 
 	it('emits once when two gestures land inside one resolution window', async () => {
@@ -587,6 +1176,10 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		press(image(), 'Enter');
 
 		expect(await opened()).toBe(0);
+		// And nothing else opened either — `missing` is the one result with no
+		// destination at all. An implementation that fell through to the panel
+		// redirect would offer options for a row that is gone.
+		expect(panelEmitted).toEqual([]);
 	});
 
 	it('drops the request when the NodeView is torn down mid-resolution', async () => {
@@ -629,6 +1222,10 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 			// working.
 			press(image(), 'Enter');
 			expect(await opened()).toBe(1);
+			// The probe ran under the address the GESTURE happened at — the
+			// workspace keys the metadata cache, so probing under the wrong one
+			// answers a question about a different workspace's row.
+			expect(probeMock).toHaveBeenLastCalledWith(moved.workspaceSlug, 'uuid-1');
 			expect(emitted[0].workspaceSlug).toBe(moved.workspaceSlug);
 			expect(emitted[0].itemId).toBe(moved.itemId);
 			expect(emitted[0].hostToken).toBe(moved.hostToken);
