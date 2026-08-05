@@ -53,7 +53,7 @@
 	import AttachmentDeleteConfirm, {
 		attachmentDeletePrompt,
 	} from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
-	import Lightbox, { type LightboxImage } from '$lib/components/common/Lightbox.svelte';
+	import Lightbox from '$lib/components/common/Lightbox.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -62,6 +62,10 @@
 		notifyAttachmentPanelOpen,
 		registerAttachmentDeletionListener,
 		registerAttachmentUploadListener,
+		// The viewer's image shape lives on the channel, not on the component
+		// (TASK-2431) — one declaration for the direct mounts and the bus alike.
+		// A type-only import, so the test's module mock is unaffected.
+		type LightboxImage,
 	} from '$lib/attachments/events';
 	import { viewIdentity, createFence, createPaintFence } from '$lib/attachments/viewFence';
 
@@ -146,6 +150,16 @@
 		filename: string;
 		mime_type: string;
 		size_bytes: number;
+		/**
+		 * Intrinsic pixels, OPTIONAL and nullable (TASK-2431). The list row has
+		 * them, an upload event does not (`UploadedAttachment` is four fields),
+		 * and no tile reads them — they are carried so the set handed to the
+		 * viewer is complete, which is what keeps phase 3b's pixel-based loading
+		 * policy from having to reopen every producer. Optional rather than
+		 * required precisely so the upload buffer stays assignable to this type.
+		 */
+		width?: number | null;
+		height?: number | null;
 	}
 
 	function toStripAttachment(row: AttachmentListItem): StripAttachment {
@@ -154,6 +168,8 @@
 			filename: row.filename,
 			mime_type: row.mime_type,
 			size_bytes: row.size_bytes,
+			width: row.width ?? null,
+			height: row.height ?? null,
 		};
 	}
 
@@ -164,7 +180,12 @@
 
 	let attachments = $state<StripAttachment[]>([]);
 	let expanded = $state(false);
-	let lightbox = $state<{ images: LightboxImage[]; index: number } | null>(null);
+	let lightbox = $state<{
+		images: LightboxImage[];
+		index: number;
+		/** The tile that opened it — focus goes back here on close (TASK-2431). */
+		invoker: HTMLElement | null;
+	} | null>(null);
 	/**
 	 * The delete confirmation currently on screen, if any (PLAN-2392 DR-18 /
 	 * TASK-2425). One at a time: opening a second supersedes the first, which
@@ -653,16 +674,36 @@
 	// reaches the viewer, because SVG can carry active content. Both this list
 	// and the tile branch below read the same predicate, so a file tile can
 	// never be a member of the lightbox's set.
+	//
+	// The full row is threaded, not just `{id, alt}` (TASK-2431): `mime_type`
+	// so the set carries its own evidence of why each member passed the gate,
+	// and `size_bytes` / `width` / `height` so 3b's loading policy has them.
+	// The strip is the one producer that knows all of it from its list row.
 	let lightboxImages = $derived<LightboxImage[]>(
 		attachments
 			.filter((a) => canOpenInViewer(a.mime_type))
-			.map((a) => ({ id: a.id, alt: displayFilename(a.filename) }))
+			.map((a) => ({
+				id: a.id,
+				alt: displayFilename(a.filename),
+				filename: a.filename || null,
+				mime_type: a.mime_type,
+				size_bytes: a.size_bytes ?? null,
+				width: a.width ?? null,
+				height: a.height ?? null,
+			}))
 	);
 
-	function openLightbox(att: StripAttachment) {
+	/**
+	 * `invoker` is the tile's own button — the viewer returns focus to it on
+	 * close. It has to be passed rather than inferred: `Lightbox` falls back to
+	 * whatever held focus at open, which is right for a click but says nothing
+	 * useful when the open came from somewhere else, and the fallback runs
+	 * AFTER the viewer's own focus entry in some orders.
+	 */
+	function openLightbox(att: StripAttachment, invoker: HTMLElement | null = null) {
 		const index = lightboxImages.findIndex((img) => img.id === att.id);
 		if (index < 0) return;
-		lightbox = { images: lightboxImages, index };
+		lightbox = { images: lightboxImages, index, invoker };
 	}
 
 	/** What the file IS — the tooltip, and the base of the accessible name. */
@@ -924,7 +965,7 @@
 									class="att-tile"
 									title={tileLabel(att)}
 									aria-label={tileActionLabel(att)}
-									onclick={() => openLightbox(att)}
+									onclick={(e) => openLightbox(att, e.currentTarget)}
 								>
 									<img
 										src={api.attachments.downloadUrl(wsSlug, att.id, 'thumb-sm')}
@@ -1042,14 +1083,36 @@
 	</Menu>
 {/if}
 
-{#if lightbox}
-	<Lightbox
-		images={lightbox.images}
-		index={lightbox.index}
-		{wsSlug}
-		onClose={() => (lightbox = null)}
-	/>
-{/if}
+<!--
+	Keyed per open (TASK-2431), the shape `AttachmentViewerHost` uses. `Lightbox`
+	seeds its INDEX once through `untrack`, so replacing `lightbox` while a
+	viewer is already up would reuse the instance and open the new set at the old
+	position. (Its MIME filter is `$derived` and would re-answer on its own —
+	the index is what cannot.) Nothing reaches that state today, the open viewer
+	being inert over everything that could cause it, which is why this belongs in
+	the structure rather than resting on a fact about the current UI.
+
+	Accepted cost, recorded: a keyed block DESTROYS the old instance before
+	creating the new one, so a viewer→viewer swap briefly releases the last
+	backdrop lease (un-inerting the app) and runs the old viewer's focus restore
+	before the new one takes focus. That is the same transient
+	`AttachmentViewerHost` has carried since TASK-2428, it is unreachable from
+	the UI (the open viewer inerts every control that could trigger it), and the
+	alternative — a reused instance showing a stale set — is the worse of the
+	two. Only a viewer→NULL→viewer sequence happens in practice, where the
+	release is meant to happen anyway.
+-->
+{#key lightbox}
+	{#if lightbox}
+		<Lightbox
+			images={lightbox.images}
+			index={lightbox.index}
+			{wsSlug}
+			invoker={lightbox.invoker}
+			onClose={() => (lightbox = null)}
+		/>
+	{/if}
+{/key}
 
 <style>
 	.attachment-strip {

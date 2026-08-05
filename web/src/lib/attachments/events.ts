@@ -281,9 +281,19 @@ export interface LightboxImage {
 	 * Metadata the viewer may caption with, all NULLABLE for the same reason
 	 * the panel's three are: an emitter knows only what its own surface gives
 	 * it, and an inline image's HEAD probe may not have completed or may have
-	 * failed. Structurally a superset of the `Lightbox` component's own
-	 * `LightboxImage` ({id, alt}), so a set built for this channel is passed
-	 * straight through to it.
+	 * failed, while an upload event carries only four fields
+	 * (`UploadedAttachment`).
+	 *
+	 * `mime_type` is not decoration: it is what lets a CONSUMER re-state the
+	 * DR-16 open gate over a whole set rather than trusting the one element
+	 * that was clicked (TASK-2431). `width` / `height` are here ahead of any
+	 * reader — phase 3b's pixel-based loading policy needs them, and adding
+	 * them now costs one nullable field per producer instead of reopening the
+	 * event, the host and every producer later.
+	 *
+	 * This is the ONLY declaration of the shape. `Lightbox.svelte` used to
+	 * carry its own `{id, alt}` twin; it now re-exports this one, so the
+	 * component's props and the channel's payload cannot drift.
 	 */
 	filename: string | null;
 	mime_type: string | null;

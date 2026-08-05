@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import Lightbox from './Lightbox.svelte';
+import type { LightboxImage } from '$lib/attachments/events';
 import {
 	acquire,
 	hasForeignEscapeOwner,
@@ -42,8 +43,29 @@ const realGetClientRects = HTMLElement.prototype.getClientRects;
 const IMG_A = 'aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa';
 const IMG_B = 'bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb';
 
+const IMG_C = 'cccccccc-3333-4333-8333-cccccccccccc';
+
+/**
+ * A member of the viewer's set. `mime_type` defaults to an ALLOWLISTED type,
+ * because the gate fails closed: a record without one is not viewable, so a
+ * null default would silently empty the viewer for every case in this file
+ * that is about something else. Pass `null` explicitly to test the unresolved
+ * case.
+ */
+function image(id: string, alt: string, mime: string | null = 'image/png'): LightboxImage {
+	return {
+		id,
+		alt,
+		filename: null,
+		mime_type: mime,
+		size_bytes: null,
+		width: null,
+		height: null,
+	};
+}
+
 interface Props {
-	images: { id: string; alt: string }[];
+	images: LightboxImage[];
 	index?: number;
 	wsSlug: string;
 	onClose: () => void;
@@ -53,7 +75,7 @@ interface Props {
 // Reactive props for the capture-at-open cases ($state may only initialize a
 // declaration, hence top level).
 const liveProps = $state<Props>({
-	images: [{ id: IMG_A, alt: 'a diagram' }],
+	images: [image(IMG_A, 'a diagram')],
 	index: 0,
 	wsSlug: 'ws-one',
 	onClose: () => {},
@@ -67,7 +89,7 @@ function mountViewer(props: Partial<Props> = {}): ReturnType<typeof mount> {
 	const app = mount(Lightbox, {
 		target: appRoot,
 		props: {
-			images: [{ id: IMG_A, alt: 'a diagram' }],
+			images: [image(IMG_A, 'a diagram')],
 			index: 0,
 			wsSlug: 'ws-one',
 			onClose: () => {},
@@ -115,7 +137,7 @@ beforeEach(() => {
 		return [{}] as unknown as DOMRectList;
 	};
 	Object.assign(liveProps, {
-		images: [{ id: IMG_A, alt: 'a diagram' }],
+		images: [image(IMG_A, 'a diagram')],
 		index: 0,
 		wsSlug: 'ws-one',
 		onClose: () => {},
@@ -144,7 +166,7 @@ describe('Lightbox — dialog semantics', () => {
 	it('falls back to a generic name when the image has no alt', () => {
 		// An unnamed dialog is announced as nothing at all, so the fallback is
 		// part of the contract rather than a nicety.
-		mountViewer({ images: [{ id: IMG_A, alt: '' }] });
+		mountViewer({ images: [image(IMG_A, '')] });
 		expect(root().getAttribute('aria-label')).toBe('Attachment viewer');
 	});
 
@@ -155,8 +177,8 @@ describe('Lightbox — dialog semantics', () => {
 		// addresses surfaces BY NAME) would have nothing to target.
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 		expect(closeButton().getAttribute('aria-label')).toBe('Close');
@@ -171,14 +193,204 @@ describe('Lightbox — dialog semantics', () => {
 	it('names itself after the image CURRENTLY shown, not the one it opened on', () => {
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 		expect(root().getAttribute('aria-label')).toBe('first');
 		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
 		flushSync();
 		expect(root().getAttribute('aria-label')).toBe('second');
+	});
+});
+
+describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
+	/**
+	 * The producers filter their own sets, and these do not replace that. They
+	 * cover the case a producer's filter structurally cannot: the set is
+	 * captured at open, and ←/→ page through it for as long as the viewer is
+	 * up. Anything that arrives in the array — a stale capture, a future
+	 * producer that forgets — must still be unreachable frame by frame.
+	 */
+	function shown(): string {
+		return root().querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt') ?? '';
+	}
+
+	it('never shows a known non-allowlisted type, even when asked to open ON it', () => {
+		mountViewer({
+			images: [image(IMG_A, 'png', 'image/png'), image(IMG_B, 'svg', 'image/svg+xml')],
+			index: 1,
+		});
+
+		// The requested image is refused, so the viewer opens on what is left
+		// rather than on the SVG — and with one member, there is no ←/→ at all.
+		expect(shown()).toBe('png');
+		expect(imageSrc()).toContain(IMG_A);
+		expect(root().querySelector('.lightbox-counter')).toBeNull();
+		expect(root().querySelector('.lightbox-nav')).toBeNull();
+	});
+
+	it('cannot be paged onto one with ←/→', () => {
+		mountViewer({
+			images: [
+				image(IMG_A, 'png', 'image/png'),
+				image(IMG_B, 'svg', 'image/svg+xml'),
+				image(IMG_C, 'jpeg', 'image/jpeg'),
+			],
+		});
+
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+
+		const seen = [shown()];
+		for (let i = 0; i < 3; i++) {
+			press('ArrowRight');
+			seen.push(shown());
+		}
+		press('ArrowLeft');
+		seen.push(shown());
+
+		expect(seen).toEqual(['png', 'jpeg', 'png', 'jpeg', 'png']);
+		expect(seen).not.toContain('svg');
+	});
+
+	it('keeps the requested image when EARLIER members are filtered out', () => {
+		// The requested image is at position 1 in the given set and position 0
+		// in the filtered one. Carrying the NUMBER across — even clamped to the
+		// filtered length, which is the plausible wrong version — lands on the
+		// image after it. Only resolving by id opens what was asked for.
+		mountViewer({
+			images: [
+				image(IMG_B, 'svg', 'image/svg+xml'),
+				image(IMG_A, 'png', 'image/png'),
+				image(IMG_C, 'jpeg', 'image/jpeg'),
+			],
+			index: 1,
+		});
+
+		expect(shown()).toBe('png');
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+	});
+
+	it('REFUSES an image whose type is not resolved', () => {
+		// This test previously asserted the opposite, on the reasoning that an
+		// inline image's probe is often unasked at click time. That reasoning
+		// belongs to the PRODUCER — which can wait for the probe — and asserting
+		// it HERE pinned open the exact hole the task exists to close: an emitter
+		// could hand over `[safe, unresolved]` and the user could arrow onto the
+		// unresolved one. This is the last thing between a set and a rendered
+		// image; "not yet known" is not evidence that a file is a PNG.
+		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+	});
+
+	it('cannot be paged onto an unresolved sibling', () => {
+		mountViewer({
+			images: [image(IMG_A, 'png'), image(IMG_B, 'unprobed', null), image(IMG_C, 'jpeg', 'image/jpeg')],
+		});
+
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+		const seen = [shown()];
+		for (let i = 0; i < 3; i++) {
+			press('ArrowRight');
+			seen.push(shown());
+		}
+		expect(seen).toEqual(['png', 'jpeg', 'png', 'jpeg']);
+		expect(seen).not.toContain('unprobed');
+	});
+
+	it('shows nothing at all rather than one refused image', () => {
+		mountViewer({ images: [image(IMG_B, 'svg', 'image/svg+xml')] });
+
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		// Still a real dialog with a way out — the failure mode is an empty
+		// viewer, never a rendered one.
+		expect(closeButton()).not.toBeNull();
+		// And the arrows cannot divide by an empty set.
+		press('ArrowRight');
+		press('ArrowLeft');
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+	});
+});
+
+describe('Lightbox — the set changing under an OPEN viewer (TASK-2431)', () => {
+	/**
+	 * The producers hand over a set once and the viewer pages through it for as
+	 * long as it is up, so "was safe when the list was built" is not the claim
+	 * that has to hold — "is safe on the frame being shown" is. These drive the
+	 * live props (`liveProps`, the reactive object the file already uses for the
+	 * capture-at-open cases) rather than remounting, which is the only way to
+	 * reach a set that changes under a viewer that is already open.
+	 */
+	function shown(): string {
+		return root().querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt') ?? '';
+	}
+
+	function mountLive() {
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		return app;
+	}
+
+	it('drops a record whose MIME resolves to something unsafe AFTER open', () => {
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg')];
+		mountLive();
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+
+		// The late answer arrives: what was believed safe is not. A set captured
+		// once would keep paging onto it.
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg', 'image/svg+xml')];
+		flushSync();
+
+		expect(shown()).toBe('png');
+		expect(root().querySelector('.lightbox-counter')).toBeNull();
+		press('ArrowRight');
+		expect(shown()).toBe('png');
+	});
+
+	it('keeps showing a real image when the one under it is removed', () => {
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_C, 'jpeg', 'image/jpeg')];
+		mountLive();
+		press('ArrowRight');
+		expect(shown()).toBe('jpeg');
+
+		// The set shrinks beneath the position the user navigated to — a delete
+		// from another surface, a reload. The index must clamp, not blank out or
+		// render `undefined`.
+		liveProps.images = [image(IMG_A, 'png')];
+		flushSync();
+
+		expect(shown()).toBe('png');
+		expect(imageSrc()).toContain(IMG_A);
+	});
+
+	it('cannot be navigated onto an unsafe entry ADDED after open', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+
+		liveProps.images = [
+			image(IMG_A, 'png'),
+			image(IMG_B, 'svg', 'image/svg+xml'),
+			image(IMG_C, 'unprobed', null),
+		];
+		flushSync();
+
+		// Both additions are refused, so the viewer is still single-image.
+		expect(root().querySelector('.lightbox-counter')).toBeNull();
+		press('ArrowRight');
+		press('ArrowLeft');
+		expect(shown()).toBe('png');
+	});
+
+	it('empties rather than showing an unsafe replacement', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+		expect(shown()).toBe('png');
+
+		liveProps.images = [image(IMG_B, 'svg', 'image/svg+xml')];
+		flushSync();
+
+		expect(root().querySelector('.lightbox-image')).toBeNull();
 	});
 });
 
@@ -231,8 +443,8 @@ describe('Lightbox — workspace captured at open', () => {
 		// all, which would be a different bug. This is the counterweight.
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 		expect(imageSrc()).toContain(IMG_A);
@@ -250,8 +462,8 @@ describe('Lightbox — focus', () => {
 		// LAST candidate.
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 		const controls = Array.from(root().querySelectorAll('button'));
@@ -368,8 +580,8 @@ describe('Lightbox — Tab trap', () => {
 	it('wraps forward off the last focusable', () => {
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 		const next = root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!;
@@ -382,8 +594,8 @@ describe('Lightbox — Tab trap', () => {
 	it('wraps backward off the first focusable', () => {
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 		closeButton().focus();
@@ -401,8 +613,8 @@ describe('Lightbox — Tab trap', () => {
 		const outside = appRoot.appendChild(document.createElement('button'));
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 		outside.focus();
@@ -423,8 +635,8 @@ describe('Lightbox — Tab trap', () => {
 		// the natural order inside the viewer.
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 		closeButton().focus();
@@ -494,8 +706,8 @@ describe('Lightbox — Escape ownership', () => {
 		// Escape branch had.
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 		expect(imageSrc()).toContain(IMG_A);
@@ -559,16 +771,16 @@ describe('Lightbox — only the frontmost viewer acts', () => {
 		mountViewer({
 			onClose: onCloseBack,
 			images: [
-				{ id: IMG_A, alt: 'back-first' },
-				{ id: IMG_B, alt: 'back-second' },
+				image(IMG_A, 'back-first'),
+				image(IMG_B, 'back-second'),
 			],
 		});
 		const back = root();
 		mountViewer({
 			onClose: onCloseFront,
 			images: [
-				{ id: IMG_A, alt: 'front-first' },
-				{ id: IMG_B, alt: 'front-second' },
+				image(IMG_A, 'front-first'),
+				image(IMG_B, 'front-second'),
 			],
 		});
 		const front = root();
@@ -655,8 +867,8 @@ describe('Lightbox — a native modal opened OVER the viewer', () => {
 		mockOpenModals([dialog]);
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 		inDialog.focus();
@@ -670,8 +882,8 @@ describe('Lightbox — a native modal opened OVER the viewer', () => {
 		mockOpenModals([dialog]);
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 
@@ -685,8 +897,8 @@ describe('Lightbox — a native modal opened OVER the viewer', () => {
 		mockOpenModals([dialog]);
 		mountViewer({
 			images: [
-				{ id: IMG_A, alt: 'first' },
-				{ id: IMG_B, alt: 'second' },
+				image(IMG_A, 'first'),
+				image(IMG_B, 'second'),
 			],
 		});
 		expect(press('ArrowRight')).toBe(false);

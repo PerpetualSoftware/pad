@@ -356,6 +356,33 @@ describe('ItemAttachmentStrip', () => {
 		expect(document.querySelector('.lightbox-counter')?.textContent).toBe('2 / 2');
 	});
 
+	it('opens a FRESH viewer when a second tile is activated (TASK-2431)', async () => {
+		// The viewer seeds its index — and its own MIME filter — once at mount,
+		// so the mount must be keyed per open. Without that, a second open reuses
+		// the instance and keeps showing the first image.
+		//
+		// In the app an open viewer inerts the tiles behind it, so this is
+		// insurance rather than a live path; jsdom does not implement inertness,
+		// which is what makes the invariant testable at all.
+		listMock.mockResolvedValue(response([att({ id: 'img1' }), att({ id: 'img2' })]));
+		mountStrip('item-a');
+		await settle();
+
+		tiles()[0].click();
+		flushSync();
+		expect(
+			document.querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt')
+		).toBe('img1.png');
+
+		tiles()[1].click();
+		flushSync();
+		expect(
+			document.querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt')
+		).toBe('img2.png');
+		// ...and exactly one viewer, not two stacked.
+		expect(document.querySelectorAll('.lightbox-backdrop')).toHaveLength(1);
+	});
+
 	it('opens the lightbox at the IMAGE index, not the attachment index', async () => {
 		// Interleaved non-images: a naive `attachments.indexOf(att)` would open
 		// the wrong image, since the lightbox only ever receives image rows.

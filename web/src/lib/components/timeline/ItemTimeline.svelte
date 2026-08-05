@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onDestroy, tick } from 'svelte';
+	import { onDestroy, tick, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { sseService } from '$lib/services/sse.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -11,7 +11,10 @@
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import { fetchAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import { attachmentDownloadUrl, type AttachmentMeta } from '$lib/markdown/attachments';
-	import Lightbox, { type LightboxImage } from '$lib/components/common/Lightbox.svelte';
+	import { canOpenInViewer } from '$lib/attachments/display';
+	// One declaration of the viewer's image shape, on the channel (TASK-2431).
+	import type { LightboxImage } from '$lib/attachments/events';
+	import Lightbox from '$lib/components/common/Lightbox.svelte';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 
 	interface Props {
@@ -172,30 +175,100 @@
 
 	// Lightbox state (IDEA-1660). Set when a thumbnail is activated; cleared
 	// on close. Null = closed, so the host remounts fresh on each open.
-	let lightbox: { images: LightboxImage[]; index: number } | null = $state(null);
+	let lightbox: { images: LightboxImage[]; index: number; invoker: HTMLElement | null } | null =
+		$state(null);
 	let entryListEl: HTMLElement | undefined = $state();
 
-	// Open the lightbox for a clicked/activated thumbnail, gathering sibling
-	// attachment images in the same comment/reply body so ←/→ can page them.
-	function openLightboxFromImg(imgEl: HTMLElement) {
+	/**
+	 * The DR-16 open gate, applied to ONE rendered thumbnail (TASK-2431).
+	 *
+	 * Returns the viewer's own record for an `<img data-attachment-id>`, or
+	 * null when that image may not be opened. Null is the answer in two
+	 * different situations and deliberately does not distinguish them:
+	 *
+	 *  - the MIME is known and is not on the allowlist. `image/svg+xml` is the
+	 *    one that matters — SVG carries active content, and the markdown
+	 *    renderer emits an `<img>` for ANY `image/*` (`markdown/attachments.ts`
+	 *    `isImageMime`), which is the correct decision for RENDERING and the
+	 *    wrong one for OPENING. That difference is the whole reason this
+	 *    function exists rather than a `startsWith('image/')` test.
+	 *  - the MIME is not known yet. Fail SAFE: an unresolved probe is not
+	 *    evidence that a file is a PNG. It costs nothing, because an image
+	 *    whose metadata has not resolved is not rendered as an `<img>` at all
+	 *    (the renderer shows a "missing" placeholder until `attMeta` has the
+	 *    row), so there is no cold-start case where this refuses something the
+	 *    user can see and could previously open. A later probe re-runs the
+	 *    semantics effect below and the thumbnail becomes clickable then.
+	 *
+	 * Read straight off the CACHED metadata — never a fresh HEAD per click.
+	 * `attMeta` is the same map the renderer resolved the image through, so the
+	 * gate and the picture on screen are answering from one source.
+	 */
+	function viewerImageFor(el: HTMLElement): LightboxImage | null {
+		const id = el.getAttribute('data-attachment-id') ?? '';
+		if (!id) return null;
+		const meta = attMeta.get(id);
+		if (!meta || !canOpenInViewer(meta.mime_type)) return null;
+		return {
+			id,
+			alt: el.getAttribute('alt') ?? '',
+			// The probe leaves filename empty (see probeAttachment) and HEAD
+			// carries no intrinsic dimensions, so most of these are null here.
+			// That is what nullable means on this type; the strip fills them.
+			filename: meta.filename || null,
+			mime_type: meta.mime_type,
+			size_bytes: meta.size_bytes ?? null,
+			width: meta.width ?? null,
+			height: meta.height ?? null,
+		};
+	}
+
+	/**
+	 * Open the viewer on an activated thumbnail, with its siblings in the same
+	 * comment/reply body so ←/→ can page them.
+	 *
+	 * THE WHOLE LIST IS GATED, not just the clicked image (TASK-2431). Before
+	 * this, the set was built from every `img[data-attachment-id]` in scope with
+	 * no MIME consulted at all, so opening a safe PNG and pressing → could land
+	 * on an SVG: gating the click alone is not a gate.
+	 *
+	 * And the index is derived from the clicked attachment's ID, not from its
+	 * position among the DOM elements — filtering reindexes everything after the
+	 * first refusal, so a DOM index would silently open the wrong image. When the
+	 * clicked image is itself refused it is not in the list, `findIndex` returns
+	 * -1, and nothing opens.
+	 */
+	function openLightboxFromImg(imgEl: HTMLElement): boolean {
+		const clickedId = imgEl.getAttribute('data-attachment-id') ?? '';
+		if (!clickedId) return false;
 		const scope = imgEl.closest('.comment-body, .reply-body') ?? imgEl.parentElement;
 		const els = scope
 			? Array.from(scope.querySelectorAll<HTMLElement>('img[data-attachment-id]'))
 			: [imgEl];
-		const list: LightboxImage[] = els
-			.map((el) => ({ id: el.getAttribute('data-attachment-id') ?? '', alt: el.getAttribute('alt') ?? '' }))
-			.filter((x) => x.id !== '');
-		if (list.length === 0) return;
-		lightbox = { images: list, index: Math.max(0, els.indexOf(imgEl)) };
+		const list = els
+			.map((el) => viewerImageFor(el))
+			.filter((x): x is LightboxImage => x !== null);
+		// A body can legitimately embed the same attachment twice; the first
+		// occurrence wins, which shows the image the user asked for.
+		const index = list.findIndex((x) => x.id === clickedId);
+		if (index < 0) return false;
+		lightbox = { images: list, index, invoker: imgEl };
+		return true;
 	}
 
+	// BOTH activation routes go through the one gated opener — a filter applied
+	// to the mouse path only would be no filter at all.
+	//
+	// `preventDefault` is now conditional on actually opening: swallowing the
+	// event for a thumbnail the viewer refuses would leave the click doing
+	// nothing at all, including whatever the surrounding markup would have done
+	// with it.
 	function onThumbClick(e: MouseEvent) {
 		const imgEl = (e.target as HTMLElement | null)?.closest(
 			'img[data-attachment-id]'
 		) as HTMLElement | null;
 		if (!imgEl) return;
-		e.preventDefault();
-		openLightboxFromImg(imgEl);
+		if (openLightboxFromImg(imgEl)) e.preventDefault();
 	}
 
 	function onThumbKeydown(e: KeyboardEvent) {
@@ -204,8 +277,9 @@
 			'img[data-attachment-id]'
 		) as HTMLElement | null;
 		if (!imgEl) return;
-		e.preventDefault(); // Space would otherwise scroll the page
-		openLightboxFromImg(imgEl);
+		// Space would otherwise scroll the page — but only suppress it when the
+		// key actually did something.
+		if (openLightboxFromImg(imgEl)) e.preventDefault();
 	}
 
 	// Delegated click + keydown on the entry list (rather than declarative
@@ -227,13 +301,43 @@
 	// Depends on BOTH `entries` (new comments) AND `attMeta` (an image only
 	// renders as an <img> once its metadata resolves — before that it's a
 	// "missing" placeholder span — so the pass must re-run on resolution).
+	//
+	// THE SEMANTICS ARE CONDITIONAL ON THE SAME GATE THE OPENER USES
+	// (TASK-2431). Previously every `image/*` thumbnail got `role="button"`, a
+	// tabindex and a "View image" name; with the opener now refusing the ones
+	// outside the allowlist, that would leave an SVG as a focus stop announced
+	// as a button whose activation does nothing — a worse outcome than the hole
+	// it replaces, and the reason this pass has to be able to take semantics
+	// BACK OFF an element (a probe can resolve a MIME that turns a thumbnail
+	// from viewable-by-assumption into refused).
 	$effect(() => {
-		void entries;
+		// `visibleEntries`, NOT `entries`: the pane's Activity / Versions tabs
+		// filter the rendered set without refetching, so flipping away from
+		// comments and back DESTROYS and rebuilds every comment card while
+		// `entries` never changes. Tracking the raw list left those rebuilt
+		// images mouse-openable (the delegated listeners live on the container,
+		// which survives) but with no role, no tabindex and no name — openable
+		// by mouse only, which is the dead-control failure in its other
+		// direction (Codex round 4). Reading the derived also reads `entries`,
+		// so nothing is lost by not naming it too.
+		void visibleEntries;
 		void attMeta;
 		const el = entryListEl;
 		if (!el) return;
+		// The DOM pass is deferred a tick, so it can land after an item /
+		// workspace switch has already replaced what it was written for. Nothing
+		// it does is destructive, but a cancelled continuation is the local house
+		// rule for every await-then-write here (TASK-2112).
+		let cancelled = false;
 		tick().then(() => {
+			if (cancelled) return;
 			for (const img of el.querySelectorAll<HTMLElement>('img[data-attachment-id]')) {
+				if (viewerImageFor(img) === null) {
+					img.removeAttribute('role');
+					img.removeAttribute('tabindex');
+					img.removeAttribute('aria-label');
+					continue;
+				}
 				if (img.getAttribute('role') === 'button') continue;
 				img.setAttribute('role', 'button');
 				img.setAttribute('tabindex', '0');
@@ -241,6 +345,9 @@
 				img.setAttribute('aria-label', alt ? `View image: ${alt}` : 'View attachment image');
 			}
 		});
+		return () => {
+			cancelled = true;
+		};
 	});
 
 	// Current user ID for reaction toggle — read from the global auth store.
@@ -301,9 +408,44 @@
 		}
 	}
 
+	/**
+	 * The view the currently painted timeline belongs to. Plain `let` + untrack,
+	 * NOT `$state`: the effect below both reads and writes it, and a `$state`
+	 * read inside its own writing effect self-depends, aborts the flush and
+	 * silently strands unrelated reactivity (CONVE-1688). Seeded from the
+	 * initial props so a fresh mount is not treated as a switch — there is
+	 * nothing to tear down on the first run.
+	 */
+	// The two parts are joined with a separator that cannot occur in a slug,
+	// so no pair of (workspace, item) values can collide into one key.
+	let lastView = untrack(() => `${wsSlug}/${itemSlug}`);
+
 	$effect(() => {
-		void wsSlug;
-		void itemSlug;
+		const ws = wsSlug;
+		const slug = itemSlug;
+		// A→B LIFECYCLE (TASK-2431). This component is reused across an item /
+		// workspace switch (no `{#key}`), and it had NO viewer reset at all —
+		// `lightbox` was cleared on close and nowhere else. So a switch left a
+		// full-screen viewer up over the incoming item, still holding the
+		// previous view's attachment ids while `Lightbox` rebuilt their URLs
+		// from the workspace it captured at open. The strip's reset is the
+		// pattern; this is the same rule stated for this component.
+		//
+		// `attMeta` is deliberately NOT cleared alongside it. It is keyed by a
+		// bare uuid where the shared HEAD cache is keyed `ws:uuid`, which looks
+		// like a workspace-scoped cache leaking across the switch — but an
+		// attachment id is a UUID belonging to exactly one workspace, so an
+		// entry can only ever answer for the id it describes. Clearing it would
+		// buy nothing and cost something real: the probe effect refills it only
+		// when `entries` next changes, so a FAILED load after the switch would
+		// leave every already-rendered image permanently un-openable for the
+		// rest of the mount (Codex round 3).
+		untrack(() => {
+			const view = `${ws}/${slug}`;
+			if (view === lastView) return;
+			lastView = view;
+			lightbox = null;
+		});
 		loadTimeline();
 	});
 
@@ -575,14 +717,36 @@
 	{/if}
 </section>
 
-{#if lightbox}
-	<Lightbox
-		images={lightbox.images}
-		index={lightbox.index}
-		{wsSlug}
-		onClose={() => (lightbox = null)}
-	/>
-{/if}
+<!--
+	Keyed per open (TASK-2431), the shape `AttachmentViewerHost` uses. `Lightbox`
+	seeds its INDEX once through `untrack`, so replacing `lightbox` while a
+	viewer is already up would reuse the instance and open the new set at the old
+	position. (Its MIME filter is `$derived` and would re-answer on its own —
+	the index is what cannot.) Nothing reaches that state today, the open viewer
+	being inert over everything that could cause it, which is why this belongs in
+	the structure rather than resting on a fact about the current UI.
+
+	Accepted cost, recorded: a keyed block DESTROYS the old instance before
+	creating the new one, so a viewer→viewer swap briefly releases the last
+	backdrop lease (un-inerting the app) and runs the old viewer's focus restore
+	before the new one takes focus. That is the same transient
+	`AttachmentViewerHost` has carried since TASK-2428, it is unreachable from
+	the UI (the open viewer inerts every control that could trigger it), and the
+	alternative — a reused instance showing a stale set — is the worse of the
+	two. Only a viewer→NULL→viewer sequence happens in practice, where the
+	release is meant to happen anyway.
+-->
+{#key lightbox}
+	{#if lightbox}
+		<Lightbox
+			images={lightbox.images}
+			index={lightbox.index}
+			{wsSlug}
+			invoker={lightbox.invoker}
+			onClose={() => (lightbox = null)}
+		/>
+	{/if}
+{/key}
 
 <style>
 	.timeline {

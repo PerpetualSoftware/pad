@@ -7,9 +7,10 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { lightboxStubCalls, type LightboxStubCall } from './lightboxStub';
+	import type { LightboxImage } from '$lib/attachments/events';
 
 	interface Props {
-		images: { id: string }[];
+		images: LightboxImage[];
 		index?: number;
 		wsSlug: string;
 		invoker?: HTMLElement | null;

@@ -28,11 +28,28 @@
 		VIEWER_ROOT_CLASS,
 	} from '$lib/a11y/viewerBackdrop';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
-
-	export interface LightboxImage {
-		id: string;
-		alt: string;
-	}
+	import { canOpenInViewer } from '$lib/attachments/display';
+	/**
+	 * ONE definition of what an image in this viewer is (PLAN-2392 / TASK-2431).
+	 *
+	 * It used to be declared here as `{id, alt}` and again — as a superset — on
+	 * the open-viewer channel, with a comment noting the two were structurally
+	 * compatible. Two declarations of the same thing drift the moment one gains
+	 * a field, which is exactly what TASK-2431 does (`mime_type` is what makes
+	 * the DR-16 open gate total, and `size_bytes` / `width` / `height` land now
+	 * so phase 3b's pixel-based loading policy need not reopen the event, the
+	 * host and every producer). The channel's is now the only one.
+	 *
+	 * Everything past `id` / `alt` is NULLABLE and this component treats it as
+	 * such: an inline image's metadata comes from a HEAD probe that may not have
+	 * completed, and an upload event carries only four fields.
+	 *
+	 * Producers that mount this component directly import the type from the
+	 * CHANNEL too, not from here — a `.svelte` module cannot re-export a type,
+	 * and a local `interface … extends` would be a second declaration, which is
+	 * the drift this consolidation removes.
+	 */
+	import type { LightboxImage } from '$lib/attachments/events';
 
 	interface Props {
 		images: LightboxImage[];
@@ -51,11 +68,62 @@
 
 	let { images, index = 0, wsSlug, onClose, invoker = null }: Props = $props();
 
+	/**
+	 * THE LAST-MILE GATE (PLAN-2392 DR-16 / TASK-2431).
+	 *
+	 * Every producer filters its own set before opening — that is where the
+	 * gate belongs, because only the producer knows which of its rows are
+	 * images at all. This is the same rule re-stated at the point of USE, and it
+	 * is not redundant with them:
+	 *
+	 *  - `←/→` page through a set the producer chose ONCE. A producer's filter
+	 *    is a statement about the moment it built the list; this one has to hold
+	 *    for every frame the viewer shows.
+	 *  - the set is `readonly` on the channel but a plain array as a prop, and a
+	 *    producer that mutates it — or a record inside it — after emitting is
+	 *    not a hypothesis this component can rule out.
+	 *  - a producer added later inherits the rule instead of having to know it.
+	 *
+	 * IT FAILS CLOSED. Only a POSITIVELY allowlisted `mime_type` is viewable; a
+	 * null / undefined / unresolved one is not. "Not yet known" is not evidence
+	 * that a file is a PNG, and this is the last thing standing between a set
+	 * and a rendered image — the place where the benefit of the doubt is worth
+	 * least. An earlier revision admitted null on the grounds that an inline
+	 * image's probe is often unasked at click time; that reasoning belongs to
+	 * the PRODUCER, which can wait for the probe, and it had the effect of
+	 * letting an emitter hand over `[safe, unresolved]` and letting the user
+	 * arrow onto the unresolved one. The producers that exist today lose
+	 * nothing: the strip always has the MIME from its list row, and the timeline
+	 * already excludes unresolved entries from the set it builds.
+	 *
+	 * THE CONTRACT FOR NEW PRODUCERS, therefore: resolve the MIME before you
+	 * emit. Passing a possibly-null value is not "let the viewer decide", it is
+	 * an image that silently will not open.
+	 *
+	 * DERIVED, NOT CAPTURED. Every other open-time value here is `untrack`ed
+	 * because the props are constant for the instance's life — but that is a
+	 * claim about the CURRENT producers, and this filter is exactly the thing
+	 * that must not rest on one. As a `$derived` it re-runs when the array is
+	 * replaced or when a record's MIME resolves to something unsafe after the
+	 * viewer opened, so a stale capture cannot outlive its own truth.
+	 */
+	let viewable = $derived(images.filter((im) => canOpenInViewer(im.mime_type)));
+
 	// Seeded once at mount — the host remounts (null → set) on each open, so
 	// no prop-sync effect is needed. untrack makes the initial-value capture
-	// explicit (props are constant for this component's lifetime).
+	// explicit.
+	//
+	// Resolved through the ID rather than carried across as a number: filtering
+	// reindexes everything after a refusal, so the requested POSITION can name a
+	// different image (or none) in the filtered set. Where the requested image
+	// is the one refused, there is nothing to land on and the first viewable
+	// image is what opens.
 	let current = $state(
-		untrack(() => Math.min(Math.max(index, 0), Math.max(images.length - 1, 0)))
+		untrack(() => {
+			const wanted = images[Math.min(Math.max(index, 0), Math.max(images.length - 1, 0))];
+			const at = wanted ? viewable.findIndex((im) => im.id === wanted.id) : -1;
+			return at < 0 ? 0 : at;
+		})
 	);
 
 	// CAPTURED AT OPEN, never read live (TASK-2429). The pane switches workspace
@@ -79,8 +147,20 @@
 		return active && active !== document.body ? (active as HTMLElement) : null;
 	});
 
-	let hasMultiple = $derived(images.length > 1);
-	let img = $derived(images[current]);
+	// EVERYTHING PAST THIS POINT READS `viewable`, NEVER `images` — the nav
+	// wrap-around, the counter and the rendered `<img>` alike. A single read of
+	// the unfiltered prop below would reopen the hole this filter closes.
+	let hasMultiple = $derived(viewable.length > 1);
+	// The position actually shown, clamped. `current` is what the user's ←/→
+	// moved, but the set can SHRINK underneath it — a record whose MIME resolves
+	// to something unsafe after open drops out of `viewable`, and the array can
+	// be replaced outright. Clamping in a derived (rather than writing `current`
+	// from an effect, which would be an effect writing state it reads) keeps the
+	// viewer on a real member instead of blanking or showing `undefined`.
+	let shownIndex = $derived(
+		Math.min(Math.max(current, 0), Math.max(viewable.length - 1, 0))
+	);
+	let img = $derived(viewable[shownIndex]);
 	let src = $derived(img ? attachmentDownloadUrl(openWsSlug, img.id) : '');
 	// The accessible name: the image's own alt where there is one, else a
 	// generic label. Never empty — an unnamed `role="dialog"` is announced as
@@ -92,11 +172,18 @@
 	// a flush (CONVE-1688).
 	let rootEl = $state<HTMLElement | null>(null);
 
+	// Stepped from `shownIndex`, not from `current`: after the set shrinks they
+	// differ, and moving from the raw value would jump relative to a position
+	// the user was never on. Both are no-ops on an empty set — reachable only
+	// through the nav controls / arrow keys, which `hasMultiple` already hides
+	// and gates, but written so the modulo can never be `% 0`.
 	function prev() {
-		current = (current - 1 + images.length) % images.length;
+		if (viewable.length === 0) return;
+		current = (shownIndex - 1 + viewable.length) % viewable.length;
 	}
 	function next() {
-		current = (current + 1) % images.length;
+		if (viewable.length === 0) return;
+		current = (shownIndex + 1) % viewable.length;
 	}
 
 	/**
@@ -307,7 +394,9 @@
 	{/if}
 
 	{#if hasMultiple}
-		<div class="lightbox-counter">{current + 1} / {images.length}</div>
+		<!-- `shownIndex`, so the counter names the image actually on screen even
+		     after the set shrank under `current`. -->
+		<div class="lightbox-counter">{shownIndex + 1} / {viewable.length}</div>
 	{/if}
 </div>
 
