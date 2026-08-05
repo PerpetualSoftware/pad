@@ -247,3 +247,153 @@ export function notifyAttachmentPanelOpen(event: AttachmentPanelOpenEvent): void
 	if (!event?.attachmentId || !event.itemId || !event.hostToken) return;
 	for (const fn of panelListeners) fn(event);
 }
+
+/**
+ * Image viewer (PLAN-2392 phase 3a, TASK-2428).
+ *
+ * Tapping an image — an inline editor image, and in phase 3c the surfaces that
+ * still mount their own viewer — opens the full-screen `Lightbox`. Same problem
+ * as the panel channel above, same answer: the emitters include Tiptap
+ * NodeViews, which are imperative DOM and cannot mount a Svelte component, so
+ * they signal through this bus and an `ItemDetail`-owned host does the mounting.
+ *
+ * ADDRESSING is DR-8's, unchanged and shared: a host consumes an event only
+ * when BOTH `itemId` and `hostToken` are its own, because the bus is global
+ * while `ItemDetail` is mounted more than once (master pane + peeked pane).
+ * The token is the SAME one the panel channel uses — one token per HOST, not
+ * one per channel — so `createAttachmentHostToken` is not duplicated here.
+ *
+ * WHY THE STRIP AND THE TIMELINE ARE NOT ON THIS CHANNEL: they mount `Lightbox`
+ * directly and keep doing so. The a11y contract lives in the component, and the
+ * lease stack makes coexisting mounts safe, so consolidating producers buys
+ * nothing until 3c gives them a single surface to consolidate ONTO. A decision,
+ * not an omission.
+ *
+ * `mutationsEnabled` is deliberately absent from this channel and from the
+ * host: 3a's viewer has no mutating action, so it would be a dead prop. It is a
+ * hard prerequisite of 3c's Delete, and when it arrives its source must be the
+ * host's own gate.
+ */
+export interface LightboxImage {
+	id: string;
+	alt: string;
+	/**
+	 * Metadata the viewer may caption with, all NULLABLE for the same reason
+	 * the panel's three are: an emitter knows only what its own surface gives
+	 * it, and an inline image's HEAD probe may not have completed or may have
+	 * failed. Structurally a superset of the `Lightbox` component's own
+	 * `LightboxImage` ({id, alt}), so a set built for this channel is passed
+	 * straight through to it.
+	 */
+	filename: string | null;
+	mime_type: string | null;
+	size_bytes: number | null;
+	width: number | null;
+	height: number | null;
+}
+
+export interface AttachmentViewerOpenEvent {
+	/** UUID of the attachment the viewer opens ON. */
+	attachmentId: string;
+	/**
+	 * Workspace the images are read from, CAPTURED AT EMIT — never read live
+	 * from the host. The pane switches workspace without remounting, so a host
+	 * that resolved the slug itself at render time could serve a viewer opened
+	 * in ws1 from ws2's endpoint. The emitter knows which workspace the click
+	 * happened in; that is the answer the viewer must keep.
+	 */
+	workspaceSlug: string;
+	/**
+	 * UUID of the item whose `ItemDetail` mount should SHOW the viewer.
+	 *
+	 * ROUTING, not ownership — see `AttachmentPanelOpenEvent.itemId` for the
+	 * full argument. It names the host in front of the user; it asserts nothing
+	 * about which item the attachment belongs to, and nothing about permission.
+	 */
+	itemId: string;
+	/** Identity of the `ItemDetail` mount that owns the emitting surface. */
+	hostToken: string;
+	/**
+	 * The set the viewer's ←/→ page through, in the emitting surface's own
+	 * order. Readonly because the viewer must not reorder or mutate a set the
+	 * emitter still owns.
+	 */
+	images: readonly LightboxImage[];
+	/** Index to open at. `images[index]?.id === attachmentId` at emit. */
+	index: number;
+	/**
+	 * The element the viewer returns focus to on close. Null when the emitter
+	 * has no stable element to offer.
+	 */
+	invoker: HTMLElement | null;
+}
+
+const viewerListeners = new Set<(event: AttachmentViewerOpenEvent) => void>();
+
+/**
+ * "Is this event mine?" — the single predicate every viewer host must use.
+ *
+ * Deliberately a separate function from the panel's rather than one generic
+ * over both: the two events are different shapes, and a shared predicate would
+ * have to be typed loosely enough to accept anything with two string fields.
+ * The RULE is identical and stated once, in `isAddressable`: both sides must be
+ * fully addressable before a comparison means anything — two empty tokens are
+ * not a match, they are two absences.
+ *
+ * The event parameter accepts `null | undefined` where the panel's does not.
+ * That is the signature TASK-2428 specifies, and it matches what both
+ * functions have always DONE at runtime (`if (!event) return false`) — the
+ * panel's type is simply narrower than its behaviour. Widening the panel's to
+ * match is a change to a shipped surface and belongs to whoever next touches
+ * it, not to this task.
+ */
+export function isAttachmentViewerEventForHost(
+	event: AttachmentViewerOpenEvent | null | undefined,
+	host: { itemId: string | null | undefined; hostToken: string | null | undefined }
+): boolean {
+	if (!event) return false;
+	const from = { itemId: event.itemId, hostToken: event.hostToken };
+	const to = { itemId: host?.itemId ?? '', hostToken: host?.hostToken ?? '' };
+	if (!isAddressable(from) || !isAddressable(to)) return false;
+	return from.itemId === to.itemId && from.hostToken === to.hostToken;
+}
+
+/**
+ * Subscribe to open-viewer requests. Returns a dispose function — call it from
+ * the host's teardown, or the listener leaks and fires into a dead component.
+ * Listeners receive EVERY emission; filter with
+ * `isAttachmentViewerEventForHost`.
+ */
+export function registerAttachmentViewerListener(
+	fn: (event: AttachmentViewerOpenEvent) => void
+): () => void {
+	viewerListeners.add(fn);
+	return () => viewerListeners.delete(fn);
+}
+
+/**
+ * Request that the owning host open the image viewer.
+ *
+ * No-op when the event can't address a host, can't be fetched, or carries no
+ * images: an emission missing any identity field would either reach nobody or
+ * invite a "matches anything" reading of the predicate; one without a workspace
+ * would open a viewer whose every image URL 404s (the slug is a path segment,
+ * and the host deliberately does not substitute its own); and an empty set
+ * would open a full-screen viewer showing nothing.
+ *
+ * What it deliberately does NOT police: the `index` (the viewer clamps, and
+ * dropping the whole emission over an off-by-one would be a silent no-op where
+ * showing the neighbouring image is harmless), and the MIME types in the set —
+ * what is viewable is the EMITTER's judgement, made against the surface it is
+ * emitting from, not a rule this channel can state for every future producer.
+ *
+ * (Named per TASK-2428's normative signature — `notifyViewerOpen`, without the
+ * `Attachment` infix the sibling emitters carry. The task spells the exported
+ * surface out explicitly, so it wins over the local naming rhyme.)
+ */
+export function notifyViewerOpen(event: AttachmentViewerOpenEvent): void {
+	if (!event?.attachmentId || !event.itemId || !event.hostToken) return;
+	if (!event.workspaceSlug) return;
+	if (!event.images?.length) return;
+	for (const fn of viewerListeners) fn(event);
+}
