@@ -17,6 +17,7 @@
 	import CreateWorkspaceModal from '$lib/components/layout/CreateWorkspaceModal.svelte';
 	import OpenChildrenDialog from '$lib/components/OpenChildrenDialog.svelte';
 	import { isMod, isInputFocused } from '$lib/utils/keyboard';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import KeyboardShortcuts from '$lib/components/common/KeyboardShortcuts.svelte';
 
 	let { children } = $props();
@@ -150,6 +151,32 @@
 	});
 
 	function handleKeydown(e: KeyboardEvent) {
+		// TASK-2430 — the root app-shell shortcuts were entirely unguarded. Every
+		// one of them mutates SHELL state (search palette, sidebar/topbar, detail
+		// panel, quick-add, collection search, the shortcuts modal) that sits
+		// UNDER a frontmost viewer, and `isInputFocused()` cannot help: it only
+		// recognises text controls, so a focused viewer BUTTON reads as "not
+		// typing" and every shortcut below fires straight through the viewer.
+		//
+		// The owner argument is `null` on purpose: the surface asking to act is
+		// the app shell itself, which by construction is never inside a viewer
+		// portal or a top-layer `<dialog>` — so ANY frontmost surface blocks it.
+		// That also gives the native-dialog branch its due: a `showModal()` dialog
+		// owns the screen, and Cmd+K must not open a search palette behind it.
+		//
+		// `isBlockedByModal` returns false on an empty stack, so with no viewer
+		// and no open native modal every shortcut behaves exactly as before.
+		//
+		// ONE DELIBERATE COLLATERAL CHANGE, from the native-dialog branch: `?`
+		// no longer toggles the Keyboard Shortcuts modal CLOSED from inside
+		// itself (it is a `Modal`, i.e. a `showModal()` dialog). Escape and its
+		// close button both still dismiss it — `Modal.svelte` owns `cancel` —
+		// so nothing becomes undismissable, and a global shortcut acting from
+		// inside a modal that owns the screen was the bug, not the feature. The
+		// Escape branches below are likewise now unreachable while that modal is
+		// up; they remain as the backstop for the non-modal `searchOpen` palette,
+		// which is a plain overlay and not a dialog.
+		if (isBlockedByModal(null)) return;
 		if (isMod(e) && e.key === 'k') {
 			e.preventDefault();
 			uiStore.toggleSearch();

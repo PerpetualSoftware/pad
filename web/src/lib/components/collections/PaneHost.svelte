@@ -28,6 +28,7 @@
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { paneOverlay } from '$lib/stores/paneOverlay.svelte';
 	import { paneFocusables, nextTrapTarget, inExemptSurface } from '$lib/collections/paneFocus';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import type { PaneTarget } from '$lib/types';
 
 	interface Props {
@@ -470,9 +471,26 @@
 		}
 	});
 
+	/**
+	 * TASK-2430 — the divider is a resize surface in the app shell. While a
+	 * viewer (or a native `showModal()` dialog) is in front, dragging or
+	 * arrow-nudging the layout underneath it is exactly the deference this task
+	 * is about.
+	 *
+	 * The owner is the divider element — the surface asking to act — passed from
+	 * `e.currentTarget` (the listener's own element), NOT `e.target`.
+	 * `isBlockedByModal` returns false on an empty stack, so with no viewer open
+	 * drag and keyboard resize behave exactly as before.
+	 */
+	function dividerBlocked(e: Event): boolean {
+		return isBlockedByModal((e.currentTarget as Element | null) ?? null);
+	}
+
 	function onDividerPointerDown(e: PointerEvent) {
 		// Left button / touch / pen only; ignore right-click etc.
 		if (e.button !== 0) return;
+		// Gesture START gate (TASK-2430).
+		if (dividerBlocked(e)) return;
 		// Stop the browser from starting a text selection or handing the
 		// gesture to the list (row-click nav) mid-drag.
 		e.preventDefault();
@@ -485,6 +503,14 @@
 
 	function onDividerPointerMove(e: PointerEvent) {
 		if (!resizingPane || !paneEl) return;
+		// STRADDLE gate (TASK-2430) — the drag may have begun before the viewer
+		// opened, and the divider holds the pointer capture, so it keeps
+		// receiving moves. End the resize (releasing capture and restoring the
+		// global drag chrome) rather than merely skipping this frame.
+		if (dividerBlocked(e)) {
+			endPaneResize(e);
+			return;
+		}
 		// The pane is right-docked, so its width is (its right edge − pointer
 		// x). Reading the live rect keeps this correct regardless of page
 		// padding or the pane's current size.
@@ -517,6 +543,8 @@
 	// ArrowLeft grows the pane (divider moves left), ArrowRight shrinks it,
 	// matching the drag direction.
 	function onDividerKeydown(e: KeyboardEvent) {
+		// TASK-2430 — arrows must not resize the layout under a frontmost viewer.
+		if (dividerBlocked(e)) return;
 		const step = e.shiftKey ? 32 : 16;
 		const current = currentPaneWidth();
 		if (e.key === 'ArrowLeft') {

@@ -4,6 +4,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api/client';
 	import { onMount } from 'svelte';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
 	let { children } = $props();
 	let ready = $state(false);
@@ -49,6 +50,13 @@
 	}
 
 	function handleWindowKeydown(event: KeyboardEvent) {
+		// TASK-2430 — one owner per Escape. The console shell renders no item
+		// detail, so no attachment viewer can exist here, but `+layout.svelte`
+		// DOES mount `CreateWorkspaceModal` / `OpenChildrenDialog` on console
+		// routes: with one of those native dialogs open, this handler would close
+		// the mobile nav underneath it on the same press that cancels the dialog.
+		// Empty stack + no native modal ⇒ false, so ordinary Escape is unchanged.
+		if (isBlockedByModal(null)) return;
 		if (event.key === 'Escape' && mobileMenuOpen) {
 			mobileMenuOpen = false;
 		}

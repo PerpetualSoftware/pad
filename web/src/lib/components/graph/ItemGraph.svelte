@@ -18,6 +18,7 @@
 	import { createCollectionColorMap } from '$lib/graph/palette';
 	import { sseService, type ItemEvent } from '$lib/services/sse.svelte';
 	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
 	let {
 		workspace,
@@ -440,7 +441,23 @@
 	let dragOriginTx = 0;
 	let dragOriginTy = 0;
 
+	/**
+	 * TASK-2430 — the graph CO-MOUNTS with the attachment viewer (an item's
+	 * drawer stays in the DOM while a viewer opens over it), so its pan/zoom must
+	 * defer to a frontmost viewer or native `showModal()` dialog.
+	 *
+	 * The owner is the graph viewport — the surface asking to act — never
+	 * `event.target`. `isBlockedByModal` returns false on an empty stack, so with
+	 * no viewer open pan and zoom behave exactly as before.
+	 */
+	function graphBlocked(): boolean {
+		return isBlockedByModal(viewport);
+	}
+
 	function onWheel(e: WheelEvent) {
+		// Gate BEFORE `preventDefault()`: while a viewer is in front the wheel
+		// belongs to whatever is under the cursor up there, not to this canvas.
+		if (graphBlocked()) return;
 		e.preventDefault();
 		const rect = viewport?.getBoundingClientRect();
 		if (!rect) return;
@@ -457,6 +474,8 @@
 
 	function onPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return;
+		// Gesture START gate (TASK-2430).
+		if (graphBlocked()) return;
 		// Don't start a pan when the press lands on an interactive overlay
 		// (legend toggles, detail-card actions, error retry) — they sit inside the
 		// viewport, so without this a click on them would also begin a drag.
@@ -471,8 +490,44 @@
 		// NOTE: no setPointerCapture here — capturing on pointerdown would swallow
 		// the node's click/dblclick. We capture only once a real drag starts.
 	}
+	/**
+	 * Tear a pan down mid-gesture (TASK-2430). This canvas has NO
+	 * `lostpointercapture` handler, and once a real drag engages it OWNS the
+	 * pointer via `setPointerCapture` — so a gesture that began before a viewer
+	 * opened keeps delivering moves to this viewport afterwards. Releasing the
+	 * capture here is what actually stops it, not just the early return.
+	 */
+	function abortPan(e: PointerEvent) {
+		const wasDragging = dragging;
+		maybeDrag = false;
+		dragging = false;
+		if (capturedPointerId !== null) {
+			try {
+				(e.currentTarget as Element).releasePointerCapture(capturedPointerId);
+			} catch {
+				// already released — ignore.
+			}
+			capturedPointerId = null;
+		}
+		if (wasDragging) {
+			// The gesture WAS a pan, so still swallow the click it produces, and
+			// clear on the next tick exactly as the normal end-of-pan path does.
+			suppressClick = true;
+			setTimeout(() => {
+				suppressClick = false;
+			}, 0);
+		}
+	}
+
 	function onPointerMove(e: PointerEvent) {
 		if (!maybeDrag) return;
+		// STRADDLE gate (TASK-2430) — the press may have landed before the viewer
+		// opened. Abort rather than early-return: an early return alone would
+		// leave the pointer captured and `dragging` latched.
+		if (graphBlocked()) {
+			abortPan(e);
+			return;
+		}
 		// If the primary button is no longer held, the press ended off-viewport
 		// before a drag engaged (no capture yet, so we never got pointerup) — abort
 		// rather than start a ghost pan with no button down.
@@ -496,6 +551,18 @@
 		tx = dragOriginTx + dx;
 		ty = dragOriginTy + dy;
 	}
+	// NO arbitration gate on pointerup, deliberately. The obvious symmetry with
+	// the move gate above would be dead code: this path's ONLY job is teardown —
+	// drop the flags, release the capture, swallow the click — which is byte for
+	// byte what `abortPan` does, so a gate here cannot change any outcome and no
+	// test can fail on its removal (mutation-verified). A guard that cannot fail
+	// is decoration, and decoration in a security-shaped review reads as
+	// coverage. The straddle is already handled: the move gate tears the pan
+	// down the moment the viewer appears, and a pointerup arriving with no
+	// intervening move performs the same teardown either way.
+	//
+	// This stops being true the moment the un-blocked path grows a real side
+	// effect (a navigation, a persist). Add the gate then — with a test.
 	function onPointerUp(e: PointerEvent) {
 		maybeDrag = false;
 		if (dragging) {

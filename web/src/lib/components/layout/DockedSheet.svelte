@@ -13,6 +13,7 @@
 	import type { Snippet } from 'svelte';
 	import { fly, fade } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
 	let {
 		open,
@@ -33,15 +34,61 @@
 	let startY = 0;
 	const DISMISS_PX = 90;
 
+	let panelEl = $state<HTMLElement | null>(null);
+
+	/**
+	 * TASK-2430 — this sheet is a GLOBAL Escape/gesture owner (three instances
+	 * stay mounted by `BottomNav`), so it has to ask whether something is in
+	 * FRONT of it before acting. `isBlockedByModal` is the shared arbitration
+	 * helper: it answers from viewer LEASE state plus the native `dialog:modal`
+	 * top layer, and returns **false on an empty stack** — with no viewer and no
+	 * native modal open, every path below behaves exactly as it did before.
+	 *
+	 * The argument is the SURFACE ASKING TO ACT (our own panel), not
+	 * `event.target`: a viewer opened FROM this sheet leaves focus/target inside
+	 * the sheet, and target-based arbitration would then wrongly let the sheet
+	 * dismiss itself out from under the viewer it launched.
+	 */
+	function blockedByFrontLayer(): boolean {
+		return isBlockedByModal(panelEl);
+	}
+
+	function cancelDrag() {
+		dragging = false;
+		dragY = 0;
+	}
+
 	function onTouchStart(e: TouchEvent) {
+		// Gesture START gate.
+		if (blockedByFrontLayer()) return;
 		startY = e.touches[0].clientY;
 		dragging = true;
 	}
 	function onTouchMove(e: TouchEvent) {
 		if (!dragging) return;
+		// STRADDLE gate: a swipe can begin before a viewer opens and keep
+		// delivering moves afterwards (touch events continue to their original
+		// target). Abandon the drag rather than keep translating the panel.
+		if (blockedByFrontLayer()) {
+			cancelDrag();
+			return;
+		}
 		dragY = Math.max(0, e.touches[0].clientY - startY);
 	}
 	function onTouchEnd() {
+		// STRADDLE gate on the terminal event — the release is what would actually
+		// call `onclose()`, so this is the one that must not fire under a viewer.
+		//
+		// The gate is the ONLY addition: no `if (!dragging) return` above it, so
+		// the un-blocked path below is byte for byte the original terminal
+		// cleanup. An early bail there was tried and removed — with a stray or
+		// duplicate touchend it skipped `dragging = false` / `dragY = 0`, which is
+		// a state-path difference in a task that promises none without a viewer,
+		// for no benefit (`dragY` is only ever non-zero while `dragging`).
+		if (blockedByFrontLayer()) {
+			cancelDrag();
+			return;
+		}
 		dragging = false;
 		if (dragY > DISMISS_PX) {
 			onclose();
@@ -50,7 +97,15 @@
 	}
 
 	function onKeydown(e: KeyboardEvent) {
-		if (open && e.key === 'Escape') onclose();
+		if (!open || e.key !== 'Escape') return;
+		// ONLY the frontmost-layer check. This handler still closes on an Escape a
+		// control already handled, exactly as it always has — TASK-2430 added a
+		// `defaultPrevented` bail here and it was REVERTED: it is a defensible
+		// change on its own merits, but it fires with NO viewer present, and this
+		// task's contract is that an empty lease leaves behaviour untouched. It
+		// belongs in its own item, not smuggled into an attachments phase.
+		if (blockedByFrontLayer()) return;
+		onclose();
 	}
 </script>
 
@@ -61,6 +116,7 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div class="ds-backdrop" onclick={onclose} transition:fade={{ duration: 160 }}></div>
 	<div
+		bind:this={panelEl}
 		class="ds-panel"
 		role="dialog"
 		aria-modal="true"

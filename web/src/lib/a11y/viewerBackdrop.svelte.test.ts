@@ -721,15 +721,26 @@ describe('hasForeignEscapeOwner', () => {
 
 	/**
 	 * Emulate an engine where `dialog:modal` IS supported (jsdom throws on it —
-	 * probed, not assumed), with `modals` as the open modal dialogs. Only the
-	 * combined selector the module builds is intercepted.
+	 * probed, not assumed), with `modals` as the open modal dialogs. Intercepts
+	 * ANY selector starting with `dialog:modal` — the module asks it both
+	 * standalone and combined with the ARIA branch, and delegating the combined
+	 * form's tail unconditionally would turn the standalone form back into a
+	 * throwing `dialog:modal` query and silently drop the caller onto the
+	 * unsupported-engine path.
 	 */
 	function mockModalSupport(modals: Element[]): void {
 		const real = document.querySelector.bind(document);
 		vi.spyOn(document, 'querySelector').mockImplementation((selector: string) => {
 			if (!selector.startsWith('dialog:modal')) return real(selector);
-			const rest = selector.slice(selector.indexOf(',') + 1).trim();
-			return modals[0] ?? real(rest);
+			if (modals[0]) return modals[0];
+			// Shape-agnostic (TASK-2430): the helper may ask `dialog:modal` on its
+			// own or combined with the ARIA branch. Delegating `slice(indexOf(',')
+			// + 1)` unconditionally turned the standalone form back into
+			// `real('dialog:modal')`, which THROWS in jsdom and pushed the helper
+			// down its unsupported-engine fallback — the opposite of what a test
+			// named "on a supporting engine" is asking about.
+			const comma = selector.indexOf(',');
+			return comma === -1 ? null : real(selector.slice(comma + 1).trim());
 		});
 	}
 
@@ -761,12 +772,101 @@ describe('hasForeignEscapeOwner', () => {
 		expect(hasForeignEscapeOwner()).toBe(false);
 	});
 
-	it('still sees a sheet opened WHILE a viewer is up', () => {
-		// The exclusion is targeted at the viewer, not a blanket "a viewer is
-		// open, so nothing else counts".
+	it('still sees a sheet when a viewer ELEMENT exists but holds no lease', () => {
+		// The exclusion is targeted at the viewer element, not a blanket "a viewer
+		// is in the DOM, so nothing else counts". With no lease held, the viewer
+		// is not in front of anything — a mid-teardown viewer is exactly this
+		// state — and the sheet owns its Escape as it always did.
 		viewerRoot();
 		bodyChild('sheet').setAttribute('role', 'dialog');
 		expect(hasForeignEscapeOwner()).toBe(true);
+	});
+
+	it('stops seeing a sheet once a viewer LEASE is frontmost (TASK-2430)', () => {
+		// THE DEAD-KEY FENCE. Once the sheets consult `isBlockedByModal` (3b),
+		// a sheet under a frontmost viewer stands down — so if this still answered
+		// `true`, the route driver would return, the sheet would decline, and the
+		// viewer's Escape (which lives ONLY on the stack) would run nowhere.
+		// Nobody would own the key.
+		const sheet = bodyChild('sheet');
+		sheet.setAttribute('role', 'dialog');
+		expect(hasForeignEscapeOwner()).toBe(true);
+
+		const lease = acquire(viewerRoot());
+		expect(hasForeignEscapeOwner()).toBe(false);
+
+		// Released → the sheet is the front layer again and reclaims the key.
+		lease.release();
+		expect(hasForeignEscapeOwner()).toBe(true);
+	});
+
+	it('is lease-aware on a `:modal`-SUPPORTING engine too, not just the fallback', () => {
+		// jsdom throws on `:modal`, so every test in this describe that does not
+		// install an emulation exercises the FALLBACK branch — which would leave
+		// the branch real browsers take unfenced for the LEASE case specifically.
+		// Emulating support needs BOTH probes mocked, not just
+		// `querySelector`: `acquire()` runs `reconcile()`, which calls
+		// `el.matches('dialog:modal')` on body children, and an unmocked throw
+		// there latches `modalSelectorSupported = false` and silently drops the
+		// helper onto the fallback path mid-test. `mockOpenModals` covers both.
+		const modals: Element[] = [];
+		mockOpenModals((el) => modals.includes(el));
+		// `hasForeignEscapeOwner` asks `querySelector`, which `mockOpenModals`
+		// does not intercept — route it to the same oracle.
+		const realQuery = document.querySelector.bind(document);
+		vi.spyOn(document, 'querySelector').mockImplementation((selector: string) => {
+			if (selector !== 'dialog:modal') return realQuery(selector);
+			return modals[0] ?? null;
+		});
+
+		const sheet = bodyChild('sheet');
+		sheet.setAttribute('role', 'dialog');
+		expect(hasForeignEscapeOwner()).toBe(true);
+
+		const lease = acquire(viewerRoot());
+		expect(hasForeignEscapeOwner()).toBe(false);
+
+		// ...and a real `showModal()` dialog still wins over the held lease.
+		modals.push(openModal());
+		expect(hasForeignEscapeOwner()).toBe(true);
+		lease.release();
+	});
+
+	it('STILL sees a sheet nested INSIDE the frontmost viewer', () => {
+		// The containment half of the lease-aware branch. A sheet that lives
+		// inside the viewer root is IN FRONT of the viewer's own content, so it
+		// genuinely owns its Escape — and `isBlockedByModal(sheetEl)` agrees
+		// (contained by the front root ⇒ not blocked). A blanket "a lease exists
+		// ⇒ no ARIA owner" would let the route driver run the stack and close the
+		// viewer out from under the sheet it is showing: two layers, one press.
+		const viewer = viewerRoot();
+		const nested = document.createElement('div');
+		nested.setAttribute('role', 'dialog');
+		viewer.appendChild(nested);
+		acquire(viewer);
+
+		expect(hasForeignEscapeOwner()).toBe(true);
+
+		// ...while a sheet BEHIND the same viewer is still invisible to it.
+		nested.remove();
+		bodyChild('sheet').setAttribute('role', 'dialog');
+		expect(hasForeignEscapeOwner()).toBe(false);
+	});
+
+	it('does NOT apply the liveness rule to the `dialog[open]` fallback', () => {
+		// The containment rule is deliberately ARIA-only. Nothing in the app
+		// guards a native `<dialog>`, so unlike a sheet it has not stood down for
+		// the viewer and does still own Escape — and on this branch a real
+		// `showModal()` dialog is indistinguishable from a non-modal one, so
+		// letting the lease out-rank it would fire the browser's native `cancel`
+		// AND run the stack: two layers on one press.
+		const dialog = openModal();
+		dialog.setAttribute('open', '');
+		expect(hasForeignEscapeOwner()).toBe(true);
+
+		const lease = acquire(viewerRoot());
+		expect(hasForeignEscapeOwner()).toBe(true);
+		lease.release();
 	});
 
 	it('falls back to `dialog[open]` where `:modal` is unsupported', () => {

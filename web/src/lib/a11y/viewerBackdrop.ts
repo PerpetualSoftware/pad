@@ -375,23 +375,74 @@ export const VIEWER_ROOT_CLASS = 'attachment-viewer';
  * a sheet that doesn't move focus into itself leaves `document.activeElement`
  * on the trigger underneath, so a `closest()` test would miss it.
  *
- * TASK-2430 folds this into {@link isBlockedByModal}'s three-way precedence
- * across all seven global Escape/key owners; 3a needs only the two route
- * guards to stop swallowing the viewer's Escape.
+ * TASK-2430 makes the ARIA branch LEASE-AWARE, and the reason is a change of
+ * premise rather than a change of mind. When 3a shipped, `BottomSheet` and
+ * `DockedSheet` acted on every Escape unconditionally, so a sheet open beneath
+ * a viewer genuinely still owned the key and this helper had to say so. 3b
+ * makes those sheets consult {@link isBlockedByModal} and stand down while a
+ * viewer is frontmost — at which point a `true` here would leave Escape with NO
+ * owner at all: the route driver returns, the sheet declines, and the viewer's
+ * Escape (which lives only on `escapeStack`) never runs. So:
+ *
+ *  • NATIVE branch first, and it still wins outright — a `showModal()` dialog
+ *    is in the top layer, ABOVE any body-portaled viewer.
+ *  • Otherwise the ARIA branch counts only sheets that are NOT behind the
+ *    frontmost viewer. A sheet BEHIND it has stood down, so it owns nothing; a
+ *    sheet nested INSIDE it is in front of the viewer's own content and does
+ *    still own its Escape (`isBlockedByModal(sheetEl)` agrees — the sheet is
+ *    contained by the front root, so it is not blocked). Containment, not a
+ *    blanket "a lease exists ⇒ ignore every sheet", which would let one press
+ *    close a nested sheet AND the viewer under it.
+ *  • With no lease, the ARIA branch is exactly as before.
+ *
+ * Deliberately keyed on LEASE STATE, not on "a `.attachment-viewer` element
+ * exists" — a viewer mid-teardown has dropped its lease and its sheets are live
+ * again, which is the correct moment for them to reclaim the key.
  */
 export function hasForeignEscapeOwner(): boolean {
 	if (!hasDocument()) return false;
-	const aria = `[role="dialog"]:not(.item-pane):not(.${VIEWER_ROOT_CLASS})`;
 	if (modalSelectorSupported !== false) {
 		try {
-			const found = !!document.querySelector(`dialog:modal, ${aria}`);
+			const nativeModal = !!document.querySelector('dialog:modal');
 			modalSelectorSupported = true;
-			return found;
+			if (nativeModal) return true;
+			return hasLiveAriaEscapeOwner();
 		} catch {
 			modalSelectorSupported = false;
 		}
 	}
-	return !!document.querySelector(`dialog[open], ${aria}`);
+	// UNSUPPORTED `:modal`. `dialog[open]` still SHORT-CIRCUITS, and the
+	// containment rule below deliberately does NOT apply to it: nothing in the
+	// app guards a native `<dialog>`, so unlike an ARIA sheet it has not stood
+	// down for the viewer and does still own Escape. Routing it through the
+	// liveness rule instead was tried and reverted — it makes a real
+	// `showModal()` dialog (indistinguishable from a non-modal one on this
+	// branch) stop out-ranking the lease, so one press would fire the browser's
+	// native `cancel` AND run the stack: two layers closed.
+	//
+	// RESIDUAL, KNOWINGLY ACCEPTED: on this branch a NON-modal `<dialog open>`
+	// held open beside a viewer would be reported as an Escape owner while
+	// {@link isBlockedByModal} answers "no native modal" — the route would stand
+	// down for a surface that owns nothing, and Escape would do nothing. It is
+	// unreachable in this app twice over: `Modal.svelte` is the only `<dialog>`
+	// in the tree and drives it exclusively through `showModal()`/`close()`, and
+	// every engine that ships `<dialog>` also ships `:modal`, so this branch is
+	// jsdom and legacy only. Fixing it costs the real-modal case above, which is
+	// the one that can actually happen.
+	if (document.querySelector('dialog[open]')) return true;
+	return hasLiveAriaEscapeOwner();
+}
+
+/**
+ * Is there an ARIA-dialog Escape owner that is actually LIVE — i.e. not one the
+ * viewer backdrop has put behind itself? With no lease every match counts, as
+ * it always did; with one, only matches INSIDE the frontmost viewer do.
+ */
+function hasLiveAriaEscapeOwner(): boolean {
+	const aria = `[role="dialog"]:not(.item-pane):not(.${VIEWER_ROOT_CLASS})`;
+	const front = frontRoot();
+	if (!front) return !!document.querySelector(aria);
+	return Array.from(document.querySelectorAll(aria)).some((el) => front.contains(el));
 }
 
 /** Test seam: drop all leases and observers without running focus handoff. */

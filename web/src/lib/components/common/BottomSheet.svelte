@@ -19,6 +19,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { paneFocusables, nextTrapTarget } from '$lib/collections/paneFocus';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
 	interface Props {
 		open: boolean;
@@ -120,6 +121,16 @@
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (!open) return;
+		// TASK-2430 — front layer wins. `isFrontmostSheet()` only arbitrates
+		// between SHEETS; a body-portaled viewer (or a native `showModal()`
+		// dialog) sits above every sheet and is invisible to that check, so ask
+		// the shared arbitration helper as well. The argument is this sheet — the
+		// surface asking to act — not `event.target`: a viewer launched FROM this
+		// sheet still has the sheet as the keydown target.
+		//
+		// Empty stack + no native modal ⇒ `false`, so with no viewer open both
+		// the Escape close and the Tab trap behave exactly as before.
+		if (isBlockedByModal(sheetEl)) return;
 		if (!isFrontmostSheet()) return;
 		if (e.key === 'Escape') {
 			e.preventDefault();

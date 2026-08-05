@@ -15,6 +15,7 @@
 	import type { NodeObject, LinkObject } from '3d-force-graph';
 	import type { GraphResponse, Item } from '$lib/types';
 	import { GRAPH_PALETTE } from '$lib/graph/palette';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import DetailCard from './DetailCard.svelte';
 	import GraphToolbar from './GraphToolbar.svelte';
 
@@ -947,6 +948,13 @@
 	// Escape exits focus mode — but only when a node is selected, so it doesn't
 	// swallow the key from other handlers (spirit of CONVE-639).
 	function onKeydown(e: KeyboardEvent) {
+		// TASK-2430 — one owner per Escape. This route mounts no `ItemDetail`, so
+		// no attachment viewer can be in front of it, but `+layout.svelte`'s
+		// global `CreateWorkspaceModal` / `OpenChildrenDialog` can: with one open
+		// this handler would `preventDefault()` the dialog's own native cancel AND
+		// deselect the graph node underneath, two layers from one press. Empty
+		// stack + no native modal ⇒ false, so ordinary Escape is unchanged.
+		if (isBlockedByModal(null)) return;
 		if (e.key === 'Escape' && selectedRef !== null) {
 			e.preventDefault();
 			deselect();

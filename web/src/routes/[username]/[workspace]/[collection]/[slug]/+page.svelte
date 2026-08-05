@@ -428,6 +428,24 @@
 		// A control that already handled this key (preventDefault) owns it.
 		if (e.defaultPrevented) return;
 		if (e.key !== 'Escape') return;
+		// NO `isBlockedByModal` BAIL HERE, deliberately (TASK-2430). This handler
+		// owns ONLY Escape, and it is the sole code path that runs the escape
+		// stack on this route — which is where the VIEWER's Escape lives
+		// (TASK-2429). An arbitration bail would return before `runTopEscape()`
+		// and leave a frontmost viewer's Escape with no owner at all.
+		//
+		// Escape's three-way precedence is already complete without one:
+		//   1. empty lease, no native modal → `hasForeignEscapeOwner()` is false →
+		//      today's behaviour, unchanged;
+		//   2. viewer lease frontmost → the helper EXCLUDES the viewer, so we fall
+		//      through and the stack dispatches to it (the depth-aware branches
+		//      below are gated on `topEscapePriority() === pane`, which a viewer
+		//      registered above `pane` makes false, so nothing double-closes);
+		//   3. native top-layer `<dialog>` → the helper's feature-detected
+		//      `dialog:modal` branch is true → we stand down and it wins.
+		// The sibling collection route DOES carry the bail, but below its Escape
+		// block, guarding its list/board navigation keys — which this host has
+		// none of.
 		const target = e.target as HTMLElement | null;
 		// Text-editing targets own ESC locally — don't hijack into a layer-close.
 		if (isTextEntryTarget(target)) return;

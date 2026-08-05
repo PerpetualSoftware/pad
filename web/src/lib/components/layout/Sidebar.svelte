@@ -15,6 +15,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import NotificationPanel from '$lib/components/common/NotificationPanel.svelte';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
 	let notificationPanelOpen = $state(false);
 	let showCreateCollection = $state(false);
@@ -292,7 +293,33 @@
 		} catch {}
 	});
 
+	/**
+	 * TASK-2430 — the sidebar's swipe gestures are global surfaces: the OPEN
+	 * swipe is a `<svelte:window>` touch handler that fires anywhere on the page,
+	 * and the CLOSE swipe rides on the `<aside>` itself. Both must stand down
+	 * while a viewer (or a native `showModal()` dialog) is in front — opening or
+	 * closing app chrome underneath a modal surface is exactly the deference this
+	 * task is about.
+	 *
+	 * The owner is the sidebar element, i.e. the surface asking to act, not
+	 * `event.target`. `isBlockedByModal` returns false on an empty stack, so with
+	 * no viewer open both gestures behave exactly as before.
+	 */
+	function swipeBlocked(): boolean {
+		return isBlockedByModal(sidebarEl ?? null);
+	}
+
+	function cancelCloseSwipe() {
+		isSwiping = false;
+		if (sidebarEl) {
+			sidebarEl.style.transform = '';
+			sidebarEl.style.transition = '';
+		}
+	}
+
 	function handleTouchStart(e: TouchEvent) {
+		// Gesture START gate.
+		if (swipeBlocked()) return;
 		// Don't initiate swipe-to-close if the touch started inside a
 		// horizontally scrollable element (e.g. the mobile workspace list)
 		let el = e.target as HTMLElement | null;
@@ -307,6 +334,13 @@
 
 	function handleTouchMove(e: TouchEvent) {
 		if (!isSwiping) return;
+		// STRADDLE gate — a swipe that began before the viewer opened keeps
+		// delivering moves to its original target afterwards. Abandon it and undo
+		// the in-progress transform rather than keep dragging the drawer.
+		if (swipeBlocked()) {
+			cancelCloseSwipe();
+			return;
+		}
 		touchCurrentX = e.touches[0].clientX;
 
 		const delta = touchCurrentX - touchStartX;
@@ -319,6 +353,12 @@
 
 	function handleTouchEnd() {
 		if (!isSwiping || !sidebarEl) return;
+		// STRADDLE gate on the terminal event — this is the one that would
+		// actually call `closeSidebar()`.
+		if (swipeBlocked()) {
+			cancelCloseSwipe();
+			return;
+		}
 		isSwiping = false;
 
 		const delta = touchCurrentX - touchStartX;
@@ -336,6 +376,8 @@
 <svelte:window
 	ontouchstart={(e) => {
 		if (!uiStore.isMobile || uiStore.sidebarOpen) return;
+		// Gesture START gate (TASK-2430) — see `swipeBlocked`.
+		if (swipeBlocked()) return;
 		const x = e.touches[0].clientX;
 		if (x <= 16) {
 			// Don't activate if the touch is inside a horizontally scrollable container
@@ -353,6 +395,12 @@
 	}}
 	ontouchmove={(e) => {
 		if (!openSwipeTracking) return;
+		// STRADDLE gate — an edge swipe that began before the viewer opened must
+		// not go on to open the sidebar underneath it.
+		if (swipeBlocked()) {
+			openSwipeTracking = false;
+			return;
+		}
 		const x = e.touches[0].clientX;
 		const y = e.touches[0].clientY;
 		const dx = x - openSwipeStartX;

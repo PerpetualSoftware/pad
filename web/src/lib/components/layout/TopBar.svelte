@@ -15,11 +15,14 @@
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
 
 	let userMenuOpen = $state(false);
 	let userTriggerEl: HTMLButtonElement | undefined = $state(undefined);
+	/** The overflow menu panel — the arbitration OWNER for its window keydown. */
+	let overflowMenuEl: HTMLElement | undefined = $state(undefined);
 	let currentTheme = $state<'dark' | 'light'>('dark');
 	let connectOpen = $state(false);
 
@@ -570,6 +573,17 @@
 	// ── Overflow menu keyboard ───────────────────────────────────────────
 	function handleOverflowKeydown(e: KeyboardEvent) {
 		if (!overflowOpen) return;
+		// TASK-2430 — this is a WINDOW handler owning Escape and Up/Down for a
+		// menu that lives in the app shell. While a viewer (or a native
+		// `showModal()` dialog) is in front, the shell is inert: consuming those
+		// keys would steal Escape from the frontmost surface, and the arrow keys
+		// would call `.focus()` on menu items UNDER it — pulling focus out of the
+		// frontmost surface and into inert chrome.
+		//
+		// The owner is the menu element itself; `isBlockedByModal` returns false
+		// on an empty stack, so with no viewer/native modal this handler behaves
+		// exactly as before.
+		if (isBlockedByModal(overflowMenuEl ?? null)) return;
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			closeOverflow();
@@ -578,6 +592,17 @@
 		}
 		if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
 			e.preventDefault();
+			// KNOWN DEAD IN THE BROWSER, deliberately left that way here.
+			// `svelte-dnd-action` REWRITES the authored roles on this zone and its
+			// children (`role="menu"`→`list`, `menuitem`→`listitem`) unless
+			// `autoAriaDisabled` is set, so this query matches nothing and the
+			// roving focus below never runs — only the `preventDefault()` above
+			// takes effect. TASK-2430 briefly widened the selector to
+			// `[role="listitem"]` too and it was REVERTED: reviving the branch
+			// changes what ArrowUp/Down do with NO viewer present, and this task's
+			// contract is that an empty lease leaves behaviour untouched. Worth
+			// fixing — in its own item, where the a11y change can be reviewed as
+			// such.
 			const items = Array.from(
 				document.querySelectorAll<HTMLElement>('#workspace-overflow-menu [role="menuitem"]')
 			);
@@ -615,6 +640,15 @@
 	onmouseup={disarmMenu}
 	onclick={(e) => {
 		const target = e.target as HTMLElement;
+		// DELIBERATELY UNGUARDED by `isBlockedByModal` (TASK-2430). Unlike the
+		// keydown handler above, this is a pointer-DISMISSER: its only effect is
+		// to close the menu, i.e. to tear down LOWER UI. A click inside a
+		// frontmost viewer closing chrome that is already obscured and inert is
+		// the correct outcome, not a leak — the same reasoning that keeps
+		// `clickOutside.ts`, the emoji/reaction pickers and the sidebar's
+		// collection picker unguarded. Adding a gate here would leave a stale
+		// menu open behind the viewer instead.
+		//
 		// Don't close on outside-click during a drag — the click event
 		// fired on mouseup at drag end would otherwise tear down the
 		// menu while finalize handlers are still wiring up state.
@@ -860,6 +894,7 @@
 				{#if overflowZone.length > 0}
 					<!-- svelte-ignore a11y_no_static_element_interactions -->
 					<div
+						bind:this={overflowMenuEl}
 						id="workspace-overflow-menu"
 						class="overflow-menu"
 						class:open={menuVisible}
