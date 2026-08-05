@@ -12,6 +12,7 @@
 	import { fetchAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import { attachmentDownloadUrl, type AttachmentMeta } from '$lib/markdown/attachments';
 	import { canOpenInViewer } from '$lib/attachments/display';
+	import { isEditorOwnedImage } from '$lib/attachments/editorOwnedImage';
 	// One declaration of the viewer's image shape, on the channel (TASK-2431).
 	import type { LightboxImage } from '$lib/attachments/events';
 	import Lightbox from '$lib/components/common/Lightbox.svelte';
@@ -263,19 +264,37 @@
 	// event for a thumbnail the viewer refuses would leave the click doing
 	// nothing at all, including whatever the surrounding markup would have done
 	// with it.
-	function onThumbClick(e: MouseEvent) {
+	/**
+	 * The image this delegated event is about, or null when the event is not
+	 * ours to act on.
+	 *
+	 * The entry list contains LIVE CommentEditor instances, whose inline images
+	 * are AttachmentImage NodeViews that own their own activation, semantics and
+	 * propagation (TASK-2432). They render the same `img[data-attachment-id]`
+	 * this selector matches, so without the ownership check this delegation acts
+	 * on elements belonging to another component — see `isEditorOwnedImage` for
+	 * the two failures that produced.
+	 */
+	function delegatedThumb(e: Event): HTMLElement | null {
 		const imgEl = (e.target as HTMLElement | null)?.closest(
 			'img[data-attachment-id]'
 		) as HTMLElement | null;
+		if (!imgEl || isEditorOwnedImage(imgEl)) return null;
+		return imgEl;
+	}
+
+	function onThumbClick(e: MouseEvent) {
+		const imgEl = delegatedThumb(e);
 		if (!imgEl) return;
 		if (openLightboxFromImg(imgEl)) e.preventDefault();
 	}
 
 	function onThumbKeydown(e: KeyboardEvent) {
 		if (e.key !== 'Enter' && e.key !== ' ') return;
-		const imgEl = (e.target as HTMLElement | null)?.closest(
-			'img[data-attachment-id]'
-		) as HTMLElement | null;
+		// A modified key is a shortcut, not an activation — the same guard the
+		// NodeView carries. Cmd/Ctrl+Enter is CommentEditor's submit binding.
+		if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+		const imgEl = delegatedThumb(e);
 		if (!imgEl) return;
 		// Space would otherwise scroll the page — but only suppress it when the
 		// key actually did something.
@@ -332,6 +351,11 @@
 		tick().then(() => {
 			if (cancelled) return;
 			for (const img of el.querySelectorAll<HTMLElement>('img[data-attachment-id]')) {
+				// A live editor's NodeView owns its own semantics (TASK-2432) and
+				// `attMeta` is probed from SAVED bodies only — so every image in a
+				// DRAFT comment looks unresolved here, and this pass would strip
+				// the role/tabindex the NodeView just set.
+				if (isEditorOwnedImage(img)) continue;
 				if (viewerImageFor(img) === null) {
 					img.removeAttribute('role');
 					img.removeAttribute('tabindex');

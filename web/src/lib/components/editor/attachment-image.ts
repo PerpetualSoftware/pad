@@ -295,6 +295,85 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// probes, transform results) must not touch DOM after that.
 			let destroyed = false;
 
+			// The MIME this node's attachment is KNOWN to have, from a HEAD probe. Null
+			// until one has answered — the probe is lazy (toolbar construction, uuid
+			// swap), so "null" means "not yet asked", never "not an image".
+			//
+			// Declared HERE rather than next to its first reader so that
+			// applyImageSemantics() — which the load/missing paths call — can read it
+			// without a temporal-dead-zone hazard.
+			let knownMime: string | null = null;
+
+			/**
+			 * DR-12: the inline body image is an activation target, so it carries a
+			 * button's semantics — but ONLY while it is actually one.
+			 *
+			 * The three states that make it not one:
+			 *
+			 *   - no uuid — activate() has nothing to open;
+			 *   - a confirmed deletion, or any load failure that swapped the
+			 *     placeholder in — the <img> is hidden and activate() refuses, so
+			 *     role+tabindex would be a focus stop that announces itself as a
+			 *     button and does nothing. (The placeholder itself carries the
+			 *     retry affordance while the failure is still transient.)
+			 *   - a KNOWN MIME outside the viewer allowlist — activate() refuses it
+			 *     (DR-16), so the same dead stop applies. An UNPROBED node keeps the
+			 *     semantics: "not yet asked" is not "not viewable", and the probe is
+			 *     lazy. This mirrors ItemTimeline.svelte's semantics pass, which is
+			 *     likewise able to take the semantics back OFF when a probe resolves.
+			 *
+			 *     Consequence, accepted deliberately: because the probe is lazy, a
+			 *     refused image can be FOCUSED before its MIME resolves and lose
+			 *     focus when it does. The alternative is leaving an SVG as a focus
+			 *     stop that announces itself as a button and does nothing, which is
+			 *     the failure this whole rule exists to prevent — and the same
+			 *     trade the placeholder below already makes.
+			 *
+			 * The accessible name comes from alt with a GENERIC fallback: there is
+			 * no filename on the node's attrs and the HEAD metadata does not carry
+			 * one either, so the filename form DR-12 sketches has no source here.
+			 */
+			/**
+			 * Is this image an activation target right now?
+			 *
+			 * ONE predicate, read by activate() AND by applyImageSemantics(),
+			 * because "can be opened" and "announces itself as openable" are the
+			 * same question and a dead focus stop is exactly what they look like
+			 * when they disagree. Two copies would drift: the load-failure clause
+			 * below was, briefly, only in the semantics half — so the placeholder
+			 * hid the image and stripped its role, while a stale or synthetic
+			 * event on the hidden <img> still opened a viewer.
+			 */
+			function canActivate(): boolean {
+				return (
+					!!currentUuid &&
+					!deleted &&
+					// Hidden means the placeholder has taken over: either a
+					// confirmed deletion or a load failure. Neither has an image
+					// to show, so neither has anything to open.
+					img.style.display !== 'none' &&
+					!(knownMime && !canOpenInViewer(knownMime))
+				);
+			}
+
+			function applyImageSemantics() {
+				if (!canActivate()) {
+					// Removing tabindex from the focused element would strand focus on
+					// something no further keystroke can leave.
+					if (document.activeElement === img) img.blur();
+					img.removeAttribute('role');
+					img.removeAttribute('tabindex');
+					img.removeAttribute('aria-label');
+					return;
+				}
+				img.setAttribute('role', 'button');
+				img.setAttribute('tabindex', '0');
+				img.setAttribute(
+					'aria-label',
+					currentAlt ? `View image: ${currentAlt}` : 'View attachment image'
+				);
+			}
+
 			function showMissing() {
 				missing.textContent = `📎 ${currentAlt || 'Attachment unavailable'}`;
 				// Distinct copy per cause: a confirmed deletion is permanent and
@@ -321,6 +400,10 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				if (currentUuid) missing.setAttribute('data-attachment-id', currentUuid);
 				missing.style.display = '';
 				img.style.display = 'none';
+				// The <img> the placeholder replaces stops being a control too —
+				// see applyImageSemantics for why a hidden/dead image must not
+				// keep announcing itself as one.
+				applyImageSemantics();
 			}
 
 			// Re-armed on every uuid swap in update() below, so a rotate/crop
@@ -330,6 +413,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				if (deleted) return;
 				missing.style.display = 'none';
 				img.style.display = '';
+				applyImageSemantics();
 			}
 
 			// Load events carry no identity, and this NodeView outlives a uuid
@@ -409,6 +493,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			}
 
 			if (currentUuid) loadImage(opts.getDownloadUrl(currentUuid, 'thumb-md'));
+			applyImageSemantics();
 
 			const disposeDeletionListener = registerAttachmentDeletionListener((deletedUuid) => {
 				if (deletedUuid !== currentUuid) return;
@@ -443,10 +528,37 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				}
 			});
 
-			// The MIME this node's attachment is KNOWN to have, from a HEAD probe. Null
-			// until one has answered — the probe is lazy (toolbar construction, uuid
-			// swap), so "null" means "not yet asked", never "not an image".
-			let knownMime: string | null = null;
+			/**
+			 * THE single activation path for this node — every route that opens the
+			 * image goes through here.
+			 *
+			 * The MIME gate used to live inside the click handler, which made it a
+			 * property of the MOUSE rather than of activation: a keyboard path that
+			 * opened on its own would have bypassed it entirely. One function owns
+			 * the gate so there is exactly one place a route can be added to and
+			 * exactly one place the gate can be strengthened (the viewer bus and its
+			 * fence land on this same seam in the tasks that follow).
+			 *
+			 * The gate itself is `canActivate()`, shared with the semantics pass so
+			 * an image can never be openable and un-announced, or announced and
+			 * dead.
+			 *
+			 * DR-16: the EXACT raster allowlist gates every open-the-viewer path,
+			 * not just the strip's — `image/svg+xml` can carry active content, and a
+			 * node being labelled image/* is not sufficient reason to hand it to a
+			 * viewer.
+			 *
+			 * Gated on what is POSITIVELY KNOWN, deliberately: this node's MIME comes
+			 * from a lazy HEAD probe, so at activation time it is often simply
+			 * unasked. Refusing on unknown would stop ordinary images opening — a
+			 * certain regression traded for a marginal risk — so an unprobed node
+			 * keeps today's behaviour and a probed non-allowlisted one is refused.
+			 */
+			function activate(): void {
+				if (!canActivate()) return;
+				const fullUrl = opts.getDownloadUrl(currentUuid, 'original');
+				openImageLightbox(fullUrl, currentAlt);
+			}
 
 			img.addEventListener('click', (event) => {
 				// In a contenteditable, ProseMirror handles selection on
@@ -458,23 +570,43 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				if (event.detail > 1) return;
 				event.preventDefault();
 				event.stopPropagation();
-				if (!currentUuid) return;
-				// DR-16: the EXACT raster allowlist gates every open-the-viewer
-				// path, not just the strip's — `image/svg+xml` can carry active
-				// content, and a node being labelled image/* is not sufficient
-				// reason to hand it to a viewer.
+				activate();
+			});
+
+			img.addEventListener('keydown', (event) => {
+				const isSpace = event.key === ' ' || event.key === 'Spacebar';
+				if (event.key !== 'Enter' && !isSpace) return;
+				// A modified key is a SHORTCUT, not an activation — the same guard
+				// the file chip next door carries (attachment-chip.ts). Without it
+				// this handler swallows Ctrl/Cmd+Enter, which is CommentEditor's
+				// submit binding (CommentEditor.svelte's handleKeyDown): focus an
+				// image in a comment, press Cmd+Enter, and the comment does not
+				// post — it opens a viewer instead.
+				if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+				// Space would otherwise scroll the page, and inside a
+				// contenteditable both keys would additionally be taken as text
+				// input against the selected atom.
+				event.preventDefault();
+				// UNCONDITIONAL, and before activate(): ItemTimeline delegates its
+				// own thumbnail click/keydown handlers across the whole entry list,
+				// and that list CONTAINS live CommentEditor instances whose bodies
+				// render this very NodeView — an `img[data-attachment-id]`, which is
+				// exactly the selector that delegation matches. Without this, one
+				// keypress opens two viewers.
 				//
-				// Gated on what is POSITIVELY KNOWN, deliberately: this node's
-				// MIME comes from a lazy HEAD probe, so at click time it is often
-				// simply unasked. Refusing on unknown would stop ordinary images
-				// opening — a certain regression traded for a marginal risk — so
-				// an unprobed node keeps today's behaviour and a probed
-				// non-allowlisted one is refused. Phase 3a's unified viewer
-				// threads `mime_type` onto the image list itself (DR-16), which
-				// is what turns this into a complete gate.
-				if (knownMime && !canOpenInViewer(knownMime)) return;
-				const fullUrl = opts.getDownloadUrl(currentUuid, 'original');
-				openImageLightbox(fullUrl, currentAlt);
+				// Note this is the ONLY activation the key produces: the browser
+				// synthesizes a click from Enter/Space for real <button>s, not for
+				// an <img role="button">, so there is no second fire to suppress.
+				event.stopPropagation();
+				// A HELD key repeats, and every repeat is another keydown — leaning
+				// on Enter would stack one viewer per repeat. "Fires exactly once"
+				// has to mean once per GESTURE, not once per event.
+				//
+				// Suppressed above rather than below: the repeat still belongs to
+				// this activation, so letting it escape would hand the surrounding
+				// surface a key the user only pressed once.
+				if (event.repeat) return;
+				activate();
 			});
 
 			// Build the toolbar lazily — only when the node is first
@@ -534,10 +666,16 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 							// load path acts on (DR-17), and this probe may
 							// well beat the <img> to it.
 							if (result.status === 'missing') latchMissing(probeUuid);
-							if (!toolbar) return;
 							// `transient` leaves the MIME unknown rather than
 							// wrong: gating falls back to supportedFormats.
 							knownMime = result.status === 'ok' ? result.mime : null;
+							// A resolved MIME can turn this image from
+							// viewable-by-assumption into refused, which has to take
+							// the button semantics back off. Applied BEFORE the
+							// toolbar bail-out: the semantics are a property of the
+							// image, not of whether a toolbar happens to exist.
+							applyImageSemantics();
+							if (!toolbar) return;
 							refresh();
 						}
 					);
@@ -731,6 +869,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// state stays correct across the swap.
 						knownMime = null;
 						refresh();
+						// The new uuid is unprobed, so the image is activatable
+						// again on the same "unknown ⇒ today's behaviour" rule the
+						// gate uses; a stale refusal must not outlive the image it
+						// was about.
+						applyImageSemantics();
 						const updateProbeWs = opts.address().workspaceSlug;
 						if (toolbar && newUuid && updateProbeWs) {
 							const probeUuid = newUuid;
@@ -742,8 +885,9 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 								if (destroyed) return;
 								if (currentUuid !== probeUuid) return;
 								if (result.status === 'missing') latchMissing(probeUuid);
-								if (!toolbar) return;
 								knownMime = result.status === 'ok' ? result.mime : null;
+								applyImageSemantics();
+								if (!toolbar) return;
 								refresh();
 							});
 						}
@@ -753,6 +897,10 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						currentAlt = newAlt;
 						if (newAlt) img.alt = newAlt;
 						else img.removeAttribute('alt');
+						// The accessible name is derived from alt, so it has to
+						// follow a peer's (or a local) alt edit rather than keep
+						// announcing the old text.
+						applyImageSemantics();
 					}
 
 					return true;
