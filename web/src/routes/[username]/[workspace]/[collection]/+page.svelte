@@ -52,6 +52,7 @@
 	import { resolvePaneReturnTarget } from '$lib/collections/paneFocus';
 	import { createPaneMintSettle, PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
 	import { pushEscapeHandler, runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
+	import { hasForeignEscapeOwner } from '$lib/a11y/viewerBackdrop';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
 
 	type ViewMode = 'list' | 'board' | 'table';
@@ -2231,7 +2232,15 @@
 			// EXCLUDED via `:not(.item-pane)` — its ESC is owned by its own escape-
 			// stack handler, and counting it here would swallow ESC-to-close / pop.
 			// The graph drawer isn't a dialog, so the chain is otherwise unblocked.
-			if (document.querySelector('dialog[open], [role="dialog"]:not(.item-pane)')) return;
+			//
+			// Now the SHARED helper (TASK-2429): the attachment viewer is a
+			// body-portaled `role="dialog"` whose ESC is also on the stack, so the
+			// same exclusion it applies to the pane applies to it — without that,
+			// this guard would return here and the viewer's Escape would be dead.
+			// The helper keeps the ARIA branch (BottomSheet / DockedSheet own their
+			// own ESC and are NOT on the stack) and narrows only the native branch
+			// to a feature-detected `dialog:modal`.
+			if (hasForeignEscapeOwner()) return;
 			// A HELD key fires many auto-repeat keydowns (`e.repeat === true`).
 			// Consumed here, BEFORE any layer-close/pop decision, so a hold can
 			// never cascade through the chain — only the initial physical press

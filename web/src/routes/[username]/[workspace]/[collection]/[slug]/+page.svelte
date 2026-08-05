@@ -13,6 +13,7 @@
 	import { inExemptSurface } from '$lib/collections/paneFocus';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
+	import { hasForeignEscapeOwner } from '$lib/a11y/viewerBackdrop';
 	import type { PaneTarget, ResolvedItemIdentity } from '$lib/types';
 
 	// Full-page pane HOST (PLAN-2154 Phase 2 / Architecture E, bullet 5 /
@@ -430,11 +431,12 @@
 		const target = e.target as HTMLElement | null;
 		// Text-editing targets own ESC locally — don't hijack into a layer-close.
 		if (isTextEntryTarget(target)) return;
-		// A native <dialog> / role="dialog" sheet owns its own ESC. The pane's own
-		// mobile overlay is `role="dialog"` too (TASK-2131) but is EXCLUDED via
-		// `:not(.item-pane)` — it's the layer this ESC is meant to close, handled
-		// through the shared escape stack, not a foreign modal to defer to.
-		if (document.querySelector('dialog[open], [role="dialog"]:not(.item-pane)')) return;
+		// A native modal <dialog> / role="dialog" sheet owns its own ESC. The
+		// pane's own mobile overlay is `role="dialog"` too (TASK-2131) and so is
+		// the body-portaled attachment viewer (TASK-2429), but BOTH are EXCLUDED
+		// by the shared helper — they are layers this ESC is meant to close,
+		// handled through the escape stack, not foreign modals to defer to.
+		if (hasForeignEscapeOwner()) return;
 		// A HELD key auto-repeats; only the initial physical press acts.
 		if (e.repeat) {
 			e.preventDefault();

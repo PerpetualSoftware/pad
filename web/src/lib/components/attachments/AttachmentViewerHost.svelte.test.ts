@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
+import { _resetEscapeStackForTests } from '$lib/stores/escapeStack';
 
 // TASK-2428. The viewer is exercised THROUGH its host, because the host is
 // where the two rules that matter live: an event is consumed only when both
@@ -71,12 +73,16 @@ function openEvent(over: Partial<ViewerEvent> = {}): ViewerEvent {
 }
 
 /**
- * The viewer is a fixed-position overlay rendered into its host's own mount
- * container, which is what lets a two-host test say WHICH host opened rather
- * than only how many viewers exist.
+ * Every open viewer in the document.
+ *
+ * DOM SCOPE CANNOT ANSWER "WHICH HOST" ANY MORE (TASK-2429): the viewer now
+ * portals to `<body>`, so both hosts' viewers are siblings there regardless of
+ * where their host is mounted. A two-host test proves ownership by DESTROYING
+ * one host and watching which viewer goes with it, plus the two-direction count
+ * below — not by querying inside a container.
  */
-function viewers(scope: ParentNode = document): HTMLElement[] {
-	return Array.from(scope.querySelectorAll<HTMLElement>('.lightbox-backdrop'));
+function viewers(): HTMLElement[] {
+	return Array.from(document.body.querySelectorAll<HTMLElement>('.lightbox-backdrop'));
 }
 
 function viewer(): HTMLElement | null {
@@ -116,6 +122,11 @@ describe('AttachmentViewerHost', () => {
 		while (mounted.length) unmount(mounted.pop()!);
 		target.remove();
 		document.querySelectorAll('.viewer-host-target').forEach((el) => el.remove());
+		// The viewer holds a backdrop lease and an ESC-stack registration
+		// (TASK-2429). Both are module-global, so a case that ends with one open
+		// would otherwise leak `inert` writes and a handler into the next test.
+		__resetViewerBackdropForTests();
+		_resetEscapeStackForTests();
 	});
 
 	/** Mounts a host in its OWN container, and hands that container back. */
@@ -148,24 +159,37 @@ describe('AttachmentViewerHost', () => {
 	});
 
 	it('ignores an event addressed to the OTHER host, with both mounted', () => {
-		const containerA = mountHost(propsA);
-		const containerB = mountHost(propsB);
+		mountHost(propsA);
+		const hostA = mounted[mounted.length - 1];
+		mountHost(propsB);
 
-		// Same item, other host token: exactly one viewer may open, and it must
-		// be the ADDRESSED one — counting viewers alone would pass if the wrong
-		// host opened. Matching on itemId alone would open two.
+		// DISTINGUISHABLE PAYLOADS, because counting alone cannot see a
+		// CROSS-SWAP — A answering host-2's event while B answers host-1's
+		// produces exactly the same counts as the correct routing. Each event
+		// carries its own image id, so the surviving viewer's `src` says which
+		// EVENT it came from, and destroying a known host says which HOST held it.
 		notifyViewerOpen(openEvent({ hostToken: 'host-2' }));
 		flushSync();
-
+		// Exactly one viewer may open. Matching on itemId alone would open two.
 		expect(viewers()).toHaveLength(1);
-		expect(viewers(containerB)).toHaveLength(1);
-		expect(viewers(containerA)).toHaveLength(0);
 
 		// ...and the reverse direction, so neither host is simply inert.
-		notifyViewerOpen(openEvent({ hostToken: 'host-1' }));
+		notifyViewerOpen(
+			openEvent({ hostToken: 'host-1', attachmentId: ATT_ID_2, images: [image({ id: ATT_ID_2 })] })
+		);
 		flushSync();
-		expect(viewers(containerA)).toHaveLength(1);
 		expect(viewers()).toHaveLength(2);
+
+		// Destroy host A: the viewer that goes with it must be the one opened by
+		// A's OWN token (the ATT_ID_2 event), leaving B's ATT_ID one behind. A
+		// cross-swap fails here — it would leave the ATT_ID_2 viewer standing.
+		unmount(mounted.splice(mounted.indexOf(hostA), 1)[0]);
+		flushSync();
+		const survivors = viewers();
+		expect(survivors).toHaveLength(1);
+		expect(
+			survivors[0].querySelector('.lightbox-image')?.getAttribute('src')
+		).toContain(ATT_ID);
 	});
 
 	it('ignores an event for a different item on its own token', () => {
@@ -380,34 +404,35 @@ describe('AttachmentViewerHost', () => {
 		// runs and its viewer stays on screen. Exercised open → mutate →
 		// teardown → RE-open → mutate, because a hazard that no-ops on its
 		// first write only shows once the state has actually moved.
-		const first = mountHost(propsA);
-		const neighbour = mountHost(propsA);
+		//
+		// Counted across the whole document rather than per container (the
+		// viewer portals to <body> now): both hosts answer the same address, so
+		// a stranded teardown shows up as a count that fails to reach 0.
+		mountHost(propsA);
+		mountHost(propsA);
 
 		notifyViewerOpen(openEvent());
 		flushSync();
-		expect(viewers(first)).toHaveLength(1);
-		expect(viewers(neighbour)).toHaveLength(1);
+		expect(viewers()).toHaveLength(2);
 
 		propsA.resourceGen = 2;
 		flushSync();
-		expect(viewers(first)).toHaveLength(0);
-		expect(viewers(neighbour)).toHaveLength(0);
+		expect(viewers()).toHaveLength(0);
 
 		// Re-open on the same (now current) resource and drive it again.
 		notifyViewerOpen(openEvent());
 		flushSync();
-		expect(viewers(neighbour)).toHaveLength(1);
+		expect(viewers()).toHaveLength(2);
 
 		propsA.itemId = 'item-b';
 		flushSync();
-		expect(viewers(first)).toHaveLength(0);
-		expect(viewers(neighbour)).toHaveLength(0);
+		expect(viewers()).toHaveLength(0);
 
-		// And the neighbour is still LIVE, not merely emptied: it answers the
-		// new address, which it could not do if its effects had been stranded.
+		// And both are still LIVE, not merely emptied: they answer the new
+		// address, which they could not do if their effects had been stranded.
 		notifyViewerOpen(openEvent({ itemId: 'item-b' }));
 		flushSync();
-		expect(viewers(neighbour)).toHaveLength(1);
+		expect(viewers()).toHaveLength(2);
 	});
 
 	// The bound-close invariant is NOT tested here: driving it needs the close

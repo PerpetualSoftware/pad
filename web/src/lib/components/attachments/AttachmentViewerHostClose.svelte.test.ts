@@ -129,26 +129,22 @@ describe('AttachmentViewerHost — bound close', () => {
 		expect(stub()).not.toBeNull();
 	});
 
-	it('returns focus to the invoker only on the bound close', () => {
+	it('threads the invoker down and never moves focus itself', () => {
+		// TASK-2429 moved the restore INTO the viewer. It has to happen after the
+		// backdrop lease is released — while the lease is held, the invoker is
+		// inside an `inert` body child and simply will not take focus — and the
+		// only code that runs at that moment is the viewer's own teardown. So the
+		// host's job is reduced to handing the invoker over, and its close handler
+		// must leave `document.activeElement` exactly where it was.
 		const invoker = target.appendChild(document.createElement('button'));
 		const other = target.appendChild(document.createElement('button'));
 		other.focus();
 
 		notifyViewerOpen(openEvent({ invoker }));
 		flushSync();
-		lightboxStubCalls[0].onClose();
-		flushSync();
-		expect(document.activeElement).toBe(invoker);
+		expect(lightboxStubCalls[0].invoker).toBe(invoker);
 
-		// A stale close returns nothing: it did not close anything, so moving
-		// the user's focus would be a jump out of whatever they are now in.
-		notifyViewerOpen(openEvent({ invoker }));
-		flushSync();
-		const staleClose = lightboxStubCalls[1].onClose;
-		notifyViewerOpen(openEvent({ attachmentId: ATT_ID_2, invoker: null }));
-		flushSync();
-		other.focus();
-		staleClose();
+		lightboxStubCalls[0].onClose();
 		flushSync();
 		expect(document.activeElement).toBe(other);
 	});

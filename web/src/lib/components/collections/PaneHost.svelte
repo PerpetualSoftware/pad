@@ -350,6 +350,9 @@
 		// menu). Recognised by role/tag/class so pane-owned popups that portal out
 		// to <body> are all covered — the shared `inExemptSurface` set (paneFocus.ts)
 		// is the SAME one the host's focus-follows classifier reuses (PLAN-2179).
+		// The attachment viewer (TASK-2429) is one of those portaled dialogs and is
+		// exempt for the same reason: it runs its own trap, so this one must not
+		// pull focus back out of it.
 		// (Focus already inside `.item-pane` is handled by the `region.contains`
 		// check at each call site.)
 		function onTrapKeydown(e: KeyboardEvent) {

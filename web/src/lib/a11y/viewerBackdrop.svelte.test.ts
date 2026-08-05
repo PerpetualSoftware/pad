@@ -3,6 +3,8 @@ import {
 	acquire,
 	isBlockedByModal,
 	isViewerFrontmost,
+	hasForeignEscapeOwner,
+	VIEWER_ROOT_CLASS,
 	__resetViewerBackdropForTests,
 } from './viewerBackdrop';
 
@@ -699,5 +701,118 @@ describe('isBlockedByModal', () => {
 			// ...and against any `[open]` fallback: the open dialog must not count.
 			expect(isBlockedByModal(dialog.querySelector('#d'))).toBe(false);
 		});
+	});
+});
+
+describe('hasForeignEscapeOwner', () => {
+	// The shared form of the existence check the two route ESC guards used to
+	// hand-roll (TASK-2429). It answers a NARROWER question than
+	// `isBlockedByModal`: not "is something in front of me" but "does a surface
+	// that owns Escape ITSELF exist" — so a driver of the escape stack knows
+	// whether to stand down entirely.
+
+	/** The shape a portaled viewer root has, including the marker class. */
+	function viewerRoot(): HTMLElement {
+		const el = bodyChild('viewer');
+		el.setAttribute('role', 'dialog');
+		el.classList.add(VIEWER_ROOT_CLASS);
+		return el;
+	}
+
+	/**
+	 * Emulate an engine where `dialog:modal` IS supported (jsdom throws on it —
+	 * probed, not assumed), with `modals` as the open modal dialogs. Only the
+	 * combined selector the module builds is intercepted.
+	 */
+	function mockModalSupport(modals: Element[]): void {
+		const real = document.querySelector.bind(document);
+		vi.spyOn(document, 'querySelector').mockImplementation((selector: string) => {
+			if (!selector.startsWith('dialog:modal')) return real(selector);
+			const rest = selector.slice(selector.indexOf(',') + 1).trim();
+			return modals[0] ?? real(rest);
+		});
+	}
+
+	it('is false with nothing open, so today’s guards are unchanged', () => {
+		bodyChild('app', '<button id="a">a</button>');
+		expect(hasForeignEscapeOwner()).toBe(false);
+	});
+
+	it('is true for an ARIA sheet — the shipped BottomSheet / DockedSheet', () => {
+		// The regression fence for the branch that must NOT be dropped: both are
+		// `role="dialog"` Escape owners with no escape-stack registration, so a
+		// guard that stopped seeing them would let one press close two layers.
+		bodyChild('sheet').setAttribute('role', 'dialog');
+		expect(hasForeignEscapeOwner()).toBe(true);
+	});
+
+	it('is false for the pane’s own mobile overlay', () => {
+		const pane = bodyChild('pane');
+		pane.setAttribute('role', 'dialog');
+		pane.classList.add('item-pane');
+		expect(hasForeignEscapeOwner()).toBe(false);
+	});
+
+	it('is false for the attachment viewer: its Escape is on the stack', () => {
+		// The whole reason this helper exists. A guard that treated the viewer as
+		// a foreign modal would return before running the stack, and Escape would
+		// close nothing at all.
+		viewerRoot();
+		expect(hasForeignEscapeOwner()).toBe(false);
+	});
+
+	it('still sees a sheet opened WHILE a viewer is up', () => {
+		// The exclusion is targeted at the viewer, not a blanket "a viewer is
+		// open, so nothing else counts".
+		viewerRoot();
+		bodyChild('sheet').setAttribute('role', 'dialog');
+		expect(hasForeignEscapeOwner()).toBe(true);
+	});
+
+	it('falls back to `dialog[open]` where `:modal` is unsupported', () => {
+		// jsdom is that engine (it throws on the pseudo-class), so this is the
+		// path every other test here runs on. The fallback is deliberately the
+		// PRE-TASK-2429 selector: where the narrower question can't be asked, the
+		// answer is exactly today's behaviour, never something wider.
+		const dialog = openModal();
+		dialog.setAttribute('open', '');
+		expect(hasForeignEscapeOwner()).toBe(true);
+	});
+
+	it('does not count a CLOSED native <dialog> in the fallback path', () => {
+		// `Modal.svelte` keeps its native <dialog> mounted at all times and drives
+		// it with showModal()/close(), so a fallback that dropped the `[open]`
+		// qualifier would report a foreign Escape owner on every page that merely
+		// HAS a Modal — swallowing the viewer's Escape everywhere.
+		openModal();
+		expect(hasForeignEscapeOwner()).toBe(false);
+	});
+
+	it('asks for `dialog:modal` before falling back', () => {
+		// Guards against an implementation that simply hard-codes `[open]`.
+		const seen: string[] = [];
+		const real = document.querySelector.bind(document);
+		vi.spyOn(document, 'querySelector').mockImplementation((selector: string) => {
+			seen.push(selector);
+			if (selector.startsWith('dialog:modal')) throw new SyntaxError('unsupported');
+			return real(selector);
+		});
+		hasForeignEscapeOwner();
+		expect(seen.some((s) => s.startsWith('dialog:modal'))).toBe(true);
+		expect(seen.some((s) => s.includes('dialog[open]'))).toBe(true);
+	});
+
+	it('on a supporting engine, an open NON-modal <dialog> does not count', () => {
+		// The one behaviour change from the hand-rolled `dialog[open]` string: a
+		// `show()` / declarative-open dialog never owned Escape, and
+		// `Modal.svelte` keeps a native <dialog> mounted at all times.
+		const dialog = openModal();
+		dialog.setAttribute('open', '');
+		mockModalSupport([]);
+		expect(hasForeignEscapeOwner()).toBe(false);
+
+		// ...while a real `showModal()` one does.
+		mockModalSupport([dialog]);
+		expect(hasForeignEscapeOwner()).toBe(true);
 	});
 });

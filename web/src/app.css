@@ -854,7 +854,12 @@ dialog.attachment-image-lightbox .attachment-image-lightbox-close:hover {
 	   is covered by the `dialog[open]` selector above.
 	   `:not(.item-pane)` keeps the detail pane printable: on mobile the pane
 	   carries role="dialog" (TASK-2131) but IS the content being printed, not a
-	   transient overlay to strip. */
+	   transient overlay to strip.
+	   The body-portaled attachment viewer (`.lightbox-backdrop.attachment-viewer`,
+	   TASK-2429) DOES match here, and should: it is a transient full-screen
+	   overlay, and printing with one open must print the item underneath, not a
+	   black rectangle. Audited deliberately — a JS-only grep for `role="dialog"`
+	   consumers misses this rule entirely. */
 	[role="dialog"]:not(.item-pane),
 	[role="tooltip"],
 	[role="menu"] {

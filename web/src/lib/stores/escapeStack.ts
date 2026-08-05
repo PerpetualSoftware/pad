@@ -30,6 +30,13 @@ export const ESCAPE_PRIORITY = {
 	// Dropdown menus are the innermost layer — ESC closes an open menu
 	// before it collapses the pane/drawer under it (PLAN-2290 Phase 2).
 	menu: 40,
+	// The body-portaled attachment viewer (PLAN-2392 phase 3a / TASK-2429). It
+	// sits ABOVE the menu layer because it is a real modal: while one is open
+	// the rest of the app — menus included — is inert behind it, so nothing
+	// lower can have a live layer for ESC to reach. Several viewers can be
+	// mounted at once (the strip's and a NodeView's); each declines unless it is
+	// the FRONTMOST backdrop lease, so one press closes exactly the top one.
+	viewer: 50,
 } as const;
 
 interface Entry {

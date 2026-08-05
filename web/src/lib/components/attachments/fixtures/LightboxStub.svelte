@@ -12,15 +12,16 @@
 		images: { id: string }[];
 		index?: number;
 		wsSlug: string;
+		invoker?: HTMLElement | null;
 		onClose: () => void;
 	}
 
-	let { images, index = 0, wsSlug, onClose }: Props = $props();
+	let { images, index = 0, wsSlug, invoker = null, onClose }: Props = $props();
 
 	// Captured ONCE at mount, `untrack`ed like the real component's index seed:
 	// the host remounts per open, so a recorded call belongs to exactly one
 	// viewer instance — which is the whole point of the recording.
-	const call: LightboxStubCall = untrack(() => ({ images, index, wsSlug, onClose }));
+	const call: LightboxStubCall = untrack(() => ({ images, index, wsSlug, invoker, onClose }));
 	lightboxStubCalls.push(call);
 </script>
 

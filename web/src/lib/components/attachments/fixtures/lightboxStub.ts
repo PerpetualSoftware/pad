@@ -10,6 +10,8 @@ export interface LightboxStubCall {
 	images: { id: string }[];
 	index: number;
 	wsSlug: string;
+	/** Threaded down by the host since TASK-2429; the viewer owns the restore. */
+	invoker: HTMLElement | null;
 	onClose: () => void;
 }
 

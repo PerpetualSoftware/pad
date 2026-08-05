@@ -342,6 +342,58 @@ export function isBlockedByModal(owner?: Element | null): boolean {
 	return false;
 }
 
+/**
+ * Class carried by every body-portaled VIEWER root (TASK-2429). The viewer is a
+ * `role="dialog"`, so without a marker it is indistinguishable from the foreign
+ * modals the app's ESC guards stand down for — and standing down for it would
+ * leave Escape with NO owner, since the viewer's own Escape lives on
+ * `escapeStack`. Exported (rather than typed twice) so the markup and the
+ * selector below cannot drift apart.
+ */
+export const VIEWER_ROOT_CLASS = 'attachment-viewer';
+
+/**
+ * Is a modal surface open that owns Escape ITSELF, so an escape-stack driver
+ * must stand down entirely?
+ *
+ * This is the shared form of the existence check the two route keydown handlers
+ * hand-rolled as `document.querySelector('dialog[open], [role="dialog"]:not(.item-pane)')`.
+ * Two deliberate differences from that string:
+ *
+ *  • The NATIVE branch is feature-detected `dialog:modal`, not `dialog[open]`.
+ *    A non-modal `show()` / declarative `<dialog open>` never owned Escape, and
+ *    `Modal.svelte` is always mounted — so `[open]` was over-broad. Where the
+ *    pseudo-class is unsupported (jsdom, legacy engines) it falls back to
+ *    `dialog[open]`, i.e. exactly today's behaviour, never to something wider.
+ *  • The ARIA branch additionally excludes {@link VIEWER_ROOT_CLASS}. It is
+ *    otherwise UNCHANGED and deliberately kept: `BottomSheet` and `DockedSheet`
+ *    are shipped `role="dialog"` Escape owners with no stack registration, and
+ *    dropping the branch would regress both. `.item-pane` stays excluded for
+ *    the reason it always was (TASK-2131) — it is on the stack too.
+ *
+ * Existence-based, not target-based, for the reason recorded at the call sites:
+ * a sheet that doesn't move focus into itself leaves `document.activeElement`
+ * on the trigger underneath, so a `closest()` test would miss it.
+ *
+ * TASK-2430 folds this into {@link isBlockedByModal}'s three-way precedence
+ * across all seven global Escape/key owners; 3a needs only the two route
+ * guards to stop swallowing the viewer's Escape.
+ */
+export function hasForeignEscapeOwner(): boolean {
+	if (!hasDocument()) return false;
+	const aria = `[role="dialog"]:not(.item-pane):not(.${VIEWER_ROOT_CLASS})`;
+	if (modalSelectorSupported !== false) {
+		try {
+			const found = !!document.querySelector(`dialog:modal, ${aria}`);
+			modalSelectorSupported = true;
+			return found;
+		} catch {
+			modalSelectorSupported = false;
+		}
+	}
+	return !!document.querySelector(`dialog[open], ${aria}`);
+}
+
 /** Test seam: drop all leases and observers without running focus handoff. */
 export function __resetViewerBackdropForTests(): void {
 	stack.length = 0;

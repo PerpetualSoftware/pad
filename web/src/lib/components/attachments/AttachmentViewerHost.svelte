@@ -81,23 +81,26 @@
 		return () => {
 			if (target && request !== target) return;
 			request = null;
-			// Focus returns to the element that opened the viewer — the only use
-			// this host makes of `invoker`. `Lightbox` manages no focus of its
-			// own, so without this a close leaves focus on <body> and the
-			// keyboard user restarts from the top of the document.
+			// FOCUS RESTORE IS NOT DONE HERE (TASK-2429). It used to be — this
+			// host focused `target.invoker` itself, because `Lightbox` managed no
+			// focus at all. Now the viewer holds a backdrop lease that makes every
+			// other body child `inert`, and the invoker is inside one of them: an
+			// inert element is NOT FOCUSABLE, so a focus() from here — which runs
+			// while the viewer is still mounted and the lease still held — would
+			// silently do nothing and leave the keyboard user on <body>.
 			//
-			// `isConnected` because the opener can be gone by now: an editor
-			// NodeView is re-rendered on any document change, and focusing a
-			// detached node silently does nothing on some engines and moves
-			// focus to <body> on others.
-			const invoker = target?.invoker;
-			if (invoker?.isConnected) invoker.focus();
-			// Deliberately only on a USER close. The lifecycle teardown below
-			// does not return focus: it fires because the item under the viewer
-			// is being replaced, so the invoker is part of a subtree on its way
-			// out — putting focus back into it would land the user inside
-			// content that is about to disappear. Where focus goes after a
-			// switch is the pane's business, not the viewer's.
+			// The only correct moment is AFTER the lease is released, which is
+			// inside the viewer's own teardown. So the invoker is threaded down as
+			// a prop instead (see the markup below) and `Lightbox` owns the whole
+			// restore, including the still-connected / still-focusable check that
+			// an editor NodeView re-render makes necessary.
+			//
+			// This does mean the restore now also runs on the LIFECYCLE teardown
+			// (an item switch), which this host previously refused on the grounds
+			// that the invoker is in a subtree on its way out. That refusal is no
+			// longer worth a special case: the viewer verifies the invoker still
+			// takes focus, and where it doesn't, focus lands on <body> — which is
+			// exactly where the old no-op left it.
 		};
 	}
 
@@ -156,7 +159,9 @@
 	through `untrack`, so prop-sync does not work — opening a second image while
 	the first viewer is up must produce a NEW component instance.
 
-	`wsSlug` comes off the request, per the note above.
+	`wsSlug` comes off the request, per the note above. So does `invoker`: the
+	viewer restores focus itself, after releasing the inert lease — see
+	`closeRequest` for why this host must not do it.
 -->
 {#key request}
 	{#if request}
@@ -164,6 +169,7 @@
 			images={[...request.images]}
 			index={request.index}
 			wsSlug={request.workspaceSlug}
+			invoker={request.invoker}
 			onClose={closeRequest(request)}
 		/>
 	{/if}
