@@ -27,6 +27,7 @@
 	import { AttachmentImage } from './editor/attachment-image';
 	import { AttachmentChip } from './editor/attachment-chip';
 	import { AttachmentUpload } from './editor/attachment-upload';
+	import type { AttachmentHostAddress } from '$lib/attachments/hostAddress';
 
 	interface Props {
 		/** Initial markdown body. Parsed as markdown on mount. */
@@ -42,6 +43,17 @@
 		 * it uploads fall back to the workspace editor-role gate.
 		 */
 		itemId?: string;
+		/**
+		 * Identity of the `ItemDetail` mount that owns this composer
+		 * (PLAN-2392 DR-8 / TASK-2421). Threaded down from ItemDetail through
+		 * ItemTimeline (and TimelineCommentCard for edits/replies) so an
+		 * attachment chip in a comment body can address the ONE host that
+		 * owns it — a master and a peeked pane are both mounted, and `itemId`
+		 * alone would let both consume the same event. Empty (the default,
+		 * for composers mounted outside an ItemDetail) disables addressing
+		 * rather than broadcasting.
+		 */
+		hostToken?: string;
 		/** Label for the submit button (e.g. "Comment", "Reply", "Save"). */
 		submitLabel?: string;
 		/** External busy flag (network in flight in the host). */
@@ -62,6 +74,7 @@
 		placeholder = 'Write a comment…',
 		wsSlug,
 		itemId,
+		hostToken = '',
 		submitLabel = 'Comment',
 		submitting = false,
 		autofocus = false,
@@ -109,6 +122,22 @@
 		}
 	}
 
+	/**
+	 * Reads the CURRENT host address at emit time (PLAN-2392 DR-8).
+	 *
+	 * This composer is reused across a no-{#key} item switch — the same reason
+	 * `doSubmit` above captures its item before awaiting — so a value baked
+	 * into the extension config at mount would address the PREVIOUS item after
+	 * a switch, and the host would correctly ignore the event. Tiptap's
+	 * `options` getter returns a fresh spread per access, so there is no
+	 * writing the new value in afterwards either (see hostAddress.ts).
+	 */
+	const readHostAddress = (): AttachmentHostAddress => ({
+		workspaceSlug: wsSlug,
+		itemId: itemId ?? '',
+		hostToken
+	});
+
 	const attachmentUrl = (uuid: string, variant?: 'thumb-sm' | 'thumb-md' | 'original') =>
 		wsSlug ? api.attachments.downloadUrl(wsSlug, uuid, variant) : `pad-attachment:${uuid}`;
 
@@ -127,13 +156,19 @@
 				AttachmentImage.configure({
 					getDownloadUrl: attachmentUrl,
 					workspaceSlug: wsSlug,
+					// Panel / viewer addressing (PLAN-2392 DR-8).
+					address: readHostAddress,
 					// Rotate/crop stays disabled in comments — keep it lean.
 					supportedFormats: [] as string[],
 					transform: async () => {
 						throw new Error('Image transforms are not available in comments.');
 					}
 				}),
-				AttachmentChip.configure({ getDownloadUrl: attachmentUrl, workspaceSlug: wsSlug }),
+				AttachmentChip.configure({
+					getDownloadUrl: attachmentUrl,
+					workspaceSlug: wsSlug,
+					address: readHostAddress
+				}),
 				AttachmentUpload.configure({
 					// Wrap upload so the host can track in-flight uploads and gate
 					// submit — the plugin doesn't expose its placeholder count.

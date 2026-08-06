@@ -23,7 +23,23 @@
  * (cached module-globally) to read Content-Type and Content-Length from
  * the existing GET handler — no new API endpoint needed. The fetched
  * MIME upgrades the icon from the filename-extension guess to the
- * canonical category icon, and the size is rendered alongside the name.
+ * canonical file-type icon, and the size is rendered alongside the name.
+ *
+ * Activation (TASK-2424 / PLAN-2392 DR-2): clicking — or pressing Enter or
+ * Space on — a live chip opens the shared attachment OPTIONS PANEL, the same
+ * one the item attachment strip's file tiles open, rather than the old
+ * `window.open` of the download URL. The NodeView can't mount a Svelte
+ * component, so it signals the owning `ItemDetail` host through the events
+ * bus, stamped with the host address its options carry. `renderHTML` below is
+ * unchanged: it is the non-NodeView / clipboard shape, where an `<a download>`
+ * is still the honest representation.
+ *
+ * Icon and byte formatting are the shared attachment helpers'
+ * (`$lib/attachments/display` + `$lib/attachments/icons`) as of TASK-2417 —
+ * this file used to carry its own `iconForMime` / `iconForFilename` /
+ * `formatBytes`. The one behavior that stayed local is hiding an unknown or
+ * zero size: the shared formatter renders "0 B", and per PLAN-2392 DR-3b the
+ * call site keeps that conditional rather than the helper growing a mode.
  */
 
 import { Node, mergeAttributes } from '@tiptap/core';
@@ -33,7 +49,21 @@ import {
 	type AttachmentVariant,
 	fetchAttachmentMetadata
 } from './attachment-metadata';
-import { registerAttachmentDeletionListener } from '$lib/attachments/events';
+import {
+	notifyAttachmentPanelOpen,
+	registerAttachmentDeletionListener
+} from '$lib/attachments/events';
+import {
+	type AttachmentHostAddressReader,
+	readUnaddressed
+} from '$lib/attachments/hostAddress';
+import {
+	describeAttachmentType,
+	displayFilename,
+	formatBytes,
+	iconForAttachment,
+} from '$lib/attachments/display';
+import { iconSvg } from '$lib/attachments/icons/index';
 
 const PAD_ATTACHMENT_PREFIX = 'pad-attachment:';
 
@@ -45,8 +75,22 @@ export interface AttachmentChipOptions {
 	HTMLAttributes: Record<string, unknown>;
 	/** Build the download URL — usually `api.attachments.downloadUrl` from the editor's mount context. */
 	getDownloadUrl: AttachmentUrlBuilder;
-	/** Workspace slug used by the metadata HEAD fetcher. Empty disables the fetch. */
+	/**
+	 * Workspace slug for anything resolved at CONFIGURE time.
+	 *
+	 * NOT the metadata probe's workspace — that reads `address().workspaceSlug`,
+	 * because an editor can outlive a pane workspace switch and this value would
+	 * key the cache under the previous one. Kept for callers that legitimately
+	 * want the mount-time value; a probe is not one of them.
+	 */
 	workspaceSlug: string;
+	/**
+	 * Reads the host address (item + owning `ItemDetail` mount) to stamp on
+	 * open-panel events (PLAN-2392 DR-8). A reader rather than two strings
+	 * because one host is reused across an item switch and Tiptap options
+	 * cannot be written after configure — see `$lib/attachments/hostAddress`.
+	 */
+	address: AttachmentHostAddressReader;
 }
 
 declare module '@tiptap/core' {
@@ -59,89 +103,6 @@ declare module '@tiptap/core' {
 			setAttachmentChip: (options: { uuid: string; filename: string }) => ReturnType;
 		};
 	}
-}
-
-/**
- * Map a MIME type to a category icon. Mirrors the server-side category
- * enum in `internal/attachments/mime.go`. When MIME is unknown (HEAD
- * failed or hasn't returned yet), falls back to a filename-extension
- * heuristic — same buckets, same icons, just a coarser source.
- */
-function iconForMime(mime: string): string {
-	const m = mime.toLowerCase();
-	if (m.startsWith('image/')) return '🖼️';
-	if (m.startsWith('video/')) return '🎥';
-	if (m.startsWith('audio/')) return '🎵';
-	if (m === 'application/pdf') return '📑';
-	if (
-		m === 'application/zip' ||
-		m === 'application/x-tar' ||
-		m === 'application/gzip' ||
-		m === 'application/x-bzip2' ||
-		m === 'application/x-7z-compressed'
-	)
-		return '🗜️';
-	if (
-		m === 'application/msword' ||
-		m === 'application/rtf' ||
-		m.includes('wordprocessingml') ||
-		m.includes('opendocument.text')
-	)
-		return '📄';
-	if (
-		m === 'application/vnd.ms-excel' ||
-		m.includes('spreadsheetml') ||
-		m.includes('opendocument.spreadsheet') ||
-		m === 'text/csv' ||
-		m === 'text/tab-separated-values'
-	)
-		return '📊';
-	if (
-		m === 'application/vnd.ms-powerpoint' ||
-		m.includes('presentationml') ||
-		m.includes('opendocument.presentation')
-	)
-		return '📽️';
-	if (
-		m === 'text/plain' ||
-		m === 'text/markdown' ||
-		m === 'application/json' ||
-		m === 'application/xml' ||
-		m === 'text/xml' ||
-		m === 'application/yaml' ||
-		m === 'text/yaml' ||
-		m === 'application/toml'
-	)
-		return '📝';
-	return '';
-}
-
-function iconForFilename(filename: string): string {
-	const ext = filename.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? '';
-	if (['pdf'].includes(ext)) return '📑';
-	if (['zip', 'tar', 'gz', '7z', 'bz2'].includes(ext)) return '🗜️';
-	if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) return '📄';
-	if (['xls', 'xlsx', 'ods', 'csv', 'tsv'].includes(ext)) return '📊';
-	if (['ppt', 'pptx', 'odp'].includes(ext)) return '📽️';
-	if (['mp4', 'webm', 'mov', 'mkv', 'avi'].includes(ext)) return '🎥';
-	if (['mp3', 'wav', 'ogg', 'flac', 'aac', 'm4a'].includes(ext)) return '🎵';
-	if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'heic', 'heif'].includes(ext)) return '🖼️';
-	if (['txt', 'md', 'json', 'yaml', 'yml', 'xml', 'toml', 'html', 'js', 'ts'].includes(ext)) return '📝';
-	return '📎';
-}
-
-/** Format a byte count as a human-readable string ("832 B", "1.2 MB", "5 GB"). */
-function formatBytes(n: number): string {
-	if (!Number.isFinite(n) || n <= 0) return '';
-	if (n < 1024) return `${n} B`;
-	const units = ['KB', 'MB', 'GB', 'TB'];
-	let val = n / 1024;
-	let i = 0;
-	while (val >= 1024 && i < units.length - 1) {
-		val /= 1024;
-		i++;
-	}
-	return `${val < 10 ? val.toFixed(1) : Math.round(val).toString()} ${units[i]}`;
 }
 
 export const AttachmentChip = Node.create<AttachmentChipOptions>({
@@ -158,6 +119,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			HTMLAttributes: {},
 			getDownloadUrl: (uuid: string) => `${PAD_ATTACHMENT_PREFIX}${uuid}`,
 			workspaceSlug: '',
+			address: readUnaddressed,
 		};
 	},
 
@@ -227,7 +189,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				target: '_blank',
 				rel: 'noopener noreferrer',
 			}),
-			filename || 'attachment',
+			displayFilename(filename),
 		];
 	},
 
@@ -241,11 +203,28 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			let currentUuid = (node.attrs.uuid as string | null) ?? '';
 			let currentFilename = (node.attrs.filename as string | null) ?? '';
 			let currentMime: string | null = null;
+			// Kept alongside the rendered text because the open-panel event
+			// carries the three metadata fields the panel displays (DR-2), and
+			// the accessible name below names the size too. Null until the HEAD
+			// probe resolves — legitimately so: the panel completes what the
+			// chip doesn't know rather than waiting for it.
+			let currentSize: number | null = null;
 
-			const wrapper = document.createElement('a');
+			// A BUTTON, not an anchor (DR-12; orchestrator review of TASK-2424).
+			// A live chip opens the options panel — it does not navigate — so an
+			// anchor was announcing it as a link and, worse, left the URL
+			// reachable by paths the click handler never sees: middle-click and
+			// aux-click would still open or download it, straight past the
+			// affordance that exists to stop a tap doing that. Button semantics
+			// remove the bypass by construction rather than intercepting it, and
+			// match the strip's file tile, which is the same control.
+			//
+			// `renderHTML` stays an `<a download>`: that is the clipboard /
+			// non-NodeView shape, where a real link IS the honest representation
+			// and there is no panel to open.
+			const wrapper = document.createElement('button');
+			wrapper.type = 'button';
 			wrapper.className = 'file-chip';
-			wrapper.target = '_blank';
-			wrapper.rel = 'noopener noreferrer';
 			wrapper.contentEditable = 'false';
 
 			const iconEl = document.createElement('span');
@@ -261,41 +240,69 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 
 			wrapper.append(iconEl, nameEl, sizeEl);
 
+			// The id is the chip's identity for the deletion bus and for the
+			// panel event; the download URL is the PANEL's business now, so the
+			// element carries no href to be aux-clicked.
 			const refreshHref = (): void => {
 				if (currentUuid) {
-					wrapper.href = this.options.getDownloadUrl(currentUuid);
 					wrapper.setAttribute('data-attachment-id', currentUuid);
 				} else {
-					wrapper.removeAttribute('href');
 					wrapper.removeAttribute('data-attachment-id');
 				}
 			};
 
+			// `data-filename` only: a `download` attribute means nothing on a
+			// button, and the actual download is the panel's Download action,
+			// which sets it on a real anchor (DR-16).
 			const refreshFilenameDom = (): void => {
 				if (currentFilename) {
 					wrapper.setAttribute('data-filename', currentFilename);
-					wrapper.download = currentFilename;
 				} else {
 					wrapper.removeAttribute('data-filename');
-					wrapper.removeAttribute('download');
 				}
-				nameEl.textContent = currentFilename || 'attachment';
+				nameEl.textContent = displayFilename(currentFilename);
 			};
 
-			// Icon resolution mirrors the original logic: prefer the MIME
-			// category icon when HEAD has resolved AND it produced a
-			// non-empty result (iconForMime returns '' for unknown MIME).
-			// Otherwise fall back to the filename-extension heuristic so
-			// the chip is never left iconless.
+			// Icon resolution is the shared mapper's (TASK-2417): MIME first,
+			// filename-extension second, generic file last, so the chip is
+			// never left iconless and never shows a "❓". `currentMime` is
+			// null until the HEAD probe resolves, which is exactly the
+			// filename-fallback case the mapper's second argument exists for.
+			// innerHTML (not textContent) because the icons are SVG now;
+			// iconSvg() interpolates only repo constants.
 			const refreshIcon = (): void => {
-				if (currentMime) {
-					const refined = iconForMime(currentMime);
-					if (refined) {
-						iconEl.textContent = refined;
-						return;
-					}
+				iconEl.innerHTML = iconSvg(iconForAttachment(currentMime, currentFilename));
+			};
+
+			/**
+			 * Accessible name: filename, type AND the action (PLAN-2392 DR-12).
+			 *
+			 * Activating a chip opens the options panel rather than the file, and
+			 * nothing else on the chip says so — the icon is aria-hidden and the
+			 * visible text is just the name. Recomputed whenever any of the three
+			 * inputs changes, since the size and the MIME arrive asynchronously.
+			 *
+			 * Size is included only once known: an unresolved probe should read
+			 * as "Options for notes.txt, Text", not as a confident "0 B".
+			 *
+			 * Deleted-state aware, and deliberately so rather than the dead
+			 * wording living only in `markDeleted`: a filename update on an
+			 * already-dead chip calls back through here, and a name that went
+			 * back to promising options for a row that is gone would be worse
+			 * than no name at all. (`deleted` is declared below and only ever
+			 * read after it is initialised.)
+			 */
+			const refreshAccessibleName = (): void => {
+				const name = displayFilename(currentFilename);
+				if (deleted) {
+					wrapper.setAttribute('aria-label', `${name} — this attachment has been deleted`);
+					return;
 				}
-				iconEl.textContent = iconForFilename(currentFilename);
+				const parts = [name, describeAttachmentType(currentMime, currentFilename)];
+				if (Number.isFinite(currentSize) && (currentSize as number) > 0) {
+					parts.push(formatBytes(currentSize as number));
+				}
+				wrapper.setAttribute('aria-label', `Options for ${parts.join(', ')}`);
 			};
 
 			/**
@@ -305,17 +312,43 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			 * new tab (Codex round 13). The strip broadcasts deletions, so mark
 			 * the chip dead in place instead: same .attachment-missing
 			 * treatment the markdown renderer uses for a missing reference.
+			 *
+			 * The dead state is carried by the .attachment-missing CLASS, not by
+			 * the icon (TASK-2417). It used to swap the glyph to a paperclip,
+			 * which the SVG set can't reproduce without inventing a "missing"
+			 * icon that is a state rather than a format family — and a later
+			 * filename update calls refreshIcon() and would quietly overwrite it
+			 * anyway. app.css styles .file-chip.attachment-missing instead, so
+			 * type and state are independent and neither clobbers the other.
 			 */
 			let deleted = false;
 			const markDeleted = (): void => {
 				deleted = true;
 				wrapper.classList.add('attachment-missing');
-				wrapper.removeAttribute('href');
-				wrapper.removeAttribute('download');
+				// `disabled` is what makes the dead chip genuinely INERT (DR-12),
+				// not merely unclickable: a disabled button is unfocusable and
+				// receives no click or keydown at all, so a keyboard user is
+				// never handed a focus stop whose Enter and Space do nothing.
+				// `tabindex` is deliberately never set for the same reason.
+				//
+				// Blur it explicitly first: a chip the user is focused on RIGHT
+				// NOW (they tabbed to it, then another surface deleted the row)
+				// stays focused in some browsers even once disabled, which would
+				// strand focus on an element that no longer responds.
+				if (typeof document !== 'undefined' && document.activeElement === wrapper) {
+					wrapper.blur();
+				}
+				wrapper.disabled = true;
 				wrapper.title = 'This attachment has been deleted';
+				currentSize = null;
 				sizeEl.textContent = '';
-				iconEl.textContent = '📎';
+				refreshAccessibleName();
 			};
+
+			// Set by destroy(). A HEAD probe outlives the NodeView that started
+			// it, and writing to detached DOM after teardown is at best wasted
+			// work — same fence shape as the `forUuid` check below.
+			let destroyed = false;
 
 			const disposeDeletionListener = registerAttachmentDeletionListener((deletedUuid) => {
 				if (deletedUuid === currentUuid) markDeleted();
@@ -324,35 +357,100 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			refreshHref();
 			refreshFilenameDom();
 			refreshIcon();
+			refreshAccessibleName();
 
-			// Explicit click handler → window.open. Editor.svelte installs a
-			// global anchor-click suppressor that calls preventDefault on
-			// every <a> inside the editor (so plain text links don't navigate
-			// in edit mode); without this handler the chip's anchor
-			// navigation would also be eaten and clicking the chip would
-			// silently do nothing. Mirrors the pattern AttachmentImage uses
-			// for its lightbox click. Reads currentUuid (mutable) so a peer
-			// Yjs op swapping the chip's target is honoured at click time.
+			/**
+			 * Open the options panel for this chip (PLAN-2392 DR-2 / TASK-2424).
+			 *
+			 * Replaces the old `window.open` of the download URL: a chip and a
+			 * strip tile are the same attachment and now behave identically —
+			 * metadata first, Download as a deliberate choice.
+			 *
+			 * The address is read AT EMIT TIME (`options.address()`), never
+			 * cached: the comment composer is reused across an item switch, so a
+			 * value captured at configure() would address the previous item's
+			 * host. Tiptap's `options` is a getter returning a fresh spread, so
+			 * pushing a new value onto it after configure() is a silent no-op —
+			 * hence a reader. See `$lib/attachments/hostAddress`.
+			 *
+			 * An UNADDRESSED editor (no host token — no `ItemDetail` above it)
+			 * emits nothing: `notifyAttachmentPanelOpen` drops it rather than
+			 * broadcasting to every mounted host, which is DR-8's whole point.
+			 * Every live mount site threads the address; a surface that doesn't
+			 * has no panel to open.
+			 *
+			 * Reads `currentUuid` (mutable) so a peer Yjs op swapping the chip's
+			 * target is honoured at activation time.
+			 */
+			const openPanel = (): void => {
+				if (!currentUuid || deleted) return;
+				const address = this.options.address();
+				notifyAttachmentPanelOpen({
+					attachmentId: currentUuid,
+					itemId: address.itemId,
+					hostToken: address.hostToken,
+					anchor: wrapper,
+					filename: currentFilename || null,
+					mime_type: currentMime,
+					size_bytes: currentSize,
+				});
+			};
+
+			// Explicit click handler. Editor.svelte installs a global
+			// anchor-click suppressor that calls preventDefault on every <a>
+			// inside the editor (so plain text links don't navigate in edit
+			// mode); without this handler the chip's activation would also be
+			// eaten and clicking the chip would silently do nothing. Mirrors the
+			// pattern AttachmentImage uses for its lightbox click.
+			//
+			// This is the MOUSE activation path. Keyboard activation is the
+			// keydown handler below and never reaches here — see why there.
 			wrapper.addEventListener('click', (event) => {
 				if (event.detail > 1) return; // double-click → fall through
 				if (!currentUuid) return;
-				// Removing href is not enough: this handler opens the URL
-				// itself, so a deleted chip would still open a 404 in a new tab
-				// (Codex round 14). Swallow the click instead.
-				if (deleted) {
-					event.preventDefault();
-					event.stopPropagation();
-					return;
-				}
+				// Removing href is not enough: this handler acts on the URL
+				// itself, so a deleted chip would still do something (a 404 in a
+				// new tab, before TASK-2424; a panel for a dead row, after).
+				// Swallow the click instead (Codex round 14).
 				event.preventDefault();
 				event.stopPropagation();
-				if (typeof window !== 'undefined') {
-					window.open(
-						this.options.getDownloadUrl(currentUuid),
-						'_blank',
-						'noopener,noreferrer',
-					);
-				}
+				if (deleted) return;
+				openPanel();
+			});
+
+			/**
+			 * Keyboard activation: Enter AND Space, exactly once each (DR-12).
+			 *
+			 * Enter is handled HERE rather than left to the anchor's native
+			 * "Enter means click", for a reason specific to living inside a
+			 * ProseMirror editor: the chip sits in the editable region, so an
+			 * un-suppressed Enter bubbles to the editor's own keymap, which
+			 * treats it as split-block — it calls `preventDefault` itself, which
+			 * ALSO cancels the anchor's activation click. Relying on the native
+			 * path would mean Enter silently split a paragraph instead of
+			 * opening the panel.
+			 *
+			 * `preventDefault` here is what keeps the count at one: a cancelled
+			 * keydown produces no activation click, so this handler and the
+			 * click handler above are disjoint rather than racing (the exact
+			 * double-fire DR-12 names). It also suppresses Space's page scroll,
+			 * and `stopPropagation` keeps both keys away from the editor keymap.
+			 */
+			wrapper.addEventListener('keydown', (event) => {
+				const isSpace = event.key === ' ' || event.key === 'Spacebar';
+				if (event.key !== 'Enter' && !isSpace) return;
+				// A modified key is a shortcut, not an activation.
+				if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+				// Suppress BEFORE the deleted/no-uuid bail, not after. A disabled
+				// button gets no keydown, so this is belt-and-braces — but if a
+				// dead chip ever did receive one, returning early would let Enter
+				// through to ProseMirror's keymap and split the paragraph the
+				// chip sits in, which is a destructive answer to pressing Enter
+				// on something inert.
+				event.preventDefault();
+				event.stopPropagation();
+				if (!currentUuid || deleted) return;
+				openPanel();
 			});
 
 			// Async metadata enrichment via HEAD. Server registers HEAD
@@ -368,18 +466,44 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			// not trample state for a NEW uuid that landed via update()
 			// while we were awaiting HEAD.
 			const probeMetadata = (forUuid: string): void => {
-				if (!forUuid || !this.options.workspaceSlug) return;
+				// Workspace off the READER, not the static option: this editor can
+				// outlive a workspace switch, and this value keys the metadata
+				// cache — stale, it asks the previous workspace about this
+				// workspace's attachment (final review round 3).
+				const probeWs = this.options.address().workspaceSlug;
+				if (!forUuid || !probeWs) return;
 				fetchAttachmentMetadata(
-					this.options.workspaceSlug,
+					probeWs,
 					forUuid,
 					this.options.getDownloadUrl,
-				).then((meta) => {
-					if (!meta) return;
+				).then((result) => {
+					if (destroyed) return; // NodeView torn down while HEAD was in flight
+					if (deleted) return; // the target is gone; don't un-mark the chip
 					if (currentUuid !== forUuid) return; // superseded
-					currentMime = meta.mime;
+					// A transient failure says nothing about whether the row
+					// exists — keep the filename-guess icon and stay
+					// retryable (PLAN-2392 DR-17).
+					if (result.status === 'transient') return;
+					// A 404 IS authoritative. This is the path editor undo
+					// takes: undo restores the chip node, but the delete was a
+					// REST row mutation Tiptap's history can't roll back, so
+					// the chip must render dead rather than link to a 404.
+					if (result.status === 'missing') {
+						markDeleted();
+						return;
+					}
+					currentMime = result.mime;
+					currentSize = result.size;
 					refreshIcon();
-					const size = formatBytes(meta.size);
+					// The shared formatter renders "0 B" and doesn't guard
+					// non-finite input; a chip with no known size should show
+					// nothing at all, so the conditional lives here rather
+					// than in the helper (PLAN-2392 DR-3b).
+					const size =
+						Number.isFinite(result.size) && result.size > 0 ? formatBytes(result.size) : '';
 					sizeEl.textContent = size ? `· ${size}` : '';
+					// The name says the type and the size; both just arrived.
+					refreshAccessibleName();
 				});
 			};
 
@@ -401,16 +525,25 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 
 					if (newUuid !== currentUuid) {
 						currentUuid = newUuid;
-						// New target ⇒ the old deletion no longer applies.
+						// New target ⇒ the old deletion no longer applies. Undoing
+						// EVERY part of markDeleted() matters: `disabled` is what
+						// makes a dead chip inert, so leaving it set here would
+						// give a live chip that announces itself as live and does
+						// nothing — worse than the dead one, which at least says
+						// so. Reachable via a peer's uuid swap or a ProseMirror
+						// node replacement (orchestrator's full-diff review).
 						deleted = false;
+						wrapper.disabled = false;
 						wrapper.classList.remove('attachment-missing');
 						wrapper.removeAttribute('title');
 						// New uuid ⇒ stale MIME / size; reset until HEAD probe
 						// returns for the new identifier.
 						currentMime = null;
+						currentSize = null;
 						sizeEl.textContent = '';
 						refreshHref();
 						refreshIcon();
+						refreshAccessibleName();
 						probeMetadata(newUuid);
 					}
 					if (newFilename !== currentFilename) {
@@ -422,11 +555,13 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 						// application/octet-stream). Always recomputing is
 						// idempotent for MIMEs with a definitive icon.
 						refreshIcon();
+						refreshAccessibleName();
 					}
 
 					return true;
 				},
 				destroy() {
+					destroyed = true;
 					disposeDeletionListener();
 				},
 			};

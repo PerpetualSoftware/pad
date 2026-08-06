@@ -68,9 +68,20 @@
 		 * callers, so existing usage is unaffected.
 		 */
 		flushBeforeRestore?: () => Promise<void>;
+		/**
+		 * Identity of the `ItemDetail` mount that owns this timeline
+		 * (PLAN-2392 DR-8 / TASK-2421). Forwarded verbatim to every
+		 * CommentEditor this timeline mounts — the composer here, and the
+		 * edit/reply composers inside TimelineCommentCard — so an attachment
+		 * chip in a comment body can address the ONE host that owns it. A
+		 * master and a peeked pane are both mounted on the same module-global
+		 * bus, so `itemId` alone is not an address. Empty (the default, for
+		 * callers outside an ItemDetail) disables addressing.
+		 */
+		hostToken?: string;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '' }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -120,7 +131,23 @@
 		fetchAttachmentMetadata(wsSlug, uuid, (id, variant) =>
 			attachmentDownloadUrl(wsSlug, id, variant)
 		).then((m) => {
-			if (!m) return;
+			// A transient failure (5xx / network) is not evidence about the
+			// row, and the helper deliberately doesn't cache it — so drop the
+			// probed mark too, or this panel could never ask again for the
+			// rest of the mount (PLAN-2392 DR-17). Note what this does and
+			// does not buy: clearing the mark makes the attachment eligible
+			// again on the NEXT run of the probe effect (a new comment, an
+			// edit, a remount), it does not schedule a retry of its own. A
+			// proactive retry belongs with the timeline's deletion
+			// subscription in phase 3c, not here. A `missing` result IS
+			// authoritative: leave the mark set and leave `attMeta` without an
+			// entry, which is what the renderer already degrades to a missing
+			// placeholder on.
+			if (m.status === 'transient') {
+				probed.delete(uuid);
+				return;
+			}
+			if (m.status !== 'ok') return;
 			if (reqWs !== wsSlug) return;
 			const next = new Map(attMeta);
 			// filename is left empty — the markdown alt text is the chip/img
@@ -471,6 +498,7 @@
 			<CommentEditor
 				{wsSlug}
 				{itemId}
+				{hostToken}
 				placeholder="Write a comment… (paste or drop an image to attach)"
 				submitLabel="Comment"
 				{submitting}
@@ -509,6 +537,7 @@
 								{canEdit}
 								{frozen}
 								{isAdmin}
+								{hostToken}
 								{attachmentResolver}
 								onDelete={handleDelete}
 								onReply={handleReply}

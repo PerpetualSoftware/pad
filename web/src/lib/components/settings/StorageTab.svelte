@@ -1,8 +1,9 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { page } from '$app/state';
 	import { api, PadApiError } from '$lib/api/client';
 	import { announceAttachmentDeleted } from '$lib/attachments/events';
+	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import type {
 		AttachmentListItem,
 		AttachmentListFilters,
@@ -11,19 +12,69 @@
 		WorkspaceStorageInfo
 	} from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { categoryIcon, formatBytes, isImage } from '$lib/attachments/display';
+	import {
+		iconForAttachment,
+		formatBytes,
+		isImage,
+		canOpenInViewer,
+		displayFilename,
+	} from '$lib/attachments/display';
+	import {
+		buildStorageFilters,
+		hasActiveStorageFilters,
+		type StorageFilterSelections
+	} from '$lib/attachments/storageFilters';
+	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
+	import Menu from '$lib/components/common/Menu.svelte';
+	import AttachmentDeleteConfirm, {
+		workspaceAttachmentDeletePrompt,
+	} from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
+	import { viewIdentity, createFence, createPaintFence } from '$lib/attachments/viewFence';
 
 	// ── Props ────────────────────────────────────────────────────────────────
 	interface Props {
 		wsSlug: string;
 		collections: Collection[];
+		/**
+		 * Parent-item UUID to scope the list to — the item attachment strip's
+		 * "View all (N)" continuation passes it via `?attachment_item=`
+		 * (PLAN-2392 DR-18). Seeds the filter, and re-seeds whenever the
+		 * deep-link CHANGES, so following a second item's link while this tab
+		 * is already mounted retargets instead of keeping the old scope
+		 * (Codex round 3). Clearing the scope in the UI rewrites the URL, which
+		 * is why this can go back to '' without fighting the user.
+		 */
+		initialItemId?: string;
+		/**
+		 * Called when the user clears the item scope, so the OWNER of the URL
+		 * can drop `?attachment_item=`. It lives up there because only a real
+		 * navigation updates `page.url` — which is what `initialItemId` is
+		 * derived from (Codex round 4).
+		 */
+		onClearScope?: () => void;
 	}
-	let { wsSlug, collections }: Props = $props();
+	let { wsSlug, collections, initialItemId = '', onClearScope }: Props = $props();
 
 	// ── State ────────────────────────────────────────────────────────────────
 	let loading = $state(true);
 	let usage = $state<WorkspaceStorageInfo | null>(null);
 	let attachments = $state<AttachmentListItem[]>([]);
+	/**
+	 * The delete confirmation currently on screen (PLAN-2392 DR-18 /
+	 * TASK-2425). This row used to raise a browser-native `confirm()`; every
+	 * attachment delete now goes through the same in-app drill-down — Cancel
+	 * first, destructive row last, prompt back-referenced by
+	 * `aria-describedby`. The WORDING stays this surface's own: the strip's
+	 * "referenced in this item's content" check has no meaning in a
+	 * workspace-wide list, and what matters here is the GC grace period.
+	 */
+	let pendingDelete = $state<{
+		att: AttachmentListItem;
+		anchor: HTMLElement | null;
+		prompt: string;
+	} | null>(null);
+	const uid = $props.id();
+	const promptId = `storage-delete-note-${uid}`;
 	let total = $state(0);
 	let limit = $state(50);
 	let offset = $state(0);
@@ -41,12 +92,28 @@
 
 	let filterCategory = $state<CategoryValue>('');
 	let filterItem = $state<ItemValue>('');
+	/**
+	 * Scope to a single parent item. Seeded from `initialItemId` (the strip's
+	 * "View all" handoff) and cleared by the user. Mutually exclusive with the
+	 * attached/unattached selector — combining `item_id` with `item=unattached`
+	 * yields an empty set server-side — so while it is set, that selector is
+	 * disabled and not sent.
+	 */
+	// untrack: the initializer takes the value at mount; ongoing changes are
+	// handled by the re-seed effect below (reading a prop directly in an
+	// initializer otherwise warns about capturing only the initial value).
+	let filterItemId = $state<string>(untrack(() => initialItemId));
+	// Last deep-link value applied, so the re-seed effect fires only on a
+	// genuine change and never fights a scope the user cleared by hand.
+	let seededItemId = untrack(() => initialItemId);
 	let filterCollection = $state<string>('');
 	let sortValue = $state<SortValue>('created_at_desc');
 
 	// ── Helpers ──────────────────────────────────────────────────────────────
-	// formatBytes / categoryIcon / isImage live in $lib/attachments/display
-	// (extracted in TASK-2383 so the item attachment strip shares them).
+	// formatBytes / iconForAttachment / isImage live in $lib/attachments/display
+	// (extracted in TASK-2383 so the item attachment strip shares them;
+	// categoryIcon became iconForAttachment in TASK-2417, which also moved the
+	// glyph to the shared SVG set in $lib/attachments/icons).
 
 	function formatDate(iso: string): string {
 		try {
@@ -84,37 +151,245 @@
 
 	// ── Data loading ─────────────────────────────────────────────────────────
 
-	function buildFilters(): AttachmentListFilters {
-		const f: AttachmentListFilters = {
+	function selections(): StorageFilterSelections {
+		return {
 			limit,
 			offset,
-			sort: sortValue
+			sort: sortValue,
+			category: filterCategory,
+			item: filterItem,
+			itemId: filterItemId,
+			collection: filterCollection
 		};
-		if (filterCategory) f.category = filterCategory;
-		if (filterItem) f.item = filterItem;
-		if (filterCollection) f.collection = filterCollection;
-		return f;
 	}
 
+	function buildFilters(): AttachmentListFilters {
+		return buildStorageFilters(selections());
+	}
+
+	// Drives the empty-state wording: "nothing matches" is honest when a filter
+	// is narrowing the list (including a foreign or stale `attachment_item`
+	// uuid, which is indistinguishable from an item with no attachments);
+	// "nothing uploaded yet" is only true unfiltered (Codex round 2).
+	// One projection, not two: re-listing the fields here let the two drift
+	// (final-review P3). `selections()` reads the same $state, so the derived
+	// still tracks every filter.
+	let anyFilterActive = $derived(hasActiveStorageFilters(selections()));
+
+	/**
+	 * Label for the item-scope chip. The rows themselves carry the item title,
+	 * so the chip names the item once the first page lands and falls back to a
+	 * generic phrasing before that (or when the item has no live attachments
+	 * left, which is exactly when the list is empty anyway).
+	 */
+	let scopedItemTitle = $derived(
+		attachments.find((a) => a.item_id === filterItemId)?.item_title ?? ''
+	);
+
+	// ── View identity + fences (PLAN-2392, shared with the item attachment
+	// strip) ─────────────────────────────────────────────────────────────────
+	//
+	// This tab lives at `/{user}/{ws}/settings` — ONE SvelteKit route — so a
+	// workspace switch changes `wsSlug` under a MOUNTED component and every
+	// request, continuation and rendered control has to say which workspace it
+	// belongs to. `$lib/attachments/viewFence` owns that invariant; see its
+	// header. The identity is stated ONCE here, so no individual fence can
+	// restate a shorter one, and each request reads its workspace back off its
+	// own token rather than off the live prop.
+	const view = viewIdentity(() => ({ ws: wsSlug }));
+	/**
+	 * Fence 2 — the view generation. Mutations fence on this rather than on the
+	 * paint alone: a paint token has no generation, so an A→B→A round trip (or
+	 * an unmount) leaves an identity that still matches and a stale continuation
+	 * would sail through (Codex round 3).
+	 */
+	const viewFence = createFence(view);
+	/** Fence 3 — the workspace whose view is currently painted (and loaded). */
+	const paint = createPaintFence(view);
+
+	// Destroy invalidates EVERY fence and un-paints. The strip gets its request
+	// fence invalidated for free (its load lives in an $effect, whose teardown
+	// runs on destroy); this tab's loaders are plain async functions, so nothing
+	// else retires their tokens — and a list or usage request that fails after
+	// unmount would otherwise raise an error toast for a tab that is gone
+	// (Codex round 5). "Nothing is painted any more" is exactly what the paint
+	// fence is for, so no separate destroyed flag is needed.
+	onDestroy(() => {
+		viewFence.invalidate();
+		listFence.invalidate();
+		usageFence.invalidate();
+		workspaceViewFence.invalidate();
+		paint.record(null);
+	});
+
+	/**
+	 * The tab's only load trigger. It owns BOTH transitions, in one effect and
+	 * one dependency set, because they can arrive in the same flush and the
+	 * order matters:
+	 *
+	 *  - **Workspace change.** `/{user}/{ws}/settings` is one SvelteKit route,
+	 *    so switching workspaces changes `wsSlug` under a MOUNTED tab. Without
+	 *    a reactive reload the previous workspace's rows and usage figure stay
+	 *    on screen, and a list request that was in flight across the switch is
+	 *    dropped by `loadList`'s workspace fence — which, with no successor
+	 *    request, would strand `listLoading` at true forever (final review P1).
+	 *    Since this fires on mount too, it REPLACES the old `onMount` load
+	 *    rather than sitting alongside it — an effect plus `onMount` would
+	 *    fetch the first page twice.
+	 *  - **Deep-link change.** A new `?attachment_item=` on the same route
+	 *    (a second "View all" followed from an already-open settings page)
+	 *    retargets the scope instead of silently keeping the first item's
+	 *    (Codex round 3).
+	 *
+	 * A workspace change subsumes the deep-link branch: it re-seeds the scope
+	 * from the incoming link itself, so a single load covers both and the
+	 * deep-link branch can't fire a second one behind it.
+	 */
+	$effect(() => {
+		// Captured outside `untrack` so `wsSlug` (via the identity) and
+		// `initialItemId` are this effect's dependencies.
+		const here = view.capture();
+		const incoming = initialItemId;
+		if (!here.key) return;
+		untrack(() => {
+			if (!paint.isCurrent()) {
+				paint.record(here);
+				// The view itself changed, so in-flight mutations captured
+				// against the old one must stop reconciling. Bumped here, not
+				// derived from the paint: an A→B→A round trip lands back on an
+				// identity that MATCHES, and only a generation can tell that
+				// apart from never having left (Codex round 3).
+				viewFence.invalidate();
+				// Everything workspace-scoped is meaningless in the new
+				// workspace and must not survive the switch: the rows and
+				// usage figure obviously, but also the two workspace-scoped
+				// filter values — an item uuid and a collection uuid from the
+				// old workspace would silently filter the new list down to
+				// nothing. Category / attached / sort / page size are plain
+				// preferences with no workspace identity, so they carry over.
+				seededItemId = incoming;
+				filterItemId = incoming;
+				filterCollection = '';
+				offset = 0;
+				attachments = [];
+				total = 0;
+				usage = null;
+				// A confirmation left up for a row from the previous workspace
+				// goes with it: the button it is anchored to has just been
+				// unmounted, and `confirmDelete`'s fence would refuse it anyway.
+				pendingDelete = null;
+				void loadWorkspaceView();
+				return;
+			}
+			if (incoming === seededItemId) return;
+			seededItemId = incoming;
+			filterItemId = incoming;
+			retargetScope();
+		});
+	});
+
+	/**
+	 * Refetch after the item scope changed. Clears the rendered rows first:
+	 * the list fence stops a stale RESPONSE from landing, but on its own
+	 * it would leave the previous item's rows on screen while the new request
+	 * runs — indefinitely if that request fails (Codex round 5).
+	 */
+	function retargetScope() {
+		attachments = [];
+		total = 0;
+		onFiltersChanged();
+	}
+
+	function clearItemScope() {
+		filterItemId = '';
+		// Pre-claim the incoming '' so the re-seed effect treats the resulting
+		// URL change as already applied and doesn't fire a second fetch.
+		seededItemId = '';
+		// Drop the deep-link too, or a tab switch / reload / restored route
+		// re-applies a scope the user just dismissed (Codex rounds 2-4).
+		onClearScope?.();
+		retargetScope();
+	}
+
+	/**
+	 * Fence 1, usage channel. Both halves matter, for the same reasons as the
+	 * list's. The workspace check: this tab stays mounted across a workspace
+	 * change, so a figure fetched for the workspace the user just left must not
+	 * paint over the one they switched to (nor raise its error toast). The
+	 * generation check: on an A→B→A round trip the workspace matches again, so
+	 * only the generation can tell the first A request from the current one
+	 * (Codex round 1).
+	 */
+	const usageFence = createFence(view);
+
 	async function loadUsage() {
+		const req = usageFence.restart();
 		try {
-			usage = await api.attachments.storageUsage(wsSlug);
+			const next = await api.attachments.storageUsage(req.value.ws);
+			if (req.stale()) return;
+			usage = next;
 		} catch (err) {
+			if (req.stale()) return;
 			const msg = err instanceof Error ? err.message : 'Failed to load storage usage';
 			toastStore.show(msg, 'error');
 		}
 	}
 
-	async function loadList() {
+	// Every list load shares one fence, so a slower earlier request can never
+	// overwrite a newer one's rows/total/offset — the deep-link re-seed can
+	// start a load while onMount's or a filter change's is still in flight
+	// (Codex round 4).
+	const listFence = createFence(view);
+	// A list request is in flight. Only meaningful once the tab's initial
+	// `loading` gate is down — it keeps a scope retarget (which clears the
+	// rows) from flashing "no attachments match" before the new page lands.
+	let listLoading = $state(false);
+	// The last list request failed. Without it a failure renders as "no
+	// attachments match", which is the same misleading empty-vs-broken
+	// conflation DR-10 removed from the item strip (Codex round 6).
+	let listError = $state(false);
+
+	/**
+	 * @param opts.retry - This load is an explicit Retry after a failure, so it
+	 * carries the same cache-invalidation duty the item strip's Retry does
+	 * (PLAN-2392 DR-10, final-review P2). `fetchAttachmentMetadata` latches
+	 * `null` on a failed HEAD for the page lifetime, so the outage that broke
+	 * this list also poisoned every chip and inline image that probed during
+	 * it. Dropping a healthy entry is harmless — the cache holds immutable data
+	 * and nothing refetches eagerly.
+	 */
+	async function loadList(opts: { retry?: boolean } = {}) {
+		// `wsSlug` is reactive and this tab stays mounted across a workspace
+		// change, so the request's workspace is captured and re-checked: the
+		// generation alone can't tell a superseded workspace from the current
+		// one, and both the rows and the metadata-cache keys are workspace
+		// scoped (Codex fresh-angle round 2).
+		const req = listFence.restart();
+		const reqWsSlug = req.value.ws;
+		listLoading = true;
+		listError = false;
+		if (opts.retry) {
+			for (const a of attachments) invalidateAttachmentMetadata(reqWsSlug, a.id);
+		}
 		try {
-			const resp: AttachmentListResponse = await api.attachments.list(wsSlug, buildFilters());
+			const resp: AttachmentListResponse = await api.attachments.list(reqWsSlug, buildFilters());
+			if (req.stale()) return;
 			attachments = resp.attachments ?? [];
+			if (opts.retry) {
+				// The rows the refetch returned get the same treatment — at
+				// failure time the list held the stale page, or nothing at all.
+				for (const a of attachments) invalidateAttachmentMetadata(reqWsSlug, a.id);
+			}
 			total = resp.total ?? 0;
 			limit = resp.limit ?? limit;
 			offset = resp.offset ?? offset;
 		} catch (err) {
+			if (req.stale()) return;
+			listError = true;
 			const msg = err instanceof Error ? err.message : 'Failed to load attachments';
 			toastStore.show(msg, 'error');
+		} finally {
+			if (!req.stale()) listLoading = false;
 		}
 	}
 
@@ -122,13 +397,27 @@
 		await Promise.all([loadList(), loadUsage()]);
 	}
 
-	onMount(async () => {
+	/**
+	 * Load (or reload) everything the tab shows for the current workspace, behind
+	 * the whole-tab `loading` gate. Used on mount and on every workspace change.
+	 */
+	const workspaceViewFence = createFence(view);
+
+	async function loadWorkspaceView() {
+		const req = workspaceViewFence.restart();
+		loading = true;
 		try {
 			await Promise.all([loadList(), loadUsage()]);
 		} finally {
-			loading = false;
+			// Only the NEWEST load lowers the gate; a superseded one doing it
+			// would reveal the next workspace's half-loaded view. The workspace
+			// check alone isn't enough — on an A→B→A round trip the first A load
+			// finishes with `wsSlug` back at A while A's current load is still in
+			// flight (Codex round 1). It can't strand: whatever supersedes a load
+			// is itself a load, and the newest one's `finally` always runs.
+			if (!req.stale()) loading = false;
 		}
-	});
+	}
 
 	// Filter / sort changes reset to the first page and refetch. Using an
 	// explicit handler instead of an $effect keeps the side-effect tied to
@@ -141,20 +430,110 @@
 
 	// ── Actions ──────────────────────────────────────────────────────────────
 
+	/**
+	 * Open the delete confirmation (PLAN-2392 DR-18 / TASK-2425).
+	 *
+	 * ENTRY fence, for the same reason `handleDelete` re-takes it below: the
+	 * clicked row was painted for the workspace this tab has LOADED, which
+	 * during the prop-update → effect-flush window is not necessarily the one
+	 * `wsSlug` already names.
+	 */
+	function requestDelete(att: AttachmentListItem, anchor: HTMLElement | null) {
+		if (!paint.isCurrent()) return;
+		pendingDelete = {
+			att,
+			anchor,
+			prompt: workspaceAttachmentDeletePrompt(att.filename),
+		};
+	}
+
+	/** Escape / outside-click. `Menu` handles the Escape refocus itself. */
+	function dismissDelete() {
+		pendingDelete = null;
+	}
+
+	/** The Cancel row — returns focus to the button it was anchored to. */
+	function cancelDelete() {
+		const anchor = pendingDelete?.anchor;
+		pendingDelete = null;
+		anchor?.focus();
+	}
+
+	/**
+	 * The user confirmed. `confirm()` blocked the thread, so the entry fence
+	 * was still true by definition when it returned; an in-app confirmation
+	 * does not, and the workspace can change while it is up — so the fence is
+	 * re-checked at the point that actually sends the request.
+	 */
+	/**
+	 * Ids with a DELETE in flight. A plain Set, not `$state`: nothing renders
+	 * from it, and it is read by the guard in `confirmDelete` which needs the
+	 * value as of right now rather than a reactive snapshot.
+	 */
+	const deletingIds = new Set<string>();
+
+	function confirmDelete() {
+		const pending = pendingDelete;
+		pendingDelete = null;
+		if (!pending) return;
+		if (!paint.isCurrent()) return;
+		// One delete at a time. `confirm()` blocked the thread, so a second
+		// confirmation could not be raised while the first request was in
+		// flight; an in-app one can, and this list does not remove the row
+		// optimistically the way the item strip does, so the same row stays
+		// clickable throughout. Two DELETEs for one row means the second gets a
+		// 404 and the user sees a success and an "already deleted" for a single
+		// action (orchestrator's full-diff review round 2).
+		if (deletingIds.has(pending.att.id)) return;
+		void handleDelete(pending.att);
+	}
+
 	async function handleDelete(att: AttachmentListItem) {
-		const ok = confirm(
-			`Delete ${att.filename}? The blob is reclaimed by garbage collection after a grace period.`
-		);
-		if (!ok) return;
+		// ENTRY fence (fence 3). The clicked row was painted for the workspace
+		// this tab has LOADED, which during the prop-update → effect-flush window
+		// is not necessarily the one `wsSlug` already names. Taking the workspace
+		// off the paint means the DELETE targets the row the user actually
+		// clicked; refusing when the paint is stale is the only lever that works
+		// at all, because every check below runs after the await and no fence can
+		// unsend a request.
+		const painted = paint.painted();
+		if (!painted || !paint.isCurrent()) return;
+		const reqWsSlug = painted.value.ws;
+		// Fence 2 for everything after the await. Deliberately NOT the paint
+		// token: that carries an identity but no generation, so an A→B→A round
+		// trip (or an unmount) would leave it matching again and let a stale
+		// continuation toast and refetch (Codex round 3).
+		const req = viewFence.begin();
+
+		deletingIds.add(att.id);
 		try {
-			await api.attachments.delete(wsSlug, att.id);
+			await api.attachments.delete(reqWsSlug, att.id);
 			// Same broadcast the item attachment strip does (PLAN-2382 /
 			// TASK-2384): an editor open in another tab-pane still holds live
 			// <img>/chip NodeViews for this attachment, and an already-loaded
 			// image never re-requests, so without this they keep presenting a
 			// row the server no longer has (Codex round 14).
-			announceAttachmentDeleted(wsSlug, att.id);
-			toastStore.show(`Deleted ${att.filename}`, 'success');
+			//
+			// Deliberately AHEAD of the fence, like the strip's: this is a GLOBAL
+			// side effect keyed by (workspace, id), not a write into this view's
+			// local state, and a workspace switch says nothing about whether the
+			// row is gone. Skipping it would leave every other mounted surface
+			// stale on proof we already have.
+			announceAttachmentDeleted(reqWsSlug, att.id);
+			// The toast DOES belong to a view: after an A→B switch mid-request it
+			// would announce A's deletion over B (final review round 4).
+			if (req.stale()) {
+				// The refetch does NOT. This tab holds no tombstones and does not
+				// subscribe to the deletion bus, so a list request that raced the
+				// DELETE can have repainted the row — and on an A→B→A round trip
+				// the fence above suppresses the only thing that heals it. A
+				// refetch is a request for the truth about what is ON SCREEN, not
+				// a write into a view the user left, so it is gated on the paint
+				// rather than on the generation (Codex round 4).
+				if (paint.isCurrent() && !painted.changed()) await reload();
+				return;
+			}
+			toastStore.show(`Deleted ${displayFilename(att.filename)}`, 'success');
 			await reload();
 		} catch (err) {
 			// A 404 is authoritative that the row is gone — the list was simply
@@ -163,13 +542,25 @@
 			// an error for something that is in fact already done
 			// (Codex round 20; matches the attachment strip's handling).
 			if (err instanceof PadApiError && err.code === 'not_found') {
-				announceAttachmentDeleted(wsSlug, att.id);
-				toastStore.show(`${att.filename} was already deleted`, 'info');
+				announceAttachmentDeleted(reqWsSlug, att.id);
+				if (req.stale()) {
+					// Same reasoning as the success arm: a 404 is just as
+					// authoritative that the row is gone, so the on-screen list
+					// still deserves the correction.
+					if (paint.isCurrent() && !painted.changed()) await reload();
+					return;
+				}
+				toastStore.show(`${displayFilename(att.filename)} was already deleted`, 'info');
 				await reload();
 				return;
 			}
+			if (req.stale()) return;
 			const msg = err instanceof Error ? err.message : 'Failed to delete attachment';
 			toastStore.show(msg, 'error');
+		} finally {
+			// Every arm above returns from inside the try/catch, so the release
+			// has to be here or a failed delete would block the row forever.
+			deletingIds.delete(att.id);
 		}
 	}
 
@@ -273,6 +664,10 @@
 					class="role-select"
 					bind:value={filterItem}
 					onchange={onFiltersChanged}
+					disabled={!!filterItemId}
+					title={filterItemId
+						? 'Scoped to one item — clear the scope to filter by attached/unattached'
+						: undefined}
 				>
 					<option value="">All</option>
 					<option value="attached">Attached</option>
@@ -321,36 +716,80 @@
 			</label>
 		</div>
 
+		<!-- Item scope (PLAN-2392 DR-18): set by the item strip's "View all"
+		     link. Always visible while active, so the list is never silently
+		     filtered. -->
+		{#if filterItemId}
+			<div class="item-scope">
+				<span>
+					Showing attachments for
+					<strong>{scopedItemTitle || 'one item'}</strong>
+				</span>
+				<button type="button" class="scope-clear" onclick={clearItemScope}>
+					Show all attachments
+				</button>
+			</div>
+		{/if}
+
 		<!-- Attachment list -->
-		{#if total === 0}
+		{#if listLoading && attachments.length === 0}
+			<p class="empty-text">Loading attachments…</p>
+		{:else if listError}
 			<p class="empty-text">
-				No attachments yet — paste or drag a file into any item to upload one.
+				Couldn't load attachments.
+				<button type="button" class="scope-clear" onclick={() => loadList({ retry: true })}>
+					Retry
+				</button>
+			</p>
+		{:else if total === 0}
+			<p class="empty-text">
+				{#if anyFilterActive}
+					No attachments match the current filters.
+				{:else}
+					No attachments yet — paste or drag a file into any item to upload one.
+				{/if}
 			</p>
 		{:else}
 			<div class="att-list">
 				{#each attachments as att (att.id)}
 					<div class="att-row card">
-						<a
+						<!-- DR-16: the THUMBNAIL still renders for anything image-ish
+						     (it is an <img> either way), but the link that hands the
+						     ORIGINAL to the browser is gated on the exact raster
+						     allowlist — `image/svg+xml` can carry active content and
+						     the download handler defaults unknown types to an inline
+						     disposition. A non-allowlisted row keeps the row, loses
+						     the open-in-new-tab. -->
+						<svelte:element
+							this={canOpenInViewer(att.mime_type) ? 'a' : 'div'}
 							class="att-thumb"
-							href={api.attachments.downloadUrl(wsSlug, att.id)}
-							target="_blank"
-							rel="noopener"
-							aria-label="Open {att.filename}"
+							href={canOpenInViewer(att.mime_type)
+								? api.attachments.downloadUrl(wsSlug, att.id)
+								: undefined}
+							target={canOpenInViewer(att.mime_type) ? '_blank' : undefined}
+							rel={canOpenInViewer(att.mime_type) ? 'noopener' : undefined}
+							aria-label={canOpenInViewer(att.mime_type)
+								? `Open ${displayFilename(att.filename)}`
+								: undefined}
 						>
 							{#if isImage(att.mime_type)}
 								<img
 									src={api.attachments.downloadUrl(wsSlug, att.id, 'thumb-sm')}
-									alt={att.filename}
+									alt={displayFilename(att.filename)}
 									loading="lazy"
 								/>
 							{:else}
-								<span aria-hidden="true">{categoryIcon(att.mime_type)}</span>
+								<span class="att-file-icon">
+									<AttachmentIcon id={iconForAttachment(att.mime_type, att.filename)} />
+								</span>
 							{/if}
-						</a>
+						</svelte:element>
 
 						<div class="att-meta">
 							<div class="att-line1">
-								<span class="att-filename" title={att.filename}>{att.filename}</span>
+								<span class="att-filename" title={displayFilename(att.filename)}
+									>{displayFilename(att.filename)}</span
+								>
 							</div>
 							<div class="att-line2">
 								<span class="att-size">{formatBytes(att.size_bytes)}</span>
@@ -380,7 +819,9 @@
 							<button
 								type="button"
 								class="btn btn-small btn-remove"
-								onclick={() => handleDelete(att)}
+								onclick={(e) => requestDelete(att, e.currentTarget)}
+								title="Delete {displayFilename(att.filename)}"
+								aria-label="Delete {displayFilename(att.filename)}"
 							>
 								Delete
 							</button>
@@ -414,6 +855,33 @@
 		{/if}
 	{/if}
 </div>
+
+<!--
+	The delete confirmation (PLAN-2392 DR-18 / TASK-2425) — the same in-app
+	drill-down the item strip and the options panel show, anchored to the row's
+	own Delete button. Props are read through `?.` because `Menu` places itself
+	in a `tick().then()` that can run after this block is torn down.
+-->
+{#if pendingDelete}
+	<Menu
+		open
+		onclose={dismissDelete}
+		trigger={pendingDelete?.anchor ?? undefined}
+		mode="portal"
+		width={272}
+		sheetOnMobile
+		sheetTitle="Delete {displayFilename(pendingDelete?.att.filename)}"
+		ariaLabel="Delete {displayFilename(pendingDelete?.att.filename)}"
+		focusKey={pendingDelete?.att.id}
+	>
+		<AttachmentDeleteConfirm
+			prompt={pendingDelete?.prompt ?? ''}
+			{promptId}
+			oncancel={cancelDelete}
+			onconfirm={confirmDelete}
+		/>
+	</Menu>
+{/if}
 
 <style>
 	/* ── Local copies of the parent settings page primitives ────────────────
@@ -563,6 +1031,30 @@
 		color: var(--text-secondary);
 	}
 
+	.item-scope {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--space-2);
+		margin-bottom: var(--space-3);
+		font-size: 0.85em;
+		color: var(--text-secondary);
+	}
+
+	.scope-clear {
+		padding: 2px var(--space-2);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-sm, 4px);
+		background: transparent;
+		color: var(--text-secondary);
+		font: inherit;
+		cursor: pointer;
+	}
+	.scope-clear:hover {
+		color: var(--text-primary);
+		border-color: var(--accent, var(--border));
+	}
+
 	.att-list {
 		display: flex;
 		flex-direction: column;
@@ -589,6 +1081,15 @@
 		font-size: 1.4em;
 		overflow: hidden;
 		text-decoration: none;
+	}
+
+	/* File-type icon (TASK-2417). Monochrome and currentColor-driven, so it
+	   themes with light/dark and stays visible under forced-colors. */
+	.att-file-icon {
+		display: flex;
+		color: var(--text-secondary);
+		font-size: 24px;
+		line-height: 1;
 	}
 
 	.att-thumb img {

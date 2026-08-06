@@ -52,6 +52,10 @@ coverage.txt
 # Distribution
 dist/
 
+# Nix build output
+/result
+/result-*
+
 # Playwright e2e artifacts (scoped to the test fixture, never the
 # developer's real ~/.pad)
 .pad-e2e/

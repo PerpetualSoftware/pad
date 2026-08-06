@@ -35,8 +35,10 @@ func TestWebhookSecret_MaskedExceptOnCreate(t *testing.T) {
 	base := "/api/v1/workspaces/" + ws.Slug + "/webhooks"
 
 	// CREATE — the raw secret MUST be echoed back exactly once.
+	// Literal IP (not a hostname) so ValidateWebhookURL passes without a
+	// DNS lookup — matches handlers_webhook_token_idor_test.go.
 	rr := doRequestWithCookie(srv, "POST", base, map[string]any{
-		"url":    "https://example.com/hook",
+		"url":    "https://8.8.8.8/hook",
 		"secret": secret,
 	}, token)
 	if rr.Code != http.StatusCreated {
@@ -91,8 +93,10 @@ func TestWebhookSecret_RejectsReservedPrefix(t *testing.T) {
 		t.Fatalf("CreateWorkspace: %v", err)
 	}
 
+	// Literal IP (not a hostname) so ValidateWebhookURL passes without a
+	// DNS lookup — matches handlers_webhook_token_idor_test.go.
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/webhooks", map[string]any{
-		"url":    "https://example.com/hook",
+		"url":    "https://8.8.8.8/hook",
 		"secret": "enc:sneaky",
 	}, token)
 	if rr.Code != http.StatusBadRequest {

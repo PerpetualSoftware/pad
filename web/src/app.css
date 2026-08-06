@@ -349,6 +349,12 @@ input:focus, textarea:focus {
    attachments. Used by both the editor's AttachmentChip node and the
    read-only markdown render path (TASK-874). Styles target the same
    class names from both surfaces so the visual matches edge to edge. */
+/* Two elements share this class: the editor NodeView renders a <button> (a
+   live chip opens the options panel, it does not navigate — PLAN-2392 DR-12),
+   while the read-only markdown path and the clipboard shape render an <a
+   download>. So it carries the button reset explicitly: without `font:
+   inherit` the UA's 13.33px Arial would replace the inherited font and shrink
+   the chip, and `text-align` keeps the label left-aligned in the button. */
 .file-chip {
 	display: inline-flex;
 	align-items: center;
@@ -356,6 +362,8 @@ input:focus, textarea:focus {
 	max-width: 100%;
 	padding: 4px 10px;
 	margin: 0 1px;
+	font: inherit;
+	text-align: start;
 	background: var(--bg-tertiary);
 	border: 1px solid var(--border-subtle);
 	border-radius: 6px;
@@ -372,10 +380,43 @@ input:focus, textarea:focus {
 	border-color: color-mix(in srgb, var(--accent-blue) 35%, var(--border));
 	text-decoration: none;
 }
+/* The editor NodeView renders an SVG file-type icon here (TASK-2417); the
+   read-only markdown render path still emits a text glyph, so these rules
+   have to work for both. currentColor keeps the SVG themed and
+   forced-colors safe. */
 .file-chip-icon {
 	flex-shrink: 0;
+	display: flex;
+	align-items: center;
 	font-size: 1.05em;
 	line-height: 1;
+}
+.file-chip-icon > svg {
+	color: var(--text-secondary);
+}
+
+/* Deleted / missing target. The chip used to signal this by swapping its
+   glyph to a paperclip; the icon now says what KIND of file it is, so the
+   dead state gets its own treatment on the chip instead (TASK-2417). The
+   compound selector keeps this off the markdown renderer's bare
+   .attachment-missing span, which has its own inline marker. */
+.file-chip.attachment-missing {
+	color: var(--text-muted);
+	border-style: dashed;
+	cursor: default;
+	text-decoration: line-through;
+}
+/* The NodeView marks a dead chip `disabled`, which is what makes it inert and
+   unfocusable; keep it looking the same as the read-only path's missing chip
+   rather than inheriting the UA's disabled-button greying. */
+.file-chip:disabled {
+	color: var(--text-muted);
+	cursor: default;
+	opacity: 1;
+}
+.file-chip.attachment-missing:hover {
+	background: var(--bg-tertiary);
+	border-color: var(--border-subtle);
 }
 .file-chip-name {
 	overflow: hidden;

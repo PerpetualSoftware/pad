@@ -28,15 +28,21 @@
 
 import { Node, mergeAttributes } from '@tiptap/core';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
+import { canOpenInViewer } from '$lib/attachments/display';
 import {
 	type AttachmentUrlBuilder,
 	type AttachmentVariant,
 	fetchAttachmentMetadata,
 	invalidateAttachmentMetadata,
+	revalidateAttachmentMetadata,
 	mimeToFormat
 } from './attachment-metadata';
 import { openCropModal, type CropResult } from './attachment-crop-modal';
 import { registerAttachmentDeletionListener } from '$lib/attachments/events';
+import {
+	type AttachmentHostAddressReader,
+	readUnaddressed
+} from '$lib/attachments/hostAddress';
 import type { AttachmentTransformRequest, AttachmentTransformResult } from '$lib/types';
 
 // Re-export the shared types so existing call sites keep working.
@@ -96,12 +102,22 @@ export interface AttachmentImageOptions {
 	 */
 	getDownloadUrl: AttachmentUrlBuilder;
 	/**
-	 * Workspace slug used for HEAD-probing the image's MIME (so the
-	 * rotate toolbar can gate buttons on the processor's supported
-	 * formats). Empty string disables the probe — the toolbar still
-	 * shows but skips per-format gating.
+	 * Workspace slug resolved at CONFIGURE time.
+	 *
+	 * The MIME probes that gate the rotate toolbar read
+	 * `address().workspaceSlug` instead: this editor can outlive a pane
+	 * workspace switch, and that value keys the metadata cache. An empty
+	 * address workspace disables the probe — the toolbar still shows, but
+	 * skips per-format gating.
 	 */
 	workspaceSlug: string;
+	/**
+	 * Reads the host address (item + owning `ItemDetail` mount) to stamp on
+	 * panel / viewer events (PLAN-2392 DR-8). A reader rather than two
+	 * strings — see `$lib/attachments/hostAddress` for why writing options
+	 * after configure cannot work.
+	 */
+	address: AttachmentHostAddressReader;
 	/**
 	 * Image formats the server-side processor supports. Drives the
 	 * rotate toolbar's enabled state per attachment: a button is
@@ -161,6 +177,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			HTMLAttributes: {},
 			getDownloadUrl: (uuid: string) => `${PAD_ATTACHMENT_PREFIX}${uuid}`,
 			workspaceSlug: '',
+			address: readUnaddressed,
 			supportedFormats: [] as string[],
 			transform: async () => {
 				throw new Error('AttachmentImage: configure({ transform }) is required to use rotate/crop');
@@ -274,6 +291,9 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// Deletion is authoritative: a load still in flight when it lands
 			// must not be allowed to paint the image back (Codex round 15).
 			let deleted = false;
+			// True once the NodeView is torn down. Async continuations (HEAD
+			// probes, transform results) must not touch DOM after that.
+			let destroyed = false;
 
 			function showMissing() {
 				missing.textContent = `📎 ${currentAlt || 'Attachment unavailable'}`;
@@ -283,6 +303,21 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					? 'This attachment has been deleted'
 					: 'This attachment could not be loaded — it may have been deleted. Click to retry.';
 				missing.style.cursor = deleted ? 'default' : 'pointer';
+				// And the INTERACTIVE SEMANTICS go with the copy, not just the
+				// cursor (DR-12; final review round 5). A confirmed deletion
+				// makes `retryLoad` a no-op, so leaving role=button + tabindex
+				// hands a keyboard or screen-reader user a focus stop that
+				// announces itself as a button and does nothing — the same dead
+				// stop the file chip's `disabled` closes, on the surface next to
+				// it. A transient failure IS retryable and keeps both.
+				if (deleted) {
+					if (document.activeElement === missing) missing.blur();
+					missing.removeAttribute('role');
+					missing.removeAttribute('tabindex');
+				} else {
+					missing.setAttribute('role', 'button');
+					missing.setAttribute('tabindex', '0');
+				}
 				if (currentUuid) missing.setAttribute('data-attachment-id', currentUuid);
 				missing.style.display = '';
 				img.style.display = 'none';
@@ -310,9 +345,59 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// queued, so a superseded load simply has no callback left to run.
 			let detachLoadListeners = () => {};
 
+			/**
+			 * Latch the permanent placeholder for a row the server says is
+			 * gone. Same end state as the deletion broadcast, reached by a
+			 * different route: the broadcast only fires for a delete that
+			 * happened in THIS tab's session, while this covers a node whose
+			 * row was already gone when it rendered — which is exactly what
+			 * editor undo produces (PLAN-2392 DR-17). Tiptap/Yjs history
+			 * owns the document; the delete was a REST row mutation it can't
+			 * roll back, so undo restores a node pointing at nothing.
+			 */
+			function latchMissing(forUuid: string) {
+				if (destroyed || deleted) return;
+				if (!forUuid || currentUuid !== forUuid) return;
+				deleted = true;
+				// Same reason the deletion listener does this: an in-flight
+				// load's `load` event would otherwise paint the image back.
+				detachLoadListeners();
+				showMissing();
+			}
+
+			/**
+			 * An <img> `error` event carries no status code, so a deleted row
+			 * and a network blip are indistinguishable at that layer — which
+			 * is why every load failure has to stay retryable by default. A
+			 * HEAD probe is what tells them apart: only a 404 latches, and a
+			 * `transient` result leaves the retryable placeholder exactly as
+			 * it was (and is not cached, so Retry re-issues the HEAD).
+			 *
+			 * It REVALIDATES rather than reading the cache: the failed load is
+			 * evidence that whatever we last observed about this row is out of
+			 * date, and a cached `ok` from before the deletion would make the
+			 * placeholder permanently unlatchable.
+			 */
+			function probeForMissing(forUuid: string) {
+				// Workspace off the READER, not the static option — it keys the
+				// metadata cache and this editor can outlive a workspace switch
+				// (final review round 3).
+				const probeWs = opts.address().workspaceSlug;
+				if (!forUuid || !probeWs || deleted || destroyed) return;
+				void revalidateAttachmentMetadata(probeWs, forUuid, opts.getDownloadUrl).then(
+					(result) => {
+						if (result.status === 'missing') latchMissing(forUuid);
+					}
+				);
+			}
+
 			function loadImage(url: string) {
 				detachLoadListeners();
-				const onError = () => showMissing();
+				const forUuid = currentUuid;
+				const onError = () => {
+					showMissing();
+					probeForMissing(forUuid);
+				};
 				const onLoad = () => resetMissing();
 				img.addEventListener('error', onError, { once: true });
 				img.addEventListener('load', onLoad, { once: true });
@@ -332,10 +417,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// otherwise fire after the delete and restore the image.
 				detachLoadListeners();
 				showMissing();
+				refresh();
 			});
 
-			missing.setAttribute('role', 'button');
-			missing.setAttribute('tabindex', '0');
+			// role/tabindex are set by showMissing(), which knows whether this is
+			// a retryable failure or a confirmed deletion. Hidden and inert here.
 			missing.style.cursor = 'pointer';
 
 			function retryLoad() {
@@ -357,6 +443,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				}
 			});
 
+			// The MIME this node's attachment is KNOWN to have, from a HEAD probe. Null
+			// until one has answered — the probe is lazy (toolbar construction, uuid
+			// swap), so "null" means "not yet asked", never "not an image".
+			let knownMime: string | null = null;
+
 			img.addEventListener('click', (event) => {
 				// In a contenteditable, ProseMirror handles selection on
 				// mousedown; intercept click so a single click opens the
@@ -368,6 +459,20 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				event.preventDefault();
 				event.stopPropagation();
 				if (!currentUuid) return;
+				// DR-16: the EXACT raster allowlist gates every open-the-viewer
+				// path, not just the strip's — `image/svg+xml` can carry active
+				// content, and a node being labelled image/* is not sufficient
+				// reason to hand it to a viewer.
+				//
+				// Gated on what is POSITIVELY KNOWN, deliberately: this node's
+				// MIME comes from a lazy HEAD probe, so at click time it is often
+				// simply unasked. Refusing on unknown would stop ordinary images
+				// opening — a certain regression traded for a marginal risk — so
+				// an unprobed node keeps today's behaviour and a probed
+				// non-allowlisted one is refused. Phase 3a's unified viewer
+				// threads `mime_type` onto the image list itself (DR-16), which
+				// is what turns this into a complete gate.
+				if (knownMime && !canOpenInViewer(knownMime)) return;
 				const fullUrl = opts.getDownloadUrl(currentUuid, 'original');
 				openImageLightbox(fullUrl, currentAlt);
 			});
@@ -376,10 +481,23 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// selected — so non-selected images don't carry the DOM
 			// cost. Subsequent selections reuse the same toolbar.
 			let toolbar: HTMLElement | null = null;
-			let toolbarMime: string | null = null;
 			let unregisterRefresher: (() => void) | null = null;
 			const refresh = () => {
-				if (toolbar) refreshToolbarState(toolbar, toolbarMime, opts.supportedFormats);
+				if (!toolbar) return;
+				// A confirmed deletion inertizes the WHOLE node, not just its
+				// placeholder: rotate and crop against a row that is gone can
+				// only 404, and leaving them live is the same dead-control gap
+				// the placeholder's role/tabindex removal closes (round 7).
+				if (deleted) {
+					toolbar
+						.querySelectorAll<HTMLButtonElement>('.attachment-image-toolbar-btn')
+						.forEach((btn) => {
+							btn.disabled = true;
+							btn.title = 'This attachment has been deleted';
+						});
+					return;
+				}
+				refreshToolbarState(toolbar, knownMime, opts.supportedFormats);
 			};
 			const ensureToolbar = (): HTMLElement => {
 				if (toolbar) return toolbar;
@@ -401,15 +519,25 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// (e.g. SSR / preview surfaces) — the toolbar's state
 				// falls back to the supportedFormats list alone, with
 				// the MIME left null.
-				if (currentUuid && opts.workspaceSlug) {
+				const toolbarProbeWs = opts.address().workspaceSlug;
+				if (currentUuid && toolbarProbeWs) {
 					const probeUuid = currentUuid;
-					fetchAttachmentMetadata(opts.workspaceSlug, probeUuid, opts.getDownloadUrl).then(
-						(meta) => {
-							// Bail if the NodeView's uuid changed (rotate/peer
-							// op) while the probe was in flight — otherwise
-							// we'd cache stale MIME state for the new image.
-							if (!toolbar || currentUuid !== probeUuid) return;
-							toolbarMime = meta?.mime ?? null;
+					fetchAttachmentMetadata(toolbarProbeWs, probeUuid, opts.getDownloadUrl).then(
+						(result) => {
+							// Bail if the NodeView was torn down, or if its uuid
+							// changed (rotate/peer op) while the probe was in
+							// flight — otherwise we'd touch detached DOM, or
+							// cache stale MIME state for the new image.
+							if (destroyed) return;
+							if (currentUuid !== probeUuid) return;
+							// A 404 here is the same authoritative signal the
+							// load path acts on (DR-17), and this probe may
+							// well beat the <img> to it.
+							if (result.status === 'missing') latchMissing(probeUuid);
+							if (!toolbar) return;
+							// `transient` leaves the MIME unknown rather than
+							// wrong: gating falls back to supportedFormats.
+							knownMime = result.status === 'ok' ? result.mime : null;
 							refresh();
 						}
 					);
@@ -419,6 +547,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			};
 
 			const swapNodeUuid = (newId: string): void => {
+				// A transform that resolves after teardown has no position left
+				// to dispatch against — `editor.isDestroyed` is false whenever
+				// the editor outlives this one NodeView, which is the common
+				// case (the node was replaced, the doc was re-rendered).
+				if (destroyed) return;
 				// Master-freeze / R12 (TASK-2172): runRotate/runCrop gate editability
 				// at CLICK time, but the transform awaits a network round-trip during
 				// which the master can begin peeking — flipping the editor read-only
@@ -478,6 +611,12 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					if (currentUuid !== startUuid) return;
 					swapNodeUuid(result.id);
 				} catch (err) {
+					// Same fence as the success path: a failure that lands after
+					// teardown, or after the node moved to a different image,
+					// belongs to work the user has already navigated away from.
+					// Reporting it would alert about attachment A while they are
+					// looking at B.
+					if (destroyed || currentUuid !== startUuid) return;
 					const msg = err instanceof Error ? err.message : 'Rotation failed';
 					if (opts.onError) opts.onError(msg);
 					else if (typeof console !== 'undefined') console.error('[attachmentImage] rotate', err);
@@ -530,6 +669,12 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					if (currentUuid !== startUuid) return;
 					swapNodeUuid(result.id);
 				} catch (err) {
+					// Same fence as the success path: a failure that lands after
+					// teardown, or after the node moved to a different image,
+					// belongs to work the user has already navigated away from.
+					// Reporting it would alert about attachment A while they are
+					// looking at B.
+					if (destroyed || currentUuid !== startUuid) return;
 					const msg = err instanceof Error ? err.message : 'Crop failed';
 					if (opts.onError) opts.onError(msg);
 					else if (typeof console !== 'undefined') console.error('[attachmentImage] crop', err);
@@ -560,8 +705,9 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// (e.g. on the same image rendered elsewhere) will
 						// re-fetch. Triggers for any source of the change:
 						// local rotate via swapNodeUuid OR a peer Yjs op.
-						if (currentUuid && opts.workspaceSlug) {
-							invalidateAttachmentMetadata(opts.workspaceSlug, currentUuid);
+						const swapWs = opts.address().workspaceSlug;
+						if (currentUuid && swapWs) {
+							invalidateAttachmentMetadata(swapWs, currentUuid);
 						}
 						currentUuid = newUuid;
 						// The old uuid's state — whether a 404 placeholder or a
@@ -583,17 +729,21 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// Toolbar's MIME probe was for the old uuid; reset
 						// gating to "still loading" + re-probe so per-format
 						// state stays correct across the swap.
-						toolbarMime = null;
+						knownMime = null;
 						refresh();
-						if (toolbar && newUuid && opts.workspaceSlug) {
+						const updateProbeWs = opts.address().workspaceSlug;
+						if (toolbar && newUuid && updateProbeWs) {
 							const probeUuid = newUuid;
 							fetchAttachmentMetadata(
-								opts.workspaceSlug,
+								updateProbeWs,
 								probeUuid,
 								opts.getDownloadUrl
-							).then((meta) => {
-								if (!toolbar || currentUuid !== probeUuid) return;
-								toolbarMime = meta?.mime ?? null;
+							).then((result) => {
+								if (destroyed) return;
+								if (currentUuid !== probeUuid) return;
+								if (result.status === 'missing') latchMissing(probeUuid);
+								if (!toolbar) return;
+								knownMime = result.status === 'ok' ? result.mime : null;
 								refresh();
 							});
 						}
@@ -624,6 +774,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					if (toolbar) toolbar.classList.add('attachment-image-toolbar-hidden');
 				},
 				destroy() {
+					// Set FIRST: every async continuation below fences on it, and
+					// a HEAD probe in flight at teardown would otherwise resolve
+					// into detached DOM (the chip NodeView has carried this flag
+					// since it was written; the image one did not).
+					destroyed = true;
 					detachLoadListeners();
 					disposeDeletionListener();
 					// Tear down the refresher subscription so the
@@ -767,7 +922,13 @@ function refreshToolbarState(
 	const btns = toolbar.querySelectorAll<HTMLButtonElement>('.attachment-image-toolbar-btn');
 	const noProcessor = supportedFormats.length === 0;
 	const format = mime ? mimeToFormat(mime) : null;
-	const knownUnsupported = !!format && !supportedFormats.includes(format);
+	// A KNOWN mime that maps to no processor format is unsupported, not
+	// unknown. `mimeToFormat` returns null both for "never asked" and for
+	// "asked, and this is not something the processor handles" — treating the
+	// second as the first left Crop enabled for e.g. image/svg+xml, which
+	// hands the original to the crop modal for a transform the server will
+	// refuse (final review round 7).
+	const knownUnsupported = !!mime && (!format || !supportedFormats.includes(format));
 
 	btns.forEach((btn) => {
 		// Re-derive the original tooltip from the dataset. We keep the
@@ -784,7 +945,9 @@ function refreshToolbarState(
 		}
 		if (knownUnsupported) {
 			btn.disabled = true;
-			btn.title = `Image editing for ${mime} requires libvips (this build supports ${supportedFormats.join(', ')})`;
+			btn.title = format
+				? `Image editing for ${mime} requires libvips (this build supports ${supportedFormats.join(', ')})`
+				: `Image editing isn't available for ${mime}`;
 			return;
 		}
 		btn.disabled = false;
