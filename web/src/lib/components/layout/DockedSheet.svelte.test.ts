@@ -24,7 +24,11 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick, flushSync } from 'svelte';
 import DockedSheet from './DockedSheet.svelte';
-import { acquire, __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
+import {
+	acquire,
+	noteEscapeConsumedByViewer,
+	__resetViewerBackdropForTests,
+} from '$lib/a11y/viewerBackdrop';
 
 const bodySnippet = createRawSnippet(() => ({
 	render: () => `<div><button type="button">Inside</button></div>`,
@@ -135,6 +139,44 @@ describe('DockedSheet — Escape ownership (TASK-2430)', () => {
 		const e = escape();
 		e.preventDefault();
 		window.dispatchEvent(e);
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('declines an Escape a VIEWER already consumed, after the lease is gone', async () => {
+		// TASK-2448 / BUG-2441 — the real dispatch, reproduced. The viewer's own
+		// escape handler runs earlier in the same event and tears itself down
+		// synchronously, so this listener genuinely sees an EMPTY lease stack:
+		// the test releases the lease before dispatching, exactly as the browser
+		// does. Only the event-scoped mark can save the sheet here.
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose }) });
+		await tick();
+		flushSync();
+
+		const lease = acquire(mountViewer());
+		const e = escape();
+		noteEscapeConsumedByViewer(e); // what Lightbox does before `onClose()`
+		lease.release(); // what Svelte's synchronous teardown does next
+		window.dispatchEvent(e);
+		expect(onclose).not.toHaveBeenCalled();
+
+		// The NEXT press is the sheet's — one Escape closes one layer, it does
+		// not make the sheet permanently deaf.
+		window.dispatchEvent(escape());
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('EMPTY-STACK REGRESSION: an unmarked Escape still closes it', async () => {
+		// The other half of the pair above: the marker is the ONLY thing that
+		// changed, so a press no viewer touched behaves exactly as before —
+		// including when a viewer once existed and has since gone.
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose }) });
+		await tick();
+		flushSync();
+
+		acquire(mountViewer()).release();
+		window.dispatchEvent(escape());
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});
 

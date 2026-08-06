@@ -317,8 +317,49 @@ function keepInteractiveAsDialog(el: Element): boolean {
 }
 
 /**
+ * Events a VIEWER has already consumed (TASK-2448 / BUG-2441).
+ *
+ * A lease-state question cannot arbitrate a dispatch that MUTATES lease state
+ * halfway through. `Lightbox`'s escape-stack handler calls `onClose()`
+ * synchronously, and Svelte flushes the teardown — hence `lease.release()` —
+ * inside that same call. Every `window` keydown listener that runs LATER in the
+ * SAME dispatch therefore asks `isBlockedByModal` against an empty stack, is
+ * told "nothing is in front of you", and closes a second layer.
+ *
+ * So consumption is recorded per EVENT rather than inferred from the lease: the
+ * viewer marks the dispatch it consumed, and that mark outlives its own lease.
+ * Keyed on the event OBJECT (a `WeakSet`, so nothing is retained past the
+ * dispatch) rather than on `defaultPrevented`, because `defaultPrevented` says
+ * only "somebody handled this key" — it is set by controls that are not viewers
+ * at all, and honouring it would change how sheets behave with NO viewer
+ * present. That is exactly the unannounced change TASK-2430 shipped and
+ * reverted. This mark can only ever be set while a viewer is frontmost, so on
+ * an empty lease stack it is unreachable by construction and every consumer
+ * below behaves as it did before.
+ */
+let viewerConsumedEscapes = new WeakSet<Event>();
+
+/**
+ * Record that a viewer consumed `event`. Called by the viewer's escape-stack
+ * handler BEFORE it closes, since closing is what destroys the lease.
+ */
+export function noteEscapeConsumedByViewer(event: Event): void {
+	viewerConsumedEscapes.add(event);
+}
+
+/** Has a viewer already consumed this exact event? */
+export function isEscapeConsumedByViewer(event?: Event | null): boolean {
+	return !!event && viewerConsumedEscapes.has(event);
+}
+
+/**
  * Should `owner` — the SURFACE asking to act, NOT `event.target` — decline
  * because something is in front of it?
+ *
+ * Pass `event` from a keydown owner to get the EVENT-SCOPED answer as well: a
+ * viewer that consumed this very dispatch blocks every later owner in it,
+ * whatever the lease says by the time they ask (TASK-2448). Owners that don't
+ * pass one get the unchanged lease-state answer.
  *
  * Derives from LEASE STATE, never from DOM `inert`, and returns **false on an
  * empty stack** (with no native modal open) so existing guards keep exactly
@@ -332,7 +373,13 @@ function keepInteractiveAsDialog(el: Element): boolean {
  * genuine top dialog. Owners in a lower dialog are already inert by the
  * browser's own top-layer rules, so the permissive answer costs nothing.
  */
-export function isBlockedByModal(owner?: Element | null): boolean {
+export function isBlockedByModal(owner?: Element | null, event?: Event | null): boolean {
+	// FIRST, and unconditionally: a viewer that consumed this dispatch has
+	// already spent it. Checked ahead of the native-dialog branch because it is
+	// the one answer that does not depend on live state at all — the surface that
+	// won the key may no longer exist by now, which is the whole point.
+	if (isEscapeConsumedByViewer(event)) return true;
+
 	const modals = openNativeModals();
 	if (modals.length > 0) return !modals.some((d) => d.contains(owner ?? null));
 
@@ -452,4 +499,7 @@ export function __resetViewerBackdropForTests(): void {
 	stopObserver();
 	owned.clear();
 	modalSelectorSupported = null;
+	// A `WeakSet` can't be cleared, so drop the whole set — otherwise a marked
+	// event object reused across cases would carry a stale consumption.
+	viewerConsumedEscapes = new WeakSet<Event>();
 }

@@ -25,6 +25,7 @@
 		acquire,
 		isBlockedByModal,
 		isViewerFrontmost,
+		noteEscapeConsumedByViewer,
 		VIEWER_ROOT_CLASS,
 	} from '$lib/a11y/viewerBackdrop';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
@@ -259,8 +260,15 @@
 		// Declines (returns false) unless this viewer is the FRONTMOST lease, so
 		// with two viewers open one press closes exactly the top one and the
 		// stack falls through to it rather than to an unrelated layer.
-		const unregisterEscape = pushEscapeHandler(() => {
+		const unregisterEscape = pushEscapeHandler((event) => {
 			if (!isViewerFrontmost(el)) return false;
+			// Mark the DISPATCH before closing, not after (TASK-2448 / BUG-2441).
+			// `onClose()` runs the teardown below synchronously — the lease is gone
+			// by the time it returns — so a later `window` listener in this same
+			// event would be told "no viewer" and close a second layer. The mark is
+			// the only thing that survives that, and it has to be in place before
+			// the state it stands in for is destroyed.
+			if (event) noteEscapeConsumedByViewer(event);
 			onClose();
 			return true;
 		}, ESCAPE_PRIORITY.viewer);

@@ -2315,7 +2315,10 @@
 				e.preventDefault();
 				return;
 			}
-			if (runTopEscape()) e.preventDefault();
+			// The event is forwarded (TASK-2448) purely so a handler can mark the
+			// DISPATCH it consumed — the stack itself neither reads it nor acts on
+			// it.
+			if (runTopEscape(e)) e.preventDefault();
 			return;
 		}
 

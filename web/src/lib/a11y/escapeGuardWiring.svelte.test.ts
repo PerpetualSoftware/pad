@@ -142,6 +142,24 @@ describe.each(ROUTES)('ESC guard wiring in %s', (relative) => {
 		expect(guardAt).toBeLessThan(stackAt);
 	});
 
+	it('forwards the keydown EVENT into the stack (TASK-2448)', () => {
+		// The driver half of BUG-2441's fix. The viewer marks the dispatch it
+		// consumed so later `window` listeners stand down — and it can only do
+		// that if the driver hands it the event. Dropping the argument back to a
+		// bare `runTopEscape()` restores the double-close, silently: every unit
+		// test still passes, because the marking side is intact and simply never
+		// runs. That is precisely the kind of quiet revert a grep contract is
+		// here for.
+		//
+		// The identifier is read from the handler's own signature rather than
+		// assumed to be `e`, so a rename can't fail this for the wrong reason.
+		const handler = pageKeydownHandler(code);
+		expect(handler).not.toBeNull();
+		const param = handler!.match(/function\s+\w+\s*\(\s*(\w+)/);
+		expect(param).not.toBeNull();
+		expect(code).toMatch(new RegExp(`runTopEscape\\s*\\(\\s*${param![1]}\\s*\\)`));
+	});
+
 	// ── TASK-2430: Escape must still REACH the stack ───────────────────────
 	//
 	// The single most dangerous way to get TASK-2430 wrong is to hoist an

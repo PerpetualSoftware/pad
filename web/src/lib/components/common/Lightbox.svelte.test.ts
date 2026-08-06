@@ -5,6 +5,7 @@ import type { LightboxImage } from '$lib/attachments/events';
 import {
 	acquire,
 	hasForeignEscapeOwner,
+	isBlockedByModal,
 	__resetViewerBackdropForTests,
 	VIEWER_ROOT_CLASS,
 } from '$lib/a11y/viewerBackdrop';
@@ -750,6 +751,60 @@ describe('Lightbox — Escape ownership', () => {
 		expect(onClose).toHaveBeenCalledTimes(1);
 		// ONE layer: the pane underneath must not also close on the same press.
 		expect(paneClose).not.toHaveBeenCalled();
+	});
+
+	it('BUG-2441: a LATER window listener stands down even though the lease is already gone', () => {
+		// The bug reproduced honestly in jsdom, which needs the one thing the
+		// other cases in this file leave out: an `onClose` that actually TEARS THE
+		// VIEWER DOWN, synchronously, inside the driver's handler — which is what
+		// Svelte does in the browser, and what releases the lease mid-dispatch.
+		// With a `vi.fn()` onClose the lease survives the press and the sheet's
+		// live guard answers correctly all by itself; that is exactly why the
+		// unit suite missed this and TASK-2436's browser suite caught it.
+		//
+		// The sheet stand-in is deliberately shaped like `DockedSheet` /
+		// `BottomSheet`: a `window` keydown listener registered AFTER the driver,
+		// guarded by `isBlockedByModal(ownEl, event)`.
+		const app = mountViewer({
+			onClose: () => {
+				unmount(mounted.splice(mounted.indexOf(app), 1)[0]);
+				flushSync();
+			},
+		});
+
+		const sheetEl = appRoot.appendChild(document.createElement('div'));
+		const sheetClose = vi.fn();
+
+		const routeDriver = (e: KeyboardEvent) => {
+			if (e.key !== 'Escape') return;
+			if (hasForeignEscapeOwner()) return;
+			if (runTopEscape(e)) e.preventDefault();
+		};
+		const sheetOwner = (e: KeyboardEvent) => {
+			if (e.key !== 'Escape') return;
+			if (isBlockedByModal(sheetEl, e)) return;
+			sheetClose();
+		};
+		window.addEventListener('keydown', routeDriver);
+		window.addEventListener('keydown', sheetOwner);
+		try {
+			press('Escape');
+			// The viewer is gone — so the sheet's LIVE guard now answers "nothing
+			// in front of you". Asserted, because it is the premise of the bug: if
+			// this were false the test would prove nothing.
+			expect(roots()).toHaveLength(0);
+			expect(isBlockedByModal(sheetEl)).toBe(false);
+			// ...and yet the sheet did not act, because the press was already spent.
+			expect(sheetClose).not.toHaveBeenCalled();
+
+			// EMPTY-STACK REGRESSION, on the same wiring: the NEXT press is the
+			// sheet's. The fix must not leave it permanently deaf.
+			press('Escape');
+			expect(sheetClose).toHaveBeenCalledTimes(1);
+		} finally {
+			window.removeEventListener('keydown', routeDriver);
+			window.removeEventListener('keydown', sheetOwner);
+		}
 	});
 
 	it('unregisters on close, so a later Escape reaches the layer beneath', () => {

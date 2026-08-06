@@ -4,6 +4,8 @@ import {
 	isBlockedByModal,
 	isViewerFrontmost,
 	hasForeignEscapeOwner,
+	noteEscapeConsumedByViewer,
+	isEscapeConsumedByViewer,
 	VIEWER_ROOT_CLASS,
 	__resetViewerBackdropForTests,
 } from './viewerBackdrop';
@@ -701,6 +703,74 @@ describe('isBlockedByModal', () => {
 			// ...and against any `[open]` fallback: the open dialog must not count.
 			expect(isBlockedByModal(dialog.querySelector('#d'))).toBe(false);
 		});
+	});
+});
+
+describe('event-scoped Escape consumption (TASK-2448 / BUG-2441)', () => {
+	const esc = () => new KeyboardEvent('keydown', { key: 'Escape' });
+
+	it('survives the release of the lease that recorded it', () => {
+		// The whole point: the mark answers for a viewer that no longer exists.
+		const app = bodyChild('app', '<button id="a">a</button>');
+		const viewer = bodyChild('viewer');
+		const lease = acquire(viewer);
+		const event = esc();
+
+		noteEscapeConsumedByViewer(event);
+		lease.release();
+
+		expect(isBlockedByModal(app, null)).toBe(false); // live state: nothing in front
+		expect(isBlockedByModal(app, event)).toBe(true); // ...but this press is spent
+	});
+
+	it('is scoped to ONE event — the next press is unaffected', () => {
+		const app = bodyChild('app');
+		const consumed = esc();
+		noteEscapeConsumedByViewer(consumed);
+
+		expect(isBlockedByModal(app, consumed)).toBe(true);
+		expect(isBlockedByModal(app, esc())).toBe(false);
+	});
+
+	it('blocks an owner INSIDE the closing viewer too', () => {
+		// A viewer that has spent the press has spent it for everyone: the
+		// surface that won it is being torn down, so "inside it" is not a licence
+		// to act on the same key.
+		const viewer = bodyChild('viewer', '<button id="v">v</button>');
+		const lease = acquire(viewer);
+		const event = esc();
+		noteEscapeConsumedByViewer(event);
+
+		expect(isBlockedByModal(viewer.querySelector('#v'), event)).toBe(true);
+		lease.release();
+	});
+
+	it('changes NOTHING with an unmarked event, at any lease state', () => {
+		// The empty-stack contract, stated as an equivalence: passing an event
+		// nobody marked must give the same answer as not passing one at all.
+		const app = bodyChild('app', '<button id="a">a</button>');
+		const owner = app.querySelector('#a');
+		const event = esc();
+
+		expect(isBlockedByModal(owner, event)).toBe(isBlockedByModal(owner));
+		expect(isBlockedByModal(owner, event)).toBe(false);
+
+		const viewer = bodyChild('viewer');
+		const lease = acquire(viewer);
+		expect(isBlockedByModal(owner, event)).toBe(isBlockedByModal(owner));
+		expect(isBlockedByModal(owner, event)).toBe(true);
+		expect(isBlockedByModal(viewer, event)).toBe(isBlockedByModal(viewer));
+		expect(isBlockedByModal(viewer, event)).toBe(false);
+		lease.release();
+	});
+
+	it('reports the mark directly, and treats a missing event as unmarked', () => {
+		const event = esc();
+		expect(isEscapeConsumedByViewer(event)).toBe(false);
+		noteEscapeConsumedByViewer(event);
+		expect(isEscapeConsumedByViewer(event)).toBe(true);
+		expect(isEscapeConsumedByViewer(null)).toBe(false);
+		expect(isEscapeConsumedByViewer(undefined)).toBe(false);
 	});
 });
 

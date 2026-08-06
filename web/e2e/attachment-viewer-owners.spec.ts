@@ -278,17 +278,20 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		request
 	}) => {
 		// ─────────────────────────────────────────────────────────────────────
-		// KNOWN DEFECT (BUG-2441) — this test asserts the CONTRACT and currently
-		// FAILS.
-		// `test.fail()` runs it and requires the failure, so the day the defect
-		// is fixed this file goes red and the annotation has to come off.
+		// BUG-2441, FIXED BY TASK-2448 — this asserted the contract and FAILED
+		// until the fix landed; the `test.fail()` annotation is retired with it.
 		//
-		// WHAT HAPPENS: one Escape closes BOTH layers. Both the route's escape
-		// driver and `DockedSheet.onKeydown` are `window` keydown listeners, and
-		// Svelte flushes the viewer's teardown SYNCHRONOUSLY inside the driver's
-		// handler — so by the time the sheet's listener runs, in the SAME event,
-		// the lease is already released and `isBlockedByModal(panelEl)` answers
-		// `false`. The guard is correct; the moment it is read is not.
+		// WHAT USED TO HAPPEN: one Escape closed BOTH layers. Both the route's
+		// escape driver and `DockedSheet.onKeydown` are `window` keydown
+		// listeners, and Svelte flushes the viewer's teardown SYNCHRONOUSLY inside
+		// the driver's handler — so by the time the sheet's listener ran, in the
+		// SAME event, the lease was already released and `isBlockedByModal(panelEl)`
+		// answered `false`. The guard was correct; the moment it was read was not.
+		//
+		// WHAT FIXES IT: the viewer marks the EVENT it consumed
+		// (`noteEscapeConsumedByViewer`), and the sheet passes that event to
+		// `isBlockedByModal` — so the mark outlives the lease and this listener
+		// stands down. Remove either half and this test fails again.
 		//
 		// It is invisible to the unit suite because that suite drives one
 		// component's handler in isolation, so nothing releases a lease
@@ -296,9 +299,6 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		// same viewer with its Close button leaves the sheet open, which is how
 		// this was isolated. `BottomSheet` has the identical shape (next test).
 		// ─────────────────────────────────────────────────────────────────────
-		// NOTE the PLACEMENT of `test.fail()` below: it is called AFTER setup, not
-		// here. Annotating the whole test would let a login, seed, upload or
-		// navigation failure be reported as the expected BUG-2441 failure.
 		await page.setViewportSize(MOBILE);
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Owner docked viewer');
@@ -317,13 +317,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		).toBe(true);
 
 		// Setup is complete and verified; from here the assertion is the one
-		// BUG-2441 breaks.
-		test.fail(
-			true,
-			'BUG-2441: the lease is released mid-dispatch, so a later window Escape ' +
-				'listener sees an empty stack and closes a second layer'
-		);
-
+		// BUG-2441 used to break.
 		await page.keyboard.press('Escape');
 		await expect(page.locator(VIEWER)).toHaveCount(0);
 		// SETTLE FIRST. `DockedSheet` leaves on a fly/fade transition, so it is
@@ -332,6 +326,12 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		// HAS been closed. This wait is what makes the test able to fail.
 		await page.waitForTimeout(600);
 		await expect(sheet, 'the sheet is a LOWER layer and must survive the press').toBeVisible();
+
+		// ...and the SECOND press closes it: "one Escape closes one layer" is a
+		// claim about ordering, not about the sheet having gone deaf. Without this
+		// the fix could pass by permanently disabling the sheet's Escape.
+		await page.keyboard.press('Escape');
+		await expect(sheet).toHaveCount(0);
 	});
 
 	test('owner 4 — a BottomSheet keeps Escape and its Tab trap with no viewer', async ({
@@ -422,17 +422,17 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		request
 	}) => {
 		// ─────────────────────────────────────────────────────────────────────
-		// KNOWN DEFECT (BUG-2441), same shape as owner 3's — recorded separately because
-		// `BottomSheet` and `DockedSheet` are different components with
-		// different guards, and the task specifies this one by name.
+		// BUG-2441, FIXED BY TASK-2448 — same shape as owner 3's, kept separate
+		// because `BottomSheet` and `DockedSheet` are different components with
+		// different guards, and the bug specifies this one by name.
 		//
-		// One Escape closes both the viewer and the sheet beneath it. The
-		// sheet's `isBlockedByModal(sheetEl)` guard is correct; it is READ too
-		// late, after the escape driver's handler has already closed the viewer
-		// and Svelte has synchronously released the backdrop lease inside the
-		// SAME event dispatch.
+		// One Escape used to close both the viewer and the sheet beneath it. The
+		// sheet's `isBlockedByModal(sheetEl)` guard was correct; it was READ too
+		// late, after the escape driver's handler had already closed the viewer
+		// and Svelte had synchronously released the backdrop lease inside the
+		// SAME event dispatch. The guard now takes the EVENT as well, and the
+		// viewer marks the event it consumed before closing.
 		// ─────────────────────────────────────────────────────────────────────
-		// `test.fail()` is called after setup — see the DockedSheet test above.
 		await page.setViewportSize(MOBILE);
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Owner sheet escape');
@@ -455,17 +455,16 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 			.evaluate((el) => (el as HTMLElement).click());
 		await expect(page.locator(VIEWER)).toHaveCount(1);
 
-		test.fail(
-			true,
-			'BUG-2441: the lease is released mid-dispatch, so a later window Escape ' +
-				'listener sees an empty stack and closes a second layer'
-		);
-
 		await page.keyboard.press('Escape');
 		await expect(page.locator(VIEWER)).toHaveCount(0);
 		// Settle past the sheet's leave transition — see owner 3.
 		await page.waitForTimeout(600);
 		await expect(sheet, 'the sheet is a LOWER layer and must survive the press').toBeVisible();
+
+		// A SECOND press closes it — the sheet keeps its Escape, it just doesn't
+		// get to spend the viewer's one (see owner 3).
+		await page.keyboard.press('Escape');
+		await expect(sheet).toHaveCount(0);
 	});
 
 	test('owner 5 — the TopBar overflow menu keeps Escape with no viewer, and stands down under one', async ({

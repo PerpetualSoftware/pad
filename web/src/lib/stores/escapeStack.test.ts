@@ -131,4 +131,37 @@ describe('escapeStack', () => {
 		runTopEscape();
 		expect(calls).toEqual(['second']);
 	});
+
+	it('forwards the driving event to every handler it invokes (TASK-2448)', () => {
+		const seen: (KeyboardEvent | undefined)[] = [];
+		// This suite runs in the NODE environment (no DOM globals), and the stack
+		// treats the event as an opaque token it forwards and never reads — so a
+		// stand-in is the honest fixture here.
+		const event = { key: 'Escape' } as KeyboardEvent;
+
+		// A DECLINING handler is asked first and must also receive the event —
+		// a handler that declines this time may consume the next press.
+		pushEscapeHandler((e) => {
+			seen.push(e);
+			return false;
+		}, ESCAPE_PRIORITY.viewer);
+		pushEscapeHandler((e) => {
+			seen.push(e);
+			return true;
+		}, ESCAPE_PRIORITY.pane);
+
+		expect(runTopEscape(event)).toBe(true);
+		expect(seen).toEqual([event, event]);
+	});
+
+	it('runs identically with no event, for callers that have none', () => {
+		const seen: (KeyboardEvent | undefined)[] = [];
+		pushEscapeHandler((e) => {
+			seen.push(e);
+			return true;
+		}, ESCAPE_PRIORITY.pane);
+
+		expect(runTopEscape()).toBe(true);
+		expect(seen).toEqual([undefined]);
+	});
 });

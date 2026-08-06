@@ -19,7 +19,13 @@
 // the stack — components push/pop imperatively and one listener reads the top
 // — so keeping it non-reactive makes it trivially unit-testable.
 
-export type EscapeHandler = () => boolean;
+// The keydown event that provoked this run, when the driver has one. It is
+// optional because the stack is also driven from tests and from non-event
+// callers, and because no existing handler needs it — only a handler that must
+// mark the DISPATCH itself does (TASK-2448 / BUG-2441: the viewer records that
+// it consumed THIS Escape, so later window listeners in the same dispatch can
+// stand down even after its lease is gone).
+export type EscapeHandler = (event?: KeyboardEvent) => boolean;
 
 // Higher priority = more "inner" = handled first. Gaps are intentional so a
 // future layer can slot between two without renumbering the others.
@@ -72,13 +78,17 @@ export function topEscapePriority(): number | null {
 // Invoke the highest-priority handler that consumes the ESC. Returns true if
 // some handler consumed it (the caller should then `preventDefault`), false if
 // every handler declined or the stack is empty (leave native ESC untouched).
-export function runTopEscape(): boolean {
+//
+// `event` is forwarded to each handler unchanged and is otherwise inert here —
+// the stack never reads it, never prevents default on it, and behaves
+// identically whether or not it is supplied.
+export function runTopEscape(event?: KeyboardEvent): boolean {
 	// Iterate over a COPY, highest priority first (newest wins ties), so a
 	// handler that unregisters itself (or another) during its own invocation
 	// can't corrupt the iteration.
 	const ordered = [...entries].sort((a, b) => b.priority - a.priority || b.id - a.id);
 	for (const entry of ordered) {
-		if (entry.handler()) return true;
+		if (entry.handler(event)) return true;
 	}
 	return false;
 }

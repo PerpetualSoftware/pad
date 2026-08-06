@@ -48,9 +48,19 @@
 	 * `event.target`: a viewer opened FROM this sheet leaves focus/target inside
 	 * the sheet, and target-based arbitration would then wrongly let the sheet
 	 * dismiss itself out from under the viewer it launched.
+	 *
+	 * TASK-2448 adds the optional `event`. `isBlockedByModal` alone answers "is a
+	 * viewer in front RIGHT NOW", and for a KEYDOWN that is the wrong moment to
+	 * ask: the viewer's own Escape handler runs earlier in the same dispatch and
+	 * tears the viewer down synchronously, so by the time this listener runs the
+	 * lease is already gone and the honest answer to the live question is "no".
+	 * Passing the event asks the EVENT-SCOPED question instead — "has a viewer
+	 * already spent this press" — which the viewer answered before it died. The
+	 * gesture paths below keep the live question: a touch sequence is not one
+	 * dispatch, and nothing marks it.
 	 */
-	function blockedByFrontLayer(): boolean {
-		return isBlockedByModal(panelEl);
+	function blockedByFrontLayer(event?: Event): boolean {
+		return isBlockedByModal(panelEl, event);
 	}
 
 	function cancelDrag() {
@@ -104,7 +114,15 @@
 		// change on its own merits, but it fires with NO viewer present, and this
 		// task's contract is that an empty lease leaves behaviour untouched. It
 		// belongs in its own item, not smuggled into an attachments phase.
-		if (blockedByFrontLayer()) return;
+		//
+		// DELIBERATE, NAMED BEHAVIOUR CHANGE (TASK-2448 / BUG-2441) — the FOURTH
+		// named parity exception of PLAN-2392 phase 3a. This sheet now declines an
+		// Escape a VIEWER has already consumed in the same dispatch. It is not the
+		// reverted `defaultPrevented` bail: this marker is set ONLY by a frontmost
+		// viewer's escape handler, so with no viewer open it can never be set and
+		// this line is exactly `blockedByFrontLayer()` as before — the empty-stack
+		// contract 2430 broke is kept intact.
+		if (blockedByFrontLayer(e)) return;
 		onclose();
 	}
 </script>

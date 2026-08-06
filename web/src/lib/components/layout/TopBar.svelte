@@ -583,7 +583,15 @@
 		// The owner is the menu element itself; `isBlockedByModal` returns false
 		// on an empty stack, so with no viewer/native modal this handler behaves
 		// exactly as before.
-		if (isBlockedByModal(overflowMenuEl ?? null)) return;
+		//
+		// TASK-2448 passes the EVENT too, so the answer is event-scoped as well as
+		// live. This owner is not known to be broken today — its `window` listener
+		// is registered by the layout, so it happens to run BEFORE the route's
+		// escape driver and still sees the lease held. That is listener-order
+		// luck, not a guarantee; the same latent double-close as `DockedSheet` /
+		// `BottomSheet` is one mount-order change away. With no viewer open the
+		// marker can never be set, so this is byte-identical to before.
+		if (isBlockedByModal(overflowMenuEl ?? null, e)) return;
 		if (e.key === 'Escape') {
 			e.preventDefault();
 			closeOverflow();

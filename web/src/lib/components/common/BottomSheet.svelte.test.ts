@@ -8,7 +8,11 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick, flushSync } from 'svelte';
 import BottomSheet from './BottomSheet.svelte';
-import { acquire, __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
+import {
+	acquire,
+	noteEscapeConsumedByViewer,
+	__resetViewerBackdropForTests
+} from '$lib/a11y/viewerBackdrop';
 
 // Two focusable controls so the Tab-trap wrap has a first/last to cycle between.
 const bodySnippet = createRawSnippet(() => ({
@@ -234,6 +238,40 @@ describe('BottomSheet.svelte — defers to a frontmost viewer (TASK-2430)', () =
 		expect(onclose).not.toHaveBeenCalled();
 
 		lease.release();
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('declines an Escape a VIEWER already consumed, after the lease is gone', async () => {
+		// TASK-2448 / BUG-2441. The lease is released BEFORE the dispatch on
+		// purpose — that is what the browser does, since the viewer's escape
+		// handler runs earlier in the same event and Svelte flushes its teardown
+		// synchronously. The lease-state guard above cannot see this; only the
+		// event-scoped mark can.
+		const onclose = vi.fn();
+		render(BottomSheet, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		const lease = acquire(mountViewer());
+		const consumed = new KeyboardEvent('keydown', { key: 'Escape' });
+		noteEscapeConsumedByViewer(consumed);
+		lease.release();
+		window.dispatchEvent(consumed);
+		expect(onclose).not.toHaveBeenCalled();
+
+		// One Escape closes ONE layer — the sheet still owns the next press.
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('EMPTY-STACK REGRESSION: an unmarked Escape still closes it after a viewer has gone', async () => {
+		const onclose = vi.fn();
+		render(BottomSheet, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		acquire(mountViewer()).release();
 		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});

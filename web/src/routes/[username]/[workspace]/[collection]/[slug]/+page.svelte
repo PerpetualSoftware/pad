@@ -479,7 +479,9 @@
 		// Otherwise let the escape stack close exactly one layer, innermost-first
 		// (a graph drawer → the pane). No-op with nothing registered (stack empty →
 		// returns false → native ESC untouched).
-		if (runTopEscape()) e.preventDefault();
+		// The event is forwarded (TASK-2448) purely so a handler can mark the
+		// DISPATCH it consumed — the stack itself neither reads it nor acts on it.
+		if (runTopEscape(e)) e.preventDefault();
 	}
 
 	// Test-only hook (PLAN-2154 / TASK-2175): exposes the SAME pane-controller

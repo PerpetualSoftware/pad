@@ -130,7 +130,20 @@
 		//
 		// Empty stack + no native modal ⇒ `false`, so with no viewer open both
 		// the Escape close and the Tab trap behave exactly as before.
-		if (isBlockedByModal(sheetEl)) return;
+		//
+		// DELIBERATE, NAMED BEHAVIOUR CHANGE (TASK-2448 / BUG-2441) — the FOURTH
+		// named parity exception of PLAN-2392 phase 3a. The `event` argument makes
+		// the question EVENT-SCOPED as well as live: the viewer's escape handler
+		// runs earlier in this same dispatch and releases its lease synchronously,
+		// so the live question answers "nothing in front of you" and this sheet
+		// closes as a second layer on one press. A viewer that consumed the press
+		// marks it, and the mark outlives the lease.
+		//
+		// This is NOT the `defaultPrevented` bail TASK-2430 shipped and reverted:
+		// that fired with no viewer present. This marker is only ever set by a
+		// frontmost viewer, so with an empty lease stack it is unreachable and
+		// this line behaves exactly as `isBlockedByModal(sheetEl)` did.
+		if (isBlockedByModal(sheetEl, e)) return;
 		if (!isFrontmostSheet()) return;
 		if (e.key === 'Escape') {
 			e.preventDefault();
