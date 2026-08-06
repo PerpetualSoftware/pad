@@ -108,6 +108,14 @@
 
 	function onKeydown(e: KeyboardEvent) {
 		if (!open || e.key !== 'Escape') return;
+		// A HELD Escape fires many auto-repeat keydowns, and each is a FRESH
+		// event object — so the viewer's per-event consumption mark (BUG-2441)
+		// cannot cover them: by the second repeat its lease is already gone and
+		// the event is unmarked, so a hold would close the viewer and then this
+		// sheet. Only the initial physical press acts. The two route guards
+		// already do exactly this ([collection]/+page.svelte, [slug]/+page.svelte);
+		// this closes the same hole for the owners that did not (TASK-2448).
+		if (e.repeat) return;
 		// ONLY the frontmost-layer check. This handler still closes on an Escape a
 		// control already handled, exactly as it always has — TASK-2430 added a
 		// `defaultPrevented` bail here and it was REVERTED: it is a defensible

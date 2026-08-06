@@ -293,7 +293,7 @@ export interface LightboxImage {
 	 * event, the host and every producer later.
 	 *
 	 * This is the ONLY declaration of the shape. `Lightbox.svelte` used to
-	 * carry its own `{id, alt}` twin; it now re-exports this one, so the
+	 * carry its own `{id, alt}` twin; it now imports this one, so the
 	 * component's props and the channel's payload cannot drift.
 	 */
 	filename: string | null;

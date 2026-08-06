@@ -121,6 +121,11 @@
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (!open) return;
+		// A HELD Escape auto-repeats as FRESH event objects, which the viewer's
+		// per-event mark (BUG-2441) cannot cover once its lease is released —
+		// a hold would close the viewer and then this sheet. Only the initial
+		// press acts, matching the route guards (TASK-2448).
+		if (e.key === 'Escape' && e.repeat) return;
 		// TASK-2430 — front layer wins. `isFrontmostSheet()` only arbitrates
 		// between SHEETS; a body-portaled viewer (or a native `showModal()`
 		// dialog) sits above every sheet and is invisible to that check, so ask

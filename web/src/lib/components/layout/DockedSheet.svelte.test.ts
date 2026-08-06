@@ -70,6 +70,16 @@ function escape(): KeyboardEvent {
 	return new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
 }
 
+/** An auto-repeat Escape — what a HELD key fires after the first press. */
+function escapeRepeat(): KeyboardEvent {
+	return new KeyboardEvent('keydown', {
+		key: 'Escape',
+		bubbles: true,
+		cancelable: true,
+		repeat: true,
+	});
+}
+
 afterEach(() => {
 	cleanup();
 	__resetViewerBackdropForTests();
@@ -88,6 +98,35 @@ describe('DockedSheet — Escape ownership (TASK-2430)', () => {
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});
 
+	it('ignores an auto-repeat Escape, so a HELD key cannot cascade past the viewer', async () => {
+		// BUG-2441's per-event consumption mark cannot cover a hold: every
+		// auto-repeat is a FRESH event object, and by the second one the
+		// viewer's lease is already released — so an unguarded handler would
+		// close the viewer on the first press and this sheet on the second,
+		// from ONE physical press. Found by the final full-diff review
+		// (TASK-2448); the two route guards already rejected repeats.
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose }) });
+		await tick();
+		flushSync();
+
+		window.dispatchEvent(escapeRepeat());
+		expect(onclose).not.toHaveBeenCalled();
+	});
+	it('EMPTY-STACK REGRESSION: a repeat is ignored but the next REAL press still closes', async () => {
+		// The other half: the guard must reject repeats WITHOUT deadening the
+		// handler. A guard that declined unconditionally would pass the test
+		// above and break the sheet entirely.
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose }) });
+		await tick();
+		flushSync();
+
+		window.dispatchEvent(escapeRepeat());
+		expect(onclose).not.toHaveBeenCalled();
+		window.dispatchEvent(escape());
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
 	it('declines Escape while a viewer lease is frontmost', async () => {
 		const onclose = vi.fn();
 		render(DockedSheet, { props: baseProps({ onclose }) });

@@ -573,6 +573,11 @@
 	// ── Overflow menu keyboard ───────────────────────────────────────────
 	function handleOverflowKeydown(e: KeyboardEvent) {
 		if (!overflowOpen) return;
+		// A HELD Escape auto-repeats as FRESH event objects, so the viewer's
+		// per-event consumption mark (BUG-2441) cannot cover them once its lease
+		// is gone — a hold would close the viewer and then this menu. Only the
+		// initial press acts, matching the route guards (TASK-2448).
+		if (e.key === 'Escape' && e.repeat) return;
 		// TASK-2430 — this is a WINDOW handler owning Escape and Up/Down for a
 		// menu that lives in the app shell. While a viewer (or a native
 		// `showModal()` dialog) is in front, the shell is inert: consuming those
