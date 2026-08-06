@@ -111,7 +111,7 @@ function makeEditor(element: HTMLElement, content: string = BODY_CONTENT): Edito
 				getDownloadUrl: (uuid: string, variant?: string) =>
 					`/api/v1/workspaces/ws/attachments/${uuid}?variant=${variant ?? 'thumb-md'}`,
 				address: () => address,
-				supportedFormats: ['png'],
+				supportedFormats: () => ['png'],
 				transform: async () => {
 					throw new Error('not used');
 				},
@@ -137,7 +137,7 @@ function makeCommentEditor(element: HTMLElement): Editor {
 				getDownloadUrl: (uuid: string) => `/api/v1/workspaces/ws/attachments/${uuid}`,
 				workspaceSlug: 'ws',
 				address: () => address,
-				supportedFormats: [] as string[],
+				supportedFormats: () => [] as string[],
 				transform: async () => {
 					throw new Error('Image transforms are not available in comments.');
 				},

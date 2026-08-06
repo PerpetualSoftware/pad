@@ -64,7 +64,7 @@ function makeEditor(element: HTMLElement): Editor {
 				getDownloadUrl: (uuid: string, variant?: string) =>
 					`/api/v1/workspaces/ws/attachments/${uuid}?variant=${variant ?? 'thumb-md'}`,
 				address: () => address,
-				supportedFormats: ['png'],
+				supportedFormats: () => ['png'],
 				transform: async () => {
 					throw new Error('not used');
 				},

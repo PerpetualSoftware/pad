@@ -76,15 +76,44 @@ function registerToolbarRefresher(fn: () => void): () => void {
 
 /**
  * Re-run every active toolbar's refresh hook. Called by Editor.svelte
- * after `api.server.capabilities()` resolves and the new
- * `supportedFormats` list has been pushed onto the AttachmentImage
- * extension's options. Any toolbar that was sitting in the
- * "all-disabled" pre-capabilities state snaps to its correct
- * per-format gating.
+ * once `api.server.capabilities()` resolves, so that any toolbar sitting
+ * in the "all-disabled" pre-capabilities state re-reads the formats
+ * reader and snaps to its correct per-format gating.
+ *
+ * The push is about EXISTING toolbar DOM only — the value itself is read
+ * live through `options.supportedFormats()`, so a toolbar built after
+ * capabilities resolved is already correct without a notification.
  */
 export function notifyAttachmentImageCapabilitiesChanged(): void {
 	for (const fn of toolbarRefreshers) fn();
 }
+
+/**
+ * Reads the image formats the SERVER's processor supports, at the moment
+ * the toolbar needs them.
+ *
+ * A reader, not a `string[]`, for the reason `$lib/attachments/hostAddress`
+ * spells out at length: the list is only known after an async
+ * `/server/capabilities` fetch that resolves LONG after `configure()`, and
+ * Tiptap's `options` is a GETTER returning a fresh spread per access
+ * (`@tiptap/core@3.22.5`), so `ext.options.supportedFormats = caps` mutates
+ * a temporary that is thrown away on the next line. The NodeView compounds
+ * it by snapshotting `this.options` once at construction. Both look like
+ * they work; together they left the rotate/crop toolbar permanently in its
+ * degraded "no image processor" state (BUG-2426).
+ *
+ * The host supplies a closure over its own live capability state, so the
+ * value is current whenever it is read — no write ever has to land.
+ */
+export type SupportedFormatsReader = () => string[];
+
+/**
+ * Default option value: no processor. An editor that never wires
+ * capabilities gets the degraded toolbar, which is the honest answer —
+ * and is what `CommentEditor` configures DELIBERATELY, since comments
+ * do not offer transforms at all.
+ */
+export const readNoSupportedFormats: SupportedFormatsReader = () => [];
 
 /**
  * Result of a server-side image transform. The editor uses the new
@@ -123,12 +152,18 @@ export interface AttachmentImageOptions {
 	 */
 	address: AttachmentHostAddressReader;
 	/**
-	 * Image formats the server-side processor supports. Drives the
-	 * rotate toolbar's enabled state per attachment: a button is
-	 * disabled (with tooltip) when the image's MIME isn't in this
-	 * list. Empty list ⇒ all transforms disabled (degraded build).
+	 * Reads the image formats the server-side processor supports. Drives
+	 * the rotate toolbar's enabled state per attachment: a button is
+	 * disabled (with tooltip) when the image's MIME isn't in the list.
+	 * Empty list ⇒ all transforms disabled (degraded build, or a surface
+	 * like the comment composer that switches transforms off on purpose).
+	 *
+	 * A reader rather than a list because the list arrives from an async
+	 * capabilities fetch after `configure()` — see
+	 * `SupportedFormatsReader` above for why writing it in afterwards
+	 * cannot work (BUG-2426).
 	 */
-	supportedFormats: string[];
+	supportedFormats: SupportedFormatsReader;
 	/**
 	 * Calls the server's /transform endpoint. Set by Editor.svelte to
 	 * `api.attachments.transform(workspaceSlug, uuid, payload)`.
@@ -182,7 +217,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			getDownloadUrl: (uuid: string) => `${PAD_ATTACHMENT_PREFIX}${uuid}`,
 			workspaceSlug: '',
 			address: readUnaddressed,
-			supportedFormats: [] as string[],
+			supportedFormats: readNoSupportedFormats,
 			transform: async () => {
 				throw new Error('AttachmentImage: configure({ transform }) is required to use rotate/crop');
 			},
@@ -1016,7 +1051,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						});
 					return;
 				}
-				refreshToolbarState(toolbar, knownMime, opts.supportedFormats);
+				// Read through the option, never a captured list: `opts` is a
+				// snapshot of `this.options` taken when this NodeView was built,
+				// which for a toolbar that predates the capabilities fetch is
+				// before the server's formats are known (BUG-2426).
+				refreshToolbarState(toolbar, knownMime, opts.supportedFormats());
 			};
 			const ensureToolbar = (): HTMLElement => {
 				if (toolbar) return toolbar;

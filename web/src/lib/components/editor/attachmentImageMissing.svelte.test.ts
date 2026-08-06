@@ -68,7 +68,7 @@ function makeEditor(element: HTMLElement): Editor {
 				// reads, and with an empty one it never runs (which is itself the
 				// documented "unknown ⇒ keep today's behaviour" path).
 				address: () => ({ workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-1' }),
-				supportedFormats: [],
+				supportedFormats: () => [],
 				transform: async () => {
 					throw new Error('not used');
 				},
