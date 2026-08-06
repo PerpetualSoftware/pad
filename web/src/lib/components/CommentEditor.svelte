@@ -158,8 +158,11 @@
 					workspaceSlug: wsSlug,
 					// Panel / viewer addressing (PLAN-2392 DR-8).
 					address: readHostAddress,
-					// Rotate/crop stays disabled in comments — keep it lean.
-					supportedFormats: [] as string[],
+					// Rotate/crop stays DISABLED in comments — keep it lean. This
+					// reader is deliberately constant: the body editor wires its
+					// reader to the server's capabilities (BUG-2426), and the
+					// comment composer must not follow it there.
+					supportedFormats: () => [],
 					transform: async () => {
 						throw new Error('Image transforms are not available in comments.');
 					}

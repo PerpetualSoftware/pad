@@ -19,6 +19,7 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { paneFocusables, nextTrapTarget } from '$lib/collections/paneFocus';
+	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 
 	interface Props {
 		open: boolean;
@@ -120,6 +121,34 @@
 
 	function handleKeydown(e: KeyboardEvent) {
 		if (!open) return;
+		// A HELD Escape auto-repeats as FRESH event objects, which the viewer's
+		// per-event mark (BUG-2441) cannot cover once its lease is released —
+		// a hold would close the viewer and then this sheet. Only the initial
+		// press acts, matching the route guards (TASK-2448).
+		if (e.key === 'Escape' && e.repeat) return;
+		// TASK-2430 — front layer wins. `isFrontmostSheet()` only arbitrates
+		// between SHEETS; a body-portaled viewer (or a native `showModal()`
+		// dialog) sits above every sheet and is invisible to that check, so ask
+		// the shared arbitration helper as well. The argument is this sheet — the
+		// surface asking to act — not `event.target`: a viewer launched FROM this
+		// sheet still has the sheet as the keydown target.
+		//
+		// Empty stack + no native modal ⇒ `false`, so with no viewer open both
+		// the Escape close and the Tab trap behave exactly as before.
+		//
+		// DELIBERATE, NAMED BEHAVIOUR CHANGE (TASK-2448 / BUG-2441) — the FOURTH
+		// named parity exception of PLAN-2392 phase 3a. The `event` argument makes
+		// the question EVENT-SCOPED as well as live: the viewer's escape handler
+		// runs earlier in this same dispatch and releases its lease synchronously,
+		// so the live question answers "nothing in front of you" and this sheet
+		// closes as a second layer on one press. A viewer that consumed the press
+		// marks it, and the mark outlives the lease.
+		//
+		// This is NOT the `defaultPrevented` bail TASK-2430 shipped and reverted:
+		// that fired with no viewer present. This marker is only ever set by a
+		// frontmost viewer, so with an empty lease stack it is unreachable and
+		// this line behaves exactly as `isBlockedByModal(sheetEl)` did.
+		if (isBlockedByModal(sheetEl, e)) return;
 		if (!isFrontmostSheet()) return;
 		if (e.key === 'Escape') {
 			e.preventDefault();

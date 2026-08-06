@@ -13,6 +13,7 @@
 	import { inExemptSurface } from '$lib/collections/paneFocus';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
+	import { hasForeignEscapeOwner } from '$lib/a11y/viewerBackdrop';
 	import type { PaneTarget, ResolvedItemIdentity } from '$lib/types';
 
 	// Full-page pane HOST (PLAN-2154 Phase 2 / Architecture E, bullet 5 /
@@ -427,14 +428,33 @@
 		// A control that already handled this key (preventDefault) owns it.
 		if (e.defaultPrevented) return;
 		if (e.key !== 'Escape') return;
+		// NO `isBlockedByModal` BAIL HERE, deliberately (TASK-2430). This handler
+		// owns ONLY Escape, and it is the sole code path that runs the escape
+		// stack on this route — which is where the VIEWER's Escape lives
+		// (TASK-2429). An arbitration bail would return before `runTopEscape()`
+		// and leave a frontmost viewer's Escape with no owner at all.
+		//
+		// Escape's three-way precedence is already complete without one:
+		//   1. empty lease, no native modal → `hasForeignEscapeOwner()` is false →
+		//      today's behaviour, unchanged;
+		//   2. viewer lease frontmost → the helper EXCLUDES the viewer, so we fall
+		//      through and the stack dispatches to it (the depth-aware branches
+		//      below are gated on `topEscapePriority() === pane`, which a viewer
+		//      registered above `pane` makes false, so nothing double-closes);
+		//   3. native top-layer `<dialog>` → the helper's feature-detected
+		//      `dialog:modal` branch is true → we stand down and it wins.
+		// The sibling collection route DOES carry the bail, but below its Escape
+		// block, guarding its list/board navigation keys — which this host has
+		// none of.
 		const target = e.target as HTMLElement | null;
 		// Text-editing targets own ESC locally — don't hijack into a layer-close.
 		if (isTextEntryTarget(target)) return;
-		// A native <dialog> / role="dialog" sheet owns its own ESC. The pane's own
-		// mobile overlay is `role="dialog"` too (TASK-2131) but is EXCLUDED via
-		// `:not(.item-pane)` — it's the layer this ESC is meant to close, handled
-		// through the shared escape stack, not a foreign modal to defer to.
-		if (document.querySelector('dialog[open], [role="dialog"]:not(.item-pane)')) return;
+		// A native modal <dialog> / role="dialog" sheet owns its own ESC. The
+		// pane's own mobile overlay is `role="dialog"` too (TASK-2131) and so is
+		// the body-portaled attachment viewer (TASK-2429), but BOTH are EXCLUDED
+		// by the shared helper — they are layers this ESC is meant to close,
+		// handled through the escape stack, not foreign modals to defer to.
+		if (hasForeignEscapeOwner()) return;
 		// A HELD key auto-repeats; only the initial physical press acts.
 		if (e.repeat) {
 			e.preventDefault();
@@ -459,7 +479,9 @@
 		// Otherwise let the escape stack close exactly one layer, innermost-first
 		// (a graph drawer → the pane). No-op with nothing registered (stack empty →
 		// returns false → native ESC untouched).
-		if (runTopEscape()) e.preventDefault();
+		// The event is forwarded (TASK-2448) purely so a handler can mark the
+		// DISPATCH it consumed — the stack itself neither reads it nor acts on it.
+		if (runTopEscape(e)) e.preventDefault();
 	}
 
 	// Test-only hook (PLAN-2154 / TASK-2175): exposes the SAME pane-controller

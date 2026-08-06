@@ -1,6 +1,7 @@
 // Setup for the jsdom vitest project (see vitest.config.ts). Only loaded when
 // the browser test deps are installed, so importing them here is safe.
 import '@testing-library/jest-dom/vitest';
+import { beforeEach } from 'vitest';
 
 // jsdom does not implement the native <dialog> top-layer methods
 // (`HTMLDialogElement.prototype.showModal` / `.close` are either missing or
@@ -22,6 +23,73 @@ if (typeof HTMLDialogElement !== 'undefined') {
 		this.dispatchEvent(new Event('close'));
 	};
 }
+
+// This jsdom build exposes a `localStorage` OBJECT with no working methods
+// (it warns `--localstorage-file was provided without a valid path`), so
+// `localStorage.getItem is not a function` blows up at MODULE-LOAD time for
+// every store that reads a persisted preference — `ui.svelte.ts` does, which
+// takes `Sidebar`/`TopBar` and everything importing them out of reach of
+// component tests entirely (TASK-2430). A `typeof … !== 'function'` probe
+// (not a truthiness check on the object) is what actually detects it.
+//
+// SCOPE: do NOT assume a fresh instance per file. Whether the jsdom environment
+// (and therefore this shim) is rebuilt per test file depends on vitest's pool /
+// isolation config, and the `getItem` probe below deliberately skips
+// re-installation when a working Storage already exists — so a shim installed
+// for an earlier file can survive into a later one, carrying its keys with it.
+// That would make FILE ORDER observable through any module that reads a
+// persisted preference (`ui.svelte.ts` reads `pad-topbar` at import time, and
+// `PaneHost` persists a pane width on every drag).
+//
+// This repo runs plain `npm run test` with vitest's DEFAULT per-file isolation
+// (no `--no-isolate`, no pool override, in the config or in CI — checked), but
+// the `beforeEach` clear below does not rely on that: storage is emptied before
+// every TEST, so the shim stays deterministic if the pool config ever changes.
+// A test that needs a seeded value seeds it in its own `beforeEach`, which runs
+// after this one. Seeding in `beforeAll` will NOT survive — deliberately, since
+// that is precisely the pattern that makes order matter.
+//
+// TRADE-OFF WORTH KNOWING: this replaces BOTH `localStorage` and
+// `sessionStorage` with in-memory stand-ins. They are dumb maps — no quota, no
+// `StorageEvent`, no cross-document semantics, no serialization of non-strings
+// beyond `String(v)`. A genuine persistence bug that only reproduces against
+// real browser Storage will therefore pass here. If you are chasing one, that
+// is the first thing to rule out; the honest test for it is Playwright.
+if (typeof globalThis.localStorage?.getItem !== 'function') {
+	const makeStorage = (): Storage => {
+		const map = new Map<string, string>();
+		return {
+			get length() {
+				return map.size;
+			},
+			key: (i: number) => Array.from(map.keys())[i] ?? null,
+			getItem: (k: string) => (map.has(k) ? (map.get(k) as string) : null),
+			setItem: (k: string, v: string) => void map.set(k, String(v)),
+			removeItem: (k: string) => void map.delete(k),
+			clear: () => map.clear(),
+		} as Storage;
+	};
+	Object.defineProperty(globalThis, 'localStorage', {
+		value: makeStorage(),
+		configurable: true,
+		writable: true,
+	});
+	Object.defineProperty(globalThis, 'sessionStorage', {
+		value: makeStorage(),
+		configurable: true,
+		writable: true,
+	});
+}
+
+// Unconditional, and per TEST rather than per setup-file load: covers BOTH
+// branches above (freshly installed shim, or a real / previously-installed
+// Storage the probe skipped over) under any isolation setting.
+globalThis.localStorage?.clear?.();
+globalThis.sessionStorage?.clear?.();
+beforeEach(() => {
+	globalThis.localStorage?.clear?.();
+	globalThis.sessionStorage?.clear?.();
+});
 
 // jsdom does not implement `window.matchMedia`. Several client-only stores
 // (`breakpoint.svelte.ts`, `ui.svelte.ts`) call it at MODULE-LOAD time,

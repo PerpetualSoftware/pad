@@ -201,7 +201,12 @@ test('workspace export → import round-trip via web UI', async ({ page, fixture
 		await page.getByRole('button', { name: /\+ new workspace/i }).click();
 	}
 
-	await expect(page.getByRole('dialog')).toBeVisible();
+	// Target by ACCESSIBLE NAME, not a bare `dialog` role (TASK-2430): the app
+	// now hosts several concurrent `role="dialog"` surfaces (the mobile item
+	// pane, BottomSheet/DockedSheet, the body-portaled attachment viewer), so a
+	// bare locator is ambiguous — it resolves to whichever happens to be
+	// mounted, and strict mode fails outright once two are.
+	await expect(page.getByRole('dialog', { name: /new workspace/i })).toBeVisible();
 
 	// Modal opens in 'create' mode; switch to import.
 	const importTab = page.getByRole('button', { name: /^import$/i });

@@ -64,6 +64,14 @@ export function paneFocusables(
  * the `:not`, `closest()` from any in-pane element would match the pane and
  * wrongly mark the whole pane exempt (killing the mobile Tab trap and confusing
  * the classifier). A genuinely nested dialog opened FROM the pane still matches.
+ *
+ * The attachment viewer (TASK-2429) matches the ARIA branch, and MUST: it is a
+ * body-portaled `role="dialog"` that runs its own Tab trap and key handling, so
+ * both consumers have to leave it alone — exactly the case this set exists for.
+ * That is the opposite of the route ESC guards, which have to look PAST it
+ * (`hasForeignEscapeOwner`, `$lib/a11y/viewerBackdrop`) because its Escape is on
+ * the shared stack. Same attribute, two different questions; audited as part of
+ * TASK-2429's collision sweep.
  */
 export const PANE_EXEMPT_SURFACE_SELECTOR =
 	'dialog, [role="dialog"]:not(.item-pane), [role="menu"], [role="listbox"], .block-context-menu';

@@ -8,6 +8,11 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick, flushSync } from 'svelte';
 import BottomSheet from './BottomSheet.svelte';
+import {
+	acquire,
+	noteEscapeConsumedByViewer,
+	__resetViewerBackdropForTests
+} from '$lib/a11y/viewerBackdrop';
 
 // Two focusable controls so the Tab-trap wrap has a first/last to cycle between.
 const bodySnippet = createRawSnippet(() => ({
@@ -188,5 +193,138 @@ describe('BottomSheet.svelte', () => {
 		flushSync();
 
 		expect(document.activeElement).toBe(trigger);
+	});
+});
+
+// ── TASK-2430: front layer wins ──────────────────────────────────────────
+//
+// `isFrontmostSheet()` only arbitrates between SHEETS. A body-portaled viewer
+// sits above every sheet and is invisible to it, so the sheet also has to
+// consult the shared arbitration helper. Each case is paired with an
+// EMPTY-STACK REGRESSION: with no lease held, Escape and the Tab trap must
+// behave exactly as they did before.
+describe('BottomSheet.svelte — defers to a frontmost viewer (TASK-2430)', () => {
+	/** A body-portaled viewer root, exactly the shape `acquire` expects. */
+	function mountViewer(): HTMLElement {
+		const root = document.createElement('div');
+		root.className = 'attachment-viewer';
+		root.setAttribute('role', 'dialog');
+		document.body.appendChild(root);
+		return root;
+	}
+
+	afterEach(() => {
+		__resetViewerBackdropForTests();
+	});
+
+	it('EMPTY-STACK REGRESSION: still closes on Escape with no lease held', async () => {
+		const onclose = vi.fn();
+		render(BottomSheet, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('declines Escape while a viewer lease is frontmost, and takes it back on release', async () => {
+		const onclose = vi.fn();
+		render(BottomSheet, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		const lease = acquire(mountViewer());
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(onclose).not.toHaveBeenCalled();
+
+		lease.release();
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('declines an Escape a VIEWER already consumed, after the lease is gone', async () => {
+		// TASK-2448 / BUG-2441. The lease is released BEFORE the dispatch on
+		// purpose — that is what the browser does, since the viewer's escape
+		// handler runs earlier in the same event and Svelte flushes its teardown
+		// synchronously. The lease-state guard above cannot see this; only the
+		// event-scoped mark can.
+		const onclose = vi.fn();
+		render(BottomSheet, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		const lease = acquire(mountViewer());
+		const consumed = new KeyboardEvent('keydown', { key: 'Escape' });
+		noteEscapeConsumedByViewer(consumed);
+		lease.release();
+		window.dispatchEvent(consumed);
+		expect(onclose).not.toHaveBeenCalled();
+
+		// One Escape closes ONE layer — the sheet still owns the next press.
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('EMPTY-STACK REGRESSION: an unmarked Escape still closes it after a viewer has gone', async () => {
+		const onclose = vi.fn();
+		render(BottomSheet, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		acquire(mountViewer()).release();
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('OWNER ARGUMENT: an Escape ORIGINATING inside the viewer is still declined', async () => {
+		// The discriminating case for "the argument is the SURFACE ASKING TO ACT,
+		// not `event.target`". The blocked test above dispatches on `window`,
+		// where the target is outside the viewer too, so it would ALSO pass with
+		// the wrong argument. This is the realistic press — the viewer holds
+		// focus, so the target is a viewer control, and an `e.target` owner would
+		// answer "not blocked" and close the sheet underneath it.
+		const onclose = vi.fn();
+		render(BottomSheet, { props: baseProps({ open: true, onclose }) });
+		await tick();
+		flushSync();
+
+		const viewer = mountViewer();
+		const btn = document.createElement('button');
+		viewer.appendChild(btn);
+		acquire(viewer);
+
+		btn.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
+	it('EMPTY-STACK REGRESSION: still traps Tab with no lease held, and stops trapping under a viewer', async () => {
+		// Same visibility stub the positive Tab tests above use: without it jsdom
+		// reports every control as invisible, `paneFocusables` returns [], and the
+		// trap falls back to focusing the sheet container — which would still
+		// satisfy the assertions below without ever exercising the real wrap.
+		vi.spyOn(HTMLElement.prototype, 'getClientRects').mockReturnValue([
+			{ width: 1, height: 1 } as DOMRect
+		] as unknown as DOMRectList);
+		render(BottomSheet, { props: baseProps({ open: true }) });
+		await tick();
+		flushSync();
+
+		const last = document.getElementById('last-btn') as HTMLButtonElement;
+		last.focus();
+		const trapped = new KeyboardEvent('keydown', { key: 'Tab', cancelable: true });
+		window.dispatchEvent(trapped);
+		// The trap wrapped focus to the sheet's FIRST focusable — the header close
+		// button — and consumed the key.
+		expect(trapped.defaultPrevented).toBe(true);
+		expect(document.activeElement).toBe(getSheet().querySelector('.bs-close'));
+
+		// Under a viewer the sheet must NOT pull focus back into itself — the
+		// viewer runs its own trap.
+		acquire(mountViewer());
+		last.focus();
+		const passed = new KeyboardEvent('keydown', { key: 'Tab', cancelable: true });
+		window.dispatchEvent(passed);
+		expect(passed.defaultPrevented).toBe(false);
+		expect(document.activeElement).toBe(last);
 	});
 });

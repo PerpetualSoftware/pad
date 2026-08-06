@@ -873,6 +873,13 @@
 		const getAttachmentUrl = (uuid: string, variant?: AttachmentVariant) =>
 			wsSlug ? api.attachments.downloadUrl(wsSlug, uuid, variant) : `pad-attachment:${uuid}`;
 
+		// The server's image-processor formats, filled in by the async
+		// capabilities fetch below and read LIVE by the AttachmentImage
+		// NodeViews (BUG-2426). Held here rather than written onto the
+		// extension because a post-configure write to Tiptap's options is a
+		// no-op — see `SupportedFormatsReader` in attachment-image.ts.
+		let serverImageFormats: string[] = [];
+
 		// Reads the CURRENT host address at emit time (PLAN-2392 DR-8). This
 		// editor is remounted per item behind a {#key}, so a captured value
 		// would in fact be correct here — it is a reader anyway so both editor
@@ -953,13 +960,13 @@
 				// the life of a mount — ItemDetail remounts this editor per
 				// item ({#key item.id}) and mints one token per ItemDetail.
 				address: readHostAddress,
-				// Initial supportedFormats is empty — server capabilities
-				// are fetched async below. The toolbar starts disabled
-				// for all formats until capabilities resolve, then
-				// updates per-button via refreshToolbarState. The
-				// editor lifetime is long-lived so the one-call cost
-				// is amortized; no per-render fetch.
-				supportedFormats: [] as string[],
+				// Read live: server capabilities are fetched async below, so
+				// the list is empty when this editor is constructed and full
+				// once the fetch lands. The toolbar starts disabled for all
+				// formats and updates per-button via refreshToolbarState.
+				// The editor lifetime is long-lived so the one-call cost is
+				// amortized; no per-render fetch.
+				supportedFormats: () => serverImageFormats,
 				transform: async (uuid, payload) => {
 					if (!wsSlug) {
 						throw new Error('No workspace context — open the image inside a workspace to edit it.');
@@ -1149,19 +1156,20 @@
 		lastMarkdown = unescapeDocLinks((editor.storage as any).markdown.getMarkdown());
 		onEditor?.(editor);
 
-		// Fetch the server's image-processor capabilities and push the
-		// supported-formats list into the AttachmentImage extension so
-		// its rotate toolbar can gate per-format. Async / fire-and-
-		// forget — the toolbar starts disabled (empty list) and
-		// snaps to the right state once this resolves. The endpoint
-		// is public, so the fetch works pre-login on shared-item
-		// preview surfaces too.
+		// Fetch the server's image-processor capabilities so the rotate
+		// toolbar can gate per-format. Async / fire-and-forget — the
+		// toolbar starts disabled (empty list) and snaps to the right
+		// state once this resolves. The endpoint is public, so the fetch
+		// works pre-login on shared-item preview surfaces too.
+		//
+		// The list lands in `serverImageFormats`, which the extension reads
+		// through its `supportedFormats` reader. It is NOT written onto
+		// `ext.options`: that assignment used to live here and never
+		// reached the NodeViews, because Tiptap's `options` is a getter
+		// returning a fresh spread per access (BUG-2426).
 		api.server.capabilities()
 			.then((caps) => {
-				const ext = editor?.extensionManager.extensions.find(
-					(e: { name: string }) => e.name === 'attachmentImage'
-				);
-				if (ext) ext.options.supportedFormats = caps.image.image_formats;
+				serverImageFormats = caps.image.image_formats;
 				// Push the new list to any toolbars that were already
 				// open before this fetch resolved — without this, a
 				// user who selected an image during the in-flight

@@ -43,7 +43,9 @@
 	import CopyItemDialog from '$lib/components/items/CopyItemDialog.svelte';
 	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
 	import AttachmentPanelHost from '$lib/components/attachments/AttachmentPanelHost.svelte';
+	import AttachmentViewerHost from '$lib/components/attachments/AttachmentViewerHost.svelte';
 	import { createAttachmentHostToken } from '$lib/attachments/events';
+	import { createViewerResourceGen } from '$lib/attachments/viewerResource.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
 	import { isSamePaneTarget, breadcrumbParentTarget } from '$lib/collections/paneTarget';
@@ -409,6 +411,36 @@
 	$effect(() => {
 		onReady?.(scrollReady);
 	});
+
+	// Viewer-resource generation (PLAN-2392 / TASK-2428). A DEDICATED reactive
+	// counter that advances only when the LOADED item resource actually changes
+	// — the item this instance is showing, workspace included (IDEA-2135's
+	// same-ref-different-workspace case), and only once it matches the requested
+	// ref rather than mid-switch.
+	//
+	// It exists because neither of the two counters already here can be used:
+	// `loadGeneration` is a plain non-reactive fence bumped by EVERY loadData()
+	// — including the same-item reload after a collection schema edit — so a
+	// consumer keyed on it would tear down on a refresh that changed nothing it
+	// can see, and `itemGen` is bumped by every optimistic item write. The route
+	// is not usable either: a collection-only or username-only URL change
+	// preserves the item.
+	//
+	// Derived-then-observed rather than incremented at each `item = ...` site:
+	// there are ~30 of those and most are same-item writes. One key comparison
+	// states the rule once and cannot be forgotten by a future assignment.
+	//
+	// Both the rule and the effect that applies it live in
+	// `$lib/attachments/viewerResource*` so they are unit-testable: inline here
+	// they could only be exercised through the host's props, which are handed the
+	// answer and so cannot tell a correct counter from one that never moves
+	// (Codex round 6). The self-write discipline this effect needs — never read
+	// `gen` in the tracked scope — is documented and pinned there.
+	const viewerResource = createViewerResourceGen(() => ({
+		workspaceSlug: loadedItemWsSlug,
+		itemId: item?.id,
+		loaded: itemMatchesRef && item !== null,
+	}));
 
 	// Resolved identity for the host's `?item == master` guard (TASK-2173). Non-
 	// reactive-write $derived (CONVE-1688: the emit effect below only READS it):
@@ -5815,6 +5847,29 @@
 		{/key}
 	{/if}
 {/if}
+
+<!-- The image viewer's host (PLAN-2392 phase 3a / TASK-2428). One per
+     `ItemDetail` mount, sharing the token the panel host uses — one token per
+     HOST, not one per channel — and carrying no `mutationsEnabled`, because
+     3a's viewer has no mutating action and a dead prop is worse than none.
+
+     TOP LEVEL, not beside `AttachmentPanelHost` inside the `{:else if item &&
+     collection}` branch, and that placement is the whole lifecycle rule: every
+     `loadData()` sets `loading = true`, which swaps that entire subtree for the
+     skeleton — including a same-item schema reload after a collection edit.
+     Mounted in there, an open viewer would be destroyed by a background refresh
+     that changed nothing the user can see. Out here it survives, and closes on
+     exactly one thing: a resource switch, via the props below.
+
+     `itemId` is gated on `itemMatchesRef` (the TASK-2112 switch boundary) so a
+     mid-switch host addresses nothing; `resourceGen` is the dedicated counter
+     that advances only on a real loaded-item resource change — never on
+     `loadGeneration`, which every refresh bumps. -->
+<AttachmentViewerHost
+	itemId={itemMatchesRef ? item?.id : null}
+	hostToken={attachmentHostToken}
+	resourceGen={viewerResource.current}
+/>
 
 <style>
 	.center-message {

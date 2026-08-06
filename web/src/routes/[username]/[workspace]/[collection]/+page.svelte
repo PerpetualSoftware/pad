@@ -52,6 +52,7 @@
 	import { resolvePaneReturnTarget } from '$lib/collections/paneFocus';
 	import { createPaneMintSettle, PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
 	import { pushEscapeHandler, runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
+	import { hasForeignEscapeOwner, isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
 
 	type ViewMode = 'list' | 'board' | 'table';
@@ -2231,7 +2232,15 @@
 			// EXCLUDED via `:not(.item-pane)` — its ESC is owned by its own escape-
 			// stack handler, and counting it here would swallow ESC-to-close / pop.
 			// The graph drawer isn't a dialog, so the chain is otherwise unblocked.
-			if (document.querySelector('dialog[open], [role="dialog"]:not(.item-pane)')) return;
+			//
+			// Now the SHARED helper (TASK-2429): the attachment viewer is a
+			// body-portaled `role="dialog"` whose ESC is also on the stack, so the
+			// same exclusion it applies to the pane applies to it — without that,
+			// this guard would return here and the viewer's Escape would be dead.
+			// The helper keeps the ARIA branch (BottomSheet / DockedSheet own their
+			// own ESC and are NOT on the stack) and narrows only the native branch
+			// to a feature-detected `dialog:modal`.
+			if (hasForeignEscapeOwner()) return;
 			// A HELD key fires many auto-repeat keydowns (`e.repeat === true`).
 			// Consumed here, BEFORE any layer-close/pop decision, so a hold can
 			// never cascade through the chain — only the initial physical press
@@ -2306,9 +2315,35 @@
 				e.preventDefault();
 				return;
 			}
-			if (runTopEscape()) e.preventDefault();
+			// The event is forwarded (TASK-2448) purely so a handler can mark the
+			// DISPATCH it consumed — the stack itself neither reads it nor acts on
+			// it.
+			if (runTopEscape(e)) e.preventDefault();
 			return;
 		}
+
+		// ── Everything below is NAVIGATION, and it stops at a front layer ──
+		//
+		// THREE-WAY PRECEDENCE (TASK-2430), and note WHERE this sits: BELOW the
+		// Escape block, deliberately.
+		//
+		//   1. EMPTY viewer lease, no native modal → false. Nav keys behave
+		//      exactly as before; nothing changes without a viewer.
+		//   2. Viewer lease frontmost → true. `j`/`k`/`Enter`/Tab would otherwise
+		//      keep re-targeting the list UNDER the viewer, which is the half of
+		//      this handler Escape-only guards never covered.
+		//   3. Native top-layer `<dialog>` co-present → true; it owns the screen.
+		//
+		// It must NOT be hoisted above the Escape block. Escape's own three-way
+		// rule is already complete up there: `hasForeignEscapeOwner()` stands
+		// down for a native `dialog:modal` and for foreign sheets, and
+		// deliberately EXCLUDES the viewer — because the viewer's Escape lives on
+		// `escapeStack`, and THIS handler is the only code that runs the stack
+		// (TASK-2429). A blanket `isBlockedByModal` bail at the top of the
+		// function would therefore return before `runTopEscape()` and leave the
+		// viewer's Escape with no owner at all: a silently dead key, and the
+		// exact regression TASK-2429 exists to prevent.
+		if (isBlockedByModal(null)) return;
 
 		// Navigation keys (j/k/arrows/Enter): don't capture when focus is in an
 		// input/textarea/select or when quick-create is open.

@@ -11,22 +11,42 @@
 // Driven through a REAL Tiptap editor, like the chip spec: the placeholder is
 // imperative NodeView DOM and its accessibility semantics are properties of
 // that DOM, which a hand-built element would not pin.
+//
+// The viewer assertions here are PRODUCER-level — `notifyViewerOpen` is mocked,
+// so "opens" means "asks". A broken or absent host would be invisible to them;
+// that half of the route is `attachmentImageViewerHost.svelte.test.ts`'s.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 
 const deletionListeners = new Set<(uuid: string) => void>();
+// Every open-the-viewer request this NodeView makes, captured RAW — before the
+// channel's own addressability filter. The gate under test is the NodeView's;
+// routing is `events.ts`'s and has its own spec.
+const emitted: Array<Record<string, unknown>> = [];
 vi.mock('$lib/attachments/events', () => ({
 	notifyAttachmentPanelOpen: () => {},
+	notifyViewerOpen: (event: Record<string, unknown>) => {
+		emitted.push(event);
+	},
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
 		deletionListeners.add(fn);
 		return () => deletionListeners.delete(fn);
 	},
 }));
 
-// No probe: these tests are about what the placeholder IS, not how it is
-// discovered, and a real HEAD would make them asynchronous for no gain.
-const probeMock = vi.fn(async () => ({ status: 'transient' as const }));
+// The probe's full result union, spelled out. Without it `vi.fn` infers the
+// type of the DEFAULT implementation alone, and every `mockResolvedValue` for a
+// different arm is a type error — invisible under `npm run check`, which
+// excludes `*.svelte.test.ts`, and a trap for whoever widens that exclude.
+type ProbeResult =
+	| { status: 'ok'; mime: string; size: number }
+	| { status: 'missing' }
+	| { status: 'transient' };
+
+// No probe by default: these tests are about what the placeholder IS, not how
+// it is discovered, and a real HEAD would make them asynchronous for no gain.
+const probeMock = vi.fn<() => Promise<ProbeResult>>(async () => ({ status: 'transient' }));
 vi.mock('./attachment-metadata', () => ({
 	fetchAttachmentMetadata: () => probeMock(),
 	revalidateAttachmentMetadata: () => probeMock(),
@@ -48,7 +68,7 @@ function makeEditor(element: HTMLElement): Editor {
 				// reads, and with an empty one it never runs (which is itself the
 				// documented "unknown ⇒ keep today's behaviour" path).
 				address: () => ({ workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-1' }),
-				supportedFormats: [],
+				supportedFormats: () => [],
 				transform: async () => {
 					throw new Error('not used');
 				},
@@ -65,6 +85,7 @@ describe('inline image missing placeholder', () => {
 
 	beforeEach(() => {
 		deletionListeners.clear();
+		emitted.length = 0;
 		probeMock.mockClear();
 		target = document.body.appendChild(document.createElement('div'));
 	});
@@ -82,6 +103,16 @@ describe('inline image missing placeholder', () => {
 		return el;
 	}
 
+	/**
+	 * Let the lazy HEAD probe AND the activation's own MIME resolution settle.
+	 * Activation is asynchronous as of TASK-2433 — it resolves the MIME before
+	 * emitting — so a synchronous assertion after a click would read `[]` no
+	 * matter what the implementation does.
+	 */
+	async function settle() {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
 	function failLoad() {
 		const img = target.querySelector<HTMLImageElement>('img[data-attachment-id]');
 		if (!img) throw new Error('image NodeView did not render');
@@ -92,41 +123,91 @@ describe('inline image missing placeholder', () => {
 		// The allowlist gates EVERY open-the-viewer path, not just the strip's:
 		// image/svg+xml can carry active content, and a node being labelled
 		// image/* is not sufficient reason to hand it to a viewer.
-		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml' });
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml' , size: 4096 });
 		editor = makeEditor(target);
 		const img = target.querySelector<HTMLImageElement>('img[data-attachment-id]');
 		if (!img) throw new Error('image NodeView did not render');
 
 		// Select the node so the lazy MIME probe runs, then let it settle.
 		editor.commands.setNodeSelection(1);
-		await Promise.resolve();
-		await Promise.resolve();
+		await settle();
 
 		img.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
-		expect(document.querySelector('dialog.attachment-image-lightbox')).toBeNull();
+		await settle();
+		// NOTHING is emitted — not an event carrying the unsafe MIME for the
+		// viewer to reject at the other end. The gate is the producer's, because
+		// a request that reached the bus would be visible to any future consumer.
+		expect(emitted).toEqual([]);
 	});
 
-	it('still opens an allowlisted raster type', async () => {
-		// The gate must not cost the common case: a PNG opens as it always did.
-		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png' });
+	it('emits a fully-stamped viewer request for an allowlisted raster type', async () => {
+		// The gate must not cost the common case: a PNG opens as it always did —
+		// and this is the assertion the deletion of the old `<dialog>` rests on.
+		// "The dialog is gone" is satisfied by an implementation that opens
+		// NOTHING, so the claim has to be about what is EMITTED.
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 4096 });
 		editor = makeEditor(target);
 		const img = target.querySelector<HTMLImageElement>('img[data-attachment-id]');
 		if (!img) throw new Error('image NodeView did not render');
 
 		editor.commands.setNodeSelection(1);
-		await Promise.resolve();
-		await Promise.resolve();
+		await settle();
 
 		img.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
-		expect(document.querySelector('dialog.attachment-image-lightbox')).not.toBeNull();
-		document.querySelector('dialog.attachment-image-lightbox')?.remove();
+		await settle();
+
+		// The WHOLE payload, field by field. Each one is load-bearing and each
+		// has a plausible wrong value: the address routes the event to one of
+		// several mounted hosts (DR-8), `workspaceSlug` is what every image URL
+		// is read from, `mime_type` is what lets `Lightbox` re-state the DR-16
+		// gate over the set (it FAILS CLOSED on null as of TASK-2431, so an
+		// event with an unresolved MIME mounts a viewer that renders no image),
+		// and `invoker` is where the viewer aims focus on close.
+		expect(emitted).toEqual([
+			{
+				attachmentId: 'uuid-1',
+				workspaceSlug: 'ws',
+				itemId: 'item-A',
+				hostToken: 'apanel-1',
+				images: [
+					{
+						id: 'uuid-1',
+						alt: 'A diagram',
+						filename: null,
+						mime_type: 'image/png',
+						size_bytes: 4096,
+						width: null,
+						height: null,
+					},
+				],
+				index: 0,
+				invoker: img,
+			},
+		]);
+	});
+
+	it('emits nothing at all when the MIME cannot be resolved', async () => {
+		// The revised rule for this task (TASK-2431's adversarial round): a
+		// `transient` probe is NOT "unknown, so keep today's behaviour" any more.
+		// `Lightbox` fails closed on an unresolved MIME, so emitting one would be
+		// a request that opens nothing while looking, on the bus, exactly like a
+		// request that does. The retryable branch is TASK-2434's.
+		probeMock.mockResolvedValue({ status: 'transient' });
+		editor = makeEditor(target);
+		const img = target.querySelector<HTMLImageElement>('img[data-attachment-id]');
+		if (!img) throw new Error('image NodeView did not render');
+
+		img.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+		await settle();
+
+		expect(emitted).toEqual([]);
 	});
 
 	it('inertizes the transform toolbar when the attachment is deleted', async () => {
 		// A confirmed deletion inertizes the WHOLE node. Rotate and crop against
 		// a row that is gone can only 404, and leaving them live is the same
 		// dead-control gap the placeholder's role/tabindex removal closes.
-		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png' });
+		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png' , size: 4096 });
 		editor = makeEditor(target);
 		editor.commands.setNodeSelection(1);
 		await Promise.resolve();

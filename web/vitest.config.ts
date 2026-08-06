@@ -36,6 +36,7 @@ const projectRoot = fileURLToPath(new URL('.', import.meta.url));
 const $lib = fileURLToPath(new URL('./src/lib', import.meta.url));
 const appEnvironmentMock = fileURLToPath(new URL('./src/test/mocks/app-environment.ts', import.meta.url));
 const appStateMock = fileURLToPath(new URL('./src/test/mocks/app-state.ts', import.meta.url));
+const appNavigationMock = fileURLToPath(new URL('./src/test/mocks/app-navigation.ts', import.meta.url));
 
 // Agent worktrees symlink `web/node_modules` to the main checkout's
 // node_modules rather than `npm install`-ing a copy (installing clobbers a
@@ -98,6 +99,9 @@ export default defineConfig(async () => {
 					// since resolution happens first).
 					'$app/environment': appEnvironmentMock,
 					'$app/state': appStateMock,
+					// `$app/navigation` for the same reason (TASK-2430) — without it
+					// Sidebar / TopBar / PaneHost can't even be IMPORTED under jsdom.
+					'$app/navigation': appNavigationMock,
 				},
 			},
 			server: nodeModulesRealPath
