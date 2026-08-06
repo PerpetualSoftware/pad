@@ -198,6 +198,9 @@ Examples:
 					// --cli-prompt requires a TTY there too. Use --email/--name/
 					// --password to bootstrap a remote instance non-interactively.
 					printSetupRequiredHint(cfg)
+					if cfg.Mode == config.ModeCloud {
+						return fmt.Errorf("Pad Cloud account required")
+					}
 					return fmt.Errorf("this Pad instance has not been initialized yet")
 				} else if !canPromptForConfig() {
 					printSetupRequiredHint(cfg)

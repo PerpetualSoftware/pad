@@ -691,11 +691,16 @@ func saveCredentials(cfg *config.Config, resp *cli.LoginResponse) error {
 }
 
 func printSetupRequiredHint(cfg *config.Config) {
-	fmt.Println("This Pad instance has not been initialized yet.")
 	switch cfg.Mode {
-	case config.ModeRemote, config.ModeCloud:
+	case config.ModeCloud:
+		fmt.Println("You're configured in Cloud mode but don't have an account on Pad Cloud yet.")
+		fmt.Printf("  Sign up at %s/register, then run 'pad auth login'.\n", config.CloudBaseURL)
+		fmt.Println("  Or switch to a local server with 'pad auth configure --mode local'.")
+	case config.ModeRemote:
+		fmt.Println("This Pad instance has not been initialized yet.")
 		fmt.Println("Run 'pad auth setup' on the machine or container running the Pad server, then try again.")
 	default:
+		fmt.Println("This Pad instance has not been initialized yet.")
 		fmt.Println("Run 'pad auth setup' to create the first admin account, then try again.")
 	}
 }
