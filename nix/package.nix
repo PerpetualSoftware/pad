@@ -61,7 +61,7 @@ buildGoModule {
 
   # Update alongside go.sum. Regenerate via:
   #   nix build .#default 2>&1 | grep -A2 'got:'
-  vendorHash = "sha256-lfC5x/sS1KaC2AhGAJG1ozrbjJTHPTvqAq6ufGr+3Gk=";
+  vendorHash = "sha256-0vhfrqrIOvmDWPI2iED4u0byhFq9puyUYOWU+DE222A=";
 
   subPackages = [ "cmd/pad" ];
 
