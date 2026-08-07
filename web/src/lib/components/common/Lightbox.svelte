@@ -16,7 +16,9 @@
 	 *
 	 * Keyboard: Esc closes (through `escapeStack`, NOT a local listener),
 	 * ←/→ navigate when multiple images were passed, Tab cycles within the
-	 * viewer. Backdrop click closes; clicking the image itself does not.
+	 * viewer, `+`/`-` zoom about the stage centre and `0` resets (PLAN-2392
+	 * phase 3b / TASK-2455). Backdrop click closes; clicking the image itself
+	 * does not.
 	 */
 	import { untrack } from 'svelte';
 	import { attachmentDownloadUrl } from '$lib/markdown/attachments';
@@ -30,6 +32,15 @@
 	} from '$lib/a11y/viewerBackdrop';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { canOpenInViewer } from '$lib/attachments/display';
+	import {
+		reset as resetZoom,
+		clampState,
+		zoomTo,
+		stageCenter,
+		ZOOM_STEP,
+		type Geometry,
+		type ZoomState,
+	} from '$lib/attachments/zoom';
 	/**
 	 * ONE definition of what an image in this viewer is (PLAN-2392 / TASK-2431).
 	 *
@@ -173,6 +184,52 @@
 	// a flush (CONVE-1688).
 	let rootEl = $state<HTMLElement | null>(null);
 
+	// ── Zoom / pan (PLAN-2392 phase 3b / TASK-2455) ──────────────────────────
+	//
+	// The transform is `translate(x,y) scale(scale)` on the <img>, about the
+	// stage centre. Every number comes from `$lib/attachments/zoom` (TASK-2454),
+	// which owns the arithmetic and its bounds; this component only MEASURES the
+	// rendered geometry, wires the keys, and re-clamps on resize.
+	let zoom = $state<ZoomState>(resetZoom());
+	// The stage is the 92vw×92vh box the bare <img> used to be; the <img> sits
+	// inside it, `object-fit: contain`. Both are read live for geometry — never
+	// through `getBoundingClientRect()` on the transformed image, which returns
+	// the POST-scale box and would make the pan bounds grow with the zoom.
+	let stageEl = $state<HTMLElement | null>(null);
+	let imgEl = $state<HTMLImageElement | null>(null);
+
+	/**
+	 * The measured geometry, or null before there is anything to measure.
+	 *
+	 * `offsetWidth` / `offsetHeight` are the UNSCALED layout box — transforms do
+	 * not touch them, which is the whole reason they, not `getBoundingClientRect`,
+	 * are the source here. A not-yet-decoded bitmap reads back all zeros; the zoom
+	 * module is defensive about that and still returns an in-bounds transform, so
+	 * no guard is needed here.
+	 */
+	function readGeometry(): Geometry | null {
+		const stage = stageEl;
+		const image = imgEl;
+		if (!stage || !image) return null;
+		return {
+			stageW: stage.clientWidth,
+			stageH: stage.clientHeight,
+			fittedW: image.offsetWidth,
+			fittedH: image.offsetHeight,
+			naturalW: image.naturalWidth,
+			naturalH: image.naturalHeight,
+		};
+	}
+
+	// `+` / `-` zoom about the stage centre. Reading and writing `zoom` from an
+	// EVENT handler is fine — the CONVE-1688 rule is about `$effect`s that read
+	// the state they write, not about handlers.
+	function stepZoom(factor: number) {
+		const g = readGeometry();
+		if (!g) return;
+		zoom = zoomTo(zoom, zoom.scale * factor, stageCenter(g), g);
+	}
+
 	// Stepped from `shownIndex`, not from `current`: after the set shrinks they
 	// differ, and moving from the raw value would jump relative to a position
 	// the user was never on. Both are no-ops on an empty set — reachable only
@@ -289,6 +346,44 @@
 		};
 	});
 
+	// Reset the transform whenever the SHOWN image changes — arrow nav, or the
+	// set shrinking under `current` so a different member is shown (TASK-2455).
+	// Close needs no handling: every producer keys the mount, so closing
+	// unmounts this instance and the next open starts from `resetZoom()`.
+	//
+	// `lastResetForId` is a PLAIN let, not `$state`: an effect that read and wrote
+	// the same `$state` would self-depend and abort its own flush (CONVE-1688),
+	// stranding unrelated reactivity nearby. This effect reads `img?.id` (tracked)
+	// and writes `zoom` (which it never reads) plus this sentinel (a plain let, so
+	// never tracked) — nothing it writes is anything it reads. Seeded to the
+	// current id so the mount does not fire a redundant reset.
+	let lastResetForId: string | undefined = untrack(() => img?.id);
+	$effect(() => {
+		const id = img?.id;
+		if (id === lastResetForId) return;
+		lastResetForId = id;
+		zoom = resetZoom();
+	});
+
+	// Re-clamp on stage resize. `maxScale` is geometry-dependent and geometry is
+	// viewport-dependent, so ENLARGING the window lowers the ceiling and can
+	// strand a previously-valid scale above it. `clampState` re-clamps SCALE
+	// first, then pan — the order a geometry change needs; clamping pan first
+	// would bound it against a scale that is about to change. The callback runs
+	// outside any tracked scope, so its `zoom` read/write is not a self-write.
+	// Guarded for environments without `ResizeObserver` (SSR); the jsdom test
+	// project ships a global stand-in (`src/test/setup-jsdom.ts`).
+	$effect(() => {
+		const stage = stageEl;
+		if (!stage || typeof ResizeObserver === 'undefined') return;
+		const ro = new ResizeObserver(() => {
+			const g = readGeometry();
+			if (g) zoom = clampState(zoom, g);
+		});
+		ro.observe(stage);
+		return () => ro.disconnect();
+	});
+
 	function onKeydown(e: KeyboardEvent) {
 		// A control that already handled this key owns it.
 		if (e.defaultPrevented) return;
@@ -327,9 +422,38 @@
 		if (e.key === 'ArrowLeft' && hasMultiple) {
 			e.preventDefault();
 			prev();
-		} else if (e.key === 'ArrowRight' && hasMultiple) {
+			return;
+		}
+		if (e.key === 'ArrowRight' && hasMultiple) {
 			e.preventDefault();
 			next();
+			return;
+		}
+
+		// Zoom: `+` / `-` about the stage centre, `0` resets. INSIDE the gates
+		// above by construction — placed after `defaultPrevented`,
+		// `isViewerFrontmost` and `isBlockedByModal` have each had their say, so a
+		// zoom key can never steal a press another owner or a layer above is due.
+		//
+		// The modifier rule is a CONTRACT, not a nicety: this listens on `window`,
+		// so acting on Ctrl/Cmd/Alt-`-`/`0` would swallow the browser's own
+		// page-zoom (and OS) shortcuts from every surface while a viewer is open.
+		// Leave those keys entirely — do not act, and do NOT `preventDefault`, or
+		// the native shortcut is cancelled even though we declined to handle it.
+		// `shiftKey` is fine (on most layouts `+` IS Shift+`=`), so it is absent
+		// from the guard.
+		if (e.ctrlKey || e.metaKey || e.altKey) return;
+		if (e.key === '+' || e.key === '=') {
+			// `+` — including the numpad, whose `.key` is also `'+'` — and bare `=`.
+			e.preventDefault();
+			stepZoom(ZOOM_STEP);
+		} else if (e.key === '-') {
+			// `-`, including the numpad, whose `.key` is also `'-'`.
+			e.preventDefault();
+			stepZoom(1 / ZOOM_STEP);
+		} else if (e.key === '0') {
+			e.preventDefault();
+			zoom = resetZoom();
 		}
 		// NO Escape branch. See the registration above.
 	}
@@ -397,9 +521,26 @@
 		</button>
 	{/if}
 
-	{#if img}
-		<img class="lightbox-image" {src} alt={img.alt || 'Attachment'} />
-	{/if}
+	<!--
+		The STAGE is the 92vw×92vh box the bare <img> used to be; the image sits
+		inside it, `object-fit: contain`, and carries the zoom transform. The stage
+		is `pointer-events: none` so a click on the empty letterbox around the image
+		falls through to the backdrop and closes (exactly as it did when the image
+		was the only thing here); the image re-enables pointer events so a click ON
+		it does not close — and so 3c's drag / 3d's pinch have a target. The controls
+		sit ABOVE the stage (their own `z-index`), never inside it.
+	-->
+	<div class="lightbox-stage" bind:this={stageEl}>
+		{#if img}
+			<img
+				bind:this={imgEl}
+				class="lightbox-image"
+				{src}
+				alt={img.alt || 'Attachment'}
+				style="transform: translate({zoom.x}px, {zoom.y}px) scale({zoom.scale});"
+			/>
+		{/if}
+	</div>
 
 	{#if hasMultiple}
 		<!-- `shownIndex`, so the counter names the image actually on screen even
@@ -453,17 +594,49 @@
 		cursor: zoom-out;
 	}
 
+	.lightbox-stage {
+		/* The box the bare <img> used to occupy — TASK-2454's coordinate system. */
+		width: 92vw;
+		height: 92vh;
+		flex: none;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		/*
+		 * The empty letterbox around the image is transparent to pointer events, so
+		 * a click there reaches the backdrop and closes — the pre-zoom behaviour.
+		 * The image below re-enables them. Deliberately NOT `touch-action: none`
+		 * here: that would kill native pinch before 3d's handler exists, leaving
+		 * phone users no zoom at all in the interval (out of TASK-2455's scope).
+		 */
+		pointer-events: none;
+	}
+
 	.lightbox-image {
-		max-width: 92vw;
-		max-height: 92vh;
+		max-width: 100%;
+		max-height: 100%;
 		object-fit: contain;
 		border-radius: var(--radius);
 		box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
 		cursor: default;
+		pointer-events: auto;
+		transform-origin: center;
+		transition: transform 0.15s ease-out;
+	}
+
+	/* Reduced motion suppresses the TRANSITION only — the zoom still works
+	   (Modal.svelte's precedent). */
+	@media (prefers-reduced-motion: reduce) {
+		.lightbox-image {
+			transition: none;
+		}
 	}
 
 	.lightbox-close {
 		position: absolute;
+		/* Above the stage's stacking context. Small on purpose: the viewer's own
+		   z-index sweep (TASK-2436) forbids any app overlay at or above 100000. */
+		z-index: 1;
 		top: var(--space-3);
 		right: var(--space-3);
 		width: 40px;
@@ -486,6 +659,7 @@
 
 	.lightbox-nav {
 		position: absolute;
+		z-index: 1;
 		top: 50%;
 		transform: translateY(-50%);
 		width: 48px;
@@ -516,6 +690,7 @@
 
 	.lightbox-counter {
 		position: absolute;
+		z-index: 1;
 		bottom: var(--space-3);
 		left: 50%;
 		transform: translateX(-50%);

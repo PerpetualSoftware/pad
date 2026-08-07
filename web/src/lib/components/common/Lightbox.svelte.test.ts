@@ -120,6 +120,26 @@ function closeButton(scope: HTMLElement = root()): HTMLButtonElement {
 	return scope.querySelector<HTMLButtonElement>('.lightbox-close')!;
 }
 
+/** The `transform` inline style on the viewer's image (empty before it mounts). */
+function transformOf(scope: HTMLElement = root()): string {
+	return scope.querySelector<HTMLImageElement>('.lightbox-image')?.style.transform ?? '';
+}
+
+/**
+ * The `scale(...)` factor currently on the image, or NaN if there is none.
+ *
+ * jsdom lays nothing out, so the geometry the zoom module reads is all zeros —
+ * but `maxScale` FALLS BACK to `4` on an unusable geometry (a small image still
+ * needs a zoom range), so `zoomTo` still moves off fit here. That is what makes
+ * the scale observable in jsdom at all; the pan bounds, which DO need real
+ * geometry, are exercised in the browser suite (TASK-2436) and proven in
+ * `zoom.test.ts`.
+ */
+function scaleOf(scope: HTMLElement = root()): number {
+	const m = /scale\(([-\d.]+)\)/.exec(transformOf(scope));
+	return m ? Number(m[1]) : NaN;
+}
+
 /** A cancelable window keydown, returning whether the app consumed it. */
 function press(key: string, init: KeyboardEventInit = {}): boolean {
 	const event = new KeyboardEvent('keydown', { key, cancelable: true, bubbles: true, ...init });
@@ -154,6 +174,9 @@ afterEach(() => {
 	_resetEscapeStackForTests();
 	HTMLElement.prototype.getClientRects = realGetClientRects;
 	vi.restoreAllMocks();
+	// The zoom resize test installs a driving `ResizeObserver` via `vi.stubGlobal`;
+	// restore the setup-file's global inert shim so it can't leak into a later test.
+	vi.unstubAllGlobals();
 });
 
 describe('Lightbox — dialog semantics', () => {
@@ -1016,5 +1039,328 @@ describe('Lightbox — background inertness (delegated)', () => {
 		flushSync();
 		expect(document.activeElement).not.toBe(invokerFront);
 		expect(back.contains(document.activeElement)).toBe(true);
+	});
+});
+
+// TASK-2455 — the zoom transform wired into the viewer (PLAN-2392 phase 3b).
+//
+// jsdom has no layout, so these assert the WIRING and the ARBITRATION, not the
+// pan geometry: which key does what, that the modifier / gate rules hold, and
+// that the transform resets when the shown image changes. The arithmetic those
+// keys drive is proven browser-free in `zoom.test.ts`; the pixel geometry is
+// TASK-2436's browser suite.
+
+describe('Lightbox — zoom keys', () => {
+	it('zooms IN on + (identity → one step), centred', () => {
+		mountViewer();
+		expect(scaleOf()).toBe(1);
+		expect(transformOf()).toBe('translate(0px, 0px) scale(1)');
+
+		expect(press('+')).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+		// A centre-anchored zoom leaves the pan at zero.
+		expect(transformOf()).toContain('translate(0px, 0px)');
+	});
+
+	it('accepts a bare = as zoom-IN (the unshifted key on most layouts)', () => {
+		mountViewer();
+		expect(press('=')).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('accepts the numpad plus — matched on .key, so .code is irrelevant', () => {
+		// The numpad's `+` reports `key === '+'` (only `code` says `NumpadAdd`), so
+		// a code-based match would silently miss it. This pins the key-based one.
+		mountViewer();
+		const event = new KeyboardEvent('keydown', {
+			key: '+',
+			code: 'NumpadAdd',
+			cancelable: true,
+			bubbles: true,
+		});
+		window.dispatchEvent(event);
+		flushSync();
+		expect(event.defaultPrevented).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('zooms OUT on - (back toward fit)', () => {
+		mountViewer();
+		press('+');
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25 * 1.25);
+		expect(press('-')).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('does not zoom below fit: - at fit is a no-op', () => {
+		// The floor is FIT (=1); `clampScale` holds it, so `-` at fit changes
+		// nothing rather than shrinking the image past its fitted box.
+		mountViewer();
+		expect(press('-')).toBe(true);
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('resets to fit, centred, on 0', () => {
+		mountViewer();
+		press('+');
+		press('+');
+		expect(scaleOf()).toBeGreaterThan(1);
+		expect(press('0')).toBe(true);
+		expect(scaleOf()).toBe(1);
+		expect(transformOf()).toBe('translate(0px, 0px) scale(1)');
+	});
+
+	it('IGNORES + when Alt is held — and does NOT preventDefault', () => {
+		// Alt-modified is the OS's, not ours. Acting would be wrong; ALSO
+		// preventing default would cancel the OS shortcut even though we declined.
+		mountViewer();
+		expect(press('+', { altKey: true })).toBe(false);
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('IGNORES - when Ctrl is held (browser page-zoom-out) — and does NOT preventDefault', () => {
+		// The whole reason the modifier rule is a contract: this listens on
+		// `window`, so swallowing Ctrl+- would break page-zoom from every surface
+		// while a viewer is open.
+		mountViewer();
+		expect(press('-', { ctrlKey: true })).toBe(false);
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('IGNORES 0 when Cmd is held (browser reset-zoom) — and does NOT preventDefault', () => {
+		mountViewer();
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25);
+		// Cmd+0 is the browser's reset — leave the viewer's own zoom untouched and
+		// let the event through.
+		expect(press('0', { metaKey: true })).toBe(false);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+});
+
+describe('Lightbox — zoom keys are ARBITRATED, not just handled', () => {
+	// A `+`/`-`/`0` branch placed BEFORE the existing gates would pass every zoom
+	// test above while stealing a press another owner or a layer is due. Each gate
+	// gets its own leg with a positive control.
+
+	function mockOpenModals(modals: Element[]): void {
+		const realQueryAll = document.querySelectorAll.bind(document);
+		vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
+			if (selector !== 'dialog:modal') return realQueryAll(selector);
+			return Array.from(realQueryAll('dialog')).filter((d) =>
+				modals.includes(d)
+			) as unknown as NodeListOf<Element>;
+		});
+		const realMatches = Element.prototype.matches;
+		vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
+			this: Element,
+			selector: string
+		) {
+			if (selector !== 'dialog:modal') return realMatches.call(this, selector);
+			return realMatches.call(this, 'dialog') && modals.includes(this);
+		});
+	}
+
+	it('declines a key another control already handled (defaultPrevented) — control: an un-consumed one acts', () => {
+		mountViewer();
+		const consumed = new KeyboardEvent('keydown', { key: '+', cancelable: true, bubbles: true });
+		consumed.preventDefault();
+		window.dispatchEvent(consumed);
+		flushSync();
+		expect(scaleOf()).toBe(1);
+
+		// Positive control: the SAME key, not pre-consumed, does zoom.
+		expect(press('+')).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('zooms only the FRONTMOST viewer, never the one behind it', () => {
+		mountViewer();
+		const back = root();
+		mountViewer();
+		const front = root();
+		expect(back).not.toBe(front);
+
+		expect(press('+')).toBe(true);
+		expect(scaleOf(front)).toBeCloseTo(1.25);
+		expect(scaleOf(back)).toBe(1);
+	});
+
+	it('stands down while a showModal() dialog is above it, and resumes after it closes', () => {
+		// The emulation goes in BEFORE the mount: the manager probes `:modal` on
+		// its first reconcile and jsdom's throw makes it cache "unsupported" for
+		// the module's life, so mocking afterwards would be ignored.
+		const dialog = document.body.appendChild(document.createElement('dialog'));
+		mockOpenModals([dialog]);
+		mountViewer();
+
+		expect(press('+')).toBe(false);
+		expect(scaleOf()).toBe(1);
+
+		mockOpenModals([]);
+		expect(press('+')).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+});
+
+describe('Lightbox — the transform resets when the shown image changes (TASK-2455)', () => {
+	function mountLive() {
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		return app;
+	}
+
+	it('resets on arrow navigation', () => {
+		mountViewer({ images: [image(IMG_A, 'first'), image(IMG_B, 'second')] });
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25);
+
+		expect(press('ArrowRight')).toBe(true);
+		expect(imageSrc()).toContain(IMG_B);
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('resets when the set shrinks under `current` so a DIFFERENT image is shown', () => {
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg')];
+		mountLive();
+		press('ArrowRight');
+		expect(imageSrc()).toContain(IMG_B);
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25);
+
+		// B's MIME resolves unsafe → it drops out → the shown image becomes A →
+		// the transform is back at fit.
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg', 'image/svg+xml')];
+		flushSync();
+		expect(imageSrc()).toContain(IMG_A);
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('does NOT reset (and keeps the zoom) when an image is added AFTER the shown one', () => {
+		// The reset keys on the shown image's identity, not on the array changing:
+		// growing the set past `current` leaves the shown image — and its zoom —
+		// alone.
+		liveProps.images = [image(IMG_A, 'only')];
+		mountLive();
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25);
+
+		liveProps.images = [image(IMG_A, 'only'), image(IMG_C, 'second', 'image/jpeg')];
+		flushSync();
+		expect(imageSrc()).toContain(IMG_A);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('a reset does not wedge the scheduler: unrelated reactivity still flushes AFTER a navigate', () => {
+		// Acceptance #3. The symptom of an $effect writing a $state it also reads is
+		// that OTHER reactivity near it silently strands. So the test must FIRE the
+		// reset effect (the effect that writes `zoom`) and THEN prove an unrelated
+		// derived still recomputes. Navigation is what fires it; growing the set
+		// without navigating leaves `img.id` unchanged, so the reset effect never
+		// runs and could not have wedged anything — a weaker test that a
+		// self-dependent reset would still pass.
+		liveProps.images = [image(IMG_A, 'first'), image(IMG_B, 'second')];
+		mountLive();
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25);
+
+		// Navigation fires the reset effect (img A → B), taking the transform back
+		// to fit — the write a self-dependent effect would abort mid-flush.
+		expect(press('ArrowRight')).toBe(true);
+		expect(scaleOf()).toBe(1);
+
+		// UNRELATED to the reset: grow the set past the shown image. Its counter
+		// derived must still recompute — a wedged scheduler would strand it at the
+		// pre-update value.
+		liveProps.images = [
+			image(IMG_A, 'first'),
+			image(IMG_B, 'second'),
+			image(IMG_C, 'third', 'image/jpeg'),
+		];
+		flushSync();
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('2 / 3');
+	});
+});
+
+describe('Lightbox — resize re-clamps SCALE first, then pan (TASK-2455)', () => {
+	it('pulls a now-out-of-range scale down when the stage grows and lowers the ceiling', () => {
+		// jsdom fires no ResizeObserver, so DRIVE one by hand and mock the geometry
+		// the component reads. The scenario is the headline one: enlarging the
+		// window lowers `actualScale` and with it `maxScale`, stranding a
+		// previously-valid scale above the new ceiling. Only `clampState` (scale
+		// THEN pan) fixes it — `clampPan` alone would leave the scale untouched.
+		let roCallback: ResizeObserverCallback | null = null;
+		let observed: Element | null = null;
+		vi.stubGlobal(
+			'ResizeObserver',
+			class {
+				constructor(cb: ResizeObserverCallback) {
+					roCallback = cb;
+				}
+				observe(target: Element) {
+					observed = target;
+				}
+				unobserve() {}
+				disconnect() {}
+			}
+		);
+
+		mountViewer();
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		const stage = root().querySelector<HTMLElement>('.lightbox-stage')!;
+		// It observes the STAGE (whose size IS the viewport-dependent geometry),
+		// not the image or the backdrop.
+		expect(observed).toBe(stage);
+
+		// A big bitmap fitted into a small box: actualScale = 1000/100 = 10, so the
+		// ceiling starts at 40 — lots of headroom to zoom into.
+		let fitted = 100;
+		Object.defineProperty(image, 'offsetWidth', { configurable: true, get: () => fitted });
+		Object.defineProperty(image, 'offsetHeight', { configurable: true, get: () => fitted });
+		Object.defineProperty(image, 'naturalWidth', { configurable: true, get: () => 1000 });
+		Object.defineProperty(image, 'naturalHeight', { configurable: true, get: () => 1000 });
+		Object.defineProperty(stage, 'clientWidth', { configurable: true, get: () => fitted });
+		Object.defineProperty(stage, 'clientHeight', { configurable: true, get: () => fitted });
+
+		// Zoom well past 4 (1.25^8 ≈ 5.96), which the ceiling of 40 permits.
+		for (let i = 0; i < 8; i++) press('+');
+		expect(scaleOf()).toBeGreaterThan(5);
+
+		// The stage grows until the image fits 1:1: actualScale → 1, ceiling → 4.
+		// The current scale (~5.96) is now above it.
+		fitted = 1000;
+		expect(roCallback).not.toBeNull();
+		roCallback!([] as unknown as ResizeObserverEntry[], null as unknown as ResizeObserver);
+		flushSync();
+
+		// Re-clamped to the new ceiling — proof the SCALE was clamped, not only pan.
+		expect(scaleOf()).toBeCloseTo(4);
+	});
+});
+
+describe('Lightbox — + / - anchor at the stage centre (TASK-2455)', () => {
+	it('keeps the pan at ZERO when zooming a centred image that overflows the stage', () => {
+		// The only leg that pins the ANCHOR. Everywhere else jsdom's all-zero
+		// geometry forces `stageCenter` to (0,0) and the pan to 0, so an off-centre
+		// anchor is invisible. Here the (mocked) geometry lets the zoomed image
+		// OVERFLOW the stage, freeing the pan — and a centre-anchored zoom of an
+		// already-centred image must still leave it at (0,0). A top-left (or any
+		// non-centre) anchor would push a non-zero translate and fail this.
+		mountViewer();
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		const stage = root().querySelector<HTMLElement>('.lightbox-stage')!;
+		Object.defineProperty(image, 'offsetWidth', { configurable: true, get: () => 400 });
+		Object.defineProperty(image, 'offsetHeight', { configurable: true, get: () => 400 });
+		Object.defineProperty(image, 'naturalWidth', { configurable: true, get: () => 2000 });
+		Object.defineProperty(image, 'naturalHeight', { configurable: true, get: () => 2000 });
+		Object.defineProperty(stage, 'clientWidth', { configurable: true, get: () => 1000 });
+		Object.defineProperty(stage, 'clientHeight', { configurable: true, get: () => 1000 });
+
+		// 400 × 1.25^5 ≈ 1220 > 1000, so the image overflows and pan is unclamped.
+		for (let i = 0; i < 5; i++) press('+');
+		expect(scaleOf()).toBeGreaterThan(2.5);
+		expect(transformOf()).toContain('translate(0px, 0px)');
 	});
 });

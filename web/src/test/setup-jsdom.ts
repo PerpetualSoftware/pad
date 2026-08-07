@@ -117,3 +117,26 @@ if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
 		} as MediaQueryList;
 	};
 }
+
+// jsdom has no `ResizeObserver`. The attachment viewer (`Lightbox`) observes its
+// stage to re-clamp the zoom on viewport changes, and several suites mount it —
+// directly (`Lightbox.svelte.test.ts`) and through its producers
+// (`AttachmentViewerHost`, `ItemTimeline`, `ItemAttachmentStrip`). The component
+// GUARDS on `typeof ResizeObserver === 'undefined'` (for SSR), so without this
+// shim it would not throw — it would simply SKIP the observer branch entirely,
+// leaving the resize path untested and unexercised in every suite that mounts
+// the viewer. The shim makes that branch actually run (construct + observe). The
+// repo's only prior shim is LOCAL to `TopBar.svelte.test.ts` (and DRIVES a size,
+// to force overflow) — this global one is deliberately INERT: jsdom lays nothing
+// out, so there is no size to report, and firing a zero-rect callback would only
+// exercise a no-op clamp. A test that needs to DRIVE a resize installs its own
+// via `vi.stubGlobal`, which layers over this default and is cleared by
+// `vi.unstubAllGlobals()`.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+	class ResizeObserverShim {
+		observe(): void {}
+		unobserve(): void {}
+		disconnect(): void {}
+	}
+	globalThis.ResizeObserver = ResizeObserverShim as unknown as typeof ResizeObserver;
+}
