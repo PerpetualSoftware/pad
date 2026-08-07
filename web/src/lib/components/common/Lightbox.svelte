@@ -35,7 +35,9 @@
 	import {
 		reset as resetZoom,
 		clampState,
+		clampPan,
 		zoomTo,
+		toggleFitOrActual,
 		stageCenter,
 		ZOOM_STEP,
 		type Geometry,
@@ -228,6 +230,7 @@
 		const g = readGeometry();
 		if (!g) return;
 		zoom = zoomTo(zoom, zoom.scale * factor, stageCenter(g), g);
+		rebaseDrag(); // keyboard zoom mid-drag must not desync the pan baseline
 	}
 
 	// Wheel / ctrl-cmd-wheel zoom, anchored at the CURSOR (TASK-2457 / DR-4). Both
@@ -258,6 +261,254 @@
 		// Wheel up / away (deltaY < 0) zooms in.
 		const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
 		zoom = zoomTo(zoom, zoom.scale * factor, anchor, g);
+		// A wheel DURING a captured drag just moved `zoom.{x,y}` from this pointer
+		// position — rebase so the next pointermove continues from here.
+		lastClientX = e.clientX;
+		lastClientY = e.clientY;
+		rebaseDrag();
+	}
+
+	// ── Double-click toggle + drag-to-pan (PLAN-2392 / TASK-2458) ────────────
+	//
+	// Desktop single-pointer half of the drag-pan work (3d keeps two-pointer
+	// pinch, double-TAP and touch semantics). Modelled on the captured-drag house
+	// pattern at `graph/ItemGraph.svelte` — arm on pointerdown, capture only once a
+	// real drag engages (capturing on down would swallow the dblclick), re-check
+	// the arbitration gates on every move so a gesture that STRADDLES a
+	// frontmost/modal change aborts instead of panning an image the user no longer
+	// owns, and suppress the synthesized click a pan produces.
+	const DRAG_THRESHOLD = 4; // CSS px below which the gesture is a click, not a pan
+	let maybeDrag = false;
+	// `$state` so the template can drop the transform TRANSITION while dragging —
+	// otherwise the image eases toward each pan target and visibly trails the
+	// pointer. Read/written only in pointer handlers (never an $effect's tracked
+	// scope), so no CONVE-1688 self-write.
+	let dragging = $state(false);
+	let suppressClick = false;
+	let capturedPointerId: number | null = null;
+	// The pointer that OWNS the current gesture, captured at pointerdown. Every
+	// later move/up/cancel/lost must come from it: a touch or a second pointer
+	// (pen) is not captured, so its events still reach this root and would
+	// otherwise engage or terminate an in-flight mouse drag (touch stays native
+	// until 3d).
+	let gesturePointerId: number | null = null;
+	let dragStartClientX = 0;
+	let dragStartClientY = 0;
+	let dragOriginX = 0; // zoom.x at drag baseline
+	let dragOriginY = 0; // zoom.y at drag baseline
+	let lastClientX = 0; // last pointer position seen during the gesture
+	let lastClientY = 0;
+
+	// Re-baseline the gesture to the CURRENT zoom + last pointer position. The drag
+	// computes `origin + total delta`, so anything that moves `zoom.{x,y}` from
+	// OUTSIDE the drag — wheel, `+`/`-`/`0` keys, a resize re-clamp — must rebase,
+	// or the next move snaps the pan back to the pre-change origin (a visible jump).
+	// Rebases an ARMED gesture too (not only a live drag): a zoom that lands
+	// between pointerdown and the drag threshold would otherwise leave the engage
+	// baseline stale. A no-op when no gesture is in flight.
+	function rebaseDrag(): void {
+		if (!maybeDrag && !dragging) return;
+		dragOriginX = zoom.x;
+		dragOriginY = zoom.y;
+		dragStartClientX = lastClientX;
+		dragStartClientY = lastClientY;
+	}
+	// A SINGLE owned timer for clearing `suppressClick`, so an EARLIER gesture's
+	// pending clear can never fire during a LATER one and unsuppress its pan's
+	// click. `cancelSuppressClear` runs whenever a new gesture is armed or a drag
+	// engages (the flag is held true for the whole drag); `armSuppressClear` runs
+	// once at the END of a pan to drop it on the next tick, after the synthesized
+	// click has been (and gone).
+	let suppressClickTimer: ReturnType<typeof setTimeout> | null = null;
+	function cancelSuppressClear(): void {
+		if (suppressClickTimer !== null) {
+			clearTimeout(suppressClickTimer);
+			suppressClickTimer = null;
+		}
+	}
+	function armSuppressClear(): void {
+		suppressClick = true;
+		cancelSuppressClear();
+		suppressClickTimer = setTimeout(() => {
+			suppressClick = false;
+			suppressClickTimer = null;
+		}, 0);
+	}
+
+	// The same gates `onKeydown` / `onWheel` carry: only the frontmost, non-blocked
+	// viewer owns the pointer. Applied at EVERY entry point (down / move / up /
+	// dblclick / backdrop click), not just the start.
+	function pointerGatesOpen(el: HTMLElement): boolean {
+		return isViewerFrontmost(el) && !isBlockedByModal(el);
+	}
+
+	function releaseCapture(e: PointerEvent): void {
+		if (capturedPointerId !== null) {
+			try {
+				(e.currentTarget as Element).releasePointerCapture(capturedPointerId);
+			} catch {
+				// already released — ignore.
+			}
+			capturedPointerId = null;
+		}
+	}
+
+	// Tear a gesture down mid-flight: release the capture (an early return alone
+	// would leave the pointer captured and `dragging` latched, still delivering
+	// moves), and — if a real pan was underway — still swallow the click it
+	// produces. The transform is LEFT WHERE IT WAS (the abort does not undo pan).
+	function abortGesture(e: PointerEvent): void {
+		const wasDragging = dragging;
+		maybeDrag = false;
+		dragging = false;
+		gesturePointerId = null;
+		releaseCapture(e);
+		if (wasDragging) armSuppressClear();
+	}
+
+	function onPointerDown(e: PointerEvent) {
+		if (e.button !== 0) return; // primary button only
+		if (e.pointerType === 'touch') return; // touch stays native until 3d
+		// A second pointer (a pen, say) pressing mid-drag must NOT seize the gesture:
+		// re-arming below would replace `gesturePointerId` and hand the pan to the
+		// interloper. An active drag is owned until its own pointer releases.
+		if (dragging) return;
+		// A new primary press supersedes any STALE armed gesture — one whose
+		// pointerup was missed off-root (no capture yet, so it was never delivered).
+		// Clear it before any early return below, or a later control / gated press
+		// leaves `maybeDrag` latched and the next move engages a phantom drag from a
+		// dead baseline. (We already returned above if a drag is live.)
+		maybeDrag = false;
+		// A press ON a control (close / nav) is that control's click, never a pan:
+		// arming here would let a drag OFF a button still fire its click, since the
+		// buttons' own handlers don't consult `suppressClick` (the house pattern in
+		// ItemGraph excludes its interactive overlays the same way).
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav')) return;
+		const el = rootEl;
+		if (!el || !pointerGatesOpen(el)) return; // START gate
+		maybeDrag = true;
+		dragging = false;
+		gesturePointerId = e.pointerId;
+		suppressClick = false;
+		cancelSuppressClear(); // a fresh gesture — drop any prior pan's pending clear
+		dragStartClientX = e.clientX;
+		dragStartClientY = e.clientY;
+		lastClientX = e.clientX;
+		lastClientY = e.clientY;
+		// Capture the pan origin from the state at pointer-down, so every move
+		// computes origin + TOTAL delta — never delta-of-delta, which the zoom
+		// module warns loses the slack at a bound (its "gesture is not associative"
+		// note). No `setPointerCapture` yet: capturing here would swallow dblclick.
+		dragOriginX = zoom.x;
+		dragOriginY = zoom.y;
+	}
+
+	function onPointerMove(e: PointerEvent) {
+		if (!maybeDrag) return;
+		if (e.pointerId !== gesturePointerId) return; // only the owning pointer drives
+		const el = rootEl;
+		// WHOLE-GESTURE arbitration: the press may have been captured before another
+		// viewer / a native modal became frontmost. Abort rather than early-return.
+		if (!el || !pointerGatesOpen(el)) {
+			abortGesture(e);
+			return;
+		}
+		// Primary button no longer held — a pointerup we never received (it ended
+		// off-target pre-capture, or was swallowed after a drag engaged). Tear the
+		// whole gesture down, not just `maybeDrag`: a full `abortGesture` also
+		// releases any capture and clears `dragging`, so nothing leaks into the next
+		// pointerdown (a bare `maybeDrag = false` left a live capture + `dragging`).
+		if ((e.buttons & 1) === 0) {
+			abortGesture(e);
+			return;
+		}
+		lastClientX = e.clientX;
+		lastClientY = e.clientY;
+		const dx = e.clientX - dragStartClientX;
+		const dy = e.clientY - dragStartClientY;
+		if (!dragging) {
+			if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+			dragging = true;
+			// This gesture is a pan, not a click: suppress until the drag ENDS. Held
+			// true for the whole drag; cancel any prior gesture's pending clear so it
+			// can't fire mid-pan and unsuppress us.
+			suppressClick = true;
+			cancelSuppressClear();
+			capturedPointerId = e.pointerId;
+			try {
+				(e.currentTarget as Element).setPointerCapture(e.pointerId);
+			} catch {
+				// capture unsupported/failed — panning still works while over the root
+			}
+		}
+		const g = readGeometry();
+		if (!g) return;
+		// Clamp PAN only — the drag never changes scale — from the captured origin
+		// plus the total delta. `clampPan` keeps a stage edge from showing past the
+		// image; at fit the bound is zero, so a drag is a no-op pan.
+		zoom = clampPan({ scale: zoom.scale, x: dragOriginX + dx, y: dragOriginY + dy }, g);
+	}
+
+	function onPointerUp(e: PointerEvent) {
+		if (!maybeDrag && !dragging) return; // not a gesture we started
+		if (e.pointerId !== gesturePointerId) return; // a foreign pointer can't end ours
+		const el = rootEl;
+		// Re-check on release too (spec): a gesture that straddled a
+		// frontmost/modal change aborts rather than finalising a pan.
+		if (!el || !pointerGatesOpen(el)) {
+			abortGesture(e);
+			return;
+		}
+		maybeDrag = false;
+		gesturePointerId = null;
+		if (dragging) {
+			dragging = false;
+			releaseCapture(e);
+			// Keep the click this pan produces swallowed, then clear on the next tick
+			// so a later genuine click is unaffected.
+			armSuppressClear();
+		}
+	}
+
+	function onPointerCancel(e: PointerEvent) {
+		if (!maybeDrag && !dragging) return; // no gesture to cancel
+		if (e.pointerId !== gesturePointerId) return;
+		abortGesture(e);
+	}
+
+	function onLostPointerCapture(e: PointerEvent) {
+		if (!maybeDrag && !dragging) return; // no gesture; ignore a stray capture-loss
+		if (e.pointerId !== gesturePointerId) return;
+		// Capture taken away (OS/browser, or our own release) — the gesture is over.
+		// Clear WITHOUT releasing (already gone); keep the click suppressed if a pan
+		// was underway. Idempotent with `onPointerUp`, which sets `dragging` false
+		// before releasing, so a release-driven event here is a no-op.
+		const wasDragging = dragging;
+		maybeDrag = false;
+		dragging = false;
+		capturedPointerId = null;
+		gesturePointerId = null;
+		if (wasDragging) armSuppressClear();
+	}
+
+	// Double-click toggles fit <-> actual size, anchored at the pointer
+	// (`toggleFitOrActual`). A pan suppresses its clicks, so a dblclick only fires
+	// on a genuine double-click, never after a drag.
+	function onDoubleClick(e: MouseEvent) {
+		// A pan just ended (its click is being swallowed) — don't also toggle: a
+		// gesture is either a drag or a double-click, never both. Same swallow the
+		// backdrop click consults.
+		if (suppressClick) return;
+		// A double-click ON a control (close / nav) is that control's, not a zoom
+		// toggle — without this, double-clicking Next navigates twice AND toggles.
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav')) return;
+		const el = rootEl;
+		if (!el || !pointerGatesOpen(el)) return;
+		const g = readGeometry();
+		const rect = stageEl?.getBoundingClientRect();
+		if (!g || !rect) return;
+		const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+		zoom = toggleFitOrActual(zoom, anchor, g);
 	}
 
 	// Stepped from `shownIndex`, not from `current`: after the set shrinks they
@@ -393,6 +644,12 @@
 		if (id === lastResetForId) return;
 		lastResetForId = id;
 		zoom = resetZoom();
+		// A drag live ACROSS the image change (arrow-nav mid-drag) is left with a
+		// stale baseline, and deliberately so: `resetZoom` is fit, where `clampPan`
+		// pins the pan to 0 for ANY baseline, so the next move can't jump; and the
+		// next wheel/keyboard zoom rebases via `rebaseDrag`. Re-seeding here would be
+		// unobservable — and calling `rebaseDrag` (which reads `zoom`) inside this
+		// `zoom`-writing effect would self-invalidate it (CONVE-1688).
 	});
 
 	// Re-clamp on stage resize. `maxScale` is geometry-dependent and geometry is
@@ -408,7 +665,10 @@
 		if (!stage || typeof ResizeObserver === 'undefined') return;
 		const ro = new ResizeObserver(() => {
 			const g = readGeometry();
-			if (g) zoom = clampState(zoom, g);
+			if (g) {
+				zoom = clampState(zoom, g);
+				rebaseDrag(); // a resize re-clamp mid-drag must not desync the baseline
+			}
 		});
 		ro.observe(stage);
 		return () => ro.disconnect();
@@ -520,6 +780,7 @@
 		} else if (e.key === '0') {
 			e.preventDefault();
 			zoom = resetZoom();
+			rebaseDrag(); // keyboard reset mid-drag must not desync the pan baseline
 		}
 		// NO Escape branch. See the registration above.
 	}
@@ -528,6 +789,16 @@
 	// controls have a different target, so they don't dismiss. This avoids
 	// putting a click handler (and its a11y burden) on the <img>.
 	function onBackdropClick(e: MouseEvent) {
+		// A pan that released here produced this click — a drag is not a dismissal
+		// (TASK-2458). A below-threshold press (still a click) leaves this false, so
+		// it still closes; a plain click on the backdrop closes as before.
+		if (suppressClick) return;
+		const el = rootEl;
+		// Same gates as every other pointer entry point. Background inertness makes
+		// the normal path unreachable, so this is robustness, not a live fix — but a
+		// pointer owner that skips the gates the keyboard owner carries is the drift
+		// that breeds the next BUG-2441.
+		if (!el || !pointerGatesOpen(el)) return;
 		if (e.target === e.currentTarget) onClose();
 	}
 </script>
@@ -549,6 +820,12 @@
 	aria-label={dialogLabel}
 	tabindex="-1"
 	onclick={onBackdropClick}
+	ondblclick={onDoubleClick}
+	onpointerdown={onPointerDown}
+	onpointermove={onPointerMove}
+	onpointerup={onPointerUp}
+	onpointercancel={onPointerCancel}
+	onlostpointercapture={onLostPointerCapture}
 >
 	<!--
 		Explicit `aria-label`s: the glyph IS the label otherwise ("✕", "‹", "›"),
@@ -598,11 +875,14 @@
 	-->
 	<div class="lightbox-stage" bind:this={stageEl}>
 		{#if img}
+			<!-- draggable=false: a native image drag would otherwise pre-empt the pan. -->
 			<img
 				bind:this={imgEl}
 				class="lightbox-image"
+				class:panning={dragging}
 				{src}
 				alt={img.alt || 'Attachment'}
+				draggable="false"
 				style="transform: translate({zoom.x}px, {zoom.y}px) scale({zoom.scale});"
 			/>
 		{/if}
@@ -658,6 +938,11 @@
 		background: rgba(0, 0, 0, 0.82);
 		backdrop-filter: blur(2px);
 		cursor: zoom-out;
+		/* A drag-to-pan surface: no text should get selected mid-drag (the counter
+		   is the only text, and it is not meant to be selectable). draggable=false
+		   on the <img> handles the image; this handles selection (TASK-2458). */
+		user-select: none;
+		-webkit-user-select: none;
 	}
 
 	.lightbox-stage {
@@ -688,6 +973,13 @@
 		pointer-events: auto;
 		transform-origin: center;
 		transition: transform 0.15s ease-out;
+	}
+
+	/* While DRAGGING, the image must track the pointer 1:1 — the easing transition
+	   would make it lag behind the cursor (TASK-2458). Discrete zoom (keys / wheel /
+	   double-click) keeps the transition. */
+	.lightbox-image.panning {
+		transition: none;
 	}
 
 	/* Reduced motion suppresses the TRANSITION only — the zoom still works

@@ -15,7 +15,13 @@ import {
 	ESCAPE_PRIORITY,
 	_resetEscapeStackForTests,
 } from '$lib/stores/escapeStack';
-import { reset as resetZoom, zoomTo, ZOOM_STEP, type Geometry } from '$lib/attachments/zoom';
+import {
+	reset as resetZoom,
+	zoomTo,
+	toggleFitOrActual,
+	ZOOM_STEP,
+	type Geometry,
+} from '$lib/attachments/zoom';
 
 // TASK-2429 — the DR-4b modal contract on the attachment viewer.
 //
@@ -1668,5 +1674,594 @@ describe('Lightbox — wheel zoom (TASK-2457)', () => {
 		mockOpenModals([]);
 		expect(wheel(root(), { clientX: 10, clientY: 10, deltaY: -1 })).toBe(true);
 		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+});
+
+// TASK-2458 — drag-to-pan + double-click toggle (probe).
+const REAL_PC = {
+	setPointerCapture: Element.prototype.setPointerCapture,
+	releasePointerCapture: Element.prototype.releasePointerCapture,
+};
+let captured: number[] = [];
+let released: number[] = [];
+
+function pointerEvent(
+	type: string,
+	x: number,
+	y: number,
+	opts: { buttons?: number; pointerType?: string; button?: number; pointerId?: number } = {}
+): Event {
+	const e = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
+	Object.defineProperty(e, 'pointerId', { value: opts.pointerId ?? 1 });
+	Object.defineProperty(e, 'buttons', { value: opts.buttons ?? 1 });
+	Object.defineProperty(e, 'button', { value: opts.button ?? 0 });
+	Object.defineProperty(e, 'pointerType', { value: opts.pointerType ?? 'mouse' });
+	return e;
+}
+
+function panX(scope: HTMLElement = root()): number {
+	const m = /translate\(([-\d.]+)px,/.exec(transformOf(scope));
+	return m ? Number(m[1]) : NaN;
+}
+
+const OVERFLOW_G: Geometry = {
+	stageW: 1000,
+	stageH: 1000,
+	fittedW: 900,
+	fittedH: 900,
+	naturalW: 2000,
+	naturalH: 2000,
+};
+
+/** dblclick at the stage centre → actual size, so drags have pan room. */
+function zoomToActual(scope: HTMLElement = root()): void {
+	scope.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+	flushSync();
+}
+/** The pan bound at `actualScale` for OVERFLOW_G: (900·(2000/900) − 1000)/2. */
+const ACTUAL_BOUND = (OVERFLOW_G.fittedW * (OVERFLOW_G.naturalW / OVERFLOW_G.fittedW) - OVERFLOW_G.stageW) / 2;
+
+function mockOpenModals(modals: Element[]): void {
+	const realQueryAll = document.querySelectorAll.bind(document);
+	vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
+		if (selector !== 'dialog:modal') return realQueryAll(selector);
+		return Array.from(realQueryAll('dialog')).filter((d) =>
+			modals.includes(d)
+		) as unknown as NodeListOf<Element>;
+	});
+	const realMatches = Element.prototype.matches;
+	vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
+		if (selector !== 'dialog:modal') return realMatches.call(this, selector);
+		return realMatches.call(this, 'dialog') && modals.includes(this);
+	});
+}
+
+describe('Lightbox — drag-to-pan and double-click (TASK-2458)', () => {
+	beforeEach(() => {
+		captured = [];
+		released = [];
+		(Element.prototype as unknown as Record<string, unknown>).setPointerCapture = function (id: number) {
+			captured.push(id);
+		};
+		(Element.prototype as unknown as Record<string, unknown>).releasePointerCapture = function (id: number) {
+			released.push(id);
+		};
+	});
+	afterEach(() => {
+		if (REAL_PC.setPointerCapture === undefined)
+			delete (Element.prototype as unknown as Record<string, unknown>).setPointerCapture;
+		else Element.prototype.setPointerCapture = REAL_PC.setPointerCapture;
+		if (REAL_PC.releasePointerCapture === undefined)
+			delete (Element.prototype as unknown as Record<string, unknown>).releasePointerCapture;
+		else Element.prototype.releasePointerCapture = REAL_PC.releasePointerCapture;
+	});
+
+	// ── pan, positively AND clamped (the anti-false-green acceptance) ──
+	it('pans in-bounds by the drag delta, then clamps at the edge and moves NO FURTHER', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual(); // scale ~2.22, pan bound ±ACTUAL_BOUND (500), pan still 0
+		expect(scaleOf()).toBeCloseTo(2000 / 900);
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		// A small in-bounds drag MOVES the transform by exactly the delta.
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1); // a real drag engaged + captured
+		expect(panX()).toBeCloseTo(100);
+
+		// Over-drag to the same edge: it clamps at the bound...
+		root().dispatchEvent(pointerEvent('pointermove', 500 + ACTUAL_BOUND + 300, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(ACTUAL_BOUND);
+		// ...and dragging further still moves it no further (the clamp, not the delta).
+		root().dispatchEvent(pointerEvent('pointermove', 500 + ACTUAL_BOUND + 900, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(ACTUAL_BOUND);
+
+		root().dispatchEvent(pointerEvent('pointerup', 500 + ACTUAL_BOUND + 900, 500, { buttons: 0 }));
+		expect(released).toContain(1);
+	});
+
+	// ── double-click toggle, anchored, RETURNS ──
+	/** The realistic sequence a browser fires for a double-click on `el`. */
+	function doubleClick(el: Element, clientX: number, clientY: number): void {
+		el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX, clientY }));
+		el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX, clientY }));
+		el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX, clientY }));
+		flushSync();
+	}
+
+	it('two successive anchored double-clicks ON THE IMAGE toggle fit → actual → fit, never closing', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		mockGeometry(root(), OVERFLOW_G);
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		expect(scaleOf()).toBe(1);
+
+		// The full click/click/dblclick sequence on the IMAGE (target !== backdrop),
+		// off-centre so the toggle-to-actual is genuinely anchored. The constituent
+		// clicks must NOT dismiss.
+		doubleClick(image, 800, 500);
+		expect(onClose).not.toHaveBeenCalled();
+		const expected = toggleFitOrActual(resetZoom(), { x: 800, y: 500 }, OVERFLOW_G);
+		expect(transformOf()).toBe(
+			`translate(${expected.x}px, ${expected.y}px) scale(${expected.scale})`
+		);
+		expect(expected.scale).toBeGreaterThan(1);
+		expect(expected.x).not.toBe(0);
+
+		// The SECOND double-click returns to fit, centred — the toggle is two-way.
+		doubleClick(image, 800, 500);
+		expect(onClose).not.toHaveBeenCalled();
+		expect(transformOf()).toBe('translate(0px, 0px) scale(1)');
+	});
+
+	it('a double-click while a pan is still being suppressed does NOT toggle (drag XOR toggle)', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		// Engage and release a pan — its click is now being swallowed (suppressClick).
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		root().dispatchEvent(pointerEvent('pointerup', 600, 500, { buttons: 0 }));
+		flushSync();
+		// A double-click landing while that suppression is still live must stand
+		// down — a gesture is a drag OR a toggle, never both (same swallow the
+		// backdrop click consults).
+		image.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 800, clientY: 500 }));
+		flushSync();
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('a double-click does NOT toggle while a native modal is above it; it resumes after', () => {
+		const dialog = document.body.appendChild(document.createElement('dialog'));
+		mockOpenModals([dialog]);
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+
+		image.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf()).toBe(1); // gated out by isBlockedByModal
+
+		mockOpenModals([]);
+		image.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf()).toBeCloseTo(2000 / 900); // resumes
+	});
+
+	// ── drag-vs-click disambiguation ──
+	it('a below-threshold press released over the backdrop still CLOSES', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		root().dispatchEvent(pointerEvent('pointerdown', 100, 100));
+		root().dispatchEvent(pointerEvent('pointermove', 102, 101)); // < 4px → still a click
+		root().dispatchEvent(pointerEvent('pointerup', 102, 101, { buttons: 0 }));
+		flushSync();
+		// The click the press synthesizes, on the backdrop itself.
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onClose).toHaveBeenCalledTimes(1);
+		expect(captured).toEqual([]); // never engaged a drag
+	});
+
+	it('a past-threshold DRAG released over the backdrop does NOT close', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		root().dispatchEvent(pointerEvent('pointerdown', 100, 100));
+		root().dispatchEvent(pointerEvent('pointermove', 200, 200)); // > 4px → a pan
+		root().dispatchEvent(pointerEvent('pointerup', 200, 200, { buttons: 0 }));
+		flushSync();
+		// The click a pan synthesizes is suppressed (cleared only on the next tick,
+		// which this synchronous dispatch beats).
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onClose).not.toHaveBeenCalled();
+		expect(captured).toContain(1);
+	});
+
+	it('CONTROL: a plain backdrop click (no gesture) still closes', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	// ── arbitration: the START gate ──
+	it('does not START a pan when the viewer is not frontmost; the front one does', () => {
+		mountViewer();
+		const back = root();
+		mockGeometry(back, OVERFLOW_G);
+		mountViewer();
+		const front = root();
+		mockGeometry(front, OVERFLOW_G);
+		zoomToActual(front);
+
+		// Drag on the BACKGROUND viewer: no capture, no pan.
+		back.dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		back.dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toEqual([]);
+
+		// Positive control: the FRONT viewer pans.
+		front.dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		front.dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+		expect(panX(front)).toBeCloseTo(100);
+	});
+
+	// ── arbitration: whole-gesture, a STACKED-VIEWER transition mid-drag ──
+	it('ABORTS a captured drag when a SECOND viewer becomes frontmost mid-gesture', () => {
+		mountViewer();
+		const first = root();
+		mockGeometry(first, OVERFLOW_G);
+		zoomToActual(first);
+
+		first.dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		first.dispatchEvent(pointerEvent('pointermove', 600, 500)); // positive control: pans to 100
+		flushSync();
+		expect(captured).toContain(1);
+		expect(panX(first)).toBeCloseTo(100);
+		const frozen = panX(first);
+
+		// A second viewer opens — `first` is no longer frontmost.
+		mountViewer();
+
+		// A further move on `first` (still captured there) must ABORT: release the
+		// capture, leave the transform where it was.
+		first.dispatchEvent(pointerEvent('pointermove', 900, 500));
+		flushSync();
+		expect(released).toContain(1);
+		expect(panX(first)).toBeCloseTo(frozen);
+	});
+
+	// ── arbitration: whole-gesture, a NATIVE-MODAL transition mid-drag ──
+	it('ABORTS a captured drag when a native modal opens above it mid-gesture', () => {
+		const dialog = document.body.appendChild(document.createElement('dialog'));
+		// Establish `:modal` support with NO modal first (jsdom throws on the
+		// pseudo-class, and the manager caches support on its first probe), so the
+		// drag can start; then add the dialog mid-gesture.
+		mockOpenModals([]);
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500)); // positive control: pans
+		flushSync();
+		expect(captured).toContain(1);
+		expect(panX()).toBeCloseTo(100);
+		const frozen = panX();
+
+		mockOpenModals([dialog]); // a showModal() dialog is now above the viewer
+
+		root().dispatchEvent(pointerEvent('pointermove', 900, 500));
+		flushSync();
+		expect(released).toContain(1);
+		expect(panX()).toBeCloseTo(frozen);
+	});
+
+	// ── integration details ──
+	it('marks the image non-draggable so a native image drag cannot pre-empt the pan', () => {
+		mountViewer();
+		expect(root().querySelector('.lightbox-image')?.getAttribute('draggable')).toBe('false');
+	});
+
+	it('ignores a TOUCH pointer (native until 3d); a mouse pointer pans', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerType: 'touch' }));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500, { pointerType: 'touch' }));
+		flushSync();
+		expect(captured).toEqual([]);
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+		expect(panX()).toBeCloseTo(100);
+	});
+
+	it('drops the transform transition while dragging (image tracks the pointer), restoring it after', () => {
+		// jsdom applies no transitions, so assert the mechanism: the `panning` class
+		// (which sets transition:none) is present only for the duration of the drag.
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		expect(image.classList.contains('panning')).toBe(false);
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(image.classList.contains('panning')).toBe(true);
+
+		root().dispatchEvent(pointerEvent('pointerup', 600, 500, { buttons: 0 }));
+		flushSync();
+		expect(image.classList.contains('panning')).toBe(false);
+	});
+
+	it('a TOUCH or second pointer cannot move or END an active mouse drag', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		// Mouse drag engaged (pointerId 1).
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(100);
+
+		// A touch move with a DIFFERENT pointerId (not captured) must not pan...
+		root().dispatchEvent(
+			pointerEvent('pointermove', 900, 500, { pointerId: 2, pointerType: 'touch' })
+		);
+		flushSync();
+		expect(panX()).toBeCloseTo(100);
+
+		// ...and a touch pointerup must not END the mouse drag.
+		root().dispatchEvent(
+			pointerEvent('pointerup', 900, 500, { pointerId: 2, pointerType: 'touch', buttons: 0 })
+		);
+		flushSync();
+		expect(released).not.toContain(2);
+
+		// The mouse (pointerId 1) is still driving: its move pans further.
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(200);
+	});
+
+	it('a second primary pointerdown mid-drag does NOT hijack the gesture', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500)); // mouse id 1
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500)); // captured, x = 100
+		flushSync();
+		expect(panX()).toBeCloseTo(100);
+
+		// A second primary press (a pen, id 2) lands mid-drag — it must be ignored,
+		// not re-arm the gesture onto itself.
+		root().dispatchEvent(
+			pointerEvent('pointerdown', 200, 200, { pointerId: 2, pointerType: 'pen' })
+		);
+		// The ORIGINAL pointer (id 1) still drives the pan.
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(200);
+		// ...and the interloper's own move does nothing.
+		root().dispatchEvent(
+			pointerEvent('pointermove', 900, 900, { pointerId: 2, pointerType: 'pen' })
+		);
+		flushSync();
+		expect(panX()).toBeCloseTo(200);
+	});
+
+	it('releases the capture on pointercancel', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+		root().dispatchEvent(pointerEvent('pointercancel', 600, 500));
+		expect(released).toContain(1);
+	});
+
+	// ── gesture-state hygiene (round 1) ──
+	it('a wheel DURING a captured drag does not snap the pan back (rebases the baseline)', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500)); // captured, x = 200
+		flushSync();
+		expect(panX()).toBeCloseTo(200);
+
+		// A wheel arrives mid-drag, anchored at the stage CENTRE (500) — distinct
+		// from the drag position — so it moves the pan to a value the pre-wheel
+		// origin+delta does NOT reproduce. The baseline must rebase to the wheel's
+		// pointer position (500) and post-wheel pan, so a following pointermove to
+		// that same point (zero net delta) leaves the transform where the wheel put
+		// it. Without the rebase, that move snaps the pan back to the pre-wheel
+		// origin (0) — a visible jump.
+		wheel(root(), { clientX: 500, clientY: 500, deltaY: -1 });
+		const afterWheel = transformOf();
+		expect(panX()).not.toBeCloseTo(200); // the wheel genuinely moved the pan
+		root().dispatchEvent(pointerEvent('pointermove', 500, 500));
+		flushSync();
+		expect(transformOf()).toBe(afterWheel);
+	});
+
+	it('a keyboard zoom (+) DURING a captured drag does not snap the pan back', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500)); // captured, x = 200
+		flushSync();
+		expect(panX()).toBeCloseTo(200);
+
+		// `+` zooms about the stage centre mid-drag, moving the pan; the drag
+		// baseline must rebase to the last pointer position (700), so a move back to
+		// that point is a zero net delta and holds. Without the rebase it snaps to
+		// the pre-key origin + total delta.
+		expect(press('+')).toBe(true);
+		const afterKey = transformOf();
+		expect(panX()).not.toBeCloseTo(200);
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500));
+		flushSync();
+		expect(transformOf()).toBe(afterKey);
+	});
+
+	it('an external zoom while ARMED (before the drag threshold) rebases, so engaging does not jump', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		// Arm the gesture (pointerdown) but stay below the 4px threshold.
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		// A wheel zooms while merely ARMED (not yet dragging), anchored off-centre so
+		// it moves the pan.
+		wheel(root(), { clientX: 800, clientY: 500, deltaY: -1 });
+		const afterWheelPan = panX();
+		expect(afterWheelPan).not.toBeCloseTo(0);
+
+		// Cross the threshold with a small move from the WHEEL pointer position: the
+		// engage must continue from the post-wheel pan (armed rebase), NOT snap to
+		// origin(0) + the full delta from the original press point.
+		root().dispatchEvent(pointerEvent('pointermove', 810, 500));
+		flushSync();
+		expect(captured).toContain(1);
+		expect(panX()).toBeCloseTo(afterWheelPan + 10);
+	});
+
+	it('a stale armed gesture (missed pointerup) does not resume as a phantom drag on a later control press', () => {
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		// Arm a gesture whose pointerup never arrives (the pointer left the root
+		// before the drag threshold, so there was no capture to deliver it).
+		root().dispatchEvent(pointerEvent('pointerdown', 100, 100));
+		// A later press lands on a control — excluded from starting a pan, and must
+		// also clear the stale arm so the following move can't engage from a dead
+		// baseline.
+		const close = closeButton();
+		close.dispatchEvent(pointerEvent('pointerdown', 20, 20));
+		close.dispatchEvent(pointerEvent('pointermove', 300, 300)); // far past threshold
+		flushSync();
+		expect(captured).toEqual([]);
+	});
+
+	it('a double-click on a nav control does NOT also toggle zoom', () => {
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		mockGeometry(root(), OVERFLOW_G);
+		const next = root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!;
+		expect(scaleOf()).toBe(1);
+		next.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 20, clientY: 20 }));
+		flushSync();
+		expect(scaleOf()).toBe(1); // the toggle stood down for the control
+	});
+
+	it('a mid-capture ABORT leaves the SAME viewer able to start a clean next gesture', () => {
+		const dialog = document.body.appendChild(document.createElement('dialog'));
+		mockOpenModals([]); // establish :modal support with nothing open
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+
+		mockOpenModals([dialog]); // blocked → the next move aborts
+		root().dispatchEvent(pointerEvent('pointermove', 900, 500));
+		flushSync();
+		expect(released).toContain(1);
+		mockOpenModals([]); // unblocked; same viewer frontmost again
+
+		// A fresh gesture engages cleanly — no stuck `dragging` / capture from abort.
+		captured.length = 0;
+		released.length = 0;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500));
+		flushSync();
+		expect(captured).toContain(1);
+		root().dispatchEvent(pointerEvent('pointerup', 560, 500, { buttons: 0 }));
+		expect(released).toContain(1);
+	});
+
+	it('a buttons-released move after a drag releases capture, not leaking into the next gesture', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+
+		// A move with the primary button no longer held — a pointerup we never saw.
+		root().dispatchEvent(pointerEvent('pointermove', 650, 500, { buttons: 0 }));
+		flushSync();
+		expect(released).toContain(1);
+
+		captured.length = 0;
+		released.length = 0;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500));
+		flushSync();
+		expect(captured).toContain(1);
+	});
+
+	it('lostpointercapture ends the gesture; the next one starts clean', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+
+		root().dispatchEvent(pointerEvent('lostpointercapture', 600, 500));
+		flushSync();
+
+		captured.length = 0;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500));
+		flushSync();
+		expect(captured).toContain(1);
+	});
+
+	it('a press ON a control (close / nav) never starts a pan', () => {
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		const close = closeButton();
+		// Press on the control, then move well past the threshold: a drag OFF a
+		// button must not engage a pan (its own click stays intact).
+		close.dispatchEvent(pointerEvent('pointerdown', 20, 20));
+		close.dispatchEvent(pointerEvent('pointermove', 200, 200));
+		flushSync();
+		expect(captured).toEqual([]);
+	});
+
+	// ── the pointer entry points carry the same gates ──
+	it('double-click does NOT toggle when the viewer is not frontmost; the front one does', () => {
+		mountViewer();
+		const back = root();
+		mockGeometry(back, OVERFLOW_G);
+		mountViewer();
+		const front = root();
+		mockGeometry(front, OVERFLOW_G);
+
+		back.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf(back)).toBe(1); // background viewer did not toggle
+
+		front.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf(front)).toBeCloseTo(2000 / 900); // frontmost did
 	});
 });
