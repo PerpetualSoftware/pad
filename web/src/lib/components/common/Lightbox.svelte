@@ -22,7 +22,7 @@
 	 */
 	import { untrack } from 'svelte';
 	import { attachmentDownloadUrl } from '$lib/markdown/attachments';
-	import { paneFocusables, nextTrapTarget } from '$lib/collections/paneFocus';
+	import { paneFocusables, nextTrapTarget, handoffFocus } from '$lib/collections/paneFocus';
 	import {
 		acquire,
 		isBlockedByModal,
@@ -382,6 +382,30 @@
 		});
 		ro.observe(stage);
 		return () => ro.disconnect();
+	});
+
+	// aria-modal promises focus never leaves the surface, but a focused nav button
+	// is CONDITIONALLY rendered (`hasMultiple`) — when the set shrinks to one it
+	// unmounts, dropping focus to <body> behind the inerted app until the next Tab
+	// (TASK-2456; a 3a defect every control 3b adds inherits). Keyed on the
+	// control-visibility signal, this hands focus back to the stable fallback
+	// (close button, else root) within the SAME flush the removal happens in, so
+	// <body> is never observably focused. `handoffFocus` with no `departing` is
+	// the reactive-removal shape; TASK-2459/2460 will call the same helper with
+	// THEIR departing control before disabling it.
+	//
+	// Guarded to the frontmost, non-blocked viewer: a surface stacked OVER this
+	// one owns focus, and pulling it back here would be the wrong direction (the
+	// same reason the key handler stands down for those). Reads only derived /
+	// element state and mutates focus — a DOM side effect, not $state — so it
+	// cannot self-invalidate its own flush (CONVE-1688).
+	$effect(() => {
+		// Tracked so the effect re-runs when a focus-holding control mounts or
+		// unmounts; a true→false flip is the shrink that removes the focused button.
+		void hasMultiple;
+		const el = rootEl;
+		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
+		handoffFocus(el);
 	});
 
 	function onKeydown(e: KeyboardEvent) {

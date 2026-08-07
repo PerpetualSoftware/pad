@@ -1364,3 +1364,110 @@ describe('Lightbox — + / - anchor at the stage centre (TASK-2455)', () => {
 		expect(transformOf()).toContain('translate(0px, 0px)');
 	});
 });
+
+// TASK-2456 — focus handoff when a focused viewer control disappears.
+//
+// aria-modal promises focus never leaves the surface, but a conditionally
+// rendered nav button that had focus drops focus to <body> behind the inerted
+// app when the set shrinks to one. These are SAME-INSTANCE (a remount would hide
+// the whole thing) and assert focus lands on a control INSIDE the viewer.
+
+describe('Lightbox — focus handoff on a shrinking set (TASK-2456)', () => {
+	function mountLive() {
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		return app;
+	}
+
+	it('CONTROL: a removed focused control drops focus to <body> in this environment', () => {
+		// The defect reproduced honestly, so the positive test below is not
+		// vacuous: removing a focused element strands focus on <body> here just as
+		// it does in a real engine. (Done on a detached fixture so it does not fight
+		// Svelte for ownership of a live viewer node.)
+		const fixture = appRoot.appendChild(document.createElement('div'));
+		const btn = fixture.appendChild(document.createElement('button'));
+		btn.focus();
+		expect(document.activeElement).toBe(btn);
+		btn.remove();
+		expect(document.activeElement).toBe(document.body);
+	});
+
+	it('hands focus to the close button when the focused Next control is removed by a shrink', () => {
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'jpeg', 'image/jpeg')];
+		mountLive();
+		const before = root();
+		const nextBtn = before.querySelector<HTMLButtonElement>('.lightbox-nav.next')!;
+		nextBtn.focus();
+		// Precondition, so the assertion is about a real handoff and not a viewer
+		// that happened to already have focus on the close button.
+		expect(document.activeElement).toBe(nextBtn);
+
+		// The set shrinks to one: the nav buttons unmount. Without the handoff,
+		// focus would now be on <body>, behind everything the viewer inerted.
+		liveProps.images = [image(IMG_A, 'png')];
+		flushSync();
+
+		// SAME instance — this is the same-instance property the acceptance names;
+		// a keyed remount would trivially start focused and false-green the rest.
+		expect(root()).toBe(before);
+		expect(before.querySelector('.lightbox-nav')).toBeNull();
+		// INSIDE the viewer — not merely "not on body".
+		expect(before.contains(document.activeElement)).toBe(true);
+		expect(document.activeElement).toBe(closeButton(before));
+		expect(document.activeElement).not.toBe(document.body);
+	});
+
+	it('does not steal focus when it is already on a surviving control', () => {
+		// A shrink while focus is on the CLOSE button (which survives) must leave
+		// it there — the handoff repairs a lost focus, it does not re-home a fine one.
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'jpeg', 'image/jpeg')];
+		mountLive();
+		closeButton().focus();
+		expect(document.activeElement).toBe(closeButton());
+
+		liveProps.images = [image(IMG_A, 'png')];
+		flushSync();
+		expect(document.activeElement).toBe(closeButton());
+	});
+
+	it('a BACKGROUND viewer does not grab focus when ITS OWN set shrinks', () => {
+		// The isViewerFrontmost guard on the repair effect. With a second viewer
+		// stacked over the first, the front one owns focus; a shrink in the BACK
+		// viewer must not pull focus out of the front into the inert background.
+		// Without the guard the reactive repair would see "focus is not inside ME"
+		// and yank it to the back viewer's fallback.
+		liveProps.images = [image(IMG_A, 'back-a'), image(IMG_B, 'back-b', 'image/jpeg')];
+		const backApp = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(backApp);
+		flushSync();
+		const back = root();
+		mountViewer({ images: [image(IMG_A, 'front-a'), image(IMG_B, 'front-b')] });
+		const front = root();
+		expect(front).not.toBe(back);
+		expect(front.contains(document.activeElement)).toBe(true);
+
+		liveProps.images = [image(IMG_A, 'back-a')];
+		flushSync();
+
+		expect(front.contains(document.activeElement)).toBe(true);
+		expect(back.contains(document.activeElement)).toBe(false);
+	});
+});
+
+describe('Lightbox — Tab still cycles at maximum zoom (TASK-2456)', () => {
+	it('wraps forward off the last control to the close button even at the zoom ceiling', () => {
+		// At max zoom the transformed image visually overlaps the controls, but the
+		// trap is JS-based (paneFocus) and the image is not focusable, so Tab order
+		// is unaffected. Driving the zoom to the ceiling first proves it.
+		mountViewer({ images: [image(IMG_A, 'first'), image(IMG_B, 'second')] });
+		for (let i = 0; i < 10; i++) press('+');
+		expect(scaleOf()).toBeCloseTo(4);
+
+		const nextBtn = root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!;
+		nextBtn.focus();
+		expect(press('Tab')).toBe(true);
+		expect(root().contains(document.activeElement)).toBe(true);
+		expect(document.activeElement).toBe(closeButton());
+	});
+});
