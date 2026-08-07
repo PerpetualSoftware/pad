@@ -15,6 +15,7 @@ import {
 	ESCAPE_PRIORITY,
 	_resetEscapeStackForTests,
 } from '$lib/stores/escapeStack';
+import { reset as resetZoom, zoomTo, ZOOM_STEP, type Geometry } from '$lib/attachments/zoom';
 
 // TASK-2429 — the DR-4b modal contract on the attachment viewer.
 //
@@ -1469,5 +1470,203 @@ describe('Lightbox — Tab still cycles at maximum zoom (TASK-2456)', () => {
 		expect(press('Tab')).toBe(true);
 		expect(root().contains(document.activeElement)).toBe(true);
 		expect(document.activeElement).toBe(closeButton());
+	});
+});
+
+// TASK-2457 — wheel / ctrl-cmd-wheel zoom, anchored at the cursor.
+//
+// The listener is registered NON-PASSIVELY on the viewer root, so a dispatched
+// WheelEvent's `defaultPrevented` reflects the handler's `preventDefault` — the
+// direct assertion the acceptance requires (never inferred from "the page did
+// not scroll", which jsdom can't show anyway).
+
+/** Dispatch a wheel on `scope` (the viewer root, where the listener lives). */
+function wheel(scope: HTMLElement, init: WheelEventInit): boolean {
+	const e = new WheelEvent('wheel', { cancelable: true, bubbles: true, ...init });
+	scope.dispatchEvent(e);
+	flushSync();
+	return e.defaultPrevented;
+}
+
+/** Mock the geometry the viewer reads, so the cursor anchor is observable. */
+function mockGeometry(scope: HTMLElement, g: Geometry, rectLeft = 0, rectTop = 0): void {
+	const image = scope.querySelector<HTMLImageElement>('.lightbox-image')!;
+	const stage = scope.querySelector<HTMLElement>('.lightbox-stage')!;
+	Object.defineProperty(image, 'offsetWidth', { configurable: true, get: () => g.fittedW });
+	Object.defineProperty(image, 'offsetHeight', { configurable: true, get: () => g.fittedH });
+	Object.defineProperty(image, 'naturalWidth', { configurable: true, get: () => g.naturalW });
+	Object.defineProperty(image, 'naturalHeight', { configurable: true, get: () => g.naturalH });
+	Object.defineProperty(stage, 'clientWidth', { configurable: true, get: () => g.stageW });
+	Object.defineProperty(stage, 'clientHeight', { configurable: true, get: () => g.stageH });
+	stage.getBoundingClientRect = () =>
+		({
+			left: rectLeft,
+			top: rectTop,
+			width: g.stageW,
+			height: g.stageH,
+			right: rectLeft + g.stageW,
+			bottom: rectTop + g.stageH,
+			x: rectLeft,
+			y: rectTop,
+			toJSON() {},
+		}) as DOMRect;
+}
+
+describe('Lightbox — wheel zoom (TASK-2457)', () => {
+	function mockOpenModals(modals: Element[]): void {
+		const realQueryAll = document.querySelectorAll.bind(document);
+		vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
+			if (selector !== 'dialog:modal') return realQueryAll(selector);
+			return Array.from(realQueryAll('dialog')).filter((d) =>
+				modals.includes(d)
+			) as unknown as NodeListOf<Element>;
+		});
+		const realMatches = Element.prototype.matches;
+		vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
+			this: Element,
+			selector: string
+		) {
+			if (selector !== 'dialog:modal') return realMatches.call(this, selector);
+			return realMatches.call(this, 'dialog') && modals.includes(this);
+		});
+	}
+
+	it('zooms IN and leaves the cursor point anchored — matching the module exactly', () => {
+		// A geometry where the image nearly fills the stage, so ONE wheel step
+		// overflows and an off-centre cursor produces an observable, module-defined
+		// pan (jsdom's zero geometry would hide it — the same limit the anchor key
+		// test noted). The image point under the cursor stays there because the
+		// component delegates to `zoomTo` with the cursor as the anchor: the
+		// resulting transform must equal `zoomTo`'s output byte for byte.
+		mountViewer();
+		const g: Geometry = {
+			stageW: 1000,
+			stageH: 1000,
+			fittedW: 900,
+			fittedH: 900,
+			naturalW: 2000,
+			naturalH: 2000,
+		};
+		// A NONZERO stage offset in the viewport, so the anchor must be computed
+		// stage-LOCAL (clientX − rect.left). An implementation that fed viewport
+		// coordinates straight in would anchor 120/60px off and fail this.
+		const rectLeft = 120;
+		const rectTop = 60;
+		mockGeometry(root(), g, rectLeft, rectTop);
+		const clientX = 800;
+		const clientY = 500;
+		const anchor = { x: clientX - rectLeft, y: clientY - rectTop };
+		const expected = zoomTo(resetZoom(), 1 * ZOOM_STEP, anchor, g);
+
+		expect(wheel(root(), { clientX, clientY, deltaY: -1 })).toBe(true);
+		expect(transformOf()).toBe(
+			`translate(${expected.x}px, ${expected.y}px) scale(${expected.scale})`
+		);
+		// The off-centre anchor genuinely moved the pan (not a centred no-op), so
+		// this is a real anchor assertion, not a vacuous one.
+		expect(expected.x).not.toBe(0);
+	});
+
+	it('stops propagation while frontmost so restoration never sees the wheel; lets it through otherwise', () => {
+		// The `stopPropagation` half — belt to the restoration guard. A frontmost
+		// viewer's wheel must not reach a `window` listener (the scroll-restoration
+		// one); a non-frontmost viewer declines, so its event DOES bubble through
+		// (there, restoration's OWN guard is what protects it — asserted in
+		// restore.svelte.test.ts).
+		const seen = vi.fn();
+		window.addEventListener('wheel', seen);
+		try {
+			mountViewer();
+			const back = root();
+			mountViewer();
+			const front = root();
+
+			const e1 = new WheelEvent('wheel', {
+				cancelable: true,
+				bubbles: true,
+				clientX: 10,
+				clientY: 10,
+				deltaY: -1,
+			});
+			front.dispatchEvent(e1);
+			flushSync();
+			expect(e1.defaultPrevented).toBe(true);
+			expect(seen).not.toHaveBeenCalled();
+
+			const e2 = new WheelEvent('wheel', {
+				cancelable: true,
+				bubbles: true,
+				clientX: 10,
+				clientY: 10,
+				deltaY: -1,
+			});
+			back.dispatchEvent(e2);
+			flushSync();
+			expect(seen).toHaveBeenCalledTimes(1);
+		} finally {
+			window.removeEventListener('wheel', seen);
+		}
+	});
+
+	it('ctrl/cmd+wheel ALSO zooms (both plain and modified) and is preventDefaulted', () => {
+		// The modifier is NOT a gate for wheel (unlike the +/- keys): ctrl/cmd wheel
+		// is the browser's page-zoom, which the viewer overrides while open — hence
+		// the non-passive preventDefault.
+		mountViewer();
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaY: -1, ctrlKey: true })).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+		mountViewer();
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaY: -1, metaKey: true })).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('a horizontal-only wheel (deltaY 0) is consumed but does NOT zoom', () => {
+		// A trackpad side-swipe must not read as a zoom-out; direction is deltaY
+		// only. Seed a zoom-in FIRST so a spurious zoom-out would be observable —
+		// from fit it would just clamp back to 1 and hide the bug.
+		mountViewer();
+		wheel(root(), { clientX: 10, clientY: 10, deltaY: -1 });
+		expect(scaleOf()).toBeCloseTo(1.25);
+		// Still preventDefaulted (the modal owns the wheel), but the zoom is left put.
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaX: 120, deltaY: 0 })).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('a downward wheel zooms OUT (back toward fit)', () => {
+		mountViewer();
+		wheel(root(), { clientX: 10, clientY: 10, deltaY: -1 });
+		wheel(root(), { clientX: 10, clientY: 10, deltaY: -1 });
+		expect(scaleOf()).toBeCloseTo(1.25 * 1.25);
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaY: 1 })).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('no-ops (and does NOT preventDefault) when not the frontmost viewer; the front one acts', () => {
+		mountViewer();
+		const back = root();
+		mountViewer();
+		const front = root();
+		expect(back).not.toBe(front);
+
+		// Dispatched on the BACKGROUND viewer: it must decline AND leave the event
+		// uncancelled (nothing behind it to own the wheel either way).
+		expect(wheel(back, { clientX: 10, clientY: 10, deltaY: -1 })).toBe(false);
+		expect(scaleOf(back)).toBe(1);
+
+		// Positive control: the FRONT viewer zooms and cancels.
+		expect(wheel(front, { clientX: 10, clientY: 10, deltaY: -1 })).toBe(true);
+		expect(scaleOf(front)).toBeCloseTo(1.25);
+	});
+
+	it('no-ops while a showModal() dialog is above it, and resumes after it closes', () => {
+		const dialog = document.body.appendChild(document.createElement('dialog'));
+		mockOpenModals([dialog]);
+		mountViewer();
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaY: -1 })).toBe(false);
+		expect(scaleOf()).toBe(1);
+
+		mockOpenModals([]);
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaY: -1 })).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
 	});
 });

@@ -230,6 +230,36 @@
 		zoom = zoomTo(zoom, zoom.scale * factor, stageCenter(g), g);
 	}
 
+	// Wheel / ctrl-cmd-wheel zoom, anchored at the CURSOR (TASK-2457 / DR-4). Both
+	// plain AND ctrl/cmd wheel zoom, so there is no modifier gate — but the
+	// listener is registered NON-PASSIVELY (see the effect below) so
+	// `preventDefault` takes effect: the inert page behind must not scroll, and
+	// ctrl/cmd+wheel must not trigger the browser's own page zoom. `stopPropagation`
+	// as well, so the page's scroll-restoration listener does not count this as a
+	// user scroll (belt; `restore.svelte.ts` also ignores viewer input — braces).
+	function onWheel(e: WheelEvent) {
+		const el = rootEl;
+		// Same gates as `onKeydown`: only the frontmost, non-blocked viewer acts.
+		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
+		// We own the wheel while frontmost — consume it even before the bitmap is
+		// measurable, so a scroll can never leak past the modal into the inert app.
+		e.preventDefault();
+		e.stopPropagation();
+		// A horizontal-only wheel (`deltaY === 0`, e.g. a trackpad side-swipe) is
+		// still consumed — the modal owns the wheel — but must NOT zoom, or it would
+		// read as a zoom-out. Direction comes from `deltaY` alone.
+		if (e.deltaY === 0) return;
+		const g = readGeometry();
+		const rect = stageEl?.getBoundingClientRect();
+		if (!g || !rect) return;
+		// Anchor in stage-local px (top-left origin) — the coordinate system the
+		// zoom module documents. The stage is untransformed, so its rect is stable.
+		const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+		// Wheel up / away (deltaY < 0) zooms in.
+		const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+		zoom = zoomTo(zoom, zoom.scale * factor, anchor, g);
+	}
+
 	// Stepped from `shownIndex`, not from `current`: after the set shrinks they
 	// differ, and moving from the raw value would jump relative to a position
 	// the user was never on. Both are no-ops on an empty set — reachable only
@@ -382,6 +412,18 @@
 		});
 		ro.observe(stage);
 		return () => ro.disconnect();
+	});
+
+	// Register the wheel listener imperatively with `{ passive: false }` so
+	// `preventDefault` is guaranteed to take effect (a declarative `onwheel`
+	// binding's passivity is not something to rely on), and on the viewer ROOT so
+	// a wheel over the backdrop letterbox is consumed too — scrolling "past" the
+	// modal into the inert app is exactly what the contract forbids (TASK-2457).
+	$effect(() => {
+		const el = rootEl;
+		if (!el) return;
+		el.addEventListener('wheel', onWheel, { passive: false });
+		return () => el.removeEventListener('wheel', onWheel);
 	});
 
 	// aria-modal promises focus never leaves the surface, but a focused nav button
