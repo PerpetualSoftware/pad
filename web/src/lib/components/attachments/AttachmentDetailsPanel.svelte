@@ -60,13 +60,11 @@
 	entry points at once in PLAN-2411 (DR-19).
 -->
 <script lang="ts">
-	import { onDestroy, untrack } from 'svelte';
+	import { onDestroy } from 'svelte';
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
-	import AttachmentDeleteConfirm, {
-		attachmentDeletePrompt,
-	} from './AttachmentDeleteConfirm.svelte';
+	import AttachmentDeleteConfirm from './AttachmentDeleteConfirm.svelte';
 	import {
 		attachmentActionsFor,
 		type AttachmentActionContext,
@@ -78,14 +76,12 @@
 		formatBytes,
 		iconForAttachment,
 	} from '$lib/attachments/display';
-	import { api } from '$lib/api/client';
-	import {
-		fetchAttachmentMetadata,
-		revalidateAttachmentMetadata,
-	} from '$lib/components/editor/attachment-metadata';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { createFence, createPaintFence, viewIdentity } from '$lib/attachments/viewFence';
+	// The metadata + delete-confirm machinery lives in shared modules now
+	// (TASK-2473); this component is a consumer + the renderer.
+	import { createSurfaceMetadata } from '$lib/attachments/surfaceMetadata.svelte';
+	import { createDeleteConfirm } from '$lib/attachments/surfaceDeleteConfirm.svelte';
 
 	interface Props {
 		open: boolean;
@@ -152,61 +148,13 @@
 		onDeleted,
 	}: Props = $props();
 
-	/**
-	 * How long a metadata read may hang before the panel calls it a failure.
-	 * Generous: this is the "something is wrong" threshold, not a latency
-	 * budget — a slow answer that arrives still wins.
-	 */
-	const METADATA_SLOW_MS = 10_000;
-
 	const uid = $props.id();
 	const promptId = `attachment-delete-note-${uid}`;
 
-	// What the server told us, filling the gaps in what the event carried.
-	let fetchedMime = $state<string | null>(null);
-	let fetchedSize = $state<number | null>(null);
-	let loading = $state(false);
-	/** 404 — authoritative. Actions go inert. */
-	let missing = $state(false);
-	/** Non-404 failure — inline, retryable, alongside what we already know. */
-	let loadFailed = $state(false);
-	let view = $state<'root' | 'delete'>('root');
+	// Action-run state. The metadata + delete-confirm machinery moved out to the
+	// shared surface modules (TASK-2473); running the actions stays here.
 	let busy = $state(false);
 	let actionError = $state<string | null>(null);
-	let deletePrompt = $state('');
-	/** Bumped by Retry; drives the loader effect's forced-revalidate path. */
-	let forceReload = $state(0);
-
-	// --- fences (see $lib/attachments/viewFence) ------------------------------
-	// The identity of what this panel is showing. The PAIR, not the id alone:
-	// the workspace half is what a hand-rolled fence keeps forgetting.
-	const identity = viewIdentity(() => ({ ws: wsSlug, att: attachmentId }));
-	// 1. Request fence — restarted per metadata read, so a Retry supersedes
-	//    its own predecessor and only the newest response may write.
-	const loadFence = createFence(identity);
-	// 2. View fence — invalidated only when the panel really changes subject,
-	//    so an in-flight delete of the attachment still on screen can still
-	//    reconcile even after a Retry reloaded its metadata.
-	const viewFence = createFence(identity);
-	// 3. Paint fence — "does the control the user clicked belong to what is on
-	//    screen?" Checked at ENTRY by every control, because the other two run
-	//    after an await and no fence can unsend a request.
-	const paint = createPaintFence(identity);
-
-	// Plain `let`, never $state: read and written only inside effects, and a
-	// $state here would make the effect below depend on what it writes
-	// (CONVE-1688 — the self-write loop that silently aborts the flush).
-	let paintedKey: string | null = null;
-	/**
-	 * The reload stamp this component has already acted on — the host's
-	 * revalidate signal and the local Retry counter together. Seeded from the
-	 * incoming prop so a host that has already bumped its counter (an earlier
-	 * restore, before this panel existed) doesn't read as a pending reload on
-	 * the first render.
-	 */
-	let seenReload = untrack(() => `${revalidateToken}:0`);
-	/** Resolver for the in-app confirmation currently on screen, if any. */
-	let pendingConfirm: ((confirmed: boolean) => void) | null = null;
 	/**
 	 * Teardown latch and the deferred-close timer. Plain `let`, not `$state`:
 	 * nothing renders from them, and they are read by continuations that must
@@ -223,6 +171,44 @@
 	let deleteSignal = 0;
 
 	const displayName = $derived(displayFilename(filename));
+
+	// The delete-confirmation machine (DR-18). Owns the confirmation STATE — the
+	// pending resolver, the warning wording, the permission-withdrawn abandon —
+	// while the delete descriptor still owns the delete itself. `isReferenced`
+	// reads `referencedHere()` at request time so it sees unflushed editor edits.
+	const deleteConfirm = createDeleteConfirm({
+		mutationsEnabled: () => mutationsEnabled,
+		isReferenced: () => referencedHere(),
+		displayName: () => displayName,
+	});
+
+	// The metadata machine (DR-2, DR-10, DR-14). Seeds from the open event, fills
+	// the gaps with a HEAD, and owns the (workspace, attachment) fences the
+	// panel's own actions/close fence against. A genuine subject change drops the
+	// other per-subject state the machine does not own — the confirmation and any
+	// in-flight action — exactly as the panel did inline.
+	const surfaceMeta = createSurfaceMetadata(
+		() => ({
+			ws: wsSlug,
+			attachmentId,
+			seed: { filename, mime_type: mimeType, size_bytes: sizeBytes },
+			open,
+			parentArchived,
+			revalidateToken,
+		}),
+		{
+			onSubjectChange: () => {
+				deleteConfirm.cancel();
+				busy = false;
+				actionError = null;
+			},
+		}
+	);
+
+	// Render-facing views of the metadata machine's settled phase.
+	const missing = $derived(surfaceMeta.phase === 'missing');
+	const loadFailed = $derived(surfaceMeta.phase === 'transient');
+	const loading = $derived(surfaceMeta.slow);
 	/**
 	 * An archived parent's reachability probe is still in flight.
 	 *
@@ -234,9 +220,11 @@
 	 */
 	const unreachablePending = $derived(parentArchived && loading && !missing);
 	// The event's value wins when it has one — it came from a list row, which
-	// is at least as good as a HEAD and is available before any fetch.
-	const mime = $derived(mimeType || fetchedMime || '');
-	const size = $derived(sizeBytes ?? fetchedSize);
+	// is at least as good as a HEAD and is available before any fetch. The merge
+	// lives in the metadata machine now; the empty-string fallback stays here
+	// because `mime` feeds the icon/type helpers, which want a string.
+	const mime = $derived(surfaceMeta.fields.mime_type || '');
+	const size = $derived(surfaceMeta.fields.size_bytes);
 	const iconId = $derived(iconForAttachment(mime || null, filename));
 	const typeLabel = $derived(describeAttachmentType(mime || null, filename));
 	// Always says at least the type — a panel that opened on a chip with no
@@ -290,7 +278,7 @@
 			// already treats as authoritative.
 			return mutationsEnabled;
 		},
-		confirmDelete: () => confirmDelete(),
+		confirmDelete: () => deleteConfirm.request(),
 		onDeleted: (id) => {
 			deleteSignal += 1;
 			onDeleted?.(id);
@@ -299,148 +287,6 @@
 	};
 
 	const actions = $derived(attachmentActionsFor(ctx));
-
-	function downloadUrl(uuid: string, variant?: 'thumb-sm' | 'thumb-md' | 'original'): string {
-		return api.attachments.downloadUrl(wsSlug, uuid, variant);
-	}
-
-	/**
-	 * Load whatever the event didn't carry, and re-read on demand.
-	 *
-	 * Reads only props + the fence identity in tracked scope; every piece of
-	 * state it writes (`loading`, `missing`, `fetched*`) is read in the markup
-	 * and in `untrack`ed blocks only, so the effect cannot self-invalidate.
-	 */
-	$effect(() => {
-		const req = loadFence.restart();
-		const isOpen = open;
-		const seedMime = mimeType;
-		const seedSize = sizeBytes;
-		const reloadStamp = `${revalidateToken}:${forceReload}`;
-		const archivedParent = parentArchived;
-
-		let forced = false;
-		untrack(() => {
-			// A genuine subject change: drop everything the previous attachment
-			// left behind, stop any in-flight continuation from reconciling, and
-			// abandon a confirmation that was up for a file the user is no longer
-			// looking at.
-			if (req.key !== paintedKey) {
-				paintedKey = req.key;
-				viewFence.invalidate();
-				settleConfirm(false);
-				fetchedMime = null;
-				fetchedSize = null;
-				missing = false;
-				loadFailed = false;
-				busy = false;
-				actionError = null;
-			}
-			// Whatever this run paints belongs to this (workspace, attachment).
-			// An un-addressable token records nothing, which correctly stops the
-			// panel's controls claiming the previous subject.
-			paint.record(req);
-			// An archived parent makes this a REACHABILITY question, and the
-			// metadata cache can hold an `ok` observed before the archive — the
-			// same reason existence probes elsewhere revalidate rather than
-			// read. So force it, which also routes through the invalidate-then-
-			// fetch path instead of replaying a stale success.
-			if (archivedParent) forced = true;
-			if (reloadStamp !== seenReload) {
-				seenReload = reloadStamp;
-				forced = true;
-				// A forced revalidation exists because the previous answer may no
-				// longer hold — the parent was just restored (DR-14). So drop the
-				// latched `missing` NOW rather than only on an `ok`: if this
-				// revalidation comes back transient, the render must fall through
-				// to the retryable error. Leaving it latched shows "no longer
-				// available" with no way to ask again, which is the exact
-				// empty-vs-broken confusion DR-10 exists to prevent.
-				missing = false;
-			}
-		});
-
-		if (!isOpen || req.key === null) return;
-		// Nothing to complete: the strip's entry point always has all three.
-		// Unless the parent is archived — then "complete" and "reachable" are
-		// different claims, and only a probe settles the second one.
-		if (!forced && !archivedParent && seedMime && seedSize !== null && seedSize !== undefined) {
-			return;
-		}
-
-		loading = true;
-		loadFailed = false;
-		// A HEAD that never settles is not a failure the fetch layer can report:
-		// no rejection arrives, so without this the panel sits on "Reading
-		// details…" forever with no Retry — indistinguishable to the user from
-		// a hang, and the exact loading-vs-failed confusion DR-10 exists to
-		// prevent. The request is NOT aborted: if it does eventually answer, it
-		// is still the truth and still allowed to correct the error state.
-		const slowTimer = setTimeout(() => {
-			if (req.stale()) return;
-			loading = false;
-			loadFailed = true;
-		}, METADATA_SLOW_MS);
-		void (async () => {
-			// The workspace comes off the TOKEN, not the live prop: the request
-			// must name the workspace it was issued for even if the panel has
-			// since moved on.
-			const result = forced
-				? await revalidateAttachmentMetadata(req.value.ws, req.value.att, downloadUrl)
-				: await fetchAttachmentMetadata(req.value.ws, req.value.att, downloadUrl);
-			clearTimeout(slowTimer);
-			if (req.stale()) return;
-			loading = false;
-			if (result.status === 'ok') {
-				fetchedMime = result.mime;
-				fetchedSize = result.size;
-				missing = false;
-				loadFailed = false;
-			} else if (result.status === 'missing') {
-				// Authoritative. Latch it — the actions go inert below.
-				missing = true;
-				loadFailed = false;
-			} else {
-				// Says nothing about whether the row exists: keep showing what we
-				// have and stay retryable.
-				loadFailed = true;
-			}
-		})();
-	});
-
-	/**
-	 * Permission withdrawn while the confirmation is open.
-	 *
-	 * The pane can go peeked (or a role can change) between opening the
-	 * confirmation and answering it. Blocking the eventual request is not
-	 * enough: the user is left looking at a live "Delete file" button for an
-	 * action that can no longer happen, on a surface that is supposed to offer
-	 * no delete at all in that state. So the confirmation is abandoned as a
-	 * rejection, exactly as a subject change abandons it.
-	 *
-	 * Plain latch + `untrack` for the writes: as `$state` this effect would
-	 * depend on what it writes, which aborts the flush and strands unrelated
-	 * reactivity (CONVE-1688).
-	 */
-	$effect(() => {
-		const mayMutate = mutationsEnabled;
-		untrack(() => {
-			if (mayMutate || view !== 'delete') return;
-			settleConfirm(false);
-		});
-	});
-
-	function retry() {
-		// ENTRY fence: the clicked row was painted for `paint`'s identity, and
-		// the live props may already name a different attachment.
-		if (!paint.isCurrent()) return;
-		loadFailed = false;
-		// Goes through the loader effect's revalidate path rather than fetching
-		// here, so a user Retry and the host's restore signal (DR-14) are ONE
-		// code path — and both therefore invalidate before refetching, which is
-		// the whole point of Retry (DR-10).
-		forceReload += 1;
-	}
 
 	/**
 	 * Ids referenced by THIS item's body. A hit means deleting leaves a
@@ -458,45 +304,13 @@
 		return new Set(attachmentRefsIn(live ?? itemContent ?? '')).has(attachmentId);
 	}
 
-	/**
-	 * The confirmation, as a promise the delete descriptor awaits. The
-	 * descriptor snapshots identity BEFORE this and re-checks permission after
-	 * it resolves, which is the whole reason it is wired this way rather than
-	 * as a bespoke "confirm, then call the API" path here.
-	 *
-	 * The wording comes from the shared `attachmentDeletePrompt` — the same
-	 * two arms the strip's tile shows (DR-18). The hedged arm matters here for
-	 * one EXTRA reason beyond the shared one: the body this checks is the
-	 * HOST's, which is not necessarily the attachment's parent item. The
-	 * open-panel event's `itemId` is ROUTING, not ownership: a chip in a reused
-	 * comment composer's unsubmitted draft correctly routes to the host in
-	 * front of the user even after an item switch.
-	 */
-	function confirmDelete(): Promise<boolean> {
-		deletePrompt = attachmentDeletePrompt(displayName, referencedHere());
-		return new Promise<boolean>((resolve) => {
-			// Supersede any confirmation already up — two open at once would
-			// leave one resolver dangling forever.
-			pendingConfirm?.(false);
-			pendingConfirm = resolve;
-			view = 'delete';
-		});
-	}
-
-	function settleConfirm(confirmed: boolean) {
-		const resolve = pendingConfirm;
-		pendingConfirm = null;
-		view = 'root';
-		resolve?.(confirmed);
-	}
-
 	async function runAction(action: ButtonAttachmentAction) {
-		if (!paint.isCurrent()) return;
+		if (!surfaceMeta.paint.isCurrent()) return;
 		if (!action.enabled(ctx)) return;
 		// Fence 2: a subject change mid-action must not write this action's
 		// outcome onto a DIFFERENT attachment's panel. The request itself still
 		// lands — it targets an id, not a view.
-		const token = viewFence.begin();
+		const token = surfaceMeta.viewFence.begin();
 		const deletesBefore = deleteSignal;
 		actionError = null;
 		busy = true;
@@ -534,19 +348,17 @@
 		destroyed = true;
 		clearTimeout(deferredClose);
 		deferredClose = undefined;
-		viewFence.invalidate();
-		loadFence.invalidate();
-		paint.record(null);
-		const resolve = pendingConfirm;
-		pendingConfirm = null;
-		resolve?.(false);
+		// Invalidate the fences so every in-flight continuation reads stale, and
+		// reject any pending confirmation so the descriptor's `await` settles.
+		surfaceMeta.dispose();
+		deleteConfirm.dispose();
 	});
 
 	function handleClose() {
 		// A confirmation still on screen when the panel closes is a rejection:
 		// leaving the promise unresolved would strand the descriptor's `await`
 		// forever.
-		settleConfirm(false);
+		deleteConfirm.cancel();
 		onclose();
 	}
 
@@ -562,13 +374,13 @@
 		// attachment (tap a chip, tap another). Closing then would dismiss a
 		// panel the user just opened. Cleared on teardown so it cannot fire into
 		// a destroyed component either.
-		const token = viewFence.begin();
+		const token = surfaceMeta.viewFence.begin();
 		clearTimeout(deferredClose);
 		deferredClose = setTimeout(() => {
 			deferredClose = undefined;
 			if (destroyed) return;
 			if (token.stale()) return;
-			if (!paint.isCurrent()) return;
+			if (!surfaceMeta.paint.isCurrent()) return;
 			handleClose();
 		}, 0);
 	}
@@ -583,9 +395,9 @@
 	sheetOnMobile
 	sheetTitle={displayName}
 	ariaLabel={panelLabel}
-	focusKey={`${attachmentId}:${view}`}
+	focusKey={`${attachmentId}:${deleteConfirm.pending ? 'delete' : 'root'}`}
 >
-	{#if view === 'root'}
+	{#if !deleteConfirm.pending}
 		<!-- Header. `role="presentation"`, like the item menu's confirm note:
 		     a role="menu" owns menuitem / separator / group children, and this
 		     says explicitly that the header is none of them. -->
@@ -608,7 +420,7 @@
 		{:else if loadFailed}
 			<!-- Beside what we already know, never instead of it (DR-10). -->
 			<div class="ap-note ap-note-error" role="presentation">Couldn't load the file details.</div>
-			<MenuItem icon="↻" onclick={retry}>Retry</MenuItem>
+			<MenuItem icon="↻" onclick={() => surfaceMeta.retry()}>Retry</MenuItem>
 		{/if}
 
 		{#if actionError}
@@ -656,10 +468,10 @@
 			renders too — one confirmation for one object.
 		-->
 		<AttachmentDeleteConfirm
-			prompt={deletePrompt}
+			prompt={deleteConfirm.warning ?? ''}
 			{promptId}
-			oncancel={() => settleConfirm(false)}
-			onconfirm={() => settleConfirm(true)}
+			oncancel={() => deleteConfirm.cancel()}
+			onconfirm={() => deleteConfirm.confirm()}
 		/>
 	{/if}
 </Menu>
