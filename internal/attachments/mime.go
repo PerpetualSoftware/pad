@@ -138,6 +138,48 @@ func LookupMIME(mime string) (MIMEEntry, bool) {
 	return e, ok
 }
 
+// inlineSafe is the EXPLICIT set of MIME types the read path may serve with
+// Content-Disposition: inline (BUG-2413). It is deliberately a standalone
+// allowlist and NOT a function of RenderMode. Deriving inline-safety from the
+// broad RenderInline bucket would auto-trust every future RenderInline entry, so
+// adding an active type (image/svg+xml, say) as RenderInline would silently
+// reintroduce same-origin execution. Listing the exact types here means a new
+// allowlist entry FAILS SAFE — it downloads until someone makes the explicit,
+// reviewable decision to add it here too, the same posture the `allowed` map
+// itself takes.
+//
+// Every member is a format the browser renders WITHOUT executing embedded
+// script: raster images, audio and video (all also embedded by the app via
+// <img>/<audio>/<video>), plus PDF (sandboxed viewer) and plain text. This is
+// the server mirror of the client's VIEWER_MIMES + BROWSER_PREVIEW_MIMES
+// (web/src/lib/attachments/display.ts). Notably absent: image/svg+xml and
+// application/xhtml+xml (active), text/xml + application/xml (SVG/XHTML wear
+// these after an extensionless sniff), and the whole RenderForceDownload bucket.
+var inlineSafe = map[string]struct{}{
+	// Raster images.
+	"image/png": {}, "image/jpeg": {}, "image/gif": {}, "image/webp": {},
+	"image/avif": {}, "image/heic": {}, "image/heif": {},
+	// Audio (inline via <audio controls>).
+	"audio/mpeg": {}, "audio/wav": {}, "audio/ogg": {}, "audio/webm": {},
+	"audio/flac": {}, "audio/aac": {}, "audio/mp4": {},
+	// Video the app plays inline via <video controls>.
+	"video/mp4": {}, "video/webm": {}, "video/quicktime": {},
+	// Preview-safe documents.
+	"application/pdf": {}, "text/plain": {},
+}
+
+// ServeInline reports whether an allowlisted attachment's bytes may be sent with
+// Content-Disposition: inline. It is the server-side safety gate for BUG-2413:
+// only the explicit passive-media / preview-safe types in `inlineSafe` are
+// inline; everything else — the rest of the RenderChip bucket, the whole
+// RenderForceDownload bucket, and (at the call site) any MIME not on the
+// allowlist at all — is served as an attachment so it cannot execute as
+// same-origin active content.
+func (e MIMEEntry) ServeInline() bool {
+	_, ok := inlineSafe[e.MIME]
+	return ok
+}
+
 // NormalizeMIME strips parameters and lowercases the type/subtype. We
 // match strictly against the allowlist after normalization so callers
 // can pass an http.DetectContentType result (which may include a charset

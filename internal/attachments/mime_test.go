@@ -67,6 +67,40 @@ func TestLookupMIME_RenderModes(t *testing.T) {
 	}
 }
 
+// BUG-2413: ServeInline is the read path's inline-safe gate. Passive media plus
+// PDF and plain text may be served inline; every other allowlisted type — the
+// rest of the RenderChip bucket and the whole force-download bucket — must not.
+func TestServeInline(t *testing.T) {
+	must := func(m string) MIMEEntry {
+		t.Helper()
+		e, ok := LookupMIME(m)
+		if !ok {
+			t.Fatalf("LookupMIME(%q) rejected", m)
+		}
+		return e
+	}
+	inline := []string{
+		"image/png", "image/jpeg", "image/gif", "image/webp", "image/avif",
+		"audio/mpeg", "video/mp4", // passive media the app embeds inline
+		"application/pdf", "text/plain", // the preview-safe chip subset
+	}
+	for _, m := range inline {
+		if !must(m).ServeInline() {
+			t.Errorf("ServeInline(%q) = false, want true (inline-safe)", m)
+		}
+	}
+	download := []string{
+		"text/xml", "application/xml", "application/json", "text/csv",
+		"text/markdown", "application/msword", "application/zip",
+		"text/html", "text/javascript", "application/javascript",
+	}
+	for _, m := range download {
+		if must(m).ServeInline() {
+			t.Errorf("ServeInline(%q) = true, want false (must download)", m)
+		}
+	}
+}
+
 // minimal PNG header
 var pngHeader = []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
 
