@@ -618,9 +618,15 @@
 		<div class="menu-divider" role="separator"></div>
 
 		{#each actions as action (action.id)}
+			<!-- The action's SVG icon, drawn from the shared registry through
+			     MenuItem's snippet path — NOT a glyph string (TASK-2472). Declared
+			     per-iteration so it closes over THIS action's icon id. -->
+			{#snippet actionIcon()}
+				<AttachmentIcon id={action.icon} />
+			{/snippet}
 			{#if action.element === 'anchor'}
 				<MenuItem
-					icon={action.icon}
+					iconSnippet={actionIcon}
 					href={action.href(ctx)}
 					download={action.download?.(ctx)}
 					target={action.target}
@@ -633,7 +639,7 @@
 				</MenuItem>
 			{:else}
 				<MenuItem
-					icon={action.icon}
+					iconSnippet={actionIcon}
 					danger={action.danger}
 					title={action.description}
 					disabled={!action.enabled(ctx) || missing || busy || unreachablePending}

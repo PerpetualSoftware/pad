@@ -13,20 +13,27 @@
 		GENERIC_ICON_ID,
 		ICON_SVG_ATTRS,
 		iconSize,
-		isAttachmentIconId,
+		isIconId,
+		type IconId,
 	} from './index';
 
 	let {
 		id,
 		size = undefined,
 	}: {
-		/** An icon id — usually `iconForAttachment(mime, filename)`. Unknown ids render the generic file. */
-		id: string;
+		/**
+		 * A known registry icon id — a file family (`iconForAttachment(mime,
+		 * filename)`) or an action icon (`actions.ts`). Typed to the union so an
+		 * unknown id is a COMPILE error rather than a silent generic-file fallback.
+		 */
+		id: IconId;
 		/** CSS length, or a number of pixels. Defaults to `1em` so it scales with the surface's type. */
 		size?: number | string;
 	} = $props();
 
-	const iconId = $derived(isAttachmentIconId(id) ? id : GENERIC_ICON_ID);
+	// `id` is typed to the registry, so this is defensive (an `as` cast could still
+	// smuggle a bad string) and never falls through for a real id.
+	const iconId = $derived(isIconId(id) ? id : GENERIC_ICON_ID);
 	const box = $derived(iconSize(size));
 </script>
 

@@ -9,11 +9,11 @@
  *
  * TODAY THERE IS ONE CONSUMER: the options panel, which draws them as a
  * menu/sheet. The unified image viewer — the second renderer, an inline
- * toolbar over the same list — arrives in phase 3a, which is also what will
+ * toolbar over the same list — arrives in phase 3c-i, which is also what will
  * consume the `address` option now threaded onto the image NodeView. Stated
  * plainly because "rendered twice" read as a description of the present and
  * was not one; a list with a single consumer is a shape held open on purpose,
- * and worth re-justifying if 3a ever stops coming.
+ * and worth re-justifying if 3c-i ever stops coming.
  *
  * TWO DESCRIPTOR SHAPES, not one, because the ELEMENT is part of the contract
  * (DR-5, round 35/36):
@@ -50,6 +50,7 @@ import { api } from '$lib/api/client';
 import { announceAttachmentDeleted } from '$lib/attachments/events';
 import { canBrowserPreview } from '$lib/attachments/display';
 import { copyToClipboard } from '$lib/utils/clipboard';
+import type { ActionIconId } from '$lib/attachments/icons/index';
 
 export type AttachmentActionId = 'open' | 'download' | 'copy-link' | 'delete';
 
@@ -97,8 +98,12 @@ interface BaseAttachmentAction {
 	id: AttachmentActionId;
 	/** Row/button label. Visible text, so it carries the honest semantics. */
 	label: string;
-	/** Leading glyph, in `MenuItem`'s string-icon vocabulary. */
-	icon: string;
+	/**
+	 * Leading icon — an ACTION-icon id from the shared registry (TASK-2472),
+	 * rendered via `AttachmentIcon` through `MenuItem`'s `iconSnippet`. Typed to
+	 * the union so a renderer cannot pass a glyph string or an unknown id.
+	 */
+	icon: ActionIconId;
 	/** Longer explanation for a tooltip / sublabel. */
 	description?: string;
 	/**
@@ -161,7 +166,7 @@ export const ATTACHMENT_ACTIONS: readonly AttachmentAction[] = [
 	{
 		id: 'open',
 		label: 'Open in new tab',
-		icon: '⇗',
+		icon: 'action-open',
 		description: 'Hands the file to the browser to preview.',
 		element: 'anchor',
 		// Only for what a browser previews natively. Never a Pad-rendered
@@ -176,7 +181,7 @@ export const ATTACHMENT_ACTIONS: readonly AttachmentAction[] = [
 	{
 		id: 'download',
 		label: 'Download',
-		icon: '⇩',
+		icon: 'action-download',
 		element: 'anchor',
 		applies: () => true,
 		enabled: addressable,
@@ -198,7 +203,7 @@ export const ATTACHMENT_ACTIONS: readonly AttachmentAction[] = [
 		// access to this workspace, not a public share link. Pad has no
 		// attachment share token.
 		label: 'Copy workspace link',
-		icon: '🔗',
+		icon: 'action-copy-link',
 		description: 'Opens only for people with access to this workspace.',
 		element: 'button',
 		applies: () => true,
@@ -214,7 +219,7 @@ export const ATTACHMENT_ACTIONS: readonly AttachmentAction[] = [
 	{
 		id: 'delete',
 		label: 'Delete',
-		icon: '🗑',
+		icon: 'action-delete',
 		element: 'button',
 		danger: true,
 		// ABSENT, not disabled, where the caller cannot mutate — a peeked pane,

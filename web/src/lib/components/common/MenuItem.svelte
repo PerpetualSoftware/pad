@@ -161,7 +161,11 @@
 
 	.mi-icon {
 		width: 18px;
-		text-align: center;
+		/* Centre the slot's content on BOTH axes — a text glyph as before, and the
+		   `iconSnippet`'s `display:block` SVG, which `text-align` alone would leave
+		   left-aligned (TASK-2472). */
+		display: grid;
+		place-items: center;
 		flex: 0 0 18px;
 		opacity: 0.85;
 	}
