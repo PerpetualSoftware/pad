@@ -731,18 +731,36 @@ func (s *Server) handleGetAttachment(w http.ResponseWriter, r *http.Request) {
 
 	// Headers come BEFORE ServeContent / io.Copy so they make it onto
 	// the wire even when the response is a 304 / 206.
-	w.Header().Set("Content-Type", att.MimeType)
+	//
+	// Content-Type AND Content-Disposition are a security decision here, not a
+	// convenience (BUG-2413). FAIL CLOSED: serve inline only a stored MIME that is
+	// on the allowlist AND explicitly inline-safe (passive media the browser
+	// renders in place, plus PDF and plain text — see MIMEEntry.ServeInline).
+	// Everything else — the rest of the RenderChip bucket (xml/json/csv/office/
+	// archives), the RenderForceDownload bucket, and any MIME we don't recognize
+	// at all — is served as an attachment, so a legacy or mislabelled
+	// image/svg+xml, an extensionless SVG stored as text/xml, or an unknown row
+	// can never render as same-origin active content. The default was previously
+	// inline, which is exactly the fail-open this closes.
+	contentType := att.MimeType
+	disposition := "attachment"
+	if entry, ok := attachments.LookupMIME(att.MimeType); ok {
+		if entry.ServeInline() {
+			disposition = "inline"
+		}
+	} else {
+		// Not on the allowlist at all: don't echo back a type the browser might
+		// act on. Opaque bytes, paired with the attachment disposition and the
+		// nosniff below, make an unrecognized row inert.
+		contentType = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", contentType)
 	// Authorization has succeeded — replace the no-store denial directive
 	// set at the top of the handler with the positive one. Known and
 	// accepted: this one-hour positive browser cache outlives a permission
 	// revocation (PLAN-2391 DR-10).
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	disposition := "inline"
-	if entry, ok := attachments.LookupMIME(att.MimeType); ok && entry.RenderMode == attachments.RenderForceDownload {
-		disposition = "attachment"
-	}
 	w.Header().Set("Content-Disposition",
 		fmt.Sprintf(`%s; filename=%q`, disposition, sanitizeHeaderFilename(att.Filename)))
 
