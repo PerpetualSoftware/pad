@@ -267,18 +267,25 @@ afterEach(() => {
 });
 
 describe('Lightbox — dialog semantics', () => {
-	it('is an aria-modal dialog named after the image', () => {
+	it('is an aria-modal dialog named after the image, plus its type', () => {
 		mountViewer();
 		expect(root().getAttribute('role')).toBe('dialog');
 		expect(root().getAttribute('aria-modal')).toBe('true');
-		expect(root().getAttribute('aria-label')).toBe('a diagram');
+		// The accessible name is the display name PLUS the type/size the header
+		// shows (3c-ii T2b) — computed from the same helper the component uses. Size
+		// is absent here (the seed carries none and the probe is async), so the label
+		// is "name, type".
+		const type = describeAttachmentType('image/png', null);
+		expect(root().getAttribute('aria-label')).toBe(`a diagram, ${type}`);
 	});
 
 	it('falls back to a generic name when the image has no alt', () => {
 		// An unnamed dialog is announced as nothing at all, so the fallback is
-		// part of the contract rather than a nicety.
+		// part of the contract rather than a nicety — now the display-name fallback
+		// ("Attachment") plus the type.
 		mountViewer({ images: [image(IMG_A, '')] });
-		expect(root().getAttribute('aria-label')).toBe('Attachment viewer');
+		const type = describeAttachmentType('image/png', null);
+		expect(root().getAttribute('aria-label')).toBe(`Attachment, ${type}`);
 	});
 
 	it('gives every control a real accessible name, not a glyph', () => {
@@ -308,10 +315,11 @@ describe('Lightbox — dialog semantics', () => {
 				image(IMG_B, 'second'),
 			],
 		});
-		expect(root().getAttribute('aria-label')).toBe('first');
+		const type = describeAttachmentType('image/png', null);
+		expect(root().getAttribute('aria-label')).toBe(`first, ${type}`);
 		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
 		flushSync();
-		expect(root().getAttribute('aria-label')).toBe('second');
+		expect(root().getAttribute('aria-label')).toBe(`second, ${type}`);
 	});
 });
 
@@ -3825,12 +3833,20 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 		expect(counterText()).toBeNull();
 	});
 
-	it('an authoritative metadata 404 for the ONLY image closes the viewer', async () => {
+	it('an authoritative metadata 404 for a SINGLE-item surface shows the inert overlay, not a close (3c-ii T2b)', async () => {
+		// The retired panel's behavior, preserved: a single file the user opened that
+		// turns out to be gone shows "no longer available" rather than flash-closing.
+		// (A multi-image set still closes on all-missing — the next test.)
 		const onClose = vi.fn();
 		metaFetch.mockResolvedValue({ status: 'missing' });
 		mountViewer({ images: [image(IMG_A, 'a')], onClose });
 		await settleAsync();
-		expect(onClose).toHaveBeenCalledTimes(1);
+		expect(onClose).not.toHaveBeenCalled();
+		const missing = root().querySelector('.lightbox-missing');
+		expect(missing).not.toBeNull();
+		expect(missing?.textContent).toContain('no longer available');
+		// No bytes: the missing arm mounts no <img>.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
 	});
 
 	it('an ENTIRE set going missing cascades advance→advance→close (terminates)', async () => {

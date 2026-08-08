@@ -79,6 +79,7 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import Lightbox from '$lib/components/common/Lightbox.svelte';
+	import { displayFilename } from '$lib/attachments/display';
 	import {
 		isAttachmentSurfaceEventForHost,
 		registerAttachmentDeletionListener,
@@ -133,8 +134,9 @@
 	 * use. The child is destroyed by nulling `request` (item switch, archive), but
 	 * a callback it already scheduled (a delete resolving) can still land after and
 	 * would otherwise clear whatever is current by then. Focus restore is NOT done
-	 * here: the surface returns focus itself, after releasing its inert backdrop
-	 * lease (an element under the lease is not focusable) — see `AttachmentViewerHost`.
+	 * here: `Lightbox` returns focus itself, after releasing its inert backdrop
+	 * lease (an element under the lease is not focusable), so the host threads the
+	 * `invoker` down rather than focusing it from a teardown that runs too early.
 	 */
 	function closeRequest(target: AttachmentSurfaceOpenEvent | null): () => void {
 		return () => {
@@ -147,7 +149,11 @@
 	function fromPanel(event: AttachmentPanelOpenEvent): AttachmentSurfaceOpenEvent {
 		const image: LightboxImage = {
 			id: event.attachmentId,
-			alt: event.filename ?? '',
+			// The shared nameless-file fallback ("Untitled file"), matching what the
+			// retired panel showed — so a null-filename file is named consistently
+			// across the strip, the surface and this bridge, not the Lightbox's bare
+			// "Attachment".
+			alt: displayFilename(event.filename),
 			filename: event.filename,
 			mime_type: event.mime_type,
 			size_bytes: event.size_bytes,

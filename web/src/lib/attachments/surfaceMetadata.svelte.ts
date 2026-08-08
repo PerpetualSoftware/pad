@@ -1,8 +1,9 @@
 /**
  * The attachment surface's metadata machine (PLAN-2392 3c-i / TASK-2473),
- * lifted VERBATIM from `AttachmentDetailsPanel.svelte`'s internals so the panel
- * and — later — the converged viewer share ONE implementation rather than a
- * copy each.
+ * lifted VERBATIM from the options panel's internals so the panel and the
+ * converged surface shared ONE implementation rather than a copy each. The panel
+ * was retired in the T2b cutover (TASK-2488); the sole consumer now is the grown
+ * `Lightbox`, and this module is where the machine lives so it cannot drift.
  *
  * SEED THEN FETCH (DR-2, DR-10). A surface opens IMMEDIATELY with whatever the
  * open event carried (a list row has all three fields; a chip may have none)

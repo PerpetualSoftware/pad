@@ -123,10 +123,10 @@
 		mutationsEnabled?: boolean;
 		/**
 		 * The persisted item body + the editor's LIVE markdown, as getters — the
-		 * panel's pattern (`AttachmentDetailsPanel.svelte`). Used ONLY to warn when
-		 * a delete would break a live reference in this body (DR-5); read at
-		 * confirm time so the live getter sees unflushed edits. Absent → the
-		 * warning falls to its hedged arm.
+		 * pattern the retired options panel used. Used ONLY to warn when a delete
+		 * would break a live reference in this body (DR-5); read at confirm time so
+		 * the live getter sees unflushed edits. Absent → the warning falls to its
+		 * hedged arm.
 		 */
 		getItemContent?: () => string | null;
 		getLiveContent?: () => string | null;
@@ -290,10 +290,6 @@
 		)
 	);
 	let img = $derived(survivors[shownIndex]);
-	// The accessible name: the image's own alt where there is one, else a
-	// generic label. Never empty — an unnamed `role="dialog"` is announced as
-	// nothing at all.
-	let dialogLabel = $derived(img?.alt || 'Attachment viewer');
 
 	// ── Metadata header (PLAN-2392 phase 3c-i / TASK-2475) ────────────────────
 	//
@@ -373,6 +369,15 @@
 	let unreachablePending = $derived(
 		parentArchived && (headerMeta.phase !== 'ok' || headerMeta.slow) && !missing
 	);
+	// A SINGLE-item surface whose file is gone (metadata 404) shows an inert "no
+	// longer available" overlay instead of closing — the behavior the retired
+	// options panel had, preserved through the T2b cutover (a panel open is always
+	// single-item, so it is keyed on the whole set being one). A MULTI-image set is
+	// unchanged: a member's 404 advances to a survivor, and the last one closes,
+	// via the tombstone path below. An EXTERNAL delete (the bus) still closes even a
+	// single, exactly as the panel host did — it is only the metadata-404 answer to
+	// a question the user asked that earns the message rather than a flash-close.
+	let soleMissing = $derived(!!img && missing && images.length === 1);
 
 	// ── Action toolbar (PLAN-2392 phase 3c-i / TASK-2474) ─────────────────────
 	//
@@ -390,6 +395,12 @@
 	// string. Shared by the metadata header, the download attribute and the delete
 	// prompt, so all three name the file identically.
 	let displayName = $derived(img?.filename ?? blankToNull(img?.alt) ?? 'Attachment');
+	// The dialog's accessible NAME (3c-ii T2b): the file's display name plus the
+	// type · size the header shows, so a screen reader announces WHAT is open — the
+	// metadata the retired panel exposed — not a bare alt. Never empty (`displayName`
+	// always resolves), so an unnamed `role="dialog"` — announced as nothing — can't
+	// happen.
+	let dialogLabel = $derived([displayName, headerDetail].filter(Boolean).join(', '));
 	// Inline, transient error from a button action (a failed clipboard write). Sits
 	// in the toolbar beside the controls, never a blocking dialog.
 	let toolbarError = $state<string | null>(null);
@@ -592,8 +603,11 @@
 	// safe→unsafe MIME flip keeps id + dims identical, so without the renderer in
 	// the key the load effect would not re-fire and the SAFE bytes would stay on
 	// screen behind the fallback arm — the no-bytes invariant depends on this.
+	// `soleMissing` joins the key too: a single-item image whose 404 lands flips it
+	// true, and the load effect must re-fire to DISPOSE the loader (no bytes for a
+	// gone file) and let the missing overlay take the stage.
 	let loadKey = $derived(
-		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}`
+		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}:${soleMissing}`
 	);
 	// Captured NON-reactively at load time (see the effect): a breakpoint flip
 	// alone must not reload — desktop→mobile must not abort an in-flight original,
@@ -1112,9 +1126,13 @@
 	// cascades advance→advance→close, one 404 at a time, and terminates.
 	let lastMissingId: string | undefined = undefined;
 	$effect(() => {
-		const isMissing = missing;
+		// A SINGLE-item surface (`images.length === 1`) does NOT route through the
+		// tombstone path on a 404 — it shows the inert `soleMissing` overlay and
+		// stays open (the retired panel's behavior). Only a MULTI-image set advances
+		// / closes here, so the whole-set cascade is unchanged.
+		const advanceMissing = missing && images.length > 1;
 		untrack(() => {
-			const missingId = isMissing ? img?.id : undefined;
+			const missingId = advanceMissing ? img?.id : undefined;
 			if (!missingId) {
 				lastMissingId = undefined;
 				return;
@@ -1300,7 +1318,7 @@
 			// safe→unsafe flip actually re-runs this and reaches the dispose. The
 			// loader's own DR-16 gate (`start()`) is the backstop; the Lightbox
 			// decides no-bytes explicitly here.
-			if (shownRenderer === 'raster-image') {
+			if (shownRenderer === 'raster-image' && !soleMissing) {
 				// Pass the RESOLVED MIME, not the seed. A null-seed entry that
 				// reclassified to raster (its HEAD resolved an image) still carries a
 				// null seed `mime_type`, and the loader's own DR-16 gate (`start()`)
@@ -1820,7 +1838,7 @@
 			(`bitmapPresent` is false here). `pointer-events: none` like the other
 			stage overlays, so a click on the empty area still reaches the backdrop.
 		-->
-		{#if img && shownRenderer !== 'raster-image'}
+		{#if img && shownRenderer !== 'raster-image' && !soleMissing}
 			<div class="lightbox-fallback" role="group" aria-label="No preview available">
 				<span class="lightbox-fallback-icon" aria-hidden="true">
 					<AttachmentIcon id={fallbackIconId} size={72} />
@@ -1830,6 +1848,25 @@
 					<p class="lightbox-fallback-detail">{headerDetail}</p>
 				{/if}
 				<p class="lightbox-fallback-note">No preview available</p>
+			</div>
+		{/if}
+
+		<!--
+			THE MISSING ARM (3c-ii T2b, TASK-2488). A SINGLE-item surface whose file is
+			gone (metadata 404) sits in this inert "no longer available" state rather
+			than flash-closing — the message the retired options panel showed. NO BYTES
+			(the load effect disposed the loader on the `soleMissing` flip); the toolbar
+			is already inert (every action is disabled while `missing`). `role="status"`
+			so it is announced. A multi-image set never reaches here — it advances or
+			closes through the tombstone path.
+		-->
+		{#if soleMissing}
+			<div class="lightbox-fallback lightbox-missing" role="status">
+				<span class="lightbox-fallback-icon" aria-hidden="true">
+					<AttachmentIcon id={fallbackIconId} size={72} />
+				</span>
+				<p class="lightbox-fallback-name" title={displayName}>{displayName}</p>
+				<p class="lightbox-fallback-note">This file is no longer available. It may have been deleted.</p>
 			</div>
 		{/if}
 	</div>

@@ -13,6 +13,23 @@ import type { LightboxImage } from '$lib/attachments/events';
 // jsdom cannot prove focus/inertness/layout the way TASK-2436's browser suite
 // does; the assertions here are the manager-was-asked / structural-precondition
 // shape the Lightbox suite established.
+//
+// MIGRATION MANIFEST (3c-ii T2b, TASK-2488). When the panel + the two legacy
+// hosts were deleted, their suites consolidated as follows — named here so the
+// coverage is accounted for, not silently dropped:
+//   - AttachmentPanelHost.svelte.test.ts / AttachmentViewerHost.svelte.test.ts /
+//     AttachmentViewerHostClose.svelte.test.ts — the ADDRESSING (DR-8 two-host
+//     isolation), LIFECYCLE (archive/restore/item-switch/resourceGen/deletion),
+//     and CLOSE (bound close handler) cases are the describes below, now against
+//     the ONE host and the real Lightbox.
+//   - The panel's own BEHAVIOR (metadata seed/fill, transient/missing states,
+//     the delete drill-down, action rendering) is the Lightbox's now and is
+//     covered by Lightbox.svelte.test.ts (190 tests).
+//   - AttachmentDetailsPanel.extraction.test.ts — the machinery-extraction
+//     grep-gate migrated to Lightbox.extraction.test.ts (same contract, new
+//     consumer).
+//   - The NodeView → host → Lightbox whole-route integration migrated in
+//     editor/attachmentImageViewerHost.svelte.test.ts (mounts this host now).
 
 // The Lightbox reads `viewport.isMobile` at load; pin desktop.
 vi.mock('$lib/stores/breakpoint.svelte', () => ({
@@ -434,6 +451,21 @@ describe('AttachmentSurfaceHost — resource switch + deletion', () => {
 		expect(surfaces()).toHaveLength(1);
 		const download = document.body.querySelector('.lightbox-toolbar [aria-label="Download"]');
 		expect(download?.getAttribute('href')).toContain(ATT_B);
+	});
+
+	it('a legacy-panel single open whose file 404s shows the inert overlay, not a close (T2b)', async () => {
+		// The retired panel showed "no longer available" for a single file that turned
+		// out to be gone; the cutover must preserve that end-to-end. An incomplete
+		// seed forces the probe, which 404s.
+		metaFetch.mockResolvedValue({ status: 'missing' });
+		mountHost(propsA);
+		notifyAttachmentPanelOpen(panelEvent({ size_bytes: null }));
+		await settle();
+		// Still open — the surface did not flash-close.
+		expect(surfaceOpen()).toBe(true);
+		const missing = document.body.querySelector('.lightbox-missing');
+		expect(missing).not.toBeNull();
+		expect(missing?.textContent).toContain('no longer available');
 	});
 
 	it('closes a SINGLE-open surface when another surface deletes its attachment', async () => {
