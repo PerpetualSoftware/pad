@@ -20,13 +20,25 @@
 //     which is the assertion that would have caught a second emitter.
 //
 // THIS FILE IS THE PRODUCER LAYER, and its counts are counts of REQUESTS on the
-// bus, not of viewers on screen: `notifyViewerOpen` is mocked, so "opens once"
-// here means "asks once". That is the right layer for the keyboard contract —
-// which is about how many times activation fires, and under which gestures —
-// but it is deliberately blind to whether anything is listening. The end of the
-// route (real bus → real `AttachmentViewerHost` → real `Lightbox`, and a real
-// viewer in the document) is pinned next door in
-// `attachmentImageViewerHost.svelte.test.ts`.
+// bus, not of surfaces on screen: `notifyAttachmentSurfaceOpen` is mocked, so
+// "opens once" here means "asks once". That is the right layer for the keyboard
+// contract — which is about how many times activation fires, and under which
+// gestures — but it is deliberately blind to whether anything is listening. The
+// end of the route (real bus → real host → real surface in the document) is
+// pinned next door in `attachmentImageViewerHost.svelte.test.ts`.
+//
+// ONE SURFACE CHANNEL (TASK-2489). This NodeView used to FORK on MIME: a raster
+// type opened the viewer (`notifyViewerOpen`) and a non-raster one was
+// redirected to the options panel (`notifyAttachmentPanelOpen`). Those two
+// channels have CONVERGED — every resolved-ok activation now emits exactly ONE
+// `notifyAttachmentSurfaceOpen`, carrying the attachment's true MIME (raster png,
+// non-raster svg/pdf alike). The surface's OWN renderer picks the arm downstream
+// (raster → `<img>`; svg/pdf → the no-bytes fallback), so the producer no longer
+// branches on MIME. `emitted` therefore holds ALL activation emits; there is no
+// second array. The NODE SEMANTICS are UNCHANGED across the convergence: a known
+// non-raster MIME still gets the `Attachment options: <alt>` aria-label and a
+// raster one `View image: <alt>`, and role/tabindex behave identically — only the
+// EMIT collapsed to one channel.
 //
 // Driven through a REAL Tiptap editor, like the placeholder spec next door: the
 // semantics live on imperative NodeView DOM and a hand-built element would pin
@@ -37,20 +49,14 @@ import StarterKit from '@tiptap/starter-kit';
 import { isEditorOwnedImage } from '$lib/attachments/editorOwnedImage';
 
 const deletionListeners = new Set<(uuid: string) => void>();
-// Open-viewer requests, captured RAW — before the channel's addressability
-// filter, so what is asserted is what THIS NodeView produced.
+// Open-surface requests, captured RAW — before the channel's addressability
+// filter, so what is asserted is what THIS NodeView produced. TASK-2489
+// converged the old viewer/panel fork into ONE channel, so this array now holds
+// EVERY activation emit (raster png, non-raster svg/pdf alike); there is no
+// second array to tell a redirect from a drop, because there is no redirect.
 const emitted: Array<Record<string, unknown>> = [];
-// Open-the-PANEL requests, same treatment. TASK-2434 makes this NodeView a
-// producer on BOTH channels — a non-allowlisted MIME is redirected to the
-// options panel rather than refused — so a spec that captured only the viewer
-// channel could not tell a redirect from a silent drop, which is exactly the
-// distinction the matrix is about.
-const panelEmitted: Array<Record<string, unknown>> = [];
 vi.mock('$lib/attachments/events', () => ({
-	notifyAttachmentPanelOpen: (event: Record<string, unknown>) => {
-		panelEmitted.push(event);
-	},
-	notifyViewerOpen: (event: Record<string, unknown>) => {
+	notifyAttachmentSurfaceOpen: (event: Record<string, unknown>) => {
 		emitted.push(event);
 	},
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
@@ -149,13 +155,11 @@ function makeCommentEditor(element: HTMLElement): Editor {
 }
 
 /**
- * How many times activation asked for the VIEWER. One request per open.
+ * How many times activation asked for the SURFACE. One request per open.
  *
- * Deliberately not "how many times activation fired": since TASK-2434 an
- * activation can instead land on the panel channel, which `panelEmitted`
- * counts. Reading this as a count of activations would make every redirect
- * look like a dropped gesture — the exact confusion the two arrays exist to
- * keep apart.
+ * Since TASK-2489 there is a single channel: every resolved-ok activation emits
+ * exactly one surface event regardless of MIME, so this is simply the count of
+ * activation emits — no viewer/panel split to keep apart anymore.
  */
 function openCount(): number {
 	return emitted.length;
@@ -234,7 +238,6 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		revalidateMock.mockClear();
 		revalidateMock.mockImplementation((ws?: string, uuid?: string) => probeMock(ws, uuid));
 		emitted.length = 0;
-		panelEmitted.length = 0;
 		host = document.body.appendChild(document.createElement('div'));
 		target = host.appendChild(document.createElement('div'));
 	});
@@ -244,7 +247,6 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		editor = undefined;
 		host.remove();
 		emitted.length = 0;
-		panelEmitted.length = 0;
 		document.querySelectorAll('.timeline-viewer-stub').forEach((d) => d.remove());
 	});
 
@@ -342,6 +344,11 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 				// TASK-2432, so the keyboard path has a stable one to offer —
 				// which is the whole reason `invoker` is on the event.
 				invoker: img,
+				// Single-open seeds describing images[0] (TASK-2489). Null filename,
+				// same absence the node's attrs and the HEAD both carry.
+				filename: null,
+				mime_type: 'image/png',
+				size_bytes: 4096,
 			},
 		]);
 	});
@@ -492,10 +499,13 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		expect(await opened()).toBe(0);
 	});
 
-	it('keeps a probed non-raster type OUT of the viewer through the KEYBOARD, not just the mouse', async () => {
-		// The gate used to live inside the click handler. A keyboard path that
-		// emitted on its own would have sailed straight past it, so the refusal
-		// is asserted on the route that would have bypassed it.
+	it('emits ONE surface event carrying the svg MIME through the KEYBOARD, not just the mouse', async () => {
+		// Convergence (TASK-2489): the producer no longer keeps svg off the raster
+		// arm — the SURFACE does, downstream, by picking its no-bytes fallback for a
+		// non-raster MIME. So the keyboard path emits exactly ONE surface event
+		// carrying the true `image/svg+xml`, and it is that MIME — not a second
+		// channel — that keeps the bytes off the <img> arm. Asserting the emit (not
+		// merely "no viewer") preserves the intent: the gesture is not dropped.
 		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml' , size: 4096 });
 		editor = makeEditor(target);
 
@@ -504,49 +514,64 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		// unasked, because "not yet asked" is not "not viewable". (Activation
 		// itself no longer trusts that — TASK-2433 made it resolve the MIME
 		// first — but the two are separate claims and this one is the premise.)
-		// Pinning it here is what makes the refusal below attributable to the RESOLVED MIME
-		// rather than to any other inertness route — an empty uuid, a latched
-		// deletion, a hidden image — all of which would already be true now.
+		// Pinning it here is what makes the emit below attributable to the RESOLVED
+		// MIME rather than to any other route — an empty uuid, a latched deletion,
+		// a hidden image — all of which would already be true now.
 		expect(image().getAttribute('role')).toBe('button');
 
 		await settleProbe();
 		expect(probeMock).toHaveBeenCalled();
 
 		press(image(), 'Enter');
-		expect(await opened()).toBe(0);
-
-		// TASK-2434: it is a REDIRECT, not a refusal. Asserting only "the viewer
-		// did not open" would be satisfied by an implementation that dropped the
-		// gesture on the floor — which is what this used to do, and the dead
-		// focus stop the matrix exists to close.
-		expect(panelEmitted).toHaveLength(1);
-		// So it stays a real control, and it says where it goes.
+		expect(await opened()).toBe(1);
+		// The surface event carries the svg MIME — flat seed and images[0] alike.
+		expect(emitted[0].mime_type).toBe('image/svg+xml');
+		expect((emitted[0].images as Array<Record<string, unknown>>)[0].mime_type).toBe(
+			'image/svg+xml'
+		);
+		// The node SEMANTICS are unchanged by the convergence: a known non-raster
+		// MIME still names itself the options control and stays a real focus stop.
 		expect(image().getAttribute('role')).toBe('button');
 		expect(image().getAttribute('tabindex')).toBe('0');
 		expect(image().getAttribute('aria-label')).toBe('Attachment options: A diagram');
 	});
 
-	it('redirects a non-allowlisted MIME to the panel, with the whole payload', async () => {
+	it('emits a surface event for a non-allowlisted MIME, whole payload', async () => {
 		// The `ok` + not-allowlisted arm of the matrix, asserted on what is
 		// EMITTED. A count alone is satisfied by an event of any shape, and the
-		// panel's routing fields are exactly what a producer gets wrong: the
-		// address decides which of two mounted hosts opens it, and the three
-		// metadata fields are what the panel renders before its own fetch lands.
+		// surface's routing fields are exactly what a producer gets wrong: the
+		// address decides which of two mounted hosts opens it, and the metadata
+		// fields are what the surface renders before its own fetch lands. Since
+		// TASK-2489 a pdf takes the ONE converged channel — the same surface event
+		// a raster type gets, carrying the true `application/pdf`.
 		probeMock.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 1234 });
 		editor = makeEditor(target);
 		const img = image();
 
 		press(img, 'Enter');
-		expect(await opened()).toBe(0);
+		expect(await opened()).toBe(1);
 
-		expect(panelEmitted).toEqual([
+		expect(emitted).toEqual([
 			{
 				attachmentId: 'uuid-1',
+				workspaceSlug: 'ws',
 				itemId: 'item-A',
 				hostToken: 'apanel-1',
-				anchor: img,
-				// No filename anywhere on this surface — the node's attrs carry
-				// none and the HEAD does not either. Null, not a fabricated one.
+				images: [
+					{
+						id: 'uuid-1',
+						alt: 'A diagram',
+						// No filename anywhere on this surface — the node's attrs carry
+						// none and the HEAD does not either. Null, not a fabricated one.
+						filename: null,
+						mime_type: 'application/pdf',
+						size_bytes: 1234,
+						width: null,
+						height: null,
+					},
+				],
+				index: 0,
+				invoker: img,
 				filename: null,
 				mime_type: 'application/pdf',
 				size_bytes: 1234,
@@ -557,26 +582,26 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		// this whole path exists to close.
 		expect(probeMock).toHaveBeenCalled();
 		// And the pending affordance is cleared on THIS branch too. The
-		// finalizer is shared, but a clear moved into the viewer branch would
-		// leave every redirect permanently `aria-busy`.
+		// finalizer is shared, but a clear moved into a MIME-specific branch would
+		// leave a non-raster emit permanently `aria-busy`.
 		expect(img.getAttribute('aria-busy')).toBeNull();
 		expect(img.style.cursor).toBe('');
 	});
 
-	it('keeps redirecting on every activation, not just the first', async () => {
+	it('keeps emitting a surface event on every activation, not just the first', async () => {
 		// The regression the semantics rewrite exists to prevent, and the one an
 		// attribute-only assertion would miss entirely. Activation now WRITES the
-		// resolved MIME onto the node. If the activation gate still refused a
-		// known non-allowlisted MIME — as it did before this task — the first tap
-		// would open the panel and every tap after it would silently do nothing,
-		// because the gate would be reading the answer the first tap recorded.
+		// resolved MIME onto the node. If the activation gate refused a known
+		// non-allowlisted MIME — as it did before the convergence — the first tap
+		// would emit and every tap after it would silently do nothing, because the
+		// gate would be reading the answer the first tap recorded.
 		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 10 });
 		editor = makeEditor(target);
 		const img = image();
 
 		press(img, 'Enter');
 		await opened();
-		expect(panelEmitted).toHaveLength(1);
+		expect(emitted).toHaveLength(1);
 
 		// The premise: the MIME really is on the node now (the label proves it,
 		// and it is the same state the gate would have been reading).
@@ -587,34 +612,34 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		click(img);
 		await opened();
 
-		expect(panelEmitted).toHaveLength(3);
-		expect(await opened()).toBe(0);
-		// The LAST one, not just the count: a redirect that kept firing with a
-		// payload frozen at the first gesture would be a count of three and a
-		// panel that opens on whatever the node used to be.
-		expect(panelEmitted[2]).toMatchObject({
+		expect(emitted).toHaveLength(3);
+		// The LAST one, not just the count: an emit that kept firing with a payload
+		// frozen at the first gesture would be a count of three and a surface that
+		// opens on whatever the node used to be.
+		expect(emitted[2]).toMatchObject({
 			attachmentId: 'uuid-1',
 			itemId: 'item-A',
 			hostToken: 'apanel-1',
-			anchor: img,
+			invoker: img,
 			mime_type: 'image/svg+xml',
 			size_bytes: 10,
 		});
 	});
 
-	it('never opens the panel for a MIME the viewer WILL take', async () => {
-		// The other direction of the redirect, which a one-sided spec would leave
-		// free: an implementation that emitted BOTH events would satisfy every
-		// panel assertion above and open two surfaces from one gesture.
+	it('emits exactly one surface event, never two', async () => {
+		// There is ONE channel now (TASK-2489), so a raster type has exactly one
+		// place to go — and it must go there exactly once. An implementation that
+		// still emitted on two paths (a leftover viewer emit AND a converged one)
+		// would open two surfaces from one gesture; a count of one closes that.
 		editor = makeEditor(target);
 
 		press(image(), 'Enter');
 
 		expect(await opened()).toBe(1);
-		expect(panelEmitted).toEqual([]);
+		expect(emitted).toHaveLength(1);
 		// Reached by ASKING, not by assuming: an implementation that skipped the
-		// probe for images it liked the look of would pass the two assertions
-		// above and be exactly the bypass TASK-2433 closed.
+		// probe for images it liked the look of would pass the assertion above
+		// and be exactly the bypass TASK-2433 closed.
 		expect(probeMock).toHaveBeenCalled();
 	});
 
@@ -630,7 +655,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		await opened();
 
 		expect(await opened()).toBe(0);
-		expect(panelEmitted).toEqual([]);
+		expect(emitted).toEqual([]);
 
 		const placeholder = target.querySelector<HTMLElement>('.attachment-missing');
 		expect(img.style.display).toBe('none');
@@ -667,7 +692,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		await opened();
 
 		expect(await opened()).toBe(0);
-		expect(panelEmitted).toEqual([]);
+		expect(emitted).toEqual([]);
 
 		const placeholder = target.querySelector<HTMLElement>('.attachment-missing');
 		expect(img.style.display).toBe('none');
@@ -807,15 +832,17 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		release();
 
 		expect(await opened()).toBe(0);
-		// BOTH channels. A `deleted` check placed after the allowlist branch
-		// would still leak the redirect.
-		expect(panelEmitted).toEqual([]);
+		// ONE channel now (TASK-2489). A `deleted` check placed after the old
+		// allowlist branch would still have leaked; the converged emit means the
+		// single array must stay empty.
+		expect(emitted).toEqual([]);
 	});
 
-	it('opens NO PANEL either when a delete lands mid-probe on a non-raster type', async () => {
-		// The same race down the redirect branch, which is new surface: the
+	it('emits NOTHING either when a delete lands mid-probe on a non-raster type', async () => {
+		// The same race down the converged branch for a non-raster type: the
 		// `missing`/`transient`/`ok` split gave the continuation three more places
-		// to act on a row that is gone.
+		// to act on a row that is gone, and a non-raster MIME no longer takes a
+		// separate path, so the surface emit must be suppressed just the same.
 		let release: () => void = () => {};
 		probeMock.mockImplementation(
 			() =>
@@ -830,31 +857,31 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		release();
 
 		await opened();
-		expect(panelEmitted).toEqual([]);
+		expect(emitted).toEqual([]);
 		expect(await opened()).toBe(0);
 
-		// THE CONTROL, and it is the whole test: `expect no panel` is satisfied
-		// by an implementation that has no redirect at all — the pre-TASK-2434
-		// binary refusal passes it outright. So prove the branch works on an
-		// undeleted node under the identical probe.
+		// THE CONTROL, and it is the whole test: `expect no emit` is satisfied by
+		// an implementation that never emits for a non-raster type at all — the
+		// pre-convergence binary refusal passes it outright. So prove the branch
+		// works on an undeleted node under the identical probe: it emits once.
 		editor.destroy();
 		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 10 });
 		editor = makeEditor(target);
 		press(image(), 'Enter');
 		await opened();
-		expect(panelEmitted).toHaveLength(1);
+		expect(emitted).toHaveLength(1);
 	});
 
-	// The address fence, restated on the PANEL branch. It is a second emission
-	// site with its own copy of the captured address, so the three comparisons
-	// have to hold for it independently — a fence that only guarded the viewer
-	// would let a redirect open a panel over a pane the user has left.
+	// The address fence, restated for a non-raster type. It is the same emission
+	// site, now the ONLY one, so the three comparisons have to hold for it — a
+	// fence that only guarded a raster emit would let a non-raster one open a
+	// surface over a pane the user has left.
 	for (const [label, moved] of [
 		['workspace', { workspaceSlug: 'ws2', itemId: 'item-A', hostToken: 'apanel-1' }],
 		['item', { workspaceSlug: 'ws', itemId: 'item-B', hostToken: 'apanel-1' }],
 		['owning mount', { workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-2' }],
 	] as const) {
-		it(`drops the PANEL redirect when the ${label} moves mid-resolution`, async () => {
+		it(`drops the surface emit for a non-raster type when the ${label} moves mid-resolution`, async () => {
 			probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 10 });
 			editor = makeCommentEditor(target);
 
@@ -862,15 +889,15 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 			address = { ...moved };
 
 			await opened();
-			expect(panelEmitted).toEqual([]);
+			expect(emitted).toEqual([]);
 
-			// The control: settled, the next gesture DOES redirect — so the drop
-			// above is the fence, not a branch that never worked.
+			// The control: settled, the next gesture DOES emit — so the drop above
+			// is the fence, not a branch that never worked.
 			press(image(), 'Enter');
 			await opened();
-			expect(panelEmitted).toHaveLength(1);
-			expect(panelEmitted[0].itemId).toBe(moved.itemId);
-			expect(panelEmitted[0].hostToken).toBe(moved.hostToken);
+			expect(emitted).toHaveLength(1);
+			expect(emitted[0].itemId).toBe(moved.itemId);
+			expect(emitted[0].hostToken).toBe(moved.hostToken);
 		});
 	}
 
@@ -991,7 +1018,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		placeholder?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
 		expect(img.style.display).toBe('none');
 		expect(await opened()).toBe(0);
-		expect(panelEmitted).toEqual([]);
+		expect(emitted).toEqual([]);
 	});
 
 	it('opens nothing when a load failure hides the image mid-probe and the MIME is FINE', async () => {
@@ -1034,7 +1061,7 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		await opened();
 
 		expect(await opened()).toBe(0);
-		expect(panelEmitted).toEqual([]);
+		expect(emitted).toEqual([]);
 		// And it stayed retryable: refusing to open must not cost the user the
 		// retry affordance.
 		expect(placeholder?.getAttribute('role')).toBe('button');
@@ -1080,17 +1107,20 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 	// away and back would assert the same values under either implementation. The
 	// enforceable half is the drop, and that is asserted per field above.
 
-	it('refuses an UNPROBED non-raster type — the gesture that beats the lazy probe', async () => {
+	it('emits for an UNPROBED non-raster type — the gesture that beats the lazy probe', async () => {
 		// The bypass this task's revised gate closes, and the one the test above
 		// cannot see: `settleProbe()` selects the node, which builds the toolbar
 		// and runs the lazy HEAD, so by then `canActivate()` already knows the
-		// MIME and refuses before activation does any work of its own. An
-		// UNSELECTED body image — the state every image is in until the user
-		// touches it — has `knownMime === null`, and the old gate read it only
-		// when truthy: the click sailed past and opened the ORIGINAL file.
+		// MIME before activation does any work of its own. An UNSELECTED body image
+		// — the state every image is in until the user touches it — has
+		// `knownMime === null`, and the old gate read it only when truthy: the
+		// click sailed past and opened the ORIGINAL file.
 		//
-		// So: never selected, no toolbar, nothing probed. The refusal here can
-		// only come from activation resolving the MIME itself before emitting.
+		// So: never selected, no toolbar, nothing probed. Activation resolves the
+		// MIME itself before emitting, and since TASK-2489 that resolution feeds
+		// ONE converged channel — so an unprobed non-raster type reaches the
+		// surface exactly as the probed one does, twice for two gestures, never
+		// dropped and never opening the original bytes.
 		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml' , size: 4096 });
 		editor = makeEditor(target);
 
@@ -1099,16 +1129,16 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		expect(image().getAttribute('role')).toBe('button');
 
 		press(image(), 'Enter');
-		expect(await opened()).toBe(0);
+		expect(await opened()).toBe(1);
 		click(image());
-		expect(await opened()).toBe(0);
-		// And it did ask — a refusal reached by never probing at all would be
-		// the same count for the wrong reason.
+		expect(await opened()).toBe(2);
+		// And it did ask — an emit reached by never probing at all would be the
+		// same count for the wrong reason.
 		expect(probeMock).toHaveBeenCalled();
-		// TASK-2434: and neither gesture was DROPPED. Asserting only "no viewer"
-		// is satisfied by the silent return this task replaced; the unprobed
-		// gesture has to reach the panel exactly as the probed one does.
-		expect(panelEmitted).toHaveLength(2);
+		// Both gestures carry the resolved svg MIME on the converged channel.
+		expect(emitted).toHaveLength(2);
+		expect(emitted[0].mime_type).toBe('image/svg+xml');
+		expect(emitted[1].mime_type).toBe('image/svg+xml');
 	});
 
 	it('emits once when two gestures land inside one resolution window', async () => {
@@ -1176,10 +1206,10 @@ describe('inline body image — keyboard activation (DR-12)', () => {
 		press(image(), 'Enter');
 
 		expect(await opened()).toBe(0);
-		// And nothing else opened either — `missing` is the one result with no
-		// destination at all. An implementation that fell through to the panel
-		// redirect would offer options for a row that is gone.
-		expect(panelEmitted).toEqual([]);
+		// And nothing opened at all — `missing` is the one result with no
+		// destination. An implementation that fell through to the converged
+		// surface emit would offer a row that is gone.
+		expect(emitted).toEqual([]);
 	});
 
 	it('drops the request when the NodeView is torn down mid-resolution', async () => {

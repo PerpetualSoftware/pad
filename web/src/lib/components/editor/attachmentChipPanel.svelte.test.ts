@@ -20,7 +20,7 @@ const panelOpenMock = vi.fn<(event: Record<string, unknown>) => void>();
 const deletionListeners = new Set<(uuid: string) => void>();
 
 vi.mock('$lib/attachments/events', () => ({
-	notifyAttachmentPanelOpen: (event: Record<string, unknown>) => panelOpenMock(event),
+	notifyAttachmentSurfaceOpen: (event: Record<string, unknown>) => panelOpenMock(event),
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
 		deletionListeners.add(fn);
 		return () => deletionListeners.delete(fn);
@@ -105,7 +105,7 @@ describe('editor chip → options panel', () => {
 		return el;
 	}
 
-	it('emits the open-panel event instead of opening the file in a new tab', () => {
+	it('emits the open-surface event instead of opening the file in a new tab', () => {
 		const el = chip();
 		const opened = vi.spyOn(window, 'open').mockImplementation(() => null);
 
@@ -115,13 +115,29 @@ describe('editor chip → options panel', () => {
 		expect(panelOpenMock).toHaveBeenCalledTimes(1);
 		expect(panelOpenMock).toHaveBeenCalledWith({
 			attachmentId: 'uuid-1',
+			// This editor is configured with no workspace ⇒ no probe.
+			workspaceSlug: '',
 			// Stamped from the address READER at emit time (DR-8).
 			itemId: 'item-A',
 			hostToken: 'apanel-1',
-			anchor: el,
+			// A single-attachment open on the unified surface (T4a).
+			images: [
+				{
+					id: 'uuid-1',
+					alt: 'spec.pdf',
+					filename: 'spec.pdf',
+					// Null is legitimate: the chip's HEAD probe may not have
+					// resolved, and the surface completes what the chip doesn't
+					// know (DR-2).
+					mime_type: null,
+					size_bytes: null,
+					width: null,
+					height: null,
+				},
+			],
+			index: 0,
+			invoker: el,
 			filename: 'spec.pdf',
-			// Null is legitimate: the chip's HEAD probe may not have resolved,
-			// and the panel completes what the chip doesn't know (DR-2).
 			mime_type: null,
 			size_bytes: null,
 		});

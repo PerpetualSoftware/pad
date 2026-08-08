@@ -3,6 +3,7 @@ import { flushSync, mount, unmount } from 'svelte';
 import type { AttachmentListItem, AttachmentListResponse } from '$lib/types';
 import type { UploadedAttachment } from '$lib/attachments/events';
 import { runTopEscape, _resetEscapeStackForTests } from '$lib/stores/escapeStack';
+import { __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
 
 // TASK-2383. The strip is mounted OUTSIDE ItemDetail's `{#key itemSlug}`
 // block, so it PERSISTS across an A→B item switch — the no-{#key} bug class
@@ -36,49 +37,48 @@ vi.mock('$lib/api/client', () => ({
 }));
 
 const notifyDeletedMock = vi.fn<(uuid: string) => void>();
-// A stand-in registry: registerAttachmentDeletionListener is real enough to
-// drive the strip's own subscription (broadcastDeletion invokes it), while
-// notifyAttachmentDeleted is a pure spy — it records the emit WITHOUT fanning
-// out, so a test can assert what the strip announces separately from what it
-// receives.
-const deletionListeners = new Set<(uuid: string) => void>();
-function broadcastDeletion(uuid: string) {
-	for (const fn of deletionListeners) fn(uuid);
-}
-const uploadListeners = new Set<(itemId: string, a: UploadedAttachment) => void>();
-function broadcastUpload(itemId: string, a: UploadedAttachment) {
-	for (const fn of uploadListeners) fn(itemId, a);
-}
-
-// TASK-2424: the strip is now also an EMITTER on the open-panel channel, so
-// the mocked module has to carry that export too (a vi.mock factory replaces
-// the whole module — a missing export is an import error, not a silent hole).
-const panelOpenMock = vi.fn<(event: Record<string, unknown>) => void>();
-
-vi.mock('$lib/attachments/events', () => ({
-	announceAttachmentDeleted: (ws: string, uuid: string) => {
-		notifyDeletedMock(uuid);
-		// Fan out to the registered listeners, as the real one does (notify +
-		// invalidate). The viewer (TASK-2477) reconciles a delete through this bus,
-		// so an own-toolbar delete must reach its listener the same way an external
-		// delete does; the spy above still records the announce for assertions.
-		broadcastDeletion(uuid);
-		invalidateMock(ws, uuid);
-	},
-	notifyAttachmentPanelOpen: (event: Record<string, unknown>) => panelOpenMock(event),
-	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
-		deletionListeners.add(fn);
-		return () => deletionListeners.delete(fn);
-	},
-	registerAttachmentUploadListener: (fn: (itemId: string, a: UploadedAttachment) => void) => {
-		uploadListeners.add(fn);
-		return () => uploadListeners.delete(fn);
-	},
-}));
-
-// announceAttachmentDeleted bundles the notify + cache-invalidate pair; the
-// mock above splits them back out so tests can assert each half.
+// announceAttachmentDeleted bundles the notify + cache-invalidate pair; the mock
+// below splits them back out so tests can assert each half.
 const invalidateMock = vi.fn<(ws: string, uuid: string) => void>();
+// TASK-2424 / T4a (TASK-2489): the strip is now an EMITTER on the UNIFIED SURFACE
+// channel — both a file tile (`openOptions`) and an image tile (`openLightbox`)
+// emit `notifyAttachmentSurfaceOpen`. Spied so the emission can be asserted as a
+// payload, AND forwarded to the REAL bus so a mounted `AttachmentSurfaceHost` opens
+// the real Lightbox end-to-end.
+const surfaceOpenMock = vi.fn<(event: Record<string, unknown>) => void>();
+
+// The bus stays REAL (importOriginal), so the strip's deletion subscription, the
+// mounted host's surface + deletion subscriptions, and the Lightbox's own tombstone
+// path all fan out for real. Only two exports are wrapped: `announceAttachmentDeleted`
+// records the announce (notify + invalidate) for assertions WHILE calling the real
+// `notifyAttachmentDeleted` so every live surface still hears it; and
+// `notifyAttachmentSurfaceOpen` records the emit and forwards it to the real bus.
+vi.mock('$lib/attachments/events', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/attachments/events')>();
+	return {
+		...actual,
+		announceAttachmentDeleted: (ws: string, uuid: string) => {
+			notifyDeletedMock(uuid);
+			actual.notifyAttachmentDeleted(uuid);
+			invalidateMock(ws, uuid);
+		},
+		notifyAttachmentSurfaceOpen: (event: unknown) => {
+			surfaceOpenMock(event as Record<string, unknown>);
+			return actual.notifyAttachmentSurfaceOpen(event as never);
+		},
+	};
+});
+
+// The mocked module — its `notifyAttachmentDeleted` / `notifyAttachmentUploaded`
+// are the REAL ones (spread through), so a test can simulate ANOTHER surface's
+// broadcast by calling them directly, exactly as the app would.
+const events = await import('$lib/attachments/events');
+function broadcastDeletion(uuid: string) {
+	events.notifyAttachmentDeleted(uuid);
+}
+function broadcastUpload(itemId: string, a: UploadedAttachment) {
+	events.notifyAttachmentUploaded(itemId, a);
+}
 
 // The strip also reaches the shared HEAD-metadata cache directly, on Retry
 // (PLAN-2392 DR-10) — a separate spy from the events bus's, so the two can be
@@ -102,6 +102,13 @@ vi.mock('$lib/stores/toast.svelte', () => ({
 }));
 
 const { default: ItemAttachmentStrip } = await import('./ItemAttachmentStrip.svelte');
+// T4a (TASK-2489): the strip no longer mounts `Lightbox` itself — it EMITS on the
+// surface channel and the ONE `AttachmentSurfaceHost` owns the mount. The viewer
+// tests mount that host, addressed to the strip's (itemId, hostToken), so a tile
+// activation renders the real Lightbox end-to-end.
+const { default: AttachmentSurfaceHost } = await import(
+	'$lib/components/attachments/AttachmentSurfaceHost.svelte'
+);
 
 function att(overrides: Partial<AttachmentListItem> & { id: string }): AttachmentListItem {
 	return {
@@ -160,6 +167,8 @@ const props = $state<{
 describe('ItemAttachmentStrip', () => {
 	let target: HTMLElement;
 	let instance: ReturnType<typeof mount> | undefined;
+	let hostTarget: HTMLElement;
+	let hostApp: ReturnType<typeof mount> | undefined;
 
 	beforeEach(() => {
 		listMock.mockReset();
@@ -169,7 +178,7 @@ describe('ItemAttachmentStrip', () => {
 		notifyDeletedMock.mockReset();
 		invalidateMock.mockReset();
 		invalidateMetadataMock.mockReset();
-		panelOpenMock.mockReset();
+		surfaceOpenMock.mockReset();
 		props.hostToken = 'host-1';
 		props.wsSlug = 'ws';
 		props.username = 'dave';
@@ -181,16 +190,36 @@ describe('ItemAttachmentStrip', () => {
 		props.getItemContent = undefined;
 		props.getLiveContent = undefined;
 		target = document.body.appendChild(document.createElement('div'));
+		hostTarget = document.body.appendChild(document.createElement('div'));
 	});
 
 	afterEach(() => {
+		// The host owns the viewer now (T4a); tear it down first so the Lightbox's
+		// own teardown unregisters its Escape handler and releases its backdrop lease.
+		if (hostApp) unmount(hostApp);
+		hostApp = undefined;
 		if (instance) unmount(instance);
 		instance = undefined;
 		target.remove();
-		// The viewer registers on the shared ESC stack (TASK-2429); a case that
-		// leaves one open would otherwise leak a handler into the next test.
+		hostTarget.remove();
+		// The viewer registers on the shared ESC stack (TASK-2429) and the backdrop
+		// lease registry; a case that leaves one open would otherwise leak into the
+		// next test.
 		_resetEscapeStackForTests();
+		__resetViewerBackdropForTests();
 	});
+
+	/**
+	 * Mount the ONE `AttachmentSurfaceHost` the viewer tests rely on. It reads the
+	 * SAME reactive `props` (wsSlug / itemId / hostToken / mutationsEnabled / the
+	 * content getters); its extra fields are ignored and `resourceGen` /
+	 * `parentArchived` default to their inert values. Call it AFTER `mountStrip`
+	 * so the address (itemId) is set, and the strip's surface emit reaches it.
+	 */
+	function mountViewerHost() {
+		hostApp = mount(AttachmentSurfaceHost, { target: hostTarget, props });
+		flushSync();
+	}
 
 	function mountStrip(itemId: string | null) {
 		props.itemId = itemId;
@@ -264,7 +293,7 @@ describe('ItemAttachmentStrip', () => {
 		expect(tile.getAttribute('title')).toBe('spec.pdf, PDF, 1.5 KB');
 	});
 
-	it('emits the open-panel event with the anchor and all three metadata fields', async () => {
+	it('emits the open-surface event with the invoker and all three metadata fields', async () => {
 		listMock.mockResolvedValue(
 			response([
 				att({ id: 'doc', mime_type: 'application/pdf', filename: 'spec.pdf', size_bytes: 1536 }),
@@ -277,18 +306,55 @@ describe('ItemAttachmentStrip', () => {
 		tile.click();
 		flushSync();
 
-		expect(panelOpenMock).toHaveBeenCalledTimes(1);
-		expect(panelOpenMock).toHaveBeenCalledWith({
+		expect(surfaceOpenMock).toHaveBeenCalledTimes(1);
+		// A file tile opens the unified surface as a SINGLE-attachment open (T4a):
+		// `workspaceSlug` captured, `itemId`/`hostToken` route it (DR-8), the tile is
+		// the `invoker` (focus-return), a single-image set DESCRIBES the file, and the
+		// flat seeds equal images[0]. The strip always has all three from its list row.
+		expect(surfaceOpenMock).toHaveBeenCalledWith({
 			attachmentId: 'doc',
-			// Routing: which ItemDetail mount shows the panel (DR-8).
+			workspaceSlug: 'ws',
 			itemId: 'item-a',
 			hostToken: 'host-1',
-			anchor: tile,
-			// The strip always has all three from its list row, unlike a chip.
+			images: [
+				{
+					id: 'doc',
+					alt: 'spec.pdf',
+					filename: 'spec.pdf',
+					mime_type: 'application/pdf',
+					size_bytes: 1536,
+					width: null,
+					height: null,
+				},
+			],
+			index: 0,
+			invoker: tile,
 			filename: 'spec.pdf',
 			mime_type: 'application/pdf',
 			size_bytes: 1536,
 		});
+	});
+
+	it('opens a BLANK-filename file tile — flat seed normalized to match images[0] (T4a)', async () => {
+		// Regression: a blank filename is `''` on the row but `null` on the image
+		// record; if the flat seed stayed `''` the notify validator would reject the
+		// mismatch and the file would silently fail to open. Both are normalized to
+		// null, so the emit is accepted and the surface opens.
+		listMock.mockResolvedValue(
+			response([att({ id: 'doc', mime_type: 'application/pdf', filename: '', size_bytes: 1536 })])
+		);
+		mountStrip('item-a');
+		await settle();
+
+		tiles()[0].click();
+		flushSync();
+
+		expect(surfaceOpenMock).toHaveBeenCalledTimes(1);
+		const event = surfaceOpenMock.mock.calls[0][0] as Record<string, unknown>;
+		// The flat seed EQUALS images[0] (both null), so the notify validator accepts
+		// it — a `''` flat seed against a `null` record would have been dropped.
+		expect((event.images as Array<Record<string, unknown>>)[0].filename).toBeNull();
+		expect(event.filename).toBeNull();
 	});
 
 	it('adds no keydown handler that would race the UA activation click', async () => {
@@ -316,7 +382,7 @@ describe('ItemAttachmentStrip', () => {
 			const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true });
 			tile.dispatchEvent(event);
 			flushSync();
-			expect(panelOpenMock).not.toHaveBeenCalled();
+			expect(surfaceOpenMock).not.toHaveBeenCalled();
 			// ...and Space must not be swallowed as a scroll suppressor either:
 			// the UA's own default handling is what we are relying on.
 			expect(event.defaultPrevented).toBe(false);
@@ -324,12 +390,16 @@ describe('ItemAttachmentStrip', () => {
 		// The UA's click is then the one and only activation path.
 		tile.click();
 		flushSync();
-		expect(panelOpenMock).toHaveBeenCalledTimes(1);
+		expect(surfaceOpenMock).toHaveBeenCalledTimes(1);
 	});
 
-	it('renders an SVG as a FILE tile and keeps it out of the viewer (DR-16)', async () => {
-		// `isImage` would say yes to this — the viewer takes an exact raster
-		// allowlist instead, because SVG can carry active content.
+	it('renders an SVG as a FILE tile; the surface draws it on the fallback arm, not as raster bytes (DR-16)', async () => {
+		// `isImage` would say yes to an SVG — the RASTER set takes an exact allowlist
+		// instead, because SVG can carry active content. Post-convergence (T4a) the SVG
+		// still opens the unified surface (as a file), but on the NO-BYTES fallback arm:
+		// the DR-16 guarantee moved from "no viewer at all" to "no raster <img>",
+		// enforced by the surface's own renderer downstream. At the producer level the
+		// SVG is one `notifyAttachmentSurfaceOpen`, exactly like the PNG.
 		listMock.mockResolvedValue(
 			response([
 				att({ id: 'svg', mime_type: 'image/svg+xml', filename: 'logo.svg' }),
@@ -338,6 +408,7 @@ describe('ItemAttachmentStrip', () => {
 		);
 		mountStrip('item-a');
 		await settle();
+		mountViewerHost();
 
 		const [svgTile, pngTile] = tiles();
 		// The SVG got the file path: an icon + name, no thumbnail request.
@@ -345,18 +416,22 @@ describe('ItemAttachmentStrip', () => {
 		expect(svgTile.getAttribute('aria-label')).toContain('Options for logo.svg');
 
 		svgTile.click();
-		flushSync();
-		expect(document.querySelector('.lightbox-backdrop')).toBeNull();
-		expect(panelOpenMock).toHaveBeenCalledTimes(1);
-
-		// ...and it isn't a member of the lightbox's set either, so the PNG's
-		// viewer holds ONE image rather than paging into the SVG (the counter
-		// only renders for a multi-image set, so its absence IS the assertion).
-		panelOpenMock.mockClear();
-		pngTile.click();
-		flushSync();
-		expect(panelOpenMock).not.toHaveBeenCalled();
+		await settle();
+		expect(surfaceOpenMock).toHaveBeenCalledTimes(1);
+		// Opened — but on the FALLBACK arm: a real surface on screen, no raster bytes
+		// for the SVG.
 		expect(document.querySelector('.lightbox-backdrop')).not.toBeNull();
+		expect(document.querySelector('.lightbox-fallback')).not.toBeNull();
+		expect(document.querySelector('.lightbox-image')).toBeNull();
+
+		// ...and the SVG isn't a member of the PNG's RASTER set either, so the PNG's
+		// surface holds ONE image rather than paging into the SVG (the counter only
+		// renders for a multi-image set, so its absence IS the assertion).
+		surfaceOpenMock.mockClear();
+		pngTile.click();
+		await settle();
+		expect(surfaceOpenMock).toHaveBeenCalledTimes(1);
+		expect(document.querySelector('.lightbox-image')).not.toBeNull();
 		expect(document.querySelector('.lightbox-counter')).toBeNull();
 	});
 
@@ -364,6 +439,7 @@ describe('ItemAttachmentStrip', () => {
 		listMock.mockResolvedValue(response([att({ id: 'img1' }), att({ id: 'img2' })]));
 		mountStrip('item-a');
 		await settle();
+		mountViewerHost();
 
 		const tile = tiles()[1];
 		expect(tile.tagName).toBe('BUTTON');
@@ -372,7 +448,7 @@ describe('ItemAttachmentStrip', () => {
 		);
 
 		tile.click();
-		flushSync();
+		await settle();
 		// The lightbox opens on the clicked image, with both images available
 		// so ←/→ page through the item's attachments.
 		expect(document.querySelector('.lightbox-backdrop')).not.toBeNull();
@@ -381,8 +457,8 @@ describe('ItemAttachmentStrip', () => {
 
 	it('opens a FRESH viewer when a second tile is activated (TASK-2431)', async () => {
 		// The viewer seeds its index — and its own MIME filter — once at mount,
-		// so the mount must be keyed per open. Without that, a second open reuses
-		// the instance and keeps showing the first image.
+		// so the host's mount must be keyed per open. Without that, a second open
+		// reuses the instance and keeps showing the first image.
 		//
 		// In the app an open viewer inerts the tiles behind it, so this is
 		// insurance rather than a live path; jsdom does not implement inertness,
@@ -390,15 +466,16 @@ describe('ItemAttachmentStrip', () => {
 		listMock.mockResolvedValue(response([att({ id: 'img1' }), att({ id: 'img2' })]));
 		mountStrip('item-a');
 		await settle();
+		mountViewerHost();
 
 		tiles()[0].click();
-		flushSync();
+		await settle();
 		expect(
 			document.querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt')
 		).toBe('img1.png');
 
 		tiles()[1].click();
-		flushSync();
+		await settle();
 		expect(
 			document.querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt')
 		).toBe('img2.png');
@@ -408,7 +485,7 @@ describe('ItemAttachmentStrip', () => {
 
 	it('opens the lightbox at the IMAGE index, not the attachment index', async () => {
 		// Interleaved non-images: a naive `attachments.indexOf(att)` would open
-		// the wrong image, since the lightbox only ever receives image rows.
+		// the wrong image, since the raster set only ever receives image rows.
 		listMock.mockResolvedValue(
 			response([
 				att({ id: 'img1' }),
@@ -419,10 +496,11 @@ describe('ItemAttachmentStrip', () => {
 		);
 		mountStrip('item-a');
 		await settle();
+		mountViewerHost();
 
 		// Fourth tile overall, but the SECOND image.
 		tiles()[3].click();
-		flushSync();
+		await settle();
 		expect(document.querySelector('.lightbox-counter')?.textContent).toBe('2 / 2');
 		expect(document.querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt')).toBe(
 			'img2.png'
@@ -1896,9 +1974,10 @@ describe('ItemAttachmentStrip', () => {
 		listMock.mockResolvedValue(response([att({ id: 'img1' })]));
 		mountStrip('item-a');
 		await settle();
+		mountViewerHost();
 
 		tiles()[0].click();
-		flushSync();
+		await settle();
 		expect(document.querySelector('.lightbox-toolbar')).not.toBeNull();
 		expect(toolbarLabels()).toContain('Delete');
 	});
@@ -1908,9 +1987,10 @@ describe('ItemAttachmentStrip', () => {
 		listMock.mockResolvedValue(response([att({ id: 'img1' })]));
 		mountStrip('item-a');
 		await settle();
+		mountViewerHost();
 
 		tiles()[0].click();
-		flushSync();
+		await settle();
 		expect(document.querySelector('.lightbox-toolbar')).not.toBeNull();
 		expect(toolbarLabels()).toContain('Download');
 		expect(toolbarLabels()).not.toContain('Delete');
@@ -1924,9 +2004,10 @@ describe('ItemAttachmentStrip', () => {
 		listMock.mockResolvedValue(response([att({ id: 'img1' })]));
 		mountStrip('item-a');
 		await settle();
+		mountViewerHost();
 
 		tiles()[0].click();
-		flushSync();
+		await settle();
 		document.querySelector<HTMLButtonElement>(
 			'.lightbox-toolbar .lightbox-tool[aria-label="Delete"]'
 		)!.click();
@@ -1953,9 +2034,10 @@ describe('ItemAttachmentStrip', () => {
 		listMock.mockResolvedValue(response([att({ id: 'img1' }), att({ id: 'img2' })]));
 		mountStrip('item-a');
 		await settle();
+		mountViewerHost();
 
 		tiles()[0].click(); // open the viewer on img1
-		flushSync();
+		await settle();
 		expect(document.querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
 
 		document.querySelector<HTMLButtonElement>(

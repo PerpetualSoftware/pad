@@ -50,7 +50,7 @@ import {
 	fetchAttachmentMetadata
 } from './attachment-metadata';
 import {
-	notifyAttachmentPanelOpen,
+	notifyAttachmentSurfaceOpen,
 	registerAttachmentDeletionListener
 } from '$lib/attachments/events';
 import {
@@ -385,11 +385,29 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			const openPanel = (): void => {
 				if (!currentUuid || deleted) return;
 				const address = this.options.address();
-				notifyAttachmentPanelOpen({
+				// The unified surface as a SINGLE-attachment open (T4a: panel →
+				// surface). `workspaceSlug` is CAPTURED from the live address at emit —
+				// the pane can switch workspace under an open surface; `wrapper` becomes
+				// the surface's `invoker` (focus-return only). Seeds may be null (the
+				// chip's HEAD probe may not have resolved — DR-2); the surface fills them.
+				notifyAttachmentSurfaceOpen({
 					attachmentId: currentUuid,
+					workspaceSlug: address.workspaceSlug,
 					itemId: address.itemId,
 					hostToken: address.hostToken,
-					anchor: wrapper,
+					images: [
+						{
+							id: currentUuid,
+							alt: displayFilename(currentFilename || null),
+							filename: currentFilename || null,
+							mime_type: currentMime,
+							size_bytes: currentSize,
+							width: null,
+							height: null,
+						},
+					],
+					index: 0,
+					invoker: wrapper,
 					filename: currentFilename || null,
 					mime_type: currentMime,
 					size_bytes: currentSize,

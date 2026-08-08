@@ -13,9 +13,9 @@
 	import { attachmentDownloadUrl, type AttachmentMeta } from '$lib/markdown/attachments';
 	import { canOpenInViewer } from '$lib/attachments/display';
 	import { isEditorOwnedImage } from '$lib/attachments/editorOwnedImage';
-	// One declaration of the viewer's image shape, on the channel (TASK-2431).
-	import type { LightboxImage } from '$lib/attachments/events';
-	import Lightbox from '$lib/components/common/Lightbox.svelte';
+	// One declaration of the surface set's image shape, on the channel (TASK-2431).
+	import { notifyAttachmentSurfaceOpen, type LightboxImage } from '$lib/attachments/events';
+	import { viewIdentity, createPaintFence } from '$lib/attachments/viewFence';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 
 	interface Props {
@@ -185,11 +185,24 @@
 		}
 	});
 
-	// Lightbox state (IDEA-1660). Set when a thumbnail is activated; cleared
-	// on close. Null = closed, so the host remounts fresh on each open.
-	let lightbox: { images: LightboxImage[]; index: number; invoker: HTMLElement | null } | null =
-		$state(null);
 	let entryListEl: HTMLElement | undefined = $state();
+
+	// STALE-ACTIVATION FENCE (T4a, TASK-2489). The timeline is reused across a
+	// no-`{#key}` item / workspace switch, so a thumbnail activated after a switch
+	// must not emit against the new view. `paint` records the (ws, item) whose
+	// thumbnails are on screen — re-recorded only when `entries` actually change
+	// (a bare view change without a reload keeps the old paint), so `isCurrent()`
+	// at emit refuses a stale click. The captured `workspaceSlug` on the event is
+	// the same DR-16 protection carried onto the wire.
+	const timelineView = viewIdentity(() => ({ ws: wsSlug, item: itemSlug }));
+	const paint = createPaintFence(timelineView);
+	$effect(() => {
+		void entries;
+		// Capture the view NON-reactively: this must fire only when the rendered
+		// entries change (a current load set them), never on a bare `wsSlug` change
+		// that has not yet reloaded — that is the window a stale click lives in.
+		untrack(() => paint.record(timelineView.capture()));
+	});
 
 	/**
 	 * The DR-16 open gate, applied to ONE rendered thumbnail (TASK-2431).
@@ -251,6 +264,8 @@
 	 * -1, and nothing opens.
 	 */
 	function openLightboxFromImg(imgEl: HTMLElement): boolean {
+		// ENTRY fence (T4a): a thumbnail activated after a view switch must not emit.
+		if (!paint.isCurrent()) return false;
 		const clickedId = imgEl.getAttribute('data-attachment-id') ?? '';
 		if (!clickedId) return false;
 		const scope = imgEl.closest('.comment-body, .reply-body') ?? imgEl.parentElement;
@@ -264,7 +279,22 @@
 		// occurrence wins, which shows the image the user asked for.
 		const index = list.findIndex((x) => x.id === clickedId);
 		if (index < 0) return false;
-		lightbox = { images: list, index, invoker: imgEl };
+		// Emit on the surface channel (T4a) — the host owns the mount. The set + its
+		// index ARE the capture (the notify snapshots them); `workspaceSlug` is
+		// captured here so the host serves this view's images from this workspace.
+		const target = list[index];
+		notifyAttachmentSurfaceOpen({
+			attachmentId: clickedId,
+			workspaceSlug: wsSlug,
+			itemId: itemId ?? '',
+			hostToken,
+			images: list,
+			index,
+			invoker: imgEl,
+			filename: target.filename,
+			mime_type: target.mime_type,
+			size_bytes: target.size_bytes,
+		});
 		return true;
 	}
 
@@ -453,34 +483,23 @@
 	 */
 	// The two parts are joined with a separator that cannot occur in a slug,
 	// so no pair of (workspace, item) values can collide into one key.
-	let lastView = untrack(() => `${wsSlug}/${itemSlug}`);
-
 	$effect(() => {
-		const ws = wsSlug;
-		const slug = itemSlug;
-		// A→B LIFECYCLE (TASK-2431). This component is reused across an item /
-		// workspace switch (no `{#key}`), and it had NO viewer reset at all —
-		// `lightbox` was cleared on close and nowhere else. So a switch left a
-		// full-screen viewer up over the incoming item, still holding the
-		// previous view's attachment ids while `Lightbox` rebuilt their URLs
-		// from the workspace it captured at open. The strip's reset is the
-		// pattern; this is the same rule stated for this component.
+		void wsSlug;
+		void itemSlug;
+		// A→B LIFECYCLE (TASK-2431 / T4a). This component is reused across an item /
+		// workspace switch (no `{#key}`). The open surface is the HOST's now, and it
+		// closes on the resource switch (T4a), so the timeline no longer clears a
+		// `lightbox` of its own — a stale click is refused by the `paint` fence at
+		// emit, and a stale OPEN is closed by the host.
 		//
-		// `attMeta` is deliberately NOT cleared alongside it. It is keyed by a
-		// bare uuid where the shared HEAD cache is keyed `ws:uuid`, which looks
-		// like a workspace-scoped cache leaking across the switch — but an
-		// attachment id is a UUID belonging to exactly one workspace, so an
-		// entry can only ever answer for the id it describes. Clearing it would
-		// buy nothing and cost something real: the probe effect refills it only
-		// when `entries` next changes, so a FAILED load after the switch would
-		// leave every already-rendered image permanently un-openable for the
-		// rest of the mount (Codex round 3).
-		untrack(() => {
-			const view = `${ws}/${slug}`;
-			if (view === lastView) return;
-			lastView = view;
-			lightbox = null;
-		});
+		// `attMeta` is deliberately NOT cleared on the switch. It is keyed by a bare
+		// uuid where the shared HEAD cache is keyed `ws:uuid`, which looks like a
+		// workspace-scoped cache leaking across the switch — but an attachment id is
+		// a UUID belonging to exactly one workspace, so an entry can only ever answer
+		// for the id it describes. Clearing it would buy nothing and cost something
+		// real: the probe effect refills it only when `entries` next changes, so a
+		// FAILED load after the switch would leave every already-rendered image
+		// permanently un-openable for the rest of the mount (Codex round 3).
 		loadTimeline();
 	});
 
@@ -753,38 +772,11 @@
 </section>
 
 <!--
-	Keyed per open (TASK-2431), the shape `AttachmentViewerHost` uses. `Lightbox`
-	seeds its INDEX once through `untrack`, so replacing `lightbox` while a
-	viewer is already up would reuse the instance and open the new set at the old
-	position. (Its MIME filter is `$derived` and would re-answer on its own —
-	the index is what cannot.) Nothing reaches that state today, the open viewer
-	being inert over everything that could cause it, which is why this belongs in
-	the structure rather than resting on a fact about the current UI.
-
-	Accepted cost, recorded: a keyed block DESTROYS the old instance before
-	creating the new one, so a viewer→viewer swap briefly releases the last
-	backdrop lease (un-inerting the app) and runs the old viewer's focus restore
-	before the new one takes focus. That is the same transient
-	`AttachmentViewerHost` has carried since TASK-2428, it is unreachable from
-	the UI (the open viewer inerts every control that could trigger it), and the
-	alternative — a reused instance showing a stale set — is the worse of the
-	two. Only a viewer→NULL→viewer sequence happens in practice, where the
-	release is meant to happen anyway.
+	The timeline no longer mounts `Lightbox` directly (T4a, TASK-2489). An activated
+	thumbnail emits on the surface channel (`openLightboxFromImg`) and the ONE
+	`AttachmentSurfaceHost` owns the mount, the keyed-per-open remount and the
+	lifecycle.
 -->
-{#key lightbox}
-	{#if lightbox}
-		<Lightbox
-			images={lightbox.images}
-			index={lightbox.index}
-			{wsSlug}
-			invoker={lightbox.invoker}
-			{mutationsEnabled}
-			{getItemContent}
-			{getLiveContent}
-			onClose={() => (lightbox = null)}
-		/>
-	{/if}
-{/key}
 
 <style>
 	.timeline {

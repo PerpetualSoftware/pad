@@ -25,9 +25,9 @@ import StarterKit from '@tiptap/starter-kit';
 import { __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
 import { _resetEscapeStackForTests } from '$lib/stores/escapeStack';
 import {
-	isAttachmentPanelEventForHost,
-	registerAttachmentPanelListener,
-	type AttachmentPanelOpenEvent,
+	isAttachmentSurfaceEventForHost,
+	registerAttachmentSurfaceListener,
+	type AttachmentSurfaceOpenEvent,
 } from '$lib/attachments/events';
 
 const UUID = '11111111-1111-4111-8111-111111111111';
@@ -238,19 +238,22 @@ describe('inline image → viewer host → Lightbox', () => {
 		).toContain(UUID);
 	});
 
-	it('REDIRECTS a non-allowlisted type onto the real panel channel', async () => {
-		// TASK-2434's redirect, asserted through the REAL bus rather than a mock.
-		// The producer specs next door mock `notifyAttachmentPanelOpen`, so they
-		// see the call and are blind to what the channel does with it — and the
-		// channel drops any emission it judges unaddressable. An event that never
-		// leaves the bus is indistinguishable, from the producer's side, from the
-		// silent refusal this task replaced.
-		const seen: AttachmentPanelOpenEvent[] = [];
-		const dispose = registerAttachmentPanelListener((e) => seen.push(e));
+	it('emits the svg onto the SURFACE channel, addressably (producer contract)', async () => {
+		// TASK-2489's convergence, asserted through the REAL bus rather than a mock.
+		// The redirect distinction is gone: the NodeView no longer picks a panel
+		// vs viewer channel by MIME — it emits ONE surface event carrying the true
+		// svg MIME, and the surface's own renderer (the previous test, which mounts
+		// the host) draws it on the no-bytes fallback arm. The producer specs next
+		// door mock the notifier, so they see the call and are blind to what the
+		// channel does with it — and the channel drops any emission it judges
+		// unaddressable. An event that never leaves the bus is indistinguishable,
+		// from the producer's side, from a silent refusal.
+		const seen: AttachmentSurfaceOpenEvent[] = [];
+		const dispose = registerAttachmentSurfaceListener((e) => seen.push(e));
 		try {
 			probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 100 } as never);
-			// No host mounted: this pins the PRODUCER contract (the NodeView redirects
-			// an SVG onto the panel channel, addressably), independent of who consumes
+			// No host mounted: this pins the PRODUCER contract (the NodeView emits an
+			// SVG onto the surface channel, addressably), independent of who consumes
 			// it. The host consuming it into the fallback arm is the previous test.
 			editor = makeEditor(editorTarget);
 
@@ -264,16 +267,18 @@ describe('inline image → viewer host → Lightbox', () => {
 			// And it went SOMEWHERE — the completeness half.
 			expect(seen).toHaveLength(1);
 			expect(seen[0].attachmentId).toBe(UUID);
+			// The true svg MIME rides through, both as the flat seed and on the image.
 			expect(seen[0].mime_type).toBe('image/svg+xml');
+			expect(seen[0].images[0].mime_type).toBe('image/svg+xml');
 			// Addressed well enough for a host to claim it. The channel's own
 			// predicate, not a re-implementation of it: a payload that reached a
 			// raw subscriber but that no host would match is still a tap that
 			// does nothing.
 			expect(
-				isAttachmentPanelEventForHost(seen[0], { itemId: ITEM_ID, hostToken: HOST_TOKEN })
+				isAttachmentSurfaceEventForHost(seen[0], { itemId: ITEM_ID, hostToken: HOST_TOKEN })
 			).toBe(true);
 			expect(
-				isAttachmentPanelEventForHost(seen[0], { itemId: ITEM_ID, hostToken: 'another-mount' })
+				isAttachmentSurfaceEventForHost(seen[0], { itemId: ITEM_ID, hostToken: 'another-mount' })
 			).toBe(false);
 		} finally {
 			dispose();

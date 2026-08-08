@@ -39,8 +39,7 @@ import {
 } from './attachment-metadata';
 import { openCropModal, type CropResult } from './attachment-crop-modal';
 import {
-	notifyAttachmentPanelOpen,
-	notifyViewerOpen,
+	notifyAttachmentSurfaceOpen,
 	registerAttachmentDeletionListener
 } from '$lib/attachments/events';
 import {
@@ -904,62 +903,51 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 							return;
 						}
 
-						// DR-16 / DR-7, on the resolved answer rather than the absence
-						// of one: `image/svg+xml` can carry active content, so it does
-						// not go to the viewer — but it is still an attachment the
-						// user just activated, and the options panel is the surface
-						// that owns everything the viewer will not take. A redirect,
-						// not a refusal.
+						// ONE surface emit (T4a, TASK-2489): the raster/non-raster fork is
+						// gone. The converged surface opens ANY attachment — a raster
+						// image on its <img> arm, an `image/svg+xml` (active content, so
+						// never rendered as bytes) or any other type on the no-bytes
+						// fallback arm — so admission no longer branches on the MIME here;
+						// the surface's own `getSurfaceRenderer` picks the arm. The
+						// resolve-before-emit gate above (missing → latch, transient →
+						// retry) is unchanged: this only runs on a resolved probe.
 						//
-						// `filename` is null for the same reason it is on the viewer
-						// payload: the node's attrs carry none and the HEAD does not
-						// either. The panel fetches what it needs itself — its three
-						// metadata fields are nullable precisely for emitters like
-						// this one.
-						if (!canOpenInViewer(result.mime)) {
-							notifyAttachmentPanelOpen({
-								attachmentId: forUuid,
-								itemId: fromItem,
-								hostToken: fromHost,
-								anchor: img,
-								filename: null,
-								mime_type: result.mime,
-								size_bytes: result.size,
-							});
-							return;
-						}
-						notifyViewerOpen({
+						// `filename` is null: the node's attrs carry none and the HEAD
+						// does not either — the same absence `applyImageSemantics` names
+						// its fallback for. `width`/`height` likewise (3b's pixel policy
+						// wants them; the HEAD has no source). `workspaceSlug` is the one
+						// captured at activation (`fromWs`), never read live — the pane
+						// can switch workspace under an open surface.
+						notifyAttachmentSurfaceOpen({
 							attachmentId: forUuid,
 							workspaceSlug: fromWs,
 							itemId: fromItem,
 							hostToken: fromHost,
-							// A single-image set: this NodeView knows about ITS node
-							// and nothing else. The body's other images are a set the
-							// editor could offer, but assembling one here would make
-							// ←/→ page through a list this surface does not own.
+							// A single-image set: this NodeView knows about ITS node and
+							// nothing else. The body's other images are a set the editor
+							// could offer, but assembling one here would make ←/→ page
+							// through a list this surface does not own.
 							images: [
 								{
 									id: forUuid,
 									alt: currentAlt,
-									// The node's attrs carry no filename and the HEAD
-									// metadata does not either — the same absence
-									// `applyImageSemantics` names its fallback for.
 									filename: null,
 									mime_type: result.mime,
 									size_bytes: result.size,
-									// 3b's pixel-based loading policy wants these; the
-									// HEAD probe has no source for them today.
 									width: null,
 									height: null,
 								},
 							],
 							index: 0,
-							// Where the viewer aims focus on close. The <img> is a real
-							// focus stop as of TASK-2432, so this is a stable target
-							// rather than whatever happened to hold focus at open —
-							// though `Lightbox` still falls back to the body if the
-							// element has since become unfocusable or detached.
+							// Where the surface aims focus on close. The <img> is a real
+							// focus stop as of TASK-2432, so this is a stable target rather
+							// than whatever held focus at open (the surface still falls
+							// back to the body if the element became unfocusable/detached).
 							invoker: img,
+							// Single-open seeds describing images[0].
+							filename: null,
+							mime_type: result.mime,
+							size_bytes: result.size,
 						});
 					})
 					.finally(() => {
@@ -1553,13 +1541,13 @@ function refreshToolbarState(
  *
  * `openImageLightbox` / `closeLightbox` used to live here: a hand-rolled
  * `<dialog>` this NodeView appended to `document.body` and `showModal()`d.
- * TASK-2433 deleted them. Inline images now emit on the viewer channel
- * (`notifyViewerOpen`, in activate() above) and the `AttachmentViewerHost` that
- * `ItemDetail` owns mounts the `Lightbox` for THIS route — which is where the
- * modal contract lives: the lease-stacked backdrop, the focus trap and restore,
- * the Escape ordering, and the DR-16 filter re-applied over the whole set. (The
- * strip and the timeline still mount `Lightbox` themselves, by decision rather
- * than omission — see the channel's own note in `$lib/attachments/events`.)
+ * TASK-2433 deleted them. Inline images now emit on the unified SURFACE channel
+ * (`notifyAttachmentSurfaceOpen`, in activate() above — T4a) and the ONE
+ * `AttachmentSurfaceHost` that `ItemDetail` owns mounts the `Lightbox` for this
+ * route AND every other producer — which is where the modal contract lives: the
+ * lease-stacked backdrop, the focus trap and restore, the Escape ordering, and
+ * the DR-16 gate re-applied over the whole set. (The strip and the timeline emit
+ * on the same channel now too, since T4a — no producer mounts `Lightbox` itself.)
  *
  * A NodeView cannot mount a Svelte component, which is the entire reason the
  * bus exists. Re-adding an imperative overlay here would not be a shortcut, it

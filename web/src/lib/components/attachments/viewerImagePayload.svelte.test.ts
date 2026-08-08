@@ -9,25 +9,47 @@ import type {
 } from '$lib/types';
 
 /**
- * WHAT THE PRODUCERS PUT ON EACH IMAGE (PLAN-2392 / TASK-2431).
+ * WHAT THE PRODUCERS PUT ON EACH IMAGE (PLAN-2392 / TASK-2431, T4a).
  *
- * The strip and the timeline mount `Lightbox` directly, so what they hand it is
- * only observable by standing in for the component — hence the stub, and hence
- * a file of its own (a `vi.mock` is file-scoped, and the behavioural suites for
- * both components deliberately drive the REAL viewer).
+ * The strip and the timeline no longer mount `Lightbox` directly — they EMIT on
+ * the unified attachment surface channel (`notifyAttachmentSurfaceOpen`, T4a) and
+ * an `ItemDetail`-owned host does the mounting. So what they hand off is now only
+ * observable on that channel: this file spies the emitter and inspects the
+ * emitted event instead of standing in for the component (a `vi.mock` is
+ * file-scoped, and the behavioural suites for both components drive the REAL bus).
  *
- * The claim under test is narrow and unglamorous: every image carries its
- * `mime_type` and the nullable metadata beside it. `mime_type` is what lets a
- * consumer re-state the DR-16 gate over a set it did not build, and
- * `width` / `height` are here for 3b's pixel-based loading policy — no reader
- * today, which is exactly why a test has to hold them. Dropped fields are
- * silent: nothing renders them, nothing type-errors (they are nullable), and
- * the next phase would rediscover the gap by reopening every producer.
+ * The claim under test is unchanged and narrow: every image carries its
+ * `mime_type` and the nullable metadata beside it, the `invoker` is the clicked
+ * element, the captured `workspaceSlug` is the one the click happened in, and the
+ * `index` is right — now asserted about the EMITTED event rather than stubbed
+ * props. `mime_type` is what lets a consumer re-state the DR-16 gate over a set it
+ * did not build, and `width` / `height` are here for 3b's pixel-based loading
+ * policy — no reader today, which is exactly why a test has to hold them. Dropped
+ * fields are silent: nothing renders them, nothing type-errors (they are
+ * nullable), and the next phase would rediscover the gap by reopening every
+ * producer.
  */
 
-vi.mock('$lib/components/common/Lightbox.svelte', async () => ({
-	default: (await import('./fixtures/LightboxStub.svelte')).default,
-}));
+// Spy the surface emitter, keeping the rest of the bus real (the producers import
+// other exports from this module, and the real registration listeners must stay).
+// We do NOT call through to the real `notifyAttachmentSurfaceOpen` — its deep
+// snapshot / validation path is exercised by the events unit test, and capturing
+// the producer's raw event is exactly the payload this file means to assert.
+const surfaceSpy = vi.hoisted(() => vi.fn());
+vi.mock('$lib/attachments/events', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('$lib/attachments/events')>();
+	return {
+		...actual,
+		notifyAttachmentSurfaceOpen: (e: unknown) => {
+			surfaceSpy(e);
+		},
+	};
+});
+
+/** The events emitted on the surface channel so far, most-recent last. */
+function surfaceEvents(): any[] {
+	return surfaceSpy.mock.calls.map((c) => c[0]);
+}
 
 // ─── strip mocks ────────────────────────────────────────────────────────────
 
@@ -93,7 +115,6 @@ vi.mock('$lib/components/CommentEditor.svelte', async () => ({
 	default: (await import('../timeline/fixtures/InertCommentEditor.svelte')).default,
 }));
 
-const { lightboxStubCalls } = await import('./fixtures/lightboxStub');
 const { default: ItemAttachmentStrip } = await import('../items/ItemAttachmentStrip.svelte');
 const { default: ItemTimeline } = await import('../timeline/ItemTimeline.svelte');
 
@@ -101,7 +122,7 @@ let target: HTMLElement;
 let instance: ReturnType<typeof mount> | undefined;
 
 beforeEach(() => {
-	lightboxStubCalls.length = 0;
+	surfaceSpy.mockClear();
 	listMock.mockReset();
 	timelineListMock.mockReset();
 	target = document.body.appendChild(document.createElement('div'));
@@ -159,8 +180,9 @@ describe('strip → viewer payload (TASK-2431)', () => {
 		tile.click();
 		flushSync();
 
-		expect(lightboxStubCalls).toHaveLength(1);
-		expect(lightboxStubCalls[0].images).toEqual([
+		const events = surfaceEvents();
+		expect(events).toHaveLength(1);
+		expect(events[0].images).toEqual([
 			{
 				id: 'img1',
 				alt: 'img1.png',
@@ -171,6 +193,8 @@ describe('strip → viewer payload (TASK-2431)', () => {
 				height: 600,
 			},
 		]);
+		// Captured at emit from the mount's `wsSlug` — never read live from the host.
+		expect(events[0].workspaceSlug).toBe('ws');
 	});
 
 	it('passes the tile itself as the invoker, so focus returns to it', async () => {
@@ -197,10 +221,12 @@ describe('strip → viewer payload (TASK-2431)', () => {
 		tile.click();
 		flushSync();
 
-		// The viewer's own fallback ("whatever held focus at open") cannot stand
+		// The surface's own fallback ("whatever held focus at open") cannot stand
 		// in for this: a click does not focus a button on every engine, and by
-		// the time the viewer restores, focus may have been anywhere.
-		expect(lightboxStubCalls[0].invoker).toBe(tile);
+		// the time the surface restores, focus may have been anywhere.
+		const events = surfaceEvents();
+		expect(events[0].invoker).toBe(tile);
+		expect(events[0].workspaceSlug).toBe('ws');
 	});
 
 	it('emits ONLY allowlisted rows, whatever else the item holds', async () => {
@@ -244,11 +270,14 @@ describe('strip → viewer payload (TASK-2431)', () => {
 		imageTiles[0].click();
 		flushSync();
 
-		expect(lightboxStubCalls).toHaveLength(1);
-		expect(lightboxStubCalls[0].images.map((im) => im.id)).toEqual(['img1', 'img2']);
-		expect(lightboxStubCalls[0].images.every((im) => im.mime_type === 'image/png')).toBe(true);
+		const events = surfaceEvents();
+		expect(events).toHaveLength(1);
+		expect(events[0].images.map((im: { id: string }) => im.id)).toEqual(['img1', 'img2']);
+		expect(events[0].images.every((im: { mime_type: string }) => im.mime_type === 'image/png')).toBe(
+			true
+		);
 		// Opened on the clicked one, at its position in the FILTERED set.
-		expect(lightboxStubCalls[0].index).toBe(0);
+		expect(events[0].index).toBe(0);
 	});
 
 	it('leaves dimensions null when the row has none, rather than inventing them', async () => {
@@ -274,8 +303,9 @@ describe('strip → viewer payload (TASK-2431)', () => {
 		target.querySelector<HTMLElement>('.att-tile')!.click();
 		flushSync();
 
-		expect(lightboxStubCalls[0].images[0].width).toBeNull();
-		expect(lightboxStubCalls[0].images[0].height).toBeNull();
+		const events = surfaceEvents();
+		expect(events[0].images[0].width).toBeNull();
+		expect(events[0].images[0].height).toBeNull();
 	});
 });
 
@@ -353,15 +383,17 @@ describe('timeline → viewer payload (TASK-2431)', () => {
 		png.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 		flushSync();
 
-		expect(lightboxStubCalls).toHaveLength(1);
-		expect(lightboxStubCalls[0].images.map((im) => im.id)).toEqual([PNG]);
+		const events = surfaceEvents();
+		expect(events).toHaveLength(1);
+		expect(events[0].images.map((im: { id: string }) => im.id)).toEqual([PNG]);
+		expect(events[0].workspaceSlug).toBe('ws');
 
 		// ...and the SVG opens nothing at all.
-		lightboxStubCalls.length = 0;
+		surfaceSpy.mockClear();
 		const svg = rendered.find((el) => el.getAttribute('data-attachment-id') === SVG)!;
 		svg.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 		flushSync();
-		expect(lightboxStubCalls).toHaveLength(0);
+		expect(surfaceEvents()).toHaveLength(0);
 	});
 
 	it('carries the probed mime and size, nulls what HEAD cannot know, and names the invoker', async () => {
@@ -383,8 +415,9 @@ describe('timeline → viewer payload (TASK-2431)', () => {
 		thumb.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
 		flushSync();
 
-		expect(lightboxStubCalls).toHaveLength(1);
-		expect(lightboxStubCalls[0].images).toEqual([
+		const events = surfaceEvents();
+		expect(events).toHaveLength(1);
+		expect(events[0].images).toEqual([
 			{
 				id: PNG,
 				alt: 'a diagram',
@@ -398,6 +431,7 @@ describe('timeline → viewer payload (TASK-2431)', () => {
 				height: null,
 			},
 		]);
-		expect(lightboxStubCalls[0].invoker).toBe(thumb);
+		expect(events[0].invoker).toBe(thumb);
+		expect(events[0].workspaceSlug).toBe('ws');
 	});
 });
