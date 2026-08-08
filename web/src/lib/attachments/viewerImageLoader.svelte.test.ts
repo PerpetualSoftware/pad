@@ -50,16 +50,110 @@ describe('viewerImageLoader — the decision table as requests (TASK-2459)', () 
 		expect(loader.displaySrc).toBe(ORIGINAL('A'));
 	});
 
-	it('large / unknown on mobile: NO request (idle — the tap affordance is TASK-2460)', () => {
+	it('large / unknown on mobile: NO request — `deferred`, the tap affordance (TASK-2460)', () => {
 		const large = createViewerImageLoader();
 		large.load(image('A', { width: 5000, height: 5000 }), 'ws', 'mobile');
-		expect(large.displaySrc).toBe('');
-		expect(large.phase).toBe('idle');
+		expect(large.displaySrc).toBe(''); // no request issued
+		expect(large.phase).toBe('deferred'); // NOT 'idle' — the original is on tap
 
 		const unknown = createViewerImageLoader();
 		unknown.load(image('B', { width: null, height: 900 }), 'ws', 'mobile');
 		expect(unknown.displaySrc).toBe('');
-		expect(unknown.phase).toBe('idle');
+		expect(unknown.phase).toBe('deferred');
+	});
+});
+
+describe('viewerImageLoader — mobile on-demand original (TASK-2460)', () => {
+	it('deferred cell: loadOriginal (tap) requests the ORIGINAL directly, once', () => {
+		const loader = createViewerImageLoader();
+		loader.load(image('A', { width: 5000, height: 5000 }), 'ws', 'mobile');
+		expect(loader.phase).toBe('deferred');
+		expect(loader.displaySrc).toBe('');
+
+		loader.loadOriginal(); // the tap
+		expect(loader.displaySrc).toBe(ORIGINAL('A'));
+		expect(loader.phase).toBe('loading');
+
+		// A second trigger (a second tap, or a zoom-past-fit racing it) is a no-op.
+		const t = loader.loadToken;
+		loader.loadOriginal();
+		expect(loader.displaySrc).toBe(ORIGINAL('A'));
+		expect(loader.loadToken).toBe(t);
+
+		loader.decoded(5000, 5000, loader.displaySrc, loader.loadToken);
+		expect(loader.phase).toBe('ready');
+	});
+
+	it('mobile thumb cell: thumb paints, then loadOriginal (zoom-past-fit) upgrades once', () => {
+		const loader = createViewerImageLoader();
+		loader.load(image('A', { width: 2000, height: 100 }), 'ws', 'mobile');
+		expect(loader.displaySrc).toBe(THUMB('A')); // thumb painted, no auto-upgrade
+		const thumbToken = loader.loadToken;
+		loader.decoded(1024, 51, loader.displaySrc, loader.loadToken);
+		expect(loader.displaySrc).toBe(THUMB('A')); // mobile: still the thumb
+
+		loader.loadOriginal(); // zoom past fit
+		expect(loader.displaySrc).toBe(ORIGINAL('A'));
+		// SAME element reused (token unchanged) so the thumb stays until the original
+		// decodes — no flash.
+		expect(loader.loadToken).toBe(thumbToken);
+
+		// A second zoom step past fit does not re-request.
+		loader.loadOriginal();
+		expect(loader.displaySrc).toBe(ORIGINAL('A'));
+		expect(loader.loadToken).toBe(thumbToken);
+	});
+
+	it('mobile thumb cell whose thumb-md SERVED THE ORIGINAL issues no zoom re-fetch', () => {
+		// The fallback detector must run on the mobile path too: a fresh upload /
+		// WebP / AVIF has no derived thumb, so `?variant=thumb-md` returns the
+		// ORIGINAL. Without clearing `originalDeferred`, a later zoom-past-fit would
+		// download and decode the original a SECOND time.
+		const loader = createViewerImageLoader();
+		loader.load(image('A', { width: 2000, height: 100 }), 'ws', 'mobile');
+		expect(loader.displaySrc).toBe(THUMB('A'));
+		// The "thumb" decoded ABOVE the bound → it WAS the original.
+		loader.decoded(2000, 100, loader.displaySrc, loader.loadToken);
+		expect(loader.phase).toBe('ready');
+		// Zoom past fit now finds nothing deferred — no second request.
+		loader.loadOriginal();
+		expect(loader.displaySrc).toBe(THUMB('A')); // unchanged
+	});
+
+	it('desktop never defers: loadOriginal is a no-op (auto-upgrade owns the original)', () => {
+		const loader = createViewerImageLoader();
+		loader.load(image('A', { width: 5000, height: 5000 }), 'ws', 'desktop');
+		expect(loader.displaySrc).toBe(THUMB('A'));
+		const before = loader.displaySrc;
+		loader.loadOriginal(); // no-op on desktop
+		expect(loader.displaySrc).toBe(before);
+	});
+
+	it('retry after an on-demand original FAILS re-requests the original, not the affordance', () => {
+		const loader = createViewerImageLoader();
+		loader.load(image('A', { width: 5000, height: 5000 }), 'ws', 'mobile');
+		loader.loadOriginal(); // tap
+		expect(loader.displaySrc).toBe(ORIGINAL('A'));
+		loader.errored(loader.displaySrc, loader.loadToken);
+		expect(loader.phase).toBe('error');
+
+		const t = loader.loadToken;
+		loader.retry();
+		// Back to the ORIGINAL (a fresh token remounts to refetch) — NOT reverted to
+		// the 'deferred' tap affordance.
+		expect(loader.phase).toBe('loading');
+		expect(loader.displaySrc).toBe(ORIGINAL('A'));
+		expect(loader.loadToken).toBeGreaterThan(t);
+	});
+
+	it('retry after the INITIAL thumb fails re-requests the thumb (start path)', () => {
+		const loader = createViewerImageLoader();
+		loader.load(image('A', { width: 2000, height: 100 }), 'ws', 'mobile');
+		expect(loader.displaySrc).toBe(THUMB('A'));
+		loader.errored(loader.displaySrc, loader.loadToken);
+		expect(loader.phase).toBe('error');
+		loader.retry();
+		expect(loader.displaySrc).toBe(THUMB('A')); // the initial policy, re-run
 	});
 });
 

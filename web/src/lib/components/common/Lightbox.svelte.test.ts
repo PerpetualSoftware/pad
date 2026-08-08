@@ -23,6 +23,30 @@ import {
 	type Geometry,
 } from '$lib/attachments/zoom';
 
+// TASK-2460 — the mobile DR-5b cells. `viewport.isMobile` is module state read
+// from matchMedia at init (false under jsdom), so a controllable mock lets a few
+// tests drive the mobile path. It DEFAULTS to desktop, so every other test in this
+// file is unchanged; flip `mobileFlag` BEFORE mounting (the loader captures the
+// platform at load time) and the mobile describe restores it.
+//
+// The mock delegates through a hoisted holder to a module-level `$state`, so a
+// flip is genuinely REACTIVE — the viewer's `platform` derived re-runs. A plain
+// object getter would be read once at mount and never invalidate, which would make
+// the breakpoint-flip test vacuous (it would pass whether or not the load effect
+// wrongly tracked `platform`). `.svelte.test.ts` supports runes.
+const mobileHolder = vi.hoisted(() => ({ read: () => false }));
+vi.mock('$lib/stores/breakpoint.svelte', () => ({
+	viewport: {
+		get isMobile() {
+			return mobileHolder.read();
+		},
+	},
+	MOBILE_BREAKPOINT: 768,
+	MOBILE_MEDIA_QUERY: '(max-width: 768px)',
+}));
+let mobileFlag = $state(false);
+mobileHolder.read = () => mobileFlag;
+
 // TASK-2429 — the DR-4b modal contract on the attachment viewer.
 //
 // WHAT JSDOM CANNOT PROVE, and is therefore TASK-2436's browser suite (DR-9):
@@ -2496,5 +2520,160 @@ describe('Lightbox — DR-5b image loading (TASK-2459)', () => {
 		firstA.dispatchEvent(new Event('error'));
 		flushSync();
 		expect(root().querySelector('.lightbox-error')).toBeNull();
+	});
+});
+
+// ── TASK-2460: the mobile DR-5b cells wired into the viewer ──────────────────
+// The request policy is proven in viewerImageLoader.svelte.test.ts; these pin the
+// WIRING under a mobile viewport — the tap affordance renders and issues the
+// request, zoom-past-fit upgrades the thumb, and zoom is disabled with no bitmap.
+describe('Lightbox — mobile tap-to-load and zoom-past-fit (TASK-2460)', () => {
+	beforeEach(() => {
+		mobileFlag = true;
+		flushSync();
+	});
+	afterEach(() => {
+		mobileFlag = false;
+		flushSync();
+	});
+
+	function tapButton(scope: HTMLElement = root()): HTMLButtonElement {
+		return scope.querySelector<HTMLButtonElement>('.lightbox-tap-load')!;
+	}
+
+	it('mobile + large: NO automatic request — a named tap affordance instead', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		// The assertion that fails if the deferral is dropped: no <img>, no request.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		const tap = tapButton();
+		expect(tap).not.toBeNull();
+		// Named, and NOT pointer-dead under the stage's `pointer-events: none`.
+		expect(tap.textContent?.trim()).toBe('Tap to load full image');
+		expect(getComputedStyle(tap).pointerEvents).not.toBe('none');
+	});
+
+	it('mobile + unknown dims: also deferred (tap affordance, no request)', () => {
+		mountViewer({ images: [image(IMG_A, 'unknown')] }); // helper leaves dims null
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(tapButton()).not.toBeNull();
+	});
+
+	it('TAP-ONLY leg: the tap itself issues the request (the original, no variant)', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		tapButton().click();
+		flushSync();
+		// The tap loaded the ORIGINAL directly (mobile large has no thumb).
+		expect(imageSrc()).toContain(IMG_A);
+		expect(imageSrc()).not.toContain('variant=');
+		// The affordance is gone (replaced by the image it loads).
+		expect(root().querySelector('.lightbox-tap-load')).toBeNull();
+	});
+
+	it('a focused tap that unmounts on load hands focus off (does not strand <body>)', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		const tap = tapButton();
+		tap.focus();
+		expect(document.activeElement).toBe(tap);
+		tap.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-tap-load')).toBeNull();
+		expect(document.activeElement).not.toBe(document.body);
+	});
+
+	it('the placeholder takes the image aspect ratio when known, a neutral box otherwise', () => {
+		// Genuinely LARGE (> 8 MP) so it is the deferred cell, not the thumb cell.
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 2500)] });
+		expect(tapButton().getAttribute('style')).toContain('aspect-ratio: 5000 / 2500');
+		unmount(mounted.pop()!);
+
+		mountViewer({ images: [image(IMG_B, 'unknown')] });
+		const style = tapButton().getAttribute('style') ?? '';
+		expect(style).not.toContain('aspect-ratio');
+		expect(style).toContain('height'); // a neutral, explicitly-sized box
+	});
+
+	it('mobile thumb cell: zoom-past-fit upgrades to the original exactly once', () => {
+		mountViewer({ images: [sized(IMG_A, 'wide', 2000, 100)] });
+		expect(imageSrc()).toContain('variant=thumb-md'); // thumb painted, no auto-upgrade
+		fireLoad(1024, 51);
+		expect(imageSrc()).toContain('variant=thumb-md'); // mobile: stays the thumb
+
+		// Zoom past fit — the same element is reused (no flash), src swaps to original.
+		const thumbEl = root().querySelector<HTMLImageElement>('.lightbox-image');
+		expect(press('+')).toBe(true);
+		expect(scaleOf()).toBeGreaterThan(1); // actually past fit
+		expect(imageSrc()).toContain(IMG_A);
+		expect(imageSrc()).not.toContain('variant='); // the original
+		expect(root().querySelector('.lightbox-image')).toBe(thumbEl); // reused, no remount
+
+		// Further zoom steps do NOT re-request — one fetch, not one per step.
+		expect(press('+')).toBe(true);
+		expect(imageSrc()).not.toContain('variant=');
+		expect(root().querySelector('.lightbox-image')).toBe(thumbEl);
+	});
+
+	it('a zoom-past-fit made BEFORE the thumb paints upgrades the moment it paints', () => {
+		mountViewer({ images: [sized(IMG_A, 'wide', 2000, 100)] });
+		expect(imageSrc()).toContain('variant=thumb-md'); // loading, not yet decoded
+		// Zoom past fit while still loading — no original yet (the trigger waits for
+		// a painted bitmap).
+		expect(press('+')).toBe(true);
+		expect(scaleOf()).toBeGreaterThan(1);
+		expect(imageSrc()).toContain('variant=thumb-md'); // no upgrade before paint
+
+		// The thumb paints while ALREADY zoomed past fit → the original is fetched
+		// now, with no further gesture, so the user is never stranded on the thumb.
+		fireLoad(1024, 51);
+		expect(imageSrc()).not.toContain('variant=');
+	});
+
+	it('zoom is DISABLED while nothing is decoded (the deferred cell): keys do nothing', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		// The zoom keys are consumed (owned by the modal) but inert — no image loads,
+		// the affordance stays, and nothing throws.
+		expect(press('0')).toBe(true);
+		expect(press('+')).toBe(true);
+		expect(press('-')).toBe(true);
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(tapButton()).not.toBeNull();
+	});
+
+	it('a drag over the deferred placeholder is inert: it captures nothing', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		// The pan handlers live on the backdrop and `setPointerCapture` there once a
+		// drag engages past threshold. WITHOUT the `bitmapPresent` gate the move below
+		// would arm a drag and capture; the gate keeps it fully inert. Spying on the
+		// capture makes this regression-sensitive (a passed pointerup would otherwise
+		// clear `dragging` and mask a missing gate).
+		// jsdom has no `setPointerCapture` (the production code try/catches it), so
+		// install a mock fn to observe the attempt rather than spying a missing method.
+		const captureSpy = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = captureSpy;
+		root().dispatchEvent(pointerEvent('pointerdown', 100, 100));
+		root().dispatchEvent(pointerEvent('pointermove', 320, 100)); // well past threshold
+		flushSync();
+		expect(captureSpy).not.toHaveBeenCalled();
+		root().dispatchEvent(pointerEvent('pointerup', 320, 100));
+		flushSync();
+		// Nothing loaded; the affordance is intact and the tap still issues the request.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(tapButton()).not.toBeNull();
+		tapButton().click();
+		flushSync();
+		expect(imageSrc()).toContain(IMG_A);
+	});
+
+	it('mobile→desktop breakpoint flip does NOT retro-fetch: the affordance stays', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(tapButton()).not.toBeNull();
+		// Flip to desktop AFTER the load captured mobile — the reactive flip now
+		// really invalidates `platform`, and the load effect (which untracks it) must
+		// still not re-run, so nothing is fetched and the affordance stays.
+		mobileFlag = false;
+		flushSync();
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-tap-load')).not.toBeNull();
 	});
 });

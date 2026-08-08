@@ -41,6 +41,7 @@
 		zoomTo,
 		toggleFitOrActual,
 		stageCenter,
+		isAtFit,
 		ZOOM_STEP,
 		type Geometry,
 		type ZoomState,
@@ -200,6 +201,20 @@
 	// alone must not reload — desktop→mobile must not abort an in-flight original,
 	// mobile→desktop must not retroactively auto-fetch (TASK-2459).
 	let platform = $derived<Platform>(viewport.isMobile ? 'mobile' : 'desktop');
+	// Whether an <img> exists to zoom. False in the mobile `deferred` cell (a
+	// placeholder, nothing decoded) and when there is no image — zoom is then
+	// DISABLED, not merely a no-op (TASK-2460). Non-`deferred` states (loading /
+	// ready / error) all set `displaySrc`, so the guard is exactly "the deferred
+	// placeholder is showing" without singling the phase out.
+	let bitmapPresent = $derived(!!img && !!loader.displaySrc);
+	// The tap-to-load placeholder's box. Where dimensions are known it takes the
+	// image's own aspect ratio (so the affordance previews the shape that will
+	// arrive); where they are not, a neutral box (TASK-2460).
+	let placeholderStyle = $derived(
+		img?.width && img?.height
+			? `aspect-ratio: ${img.width} / ${img.height}; width: min(70vw, 520px); max-width: 90%; max-height: 80%;`
+			: `width: min(60vw, 360px); height: min(45vh, 270px); max-width: 90%; max-height: 80%;`
+	);
 
 	// The portaled root. `$state` so the effect below re-runs once `bind:this`
 	// lands; read-only inside every effect, so nothing here can self-invalidate
@@ -405,7 +420,12 @@
 		// (the house pattern in ItemGraph excludes its interactive overlays the same
 		// way). Retry sits over the (broken) stage in the error state, so it needs
 		// the same exclusion as the always-present chrome.
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry')) return;
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load')) return;
+		// No decoded bitmap to pan (the mobile `deferred` placeholder shows no
+		// `<img>`) — do NOT arm a drag, so the gesture stays fully inert instead of
+		// capturing the pointer and latching `dragging` for a pan that can never
+		// happen (TASK-2460). A plain press still reaches the backdrop to close.
+		if (!bitmapPresent) return;
 		const el = rootEl;
 		if (!el || !pointerGatesOpen(el)) return; // START gate
 		maybeDrag = true;
@@ -524,7 +544,7 @@
 		// A double-click ON a control (close / nav / retry) is that control's, not a
 		// zoom toggle — without this, double-clicking Next navigates twice AND
 		// toggles, or a double-click on Retry toggles zoom on the broken stage.
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry')) return;
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load')) return;
 		const el = rootEl;
 		if (!el || !pointerGatesOpen(el)) return;
 		const g = readGeometry();
@@ -689,6 +709,24 @@
 	// Drop the load on unmount (close) — one teardown, no dependencies.
 	$effect(() => () => loader.dispose());
 
+	// Zoom-past-fit is the mobile THUMB cell's trigger to fetch the original
+	// (TASK-2460): once a thumbnail has PAINTED, zooming past FIT (`scale > 1`, not
+	// past the thumb's own 1:1) upgrades to the original. Threshold is
+	// `!isAtFit(zoom)` — exactly "past fit", robust to the FIT_EPSILON float noise.
+	// Depends on `zoom` AND `loader.painted` (both tracked): gating on `painted`
+	// means a pre-paint zoom cannot fetch the original early, AND — because the flip
+	// to painted RE-RUNS this effect — a zoom made WHILE the thumb was still loading
+	// still upgrades the instant it paints (not stranded on the thumbnail).
+	// `loadOriginal` writes neither `zoom` nor `painted`, so tracking them cannot
+	// self-invalidate the flush (CONVE-1688). Fires on every zoom step past fit, but
+	// `loadOriginal`'s own dedup makes all but the first a no-op — the original is
+	// requested exactly once — and it no-ops entirely wherever nothing is deferred
+	// (desktop, or an already-loaded cell).
+	$effect(() => {
+		if (isAtFit(zoom) || !loader.painted) return;
+		untrack(() => loader.loadOriginal());
+	});
+
 	// Re-clamp on stage resize. `maxScale` is geometry-dependent and geometry is
 	// viewport-dependent, so ENLARGING the window lowers the ceiling and can
 	// strand a previously-valid scale above it. `clampState` re-clamps SCALE
@@ -740,13 +778,15 @@
 	// cannot self-invalidate its own flush (CONVE-1688).
 	$effect(() => {
 		// Tracked so the effect re-runs whenever a focus-holding control mounts or
-		// unmounts: the nav buttons (`hasMultiple`), the DR-10 retry button
-		// (`phase === 'error'`), and the image itself (`img`) — a set shrinking to
-		// empty removes the image, and an errored image navigated away removes the
-		// retry button, either of which could otherwise strand focus on <body>
-		// (TASK-2459).
+		// unmounts: the nav buttons (`hasMultiple`), the phase-gated controls (the
+		// DR-10 retry button in `error`, the tap-to-load button in `deferred` — both
+		// replaced by the image they load, TASK-2459 / TASK-2460), and the image
+		// itself (`img`). A set shrinking to empty, an errored image navigated away,
+		// or a tap that swaps the affordance for the bitmap could otherwise strand
+		// focus on <body>. Tracking the whole `phase` covers every such transition;
+		// `handoffFocus` no-ops while focus is still inside the surface.
 		void hasMultiple;
-		void (loader.phase === 'error');
+		void loader.phase;
 		void img;
 		const el = rootEl;
 		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
@@ -812,6 +852,16 @@
 		// `shiftKey` is fine (on most layouts `+` IS Shift+`=`), so it is absent
 		// from the guard.
 		if (e.ctrlKey || e.metaKey || e.altKey) return;
+		// Zoom keys are DISABLED, not merely no-ops, while no bitmap exists — the
+		// mobile `deferred` cell shows a placeholder with nothing to zoom
+		// (TASK-2460). Consume the key so it can't leak past the modal, but do not
+		// act. (`+`/`-` are already inert via `readGeometry`; `0` would otherwise
+		// still reset.)
+		const isZoomKey = e.key === '+' || e.key === '=' || e.key === '-' || e.key === '0';
+		if (isZoomKey && !bitmapPresent) {
+			e.preventDefault();
+			return;
+		}
 		if (e.key === '+' || e.key === '=') {
 			// `+` — including the numpad, whose `.key` is also `'+'` — and bare `=`.
 			e.preventDefault();
@@ -970,6 +1020,29 @@
 			     stage; the spinner is decoration over the (loading) image. -->
 			<div class="lightbox-status lightbox-loading" role="status" aria-label="Loading image">
 				<span class="lightbox-spinner" aria-hidden="true"></span>
+			</div>
+		{/if}
+
+		{#if img && loader.phase === 'deferred'}
+			<!-- The mobile large/unknown cell: DR-5b auto-fetches nothing here, so this
+			     is a TAP-TO-LOAD affordance, not a spinner (TASK-2460). The layer is
+			     inert; the button itself re-enables pointer events (the stage turns
+			     them off) so a tap can reach it — the one failure mode this cell exists
+			     to avoid. The whole placeholder is the button (a large touch target),
+			     sized to the image's aspect ratio when known. On tap it is replaced by
+			     the image it loads, so it hands focus off first (TASK-2456). -->
+			<div class="lightbox-status lightbox-deferred">
+				<button
+					class="lightbox-tap-load"
+					type="button"
+					style={placeholderStyle}
+					onclick={() => {
+						handoffFocus(rootEl!, rootEl?.querySelector('.lightbox-tap-load') ?? null);
+						loader.loadOriginal();
+					}}
+				>
+					<span class="lightbox-tap-label">Tap to load full image</span>
+				</button>
 			</div>
 		{/if}
 
@@ -1161,6 +1234,41 @@
 
 	.lightbox-retry:hover {
 		background: rgba(0, 0, 0, 0.75);
+	}
+
+	/* Tap-to-load placeholder for the mobile deferred cell (TASK-2460). The layer
+	   is inert; the button re-enables pointer events below. */
+	.lightbox-deferred {
+		pointer-events: none;
+	}
+
+	.lightbox-tap-load {
+		/* EXPLICIT: the stage sets `pointer-events: none`, so the tap target has to
+		   turn them back on — a control the user cannot tap is the failure this cell
+		   exists to avoid (TASK-2460). */
+		pointer-events: auto;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		/* Sizing (aspect ratio when known, neutral box otherwise) comes from the
+		   inline `placeholderStyle`. */
+		background: rgba(255, 255, 255, 0.06);
+		border: 1px dashed rgba(255, 255, 255, 0.35);
+		border-radius: var(--radius);
+		color: #fff;
+		cursor: pointer;
+	}
+
+	.lightbox-tap-load:hover,
+	.lightbox-tap-load:focus-visible {
+		background: rgba(255, 255, 255, 0.12);
+		border-color: rgba(255, 255, 255, 0.6);
+	}
+
+	.lightbox-tap-label {
+		padding: var(--space-2) var(--space-4);
+		font-size: 0.95rem;
+		font-weight: 500;
 	}
 
 	.lightbox-close {
