@@ -1339,4 +1339,21 @@
 		color: #fff;
 		font-size: 0.8rem;
 	}
+
+	/* Forced-colors (PLAN-2392 DR-4). The custom palette is discarded, so the
+	   image's box-shadow boundary vanishes — give the image a real BORDER so its
+	   boundary stays visible. LAST in the sheet so it wins over the controls' own
+	   (equal-specificity) border rules above, giving them explicit system-colour
+	   borders rather than relying on the UA's forced-colors adjustment. */
+	@media (forced-colors: active) {
+		.lightbox-image {
+			border: 2px solid CanvasText;
+		}
+		.lightbox-close,
+		.lightbox-nav,
+		.lightbox-retry,
+		.lightbox-tap-load {
+			border: 1px solid ButtonText;
+		}
+	}
 </style>
