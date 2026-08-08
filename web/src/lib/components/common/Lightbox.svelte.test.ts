@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import Lightbox from './Lightbox.svelte';
 import type { LightboxImage } from '$lib/attachments/events';
+// TASK-2477 — the deletion bus is REAL in this suite (the viewer subscribes to
+// it); firing `notifyAttachmentDeleted` drives the survivor logic directly.
+import { notifyAttachmentDeleted } from '$lib/attachments/events';
 import {
 	acquire,
 	hasForeignEscapeOwner,
@@ -3401,5 +3404,217 @@ describe('Lightbox — the fallback arm (TASK-2476)', () => {
 		// The gesture was cancelled: the capture is released and the fallback shows.
 		expect(release, 'the reactive cancel released the capture').toHaveBeenCalled();
 		expect(fallback()).not.toBeNull();
+	});
+});
+
+describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
+	// The viewer subscribes to the REAL deletion bus and reconciles by IDENTITY:
+	// the shown image is tracked by id, the index derived, so a delete advances or
+	// closes (never lands on a position that now names a different member). The
+	// bus is real in this suite, so `notifyAttachmentDeleted` drives it directly.
+	function mountLive() {
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		return app;
+	}
+	function shownAlt(): string {
+		const raster = root().querySelector<HTMLImageElement>('.lightbox-image');
+		if (raster) return raster.getAttribute('alt') ?? '';
+		return root().querySelector('.lightbox-fallback-name')?.textContent ?? '';
+	}
+	function counterText(): string | null {
+		return root().querySelector('.lightbox-counter')?.textContent ?? null;
+	}
+	function del(id: string) {
+		notifyAttachmentDeleted(id);
+		flushSync();
+	}
+
+	it('deleting the ONLY image closes the viewer', () => {
+		const onClose = vi.fn();
+		mountViewer({ images: [image(IMG_A, 'a')], onClose });
+		del(IMG_A);
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('deleting the SHOWN image advances to the next survivor', () => {
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg'), image(IMG_C, 'c', 'image/gif')],
+		});
+		expect(shownAlt()).toBe('a');
+		del(IMG_A);
+		// Advanced to the one that FOLLOWED A.
+		expect(shownAlt()).toBe('b');
+		expect(counterText()).toBe('1 / 2');
+	});
+
+	it('deleting the LAST shown image wraps to the first survivor', () => {
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg'), image(IMG_C, 'c', 'image/gif')],
+		});
+		press('ArrowRight');
+		press('ArrowRight');
+		expect(shownAlt()).toBe('c'); // on the last
+		del(IMG_C);
+		// Wrap-around: the deleted last advances to the first survivor.
+		expect(shownAlt()).toBe('a');
+		expect(counterText()).toBe('1 / 2');
+	});
+
+	it('deleting an EARLIER image keeps the SAME image shown (identity, not index)', () => {
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg'), image(IMG_C, 'c', 'image/gif')],
+		});
+		press('ArrowRight');
+		press('ArrowRight');
+		expect(shownAlt()).toBe('c'); // position 3 of 3
+		del(IMG_A);
+		// An index-based viewer would now show B (C shifted to index 1); identity
+		// keeps C on screen.
+		expect(shownAlt()).toBe('c');
+		expect(counterText()).toBe('2 / 2');
+	});
+
+	it('deleting down to ONE image drops the counter and nav', () => {
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		expect(counterText()).toBe('1 / 2');
+		del(IMG_A);
+		expect(shownAlt()).toBe('b');
+		expect(root().querySelector('.lightbox-counter')).toBeNull();
+		expect(root().querySelector('.lightbox-nav')).toBeNull();
+	});
+
+	it('deleting every image (zero left) closes on the last one', () => {
+		const onClose = vi.fn();
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')], onClose });
+		del(IMG_A); // → advance to B, still open
+		expect(onClose).not.toHaveBeenCalled();
+		expect(shownAlt()).toBe('b');
+		del(IMG_B); // zero left → close
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('reopening (a fresh mount) clears tombstones — a re-added image shows again', () => {
+		const first = mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		del(IMG_A);
+		expect(shownAlt()).toBe('b'); // A tombstoned for THIS instance
+		unmount(mounted.splice(mounted.indexOf(first), 1)[0]);
+		flushSync();
+
+		// A fresh instance (every producer keys the mount) with A back in the list:
+		// no cross-open tombstone leakage, so A opens.
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		expect(shownAlt()).toBe('a');
+	});
+
+	it('an OWN toolbar delete flows through the bus identically (advance)', () => {
+		// mutationsEnabled + a full confirm→delete, but api.attachments.delete is not
+		// mocked here — so drive the announce directly (what the descriptor does on a
+		// 204) and assert the viewer reconciles it via the SAME survivor path.
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')],
+			mutationsEnabled: true,
+		});
+		// The bus announce (own or external) is the one path.
+		del(IMG_A);
+		expect(shownAlt()).toBe('b');
+	});
+
+	it('deletes a non-image FALLBACK entry too', () => {
+		// The survivor logic composes with D's navigable: a fallback-arm entry (an
+		// unsafe MIME that flipped mid-view) is deletable, and deleting it advances.
+		liveProps.images = [image(IMG_A, 'a'), image(IMG_B, 'b')];
+		mountLive();
+		liveProps.images = [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/svg+xml')]; // B → fallback
+		flushSync();
+		press('ArrowRight'); // → B, the fallback arm
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		del(IMG_B);
+		// Advanced off the fallback back to A (the raster arm).
+		expect(shownAlt()).toBe('a');
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+	});
+
+	it('a delete of a DIFFERENT image while the confirm drill-down is up leaves it up', () => {
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')],
+			mutationsEnabled: true,
+		});
+		// Open the delete confirmation on the shown image A.
+		root().querySelector<HTMLButtonElement>(
+			'.lightbox-toolbar .lightbox-tool[aria-label="Delete"]'
+		)!.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+
+		// An EXTERNAL delete of B (not shown) — A stays shown, its confirm stays up.
+		del(IMG_B);
+		expect(shownAlt()).toBe('a');
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+	});
+
+	it('a delete of an unrelated attachment (not in the set) is a harmless no-op', () => {
+		const onClose = vi.fn();
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')], onClose });
+		del('ffffffff-0000-4000-8000-ffffffffffff'); // never in the set
+		expect(onClose).not.toHaveBeenCalled();
+		expect(shownAlt()).toBe('a');
+		expect(counterText()).toBe('1 / 2');
+	});
+
+	it('a delete of an already-dangling shown id is a harmless no-op (no throw)', () => {
+		// The shown image is removed straight from the PROP (not the bus), so shownId
+		// dangles and the index derives to survivors[0]. A later bus delete of that
+		// gone id must not read after[-1] or advance.
+		liveProps.images = [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')];
+		mountLive();
+		press('ArrowRight'); // shownId = B
+		expect(shownAlt()).toBe('b');
+		liveProps.images = [image(IMG_A, 'a')]; // B removed from the prop → shownId dangles
+		flushSync();
+		expect(shownAlt()).toBe('a'); // derived falls to the survivor
+		del(IMG_B); // a bus delete of the gone B — must not throw or disturb A
+		expect(shownAlt()).toBe('a');
+	});
+
+	it('a delete on an already-empty viewer does not close it', () => {
+		const onClose = vi.fn();
+		liveProps.images = [image(IMG_A, 'a')];
+		liveProps.onClose = onClose;
+		mountLive();
+		liveProps.images = []; // all removed via the prop → empty, still mounted
+		flushSync();
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		// A delete (of the gone one, or an unrelated id) must NOT close the
+		// already-empty viewer — the close is for a delete that EMPTIES a set, not one
+		// that finds it already empty.
+		del(IMG_A);
+		del('ffffffff-0000-4000-8000-ffffffffffff');
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	it('deleting the shown image mid-DRAG advances and resets the zoom (stale drag stays harmless)', () => {
+		mountViewer({
+			images: [sized(IMG_A, 'a', 5000, 5000), sized(IMG_B, 'b', 800, 600, 'image/jpeg')],
+		});
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(1024, 768); // A decoded → bitmapPresent, pan room
+		zoomToActual();
+		expect(scaleOf()).toBeGreaterThan(1); // zoomed in on A
+		const capture = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = capture;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500)); // engage the drag
+		flushSync();
+		expect(capture, 'the drag armed on A').toHaveBeenCalled();
+
+		// A is deleted while the drag is live → advance to B, and the id-keyed reset
+		// returns the transform to fit. The stale drag baseline is deliberately LEFT
+		// (as arrow-nav mid-drag does) but harmless: at fit `clampPan` pins the pan to
+		// 0, so no baseline can jump the image.
+		del(IMG_A);
+		expect(shownAlt()).toBe('b');
+		expect(scaleOf(), 'the advance reset the transform to fit').toBe(1);
 	});
 });

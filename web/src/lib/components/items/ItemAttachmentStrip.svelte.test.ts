@@ -58,6 +58,11 @@ const panelOpenMock = vi.fn<(event: Record<string, unknown>) => void>();
 vi.mock('$lib/attachments/events', () => ({
 	announceAttachmentDeleted: (ws: string, uuid: string) => {
 		notifyDeletedMock(uuid);
+		// Fan out to the registered listeners, as the real one does (notify +
+		// invalidate). The viewer (TASK-2477) reconciles a delete through this bus,
+		// so an own-toolbar delete must reach its listener the same way an external
+		// delete does; the spy above still records the announce for assertions.
+		broadcastDeletion(uuid);
 		invalidateMock(ws, uuid);
 	},
 	notifyAttachmentPanelOpen: (event: Record<string, unknown>) => panelOpenMock(event),
@@ -1938,5 +1943,35 @@ describe('ItemAttachmentStrip', () => {
 		expect(notifyDeletedMock).toHaveBeenCalledWith('img1');
 		// The viewer closed over the deleted image.
 		expect(document.querySelector('.lightbox-backdrop')).toBeNull();
+	});
+
+	it('confirming Delete on ONE of TWO images ADVANCES the viewer, not closes it (TASK-2477)', async () => {
+		// The full toolbar → confirm → api.delete → announce → deletion-bus →
+		// survivor-advance path, with MORE THAN ONE image: the viewer must ADVANCE to
+		// the survivor rather than close (the retired C1 close-on-delete latch).
+		props.mutationsEnabled = true;
+		listMock.mockResolvedValue(response([att({ id: 'img1' }), att({ id: 'img2' })]));
+		mountStrip('item-a');
+		await settle();
+
+		tiles()[0].click(); // open the viewer on img1
+		flushSync();
+		expect(document.querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+
+		document.querySelector<HTMLButtonElement>(
+			'.lightbox-toolbar .lightbox-tool[aria-label="Delete"]'
+		)!.click();
+		flushSync();
+		Array.from(document.querySelectorAll<HTMLButtonElement>('.lightbox-delete-confirm button'))
+			.find((b) => b.textContent?.includes('Delete file'))!
+			.click();
+		await settle();
+
+		expect(deleteMock).toHaveBeenCalledWith('ws', 'img1');
+		// The viewer stays OPEN, advanced to the surviving img2.
+		expect(document.querySelector('.lightbox-backdrop')).not.toBeNull();
+		expect(document.querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt')).toBe(
+			'img2.png'
+		);
 	});
 });

@@ -72,7 +72,10 @@
 	 * and a local `interface … extends` would be a second declaration, which is
 	 * the drift this consolidation removes.
 	 */
-	import type { LightboxImage } from '$lib/attachments/events';
+	import {
+		registerAttachmentDeletionListener,
+		type LightboxImage,
+	} from '$lib/attachments/events';
 	// ── Toolbar (PLAN-2392 phase 3c-i / TASK-2474) ───────────────────────────
 	// The viewer's copy of the shared attachment-action list (DR-5) — the SAME
 	// descriptors the options panel renders, drawn here as an inline toolbar over
@@ -223,20 +226,28 @@
 			})
 	);
 
-	// Seeded once at mount — the host remounts (null → set) on each open, so
-	// no prop-sync effect is needed. untrack makes the initial-value capture
-	// explicit.
-	//
-	// Resolved through the ID rather than carried across as a number: filtering
-	// reindexes everything after a refusal, so the requested POSITION can name a
-	// different image (or none) in the filtered set. Where the requested image
-	// is the one refused, there is nothing to land on and the first navigable
-	// image is what opens.
-	let current = $state(
+	// DELETION TOMBSTONES (PLAN-2392 DR-5c / TASK-2477). Ids the deletion bus has
+	// announced gone while this viewer is open — the SURVIVING set is `navigable`
+	// minus these. Fresh per instance and never reset: every producer keys the
+	// mount, so a reopen is a new component with an empty set (no cross-open
+	// leakage), and a delete is authoritative for the life of the viewer that saw
+	// it. A `Set` reassigned (not mutated) on each add so the `survivors` derived
+	// re-runs.
+	let tombstones = $state<Set<string>>(new Set());
+
+	// THE SHOWN IMAGE, TRACKED BY ID (TASK-2477). The index is DERIVED from this,
+	// not the source of truth — so deleting an EARLIER image keeps the SAME image
+	// on screen (identity, not a position that now names a different member), and
+	// deleting the shown one advances by recomputing from the new survivor list.
+	// Seeded once at mount from the requested index, resolved through the id: the
+	// filter reindexes everything after a refusal, so the requested POSITION can
+	// name a different image (or none). Where the requested image is refused, the
+	// first navigable image opens.
+	let shownId = $state<string | null>(
 		untrack(() => {
 			const wanted = images[Math.min(Math.max(index, 0), Math.max(images.length - 1, 0))];
-			const at = wanted ? navigable.findIndex((im) => im.id === wanted.id) : -1;
-			return at < 0 ? 0 : at;
+			const at = wanted ? navigable.find((im) => im.id === wanted.id) : undefined;
+			return (at ?? navigable[0])?.id ?? null;
 		})
 	);
 
@@ -261,21 +272,25 @@
 		return active && active !== document.body ? (active as HTMLElement) : null;
 	});
 
-	// EVERYTHING PAST THIS POINT READS `navigable`, NEVER `images` — the nav
-	// wrap-around, the counter and the rendered `<img>` alike. A single read of
-	// the unfiltered prop below would reopen the hole this filter closes.
-	let hasMultiple = $derived(navigable.length > 1);
-	// The position actually shown, clamped. `current` is what the user's ←/→
-	// moved, but the set can SHRINK underneath it — an entry whose MIME resolves to
-	// UNRESOLVED, or is dropped from the array, leaves `navigable` (a flip to
-	// unsafe does NOT — it stays as the fallback arm). Clamping in a derived
-	// (rather than writing `current` from an effect, which would be an effect
-	// writing state it reads) keeps the viewer on a real member instead of blanking
-	// or showing `undefined`.
+	// THE SURVIVING SET — `navigable` minus the tombstones (TASK-2477). EVERYTHING
+	// PAST THIS POINT READS `survivors`, NEVER `images` or even `navigable`: the nav
+	// wrap-around, the counter and the rendered `<img>` alike. A read of the
+	// unfiltered prop would reopen the DR-16 hole `navigable` closes; a read of
+	// `navigable` (pre-tombstone) would page onto a deleted image.
+	let survivors = $derived(navigable.filter((im) => !tombstones.has(im.id)));
+	let hasMultiple = $derived(survivors.length > 1);
+	// The position actually shown, DERIVED from `shownId`. Falls to 0 when the id
+	// dangles — a shown image removed straight from the `images` prop (a producer's
+	// set change, not the deletion bus, which advances `shownId` itself). Deriving
+	// the index (rather than writing it from an effect that reads it) keeps the
+	// viewer on a real member instead of blanking or showing `undefined`.
 	let shownIndex = $derived(
-		Math.min(Math.max(current, 0), Math.max(navigable.length - 1, 0))
+		Math.max(
+			survivors.findIndex((im) => im.id === shownId),
+			0
+		)
 	);
-	let img = $derived(navigable[shownIndex]);
+	let img = $derived(survivors[shownIndex]);
 	// THE STAGE ARM (TASK-2476). The single decision of what the stage draws for
 	// the shown entry: `'raster-image'` → the `<img>`; `null` → the no-bytes icon
 	// fallback. A navigable entry always has a resolved MIME (unresolved is refused
@@ -343,11 +358,6 @@
 	// string. Shared by the metadata header, the download attribute and the delete
 	// prompt, so all three name the file identically.
 	let displayName = $derived(img?.filename ?? blankToNull(img?.alt) ?? 'Attachment');
-	// Counts confirmed deletes. The descriptor's `run()` resolves the same way
-	// whether the row was deleted or the user CANCELLED, so the counter is how the
-	// two are told apart — a delete closes the viewer, a cancel does not. Plain
-	// `let`: read/written only in the action handler, never a tracked scope.
-	let toolbarDeleteSignal = 0;
 	// Inline, transient error from a button action (a failed clipboard write). Sits
 	// in the toolbar beside the controls, never a blocking dialog.
 	let toolbarError = $state<string | null>(null);
@@ -424,9 +434,14 @@
 			return mutationsEnabled;
 		},
 		confirmDelete: () => deleteConfirm.request(),
-		onDeleted: () => {
-			toolbarDeleteSignal += 1;
-		},
+		// NO `onDeleted` (TASK-2477): the panel uses it to close on delete, but the
+		// viewer reconciles a delete through the DELETION BUS instead — the
+		// descriptor's `announceAttachmentDeleted` fires `handleDeletion`, which
+		// tombstones the id and advances (or closes when nothing survives). That is
+		// the SAME path an external delete takes, so an own-toolbar delete and a
+		// strip/other-tab delete are indistinguishable to the survivor logic. The
+		// C1 close-on-delete latch is retired: the viewer had no survivor logic then,
+		// so closing was the only sane outcome; now it advances when survivors remain.
 		onCopied: () => toastStore.show('Link copied to clipboard', 'success'),
 	};
 
@@ -434,27 +449,15 @@
 
 	async function runToolbarAction(action: ButtonAttachmentAction) {
 		if (!action.enabled(toolbarCtx)) return;
-		const deletesBefore = toolbarDeleteSignal;
-		// The image this action was launched against. Closing on delete is gated on
-		// it still being the one shown, so a set-shrink / nav during the await can't
-		// close the viewer over a DIFFERENT image than the one deleted.
-		const targetId = img?.id;
 		toolbarError = null;
 		toolbarBusy = true;
 		try {
 			await action.run(toolbarCtx);
-			// The continuation may land after the viewer was torn down (a keyed
-			// producer remounts on the next open) — `onClose` is a stale callback then.
+			// A confirmed delete is reconciled through the deletion bus (`handleDeletion`
+			// runs synchronously inside `run`'s announce) — advance or close — so nothing
+			// to do here. Copy-link and the rest simply finish. The `destroyed` guard
+			// covers a continuation landing after the bus close tore the viewer down.
 			if (destroyed) return;
-			// A confirmed delete removed the image on screen — showing its now-404
-			// bytes is wrong, so close the viewer (the panel's onclose parallel). Close
-			// when the shown image is STILL the deleted one (the common case: the
-			// producer's set isn't mutated, so the 404'd image is what's on screen), OR
-			// when the set emptied out from under us (`!img` — nothing left to show).
-			// Only a set-shrink that moved a DIFFERENT image into view is left open —
-			// and the descriptor's own identity re-check already aborts a delete that
-			// raced an arrow-nav (no signal bump). A Cancel leaves the signal untouched.
-			if (toolbarDeleteSignal !== deletesBefore && (!img || img.id === targetId)) onClose();
 		} catch (err) {
 			if (destroyed) return;
 			toolbarError =
@@ -963,18 +966,61 @@
 		zoom = toggleFitOrActual(zoom, anchor, g);
 	}
 
-	// Stepped from `shownIndex`, not from `current`: after the set shrinks they
-	// differ, and moving from the raw value would jump relative to a position
-	// the user was never on. Both are no-ops on an empty set — reachable only
-	// through the nav controls / arrow keys, which `hasMultiple` already hides
-	// and gates, but written so the modulo can never be `% 0`.
+	// Move `shownId` (identity), stepped from the DERIVED `shownIndex` over the
+	// SURVIVORS. Writing the id, not an index, is what keeps the viewer on a real
+	// member when the set changes under it. No-ops on an empty set — reachable only
+	// through the nav controls / arrow keys, which `hasMultiple` already hides and
+	// gates, but written so the modulo can never be `% 0`.
 	function prev() {
-		if (navigable.length === 0) return;
-		current = (shownIndex - 1 + navigable.length) % navigable.length;
+		if (survivors.length === 0) return;
+		shownId = survivors[(shownIndex - 1 + survivors.length) % survivors.length].id;
 	}
 	function next() {
-		if (navigable.length === 0) return;
-		current = (shownIndex + 1) % navigable.length;
+		if (survivors.length === 0) return;
+		shownId = survivors[(shownIndex + 1) % survivors.length].id;
+	}
+
+	// THE DELETION SUBSCRIPTION (PLAN-2392 DR-5c / TASK-2477). ONE path for both
+	// origins: the toolbar's own Delete announces on the bus (the descriptor's
+	// `announceAttachmentDeleted`), and an external surface (the strip, another
+	// tab) announces the same way — so this reacts identically to both, and the
+	// toolbar's ctx deliberately carries NO `onDeleted` (that close-on-delete is
+	// the PANEL's; the viewer advances instead). An event handler, not an $effect,
+	// so writing `shownId` / `tombstones` here is not a self-write.
+	function handleDeletion(uuid: string) {
+		if (!uuid || tombstones.has(uuid)) return;
+		// Snapshot BEFORE tombstoning: the position of the deleted entry decides
+		// where "advance" lands.
+		const before = survivors;
+		const i = before.findIndex((im) => im.id === uuid);
+		// NOT in our surviving set: an unsafe-at-open / unresolved entry (D excluded
+		// it), another item's attachment on the shared bus, or an already-dangling
+		// `shownId` (a producer removed the shown image straight from the prop). Still
+		// tombstone it — a delete is authoritative — but there is nothing to advance
+		// to or close over, so DON'T touch `shownId` (its index derives to a survivor)
+		// and DON'T read `after[-1]` or close an already-empty viewer.
+		if (i < 0) {
+			tombstones = new Set(tombstones).add(uuid);
+			return;
+		}
+		const deletingShown = uuid === shownId;
+		// Authoritative and latched for this viewer's life — reassign the Set so
+		// `survivors` recomputes.
+		tombstones = new Set(tombstones).add(uuid);
+		const after = survivors; // recomputed, minus uuid
+		if (after.length === 0) {
+			// Nothing left to show — zero-left / deleting-only → close.
+			onClose();
+			return;
+		}
+		if (deletingShown) {
+			// ADVANCE to the entry that FOLLOWED the deleted one — now at index `i` in
+			// the shrunk list — wrapping to the first when the last was deleted. The
+			// zoom transform resets through the existing id-keyed effect, since the
+			// shown id changes here. Deleting an EARLIER/LATER entry leaves `shownId`
+			// untouched: identity, not index, so the SAME image stays on screen.
+			shownId = after[i < after.length ? i : 0].id;
+		}
 	}
 
 	/**
@@ -1071,7 +1117,13 @@
 			return true;
 		}, ESCAPE_PRIORITY.viewer);
 
+		// Subscribe to the deletion bus (TASK-2477). Registered alongside the lease so
+		// it is DISPOSED in the same teardown — a leaked listener would fire
+		// `shownId` / `onClose` writes into a torn-down viewer.
+		const unregisterDeletion = registerAttachmentDeletionListener(handleDeletion);
+
 		return () => {
+			unregisterDeletion();
 			unregisterEscape();
 			// Release BEFORE restoring focus, and let the RESULT decide: when a
 			// viewer remains beneath this one the manager has already handed focus
@@ -1087,10 +1139,13 @@
 		};
 	});
 
-	// Reset the transform whenever the SHOWN image changes — arrow nav, or the
-	// set shrinking under `current` so a different member is shown (TASK-2455).
-	// Close needs no handling: every producer keys the mount, so closing
-	// unmounts this instance and the next open starts from `resetZoom()`.
+	// Reset the transform whenever the SHOWN image changes — arrow nav, or a delete
+	// that ADVANCES `shownId` to a survivor (TASK-2455 / TASK-2477). Keyed on
+	// `img?.id`, so it fires exactly when a DIFFERENT image is shown: deleting an
+	// earlier/later entry leaves `shownId` (and thus `img.id`) put, so the same
+	// image's zoom survives; advancing onto a new one resets it. Close needs no
+	// handling: every producer keys the mount, so closing unmounts this instance
+	// and the next open starts from `resetZoom()`.
 	//
 	// `lastResetForId` is a PLAIN let, not `$state`: an effect that read and wrote
 	// the same `$state` would self-depend and abort its own flush (CONVE-1688),
@@ -1658,9 +1713,9 @@
 	</div>
 
 	{#if hasMultiple}
-		<!-- `shownIndex`, so the counter names the image actually on screen even
-		     after the set shrank under `current`. -->
-		<div class="lightbox-counter">{shownIndex + 1} / {navigable.length}</div>
+		<!-- Derived `shownIndex` over the SURVIVORS, so the counter names the image
+		     actually on screen even after a deletion shrank the set. -->
+		<div class="lightbox-counter">{shownIndex + 1} / {survivors.length}</div>
 	{/if}
 
 	<!--
