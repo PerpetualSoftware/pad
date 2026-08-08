@@ -140,6 +140,15 @@
 		 * archive-closes / restore-revalidates lifecycle lands with the host in T2a).
 		 */
 		parentArchived?: boolean;
+		/**
+		 * Host-owned forced-revalidation signal (PLAN-2392 3c-ii / T2a). A BUMP
+		 * forces the metadata machine to invalidate-then-fetch (DR-14) — the
+		 * restore-revalidate path: a surface opened while the parent was archived
+		 * (probe-gated / missing) re-probes when the parent is restored, rather than
+		 * assuming the pre-archive answer still holds. DEFAULT 0. T6's
+		 * always-revalidate-on-open `openNonce` layers onto this same forcing input.
+		 */
+		revalidateToken?: number;
 	}
 
 	let {
@@ -152,6 +161,7 @@
 		getItemContent,
 		getLiveContent,
 		parentArchived = false,
+		revalidateToken = 0,
 	}: Props = $props();
 
 	/**
@@ -305,7 +315,7 @@
 		},
 		open: !!img,
 		parentArchived,
-		revalidateToken: 0,
+		revalidateToken,
 	}));
 
 	// THE RESOLVED MIME, and THE STAGE ARM off it (3c-ii T3, TASK-2476 for the arm).
