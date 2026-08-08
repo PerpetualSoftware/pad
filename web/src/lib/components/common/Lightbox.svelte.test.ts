@@ -2265,3 +2265,236 @@ describe('Lightbox — drag-to-pan and double-click (TASK-2458)', () => {
 		expect(scaleOf(front)).toBeCloseTo(2000 / 900); // frontmost did
 	});
 });
+
+// TASK-2459 — the DR-5b loader WIRED into the viewer. The request logic is
+// proven in viewerImageLoader.svelte.test.ts; these pin the wiring: the <img>
+// shows the loader's URL, its decode feeds the fallback detector / upgrade, and
+// the spinner / error / retry states render.
+
+/** A LightboxImage with explicit pixel dimensions. */
+function sized(id: string, alt: string, width: number, height: number, mime = 'image/png'): LightboxImage {
+	return { id, alt, filename: null, mime_type: mime, size_bytes: null, width, height };
+}
+/** Simulate the <img> decoding at `naturalWidth x naturalHeight`, then flush. */
+function fireLoad(naturalWidth: number, naturalHeight: number, scope: HTMLElement = root()): void {
+	const el = scope.querySelector<HTMLImageElement>('.lightbox-image');
+	if (!el) throw new Error('no image to load');
+	Object.defineProperty(el, 'naturalWidth', { configurable: true, get: () => naturalWidth });
+	Object.defineProperty(el, 'naturalHeight', { configurable: true, get: () => naturalHeight });
+	el.dispatchEvent(new Event('load'));
+	flushSync();
+}
+
+describe('Lightbox — DR-5b image loading (TASK-2459)', () => {
+	it('a large image loads the THUMBNAIL first, then upgrades to the original on decode', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(imageSrc()).toContain('variant=thumb-md');
+		expect(imageSrc()).toContain(IMG_A);
+
+		// The thumb decodes at a bounded size → the background upgrade swaps in.
+		fireLoad(1024, 768);
+		expect(imageSrc()).toContain(IMG_A);
+		expect(imageSrc()).not.toContain('variant='); // the original, no variant
+	});
+
+	it('the FALLBACK case does not upgrade (a thumb-md request served the original)', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(imageSrc()).toContain('variant=thumb-md');
+		// Decoded ABOVE the thumbnail bound → it WAS the original: no second request.
+		fireLoad(5000, 5000);
+		expect(imageSrc()).toContain('variant=thumb-md');
+	});
+
+	it('an unknown-dimensions image requests the ORIGINAL directly (no thumb)', () => {
+		mountViewer({ images: [image(IMG_A, 'a')] }); // the helper leaves dims null
+		expect(imageSrc()).toContain(IMG_A);
+		expect(imageSrc()).not.toContain('variant=');
+	});
+
+	it('shows a loading spinner until the image decodes, then hides it', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(root().querySelector('.lightbox-loading')).not.toBeNull();
+		fireLoad(1024, 768); // thumb decoded → upgrade requested (still loading)
+		expect(root().querySelector('.lightbox-loading')).not.toBeNull();
+		fireLoad(5000, 5000); // original decoded → ready
+		expect(root().querySelector('.lightbox-loading')).toBeNull();
+	});
+
+	it('a load error shows a retryable error; retry RE-REQUESTS and hands off focus', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		const el = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		el.dispatchEvent(new Event('error'));
+		flushSync();
+		expect(root().querySelector('.lightbox-error')).not.toBeNull();
+
+		const retry = root().querySelector<HTMLButtonElement>('.lightbox-retry')!;
+		// The retry control carries pointer-events:auto explicitly (the stage is off).
+		expect(getComputedStyle(retry).pointerEvents).not.toBe('none');
+		retry.focus();
+		retry.click();
+		flushSync();
+		// Re-requested → loading again → the error (and its button) are gone, and
+		// focus was handed off before the button disappeared (TASK-2456).
+		expect(root().querySelector('.lightbox-error')).toBeNull();
+		expect(document.activeElement).toBe(closeButton());
+	});
+
+	it('ABORTS on navigate: the src points at the new image, dropping the old URL', () => {
+		mountViewer({
+			images: [sized(IMG_A, 'a', 5000, 5000), sized(IMG_B, 'b', 800, 600, 'image/jpeg')],
+		});
+		expect(imageSrc()).toContain(IMG_A);
+		expect(imageSrc()).toContain('variant=thumb-md');
+
+		expect(press('ArrowRight')).toBe(true);
+		expect(imageSrc()).toContain(IMG_B);
+		expect(imageSrc()).not.toContain(IMG_A); // the old URL is gone at once
+		expect(imageSrc()).not.toContain('variant='); // B is small ≤1024 → original
+	});
+
+	it('retry RE-MOUNTS the <img> so a same-URL failure is actually re-requested', () => {
+		mountViewer({ images: [image(IMG_A, 'a')] }); // unknown dims → original URL directly
+		const before = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		const beforeSrc = before.getAttribute('src');
+		before.dispatchEvent(new Event('error'));
+		flushSync();
+		root().querySelector<HTMLButtonElement>('.lightbox-retry')!.click();
+		flushSync();
+		const after = root().querySelector<HTMLImageElement>('.lightbox-image');
+		// A NEW element (the load token changed the {#key}) at the SAME URL — the
+		// browser re-requests even though a naive `src=''`→same-URL would no-op.
+		expect(after).not.toBe(before);
+		expect(after?.getAttribute('src')).toBe(beforeSrc);
+	});
+
+	it('a focused retry that unmounts on set-shrink does not strand focus on <body>', () => {
+		liveProps.images = [image(IMG_A, 'a')];
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		root().querySelector<HTMLImageElement>('.lightbox-image')!.dispatchEvent(new Event('error'));
+		flushSync();
+		const retry = root().querySelector<HTMLButtonElement>('.lightbox-retry')!;
+		retry.focus();
+		expect(document.activeElement).toBe(retry);
+
+		// The set shrinks to empty — the errored image and its retry button unmount.
+		liveProps.images = [];
+		flushSync();
+		expect(root().querySelector('.lightbox-retry')).toBeNull();
+		expect(document.activeElement).toBe(closeButton());
+		expect(document.activeElement).not.toBe(document.body);
+	});
+
+	it('a LATE decode for a navigated-away image does not corrupt the current one', () => {
+		mountViewer({
+			images: [sized(IMG_A, 'a', 5000, 5000), sized(IMG_B, 'b', 5000, 5000, 'image/jpeg')],
+		});
+		const staleImg = root().querySelector<HTMLImageElement>('.lightbox-image')!; // A's element
+		expect(staleImg.getAttribute('src')).toContain('variant=thumb-md');
+
+		// Navigate to B — the id-keyed <img> remounts, detaching A's element.
+		expect(press('ArrowRight')).toBe(true);
+		expect(imageSrc()).toContain(IMG_B);
+		expect(imageSrc()).toContain('variant=thumb-md');
+
+		// A's thumbnail finishes decoding LATE at a FALLBACK size (>1024) on the now
+		// detached element. It must not mark B ready or suppress B's upgrade.
+		Object.defineProperty(staleImg, 'naturalWidth', { configurable: true, get: () => 5000 });
+		Object.defineProperty(staleImg, 'naturalHeight', { configurable: true, get: () => 5000 });
+		staleImg.dispatchEvent(new Event('load'));
+		flushSync();
+		expect(imageSrc()).toContain(IMG_B);
+		expect(imageSrc()).toContain('variant=thumb-md'); // B untouched
+
+		// B's OWN decode still drives B's upgrade.
+		fireLoad(1024, 768);
+		expect(imageSrc()).toContain(IMG_B);
+		expect(imageSrc()).not.toContain('variant=');
+	});
+
+	it('zoom/pan still work on the image the loader RE-MOUNTED after navigation', () => {
+		// The {#key} remounts the <img> on nav, rebinding `imgEl`. The zoom reads
+		// geometry from `imgEl`; a stale bind would read the detached element and
+		// pan nothing.
+		mountViewer({
+			images: [sized(IMG_A, 'a', 5000, 5000), sized(IMG_B, 'b', 5000, 5000, 'image/jpeg')],
+		});
+		expect(press('ArrowRight')).toBe(true);
+		expect(imageSrc()).toContain(IMG_B);
+
+		mockGeometry(root(), OVERFLOW_G); // mocks the NEW (B's) image element
+		root().dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf()).toBeCloseTo(2000 / 900); // zoom read the rebound element
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(100);
+	});
+
+	it('DR-16: an all-unsafe set renders no image and issues no request', () => {
+		mountViewer({ images: [image(IMG_A, 'svg', 'image/svg+xml')] });
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-loading')).toBeNull();
+	});
+
+	it('a same-id re-emit that FILLS dimensions re-runs the DR-5b policy', () => {
+		// The load key is id + dimensions, so a re-derived set with the SAME values
+		// does not reload, but an async metadata fill (unknown → sized) MUST — a
+		// stale dimension is a stale policy.
+		liveProps.images = [image(IMG_A, 'a')]; // unknown dims → original directly
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		expect(imageSrc()).not.toContain('variant='); // unknown → the original
+
+		// The same id re-emits with LARGE dimensions filled in.
+		liveProps.images = [sized(IMG_A, 'a', 5000, 5000)];
+		flushSync();
+		expect(imageSrc()).toContain('variant=thumb-md'); // policy re-ran → thumb first
+	});
+
+	it('the retry button is excluded from pan + zoom-toggle gestures over the stage', () => {
+		mountViewer({ images: [sized(IMG_A, 'a', 5000, 5000)] });
+		root().querySelector<HTMLImageElement>('.lightbox-image')!.dispatchEvent(new Event('error'));
+		flushSync();
+		mockGeometry(root(), OVERFLOW_G);
+		const retry = root().querySelector<HTMLButtonElement>('.lightbox-retry')!;
+		const before = scaleOf();
+		// A double-click ON retry must not toggle zoom (excluded like close / nav).
+		retry.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf()).toBeCloseTo(before);
+		// A drag STARTING on retry must not pan the broken stage.
+		retry.dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(0);
+	});
+
+	it('an A→B→A same-URL late error on the DETACHED element does not clobber the live image', () => {
+		// The third A load reuses A's exact URL, so the URL fence alone cannot tell
+		// the detached first A element's late error from the live one — the per-mount
+		// generation is what rejects it (the no-`{#key}` switch-safety class).
+		mountViewer({
+			images: [sized(IMG_A, 'a', 800, 600), sized(IMG_B, 'b', 800, 600, 'image/jpeg')],
+		});
+		const firstA = root().querySelector<HTMLImageElement>('.lightbox-image')!; // E1
+		expect(press('ArrowRight')).toBe(true); // → B (E1 detaches)
+		expect(press('ArrowLeft')).toBe(true); // → A again (E3 mounts, same URL)
+		const liveA = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		expect(liveA).not.toBe(firstA);
+		expect(liveA.getAttribute('src')).toBe(firstA.getAttribute('src')); // same URL
+
+		fireLoad(800, 600); // the LIVE A decodes fine → ready, no error
+		expect(root().querySelector('.lightbox-error')).toBeNull();
+
+		// The detached E1 errors LATE at the same URL — the generation fence must
+		// reject it so the live, ready image is not flipped into 'error'.
+		firstA.dispatchEvent(new Event('error'));
+		flushSync();
+		expect(root().querySelector('.lightbox-error')).toBeNull();
+	});
+});

@@ -151,9 +151,15 @@ describe('inline image → viewer host → Lightbox', () => {
 			expect(viewer.getAttribute('role')).toBe('dialog');
 			expect(viewer.parentElement).toBe(document.body);
 			const shown = viewer.querySelector<HTMLImageElement>('img.lightbox-image');
+			// The URL is built from the CAPTURED workspace this NodeView emitted in
+			// (the pane can switch workspace under a mounted viewer) — this pins
+			// which workspace, which is why it survives the DR-5b loading rework.
 			expect(shown?.getAttribute('src')).toContain(UUID);
-			// The full-resolution blob, as the deleted dialog loaded: the viewer
-			// asks for the canonical URL with no `variant`.
+			// NO `?variant`: an inline editor image carries no dimensions, so it is
+			// `unknown` to the DR-5b classifier, and the unknown-dims desktop cell
+			// requests the ORIGINAL directly — the canonical, no-variant URL — never
+			// a thumbnail (TASK-2459). A dimensioned large image WOULD ship
+			// `?variant=thumb-md` first; that path is covered in the loader tests.
 			expect(shown?.getAttribute('src')).not.toContain('variant=');
 		});
 	}

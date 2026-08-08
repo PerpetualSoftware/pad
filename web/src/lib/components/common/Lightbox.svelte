@@ -21,8 +21,10 @@
 	 * does not.
 	 */
 	import { untrack } from 'svelte';
-	import { attachmentDownloadUrl } from '$lib/markdown/attachments';
 	import { paneFocusables, nextTrapTarget, handoffFocus } from '$lib/collections/paneFocus';
+	import { createViewerImageLoader } from '$lib/attachments/viewerImageLoader.svelte';
+	import type { Platform } from '$lib/attachments/viewerLoading';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import {
 		acquire,
 		isBlockedByModal,
@@ -175,11 +177,29 @@
 		Math.min(Math.max(current, 0), Math.max(viewable.length - 1, 0))
 	);
 	let img = $derived(viewable[shownIndex]);
-	let src = $derived(img ? attachmentDownloadUrl(openWsSlug, img.id) : '');
 	// The accessible name: the image's own alt where there is one, else a
 	// generic label. Never empty — an unnamed `role="dialog"` is announced as
 	// nothing at all.
 	let dialogLabel = $derived(img?.alt || 'Attachment viewer');
+
+	// ── Image loading (PLAN-2392 phase 3b / TASK-2459) ────────────────────────
+	//
+	// The DR-5b thumb-then-original policy. The loader owns which URL the <img>
+	// shows (`displaySrc`, the canonical attachment URL) and the load phase; this
+	// component drives it from the shown image and reports each decode / error.
+	const loader = createViewerImageLoader();
+	// The id AND the pixel dimensions, as ONE stable primitive string — never the
+	// `img` object. A prop re-emit with the same VALUES (a re-derived `viewable`
+	// array) must not re-fire the load effect, but a genuine dimension change (an
+	// async metadata fill that flips `unknown` → a sized class) MUST: the DR-5b
+	// policy is a function of the pixels, so a stale dimension is a stale policy.
+	// A shrink to no image collapses to `'::'`, still a change → the effect fires
+	// and releases the load.
+	let loadKey = $derived(`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}`);
+	// Captured NON-reactively at load time (see the effect): a breakpoint flip
+	// alone must not reload — desktop→mobile must not abort an in-flight original,
+	// mobile→desktop must not retroactively auto-fetch (TASK-2459).
+	let platform = $derived<Platform>(viewport.isMobile ? 'mobile' : 'desktop');
 
 	// The portaled root. `$state` so the effect below re-runs once `bind:this`
 	// lands; read-only inside every effect, so nothing here can self-invalidate
@@ -379,11 +399,13 @@
 		// leaves `maybeDrag` latched and the next move engages a phantom drag from a
 		// dead baseline. (We already returned above if a drag is live.)
 		maybeDrag = false;
-		// A press ON a control (close / nav) is that control's click, never a pan:
-		// arming here would let a drag OFF a button still fire its click, since the
-		// buttons' own handlers don't consult `suppressClick` (the house pattern in
-		// ItemGraph excludes its interactive overlays the same way).
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav')) return;
+		// A press ON a control (close / nav / the DR-10 retry) is that control's
+		// click, never a pan: arming here would let a drag OFF a button still fire
+		// its click, since the buttons' own handlers don't consult `suppressClick`
+		// (the house pattern in ItemGraph excludes its interactive overlays the same
+		// way). Retry sits over the (broken) stage in the error state, so it needs
+		// the same exclusion as the always-present chrome.
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry')) return;
 		const el = rootEl;
 		if (!el || !pointerGatesOpen(el)) return; // START gate
 		maybeDrag = true;
@@ -499,9 +521,10 @@
 		// gesture is either a drag or a double-click, never both. Same swallow the
 		// backdrop click consults.
 		if (suppressClick) return;
-		// A double-click ON a control (close / nav) is that control's, not a zoom
-		// toggle — without this, double-clicking Next navigates twice AND toggles.
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav')) return;
+		// A double-click ON a control (close / nav / retry) is that control's, not a
+		// zoom toggle — without this, double-clicking Next navigates twice AND
+		// toggles, or a double-click on Retry toggles zoom on the broken stage.
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry')) return;
 		const el = rootEl;
 		if (!el || !pointerGatesOpen(el)) return;
 		const g = readGeometry();
@@ -652,6 +675,20 @@
 		// `zoom`-writing effect would self-invalidate it (CONVE-1688).
 	});
 
+	// (Re)load whenever the SHOWN image changes — nav, a dimension fill, or a set
+	// shrink. This is also the ABORT + release point: `loader.load` drops the URL
+	// the user left, and it re-runs on the set shrinking to empty (`loadKey` →
+	// `'::'`) so a closed / emptied viewer holds no in-flight request. Reads only
+	// `loadKey` (tracked, a stable string so a same-values prop re-emit doesn't
+	// re-fire); `img`, `openWsSlug` and `platform` are captured non-reactively so a
+	// breakpoint flip alone can't reload (TASK-2459).
+	$effect(() => {
+		void loadKey;
+		untrack(() => loader.load(img, openWsSlug, platform));
+	});
+	// Drop the load on unmount (close) — one teardown, no dependencies.
+	$effect(() => () => loader.dispose());
+
 	// Re-clamp on stage resize. `maxScale` is geometry-dependent and geometry is
 	// viewport-dependent, so ENLARGING the window lowers the ceiling and can
 	// strand a previously-valid scale above it. `clampState` re-clamps SCALE
@@ -702,9 +739,15 @@
 	// element state and mutates focus — a DOM side effect, not $state — so it
 	// cannot self-invalidate its own flush (CONVE-1688).
 	$effect(() => {
-		// Tracked so the effect re-runs when a focus-holding control mounts or
-		// unmounts; a true→false flip is the shrink that removes the focused button.
+		// Tracked so the effect re-runs whenever a focus-holding control mounts or
+		// unmounts: the nav buttons (`hasMultiple`), the DR-10 retry button
+		// (`phase === 'error'`), and the image itself (`img`) — a set shrinking to
+		// empty removes the image, and an errored image navigated away removes the
+		// retry button, either of which could otherwise strand focus on <body>
+		// (TASK-2459).
 		void hasMultiple;
+		void (loader.phase === 'error');
+		void img;
 		const el = rootEl;
 		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
 		handoffFocus(el);
@@ -874,17 +917,79 @@
 		sit ABOVE the stage (their own `z-index`), never inside it.
 	-->
 	<div class="lightbox-stage" bind:this={stageEl}>
-		{#if img}
-			<!-- draggable=false: a native image drag would otherwise pre-empt the pan. -->
-			<img
-				bind:this={imgEl}
-				class="lightbox-image"
-				class:panning={dragging}
-				{src}
-				alt={img.alt || 'Attachment'}
-				draggable="false"
-				style="transform: translate({zoom.x}px, {zoom.y}px) scale({zoom.scale});"
-			/>
+		{#if img && loader.displaySrc}
+			<!--
+				KEYED ON THE LOAD TOKEN (TASK-2459). The <img> would otherwise persist
+				across navigation, and a bitmap that finished decoding LATE would fire
+				`load` reading the NEW image's src — labelling A's fallback decode as B
+				and suppressing B's upgrade (the no-`{#key}` switch-safety class). A
+				fresh element per REQUEST tears the stale element's listener down. The
+				token changes on load / retry but NOT on the thumb→original upgrade, so
+				the upgrade reuses the SAME element (no flash) while a retry — whose URL
+				is usually unchanged — still re-mounts and re-requests. The decode is
+				read from the EVENT's own target, and the loader fences on the decoded
+				src too, belt and braces.
+			-->
+			{#key loader.loadToken}
+				<!-- draggable=false: a native image drag would otherwise pre-empt the pan. -->
+				<!--
+					`data-gen` is the generation this element was mounted under, read back
+					in the handlers via `dataset.gen` — the SAME frozen-DOM-attribute
+					snapshot the src fence uses (`getAttribute('src')`). A DOM attribute on
+					a DETACHED element is not updated, so it is a true per-element snapshot;
+					a plain `{@const}` would compile to a lazy `$derived` and re-read the
+					CURRENT `loadToken` when a late event fires, defeating the fence in an
+					A→B→A navigation (the third A reuses A's exact URL, so only the
+					generation tells the detached first element apart). The `{#key}` gives a
+					fresh element per load / retry; the thumb→original upgrade reuses the
+					SAME element (token unchanged), so `data-gen` is stable across it.
+				-->
+				<img
+					bind:this={imgEl}
+					class="lightbox-image"
+					class:panning={dragging}
+					src={loader.displaySrc}
+					data-gen={loader.loadToken}
+					alt={img.alt || 'Attachment'}
+					draggable="false"
+					onload={(e) => {
+						const el = e.currentTarget as HTMLImageElement;
+						loader.decoded(el.naturalWidth, el.naturalHeight, el.getAttribute('src') ?? '', Number(el.dataset.gen));
+					}}
+					onerror={(e) => {
+						const el = e.currentTarget as HTMLImageElement;
+						loader.errored(el.getAttribute('src') ?? '', Number(el.dataset.gen));
+					}}
+					style="transform: translate({zoom.x}px, {zoom.y}px) scale({zoom.scale});"
+				/>
+			{/key}
+		{/if}
+
+		{#if img && loader.phase === 'loading'}
+			<!-- pointer-events:none so it never intercepts a pan / dblclick over the
+			     stage; the spinner is decoration over the (loading) image. -->
+			<div class="lightbox-status lightbox-loading" role="status" aria-label="Loading image">
+				<span class="lightbox-spinner" aria-hidden="true"></span>
+			</div>
+		{/if}
+
+		{#if img && loader.phase === 'error'}
+			<div class="lightbox-status lightbox-error" role="alert">
+				<p class="lightbox-error-text">This image couldn't be loaded.</p>
+				<!-- pointer-events:auto EXPLICITLY: the stage turns pointer events off,
+				     and this control must be clickable. On a successful retry it
+				     disappears, so it hands focus off first (TASK-2456). -->
+				<button
+					class="lightbox-retry"
+					type="button"
+					onclick={() => {
+						handoffFocus(rootEl!, rootEl?.querySelector('.lightbox-retry') ?? null);
+						loader.retry();
+					}}
+				>
+					Retry
+				</button>
+			</div>
 		{/if}
 	</div>
 
@@ -988,6 +1093,74 @@
 		.lightbox-image {
 			transition: none;
 		}
+	}
+
+	/* Loading spinner + error, centred over the stage (TASK-2459). */
+	.lightbox-status {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-3);
+		z-index: 1;
+	}
+
+	.lightbox-loading {
+		/* Never intercept a pan / double-click over the stage. */
+		pointer-events: none;
+	}
+
+	.lightbox-spinner {
+		width: 42px;
+		height: 42px;
+		border: 3px solid rgba(255, 255, 255, 0.25);
+		border-top-color: rgba(255, 255, 255, 0.9);
+		border-radius: 50%;
+		animation: lightbox-spin 0.8s linear infinite;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		/* Slowed, not stopped — it must still read as "in progress". */
+		.lightbox-spinner {
+			animation-duration: 2.4s;
+		}
+	}
+
+	@keyframes lightbox-spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	.lightbox-error {
+		/* The layer is inert; the button re-enables itself below. */
+		pointer-events: none;
+		color: #fff;
+		text-align: center;
+	}
+
+	.lightbox-error-text {
+		margin: 0;
+		font-size: 0.95rem;
+	}
+
+	.lightbox-retry {
+		/* EXPLICIT: the stage sets `pointer-events: none`, so the one interactive
+		   control in this layer has to turn them back on (TASK-2459). */
+		pointer-events: auto;
+		padding: var(--space-2) var(--space-4);
+		background: rgba(0, 0, 0, 0.5);
+		border: 1px solid rgba(255, 255, 255, 0.3);
+		border-radius: var(--radius);
+		color: #fff;
+		font-size: 0.9rem;
+		cursor: pointer;
+	}
+
+	.lightbox-retry:hover {
+		background: rgba(0, 0, 0, 0.75);
 	}
 
 	.lightbox-close {

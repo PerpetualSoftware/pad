@@ -1499,6 +1499,8 @@ describe('ItemAttachmentStrip', () => {
 		filename: `${id}.png`,
 		mime_type: 'image/png',
 		size_bytes: 4096,
+		width: null,
+		height: null,
 	});
 
 	it('shows a dropped file immediately, without a refetch', async () => {

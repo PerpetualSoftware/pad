@@ -84,12 +84,21 @@ export interface UploadedAttachment {
 	filename: string;
 	mime_type: string;
 	size_bytes: number;
+	/**
+	 * Pixel dimensions, when the server returned them (nullable — a non-image, or
+	 * an image whose dimensions it couldn't read). Carried so a freshly uploaded
+	 * image opened in the viewer can classify for the DR-5b loading policy
+	 * (TASK-2459) instead of falling to `unknown` and pulling the original
+	 * outright; the upload response has them, this narrowing used to DROP them.
+	 */
+	width: number | null;
+	height: number | null;
 }
 
 /**
  * Narrow an upload response to what subscribers need. Both upload paths (body
- * editor, comment composer) were hand-mapping the same four fields, which is
- * how the two drift apart.
+ * editor, comment composer) were hand-mapping the same fields, which is how the
+ * two drift apart.
  */
 export function toUploadedAttachment(result: AttachmentUploadResult): UploadedAttachment {
 	return {
@@ -97,6 +106,8 @@ export function toUploadedAttachment(result: AttachmentUploadResult): UploadedAt
 		filename: result.filename,
 		mime_type: result.mime,
 		size_bytes: result.size,
+		width: result.width ?? null,
+		height: result.height ?? null,
 	};
 }
 
@@ -282,8 +293,9 @@ export interface LightboxImage {
 	 * Metadata the viewer may caption with, all NULLABLE for the same reason
 	 * the panel's three are: an emitter knows only what its own surface gives
 	 * it, and an inline image's HEAD probe may not have completed or may have
-	 * failed, while an upload event carries only four fields
-	 * (`UploadedAttachment`).
+	 * failed, while an upload event carries only the `UploadedAttachment` fields
+	 * (which now include the pixel dimensions, threaded for the DR-5b policy —
+	 * TASK-2459).
 	 *
 	 * `mime_type` is not decoration: it is what lets a CONSUMER re-state the
 	 * DR-16 open gate over a whole set rather than trusting the one element
