@@ -114,6 +114,10 @@ interface HostProps {
 	itemId: string | null;
 	hostToken: string;
 	resourceGen: number;
+	// Viewer-toolbar context forwarded to Lightbox (TASK-2474).
+	mutationsEnabled?: boolean;
+	getItemContent?: () => string | null;
+	getLiveContent?: () => string | null;
 }
 
 // Two reactive props objects, declared at the top level because `$state(...)`
@@ -458,4 +462,36 @@ describe('AttachmentViewerHost', () => {
 	// version of this test written that way passed with the guard deleted.
 	// It lives in `AttachmentViewerHostClose.svelte.test.ts`, against a stubbed
 	// Lightbox that hands the callback back.
+
+	// ── Toolbar forwarding (TASK-2474) ───────────────────────────────────────
+	// The BUS/HOST origin of the three that mount a Lightbox. These prove the
+	// host threads its `mutationsEnabled` through to the viewer's toolbar.
+	function toolbarLabels(): string[] {
+		return Array.from(document.querySelectorAll<HTMLElement>('.lightbox-toolbar .lightbox-tool')).map(
+			(t) => t.getAttribute('aria-label') ?? ''
+		);
+	}
+
+	it('renders the viewer toolbar with Delete when the host grants mutations', () => {
+		mountHost({ ...propsA, mutationsEnabled: true });
+		notifyViewerOpen(openEvent());
+		flushSync();
+
+		expect(document.querySelector('.lightbox-toolbar')).not.toBeNull();
+		expect(toolbarLabels()).toContain('Delete');
+		expect(toolbarLabels()).toContain('Download');
+	});
+
+	it('renders a read-only toolbar (no Delete) when the host withholds mutations', () => {
+		// A peeked pane's host passes mutationsEnabled=false — the toolbar still
+		// renders its read-only actions, but Delete is absent, not merely disabled.
+		mountHost({ ...propsA, mutationsEnabled: false });
+		notifyViewerOpen(openEvent());
+		flushSync();
+
+		expect(document.querySelector('.lightbox-toolbar')).not.toBeNull();
+		const labels = toolbarLabels();
+		expect(labels).toContain('Open in new tab');
+		expect(labels).not.toContain('Delete');
+	});
 });

@@ -35,7 +35,10 @@
 		VIEWER_ROOT_CLASS,
 	} from '$lib/a11y/viewerBackdrop';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
-	import { canOpenInViewer } from '$lib/attachments/display';
+	// The renderer registry (TASK-2476): 'raster-image' for the DR-16 allowlist,
+	// null → the no-bytes icon fallback. This is the single gate that decides the
+	// stage's ARM; the old `canOpenInViewer` last-mile FILTER is gone.
+	import { getSurfaceRenderer, type SurfaceRendererId } from '$lib/attachments/surfaceRenderers';
 	import {
 		reset as resetZoom,
 		clampState,
@@ -69,7 +72,31 @@
 	 * and a local `interface … extends` would be a second declaration, which is
 	 * the drift this consolidation removes.
 	 */
-	import type { LightboxImage } from '$lib/attachments/events';
+	import {
+		registerAttachmentDeletionListener,
+		type LightboxImage,
+	} from '$lib/attachments/events';
+	// ── Toolbar (PLAN-2392 phase 3c-i / TASK-2474) ───────────────────────────
+	// The viewer's copy of the shared attachment-action list (DR-5) — the SAME
+	// descriptors the options panel renders, drawn here as an inline toolbar over
+	// the stage. Delete confirmation reuses the panel's B module (TASK-2473): the
+	// module owns the confirmation GATE, the descriptor owns the delete.
+	import {
+		attachmentActionsFor,
+		type AttachmentActionContext,
+		type ButtonAttachmentAction,
+	} from '$lib/attachments/actions';
+	import { createDeleteConfirm } from '$lib/attachments/surfaceDeleteConfirm.svelte';
+	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
+	import AttachmentDeleteConfirm from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
+	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	// ── Metadata header (PLAN-2392 phase 3c-i / TASK-2475) ───────────────────
+	// Filename / type / size for the shown image, seeded from the LightboxImage
+	// and completed by the SAME B metadata module the panel uses (TASK-2473): it
+	// fetches only what the seed left null (DR-2 — open now, fill after).
+	import { describeAttachmentType, formatBytes, iconForAttachment } from '$lib/attachments/display';
+	import { createSurfaceMetadata } from '$lib/attachments/surfaceMetadata.svelte';
 
 	interface Props {
 		images: LightboxImage[];
@@ -84,9 +111,36 @@
 		 * at open (see below), which is the same element in every current path.
 		 */
 		invoker?: HTMLElement | null;
+		/**
+		 * Whether the viewer may offer MUTATING actions — Delete (TASK-2474). The
+		 * host's answer (`canEdit && !peeking`), threaded identically at every hop
+		 * (host / strip / timeline). DEFAULT false: an omitted prop degrades to a
+		 * read-only toolbar (open / download / copy-link), never a wrongly-gated
+		 * one. The timeline's OWN `canEdit` (which ignores peeking) is never the
+		 * source — a peeked master must show no Delete.
+		 */
+		mutationsEnabled?: boolean;
+		/**
+		 * The persisted item body + the editor's LIVE markdown, as getters — the
+		 * panel's pattern (`AttachmentDetailsPanel.svelte`). Used ONLY to warn when
+		 * a delete would break a live reference in this body (DR-5); read at
+		 * confirm time so the live getter sees unflushed edits. Absent → the
+		 * warning falls to its hedged arm.
+		 */
+		getItemContent?: () => string | null;
+		getLiveContent?: () => string | null;
 	}
 
-	let { images, index = 0, wsSlug, onClose, invoker = null }: Props = $props();
+	let {
+		images,
+		index = 0,
+		wsSlug,
+		onClose,
+		invoker = null,
+		mutationsEnabled = false,
+		getItemContent,
+		getLiveContent,
+	}: Props = $props();
 
 	/**
 	 * THE LAST-MILE GATE (PLAN-2392 DR-16 / TASK-2431).
@@ -104,7 +158,7 @@
 	 *    not a hypothesis this component can rule out.
 	 *  - a producer added later inherits the rule instead of having to know it.
 	 *
-	 * IT FAILS CLOSED. Only a POSITIVELY allowlisted `mime_type` is viewable; a
+	 * IT FAILS CLOSED. Only a POSITIVELY allowlisted `mime_type` is navigable; a
 	 * null / undefined / unresolved one is not. "Not yet known" is not evidence
 	 * that a file is a PNG, and this is the last thing standing between a set
 	 * and a rendered image — the place where the benefit of the doubt is worth
@@ -127,22 +181,73 @@
 	 * replaced or when a record's MIME resolves to something unsafe after the
 	 * viewer opened, so a stale capture cannot outlive its own truth.
 	 */
-	let viewable = $derived(images.filter((im) => canOpenInViewer(im.mime_type)));
+	// A blank/whitespace-only string is not a value — it is the ABSENCE of one, and
+	// the display chains (`filename ?? alt ?? …`) only skip null/undefined, so an
+	// empty string would win over the fallback and render nothing (TASK-2475).
+	// Normalized to a trimmed value or null, once, at ingestion below.
+	function blankToNull(s: string | null | undefined): string | null {
+		const t = (s ?? '').trim();
+		return t.length > 0 ? t : null;
+	}
 
-	// Seeded once at mount — the host remounts (null → set) on each open, so
-	// no prop-sync effect is needed. untrack makes the initial-value capture
-	// explicit.
-	//
-	// Resolved through the ID rather than carried across as a number: filtering
-	// reindexes everything after a refusal, so the requested POSITION can name a
-	// different image (or none) in the filtered set. Where the requested image
-	// is the one refused, there is nothing to land on and the first viewable
-	// image is what opens.
-	let current = $state(
+	// THE OPEN GATE, CAPTURED (PLAN-2392 DR-16 / TASK-2476). Entries whose RESOLVED
+	// MIME is unsafe in the INITIAL set — the 3a open gate refuses them outright and
+	// they never navigate, exactly as before, through 3c-i (3c-ii adds the file
+	// route). Snapshotted ONCE at mount, because "unsafe at open" and "unsafe
+	// mid-view" are DIFFERENT cells: an entry that FLIPS to unsafe while the viewer
+	// is open — or is added unsafe — is kept and drawn as the no-bytes fallback,
+	// where dropping it used to be the only option. The distinction can only be an
+	// open-time snapshot; a live filter cannot tell the two apart.
+	const unsafeAtOpenIds = untrack(
+		() =>
+			new Set(
+				images
+					.filter((im) => im.mime_type != null && getSurfaceRenderer(im.mime_type) === null)
+					.map((im) => im.id)
+			)
+	);
+
+	// THE NAVIGABLE SET — what ←/→ page through and the counter counts. It now KEEPS
+	// unsafe-resolved entries that appeared or flipped MID-VIEW (drawn as the
+	// no-bytes fallback arm, see `shownRenderer`), and still REFUSES:
+	//   - unresolved (null) MIME — refused-from-navigation, exactly as today; and
+	//   - unsafe entries present AT OPEN — the 3a gate, held via `unsafeAtOpenIds`.
+	// Keeping an unsafe entry is safe because its arm mounts NO bytes — the gate
+	// that used to drop it now only decides the ARM. INGESTION (TASK-2475) also
+	// normalizes each row's blank filename to null here so the display-name chain
+	// falls through to `alt`; identity is preserved for an already-clean row so the
+	// downstream fences that key on `img.id` are unaffected.
+	let navigable = $derived(
+		images
+			.filter((im) => im.mime_type != null && !unsafeAtOpenIds.has(im.id))
+			.map((im) => {
+				const clean = blankToNull(im.filename);
+				return clean === im.filename ? im : { ...im, filename: clean };
+			})
+	);
+
+	// DELETION TOMBSTONES (PLAN-2392 DR-5c / TASK-2477). Ids the deletion bus has
+	// announced gone while this viewer is open — the SURVIVING set is `navigable`
+	// minus these. Fresh per instance and never reset: every producer keys the
+	// mount, so a reopen is a new component with an empty set (no cross-open
+	// leakage), and a delete is authoritative for the life of the viewer that saw
+	// it. A `Set` reassigned (not mutated) on each add so the `survivors` derived
+	// re-runs.
+	let tombstones = $state<Set<string>>(new Set());
+
+	// THE SHOWN IMAGE, TRACKED BY ID (TASK-2477). The index is DERIVED from this,
+	// not the source of truth — so deleting an EARLIER image keeps the SAME image
+	// on screen (identity, not a position that now names a different member), and
+	// deleting the shown one advances by recomputing from the new survivor list.
+	// Seeded once at mount from the requested index, resolved through the id: the
+	// filter reindexes everything after a refusal, so the requested POSITION can
+	// name a different image (or none). Where the requested image is refused, the
+	// first navigable image opens.
+	let shownId = $state<string | null>(
 		untrack(() => {
 			const wanted = images[Math.min(Math.max(index, 0), Math.max(images.length - 1, 0))];
-			const at = wanted ? viewable.findIndex((im) => im.id === wanted.id) : -1;
-			return at < 0 ? 0 : at;
+			const at = wanted ? navigable.find((im) => im.id === wanted.id) : undefined;
+			return (at ?? navigable[0])?.id ?? null;
 		})
 	);
 
@@ -167,24 +272,268 @@
 		return active && active !== document.body ? (active as HTMLElement) : null;
 	});
 
-	// EVERYTHING PAST THIS POINT READS `viewable`, NEVER `images` — the nav
-	// wrap-around, the counter and the rendered `<img>` alike. A single read of
-	// the unfiltered prop below would reopen the hole this filter closes.
-	let hasMultiple = $derived(viewable.length > 1);
-	// The position actually shown, clamped. `current` is what the user's ←/→
-	// moved, but the set can SHRINK underneath it — a record whose MIME resolves
-	// to something unsafe after open drops out of `viewable`, and the array can
-	// be replaced outright. Clamping in a derived (rather than writing `current`
-	// from an effect, which would be an effect writing state it reads) keeps the
+	// THE SURVIVING SET — `navigable` minus the tombstones (TASK-2477). EVERYTHING
+	// PAST THIS POINT READS `survivors`, NEVER `images` or even `navigable`: the nav
+	// wrap-around, the counter and the rendered `<img>` alike. A read of the
+	// unfiltered prop would reopen the DR-16 hole `navigable` closes; a read of
+	// `navigable` (pre-tombstone) would page onto a deleted image.
+	let survivors = $derived(navigable.filter((im) => !tombstones.has(im.id)));
+	let hasMultiple = $derived(survivors.length > 1);
+	// The position actually shown, DERIVED from `shownId`. Falls to 0 when the id
+	// dangles — a shown image removed straight from the `images` prop (a producer's
+	// set change, not the deletion bus, which advances `shownId` itself). Deriving
+	// the index (rather than writing it from an effect that reads it) keeps the
 	// viewer on a real member instead of blanking or showing `undefined`.
 	let shownIndex = $derived(
-		Math.min(Math.max(current, 0), Math.max(viewable.length - 1, 0))
+		Math.max(
+			survivors.findIndex((im) => im.id === shownId),
+			0
+		)
 	);
-	let img = $derived(viewable[shownIndex]);
+	let img = $derived(survivors[shownIndex]);
+	// THE STAGE ARM (TASK-2476). The single decision of what the stage draws for
+	// the shown entry: `'raster-image'` → the `<img>`; `null` → the no-bytes icon
+	// fallback. A navigable entry always has a resolved MIME (unresolved is refused
+	// above), so this is `'raster-image'` for safe and `null` for unsafe-mid-view.
+	let shownRenderer = $derived<SurfaceRendererId | null>(
+		img ? getSurfaceRenderer(img.mime_type) : null
+	);
 	// The accessible name: the image's own alt where there is one, else a
 	// generic label. Never empty — an unnamed `role="dialog"` is announced as
 	// nothing at all.
 	let dialogLabel = $derived(img?.alt || 'Attachment viewer');
+
+	// ── Metadata header (PLAN-2392 phase 3c-i / TASK-2475) ────────────────────
+	//
+	// Filename / type / size for the shown image. The B module (TASK-2473) seeds
+	// from the LightboxImage and completes only what is null — but a viewer image
+	// has always cleared the MIME gate, so MIME is known and the module fetches
+	// iff `size_bytes` is null. `filename` is never fetched (the HEAD does not
+	// return one), so the name comes straight off the seed; only type and size
+	// read through the module's merged `fields`. `open`/`parentArchived` are
+	// constant here (the viewer is always open; it has no archived-parent probe).
+	const headerMeta = createSurfaceMetadata(() => ({
+		ws: openWsSlug,
+		attachmentId: img?.id ?? '',
+		seed: {
+			filename: img?.filename ?? null,
+			mime_type: img?.mime_type ?? null,
+			size_bytes: img?.size_bytes ?? null,
+		},
+		open: !!img,
+		parentArchived: false,
+		revalidateToken: 0,
+	}));
+	// Type only when the MIME is known — no "unknown type" noise (DR-2). Size only
+	// when it is a real number — `formatBytes` is never fed null, and absent beats
+	// "0 B" (the chip call-site precedent).
+	let headerType = $derived(
+		headerMeta.fields.mime_type
+			? describeAttachmentType(headerMeta.fields.mime_type, headerMeta.fields.filename)
+			: null
+	);
+	let headerSize = $derived(
+		typeof headerMeta.fields.size_bytes === 'number' ? formatBytes(headerMeta.fields.size_bytes) : null
+	);
+	let headerDetail = $derived([headerType, headerSize].filter(Boolean).join(' · '));
+	// A non-404 fetch failure: show the DR-10 inline retry BESIDE what is already
+	// known (the name + type never blank out), and Retry revalidates through the
+	// module rather than replaying the cached failure. The module's other authoritative
+	// phase — `missing` (404) — is NOT a header state: it means the shown file is
+	// gone, so it is routed through the deletion path instead (see the effect below).
+	let headerTransient = $derived(headerMeta.phase === 'transient');
+	// The fallback arm's large icon (TASK-2476): the same family glyph the strip /
+	// panel show for this type, from the shared registry.
+	let fallbackIconId = $derived(iconForAttachment(img?.mime_type ?? null, img?.filename ?? null));
+
+	// ── Action toolbar (PLAN-2392 phase 3c-i / TASK-2474) ─────────────────────
+	//
+	// The SAME `attachmentActionsFor` list the options panel renders (DR-5), drawn
+	// as an inline toolbar over the stage. The viewer only ever holds IMAGES (the
+	// last-mile MIME gate above), so Open always applies; Download and Copy-link
+	// always apply; Delete applies only when the host granted `mutationsEnabled`.
+	const uid = $props.id();
+	const deletePromptId = `lightbox-delete-note-${uid}`;
+	// THE DISPLAY-NAME CHAIN (TASK-2475): filename ?? alt ?? 'Attachment'. `filename`
+	// is already blank-normalized at ingestion, so a nameless image falls through to
+	// `alt` (also blank-normalized) and then the generic label — never an empty
+	// string. Shared by the metadata header, the download attribute and the delete
+	// prompt, so all three name the file identically.
+	let displayName = $derived(img?.filename ?? blankToNull(img?.alt) ?? 'Attachment');
+	// Inline, transient error from a button action (a failed clipboard write). Sits
+	// in the toolbar beside the controls, never a blocking dialog.
+	let toolbarError = $state<string | null>(null);
+	let toolbarBusy = $state(false);
+
+	/**
+	 * Ids referenced by the host's body — the delete-warning check (DR-5). Read at
+	 * confirm time (not derived) so the live getter sees unflushed editor edits.
+	 * Both getters are optional: a producer that threads neither leaves the warning
+	 * on its hedged arm, which is the honest default.
+	 */
+	function toolbarReferencedHere(): boolean {
+		const id = img?.id;
+		if (!id) return false;
+		let live: string | null = null;
+		try {
+			live = getLiveContent?.() ?? null;
+		} catch {
+			live = null;
+		}
+		let persisted: string | null = null;
+		try {
+			persisted = getItemContent?.() ?? null;
+		} catch {
+			persisted = null;
+		}
+		return new Set(attachmentRefsIn(live ?? persisted ?? '')).has(id);
+	}
+
+	// The delete-confirmation machine (TASK-2473's B module). Owns the drill-down
+	// STATE — pending / warning / permission-withdrawn abandon; the descriptor owns
+	// the delete. `mutationsEnabled` is read live so a pane going peeked mid-confirm
+	// abandons it.
+	const deleteConfirm = createDeleteConfirm({
+		mutationsEnabled: () => mutationsEnabled,
+		isReferenced: () => toolbarReferencedHere(),
+		displayName: () => displayName,
+	});
+	// Teardown latch: an action's async continuation may land AFTER the viewer was
+	// unmounted (a keyed producer tore it down), and `onClose` is a stale
+	// producer callback by then — calling it would dismiss whatever viewer the
+	// producer has open BY NOW. Plain `let`, read only in the continuation.
+	let destroyed = false;
+	// Drop any pending confirmation on unmount so the descriptor's awaited
+	// `confirmDelete()` promise settles rather than dangling (the panel's teardown),
+	// and latch `destroyed` so no post-unmount continuation calls `onClose`. The
+	// metadata module's fences are invalidated here too so a late HEAD can't write
+	// into a torn-down header (TASK-2475).
+	$effect(() => () => {
+		destroyed = true;
+		deleteConfirm.dispose();
+		headerMeta.dispose();
+	});
+
+	/**
+	 * The action context. GETTERS, not a snapshot: the delete descriptor re-reads
+	 * `mutationsEnabled` and the identity on the far side of the confirmation, and
+	 * a frozen object would defeat those re-checks. `workspaceSlug` comes off the
+	 * captured `openWsSlug` for the same reason every other URL here does — a live
+	 * read could name the wrong workspace after a pane switch.
+	 */
+	const toolbarCtx: AttachmentActionContext = {
+		get workspaceSlug() {
+			return openWsSlug;
+		},
+		get attachment() {
+			return {
+				id: img?.id ?? '',
+				filename: displayName,
+				mime_type: img?.mime_type ?? null,
+			};
+		},
+		get mutationsEnabled() {
+			return mutationsEnabled;
+		},
+		confirmDelete: () => deleteConfirm.request(),
+		// NO `onDeleted` (TASK-2477): the panel uses it to close on delete, but the
+		// viewer reconciles a delete through the DELETION BUS instead — the
+		// descriptor's `announceAttachmentDeleted` fires `handleDeletion`, which
+		// tombstones the id and advances (or closes when nothing survives). That is
+		// the SAME path an external delete takes, so an own-toolbar delete and a
+		// strip/other-tab delete are indistinguishable to the survivor logic. The
+		// C1 close-on-delete latch is retired: the viewer had no survivor logic then,
+		// so closing was the only sane outcome; now it advances when survivors remain.
+		onCopied: () => toastStore.show('Link copied to clipboard', 'success'),
+	};
+
+	let toolbarActions = $derived(attachmentActionsFor(toolbarCtx));
+
+	async function runToolbarAction(action: ButtonAttachmentAction) {
+		if (!action.enabled(toolbarCtx)) return;
+		// Fence the whole action against the shown identity (the SAME view fence the
+		// metadata machine invalidates on a subject change). A confirmed delete of the
+		// shown image advances `shownId` to a survivor synchronously inside `run`'s
+		// announce, and a metadata `missing` for the shown image can advance it while a
+		// SLOW delete of that same image is still awaiting — either way the view has
+		// moved on, and this continuation must NOT write `toolbarBusy` / `toolbarError`
+		// onto the survivor now on screen. The subject-change reset (the id-keyed effect)
+		// clears the busy/error state for the new image; a stale continuation just
+		// bows out. A same-image failure (delete rejected, no advance) is NOT stale, so
+		// its error still shows against the image it belongs to.
+		const token = headerMeta.viewFence.begin();
+		toolbarError = null;
+		toolbarBusy = true;
+		try {
+			await action.run(toolbarCtx);
+			// A confirmed delete is reconciled through the deletion bus (`handleDeletion`
+			// runs synchronously inside `run`'s announce) — advance or close — so nothing
+			// to do here. Copy-link and the rest simply finish. The guards cover a
+			// continuation landing after the bus close tore the viewer down (`destroyed`)
+			// or after the view advanced off this image (`token.stale()`).
+			if (destroyed || token.stale()) return;
+		} catch (err) {
+			if (destroyed || token.stale()) return;
+			toolbarError =
+				err instanceof Error ? err.message : `Couldn't ${action.label.toLowerCase()}`;
+		} finally {
+			// Only the still-current continuation clears the busy flag; a stale one leaves
+			// it for the subject-change reset to zero, so it can't un-busy the survivor
+			// mid-action.
+			if (!destroyed && !token.stale()) toolbarBusy = false;
+		}
+	}
+
+	// The delete drill-down's rows, as a proper ARIA menu (TASK-2474). The confirm
+	// renders `role="menuitem"` buttons; a `role="menu"` parent is required, and a
+	// menu manages focus by ROVING TABINDEX — exactly ONE row is in the tab order
+	// (tabindex 0), the rest are -1, Up/Down move between them, and Tab moves OUT to
+	// the viewer chrome rather than cycling the rows. The Lightbox hosts the shared
+	// confirm inline (not inside a `Menu`), so it drives that itself.
+	function confirmMenuItems(): HTMLElement[] {
+		const el = rootEl;
+		if (!el) return [];
+		return Array.from(
+			el.querySelectorAll<HTMLElement>('.lightbox-delete-confirm [role="menuitem"]')
+		);
+	}
+	// Make `active` the single tab stop; every other row leaves the tab order. Tab
+	// then exits the menu (the trap's `paneFocusables` skips the -1 rows), while
+	// the active row can still be Tabbed BACK into — the ARIA menu contract.
+	function applyRoving(active: HTMLElement | null) {
+		const items = confirmMenuItems();
+		if (items.length === 0) return;
+		const target = active && items.includes(active) ? active : items[0];
+		for (const it of items) it.tabIndex = it === target ? 0 : -1;
+	}
+	function moveConfirmFocus(delta: number) {
+		const items = confirmMenuItems();
+		if (items.length === 0) return;
+		const at = items.indexOf(document.activeElement as HTMLElement);
+		const next = at < 0 ? 0 : (at + delta + items.length) % items.length;
+		const target = items[next];
+		applyRoving(target);
+		target?.focus({ preventScroll: true });
+	}
+
+	// When the drill-down OPENS, set the roving tab stop and move focus to its first
+	// row (Cancel), as the panel's `Menu` does — otherwise focus is stranded on the
+	// now-unmounted Delete button and the generic handoff would land it on Close,
+	// not Cancel. Plain sentinel so this fires only on the false→true edge, and
+	// reads `pending` (tracked) while writing only DOM (focus + tabindex) and the
+	// sentinel, never its own trigger.
+	let confirmWasPending = untrack(() => deleteConfirm.pending);
+	$effect(() => {
+		const pending = deleteConfirm.pending;
+		if (pending === confirmWasPending) return;
+		confirmWasPending = pending;
+		if (!pending) return;
+		untrack(() => {
+			const first = confirmMenuItems()[0] ?? null;
+			applyRoving(first);
+			first?.focus({ preventScroll: true });
+		});
+	});
 
 	// ── Image loading (PLAN-2392 phase 3b / TASK-2459) ────────────────────────
 	//
@@ -193,13 +542,18 @@
 	// component drives it from the shown image and reports each decode / error.
 	const loader = createViewerImageLoader();
 	// The id AND the pixel dimensions, as ONE stable primitive string — never the
-	// `img` object. A prop re-emit with the same VALUES (a re-derived `viewable`
+	// `img` object. A prop re-emit with the same VALUES (a re-derived `navigable`
 	// array) must not re-fire the load effect, but a genuine dimension change (an
 	// async metadata fill that flips `unknown` → a sized class) MUST: the DR-5b
 	// policy is a function of the pixels, so a stale dimension is a stale policy.
 	// A shrink to no image collapses to `'::'`, still a change → the effect fires
-	// and releases the load.
-	let loadKey = $derived(`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}`);
+	// and releases the load. THE ARM JOINS THE KEY (TASK-2476): a same-id
+	// safe→unsafe MIME flip keeps id + dims identical, so without the renderer in
+	// the key the load effect would not re-fire and the SAFE bytes would stay on
+	// screen behind the fallback arm — the no-bytes invariant depends on this.
+	let loadKey = $derived(
+		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}`
+	);
 	// Captured NON-reactively at load time (see the effect): a breakpoint flip
 	// alone must not reload — desktop→mobile must not abort an in-flight original,
 	// mobile→desktop must not retroactively auto-fetch (TASK-2459).
@@ -211,7 +565,27 @@
 	// act over the error UI with nothing decoded behind it. Zoom is then DISABLED,
 	// not merely a no-op (TASK-2460). A successful retry returns to loading/ready
 	// and re-enables it.
-	let bitmapPresent = $derived(!!img && !!loader.displaySrc && loader.phase !== 'error');
+	// ...and only on the RASTER arm (TASK-2476): the fallback arm has nothing
+	// decoded to transform, so zoom / pan / the zoom keys are disabled over it.
+	let bitmapPresent = $derived(
+		shownRenderer === 'raster-image' && !!img && !!loader.displaySrc && loader.phase !== 'error'
+	);
+
+	// RELEASE THE BYTES AT UNMOUNT (TASK-2476). Disposing the loader clears its
+	// state, but the `<img>` Svelte is about to remove keeps its `src` — and thus a
+	// possibly in-flight native request and its decoded bitmap — alive on the
+	// detached element until GC. Clearing the src in the element's own `destroy`
+	// aborts that request the instant the element leaves the tree, on EVERY unmount
+	// path: the arm flip to fallback, a nav to another image, and close. Belt to
+	// the loader's dispose; together the no-bytes invariant holds without waiting
+	// on the garbage collector.
+	function releaseImg(node: HTMLImageElement) {
+		return {
+			destroy() {
+				node.removeAttribute('src');
+			},
+		};
+	}
 	// The tap-to-load placeholder's box. Where dimensions are known it takes the
 	// image's own aspect ratio (so the affordance previews the shape that will
 	// arrive); where they are not, a neutral box (TASK-2460).
@@ -288,6 +662,11 @@
 		// measurable, so a scroll can never leak past the modal into the inert app.
 		e.preventDefault();
 		e.stopPropagation();
+		// A wheel over the TOOLBAR (or its delete drill-down) is consumed like every
+		// other wheel — the modal owns it, so the inert page can't scroll — but must
+		// NOT zoom the image behind it (TASK-2474). The same exclusion the pointerdown
+		// and double-click handlers carry, applied here too.
+		if ((e.target as Element | null)?.closest?.('.lightbox-toolbar, .lightbox-meta')) return;
 		// Consumed (the modal owns the wheel) but INERT with no decoded bitmap — the
 		// mobile deferred placeholder or the error UI, where the broken `<img>` still
 		// satisfies `readGeometry` (TASK-2461). Same guard the keys use.
@@ -410,6 +789,29 @@
 		if (wasDragging) armSuppressClear();
 	}
 
+	// The event-less twin of `abortGesture`, for a REACTIVE teardown (TASK-2476):
+	// the bitmap can vanish (the arm flips to fallback) with NO further pointer
+	// event to carry the abort — the user holds still while the prop changes. This
+	// tears the same state down and releases the capture through the root (no
+	// `currentTarget` to hand `abortGesture`), so a stale gesture can neither pan
+	// the reloaded image after an A→unsafe→A flip nor leak into the next press.
+	function cancelGesture(): void {
+		if (!maybeDrag && !dragging) return;
+		const wasDragging = dragging;
+		maybeDrag = false;
+		dragging = false;
+		gesturePointerId = null;
+		if (capturedPointerId !== null) {
+			try {
+				rootEl?.releasePointerCapture(capturedPointerId);
+			} catch {
+				// already released — ignore.
+			}
+			capturedPointerId = null;
+		}
+		if (wasDragging) armSuppressClear();
+	}
+
 	function onPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return; // primary button only
 		if (e.pointerType === 'touch') return; // touch stays native until 3d
@@ -429,7 +831,7 @@
 		// (the house pattern in ItemGraph excludes its interactive overlays the same
 		// way). Retry sits over the (broken) stage in the error state, so it needs
 		// the same exclusion as the always-present chrome.
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load')) return;
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar, .lightbox-meta')) return;
 		// No decoded bitmap to pan (the mobile `deferred` placeholder shows no
 		// `<img>`) — do NOT arm a drag, so the gesture stays fully inert instead of
 		// capturing the pointer and latching `dragging` for a pan that can never
@@ -517,6 +919,14 @@
 			abortGesture(e);
 			return;
 		}
+		// The bitmap vanished before release — the shown entry flipped to the
+		// fallback arm (or errored) while the pointer was down (TASK-2476). ABORT,
+		// don't finalise: there is nothing to pan, and finalising would leave the
+		// suppress-click machinery armed over a stage with no image.
+		if (!bitmapPresent) {
+			abortGesture(e);
+			return;
+		}
 		maybeDrag = false;
 		gesturePointerId = null;
 		if (dragging) {
@@ -560,7 +970,7 @@
 		// A double-click ON a control (close / nav / retry) is that control's, not a
 		// zoom toggle — without this, double-clicking Next navigates twice AND
 		// toggles, or a double-click on Retry toggles zoom on the broken stage.
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load')) return;
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar, .lightbox-meta')) return;
 		// Inert with no decoded bitmap (deferred placeholder / error UI) — the same
 		// guard the keys and wheel use (TASK-2461).
 		if (!bitmapPresent) return;
@@ -573,19 +983,106 @@
 		zoom = toggleFitOrActual(zoom, anchor, g);
 	}
 
-	// Stepped from `shownIndex`, not from `current`: after the set shrinks they
-	// differ, and moving from the raw value would jump relative to a position
-	// the user was never on. Both are no-ops on an empty set — reachable only
-	// through the nav controls / arrow keys, which `hasMultiple` already hides
-	// and gates, but written so the modulo can never be `% 0`.
+	// Move `shownId` (identity), stepped from the DERIVED `shownIndex` over the
+	// SURVIVORS. Writing the id, not an index, is what keeps the viewer on a real
+	// member when the set changes under it. No-ops on an empty set — reachable only
+	// through the nav controls / arrow keys, which `hasMultiple` already hides and
+	// gates, but written so the modulo can never be `% 0`.
 	function prev() {
-		if (viewable.length === 0) return;
-		current = (shownIndex - 1 + viewable.length) % viewable.length;
+		if (survivors.length === 0) return;
+		shownId = survivors[(shownIndex - 1 + survivors.length) % survivors.length].id;
 	}
 	function next() {
-		if (viewable.length === 0) return;
-		current = (shownIndex + 1) % viewable.length;
+		if (survivors.length === 0) return;
+		shownId = survivors[(shownIndex + 1) % survivors.length].id;
 	}
+
+	// THE DELETION SUBSCRIPTION (PLAN-2392 DR-5c / TASK-2477). ONE path for both
+	// origins: the toolbar's own Delete announces on the bus (the descriptor's
+	// `announceAttachmentDeleted`), and another in-page surface (the strip, a body
+	// NodeView) announces the same way — so this reacts identically to both, and the
+	// toolbar's ctx deliberately carries NO `onDeleted` (that close-on-delete is
+	// the PANEL's; the viewer advances instead). The bus is PROCESS-LOCAL, so an
+	// out-of-page delete (another tab, a job, the API) reaches this viewer as a
+	// metadata `missing` phase instead — routed through here by the effect below.
+	// An event handler, not an $effect, so writing `shownId` / `tombstones` here is
+	// not a self-write.
+	function handleDeletion(uuid: string) {
+		if (!uuid || tombstones.has(uuid)) return;
+		// Snapshot BEFORE tombstoning: the position of the deleted entry decides
+		// where "advance" lands.
+		const before = survivors;
+		const i = before.findIndex((im) => im.id === uuid);
+		// NOT in our surviving set: an unsafe-at-open / unresolved entry (D excluded
+		// it), another item's attachment on the shared bus, or an already-dangling
+		// `shownId` (a producer removed the shown image straight from the prop). Still
+		// tombstone it — a delete is authoritative — but there is nothing to advance
+		// to or close over, so DON'T touch `shownId` (its index derives to a survivor)
+		// and DON'T read `after[-1]` or close an already-empty viewer.
+		if (i < 0) {
+			tombstones = new Set(tombstones).add(uuid);
+			return;
+		}
+		const deletingShown = uuid === shownId;
+		// Authoritative and latched for this viewer's life — reassign the Set so
+		// `survivors` recomputes.
+		tombstones = new Set(tombstones).add(uuid);
+		const after = survivors; // recomputed, minus uuid
+		if (after.length === 0) {
+			// Nothing left to show — zero-left / deleting-only → close.
+			onClose();
+			return;
+		}
+		if (deletingShown) {
+			// ADVANCE to the entry that FOLLOWED the deleted one — now at index `i` in
+			// the shrunk list — wrapping to the first when the last was deleted. The
+			// zoom transform resets through the existing id-keyed effect, since the
+			// shown id changes here. Deleting an EARLIER/LATER entry leaves `shownId`
+			// untouched: identity, not index, so the SAME image stays on screen.
+			shownId = after[i < after.length ? i : 0].id;
+		}
+	}
+
+	// AN AUTHORITATIVE 404 IS A DELETION BY ANOTHER DOOR (PLAN-2392 DR-17 /
+	// 3c-i final fix). The deletion bus is PROCESS-LOCAL (`events.ts`), so a delete
+	// from another browser tab, a background job, or a direct API call never
+	// announces on it — but where the metadata machine PROBES the shown attachment,
+	// its HEAD returns the `missing` phase, which is just as authoritative (DR-17).
+	// Route that id through the SAME tombstone path so advance-or-close, the id-keyed
+	// zoom reset, focus handling, and the confirm-abandon all come for free — rather
+	// than leaving stale image bytes and live Open / Download / Copy / Delete on a
+	// file that is gone. ONLY `missing` latches; a `transient` (non-404) stays
+	// retryable and never gets here.
+	//
+	// SCOPE: the machine only HEAD-probes when a seed field is null (an inline / body
+	// image seeds no size, so it probes; a strip image seeds mime AND size and is not
+	// re-probed — `surfaceMetadata`'s "nothing to complete" short-circuit). So this
+	// catches an out-of-page delete for a probed image; a strip-opened image whose
+	// file is deleted elsewhere is reconciled only if that delete also crosses the
+	// in-page bus. A blanket reachability probe for every viewer image is deliberately
+	// NOT done here (a HEAD per open, for the uncommon cross-tab case) — 3c-ii owns
+	// any always-revalidate decision.
+	//
+	// A sentinel + `untrack` keep it CONVE-1688-safe. The ONLY tracked read is
+	// `headerMeta.phase`; `img?.id` is read untracked, so an arrow-nav that changes
+	// the shown id without changing the phase can't re-fire this, and the advance's
+	// subject change (which resets the machine's phase away from `missing`) is what
+	// re-runs it for the NEXT id. `handleDeletion` is idempotent, so a whole gone set
+	// cascades advance→advance→close, one 404 at a time, and terminates.
+	let lastMissingId: string | undefined = undefined;
+	$effect(() => {
+		const missing = headerMeta.phase === 'missing';
+		untrack(() => {
+			const missingId = missing ? img?.id : undefined;
+			if (!missingId) {
+				lastMissingId = undefined;
+				return;
+			}
+			if (missingId === lastMissingId) return;
+			lastMissingId = missingId;
+			handleDeletion(missingId);
+		});
+	});
 
 	/**
 	 * Return focus where it came from, on close.
@@ -662,6 +1159,14 @@
 		// stack falls through to it rather than to an unrelated layer.
 		const unregisterEscape = pushEscapeHandler((event) => {
 			if (!isViewerFrontmost(el)) return false;
+			// The delete drill-down is an inner layer (TASK-2474): Escape backs OUT of
+			// it to the toolbar, and only a second Escape closes the viewer — the
+			// two-step the panel's Menu gives its own drill-down. Consume this press.
+			if (deleteConfirm.pending) {
+				if (event) noteEscapeConsumedByViewer(event);
+				deleteConfirm.cancel();
+				return true;
+			}
 			// Mark the DISPATCH before closing, not after (TASK-2448 / BUG-2441).
 			// `onClose()` runs the teardown below synchronously — the lease is gone
 			// by the time it returns — so a later `window` listener in this same
@@ -673,7 +1178,13 @@
 			return true;
 		}, ESCAPE_PRIORITY.viewer);
 
+		// Subscribe to the deletion bus (TASK-2477). Registered alongside the lease so
+		// it is DISPOSED in the same teardown — a leaked listener would fire
+		// `shownId` / `onClose` writes into a torn-down viewer.
+		const unregisterDeletion = registerAttachmentDeletionListener(handleDeletion);
+
 		return () => {
+			unregisterDeletion();
 			unregisterEscape();
 			// Release BEFORE restoring focus, and let the RESULT decide: when a
 			// viewer remains beneath this one the manager has already handed focus
@@ -689,10 +1200,13 @@
 		};
 	});
 
-	// Reset the transform whenever the SHOWN image changes — arrow nav, or the
-	// set shrinking under `current` so a different member is shown (TASK-2455).
-	// Close needs no handling: every producer keys the mount, so closing
-	// unmounts this instance and the next open starts from `resetZoom()`.
+	// Reset the transform whenever the SHOWN image changes — arrow nav, or a delete
+	// that ADVANCES `shownId` to a survivor (TASK-2455 / TASK-2477). Keyed on
+	// `img?.id`, so it fires exactly when a DIFFERENT image is shown: deleting an
+	// earlier/later entry leaves `shownId` (and thus `img.id`) put, so the same
+	// image's zoom survives; advancing onto a new one resets it. Close needs no
+	// handling: every producer keys the mount, so closing unmounts this instance
+	// and the next open starts from `resetZoom()`.
 	//
 	// `lastResetForId` is a PLAIN let, not `$state`: an effect that read and wrote
 	// the same `$state` would self-depend and abort its own flush (CONVE-1688),
@@ -706,6 +1220,20 @@
 		if (id === lastResetForId) return;
 		lastResetForId = id;
 		zoom = resetZoom();
+		// The shown image changed (arrow-nav, or a set-shrink moving a different
+		// member into view), so a delete confirmation still up is for a file the user
+		// is no longer looking at — abandon it (TASK-2474), exactly as the panel's
+		// subject-change does. `cancel()` writes the delete-confirm MODULE's state,
+		// not this effect's tracked `zoom`, so it cannot self-invalidate the flush.
+		deleteConfirm.cancel();
+		// Drop the toolbar's per-image action state too: an action that was in flight
+		// on the PREVIOUS image (a slow delete raced by this advance, or the confirmed
+		// delete that caused it) fenced itself out of the `finally` that would clear
+		// `toolbarBusy`, so zero it here — otherwise the survivor shows "Deleting…" for
+		// a request that isn't about it. `toolbarError` likewise belonged to the old
+		// image. Both are `$state` this effect never reads, so no self-invalidation.
+		toolbarBusy = false;
+		toolbarError = null;
 		// A drag live ACROSS the image change (arrow-nav mid-drag) is left with a
 		// stale baseline, and deliberately so: `resetZoom` is fit, where `clampPan`
 		// pins the pan to 0 for ANY baseline, so the next move can't jump; and the
@@ -723,10 +1251,34 @@
 	// breakpoint flip alone can't reload (TASK-2459).
 	$effect(() => {
 		void loadKey;
-		untrack(() => loader.load(img, openWsSlug, platform));
+		untrack(() => {
+			// THE NO-BYTES INVARIANT (TASK-2476). The raster arm loads; EVERY other arm
+			// — the fallback (unsafe/no-preview) or no image at all — DISPOSES the
+			// loader, so the arm flip releases any in-flight or decoded bitmap and
+			// issues no request. `loadKey` carries the renderer, so a same-id
+			// safe→unsafe flip actually re-runs this and reaches the dispose. The
+			// loader's own DR-16 gate (`start()`) is the backstop; the Lightbox
+			// decides no-bytes explicitly here.
+			if (shownRenderer === 'raster-image') {
+				loader.load(img, openWsSlug, platform);
+			} else {
+				loader.dispose();
+			}
+		});
 	});
 	// Drop the load on unmount (close) — one teardown, no dependencies.
 	$effect(() => () => loader.dispose());
+
+	// Reactively abort a live gesture the instant the bitmap goes away (TASK-2476).
+	// The pointer handlers catch a flip that arrives WITH an event (move / up), but
+	// the arm can flip to fallback from a PROP change while the pointer is held
+	// still — no event to carry the abort. Reads `bitmapPresent` (tracked) and
+	// tears the gesture down in `untrack` (it writes `dragging` etc., never read
+	// here), so it cannot self-invalidate (CONVE-1688).
+	$effect(() => {
+		if (bitmapPresent) return;
+		untrack(() => cancelGesture());
+	});
 
 	// Zoom-past-fit is the mobile THUMB cell's trigger to fetch the original
 	// (TASK-2460): once a thumbnail has PAINTED, zooming past FIT (`scale > 1`, not
@@ -807,6 +1359,19 @@
 		void hasMultiple;
 		void loader.phase;
 		void img;
+		// The toolbar's drill-down swaps the action buttons for the confirm rows and
+		// back (TASK-2474); the control that had focus (the Delete button, or Cancel)
+		// unmounts across that switch, so track `pending` to re-home a focus stranded
+		// on <body> to the stable fallback within the same flush.
+		void deleteConfirm.pending;
+		// The metadata header's Retry button unmounts the instant its own click
+		// clears the transient phase (TASK-2475), so a keyboard user who pressed it is
+		// left on <body>; track the transient flag to re-home them the same way.
+		void headerTransient;
+		// The stage arm swap (raster ↔ fallback, TASK-2476) unmounts whatever raster
+		// control had focus — the Retry/tap-load button — and the fallback arm has no
+		// focusable content, so track the arm to re-home a stranded focus.
+		void shownRenderer;
 		const el = rootEl;
 		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
 		handoffFocus(el);
@@ -843,6 +1408,21 @@
 			if (target) {
 				e.preventDefault();
 				target.focus({ preventScroll: true });
+			}
+			return;
+		}
+
+		// The delete drill-down owns the arrow keys as a MENU while it is open
+		// (TASK-2474): Up/Down move between its rows, and it consumes Left/Right so a
+		// confirmation can't page the gallery behind it. Tab still cycles the rows
+		// through the trap above; Escape backs out (via the escape stack). Returns
+		// for every key, so zoom keys are inert over the confirm too.
+		if (deleteConfirm.pending) {
+			if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+				e.preventDefault();
+				moveConfirmFocus(e.key === 'ArrowDown' ? 1 : -1);
+			} else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+				e.preventDefault();
 			}
 			return;
 		}
@@ -977,6 +1557,80 @@
 	{/if}
 
 	<!--
+		ACTION TOOLBAR (TASK-2474). The shared descriptor list, drawn over the
+		stage. The `.lightbox-toolbar` wrapper is the positioned pill AND the
+		pointer control-exclusion hook — registered in BOTH lists above
+		(`onPointerDown` / `onDoubleClick` / `onWheel`) via `.lightbox-toolbar`, so
+		a press / double-click / wheel on it is that control's, never a pan or a
+		zoom. The ARIA ROLE lives on the inner state, not the wrapper: the actions
+		are a `role="toolbar"`, and the delete drill-down a `role="menu"` (its rows
+		are `role="menuitem"`, which a toolbar must not parent). Gated on `img`.
+	-->
+	{#if img}
+		<div class="lightbox-toolbar">
+			{#if deleteConfirm.pending}
+				<!--
+					Delete confirmation as a drill-down (DR-18) — the SAME shared component
+					the panel and the strip render, so the wording and shape can only ever
+					change in one place. The module owns the pending/warning state; the
+					descriptor's awaited gate resolves through confirm() / cancel(). It is a
+					`role="menu"` of `role="menuitem"` rows: focus enters the first row on
+					open, Up/Down move between them, Escape backs out (see the handlers).
+				-->
+				<div class="lightbox-delete-confirm" role="menu" aria-label="Confirm delete">
+					<AttachmentDeleteConfirm
+						prompt={deleteConfirm.warning ?? ''}
+						promptId={deletePromptId}
+						oncancel={() => deleteConfirm.cancel()}
+						onconfirm={() => deleteConfirm.confirm()}
+					/>
+				</div>
+			{:else}
+				<div class="lightbox-toolbar-actions" role="toolbar" aria-label="Attachment actions">
+					{#if toolbarError}
+						<div class="lightbox-toolbar-error" role="alert">{toolbarError}</div>
+					{/if}
+					{#each toolbarActions as action (action.id)}
+						{#snippet toolIcon()}
+							<AttachmentIcon id={action.icon} />
+						{/snippet}
+						{#if action.element === 'anchor'}
+							<a
+								class="lightbox-tool"
+								href={action.href(toolbarCtx)}
+								download={action.download?.(toolbarCtx)}
+								target={action.target}
+								rel={action.rel}
+								aria-label={action.label}
+								title={action.description ?? action.label}
+								aria-disabled={!action.enabled(toolbarCtx)}
+							>
+								<span class="lightbox-tool-icon" aria-hidden="true">{@render toolIcon()}</span>
+								<span class="lightbox-tool-label">{action.label}</span>
+							</a>
+						{:else}
+							<button
+								class="lightbox-tool"
+								class:danger={action.danger}
+								type="button"
+								aria-label={action.label}
+								title={action.description ?? action.label}
+								disabled={!action.enabled(toolbarCtx) || toolbarBusy}
+								onclick={() => runToolbarAction(action)}
+							>
+								<span class="lightbox-tool-icon" aria-hidden="true">{@render toolIcon()}</span>
+								<span class="lightbox-tool-label"
+									>{toolbarBusy && action.id === 'delete' ? 'Deleting…' : action.label}</span
+								>
+							</button>
+						{/if}
+					{/each}
+				</div>
+			{/if}
+		</div>
+	{/if}
+
+	<!--
 		The STAGE is the 92vw×92vh box the bare <img> used to be; the image sits
 		inside it, `object-fit: contain`, and carries the zoom transform. The stage
 		is `pointer-events: none` so a click on the empty letterbox around the image
@@ -986,7 +1640,7 @@
 		sit ABOVE the stage (their own `z-index`), never inside it.
 	-->
 	<div class="lightbox-stage" bind:this={stageEl}>
-		{#if img && loader.displaySrc}
+		{#if shownRenderer === 'raster-image' && loader.displaySrc}
 			<!--
 				KEYED ON THE LOAD TOKEN (TASK-2459). The <img> would otherwise persist
 				across navigation, and a bitmap that finished decoding LATE would fire
@@ -1015,6 +1669,7 @@
 				-->
 				<img
 					bind:this={imgEl}
+					use:releaseImg
 					class="lightbox-image"
 					class:panning={dragging}
 					src={loader.displaySrc}
@@ -1052,7 +1707,7 @@
 			{/key}
 		{/if}
 
-		{#if img && loader.phase === 'loading'}
+		{#if shownRenderer === 'raster-image' && loader.phase === 'loading'}
 			<!-- pointer-events:none so it never intercepts a pan / dblclick over the
 			     stage; the spinner is decoration over the (loading) image. -->
 			<div class="lightbox-status lightbox-loading" role="status" aria-label="Loading image">
@@ -1060,7 +1715,7 @@
 			</div>
 		{/if}
 
-		{#if img && loader.phase === 'deferred'}
+		{#if shownRenderer === 'raster-image' && loader.phase === 'deferred'}
 			<!-- The mobile large/unknown cell: DR-5b auto-fetches nothing here, so this
 			     is a TAP-TO-LOAD affordance, not a spinner (TASK-2460). The layer is
 			     inert; the button itself re-enables pointer events (the stage turns
@@ -1083,7 +1738,7 @@
 			</div>
 		{/if}
 
-		{#if img && loader.phase === 'error'}
+		{#if shownRenderer === 'raster-image' && loader.phase === 'error'}
 			<div class="lightbox-status lightbox-error" role="alert">
 				<p class="lightbox-error-text">This image couldn't be loaded.</p>
 				<!-- pointer-events:auto EXPLICITLY: the stage turns pointer events off,
@@ -1101,12 +1756,65 @@
 				</button>
 			</div>
 		{/if}
+
+		<!--
+			THE FALLBACK ARM (TASK-2476). A navigable entry the viewer cannot draw as an
+			image — an unsafe/active type that flipped or was added while open. NO
+			BYTES: no `<img>`, no `src`, no request (the load effect disposed the
+			loader on the arm flip). Just the file's identity — the large family icon,
+			its name, type · size — and an honest "No preview available". Same chrome,
+			same modal contract, same lease as the raster arm; zoom is disabled
+			(`bitmapPresent` is false here). `pointer-events: none` like the other
+			stage overlays, so a click on the empty area still reaches the backdrop.
+		-->
+		{#if img && shownRenderer !== 'raster-image'}
+			<div class="lightbox-fallback" role="group" aria-label="No preview available">
+				<span class="lightbox-fallback-icon" aria-hidden="true">
+					<AttachmentIcon id={fallbackIconId} size={72} />
+				</span>
+				<p class="lightbox-fallback-name" title={displayName}>{displayName}</p>
+				{#if headerDetail}
+					<p class="lightbox-fallback-detail">{headerDetail}</p>
+				{/if}
+				<p class="lightbox-fallback-note">No preview available</p>
+			</div>
+		{/if}
 	</div>
 
 	{#if hasMultiple}
-		<!-- `shownIndex`, so the counter names the image actually on screen even
-		     after the set shrank under `current`. -->
-		<div class="lightbox-counter">{shownIndex + 1} / {viewable.length}</div>
+		<!-- Derived `shownIndex` over the SURVIVORS, so the counter names the image
+		     actually on screen even after a deletion shrank the set. -->
+		<div class="lightbox-counter">{shownIndex + 1} / {survivors.length}</div>
+	{/if}
+
+	<!--
+		METADATA HEADER (TASK-2475). Filename / type / size for the shown image.
+		Bottom-left, NOT the top row: the two primary actions (the toolbar) and
+		Close own the top, and metadata must never crowd them on a phone (DR-18) —
+		placing it here keeps that true by construction. A LABEL like the counter,
+		not a dismiss target: it is excluded from the pan/zoom gestures (via
+		`.lightbox-meta` in the three lists) so a press on it is inert, and only the
+		Retry button acts. The name is truncated with the FULL value in `title`
+		(DR-13); the detail line adds type · size only when known.
+	-->
+	{#if img}
+		<div class="lightbox-meta">
+			<div class="lightbox-meta-name" title={displayName}>{displayName}</div>
+			{#if headerDetail}
+				<div class="lightbox-meta-detail">{headerDetail}</div>
+			{/if}
+			{#if headerTransient}
+				<!-- DR-10: retryable, BESIDE the name/type it already knows — never a
+				     blank sheet. Retry revalidates through the module. -->
+				<div class="lightbox-meta-error" role="status">
+					<span>Couldn't load details</span>
+					<span aria-hidden="true">·</span>
+					<button class="lightbox-meta-retry" type="button" onclick={() => headerMeta.retry()}
+						>Retry</button
+					>
+				</div>
+			{/if}
+		</div>
 	{/if}
 </div>
 
@@ -1220,6 +1928,53 @@
 	.lightbox-loading {
 		/* Never intercept a pan / double-click over the stage. */
 		pointer-events: none;
+	}
+
+	/* The no-bytes fallback arm (TASK-2476). Centred over the stage like the status
+	   overlays; inert, so a click on the surrounding area still reaches the backdrop
+	   and closes. Logical properties + min-width:0 so a long filename ellipsizes
+	   (DR-13) rather than blowing the box out. */
+	.lightbox-fallback {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-2);
+		padding: var(--space-4);
+		text-align: center;
+		color: #fff;
+		pointer-events: none;
+	}
+
+	.lightbox-fallback-icon {
+		display: inline-flex;
+		color: rgba(255, 255, 255, 0.85);
+	}
+
+	.lightbox-fallback-name {
+		margin: 0;
+		max-inline-size: min(80vw, 560px);
+		min-width: 0;
+		font-size: 1rem;
+		font-weight: 600;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.lightbox-fallback-detail {
+		margin: 0;
+		font-size: 0.85rem;
+		opacity: 0.85;
+	}
+
+	.lightbox-fallback-note {
+		margin: 0;
+		margin-block-start: var(--space-1);
+		font-size: 0.85rem;
+		opacity: 0.7;
 	}
 
 	.lightbox-spinner {
@@ -1377,6 +2132,179 @@
 		font-size: 0.8rem;
 	}
 
+	/* Metadata header (TASK-2475). Bottom-left, clear of the top toolbar / close
+	   (DR-18). Logical properties + `min-width: 0` so a long filename ellipsizes
+	   inside its own box rather than blowing out the layout (DR-13). A LABEL, like
+	   the counter: it keeps its default pointer events so a press on it is the
+	   header's own (and is excluded from the pan/zoom gestures via `.lightbox-meta`
+	   in the three exclusion lists) rather than falling THROUGH to the image behind
+	   and arming a pan. It does not close the viewer — a filename is not a dismiss
+	   target — and only Retry inside it does anything. Width is capped short of the
+	   centred counter (reserve ~72px each side of centre) so the two never touch,
+	   at any width or in RTL. */
+	.lightbox-meta {
+		position: absolute;
+		z-index: 1;
+		inset-block-end: var(--space-3);
+		inset-inline-start: var(--space-3);
+		min-width: 0;
+		max-inline-size: min(calc(50% - 72px), 420px);
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		color: #fff;
+		/* Legible over any image — a soft shadow rather than a plate, so it stays
+		   unobtrusive while the filename is still readable on a light photo. */
+		text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+	}
+
+	.lightbox-meta-name {
+		min-width: 0;
+		max-inline-size: 100%;
+		font-size: 0.85rem;
+		font-weight: 600;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.lightbox-meta-detail {
+		min-width: 0;
+		font-size: 0.75rem;
+		opacity: 0.85;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.lightbox-meta-error {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		font-size: 0.75rem;
+		color: var(--accent-red, #ff6b6b);
+	}
+
+	.lightbox-meta-retry {
+		padding: 1px var(--space-1);
+		border: 1px solid currentColor;
+		border-radius: var(--radius-sm, 4px);
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		font-size: 0.75rem;
+		cursor: pointer;
+	}
+
+	.lightbox-meta-retry:hover,
+	.lightbox-meta-retry:focus-visible {
+		background: rgba(255, 255, 255, 0.16);
+	}
+
+	/* Action toolbar (TASK-2474). The WRAPPER is positioning + the pointer-
+	   exclusion hook only; each inner state carries its own look. Top-centre,
+	   above the stage's stacking context (`z-index: 1`, like the other chrome). */
+	.lightbox-toolbar {
+		position: absolute;
+		z-index: 1;
+		top: var(--space-3);
+		left: 50%;
+		transform: translateX(-50%);
+		max-width: min(92vw, 640px);
+	}
+
+	/* The confirm panel is TALLER and WIDER than the action pill and would collide
+	   with the top-right close button at narrow widths — drop it below the close
+	   button's row (40px control at `top: var(--space-3)`). */
+	.lightbox-toolbar:has(.lightbox-delete-confirm) {
+		top: calc(var(--space-3) + 52px);
+	}
+
+	/* The action pill: a horizontal row of icon/label controls. */
+	.lightbox-toolbar-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+		justify-content: center;
+		padding: var(--space-1) var(--space-2);
+		background: rgba(0, 0, 0, 0.5);
+		border: 1px solid rgba(255, 255, 255, 0.2);
+		border-radius: 9999px;
+	}
+
+	/* The delete drill-down: a small panel of stacked rows (the shared
+	   AttachmentDeleteConfirm), the same column shape the panel's menu gives it. */
+	.lightbox-delete-confirm {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		border-radius: var(--radius);
+		padding: var(--space-2);
+		background: var(--bg-primary, #1a1a1a);
+		color: var(--text-primary, #fff);
+		border: 1px solid rgba(255, 255, 255, 0.2);
+		min-width: min(88vw, 320px);
+	}
+
+	.lightbox-tool {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		padding: var(--space-1) var(--space-2);
+		border: none;
+		border-radius: 9999px;
+		background: transparent;
+		color: #fff;
+		font: inherit;
+		font-size: 0.85rem;
+		line-height: 1;
+		cursor: pointer;
+		text-decoration: none;
+	}
+
+	.lightbox-tool:hover,
+	.lightbox-tool:focus-visible {
+		background: rgba(255, 255, 255, 0.16);
+	}
+
+	.lightbox-tool:disabled,
+	.lightbox-tool[aria-disabled='true'] {
+		opacity: 0.45;
+		cursor: default;
+		pointer-events: none;
+	}
+
+	.lightbox-tool.danger {
+		color: var(--accent-red, #ff6b6b);
+	}
+
+	.lightbox-tool-icon {
+		display: inline-flex;
+		width: 18px;
+		height: 18px;
+	}
+
+	/* DR-18: the label is ALWAYS in the accessible name (`aria-label`); its VISIBLE
+	   text shows on phone (≤768, the app's canonical breakpoint) and is hidden on
+	   the roomier desktop toolbar, which stays icon-only. */
+	.lightbox-tool-label {
+		display: none;
+	}
+
+	@media (max-width: 768px) {
+		.lightbox-tool-label {
+			display: inline;
+		}
+	}
+
+	.lightbox-toolbar-error {
+		flex-basis: 100%;
+		text-align: center;
+		color: var(--accent-red, #ff6b6b);
+		font-size: 0.8rem;
+	}
+
 	/* Forced-colors (PLAN-2392 DR-4). The custom palette is discarded, so the
 	   image's box-shadow boundary vanishes — give the image a real BORDER so its
 	   boundary stays visible. LAST in the sheet so it wins over the controls' own
@@ -1389,7 +2317,9 @@
 		.lightbox-close,
 		.lightbox-nav,
 		.lightbox-retry,
-		.lightbox-tap-load {
+		.lightbox-tap-load,
+		.lightbox-tool,
+		.lightbox-meta-retry {
 			border: 1px solid ButtonText;
 		}
 	}

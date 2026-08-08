@@ -58,6 +58,11 @@ const panelOpenMock = vi.fn<(event: Record<string, unknown>) => void>();
 vi.mock('$lib/attachments/events', () => ({
 	announceAttachmentDeleted: (ws: string, uuid: string) => {
 		notifyDeletedMock(uuid);
+		// Fan out to the registered listeners, as the real one does (notify +
+		// invalidate). The viewer (TASK-2477) reconciles a delete through this bus,
+		// so an own-toolbar delete must reach its listener the same way an external
+		// delete does; the spy above still records the announce for assertions.
+		broadcastDeletion(uuid);
 		invalidateMock(ws, uuid);
 	},
 	notifyAttachmentPanelOpen: (event: Record<string, unknown>) => panelOpenMock(event),
@@ -79,7 +84,16 @@ const invalidateMock = vi.fn<(ws: string, uuid: string) => void>();
 // (PLAN-2392 DR-10) — a separate spy from the events bus's, so the two can be
 // asserted independently.
 const invalidateMetadataMock = vi.fn<(ws: string, uuid: string) => void>();
+// The strip mounts the real Lightbox, whose metadata header (TASK-2475) reads
+// through this module — so the mock must carry the fetch/revalidate exports too,
+// not just invalidate. Benign `ok` stubs: the strip's viewer tests use rows whose
+// size is already known (no fetch fires), but a complete contract keeps the mount
+// robust to any row shape.
 vi.mock('$lib/components/editor/attachment-metadata', () => ({
+	fetchAttachmentMetadata: () =>
+		Promise.resolve({ status: 'ok' as const, mime: 'image/png', size: 2048 }),
+	revalidateAttachmentMetadata: () =>
+		Promise.resolve({ status: 'ok' as const, mime: 'image/png', size: 2048 }),
 	invalidateAttachmentMetadata: (ws: string, uuid: string) => invalidateMetadataMock(ws, uuid),
 }));
 
@@ -127,6 +141,9 @@ const props = $state<{
 	itemContent: string | null;
 	liveContent: (() => string | null) | null;
 	hostToken: string;
+	mutationsEnabled?: boolean;
+	getItemContent?: () => string | null;
+	getLiveContent?: () => string | null;
 }>({
 	wsSlug: 'ws',
 	username: 'dave',
@@ -135,6 +152,9 @@ const props = $state<{
 	itemContent: null,
 	liveContent: null,
 	hostToken: 'host-1',
+	mutationsEnabled: false,
+	getItemContent: undefined,
+	getLiveContent: undefined,
 });
 
 describe('ItemAttachmentStrip', () => {
@@ -157,6 +177,9 @@ describe('ItemAttachmentStrip', () => {
 		props.canDelete = false;
 		props.itemContent = null;
 		props.liveContent = null;
+		props.mutationsEnabled = false;
+		props.getItemContent = undefined;
+		props.getLiveContent = undefined;
 		target = document.body.appendChild(document.createElement('div'));
 	});
 
@@ -1856,5 +1879,99 @@ describe('ItemAttachmentStrip', () => {
 		openConfirm();
 
 		expect(promptText()).toContain("still used in this item's content");
+	});
+
+	// ── Viewer toolbar (TASK-2474) ───────────────────────────────────────────
+	// The STRIP origin of the three that mount a Lightbox. These prove the strip
+	// forwards its `mutationsEnabled` to the viewer's toolbar (separate from the
+	// tile-delete `canDelete` above).
+	function toolbarLabels(): string[] {
+		return Array.from(
+			document.querySelectorAll<HTMLElement>('.lightbox-toolbar .lightbox-tool')
+		).map((t) => t.getAttribute('aria-label') ?? '');
+	}
+
+	it('opens a viewer toolbar with Delete when the strip is granted mutations', async () => {
+		props.mutationsEnabled = true;
+		listMock.mockResolvedValue(response([att({ id: 'img1' })]));
+		mountStrip('item-a');
+		await settle();
+
+		tiles()[0].click();
+		flushSync();
+		expect(document.querySelector('.lightbox-toolbar')).not.toBeNull();
+		expect(toolbarLabels()).toContain('Delete');
+	});
+
+	it('opens a read-only viewer toolbar (no Delete) when mutations are withheld', async () => {
+		props.mutationsEnabled = false;
+		listMock.mockResolvedValue(response([att({ id: 'img1' })]));
+		mountStrip('item-a');
+		await settle();
+
+		tiles()[0].click();
+		flushSync();
+		expect(document.querySelector('.lightbox-toolbar')).not.toBeNull();
+		expect(toolbarLabels()).toContain('Download');
+		expect(toolbarLabels()).not.toContain('Delete');
+	});
+
+	it('confirming Delete in the toolbar deletes the attachment and closes the viewer', async () => {
+		// The full path: the descriptor owns the delete (api + announce), the module
+		// owns the gate, and a confirmed delete closes the viewer over the now-gone
+		// image. The same delete call the tile's × makes — one confirmation, one API.
+		props.mutationsEnabled = true;
+		listMock.mockResolvedValue(response([att({ id: 'img1' })]));
+		mountStrip('item-a');
+		await settle();
+
+		tiles()[0].click();
+		flushSync();
+		document.querySelector<HTMLButtonElement>(
+			'.lightbox-toolbar .lightbox-tool[aria-label="Delete"]'
+		)!.click();
+		flushSync();
+		// Drill-down up; confirm it.
+		const confirmRow = Array.from(
+			document.querySelectorAll<HTMLButtonElement>('.lightbox-delete-confirm button')
+		).find((b) => b.textContent?.includes('Delete file'))!;
+		expect(confirmRow).toBeDefined();
+		confirmRow.click();
+		await settle();
+
+		expect(deleteMock).toHaveBeenCalledWith('ws', 'img1');
+		expect(notifyDeletedMock).toHaveBeenCalledWith('img1');
+		// The viewer closed over the deleted image.
+		expect(document.querySelector('.lightbox-backdrop')).toBeNull();
+	});
+
+	it('confirming Delete on ONE of TWO images ADVANCES the viewer, not closes it (TASK-2477)', async () => {
+		// The full toolbar → confirm → api.delete → announce → deletion-bus →
+		// survivor-advance path, with MORE THAN ONE image: the viewer must ADVANCE to
+		// the survivor rather than close (the retired C1 close-on-delete latch).
+		props.mutationsEnabled = true;
+		listMock.mockResolvedValue(response([att({ id: 'img1' }), att({ id: 'img2' })]));
+		mountStrip('item-a');
+		await settle();
+
+		tiles()[0].click(); // open the viewer on img1
+		flushSync();
+		expect(document.querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+
+		document.querySelector<HTMLButtonElement>(
+			'.lightbox-toolbar .lightbox-tool[aria-label="Delete"]'
+		)!.click();
+		flushSync();
+		Array.from(document.querySelectorAll<HTMLButtonElement>('.lightbox-delete-confirm button'))
+			.find((b) => b.textContent?.includes('Delete file'))!
+			.click();
+		await settle();
+
+		expect(deleteMock).toHaveBeenCalledWith('ws', 'img1');
+		// The viewer stays OPEN, advanced to the surviving img2.
+		expect(document.querySelector('.lightbox-backdrop')).not.toBeNull();
+		expect(document.querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt')).toBe(
+			'img2.png'
+		);
 	});
 });

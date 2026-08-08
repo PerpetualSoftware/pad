@@ -843,6 +843,17 @@
 			return null;
 		}
 	}
+	/**
+	 * The PERSISTED item body as a stable getter (TASK-2474). The strip and panel
+	 * host take the raw value inline (`itemContent`), but the viewer toolbar's
+	 * contract is the panel's getter pattern — `getItemContent?: () => string |
+	 * null` — so it reads through this. `itemMatchesRef`-gated exactly as the
+	 * value form is, so a mid-switch read returns null rather than the outgoing
+	 * item's content.
+	 */
+	function itemPersistedMarkdown(): string | null {
+		return (itemMatchesRef ? item?.content : null) ?? null;
+	}
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
 			loadData();
@@ -5087,6 +5098,9 @@
 				canDelete={mutationsEnabled}
 				itemContent={itemMatchesRef ? item?.content : null}
 				liveContent={liveEditorMarkdown}
+				{mutationsEnabled}
+				getItemContent={itemPersistedMarkdown}
+				getLiveContent={liveEditorMarkdown}
 			/>
 
 			<!-- The attachment options panel's host (PLAN-2392 DR-8 / TASK-2423).
@@ -5626,6 +5640,9 @@
 				frozen={false}
 				restoreFrozen={peeking}
 				visibleKinds={activeTab === 'versions' ? ['version'] : ['comment', 'activity']}
+				{mutationsEnabled}
+				getItemContent={itemPersistedMarkdown}
+				getLiveContent={liveEditorMarkdown}
 			/>
 		</div>
 		</div><!-- /tab-panel Activity/Versions -->
@@ -5850,8 +5867,9 @@
 
 <!-- The image viewer's host (PLAN-2392 phase 3a / TASK-2428). One per
      `ItemDetail` mount, sharing the token the panel host uses — one token per
-     HOST, not one per channel — and carrying no `mutationsEnabled`, because
-     3a's viewer has no mutating action and a dead prop is worse than none.
+     HOST, not one per channel. It now carries `mutationsEnabled` (= `canEdit &&
+     !peeking`) and the delete-warning content getters (3c-i's viewer toolbar
+     Delete, TASK-2474), threaded to `Lightbox` exactly as the panel host's are.
 
      TOP LEVEL, not beside `AttachmentPanelHost` inside the `{:else if item &&
      collection}` branch, and that placement is the whole lifecycle rule: every
@@ -5869,6 +5887,9 @@
 	itemId={itemMatchesRef ? item?.id : null}
 	hostToken={attachmentHostToken}
 	resourceGen={viewerResource.current}
+	{mutationsEnabled}
+	getItemContent={itemPersistedMarkdown}
+	getLiveContent={liveEditorMarkdown}
 />
 
 <style>

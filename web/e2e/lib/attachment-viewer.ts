@@ -118,6 +118,72 @@ export const viewerPrev = (page: Page) =>
 export const viewerTapLoad = (page: Page) =>
 	page.locator(VIEWER).getByRole('button', { name: 'Tap to load full image' });
 
+// ── 3c-i surface chrome (TASK-2484) ─────────────────────────────────────────
+// The toolbar (TASK-2474), metadata header (TASK-2475), fallback arm (TASK-2476)
+// and delete drill-down (TASK-2473/2477). Class-qualified inside VIEWER, or —
+// for the interactive controls — addressed by the accessible NAME the code gives
+// them, per the selector rule above.
+export const VIEWER_TOOLBAR = `${VIEWER} .lightbox-toolbar`;
+export const VIEWER_META = `${VIEWER} .lightbox-meta`;
+export const VIEWER_META_NAME = `${VIEWER} .lightbox-meta-name`;
+export const VIEWER_META_DETAIL = `${VIEWER} .lightbox-meta-detail`;
+export const VIEWER_FALLBACK = `${VIEWER} .lightbox-fallback`;
+export const VIEWER_FALLBACK_NAME = `${VIEWER} .lightbox-fallback-name`;
+export const VIEWER_DELETE_CONFIRM = `${VIEWER} .lightbox-delete-confirm`;
+
+/** Open in new tab — a real anchor (role "link"), so href/target are assertable. */
+export const viewerOpenAnchor = (page: Page) =>
+	page.locator(VIEWER).getByRole('link', { name: 'Open in new tab' });
+/** Download — a real `<a download>` anchor. */
+export const viewerDownloadAnchor = (page: Page) =>
+	page.locator(VIEWER).getByRole('link', { name: 'Download' });
+/** Copy workspace link — a button (JS action, no href). */
+export const viewerCopyLink = (page: Page) =>
+	page.locator(VIEWER).getByRole('button', { name: 'Copy workspace link' });
+/** The toolbar's Delete — a button; `exact` so it never catches the confirm row
+ *  "Delete file". Absent entirely when the host withholds mutation permission. */
+export const viewerDelete = (page: Page) =>
+	page.locator(VIEWER).getByRole('button', { name: 'Delete', exact: true });
+/** The drill-down's confirm/cancel rows (role "menuitem", from MenuItem). */
+export const viewerConfirmDeleteRow = (page: Page) =>
+	page.locator(VIEWER_DELETE_CONFIRM).getByRole('menuitem', { name: 'Delete file' });
+export const viewerConfirmCancelRow = (page: Page) =>
+	page.locator(VIEWER_DELETE_CONFIRM).getByRole('menuitem', { name: 'Cancel' });
+
+/**
+ * The frontmost viewer's TABBABLE controls, in DOM (trap) order, as their
+ * accessible labels. Since TASK-2474 the toolbar adds controls AFTER the
+ * close/nav, so the trap's "last control" is no longer the Next button —
+ * anything asserting the trap edges must derive them rather than name a control.
+ */
+export function viewerFocusableLabels(page: Page): Promise<string[]> {
+	return page.evaluate((viewerSel) => {
+		const all = document.querySelectorAll(viewerSel);
+		const el = all[all.length - 1] as HTMLElement | undefined;
+		if (!el) return [];
+		return Array.from(el.querySelectorAll<HTMLElement>('a[href], button'))
+			.filter((n) => !(n as HTMLButtonElement).disabled && n.tabIndex !== -1 && n.offsetParent !== null)
+			.map((n) => n.getAttribute('aria-label') ?? n.textContent?.trim() ?? '');
+	}, VIEWER);
+}
+
+/** Focus the frontmost viewer's LAST tabbable control; returns its label. */
+export function focusViewerLastControl(page: Page): Promise<string> {
+	return page.evaluate((viewerSel) => {
+		const all = document.querySelectorAll(viewerSel);
+		const el = all[all.length - 1] as HTMLElement | undefined;
+		const nodes = el
+			? Array.from(el.querySelectorAll<HTMLElement>('a[href], button')).filter(
+					(n) => !(n as HTMLButtonElement).disabled && n.tabIndex !== -1 && n.offsetParent !== null
+				)
+			: [];
+		const last = nodes[nodes.length - 1];
+		if (!last) throw new Error('focusViewerLastControl: no focusable control');
+		last.focus();
+		return last.getAttribute('aria-label') ?? last.textContent?.trim() ?? '';
+	}, VIEWER);
+}
+
 /**
  * The `scale(...)` factor the browser has actually applied to the viewer image,
  * read from its COMPUTED transform matrix (`matrix(a, …)`, a === scale). NaN when

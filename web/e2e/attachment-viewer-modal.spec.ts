@@ -13,6 +13,7 @@ import {
 	dropFileIntoEditor,
 	expectBackgroundInert,
 	focusAttemptTakes,
+	focusViewerLastControl,
 	isFocusable,
 	itemUrl,
 	uploadAttachment,
@@ -536,33 +537,38 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		await page.locator(`${TILE}[aria-label*="trap-a.png"]`).click();
 		await expect(page.locator(VIEWER)).toHaveCount(1);
 
-		// Two images ⇒ three controls, in DOM order: Close, Previous, Next.
+		// The controls, in DOM (trap) order: Close, Previous, Next, then the toolbar
+		// (Open, Download, Copy, Delete — TASK-2474). The trap edges are DERIVED, not
+		// named: the toolbar moved the "last control" off the Next button.
 		const focused = () => page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? null);
 		expect(await focused(), 'focus entry is the first control').toBe('Close');
 
-		// FIRST → wraps to LAST. This is the branch.
+		// FIRST → wraps to LAST. This is the branch. The last control is the last
+		// toolbar action; focus it once to learn its label, then prove the wrap.
+		const lastLabel = await focusViewerLastControl(page);
+		expect(await focused()).toBe(lastLabel);
+		await page.locator(VIEWER).getByRole('button', { name: 'Close' }).focus();
 		await page.keyboard.press('Shift+Tab');
 		expect(await focused(), 'Shift+Tab from the first control must wrap to the LAST').toBe(
-			'Next image'
+			lastLabel
 		);
-		// ...and from the middle of the set it simply steps backward, so the
-		// wrap above is a wrap and not "Shift+Tab always lands on Next".
+		// ...and from the middle it simply steps backward, so the wrap above is a
+		// wrap and not "Shift+Tab always lands on the last".
+		await page.locator(VIEWER).getByRole('button', { name: 'Next image' }).focus();
 		await page.keyboard.press('Shift+Tab');
 		expect(await focused()).toBe('Previous image');
 		await page.keyboard.press('Shift+Tab');
 		expect(await focused()).toBe('Close');
 		expect(await activeInViewer(page), 'backward traversal never left the viewer').toBe(true);
 
-		// The FORWARD wrap, asserted by name rather than by containment: from the
-		// last control, Tab returns to the first.
-		await page.locator(VIEWER).getByRole('button', { name: 'Next image' }).focus();
+		// The FORWARD wrap: from the last control, Tab returns to the first.
+		await focusViewerLastControl(page);
 		await page.keyboard.press('Tab');
 		expect(await focused(), 'Tab from the last control must wrap to the FIRST').toBe('Close');
 
-		// SINGLE-CONTROL VIEWER: with one image there are no nav buttons, so
-		// `first === last` and BOTH directions resolve to the same element. A
-		// trap that only handled the multi-control case would let focus escape
-		// here — into a background that is inert, i.e. onto `<body>`.
+		// A ONE-IMAGE viewer has no nav buttons, but the toolbar still supplies
+		// controls, so the trap must still cycle among Close + the toolbar and never
+		// let focus escape into the inert background (onto `<body>`).
 		const one = await seedDoc(fixture, request, 'Viewer trap single');
 		await uploadAttachment(fixture, request, one.id, 'trap-solo.png');
 		await page.goto(itemUrl(fixture, one.slug));
@@ -570,10 +576,17 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		await expect(page.locator(VIEWER)).toHaveCount(1);
 		await expect(page.locator(VIEWER).getByRole('button', { name: 'Next image' })).toHaveCount(0);
 		expect(await focused()).toBe('Close');
-		for (const key of ['Tab', 'Shift+Tab', 'Tab']) {
-			await page.keyboard.press(key);
-			expect(await focused(), `${key} in a single-control viewer must stay on it`).toBe('Close');
-		}
+		// The WRAP still holds, asserted by name at both edges (not just containment,
+		// which a broken trap could satisfy by leaving focus put): from the last
+		// control Tab returns to Close, and Shift+Tab from Close returns to the last.
+		const soloLast = await focusViewerLastControl(page);
+		await page.keyboard.press('Tab');
+		expect(await focused(), 'nav-less: Tab from the last control wraps to Close').toBe('Close');
+		await page.keyboard.press('Shift+Tab');
+		expect(await focused(), 'nav-less: Shift+Tab from Close wraps to the last control').toBe(
+			soloLast
+		);
+		expect(await activeInViewer(page), 'focus never left the nav-less viewer').toBe(true);
 	});
 
 	test('a native showModal() dialog over the viewer wins Escape AND Tab outright', async ({
@@ -617,10 +630,11 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		});
 		const tabPrevented = () => page.evaluate(() => (window as unknown as { __tab: boolean[] }).__tab);
 
-		// CONTROL, viewer alone: a Tab the trap OWNS (from the last control, which
-		// wraps to the first) IS consumed. Without this the assertion below would
-		// pass against a viewer whose key handler never runs at all.
-		await page.locator(VIEWER).getByRole('button', { name: 'Next image' }).focus();
+		// CONTROL, viewer alone: a Tab the trap OWNS (from the LAST control, which
+		// wraps to the first) IS consumed. The last control is a toolbar action now
+		// (TASK-2474), so it is derived, not named. Without this the assertion below
+		// would pass against a viewer whose key handler never runs at all.
+		await focusViewerLastControl(page);
 		await page.keyboard.press('Tab');
 		expect(
 			(await tabPrevented()).at(-1),

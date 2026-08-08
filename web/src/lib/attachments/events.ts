@@ -281,10 +281,12 @@ export function notifyAttachmentPanelOpen(event: AttachmentPanelOpenEvent): void
  * nothing until 3c gives them a single surface to consolidate ONTO. A decision,
  * not an omission.
  *
- * `mutationsEnabled` is deliberately absent from this channel and from the
- * host: 3a's viewer has no mutating action, so it would be a dead prop. It is a
- * hard prerequisite of 3c's Delete, and when it arrives its source must be the
- * host's own gate.
+ * `mutationsEnabled` is on the HOST but deliberately NOT on this CHANNEL (since
+ * 3c-i's Delete, TASK-2474): it is a LIVE permission (the host's `canEdit &&
+ * !peeking`), read on the far side of an async confirmation, not a value an
+ * emitter could snapshot at open — so `AttachmentViewerHost` takes it (and the
+ * delete-warning content getters) as PROPS and forwards them to `Lightbox`,
+ * while the open EVENT stays permission-free.
  */
 export interface LightboxImage {
 	id: string;

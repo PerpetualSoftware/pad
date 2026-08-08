@@ -7,7 +7,12 @@ import {
 	iconForAttachment,
 	isImage
 } from './display';
-import { ATTACHMENT_ICON_IDS, ATTACHMENT_ICON_PATHS, iconSvg } from './icons/index';
+import {
+	ACTION_ICON_IDS,
+	ATTACHMENT_ICON_IDS,
+	ATTACHMENT_ICON_PATHS,
+	iconSvg
+} from './icons/index';
 import familyFixture from './mime-families.json';
 
 /**
@@ -147,9 +152,25 @@ describe('iconSvg', () => {
 		}
 	});
 
-	it('gives every family a distinct shape', () => {
+	it('gives every icon — family AND action — a distinct shape', () => {
 		const paths = new Set(Object.values(ATTACHMENT_ICON_PATHS));
-		expect(paths.size).toBe(ATTACHMENT_ICON_IDS.length);
+		expect(paths.size).toBe(ATTACHMENT_ICON_IDS.length + ACTION_ICON_IDS.length);
+	});
+
+	it('registers every ACTION icon with a non-empty currentColor path (TASK-2472)', () => {
+		// Drift guard: the four action ids the descriptors reference must exist in
+		// the registry and render a real SVG path — a descriptor pointing at a
+		// missing id would otherwise fall back to the generic file silently.
+		expect([...ACTION_ICON_IDS].sort()).toEqual(
+			['action-copy-link', 'action-delete', 'action-download', 'action-open'].sort()
+		);
+		for (const id of ACTION_ICON_IDS) {
+			expect(ATTACHMENT_ICON_PATHS[id], `${id} has a path`).toBeTruthy();
+			const svg = iconSvg(id);
+			expect(svg, `${id} renders its own path`).toContain(ATTACHMENT_ICON_PATHS[id]);
+			expect(svg).toContain('stroke="currentColor"');
+			expect(svg).not.toBe(iconSvg('generic')); // not the silent fallback
+		}
 	});
 
 	it('renders the generic icon for an unknown id rather than throwing', () => {

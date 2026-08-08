@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
 import Lightbox from './Lightbox.svelte';
 import type { LightboxImage } from '$lib/attachments/events';
+// TASK-2477 — the deletion bus is REAL in this suite (the viewer subscribes to
+// it); firing `notifyAttachmentDeleted` drives the survivor logic directly.
+import { notifyAttachmentDeleted } from '$lib/attachments/events';
 import {
 	acquire,
 	hasForeignEscapeOwner,
@@ -22,6 +25,14 @@ import {
 	ZOOM_STEP,
 	type Geometry,
 } from '$lib/attachments/zoom';
+// The viewer's real focusable-selection path — the trap cycles over exactly this
+// set, so the tests below derive the leading / trailing edge from it rather than
+// naming a specific control. The toolbar (TASK-2474) added controls after the
+// nav, so the trailing edge is no longer `.lightbox-nav.next`.
+import { paneFocusables } from '$lib/collections/paneFocus';
+// TASK-2475 — the metadata header renders type/size through these; the tests
+// compute their expected strings from the same helpers rather than hardcoding.
+import { describeAttachmentType, formatBytes } from '$lib/attachments/display';
 
 // TASK-2460 — the mobile DR-5b cells. `viewport.isMobile` is module state read
 // from matchMedia at init (false under jsdom), so a controllable mock lets a few
@@ -46,6 +57,19 @@ vi.mock('$lib/stores/breakpoint.svelte', () => ({
 }));
 let mobileFlag = $state(false);
 mobileHolder.read = () => mobileFlag;
+
+// TASK-2475 — the metadata header's B-module fetch. The viewer's images seed
+// `size_bytes: null` by default (the `image()` fixture), so the header module
+// fires a HEAD to fill it; controlling the result lets the header tests assert
+// the fill / transient-retry paths, and keeps the real (failing) fetch out of
+// every OTHER test. Defaulted to `ok` in `beforeEach`.
+const metaFetch = vi.hoisted(() => vi.fn());
+const metaRevalidate = vi.hoisted(() => vi.fn());
+vi.mock('$lib/components/editor/attachment-metadata', () => ({
+	fetchAttachmentMetadata: (...a: unknown[]) => metaFetch(...a),
+	revalidateAttachmentMetadata: (...a: unknown[]) => metaRevalidate(...a),
+	invalidateAttachmentMetadata: vi.fn(),
+}));
 
 // TASK-2429 — the DR-4b modal contract on the attachment viewer.
 //
@@ -102,6 +126,10 @@ interface Props {
 	wsSlug: string;
 	onClose: () => void;
 	invoker?: HTMLElement | null;
+	// Toolbar context (TASK-2474).
+	mutationsEnabled?: boolean;
+	getItemContent?: () => string | null;
+	getLiveContent?: () => string | null;
 }
 
 // Reactive props for the capture-at-open cases ($state may only initialize a
@@ -111,6 +139,17 @@ const liveProps = $state<Props>({
 	index: 0,
 	wsSlug: 'ws-one',
 	onClose: () => {},
+});
+
+// Reactive props for the toolbar's permission-withdrawn case (TASK-2474): a
+// peek closes the mutation gate mid-confirmation, and `mutationsEnabled` has to
+// be flippable live to drive it.
+const toolbarProps = $state<Props>({
+	images: [image(IMG_A, 'a diagram')],
+	index: 0,
+	wsSlug: 'ws-one',
+	onClose: () => {},
+	mutationsEnabled: true,
 });
 
 /** The app shell's stand-in: a body child, so the manager has something to inert. */
@@ -151,6 +190,17 @@ function closeButton(scope: HTMLElement = root()): HTMLButtonElement {
 	return scope.querySelector<HTMLButtonElement>('.lightbox-close')!;
 }
 
+/** The viewer's focusable controls, in tab order — what the trap cycles over. */
+function focusables(scope: HTMLElement = root()): HTMLElement[] {
+	return paneFocusables(scope);
+}
+
+/** The trailing edge of the trap — the last focusable control. */
+function lastFocusable(scope: HTMLElement = root()): HTMLElement {
+	const f = focusables(scope);
+	return f[f.length - 1];
+}
+
 /** The `transform` inline style on the viewer's image (empty before it mounts). */
 function transformOf(scope: HTMLElement = root()): string {
 	return scope.querySelector<HTMLImageElement>('.lightbox-image')?.style.transform ?? '';
@@ -185,6 +235,12 @@ function inertBodyChildren(): Element[] {
 }
 
 beforeEach(() => {
+	// Reset call history AND the resolved value each test, so a `toHaveBeenCalled`
+	// / call-count assertion can never read a prior test's invocation.
+	metaFetch.mockReset();
+	metaRevalidate.mockReset();
+	metaFetch.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 2048 });
+	metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 2048 });
 	HTMLElement.prototype.getClientRects = function () {
 		return [{}] as unknown as DOMRectList;
 	};
@@ -285,6 +341,17 @@ describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
 		expect(root().querySelector('.lightbox-nav')).toBeNull();
 	});
 
+	it('refuses an unsafe entry at open outright — NO fallback, not navigable (3a gate)', () => {
+		// TASK-2476 matrix, the security boundary: unsafe AT OPEN stays REFUSED (the
+		// 3a gate holds through 3c-i) — distinct from unsafe MID-VIEW, which is the
+		// fallback. So the SVG here is neither rendered NOR shown as a fallback, and
+		// the set is single-member.
+		mountViewer({ images: [image(IMG_A, 'png', 'image/png'), image(IMG_B, 'svg', 'image/svg+xml')] });
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+		expect(root().querySelector('.lightbox-counter')).toBeNull();
+		expect(root().querySelector('.lightbox-image')?.getAttribute('alt')).toBe('png');
+	});
+
 	it('cannot be paged onto one with ←/→', () => {
 		mountViewer({
 			images: [
@@ -336,6 +403,9 @@ describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
 		// image; "not yet known" is not evidence that a file is a PNG.
 		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
 		expect(root().querySelector('.lightbox-image')).toBeNull();
+		// An UNRESOLVED MIME is refused from navigation entirely — not even the
+		// fallback (that is for RESOLVED-unsafe mid-view entries, TASK-2476).
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
 	});
 
 	it('cannot be paged onto an unresolved sibling', () => {
@@ -357,6 +427,9 @@ describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
 		mountViewer({ images: [image(IMG_B, 'svg', 'image/svg+xml')] });
 
 		expect(root().querySelector('.lightbox-image')).toBeNull();
+		// A single UNSAFE-at-open entry is refused outright — no image AND no
+		// fallback (the fallback is mid-view only, TASK-2476).
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
 		// Still a real dialog with a way out — the failure mode is an empty
 		// viewer, never a rendered one.
 		expect(closeButton()).not.toBeNull();
@@ -364,6 +437,7 @@ describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
 		press('ArrowRight');
 		press('ArrowLeft');
 		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
 	});
 });
 
@@ -387,20 +461,26 @@ describe('Lightbox — the set changing under an OPEN viewer (TASK-2431)', () =>
 		return app;
 	}
 
-	it('drops a record whose MIME resolves to something unsafe AFTER open', () => {
+	it('shows the fallback (not drops) when a record resolves unsafe after open', () => {
+		// TASK-2476 matrix: safe→unsafe MID-VIEW is the FALLBACK cell — the entry
+		// stays navigable and counted, drawn as the no-bytes icon fallback, where
+		// pre-3c it was dropped from the set.
 		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg')];
 		mountLive();
 		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
 
-		// The late answer arrives: what was believed safe is not. A set captured
-		// once would keep paging onto it.
+		// The late answer arrives: what was believed safe is not.
 		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg', 'image/svg+xml')];
 		flushSync();
 
-		expect(shown()).toBe('png');
-		expect(root().querySelector('.lightbox-counter')).toBeNull();
+		// Still TWO entries — the flipped one is kept, not dropped.
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
 		press('ArrowRight');
-		expect(shown()).toBe('png');
+		// Landed on the flipped entry: the fallback arm, NO <img>.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		const fb = root().querySelector('.lightbox-fallback');
+		expect(fb).not.toBeNull();
+		expect(fb?.textContent).toContain('No preview available');
 	});
 
 	it('keeps showing a real image when the one under it is removed', () => {
@@ -419,25 +499,33 @@ describe('Lightbox — the set changing under an OPEN viewer (TASK-2431)', () =>
 		expect(imageSrc()).toContain(IMG_A);
 	});
 
-	it('cannot be navigated onto an unsafe entry ADDED after open', () => {
+	it('shows the fallback for an unsafe entry ADDED after open, but still refuses an unresolved one', () => {
+		// TASK-2476 matrix: added-while-open UNSAFE → fallback (navigable);
+		// added-while-open UNRESOLVED → refused-from-navigation (unchanged).
 		liveProps.images = [image(IMG_A, 'png')];
 		mountLive();
 
 		liveProps.images = [
 			image(IMG_A, 'png'),
-			image(IMG_B, 'svg', 'image/svg+xml'),
-			image(IMG_C, 'unprobed', null),
+			image(IMG_B, 'svg', 'image/svg+xml'), // unsafe → fallback, navigable
+			image(IMG_C, 'unprobed', null), // unresolved → refused from nav
 		];
 		flushSync();
 
-		// Both additions are refused, so the viewer is still single-image.
-		expect(root().querySelector('.lightbox-counter')).toBeNull();
+		// A (raster) + B (fallback) navigable; C (unresolved) is not — so 1 / 2.
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
 		press('ArrowRight');
-		press('ArrowLeft');
+		// Landed on B: the fallback, no <img>.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		// The next step WRAPS back to A (two members) — the unresolved C is never shown.
+		press('ArrowRight');
 		expect(shown()).toBe('png');
 	});
 
-	it('empties rather than showing an unsafe replacement', () => {
+	it('shows the fallback for an unsafe replacement rather than emptying', () => {
+		// TASK-2476: the only entry is replaced by an unsafe one — added-while-open,
+		// so the fallback cell, not an empty viewer.
 		liveProps.images = [image(IMG_A, 'png')];
 		mountLive();
 		expect(shown()).toBe('png');
@@ -446,6 +534,7 @@ describe('Lightbox — the set changing under an OPEN viewer (TASK-2431)', () =>
 		flushSync();
 
 		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
 	});
 });
 
@@ -521,8 +610,10 @@ describe('Lightbox — focus', () => {
 				image(IMG_B, 'second'),
 			],
 		});
-		const controls = Array.from(root().querySelectorAll('button'));
-		expect(controls).toHaveLength(3);
+		// More than one focusable, so "first" is separable from "a"/"the root":
+		// close, prev, next, plus the toolbar's open/download/copy-link (TASK-2474).
+		const controls = focusables();
+		expect(controls.length).toBeGreaterThan(1);
 		expect(document.activeElement).toBe(controls[0]);
 		expect(document.activeElement).toBe(closeButton());
 		expect(document.activeElement).not.toBe(root());
@@ -639,8 +730,8 @@ describe('Lightbox — Tab trap', () => {
 				image(IMG_B, 'second'),
 			],
 		});
-		const next = root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!;
-		next.focus();
+		// The trailing edge is the last toolbar control now, not the nav (TASK-2474).
+		lastFocusable().focus();
 
 		expect(press('Tab')).toBe(true);
 		expect(document.activeElement).toBe(closeButton());
@@ -656,9 +747,7 @@ describe('Lightbox — Tab trap', () => {
 		closeButton().focus();
 
 		expect(press('Tab', { shiftKey: true })).toBe(true);
-		expect(document.activeElement).toBe(
-			root().querySelector<HTMLButtonElement>('.lightbox-nav.next')
-		);
+		expect(document.activeElement).toBe(lastFocusable());
 	});
 
 	it('pulls focus back to the leading edge when it has escaped the viewer', () => {
@@ -680,9 +769,7 @@ describe('Lightbox — Tab trap', () => {
 		// ...and the trailing edge on a back Tab from outside.
 		outside.focus();
 		expect(press('Tab', { shiftKey: true })).toBe(true);
-		expect(document.activeElement).toBe(
-			root().querySelector('.lightbox-nav.next')
-		);
+		expect(document.activeElement).toBe(lastFocusable());
 	});
 
 	it('leaves a mid-cycle Tab to the browser', () => {
@@ -1254,16 +1341,18 @@ describe('Lightbox — the transform resets when the shown image changes (TASK-2
 	});
 
 	it('resets when the set shrinks under `current` so a DIFFERENT image is shown', () => {
-		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg')];
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'second', 'image/jpeg')];
 		mountLive();
 		press('ArrowRight');
 		expect(imageSrc()).toContain(IMG_B);
 		press('+');
 		expect(scaleOf()).toBeCloseTo(1.25);
 
-		// B's MIME resolves unsafe → it drops out → the shown image becomes A →
-		// the transform is back at fit.
-		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg', 'image/svg+xml')];
+		// B is REMOVED (a delete elsewhere) → the shown image becomes A → the
+		// transform is back at fit. A REMOVAL is used, not a safe→unsafe flip: since
+		// TASK-2476 a flip keeps the entry (same id) as the fallback, so it would not
+		// change the shown id and the reset would (correctly) not fire.
+		liveProps.images = [image(IMG_A, 'png')];
 		flushSync();
 		expect(imageSrc()).toContain(IMG_A);
 		expect(scaleOf()).toBe(1);
@@ -1495,8 +1584,7 @@ describe('Lightbox — Tab still cycles at maximum zoom (TASK-2456)', () => {
 		for (let i = 0; i < 10; i++) press('+');
 		expect(scaleOf()).toBeCloseTo(4);
 
-		const nextBtn = root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!;
-		nextBtn.focus();
+		lastFocusable().focus();
 		expect(press('Tab')).toBe(true);
 		expect(root().contains(document.activeElement)).toBe(true);
 		expect(document.activeElement).toBe(closeButton());
@@ -2462,6 +2550,9 @@ describe('Lightbox — DR-5b image loading (TASK-2459)', () => {
 		mountViewer({ images: [image(IMG_A, 'svg', 'image/svg+xml')] });
 		expect(root().querySelector('.lightbox-image')).toBeNull();
 		expect(root().querySelector('.lightbox-loading')).toBeNull();
+		// ...and NO fallback either: an all-unsafe set at open is refused outright
+		// (TASK-2476 — the fallback is a MID-VIEW cell, not an at-open one).
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
 	});
 
 	it('a same-id re-emit that FILLS dimensions re-runs the DR-5b policy', () => {
@@ -2498,25 +2589,30 @@ describe('Lightbox — DR-5b image loading (TASK-2459)', () => {
 		expect(panX()).toBeCloseTo(0);
 	});
 
-	it('an A→B→A same-URL late error on the DETACHED element does not clobber the live image', () => {
-		// The third A load reuses A's exact URL, so the URL fence alone cannot tell
-		// the detached first A element's late error from the live one — the per-mount
-		// generation is what rejects it (the no-`{#key}` switch-safety class).
+	it('releases a detached element on unmount, and a late error on it does not clobber the live image', () => {
+		// TASK-2476 hardens the detached-element handling: on unmount the `<img>`'s
+		// src is CLEARED (`releaseImg`), aborting its request so it can never issue or
+		// complete a same-URL late event. The GENERATION fence remains the
+		// loader-level defense (unit-tested in viewerImageLoader — the A→B→A same-URL
+		// stale decode/error cases); this covers the component wiring: the outgoing
+		// element is released, and a late error on it cannot flip the live image.
 		mountViewer({
 			images: [sized(IMG_A, 'a', 800, 600), sized(IMG_B, 'b', 800, 600, 'image/jpeg')],
 		});
 		const firstA = root().querySelector<HTMLImageElement>('.lightbox-image')!; // E1
-		expect(press('ArrowRight')).toBe(true); // → B (E1 detaches)
-		expect(press('ArrowLeft')).toBe(true); // → A again (E3 mounts, same URL)
+		expect(press('ArrowRight')).toBe(true); // → B (E1 detaches → src cleared)
+		expect(press('ArrowLeft')).toBe(true); // → A again (E3 mounts, fresh)
 		const liveA = root().querySelector<HTMLImageElement>('.lightbox-image')!;
 		expect(liveA).not.toBe(firstA);
-		expect(liveA.getAttribute('src')).toBe(firstA.getAttribute('src')); // same URL
+		// The detached element was RELEASED — its src is gone, its request aborted.
+		expect(firstA.getAttribute('src')).toBeNull();
+		// The live element holds A's URL.
+		expect(liveA.getAttribute('src')).toContain(IMG_A);
 
 		fireLoad(800, 600); // the LIVE A decodes fine → ready, no error
 		expect(root().querySelector('.lightbox-error')).toBeNull();
 
-		// The detached E1 errors LATE at the same URL — the generation fence must
-		// reject it so the live, ready image is not flipped into 'error'.
+		// A late error on the released detached element must not flip the live image.
 		firstA.dispatchEvent(new Event('error'));
 		flushSync();
 		expect(root().querySelector('.lightbox-error')).toBeNull();
@@ -2770,5 +2866,845 @@ describe('Lightbox — re-clamp on same-id decode + inert error state (TASK-2461
 		root().dispatchEvent(pointerEvent('pointermove', 720, 500));
 		flushSync();
 		expect(panX(), 'the drag aborted; no further pan over the error UI').toBeCloseTo(panned);
+	});
+});
+
+describe('Lightbox — action toolbar (TASK-2474)', () => {
+	// The shared descriptor list, drawn over the stage. The viewer only ever holds
+	// IMAGES, so Open/Download/Copy-link always apply; Delete is gated on the
+	// host's `mutationsEnabled`. `api.attachments.delete` is NOT mocked in this
+	// file, so these cases stop at the confirmation GATE (open / cancel / abandon)
+	// — the full delete network path is the strip/host origin tests' (which mock
+	// it). Here the module's own state machine is what is under test.
+	function toolbar(scope: HTMLElement = root()): HTMLElement | null {
+		return scope.querySelector<HTMLElement>('.lightbox-toolbar');
+	}
+	function tools(scope: HTMLElement = root()): HTMLElement[] {
+		return Array.from(scope.querySelectorAll<HTMLElement>('.lightbox-tool'));
+	}
+	function toolLabels(scope: HTMLElement = root()): string[] {
+		return tools(scope).map((t) => t.getAttribute('aria-label') ?? '');
+	}
+	function tool(label: string, scope: HTMLElement = root()): HTMLElement {
+		const found = tools(scope).find((t) => t.getAttribute('aria-label') === label);
+		if (!found) throw new Error(`no toolbar control labelled ${label}`);
+		return found;
+	}
+
+	beforeEach(() => {
+		Object.assign(toolbarProps, {
+			images: [image(IMG_A, 'a diagram')],
+			index: 0,
+			wsSlug: 'ws-one',
+			onClose: () => {},
+			mutationsEnabled: true,
+			getItemContent: undefined,
+			getLiveContent: undefined,
+		});
+	});
+
+	it('renders the read-only actions with no Delete when mutations are disabled', () => {
+		mountViewer({ mutationsEnabled: false });
+		expect(toolbar()).not.toBeNull();
+		const labels = toolLabels();
+		expect(labels).toContain('Open in new tab');
+		expect(labels).toContain('Download');
+		expect(labels).toContain('Copy workspace link');
+		expect(labels).not.toContain('Delete');
+	});
+
+	it('defaults to read-only (no Delete) when mutationsEnabled is omitted', () => {
+		mountViewer();
+		expect(toolbar()).not.toBeNull();
+		expect(toolLabels()).not.toContain('Delete');
+	});
+
+	it('offers Delete when the host granted mutationsEnabled', () => {
+		mountViewer({ mutationsEnabled: true });
+		expect(toolLabels()).toContain('Delete');
+	});
+
+	it('renders Open and Download as real anchors carrying href/download/target', () => {
+		mountViewer({ mutationsEnabled: false, images: [image(IMG_A, 'a diagram')] });
+		const open = tool('Open in new tab');
+		const download = tool('Download');
+		expect(open.tagName).toBe('A');
+		expect(open.getAttribute('href')).toContain(`/workspaces/ws-one/attachments/${IMG_A}`);
+		expect(open.getAttribute('target')).toBe('_blank');
+		expect(open.getAttribute('rel')).toBe('noopener noreferrer');
+		expect(download.tagName).toBe('A');
+		expect(download.getAttribute('href')).toContain(`/workspaces/ws-one/attachments/${IMG_A}`);
+		// A REAL download attribute, not decoration — the value is the display name.
+		expect(download.hasAttribute('download')).toBe(true);
+	});
+
+	it('renders Copy-link and Delete as buttons, not anchors', () => {
+		mountViewer({ mutationsEnabled: true });
+		expect(tool('Copy workspace link').tagName).toBe('BUTTON');
+		expect(tool('Delete').tagName).toBe('BUTTON');
+	});
+
+	it('drills down to the shared confirmation and back on Cancel (DR-18)', () => {
+		mountViewer({ mutationsEnabled: true });
+		tool('Delete').click();
+		flushSync();
+		// The action buttons are replaced by the shared confirm rows.
+		const confirm = root().querySelector('.lightbox-delete-confirm');
+		expect(confirm).not.toBeNull();
+		expect(tools()).toHaveLength(0);
+		// MenuItem rows carry a leading glyph in their text, so match on substrings.
+		const rows = Array.from(confirm!.querySelectorAll<HTMLElement>('button')).map(
+			(b) => b.textContent?.trim() ?? ''
+		);
+		expect(rows.some((r) => r.includes('Cancel'))).toBe(true);
+		expect(rows.some((r) => r.includes('Delete file'))).toBe(true);
+		// The hedged (not-referenced) arm, since no content getter was threaded.
+		expect(confirm!.querySelector('.attachment-delete-prompt')?.textContent).toContain(
+			'may still be referenced'
+		);
+
+		// Cancel returns to the toolbar without deleting anything.
+		Array.from(confirm!.querySelectorAll('button'))
+			.find((b) => b.textContent?.includes('Cancel'))!
+			.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull();
+		expect(toolLabels()).toContain('Delete');
+	});
+
+	it('warns about a live reference when the body still uses the attachment', () => {
+		// The delete-warning check reads the live getter at confirm time (DR-5).
+		mountViewer({
+			mutationsEnabled: true,
+			getLiveContent: () => `text ![x](pad-attachment:${IMG_A}) more`,
+		});
+		tool('Delete').click();
+		flushSync();
+		expect(root().querySelector('.attachment-delete-prompt')?.textContent).toContain(
+			"still used in this item's content"
+		);
+	});
+
+	it('abandons an open confirmation when mutation permission is withdrawn', () => {
+		// A pane going peeked closes the mutation gate mid-confirmation; the shared
+		// module abandons the drill-down rather than leaving a live Delete button for
+		// an action that can no longer happen (DR-8). Driven through a reactive prop.
+		mounted.push(mount(Lightbox, { target: appRoot, props: toolbarProps }));
+		flushSync();
+		tool('Delete').click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+
+		toolbarProps.mutationsEnabled = false;
+		flushSync();
+		// The confirmation is gone AND Delete is no longer offered.
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull();
+		expect(toolLabels()).not.toContain('Delete');
+	});
+
+	it('shows no toolbar when the set is empty', () => {
+		// An unresolved-MIME image is filtered out of `viewable`, leaving no `img`.
+		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
+		expect(toolbar()).toBeNull();
+	});
+
+	// ── Codex-review fixes (TASK-2474) ────────────────────────────────────────
+
+	it('renders the drill-down as a role="menu" of role="menuitem" rows', () => {
+		// The confirm rows are role="menuitem" (from MenuItem); they must be parented
+		// by role="menu", NOT the actions' role="toolbar".
+		mountViewer({ mutationsEnabled: true });
+		tool('Delete').click();
+		flushSync();
+		const menu = root().querySelector('.lightbox-delete-confirm');
+		expect(menu?.getAttribute('role')).toBe('menu');
+		expect(menu?.querySelectorAll('[role="menuitem"]').length).toBeGreaterThanOrEqual(2);
+		// ...and the toolbar's role="toolbar" is gone while confirming (not nesting a
+		// menu inside a toolbar).
+		expect(root().querySelector('[role="toolbar"]')).toBeNull();
+	});
+
+	it('moves focus to the first drill-down row and rovers the tab stop', () => {
+		mountViewer({ mutationsEnabled: true });
+		tool('Delete').click();
+		flushSync();
+		const rows = Array.from(
+			root().querySelectorAll<HTMLElement>('.lightbox-delete-confirm [role="menuitem"]')
+		);
+		// Cancel is first (the shared confirm's order), and focus lands on it.
+		expect(document.activeElement).toBe(rows[0]);
+		// Roving tabindex: exactly the active row is in the tab order, the rest are
+		// -1 — so Tab EXITS the menu to the chrome (ARIA menu), not between rows.
+		expect(rows[0].tabIndex).toBe(0);
+		expect(rows.slice(1).every((r) => r.tabIndex === -1)).toBe(true);
+	});
+
+	it('Up/Down move focus between drill-down rows and roll the tab stop', () => {
+		mountViewer({ mutationsEnabled: true });
+		tool('Delete').click();
+		flushSync();
+		const rows = Array.from(
+			root().querySelectorAll<HTMLElement>('.lightbox-delete-confirm [role="menuitem"]')
+		);
+		expect(document.activeElement).toBe(rows[0]);
+		expect(press('ArrowDown')).toBe(true);
+		expect(document.activeElement).toBe(rows[1]);
+		expect(rows[1].tabIndex).toBe(0);
+		expect(rows[0].tabIndex).toBe(-1);
+	});
+
+	it('Escape backs out of the drill-down before it closes the viewer', () => {
+		const onClose = vi.fn();
+		mounted.push(
+			mount(Lightbox, { target: appRoot, props: { ...toolbarProps, onClose } })
+		);
+		flushSync();
+		tool('Delete').click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+
+		// First Escape cancels the confirmation; the viewer stays open.
+		expect(runTopEscape()).toBe(true);
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull();
+		expect(onClose).not.toHaveBeenCalled();
+
+		// Second Escape closes the viewer.
+		expect(runTopEscape()).toBe(true);
+		flushSync();
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('abandons the drill-down when the shown image changes under it', () => {
+		// A delete elsewhere shrinks the set so a DIFFERENT member is shown; a
+		// confirmation for the gone image must not linger over the new one.
+		Object.assign(toolbarProps, {
+			images: [image(IMG_A, 'first'), image(IMG_B, 'second')],
+		});
+		mounted.push(mount(Lightbox, { target: appRoot, props: toolbarProps }));
+		flushSync();
+		tool('Delete').click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+
+		// The shown image (A) drops out; B moves into view.
+		toolbarProps.images = [image(IMG_B, 'second')];
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull();
+	});
+
+	it('consumes a wheel over the toolbar without zooming the image', () => {
+		mountViewer({ mutationsEnabled: false });
+		fireLoad(2000, 2000);
+		mockGeometry(root(), {
+			stageW: 1000,
+			stageH: 1000,
+			fittedW: 900,
+			fittedH: 900,
+			naturalW: 2000,
+			naturalH: 2000,
+		});
+		const before = scaleOf();
+
+		// A wheel over a toolbar control is consumed (the modal owns the wheel) but
+		// must NOT zoom.
+		expect(wheel(tool('Download'), { deltaY: -100, clientX: 500, clientY: 500 })).toBe(true);
+		expect(scaleOf()).toBe(before);
+
+		// Control: the SAME wheel over the image DOES zoom — so the exclusion is what
+		// stopped the toolbar wheel, not a dead wheel path.
+		expect(
+			wheel(root().querySelector<HTMLElement>('.lightbox-image')!, {
+				deltaY: -100,
+				clientX: 500,
+				clientY: 500,
+			})
+		).toBe(true);
+		expect(scaleOf()).toBeGreaterThan(before);
+	});
+});
+
+describe('Lightbox — metadata header (TASK-2475)', () => {
+	// Filename / type / size for the shown image, seeded from the LightboxImage and
+	// completed by the B module. The metadata mock (top of file) controls the HEAD.
+	function metaImage(over: Partial<LightboxImage> = {}): LightboxImage {
+		return {
+			id: IMG_A,
+			alt: 'a diagram',
+			filename: 'photo.png',
+			mime_type: 'image/png',
+			size_bytes: 2048,
+			width: null,
+			height: null,
+			...over,
+		};
+	}
+	function metaName(): string | null {
+		return root().querySelector('.lightbox-meta-name')?.textContent ?? null;
+	}
+	function metaDetail(): string | null {
+		return root().querySelector('.lightbox-meta-detail')?.textContent ?? null;
+	}
+	function metaError(): HTMLElement | null {
+		return root().querySelector('.lightbox-meta-error');
+	}
+	async function settleAsync() {
+		for (let i = 0; i < 5; i++) await Promise.resolve();
+		flushSync();
+	}
+
+	it('renders filename, type and size from a complete seed without fetching', async () => {
+		mountViewer({ images: [metaImage()] });
+		await settleAsync();
+		expect(metaName()).toBe('photo.png');
+		expect(metaDetail()).toBe(
+			`${describeAttachmentType('image/png', 'photo.png')} · ${formatBytes(2048)}`
+		);
+		// Seed carries both MIME and size, so no HEAD fires (DR-2's "fetch only what
+		// is null").
+		expect(metaFetch).not.toHaveBeenCalled();
+	});
+
+	it('falls back filename → alt when the filename is null', async () => {
+		mountViewer({ images: [metaImage({ filename: null })] });
+		await settleAsync();
+		expect(metaName()).toBe('a diagram');
+	});
+
+	it('treats a whitespace-only filename as absent and uses alt', async () => {
+		mountViewer({ images: [metaImage({ filename: '   ' })] });
+		await settleAsync();
+		expect(metaName()).toBe('a diagram');
+	});
+
+	it('falls back to the generic label when filename AND alt are blank', async () => {
+		mountViewer({ images: [metaImage({ filename: null, alt: '' })] });
+		await settleAsync();
+		expect(metaName()).toBe('Attachment');
+	});
+
+	it('treats a whitespace-only alt as blank too, reaching the generic label', async () => {
+		// The chain blank-normalizes alt, not just filename — an all-spaces alt must
+		// not win over 'Attachment' as an empty-but-present string would.
+		mountViewer({ images: [metaImage({ filename: null, alt: '   ' })] });
+		await settleAsync();
+		expect(metaName()).toBe('Attachment');
+	});
+
+	it('omits the size half when size stays unknown — detail is type only, no "0 B"', async () => {
+		// A viewer image always has a known MIME (the last-mile gate), so the
+		// type-omitted branch is unreachable here; what IS reachable is a null size
+		// that the fetch fails to fill. The detail must then be TYPE ONLY, with no
+		// stray " · " and no "0 B" (formatBytes is never fed null).
+		metaFetch.mockResolvedValue({ status: 'transient' });
+		mountViewer({ images: [metaImage({ size_bytes: null })] });
+		await settleAsync();
+		expect(metaName()).toBe('photo.png');
+		expect(metaDetail()).toBe(describeAttachmentType('image/png', 'photo.png'));
+	});
+
+	it('fetches to fill a null size and updates the detail line', async () => {
+		metaFetch.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 4096 });
+		mountViewer({ images: [metaImage({ size_bytes: null })] });
+		await settleAsync();
+		expect(metaFetch).toHaveBeenCalled();
+		expect(metaDetail()).toContain(formatBytes(4096));
+	});
+
+	it('a fetched field never overwrites a non-null seed', async () => {
+		// Seed MIME is the image PNG; the fetch returns a VISIBLY DIFFERENT type
+		// family (application/pdf) plus a size. The size fills (was null) but the type
+		// must stay the seed's — fields merge seed-wins. The fetched family is chosen
+		// distinct from the seed's on purpose: `image/gif` also labels as "Image", so
+		// an overwrite bug would have slipped through; a PDF label would not.
+		metaFetch.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 4096 });
+		mountViewer({ images: [metaImage({ filename: null, size_bytes: null })] });
+		await settleAsync();
+		const seededType = describeAttachmentType('image/png', null);
+		expect(seededType).not.toBe(describeAttachmentType('application/pdf', null));
+		expect(metaDetail()).toBe(`${seededType} · ${formatBytes(4096)}`);
+	});
+
+	it('shows a retryable error beside the name on a transient failure, then recovers', async () => {
+		metaFetch.mockResolvedValue({ status: 'transient' });
+		mountViewer({ images: [metaImage({ size_bytes: null })] });
+		await settleAsync();
+		// Beside what it already knows — never a blank sheet (DR-10).
+		expect(metaName()).toBe('photo.png');
+		expect(metaError()).not.toBeNull();
+
+		// Retry REVALIDATES (invalidate-then-fetch), never replays the cached failure.
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 8192 });
+		const retryBtn = root().querySelector<HTMLButtonElement>('.lightbox-meta-retry')!;
+		retryBtn.focus();
+		retryBtn.click();
+		await settleAsync();
+		expect(metaRevalidate).toHaveBeenCalled();
+		expect(metaError()).toBeNull();
+		expect(metaDetail()).toContain(formatBytes(8192));
+		// Retry unmounts on success (the transient state clears); focus must not be
+		// stranded on <body> outside the modal — it is re-homed into the viewer.
+		expect(document.activeElement).not.toBe(document.body);
+		expect(root().contains(document.activeElement)).toBe(true);
+	});
+
+	it('ellipsizes a 200-char filename while the accessible name carries it in full', async () => {
+		const long = 'a'.repeat(196) + '.png';
+		expect(long.length).toBe(200);
+		mountViewer({ images: [metaImage({ filename: long })] });
+		await settleAsync();
+		const nameEl = root().querySelector<HTMLElement>('.lightbox-meta-name')!;
+		// The FULL value is in title (DR-13) and in the element text — that is the
+		// info-preservation half, and it is what jsdom can prove. The VISUAL ellipsis
+		// (overflow/text-overflow/nowrap on `.lightbox-meta-name`) is not applied by
+		// jsdom's `getComputedStyle` (it ignores scoped `<style>` rules), so it is a
+		// browser-suite concern, like every other measured-layout claim in this file.
+		expect(nameEl.getAttribute('title')).toBe(long);
+		expect(nameEl.textContent).toBe(long);
+	});
+});
+
+describe('Lightbox — the fallback arm (TASK-2476)', () => {
+	// The stage's second arm: a navigable entry the viewer cannot draw as an image
+	// (an unsafe/active type that flipped or was added while open). These drive the
+	// live props to reach it, since the open gate keeps unsafe entries out of the
+	// initial set.
+	function mountLive() {
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		return app;
+	}
+	function fallback(): HTMLElement | null {
+		return root().querySelector('.lightbox-fallback');
+	}
+
+	it('mounts no <img>, disposes the loader AND releases the detached element on the arm flip', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+		// The raster arm: an <img> holding A's src is mounted. Capture it — the flip
+		// detaches it, and the no-bytes invariant requires its request released too.
+		const priorImg = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		expect(priorImg).not.toBeNull();
+		expect(priorImg.getAttribute('src')).toContain(IMG_A);
+
+		// A flips unsafe — SAME id and dims, only the renderer arm differs. The load
+		// key carries the arm, so the load effect re-fires and DISPOSES the loader;
+		// without that the safe bytes would linger behind the fallback.
+		liveProps.images = [image(IMG_A, 'png', 'image/svg+xml')];
+		flushSync();
+
+		// No <img> in the tree, and the DETACHED element's src is CLEARED — its
+		// native request is aborted, not left in flight until GC (releaseImg).
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector(`img[src*="${IMG_A}"]`)).toBeNull();
+		expect(priorImg.getAttribute('src')).toBeNull();
+		// The fallback is what shows instead.
+		expect(fallback()).not.toBeNull();
+	});
+
+	it('renders the icon, name, type · size and "No preview available"', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+		liveProps.images = [
+			{
+				id: IMG_A,
+				alt: 'plans',
+				filename: 'plans.svg',
+				mime_type: 'image/svg+xml',
+				size_bytes: 4096,
+				width: null,
+				height: null,
+			},
+		];
+		flushSync();
+		const fb = fallback()!;
+		expect(fb).not.toBeNull();
+		// The large family icon (AttachmentIcon renders inline SVG).
+		expect(fb.querySelector('.lightbox-fallback-icon svg')).not.toBeNull();
+		// The display name, full value also in title (DR-13).
+		const nameEl = fb.querySelector('.lightbox-fallback-name');
+		expect(nameEl?.textContent).toBe('plans.svg');
+		expect(nameEl?.getAttribute('title')).toBe('plans.svg');
+		// Type · size and the honest note.
+		expect(fb.querySelector('.lightbox-fallback-detail')?.textContent).toContain(formatBytes(4096));
+		expect(fb.textContent).toContain('No preview available');
+	});
+
+	it('is navigable and counted, paged onto with ←/→', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'diagram', 'image/svg+xml')];
+		flushSync();
+		// Two navigable members — the counter counts the fallback entry.
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+		expect(root().querySelector('.lightbox-image')?.getAttribute('alt')).toBe('png');
+		press('ArrowRight');
+		// Paged onto the fallback entry.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(fallback()).not.toBeNull();
+	});
+
+	it('disables zoom on the fallback arm — nothing to transform', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+		liveProps.images = [image(IMG_A, 'png', 'image/svg+xml')];
+		flushSync();
+		expect(fallback()).not.toBeNull();
+		// The zoom key is consumed (not leaked to the inert page) but inert — there
+		// is no bitmap, and none appears.
+		expect(press('+')).toBe(true);
+		expect(press('0')).toBe(true);
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+	});
+
+	it('re-homes focus when the arm swap removes the focused raster control', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+		// Drive to the error state so the Retry button exists, and focus it.
+		root().querySelector('.lightbox-image')!.dispatchEvent(new Event('error'));
+		flushSync();
+		const retry = root().querySelector<HTMLButtonElement>('.lightbox-retry')!;
+		retry.focus();
+		expect(document.activeElement).toBe(retry);
+
+		// A flips unsafe → the raster arm (with Retry) unmounts, the fallback mounts.
+		liveProps.images = [image(IMG_A, 'png', 'image/svg+xml')];
+		flushSync();
+		expect(root().querySelector('.lightbox-retry')).toBeNull();
+		expect(fallback()).not.toBeNull();
+		// Focus is not stranded on <body> outside the modal — it is re-homed.
+		expect(document.activeElement).not.toBe(document.body);
+		expect(root().contains(document.activeElement)).toBe(true);
+	});
+
+	it('reactively cancels a live drag when the bitmap vanishes via a prop flip', () => {
+		// The pointer handlers catch a flip that arrives WITH a move/up event, but the
+		// arm can flip from a PROP change while the pointer is held STILL — no event to
+		// carry the abort. The reactive cancel must tear the gesture down and release
+		// the capture, so a stale gesture cannot pan the reloaded image after an
+		// A→unsafe→A flip.
+		liveProps.images = [sized(IMG_A, 'a', 5000, 5000)];
+		mountLive();
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(1024, 768); // decoded → bitmapPresent true
+		zoomToActual(); // pan room
+		const capture = vi.fn();
+		const release = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = capture;
+		(root() as unknown as { releasePointerCapture: unknown }).releasePointerCapture = release;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500)); // engage the drag
+		flushSync();
+		expect(capture, 'the drag armed on the decoded bitmap').toHaveBeenCalled();
+
+		// A flips unsafe via a prop change — NO further pointer event.
+		liveProps.images = [sized(IMG_A, 'a', 5000, 5000, 'image/svg+xml')];
+		flushSync();
+		// The gesture was cancelled: the capture is released and the fallback shows.
+		expect(release, 'the reactive cancel released the capture').toHaveBeenCalled();
+		expect(fallback()).not.toBeNull();
+	});
+});
+
+describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
+	// The viewer subscribes to the REAL deletion bus and reconciles by IDENTITY:
+	// the shown image is tracked by id, the index derived, so a delete advances or
+	// closes (never lands on a position that now names a different member). The
+	// bus is real in this suite, so `notifyAttachmentDeleted` drives it directly.
+	function mountLive() {
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		return app;
+	}
+	function shownAlt(): string {
+		const raster = root().querySelector<HTMLImageElement>('.lightbox-image');
+		if (raster) return raster.getAttribute('alt') ?? '';
+		return root().querySelector('.lightbox-fallback-name')?.textContent ?? '';
+	}
+	function counterText(): string | null {
+		return root().querySelector('.lightbox-counter')?.textContent ?? null;
+	}
+	function del(id: string) {
+		notifyAttachmentDeleted(id);
+		flushSync();
+	}
+
+	it('deleting the ONLY image closes the viewer', () => {
+		const onClose = vi.fn();
+		mountViewer({ images: [image(IMG_A, 'a')], onClose });
+		del(IMG_A);
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('deleting the SHOWN image advances to the next survivor', () => {
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg'), image(IMG_C, 'c', 'image/gif')],
+		});
+		expect(shownAlt()).toBe('a');
+		del(IMG_A);
+		// Advanced to the one that FOLLOWED A.
+		expect(shownAlt()).toBe('b');
+		expect(counterText()).toBe('1 / 2');
+	});
+
+	it('deleting the LAST shown image wraps to the first survivor', () => {
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg'), image(IMG_C, 'c', 'image/gif')],
+		});
+		press('ArrowRight');
+		press('ArrowRight');
+		expect(shownAlt()).toBe('c'); // on the last
+		del(IMG_C);
+		// Wrap-around: the deleted last advances to the first survivor.
+		expect(shownAlt()).toBe('a');
+		expect(counterText()).toBe('1 / 2');
+	});
+
+	it('deleting an EARLIER image keeps the SAME image shown (identity, not index)', () => {
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg'), image(IMG_C, 'c', 'image/gif')],
+		});
+		press('ArrowRight');
+		press('ArrowRight');
+		expect(shownAlt()).toBe('c'); // position 3 of 3
+		del(IMG_A);
+		// An index-based viewer would now show B (C shifted to index 1); identity
+		// keeps C on screen.
+		expect(shownAlt()).toBe('c');
+		expect(counterText()).toBe('2 / 2');
+	});
+
+	it('deleting down to ONE image drops the counter and nav', () => {
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		expect(counterText()).toBe('1 / 2');
+		del(IMG_A);
+		expect(shownAlt()).toBe('b');
+		expect(root().querySelector('.lightbox-counter')).toBeNull();
+		expect(root().querySelector('.lightbox-nav')).toBeNull();
+	});
+
+	it('deleting every image (zero left) closes on the last one', () => {
+		const onClose = vi.fn();
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')], onClose });
+		del(IMG_A); // → advance to B, still open
+		expect(onClose).not.toHaveBeenCalled();
+		expect(shownAlt()).toBe('b');
+		del(IMG_B); // zero left → close
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('reopening (a fresh mount) clears tombstones — a re-added image shows again', () => {
+		const first = mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		del(IMG_A);
+		expect(shownAlt()).toBe('b'); // A tombstoned for THIS instance
+		unmount(mounted.splice(mounted.indexOf(first), 1)[0]);
+		flushSync();
+
+		// A fresh instance (every producer keys the mount) with A back in the list:
+		// no cross-open tombstone leakage, so A opens.
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		expect(shownAlt()).toBe('a');
+	});
+
+	it('an OWN toolbar delete flows through the bus identically (advance)', () => {
+		// mutationsEnabled + a full confirm→delete, but api.attachments.delete is not
+		// mocked here — so drive the announce directly (what the descriptor does on a
+		// 204) and assert the viewer reconciles it via the SAME survivor path.
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')],
+			mutationsEnabled: true,
+		});
+		// The bus announce (own or external) is the one path.
+		del(IMG_A);
+		expect(shownAlt()).toBe('b');
+	});
+
+	it('deletes a non-image FALLBACK entry too', () => {
+		// The survivor logic composes with D's navigable: a fallback-arm entry (an
+		// unsafe MIME that flipped mid-view) is deletable, and deleting it advances.
+		liveProps.images = [image(IMG_A, 'a'), image(IMG_B, 'b')];
+		mountLive();
+		liveProps.images = [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/svg+xml')]; // B → fallback
+		flushSync();
+		press('ArrowRight'); // → B, the fallback arm
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		del(IMG_B);
+		// Advanced off the fallback back to A (the raster arm).
+		expect(shownAlt()).toBe('a');
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+	});
+
+	it('a delete of a DIFFERENT image while the confirm drill-down is up leaves it up', () => {
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')],
+			mutationsEnabled: true,
+		});
+		// Open the delete confirmation on the shown image A.
+		root().querySelector<HTMLButtonElement>(
+			'.lightbox-toolbar .lightbox-tool[aria-label="Delete"]'
+		)!.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+
+		// An EXTERNAL delete of B (not shown) — A stays shown, its confirm stays up.
+		del(IMG_B);
+		expect(shownAlt()).toBe('a');
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+	});
+
+	it('a delete of the SHOWN image while its own confirm is up advances with a CLEAN toolbar', () => {
+		// The confirm gate holds `runToolbarAction` awaiting inside `run`, so
+		// `toolbarBusy` is true the whole time the drill-down is up. An external delete
+		// of that same shown image (another in-page surface, or — via the metadata
+		// `missing` path — another tab) advances to a survivor; the subject-change reset
+		// must zero `toolbarBusy`, or the survivor's Delete shows a stale "Deleting…" for
+		// a request that was never about it. The fenced `finally` deliberately does NOT
+		// clear it (the continuation is stale), so this asserts the reset is load-bearing.
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')],
+			mutationsEnabled: true,
+		});
+		root().querySelector<HTMLButtonElement>(
+			'.lightbox-toolbar .lightbox-tool[aria-label="Delete"]'
+		)!.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+
+		del(IMG_A); // the shown image is deleted from under the open confirm
+		expect(shownAlt()).toBe('b'); // advanced to the survivor
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull(); // confirm abandoned
+		const deleteLabel = root()
+			.querySelector('.lightbox-toolbar .lightbox-tool[aria-label="Delete"] .lightbox-tool-label')
+			?.textContent?.trim();
+		expect(deleteLabel).toBe('Delete'); // NOT the stale "Deleting…"
+	});
+
+	it('a delete of an unrelated attachment (not in the set) is a harmless no-op', () => {
+		const onClose = vi.fn();
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')], onClose });
+		del('ffffffff-0000-4000-8000-ffffffffffff'); // never in the set
+		expect(onClose).not.toHaveBeenCalled();
+		expect(shownAlt()).toBe('a');
+		expect(counterText()).toBe('1 / 2');
+	});
+
+	it('a delete of an already-dangling shown id is a harmless no-op (no throw)', () => {
+		// The shown image is removed straight from the PROP (not the bus), so shownId
+		// dangles and the index derives to survivors[0]. A later bus delete of that
+		// gone id must not read after[-1] or advance.
+		liveProps.images = [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')];
+		mountLive();
+		press('ArrowRight'); // shownId = B
+		expect(shownAlt()).toBe('b');
+		liveProps.images = [image(IMG_A, 'a')]; // B removed from the prop → shownId dangles
+		flushSync();
+		expect(shownAlt()).toBe('a'); // derived falls to the survivor
+		del(IMG_B); // a bus delete of the gone B — must not throw or disturb A
+		expect(shownAlt()).toBe('a');
+	});
+
+	it('a delete on an already-empty viewer does not close it', () => {
+		const onClose = vi.fn();
+		liveProps.images = [image(IMG_A, 'a')];
+		liveProps.onClose = onClose;
+		mountLive();
+		liveProps.images = []; // all removed via the prop → empty, still mounted
+		flushSync();
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		// A delete (of the gone one, or an unrelated id) must NOT close the
+		// already-empty viewer — the close is for a delete that EMPTIES a set, not one
+		// that finds it already empty.
+		del(IMG_A);
+		del('ffffffff-0000-4000-8000-ffffffffffff');
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	it('deleting the shown image mid-DRAG advances and resets the zoom (stale drag stays harmless)', () => {
+		mountViewer({
+			images: [sized(IMG_A, 'a', 5000, 5000), sized(IMG_B, 'b', 800, 600, 'image/jpeg')],
+		});
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(1024, 768); // A decoded → bitmapPresent, pan room
+		zoomToActual();
+		expect(scaleOf()).toBeGreaterThan(1); // zoomed in on A
+		const capture = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = capture;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500)); // engage the drag
+		flushSync();
+		expect(capture, 'the drag armed on A').toHaveBeenCalled();
+
+		// A is deleted while the drag is live → advance to B, and the id-keyed reset
+		// returns the transform to fit. The stale drag baseline is deliberately LEFT
+		// (as arrow-nav mid-drag does) but harmless: at fit `clampPan` pins the pan to
+		// 0, so no baseline can jump the image.
+		del(IMG_A);
+		expect(shownAlt()).toBe('b');
+		expect(scaleOf(), 'the advance reset the transform to fit').toBe(1);
+	});
+
+	// ── The metadata `missing` phase as a deletion (3c-i final fix) ────────────
+	// The deletion bus is process-local, so an out-of-page delete (another tab, a
+	// job, the API) reaches the viewer only as the metadata machine's authoritative
+	// `missing` (404) phase — which routes through the SAME tombstone path.
+	// Interleave a microtask drain with an effect flush per hop: a cascade (each 404
+	// advances to the next, whose OWN async HEAD then 404s) needs the effect to run
+	// BETWEEN async resolutions, not once at the end.
+	async function settleAsync() {
+		for (let i = 0; i < 8; i++) {
+			await Promise.resolve();
+			flushSync();
+		}
+	}
+
+	it('an authoritative metadata 404 (missing) for the shown image advances to a survivor', async () => {
+		metaFetch.mockImplementation((_ws: unknown, uuid: string) =>
+			Promise.resolve(
+				uuid === IMG_A
+					? { status: 'missing' as const }
+					: { status: 'ok' as const, mime: 'image/png', size: 2048 }
+			)
+		);
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		await settleAsync();
+		// A's HEAD 404'd → A is tombstoned → advance to B; the set is now single.
+		expect(shownAlt()).toBe('b');
+		expect(counterText()).toBeNull();
+	});
+
+	it('an authoritative metadata 404 for the ONLY image closes the viewer', async () => {
+		const onClose = vi.fn();
+		metaFetch.mockResolvedValue({ status: 'missing' });
+		mountViewer({ images: [image(IMG_A, 'a')], onClose });
+		await settleAsync();
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('an ENTIRE set going missing cascades advance→advance→close (terminates)', async () => {
+		const onClose = vi.fn();
+		// Every image 404s: A advances to B, B's own probe 404s and advances to C,
+		// C's 404 empties the set → close. The effect re-runs once per subject change
+		// (each HEAD is async), so the cascade settles rather than looping.
+		metaFetch.mockResolvedValue({ status: 'missing' });
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg'), image(IMG_C, 'c', 'image/gif')],
+			onClose,
+		});
+		await settleAsync();
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('a TRANSIENT metadata failure does NOT delete the shown image (DR-17)', async () => {
+		const onClose = vi.fn();
+		metaFetch.mockResolvedValue({ status: 'transient' });
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')], onClose });
+		await settleAsync();
+		// A non-404 failure is retryable, never a deletion — the viewer stays on A and
+		// shows the header's inline retry instead.
+		expect(shownAlt()).toBe('a');
+		expect(onClose).not.toHaveBeenCalled();
+		expect(root().querySelector('.lightbox-meta-error')).not.toBeNull();
 	});
 });

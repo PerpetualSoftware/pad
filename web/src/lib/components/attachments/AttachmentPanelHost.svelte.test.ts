@@ -241,6 +241,27 @@ describe('AttachmentPanelHost', () => {
 		expect(row('Delete')?.tagName).toBe('BUTTON');
 	});
 
+	it('draws each action-row icon as an SVG, never a glyph string (TASK-2472)', async () => {
+		mountHost(propsA);
+		notifyAttachmentPanelOpen(openEvent());
+		await settle();
+
+		// Every action row's leading icon is a rendered SVG (the shared registry via
+		// MenuItem's snippet path) — fails if the panel goes back to passing the
+		// descriptor's `icon` as MenuItem's TEXT `icon` prop.
+		for (const label of ['Open in new tab', 'Download', 'Copy workspace link', 'Delete']) {
+			const r = row(label);
+			expect(r, `row "${label}" exists`).toBeDefined();
+			expect(r!.querySelector('.mi-icon svg'), `"${label}" icon is an SVG`).not.toBeNull();
+		}
+		// ...and NONE of the glyph characters the descriptors used to carry survive
+		// anywhere in the panel's text.
+		const text = panel()?.textContent ?? '';
+		for (const glyph of ['⇗', '⇩', '🔗', '🗑']) {
+			expect(text, `the glyph "${glyph}" is gone`).not.toContain(glyph);
+		}
+	});
+
 	it('omits Open for a type the browser cannot preview', async () => {
 		mountHost(propsA);
 		notifyAttachmentPanelOpen(

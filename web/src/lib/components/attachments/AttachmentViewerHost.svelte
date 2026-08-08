@@ -25,8 +25,11 @@
 	without remounting, so a live read could serve a viewer opened in ws1 from
 	ws2's endpoint.
 
-	NO `mutationsEnabled`. 3a's viewer has no mutating action, so threading a
-	permission here would be a dead prop. It is 3c's, together with Delete.
+	`mutationsEnabled` + CONTENT GETTERS (TASK-2474). 3c-i's viewer gained a
+	toolbar with a mutating action (Delete), so the permission and the
+	delete-warning content getters are threaded through here now — the same three
+	props, same names, the panel host already carries. Forwarded verbatim to the
+	`Lightbox`; this host adds no policy of its own.
 
 	LIFECYCLE — ONE RULE. Clear on a RESOURCE SWITCH: the host's `itemId`
 	changing, or `resourceGen` advancing. Nothing else closes the viewer.
@@ -63,9 +66,25 @@
 		 * note above for why this is not `loadGeneration`.
 		 */
 		resourceGen?: number;
+		/**
+		 * Viewer toolbar context (TASK-2474), forwarded verbatim to `Lightbox`.
+		 * `mutationsEnabled` gates Delete; the two content getters back its
+		 * delete-warning check. DEFAULT `mutationsEnabled=false` → a read-only
+		 * toolbar when a host doesn't thread it.
+		 */
+		mutationsEnabled?: boolean;
+		getItemContent?: () => string | null;
+		getLiveContent?: () => string | null;
 	}
 
-	let { itemId, hostToken, resourceGen = 0 }: Props = $props();
+	let {
+		itemId,
+		hostToken,
+		resourceGen = 0,
+		mutationsEnabled = false,
+		getItemContent,
+		getLiveContent,
+	}: Props = $props();
 
 	let request = $state<AttachmentViewerOpenEvent | null>(null);
 
@@ -170,6 +189,9 @@
 			index={request.index}
 			wsSlug={request.workspaceSlug}
 			invoker={request.invoker}
+			{mutationsEnabled}
+			{getItemContent}
+			{getLiveContent}
 			onClose={closeRequest(request)}
 		/>
 	{/if}

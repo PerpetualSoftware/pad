@@ -66,14 +66,26 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: { userId: 'user-1', user: { id: 'user-1', role: 'member' } },
 }));
 
+// Controllable so the TASK-2474 peek leg can set the timeline's OWN canEdit
+// TRUE while the host withholds `mutationsEnabled` — the only configuration that
+// makes "the viewer must not consult canEdit" falsifiable.
+const canEditMock = vi.hoisted(() => vi.fn(() => false));
 vi.mock('$lib/stores/workspace.svelte', () => ({
-	workspaceStore: { canEditItem: () => false },
+	workspaceStore: { canEditItem: canEditMock },
 }));
 
 // The HEAD probe, answered from MIMES. An id absent from the table resolves as
 // `transient` — the "not known" case the gate must fail safe on.
 vi.mock('$lib/components/editor/attachment-metadata', () => ({
 	fetchAttachmentMetadata: (_ws: string, uuid: string) =>
+		Promise.resolve(
+			MIMES[uuid]
+				? { status: 'ok' as const, mime: MIMES[uuid], size: 4096 }
+				: { status: 'transient' as const }
+		),
+	// The timeline mounts the real Lightbox, whose metadata header (TASK-2475) calls
+	// this on a header Retry — mirror the fetch stub so the contract is complete.
+	revalidateAttachmentMetadata: (_ws: string, uuid: string) =>
 		Promise.resolve(
 			MIMES[uuid]
 				? { status: 'ok' as const, mime: MIMES[uuid], size: 4096 }
@@ -137,6 +149,9 @@ const props = $state<{
 	itemId: string;
 	collectionId: string;
 	visibleKinds: Array<'comment' | 'activity' | 'version'> | undefined;
+	mutationsEnabled?: boolean;
+	getItemContent?: () => string | null;
+	getLiveContent?: () => string | null;
 }>({
 	wsSlug: 'ws',
 	username: 'alice',
@@ -145,6 +160,9 @@ const props = $state<{
 	itemId: 'item-a',
 	collectionId: 'coll-1',
 	visibleKinds: undefined,
+	mutationsEnabled: false,
+	getItemContent: undefined,
+	getLiveContent: undefined,
 });
 
 function resetProps() {
@@ -155,6 +173,9 @@ function resetProps() {
 	props.itemId = 'item-a';
 	props.collectionId = 'coll-1';
 	props.visibleKinds = undefined;
+	props.mutationsEnabled = false;
+	props.getItemContent = undefined;
+	props.getLiveContent = undefined;
 }
 
 function render() {
@@ -216,6 +237,7 @@ beforeEach(() => {
 	host = document.createElement('div');
 	document.body.appendChild(host);
 	resetProps();
+	canEditMock.mockReturnValue(false);
 	timelineListMock.mockReset();
 	timelineListMock.mockResolvedValue({ entries: [], has_more: false });
 });
@@ -478,5 +500,50 @@ describe('ItemTimeline — A→B viewer lifecycle (TASK-2431)', () => {
 		await settle();
 
 		expect(viewerShowing()).toBe(PNG_A);
+	});
+});
+
+describe('ItemTimeline — viewer toolbar (TASK-2474)', () => {
+	// The TIMELINE origin of the three that mount a Lightbox. The peek leg is the
+	// one the plan calls out: the toolbar's Delete must follow the HOST's
+	// `mutationsEnabled`, NEVER this component's own `canEdit` (which ignores
+	// peeking) — so it is exercised with canEdit TRUE and mutationsEnabled FALSE.
+	function toolLabels(): string[] {
+		return Array.from(
+			document.querySelectorAll<HTMLElement>('.lightbox-toolbar .lightbox-tool')
+		).map((t) => t.getAttribute('aria-label') ?? '');
+	}
+
+	it('renders the toolbar with Delete when the host grants mutations', async () => {
+		props.mutationsEnabled = true;
+		timelineListMock.mockResolvedValue(respond([PNG_A]));
+		render();
+		await settle();
+
+		click(thumbFor(PNG_A));
+		flushSync();
+		expect(viewerOpen()).toBe(true);
+		expect(document.querySelector('.lightbox-toolbar')).not.toBeNull();
+		expect(toolLabels()).toContain('Delete');
+	});
+
+	it('shows NO Delete on a peeked pane even though its own canEdit is true', async () => {
+		// The peek: the host withholds mutation, but this timeline's own canEdit
+		// resolves TRUE (editable item, not frozen). If the viewer were wired to
+		// canEdit instead of the passed mutationsEnabled, Delete would appear — this
+		// leg is what fails in that case.
+		canEditMock.mockReturnValue(true);
+		props.mutationsEnabled = false;
+		timelineListMock.mockResolvedValue(respond([PNG_A]));
+		render();
+		await settle();
+
+		click(thumbFor(PNG_A));
+		flushSync();
+		expect(viewerOpen()).toBe(true);
+		expect(document.querySelector('.lightbox-toolbar')).not.toBeNull();
+		expect(toolLabels()).not.toContain('Delete');
+		// ...and the read-only actions are still there — read-only, not empty.
+		expect(toolLabels()).toContain('Download');
 	});
 });
