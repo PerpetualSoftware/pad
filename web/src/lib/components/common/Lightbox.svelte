@@ -338,7 +338,9 @@
 	let headerDetail = $derived([headerType, headerSize].filter(Boolean).join(' · '));
 	// A non-404 fetch failure: show the DR-10 inline retry BESIDE what is already
 	// known (the name + type never blank out), and Retry revalidates through the
-	// module rather than replaying the cached failure.
+	// module rather than replaying the cached failure. The module's other authoritative
+	// phase — `missing` (404) — is NOT a header state: it means the shown file is
+	// gone, so it is routed through the deletion path instead (see the effect below).
 	let headerTransient = $derived(headerMeta.phase === 'transient');
 	// The fallback arm's large icon (TASK-2476): the same family glyph the strip /
 	// panel show for this type, from the shared registry.
@@ -449,21 +451,36 @@
 
 	async function runToolbarAction(action: ButtonAttachmentAction) {
 		if (!action.enabled(toolbarCtx)) return;
+		// Fence the whole action against the shown identity (the SAME view fence the
+		// metadata machine invalidates on a subject change). A confirmed delete of the
+		// shown image advances `shownId` to a survivor synchronously inside `run`'s
+		// announce, and a metadata `missing` for the shown image can advance it while a
+		// SLOW delete of that same image is still awaiting — either way the view has
+		// moved on, and this continuation must NOT write `toolbarBusy` / `toolbarError`
+		// onto the survivor now on screen. The subject-change reset (the id-keyed effect)
+		// clears the busy/error state for the new image; a stale continuation just
+		// bows out. A same-image failure (delete rejected, no advance) is NOT stale, so
+		// its error still shows against the image it belongs to.
+		const token = headerMeta.viewFence.begin();
 		toolbarError = null;
 		toolbarBusy = true;
 		try {
 			await action.run(toolbarCtx);
 			// A confirmed delete is reconciled through the deletion bus (`handleDeletion`
 			// runs synchronously inside `run`'s announce) — advance or close — so nothing
-			// to do here. Copy-link and the rest simply finish. The `destroyed` guard
-			// covers a continuation landing after the bus close tore the viewer down.
-			if (destroyed) return;
+			// to do here. Copy-link and the rest simply finish. The guards cover a
+			// continuation landing after the bus close tore the viewer down (`destroyed`)
+			// or after the view advanced off this image (`token.stale()`).
+			if (destroyed || token.stale()) return;
 		} catch (err) {
-			if (destroyed) return;
+			if (destroyed || token.stale()) return;
 			toolbarError =
 				err instanceof Error ? err.message : `Couldn't ${action.label.toLowerCase()}`;
 		} finally {
-			if (!destroyed) toolbarBusy = false;
+			// Only the still-current continuation clears the busy flag; a stale one leaves
+			// it for the subject-change reset to zero, so it can't un-busy the survivor
+			// mid-action.
+			if (!destroyed && !token.stale()) toolbarBusy = false;
 		}
 	}
 
@@ -982,11 +999,14 @@
 
 	// THE DELETION SUBSCRIPTION (PLAN-2392 DR-5c / TASK-2477). ONE path for both
 	// origins: the toolbar's own Delete announces on the bus (the descriptor's
-	// `announceAttachmentDeleted`), and an external surface (the strip, another
-	// tab) announces the same way — so this reacts identically to both, and the
+	// `announceAttachmentDeleted`), and another in-page surface (the strip, a body
+	// NodeView) announces the same way — so this reacts identically to both, and the
 	// toolbar's ctx deliberately carries NO `onDeleted` (that close-on-delete is
-	// the PANEL's; the viewer advances instead). An event handler, not an $effect,
-	// so writing `shownId` / `tombstones` here is not a self-write.
+	// the PANEL's; the viewer advances instead). The bus is PROCESS-LOCAL, so an
+	// out-of-page delete (another tab, a job, the API) reaches this viewer as a
+	// metadata `missing` phase instead — routed through here by the effect below.
+	// An event handler, not an $effect, so writing `shownId` / `tombstones` here is
+	// not a self-write.
 	function handleDeletion(uuid: string) {
 		if (!uuid || tombstones.has(uuid)) return;
 		// Snapshot BEFORE tombstoning: the position of the deleted entry decides
@@ -1022,6 +1042,47 @@
 			shownId = after[i < after.length ? i : 0].id;
 		}
 	}
+
+	// AN AUTHORITATIVE 404 IS A DELETION BY ANOTHER DOOR (PLAN-2392 DR-17 /
+	// 3c-i final fix). The deletion bus is PROCESS-LOCAL (`events.ts`), so a delete
+	// from another browser tab, a background job, or a direct API call never
+	// announces on it — but where the metadata machine PROBES the shown attachment,
+	// its HEAD returns the `missing` phase, which is just as authoritative (DR-17).
+	// Route that id through the SAME tombstone path so advance-or-close, the id-keyed
+	// zoom reset, focus handling, and the confirm-abandon all come for free — rather
+	// than leaving stale image bytes and live Open / Download / Copy / Delete on a
+	// file that is gone. ONLY `missing` latches; a `transient` (non-404) stays
+	// retryable and never gets here.
+	//
+	// SCOPE: the machine only HEAD-probes when a seed field is null (an inline / body
+	// image seeds no size, so it probes; a strip image seeds mime AND size and is not
+	// re-probed — `surfaceMetadata`'s "nothing to complete" short-circuit). So this
+	// catches an out-of-page delete for a probed image; a strip-opened image whose
+	// file is deleted elsewhere is reconciled only if that delete also crosses the
+	// in-page bus. A blanket reachability probe for every viewer image is deliberately
+	// NOT done here (a HEAD per open, for the uncommon cross-tab case) — 3c-ii owns
+	// any always-revalidate decision.
+	//
+	// A sentinel + `untrack` keep it CONVE-1688-safe. The ONLY tracked read is
+	// `headerMeta.phase`; `img?.id` is read untracked, so an arrow-nav that changes
+	// the shown id without changing the phase can't re-fire this, and the advance's
+	// subject change (which resets the machine's phase away from `missing`) is what
+	// re-runs it for the NEXT id. `handleDeletion` is idempotent, so a whole gone set
+	// cascades advance→advance→close, one 404 at a time, and terminates.
+	let lastMissingId: string | undefined = undefined;
+	$effect(() => {
+		const missing = headerMeta.phase === 'missing';
+		untrack(() => {
+			const missingId = missing ? img?.id : undefined;
+			if (!missingId) {
+				lastMissingId = undefined;
+				return;
+			}
+			if (missingId === lastMissingId) return;
+			lastMissingId = missingId;
+			handleDeletion(missingId);
+		});
+	});
 
 	/**
 	 * Return focus where it came from, on close.
@@ -1165,6 +1226,14 @@
 		// subject-change does. `cancel()` writes the delete-confirm MODULE's state,
 		// not this effect's tracked `zoom`, so it cannot self-invalidate the flush.
 		deleteConfirm.cancel();
+		// Drop the toolbar's per-image action state too: an action that was in flight
+		// on the PREVIOUS image (a slow delete raced by this advance, or the confirmed
+		// delete that caused it) fenced itself out of the `finally` that would clear
+		// `toolbarBusy`, so zero it here — otherwise the survivor shows "Deleting…" for
+		// a request that isn't about it. `toolbarError` likewise belonged to the old
+		// image. Both are `$state` this effect never reads, so no self-invalidation.
+		toolbarBusy = false;
+		toolbarError = null;
 		// A drag live ACROSS the image change (arrow-nav mid-drag) is left with a
 		// stale baseline, and deliberately so: `resetZoom` is fit, where `clampPan`
 		// pins the pan to 0 for ANY baseline, so the next move can't jump; and the

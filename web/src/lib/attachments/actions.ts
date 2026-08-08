@@ -7,13 +7,12 @@
  * descriptors: a surface renders them, none of them owns the set, and adding an
  * action means adding one descriptor here.
  *
- * TODAY THERE IS ONE CONSUMER: the options panel, which draws them as a
- * menu/sheet. The unified image viewer — the second renderer, an inline
- * toolbar over the same list — arrives in phase 3c-i, which is also what will
- * consume the `address` option now threaded onto the image NodeView. Stated
- * plainly because "rendered twice" read as a description of the present and
- * was not one; a list with a single consumer is a shape held open on purpose,
- * and worth re-justifying if 3c-i ever stops coming.
+ * TWO CONSUMERS render this list now (phase 3c-i shipped): the options panel
+ * draws it as a menu/sheet, and the image viewer's `Lightbox` toolbar draws it
+ * as an inline toolbar over the stage — anchor vs button per the `element`
+ * discriminant, the delete descriptor's confirm gate wired to each surface's own
+ * drill-down. So "rendered twice" is now the literal present, which is the whole
+ * point of the descriptor list: one source of truth, two renderers.
  *
  * TWO DESCRIPTOR SHAPES, not one, because the ELEMENT is part of the contract
  * (DR-5, round 35/36):

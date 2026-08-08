@@ -5867,8 +5867,9 @@
 
 <!-- The image viewer's host (PLAN-2392 phase 3a / TASK-2428). One per
      `ItemDetail` mount, sharing the token the panel host uses — one token per
-     HOST, not one per channel — and carrying no `mutationsEnabled`, because
-     3a's viewer has no mutating action and a dead prop is worse than none.
+     HOST, not one per channel. It now carries `mutationsEnabled` (= `canEdit &&
+     !peeking`) and the delete-warning content getters (3c-i's viewer toolbar
+     Delete, TASK-2474), threaded to `Lightbox` exactly as the panel host's are.
 
      TOP LEVEL, not beside `AttachmentPanelHost` inside the `{:else if item &&
      collection}` branch, and that placement is the whole lifecycle rule: every

@@ -3554,6 +3554,33 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
 	});
 
+	it('a delete of the SHOWN image while its own confirm is up advances with a CLEAN toolbar', () => {
+		// The confirm gate holds `runToolbarAction` awaiting inside `run`, so
+		// `toolbarBusy` is true the whole time the drill-down is up. An external delete
+		// of that same shown image (another in-page surface, or — via the metadata
+		// `missing` path — another tab) advances to a survivor; the subject-change reset
+		// must zero `toolbarBusy`, or the survivor's Delete shows a stale "Deleting…" for
+		// a request that was never about it. The fenced `finally` deliberately does NOT
+		// clear it (the continuation is stale), so this asserts the reset is load-bearing.
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')],
+			mutationsEnabled: true,
+		});
+		root().querySelector<HTMLButtonElement>(
+			'.lightbox-toolbar .lightbox-tool[aria-label="Delete"]'
+		)!.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+
+		del(IMG_A); // the shown image is deleted from under the open confirm
+		expect(shownAlt()).toBe('b'); // advanced to the survivor
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull(); // confirm abandoned
+		const deleteLabel = root()
+			.querySelector('.lightbox-toolbar .lightbox-tool[aria-label="Delete"] .lightbox-tool-label')
+			?.textContent?.trim();
+		expect(deleteLabel).toBe('Delete'); // NOT the stale "Deleting…"
+	});
+
 	it('a delete of an unrelated attachment (not in the set) is a harmless no-op', () => {
 		const onClose = vi.fn();
 		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')], onClose });
@@ -3616,5 +3643,68 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 		del(IMG_A);
 		expect(shownAlt()).toBe('b');
 		expect(scaleOf(), 'the advance reset the transform to fit').toBe(1);
+	});
+
+	// ── The metadata `missing` phase as a deletion (3c-i final fix) ────────────
+	// The deletion bus is process-local, so an out-of-page delete (another tab, a
+	// job, the API) reaches the viewer only as the metadata machine's authoritative
+	// `missing` (404) phase — which routes through the SAME tombstone path.
+	// Interleave a microtask drain with an effect flush per hop: a cascade (each 404
+	// advances to the next, whose OWN async HEAD then 404s) needs the effect to run
+	// BETWEEN async resolutions, not once at the end.
+	async function settleAsync() {
+		for (let i = 0; i < 8; i++) {
+			await Promise.resolve();
+			flushSync();
+		}
+	}
+
+	it('an authoritative metadata 404 (missing) for the shown image advances to a survivor', async () => {
+		metaFetch.mockImplementation((_ws: unknown, uuid: string) =>
+			Promise.resolve(
+				uuid === IMG_A
+					? { status: 'missing' as const }
+					: { status: 'ok' as const, mime: 'image/png', size: 2048 }
+			)
+		);
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		await settleAsync();
+		// A's HEAD 404'd → A is tombstoned → advance to B; the set is now single.
+		expect(shownAlt()).toBe('b');
+		expect(counterText()).toBeNull();
+	});
+
+	it('an authoritative metadata 404 for the ONLY image closes the viewer', async () => {
+		const onClose = vi.fn();
+		metaFetch.mockResolvedValue({ status: 'missing' });
+		mountViewer({ images: [image(IMG_A, 'a')], onClose });
+		await settleAsync();
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('an ENTIRE set going missing cascades advance→advance→close (terminates)', async () => {
+		const onClose = vi.fn();
+		// Every image 404s: A advances to B, B's own probe 404s and advances to C,
+		// C's 404 empties the set → close. The effect re-runs once per subject change
+		// (each HEAD is async), so the cascade settles rather than looping.
+		metaFetch.mockResolvedValue({ status: 'missing' });
+		mountViewer({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg'), image(IMG_C, 'c', 'image/gif')],
+			onClose,
+		});
+		await settleAsync();
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('a TRANSIENT metadata failure does NOT delete the shown image (DR-17)', async () => {
+		const onClose = vi.fn();
+		metaFetch.mockResolvedValue({ status: 'transient' });
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')], onClose });
+		await settleAsync();
+		// A non-404 failure is retryable, never a deletion — the viewer stays on A and
+		// shows the header's inline retry instead.
+		expect(shownAlt()).toBe('a');
+		expect(onClose).not.toHaveBeenCalled();
+		expect(root().querySelector('.lightbox-meta-error')).not.toBeNull();
 	});
 });
