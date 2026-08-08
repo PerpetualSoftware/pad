@@ -15,6 +15,37 @@ import {
 	ESCAPE_PRIORITY,
 	_resetEscapeStackForTests,
 } from '$lib/stores/escapeStack';
+import {
+	reset as resetZoom,
+	zoomTo,
+	toggleFitOrActual,
+	ZOOM_STEP,
+	type Geometry,
+} from '$lib/attachments/zoom';
+
+// TASK-2460 — the mobile DR-5b cells. `viewport.isMobile` is module state read
+// from matchMedia at init (false under jsdom), so a controllable mock lets a few
+// tests drive the mobile path. It DEFAULTS to desktop, so every other test in this
+// file is unchanged; flip `mobileFlag` BEFORE mounting (the loader captures the
+// platform at load time) and the mobile describe restores it.
+//
+// The mock delegates through a hoisted holder to a module-level `$state`, so a
+// flip is genuinely REACTIVE — the viewer's `platform` derived re-runs. A plain
+// object getter would be read once at mount and never invalidate, which would make
+// the breakpoint-flip test vacuous (it would pass whether or not the load effect
+// wrongly tracked `platform`). `.svelte.test.ts` supports runes.
+const mobileHolder = vi.hoisted(() => ({ read: () => false }));
+vi.mock('$lib/stores/breakpoint.svelte', () => ({
+	viewport: {
+		get isMobile() {
+			return mobileHolder.read();
+		},
+	},
+	MOBILE_BREAKPOINT: 768,
+	MOBILE_MEDIA_QUERY: '(max-width: 768px)',
+}));
+let mobileFlag = $state(false);
+mobileHolder.read = () => mobileFlag;
 
 // TASK-2429 — the DR-4b modal contract on the attachment viewer.
 //
@@ -120,6 +151,26 @@ function closeButton(scope: HTMLElement = root()): HTMLButtonElement {
 	return scope.querySelector<HTMLButtonElement>('.lightbox-close')!;
 }
 
+/** The `transform` inline style on the viewer's image (empty before it mounts). */
+function transformOf(scope: HTMLElement = root()): string {
+	return scope.querySelector<HTMLImageElement>('.lightbox-image')?.style.transform ?? '';
+}
+
+/**
+ * The `scale(...)` factor currently on the image, or NaN if there is none.
+ *
+ * jsdom lays nothing out, so the geometry the zoom module reads is all zeros —
+ * but `maxScale` FALLS BACK to `4` on an unusable geometry (a small image still
+ * needs a zoom range), so `zoomTo` still moves off fit here. That is what makes
+ * the scale observable in jsdom at all; the pan bounds, which DO need real
+ * geometry, are exercised in the browser suite (TASK-2436) and proven in
+ * `zoom.test.ts`.
+ */
+function scaleOf(scope: HTMLElement = root()): number {
+	const m = /scale\(([-\d.]+)\)/.exec(transformOf(scope));
+	return m ? Number(m[1]) : NaN;
+}
+
 /** A cancelable window keydown, returning whether the app consumed it. */
 function press(key: string, init: KeyboardEventInit = {}): boolean {
 	const event = new KeyboardEvent('keydown', { key, cancelable: true, bubbles: true, ...init });
@@ -154,6 +205,9 @@ afterEach(() => {
 	_resetEscapeStackForTests();
 	HTMLElement.prototype.getClientRects = realGetClientRects;
 	vi.restoreAllMocks();
+	// The zoom resize test installs a driving `ResizeObserver` via `vi.stubGlobal`;
+	// restore the setup-file's global inert shim so it can't leak into a later test.
+	vi.unstubAllGlobals();
 });
 
 describe('Lightbox — dialog semantics', () => {
@@ -1016,5 +1070,1705 @@ describe('Lightbox — background inertness (delegated)', () => {
 		flushSync();
 		expect(document.activeElement).not.toBe(invokerFront);
 		expect(back.contains(document.activeElement)).toBe(true);
+	});
+});
+
+// TASK-2455 — the zoom transform wired into the viewer (PLAN-2392 phase 3b).
+//
+// jsdom has no layout, so these assert the WIRING and the ARBITRATION, not the
+// pan geometry: which key does what, that the modifier / gate rules hold, and
+// that the transform resets when the shown image changes. The arithmetic those
+// keys drive is proven browser-free in `zoom.test.ts`; the pixel geometry is
+// TASK-2436's browser suite.
+
+describe('Lightbox — zoom keys', () => {
+	it('zooms IN on + (identity → one step), centred', () => {
+		mountViewer();
+		expect(scaleOf()).toBe(1);
+		expect(transformOf()).toBe('translate(0px, 0px) scale(1)');
+
+		expect(press('+')).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+		// A centre-anchored zoom leaves the pan at zero.
+		expect(transformOf()).toContain('translate(0px, 0px)');
+	});
+
+	it('accepts a bare = as zoom-IN (the unshifted key on most layouts)', () => {
+		mountViewer();
+		expect(press('=')).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('accepts the numpad plus — matched on .key, so .code is irrelevant', () => {
+		// The numpad's `+` reports `key === '+'` (only `code` says `NumpadAdd`), so
+		// a code-based match would silently miss it. This pins the key-based one.
+		mountViewer();
+		const event = new KeyboardEvent('keydown', {
+			key: '+',
+			code: 'NumpadAdd',
+			cancelable: true,
+			bubbles: true,
+		});
+		window.dispatchEvent(event);
+		flushSync();
+		expect(event.defaultPrevented).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('zooms OUT on - (back toward fit)', () => {
+		mountViewer();
+		press('+');
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25 * 1.25);
+		expect(press('-')).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('does not zoom below fit: - at fit is a no-op', () => {
+		// The floor is FIT (=1); `clampScale` holds it, so `-` at fit changes
+		// nothing rather than shrinking the image past its fitted box.
+		mountViewer();
+		expect(press('-')).toBe(true);
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('resets to fit, centred, on 0', () => {
+		mountViewer();
+		press('+');
+		press('+');
+		expect(scaleOf()).toBeGreaterThan(1);
+		expect(press('0')).toBe(true);
+		expect(scaleOf()).toBe(1);
+		expect(transformOf()).toBe('translate(0px, 0px) scale(1)');
+	});
+
+	it('IGNORES + when Alt is held — and does NOT preventDefault', () => {
+		// Alt-modified is the OS's, not ours. Acting would be wrong; ALSO
+		// preventing default would cancel the OS shortcut even though we declined.
+		mountViewer();
+		expect(press('+', { altKey: true })).toBe(false);
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('IGNORES - when Ctrl is held (browser page-zoom-out) — and does NOT preventDefault', () => {
+		// The whole reason the modifier rule is a contract: this listens on
+		// `window`, so swallowing Ctrl+- would break page-zoom from every surface
+		// while a viewer is open.
+		mountViewer();
+		expect(press('-', { ctrlKey: true })).toBe(false);
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('IGNORES 0 when Cmd is held (browser reset-zoom) — and does NOT preventDefault', () => {
+		mountViewer();
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25);
+		// Cmd+0 is the browser's reset — leave the viewer's own zoom untouched and
+		// let the event through.
+		expect(press('0', { metaKey: true })).toBe(false);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+});
+
+describe('Lightbox — zoom keys are ARBITRATED, not just handled', () => {
+	// A `+`/`-`/`0` branch placed BEFORE the existing gates would pass every zoom
+	// test above while stealing a press another owner or a layer is due. Each gate
+	// gets its own leg with a positive control.
+
+	function mockOpenModals(modals: Element[]): void {
+		const realQueryAll = document.querySelectorAll.bind(document);
+		vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
+			if (selector !== 'dialog:modal') return realQueryAll(selector);
+			return Array.from(realQueryAll('dialog')).filter((d) =>
+				modals.includes(d)
+			) as unknown as NodeListOf<Element>;
+		});
+		const realMatches = Element.prototype.matches;
+		vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
+			this: Element,
+			selector: string
+		) {
+			if (selector !== 'dialog:modal') return realMatches.call(this, selector);
+			return realMatches.call(this, 'dialog') && modals.includes(this);
+		});
+	}
+
+	it('declines a key another control already handled (defaultPrevented) — control: an un-consumed one acts', () => {
+		mountViewer();
+		const consumed = new KeyboardEvent('keydown', { key: '+', cancelable: true, bubbles: true });
+		consumed.preventDefault();
+		window.dispatchEvent(consumed);
+		flushSync();
+		expect(scaleOf()).toBe(1);
+
+		// Positive control: the SAME key, not pre-consumed, does zoom.
+		expect(press('+')).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('zooms only the FRONTMOST viewer, never the one behind it', () => {
+		mountViewer();
+		const back = root();
+		mountViewer();
+		const front = root();
+		expect(back).not.toBe(front);
+
+		expect(press('+')).toBe(true);
+		expect(scaleOf(front)).toBeCloseTo(1.25);
+		expect(scaleOf(back)).toBe(1);
+	});
+
+	it('stands down while a showModal() dialog is above it, and resumes after it closes', () => {
+		// The emulation goes in BEFORE the mount: the manager probes `:modal` on
+		// its first reconcile and jsdom's throw makes it cache "unsupported" for
+		// the module's life, so mocking afterwards would be ignored.
+		const dialog = document.body.appendChild(document.createElement('dialog'));
+		mockOpenModals([dialog]);
+		mountViewer();
+
+		expect(press('+')).toBe(false);
+		expect(scaleOf()).toBe(1);
+
+		mockOpenModals([]);
+		expect(press('+')).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+});
+
+describe('Lightbox — the transform resets when the shown image changes (TASK-2455)', () => {
+	function mountLive() {
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		return app;
+	}
+
+	it('resets on arrow navigation', () => {
+		mountViewer({ images: [image(IMG_A, 'first'), image(IMG_B, 'second')] });
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25);
+
+		expect(press('ArrowRight')).toBe(true);
+		expect(imageSrc()).toContain(IMG_B);
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('resets when the set shrinks under `current` so a DIFFERENT image is shown', () => {
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg')];
+		mountLive();
+		press('ArrowRight');
+		expect(imageSrc()).toContain(IMG_B);
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25);
+
+		// B's MIME resolves unsafe → it drops out → the shown image becomes A →
+		// the transform is back at fit.
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg', 'image/svg+xml')];
+		flushSync();
+		expect(imageSrc()).toContain(IMG_A);
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('does NOT reset (and keeps the zoom) when an image is added AFTER the shown one', () => {
+		// The reset keys on the shown image's identity, not on the array changing:
+		// growing the set past `current` leaves the shown image — and its zoom —
+		// alone.
+		liveProps.images = [image(IMG_A, 'only')];
+		mountLive();
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25);
+
+		liveProps.images = [image(IMG_A, 'only'), image(IMG_C, 'second', 'image/jpeg')];
+		flushSync();
+		expect(imageSrc()).toContain(IMG_A);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('a reset does not wedge the scheduler: unrelated reactivity still flushes AFTER a navigate', () => {
+		// Acceptance #3. The symptom of an $effect writing a $state it also reads is
+		// that OTHER reactivity near it silently strands. So the test must FIRE the
+		// reset effect (the effect that writes `zoom`) and THEN prove an unrelated
+		// derived still recomputes. Navigation is what fires it; growing the set
+		// without navigating leaves `img.id` unchanged, so the reset effect never
+		// runs and could not have wedged anything — a weaker test that a
+		// self-dependent reset would still pass.
+		liveProps.images = [image(IMG_A, 'first'), image(IMG_B, 'second')];
+		mountLive();
+		press('+');
+		expect(scaleOf()).toBeCloseTo(1.25);
+
+		// Navigation fires the reset effect (img A → B), taking the transform back
+		// to fit — the write a self-dependent effect would abort mid-flush.
+		expect(press('ArrowRight')).toBe(true);
+		expect(scaleOf()).toBe(1);
+
+		// UNRELATED to the reset: grow the set past the shown image. Its counter
+		// derived must still recompute — a wedged scheduler would strand it at the
+		// pre-update value.
+		liveProps.images = [
+			image(IMG_A, 'first'),
+			image(IMG_B, 'second'),
+			image(IMG_C, 'third', 'image/jpeg'),
+		];
+		flushSync();
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('2 / 3');
+	});
+});
+
+describe('Lightbox — resize re-clamps SCALE first, then pan (TASK-2455)', () => {
+	it('pulls a now-out-of-range scale down when the stage grows and lowers the ceiling', () => {
+		// jsdom fires no ResizeObserver, so DRIVE one by hand and mock the geometry
+		// the component reads. The scenario is the headline one: enlarging the
+		// window lowers `actualScale` and with it `maxScale`, stranding a
+		// previously-valid scale above the new ceiling. Only `clampState` (scale
+		// THEN pan) fixes it — `clampPan` alone would leave the scale untouched.
+		let roCallback: ResizeObserverCallback | null = null;
+		let observed: Element | null = null;
+		vi.stubGlobal(
+			'ResizeObserver',
+			class {
+				constructor(cb: ResizeObserverCallback) {
+					roCallback = cb;
+				}
+				observe(target: Element) {
+					observed = target;
+				}
+				unobserve() {}
+				disconnect() {}
+			}
+		);
+
+		mountViewer();
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		const stage = root().querySelector<HTMLElement>('.lightbox-stage')!;
+		// It observes the STAGE (whose size IS the viewport-dependent geometry),
+		// not the image or the backdrop.
+		expect(observed).toBe(stage);
+
+		// A big bitmap fitted into a small box: actualScale = 1000/100 = 10, so the
+		// ceiling starts at 40 — lots of headroom to zoom into.
+		let fitted = 100;
+		Object.defineProperty(image, 'offsetWidth', { configurable: true, get: () => fitted });
+		Object.defineProperty(image, 'offsetHeight', { configurable: true, get: () => fitted });
+		Object.defineProperty(image, 'naturalWidth', { configurable: true, get: () => 1000 });
+		Object.defineProperty(image, 'naturalHeight', { configurable: true, get: () => 1000 });
+		Object.defineProperty(stage, 'clientWidth', { configurable: true, get: () => fitted });
+		Object.defineProperty(stage, 'clientHeight', { configurable: true, get: () => fitted });
+
+		// Zoom well past 4 (1.25^8 ≈ 5.96), which the ceiling of 40 permits.
+		for (let i = 0; i < 8; i++) press('+');
+		expect(scaleOf()).toBeGreaterThan(5);
+
+		// The stage grows until the image fits 1:1: actualScale → 1, ceiling → 4.
+		// The current scale (~5.96) is now above it.
+		fitted = 1000;
+		expect(roCallback).not.toBeNull();
+		roCallback!([] as unknown as ResizeObserverEntry[], null as unknown as ResizeObserver);
+		flushSync();
+
+		// Re-clamped to the new ceiling — proof the SCALE was clamped, not only pan.
+		expect(scaleOf()).toBeCloseTo(4);
+	});
+});
+
+describe('Lightbox — + / - anchor at the stage centre (TASK-2455)', () => {
+	it('keeps the pan at ZERO when zooming a centred image that overflows the stage', () => {
+		// The only leg that pins the ANCHOR. Everywhere else jsdom's all-zero
+		// geometry forces `stageCenter` to (0,0) and the pan to 0, so an off-centre
+		// anchor is invisible. Here the (mocked) geometry lets the zoomed image
+		// OVERFLOW the stage, freeing the pan — and a centre-anchored zoom of an
+		// already-centred image must still leave it at (0,0). A top-left (or any
+		// non-centre) anchor would push a non-zero translate and fail this.
+		mountViewer();
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		const stage = root().querySelector<HTMLElement>('.lightbox-stage')!;
+		Object.defineProperty(image, 'offsetWidth', { configurable: true, get: () => 400 });
+		Object.defineProperty(image, 'offsetHeight', { configurable: true, get: () => 400 });
+		Object.defineProperty(image, 'naturalWidth', { configurable: true, get: () => 2000 });
+		Object.defineProperty(image, 'naturalHeight', { configurable: true, get: () => 2000 });
+		Object.defineProperty(stage, 'clientWidth', { configurable: true, get: () => 1000 });
+		Object.defineProperty(stage, 'clientHeight', { configurable: true, get: () => 1000 });
+
+		// 400 × 1.25^5 ≈ 1220 > 1000, so the image overflows and pan is unclamped.
+		for (let i = 0; i < 5; i++) press('+');
+		expect(scaleOf()).toBeGreaterThan(2.5);
+		expect(transformOf()).toContain('translate(0px, 0px)');
+	});
+});
+
+// TASK-2456 — focus handoff when a focused viewer control disappears.
+//
+// aria-modal promises focus never leaves the surface, but a conditionally
+// rendered nav button that had focus drops focus to <body> behind the inerted
+// app when the set shrinks to one. These are SAME-INSTANCE (a remount would hide
+// the whole thing) and assert focus lands on a control INSIDE the viewer.
+
+describe('Lightbox — focus handoff on a shrinking set (TASK-2456)', () => {
+	function mountLive() {
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		return app;
+	}
+
+	it('CONTROL: a removed focused control drops focus to <body> in this environment', () => {
+		// The defect reproduced honestly, so the positive test below is not
+		// vacuous: removing a focused element strands focus on <body> here just as
+		// it does in a real engine. (Done on a detached fixture so it does not fight
+		// Svelte for ownership of a live viewer node.)
+		const fixture = appRoot.appendChild(document.createElement('div'));
+		const btn = fixture.appendChild(document.createElement('button'));
+		btn.focus();
+		expect(document.activeElement).toBe(btn);
+		btn.remove();
+		expect(document.activeElement).toBe(document.body);
+	});
+
+	it('hands focus to the close button when the focused Next control is removed by a shrink', () => {
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'jpeg', 'image/jpeg')];
+		mountLive();
+		const before = root();
+		const nextBtn = before.querySelector<HTMLButtonElement>('.lightbox-nav.next')!;
+		nextBtn.focus();
+		// Precondition, so the assertion is about a real handoff and not a viewer
+		// that happened to already have focus on the close button.
+		expect(document.activeElement).toBe(nextBtn);
+
+		// The set shrinks to one: the nav buttons unmount. Without the handoff,
+		// focus would now be on <body>, behind everything the viewer inerted.
+		liveProps.images = [image(IMG_A, 'png')];
+		flushSync();
+
+		// SAME instance — this is the same-instance property the acceptance names;
+		// a keyed remount would trivially start focused and false-green the rest.
+		expect(root()).toBe(before);
+		expect(before.querySelector('.lightbox-nav')).toBeNull();
+		// INSIDE the viewer — not merely "not on body".
+		expect(before.contains(document.activeElement)).toBe(true);
+		expect(document.activeElement).toBe(closeButton(before));
+		expect(document.activeElement).not.toBe(document.body);
+	});
+
+	it('does not steal focus when it is already on a surviving control', () => {
+		// A shrink while focus is on the CLOSE button (which survives) must leave
+		// it there — the handoff repairs a lost focus, it does not re-home a fine one.
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'jpeg', 'image/jpeg')];
+		mountLive();
+		closeButton().focus();
+		expect(document.activeElement).toBe(closeButton());
+
+		liveProps.images = [image(IMG_A, 'png')];
+		flushSync();
+		expect(document.activeElement).toBe(closeButton());
+	});
+
+	it('a BACKGROUND viewer does not grab focus when ITS OWN set shrinks', () => {
+		// The isViewerFrontmost guard on the repair effect. With a second viewer
+		// stacked over the first, the front one owns focus; a shrink in the BACK
+		// viewer must not pull focus out of the front into the inert background.
+		// Without the guard the reactive repair would see "focus is not inside ME"
+		// and yank it to the back viewer's fallback.
+		liveProps.images = [image(IMG_A, 'back-a'), image(IMG_B, 'back-b', 'image/jpeg')];
+		const backApp = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(backApp);
+		flushSync();
+		const back = root();
+		mountViewer({ images: [image(IMG_A, 'front-a'), image(IMG_B, 'front-b')] });
+		const front = root();
+		expect(front).not.toBe(back);
+		expect(front.contains(document.activeElement)).toBe(true);
+
+		liveProps.images = [image(IMG_A, 'back-a')];
+		flushSync();
+
+		expect(front.contains(document.activeElement)).toBe(true);
+		expect(back.contains(document.activeElement)).toBe(false);
+	});
+});
+
+describe('Lightbox — Tab still cycles at maximum zoom (TASK-2456)', () => {
+	it('wraps forward off the last control to the close button even at the zoom ceiling', () => {
+		// At max zoom the transformed image visually overlaps the controls, but the
+		// trap is JS-based (paneFocus) and the image is not focusable, so Tab order
+		// is unaffected. Driving the zoom to the ceiling first proves it.
+		mountViewer({ images: [image(IMG_A, 'first'), image(IMG_B, 'second')] });
+		for (let i = 0; i < 10; i++) press('+');
+		expect(scaleOf()).toBeCloseTo(4);
+
+		const nextBtn = root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!;
+		nextBtn.focus();
+		expect(press('Tab')).toBe(true);
+		expect(root().contains(document.activeElement)).toBe(true);
+		expect(document.activeElement).toBe(closeButton());
+	});
+});
+
+// TASK-2457 — wheel / ctrl-cmd-wheel zoom, anchored at the cursor.
+//
+// The listener is registered NON-PASSIVELY on the viewer root, so a dispatched
+// WheelEvent's `defaultPrevented` reflects the handler's `preventDefault` — the
+// direct assertion the acceptance requires (never inferred from "the page did
+// not scroll", which jsdom can't show anyway).
+
+/** Dispatch a wheel on `scope` (the viewer root, where the listener lives). */
+function wheel(scope: HTMLElement, init: WheelEventInit): boolean {
+	const e = new WheelEvent('wheel', { cancelable: true, bubbles: true, ...init });
+	scope.dispatchEvent(e);
+	flushSync();
+	return e.defaultPrevented;
+}
+
+/** Mock the geometry the viewer reads, so the cursor anchor is observable. */
+function mockGeometry(scope: HTMLElement, g: Geometry, rectLeft = 0, rectTop = 0): void {
+	const image = scope.querySelector<HTMLImageElement>('.lightbox-image')!;
+	const stage = scope.querySelector<HTMLElement>('.lightbox-stage')!;
+	Object.defineProperty(image, 'offsetWidth', { configurable: true, get: () => g.fittedW });
+	Object.defineProperty(image, 'offsetHeight', { configurable: true, get: () => g.fittedH });
+	Object.defineProperty(image, 'naturalWidth', { configurable: true, get: () => g.naturalW });
+	Object.defineProperty(image, 'naturalHeight', { configurable: true, get: () => g.naturalH });
+	Object.defineProperty(stage, 'clientWidth', { configurable: true, get: () => g.stageW });
+	Object.defineProperty(stage, 'clientHeight', { configurable: true, get: () => g.stageH });
+	stage.getBoundingClientRect = () =>
+		({
+			left: rectLeft,
+			top: rectTop,
+			width: g.stageW,
+			height: g.stageH,
+			right: rectLeft + g.stageW,
+			bottom: rectTop + g.stageH,
+			x: rectLeft,
+			y: rectTop,
+			toJSON() {},
+		}) as DOMRect;
+}
+
+describe('Lightbox — wheel zoom (TASK-2457)', () => {
+	function mockOpenModals(modals: Element[]): void {
+		const realQueryAll = document.querySelectorAll.bind(document);
+		vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
+			if (selector !== 'dialog:modal') return realQueryAll(selector);
+			return Array.from(realQueryAll('dialog')).filter((d) =>
+				modals.includes(d)
+			) as unknown as NodeListOf<Element>;
+		});
+		const realMatches = Element.prototype.matches;
+		vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
+			this: Element,
+			selector: string
+		) {
+			if (selector !== 'dialog:modal') return realMatches.call(this, selector);
+			return realMatches.call(this, 'dialog') && modals.includes(this);
+		});
+	}
+
+	it('zooms IN and leaves the cursor point anchored — matching the module exactly', () => {
+		// A geometry where the image nearly fills the stage, so ONE wheel step
+		// overflows and an off-centre cursor produces an observable, module-defined
+		// pan (jsdom's zero geometry would hide it — the same limit the anchor key
+		// test noted). The image point under the cursor stays there because the
+		// component delegates to `zoomTo` with the cursor as the anchor: the
+		// resulting transform must equal `zoomTo`'s output byte for byte.
+		mountViewer();
+		const g: Geometry = {
+			stageW: 1000,
+			stageH: 1000,
+			fittedW: 900,
+			fittedH: 900,
+			naturalW: 2000,
+			naturalH: 2000,
+		};
+		// A NONZERO stage offset in the viewport, so the anchor must be computed
+		// stage-LOCAL (clientX − rect.left). An implementation that fed viewport
+		// coordinates straight in would anchor 120/60px off and fail this.
+		const rectLeft = 120;
+		const rectTop = 60;
+		mockGeometry(root(), g, rectLeft, rectTop);
+		const clientX = 800;
+		const clientY = 500;
+		const anchor = { x: clientX - rectLeft, y: clientY - rectTop };
+		const expected = zoomTo(resetZoom(), 1 * ZOOM_STEP, anchor, g);
+
+		expect(wheel(root(), { clientX, clientY, deltaY: -1 })).toBe(true);
+		expect(transformOf()).toBe(
+			`translate(${expected.x}px, ${expected.y}px) scale(${expected.scale})`
+		);
+		// The off-centre anchor genuinely moved the pan (not a centred no-op), so
+		// this is a real anchor assertion, not a vacuous one.
+		expect(expected.x).not.toBe(0);
+	});
+
+	it('stops propagation while frontmost so restoration never sees the wheel; lets it through otherwise', () => {
+		// The `stopPropagation` half — belt to the restoration guard. A frontmost
+		// viewer's wheel must not reach a `window` listener (the scroll-restoration
+		// one); a non-frontmost viewer declines, so its event DOES bubble through
+		// (there, restoration's OWN guard is what protects it — asserted in
+		// restore.svelte.test.ts).
+		const seen = vi.fn();
+		window.addEventListener('wheel', seen);
+		try {
+			mountViewer();
+			const back = root();
+			mountViewer();
+			const front = root();
+
+			const e1 = new WheelEvent('wheel', {
+				cancelable: true,
+				bubbles: true,
+				clientX: 10,
+				clientY: 10,
+				deltaY: -1,
+			});
+			front.dispatchEvent(e1);
+			flushSync();
+			expect(e1.defaultPrevented).toBe(true);
+			expect(seen).not.toHaveBeenCalled();
+
+			const e2 = new WheelEvent('wheel', {
+				cancelable: true,
+				bubbles: true,
+				clientX: 10,
+				clientY: 10,
+				deltaY: -1,
+			});
+			back.dispatchEvent(e2);
+			flushSync();
+			expect(seen).toHaveBeenCalledTimes(1);
+		} finally {
+			window.removeEventListener('wheel', seen);
+		}
+	});
+
+	it('ctrl/cmd+wheel ALSO zooms (both plain and modified) and is preventDefaulted', () => {
+		// The modifier is NOT a gate for wheel (unlike the +/- keys): ctrl/cmd wheel
+		// is the browser's page-zoom, which the viewer overrides while open — hence
+		// the non-passive preventDefault.
+		mountViewer();
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaY: -1, ctrlKey: true })).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+		mountViewer();
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaY: -1, metaKey: true })).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('a horizontal-only wheel (deltaY 0) is consumed but does NOT zoom', () => {
+		// A trackpad side-swipe must not read as a zoom-out; direction is deltaY
+		// only. Seed a zoom-in FIRST so a spurious zoom-out would be observable —
+		// from fit it would just clamp back to 1 and hide the bug.
+		mountViewer();
+		wheel(root(), { clientX: 10, clientY: 10, deltaY: -1 });
+		expect(scaleOf()).toBeCloseTo(1.25);
+		// Still preventDefaulted (the modal owns the wheel), but the zoom is left put.
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaX: 120, deltaY: 0 })).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('a downward wheel zooms OUT (back toward fit)', () => {
+		mountViewer();
+		wheel(root(), { clientX: 10, clientY: 10, deltaY: -1 });
+		wheel(root(), { clientX: 10, clientY: 10, deltaY: -1 });
+		expect(scaleOf()).toBeCloseTo(1.25 * 1.25);
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaY: 1 })).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+
+	it('no-ops (and does NOT preventDefault) when not the frontmost viewer; the front one acts', () => {
+		mountViewer();
+		const back = root();
+		mountViewer();
+		const front = root();
+		expect(back).not.toBe(front);
+
+		// Dispatched on the BACKGROUND viewer: it must decline AND leave the event
+		// uncancelled (nothing behind it to own the wheel either way).
+		expect(wheel(back, { clientX: 10, clientY: 10, deltaY: -1 })).toBe(false);
+		expect(scaleOf(back)).toBe(1);
+
+		// Positive control: the FRONT viewer zooms and cancels.
+		expect(wheel(front, { clientX: 10, clientY: 10, deltaY: -1 })).toBe(true);
+		expect(scaleOf(front)).toBeCloseTo(1.25);
+	});
+
+	it('no-ops while a showModal() dialog is above it, and resumes after it closes', () => {
+		const dialog = document.body.appendChild(document.createElement('dialog'));
+		mockOpenModals([dialog]);
+		mountViewer();
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaY: -1 })).toBe(false);
+		expect(scaleOf()).toBe(1);
+
+		mockOpenModals([]);
+		expect(wheel(root(), { clientX: 10, clientY: 10, deltaY: -1 })).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.25);
+	});
+});
+
+// TASK-2458 — drag-to-pan + double-click toggle (probe).
+const REAL_PC = {
+	setPointerCapture: Element.prototype.setPointerCapture,
+	releasePointerCapture: Element.prototype.releasePointerCapture,
+};
+let captured: number[] = [];
+let released: number[] = [];
+
+function pointerEvent(
+	type: string,
+	x: number,
+	y: number,
+	opts: { buttons?: number; pointerType?: string; button?: number; pointerId?: number } = {}
+): Event {
+	const e = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
+	Object.defineProperty(e, 'pointerId', { value: opts.pointerId ?? 1 });
+	Object.defineProperty(e, 'buttons', { value: opts.buttons ?? 1 });
+	Object.defineProperty(e, 'button', { value: opts.button ?? 0 });
+	Object.defineProperty(e, 'pointerType', { value: opts.pointerType ?? 'mouse' });
+	return e;
+}
+
+function panX(scope: HTMLElement = root()): number {
+	const m = /translate\(([-\d.]+)px,/.exec(transformOf(scope));
+	return m ? Number(m[1]) : NaN;
+}
+
+const OVERFLOW_G: Geometry = {
+	stageW: 1000,
+	stageH: 1000,
+	fittedW: 900,
+	fittedH: 900,
+	naturalW: 2000,
+	naturalH: 2000,
+};
+
+/** dblclick at the stage centre → actual size, so drags have pan room. */
+function zoomToActual(scope: HTMLElement = root()): void {
+	scope.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+	flushSync();
+}
+/** The pan bound at `actualScale` for OVERFLOW_G: (900·(2000/900) − 1000)/2. */
+const ACTUAL_BOUND = (OVERFLOW_G.fittedW * (OVERFLOW_G.naturalW / OVERFLOW_G.fittedW) - OVERFLOW_G.stageW) / 2;
+
+function mockOpenModals(modals: Element[]): void {
+	const realQueryAll = document.querySelectorAll.bind(document);
+	vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
+		if (selector !== 'dialog:modal') return realQueryAll(selector);
+		return Array.from(realQueryAll('dialog')).filter((d) =>
+			modals.includes(d)
+		) as unknown as NodeListOf<Element>;
+	});
+	const realMatches = Element.prototype.matches;
+	vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
+		if (selector !== 'dialog:modal') return realMatches.call(this, selector);
+		return realMatches.call(this, 'dialog') && modals.includes(this);
+	});
+}
+
+describe('Lightbox — drag-to-pan and double-click (TASK-2458)', () => {
+	beforeEach(() => {
+		captured = [];
+		released = [];
+		(Element.prototype as unknown as Record<string, unknown>).setPointerCapture = function (id: number) {
+			captured.push(id);
+		};
+		(Element.prototype as unknown as Record<string, unknown>).releasePointerCapture = function (id: number) {
+			released.push(id);
+		};
+	});
+	afterEach(() => {
+		if (REAL_PC.setPointerCapture === undefined)
+			delete (Element.prototype as unknown as Record<string, unknown>).setPointerCapture;
+		else Element.prototype.setPointerCapture = REAL_PC.setPointerCapture;
+		if (REAL_PC.releasePointerCapture === undefined)
+			delete (Element.prototype as unknown as Record<string, unknown>).releasePointerCapture;
+		else Element.prototype.releasePointerCapture = REAL_PC.releasePointerCapture;
+	});
+
+	// ── pan, positively AND clamped (the anti-false-green acceptance) ──
+	it('pans in-bounds by the drag delta, then clamps at the edge and moves NO FURTHER', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual(); // scale ~2.22, pan bound ±ACTUAL_BOUND (500), pan still 0
+		expect(scaleOf()).toBeCloseTo(2000 / 900);
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		// A small in-bounds drag MOVES the transform by exactly the delta.
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1); // a real drag engaged + captured
+		expect(panX()).toBeCloseTo(100);
+
+		// Over-drag to the same edge: it clamps at the bound...
+		root().dispatchEvent(pointerEvent('pointermove', 500 + ACTUAL_BOUND + 300, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(ACTUAL_BOUND);
+		// ...and dragging further still moves it no further (the clamp, not the delta).
+		root().dispatchEvent(pointerEvent('pointermove', 500 + ACTUAL_BOUND + 900, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(ACTUAL_BOUND);
+
+		root().dispatchEvent(pointerEvent('pointerup', 500 + ACTUAL_BOUND + 900, 500, { buttons: 0 }));
+		expect(released).toContain(1);
+	});
+
+	// ── double-click toggle, anchored, RETURNS ──
+	/** The realistic sequence a browser fires for a double-click on `el`. */
+	function doubleClick(el: Element, clientX: number, clientY: number): void {
+		el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX, clientY }));
+		el.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX, clientY }));
+		el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX, clientY }));
+		flushSync();
+	}
+
+	it('two successive anchored double-clicks ON THE IMAGE toggle fit → actual → fit, never closing', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		mockGeometry(root(), OVERFLOW_G);
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		expect(scaleOf()).toBe(1);
+
+		// The full click/click/dblclick sequence on the IMAGE (target !== backdrop),
+		// off-centre so the toggle-to-actual is genuinely anchored. The constituent
+		// clicks must NOT dismiss.
+		doubleClick(image, 800, 500);
+		expect(onClose).not.toHaveBeenCalled();
+		const expected = toggleFitOrActual(resetZoom(), { x: 800, y: 500 }, OVERFLOW_G);
+		expect(transformOf()).toBe(
+			`translate(${expected.x}px, ${expected.y}px) scale(${expected.scale})`
+		);
+		expect(expected.scale).toBeGreaterThan(1);
+		expect(expected.x).not.toBe(0);
+
+		// The SECOND double-click returns to fit, centred — the toggle is two-way.
+		doubleClick(image, 800, 500);
+		expect(onClose).not.toHaveBeenCalled();
+		expect(transformOf()).toBe('translate(0px, 0px) scale(1)');
+	});
+
+	it('a double-click while a pan is still being suppressed does NOT toggle (drag XOR toggle)', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		// Engage and release a pan — its click is now being swallowed (suppressClick).
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		root().dispatchEvent(pointerEvent('pointerup', 600, 500, { buttons: 0 }));
+		flushSync();
+		// A double-click landing while that suppression is still live must stand
+		// down — a gesture is a drag OR a toggle, never both (same swallow the
+		// backdrop click consults).
+		image.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 800, clientY: 500 }));
+		flushSync();
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('a double-click does NOT toggle while a native modal is above it; it resumes after', () => {
+		const dialog = document.body.appendChild(document.createElement('dialog'));
+		mockOpenModals([dialog]);
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+
+		image.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf()).toBe(1); // gated out by isBlockedByModal
+
+		mockOpenModals([]);
+		image.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf()).toBeCloseTo(2000 / 900); // resumes
+	});
+
+	// ── drag-vs-click disambiguation ──
+	it('a below-threshold press released over the backdrop still CLOSES', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		root().dispatchEvent(pointerEvent('pointerdown', 100, 100));
+		root().dispatchEvent(pointerEvent('pointermove', 102, 101)); // < 4px → still a click
+		root().dispatchEvent(pointerEvent('pointerup', 102, 101, { buttons: 0 }));
+		flushSync();
+		// The click the press synthesizes, on the backdrop itself.
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onClose).toHaveBeenCalledTimes(1);
+		expect(captured).toEqual([]); // never engaged a drag
+	});
+
+	it('a past-threshold DRAG released over the backdrop does NOT close', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		root().dispatchEvent(pointerEvent('pointerdown', 100, 100));
+		root().dispatchEvent(pointerEvent('pointermove', 200, 200)); // > 4px → a pan
+		root().dispatchEvent(pointerEvent('pointerup', 200, 200, { buttons: 0 }));
+		flushSync();
+		// The click a pan synthesizes is suppressed (cleared only on the next tick,
+		// which this synchronous dispatch beats).
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onClose).not.toHaveBeenCalled();
+		expect(captured).toContain(1);
+	});
+
+	it('CONTROL: a plain backdrop click (no gesture) still closes', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	// ── arbitration: the START gate ──
+	it('does not START a pan when the viewer is not frontmost; the front one does', () => {
+		mountViewer();
+		const back = root();
+		mockGeometry(back, OVERFLOW_G);
+		mountViewer();
+		const front = root();
+		mockGeometry(front, OVERFLOW_G);
+		zoomToActual(front);
+
+		// Drag on the BACKGROUND viewer: no capture, no pan.
+		back.dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		back.dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toEqual([]);
+
+		// Positive control: the FRONT viewer pans.
+		front.dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		front.dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+		expect(panX(front)).toBeCloseTo(100);
+	});
+
+	// ── arbitration: whole-gesture, a STACKED-VIEWER transition mid-drag ──
+	it('ABORTS a captured drag when a SECOND viewer becomes frontmost mid-gesture', () => {
+		mountViewer();
+		const first = root();
+		mockGeometry(first, OVERFLOW_G);
+		zoomToActual(first);
+
+		first.dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		first.dispatchEvent(pointerEvent('pointermove', 600, 500)); // positive control: pans to 100
+		flushSync();
+		expect(captured).toContain(1);
+		expect(panX(first)).toBeCloseTo(100);
+		const frozen = panX(first);
+
+		// A second viewer opens — `first` is no longer frontmost.
+		mountViewer();
+
+		// A further move on `first` (still captured there) must ABORT: release the
+		// capture, leave the transform where it was.
+		first.dispatchEvent(pointerEvent('pointermove', 900, 500));
+		flushSync();
+		expect(released).toContain(1);
+		expect(panX(first)).toBeCloseTo(frozen);
+	});
+
+	// ── arbitration: whole-gesture, a NATIVE-MODAL transition mid-drag ──
+	it('ABORTS a captured drag when a native modal opens above it mid-gesture', () => {
+		const dialog = document.body.appendChild(document.createElement('dialog'));
+		// Establish `:modal` support with NO modal first (jsdom throws on the
+		// pseudo-class, and the manager caches support on its first probe), so the
+		// drag can start; then add the dialog mid-gesture.
+		mockOpenModals([]);
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500)); // positive control: pans
+		flushSync();
+		expect(captured).toContain(1);
+		expect(panX()).toBeCloseTo(100);
+		const frozen = panX();
+
+		mockOpenModals([dialog]); // a showModal() dialog is now above the viewer
+
+		root().dispatchEvent(pointerEvent('pointermove', 900, 500));
+		flushSync();
+		expect(released).toContain(1);
+		expect(panX()).toBeCloseTo(frozen);
+	});
+
+	// ── integration details ──
+	it('marks the image non-draggable so a native image drag cannot pre-empt the pan', () => {
+		mountViewer();
+		expect(root().querySelector('.lightbox-image')?.getAttribute('draggable')).toBe('false');
+	});
+
+	it('ignores a TOUCH pointer (native until 3d); a mouse pointer pans', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerType: 'touch' }));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500, { pointerType: 'touch' }));
+		flushSync();
+		expect(captured).toEqual([]);
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+		expect(panX()).toBeCloseTo(100);
+	});
+
+	it('drops the transform transition while dragging (image tracks the pointer), restoring it after', () => {
+		// jsdom applies no transitions, so assert the mechanism: the `panning` class
+		// (which sets transition:none) is present only for the duration of the drag.
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		expect(image.classList.contains('panning')).toBe(false);
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(image.classList.contains('panning')).toBe(true);
+
+		root().dispatchEvent(pointerEvent('pointerup', 600, 500, { buttons: 0 }));
+		flushSync();
+		expect(image.classList.contains('panning')).toBe(false);
+	});
+
+	it('a TOUCH or second pointer cannot move or END an active mouse drag', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		// Mouse drag engaged (pointerId 1).
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(100);
+
+		// A touch move with a DIFFERENT pointerId (not captured) must not pan...
+		root().dispatchEvent(
+			pointerEvent('pointermove', 900, 500, { pointerId: 2, pointerType: 'touch' })
+		);
+		flushSync();
+		expect(panX()).toBeCloseTo(100);
+
+		// ...and a touch pointerup must not END the mouse drag.
+		root().dispatchEvent(
+			pointerEvent('pointerup', 900, 500, { pointerId: 2, pointerType: 'touch', buttons: 0 })
+		);
+		flushSync();
+		expect(released).not.toContain(2);
+
+		// The mouse (pointerId 1) is still driving: its move pans further.
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(200);
+	});
+
+	it('a second primary pointerdown mid-drag does NOT hijack the gesture', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500)); // mouse id 1
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500)); // captured, x = 100
+		flushSync();
+		expect(panX()).toBeCloseTo(100);
+
+		// A second primary press (a pen, id 2) lands mid-drag — it must be ignored,
+		// not re-arm the gesture onto itself.
+		root().dispatchEvent(
+			pointerEvent('pointerdown', 200, 200, { pointerId: 2, pointerType: 'pen' })
+		);
+		// The ORIGINAL pointer (id 1) still drives the pan.
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(200);
+		// ...and the interloper's own move does nothing.
+		root().dispatchEvent(
+			pointerEvent('pointermove', 900, 900, { pointerId: 2, pointerType: 'pen' })
+		);
+		flushSync();
+		expect(panX()).toBeCloseTo(200);
+	});
+
+	it('releases the capture on pointercancel', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+		root().dispatchEvent(pointerEvent('pointercancel', 600, 500));
+		expect(released).toContain(1);
+	});
+
+	// ── gesture-state hygiene (round 1) ──
+	it('a wheel DURING a captured drag does not snap the pan back (rebases the baseline)', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500)); // captured, x = 200
+		flushSync();
+		expect(panX()).toBeCloseTo(200);
+
+		// A wheel arrives mid-drag, anchored at the stage CENTRE (500) — distinct
+		// from the drag position — so it moves the pan to a value the pre-wheel
+		// origin+delta does NOT reproduce. The baseline must rebase to the wheel's
+		// pointer position (500) and post-wheel pan, so a following pointermove to
+		// that same point (zero net delta) leaves the transform where the wheel put
+		// it. Without the rebase, that move snaps the pan back to the pre-wheel
+		// origin (0) — a visible jump.
+		wheel(root(), { clientX: 500, clientY: 500, deltaY: -1 });
+		const afterWheel = transformOf();
+		expect(panX()).not.toBeCloseTo(200); // the wheel genuinely moved the pan
+		root().dispatchEvent(pointerEvent('pointermove', 500, 500));
+		flushSync();
+		expect(transformOf()).toBe(afterWheel);
+	});
+
+	it('a keyboard zoom (+) DURING a captured drag does not snap the pan back', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500)); // captured, x = 200
+		flushSync();
+		expect(panX()).toBeCloseTo(200);
+
+		// `+` zooms about the stage centre mid-drag, moving the pan; the drag
+		// baseline must rebase to the last pointer position (700), so a move back to
+		// that point is a zero net delta and holds. Without the rebase it snaps to
+		// the pre-key origin + total delta.
+		expect(press('+')).toBe(true);
+		const afterKey = transformOf();
+		expect(panX()).not.toBeCloseTo(200);
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500));
+		flushSync();
+		expect(transformOf()).toBe(afterKey);
+	});
+
+	it('an external zoom while ARMED (before the drag threshold) rebases, so engaging does not jump', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		// Arm the gesture (pointerdown) but stay below the 4px threshold.
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		// A wheel zooms while merely ARMED (not yet dragging), anchored off-centre so
+		// it moves the pan.
+		wheel(root(), { clientX: 800, clientY: 500, deltaY: -1 });
+		const afterWheelPan = panX();
+		expect(afterWheelPan).not.toBeCloseTo(0);
+
+		// Cross the threshold with a small move from the WHEEL pointer position: the
+		// engage must continue from the post-wheel pan (armed rebase), NOT snap to
+		// origin(0) + the full delta from the original press point.
+		root().dispatchEvent(pointerEvent('pointermove', 810, 500));
+		flushSync();
+		expect(captured).toContain(1);
+		expect(panX()).toBeCloseTo(afterWheelPan + 10);
+	});
+
+	it('a stale armed gesture (missed pointerup) does not resume as a phantom drag on a later control press', () => {
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		// Arm a gesture whose pointerup never arrives (the pointer left the root
+		// before the drag threshold, so there was no capture to deliver it).
+		root().dispatchEvent(pointerEvent('pointerdown', 100, 100));
+		// A later press lands on a control — excluded from starting a pan, and must
+		// also clear the stale arm so the following move can't engage from a dead
+		// baseline.
+		const close = closeButton();
+		close.dispatchEvent(pointerEvent('pointerdown', 20, 20));
+		close.dispatchEvent(pointerEvent('pointermove', 300, 300)); // far past threshold
+		flushSync();
+		expect(captured).toEqual([]);
+	});
+
+	it('a double-click on a nav control does NOT also toggle zoom', () => {
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		mockGeometry(root(), OVERFLOW_G);
+		const next = root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!;
+		expect(scaleOf()).toBe(1);
+		next.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 20, clientY: 20 }));
+		flushSync();
+		expect(scaleOf()).toBe(1); // the toggle stood down for the control
+	});
+
+	it('a mid-capture ABORT leaves the SAME viewer able to start a clean next gesture', () => {
+		const dialog = document.body.appendChild(document.createElement('dialog'));
+		mockOpenModals([]); // establish :modal support with nothing open
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+
+		mockOpenModals([dialog]); // blocked → the next move aborts
+		root().dispatchEvent(pointerEvent('pointermove', 900, 500));
+		flushSync();
+		expect(released).toContain(1);
+		mockOpenModals([]); // unblocked; same viewer frontmost again
+
+		// A fresh gesture engages cleanly — no stuck `dragging` / capture from abort.
+		captured.length = 0;
+		released.length = 0;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500));
+		flushSync();
+		expect(captured).toContain(1);
+		root().dispatchEvent(pointerEvent('pointerup', 560, 500, { buttons: 0 }));
+		expect(released).toContain(1);
+	});
+
+	it('a buttons-released move after a drag releases capture, not leaking into the next gesture', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+
+		// A move with the primary button no longer held — a pointerup we never saw.
+		root().dispatchEvent(pointerEvent('pointermove', 650, 500, { buttons: 0 }));
+		flushSync();
+		expect(released).toContain(1);
+
+		captured.length = 0;
+		released.length = 0;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500));
+		flushSync();
+		expect(captured).toContain(1);
+	});
+
+	it('lostpointercapture ends the gesture; the next one starts clean', () => {
+		mountViewer();
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(captured).toContain(1);
+
+		root().dispatchEvent(pointerEvent('lostpointercapture', 600, 500));
+		flushSync();
+
+		captured.length = 0;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500));
+		flushSync();
+		expect(captured).toContain(1);
+	});
+
+	it('a press ON a control (close / nav) never starts a pan', () => {
+		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		const close = closeButton();
+		// Press on the control, then move well past the threshold: a drag OFF a
+		// button must not engage a pan (its own click stays intact).
+		close.dispatchEvent(pointerEvent('pointerdown', 20, 20));
+		close.dispatchEvent(pointerEvent('pointermove', 200, 200));
+		flushSync();
+		expect(captured).toEqual([]);
+	});
+
+	// ── the pointer entry points carry the same gates ──
+	it('double-click does NOT toggle when the viewer is not frontmost; the front one does', () => {
+		mountViewer();
+		const back = root();
+		mockGeometry(back, OVERFLOW_G);
+		mountViewer();
+		const front = root();
+		mockGeometry(front, OVERFLOW_G);
+
+		back.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf(back)).toBe(1); // background viewer did not toggle
+
+		front.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf(front)).toBeCloseTo(2000 / 900); // frontmost did
+	});
+});
+
+// TASK-2459 — the DR-5b loader WIRED into the viewer. The request logic is
+// proven in viewerImageLoader.svelte.test.ts; these pin the wiring: the <img>
+// shows the loader's URL, its decode feeds the fallback detector / upgrade, and
+// the spinner / error / retry states render.
+
+/** A LightboxImage with explicit pixel dimensions. */
+function sized(id: string, alt: string, width: number, height: number, mime = 'image/png'): LightboxImage {
+	return { id, alt, filename: null, mime_type: mime, size_bytes: null, width, height };
+}
+/** Simulate the <img> decoding at `naturalWidth x naturalHeight`, then flush. */
+function fireLoad(naturalWidth: number, naturalHeight: number, scope: HTMLElement = root()): void {
+	const el = scope.querySelector<HTMLImageElement>('.lightbox-image');
+	if (!el) throw new Error('no image to load');
+	Object.defineProperty(el, 'naturalWidth', { configurable: true, get: () => naturalWidth });
+	Object.defineProperty(el, 'naturalHeight', { configurable: true, get: () => naturalHeight });
+	el.dispatchEvent(new Event('load'));
+	flushSync();
+}
+
+describe('Lightbox — DR-5b image loading (TASK-2459)', () => {
+	it('a large image loads the THUMBNAIL first, then upgrades to the original on decode', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(imageSrc()).toContain('variant=thumb-md');
+		expect(imageSrc()).toContain(IMG_A);
+
+		// The thumb decodes at a bounded size → the background upgrade swaps in.
+		fireLoad(1024, 768);
+		expect(imageSrc()).toContain(IMG_A);
+		expect(imageSrc()).not.toContain('variant='); // the original, no variant
+	});
+
+	it('the FALLBACK case does not upgrade (a thumb-md request served the original)', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(imageSrc()).toContain('variant=thumb-md');
+		// Decoded ABOVE the thumbnail bound → it WAS the original: no second request.
+		fireLoad(5000, 5000);
+		expect(imageSrc()).toContain('variant=thumb-md');
+	});
+
+	it('an unknown-dimensions image requests the ORIGINAL directly (no thumb)', () => {
+		mountViewer({ images: [image(IMG_A, 'a')] }); // the helper leaves dims null
+		expect(imageSrc()).toContain(IMG_A);
+		expect(imageSrc()).not.toContain('variant=');
+	});
+
+	it('shows a loading spinner until the image decodes, then hides it', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(root().querySelector('.lightbox-loading')).not.toBeNull();
+		fireLoad(1024, 768); // thumb decoded → upgrade requested (still loading)
+		expect(root().querySelector('.lightbox-loading')).not.toBeNull();
+		fireLoad(5000, 5000); // original decoded → ready
+		expect(root().querySelector('.lightbox-loading')).toBeNull();
+	});
+
+	it('a load error shows a retryable error; retry RE-REQUESTS and hands off focus', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		const el = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		el.dispatchEvent(new Event('error'));
+		flushSync();
+		expect(root().querySelector('.lightbox-error')).not.toBeNull();
+
+		const retry = root().querySelector<HTMLButtonElement>('.lightbox-retry')!;
+		// The retry control carries pointer-events:auto explicitly (the stage is off).
+		expect(getComputedStyle(retry).pointerEvents).not.toBe('none');
+		retry.focus();
+		retry.click();
+		flushSync();
+		// Re-requested → loading again → the error (and its button) are gone, and
+		// focus was handed off before the button disappeared (TASK-2456).
+		expect(root().querySelector('.lightbox-error')).toBeNull();
+		expect(document.activeElement).toBe(closeButton());
+	});
+
+	it('ABORTS on navigate: the src points at the new image, dropping the old URL', () => {
+		mountViewer({
+			images: [sized(IMG_A, 'a', 5000, 5000), sized(IMG_B, 'b', 800, 600, 'image/jpeg')],
+		});
+		expect(imageSrc()).toContain(IMG_A);
+		expect(imageSrc()).toContain('variant=thumb-md');
+
+		expect(press('ArrowRight')).toBe(true);
+		expect(imageSrc()).toContain(IMG_B);
+		expect(imageSrc()).not.toContain(IMG_A); // the old URL is gone at once
+		expect(imageSrc()).not.toContain('variant='); // B is small ≤1024 → original
+	});
+
+	it('retry RE-MOUNTS the <img> so a same-URL failure is actually re-requested', () => {
+		mountViewer({ images: [image(IMG_A, 'a')] }); // unknown dims → original URL directly
+		const before = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		const beforeSrc = before.getAttribute('src');
+		before.dispatchEvent(new Event('error'));
+		flushSync();
+		root().querySelector<HTMLButtonElement>('.lightbox-retry')!.click();
+		flushSync();
+		const after = root().querySelector<HTMLImageElement>('.lightbox-image');
+		// A NEW element (the load token changed the {#key}) at the SAME URL — the
+		// browser re-requests even though a naive `src=''`→same-URL would no-op.
+		expect(after).not.toBe(before);
+		expect(after?.getAttribute('src')).toBe(beforeSrc);
+	});
+
+	it('a focused retry that unmounts on set-shrink does not strand focus on <body>', () => {
+		liveProps.images = [image(IMG_A, 'a')];
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		root().querySelector<HTMLImageElement>('.lightbox-image')!.dispatchEvent(new Event('error'));
+		flushSync();
+		const retry = root().querySelector<HTMLButtonElement>('.lightbox-retry')!;
+		retry.focus();
+		expect(document.activeElement).toBe(retry);
+
+		// The set shrinks to empty — the errored image and its retry button unmount.
+		liveProps.images = [];
+		flushSync();
+		expect(root().querySelector('.lightbox-retry')).toBeNull();
+		expect(document.activeElement).toBe(closeButton());
+		expect(document.activeElement).not.toBe(document.body);
+	});
+
+	it('a LATE decode for a navigated-away image does not corrupt the current one', () => {
+		mountViewer({
+			images: [sized(IMG_A, 'a', 5000, 5000), sized(IMG_B, 'b', 5000, 5000, 'image/jpeg')],
+		});
+		const staleImg = root().querySelector<HTMLImageElement>('.lightbox-image')!; // A's element
+		expect(staleImg.getAttribute('src')).toContain('variant=thumb-md');
+
+		// Navigate to B — the id-keyed <img> remounts, detaching A's element.
+		expect(press('ArrowRight')).toBe(true);
+		expect(imageSrc()).toContain(IMG_B);
+		expect(imageSrc()).toContain('variant=thumb-md');
+
+		// A's thumbnail finishes decoding LATE at a FALLBACK size (>1024) on the now
+		// detached element. It must not mark B ready or suppress B's upgrade.
+		Object.defineProperty(staleImg, 'naturalWidth', { configurable: true, get: () => 5000 });
+		Object.defineProperty(staleImg, 'naturalHeight', { configurable: true, get: () => 5000 });
+		staleImg.dispatchEvent(new Event('load'));
+		flushSync();
+		expect(imageSrc()).toContain(IMG_B);
+		expect(imageSrc()).toContain('variant=thumb-md'); // B untouched
+
+		// B's OWN decode still drives B's upgrade.
+		fireLoad(1024, 768);
+		expect(imageSrc()).toContain(IMG_B);
+		expect(imageSrc()).not.toContain('variant=');
+	});
+
+	it('zoom/pan still work on the image the loader RE-MOUNTED after navigation', () => {
+		// The {#key} remounts the <img> on nav, rebinding `imgEl`. The zoom reads
+		// geometry from `imgEl`; a stale bind would read the detached element and
+		// pan nothing.
+		mountViewer({
+			images: [sized(IMG_A, 'a', 5000, 5000), sized(IMG_B, 'b', 5000, 5000, 'image/jpeg')],
+		});
+		expect(press('ArrowRight')).toBe(true);
+		expect(imageSrc()).toContain(IMG_B);
+
+		mockGeometry(root(), OVERFLOW_G); // mocks the NEW (B's) image element
+		root().dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf()).toBeCloseTo(2000 / 900); // zoom read the rebound element
+
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(100);
+	});
+
+	it('DR-16: an all-unsafe set renders no image and issues no request', () => {
+		mountViewer({ images: [image(IMG_A, 'svg', 'image/svg+xml')] });
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-loading')).toBeNull();
+	});
+
+	it('a same-id re-emit that FILLS dimensions re-runs the DR-5b policy', () => {
+		// The load key is id + dimensions, so a re-derived set with the SAME values
+		// does not reload, but an async metadata fill (unknown → sized) MUST — a
+		// stale dimension is a stale policy.
+		liveProps.images = [image(IMG_A, 'a')]; // unknown dims → original directly
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		expect(imageSrc()).not.toContain('variant='); // unknown → the original
+
+		// The same id re-emits with LARGE dimensions filled in.
+		liveProps.images = [sized(IMG_A, 'a', 5000, 5000)];
+		flushSync();
+		expect(imageSrc()).toContain('variant=thumb-md'); // policy re-ran → thumb first
+	});
+
+	it('the retry button is excluded from pan + zoom-toggle gestures over the stage', () => {
+		mountViewer({ images: [sized(IMG_A, 'a', 5000, 5000)] });
+		root().querySelector<HTMLImageElement>('.lightbox-image')!.dispatchEvent(new Event('error'));
+		flushSync();
+		mockGeometry(root(), OVERFLOW_G);
+		const retry = root().querySelector<HTMLButtonElement>('.lightbox-retry')!;
+		const before = scaleOf();
+		// A double-click ON retry must not toggle zoom (excluded like close / nav).
+		retry.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf()).toBeCloseTo(before);
+		// A drag STARTING on retry must not pan the broken stage.
+		retry.dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
+		flushSync();
+		expect(panX()).toBeCloseTo(0);
+	});
+
+	it('an A→B→A same-URL late error on the DETACHED element does not clobber the live image', () => {
+		// The third A load reuses A's exact URL, so the URL fence alone cannot tell
+		// the detached first A element's late error from the live one — the per-mount
+		// generation is what rejects it (the no-`{#key}` switch-safety class).
+		mountViewer({
+			images: [sized(IMG_A, 'a', 800, 600), sized(IMG_B, 'b', 800, 600, 'image/jpeg')],
+		});
+		const firstA = root().querySelector<HTMLImageElement>('.lightbox-image')!; // E1
+		expect(press('ArrowRight')).toBe(true); // → B (E1 detaches)
+		expect(press('ArrowLeft')).toBe(true); // → A again (E3 mounts, same URL)
+		const liveA = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		expect(liveA).not.toBe(firstA);
+		expect(liveA.getAttribute('src')).toBe(firstA.getAttribute('src')); // same URL
+
+		fireLoad(800, 600); // the LIVE A decodes fine → ready, no error
+		expect(root().querySelector('.lightbox-error')).toBeNull();
+
+		// The detached E1 errors LATE at the same URL — the generation fence must
+		// reject it so the live, ready image is not flipped into 'error'.
+		firstA.dispatchEvent(new Event('error'));
+		flushSync();
+		expect(root().querySelector('.lightbox-error')).toBeNull();
+	});
+});
+
+// ── TASK-2460: the mobile DR-5b cells wired into the viewer ──────────────────
+// The request policy is proven in viewerImageLoader.svelte.test.ts; these pin the
+// WIRING under a mobile viewport — the tap affordance renders and issues the
+// request, zoom-past-fit upgrades the thumb, and zoom is disabled with no bitmap.
+describe('Lightbox — mobile tap-to-load and zoom-past-fit (TASK-2460)', () => {
+	beforeEach(() => {
+		mobileFlag = true;
+		flushSync();
+	});
+	afterEach(() => {
+		mobileFlag = false;
+		flushSync();
+	});
+
+	function tapButton(scope: HTMLElement = root()): HTMLButtonElement {
+		return scope.querySelector<HTMLButtonElement>('.lightbox-tap-load')!;
+	}
+
+	it('mobile + large: NO automatic request — a named tap affordance instead', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		// The assertion that fails if the deferral is dropped: no <img>, no request.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		const tap = tapButton();
+		expect(tap).not.toBeNull();
+		// Named, and NOT pointer-dead under the stage's `pointer-events: none`.
+		expect(tap.textContent?.trim()).toBe('Tap to load full image');
+		expect(getComputedStyle(tap).pointerEvents).not.toBe('none');
+	});
+
+	it('mobile + unknown dims: also deferred (tap affordance, no request)', () => {
+		mountViewer({ images: [image(IMG_A, 'unknown')] }); // helper leaves dims null
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(tapButton()).not.toBeNull();
+	});
+
+	it('TAP-ONLY leg: the tap itself issues the request (the original, no variant)', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		tapButton().click();
+		flushSync();
+		// The tap loaded the ORIGINAL directly (mobile large has no thumb).
+		expect(imageSrc()).toContain(IMG_A);
+		expect(imageSrc()).not.toContain('variant=');
+		// The affordance is gone (replaced by the image it loads).
+		expect(root().querySelector('.lightbox-tap-load')).toBeNull();
+	});
+
+	it('a focused tap that unmounts on load hands focus off (does not strand <body>)', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		const tap = tapButton();
+		tap.focus();
+		expect(document.activeElement).toBe(tap);
+		tap.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-tap-load')).toBeNull();
+		expect(document.activeElement).not.toBe(document.body);
+	});
+
+	it('the placeholder takes the image aspect ratio when known, a neutral box otherwise', () => {
+		// Genuinely LARGE (> 8 MP) so it is the deferred cell, not the thumb cell.
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 2500)] });
+		expect(tapButton().getAttribute('style')).toContain('aspect-ratio: 5000 / 2500');
+		unmount(mounted.pop()!);
+
+		mountViewer({ images: [image(IMG_B, 'unknown')] });
+		const style = tapButton().getAttribute('style') ?? '';
+		expect(style).not.toContain('aspect-ratio');
+		expect(style).toContain('height'); // a neutral, explicitly-sized box
+	});
+
+	it('mobile thumb cell: zoom-past-fit upgrades to the original exactly once', () => {
+		mountViewer({ images: [sized(IMG_A, 'wide', 2000, 100)] });
+		expect(imageSrc()).toContain('variant=thumb-md'); // thumb painted, no auto-upgrade
+		fireLoad(1024, 51);
+		expect(imageSrc()).toContain('variant=thumb-md'); // mobile: stays the thumb
+
+		// Zoom past fit — the same element is reused (no flash), src swaps to original.
+		const thumbEl = root().querySelector<HTMLImageElement>('.lightbox-image');
+		expect(press('+')).toBe(true);
+		expect(scaleOf()).toBeGreaterThan(1); // actually past fit
+		expect(imageSrc()).toContain(IMG_A);
+		expect(imageSrc()).not.toContain('variant='); // the original
+		expect(root().querySelector('.lightbox-image')).toBe(thumbEl); // reused, no remount
+
+		// Further zoom steps do NOT re-request — one fetch, not one per step.
+		expect(press('+')).toBe(true);
+		expect(imageSrc()).not.toContain('variant=');
+		expect(root().querySelector('.lightbox-image')).toBe(thumbEl);
+	});
+
+	it('a zoom-past-fit made BEFORE the thumb paints upgrades the moment it paints', () => {
+		mountViewer({ images: [sized(IMG_A, 'wide', 2000, 100)] });
+		expect(imageSrc()).toContain('variant=thumb-md'); // loading, not yet decoded
+		// Zoom past fit while still loading — no original yet (the trigger waits for
+		// a painted bitmap).
+		expect(press('+')).toBe(true);
+		expect(scaleOf()).toBeGreaterThan(1);
+		expect(imageSrc()).toContain('variant=thumb-md'); // no upgrade before paint
+
+		// The thumb paints while ALREADY zoomed past fit → the original is fetched
+		// now, with no further gesture, so the user is never stranded on the thumb.
+		fireLoad(1024, 51);
+		expect(imageSrc()).not.toContain('variant=');
+	});
+
+	it('zoom is DISABLED while nothing is decoded (the deferred cell): keys do nothing', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		// The zoom keys are consumed (owned by the modal) but inert — no image loads,
+		// the affordance stays, and nothing throws.
+		expect(press('0')).toBe(true);
+		expect(press('+')).toBe(true);
+		expect(press('-')).toBe(true);
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(tapButton()).not.toBeNull();
+	});
+
+	it('a drag over the deferred placeholder is inert: it captures nothing', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		// The pan handlers live on the backdrop and `setPointerCapture` there once a
+		// drag engages past threshold. WITHOUT the `bitmapPresent` gate the move below
+		// would arm a drag and capture; the gate keeps it fully inert. Spying on the
+		// capture makes this regression-sensitive (a passed pointerup would otherwise
+		// clear `dragging` and mask a missing gate).
+		// jsdom has no `setPointerCapture` (the production code try/catches it), so
+		// install a mock fn to observe the attempt rather than spying a missing method.
+		const captureSpy = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = captureSpy;
+		root().dispatchEvent(pointerEvent('pointerdown', 100, 100));
+		root().dispatchEvent(pointerEvent('pointermove', 320, 100)); // well past threshold
+		flushSync();
+		expect(captureSpy).not.toHaveBeenCalled();
+		root().dispatchEvent(pointerEvent('pointerup', 320, 100));
+		flushSync();
+		// Nothing loaded; the affordance is intact and the tap still issues the request.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(tapButton()).not.toBeNull();
+		tapButton().click();
+		flushSync();
+		expect(imageSrc()).toContain(IMG_A);
+	});
+
+	it('mobile→desktop breakpoint flip does NOT retro-fetch: the affordance stays', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		expect(tapButton()).not.toBeNull();
+		// Flip to desktop AFTER the load captured mobile — the reactive flip now
+		// really invalidates `platform`, and the load effect (which untracks it) must
+		// still not re-run, so nothing is fetched and the affordance stays.
+		mobileFlag = false;
+		flushSync();
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-tap-load')).not.toBeNull();
+	});
+});
+
+// ── TASK-2461 final-pass fixes ──────────────────────────────────────────────
+describe('Lightbox — re-clamp on same-id decode + inert error state (TASK-2461)', () => {
+	it('re-clamps a stranded scale when a same-id reload decodes a SMALLER bitmap', () => {
+		// A same-id dimension fill reloads the image with a smaller bitmap (a large
+		// original swapped for a thumb), lowering actualScale and MAX_SCALE. The reset
+		// effect fires only on image CHANGE and the ResizeObserver only on stage
+		// resize — neither catches this; the DECODE (onload) must re-clamp.
+		mountViewer();
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		const stage = root().querySelector<HTMLElement>('.lightbox-stage')!;
+		// Big bitmap fitted small → actualScale 10, ceiling 40 — lots of headroom.
+		let fitted = 100;
+		let natural = 1000;
+		Object.defineProperty(image, 'offsetWidth', { configurable: true, get: () => fitted });
+		Object.defineProperty(image, 'offsetHeight', { configurable: true, get: () => fitted });
+		Object.defineProperty(image, 'naturalWidth', { configurable: true, get: () => natural });
+		Object.defineProperty(image, 'naturalHeight', { configurable: true, get: () => natural });
+		Object.defineProperty(stage, 'clientWidth', { configurable: true, get: () => fitted });
+		Object.defineProperty(stage, 'clientHeight', { configurable: true, get: () => fitted });
+
+		for (let i = 0; i < 8; i++) press('+');
+		expect(scaleOf(), 'zoomed well past the eventual ceiling').toBeGreaterThan(5);
+
+		// The reload decodes a 1:1 bitmap: actualScale → 1, ceiling → 4. The stranded
+		// scale (~5.96) must be pulled back to 4 by the onload re-clamp.
+		natural = fitted;
+		image.dispatchEvent(new Event('load'));
+		flushSync();
+		expect(scaleOf(), 'the decode re-clamped the stranded scale to the new max').toBeCloseTo(4);
+	});
+
+	it('disables zoom keys and drag in the ERROR state, and re-enables them after a successful retry', () => {
+		mountViewer({ images: [sized(IMG_A, 'a', 5000, 5000)] });
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(1024, 768); // thumb decoded → ready, background original in flight
+		expect(press('+')).toBe(true);
+		const zoomed = scaleOf();
+		expect(zoomed, 'zoom works with a decoded bitmap').toBeGreaterThan(1);
+
+		// The original FAILS → error state. `errored()` flips only the phase;
+		// `displaySrc` stays set, so without the phase guard `bitmapPresent` would
+		// still be true and gestures would act over the error UI.
+		root().querySelector<HTMLImageElement>('.lightbox-image')!.dispatchEvent(new Event('error'));
+		flushSync();
+		expect(root().querySelector('.lightbox-error')).not.toBeNull();
+
+		// ALL zoom gestures inert — the transform does not move: keys, wheel AND
+		// double-click (each of which the broken <img>'s geometry would otherwise let
+		// through).
+		press('+');
+		press('0');
+		wheel(root(), { clientX: 500, clientY: 500, deltaY: -1 });
+		root().dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf(), 'keys / wheel / dblclick are inert in the error state').toBeCloseTo(zoomed);
+		// DRAG inert — a pointerdown does not arm/capture.
+		const capture = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = capture;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500));
+		flushSync();
+		expect(capture, 'drag does not arm in the error state').not.toHaveBeenCalled();
+
+		// CONTROL — a successful retry re-enables gestures.
+		root().querySelector<HTMLButtonElement>('.lightbox-retry')!.click();
+		flushSync();
+		mockGeometry(root(), OVERFLOW_G); // the retry remounted the <img>
+		fireLoad(2000, 2000); // the original re-decodes → ready
+		expect(press('+')).toBe(true);
+		expect(scaleOf(), 'zoom works again after a successful retry').toBeGreaterThan(zoomed);
+	});
+
+	it('aborts a LIVE drag when the bitmap vanishes mid-drag (background original fails)', () => {
+		mountViewer({ images: [sized(IMG_A, 'a', 5000, 5000)] });
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(1024, 768); // thumb ready; background original in flight
+		zoomToActual(); // pan room
+		const capture = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = capture;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500)); // engage the drag
+		flushSync();
+		expect(capture, 'the drag armed on a decoded bitmap').toHaveBeenCalled();
+		const panned = panX();
+
+		// The original FAILS mid-drag → error. A further move must ABORT, not pan the
+		// broken UI.
+		root().querySelector<HTMLImageElement>('.lightbox-image')!.dispatchEvent(new Event('error'));
+		flushSync();
+		root().dispatchEvent(pointerEvent('pointermove', 720, 500));
+		flushSync();
+		expect(panX(), 'the drag aborted; no further pan over the error UI').toBeCloseTo(panned);
 	});
 });

@@ -48,6 +48,31 @@
 
 import type { Snapshot } from '@sveltejs/kit';
 import { onDestroy } from 'svelte';
+import { isViewerFrontmost, VIEWER_ROOT_CLASS } from '$lib/a11y/viewerBackdrop';
+
+/**
+ * True when an input event must NOT be treated as the user scrolling the page,
+ * so a pending scroll restoration is not aborted by it (TASK-2457):
+ *
+ *  - it was already handled (`defaultPrevented`) — so the NEXT modal to consume
+ *    wheel / keys inherits this without re-plumbing the restoration; OR
+ *  - it originates inside the FRONTMOST attachment viewer, a modal that owns
+ *    wheel / key / touch while open (the page behind is inert), so its own zoom
+ *    / arrow-nav must not count as the user driving the page underneath it.
+ *
+ * Generalized across wheel / key / touch on purpose, not wheel-only: touch stays
+ * native until phase 3d, so a viewer `touchmove` is NOT `defaultPrevented` and
+ * only the origin check catches it; the viewer's arrow-nav (shipped 3a) IS
+ * `defaultPrevented`, so either branch catches that. A genuine, non-viewer,
+ * un-handled scroll passes both checks and still aborts the restore, as before.
+ */
+export function isModalViewerScrollInput(e: Event): boolean {
+	if (e.defaultPrevented) return true;
+	const target = e.target;
+	if (!(target instanceof Element)) return false;
+	const viewer = target.closest(`.${VIEWER_ROOT_CLASS}`);
+	return viewer !== null && isViewerFrontmost(viewer);
+}
 
 // The app's primary scroll container lives in the root layout
 // (`.main-content { overflow-y: auto }`), not `window`. Capturing
@@ -362,7 +387,13 @@ export function createScrollRestoration(
 		// previous diff check treated it as one and bailed mid-restore,
 		// leaving the user 200-400px past their target. BUG-1425 round 12.
 		let userScrolled = false;
-		const markUserScroll = () => {
+		// Ignore input the user did not aim at the PAGE: an event a modal already
+		// handled (`defaultPrevented`) or one originating inside the frontmost
+		// attachment viewer (which owns wheel/key/touch while open). Without this,
+		// the viewer's own zoom / arrow-nav aborts a restore running underneath it
+		// (TASK-2457). See {@link isModalViewerScrollInput}.
+		const markUserScroll = (e: Event) => {
+			if (isModalViewerScrollInput(e)) return;
 			userScrolled = true;
 		};
 		const isScrollKey = (e: KeyboardEvent) =>
@@ -376,6 +407,7 @@ export function createScrollRestoration(
 			e.key === 'End' ||
 			e.key === ' ';
 		const handleKey = (e: KeyboardEvent) => {
+			if (isModalViewerScrollInput(e)) return;
 			if (isScrollKey(e)) userScrolled = true;
 		};
 		window.addEventListener('wheel', markUserScroll, { passive: true });

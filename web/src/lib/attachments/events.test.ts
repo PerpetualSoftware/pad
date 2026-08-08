@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { AttachmentUploadResult } from '$lib/types';
 import {
 	createAttachmentHostToken,
 	isAttachmentPanelEventForHost,
@@ -7,6 +8,7 @@ import {
 	notifyViewerOpen,
 	registerAttachmentPanelListener,
 	registerAttachmentViewerListener,
+	toUploadedAttachment,
 	type AttachmentPanelOpenEvent,
 	type AttachmentViewerOpenEvent,
 	type LightboxImage,
@@ -522,5 +524,31 @@ describe('viewer open channel', () => {
 		expect(viewerSeen).toHaveLength(1);
 		expect(panelSeen).toHaveLength(1);
 		expect(viewerSeen[0].attachmentId).toBe('att-1');
+	});
+});
+
+describe('toUploadedAttachment (TASK-2459)', () => {
+	it('threads the dimensions the narrowing used to drop', () => {
+		const out = toUploadedAttachment({
+			id: 'a1',
+			filename: 'big.png',
+			mime: 'image/png',
+			size: 4096,
+			width: 4000,
+			height: 3000,
+		} as AttachmentUploadResult);
+		expect(out.width).toBe(4000);
+		expect(out.height).toBe(3000);
+	});
+
+	it('leaves dimensions null when the response omits them', () => {
+		const out = toUploadedAttachment({
+			id: 'a1',
+			filename: 'f.bin',
+			mime: 'application/octet-stream',
+			size: 10,
+		} as AttachmentUploadResult);
+		expect(out.width).toBeNull();
+		expect(out.height).toBeNull();
 	});
 });

@@ -4,7 +4,10 @@
  * Split out of `[collection]/+page.svelte` so the DOM-selection and
  * focus-trap-cycle logic is unit testable without a full component mount
  * (mirrors `paneUrlParams` / `boardNav`). The `.svelte` side owns the effects
- * that install/tear these down; this module is pure, side-effect-free DOM math.
+ * that install/tear these down; the selection + cycle helpers are pure DOM math.
+ * The one exception is {@link handoffFocus}, which deliberately MOVES focus (its
+ * whole job) — the `.svelte` side calls it from an effect, but it is exported
+ * here so it lives with the focus math it builds on.
  */
 
 /**
@@ -111,6 +114,72 @@ export function nextTrapTarget(
 	}
 	if (active === last || !inside) return first;
 	return null;
+}
+
+/**
+ * Keep focus INSIDE a modal surface when a focused control leaves it — is
+ * removed from the DOM, or becomes `disabled` (PLAN-2392 / TASK-2456).
+ *
+ * `aria-modal="true"` promises focus never escapes the surface while it is open,
+ * yet a conditionally-rendered control that had focus drops focus to `<body>`
+ * when it unmounts, and a control that becomes `disabled` does the same on a real
+ * engine — landing focus BEHIND the surface's own inerted background. Neither the
+ * Tab trap (fires only on a later Tab) nor the teardown restore (only at close)
+ * repairs that gap; this does, moving focus to the surface's stable fallback.
+ *
+ * Two call shapes, one helper (the house pattern from
+ * `editor/attachment-image.ts` — blur the departing control, focus its
+ * replacement):
+ *
+ *  - BEFORE an imperative removal/disable, pass the `departing` control: if it
+ *    currently holds focus it is blurred and focus moves to the fallback. This
+ *    is the shape TASK-2459's retry and TASK-2460's tap-to-load use (a real
+ *    engine drops focus to `<body>` the instant a focused control is disabled,
+ *    so the handoff must run while the control is still focused).
+ *  - AFTER a reactive removal (a Svelte `{#if}` dropped the control), pass no
+ *    `departing`: if focus has ALREADY fallen out of `container`, it is pulled
+ *    back within the same synchronous flush, so `<body>` is never observably
+ *    focused. A focus still resting on a live control inside `container` is left
+ *    untouched.
+ *
+ * The fallback is the first tabbable control (for the viewer, its close button),
+ * else `container` itself — the same target entry focus uses, so it is always
+ * reachable even mid-load with no other control yet.
+ */
+export function handoffFocus(
+	container: HTMLElement,
+	departing: Element | null = null,
+	isVisible: (el: HTMLElement) => boolean = isFocusableVisible,
+): void {
+	if (typeof document === 'undefined') return;
+	const active = document.activeElement;
+	// Imperative (departing given): act only while that control still owns focus,
+	// so a handoff for a control the user already left is a no-op. Reactive (no
+	// departing): act only once focus has left the surface — a live focus inside
+	// it is fine and must not be yanked to the fallback.
+	const leaving =
+		departing !== null
+			? active === departing
+			: active === null || active === document.body || !container.contains(active);
+	if (!leaving) return;
+	if (departing instanceof HTMLElement) departing.blur();
+	// EXCLUDE `departing` from the candidates: in the imperative shape it is still
+	// enabled and in the DOM at call time (the caller disables/removes it AFTER
+	// this), so a departing control that is the first — or only — tabbable would
+	// otherwise be re-selected here and then dropped to <body> the instant the
+	// caller disables it. When it is the only one, fall through to the container.
+	const fallback =
+		paneFocusables(container, isVisible).find((el) => el !== departing) ?? container;
+	fallback.focus({ preventScroll: true });
+	// Verify it took, then drop to the container — the same verified-restore
+	// pattern the viewer uses on close. `paneFocusables`' visibility filter is
+	// geometry-only, so it cannot see that a candidate sits under `inert` /
+	// `visibility: hidden` (a real engine refuses focus there); if the preferred
+	// target refuses, the container (a `tabindex="-1"` surface root) still keeps
+	// focus INSIDE the surface rather than letting it fall to <body>.
+	if (fallback !== container && document.activeElement !== fallback) {
+		container.focus({ preventScroll: true });
+	}
 }
 
 /**

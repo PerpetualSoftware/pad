@@ -2,9 +2,11 @@
 	/**
 	 * Full-screen image viewer for attachment thumbnails (IDEA-1660).
 	 * Opened by a host that captures a click on an `img[data-attachment-id]`
-	 * and passes the attachment id(s) — the lightbox loads the ORIGINAL
-	 * (un-variant) blob so the expanded view is full resolution regardless
-	 * of the thumbnail variant shown inline.
+	 * and passes the attachment id(s). Loading follows the DR-5b memory policy
+	 * (PLAN-2392 phase 3b): a bounded `thumb-md` paints first and the viewer
+	 * upgrades to the full-resolution original in the background on desktop, while
+	 * a large image on mobile defers the original behind a tap-to-load affordance
+	 * (TASK-2459 / TASK-2460) — see `$lib/attachments/viewerImageLoader`.
 	 *
 	 * MODAL CONTRACT (PLAN-2392 phase 3a / TASK-2429, DR-4b). This is a real
 	 * modal now: `role="dialog"` + `aria-modal`, portaled to `<body>`, focus
@@ -16,11 +18,15 @@
 	 *
 	 * Keyboard: Esc closes (through `escapeStack`, NOT a local listener),
 	 * ←/→ navigate when multiple images were passed, Tab cycles within the
-	 * viewer. Backdrop click closes; clicking the image itself does not.
+	 * viewer, `+`/`-` zoom about the stage centre and `0` resets (PLAN-2392
+	 * phase 3b / TASK-2455). Backdrop click closes; clicking the image itself
+	 * does not.
 	 */
 	import { untrack } from 'svelte';
-	import { attachmentDownloadUrl } from '$lib/markdown/attachments';
-	import { paneFocusables, nextTrapTarget } from '$lib/collections/paneFocus';
+	import { paneFocusables, nextTrapTarget, handoffFocus } from '$lib/collections/paneFocus';
+	import { createViewerImageLoader } from '$lib/attachments/viewerImageLoader.svelte';
+	import type { Platform } from '$lib/attachments/viewerLoading';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import {
 		acquire,
 		isBlockedByModal,
@@ -30,6 +36,18 @@
 	} from '$lib/a11y/viewerBackdrop';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { canOpenInViewer } from '$lib/attachments/display';
+	import {
+		reset as resetZoom,
+		clampState,
+		clampPan,
+		zoomTo,
+		toggleFitOrActual,
+		stageCenter,
+		isAtFit,
+		ZOOM_STEP,
+		type Geometry,
+		type ZoomState,
+	} from '$lib/attachments/zoom';
 	/**
 	 * ONE definition of what an image in this viewer is (PLAN-2392 / TASK-2431).
 	 *
@@ -43,7 +61,8 @@
 	 *
 	 * Everything past `id` / `alt` is NULLABLE and this component treats it as
 	 * such: an inline image's metadata comes from a HEAD probe that may not have
-	 * completed, and an upload event carries only four fields.
+	 * completed, and an upload event carries only the `UploadedAttachment` fields
+	 * (filename, MIME, size, and — since TASK-2459 — the pixel dimensions).
 	 *
 	 * Producers that mount this component directly import the type from the
 	 * CHANNEL too, not from here — a `.svelte` module cannot re-export a type,
@@ -162,16 +181,397 @@
 		Math.min(Math.max(current, 0), Math.max(viewable.length - 1, 0))
 	);
 	let img = $derived(viewable[shownIndex]);
-	let src = $derived(img ? attachmentDownloadUrl(openWsSlug, img.id) : '');
 	// The accessible name: the image's own alt where there is one, else a
 	// generic label. Never empty — an unnamed `role="dialog"` is announced as
 	// nothing at all.
 	let dialogLabel = $derived(img?.alt || 'Attachment viewer');
 
+	// ── Image loading (PLAN-2392 phase 3b / TASK-2459) ────────────────────────
+	//
+	// The DR-5b thumb-then-original policy. The loader owns which URL the <img>
+	// shows (`displaySrc`, the canonical attachment URL) and the load phase; this
+	// component drives it from the shown image and reports each decode / error.
+	const loader = createViewerImageLoader();
+	// The id AND the pixel dimensions, as ONE stable primitive string — never the
+	// `img` object. A prop re-emit with the same VALUES (a re-derived `viewable`
+	// array) must not re-fire the load effect, but a genuine dimension change (an
+	// async metadata fill that flips `unknown` → a sized class) MUST: the DR-5b
+	// policy is a function of the pixels, so a stale dimension is a stale policy.
+	// A shrink to no image collapses to `'::'`, still a change → the effect fires
+	// and releases the load.
+	let loadKey = $derived(`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}`);
+	// Captured NON-reactively at load time (see the effect): a breakpoint flip
+	// alone must not reload — desktop→mobile must not abort an in-flight original,
+	// mobile→desktop must not retroactively auto-fetch (TASK-2459).
+	let platform = $derived<Platform>(viewport.isMobile ? 'mobile' : 'desktop');
+	// Whether a decoded bitmap exists to zoom / pan. False in the mobile `deferred`
+	// cell (a placeholder, nothing decoded), when there is no image, AND in the
+	// `error` state: `errored()` flips only the phase, leaving `displaySrc` set (the
+	// failed URL), so without the phase guard drag-arming and the zoom keys would
+	// act over the error UI with nothing decoded behind it. Zoom is then DISABLED,
+	// not merely a no-op (TASK-2460). A successful retry returns to loading/ready
+	// and re-enables it.
+	let bitmapPresent = $derived(!!img && !!loader.displaySrc && loader.phase !== 'error');
+	// The tap-to-load placeholder's box. Where dimensions are known it takes the
+	// image's own aspect ratio (so the affordance previews the shape that will
+	// arrive); where they are not, a neutral box (TASK-2460).
+	let placeholderStyle = $derived(
+		img?.width && img?.height
+			? `aspect-ratio: ${img.width} / ${img.height}; width: min(70vw, 520px); max-width: 90%; max-height: 80%;`
+			: `width: min(60vw, 360px); height: min(45vh, 270px); max-width: 90%; max-height: 80%;`
+	);
+
 	// The portaled root. `$state` so the effect below re-runs once `bind:this`
 	// lands; read-only inside every effect, so nothing here can self-invalidate
 	// a flush (CONVE-1688).
 	let rootEl = $state<HTMLElement | null>(null);
+
+	// ── Zoom / pan (PLAN-2392 phase 3b / TASK-2455) ──────────────────────────
+	//
+	// The transform is `translate(x,y) scale(scale)` on the <img>, about the
+	// stage centre. Every number comes from `$lib/attachments/zoom` (TASK-2454),
+	// which owns the arithmetic and its bounds; this component only MEASURES the
+	// rendered geometry, wires the keys, and re-clamps on resize.
+	let zoom = $state<ZoomState>(resetZoom());
+	// The stage is the 92vw×92vh box the bare <img> used to be; the <img> sits
+	// inside it, `object-fit: contain`. Both are read live for geometry — never
+	// through `getBoundingClientRect()` on the transformed image, which returns
+	// the POST-scale box and would make the pan bounds grow with the zoom.
+	let stageEl = $state<HTMLElement | null>(null);
+	let imgEl = $state<HTMLImageElement | null>(null);
+
+	/**
+	 * The measured geometry, or null before there is anything to measure.
+	 *
+	 * `offsetWidth` / `offsetHeight` are the UNSCALED layout box — transforms do
+	 * not touch them, which is the whole reason they, not `getBoundingClientRect`,
+	 * are the source here. A not-yet-decoded bitmap reads back all zeros; the zoom
+	 * module is defensive about that and still returns an in-bounds transform, so
+	 * no guard is needed here.
+	 */
+	function readGeometry(): Geometry | null {
+		const stage = stageEl;
+		const image = imgEl;
+		if (!stage || !image) return null;
+		return {
+			stageW: stage.clientWidth,
+			stageH: stage.clientHeight,
+			fittedW: image.offsetWidth,
+			fittedH: image.offsetHeight,
+			naturalW: image.naturalWidth,
+			naturalH: image.naturalHeight,
+		};
+	}
+
+	// `+` / `-` zoom about the stage centre. Reading and writing `zoom` from an
+	// EVENT handler is fine — the CONVE-1688 rule is about `$effect`s that read
+	// the state they write, not about handlers.
+	function stepZoom(factor: number) {
+		const g = readGeometry();
+		if (!g) return;
+		zoom = zoomTo(zoom, zoom.scale * factor, stageCenter(g), g);
+		rebaseDrag(); // keyboard zoom mid-drag must not desync the pan baseline
+	}
+
+	// Wheel / ctrl-cmd-wheel zoom, anchored at the CURSOR (TASK-2457 / DR-4). Both
+	// plain AND ctrl/cmd wheel zoom, so there is no modifier gate — but the
+	// listener is registered NON-PASSIVELY (see the effect below) so
+	// `preventDefault` takes effect: the inert page behind must not scroll, and
+	// ctrl/cmd+wheel must not trigger the browser's own page zoom. `stopPropagation`
+	// as well, so the page's scroll-restoration listener does not count this as a
+	// user scroll (belt; `restore.svelte.ts` also ignores viewer input — braces).
+	function onWheel(e: WheelEvent) {
+		const el = rootEl;
+		// Same gates as `onKeydown`: only the frontmost, non-blocked viewer acts.
+		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
+		// We own the wheel while frontmost — consume it even before the bitmap is
+		// measurable, so a scroll can never leak past the modal into the inert app.
+		e.preventDefault();
+		e.stopPropagation();
+		// Consumed (the modal owns the wheel) but INERT with no decoded bitmap — the
+		// mobile deferred placeholder or the error UI, where the broken `<img>` still
+		// satisfies `readGeometry` (TASK-2461). Same guard the keys use.
+		if (!bitmapPresent) return;
+		// A horizontal-only wheel (`deltaY === 0`, e.g. a trackpad side-swipe) is
+		// still consumed — the modal owns the wheel — but must NOT zoom, or it would
+		// read as a zoom-out. Direction comes from `deltaY` alone.
+		if (e.deltaY === 0) return;
+		const g = readGeometry();
+		const rect = stageEl?.getBoundingClientRect();
+		if (!g || !rect) return;
+		// Anchor in stage-local px (top-left origin) — the coordinate system the
+		// zoom module documents. The stage is untransformed, so its rect is stable.
+		const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+		// Wheel up / away (deltaY < 0) zooms in.
+		const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP;
+		zoom = zoomTo(zoom, zoom.scale * factor, anchor, g);
+		// A wheel DURING a captured drag just moved `zoom.{x,y}` from this pointer
+		// position — rebase so the next pointermove continues from here.
+		lastClientX = e.clientX;
+		lastClientY = e.clientY;
+		rebaseDrag();
+	}
+
+	// ── Double-click toggle + drag-to-pan (PLAN-2392 / TASK-2458) ────────────
+	//
+	// Desktop single-pointer half of the drag-pan work (3d keeps two-pointer
+	// pinch, double-TAP and touch semantics). Modelled on the captured-drag house
+	// pattern at `graph/ItemGraph.svelte` — arm on pointerdown, capture only once a
+	// real drag engages (capturing on down would swallow the dblclick), re-check
+	// the arbitration gates on every move so a gesture that STRADDLES a
+	// frontmost/modal change aborts instead of panning an image the user no longer
+	// owns, and suppress the synthesized click a pan produces.
+	const DRAG_THRESHOLD = 4; // CSS px below which the gesture is a click, not a pan
+	let maybeDrag = false;
+	// `$state` so the template can drop the transform TRANSITION while dragging —
+	// otherwise the image eases toward each pan target and visibly trails the
+	// pointer. Read/written only in pointer handlers (never an $effect's tracked
+	// scope), so no CONVE-1688 self-write.
+	let dragging = $state(false);
+	let suppressClick = false;
+	let capturedPointerId: number | null = null;
+	// The pointer that OWNS the current gesture, captured at pointerdown. Every
+	// later move/up/cancel/lost must come from it: a touch or a second pointer
+	// (pen) is not captured, so its events still reach this root and would
+	// otherwise engage or terminate an in-flight mouse drag (touch stays native
+	// until 3d).
+	let gesturePointerId: number | null = null;
+	let dragStartClientX = 0;
+	let dragStartClientY = 0;
+	let dragOriginX = 0; // zoom.x at drag baseline
+	let dragOriginY = 0; // zoom.y at drag baseline
+	let lastClientX = 0; // last pointer position seen during the gesture
+	let lastClientY = 0;
+
+	// Re-baseline the gesture to the CURRENT zoom + last pointer position. The drag
+	// computes `origin + total delta`, so anything that moves `zoom.{x,y}` from
+	// OUTSIDE the drag — wheel, `+`/`-`/`0` keys, a resize re-clamp — must rebase,
+	// or the next move snaps the pan back to the pre-change origin (a visible jump).
+	// Rebases an ARMED gesture too (not only a live drag): a zoom that lands
+	// between pointerdown and the drag threshold would otherwise leave the engage
+	// baseline stale. A no-op when no gesture is in flight.
+	function rebaseDrag(): void {
+		if (!maybeDrag && !dragging) return;
+		dragOriginX = zoom.x;
+		dragOriginY = zoom.y;
+		dragStartClientX = lastClientX;
+		dragStartClientY = lastClientY;
+	}
+	// A SINGLE owned timer for clearing `suppressClick`, so an EARLIER gesture's
+	// pending clear can never fire during a LATER one and unsuppress its pan's
+	// click. `cancelSuppressClear` runs whenever a new gesture is armed or a drag
+	// engages (the flag is held true for the whole drag); `armSuppressClear` runs
+	// once at the END of a pan to drop it on the next tick, after the synthesized
+	// click has been (and gone).
+	let suppressClickTimer: ReturnType<typeof setTimeout> | null = null;
+	function cancelSuppressClear(): void {
+		if (suppressClickTimer !== null) {
+			clearTimeout(suppressClickTimer);
+			suppressClickTimer = null;
+		}
+	}
+	function armSuppressClear(): void {
+		suppressClick = true;
+		cancelSuppressClear();
+		suppressClickTimer = setTimeout(() => {
+			suppressClick = false;
+			suppressClickTimer = null;
+		}, 0);
+	}
+
+	// The same gates `onKeydown` / `onWheel` carry: only the frontmost, non-blocked
+	// viewer owns the pointer. Applied at EVERY entry point (down / move / up /
+	// dblclick / backdrop click), not just the start.
+	function pointerGatesOpen(el: HTMLElement): boolean {
+		return isViewerFrontmost(el) && !isBlockedByModal(el);
+	}
+
+	function releaseCapture(e: PointerEvent): void {
+		if (capturedPointerId !== null) {
+			try {
+				(e.currentTarget as Element).releasePointerCapture(capturedPointerId);
+			} catch {
+				// already released — ignore.
+			}
+			capturedPointerId = null;
+		}
+	}
+
+	// Tear a gesture down mid-flight: release the capture (an early return alone
+	// would leave the pointer captured and `dragging` latched, still delivering
+	// moves), and — if a real pan was underway — still swallow the click it
+	// produces. The transform is LEFT WHERE IT WAS (the abort does not undo pan).
+	function abortGesture(e: PointerEvent): void {
+		const wasDragging = dragging;
+		maybeDrag = false;
+		dragging = false;
+		gesturePointerId = null;
+		releaseCapture(e);
+		if (wasDragging) armSuppressClear();
+	}
+
+	function onPointerDown(e: PointerEvent) {
+		if (e.button !== 0) return; // primary button only
+		if (e.pointerType === 'touch') return; // touch stays native until 3d
+		// A second pointer (a pen, say) pressing mid-drag must NOT seize the gesture:
+		// re-arming below would replace `gesturePointerId` and hand the pan to the
+		// interloper. An active drag is owned until its own pointer releases.
+		if (dragging) return;
+		// A new primary press supersedes any STALE armed gesture — one whose
+		// pointerup was missed off-root (no capture yet, so it was never delivered).
+		// Clear it before any early return below, or a later control / gated press
+		// leaves `maybeDrag` latched and the next move engages a phantom drag from a
+		// dead baseline. (We already returned above if a drag is live.)
+		maybeDrag = false;
+		// A press ON a control (close / nav / the DR-10 retry) is that control's
+		// click, never a pan: arming here would let a drag OFF a button still fire
+		// its click, since the buttons' own handlers don't consult `suppressClick`
+		// (the house pattern in ItemGraph excludes its interactive overlays the same
+		// way). Retry sits over the (broken) stage in the error state, so it needs
+		// the same exclusion as the always-present chrome.
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load')) return;
+		// No decoded bitmap to pan (the mobile `deferred` placeholder shows no
+		// `<img>`) — do NOT arm a drag, so the gesture stays fully inert instead of
+		// capturing the pointer and latching `dragging` for a pan that can never
+		// happen (TASK-2460). A plain press still reaches the backdrop to close.
+		if (!bitmapPresent) return;
+		const el = rootEl;
+		if (!el || !pointerGatesOpen(el)) return; // START gate
+		maybeDrag = true;
+		dragging = false;
+		gesturePointerId = e.pointerId;
+		suppressClick = false;
+		cancelSuppressClear(); // a fresh gesture — drop any prior pan's pending clear
+		dragStartClientX = e.clientX;
+		dragStartClientY = e.clientY;
+		lastClientX = e.clientX;
+		lastClientY = e.clientY;
+		// Capture the pan origin from the state at pointer-down, so every move
+		// computes origin + TOTAL delta — never delta-of-delta, which the zoom
+		// module warns loses the slack at a bound (its "gesture is not associative"
+		// note). No `setPointerCapture` yet: capturing here would swallow dblclick.
+		dragOriginX = zoom.x;
+		dragOriginY = zoom.y;
+	}
+
+	function onPointerMove(e: PointerEvent) {
+		if (!maybeDrag) return;
+		if (e.pointerId !== gesturePointerId) return; // only the owning pointer drives
+		const el = rootEl;
+		// WHOLE-GESTURE arbitration: the press may have been captured before another
+		// viewer / a native modal became frontmost. Abort rather than early-return.
+		if (!el || !pointerGatesOpen(el)) {
+			abortGesture(e);
+			return;
+		}
+		// The bitmap vanished mid-drag — the background original failed and the phase
+		// went to `error` while a pan was live (TASK-2461). Abort: there is nothing
+		// left to pan, and continuing would move the (broken) error UI.
+		if (!bitmapPresent) {
+			abortGesture(e);
+			return;
+		}
+		// Primary button no longer held — a pointerup we never received (it ended
+		// off-target pre-capture, or was swallowed after a drag engaged). Tear the
+		// whole gesture down, not just `maybeDrag`: a full `abortGesture` also
+		// releases any capture and clears `dragging`, so nothing leaks into the next
+		// pointerdown (a bare `maybeDrag = false` left a live capture + `dragging`).
+		if ((e.buttons & 1) === 0) {
+			abortGesture(e);
+			return;
+		}
+		lastClientX = e.clientX;
+		lastClientY = e.clientY;
+		const dx = e.clientX - dragStartClientX;
+		const dy = e.clientY - dragStartClientY;
+		if (!dragging) {
+			if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+			dragging = true;
+			// This gesture is a pan, not a click: suppress until the drag ENDS. Held
+			// true for the whole drag; cancel any prior gesture's pending clear so it
+			// can't fire mid-pan and unsuppress us.
+			suppressClick = true;
+			cancelSuppressClear();
+			capturedPointerId = e.pointerId;
+			try {
+				(e.currentTarget as Element).setPointerCapture(e.pointerId);
+			} catch {
+				// capture unsupported/failed — panning still works while over the root
+			}
+		}
+		const g = readGeometry();
+		if (!g) return;
+		// Clamp PAN only — the drag never changes scale — from the captured origin
+		// plus the total delta. `clampPan` keeps a stage edge from showing past the
+		// image; at fit the bound is zero, so a drag is a no-op pan.
+		zoom = clampPan({ scale: zoom.scale, x: dragOriginX + dx, y: dragOriginY + dy }, g);
+	}
+
+	function onPointerUp(e: PointerEvent) {
+		if (!maybeDrag && !dragging) return; // not a gesture we started
+		if (e.pointerId !== gesturePointerId) return; // a foreign pointer can't end ours
+		const el = rootEl;
+		// Re-check on release too (spec): a gesture that straddled a
+		// frontmost/modal change aborts rather than finalising a pan.
+		if (!el || !pointerGatesOpen(el)) {
+			abortGesture(e);
+			return;
+		}
+		maybeDrag = false;
+		gesturePointerId = null;
+		if (dragging) {
+			dragging = false;
+			releaseCapture(e);
+			// Keep the click this pan produces swallowed, then clear on the next tick
+			// so a later genuine click is unaffected.
+			armSuppressClear();
+		}
+	}
+
+	function onPointerCancel(e: PointerEvent) {
+		if (!maybeDrag && !dragging) return; // no gesture to cancel
+		if (e.pointerId !== gesturePointerId) return;
+		abortGesture(e);
+	}
+
+	function onLostPointerCapture(e: PointerEvent) {
+		if (!maybeDrag && !dragging) return; // no gesture; ignore a stray capture-loss
+		if (e.pointerId !== gesturePointerId) return;
+		// Capture taken away (OS/browser, or our own release) — the gesture is over.
+		// Clear WITHOUT releasing (already gone); keep the click suppressed if a pan
+		// was underway. Idempotent with `onPointerUp`, which sets `dragging` false
+		// before releasing, so a release-driven event here is a no-op.
+		const wasDragging = dragging;
+		maybeDrag = false;
+		dragging = false;
+		capturedPointerId = null;
+		gesturePointerId = null;
+		if (wasDragging) armSuppressClear();
+	}
+
+	// Double-click toggles fit <-> actual size, anchored at the pointer
+	// (`toggleFitOrActual`). A pan suppresses its clicks, so a dblclick only fires
+	// on a genuine double-click, never after a drag.
+	function onDoubleClick(e: MouseEvent) {
+		// A pan just ended (its click is being swallowed) — don't also toggle: a
+		// gesture is either a drag or a double-click, never both. Same swallow the
+		// backdrop click consults.
+		if (suppressClick) return;
+		// A double-click ON a control (close / nav / retry) is that control's, not a
+		// zoom toggle — without this, double-clicking Next navigates twice AND
+		// toggles, or a double-click on Retry toggles zoom on the broken stage.
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load')) return;
+		// Inert with no decoded bitmap (deferred placeholder / error UI) — the same
+		// guard the keys and wheel use (TASK-2461).
+		if (!bitmapPresent) return;
+		const el = rootEl;
+		if (!el || !pointerGatesOpen(el)) return;
+		const g = readGeometry();
+		const rect = stageEl?.getBoundingClientRect();
+		if (!g || !rect) return;
+		const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+		zoom = toggleFitOrActual(zoom, anchor, g);
+	}
 
 	// Stepped from `shownIndex`, not from `current`: after the set shrinks they
 	// differ, and moving from the raw value would jump relative to a position
@@ -289,6 +689,129 @@
 		};
 	});
 
+	// Reset the transform whenever the SHOWN image changes — arrow nav, or the
+	// set shrinking under `current` so a different member is shown (TASK-2455).
+	// Close needs no handling: every producer keys the mount, so closing
+	// unmounts this instance and the next open starts from `resetZoom()`.
+	//
+	// `lastResetForId` is a PLAIN let, not `$state`: an effect that read and wrote
+	// the same `$state` would self-depend and abort its own flush (CONVE-1688),
+	// stranding unrelated reactivity nearby. This effect reads `img?.id` (tracked)
+	// and writes `zoom` (which it never reads) plus this sentinel (a plain let, so
+	// never tracked) — nothing it writes is anything it reads. Seeded to the
+	// current id so the mount does not fire a redundant reset.
+	let lastResetForId: string | undefined = untrack(() => img?.id);
+	$effect(() => {
+		const id = img?.id;
+		if (id === lastResetForId) return;
+		lastResetForId = id;
+		zoom = resetZoom();
+		// A drag live ACROSS the image change (arrow-nav mid-drag) is left with a
+		// stale baseline, and deliberately so: `resetZoom` is fit, where `clampPan`
+		// pins the pan to 0 for ANY baseline, so the next move can't jump; and the
+		// next wheel/keyboard zoom rebases via `rebaseDrag`. Re-seeding here would be
+		// unobservable — and calling `rebaseDrag` (which reads `zoom`) inside this
+		// `zoom`-writing effect would self-invalidate it (CONVE-1688).
+	});
+
+	// (Re)load whenever the SHOWN image changes — nav, a dimension fill, or a set
+	// shrink. This is also the ABORT + release point: `loader.load` drops the URL
+	// the user left, and it re-runs on the set shrinking to empty (`loadKey` →
+	// `'::'`) so a closed / emptied viewer holds no in-flight request. Reads only
+	// `loadKey` (tracked, a stable string so a same-values prop re-emit doesn't
+	// re-fire); `img`, `openWsSlug` and `platform` are captured non-reactively so a
+	// breakpoint flip alone can't reload (TASK-2459).
+	$effect(() => {
+		void loadKey;
+		untrack(() => loader.load(img, openWsSlug, platform));
+	});
+	// Drop the load on unmount (close) — one teardown, no dependencies.
+	$effect(() => () => loader.dispose());
+
+	// Zoom-past-fit is the mobile THUMB cell's trigger to fetch the original
+	// (TASK-2460): once a thumbnail has PAINTED, zooming past FIT (`scale > 1`, not
+	// past the thumb's own 1:1) upgrades to the original. Threshold is
+	// `!isAtFit(zoom)` — exactly "past fit", robust to the FIT_EPSILON float noise.
+	// Depends on `zoom` AND `loader.painted` (both tracked): gating on `painted`
+	// means a pre-paint zoom cannot fetch the original early, AND — because the flip
+	// to painted RE-RUNS this effect — a zoom made WHILE the thumb was still loading
+	// still upgrades the instant it paints (not stranded on the thumbnail).
+	// `loadOriginal` writes neither `zoom` nor `painted`, so tracking them cannot
+	// self-invalidate the flush (CONVE-1688). Fires on every zoom step past fit, but
+	// `loadOriginal`'s own dedup makes all but the first a no-op — the original is
+	// requested exactly once — and it no-ops entirely wherever nothing is deferred
+	// (desktop, or an already-loaded cell).
+	$effect(() => {
+		if (isAtFit(zoom) || !loader.painted) return;
+		untrack(() => loader.loadOriginal());
+	});
+
+	// Re-clamp on stage resize. `maxScale` is geometry-dependent and geometry is
+	// viewport-dependent, so ENLARGING the window lowers the ceiling and can
+	// strand a previously-valid scale above it. `clampState` re-clamps SCALE
+	// first, then pan — the order a geometry change needs; clamping pan first
+	// would bound it against a scale that is about to change. The callback runs
+	// outside any tracked scope, so its `zoom` read/write is not a self-write.
+	// Guarded for environments without `ResizeObserver` (SSR); the jsdom test
+	// project ships a global stand-in (`src/test/setup-jsdom.ts`).
+	$effect(() => {
+		const stage = stageEl;
+		if (!stage || typeof ResizeObserver === 'undefined') return;
+		const ro = new ResizeObserver(() => {
+			const g = readGeometry();
+			if (g) {
+				zoom = clampState(zoom, g);
+				rebaseDrag(); // a resize re-clamp mid-drag must not desync the baseline
+			}
+		});
+		ro.observe(stage);
+		return () => ro.disconnect();
+	});
+
+	// Register the wheel listener imperatively with `{ passive: false }` so
+	// `preventDefault` is guaranteed to take effect (a declarative `onwheel`
+	// binding's passivity is not something to rely on), and on the viewer ROOT so
+	// a wheel over the backdrop letterbox is consumed too — scrolling "past" the
+	// modal into the inert app is exactly what the contract forbids (TASK-2457).
+	$effect(() => {
+		const el = rootEl;
+		if (!el) return;
+		el.addEventListener('wheel', onWheel, { passive: false });
+		return () => el.removeEventListener('wheel', onWheel);
+	});
+
+	// aria-modal promises focus never leaves the surface, but a focused nav button
+	// is CONDITIONALLY rendered (`hasMultiple`) — when the set shrinks to one it
+	// unmounts, dropping focus to <body> behind the inerted app until the next Tab
+	// (TASK-2456; a 3a defect every control 3b adds inherits). Keyed on the
+	// control-visibility signal, this hands focus back to the stable fallback
+	// (close button, else root) within the SAME flush the removal happens in, so
+	// <body> is never observably focused. `handoffFocus` with no `departing` is
+	// the reactive-removal shape; TASK-2459/2460 will call the same helper with
+	// THEIR departing control before disabling it.
+	//
+	// Guarded to the frontmost, non-blocked viewer: a surface stacked OVER this
+	// one owns focus, and pulling it back here would be the wrong direction (the
+	// same reason the key handler stands down for those). Reads only derived /
+	// element state and mutates focus — a DOM side effect, not $state — so it
+	// cannot self-invalidate its own flush (CONVE-1688).
+	$effect(() => {
+		// Tracked so the effect re-runs whenever a focus-holding control mounts or
+		// unmounts: the nav buttons (`hasMultiple`), the phase-gated controls (the
+		// DR-10 retry button in `error`, the tap-to-load button in `deferred` — both
+		// replaced by the image they load, TASK-2459 / TASK-2460), and the image
+		// itself (`img`). A set shrinking to empty, an errored image navigated away,
+		// or a tap that swaps the affordance for the bitmap could otherwise strand
+		// focus on <body>. Tracking the whole `phase` covers every such transition;
+		// `handoffFocus` no-ops while focus is still inside the surface.
+		void hasMultiple;
+		void loader.phase;
+		void img;
+		const el = rootEl;
+		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
+		handoffFocus(el);
+	});
+
 	function onKeydown(e: KeyboardEvent) {
 		// A control that already handled this key owns it.
 		if (e.defaultPrevented) return;
@@ -327,9 +850,49 @@
 		if (e.key === 'ArrowLeft' && hasMultiple) {
 			e.preventDefault();
 			prev();
-		} else if (e.key === 'ArrowRight' && hasMultiple) {
+			return;
+		}
+		if (e.key === 'ArrowRight' && hasMultiple) {
 			e.preventDefault();
 			next();
+			return;
+		}
+
+		// Zoom: `+` / `-` about the stage centre, `0` resets. INSIDE the gates
+		// above by construction — placed after `defaultPrevented`,
+		// `isViewerFrontmost` and `isBlockedByModal` have each had their say, so a
+		// zoom key can never steal a press another owner or a layer above is due.
+		//
+		// The modifier rule is a CONTRACT, not a nicety: this listens on `window`,
+		// so acting on Ctrl/Cmd/Alt-`-`/`0` would swallow the browser's own
+		// page-zoom (and OS) shortcuts from every surface while a viewer is open.
+		// Leave those keys entirely — do not act, and do NOT `preventDefault`, or
+		// the native shortcut is cancelled even though we declined to handle it.
+		// `shiftKey` is fine (on most layouts `+` IS Shift+`=`), so it is absent
+		// from the guard.
+		if (e.ctrlKey || e.metaKey || e.altKey) return;
+		// Zoom keys are DISABLED, not merely no-ops, while no bitmap exists — the
+		// mobile `deferred` cell shows a placeholder with nothing to zoom
+		// (TASK-2460). Consume the key so it can't leak past the modal, but do not
+		// act. (`+`/`-` are already inert via `readGeometry`; `0` would otherwise
+		// still reset.)
+		const isZoomKey = e.key === '+' || e.key === '=' || e.key === '-' || e.key === '0';
+		if (isZoomKey && !bitmapPresent) {
+			e.preventDefault();
+			return;
+		}
+		if (e.key === '+' || e.key === '=') {
+			// `+` — including the numpad, whose `.key` is also `'+'` — and bare `=`.
+			e.preventDefault();
+			stepZoom(ZOOM_STEP);
+		} else if (e.key === '-') {
+			// `-`, including the numpad, whose `.key` is also `'-'`.
+			e.preventDefault();
+			stepZoom(1 / ZOOM_STEP);
+		} else if (e.key === '0') {
+			e.preventDefault();
+			zoom = resetZoom();
+			rebaseDrag(); // keyboard reset mid-drag must not desync the pan baseline
 		}
 		// NO Escape branch. See the registration above.
 	}
@@ -338,6 +901,16 @@
 	// controls have a different target, so they don't dismiss. This avoids
 	// putting a click handler (and its a11y burden) on the <img>.
 	function onBackdropClick(e: MouseEvent) {
+		// A pan that released here produced this click — a drag is not a dismissal
+		// (TASK-2458). A below-threshold press (still a click) leaves this false, so
+		// it still closes; a plain click on the backdrop closes as before.
+		if (suppressClick) return;
+		const el = rootEl;
+		// Same gates as every other pointer entry point. Background inertness makes
+		// the normal path unreachable, so this is robustness, not a live fix — but a
+		// pointer owner that skips the gates the keyboard owner carries is the drift
+		// that breeds the next BUG-2441.
+		if (!el || !pointerGatesOpen(el)) return;
 		if (e.target === e.currentTarget) onClose();
 	}
 </script>
@@ -359,6 +932,12 @@
 	aria-label={dialogLabel}
 	tabindex="-1"
 	onclick={onBackdropClick}
+	ondblclick={onDoubleClick}
+	onpointerdown={onPointerDown}
+	onpointermove={onPointerMove}
+	onpointerup={onPointerUp}
+	onpointercancel={onPointerCancel}
+	onlostpointercapture={onLostPointerCapture}
 >
 	<!--
 		Explicit `aria-label`s: the glyph IS the label otherwise ("✕", "‹", "›"),
@@ -397,9 +976,132 @@
 		</button>
 	{/if}
 
-	{#if img}
-		<img class="lightbox-image" {src} alt={img.alt || 'Attachment'} />
-	{/if}
+	<!--
+		The STAGE is the 92vw×92vh box the bare <img> used to be; the image sits
+		inside it, `object-fit: contain`, and carries the zoom transform. The stage
+		is `pointer-events: none` so a click on the empty letterbox around the image
+		falls through to the backdrop and closes (exactly as it did when the image
+		was the only thing here); the image re-enables pointer events so a click ON
+		it does not close — and so 3c's drag / 3d's pinch have a target. The controls
+		sit ABOVE the stage (their own `z-index`), never inside it.
+	-->
+	<div class="lightbox-stage" bind:this={stageEl}>
+		{#if img && loader.displaySrc}
+			<!--
+				KEYED ON THE LOAD TOKEN (TASK-2459). The <img> would otherwise persist
+				across navigation, and a bitmap that finished decoding LATE would fire
+				`load` reading the NEW image's src — labelling A's fallback decode as B
+				and suppressing B's upgrade (the no-`{#key}` switch-safety class). A
+				fresh element per REQUEST tears the stale element's listener down. The
+				token changes on load / retry but NOT on the thumb→original upgrade, so
+				the upgrade reuses the SAME element (no flash) while a retry — whose URL
+				is usually unchanged — still re-mounts and re-requests. The decode is
+				read from the EVENT's own target, and the loader fences on the decoded
+				src too, belt and braces.
+			-->
+			{#key loader.loadToken}
+				<!-- draggable=false: a native image drag would otherwise pre-empt the pan. -->
+				<!--
+					`data-gen` is the generation this element was mounted under, read back
+					in the handlers via `dataset.gen` — the SAME frozen-DOM-attribute
+					snapshot the src fence uses (`getAttribute('src')`). A DOM attribute on
+					a DETACHED element is not updated, so it is a true per-element snapshot;
+					a plain `{@const}` would compile to a lazy `$derived` and re-read the
+					CURRENT `loadToken` when a late event fires, defeating the fence in an
+					A→B→A navigation (the third A reuses A's exact URL, so only the
+					generation tells the detached first element apart). The `{#key}` gives a
+					fresh element per load / retry; the thumb→original upgrade reuses the
+					SAME element (token unchanged), so `data-gen` is stable across it.
+				-->
+				<img
+					bind:this={imgEl}
+					class="lightbox-image"
+					class:panning={dragging}
+					src={loader.displaySrc}
+					data-gen={loader.loadToken}
+					alt={img.alt || 'Attachment'}
+					draggable="false"
+					onload={(e) => {
+						const el = e.currentTarget as HTMLImageElement;
+						loader.decoded(el.naturalWidth, el.naturalHeight, el.getAttribute('src') ?? '', Number(el.dataset.gen));
+						// RE-CLAMP on a fresh bitmap. A same-id reload can change the geometry
+						// (an async dimension fill swaps a large original for a smaller thumb,
+						// lowering actualScale and MAX_SCALE), stranding the current scale above
+						// the new ceiling with out-of-bounds pan. The reset effect fires only on
+						// image CHANGE (id) and the ResizeObserver only on stage resize, so
+						// neither catches this. `clampState`, NOT reset — the same image's valid
+						// zoom survives; only an over-ceiling scale/pan is pulled back. Geometry
+						// is measurable only post-decode. Gated to the LIVE element (`el ===
+						// imgEl`, the same fence `decoded` applies) so a stale detached load can't
+						// drive the current zoom. Event handler, so the `zoom` read/write is not a
+						// CONVE-1688 self-write.
+						if (el === imgEl) {
+							const g = readGeometry();
+							if (g) {
+								zoom = clampState(zoom, g);
+								rebaseDrag(); // a re-clamp mid-drag must not desync the pan baseline
+							}
+						}
+					}}
+					onerror={(e) => {
+						const el = e.currentTarget as HTMLImageElement;
+						loader.errored(el.getAttribute('src') ?? '', Number(el.dataset.gen));
+					}}
+					style="transform: translate({zoom.x}px, {zoom.y}px) scale({zoom.scale});"
+				/>
+			{/key}
+		{/if}
+
+		{#if img && loader.phase === 'loading'}
+			<!-- pointer-events:none so it never intercepts a pan / dblclick over the
+			     stage; the spinner is decoration over the (loading) image. -->
+			<div class="lightbox-status lightbox-loading" role="status" aria-label="Loading image">
+				<span class="lightbox-spinner" aria-hidden="true"></span>
+			</div>
+		{/if}
+
+		{#if img && loader.phase === 'deferred'}
+			<!-- The mobile large/unknown cell: DR-5b auto-fetches nothing here, so this
+			     is a TAP-TO-LOAD affordance, not a spinner (TASK-2460). The layer is
+			     inert; the button itself re-enables pointer events (the stage turns
+			     them off) so a tap can reach it — the one failure mode this cell exists
+			     to avoid. The whole placeholder is the button (a large touch target),
+			     sized to the image's aspect ratio when known. On tap it is replaced by
+			     the image it loads, so it hands focus off first (TASK-2456). -->
+			<div class="lightbox-status lightbox-deferred">
+				<button
+					class="lightbox-tap-load"
+					type="button"
+					style={placeholderStyle}
+					onclick={() => {
+						handoffFocus(rootEl!, rootEl?.querySelector('.lightbox-tap-load') ?? null);
+						loader.loadOriginal();
+					}}
+				>
+					<span class="lightbox-tap-label">Tap to load full image</span>
+				</button>
+			</div>
+		{/if}
+
+		{#if img && loader.phase === 'error'}
+			<div class="lightbox-status lightbox-error" role="alert">
+				<p class="lightbox-error-text">This image couldn't be loaded.</p>
+				<!-- pointer-events:auto EXPLICITLY: the stage turns pointer events off,
+				     and this control must be clickable. On a successful retry it
+				     disappears, so it hands focus off first (TASK-2456). -->
+				<button
+					class="lightbox-retry"
+					type="button"
+					onclick={() => {
+						handoffFocus(rootEl!, rootEl?.querySelector('.lightbox-retry') ?? null);
+						loader.retry();
+					}}
+				>
+					Retry
+				</button>
+			</div>
+		{/if}
+	</div>
 
 	{#if hasMultiple}
 		<!-- `shownIndex`, so the counter names the image actually on screen even
@@ -451,19 +1153,166 @@
 		background: rgba(0, 0, 0, 0.82);
 		backdrop-filter: blur(2px);
 		cursor: zoom-out;
+		/* A drag-to-pan surface: no text should get selected mid-drag (the counter
+		   is the only text, and it is not meant to be selectable). draggable=false
+		   on the <img> handles the image; this handles selection (TASK-2458). */
+		user-select: none;
+		-webkit-user-select: none;
+	}
+
+	.lightbox-stage {
+		/* The box the bare <img> used to occupy — TASK-2454's coordinate system. */
+		width: 92vw;
+		height: 92vh;
+		flex: none;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		/*
+		 * The empty letterbox around the image is transparent to pointer events, so
+		 * a click there reaches the backdrop and closes — the pre-zoom behaviour.
+		 * The image below re-enables them. Deliberately NOT `touch-action: none`
+		 * here: that would kill native pinch before 3d's handler exists, leaving
+		 * phone users no zoom at all in the interval (out of TASK-2455's scope).
+		 */
+		pointer-events: none;
 	}
 
 	.lightbox-image {
-		max-width: 92vw;
-		max-height: 92vh;
+		max-width: 100%;
+		max-height: 100%;
 		object-fit: contain;
 		border-radius: var(--radius);
 		box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
 		cursor: default;
+		pointer-events: auto;
+		transform-origin: center;
+		transition: transform 0.15s ease-out;
+	}
+
+	/* While DRAGGING, the image must track the pointer 1:1 — the easing transition
+	   would make it lag behind the cursor (TASK-2458). Discrete zoom (keys / wheel /
+	   double-click) keeps the transition. */
+	.lightbox-image.panning {
+		transition: none;
+	}
+
+	/* Reduced motion suppresses the TRANSITION only — the zoom still works
+	   (Modal.svelte's precedent). */
+	@media (prefers-reduced-motion: reduce) {
+		.lightbox-image {
+			transition: none;
+		}
+	}
+
+	/* Loading spinner + error, centred over the stage (TASK-2459). */
+	.lightbox-status {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-3);
+		z-index: 1;
+	}
+
+	.lightbox-loading {
+		/* Never intercept a pan / double-click over the stage. */
+		pointer-events: none;
+	}
+
+	.lightbox-spinner {
+		width: 42px;
+		height: 42px;
+		border: 3px solid rgba(255, 255, 255, 0.25);
+		border-top-color: rgba(255, 255, 255, 0.9);
+		border-radius: 50%;
+		animation: lightbox-spin 0.8s linear infinite;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		/* Slowed, not stopped — it must still read as "in progress". */
+		.lightbox-spinner {
+			animation-duration: 2.4s;
+		}
+	}
+
+	@keyframes lightbox-spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+
+	.lightbox-error {
+		/* The layer is inert; the button re-enables itself below. */
+		pointer-events: none;
+		color: #fff;
+		text-align: center;
+	}
+
+	.lightbox-error-text {
+		margin: 0;
+		font-size: 0.95rem;
+	}
+
+	.lightbox-retry {
+		/* EXPLICIT: the stage sets `pointer-events: none`, so the one interactive
+		   control in this layer has to turn them back on (TASK-2459). */
+		pointer-events: auto;
+		padding: var(--space-2) var(--space-4);
+		background: rgba(0, 0, 0, 0.5);
+		border: 1px solid rgba(255, 255, 255, 0.3);
+		border-radius: var(--radius);
+		color: #fff;
+		font-size: 0.9rem;
+		cursor: pointer;
+	}
+
+	.lightbox-retry:hover {
+		background: rgba(0, 0, 0, 0.75);
+	}
+
+	/* Tap-to-load placeholder for the mobile deferred cell (TASK-2460). The layer
+	   is inert; the button re-enables pointer events below. */
+	.lightbox-deferred {
+		pointer-events: none;
+	}
+
+	.lightbox-tap-load {
+		/* EXPLICIT: the stage sets `pointer-events: none`, so the tap target has to
+		   turn them back on — a control the user cannot tap is the failure this cell
+		   exists to avoid (TASK-2460). */
+		pointer-events: auto;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		/* Sizing (aspect ratio when known, neutral box otherwise) comes from the
+		   inline `placeholderStyle`. */
+		background: rgba(255, 255, 255, 0.06);
+		border: 1px dashed rgba(255, 255, 255, 0.35);
+		border-radius: var(--radius);
+		color: #fff;
+		cursor: pointer;
+	}
+
+	.lightbox-tap-load:hover,
+	.lightbox-tap-load:focus-visible {
+		background: rgba(255, 255, 255, 0.12);
+		border-color: rgba(255, 255, 255, 0.6);
+	}
+
+	.lightbox-tap-label {
+		padding: var(--space-2) var(--space-4);
+		font-size: 0.95rem;
+		font-weight: 500;
 	}
 
 	.lightbox-close {
 		position: absolute;
+		/* Above the stage's stacking context. Small on purpose: the viewer's own
+		   z-index sweep (TASK-2436) forbids any app overlay at or above 100000. */
+		z-index: 1;
 		top: var(--space-3);
 		right: var(--space-3);
 		width: 40px;
@@ -486,6 +1335,7 @@
 
 	.lightbox-nav {
 		position: absolute;
+		z-index: 1;
 		top: 50%;
 		transform: translateY(-50%);
 		width: 48px;
@@ -516,6 +1366,7 @@
 
 	.lightbox-counter {
 		position: absolute;
+		z-index: 1;
 		bottom: var(--space-3);
 		left: 50%;
 		transform: translateX(-50%);
@@ -524,5 +1375,22 @@
 		border-radius: 9999px;
 		color: #fff;
 		font-size: 0.8rem;
+	}
+
+	/* Forced-colors (PLAN-2392 DR-4). The custom palette is discarded, so the
+	   image's box-shadow boundary vanishes — give the image a real BORDER so its
+	   boundary stays visible. LAST in the sheet so it wins over the controls' own
+	   (equal-specificity) border rules above, giving them explicit system-colour
+	   borders rather than relying on the UA's forced-colors adjustment. */
+	@media (forced-colors: active) {
+		.lightbox-image {
+			border: 2px solid CanvasText;
+		}
+		.lightbox-close,
+		.lightbox-nav,
+		.lightbox-retry,
+		.lightbox-tap-load {
+			border: 1px solid ButtonText;
+		}
 	}
 </style>

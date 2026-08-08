@@ -56,6 +56,40 @@ function buildPng(width: number, height: number, rgb: [number, number, number]):
 
 export const REAL_PNG = buildPng(200, 150, [200, 120, 60]);
 
+/**
+ * A decodable PNG whose LONG EDGE EXCEEDS 1024 px (TASK-2461). The server derives
+ * a `thumb-md` (1024 px long edge) only when the source is bigger, and the DR-5b
+ * loader paints that thumb first and upgrades to this original — so the swap is
+ * observable only against a fixture this size. Kept flat-colour so `deflate`
+ * keeps it small despite the pixel count.
+ */
+export const BIG_PNG = buildPng(1600, 1200, [40, 110, 190]);
+
+/**
+ * A >1024px WIDE fixture (4:1). Fitted into the 4:3 desktop stage it is
+ * letterboxed top and bottom, so there is blank stage space INSIDE the stage box
+ * but outside the image — the click target the dismiss test needs (TASK-2461).
+ */
+export const WIDE_PNG = buildPng(1600, 400, [190, 90, 40]);
+
+/**
+ * A bounded (<= 1024px long edge) PNG to stand in for the server's `thumb-md`
+ * variant under route interception (TASK-2461): the loader's fallback detector
+ * treats a decode this size as a real thumbnail and upgrades, so serving it for
+ * `?variant=thumb-md` and {@link BIG_PNG} for the original makes the swap
+ * deterministic and observable (a 800→1600 naturalWidth jump).
+ */
+export const MID_PNG = buildPng(800, 600, [90, 170, 90]);
+
+/**
+ * A genuinely LARGE fixture — 4000×2500 = 10 MP, OVER the 8 MP
+ * `AUTO_LOAD_MAX_PIXELS` — so the DR-5b classifier calls it `large`, not just
+ * `small`-but-long. On mobile that is the DEFERRED cell (tap-to-load, no
+ * automatic request); a 1.9 MP image is only the mobile thumb cell (TASK-2461).
+ * Flat colour keeps the deflated bytes tiny despite the pixel count.
+ */
+export const HUGE_PNG = buildPng(4000, 2500, [150, 60, 150]);
+
 export const DESKTOP = { width: 1200, height: 900 };
 /** Below the 639.98px mobile breakpoint — BottomNav / DockedSheet branch. */
 export const MOBILE = { width: 390, height: 844 };
@@ -71,6 +105,8 @@ export const TILE = `${STRIP} .att-tile`;
 export const VIEWER = '.attachment-viewer[role="dialog"]';
 export const VIEWER_IMAGE = `${VIEWER} .lightbox-image`;
 export const VIEWER_COUNTER = `${VIEWER} .lightbox-counter`;
+/** The zoom/pan stage (the letterbox around the image). */
+export const VIEWER_STAGE = `${VIEWER} .lightbox-stage`;
 
 /** The viewer's controls, addressed by the accessible names TASK-2429 gave them. */
 export const viewerClose = (page: Page) => page.locator(VIEWER).getByRole('button', { name: 'Close' });
@@ -78,6 +114,40 @@ export const viewerNext = (page: Page) =>
 	page.locator(VIEWER).getByRole('button', { name: 'Next image' });
 export const viewerPrev = (page: Page) =>
 	page.locator(VIEWER).getByRole('button', { name: 'Previous image' });
+/** The DR-5b mobile tap-to-load affordance (TASK-2460 / TASK-2461). */
+export const viewerTapLoad = (page: Page) =>
+	page.locator(VIEWER).getByRole('button', { name: 'Tap to load full image' });
+
+/**
+ * The `scale(...)` factor the browser has actually applied to the viewer image,
+ * read from its COMPUTED transform matrix (`matrix(a, …)`, a === scale). NaN when
+ * there is no image or no transform — the thing jsdom cannot produce, since it
+ * has no layout and computes no matrix.
+ */
+export function renderedScale(page: Page, selector = VIEWER_IMAGE): Promise<number> {
+	return page.evaluate((sel) => {
+		// Last match = the FRONTMOST viewer, in case two are stacked (the shared lib
+		// is used by specs that stack viewers).
+		const all = document.querySelectorAll<HTMLElement>(sel);
+		const el = all[all.length - 1];
+		if (!el) return NaN;
+		const t = getComputedStyle(el).transform;
+		if (!t || t === 'none') return 1; // identity — fit
+		const m = /matrix\(([^)]+)\)/.exec(t);
+		return m ? Number(m[1].split(',')[0]) : NaN;
+	}, selector);
+}
+
+/** The viewer image's on-screen rectangle (post-transform), for anchor/pan math. */
+export function imageRect(page: Page, selector = VIEWER_IMAGE): Promise<DOMRect> {
+	return page.evaluate((sel) => {
+		const all = document.querySelectorAll<HTMLElement>(sel);
+		const el = all[all.length - 1]; // frontmost viewer (see renderedScale)
+		if (!el) throw new Error(`imageRect: no element for ${sel}`);
+		const r = el.getBoundingClientRect();
+		return { x: r.x, y: r.y, width: r.width, height: r.height, top: r.top, left: r.left, right: r.right, bottom: r.bottom } as DOMRect;
+	}, selector);
+}
 
 export function itemUrl(fixture: SuiteFixture, slug: string): string {
 	return `/${fixture.adminUsername}/${fixture.workspaceSlug}/docs/${slug}`;

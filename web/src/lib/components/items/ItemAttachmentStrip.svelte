@@ -152,11 +152,11 @@
 		size_bytes: number;
 		/**
 		 * Intrinsic pixels, OPTIONAL and nullable (TASK-2431). The list row has
-		 * them, an upload event does not (`UploadedAttachment` is four fields),
-		 * and no tile reads them — they are carried so the set handed to the
-		 * viewer is complete, which is what keeps phase 3b's pixel-based loading
-		 * policy from having to reopen every producer. Optional rather than
-		 * required precisely so the upload buffer stays assignable to this type.
+		 * them, and since TASK-2459 an upload event (`UploadedAttachment`) carries
+		 * them too — nullable, because a non-image upload has none. No tile reads
+		 * them; they are carried so the set handed to the viewer is complete, which
+		 * is what keeps phase 3b's pixel-based loading policy from having to reopen
+		 * every producer.
 		 */
 		width?: number | null;
 		height?: number | null;

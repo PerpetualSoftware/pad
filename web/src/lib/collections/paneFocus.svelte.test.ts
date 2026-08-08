@@ -5,6 +5,7 @@ import {
 	nextTrapTarget,
 	resolvePaneReturnTarget,
 	inExemptSurface,
+	handoffFocus,
 } from './paneFocus';
 
 // jsdom has no layout engine, so `offsetParent` / `getClientRects` can't gate
@@ -207,5 +208,120 @@ describe('resolvePaneReturnTarget', () => {
 	it('returns null when there is neither a focused row nor a live trigger', () => {
 		const root = mount(`<a href="/a" class="item-card">a</a>`);
 		expect(resolvePaneReturnTarget(root, null)).toBeNull();
+	});
+});
+
+describe('handoffFocus (TASK-2456)', () => {
+	// The modal-focus-retention helper: when a focused control leaves a surface
+	// (removed or disabled), focus must not fall to <body> behind the inerted
+	// background. Two shapes — reactive (no `departing`, repair after the fact)
+	// and imperative (pass `departing`, hand off before removal/disable).
+
+	it('CONTROL: without the handoff, removing a focused control strands focus on <body>', () => {
+		// The defect the helper exists to fix, proven real in this environment so
+		// the positive legs below are not vacuous: jsdom (like a real engine) drops
+		// focus to <body> when the focused element is removed.
+		const el = mount(`<button id="close">close</button><button id="next">next</button>`);
+		const next = document.getElementById('next')!;
+		next.focus();
+		expect(document.activeElement).toBe(next);
+		next.remove();
+		expect(document.activeElement).toBe(document.body);
+	});
+
+	it('reactive shape: pulls focus off <body> back to the first tabbable fallback', () => {
+		const el = mount(`<button id="close">close</button><button id="next">next</button>`);
+		const next = document.getElementById('next')!;
+		next.focus();
+		next.remove();
+		expect(document.activeElement).toBe(document.body);
+
+		handoffFocus(el, null, allVisible);
+		expect(document.activeElement).toBe(document.getElementById('close'));
+	});
+
+	it('reactive shape: leaves a live focus INSIDE the surface untouched', () => {
+		// Only repairs a focus that has LEFT the surface — a focus resting on a
+		// real control must not be yanked to the first tabbable.
+		const el = mount(`<button id="close">close</button><button id="next">next</button>`);
+		const close = document.getElementById('close')!;
+		close.focus();
+		handoffFocus(el, null, allVisible);
+		expect(document.activeElement).toBe(close);
+	});
+
+	it('imperative shape: hands focus off a control about to be DISABLED, never back onto it', () => {
+		// A real engine drops focus to <body> the instant a focused control is
+		// disabled; jsdom keeps it there, so the imperative shape blurs explicitly
+		// while the control still holds focus. This is the call TASK-2459/2460 make
+		// before setting `disabled` on their retry / tap-to-load control.
+		//
+		// The departing control is ordered FIRST on purpose: it is `paneFocusables()
+		// [0]`, so a fallback that did not EXCLUDE it would re-select the very
+		// control about to be disabled — dropping focus to <body> on a real engine.
+		const el = mount(`<button id="retry">retry</button><button id="close">close</button>`);
+		const retry = document.getElementById('retry') as HTMLButtonElement;
+		retry.focus();
+		expect(document.activeElement).toBe(retry);
+
+		handoffFocus(el, retry, allVisible);
+		// The caller now DISABLES the control it just handed focus off — the exact
+		// sequence TASK-2459/2460 run. On a real engine this is the step that would
+		// drop focus to <body> had it still been on `retry`; because the handoff
+		// moved focus to Close first, the disable is now harmless.
+		retry.disabled = true;
+		expect(document.activeElement).toBe(document.getElementById('close'));
+		expect(document.activeElement).not.toBe(retry);
+		expect(document.activeElement).not.toBe(document.body);
+	});
+
+	it('imperative shape: falls back to the container when the departing control is the ONLY tabbable', () => {
+		// Mid-load a viewer's tap-to-load / retry control can be the only focusable
+		// thing. Handing off before disabling it must NOT re-select it (→ <body> on
+		// disable) — it lands on the container (`tabindex="-1"`), still inside the
+		// surface.
+		const el = mount(`<button id="tap">tap to load</button>`);
+		el.tabIndex = -1;
+		const tap = document.getElementById('tap') as HTMLButtonElement;
+		tap.focus();
+		handoffFocus(el, tap, allVisible);
+		expect(document.activeElement).toBe(el);
+		expect(document.activeElement).not.toBe(tap);
+	});
+
+	it('imperative shape: no-op when the departing control is not the focused one', () => {
+		const el = mount(`<button id="close">close</button><button id="next">next</button>`);
+		const close = document.getElementById('close')!;
+		close.focus();
+		const next = document.getElementById('next')!;
+		handoffFocus(el, next, allVisible);
+		expect(document.activeElement).toBe(close);
+	});
+
+	it('drops to the container when the preferred fallback REFUSES focus (inert / hidden)', () => {
+		// jsdom cannot reproduce inert (it always focuses), so stub the close
+		// button's focus() to no-op — the real-engine shape of a fallback that sits
+		// under an inert / hidden ancestor. Focus must still land INSIDE the surface
+		// (the tabindex="-1" container), never on <body>.
+		const el = mount(`<button id="close">close</button><button id="next">next</button>`);
+		el.tabIndex = -1;
+		const next = document.getElementById('next')!;
+		next.focus();
+		next.remove();
+		const close = document.getElementById('close') as HTMLButtonElement;
+		close.focus = () => {}; // refuses focus, like an inert control
+		handoffFocus(el, null, allVisible);
+		expect(document.activeElement).toBe(el);
+		expect(document.activeElement).not.toBe(document.body);
+	});
+
+	it('falls back to the container itself when it has no tabbable control', () => {
+		// Mid-load a viewer can have no focusable control yet; the container is
+		// `tabindex="-1"` so focus still lands inside the surface, never on <body>.
+		const el = mount(`<span>loading…</span>`);
+		el.tabIndex = -1;
+		expect(document.activeElement).toBe(document.body);
+		handoffFocus(el, null, allVisible);
+		expect(document.activeElement).toBe(el);
 	});
 });
