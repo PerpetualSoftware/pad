@@ -83,6 +83,7 @@
 	// module owns the confirmation GATE, the descriptor owns the delete.
 	import {
 		attachmentActionsFor,
+		type AttachmentAction,
 		type AttachmentActionContext,
 		type ButtonAttachmentAction,
 	} from '$lib/attachments/actions';
@@ -129,6 +130,16 @@
 		 */
 		getItemContent?: () => string | null;
 		getLiveContent?: () => string | null;
+		/**
+		 * The shown attachment's parent item is archived (PLAN-2392 3c-ii / T3).
+		 * An archived parent makes reads 404, so the seed is not evidence the bytes
+		 * are REACHABLE (DR-14): the metadata machine is forced to probe, and every
+		 * toolbar action stays inert until that probe resolves (no live actions on
+		 * stale bytes). DEFAULT false — the common open is of a live item. Hardcoded
+		 * false before T3; a prop now so the host can thread its parent's state (the
+		 * archive-closes / restore-revalidates lifecycle lands with the host in T2a).
+		 */
+		parentArchived?: boolean;
 	}
 
 	let {
@@ -140,46 +151,41 @@
 		mutationsEnabled = false,
 		getItemContent,
 		getLiveContent,
+		parentArchived = false,
 	}: Props = $props();
 
 	/**
-	 * THE LAST-MILE GATE (PLAN-2392 DR-16 / TASK-2431).
+	 * ADMISSION vs THE ARM (PLAN-2392 DR-20 final form / 3c-ii T3).
 	 *
-	 * Every producer filters its own set before opening — that is where the
-	 * gate belongs, because only the producer knows which of its rows are
-	 * images at all. This is the same rule re-stated at the point of USE, and it
-	 * is not redundant with them:
+	 * Through 3c-i this component was image-only: a last-mile filter kept ONLY
+	 * positively-allowlisted (raster) MIMEs navigable and REFUSED everything else
+	 * — a null/unresolved MIME, or a resolved-unsafe one — outright. 3c-ii
+	 * converges the panel and the viewer onto ONE surface that opens ANY
+	 * attachment: an image, a file (PDF, ZIP), or a row whose MIME is not yet
+	 * resolved. So admission and rendering split into two decisions:
 	 *
-	 *  - `←/→` page through a set the producer chose ONCE. A producer's filter
-	 *    is a statement about the moment it built the list; this one has to hold
-	 *    for every frame the viewer shows.
-	 *  - the set is `readonly` on the channel but a plain array as a prop, and a
-	 *    producer that mutates it — or a record inside it — after emitting is
-	 *    not a hypothesis this component can rule out.
-	 *  - a producer added later inherits the rule instead of having to know it.
+	 *  - ADMISSION is now UNIVERSAL. Every entry is navigable; `←/→` page through
+	 *    the whole set. There is no MIME refusal left here.
+	 *  - THE ARM is where safety lives (`shownRenderer`, from `getSurfaceRenderer`
+	 *    on the RESOLVED MIME). `'raster-image'` mounts the `<img>` and loads
+	 *    bytes; `null` — an unsafe/active type, a file, or a still-unresolved MIME
+	 *    — mounts the NO-BYTES icon fallback (no `<img>`, no `src`, no fetch). The
+	 *    allowlist governs the ARM, never admission.
 	 *
-	 * IT FAILS CLOSED. Only a POSITIVELY allowlisted `mime_type` is navigable; a
-	 * null / undefined / unresolved one is not. "Not yet known" is not evidence
-	 * that a file is a PNG, and this is the last thing standing between a set
-	 * and a rendered image — the place where the benefit of the doubt is worth
-	 * least. An earlier revision admitted null on the grounds that an inline
-	 * image's probe is often unasked at click time; that reasoning belongs to
-	 * the PRODUCER, which can wait for the probe, and it had the effect of
-	 * letting an emitter hand over `[safe, unresolved]` and letting the user
-	 * arrow onto the unresolved one. The producers that exist today lose
-	 * nothing: the strip always has the MIME from its list row, and the timeline
-	 * already excludes unresolved entries from the set it builds.
+	 * WHY ADMITTING UNSAFE/UNRESOLVED IS SAFE. The DR-16 concern was never "a
+	 * hostile row in the set" — it was rendering hostile BYTES as active
+	 * same-origin content. The fallback arm renders no bytes at all, and the arm
+	 * is re-derived from the resolved MIME every frame (and joins the load key),
+	 * so an entry that is unsafe at open, flips unsafe mid-view, or resolves
+	 * unsafe after a probe all land on the same no-bytes fallback. The raster arm
+	 * only ever activates for a MIME `getSurfaceRenderer` positively claims. What
+	 * the 3c-i filter did by DROPPING, the arm now does by CLASSIFYING — with the
+	 * file/unresolved rows kept and shown, which is the whole point of the
+	 * converged surface.
 	 *
-	 * THE CONTRACT FOR NEW PRODUCERS, therefore: resolve the MIME before you
-	 * emit. Passing a possibly-null value is not "let the viewer decide", it is
-	 * an image that silently will not open.
-	 *
-	 * DERIVED, NOT CAPTURED. Every other open-time value here is `untrack`ed
-	 * because the props are constant for the instance's life — but that is a
-	 * claim about the CURRENT producers, and this filter is exactly the thing
-	 * that must not rest on one. As a `$derived` it re-runs when the array is
-	 * replaced or when a record's MIME resolves to something unsafe after the
-	 * viewer opened, so a stale capture cannot outlive its own truth.
+	 * (The producer-side resolve-before-emit contract on the legacy viewer
+	 * channel is unchanged and unrelated: that is the NodeView's obligation, not
+	 * this component's. Nothing routes files here yet — T4a repoints producers.)
 	 */
 	// A blank/whitespace-only string is not a value — it is the ABSENCE of one, and
 	// the display chains (`filename ?? alt ?? …`) only skip null/undefined, so an
@@ -190,40 +196,22 @@
 		return t.length > 0 ? t : null;
 	}
 
-	// THE OPEN GATE, CAPTURED (PLAN-2392 DR-16 / TASK-2476). Entries whose RESOLVED
-	// MIME is unsafe in the INITIAL set — the 3a open gate refuses them outright and
-	// they never navigate, exactly as before, through 3c-i (3c-ii adds the file
-	// route). Snapshotted ONCE at mount, because "unsafe at open" and "unsafe
-	// mid-view" are DIFFERENT cells: an entry that FLIPS to unsafe while the viewer
-	// is open — or is added unsafe — is kept and drawn as the no-bytes fallback,
-	// where dropping it used to be the only option. The distinction can only be an
-	// open-time snapshot; a live filter cannot tell the two apart.
-	const unsafeAtOpenIds = untrack(
-		() =>
-			new Set(
-				images
-					.filter((im) => im.mime_type != null && getSurfaceRenderer(im.mime_type) === null)
-					.map((im) => im.id)
-			)
-	);
-
-	// THE NAVIGABLE SET — what ←/→ page through and the counter counts. It now KEEPS
-	// unsafe-resolved entries that appeared or flipped MID-VIEW (drawn as the
-	// no-bytes fallback arm, see `shownRenderer`), and still REFUSES:
-	//   - unresolved (null) MIME — refused-from-navigation, exactly as today; and
-	//   - unsafe entries present AT OPEN — the 3a gate, held via `unsafeAtOpenIds`.
-	// Keeping an unsafe entry is safe because its arm mounts NO bytes — the gate
-	// that used to drop it now only decides the ARM. INGESTION (TASK-2475) also
-	// normalizes each row's blank filename to null here so the display-name chain
-	// falls through to `alt`; identity is preserved for an already-clean row so the
-	// downstream fences that key on `img.id` are unaffected.
+	// THE NAVIGABLE SET — what ←/→ page through and the counter counts. Admission is
+	// now universal (3c-ii T3): EVERY entry is kept, whatever its MIME — safe
+	// raster, unsafe/active, a file, or unresolved (null). Safety is the ARM's job
+	// (`shownRenderer`), not this set's: a non-raster entry draws the no-bytes
+	// fallback, so there is nothing to refuse. The 3c-i `unsafeAtOpenIds` snapshot
+	// is retired with the refusal it fed — "unsafe at open" and "unsafe mid-view"
+	// are no longer different cells, because neither is dropped; both classify to
+	// the fallback. INGESTION (TASK-2475) still normalizes each row's blank filename
+	// to null here so the display-name chain falls through to `alt`; identity is
+	// preserved for an already-clean row so the downstream fences that key on
+	// `img.id` are unaffected.
 	let navigable = $derived(
-		images
-			.filter((im) => im.mime_type != null && !unsafeAtOpenIds.has(im.id))
-			.map((im) => {
-				const clean = blankToNull(im.filename);
-				return clean === im.filename ? im : { ...im, filename: clean };
-			})
+		images.map((im) => {
+			const clean = blankToNull(im.filename);
+			return clean === im.filename ? im : { ...im, filename: clean };
+		})
 	);
 
 	// DELETION TOMBSTONES (PLAN-2392 DR-5c / TASK-2477). Ids the deletion bus has
@@ -239,10 +227,10 @@
 	// not the source of truth — so deleting an EARLIER image keeps the SAME image
 	// on screen (identity, not a position that now names a different member), and
 	// deleting the shown one advances by recomputing from the new survivor list.
-	// Seeded once at mount from the requested index, resolved through the id: the
-	// filter reindexes everything after a refusal, so the requested POSITION can
-	// name a different image (or none). Where the requested image is refused, the
-	// first navigable image opens.
+	// Seeded once at mount from the requested index, resolved through the id.
+	// Admission is universal now, so `navigable` keeps every entry in order and the
+	// requested position always names its own image; the id resolution stays for
+	// robustness (a clamp on an out-of-range index, and the empty-set null).
 	let shownId = $state<string | null>(
 		untrack(() => {
 			const wanted = images[Math.min(Math.max(index, 0), Math.max(images.length - 1, 0))];
@@ -274,9 +262,10 @@
 
 	// THE SURVIVING SET — `navigable` minus the tombstones (TASK-2477). EVERYTHING
 	// PAST THIS POINT READS `survivors`, NEVER `images` or even `navigable`: the nav
-	// wrap-around, the counter and the rendered `<img>` alike. A read of the
-	// unfiltered prop would reopen the DR-16 hole `navigable` closes; a read of
-	// `navigable` (pre-tombstone) would page onto a deleted image.
+	// wrap-around, the counter and the rendered stage alike. A read of the raw
+	// `images` prop would skip the blank-filename normalization (and any future
+	// ingestion step); a read of `navigable` (pre-tombstone) would page onto a
+	// deleted image. Safety is no longer among the reasons — the arm handles that.
 	let survivors = $derived(navigable.filter((im) => !tombstones.has(im.id)));
 	let hasMultiple = $derived(survivors.length > 1);
 	// The position actually shown, DERIVED from `shownId`. Falls to 0 when the id
@@ -291,13 +280,6 @@
 		)
 	);
 	let img = $derived(survivors[shownIndex]);
-	// THE STAGE ARM (TASK-2476). The single decision of what the stage draws for
-	// the shown entry: `'raster-image'` → the `<img>`; `null` → the no-bytes icon
-	// fallback. A navigable entry always has a resolved MIME (unresolved is refused
-	// above), so this is `'raster-image'` for safe and `null` for unsafe-mid-view.
-	let shownRenderer = $derived<SurfaceRendererId | null>(
-		img ? getSurfaceRenderer(img.mime_type) : null
-	);
 	// The accessible name: the image's own alt where there is one, else a
 	// generic label. Never empty — an unnamed `role="dialog"` is announced as
 	// nothing at all.
@@ -305,13 +287,14 @@
 
 	// ── Metadata header (PLAN-2392 phase 3c-i / TASK-2475) ────────────────────
 	//
-	// Filename / type / size for the shown image. The B module (TASK-2473) seeds
-	// from the LightboxImage and completes only what is null — but a viewer image
-	// has always cleared the MIME gate, so MIME is known and the module fetches
-	// iff `size_bytes` is null. `filename` is never fetched (the HEAD does not
-	// return one), so the name comes straight off the seed; only type and size
-	// read through the module's merged `fields`. `open`/`parentArchived` are
-	// constant here (the viewer is always open; it has no archived-parent probe).
+	// Filename / type / size for the shown image, seeded from the LightboxImage and
+	// completed by the B module (TASK-2473) — it fetches only what the seed left
+	// null (DR-2: open now, fill after). 3c-ii T3 makes two things live that were
+	// constant before: the MIME is no longer known at open (a file or an unresolved
+	// row is a first-class member), so a null-seed `mime_type` is fetched too and
+	// the RESOLVED value below drives the stage arm and the toolbar; and
+	// `parentArchived` is the prop, so an archived-parent open forces the machine's
+	// reachability probe (DR-14) instead of trusting the seed.
 	const headerMeta = createSurfaceMetadata(() => ({
 		ws: openWsSlug,
 		attachmentId: img?.id ?? '',
@@ -321,9 +304,24 @@
 			size_bytes: img?.size_bytes ?? null,
 		},
 		open: !!img,
-		parentArchived: false,
+		parentArchived,
 		revalidateToken: 0,
 	}));
+
+	// THE RESOLVED MIME, and THE STAGE ARM off it (3c-ii T3, TASK-2476 for the arm).
+	// `headerMeta.fields.mime_type` is the seed's MIME OR — when the seed was null —
+	// what the HEAD probe resolved. Deriving the arm (and the toolbar's Open, below)
+	// from this is the RECLASSIFICATION: a null-seed open shows the no-bytes
+	// fallback until the probe answers, then re-derives — raster→the `<img>`,
+	// PDF/ZIP→the fallback (with/without Open). `'raster-image'` mounts bytes; a
+	// null renderer (unsafe/active type, a file, or a still-null MIME) mounts the
+	// no-bytes icon fallback. The arm never trusts anything but a positively
+	// allowlisted RESOLVED MIME, so admitting unsafe/unresolved rows renders no
+	// hostile bytes (see the admission note above).
+	let resolvedMime = $derived(img ? headerMeta.fields.mime_type : null);
+	let shownRenderer = $derived<SurfaceRendererId | null>(
+		img ? getSurfaceRenderer(resolvedMime) : null
+	);
 	// Type only when the MIME is known — no "unknown type" noise (DR-2). Size only
 	// when it is a real number — `formatBytes` is never fed null, and absent beats
 	// "0 B" (the chip call-site precedent).
@@ -343,15 +341,37 @@
 	// gone, so it is routed through the deletion path instead (see the effect below).
 	let headerTransient = $derived(headerMeta.phase === 'transient');
 	// The fallback arm's large icon (TASK-2476): the same family glyph the strip /
-	// panel show for this type, from the shared registry.
-	let fallbackIconId = $derived(iconForAttachment(img?.mime_type ?? null, img?.filename ?? null));
+	// panel show for this type, from the shared registry. Off the RESOLVED MIME so
+	// a null-seed file reclassifies its icon too (a probe that resolves ZIP shows
+	// the archive glyph, not the generic one).
+	let fallbackIconId = $derived(iconForAttachment(resolvedMime, img?.filename ?? null));
+
+	// ARCHIVED-PARENT / MISSING GATING (3c-ii T3, mirroring the panel). `missing`
+	// (404) is authoritative; `unreachablePending` holds an archived parent's
+	// actions inert until its reachability probe reaches a DEFINITIVE `ok`. Two
+	// conditions clear-in reachability, and BOTH are needed:
+	//   - `phase !== 'ok'` covers `seeded` (before the probe starts) and
+	//     `transient` (a probe that failed or timed out past `METADATA_SLOW_MS`) —
+	//     `slow` is false in both, so a `slow`-only gate would wrongly re-enable.
+	//   - `|| slow` covers a FORCED re-probe after a prior `ok` (an archive/restore
+	//     transition, T2a; a revalidate, T6): the fetched fields are retained so
+	//     `phase` stays `ok` while the new probe is in flight, and only `slow`
+	//     catches that window.
+	// Only a settled `ok` (phase ok AND not loading) enables the actions. `missing`
+	// is handled on its own line and drives the deletion/advance path below.
+	let missing = $derived(headerMeta.phase === 'missing');
+	let unreachablePending = $derived(
+		parentArchived && (headerMeta.phase !== 'ok' || headerMeta.slow) && !missing
+	);
 
 	// ── Action toolbar (PLAN-2392 phase 3c-i / TASK-2474) ─────────────────────
 	//
 	// The SAME `attachmentActionsFor` list the options panel renders (DR-5), drawn
-	// as an inline toolbar over the stage. The viewer only ever holds IMAGES (the
-	// last-mile MIME gate above), so Open always applies; Download and Copy-link
-	// always apply; Delete applies only when the host granted `mutationsEnabled`.
+	// as an inline toolbar over the stage. 3c-ii T3: the surface now holds ANY
+	// attachment, so the descriptors decide per RESOLVED type — Open applies per
+	// `canBrowserPreview` (an image or PDF/plain-text, not a ZIP), Download and
+	// Copy-link always apply, Delete applies only when the host granted
+	// `mutationsEnabled` — and `missing` / `unreachablePending` disable all of them.
 	const uid = $props.id();
 	const deletePromptId = `lightbox-delete-note-${uid}`;
 	// THE DISPLAY-NAME CHAIN (TASK-2475): filename ?? alt ?? 'Attachment'. `filename`
@@ -429,7 +449,10 @@
 			return {
 				id: img?.id ?? '',
 				filename: displayName,
-				mime_type: img?.mime_type ?? null,
+				// The RESOLVED MIME (3c-ii T3): the descriptor's Open (`canBrowserPreview`)
+				// re-derives when a null-seed open's HEAD answers, exactly as the stage
+				// arm does — the toolbar and the arm reclassify off the same value.
+				mime_type: resolvedMime,
 			};
 		},
 		get mutationsEnabled() {
@@ -449,8 +472,16 @@
 
 	let toolbarActions = $derived(attachmentActionsFor(toolbarCtx));
 
+	// One disabled rule for every toolbar control (3c-ii T3): the descriptor's own
+	// `enabled` (Delete without `mutationsEnabled`, Open on a non-previewable type),
+	// OR an authoritative `missing` (404), OR an archived parent's still-pending
+	// reachability probe. The template adds `toolbarBusy` for the mutating button.
+	function toolDisabled(action: AttachmentAction): boolean {
+		return !action.enabled(toolbarCtx) || missing || unreachablePending;
+	}
+
 	async function runToolbarAction(action: ButtonAttachmentAction) {
-		if (!action.enabled(toolbarCtx)) return;
+		if (toolDisabled(action)) return;
 		// Fence the whole action against the shown identity (the SAME view fence the
 		// metadata machine invalidates on a subject change). A confirmed delete of the
 		// shown image advances `shownId` to a survivor synchronously inside `run`'s
@@ -1071,9 +1102,9 @@
 	// cascades advance→advance→close, one 404 at a time, and terminates.
 	let lastMissingId: string | undefined = undefined;
 	$effect(() => {
-		const missing = headerMeta.phase === 'missing';
+		const isMissing = missing;
 		untrack(() => {
-			const missingId = missing ? img?.id : undefined;
+			const missingId = isMissing ? img?.id : undefined;
 			if (!missingId) {
 				lastMissingId = undefined;
 				return;
@@ -1260,7 +1291,15 @@
 			// loader's own DR-16 gate (`start()`) is the backstop; the Lightbox
 			// decides no-bytes explicitly here.
 			if (shownRenderer === 'raster-image') {
-				loader.load(img, openWsSlug, platform);
+				// Pass the RESOLVED MIME, not the seed. A null-seed entry that
+				// reclassified to raster (its HEAD resolved an image) still carries a
+				// null seed `mime_type`, and the loader's own DR-16 gate (`start()`)
+				// reads the img it is handed — it would refuse a null. `shownRenderer`
+				// is already the resolved-MIME arm and is `'raster-image'` only for a
+				// positively allowlisted resolved type, so handing the loader that same
+				// resolved value keeps its gate agreeing with the arm rather than
+				// refusing a row the arm admitted.
+				loader.load({ ...img, mime_type: resolvedMime }, openWsSlug, platform);
 			} else {
 				loader.dispose();
 			}
@@ -1595,15 +1634,19 @@
 							<AttachmentIcon id={action.icon} />
 						{/snippet}
 						{#if action.element === 'anchor'}
+							<!-- Open / Download are links. When disabled — the descriptor says so,
+							     or `missing` / `unreachablePending` — the href is DROPPED (not just
+							     aria-disabled), so the anchor is inert to keyboard activation too,
+							     not only to the `pointer-events: none` the aria-disabled style adds. -->
 							<a
 								class="lightbox-tool"
-								href={action.href(toolbarCtx)}
+								href={toolDisabled(action) ? undefined : action.href(toolbarCtx)}
 								download={action.download?.(toolbarCtx)}
 								target={action.target}
 								rel={action.rel}
 								aria-label={action.label}
 								title={action.description ?? action.label}
-								aria-disabled={!action.enabled(toolbarCtx)}
+								aria-disabled={toolDisabled(action)}
 							>
 								<span class="lightbox-tool-icon" aria-hidden="true">{@render toolIcon()}</span>
 								<span class="lightbox-tool-label">{action.label}</span>
@@ -1615,7 +1658,7 @@
 								type="button"
 								aria-label={action.label}
 								title={action.description ?? action.label}
-								disabled={!action.enabled(toolbarCtx) || toolbarBusy}
+								disabled={toolDisabled(action) || toolbarBusy}
 								onclick={() => runToolbarAction(action)}
 							>
 								<span class="lightbox-tool-icon" aria-hidden="true">{@render toolIcon()}</span>
