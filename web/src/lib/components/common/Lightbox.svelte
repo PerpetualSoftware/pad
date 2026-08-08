@@ -2,9 +2,11 @@
 	/**
 	 * Full-screen image viewer for attachment thumbnails (IDEA-1660).
 	 * Opened by a host that captures a click on an `img[data-attachment-id]`
-	 * and passes the attachment id(s) — the lightbox loads the ORIGINAL
-	 * (un-variant) blob so the expanded view is full resolution regardless
-	 * of the thumbnail variant shown inline.
+	 * and passes the attachment id(s). Loading follows the DR-5b memory policy
+	 * (PLAN-2392 phase 3b): a bounded `thumb-md` paints first and the viewer
+	 * upgrades to the full-resolution original in the background on desktop, while
+	 * a large image on mobile defers the original behind a tap-to-load affordance
+	 * (TASK-2459 / TASK-2460) — see `$lib/attachments/viewerImageLoader`.
 	 *
 	 * MODAL CONTRACT (PLAN-2392 phase 3a / TASK-2429, DR-4b). This is a real
 	 * modal now: `role="dialog"` + `aria-modal`, portaled to `<body>`, focus
@@ -59,7 +61,8 @@
 	 *
 	 * Everything past `id` / `alt` is NULLABLE and this component treats it as
 	 * such: an inline image's metadata comes from a HEAD probe that may not have
-	 * completed, and an upload event carries only four fields.
+	 * completed, and an upload event carries only the `UploadedAttachment` fields
+	 * (filename, MIME, size, and — since TASK-2459 — the pixel dimensions).
 	 *
 	 * Producers that mount this component directly import the type from the
 	 * CHANNEL too, not from here — a `.svelte` module cannot re-export a type,
@@ -201,12 +204,14 @@
 	// alone must not reload — desktop→mobile must not abort an in-flight original,
 	// mobile→desktop must not retroactively auto-fetch (TASK-2459).
 	let platform = $derived<Platform>(viewport.isMobile ? 'mobile' : 'desktop');
-	// Whether an <img> exists to zoom. False in the mobile `deferred` cell (a
-	// placeholder, nothing decoded) and when there is no image — zoom is then
-	// DISABLED, not merely a no-op (TASK-2460). Non-`deferred` states (loading /
-	// ready / error) all set `displaySrc`, so the guard is exactly "the deferred
-	// placeholder is showing" without singling the phase out.
-	let bitmapPresent = $derived(!!img && !!loader.displaySrc);
+	// Whether a decoded bitmap exists to zoom / pan. False in the mobile `deferred`
+	// cell (a placeholder, nothing decoded), when there is no image, AND in the
+	// `error` state: `errored()` flips only the phase, leaving `displaySrc` set (the
+	// failed URL), so without the phase guard drag-arming and the zoom keys would
+	// act over the error UI with nothing decoded behind it. Zoom is then DISABLED,
+	// not merely a no-op (TASK-2460). A successful retry returns to loading/ready
+	// and re-enables it.
+	let bitmapPresent = $derived(!!img && !!loader.displaySrc && loader.phase !== 'error');
 	// The tap-to-load placeholder's box. Where dimensions are known it takes the
 	// image's own aspect ratio (so the affordance previews the shape that will
 	// arrive); where they are not, a neutral box (TASK-2460).
@@ -283,6 +288,10 @@
 		// measurable, so a scroll can never leak past the modal into the inert app.
 		e.preventDefault();
 		e.stopPropagation();
+		// Consumed (the modal owns the wheel) but INERT with no decoded bitmap — the
+		// mobile deferred placeholder or the error UI, where the broken `<img>` still
+		// satisfies `readGeometry` (TASK-2461). Same guard the keys use.
+		if (!bitmapPresent) return;
 		// A horizontal-only wheel (`deltaY === 0`, e.g. a trackpad side-swipe) is
 		// still consumed — the modal owns the wheel — but must NOT zoom, or it would
 		// read as a zoom-out. Direction comes from `deltaY` alone.
@@ -455,6 +464,13 @@
 			abortGesture(e);
 			return;
 		}
+		// The bitmap vanished mid-drag — the background original failed and the phase
+		// went to `error` while a pan was live (TASK-2461). Abort: there is nothing
+		// left to pan, and continuing would move the (broken) error UI.
+		if (!bitmapPresent) {
+			abortGesture(e);
+			return;
+		}
 		// Primary button no longer held — a pointerup we never received (it ended
 		// off-target pre-capture, or was swallowed after a drag engaged). Tear the
 		// whole gesture down, not just `maybeDrag`: a full `abortGesture` also
@@ -545,6 +561,9 @@
 		// zoom toggle — without this, double-clicking Next navigates twice AND
 		// toggles, or a double-click on Retry toggles zoom on the broken stage.
 		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load')) return;
+		// Inert with no decoded bitmap (deferred placeholder / error UI) — the same
+		// guard the keys and wheel use (TASK-2461).
+		if (!bitmapPresent) return;
 		const el = rootEl;
 		if (!el || !pointerGatesOpen(el)) return;
 		const g = readGeometry();
@@ -1005,6 +1024,24 @@
 					onload={(e) => {
 						const el = e.currentTarget as HTMLImageElement;
 						loader.decoded(el.naturalWidth, el.naturalHeight, el.getAttribute('src') ?? '', Number(el.dataset.gen));
+						// RE-CLAMP on a fresh bitmap. A same-id reload can change the geometry
+						// (an async dimension fill swaps a large original for a smaller thumb,
+						// lowering actualScale and MAX_SCALE), stranding the current scale above
+						// the new ceiling with out-of-bounds pan. The reset effect fires only on
+						// image CHANGE (id) and the ResizeObserver only on stage resize, so
+						// neither catches this. `clampState`, NOT reset — the same image's valid
+						// zoom survives; only an over-ceiling scale/pan is pulled back. Geometry
+						// is measurable only post-decode. Gated to the LIVE element (`el ===
+						// imgEl`, the same fence `decoded` applies) so a stale detached load can't
+						// drive the current zoom. Event handler, so the `zoom` read/write is not a
+						// CONVE-1688 self-write.
+						if (el === imgEl) {
+							const g = readGeometry();
+							if (g) {
+								zoom = clampState(zoom, g);
+								rebaseDrag(); // a re-clamp mid-drag must not desync the pan baseline
+							}
+						}
 					}}
 					onerror={(e) => {
 						const el = e.currentTarget as HTMLImageElement;

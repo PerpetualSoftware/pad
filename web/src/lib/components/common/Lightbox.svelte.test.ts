@@ -2677,3 +2677,98 @@ describe('Lightbox — mobile tap-to-load and zoom-past-fit (TASK-2460)', () => 
 		expect(root().querySelector('.lightbox-tap-load')).not.toBeNull();
 	});
 });
+
+// ── TASK-2461 final-pass fixes ──────────────────────────────────────────────
+describe('Lightbox — re-clamp on same-id decode + inert error state (TASK-2461)', () => {
+	it('re-clamps a stranded scale when a same-id reload decodes a SMALLER bitmap', () => {
+		// A same-id dimension fill reloads the image with a smaller bitmap (a large
+		// original swapped for a thumb), lowering actualScale and MAX_SCALE. The reset
+		// effect fires only on image CHANGE and the ResizeObserver only on stage
+		// resize — neither catches this; the DECODE (onload) must re-clamp.
+		mountViewer();
+		const image = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		const stage = root().querySelector<HTMLElement>('.lightbox-stage')!;
+		// Big bitmap fitted small → actualScale 10, ceiling 40 — lots of headroom.
+		let fitted = 100;
+		let natural = 1000;
+		Object.defineProperty(image, 'offsetWidth', { configurable: true, get: () => fitted });
+		Object.defineProperty(image, 'offsetHeight', { configurable: true, get: () => fitted });
+		Object.defineProperty(image, 'naturalWidth', { configurable: true, get: () => natural });
+		Object.defineProperty(image, 'naturalHeight', { configurable: true, get: () => natural });
+		Object.defineProperty(stage, 'clientWidth', { configurable: true, get: () => fitted });
+		Object.defineProperty(stage, 'clientHeight', { configurable: true, get: () => fitted });
+
+		for (let i = 0; i < 8; i++) press('+');
+		expect(scaleOf(), 'zoomed well past the eventual ceiling').toBeGreaterThan(5);
+
+		// The reload decodes a 1:1 bitmap: actualScale → 1, ceiling → 4. The stranded
+		// scale (~5.96) must be pulled back to 4 by the onload re-clamp.
+		natural = fitted;
+		image.dispatchEvent(new Event('load'));
+		flushSync();
+		expect(scaleOf(), 'the decode re-clamped the stranded scale to the new max').toBeCloseTo(4);
+	});
+
+	it('disables zoom keys and drag in the ERROR state, and re-enables them after a successful retry', () => {
+		mountViewer({ images: [sized(IMG_A, 'a', 5000, 5000)] });
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(1024, 768); // thumb decoded → ready, background original in flight
+		expect(press('+')).toBe(true);
+		const zoomed = scaleOf();
+		expect(zoomed, 'zoom works with a decoded bitmap').toBeGreaterThan(1);
+
+		// The original FAILS → error state. `errored()` flips only the phase;
+		// `displaySrc` stays set, so without the phase guard `bitmapPresent` would
+		// still be true and gestures would act over the error UI.
+		root().querySelector<HTMLImageElement>('.lightbox-image')!.dispatchEvent(new Event('error'));
+		flushSync();
+		expect(root().querySelector('.lightbox-error')).not.toBeNull();
+
+		// ALL zoom gestures inert — the transform does not move: keys, wheel AND
+		// double-click (each of which the broken <img>'s geometry would otherwise let
+		// through).
+		press('+');
+		press('0');
+		wheel(root(), { clientX: 500, clientY: 500, deltaY: -1 });
+		root().dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf(), 'keys / wheel / dblclick are inert in the error state').toBeCloseTo(zoomed);
+		// DRAG inert — a pointerdown does not arm/capture.
+		const capture = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = capture;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500));
+		flushSync();
+		expect(capture, 'drag does not arm in the error state').not.toHaveBeenCalled();
+
+		// CONTROL — a successful retry re-enables gestures.
+		root().querySelector<HTMLButtonElement>('.lightbox-retry')!.click();
+		flushSync();
+		mockGeometry(root(), OVERFLOW_G); // the retry remounted the <img>
+		fireLoad(2000, 2000); // the original re-decodes → ready
+		expect(press('+')).toBe(true);
+		expect(scaleOf(), 'zoom works again after a successful retry').toBeGreaterThan(zoomed);
+	});
+
+	it('aborts a LIVE drag when the bitmap vanishes mid-drag (background original fails)', () => {
+		mountViewer({ images: [sized(IMG_A, 'a', 5000, 5000)] });
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(1024, 768); // thumb ready; background original in flight
+		zoomToActual(); // pan room
+		const capture = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = capture;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500)); // engage the drag
+		flushSync();
+		expect(capture, 'the drag armed on a decoded bitmap').toHaveBeenCalled();
+		const panned = panX();
+
+		// The original FAILS mid-drag → error. A further move must ABORT, not pan the
+		// broken UI.
+		root().querySelector<HTMLImageElement>('.lightbox-image')!.dispatchEvent(new Event('error'));
+		flushSync();
+		root().dispatchEvent(pointerEvent('pointermove', 720, 500));
+		flushSync();
+		expect(panX(), 'the drag aborted; no further pan over the error UI').toBeCloseTo(panned);
+	});
+});
