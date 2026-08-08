@@ -127,6 +127,9 @@ const props = $state<{
 	itemContent: string | null;
 	liveContent: (() => string | null) | null;
 	hostToken: string;
+	mutationsEnabled?: boolean;
+	getItemContent?: () => string | null;
+	getLiveContent?: () => string | null;
 }>({
 	wsSlug: 'ws',
 	username: 'dave',
@@ -135,6 +138,9 @@ const props = $state<{
 	itemContent: null,
 	liveContent: null,
 	hostToken: 'host-1',
+	mutationsEnabled: false,
+	getItemContent: undefined,
+	getLiveContent: undefined,
 });
 
 describe('ItemAttachmentStrip', () => {
@@ -157,6 +163,9 @@ describe('ItemAttachmentStrip', () => {
 		props.canDelete = false;
 		props.itemContent = null;
 		props.liveContent = null;
+		props.mutationsEnabled = false;
+		props.getItemContent = undefined;
+		props.getLiveContent = undefined;
 		target = document.body.appendChild(document.createElement('div'));
 	});
 
@@ -1856,5 +1865,69 @@ describe('ItemAttachmentStrip', () => {
 		openConfirm();
 
 		expect(promptText()).toContain("still used in this item's content");
+	});
+
+	// ── Viewer toolbar (TASK-2474) ───────────────────────────────────────────
+	// The STRIP origin of the three that mount a Lightbox. These prove the strip
+	// forwards its `mutationsEnabled` to the viewer's toolbar (separate from the
+	// tile-delete `canDelete` above).
+	function toolbarLabels(): string[] {
+		return Array.from(
+			document.querySelectorAll<HTMLElement>('.lightbox-toolbar .lightbox-tool')
+		).map((t) => t.getAttribute('aria-label') ?? '');
+	}
+
+	it('opens a viewer toolbar with Delete when the strip is granted mutations', async () => {
+		props.mutationsEnabled = true;
+		listMock.mockResolvedValue(response([att({ id: 'img1' })]));
+		mountStrip('item-a');
+		await settle();
+
+		tiles()[0].click();
+		flushSync();
+		expect(document.querySelector('.lightbox-toolbar')).not.toBeNull();
+		expect(toolbarLabels()).toContain('Delete');
+	});
+
+	it('opens a read-only viewer toolbar (no Delete) when mutations are withheld', async () => {
+		props.mutationsEnabled = false;
+		listMock.mockResolvedValue(response([att({ id: 'img1' })]));
+		mountStrip('item-a');
+		await settle();
+
+		tiles()[0].click();
+		flushSync();
+		expect(document.querySelector('.lightbox-toolbar')).not.toBeNull();
+		expect(toolbarLabels()).toContain('Download');
+		expect(toolbarLabels()).not.toContain('Delete');
+	});
+
+	it('confirming Delete in the toolbar deletes the attachment and closes the viewer', async () => {
+		// The full path: the descriptor owns the delete (api + announce), the module
+		// owns the gate, and a confirmed delete closes the viewer over the now-gone
+		// image. The same delete call the tile's × makes — one confirmation, one API.
+		props.mutationsEnabled = true;
+		listMock.mockResolvedValue(response([att({ id: 'img1' })]));
+		mountStrip('item-a');
+		await settle();
+
+		tiles()[0].click();
+		flushSync();
+		document.querySelector<HTMLButtonElement>(
+			'.lightbox-toolbar .lightbox-tool[aria-label="Delete"]'
+		)!.click();
+		flushSync();
+		// Drill-down up; confirm it.
+		const confirmRow = Array.from(
+			document.querySelectorAll<HTMLButtonElement>('.lightbox-delete-confirm button')
+		).find((b) => b.textContent?.includes('Delete file'))!;
+		expect(confirmRow).toBeDefined();
+		confirmRow.click();
+		await settle();
+
+		expect(deleteMock).toHaveBeenCalledWith('ws', 'img1');
+		expect(notifyDeletedMock).toHaveBeenCalledWith('img1');
+		// The viewer closed over the deleted image.
+		expect(document.querySelector('.lightbox-backdrop')).toBeNull();
 	});
 });

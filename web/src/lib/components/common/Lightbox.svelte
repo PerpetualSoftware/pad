@@ -70,6 +70,22 @@
 	 * the drift this consolidation removes.
 	 */
 	import type { LightboxImage } from '$lib/attachments/events';
+	// ── Toolbar (PLAN-2392 phase 3c-i / TASK-2474) ───────────────────────────
+	// The viewer's copy of the shared attachment-action list (DR-5) — the SAME
+	// descriptors the options panel renders, drawn here as an inline toolbar over
+	// the stage. Delete confirmation reuses the panel's B module (TASK-2473): the
+	// module owns the confirmation GATE, the descriptor owns the delete.
+	import {
+		attachmentActionsFor,
+		type AttachmentActionContext,
+		type ButtonAttachmentAction,
+	} from '$lib/attachments/actions';
+	import { createDeleteConfirm } from '$lib/attachments/surfaceDeleteConfirm.svelte';
+	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
+	import AttachmentDeleteConfirm from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
+	import { displayFilename } from '$lib/attachments/display';
+	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
+	import { toastStore } from '$lib/stores/toast.svelte';
 
 	interface Props {
 		images: LightboxImage[];
@@ -84,9 +100,36 @@
 		 * at open (see below), which is the same element in every current path.
 		 */
 		invoker?: HTMLElement | null;
+		/**
+		 * Whether the viewer may offer MUTATING actions — Delete (TASK-2474). The
+		 * host's answer (`canEdit && !peeking`), threaded identically at every hop
+		 * (host / strip / timeline). DEFAULT false: an omitted prop degrades to a
+		 * read-only toolbar (open / download / copy-link), never a wrongly-gated
+		 * one. The timeline's OWN `canEdit` (which ignores peeking) is never the
+		 * source — a peeked master must show no Delete.
+		 */
+		mutationsEnabled?: boolean;
+		/**
+		 * The persisted item body + the editor's LIVE markdown, as getters — the
+		 * panel's pattern (`AttachmentDetailsPanel.svelte`). Used ONLY to warn when
+		 * a delete would break a live reference in this body (DR-5); read at
+		 * confirm time so the live getter sees unflushed edits. Absent → the
+		 * warning falls to its hedged arm.
+		 */
+		getItemContent?: () => string | null;
+		getLiveContent?: () => string | null;
 	}
 
-	let { images, index = 0, wsSlug, onClose, invoker = null }: Props = $props();
+	let {
+		images,
+		index = 0,
+		wsSlug,
+		onClose,
+		invoker = null,
+		mutationsEnabled = false,
+		getItemContent,
+		getLiveContent,
+	}: Props = $props();
 
 	/**
 	 * THE LAST-MILE GATE (PLAN-2392 DR-16 / TASK-2431).
@@ -185,6 +228,189 @@
 	// generic label. Never empty — an unnamed `role="dialog"` is announced as
 	// nothing at all.
 	let dialogLabel = $derived(img?.alt || 'Attachment viewer');
+
+	// ── Action toolbar (PLAN-2392 phase 3c-i / TASK-2474) ─────────────────────
+	//
+	// The SAME `attachmentActionsFor` list the options panel renders (DR-5), drawn
+	// as an inline toolbar over the stage. The viewer only ever holds IMAGES (the
+	// last-mile MIME gate above), so Open always applies; Download and Copy-link
+	// always apply; Delete applies only when the host granted `mutationsEnabled`.
+	const uid = $props.id();
+	const deletePromptId = `lightbox-delete-note-${uid}`;
+	// A non-null display name for the current image, for the download attribute and
+	// the delete prompt. The channel's `filename` is nullable; `alt` is the inline
+	// image's next-best name; the generic label is the last resort so a nameless
+	// image still downloads and can still be named in a confirmation (until C2's
+	// display-name chain lands, this inline fallback IS that chain).
+	let displayName = $derived(displayFilename(img?.filename ?? img?.alt ?? 'Attachment'));
+	// Counts confirmed deletes. The descriptor's `run()` resolves the same way
+	// whether the row was deleted or the user CANCELLED, so the counter is how the
+	// two are told apart — a delete closes the viewer, a cancel does not. Plain
+	// `let`: read/written only in the action handler, never a tracked scope.
+	let toolbarDeleteSignal = 0;
+	// Inline, transient error from a button action (a failed clipboard write). Sits
+	// in the toolbar beside the controls, never a blocking dialog.
+	let toolbarError = $state<string | null>(null);
+	let toolbarBusy = $state(false);
+
+	/**
+	 * Ids referenced by the host's body — the delete-warning check (DR-5). Read at
+	 * confirm time (not derived) so the live getter sees unflushed editor edits.
+	 * Both getters are optional: a producer that threads neither leaves the warning
+	 * on its hedged arm, which is the honest default.
+	 */
+	function toolbarReferencedHere(): boolean {
+		const id = img?.id;
+		if (!id) return false;
+		let live: string | null = null;
+		try {
+			live = getLiveContent?.() ?? null;
+		} catch {
+			live = null;
+		}
+		let persisted: string | null = null;
+		try {
+			persisted = getItemContent?.() ?? null;
+		} catch {
+			persisted = null;
+		}
+		return new Set(attachmentRefsIn(live ?? persisted ?? '')).has(id);
+	}
+
+	// The delete-confirmation machine (TASK-2473's B module). Owns the drill-down
+	// STATE — pending / warning / permission-withdrawn abandon; the descriptor owns
+	// the delete. `mutationsEnabled` is read live so a pane going peeked mid-confirm
+	// abandons it.
+	const deleteConfirm = createDeleteConfirm({
+		mutationsEnabled: () => mutationsEnabled,
+		isReferenced: () => toolbarReferencedHere(),
+		displayName: () => displayName,
+	});
+	// Teardown latch: an action's async continuation may land AFTER the viewer was
+	// unmounted (a keyed producer tore it down), and `onClose` is a stale
+	// producer callback by then — calling it would dismiss whatever viewer the
+	// producer has open BY NOW. Plain `let`, read only in the continuation.
+	let destroyed = false;
+	// Drop any pending confirmation on unmount so the descriptor's awaited
+	// `confirmDelete()` promise settles rather than dangling (the panel's teardown),
+	// and latch `destroyed` so no post-unmount continuation calls `onClose`.
+	$effect(() => () => {
+		destroyed = true;
+		deleteConfirm.dispose();
+	});
+
+	/**
+	 * The action context. GETTERS, not a snapshot: the delete descriptor re-reads
+	 * `mutationsEnabled` and the identity on the far side of the confirmation, and
+	 * a frozen object would defeat those re-checks. `workspaceSlug` comes off the
+	 * captured `openWsSlug` for the same reason every other URL here does — a live
+	 * read could name the wrong workspace after a pane switch.
+	 */
+	const toolbarCtx: AttachmentActionContext = {
+		get workspaceSlug() {
+			return openWsSlug;
+		},
+		get attachment() {
+			return {
+				id: img?.id ?? '',
+				filename: displayName,
+				mime_type: img?.mime_type ?? null,
+			};
+		},
+		get mutationsEnabled() {
+			return mutationsEnabled;
+		},
+		confirmDelete: () => deleteConfirm.request(),
+		onDeleted: () => {
+			toolbarDeleteSignal += 1;
+		},
+		onCopied: () => toastStore.show('Link copied to clipboard', 'success'),
+	};
+
+	let toolbarActions = $derived(attachmentActionsFor(toolbarCtx));
+
+	async function runToolbarAction(action: ButtonAttachmentAction) {
+		if (!action.enabled(toolbarCtx)) return;
+		const deletesBefore = toolbarDeleteSignal;
+		// The image this action was launched against. Closing on delete is gated on
+		// it still being the one shown, so a set-shrink / nav during the await can't
+		// close the viewer over a DIFFERENT image than the one deleted.
+		const targetId = img?.id;
+		toolbarError = null;
+		toolbarBusy = true;
+		try {
+			await action.run(toolbarCtx);
+			// The continuation may land after the viewer was torn down (a keyed
+			// producer remounts on the next open) — `onClose` is a stale callback then.
+			if (destroyed) return;
+			// A confirmed delete removed the image on screen — showing its now-404
+			// bytes is wrong, so close the viewer (the panel's onclose parallel). Close
+			// when the shown image is STILL the deleted one (the common case: the
+			// producer's set isn't mutated, so the 404'd image is what's on screen), OR
+			// when the set emptied out from under us (`!img` — nothing left to show).
+			// Only a set-shrink that moved a DIFFERENT image into view is left open —
+			// and the descriptor's own identity re-check already aborts a delete that
+			// raced an arrow-nav (no signal bump). A Cancel leaves the signal untouched.
+			if (toolbarDeleteSignal !== deletesBefore && (!img || img.id === targetId)) onClose();
+		} catch (err) {
+			if (destroyed) return;
+			toolbarError =
+				err instanceof Error ? err.message : `Couldn't ${action.label.toLowerCase()}`;
+		} finally {
+			if (!destroyed) toolbarBusy = false;
+		}
+	}
+
+	// The delete drill-down's rows, as a proper ARIA menu (TASK-2474). The confirm
+	// renders `role="menuitem"` buttons; a `role="menu"` parent is required, and a
+	// menu manages focus by ROVING TABINDEX — exactly ONE row is in the tab order
+	// (tabindex 0), the rest are -1, Up/Down move between them, and Tab moves OUT to
+	// the viewer chrome rather than cycling the rows. The Lightbox hosts the shared
+	// confirm inline (not inside a `Menu`), so it drives that itself.
+	function confirmMenuItems(): HTMLElement[] {
+		const el = rootEl;
+		if (!el) return [];
+		return Array.from(
+			el.querySelectorAll<HTMLElement>('.lightbox-delete-confirm [role="menuitem"]')
+		);
+	}
+	// Make `active` the single tab stop; every other row leaves the tab order. Tab
+	// then exits the menu (the trap's `paneFocusables` skips the -1 rows), while
+	// the active row can still be Tabbed BACK into — the ARIA menu contract.
+	function applyRoving(active: HTMLElement | null) {
+		const items = confirmMenuItems();
+		if (items.length === 0) return;
+		const target = active && items.includes(active) ? active : items[0];
+		for (const it of items) it.tabIndex = it === target ? 0 : -1;
+	}
+	function moveConfirmFocus(delta: number) {
+		const items = confirmMenuItems();
+		if (items.length === 0) return;
+		const at = items.indexOf(document.activeElement as HTMLElement);
+		const next = at < 0 ? 0 : (at + delta + items.length) % items.length;
+		const target = items[next];
+		applyRoving(target);
+		target?.focus({ preventScroll: true });
+	}
+
+	// When the drill-down OPENS, set the roving tab stop and move focus to its first
+	// row (Cancel), as the panel's `Menu` does — otherwise focus is stranded on the
+	// now-unmounted Delete button and the generic handoff would land it on Close,
+	// not Cancel. Plain sentinel so this fires only on the false→true edge, and
+	// reads `pending` (tracked) while writing only DOM (focus + tabindex) and the
+	// sentinel, never its own trigger.
+	let confirmWasPending = untrack(() => deleteConfirm.pending);
+	$effect(() => {
+		const pending = deleteConfirm.pending;
+		if (pending === confirmWasPending) return;
+		confirmWasPending = pending;
+		if (!pending) return;
+		untrack(() => {
+			const first = confirmMenuItems()[0] ?? null;
+			applyRoving(first);
+			first?.focus({ preventScroll: true });
+		});
+	});
 
 	// ── Image loading (PLAN-2392 phase 3b / TASK-2459) ────────────────────────
 	//
@@ -288,6 +514,11 @@
 		// measurable, so a scroll can never leak past the modal into the inert app.
 		e.preventDefault();
 		e.stopPropagation();
+		// A wheel over the TOOLBAR (or its delete drill-down) is consumed like every
+		// other wheel — the modal owns it, so the inert page can't scroll — but must
+		// NOT zoom the image behind it (TASK-2474). The same exclusion the pointerdown
+		// and double-click handlers carry, applied here too.
+		if ((e.target as Element | null)?.closest?.('.lightbox-toolbar')) return;
 		// Consumed (the modal owns the wheel) but INERT with no decoded bitmap — the
 		// mobile deferred placeholder or the error UI, where the broken `<img>` still
 		// satisfies `readGeometry` (TASK-2461). Same guard the keys use.
@@ -429,7 +660,7 @@
 		// (the house pattern in ItemGraph excludes its interactive overlays the same
 		// way). Retry sits over the (broken) stage in the error state, so it needs
 		// the same exclusion as the always-present chrome.
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load')) return;
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar')) return;
 		// No decoded bitmap to pan (the mobile `deferred` placeholder shows no
 		// `<img>`) — do NOT arm a drag, so the gesture stays fully inert instead of
 		// capturing the pointer and latching `dragging` for a pan that can never
@@ -560,7 +791,7 @@
 		// A double-click ON a control (close / nav / retry) is that control's, not a
 		// zoom toggle — without this, double-clicking Next navigates twice AND
 		// toggles, or a double-click on Retry toggles zoom on the broken stage.
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load')) return;
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar')) return;
 		// Inert with no decoded bitmap (deferred placeholder / error UI) — the same
 		// guard the keys and wheel use (TASK-2461).
 		if (!bitmapPresent) return;
@@ -662,6 +893,14 @@
 		// stack falls through to it rather than to an unrelated layer.
 		const unregisterEscape = pushEscapeHandler((event) => {
 			if (!isViewerFrontmost(el)) return false;
+			// The delete drill-down is an inner layer (TASK-2474): Escape backs OUT of
+			// it to the toolbar, and only a second Escape closes the viewer — the
+			// two-step the panel's Menu gives its own drill-down. Consume this press.
+			if (deleteConfirm.pending) {
+				if (event) noteEscapeConsumedByViewer(event);
+				deleteConfirm.cancel();
+				return true;
+			}
 			// Mark the DISPATCH before closing, not after (TASK-2448 / BUG-2441).
 			// `onClose()` runs the teardown below synchronously — the lease is gone
 			// by the time it returns — so a later `window` listener in this same
@@ -706,6 +945,12 @@
 		if (id === lastResetForId) return;
 		lastResetForId = id;
 		zoom = resetZoom();
+		// The shown image changed (arrow-nav, or a set-shrink moving a different
+		// member into view), so a delete confirmation still up is for a file the user
+		// is no longer looking at — abandon it (TASK-2474), exactly as the panel's
+		// subject-change does. `cancel()` writes the delete-confirm MODULE's state,
+		// not this effect's tracked `zoom`, so it cannot self-invalidate the flush.
+		deleteConfirm.cancel();
 		// A drag live ACROSS the image change (arrow-nav mid-drag) is left with a
 		// stale baseline, and deliberately so: `resetZoom` is fit, where `clampPan`
 		// pins the pan to 0 for ANY baseline, so the next move can't jump; and the
@@ -807,6 +1052,11 @@
 		void hasMultiple;
 		void loader.phase;
 		void img;
+		// The toolbar's drill-down swaps the action buttons for the confirm rows and
+		// back (TASK-2474); the control that had focus (the Delete button, or Cancel)
+		// unmounts across that switch, so track `pending` to re-home a focus stranded
+		// on <body> to the stable fallback within the same flush.
+		void deleteConfirm.pending;
 		const el = rootEl;
 		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
 		handoffFocus(el);
@@ -843,6 +1093,21 @@
 			if (target) {
 				e.preventDefault();
 				target.focus({ preventScroll: true });
+			}
+			return;
+		}
+
+		// The delete drill-down owns the arrow keys as a MENU while it is open
+		// (TASK-2474): Up/Down move between its rows, and it consumes Left/Right so a
+		// confirmation can't page the gallery behind it. Tab still cycles the rows
+		// through the trap above; Escape backs out (via the escape stack). Returns
+		// for every key, so zoom keys are inert over the confirm too.
+		if (deleteConfirm.pending) {
+			if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+				e.preventDefault();
+				moveConfirmFocus(e.key === 'ArrowDown' ? 1 : -1);
+			} else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+				e.preventDefault();
 			}
 			return;
 		}
@@ -974,6 +1239,80 @@
 		>
 			&#8250;
 		</button>
+	{/if}
+
+	<!--
+		ACTION TOOLBAR (TASK-2474). The shared descriptor list, drawn over the
+		stage. The `.lightbox-toolbar` wrapper is the positioned pill AND the
+		pointer control-exclusion hook — registered in BOTH lists above
+		(`onPointerDown` / `onDoubleClick` / `onWheel`) via `.lightbox-toolbar`, so
+		a press / double-click / wheel on it is that control's, never a pan or a
+		zoom. The ARIA ROLE lives on the inner state, not the wrapper: the actions
+		are a `role="toolbar"`, and the delete drill-down a `role="menu"` (its rows
+		are `role="menuitem"`, which a toolbar must not parent). Gated on `img`.
+	-->
+	{#if img}
+		<div class="lightbox-toolbar">
+			{#if deleteConfirm.pending}
+				<!--
+					Delete confirmation as a drill-down (DR-18) — the SAME shared component
+					the panel and the strip render, so the wording and shape can only ever
+					change in one place. The module owns the pending/warning state; the
+					descriptor's awaited gate resolves through confirm() / cancel(). It is a
+					`role="menu"` of `role="menuitem"` rows: focus enters the first row on
+					open, Up/Down move between them, Escape backs out (see the handlers).
+				-->
+				<div class="lightbox-delete-confirm" role="menu" aria-label="Confirm delete">
+					<AttachmentDeleteConfirm
+						prompt={deleteConfirm.warning ?? ''}
+						promptId={deletePromptId}
+						oncancel={() => deleteConfirm.cancel()}
+						onconfirm={() => deleteConfirm.confirm()}
+					/>
+				</div>
+			{:else}
+				<div class="lightbox-toolbar-actions" role="toolbar" aria-label="Attachment actions">
+					{#if toolbarError}
+						<div class="lightbox-toolbar-error" role="alert">{toolbarError}</div>
+					{/if}
+					{#each toolbarActions as action (action.id)}
+						{#snippet toolIcon()}
+							<AttachmentIcon id={action.icon} />
+						{/snippet}
+						{#if action.element === 'anchor'}
+							<a
+								class="lightbox-tool"
+								href={action.href(toolbarCtx)}
+								download={action.download?.(toolbarCtx)}
+								target={action.target}
+								rel={action.rel}
+								aria-label={action.label}
+								title={action.description ?? action.label}
+								aria-disabled={!action.enabled(toolbarCtx)}
+							>
+								<span class="lightbox-tool-icon" aria-hidden="true">{@render toolIcon()}</span>
+								<span class="lightbox-tool-label">{action.label}</span>
+							</a>
+						{:else}
+							<button
+								class="lightbox-tool"
+								class:danger={action.danger}
+								type="button"
+								aria-label={action.label}
+								title={action.description ?? action.label}
+								disabled={!action.enabled(toolbarCtx) || toolbarBusy}
+								onclick={() => runToolbarAction(action)}
+							>
+								<span class="lightbox-tool-icon" aria-hidden="true">{@render toolIcon()}</span>
+								<span class="lightbox-tool-label"
+									>{toolbarBusy && action.id === 'delete' ? 'Deleting…' : action.label}</span
+								>
+							</button>
+						{/if}
+					{/each}
+				</div>
+			{/if}
+		</div>
 	{/if}
 
 	<!--
@@ -1377,6 +1716,110 @@
 		font-size: 0.8rem;
 	}
 
+	/* Action toolbar (TASK-2474). The WRAPPER is positioning + the pointer-
+	   exclusion hook only; each inner state carries its own look. Top-centre,
+	   above the stage's stacking context (`z-index: 1`, like the other chrome). */
+	.lightbox-toolbar {
+		position: absolute;
+		z-index: 1;
+		top: var(--space-3);
+		left: 50%;
+		transform: translateX(-50%);
+		max-width: min(92vw, 640px);
+	}
+
+	/* The confirm panel is TALLER and WIDER than the action pill and would collide
+	   with the top-right close button at narrow widths — drop it below the close
+	   button's row (40px control at `top: var(--space-3)`). */
+	.lightbox-toolbar:has(.lightbox-delete-confirm) {
+		top: calc(var(--space-3) + 52px);
+	}
+
+	/* The action pill: a horizontal row of icon/label controls. */
+	.lightbox-toolbar-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		flex-wrap: wrap;
+		justify-content: center;
+		padding: var(--space-1) var(--space-2);
+		background: rgba(0, 0, 0, 0.5);
+		border: 1px solid rgba(255, 255, 255, 0.2);
+		border-radius: 9999px;
+	}
+
+	/* The delete drill-down: a small panel of stacked rows (the shared
+	   AttachmentDeleteConfirm), the same column shape the panel's menu gives it. */
+	.lightbox-delete-confirm {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+		border-radius: var(--radius);
+		padding: var(--space-2);
+		background: var(--bg-primary, #1a1a1a);
+		color: var(--text-primary, #fff);
+		border: 1px solid rgba(255, 255, 255, 0.2);
+		min-width: min(88vw, 320px);
+	}
+
+	.lightbox-tool {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		padding: var(--space-1) var(--space-2);
+		border: none;
+		border-radius: 9999px;
+		background: transparent;
+		color: #fff;
+		font: inherit;
+		font-size: 0.85rem;
+		line-height: 1;
+		cursor: pointer;
+		text-decoration: none;
+	}
+
+	.lightbox-tool:hover,
+	.lightbox-tool:focus-visible {
+		background: rgba(255, 255, 255, 0.16);
+	}
+
+	.lightbox-tool:disabled,
+	.lightbox-tool[aria-disabled='true'] {
+		opacity: 0.45;
+		cursor: default;
+		pointer-events: none;
+	}
+
+	.lightbox-tool.danger {
+		color: var(--accent-red, #ff6b6b);
+	}
+
+	.lightbox-tool-icon {
+		display: inline-flex;
+		width: 18px;
+		height: 18px;
+	}
+
+	/* DR-18: the label is ALWAYS in the accessible name (`aria-label`); its VISIBLE
+	   text shows on phone (≤768, the app's canonical breakpoint) and is hidden on
+	   the roomier desktop toolbar, which stays icon-only. */
+	.lightbox-tool-label {
+		display: none;
+	}
+
+	@media (max-width: 768px) {
+		.lightbox-tool-label {
+			display: inline;
+		}
+	}
+
+	.lightbox-toolbar-error {
+		flex-basis: 100%;
+		text-align: center;
+		color: var(--accent-red, #ff6b6b);
+		font-size: 0.8rem;
+	}
+
 	/* Forced-colors (PLAN-2392 DR-4). The custom palette is discarded, so the
 	   image's box-shadow boundary vanishes — give the image a real BORDER so its
 	   boundary stays visible. LAST in the sheet so it wins over the controls' own
@@ -1389,7 +1832,8 @@
 		.lightbox-close,
 		.lightbox-nav,
 		.lightbox-retry,
-		.lightbox-tap-load {
+		.lightbox-tap-load,
+		.lightbox-tool {
 			border: 1px solid ButtonText;
 		}
 	}

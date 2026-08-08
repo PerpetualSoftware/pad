@@ -105,6 +105,17 @@
 		 * disables addressing rather than broadcasting to every host.
 		 */
 		hostToken?: string;
+		/**
+		 * Viewer-toolbar context (TASK-2474), forwarded verbatim to the `Lightbox`
+		 * this strip mounts. Distinct from the tile-delete props above by design:
+		 * these carry the SAME vocabulary the panel host / viewer host use
+		 * (`mutationsEnabled` + content GETTERS), so `ItemDetail` threads one
+		 * contract to every Lightbox origin. `mutationsEnabled` defaults false →
+		 * read-only toolbar.
+		 */
+		mutationsEnabled?: boolean;
+		getItemContent?: () => string | null;
+		getLiveContent?: () => string | null;
 	}
 	let {
 		wsSlug,
@@ -114,6 +125,9 @@
 		itemContent = null,
 		liveContent = null,
 		hostToken = '',
+		mutationsEnabled = false,
+		getItemContent,
+		getLiveContent,
 	}: Props = $props();
 
 	// Hard bound on what the strip will ever hold (DR-9 / DR-11). Past this the
@@ -1109,6 +1123,9 @@
 			index={lightbox.index}
 			{wsSlug}
 			invoker={lightbox.invoker}
+			{mutationsEnabled}
+			{getItemContent}
+			{getLiveContent}
 			onClose={() => (lightbox = null)}
 		/>
 	{/if}

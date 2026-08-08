@@ -22,6 +22,11 @@ import {
 	ZOOM_STEP,
 	type Geometry,
 } from '$lib/attachments/zoom';
+// The viewer's real focusable-selection path — the trap cycles over exactly this
+// set, so the tests below derive the leading / trailing edge from it rather than
+// naming a specific control. The toolbar (TASK-2474) added controls after the
+// nav, so the trailing edge is no longer `.lightbox-nav.next`.
+import { paneFocusables } from '$lib/collections/paneFocus';
 
 // TASK-2460 — the mobile DR-5b cells. `viewport.isMobile` is module state read
 // from matchMedia at init (false under jsdom), so a controllable mock lets a few
@@ -102,6 +107,10 @@ interface Props {
 	wsSlug: string;
 	onClose: () => void;
 	invoker?: HTMLElement | null;
+	// Toolbar context (TASK-2474).
+	mutationsEnabled?: boolean;
+	getItemContent?: () => string | null;
+	getLiveContent?: () => string | null;
 }
 
 // Reactive props for the capture-at-open cases ($state may only initialize a
@@ -111,6 +120,17 @@ const liveProps = $state<Props>({
 	index: 0,
 	wsSlug: 'ws-one',
 	onClose: () => {},
+});
+
+// Reactive props for the toolbar's permission-withdrawn case (TASK-2474): a
+// peek closes the mutation gate mid-confirmation, and `mutationsEnabled` has to
+// be flippable live to drive it.
+const toolbarProps = $state<Props>({
+	images: [image(IMG_A, 'a diagram')],
+	index: 0,
+	wsSlug: 'ws-one',
+	onClose: () => {},
+	mutationsEnabled: true,
 });
 
 /** The app shell's stand-in: a body child, so the manager has something to inert. */
@@ -149,6 +169,17 @@ function imageSrc(scope: HTMLElement = root()): string {
 
 function closeButton(scope: HTMLElement = root()): HTMLButtonElement {
 	return scope.querySelector<HTMLButtonElement>('.lightbox-close')!;
+}
+
+/** The viewer's focusable controls, in tab order — what the trap cycles over. */
+function focusables(scope: HTMLElement = root()): HTMLElement[] {
+	return paneFocusables(scope);
+}
+
+/** The trailing edge of the trap — the last focusable control. */
+function lastFocusable(scope: HTMLElement = root()): HTMLElement {
+	const f = focusables(scope);
+	return f[f.length - 1];
 }
 
 /** The `transform` inline style on the viewer's image (empty before it mounts). */
@@ -521,8 +552,10 @@ describe('Lightbox — focus', () => {
 				image(IMG_B, 'second'),
 			],
 		});
-		const controls = Array.from(root().querySelectorAll('button'));
-		expect(controls).toHaveLength(3);
+		// More than one focusable, so "first" is separable from "a"/"the root":
+		// close, prev, next, plus the toolbar's open/download/copy-link (TASK-2474).
+		const controls = focusables();
+		expect(controls.length).toBeGreaterThan(1);
 		expect(document.activeElement).toBe(controls[0]);
 		expect(document.activeElement).toBe(closeButton());
 		expect(document.activeElement).not.toBe(root());
@@ -639,8 +672,8 @@ describe('Lightbox — Tab trap', () => {
 				image(IMG_B, 'second'),
 			],
 		});
-		const next = root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!;
-		next.focus();
+		// The trailing edge is the last toolbar control now, not the nav (TASK-2474).
+		lastFocusable().focus();
 
 		expect(press('Tab')).toBe(true);
 		expect(document.activeElement).toBe(closeButton());
@@ -656,9 +689,7 @@ describe('Lightbox — Tab trap', () => {
 		closeButton().focus();
 
 		expect(press('Tab', { shiftKey: true })).toBe(true);
-		expect(document.activeElement).toBe(
-			root().querySelector<HTMLButtonElement>('.lightbox-nav.next')
-		);
+		expect(document.activeElement).toBe(lastFocusable());
 	});
 
 	it('pulls focus back to the leading edge when it has escaped the viewer', () => {
@@ -680,9 +711,7 @@ describe('Lightbox — Tab trap', () => {
 		// ...and the trailing edge on a back Tab from outside.
 		outside.focus();
 		expect(press('Tab', { shiftKey: true })).toBe(true);
-		expect(document.activeElement).toBe(
-			root().querySelector('.lightbox-nav.next')
-		);
+		expect(document.activeElement).toBe(lastFocusable());
 	});
 
 	it('leaves a mid-cycle Tab to the browser', () => {
@@ -1495,8 +1524,7 @@ describe('Lightbox — Tab still cycles at maximum zoom (TASK-2456)', () => {
 		for (let i = 0; i < 10; i++) press('+');
 		expect(scaleOf()).toBeCloseTo(4);
 
-		const nextBtn = root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!;
-		nextBtn.focus();
+		lastFocusable().focus();
 		expect(press('Tab')).toBe(true);
 		expect(root().contains(document.activeElement)).toBe(true);
 		expect(document.activeElement).toBe(closeButton());
@@ -2770,5 +2798,260 @@ describe('Lightbox — re-clamp on same-id decode + inert error state (TASK-2461
 		root().dispatchEvent(pointerEvent('pointermove', 720, 500));
 		flushSync();
 		expect(panX(), 'the drag aborted; no further pan over the error UI').toBeCloseTo(panned);
+	});
+});
+
+describe('Lightbox — action toolbar (TASK-2474)', () => {
+	// The shared descriptor list, drawn over the stage. The viewer only ever holds
+	// IMAGES, so Open/Download/Copy-link always apply; Delete is gated on the
+	// host's `mutationsEnabled`. `api.attachments.delete` is NOT mocked in this
+	// file, so these cases stop at the confirmation GATE (open / cancel / abandon)
+	// — the full delete network path is the strip/host origin tests' (which mock
+	// it). Here the module's own state machine is what is under test.
+	function toolbar(scope: HTMLElement = root()): HTMLElement | null {
+		return scope.querySelector<HTMLElement>('.lightbox-toolbar');
+	}
+	function tools(scope: HTMLElement = root()): HTMLElement[] {
+		return Array.from(scope.querySelectorAll<HTMLElement>('.lightbox-tool'));
+	}
+	function toolLabels(scope: HTMLElement = root()): string[] {
+		return tools(scope).map((t) => t.getAttribute('aria-label') ?? '');
+	}
+	function tool(label: string, scope: HTMLElement = root()): HTMLElement {
+		const found = tools(scope).find((t) => t.getAttribute('aria-label') === label);
+		if (!found) throw new Error(`no toolbar control labelled ${label}`);
+		return found;
+	}
+
+	beforeEach(() => {
+		Object.assign(toolbarProps, {
+			images: [image(IMG_A, 'a diagram')],
+			index: 0,
+			wsSlug: 'ws-one',
+			onClose: () => {},
+			mutationsEnabled: true,
+			getItemContent: undefined,
+			getLiveContent: undefined,
+		});
+	});
+
+	it('renders the read-only actions with no Delete when mutations are disabled', () => {
+		mountViewer({ mutationsEnabled: false });
+		expect(toolbar()).not.toBeNull();
+		const labels = toolLabels();
+		expect(labels).toContain('Open in new tab');
+		expect(labels).toContain('Download');
+		expect(labels).toContain('Copy workspace link');
+		expect(labels).not.toContain('Delete');
+	});
+
+	it('defaults to read-only (no Delete) when mutationsEnabled is omitted', () => {
+		mountViewer();
+		expect(toolbar()).not.toBeNull();
+		expect(toolLabels()).not.toContain('Delete');
+	});
+
+	it('offers Delete when the host granted mutationsEnabled', () => {
+		mountViewer({ mutationsEnabled: true });
+		expect(toolLabels()).toContain('Delete');
+	});
+
+	it('renders Open and Download as real anchors carrying href/download/target', () => {
+		mountViewer({ mutationsEnabled: false, images: [image(IMG_A, 'a diagram')] });
+		const open = tool('Open in new tab');
+		const download = tool('Download');
+		expect(open.tagName).toBe('A');
+		expect(open.getAttribute('href')).toContain(`/workspaces/ws-one/attachments/${IMG_A}`);
+		expect(open.getAttribute('target')).toBe('_blank');
+		expect(open.getAttribute('rel')).toBe('noopener noreferrer');
+		expect(download.tagName).toBe('A');
+		expect(download.getAttribute('href')).toContain(`/workspaces/ws-one/attachments/${IMG_A}`);
+		// A REAL download attribute, not decoration — the value is the display name.
+		expect(download.hasAttribute('download')).toBe(true);
+	});
+
+	it('renders Copy-link and Delete as buttons, not anchors', () => {
+		mountViewer({ mutationsEnabled: true });
+		expect(tool('Copy workspace link').tagName).toBe('BUTTON');
+		expect(tool('Delete').tagName).toBe('BUTTON');
+	});
+
+	it('drills down to the shared confirmation and back on Cancel (DR-18)', () => {
+		mountViewer({ mutationsEnabled: true });
+		tool('Delete').click();
+		flushSync();
+		// The action buttons are replaced by the shared confirm rows.
+		const confirm = root().querySelector('.lightbox-delete-confirm');
+		expect(confirm).not.toBeNull();
+		expect(tools()).toHaveLength(0);
+		// MenuItem rows carry a leading glyph in their text, so match on substrings.
+		const rows = Array.from(confirm!.querySelectorAll<HTMLElement>('button')).map(
+			(b) => b.textContent?.trim() ?? ''
+		);
+		expect(rows.some((r) => r.includes('Cancel'))).toBe(true);
+		expect(rows.some((r) => r.includes('Delete file'))).toBe(true);
+		// The hedged (not-referenced) arm, since no content getter was threaded.
+		expect(confirm!.querySelector('.attachment-delete-prompt')?.textContent).toContain(
+			'may still be referenced'
+		);
+
+		// Cancel returns to the toolbar without deleting anything.
+		Array.from(confirm!.querySelectorAll('button'))
+			.find((b) => b.textContent?.includes('Cancel'))!
+			.click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull();
+		expect(toolLabels()).toContain('Delete');
+	});
+
+	it('warns about a live reference when the body still uses the attachment', () => {
+		// The delete-warning check reads the live getter at confirm time (DR-5).
+		mountViewer({
+			mutationsEnabled: true,
+			getLiveContent: () => `text ![x](pad-attachment:${IMG_A}) more`,
+		});
+		tool('Delete').click();
+		flushSync();
+		expect(root().querySelector('.attachment-delete-prompt')?.textContent).toContain(
+			"still used in this item's content"
+		);
+	});
+
+	it('abandons an open confirmation when mutation permission is withdrawn', () => {
+		// A pane going peeked closes the mutation gate mid-confirmation; the shared
+		// module abandons the drill-down rather than leaving a live Delete button for
+		// an action that can no longer happen (DR-8). Driven through a reactive prop.
+		mounted.push(mount(Lightbox, { target: appRoot, props: toolbarProps }));
+		flushSync();
+		tool('Delete').click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+
+		toolbarProps.mutationsEnabled = false;
+		flushSync();
+		// The confirmation is gone AND Delete is no longer offered.
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull();
+		expect(toolLabels()).not.toContain('Delete');
+	});
+
+	it('shows no toolbar when the set is empty', () => {
+		// An unresolved-MIME image is filtered out of `viewable`, leaving no `img`.
+		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
+		expect(toolbar()).toBeNull();
+	});
+
+	// ── Codex-review fixes (TASK-2474) ────────────────────────────────────────
+
+	it('renders the drill-down as a role="menu" of role="menuitem" rows', () => {
+		// The confirm rows are role="menuitem" (from MenuItem); they must be parented
+		// by role="menu", NOT the actions' role="toolbar".
+		mountViewer({ mutationsEnabled: true });
+		tool('Delete').click();
+		flushSync();
+		const menu = root().querySelector('.lightbox-delete-confirm');
+		expect(menu?.getAttribute('role')).toBe('menu');
+		expect(menu?.querySelectorAll('[role="menuitem"]').length).toBeGreaterThanOrEqual(2);
+		// ...and the toolbar's role="toolbar" is gone while confirming (not nesting a
+		// menu inside a toolbar).
+		expect(root().querySelector('[role="toolbar"]')).toBeNull();
+	});
+
+	it('moves focus to the first drill-down row and rovers the tab stop', () => {
+		mountViewer({ mutationsEnabled: true });
+		tool('Delete').click();
+		flushSync();
+		const rows = Array.from(
+			root().querySelectorAll<HTMLElement>('.lightbox-delete-confirm [role="menuitem"]')
+		);
+		// Cancel is first (the shared confirm's order), and focus lands on it.
+		expect(document.activeElement).toBe(rows[0]);
+		// Roving tabindex: exactly the active row is in the tab order, the rest are
+		// -1 — so Tab EXITS the menu to the chrome (ARIA menu), not between rows.
+		expect(rows[0].tabIndex).toBe(0);
+		expect(rows.slice(1).every((r) => r.tabIndex === -1)).toBe(true);
+	});
+
+	it('Up/Down move focus between drill-down rows and roll the tab stop', () => {
+		mountViewer({ mutationsEnabled: true });
+		tool('Delete').click();
+		flushSync();
+		const rows = Array.from(
+			root().querySelectorAll<HTMLElement>('.lightbox-delete-confirm [role="menuitem"]')
+		);
+		expect(document.activeElement).toBe(rows[0]);
+		expect(press('ArrowDown')).toBe(true);
+		expect(document.activeElement).toBe(rows[1]);
+		expect(rows[1].tabIndex).toBe(0);
+		expect(rows[0].tabIndex).toBe(-1);
+	});
+
+	it('Escape backs out of the drill-down before it closes the viewer', () => {
+		const onClose = vi.fn();
+		mounted.push(
+			mount(Lightbox, { target: appRoot, props: { ...toolbarProps, onClose } })
+		);
+		flushSync();
+		tool('Delete').click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+
+		// First Escape cancels the confirmation; the viewer stays open.
+		expect(runTopEscape()).toBe(true);
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull();
+		expect(onClose).not.toHaveBeenCalled();
+
+		// Second Escape closes the viewer.
+		expect(runTopEscape()).toBe(true);
+		flushSync();
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('abandons the drill-down when the shown image changes under it', () => {
+		// A delete elsewhere shrinks the set so a DIFFERENT member is shown; a
+		// confirmation for the gone image must not linger over the new one.
+		Object.assign(toolbarProps, {
+			images: [image(IMG_A, 'first'), image(IMG_B, 'second')],
+		});
+		mounted.push(mount(Lightbox, { target: appRoot, props: toolbarProps }));
+		flushSync();
+		tool('Delete').click();
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).not.toBeNull();
+
+		// The shown image (A) drops out; B moves into view.
+		toolbarProps.images = [image(IMG_B, 'second')];
+		flushSync();
+		expect(root().querySelector('.lightbox-delete-confirm')).toBeNull();
+	});
+
+	it('consumes a wheel over the toolbar without zooming the image', () => {
+		mountViewer({ mutationsEnabled: false });
+		fireLoad(2000, 2000);
+		mockGeometry(root(), {
+			stageW: 1000,
+			stageH: 1000,
+			fittedW: 900,
+			fittedH: 900,
+			naturalW: 2000,
+			naturalH: 2000,
+		});
+		const before = scaleOf();
+
+		// A wheel over a toolbar control is consumed (the modal owns the wheel) but
+		// must NOT zoom.
+		expect(wheel(tool('Download'), { deltaY: -100, clientX: 500, clientY: 500 })).toBe(true);
+		expect(scaleOf()).toBe(before);
+
+		// Control: the SAME wheel over the image DOES zoom — so the exclusion is what
+		// stopped the toolbar wheel, not a dead wheel path.
+		expect(
+			wheel(root().querySelector<HTMLElement>('.lightbox-image')!, {
+				deltaY: -100,
+				clientX: 500,
+				clientY: 500,
+			})
+		).toBe(true);
+		expect(scaleOf()).toBeGreaterThan(before);
 	});
 });

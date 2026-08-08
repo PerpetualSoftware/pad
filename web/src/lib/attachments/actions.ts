@@ -62,7 +62,15 @@ export type AttachmentActionId = 'open' | 'download' | 'copy-link' | 'delete';
 export interface AttachmentActionSubject {
 	id: string;
 	filename: string;
-	mime_type: string;
+	/**
+	 * NULLABLE (TASK-2474). The panel builds this from a HEAD probe that always
+	 * completes before it shows a row, but the viewer's toolbar builds it from
+	 * the open-viewer channel, whose `mime_type` is null until an inline image's
+	 * probe resolves. Every `applies()` below handles null CONSERVATIVELY: Open
+	 * needs a positively-previewable MIME (null → not offered, via
+	 * `canBrowserPreview`), while Download / Copy-link / Delete never consult it.
+	 */
+	mime_type: string | null;
 }
 
 export interface AttachmentActionContext {

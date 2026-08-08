@@ -843,6 +843,17 @@
 			return null;
 		}
 	}
+	/**
+	 * The PERSISTED item body as a stable getter (TASK-2474). The strip and panel
+	 * host take the raw value inline (`itemContent`), but the viewer toolbar's
+	 * contract is the panel's getter pattern — `getItemContent?: () => string |
+	 * null` — so it reads through this. `itemMatchesRef`-gated exactly as the
+	 * value form is, so a mid-switch read returns null rather than the outgoing
+	 * item's content.
+	 */
+	function itemPersistedMarkdown(): string | null {
+		return (itemMatchesRef ? item?.content : null) ?? null;
+	}
 	$effect(() => {
 		if (wsSlug && collSlug && itemSlug) {
 			loadData();
@@ -5087,6 +5098,9 @@
 				canDelete={mutationsEnabled}
 				itemContent={itemMatchesRef ? item?.content : null}
 				liveContent={liveEditorMarkdown}
+				{mutationsEnabled}
+				getItemContent={itemPersistedMarkdown}
+				getLiveContent={liveEditorMarkdown}
 			/>
 
 			<!-- The attachment options panel's host (PLAN-2392 DR-8 / TASK-2423).
@@ -5626,6 +5640,9 @@
 				frozen={false}
 				restoreFrozen={peeking}
 				visibleKinds={activeTab === 'versions' ? ['version'] : ['comment', 'activity']}
+				{mutationsEnabled}
+				getItemContent={itemPersistedMarkdown}
+				getLiveContent={liveEditorMarkdown}
 			/>
 		</div>
 		</div><!-- /tab-panel Activity/Versions -->
@@ -5869,6 +5886,9 @@
 	itemId={itemMatchesRef ? item?.id : null}
 	hostToken={attachmentHostToken}
 	resourceGen={viewerResource.current}
+	{mutationsEnabled}
+	getItemContent={itemPersistedMarkdown}
+	getLiveContent={liveEditorMarkdown}
 />
 
 <style>
