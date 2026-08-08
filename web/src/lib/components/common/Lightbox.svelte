@@ -83,9 +83,14 @@
 	import { createDeleteConfirm } from '$lib/attachments/surfaceDeleteConfirm.svelte';
 	import AttachmentIcon from '$lib/attachments/icons/AttachmentIcon.svelte';
 	import AttachmentDeleteConfirm from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
-	import { displayFilename } from '$lib/attachments/display';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	// ── Metadata header (PLAN-2392 phase 3c-i / TASK-2475) ───────────────────
+	// Filename / type / size for the shown image, seeded from the LightboxImage
+	// and completed by the SAME B metadata module the panel uses (TASK-2473): it
+	// fetches only what the seed left null (DR-2 — open now, fill after).
+	import { describeAttachmentType, formatBytes } from '$lib/attachments/display';
+	import { createSurfaceMetadata } from '$lib/attachments/surfaceMetadata.svelte';
 
 	interface Props {
 		images: LightboxImage[];
@@ -170,7 +175,28 @@
 	 * replaced or when a record's MIME resolves to something unsafe after the
 	 * viewer opened, so a stale capture cannot outlive its own truth.
 	 */
-	let viewable = $derived(images.filter((im) => canOpenInViewer(im.mime_type)));
+	// A blank/whitespace-only string is not a value — it is the ABSENCE of one, and
+	// the display chains (`filename ?? alt ?? …`) only skip null/undefined, so an
+	// empty string would win over the fallback and render nothing (TASK-2475).
+	// Normalized to a trimmed value or null, once, at ingestion below.
+	function blankToNull(s: string | null | undefined): string | null {
+		const t = (s ?? '').trim();
+		return t.length > 0 ? t : null;
+	}
+
+	// INGESTION (TASK-2475). Filter to viewable, then normalize each row's blank
+	// filename to null so the display-name chain (and the toolbar's download name)
+	// fall through to `alt` rather than showing an empty string. The identity of a
+	// row with an already-clean filename is preserved (no needless re-object), so
+	// the fences downstream that key on `img.id` are unaffected.
+	let viewable = $derived(
+		images
+			.filter((im) => canOpenInViewer(im.mime_type))
+			.map((im) => {
+				const clean = blankToNull(im.filename);
+				return clean === im.filename ? im : { ...im, filename: clean };
+			})
+	);
 
 	// Seeded once at mount — the host remounts (null → set) on each open, so
 	// no prop-sync effect is needed. untrack makes the initial-value capture
@@ -229,6 +255,44 @@
 	// nothing at all.
 	let dialogLabel = $derived(img?.alt || 'Attachment viewer');
 
+	// ── Metadata header (PLAN-2392 phase 3c-i / TASK-2475) ────────────────────
+	//
+	// Filename / type / size for the shown image. The B module (TASK-2473) seeds
+	// from the LightboxImage and completes only what is null — but a viewer image
+	// has always cleared the MIME gate, so MIME is known and the module fetches
+	// iff `size_bytes` is null. `filename` is never fetched (the HEAD does not
+	// return one), so the name comes straight off the seed; only type and size
+	// read through the module's merged `fields`. `open`/`parentArchived` are
+	// constant here (the viewer is always open; it has no archived-parent probe).
+	const headerMeta = createSurfaceMetadata(() => ({
+		ws: openWsSlug,
+		attachmentId: img?.id ?? '',
+		seed: {
+			filename: img?.filename ?? null,
+			mime_type: img?.mime_type ?? null,
+			size_bytes: img?.size_bytes ?? null,
+		},
+		open: !!img,
+		parentArchived: false,
+		revalidateToken: 0,
+	}));
+	// Type only when the MIME is known — no "unknown type" noise (DR-2). Size only
+	// when it is a real number — `formatBytes` is never fed null, and absent beats
+	// "0 B" (the chip call-site precedent).
+	let headerType = $derived(
+		headerMeta.fields.mime_type
+			? describeAttachmentType(headerMeta.fields.mime_type, headerMeta.fields.filename)
+			: null
+	);
+	let headerSize = $derived(
+		typeof headerMeta.fields.size_bytes === 'number' ? formatBytes(headerMeta.fields.size_bytes) : null
+	);
+	let headerDetail = $derived([headerType, headerSize].filter(Boolean).join(' · '));
+	// A non-404 fetch failure: show the DR-10 inline retry BESIDE what is already
+	// known (the name + type never blank out), and Retry revalidates through the
+	// module rather than replaying the cached failure.
+	let headerTransient = $derived(headerMeta.phase === 'transient');
+
 	// ── Action toolbar (PLAN-2392 phase 3c-i / TASK-2474) ─────────────────────
 	//
 	// The SAME `attachmentActionsFor` list the options panel renders (DR-5), drawn
@@ -237,12 +301,12 @@
 	// always apply; Delete applies only when the host granted `mutationsEnabled`.
 	const uid = $props.id();
 	const deletePromptId = `lightbox-delete-note-${uid}`;
-	// A non-null display name for the current image, for the download attribute and
-	// the delete prompt. The channel's `filename` is nullable; `alt` is the inline
-	// image's next-best name; the generic label is the last resort so a nameless
-	// image still downloads and can still be named in a confirmation (until C2's
-	// display-name chain lands, this inline fallback IS that chain).
-	let displayName = $derived(displayFilename(img?.filename ?? img?.alt ?? 'Attachment'));
+	// THE DISPLAY-NAME CHAIN (TASK-2475): filename ?? alt ?? 'Attachment'. `filename`
+	// is already blank-normalized at ingestion, so a nameless image falls through to
+	// `alt` (also blank-normalized) and then the generic label — never an empty
+	// string. Shared by the metadata header, the download attribute and the delete
+	// prompt, so all three name the file identically.
+	let displayName = $derived(img?.filename ?? blankToNull(img?.alt) ?? 'Attachment');
 	// Counts confirmed deletes. The descriptor's `run()` resolves the same way
 	// whether the row was deleted or the user CANCELLED, so the counter is how the
 	// two are told apart — a delete closes the viewer, a cancel does not. Plain
@@ -293,10 +357,13 @@
 	let destroyed = false;
 	// Drop any pending confirmation on unmount so the descriptor's awaited
 	// `confirmDelete()` promise settles rather than dangling (the panel's teardown),
-	// and latch `destroyed` so no post-unmount continuation calls `onClose`.
+	// and latch `destroyed` so no post-unmount continuation calls `onClose`. The
+	// metadata module's fences are invalidated here too so a late HEAD can't write
+	// into a torn-down header (TASK-2475).
 	$effect(() => () => {
 		destroyed = true;
 		deleteConfirm.dispose();
+		headerMeta.dispose();
 	});
 
 	/**
@@ -518,7 +585,7 @@
 		// other wheel — the modal owns it, so the inert page can't scroll — but must
 		// NOT zoom the image behind it (TASK-2474). The same exclusion the pointerdown
 		// and double-click handlers carry, applied here too.
-		if ((e.target as Element | null)?.closest?.('.lightbox-toolbar')) return;
+		if ((e.target as Element | null)?.closest?.('.lightbox-toolbar, .lightbox-meta')) return;
 		// Consumed (the modal owns the wheel) but INERT with no decoded bitmap — the
 		// mobile deferred placeholder or the error UI, where the broken `<img>` still
 		// satisfies `readGeometry` (TASK-2461). Same guard the keys use.
@@ -660,7 +727,7 @@
 		// (the house pattern in ItemGraph excludes its interactive overlays the same
 		// way). Retry sits over the (broken) stage in the error state, so it needs
 		// the same exclusion as the always-present chrome.
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar')) return;
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar, .lightbox-meta')) return;
 		// No decoded bitmap to pan (the mobile `deferred` placeholder shows no
 		// `<img>`) — do NOT arm a drag, so the gesture stays fully inert instead of
 		// capturing the pointer and latching `dragging` for a pan that can never
@@ -791,7 +858,7 @@
 		// A double-click ON a control (close / nav / retry) is that control's, not a
 		// zoom toggle — without this, double-clicking Next navigates twice AND
 		// toggles, or a double-click on Retry toggles zoom on the broken stage.
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar')) return;
+		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar, .lightbox-meta')) return;
 		// Inert with no decoded bitmap (deferred placeholder / error UI) — the same
 		// guard the keys and wheel use (TASK-2461).
 		if (!bitmapPresent) return;
@@ -1057,6 +1124,10 @@
 		// unmounts across that switch, so track `pending` to re-home a focus stranded
 		// on <body> to the stable fallback within the same flush.
 		void deleteConfirm.pending;
+		// The metadata header's Retry button unmounts the instant its own click
+		// clears the transient phase (TASK-2475), so a keyboard user who pressed it is
+		// left on <body>; track the transient flag to re-home them the same way.
+		void headerTransient;
 		const el = rootEl;
 		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
 		handoffFocus(el);
@@ -1447,6 +1518,36 @@
 		     after the set shrank under `current`. -->
 		<div class="lightbox-counter">{shownIndex + 1} / {viewable.length}</div>
 	{/if}
+
+	<!--
+		METADATA HEADER (TASK-2475). Filename / type / size for the shown image.
+		Bottom-left, NOT the top row: the two primary actions (the toolbar) and
+		Close own the top, and metadata must never crowd them on a phone (DR-18) —
+		placing it here keeps that true by construction. A LABEL like the counter,
+		not a dismiss target: it is excluded from the pan/zoom gestures (via
+		`.lightbox-meta` in the three lists) so a press on it is inert, and only the
+		Retry button acts. The name is truncated with the FULL value in `title`
+		(DR-13); the detail line adds type · size only when known.
+	-->
+	{#if img}
+		<div class="lightbox-meta">
+			<div class="lightbox-meta-name" title={displayName}>{displayName}</div>
+			{#if headerDetail}
+				<div class="lightbox-meta-detail">{headerDetail}</div>
+			{/if}
+			{#if headerTransient}
+				<!-- DR-10: retryable, BESIDE the name/type it already knows — never a
+				     blank sheet. Retry revalidates through the module. -->
+				<div class="lightbox-meta-error" role="status">
+					<span>Couldn't load details</span>
+					<span aria-hidden="true">·</span>
+					<button class="lightbox-meta-retry" type="button" onclick={() => headerMeta.retry()}
+						>Retry</button
+					>
+				</div>
+			{/if}
+		</div>
+	{/if}
 </div>
 
 <style>
@@ -1716,6 +1817,75 @@
 		font-size: 0.8rem;
 	}
 
+	/* Metadata header (TASK-2475). Bottom-left, clear of the top toolbar / close
+	   (DR-18). Logical properties + `min-width: 0` so a long filename ellipsizes
+	   inside its own box rather than blowing out the layout (DR-13). A LABEL, like
+	   the counter: it keeps its default pointer events so a press on it is the
+	   header's own (and is excluded from the pan/zoom gestures via `.lightbox-meta`
+	   in the three exclusion lists) rather than falling THROUGH to the image behind
+	   and arming a pan. It does not close the viewer — a filename is not a dismiss
+	   target — and only Retry inside it does anything. Width is capped short of the
+	   centred counter (reserve ~72px each side of centre) so the two never touch,
+	   at any width or in RTL. */
+	.lightbox-meta {
+		position: absolute;
+		z-index: 1;
+		inset-block-end: var(--space-3);
+		inset-inline-start: var(--space-3);
+		min-width: 0;
+		max-inline-size: min(calc(50% - 72px), 420px);
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		color: #fff;
+		/* Legible over any image — a soft shadow rather than a plate, so it stays
+		   unobtrusive while the filename is still readable on a light photo. */
+		text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+	}
+
+	.lightbox-meta-name {
+		min-width: 0;
+		max-inline-size: 100%;
+		font-size: 0.85rem;
+		font-weight: 600;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.lightbox-meta-detail {
+		min-width: 0;
+		font-size: 0.75rem;
+		opacity: 0.85;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.lightbox-meta-error {
+		display: flex;
+		align-items: center;
+		gap: var(--space-1);
+		font-size: 0.75rem;
+		color: var(--accent-red, #ff6b6b);
+	}
+
+	.lightbox-meta-retry {
+		padding: 1px var(--space-1);
+		border: 1px solid currentColor;
+		border-radius: var(--radius-sm, 4px);
+		background: transparent;
+		color: inherit;
+		font: inherit;
+		font-size: 0.75rem;
+		cursor: pointer;
+	}
+
+	.lightbox-meta-retry:hover,
+	.lightbox-meta-retry:focus-visible {
+		background: rgba(255, 255, 255, 0.16);
+	}
+
 	/* Action toolbar (TASK-2474). The WRAPPER is positioning + the pointer-
 	   exclusion hook only; each inner state carries its own look. Top-centre,
 	   above the stage's stacking context (`z-index: 1`, like the other chrome). */
@@ -1833,7 +2003,8 @@
 		.lightbox-nav,
 		.lightbox-retry,
 		.lightbox-tap-load,
-		.lightbox-tool {
+		.lightbox-tool,
+		.lightbox-meta-retry {
 			border: 1px solid ButtonText;
 		}
 	}

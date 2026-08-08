@@ -83,6 +83,14 @@ vi.mock('$lib/components/editor/attachment-metadata', () => ({
 				? { status: 'ok' as const, mime: MIMES[uuid], size: 4096 }
 				: { status: 'transient' as const }
 		),
+	// The timeline mounts the real Lightbox, whose metadata header (TASK-2475) calls
+	// this on a header Retry — mirror the fetch stub so the contract is complete.
+	revalidateAttachmentMetadata: (_ws: string, uuid: string) =>
+		Promise.resolve(
+			MIMES[uuid]
+				? { status: 'ok' as const, mime: MIMES[uuid], size: 4096 }
+				: { status: 'transient' as const }
+		),
 	invalidateAttachmentMetadata: vi.fn(),
 }));
 

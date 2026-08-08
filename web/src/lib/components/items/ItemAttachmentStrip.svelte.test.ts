@@ -79,7 +79,16 @@ const invalidateMock = vi.fn<(ws: string, uuid: string) => void>();
 // (PLAN-2392 DR-10) — a separate spy from the events bus's, so the two can be
 // asserted independently.
 const invalidateMetadataMock = vi.fn<(ws: string, uuid: string) => void>();
+// The strip mounts the real Lightbox, whose metadata header (TASK-2475) reads
+// through this module — so the mock must carry the fetch/revalidate exports too,
+// not just invalidate. Benign `ok` stubs: the strip's viewer tests use rows whose
+// size is already known (no fetch fires), but a complete contract keeps the mount
+// robust to any row shape.
 vi.mock('$lib/components/editor/attachment-metadata', () => ({
+	fetchAttachmentMetadata: () =>
+		Promise.resolve({ status: 'ok' as const, mime: 'image/png', size: 2048 }),
+	revalidateAttachmentMetadata: () =>
+		Promise.resolve({ status: 'ok' as const, mime: 'image/png', size: 2048 }),
 	invalidateAttachmentMetadata: (ws: string, uuid: string) => invalidateMetadataMock(ws, uuid),
 }));
 

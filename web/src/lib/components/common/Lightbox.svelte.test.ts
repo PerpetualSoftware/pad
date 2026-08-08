@@ -27,6 +27,9 @@ import {
 // naming a specific control. The toolbar (TASK-2474) added controls after the
 // nav, so the trailing edge is no longer `.lightbox-nav.next`.
 import { paneFocusables } from '$lib/collections/paneFocus';
+// TASK-2475 — the metadata header renders type/size through these; the tests
+// compute their expected strings from the same helpers rather than hardcoding.
+import { describeAttachmentType, formatBytes } from '$lib/attachments/display';
 
 // TASK-2460 — the mobile DR-5b cells. `viewport.isMobile` is module state read
 // from matchMedia at init (false under jsdom), so a controllable mock lets a few
@@ -51,6 +54,19 @@ vi.mock('$lib/stores/breakpoint.svelte', () => ({
 }));
 let mobileFlag = $state(false);
 mobileHolder.read = () => mobileFlag;
+
+// TASK-2475 — the metadata header's B-module fetch. The viewer's images seed
+// `size_bytes: null` by default (the `image()` fixture), so the header module
+// fires a HEAD to fill it; controlling the result lets the header tests assert
+// the fill / transient-retry paths, and keeps the real (failing) fetch out of
+// every OTHER test. Defaulted to `ok` in `beforeEach`.
+const metaFetch = vi.hoisted(() => vi.fn());
+const metaRevalidate = vi.hoisted(() => vi.fn());
+vi.mock('$lib/components/editor/attachment-metadata', () => ({
+	fetchAttachmentMetadata: (...a: unknown[]) => metaFetch(...a),
+	revalidateAttachmentMetadata: (...a: unknown[]) => metaRevalidate(...a),
+	invalidateAttachmentMetadata: vi.fn(),
+}));
 
 // TASK-2429 — the DR-4b modal contract on the attachment viewer.
 //
@@ -216,6 +232,12 @@ function inertBodyChildren(): Element[] {
 }
 
 beforeEach(() => {
+	// Reset call history AND the resolved value each test, so a `toHaveBeenCalled`
+	// / call-count assertion can never read a prior test's invocation.
+	metaFetch.mockReset();
+	metaRevalidate.mockReset();
+	metaFetch.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 2048 });
+	metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 2048 });
 	HTMLElement.prototype.getClientRects = function () {
 		return [{}] as unknown as DOMRectList;
 	};
@@ -3053,5 +3075,145 @@ describe('Lightbox — action toolbar (TASK-2474)', () => {
 			})
 		).toBe(true);
 		expect(scaleOf()).toBeGreaterThan(before);
+	});
+});
+
+describe('Lightbox — metadata header (TASK-2475)', () => {
+	// Filename / type / size for the shown image, seeded from the LightboxImage and
+	// completed by the B module. The metadata mock (top of file) controls the HEAD.
+	function metaImage(over: Partial<LightboxImage> = {}): LightboxImage {
+		return {
+			id: IMG_A,
+			alt: 'a diagram',
+			filename: 'photo.png',
+			mime_type: 'image/png',
+			size_bytes: 2048,
+			width: null,
+			height: null,
+			...over,
+		};
+	}
+	function metaName(): string | null {
+		return root().querySelector('.lightbox-meta-name')?.textContent ?? null;
+	}
+	function metaDetail(): string | null {
+		return root().querySelector('.lightbox-meta-detail')?.textContent ?? null;
+	}
+	function metaError(): HTMLElement | null {
+		return root().querySelector('.lightbox-meta-error');
+	}
+	async function settleAsync() {
+		for (let i = 0; i < 5; i++) await Promise.resolve();
+		flushSync();
+	}
+
+	it('renders filename, type and size from a complete seed without fetching', async () => {
+		mountViewer({ images: [metaImage()] });
+		await settleAsync();
+		expect(metaName()).toBe('photo.png');
+		expect(metaDetail()).toBe(
+			`${describeAttachmentType('image/png', 'photo.png')} · ${formatBytes(2048)}`
+		);
+		// Seed carries both MIME and size, so no HEAD fires (DR-2's "fetch only what
+		// is null").
+		expect(metaFetch).not.toHaveBeenCalled();
+	});
+
+	it('falls back filename → alt when the filename is null', async () => {
+		mountViewer({ images: [metaImage({ filename: null })] });
+		await settleAsync();
+		expect(metaName()).toBe('a diagram');
+	});
+
+	it('treats a whitespace-only filename as absent and uses alt', async () => {
+		mountViewer({ images: [metaImage({ filename: '   ' })] });
+		await settleAsync();
+		expect(metaName()).toBe('a diagram');
+	});
+
+	it('falls back to the generic label when filename AND alt are blank', async () => {
+		mountViewer({ images: [metaImage({ filename: null, alt: '' })] });
+		await settleAsync();
+		expect(metaName()).toBe('Attachment');
+	});
+
+	it('treats a whitespace-only alt as blank too, reaching the generic label', async () => {
+		// The chain blank-normalizes alt, not just filename — an all-spaces alt must
+		// not win over 'Attachment' as an empty-but-present string would.
+		mountViewer({ images: [metaImage({ filename: null, alt: '   ' })] });
+		await settleAsync();
+		expect(metaName()).toBe('Attachment');
+	});
+
+	it('omits the size half when size stays unknown — detail is type only, no "0 B"', async () => {
+		// A viewer image always has a known MIME (the last-mile gate), so the
+		// type-omitted branch is unreachable here; what IS reachable is a null size
+		// that the fetch fails to fill. The detail must then be TYPE ONLY, with no
+		// stray " · " and no "0 B" (formatBytes is never fed null).
+		metaFetch.mockResolvedValue({ status: 'transient' });
+		mountViewer({ images: [metaImage({ size_bytes: null })] });
+		await settleAsync();
+		expect(metaName()).toBe('photo.png');
+		expect(metaDetail()).toBe(describeAttachmentType('image/png', 'photo.png'));
+	});
+
+	it('fetches to fill a null size and updates the detail line', async () => {
+		metaFetch.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 4096 });
+		mountViewer({ images: [metaImage({ size_bytes: null })] });
+		await settleAsync();
+		expect(metaFetch).toHaveBeenCalled();
+		expect(metaDetail()).toContain(formatBytes(4096));
+	});
+
+	it('a fetched field never overwrites a non-null seed', async () => {
+		// Seed MIME is the image PNG; the fetch returns a VISIBLY DIFFERENT type
+		// family (application/pdf) plus a size. The size fills (was null) but the type
+		// must stay the seed's — fields merge seed-wins. The fetched family is chosen
+		// distinct from the seed's on purpose: `image/gif` also labels as "Image", so
+		// an overwrite bug would have slipped through; a PDF label would not.
+		metaFetch.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 4096 });
+		mountViewer({ images: [metaImage({ filename: null, size_bytes: null })] });
+		await settleAsync();
+		const seededType = describeAttachmentType('image/png', null);
+		expect(seededType).not.toBe(describeAttachmentType('application/pdf', null));
+		expect(metaDetail()).toBe(`${seededType} · ${formatBytes(4096)}`);
+	});
+
+	it('shows a retryable error beside the name on a transient failure, then recovers', async () => {
+		metaFetch.mockResolvedValue({ status: 'transient' });
+		mountViewer({ images: [metaImage({ size_bytes: null })] });
+		await settleAsync();
+		// Beside what it already knows — never a blank sheet (DR-10).
+		expect(metaName()).toBe('photo.png');
+		expect(metaError()).not.toBeNull();
+
+		// Retry REVALIDATES (invalidate-then-fetch), never replays the cached failure.
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 8192 });
+		const retryBtn = root().querySelector<HTMLButtonElement>('.lightbox-meta-retry')!;
+		retryBtn.focus();
+		retryBtn.click();
+		await settleAsync();
+		expect(metaRevalidate).toHaveBeenCalled();
+		expect(metaError()).toBeNull();
+		expect(metaDetail()).toContain(formatBytes(8192));
+		// Retry unmounts on success (the transient state clears); focus must not be
+		// stranded on <body> outside the modal — it is re-homed into the viewer.
+		expect(document.activeElement).not.toBe(document.body);
+		expect(root().contains(document.activeElement)).toBe(true);
+	});
+
+	it('ellipsizes a 200-char filename while the accessible name carries it in full', async () => {
+		const long = 'a'.repeat(196) + '.png';
+		expect(long.length).toBe(200);
+		mountViewer({ images: [metaImage({ filename: long })] });
+		await settleAsync();
+		const nameEl = root().querySelector<HTMLElement>('.lightbox-meta-name')!;
+		// The FULL value is in title (DR-13) and in the element text — that is the
+		// info-preservation half, and it is what jsdom can prove. The VISUAL ellipsis
+		// (overflow/text-overflow/nowrap on `.lightbox-meta-name`) is not applied by
+		// jsdom's `getComputedStyle` (it ignores scoped `<style>` rules), so it is a
+		// browser-suite concern, like every other measured-layout claim in this file.
+		expect(nameEl.getAttribute('title')).toBe(long);
+		expect(nameEl.textContent).toBe(long);
 	});
 });
