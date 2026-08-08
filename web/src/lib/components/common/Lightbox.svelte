@@ -35,7 +35,10 @@
 		VIEWER_ROOT_CLASS,
 	} from '$lib/a11y/viewerBackdrop';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
-	import { canOpenInViewer } from '$lib/attachments/display';
+	// The renderer registry (TASK-2476): 'raster-image' for the DR-16 allowlist,
+	// null → the no-bytes icon fallback. This is the single gate that decides the
+	// stage's ARM; the old `canOpenInViewer` last-mile FILTER is gone.
+	import { getSurfaceRenderer, type SurfaceRendererId } from '$lib/attachments/surfaceRenderers';
 	import {
 		reset as resetZoom,
 		clampState,
@@ -89,7 +92,7 @@
 	// Filename / type / size for the shown image, seeded from the LightboxImage
 	// and completed by the SAME B metadata module the panel uses (TASK-2473): it
 	// fetches only what the seed left null (DR-2 — open now, fill after).
-	import { describeAttachmentType, formatBytes } from '$lib/attachments/display';
+	import { describeAttachmentType, formatBytes, iconForAttachment } from '$lib/attachments/display';
 	import { createSurfaceMetadata } from '$lib/attachments/surfaceMetadata.svelte';
 
 	interface Props {
@@ -152,7 +155,7 @@
 	 *    not a hypothesis this component can rule out.
 	 *  - a producer added later inherits the rule instead of having to know it.
 	 *
-	 * IT FAILS CLOSED. Only a POSITIVELY allowlisted `mime_type` is viewable; a
+	 * IT FAILS CLOSED. Only a POSITIVELY allowlisted `mime_type` is navigable; a
 	 * null / undefined / unresolved one is not. "Not yet known" is not evidence
 	 * that a file is a PNG, and this is the last thing standing between a set
 	 * and a rendered image — the place where the benefit of the doubt is worth
@@ -184,14 +187,36 @@
 		return t.length > 0 ? t : null;
 	}
 
-	// INGESTION (TASK-2475). Filter to viewable, then normalize each row's blank
-	// filename to null so the display-name chain (and the toolbar's download name)
-	// fall through to `alt` rather than showing an empty string. The identity of a
-	// row with an already-clean filename is preserved (no needless re-object), so
-	// the fences downstream that key on `img.id` are unaffected.
-	let viewable = $derived(
+	// THE OPEN GATE, CAPTURED (PLAN-2392 DR-16 / TASK-2476). Entries whose RESOLVED
+	// MIME is unsafe in the INITIAL set — the 3a open gate refuses them outright and
+	// they never navigate, exactly as before, through 3c-i (3c-ii adds the file
+	// route). Snapshotted ONCE at mount, because "unsafe at open" and "unsafe
+	// mid-view" are DIFFERENT cells: an entry that FLIPS to unsafe while the viewer
+	// is open — or is added unsafe — is kept and drawn as the no-bytes fallback,
+	// where dropping it used to be the only option. The distinction can only be an
+	// open-time snapshot; a live filter cannot tell the two apart.
+	const unsafeAtOpenIds = untrack(
+		() =>
+			new Set(
+				images
+					.filter((im) => im.mime_type != null && getSurfaceRenderer(im.mime_type) === null)
+					.map((im) => im.id)
+			)
+	);
+
+	// THE NAVIGABLE SET — what ←/→ page through and the counter counts. It now KEEPS
+	// unsafe-resolved entries that appeared or flipped MID-VIEW (drawn as the
+	// no-bytes fallback arm, see `shownRenderer`), and still REFUSES:
+	//   - unresolved (null) MIME — refused-from-navigation, exactly as today; and
+	//   - unsafe entries present AT OPEN — the 3a gate, held via `unsafeAtOpenIds`.
+	// Keeping an unsafe entry is safe because its arm mounts NO bytes — the gate
+	// that used to drop it now only decides the ARM. INGESTION (TASK-2475) also
+	// normalizes each row's blank filename to null here so the display-name chain
+	// falls through to `alt`; identity is preserved for an already-clean row so the
+	// downstream fences that key on `img.id` are unaffected.
+	let navigable = $derived(
 		images
-			.filter((im) => canOpenInViewer(im.mime_type))
+			.filter((im) => im.mime_type != null && !unsafeAtOpenIds.has(im.id))
 			.map((im) => {
 				const clean = blankToNull(im.filename);
 				return clean === im.filename ? im : { ...im, filename: clean };
@@ -205,12 +230,12 @@
 	// Resolved through the ID rather than carried across as a number: filtering
 	// reindexes everything after a refusal, so the requested POSITION can name a
 	// different image (or none) in the filtered set. Where the requested image
-	// is the one refused, there is nothing to land on and the first viewable
+	// is the one refused, there is nothing to land on and the first navigable
 	// image is what opens.
 	let current = $state(
 		untrack(() => {
 			const wanted = images[Math.min(Math.max(index, 0), Math.max(images.length - 1, 0))];
-			const at = wanted ? viewable.findIndex((im) => im.id === wanted.id) : -1;
+			const at = wanted ? navigable.findIndex((im) => im.id === wanted.id) : -1;
 			return at < 0 ? 0 : at;
 		})
 	);
@@ -236,20 +261,28 @@
 		return active && active !== document.body ? (active as HTMLElement) : null;
 	});
 
-	// EVERYTHING PAST THIS POINT READS `viewable`, NEVER `images` — the nav
+	// EVERYTHING PAST THIS POINT READS `navigable`, NEVER `images` — the nav
 	// wrap-around, the counter and the rendered `<img>` alike. A single read of
 	// the unfiltered prop below would reopen the hole this filter closes.
-	let hasMultiple = $derived(viewable.length > 1);
+	let hasMultiple = $derived(navigable.length > 1);
 	// The position actually shown, clamped. `current` is what the user's ←/→
-	// moved, but the set can SHRINK underneath it — a record whose MIME resolves
-	// to something unsafe after open drops out of `viewable`, and the array can
-	// be replaced outright. Clamping in a derived (rather than writing `current`
-	// from an effect, which would be an effect writing state it reads) keeps the
-	// viewer on a real member instead of blanking or showing `undefined`.
+	// moved, but the set can SHRINK underneath it — an entry whose MIME resolves to
+	// UNRESOLVED, or is dropped from the array, leaves `navigable` (a flip to
+	// unsafe does NOT — it stays as the fallback arm). Clamping in a derived
+	// (rather than writing `current` from an effect, which would be an effect
+	// writing state it reads) keeps the viewer on a real member instead of blanking
+	// or showing `undefined`.
 	let shownIndex = $derived(
-		Math.min(Math.max(current, 0), Math.max(viewable.length - 1, 0))
+		Math.min(Math.max(current, 0), Math.max(navigable.length - 1, 0))
 	);
-	let img = $derived(viewable[shownIndex]);
+	let img = $derived(navigable[shownIndex]);
+	// THE STAGE ARM (TASK-2476). The single decision of what the stage draws for
+	// the shown entry: `'raster-image'` → the `<img>`; `null` → the no-bytes icon
+	// fallback. A navigable entry always has a resolved MIME (unresolved is refused
+	// above), so this is `'raster-image'` for safe and `null` for unsafe-mid-view.
+	let shownRenderer = $derived<SurfaceRendererId | null>(
+		img ? getSurfaceRenderer(img.mime_type) : null
+	);
 	// The accessible name: the image's own alt where there is one, else a
 	// generic label. Never empty — an unnamed `role="dialog"` is announced as
 	// nothing at all.
@@ -292,6 +325,9 @@
 	// known (the name + type never blank out), and Retry revalidates through the
 	// module rather than replaying the cached failure.
 	let headerTransient = $derived(headerMeta.phase === 'transient');
+	// The fallback arm's large icon (TASK-2476): the same family glyph the strip /
+	// panel show for this type, from the shared registry.
+	let fallbackIconId = $derived(iconForAttachment(img?.mime_type ?? null, img?.filename ?? null));
 
 	// ── Action toolbar (PLAN-2392 phase 3c-i / TASK-2474) ─────────────────────
 	//
@@ -486,13 +522,18 @@
 	// component drives it from the shown image and reports each decode / error.
 	const loader = createViewerImageLoader();
 	// The id AND the pixel dimensions, as ONE stable primitive string — never the
-	// `img` object. A prop re-emit with the same VALUES (a re-derived `viewable`
+	// `img` object. A prop re-emit with the same VALUES (a re-derived `navigable`
 	// array) must not re-fire the load effect, but a genuine dimension change (an
 	// async metadata fill that flips `unknown` → a sized class) MUST: the DR-5b
 	// policy is a function of the pixels, so a stale dimension is a stale policy.
 	// A shrink to no image collapses to `'::'`, still a change → the effect fires
-	// and releases the load.
-	let loadKey = $derived(`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}`);
+	// and releases the load. THE ARM JOINS THE KEY (TASK-2476): a same-id
+	// safe→unsafe MIME flip keeps id + dims identical, so without the renderer in
+	// the key the load effect would not re-fire and the SAFE bytes would stay on
+	// screen behind the fallback arm — the no-bytes invariant depends on this.
+	let loadKey = $derived(
+		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}`
+	);
 	// Captured NON-reactively at load time (see the effect): a breakpoint flip
 	// alone must not reload — desktop→mobile must not abort an in-flight original,
 	// mobile→desktop must not retroactively auto-fetch (TASK-2459).
@@ -504,7 +545,27 @@
 	// act over the error UI with nothing decoded behind it. Zoom is then DISABLED,
 	// not merely a no-op (TASK-2460). A successful retry returns to loading/ready
 	// and re-enables it.
-	let bitmapPresent = $derived(!!img && !!loader.displaySrc && loader.phase !== 'error');
+	// ...and only on the RASTER arm (TASK-2476): the fallback arm has nothing
+	// decoded to transform, so zoom / pan / the zoom keys are disabled over it.
+	let bitmapPresent = $derived(
+		shownRenderer === 'raster-image' && !!img && !!loader.displaySrc && loader.phase !== 'error'
+	);
+
+	// RELEASE THE BYTES AT UNMOUNT (TASK-2476). Disposing the loader clears its
+	// state, but the `<img>` Svelte is about to remove keeps its `src` — and thus a
+	// possibly in-flight native request and its decoded bitmap — alive on the
+	// detached element until GC. Clearing the src in the element's own `destroy`
+	// aborts that request the instant the element leaves the tree, on EVERY unmount
+	// path: the arm flip to fallback, a nav to another image, and close. Belt to
+	// the loader's dispose; together the no-bytes invariant holds without waiting
+	// on the garbage collector.
+	function releaseImg(node: HTMLImageElement) {
+		return {
+			destroy() {
+				node.removeAttribute('src');
+			},
+		};
+	}
 	// The tap-to-load placeholder's box. Where dimensions are known it takes the
 	// image's own aspect ratio (so the affordance previews the shape that will
 	// arrive); where they are not, a neutral box (TASK-2460).
@@ -708,6 +769,29 @@
 		if (wasDragging) armSuppressClear();
 	}
 
+	// The event-less twin of `abortGesture`, for a REACTIVE teardown (TASK-2476):
+	// the bitmap can vanish (the arm flips to fallback) with NO further pointer
+	// event to carry the abort — the user holds still while the prop changes. This
+	// tears the same state down and releases the capture through the root (no
+	// `currentTarget` to hand `abortGesture`), so a stale gesture can neither pan
+	// the reloaded image after an A→unsafe→A flip nor leak into the next press.
+	function cancelGesture(): void {
+		if (!maybeDrag && !dragging) return;
+		const wasDragging = dragging;
+		maybeDrag = false;
+		dragging = false;
+		gesturePointerId = null;
+		if (capturedPointerId !== null) {
+			try {
+				rootEl?.releasePointerCapture(capturedPointerId);
+			} catch {
+				// already released — ignore.
+			}
+			capturedPointerId = null;
+		}
+		if (wasDragging) armSuppressClear();
+	}
+
 	function onPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return; // primary button only
 		if (e.pointerType === 'touch') return; // touch stays native until 3d
@@ -815,6 +899,14 @@
 			abortGesture(e);
 			return;
 		}
+		// The bitmap vanished before release — the shown entry flipped to the
+		// fallback arm (or errored) while the pointer was down (TASK-2476). ABORT,
+		// don't finalise: there is nothing to pan, and finalising would leave the
+		// suppress-click machinery armed over a stage with no image.
+		if (!bitmapPresent) {
+			abortGesture(e);
+			return;
+		}
 		maybeDrag = false;
 		gesturePointerId = null;
 		if (dragging) {
@@ -877,12 +969,12 @@
 	// through the nav controls / arrow keys, which `hasMultiple` already hides
 	// and gates, but written so the modulo can never be `% 0`.
 	function prev() {
-		if (viewable.length === 0) return;
-		current = (shownIndex - 1 + viewable.length) % viewable.length;
+		if (navigable.length === 0) return;
+		current = (shownIndex - 1 + navigable.length) % navigable.length;
 	}
 	function next() {
-		if (viewable.length === 0) return;
-		current = (shownIndex + 1) % viewable.length;
+		if (navigable.length === 0) return;
+		current = (shownIndex + 1) % navigable.length;
 	}
 
 	/**
@@ -1035,10 +1127,34 @@
 	// breakpoint flip alone can't reload (TASK-2459).
 	$effect(() => {
 		void loadKey;
-		untrack(() => loader.load(img, openWsSlug, platform));
+		untrack(() => {
+			// THE NO-BYTES INVARIANT (TASK-2476). The raster arm loads; EVERY other arm
+			// — the fallback (unsafe/no-preview) or no image at all — DISPOSES the
+			// loader, so the arm flip releases any in-flight or decoded bitmap and
+			// issues no request. `loadKey` carries the renderer, so a same-id
+			// safe→unsafe flip actually re-runs this and reaches the dispose. The
+			// loader's own DR-16 gate (`start()`) is the backstop; the Lightbox
+			// decides no-bytes explicitly here.
+			if (shownRenderer === 'raster-image') {
+				loader.load(img, openWsSlug, platform);
+			} else {
+				loader.dispose();
+			}
+		});
 	});
 	// Drop the load on unmount (close) — one teardown, no dependencies.
 	$effect(() => () => loader.dispose());
+
+	// Reactively abort a live gesture the instant the bitmap goes away (TASK-2476).
+	// The pointer handlers catch a flip that arrives WITH an event (move / up), but
+	// the arm can flip to fallback from a PROP change while the pointer is held
+	// still — no event to carry the abort. Reads `bitmapPresent` (tracked) and
+	// tears the gesture down in `untrack` (it writes `dragging` etc., never read
+	// here), so it cannot self-invalidate (CONVE-1688).
+	$effect(() => {
+		if (bitmapPresent) return;
+		untrack(() => cancelGesture());
+	});
 
 	// Zoom-past-fit is the mobile THUMB cell's trigger to fetch the original
 	// (TASK-2460): once a thumbnail has PAINTED, zooming past FIT (`scale > 1`, not
@@ -1128,6 +1244,10 @@
 		// clears the transient phase (TASK-2475), so a keyboard user who pressed it is
 		// left on <body>; track the transient flag to re-home them the same way.
 		void headerTransient;
+		// The stage arm swap (raster ↔ fallback, TASK-2476) unmounts whatever raster
+		// control had focus — the Retry/tap-load button — and the fallback arm has no
+		// focusable content, so track the arm to re-home a stranded focus.
+		void shownRenderer;
 		const el = rootEl;
 		if (!el || !isViewerFrontmost(el) || isBlockedByModal(el)) return;
 		handoffFocus(el);
@@ -1396,7 +1516,7 @@
 		sit ABOVE the stage (their own `z-index`), never inside it.
 	-->
 	<div class="lightbox-stage" bind:this={stageEl}>
-		{#if img && loader.displaySrc}
+		{#if shownRenderer === 'raster-image' && loader.displaySrc}
 			<!--
 				KEYED ON THE LOAD TOKEN (TASK-2459). The <img> would otherwise persist
 				across navigation, and a bitmap that finished decoding LATE would fire
@@ -1425,6 +1545,7 @@
 				-->
 				<img
 					bind:this={imgEl}
+					use:releaseImg
 					class="lightbox-image"
 					class:panning={dragging}
 					src={loader.displaySrc}
@@ -1462,7 +1583,7 @@
 			{/key}
 		{/if}
 
-		{#if img && loader.phase === 'loading'}
+		{#if shownRenderer === 'raster-image' && loader.phase === 'loading'}
 			<!-- pointer-events:none so it never intercepts a pan / dblclick over the
 			     stage; the spinner is decoration over the (loading) image. -->
 			<div class="lightbox-status lightbox-loading" role="status" aria-label="Loading image">
@@ -1470,7 +1591,7 @@
 			</div>
 		{/if}
 
-		{#if img && loader.phase === 'deferred'}
+		{#if shownRenderer === 'raster-image' && loader.phase === 'deferred'}
 			<!-- The mobile large/unknown cell: DR-5b auto-fetches nothing here, so this
 			     is a TAP-TO-LOAD affordance, not a spinner (TASK-2460). The layer is
 			     inert; the button itself re-enables pointer events (the stage turns
@@ -1493,7 +1614,7 @@
 			</div>
 		{/if}
 
-		{#if img && loader.phase === 'error'}
+		{#if shownRenderer === 'raster-image' && loader.phase === 'error'}
 			<div class="lightbox-status lightbox-error" role="alert">
 				<p class="lightbox-error-text">This image couldn't be loaded.</p>
 				<!-- pointer-events:auto EXPLICITLY: the stage turns pointer events off,
@@ -1511,12 +1632,35 @@
 				</button>
 			</div>
 		{/if}
+
+		<!--
+			THE FALLBACK ARM (TASK-2476). A navigable entry the viewer cannot draw as an
+			image — an unsafe/active type that flipped or was added while open. NO
+			BYTES: no `<img>`, no `src`, no request (the load effect disposed the
+			loader on the arm flip). Just the file's identity — the large family icon,
+			its name, type · size — and an honest "No preview available". Same chrome,
+			same modal contract, same lease as the raster arm; zoom is disabled
+			(`bitmapPresent` is false here). `pointer-events: none` like the other
+			stage overlays, so a click on the empty area still reaches the backdrop.
+		-->
+		{#if img && shownRenderer !== 'raster-image'}
+			<div class="lightbox-fallback" role="group" aria-label="No preview available">
+				<span class="lightbox-fallback-icon" aria-hidden="true">
+					<AttachmentIcon id={fallbackIconId} size={72} />
+				</span>
+				<p class="lightbox-fallback-name" title={displayName}>{displayName}</p>
+				{#if headerDetail}
+					<p class="lightbox-fallback-detail">{headerDetail}</p>
+				{/if}
+				<p class="lightbox-fallback-note">No preview available</p>
+			</div>
+		{/if}
 	</div>
 
 	{#if hasMultiple}
 		<!-- `shownIndex`, so the counter names the image actually on screen even
 		     after the set shrank under `current`. -->
-		<div class="lightbox-counter">{shownIndex + 1} / {viewable.length}</div>
+		<div class="lightbox-counter">{shownIndex + 1} / {navigable.length}</div>
 	{/if}
 
 	<!--
@@ -1660,6 +1804,53 @@
 	.lightbox-loading {
 		/* Never intercept a pan / double-click over the stage. */
 		pointer-events: none;
+	}
+
+	/* The no-bytes fallback arm (TASK-2476). Centred over the stage like the status
+	   overlays; inert, so a click on the surrounding area still reaches the backdrop
+	   and closes. Logical properties + min-width:0 so a long filename ellipsizes
+	   (DR-13) rather than blowing the box out. */
+	.lightbox-fallback {
+		position: absolute;
+		inset: 0;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-2);
+		padding: var(--space-4);
+		text-align: center;
+		color: #fff;
+		pointer-events: none;
+	}
+
+	.lightbox-fallback-icon {
+		display: inline-flex;
+		color: rgba(255, 255, 255, 0.85);
+	}
+
+	.lightbox-fallback-name {
+		margin: 0;
+		max-inline-size: min(80vw, 560px);
+		min-width: 0;
+		font-size: 1rem;
+		font-weight: 600;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+
+	.lightbox-fallback-detail {
+		margin: 0;
+		font-size: 0.85rem;
+		opacity: 0.85;
+	}
+
+	.lightbox-fallback-note {
+		margin: 0;
+		margin-block-start: var(--space-1);
+		font-size: 0.85rem;
+		opacity: 0.7;
 	}
 
 	.lightbox-spinner {

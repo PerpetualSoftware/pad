@@ -338,6 +338,17 @@ describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
 		expect(root().querySelector('.lightbox-nav')).toBeNull();
 	});
 
+	it('refuses an unsafe entry at open outright — NO fallback, not navigable (3a gate)', () => {
+		// TASK-2476 matrix, the security boundary: unsafe AT OPEN stays REFUSED (the
+		// 3a gate holds through 3c-i) — distinct from unsafe MID-VIEW, which is the
+		// fallback. So the SVG here is neither rendered NOR shown as a fallback, and
+		// the set is single-member.
+		mountViewer({ images: [image(IMG_A, 'png', 'image/png'), image(IMG_B, 'svg', 'image/svg+xml')] });
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+		expect(root().querySelector('.lightbox-counter')).toBeNull();
+		expect(root().querySelector('.lightbox-image')?.getAttribute('alt')).toBe('png');
+	});
+
 	it('cannot be paged onto one with ←/→', () => {
 		mountViewer({
 			images: [
@@ -389,6 +400,9 @@ describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
 		// image; "not yet known" is not evidence that a file is a PNG.
 		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
 		expect(root().querySelector('.lightbox-image')).toBeNull();
+		// An UNRESOLVED MIME is refused from navigation entirely — not even the
+		// fallback (that is for RESOLVED-unsafe mid-view entries, TASK-2476).
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
 	});
 
 	it('cannot be paged onto an unresolved sibling', () => {
@@ -410,6 +424,9 @@ describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
 		mountViewer({ images: [image(IMG_B, 'svg', 'image/svg+xml')] });
 
 		expect(root().querySelector('.lightbox-image')).toBeNull();
+		// A single UNSAFE-at-open entry is refused outright — no image AND no
+		// fallback (the fallback is mid-view only, TASK-2476).
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
 		// Still a real dialog with a way out — the failure mode is an empty
 		// viewer, never a rendered one.
 		expect(closeButton()).not.toBeNull();
@@ -417,6 +434,7 @@ describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
 		press('ArrowRight');
 		press('ArrowLeft');
 		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
 	});
 });
 
@@ -440,20 +458,26 @@ describe('Lightbox — the set changing under an OPEN viewer (TASK-2431)', () =>
 		return app;
 	}
 
-	it('drops a record whose MIME resolves to something unsafe AFTER open', () => {
+	it('shows the fallback (not drops) when a record resolves unsafe after open', () => {
+		// TASK-2476 matrix: safe→unsafe MID-VIEW is the FALLBACK cell — the entry
+		// stays navigable and counted, drawn as the no-bytes icon fallback, where
+		// pre-3c it was dropped from the set.
 		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg')];
 		mountLive();
 		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
 
-		// The late answer arrives: what was believed safe is not. A set captured
-		// once would keep paging onto it.
+		// The late answer arrives: what was believed safe is not.
 		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg', 'image/svg+xml')];
 		flushSync();
 
-		expect(shown()).toBe('png');
-		expect(root().querySelector('.lightbox-counter')).toBeNull();
+		// Still TWO entries — the flipped one is kept, not dropped.
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
 		press('ArrowRight');
-		expect(shown()).toBe('png');
+		// Landed on the flipped entry: the fallback arm, NO <img>.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		const fb = root().querySelector('.lightbox-fallback');
+		expect(fb).not.toBeNull();
+		expect(fb?.textContent).toContain('No preview available');
 	});
 
 	it('keeps showing a real image when the one under it is removed', () => {
@@ -472,25 +496,33 @@ describe('Lightbox — the set changing under an OPEN viewer (TASK-2431)', () =>
 		expect(imageSrc()).toContain(IMG_A);
 	});
 
-	it('cannot be navigated onto an unsafe entry ADDED after open', () => {
+	it('shows the fallback for an unsafe entry ADDED after open, but still refuses an unresolved one', () => {
+		// TASK-2476 matrix: added-while-open UNSAFE → fallback (navigable);
+		// added-while-open UNRESOLVED → refused-from-navigation (unchanged).
 		liveProps.images = [image(IMG_A, 'png')];
 		mountLive();
 
 		liveProps.images = [
 			image(IMG_A, 'png'),
-			image(IMG_B, 'svg', 'image/svg+xml'),
-			image(IMG_C, 'unprobed', null),
+			image(IMG_B, 'svg', 'image/svg+xml'), // unsafe → fallback, navigable
+			image(IMG_C, 'unprobed', null), // unresolved → refused from nav
 		];
 		flushSync();
 
-		// Both additions are refused, so the viewer is still single-image.
-		expect(root().querySelector('.lightbox-counter')).toBeNull();
+		// A (raster) + B (fallback) navigable; C (unresolved) is not — so 1 / 2.
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
 		press('ArrowRight');
-		press('ArrowLeft');
+		// Landed on B: the fallback, no <img>.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		// The next step WRAPS back to A (two members) — the unresolved C is never shown.
+		press('ArrowRight');
 		expect(shown()).toBe('png');
 	});
 
-	it('empties rather than showing an unsafe replacement', () => {
+	it('shows the fallback for an unsafe replacement rather than emptying', () => {
+		// TASK-2476: the only entry is replaced by an unsafe one — added-while-open,
+		// so the fallback cell, not an empty viewer.
 		liveProps.images = [image(IMG_A, 'png')];
 		mountLive();
 		expect(shown()).toBe('png');
@@ -499,6 +531,7 @@ describe('Lightbox — the set changing under an OPEN viewer (TASK-2431)', () =>
 		flushSync();
 
 		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
 	});
 });
 
@@ -1305,16 +1338,18 @@ describe('Lightbox — the transform resets when the shown image changes (TASK-2
 	});
 
 	it('resets when the set shrinks under `current` so a DIFFERENT image is shown', () => {
-		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg')];
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'second', 'image/jpeg')];
 		mountLive();
 		press('ArrowRight');
 		expect(imageSrc()).toContain(IMG_B);
 		press('+');
 		expect(scaleOf()).toBeCloseTo(1.25);
 
-		// B's MIME resolves unsafe → it drops out → the shown image becomes A →
-		// the transform is back at fit.
-		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'later-svg', 'image/svg+xml')];
+		// B is REMOVED (a delete elsewhere) → the shown image becomes A → the
+		// transform is back at fit. A REMOVAL is used, not a safe→unsafe flip: since
+		// TASK-2476 a flip keeps the entry (same id) as the fallback, so it would not
+		// change the shown id and the reset would (correctly) not fire.
+		liveProps.images = [image(IMG_A, 'png')];
 		flushSync();
 		expect(imageSrc()).toContain(IMG_A);
 		expect(scaleOf()).toBe(1);
@@ -2512,6 +2547,9 @@ describe('Lightbox — DR-5b image loading (TASK-2459)', () => {
 		mountViewer({ images: [image(IMG_A, 'svg', 'image/svg+xml')] });
 		expect(root().querySelector('.lightbox-image')).toBeNull();
 		expect(root().querySelector('.lightbox-loading')).toBeNull();
+		// ...and NO fallback either: an all-unsafe set at open is refused outright
+		// (TASK-2476 — the fallback is a MID-VIEW cell, not an at-open one).
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
 	});
 
 	it('a same-id re-emit that FILLS dimensions re-runs the DR-5b policy', () => {
@@ -2548,25 +2586,30 @@ describe('Lightbox — DR-5b image loading (TASK-2459)', () => {
 		expect(panX()).toBeCloseTo(0);
 	});
 
-	it('an A→B→A same-URL late error on the DETACHED element does not clobber the live image', () => {
-		// The third A load reuses A's exact URL, so the URL fence alone cannot tell
-		// the detached first A element's late error from the live one — the per-mount
-		// generation is what rejects it (the no-`{#key}` switch-safety class).
+	it('releases a detached element on unmount, and a late error on it does not clobber the live image', () => {
+		// TASK-2476 hardens the detached-element handling: on unmount the `<img>`'s
+		// src is CLEARED (`releaseImg`), aborting its request so it can never issue or
+		// complete a same-URL late event. The GENERATION fence remains the
+		// loader-level defense (unit-tested in viewerImageLoader — the A→B→A same-URL
+		// stale decode/error cases); this covers the component wiring: the outgoing
+		// element is released, and a late error on it cannot flip the live image.
 		mountViewer({
 			images: [sized(IMG_A, 'a', 800, 600), sized(IMG_B, 'b', 800, 600, 'image/jpeg')],
 		});
 		const firstA = root().querySelector<HTMLImageElement>('.lightbox-image')!; // E1
-		expect(press('ArrowRight')).toBe(true); // → B (E1 detaches)
-		expect(press('ArrowLeft')).toBe(true); // → A again (E3 mounts, same URL)
+		expect(press('ArrowRight')).toBe(true); // → B (E1 detaches → src cleared)
+		expect(press('ArrowLeft')).toBe(true); // → A again (E3 mounts, fresh)
 		const liveA = root().querySelector<HTMLImageElement>('.lightbox-image')!;
 		expect(liveA).not.toBe(firstA);
-		expect(liveA.getAttribute('src')).toBe(firstA.getAttribute('src')); // same URL
+		// The detached element was RELEASED — its src is gone, its request aborted.
+		expect(firstA.getAttribute('src')).toBeNull();
+		// The live element holds A's URL.
+		expect(liveA.getAttribute('src')).toContain(IMG_A);
 
 		fireLoad(800, 600); // the LIVE A decodes fine → ready, no error
 		expect(root().querySelector('.lightbox-error')).toBeNull();
 
-		// The detached E1 errors LATE at the same URL — the generation fence must
-		// reject it so the live, ready image is not flipped into 'error'.
+		// A late error on the released detached element must not flip the live image.
 		firstA.dispatchEvent(new Event('error'));
 		flushSync();
 		expect(root().querySelector('.lightbox-error')).toBeNull();
@@ -3215,5 +3258,148 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 		// browser-suite concern, like every other measured-layout claim in this file.
 		expect(nameEl.getAttribute('title')).toBe(long);
 		expect(nameEl.textContent).toBe(long);
+	});
+});
+
+describe('Lightbox — the fallback arm (TASK-2476)', () => {
+	// The stage's second arm: a navigable entry the viewer cannot draw as an image
+	// (an unsafe/active type that flipped or was added while open). These drive the
+	// live props to reach it, since the open gate keeps unsafe entries out of the
+	// initial set.
+	function mountLive() {
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		return app;
+	}
+	function fallback(): HTMLElement | null {
+		return root().querySelector('.lightbox-fallback');
+	}
+
+	it('mounts no <img>, disposes the loader AND releases the detached element on the arm flip', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+		// The raster arm: an <img> holding A's src is mounted. Capture it — the flip
+		// detaches it, and the no-bytes invariant requires its request released too.
+		const priorImg = root().querySelector<HTMLImageElement>('.lightbox-image')!;
+		expect(priorImg).not.toBeNull();
+		expect(priorImg.getAttribute('src')).toContain(IMG_A);
+
+		// A flips unsafe — SAME id and dims, only the renderer arm differs. The load
+		// key carries the arm, so the load effect re-fires and DISPOSES the loader;
+		// without that the safe bytes would linger behind the fallback.
+		liveProps.images = [image(IMG_A, 'png', 'image/svg+xml')];
+		flushSync();
+
+		// No <img> in the tree, and the DETACHED element's src is CLEARED — its
+		// native request is aborted, not left in flight until GC (releaseImg).
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector(`img[src*="${IMG_A}"]`)).toBeNull();
+		expect(priorImg.getAttribute('src')).toBeNull();
+		// The fallback is what shows instead.
+		expect(fallback()).not.toBeNull();
+	});
+
+	it('renders the icon, name, type · size and "No preview available"', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+		liveProps.images = [
+			{
+				id: IMG_A,
+				alt: 'plans',
+				filename: 'plans.svg',
+				mime_type: 'image/svg+xml',
+				size_bytes: 4096,
+				width: null,
+				height: null,
+			},
+		];
+		flushSync();
+		const fb = fallback()!;
+		expect(fb).not.toBeNull();
+		// The large family icon (AttachmentIcon renders inline SVG).
+		expect(fb.querySelector('.lightbox-fallback-icon svg')).not.toBeNull();
+		// The display name, full value also in title (DR-13).
+		const nameEl = fb.querySelector('.lightbox-fallback-name');
+		expect(nameEl?.textContent).toBe('plans.svg');
+		expect(nameEl?.getAttribute('title')).toBe('plans.svg');
+		// Type · size and the honest note.
+		expect(fb.querySelector('.lightbox-fallback-detail')?.textContent).toContain(formatBytes(4096));
+		expect(fb.textContent).toContain('No preview available');
+	});
+
+	it('is navigable and counted, paged onto with ←/→', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+		liveProps.images = [image(IMG_A, 'png'), image(IMG_B, 'diagram', 'image/svg+xml')];
+		flushSync();
+		// Two navigable members — the counter counts the fallback entry.
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+		expect(root().querySelector('.lightbox-image')?.getAttribute('alt')).toBe('png');
+		press('ArrowRight');
+		// Paged onto the fallback entry.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(fallback()).not.toBeNull();
+	});
+
+	it('disables zoom on the fallback arm — nothing to transform', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+		liveProps.images = [image(IMG_A, 'png', 'image/svg+xml')];
+		flushSync();
+		expect(fallback()).not.toBeNull();
+		// The zoom key is consumed (not leaked to the inert page) but inert — there
+		// is no bitmap, and none appears.
+		expect(press('+')).toBe(true);
+		expect(press('0')).toBe(true);
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+	});
+
+	it('re-homes focus when the arm swap removes the focused raster control', () => {
+		liveProps.images = [image(IMG_A, 'png')];
+		mountLive();
+		// Drive to the error state so the Retry button exists, and focus it.
+		root().querySelector('.lightbox-image')!.dispatchEvent(new Event('error'));
+		flushSync();
+		const retry = root().querySelector<HTMLButtonElement>('.lightbox-retry')!;
+		retry.focus();
+		expect(document.activeElement).toBe(retry);
+
+		// A flips unsafe → the raster arm (with Retry) unmounts, the fallback mounts.
+		liveProps.images = [image(IMG_A, 'png', 'image/svg+xml')];
+		flushSync();
+		expect(root().querySelector('.lightbox-retry')).toBeNull();
+		expect(fallback()).not.toBeNull();
+		// Focus is not stranded on <body> outside the modal — it is re-homed.
+		expect(document.activeElement).not.toBe(document.body);
+		expect(root().contains(document.activeElement)).toBe(true);
+	});
+
+	it('reactively cancels a live drag when the bitmap vanishes via a prop flip', () => {
+		// The pointer handlers catch a flip that arrives WITH a move/up event, but the
+		// arm can flip from a PROP change while the pointer is held STILL — no event to
+		// carry the abort. The reactive cancel must tear the gesture down and release
+		// the capture, so a stale gesture cannot pan the reloaded image after an
+		// A→unsafe→A flip.
+		liveProps.images = [sized(IMG_A, 'a', 5000, 5000)];
+		mountLive();
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(1024, 768); // decoded → bitmapPresent true
+		zoomToActual(); // pan room
+		const capture = vi.fn();
+		const release = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = capture;
+		(root() as unknown as { releasePointerCapture: unknown }).releasePointerCapture = release;
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500)); // engage the drag
+		flushSync();
+		expect(capture, 'the drag armed on the decoded bitmap').toHaveBeenCalled();
+
+		// A flips unsafe via a prop change — NO further pointer event.
+		liveProps.images = [sized(IMG_A, 'a', 5000, 5000, 'image/svg+xml')];
+		flushSync();
+		// The gesture was cancelled: the capture is released and the fallback shows.
+		expect(release, 'the reactive cancel released the capture').toHaveBeenCalled();
+		expect(fallback()).not.toBeNull();
 	});
 });
