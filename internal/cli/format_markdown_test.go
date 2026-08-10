@@ -86,6 +86,44 @@ func TestRenderItemMarkdown_EscapesPipesInTitle(t *testing.T) {
 	}
 }
 
+// A title that already contains a backslash immediately before a pipe is the
+// case escaping the pipe alone can't survive: "\" + "|" becomes "\" + "\|",
+// which GFM reads as an escaped backslash followed by a LIVE pipe, so the row
+// still gains a column. The backslash has to be escaped first.
+// Reported by @xarmian in review of PR #1070.
+func TestRenderItemMarkdown_EscapesBackslashBeforePipe(t *testing.T) {
+	// Built by concatenation so the intent is unambiguous: a, space,
+	// backslash, pipe, space, b.
+	title := "a " + `\` + "|" + " b"
+
+	items := []models.Item{{
+		CollectionPrefix: "BUG",
+		ItemNumber:       num(10),
+		Title:            title,
+		Fields:           `{}`,
+		CollectionName:   "Bugs",
+		UpdatedAt:        time.Now(),
+	}}
+
+	var buf bytes.Buffer
+	RenderItemMarkdown(&buf, items)
+	row := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")[2]
+
+	// Want: escaped backslash (\\) then escaped pipe (\|) — three backslashes
+	// then a pipe. GFM renders that back to the literal "a \| b".
+	want := "a " + `\\\|` + " b"
+	if !strings.Contains(row, want) {
+		t.Errorf("backslash not escaped before pipe.\n got: %q\nwant substring: %q", row, want)
+	}
+
+	// Structural check: exactly 6 cells, so 7 delimiting pipes. Any live pipe
+	// from the title would push this higher.
+	delimiters := strings.Count(row, "|") - strings.Count(row, `\|`)
+	if delimiters != 7 {
+		t.Errorf("row has %d delimiting pipes, want 7 (6 cells): %q", delimiters, row)
+	}
+}
+
 func TestRenderItemMarkdown_NoANSIEscapes(t *testing.T) {
 	forceColor(t)
 

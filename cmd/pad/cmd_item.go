@@ -472,18 +472,22 @@ func renderItemsGroupedByCollectionMarkdown(w io.Writer, items []models.Item) {
 
 	for i, key := range order {
 		groupItems := groups[key]
-		icon := ""
-		name := key
-		if groupItems[0].CollectionIcon != "" {
-			icon = groupItems[0].CollectionIcon + " "
-		}
+		// Sanitized, not raw: a newline or SGR sequence in a collection name or
+		// icon would otherwise inject document structure into the heading, which
+		// is the same hole the per-cell escaping closes inside the table.
+		// Sanitize the parts BEFORE joining, since sanitizing trims and would
+		// otherwise eat the separating space.
+		label := cli.SanitizeMarkdownText(key)
 		if groupItems[0].CollectionName != "" {
-			name = groupItems[0].CollectionName
+			label = cli.SanitizeMarkdownText(groupItems[0].CollectionName)
+		}
+		if icon := cli.SanitizeMarkdownText(groupItems[0].CollectionIcon); icon != "" {
+			label = icon + " " + label
 		}
 		if i > 0 {
 			fmt.Fprintln(w)
 		}
-		fmt.Fprintf(w, "## %s%s (%d)\n\n", icon, name, len(groupItems))
+		fmt.Fprintf(w, "## %s (%d)\n\n", label, len(groupItems))
 		cli.RenderItemMarkdown(w, groupItems)
 	}
 }
@@ -3128,13 +3132,16 @@ func starredCmd() *cobra.Command {
 				return cli.PrintJSON(items)
 			}
 
-			if formatFlag == "markdown" {
-				cli.PrintItemMarkdown(items)
+			// Checked before the markdown branch so both formats give the
+			// command-specific message; the shared renderer would say the
+			// generic "No items found." here.
+			if len(items) == 0 {
+				fmt.Println("No starred items.")
 				return nil
 			}
 
-			if len(items) == 0 {
-				fmt.Println("No starred items.")
+			if formatFlag == "markdown" {
+				cli.PrintItemMarkdown(items)
 				return nil
 			}
 

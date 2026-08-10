@@ -56,6 +56,54 @@ func TestRenderItemsGroupedByCollectionMarkdown_GroupsWithHeadings(t *testing.T)
 	}
 }
 
+// The group heading interpolates the collection icon and name into "## …".
+// A newline in either injects document structure, which breaks the same
+// guarantee the per-cell escaping provides inside the table.
+// Reported by @xarmian in review of PR #1070.
+func TestRenderItemsGroupedByCollectionMarkdown_SanitizesHeading(t *testing.T) {
+	items := []models.Item{{
+		CollectionSlug: "tasks",
+		CollectionName: "Tasks\n## Injected Heading",
+		CollectionIcon: "✓",
+		// A stray SGR sequence must not survive into the heading either.
+		CollectionPrefix: "TASK", ItemNumber: mdNum(1),
+		Title: "t", Fields: `{"status":"ready"}`, UpdatedAt: time.Now(),
+	}}
+
+	var buf bytes.Buffer
+	renderItemsGroupedByCollectionMarkdown(&buf, items)
+	out := buf.String()
+
+	headings := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			headings++
+		}
+	}
+	if headings != 1 {
+		t.Errorf("got %d headings, want 1 — newline in the collection name injected structure:\n%s", headings, out)
+	}
+	if strings.Contains(out, "\n## Injected Heading") {
+		t.Errorf("injected heading survived:\n%s", out)
+	}
+}
+
+func TestRenderItemsGroupedByCollectionMarkdown_StripsANSIFromHeading(t *testing.T) {
+	items := []models.Item{{
+		CollectionSlug:   "tasks",
+		CollectionName:   "\x1b[1;31mTasks\x1b[0m",
+		CollectionPrefix: "TASK", ItemNumber: mdNum(1),
+		Title: "t", Fields: `{}`, UpdatedAt: time.Now(),
+	}}
+
+	var buf bytes.Buffer
+	renderItemsGroupedByCollectionMarkdown(&buf, items)
+
+	if strings.Contains(buf.String(), "\x1b[") {
+		t.Errorf("ANSI escape survived into the heading: %q", buf.String())
+	}
+}
+
 func TestRenderItemsGroupedByCollectionMarkdown_Empty(t *testing.T) {
 	var buf bytes.Buffer
 	renderItemsGroupedByCollectionMarkdown(&buf, nil)

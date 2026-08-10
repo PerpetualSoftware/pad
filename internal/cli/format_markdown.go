@@ -25,14 +25,31 @@ import (
 // Widths are not computed — markdown renderers lay the table out themselves, so
 // the width-aware column math in renderItemTable has no counterpart here.
 
-// escapeMarkdownCell makes an arbitrary string safe inside a table cell: ANSI
-// escapes are stripped, pipes are escaped so they can't start a new column, and
-// newlines collapse to spaces so they can't end the row.
-func escapeMarkdownCell(s string) string {
+// SanitizeMarkdownText makes an arbitrary string safe to interpolate into
+// markdown OUTSIDE a table cell — a heading, say. ANSI escapes are stripped and
+// newlines collapse to spaces, so a value carrying a line break can't inject
+// document structure. Pipes are left alone: they're only special inside a table.
+func SanitizeMarkdownText(s string) string {
 	s = sgrPattern.ReplaceAllString(s, "")
-	s = strings.ReplaceAll(s, "|", `\|`)
 	s = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(s)
 	return strings.TrimSpace(s)
+}
+
+// escapeMarkdownCell makes an arbitrary string safe INSIDE a table cell: it
+// sanitizes as above, then escapes backslashes and pipes.
+//
+// Order matters. Escaping the pipe alone is not enough: a title containing a
+// backslash immediately before a pipe ("…\|…") would become "…\\|…", which GFM
+// reads as an escaped backslash followed by a LIVE pipe, so the row still gains
+// a column. Escaping backslashes FIRST turns it into "…\\\|…" — an escaped
+// backslash then an escaped pipe — which renders back to the literal text.
+// Doing it the other way round would double-escape the backslashes we just
+// introduced. (Caught by @xarmian reviewing PR #1070.)
+func escapeMarkdownCell(s string) string {
+	s = SanitizeMarkdownText(s)
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, "|", `\|`)
+	return s
 }
 
 // writeMarkdownRow writes one pipe-delimited row. Cells are expected to be
