@@ -28,10 +28,10 @@
 // pinned next door in `attachmentImageViewerHost.svelte.test.ts`.
 //
 // ONE SURFACE CHANNEL (TASK-2489). This NodeView used to FORK on MIME: a raster
-// type opened the viewer (`notifyViewerOpen`) and a non-raster one was
-// redirected to the options panel (`notifyAttachmentPanelOpen`). Those two
-// channels have CONVERGED — every resolved-ok activation now emits exactly ONE
-// `notifyAttachmentSurfaceOpen`, carrying the attachment's true MIME (raster png,
+// type opened the image viewer and a non-raster one was redirected to the options
+// panel, each on its own channel. Those two channels have CONVERGED — and their
+// notifiers were since removed (TASK-2490) — every resolved-ok activation now
+// emits exactly ONE `notifyAttachmentSurfaceOpen`, carrying the attachment's true MIME (raster png,
 // non-raster svg/pdf alike). The surface's OWN renderer picks the arm downstream
 // (raster → `<img>`; svg/pdf → the no-bytes fallback), so the producer no longer
 // branches on MIME. `emitted` therefore holds ALL activation emits; there is no

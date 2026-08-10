@@ -145,7 +145,7 @@ export interface AttachmentImageOptions {
 	workspaceSlug: string;
 	/**
 	 * Reads the host address (item + owning `ItemDetail` mount) to stamp on
-	 * panel / viewer events (PLAN-2392 DR-8). A reader rather than two
+	 * attachment surface open events (PLAN-2392 DR-8). A reader rather than two
 	 * strings — see `$lib/attachments/hostAddress` for why writing options
 	 * after configure cannot work.
 	 */
@@ -377,24 +377,24 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 *     role+tabindex would be a focus stop that announces itself as a
 			 *     button and does nothing. (The placeholder itself carries the
 			 *     retry affordance while the failure is still transient.)
-			 * A KNOWN MIME outside the viewer allowlist is NOT one of them, as of
+			 * A KNOWN MIME outside the raster allowlist is NOT one of them, as of
 			 * TASK-2434. It used to be: the gate was binary — viewer or nothing —
 			 * so a resolved `image/svg+xml` made the image a control that refused,
-			 * and the semantics had to come off. The matrix replaced that refusal
-			 * with a REDIRECT (DR-7): a non-allowlisted attachment is in the
-			 * options PANEL's scope, so the image stays a perfectly real activation
-			 * target — only its destination changes. Taking the semantics off now
-			 * would hide a working control instead of retiring a dead one, and
-			 * would break it for the mouse too, since click and key share one gate:
-			 * the first tap would open the panel, resolve the MIME, and leave the
-			 * image inert for every tap after it.
+			 * and the semantics had to come off. Since the 3c-ii convergence a
+			 * non-allowlisted attachment still opens — on the converged surface's
+			 * no-bytes / options fallback arm — so the image stays a perfectly real
+			 * activation target; only which arm the surface picks changes. Taking the
+			 * semantics off now would hide a working control instead of retiring a
+			 * dead one, and would break it for the mouse too, since click and key
+			 * share one gate: the first tap would open the surface, resolve the MIME,
+			 * and leave the image inert for every tap after it.
 			 *
 			 * The accessible name comes from alt with a GENERIC fallback: there is
 			 * no filename on the node's attrs and the HEAD metadata does not carry
 			 * one either, so the filename form DR-12 sketches has no source here.
-			 * It also has to name the DESTINATION rather than always promising a
-			 * viewer — a resolved non-raster type announces the panel it actually
-			 * opens.
+			 * It also has to name the AFFORDANCE rather than always promising a
+			 * viewer — a resolved non-raster type announces the options affordance
+			 * (the surface's fallback arm) it actually opens.
 			 */
 			/**
 			 * Is this image an activation target right now?
@@ -407,12 +407,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 * hid the image and stripped its role, while a stale or synthetic
 			 * event on the hidden <img> still opened a viewer.
 			 *
-			 * It answers "does activation DO something", not "does it open the
-			 * viewer". The MIME decides WHICH surface (see activate()), and it is
-			 * deliberately absent from here: this predicate is also what a
-			 * post-await continuation re-checks, and folding a viewer-only clause
-			 * into it would make the panel branch unreachable the moment it wrote
-			 * the MIME it was branching on.
+			 * It answers "does activation DO something", not "which arm it opens on".
+			 * The MIME is deliberately absent from here: activation emits ONE surface
+			 * regardless (the surface's renderer picks the arm), and this predicate is
+			 * also what a post-await continuation re-checks — folding a MIME clause in
+			 * would make it self-invalidate the moment activation wrote the MIME.
 			 */
 			function canActivate(): boolean {
 				return (
@@ -680,64 +679,41 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 * THE single activation path for this node — every route that opens the
 			 * image goes through here.
 			 *
-			 * The MIME gate used to live inside the click handler, which made it a
-			 * property of the MOUSE rather than of activation: a keyboard path that
-			 * opened on its own would have bypassed it entirely. One function owns
-			 * the gate so there is exactly one place a route can be added to and
-			 * exactly one place the gate can be strengthened — which is what
-			 * TASK-2433 then did on this same seam: the viewer bus, the MIME
-			 * resolution and the address fence all live inside this one function.
+			 * The MIME resolution used to live inside the click handler, which made
+			 * it a property of the MOUSE rather than of activation: a keyboard path
+			 * that opened on its own would have bypassed it entirely. One function
+			 * owns it so there is exactly one place a route can be added to and
+			 * exactly one place the behaviour can be strengthened — which is what
+			 * TASK-2433 did on this same seam: the surface emit, the MIME resolution
+			 * and the address fence all live inside this one function.
 			 *
 			 * The gate itself is `canActivate()`, shared with the semantics pass so
 			 * an image can never be openable and un-announced, or announced and
 			 * dead.
 			 *
-			 * DR-16: the EXACT raster allowlist gates every open-the-viewer path,
-			 * not just the strip's — `image/svg+xml` can carry active content, and a
-			 * node being labelled image/* is not sufficient reason to hand it to a
-			 * viewer.
+			 * THE MIME IS RESOLVED BEFORE ANYTHING IS EMITTED (TASK-2433). It is no
+			 * longer an ADMISSION gate — since 3c-ii the converged surface opens ANY
+			 * resolved attachment and its own `getSurfaceRenderer` picks the arm
+			 * (raster `<img>` vs the icon / download fallback for `image/svg+xml` and
+			 * everything else) — but the probe is still where the answer is OBTAINED,
+			 * and the emitted set's `mime_type` (plus `size`) needs it. Either the
+			 * cache answers (the common case — the toolbar probe and the strip both
+			 * warm the same entry) or we await one HEAD.
 			 *
-			 * THE MIME IS RESOLVED BEFORE ANYTHING IS EMITTED (TASK-2433, revising
-			 * the decomposition's "keep the positively-known gate"). `Lightbox`
-			 * FAILS CLOSED on an unresolved MIME as of TASK-2431 — it filters the
-			 * set it was handed and admits only allowlisted entries — so an event
-			 * carrying `mime_type: null` is not "let the viewer decide", it is a
-			 * viewer that mounts and renders no image. The producer's half of that
-			 * contract is this function: either the cache answers (the common
-			 * case — the toolbar probe and the strip both warm the same entry) or
-			 * we await one HEAD, and we ask the VIEWER for only a
-			 * positively-known allowlisted answer. (Since TASK-2434 a
-			 * positively-known NON-allowlisted answer is not dropped — it goes to
-			 * the options panel instead. The rule the viewer cares about is
-			 * unchanged: nothing unresolved and nothing outside the allowlist
-			 * reaches it.)
+			 * Every probe result has a destination, and none of them is "return
+			 * quietly":
 			 *
-			 * The channel enforces the same rule at the boundary as of TASK-2433 —
-			 * `notifyViewerOpen` takes a set whose `mime_type` is non-nullable and
-			 * refuses one that is not allowlisted — so this is no longer the only
-			 * thing between a forgetful producer and an image that quietly does not
-			 * open. It is still where the answer is OBTAINED, and the payload needs
-			 * it either way.
-			 *
-			 * TASK-2434 made the gate TOTAL rather than binary. Every probe result
-			 * now has a destination, and none of them is "return quietly":
-			 *
-			 *   - `ok` + allowlisted raster  → the viewer.
-			 *   - `ok` + anything else       → the options PANEL (DR-7). A
-			 *     REDIRECT, not a refusal: an SVG or a PDF referenced as an inline
-			 *     image is a real attachment with real options, it is just not
-			 *     something to hand a viewer that would execute it.
+			 *   - `ok` (any resolved type) → ONE surface emit; the surface arm sorts
+			 *     raster from non-raster. `image/svg+xml` reaches the fallback arm
+			 *     (active content, never rendered as bytes), not a raster viewer.
 			 *   - `missing` (an authoritative 404) → the permanent placeholder,
 			 *     latched. Nothing opens.
 			 *   - `transient` → the RETRYABLE placeholder. Never an open, and
 			 *     never a latch: only a 404 is authoritative (DR-17).
 			 *
-			 * The two that were dead focus stops before this — `transient`, and a
-			 * resolved non-allowlisted MIME — are the two the matrix exists for.
-			 *
 			 * The one remaining silent return is a surface with NO WORKSPACE to
 			 * probe with (SSR / preview). It is not a dead stop in practice: those
-			 * surfaces have no host mounted to receive either event, so there is
+			 * surfaces have no host mounted to receive the event, so there is
 			 * nothing to route to and nothing to say.
 			 *
 			 * It also closes a mid-phase bypass Codex found: the old gate read
@@ -833,7 +809,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// activation is often the FIRST thing to learn it (the
 						// toolbar's own probe only runs once the node is selected).
 						// Without this the image would keep announcing "View image"
-						// for something that opens the panel.
+						// for something that opens on the surface's fallback arm.
 						//
 						// The SEMANTICS follow, and deliberately nothing else. The
 						// rotate/crop toolbar reads `knownMime` too, but refreshing

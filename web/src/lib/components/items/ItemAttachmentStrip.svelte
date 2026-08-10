@@ -97,24 +97,13 @@
 		liveContent?: (() => string | null) | null;
 		/**
 		 * Identity of the `ItemDetail` mount that owns this strip
-		 * (PLAN-2392 DR-8 / TASK-2421). The strip is an EMITTER on the
-		 * open-panel channel, and the channel is module-global while
-		 * ItemDetail is mounted more than once (master + peeked pane) — so a
-		 * tile's event has to name its host, not just its item. Empty
-		 * disables addressing rather than broadcasting to every host.
+		 * (PLAN-2392 DR-8 / TASK-2421). The strip is an EMITTER on the attachment
+		 * surface channel, and the channel is module-global while ItemDetail is
+		 * mounted more than once (master + peeked pane) — so a tile's event has to
+		 * name its host, not just its item. Empty disables addressing rather than
+		 * broadcasting to every host.
 		 */
 		hostToken?: string;
-		/**
-		 * Viewer-toolbar context (TASK-2474), forwarded verbatim to the `Lightbox`
-		 * this strip mounts. Distinct from the tile-delete props above by design:
-		 * these carry the SAME vocabulary the panel host / viewer host use
-		 * (`mutationsEnabled` + content GETTERS), so `ItemDetail` threads one
-		 * contract to every Lightbox origin. `mutationsEnabled` defaults false →
-		 * read-only toolbar.
-		 */
-		mutationsEnabled?: boolean;
-		getItemContent?: () => string | null;
-		getLiveContent?: () => string | null;
 	}
 	let {
 		wsSlug,
@@ -124,9 +113,6 @@
 		itemContent = null,
 		liveContent = null,
 		hostToken = '',
-		mutationsEnabled = false,
-		getItemContent,
-		getLiveContent,
 	}: Props = $props();
 
 	// Hard bound on what the strip will ever hold (DR-9 / DR-11). Past this the

@@ -4,11 +4,12 @@ import { __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
 import { _resetEscapeStackForTests } from '$lib/stores/escapeStack';
 import type { LightboxImage } from '$lib/attachments/events';
 
-// TASK-2487. The UNIFIED surface host is exercised through a DIRECT mount of the
-// real `Lightbox` (the surface it hosts) so the acceptance can observe the whole
-// chain: one event → one request → one mount → one probe → one focus return. The
-// host is mounted NOWHERE in the app yet (T2b cuts it in); these tests + a grep
-// are its only consumers.
+// TASK-2487 / TASK-2490. The UNIFIED surface host is exercised through a DIRECT
+// mount of the real `Lightbox` (the surface it hosts) so the acceptance can
+// observe the whole chain: one event → one request → one mount → one probe → one
+// focus return. TASK-2490 retired the cutover-window bridge (the host's two legacy
+// subscriptions and their translation), so these tests drive the ONE surface
+// channel end to end.
 //
 // jsdom cannot prove focus/inertness/layout the way TASK-2436's browser suite
 // does; the assertions here are the manager-was-asked / structural-precondition
@@ -53,35 +54,15 @@ vi.mock('$lib/components/editor/attachment-metadata', () => ({
 	invalidateAttachmentMetadata: vi.fn(),
 }));
 
-// The bus stays REAL — addressing + the bridge are the things under test — with
-// only the surface NOTIFIER spied, so a test can pin the bridge invariant: the
-// host translates legacy events INTERNALLY and never re-broadcasts on the public
-// surface channel.
-const surfaceNotifySpy = vi.hoisted(() => vi.fn());
-vi.mock('$lib/attachments/events', async (importOriginal) => {
-	const actual = await importOriginal<typeof import('$lib/attachments/events')>();
-	return {
-		...actual,
-		notifyAttachmentSurfaceOpen: (event: unknown) => {
-			surfaceNotifySpy(event);
-			return actual.notifyAttachmentSurfaceOpen(event as never);
-		},
-	};
-});
-
-const {
-	notifyAttachmentPanelOpen,
-	notifyViewerOpen,
-	notifyAttachmentSurfaceOpen,
-	notifyAttachmentDeleted,
-} = await import('$lib/attachments/events');
+const { notifyAttachmentSurfaceOpen, notifyAttachmentDeleted } = await import(
+	'$lib/attachments/events'
+);
 const { default: AttachmentSurfaceHost } = await import('./AttachmentSurfaceHost.svelte');
 
 const ATT_A = '11111111-2222-4333-8444-555555555555';
 const ATT_B = '99999999-8888-4777-8666-555555555555';
 
 interface HostProps {
-	wsSlug: string;
 	itemId: string | null;
 	hostToken: string;
 	resourceGen: number;
@@ -100,32 +81,6 @@ function img(id: string, over: Partial<LightboxImage> = {}): LightboxImage {
 		size_bytes: 2048,
 		width: 800,
 		height: 600,
-		...over,
-	};
-}
-
-function panelEvent(over: Partial<Parameters<typeof notifyAttachmentPanelOpen>[0]> = {}) {
-	return {
-		attachmentId: ATT_A,
-		itemId: 'item-a',
-		hostToken: 'host-1',
-		anchor: null,
-		filename: 'spec.pdf',
-		mime_type: 'application/pdf',
-		size_bytes: 1536,
-		...over,
-	};
-}
-
-function viewerEvent(over: Partial<Parameters<typeof notifyViewerOpen>[0]> = {}) {
-	return {
-		attachmentId: ATT_A,
-		workspaceSlug: 'ws-viewer',
-		itemId: 'item-a',
-		hostToken: 'host-1',
-		images: [img(ATT_A)],
-		index: 0,
-		invoker: null,
 		...over,
 	};
 }
@@ -166,7 +121,6 @@ let appRoot: HTMLElement;
 // declaration. Two hosts: the pane runs a master + a peeked ItemDetail at once,
 // which is exactly what DR-8 addressing exists for.
 const propsA = $state<HostProps>({
-	wsSlug: 'ws',
 	itemId: 'item-a',
 	hostToken: 'host-1',
 	resourceGen: 0,
@@ -174,7 +128,6 @@ const propsA = $state<HostProps>({
 	parentArchived: false,
 });
 const propsB = $state<HostProps>({
-	wsSlug: 'ws',
 	itemId: 'item-a',
 	hostToken: 'host-2',
 	resourceGen: 0,
@@ -192,14 +145,12 @@ function mountHost(props: HostProps): ReturnType<typeof mount> {
 beforeEach(() => {
 	metaFetch.mockReset();
 	metaRevalidate.mockReset();
-	surfaceNotifySpy.mockReset();
 	metaFetch.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 2048 });
 	metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 2048 });
 	HTMLElement.prototype.getClientRects = function () {
 		return [{}] as unknown as DOMRectList;
 	};
 	Object.assign(propsA, {
-		wsSlug: 'ws',
 		itemId: 'item-a',
 		hostToken: 'host-1',
 		resourceGen: 0,
@@ -207,7 +158,6 @@ beforeEach(() => {
 		parentArchived: false,
 	});
 	Object.assign(propsB, {
-		wsSlug: 'ws',
 		itemId: 'item-a',
 		hostToken: 'host-2',
 		resourceGen: 0,
@@ -226,7 +176,7 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe('AttachmentSurfaceHost — the three-channel bridge (TASK-2487)', () => {
+describe('AttachmentSurfaceHost — the surface channel (TASK-2487 / TASK-2490)', () => {
 	it('opens the surface for an event on the SURFACE channel', async () => {
 		mountHost(propsA);
 		notifyAttachmentSurfaceOpen(surfaceEvent());
@@ -234,105 +184,67 @@ describe('AttachmentSurfaceHost — the three-channel bridge (TASK-2487)', () =>
 		expect(surfaceOpen()).toBe(true);
 	});
 
-	it('opens the surface for a legacy PANEL event, translated internally', async () => {
+	it('EXACT-ONCE: an incomplete-seed open fires exactly ONE metadata probe', async () => {
+		// Incomplete seed (size null on both the flat seed and the record) → the
+		// surface completes it with a single HEAD.
 		mountHost(propsA);
-		notifyAttachmentPanelOpen(panelEvent());
-		await settle();
-		expect(surfaceOpen()).toBe(true);
-		// The bridge invariant: the host never re-broadcasts on the public notifier.
-		expect(surfaceNotifySpy).not.toHaveBeenCalled();
-	});
-
-	it('opens the surface for a legacy VIEWER event, translated internally', async () => {
-		mountHost(propsA);
-		notifyViewerOpen(viewerEvent());
-		await settle();
-		expect(surfaceOpen()).toBe(true);
-		expect(surfaceNotifySpy).not.toHaveBeenCalled();
-	});
-
-	it('EXACT-ONCE: a legacy + surface double-emission for the same open does not double-open', async () => {
-		mountHost(propsA);
-		// A producer mid-transition emits BOTH the legacy viewer event and the new
-		// surface event for one open. One request state → at most one mount.
-		notifyViewerOpen(viewerEvent());
-		notifyAttachmentSurfaceOpen(surfaceEvent());
-		await settle();
-		expect(surfaces()).toHaveLength(1);
-	});
-
-	it('EXACT-ONCE: a legacy panel event fires exactly ONE metadata probe', async () => {
-		// Incomplete seed (size null) → the surface completes it with a single HEAD.
-		mountHost(propsA);
-		notifyAttachmentPanelOpen(panelEvent({ size_bytes: null }));
+		notifyAttachmentSurfaceOpen(
+			surfaceEvent({ size_bytes: null, images: [img(ATT_A, { size_bytes: null })] })
+		);
 		await settle();
 		expect(surfaceOpen()).toBe(true);
 		expect(metaFetch).toHaveBeenCalledTimes(1);
-	});
-});
-
-describe('AttachmentSurfaceHost — translation fidelity (TASK-2487)', () => {
-	it('PANEL → single-open surface with the host wsSlug (the transitional exception)', async () => {
-		// The panel channel carries no workspace; the bridge supplies the host's, and
-		// the download URL (built from the surface wsSlug) proves it.
-		mountHost(propsA);
-		notifyAttachmentPanelOpen(panelEvent({ mime_type: 'application/pdf' }));
-		await settle();
-		const download = document.body.querySelector('.lightbox-toolbar [aria-label="Download"]');
-		expect(download?.getAttribute('href')).toBe(`/api/v1/workspaces/ws/attachments/${ATT_A}`);
+		// The non-archived seed-completion path uses the plain HEAD, never the
+		// archived-parent revalidation probe.
+		expect(metaRevalidate).not.toHaveBeenCalled();
 	});
 
-	it('a STALE panel event uses the host wsSlug at emit, not the event', async () => {
-		// The pane switches workspace without remounting; a legacy panel event has no
-		// captured workspace, so the bridge reads the host's CURRENT prop.
-		propsA.wsSlug = 'ws-current';
+	it('keeps the CAPTURED workspace from the event, not any host default', async () => {
+		// The surface channel captures its own workspace at emit; the host does not
+		// substitute one. The download URL (built from the request wsSlug) proves it.
 		mountHost(propsA);
-		notifyAttachmentPanelOpen(panelEvent({ mime_type: 'application/pdf' }));
-		await settle();
-		const download = document.body.querySelector('.lightbox-toolbar [aria-label="Download"]');
-		expect(download?.getAttribute('href')).toBe(
-			`/api/v1/workspaces/ws-current/attachments/${ATT_A}`
+		notifyAttachmentSurfaceOpen(
+			surfaceEvent({ workspaceSlug: 'ws-captured', mime_type: 'application/pdf', images: [img(ATT_A, { mime_type: 'application/pdf' })] })
 		);
-	});
-
-	it('VIEWER → surface field-for-field, keeping the CAPTURED workspace (not the host)', async () => {
-		// The viewer channel captured its own workspace at emit; the bridge must keep
-		// it, not substitute the host's.
-		propsA.wsSlug = 'ws-host';
-		mountHost(propsA);
-		notifyViewerOpen(viewerEvent({ workspaceSlug: 'ws-captured' }));
 		await settle();
 		const download = document.body.querySelector('.lightbox-toolbar [aria-label="Download"]');
 		expect(download?.getAttribute('href')).toBe(`/api/v1/workspaces/ws-captured/attachments/${ATT_A}`);
 	});
 
-	it('PANEL anchor → invoker: focus returns to the anchor on close', async () => {
-		const anchor = document.body.appendChild(document.createElement('button'));
-		anchor.textContent = 'open';
-		anchor.focus();
+	it('invoker: focus returns to the event invoker on close, not the pre-open focus', async () => {
+		// A sentinel holds focus at open, and the invoker is a DIFFERENT element that
+		// is NOT focused beforehand. Lightbox falls back to the activeElement-at-open
+		// when it gets no invoker, so returning focus to the invoker rather than the
+		// sentinel is what proves the host forwarded `event.invoker`.
+		const sentinel = document.body.appendChild(document.createElement('button'));
+		sentinel.textContent = 'sentinel';
+		const invoker = document.body.appendChild(document.createElement('button'));
+		invoker.textContent = 'open';
+		sentinel.focus();
 		mountHost(propsA);
-		notifyAttachmentPanelOpen(panelEvent({ anchor }));
+		notifyAttachmentSurfaceOpen(surfaceEvent({ invoker }));
 		await settle();
 		expect(surfaceOpen()).toBe(true);
-		// Close the surface; focus returns to the anchor the panel event carried.
+		// Close the surface; focus returns to the invoker the event carried.
 		document.body.querySelector<HTMLButtonElement>('.lightbox-close')!.click();
 		await settle();
 		expect(surfaceOpen()).toBe(false);
-		expect(document.activeElement).toBe(anchor);
+		expect(document.activeElement).toBe(invoker);
+		expect(document.activeElement).not.toBe(sentinel);
 	});
 
-	it('PANEL null / disconnected anchor: closing does not throw and does not focus a gone node', async () => {
-		const anchor = document.body.appendChild(document.createElement('button'));
-		anchor.focus();
+	it('null / disconnected invoker: closing does not throw and does not focus a gone node', async () => {
+		const invoker = document.body.appendChild(document.createElement('button'));
+		invoker.focus();
 		mountHost(propsA);
-		notifyAttachmentPanelOpen(panelEvent({ anchor }));
+		notifyAttachmentSurfaceOpen(surfaceEvent({ invoker }));
 		await settle();
-		// The anchor is detached while the surface is up.
-		anchor.remove();
+		// The invoker is detached while the surface is up.
+		invoker.remove();
 		document.body.querySelector<HTMLButtonElement>('.lightbox-close')!.click();
 		await settle();
 		expect(surfaceOpen()).toBe(false);
-		expect(document.activeElement).not.toBe(anchor);
+		expect(document.activeElement).not.toBe(invoker);
 	});
 });
 
@@ -351,14 +263,6 @@ describe('AttachmentSurfaceHost — addressing (DR-8, two live hosts)', () => {
 		notifyAttachmentSurfaceOpen(surfaceEvent({ itemId: 'item-z' }));
 		await settle();
 		expect(surfaceOpen()).toBe(false);
-	});
-
-	it('routes a legacy PANEL event by the same address rule', async () => {
-		mountHost(propsA);
-		mountHost(propsB);
-		notifyAttachmentPanelOpen(panelEvent({ hostToken: 'host-2' }));
-		await settle();
-		expect(surfaces()).toHaveLength(1);
 	});
 });
 
@@ -453,13 +357,15 @@ describe('AttachmentSurfaceHost — resource switch + deletion', () => {
 		expect(download?.getAttribute('href')).toContain(ATT_B);
 	});
 
-	it('a legacy-panel single open whose file 404s shows the inert overlay, not a close (T2b)', async () => {
-		// The retired panel showed "no longer available" for a single file that turned
-		// out to be gone; the cutover must preserve that end-to-end. An incomplete
-		// seed forces the probe, which 404s.
+	it('a single open whose file 404s shows the inert overlay, not a close', async () => {
+		// A single-attachment open whose file turns out to be gone must show
+		// "no longer available" rather than flash-closing. An incomplete seed forces
+		// the probe, which 404s.
 		metaFetch.mockResolvedValue({ status: 'missing' });
 		mountHost(propsA);
-		notifyAttachmentPanelOpen(panelEvent({ size_bytes: null }));
+		notifyAttachmentSurfaceOpen(
+			surfaceEvent({ size_bytes: null, images: [img(ATT_A, { size_bytes: null })] })
+		);
 		await settle();
 		// Still open — the surface did not flash-close.
 		expect(surfaceOpen()).toBe(true);
@@ -470,7 +376,7 @@ describe('AttachmentSurfaceHost — resource switch + deletion', () => {
 
 	it('closes a SINGLE-open surface when another surface deletes its attachment', async () => {
 		mountHost(propsA);
-		notifyAttachmentPanelOpen(panelEvent());
+		notifyAttachmentSurfaceOpen(surfaceEvent());
 		await settle();
 		expect(surfaceOpen()).toBe(true);
 

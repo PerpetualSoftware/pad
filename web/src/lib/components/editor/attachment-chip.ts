@@ -86,8 +86,8 @@ export interface AttachmentChipOptions {
 	workspaceSlug: string;
 	/**
 	 * Reads the host address (item + owning `ItemDetail` mount) to stamp on
-	 * open-panel events (PLAN-2392 DR-8). A reader rather than two strings
-	 * because one host is reused across an item switch and Tiptap options
+	 * attachment surface open events (PLAN-2392 DR-8). A reader rather than two
+	 * strings because one host is reused across an item switch and Tiptap options
 	 * cannot be written after configure — see `$lib/attachments/hostAddress`.
 	 */
 	address: AttachmentHostAddressReader;
@@ -374,10 +374,10 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			 * hence a reader. See `$lib/attachments/hostAddress`.
 			 *
 			 * An UNADDRESSED editor (no host token — no `ItemDetail` above it)
-			 * emits nothing: `notifyAttachmentPanelOpen` drops it rather than
+			 * emits nothing: `notifyAttachmentSurfaceOpen` drops it rather than
 			 * broadcasting to every mounted host, which is DR-8's whole point.
 			 * Every live mount site threads the address; a surface that doesn't
-			 * has no panel to open.
+			 * has no host to open on.
 			 *
 			 * Reads `currentUuid` (mutable) so a peer Yjs op swapping the chip's
 			 * target is honoured at activation time.

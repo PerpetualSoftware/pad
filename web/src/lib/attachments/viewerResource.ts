@@ -1,7 +1,7 @@
 /**
  * The viewer's resource-identity rule (PLAN-2392 phase 3a, TASK-2428).
  *
- * `AttachmentViewerHost` closes an open viewer on a RESOURCE SWITCH and on
+ * `AttachmentSurfaceHost` closes an open surface on a RESOURCE SWITCH and on
  * nothing else. Half of that is the host's own `itemId`; the other half is a
  * generation counter, because the id alone cannot tell a same-item resource
  * change from a same-item RELOAD — and `ItemDetail` reloads constantly (a

@@ -1,51 +1,31 @@
 <!--
 	AttachmentSurfaceHost — the ONE consumer of the converged attachment surface
-	for a single `ItemDetail` mount (PLAN-2392 phase 3c-ii / T2a, TASK-2487).
+	for a single `ItemDetail` mount (PLAN-2392 phase 3c-ii, TASK-2487 / TASK-2490).
 
-	It replaces the two 3a/3c-i hosts (`AttachmentPanelHost` + `AttachmentViewerHost`)
-	with one that mounts the grown `Lightbox` — the surface that opens ANY
-	attachment (image, file, unresolved). It is COMPLETE but mounted NOWHERE yet:
-	T2b does the atomic cutover (mount this, delete the two legacy hosts + the
-	panel), and T4a repoints the six producers onto the new channel. Until then
-	only its own suite mounts it.
+	It replaced the two 3a/3c-i hosts (the options-panel host + the image-viewer
+	host) with one that mounts the grown `Lightbox` — the surface that opens ANY
+	attachment (image, file, unresolved). During the 3c-ii cutover window this host
+	also BRIDGED the two legacy channels (panel, viewer), translating their shapes
+	into its own request state; T4a repointed the six producers onto the surface
+	channel and T4b (TASK-2490) then deleted those channels and the bridge. It now
+	subscribes to exactly ONE open channel.
 
-	THREE CHANNELS, ONE REQUEST (the bridge invariant). During the transition the
-	producers still emit on the two LEGACY channels (panel, viewer); the new
-	surface channel is what T4a moves them to. So this host subscribes to ALL
-	THREE and TRANSLATES the two legacy shapes INTERNALLY into its own request
-	state. It NEVER calls `notifyAttachmentSurfaceOpen` — translating through the
-	public notifier would re-enter the bus and risk a second delivery. One event
-	→ one request object → one `{#key request}` mount, BY CONSTRUCTION: a single
-	`$state` request, set (not broadcast) by whichever channel delivered. An
-	accidental old+new double emission for the same open therefore cannot
-	double-open — the second assignment simply supersedes the first, and at most
-	one `Lightbox` is ever mounted.
+	ONE EVENT → ONE REQUEST → ONE MOUNT, BY CONSTRUCTION: a single `$state` request,
+	SET (not re-broadcast) by the surface listener. Opening a second attachment
+	while the first surface is up simply supersedes the request, so at most one
+	`Lightbox` is ever mounted.
 
-	TRANSLATION MAPPING (explicit, pinned by tests):
-	  - LEGACY PANEL event → a SINGLE-open surface request: `invoker = anchor`
-	    (never the live `activeElement`; the converged surface is centered, so no
-	    positioning is retained), a one-element `images` set built from the seeds,
-	    the flat seeds carried, and `workspaceSlug = this host's wsSlug prop` — the
-	    TRANSITIONAL EXCEPTION. The panel channel never carried a workspace; the
-	    NEW channel always does (captured at emit). Reading the prop here is only
-	    correct because it is the legacy bridge; a stale-event test pins it.
-	  - LEGACY VIEWER event → a surface request field-for-field: it already carries
-	    the captured `workspaceSlug`, the `images` set, `index` and `invoker`. The
-	    flat seeds (absent on that channel) are filled from `images[index]`, which
-	    is what they describe.
-
-	ADDRESSING (DR-8, unchanged and shared across all three channels). A host
-	consumes an event only when BOTH `itemId` and `hostToken` are its own — the
-	bus is module-global while `ItemDetail` is mounted twice (a master pane plus a
-	peeked pane), so the item alone is ambiguous and the token alone would let a
-	host open a surface for another item's attachment.
+	ADDRESSING (DR-8). A host consumes an event only when BOTH `itemId` and
+	`hostToken` are its own — the bus is module-global while `ItemDetail` is mounted
+	twice (a master pane plus a peeked pane), so the item alone is ambiguous and the
+	token alone would let a host open a surface for another item's attachment.
 
 	PERMISSION NEVER TRAVELS ON AN EVENT. `mutationsEnabled` is the host's own
 	`canEdit && !peeking`, threaded to `Lightbox` as a prop (read live on the far
 	side of a delete confirmation), never snapshotted onto a request.
 
-	PARENT LIFECYCLE (DR-14), inherited from the panel host and stated as the rule
-	T3 deferred here. Attachment reads 404 on an archived parent, so:
+	PARENT LIFECYCLE (DR-14), inherited from the retired panel host. Attachment
+	reads 404 on an archived parent, so:
 	  - ARCHIVE while a surface is open (a `parentArchived` false→true TRANSITION):
 	    CLOSE it. The bytes just became unreachable and every toolbar action would
 	    404; the host's own archive-close is the right answer, and it fires whether
@@ -79,25 +59,17 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import Lightbox from '$lib/components/common/Lightbox.svelte';
-	import { displayFilename } from '$lib/attachments/display';
 	import {
 		isAttachmentSurfaceEventForHost,
 		registerAttachmentDeletionListener,
-		registerAttachmentPanelListener,
 		registerAttachmentSurfaceListener,
-		registerAttachmentViewerListener,
-		type AttachmentPanelOpenEvent,
 		type AttachmentSurfaceOpenEvent,
-		type AttachmentViewerOpenEvent,
-		type LightboxImage,
 	} from '$lib/attachments/events';
 
 	interface Props {
-		/** Workspace slug. Used ONLY as the legacy-panel bridge's workspace (the new channel carries its own). */
-		wsSlug: string;
 		/** Parent item UUID. Null/undefined while the item is loading or mid-switch. */
 		itemId: string | null | undefined;
-		/** This `ItemDetail` mount's identity on the bus — one token per host, all channels. */
+		/** This `ItemDetail` mount's identity on the bus — one token per host. */
 		hostToken: string;
 		/**
 		 * Reactive generation of the LOADED item resource. Advances only on a real
@@ -114,7 +86,6 @@
 	}
 
 	let {
-		wsSlug,
 		itemId,
 		hostToken,
 		resourceGen = 0,
@@ -145,58 +116,6 @@
 		};
 	}
 
-	/** Legacy PANEL event → single-open surface request (see the mapping note above). */
-	function fromPanel(event: AttachmentPanelOpenEvent): AttachmentSurfaceOpenEvent {
-		const image: LightboxImage = {
-			id: event.attachmentId,
-			// The shared nameless-file fallback ("Untitled file"), matching what the
-			// retired panel showed — so a null-filename file is named consistently
-			// across the strip, the surface and this bridge, not the Lightbox's bare
-			// "Attachment".
-			alt: displayFilename(event.filename),
-			filename: event.filename,
-			mime_type: event.mime_type,
-			size_bytes: event.size_bytes,
-			width: null,
-			height: null,
-		};
-		return {
-			attachmentId: event.attachmentId,
-			// TRANSITIONAL EXCEPTION: the panel channel carried no workspace, so the
-			// bridge supplies the host's. The new channel captures its own at emit.
-			workspaceSlug: wsSlug,
-			itemId: event.itemId,
-			hostToken: event.hostToken,
-			images: [image],
-			index: 0,
-			// anchor → invoker: focus-return only, never the live activeElement and no
-			// positioning (the converged surface is centered).
-			invoker: event.anchor,
-			filename: event.filename,
-			mime_type: event.mime_type,
-			size_bytes: event.size_bytes,
-		};
-	}
-
-	/** Legacy VIEWER event → surface request field-for-field (see the mapping note above). */
-	function fromViewer(event: AttachmentViewerOpenEvent): AttachmentSurfaceOpenEvent {
-		const target = event.images[event.index];
-		return {
-			attachmentId: event.attachmentId,
-			workspaceSlug: event.workspaceSlug,
-			itemId: event.itemId,
-			hostToken: event.hostToken,
-			images: event.images,
-			index: event.index,
-			invoker: event.invoker,
-			// The seeds this channel omits describe images[index] — carry them so the
-			// request shape matches a native surface event.
-			filename: target?.filename ?? null,
-			mime_type: target?.mime_type ?? null,
-			size_bytes: target?.size_bytes ?? null,
-		};
-	}
-
 	// Plain `let`, not $state: written and read only inside `untrack`ed effect
 	// bodies (CONVE-1688 — a $state read+written in one effect aborts its flush).
 	// Seeded from the initial props DELIBERATELY: a host mounting on an
@@ -206,30 +125,14 @@
 	let lastItemId = untrack(() => itemId ?? '');
 	let lastResourceGen = untrack(() => resourceGen);
 
-	// Subscribe to ALL THREE channels. `itemId` / `hostToken` are read at EMIT time
-	// (inside the callbacks) so the address is always the host's current one — this
+	// Subscribe to the surface channel. `itemId` / `hostToken` are read at EMIT time
+	// (inside the callback) so the address is always the host's current one — this
 	// component, like `ItemDetail`, outlives an A→B item switch. The registration
-	// disposers are the effects' teardown, so an unmounted host stops receiving.
+	// disposer is the effect's teardown, so an unmounted host stops receiving.
 	$effect(() => {
 		return registerAttachmentSurfaceListener((event) => {
 			if (!isAttachmentSurfaceEventForHost(event, { itemId, hostToken })) return;
 			request = event;
-		});
-	});
-	$effect(() => {
-		return registerAttachmentPanelListener((event) => {
-			// The panel predicate is the same address rule; reuse the surface one over
-			// the translated event so a single predicate governs every channel.
-			const translated = fromPanel(event);
-			if (!isAttachmentSurfaceEventForHost(translated, { itemId, hostToken })) return;
-			request = translated;
-		});
-	});
-	$effect(() => {
-		return registerAttachmentViewerListener((event) => {
-			const translated = fromViewer(event);
-			if (!isAttachmentSurfaceEventForHost(translated, { itemId, hostToken })) return;
-			request = translated;
 		});
 	});
 

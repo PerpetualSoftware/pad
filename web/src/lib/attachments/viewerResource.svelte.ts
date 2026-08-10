@@ -8,7 +8,7 @@ import { nextViewerResourceGen, viewerResourceKey } from './viewerResource';
  * wrapper `ItemDetail` actually uses. It is a module rather than four lines
  * inline in a 7,000-line component for one reason: the `$effect` below is the
  * subtlest thing in this task, and inline it could only ever be exercised
- * through `AttachmentViewerHost`'s props — which are handed the answer and so
+ * through `AttachmentSurfaceHost`'s props — which are handed the answer and so
  * cannot tell a correct counter from one that never moves, nor a healthy flush
  * from a self-invalidating one (Codex round 6).
  *

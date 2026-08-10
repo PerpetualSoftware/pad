@@ -5097,9 +5097,6 @@
 				canDelete={mutationsEnabled}
 				itemContent={itemMatchesRef ? item?.content : null}
 				liveContent={liveEditorMarkdown}
-				{mutationsEnabled}
-				getItemContent={itemPersistedMarkdown}
-				getLiveContent={liveEditorMarkdown}
 			/>
 
 			<!-- The unified attachment surface host is mounted at the TOP LEVEL, not
@@ -5621,9 +5618,6 @@
 				frozen={false}
 				restoreFrozen={peeking}
 				visibleKinds={activeTab === 'versions' ? ['version'] : ['comment', 'activity']}
-				{mutationsEnabled}
-				getItemContent={itemPersistedMarkdown}
-				getLiveContent={liveEditorMarkdown}
 			/>
 		</div>
 		</div><!-- /tab-panel Activity/Versions -->
@@ -5847,13 +5841,13 @@
 {/if}
 
 <!-- THE ONE attachment surface host (PLAN-2392 phase 3c-ii / TASK-2488, the
-     atomic cutover). It replaces the two hosts that used to live here — the
-     options panel host (beside the strip) and the image viewer host — with a
-     single `AttachmentSurfaceHost` that opens ANY attachment (image, file,
-     unresolved) on the grown `Lightbox`. During the transition it bridges all
-     three channels (the two legacy ones + the new surface channel); the six
-     producers repoint onto the new channel in T4a. One token per HOST, threaded
-     to `Lightbox` for the delete-warning + permission exactly as before.
+     atomic cutover; the legacy-channel bridge retired in TASK-2490). It replaces
+     the two hosts that used to live here — the options panel host (beside the
+     strip) and the image viewer host — with a single `AttachmentSurfaceHost` that
+     opens ANY attachment (image, file, unresolved) on the grown `Lightbox`. Every
+     producer emits on the one surface channel; the host consumes only that. One
+     token per HOST, threaded to `Lightbox` for the delete-warning + permission
+     exactly as before.
 
      TOP LEVEL, not inside the `{:else if item && collection}` branch, and that
      placement is the whole lifecycle rule: every `loadData()` sets
@@ -5862,15 +5856,14 @@
      nothing the user can see. Out here it survives and closes on exactly one
      thing: a resource switch (`itemId` change or `resourceGen` advance).
 
-     Union prop set. `itemId` is gated on `itemMatchesRef` (the TASK-2112 switch
+     Prop set. `itemId` is gated on `itemMatchesRef` (the TASK-2112 switch
      boundary) so a mid-switch host addresses nothing; `resourceGen` (from the
-     viewer host) advances only on a real loaded-item resource change, never on
-     `loadGeneration`; `parentArchived` (from the panel host, DR-14) closes the
-     surface on archive and revalidates on restore; `wsSlug` is the LEGACY-panel
-     bridge's workspace only (the panel channel carries none — the new channel
-     captures its own at emit). -->
+     retired viewer host) advances only on a real loaded-item resource change,
+     never on `loadGeneration`; `parentArchived` (from the retired panel host,
+     DR-14) closes the surface on archive and revalidates on restore. The host no
+     longer takes a `wsSlug` — the surface channel captures its own workspace at
+     emit. -->
 <AttachmentSurfaceHost
-	{wsSlug}
 	itemId={itemMatchesRef ? item?.id : null}
 	hostToken={attachmentHostToken}
 	resourceGen={viewerResource.current}

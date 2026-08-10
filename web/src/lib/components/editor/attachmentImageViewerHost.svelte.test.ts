@@ -1,9 +1,10 @@
 // The whole route: inline image NodeView → the REAL bus → the REAL
-// `AttachmentViewerHost` → the REAL `Lightbox` (PLAN-2392 phase 3a / TASK-2433).
+// `AttachmentSurfaceHost` → the REAL `Lightbox` (PLAN-2392 phase 3a / TASK-2433;
+// converged onto the one surface host in 3c-ii).
 //
 // Every other spec for this change stops at the producer: they mock
-// `notifyViewerOpen` and assert the payload, which is the right shape for
-// asking "did the NodeView emit the correct request" and is deliberately blind
+// `notifyAttachmentSurfaceOpen` and assert the payload, which is the right shape
+// for asking "did the NodeView emit the correct request" and is deliberately blind
 // to whether anything is listening. That leaves the commit's actual headline
 // claim — a deleted `<dialog>` REPLACED by the shared viewer, not removed —
 // resting on two halves nobody joins. A host that stopped consuming, an
@@ -45,9 +46,9 @@ vi.mock('./attachment-metadata', () => ({
 }));
 
 const { AttachmentImage } = await import('./attachment-image');
-// 3c-ii T2b: the two hosts collapsed into the ONE `AttachmentSurfaceHost`, which
-// bridges the legacy viewer AND panel channels. This whole-route test mounts it
-// instead — the raster arm for an image, the fallback arm for the SVG redirect.
+// 3c-ii: the two hosts collapsed into the ONE `AttachmentSurfaceHost`, which
+// consumes the single surface channel. This whole-route test mounts it — the
+// raster arm for an image, the fallback arm for the SVG redirect.
 const { default: AttachmentSurfaceHost } = await import(
 	'$lib/components/attachments/AttachmentSurfaceHost.svelte'
 );
@@ -84,7 +85,7 @@ describe('inline image → viewer host → Lightbox', () => {
 	function mountHost(props: { itemId: string; hostToken: string }) {
 		host = mount(AttachmentSurfaceHost, {
 			target: hostTarget,
-			props: { wsSlug: 'ws', ...props },
+			props,
 		}) as Record<string, unknown>;
 		flushSync();
 	}
@@ -214,7 +215,7 @@ describe('inline image → viewer host → Lightbox', () => {
 	it('REDIRECTS a non-allowlisted type onto the FALLBACK arm of the one surface (3c-ii)', async () => {
 		// The whole route for the redirect arm, with nothing between the NodeView
 		// and the surface stubbed. Pre-convergence this opened a separate panel host;
-		// now the ONE `AttachmentSurfaceHost` consumes the same panel channel and the
+		// now the ONE `AttachmentSurfaceHost` consumes the surface channel and the
 		// file-capable `Lightbox` opens the SVG on its NO-BYTES fallback arm — a real
 		// surface on screen (the completeness half), no raster `<img>` and no request
 		// (the security half). A host that stopped consuming would leave the producer

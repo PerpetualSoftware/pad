@@ -83,20 +83,9 @@
 		 * callers outside an ItemDetail) disables addressing.
 		 */
 		hostToken?: string;
-		/**
-		 * Viewer-toolbar context (TASK-2474), forwarded verbatim to the `Lightbox`
-		 * this timeline mounts. `mutationsEnabled` is the HOST's answer
-		 * (`canEdit && !peeking`) — deliberately NOT this component's own `canEdit`
-		 * below, which ignores peeking, so a peeked master's timeline viewer would
-		 * wrongly offer Delete. DEFAULT false → read-only toolbar. The two content
-		 * getters back the delete-warning check (DR-5).
-		 */
-		mutationsEnabled?: boolean;
-		getItemContent?: () => string | null;
-		getLiveContent?: () => string | null;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', mutationsEnabled = false, getItemContent, getLiveContent }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '' }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
