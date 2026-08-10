@@ -12,9 +12,9 @@
 // imperative NodeView DOM and its accessibility semantics are properties of
 // that DOM, which a hand-built element would not pin.
 //
-// The viewer assertions here are PRODUCER-level — `notifyViewerOpen` is mocked,
-// so "opens" means "asks". A broken or absent host would be invisible to them;
-// that half of the route is `attachmentImageViewerHost.svelte.test.ts`'s.
+// The surface assertions here are PRODUCER-level — `notifyAttachmentSurfaceOpen`
+// is mocked, so "opens" means "asks". A broken or absent host would be invisible
+// to them; that half of the route is `attachmentImageViewerHost.svelte.test.ts`'s.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
@@ -25,8 +25,7 @@ const deletionListeners = new Set<(uuid: string) => void>();
 // routing is `events.ts`'s and has its own spec.
 const emitted: Array<Record<string, unknown>> = [];
 vi.mock('$lib/attachments/events', () => ({
-	notifyAttachmentPanelOpen: () => {},
-	notifyViewerOpen: (event: Record<string, unknown>) => {
+	notifyAttachmentSurfaceOpen: (event: Record<string, unknown>) => {
 		emitted.push(event);
 	},
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
@@ -119,10 +118,14 @@ describe('inline image missing placeholder', () => {
 		img.dispatchEvent(new Event('error'));
 	}
 
-	it('refuses to open a probed non-raster type in the viewer (DR-16)', async () => {
-		// The allowlist gates EVERY open-the-viewer path, not just the strip's:
-		// image/svg+xml can carry active content, and a node being labelled
-		// image/* is not sufficient reason to hand it to a viewer.
+	it('emits a surface event for a probed non-raster type — the surface, not the producer, picks the fallback arm (T4a)', async () => {
+		// As of TASK-2489 the raster/non-raster fork is GONE from the producer.
+		// The DR-16 guarantee — an `image/svg+xml` (active content) is never
+		// handed to a raster viewer — did not disappear; it moved DOWNSTREAM to
+		// the surface renderer, which routes svg onto its no-bytes fallback arm.
+		// So the producer emits ONE surface event carrying the TRUE svg MIME, and
+		// admission no longer branches on the type here. The resolve-before-emit
+		// gate (missing → latch, transient → retry) is unchanged.
 		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml' , size: 4096 });
 		editor = makeEditor(target);
 		const img = target.querySelector<HTMLImageElement>('img[data-attachment-id]');
@@ -134,13 +137,35 @@ describe('inline image missing placeholder', () => {
 
 		img.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
 		await settle();
-		// NOTHING is emitted — not an event carrying the unsafe MIME for the
-		// viewer to reject at the other end. The gate is the producer's, because
-		// a request that reached the bus would be visible to any future consumer.
-		expect(emitted).toEqual([]);
+		// Exactly ONE surface emit, stamped with the real svg MIME — the surface
+		// renderer, not the producer, decides it renders no bytes.
+		expect(emitted).toEqual([
+			{
+				attachmentId: 'uuid-1',
+				workspaceSlug: 'ws',
+				itemId: 'item-A',
+				hostToken: 'apanel-1',
+				images: [
+					{
+						id: 'uuid-1',
+						alt: 'A diagram',
+						filename: null,
+						mime_type: 'image/svg+xml',
+						size_bytes: 4096,
+						width: null,
+						height: null,
+					},
+				],
+				index: 0,
+				invoker: img,
+				filename: null,
+				mime_type: 'image/svg+xml',
+				size_bytes: 4096,
+			},
+		]);
 	});
 
-	it('emits a fully-stamped viewer request for an allowlisted raster type', async () => {
+	it('emits a fully-stamped surface request for an allowlisted raster type', async () => {
 		// The gate must not cost the common case: a PNG opens as it always did —
 		// and this is the assertion the deletion of the old `<dialog>` rests on.
 		// "The dialog is gone" is satisfied by an implementation that opens
@@ -182,6 +207,9 @@ describe('inline image missing placeholder', () => {
 				],
 				index: 0,
 				invoker: img,
+				filename: null,
+				mime_type: 'image/png',
+				size_bytes: 4096,
 			},
 		]);
 	});

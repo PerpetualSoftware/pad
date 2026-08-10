@@ -1,7 +1,8 @@
 /**
  * The attachment surface's delete-confirmation machine (PLAN-2392 3c-i /
- * TASK-2473), lifted VERBATIM from `AttachmentDetailsPanel.svelte`'s internals
- * so the panel and — later — the converged viewer share ONE implementation.
+ * TASK-2473), lifted VERBATIM from the options panel's internals so the panel
+ * and the converged surface shared ONE implementation. The panel was retired in
+ * the T2b cutover (TASK-2488); the sole consumer now is the grown `Lightbox`.
  *
  * THE PROMISE / UI SPLIT STAYS (DR-18). The delete DESCRIPTOR (`actions.ts`)
  * owns the delete itself: it snapshots identity, awaits `ctx.confirmDelete()`

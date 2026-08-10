@@ -100,6 +100,16 @@ vi.mock('$lib/components/CommentEditor.svelte', async () => ({
 }));
 
 const { default: ItemTimeline } = await import('./ItemTimeline.svelte');
+// T4a (TASK-2489): the timeline no longer mounts `Lightbox` itself — it EMITS on
+// the surface channel and the ONE `AttachmentSurfaceHost` owns the mount. These
+// tests mount that host alongside the timeline, addressed to the same
+// (itemId, hostToken), so an activation renders end-to-end. `resourceGen` is the
+// host's resource-switch lever: a workspace/item switch bumps it (the production
+// ItemDetail's rule — a same-id resource change a bare id compare would miss), and
+// the host closes any open surface when it advances.
+const { default: AttachmentSurfaceHost } = await import(
+	'$lib/components/attachments/AttachmentSurfaceHost.svelte'
+);
 
 function comment(body: string, id = 'c1'): Comment {
 	return {
@@ -136,7 +146,9 @@ function respond(ids: string[]): TimelineResponse {
 }
 
 let host: HTMLElement;
+let hostTarget: HTMLElement;
 let app: Record<string, unknown> | null = null;
+let hostApp: Record<string, unknown> | null = null;
 
 // Reactive props object so a test can flip wsSlug / itemSlug the way ItemDetail
 // does — the timeline is mounted WITHOUT `{#key}` and is reused across the
@@ -148,6 +160,15 @@ const props = $state<{
 	currentContent: string;
 	itemId: string;
 	collectionId: string;
+	// The identity `ItemDetail` mints per mount and threads to the timeline (and
+	// its CommentEditors). The timeline's surface emit carries it; without it the
+	// event is unaddressable and `notifyAttachmentSurfaceOpen` drops it, so no host
+	// could open the viewer.
+	hostToken: string;
+	// The host's resource generation. A workspace/item switch advances it, which is
+	// what closes an open surface across the switch now that the timeline no longer
+	// owns the mount (T4a).
+	resourceGen: number;
 	visibleKinds: Array<'comment' | 'activity' | 'version'> | undefined;
 	mutationsEnabled?: boolean;
 	getItemContent?: () => string | null;
@@ -159,6 +180,8 @@ const props = $state<{
 	currentContent: '',
 	itemId: 'item-a',
 	collectionId: 'coll-1',
+	hostToken: 'host-1',
+	resourceGen: 0,
 	visibleKinds: undefined,
 	mutationsEnabled: false,
 	getItemContent: undefined,
@@ -172,6 +195,8 @@ function resetProps() {
 	props.currentContent = '';
 	props.itemId = 'item-a';
 	props.collectionId = 'coll-1';
+	props.hostToken = 'host-1';
+	props.resourceGen = 0;
 	props.visibleKinds = undefined;
 	props.mutationsEnabled = false;
 	props.getItemContent = undefined;
@@ -180,6 +205,14 @@ function resetProps() {
 
 function render() {
 	app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
+	// The surface host consumes the timeline's emit and mounts the real Lightbox.
+	// It reads the SAME reactive `props` (wsSlug / itemId / hostToken / resourceGen /
+	// mutationsEnabled / getItemContent / getLiveContent); its extra fields are
+	// ignored, and `parentArchived` defaults false.
+	hostApp = mount(AttachmentSurfaceHost, { target: hostTarget, props }) as Record<
+		string,
+		unknown
+	>;
 	return app;
 }
 
@@ -236,6 +269,7 @@ function pressGlobal(key: string) {
 beforeEach(() => {
 	host = document.createElement('div');
 	document.body.appendChild(host);
+	hostTarget = document.body.appendChild(document.createElement('div'));
 	resetProps();
 	canEditMock.mockReturnValue(false);
 	timelineListMock.mockReset();
@@ -245,10 +279,14 @@ beforeEach(() => {
 afterEach(() => {
 	// Unmount FIRST: that runs the viewer's own teardown, which is what
 	// unregisters its Escape handler and releases its backdrop lease. Ripping
-	// the portaled node out beforehand would leave both behind.
+	// the portaled node out beforehand would leave both behind. The HOST owns the
+	// viewer now (T4a), so it is torn down first.
+	if (hostApp) unmount(hostApp);
+	hostApp = null;
 	if (app) unmount(app);
 	app = null;
 	host.remove();
+	hostTarget.remove();
 	// The viewer portals to <body>; make sure nothing leaks between tests.
 	document.querySelectorAll('.lightbox-backdrop').forEach((n) => n.remove());
 	// ...and reset the two module-global registries a viewer touches, so a case
@@ -462,8 +500,11 @@ describe('ItemTimeline — A→B viewer lifecycle (TASK-2431)', () => {
 
 		// Same itemSlug, different workspace — the case the component had no
 		// reset for at all. A viewer left up here keeps showing ws-one's ids
-		// while the timeline underneath is ws-two's.
+		// while the timeline underneath is ws-two's. The surface is the HOST's now
+		// (T4a); a workspace switch is a resource change, so `resourceGen` advances
+		// with it (the production ItemDetail rule) and the host closes the surface.
 		props.wsSlug = 'ws-two';
+		props.resourceGen += 1;
 		flushSync();
 		await settle();
 
@@ -478,7 +519,10 @@ describe('ItemTimeline — A→B viewer lifecycle (TASK-2431)', () => {
 		click(thumbFor(PNG_A));
 		expect(viewerOpen()).toBe(true);
 
+		// An item switch is a resource change: the slug moves and `resourceGen`
+		// advances with it, so the host closes the surface it owns (T4a).
 		props.itemSlug = 'TASK-2';
+		props.resourceGen += 1;
 		flushSync();
 		await settle();
 

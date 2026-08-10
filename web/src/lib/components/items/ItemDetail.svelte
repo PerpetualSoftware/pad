@@ -42,8 +42,7 @@
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import CopyItemDialog from '$lib/components/items/CopyItemDialog.svelte';
 	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
-	import AttachmentPanelHost from '$lib/components/attachments/AttachmentPanelHost.svelte';
-	import AttachmentViewerHost from '$lib/components/attachments/AttachmentViewerHost.svelte';
+	import AttachmentSurfaceHost from '$lib/components/attachments/AttachmentSurfaceHost.svelte';
 	import { createAttachmentHostToken } from '$lib/attachments/events';
 	import { createViewerResourceGen } from '$lib/attachments/viewerResource.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
@@ -5098,34 +5097,13 @@
 				canDelete={mutationsEnabled}
 				itemContent={itemMatchesRef ? item?.content : null}
 				liveContent={liveEditorMarkdown}
-				{mutationsEnabled}
-				getItemContent={itemPersistedMarkdown}
-				getLiveContent={liveEditorMarkdown}
 			/>
 
-			<!-- The attachment options panel's host (PLAN-2392 DR-8 / TASK-2423).
-			     ONE per ItemDetail mount, and the only consumer of the open-panel
-			     channel for this mount's token — the panel it opens is
-			     permissioned by THIS host's `mutationsEnabled`, never by the
-			     emitting strip tile / editor chip, and never by the timeline's
-			     `canEdit` (which ignores `peeking`).
-			     Sits beside the strip, OUTSIDE the {#key itemSlug} block, for the
-			     same reason: it must not remount on an A→B switch — it closes the
-			     panel itself when `itemId` changes.
-			     parentArchived (DR-14): an archived parent's attachment fetch
-			     404s, so an open panel would keep offering an Open and a Download
-			     that both fail. `isArchived` follows the SSE item_archived /
-			     item_restored refetches above, so archive closes the panel and
-			     restore revalidates it. -->
-			<AttachmentPanelHost
-				{wsSlug}
-				itemId={itemMatchesRef ? item?.id : null}
-				hostToken={attachmentHostToken}
-				{mutationsEnabled}
-				itemContent={itemMatchesRef ? item?.content : null}
-				liveContent={liveEditorMarkdown}
-				parentArchived={itemMatchesRef && isArchived}
-			/>
+			<!-- The unified attachment surface host is mounted at the TOP LEVEL, not
+			     here — see the `AttachmentSurfaceHost` mount below the `{/if}`. It
+			     replaced the separate panel host that used to sit beside the strip
+			     (3c-ii T2b): one host for every open, so there is no per-channel mount
+			     inside this branch anymore. -->
 
 			<!-- Content editor — OUTSIDE the {#key itemSlug} above: the collab
 			     Editor, EditorBubbleMenu, provider, collabKey and SSE stay
@@ -5640,9 +5618,6 @@
 				frozen={false}
 				restoreFrozen={peeking}
 				visibleKinds={activeTab === 'versions' ? ['version'] : ['comment', 'activity']}
-				{mutationsEnabled}
-				getItemContent={itemPersistedMarkdown}
-				getLiveContent={liveEditorMarkdown}
 			/>
 		</div>
 		</div><!-- /tab-panel Activity/Versions -->
@@ -5865,31 +5840,37 @@
 	{/if}
 {/if}
 
-<!-- The image viewer's host (PLAN-2392 phase 3a / TASK-2428). One per
-     `ItemDetail` mount, sharing the token the panel host uses — one token per
-     HOST, not one per channel. It now carries `mutationsEnabled` (= `canEdit &&
-     !peeking`) and the delete-warning content getters (3c-i's viewer toolbar
-     Delete, TASK-2474), threaded to `Lightbox` exactly as the panel host's are.
+<!-- THE ONE attachment surface host (PLAN-2392 phase 3c-ii / TASK-2488, the
+     atomic cutover; the legacy-channel bridge retired in TASK-2490). It replaces
+     the two hosts that used to live here — the options panel host (beside the
+     strip) and the image viewer host — with a single `AttachmentSurfaceHost` that
+     opens ANY attachment (image, file, unresolved) on the grown `Lightbox`. Every
+     producer emits on the one surface channel; the host consumes only that. One
+     token per HOST, threaded to `Lightbox` for the delete-warning + permission
+     exactly as before.
 
-     TOP LEVEL, not beside `AttachmentPanelHost` inside the `{:else if item &&
-     collection}` branch, and that placement is the whole lifecycle rule: every
-     `loadData()` sets `loading = true`, which swaps that entire subtree for the
-     skeleton — including a same-item schema reload after a collection edit.
-     Mounted in there, an open viewer would be destroyed by a background refresh
-     that changed nothing the user can see. Out here it survives, and closes on
-     exactly one thing: a resource switch, via the props below.
+     TOP LEVEL, not inside the `{:else if item && collection}` branch, and that
+     placement is the whole lifecycle rule: every `loadData()` sets
+     `loading = true`, which swaps that subtree for the skeleton — a surface
+     mounted in there would be destroyed by a background refresh that changed
+     nothing the user can see. Out here it survives and closes on exactly one
+     thing: a resource switch (`itemId` change or `resourceGen` advance).
 
-     `itemId` is gated on `itemMatchesRef` (the TASK-2112 switch boundary) so a
-     mid-switch host addresses nothing; `resourceGen` is the dedicated counter
-     that advances only on a real loaded-item resource change — never on
-     `loadGeneration`, which every refresh bumps. -->
-<AttachmentViewerHost
+     Prop set. `itemId` is gated on `itemMatchesRef` (the TASK-2112 switch
+     boundary) so a mid-switch host addresses nothing; `resourceGen` (from the
+     retired viewer host) advances only on a real loaded-item resource change,
+     never on `loadGeneration`; `parentArchived` (from the retired panel host,
+     DR-14) closes the surface on archive and revalidates on restore. The host no
+     longer takes a `wsSlug` — the surface channel captures its own workspace at
+     emit. -->
+<AttachmentSurfaceHost
 	itemId={itemMatchesRef ? item?.id : null}
 	hostToken={attachmentHostToken}
 	resourceGen={viewerResource.current}
 	{mutationsEnabled}
 	getItemContent={itemPersistedMarkdown}
 	getLiveContent={liveEditorMarkdown}
+	parentArchived={itemMatchesRef && isArchived}
 />
 
 <style>

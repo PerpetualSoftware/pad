@@ -17,7 +17,8 @@ import {
 	isFocusable,
 	itemUrl,
 	uploadAttachment,
-	viewerClose
+	viewerClose,
+	viewerDialog
 } from './lib/attachment-viewer';
 
 /**
@@ -437,23 +438,27 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		await expect(pane).toHaveCount(0);
 	});
 
-	test('two viewers: Tab stays in the frontmost, and closing it hands focus DOWN, not into inert chrome', async ({
+	test('opening a second attachment SUPERSEDES the first — one host mounts at most one viewer (converged surface)', async ({
 		page,
 		fixture,
 		request
 	}) => {
-		// Two mounted viewers is a real state — the strip mounts `Lightbox`
-		// directly while `AttachmentViewerHost` mounts another for inline images
-		// (the hosts are deliberately not consolidated until 3c). jsdom cannot
-		// isolate them: the trap only means something if Tab actually traverses,
-		// and inertness only means something if the browser enforces it.
+		// FALSIFIED + REWRITTEN for the converged surface (PLAN-2392 3c-ii, the
+		// "direct-vs-host" premise this test rested on). Two mounted viewers USED to
+		// be a real state: the strip mounted `Lightbox` DIRECTLY while a separate
+		// host mounted another for inline images. T4a/T4b retired that split — every
+		// producer emits on the ONE surface channel and the ONE
+		// `AttachmentSurfaceHost` mounts at most one `Lightbox` BY CONSTRUCTION (a
+		// single `$state` request behind `{#key request}`). So opening a second
+		// attachment from the same page no longer STACKS a viewer — it SUPERSEDES
+		// the open one. This proves that invariant, and that the single surviving
+		// viewer keeps the full modal contract (background inert, trap, Escape).
 		//
-		// The second viewer is opened with a programmatic `click()` because the
-		// first one has (correctly) made the inline image unreachable to a user.
-		// The state under test is the one the implementation documents as safe,
-		// not a state a user is expected to reach.
+		// The second open is a programmatic `click()` because the first viewer has
+		// (correctly) made the inline image inert to a user — the state under test is
+		// the documented-safe one, not a path a user is expected to reach.
 		await browserLogin(page);
-		const doc = await seedDoc(fixture, request, 'Viewer stack');
+		const doc = await seedDoc(fixture, request, 'Viewer supersede');
 		await uploadAttachment(fixture, request, doc.id, 'alpha.png');
 		await page.goto(itemUrl(fixture, doc.slug));
 		await dropFileIntoEditor(page, 'bravo.png', REAL_PNG.toString('base64'));
@@ -463,57 +468,34 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		const alphaTile = page.locator(`${TILE}[aria-label*="alpha.png"]`);
 		await expect(alphaTile).toBeVisible();
 		await alphaTile.click();
-		await expect(page.getByRole('dialog', { name: 'alpha.png' })).toBeVisible();
+		await expect(viewerDialog(page, 'alpha.png')).toHaveCount(1);
 
+		// Open the inline body image while the alpha viewer is frontmost. Same host,
+		// so the request is SUPERSEDED, not stacked.
 		await inline.evaluate((el) => (el as HTMLElement).click());
-		await expect(page.locator(VIEWER)).toHaveCount(2);
+		// Exactly ONE viewer, and it is now bravo — the alpha viewer is GONE, not a
+		// second layer behind it. A stacking regression (the retired behaviour) would
+		// leave count 2.
+		await expect(page.locator(VIEWER)).toHaveCount(1);
+		await expect(viewerDialog(page, 'bravo.png')).toHaveCount(1);
+		await expect(viewerDialog(page, 'alpha.png')).toHaveCount(0);
 
-		const stacked = await page.evaluate(() =>
-			Array.from(document.querySelectorAll('.attachment-viewer')).map((v) => ({
-				label: v.getAttribute('aria-label'),
-				inert: v.hasAttribute('inert')
-			}))
-		);
-		expect(stacked.map((s) => s.label)).toEqual(['alpha.png', 'bravo.png']);
-		expect(stacked[0].inert, 'the BACKGROUND viewer must be inert like any other body child').toBe(
-			true
-		);
-		expect(stacked[1].inert).toBe(false);
-
-		// The trap holds INSIDE the frontmost: several Tabs, focus never leaves.
+		// The single surviving viewer keeps the modal contract: the whole app
+		// background is inert, and the trap holds inside it.
+		await expectBackgroundInert(page);
+		await clearProbes(page);
 		for (let i = 0; i < 5; i++) {
 			await page.keyboard.press('Tab');
-			expect(await activeInViewer(page), `Tab ${i + 1} escaped the frontmost viewer`).toBe(true);
+			expect(await activeInViewer(page), `Tab ${i + 1} escaped the viewer`).toBe(true);
 		}
-		// ...and the background viewer is unreachable for a reason Tab alone
-		// cannot show: a JS trap would keep Tab inside the front viewer even if
-		// the layer behind it were fully interactive. So aim focus straight at
-		// the BACKGROUND viewer's close button and confirm it refuses.
-		expect(
-			await focusAttemptTakes(page, '.attachment-viewer:not(:last-of-type) .lightbox-close'),
-			"the background viewer's own control must be inert, not merely skipped by the trap"
-		).toBe(false);
 
-		// One Escape closes EXACTLY the front one...
-		await page.keyboard.press('Escape');
-		await expect(page.locator(VIEWER)).toHaveCount(1);
-		await expect(page.getByRole('dialog', { name: 'alpha.png' })).toBeVisible();
-		// ...and the handoff puts focus INSIDE the newly frontmost viewer — not on
-		// `<body>`, and not back into the app, which is still inert.
-		expect(
-			await page.evaluate(() => {
-				const v = document.querySelector('.attachment-viewer')!;
-				return {
-					inert: v.hasAttribute('inert'),
-					holdsFocus: !!document.activeElement && v.contains(document.activeElement)
-				};
-			})
-		).toEqual({ inert: false, holdsFocus: true });
-
-		// And the last one out restores the original invoker.
+		// One Escape closes it — there is no second layer to reveal — and focus is
+		// restored to the invoker that opened the SURVIVING (bravo) viewer: the
+		// inline body image. Not <body>, and not the alpha tile (whose viewer was
+		// superseded, never closed, so it never ran its own focus restore).
 		await page.keyboard.press('Escape');
 		await expect(page.locator(VIEWER)).toHaveCount(0);
-		await expect(alphaTile).toBeFocused();
+		await expect(inline, 'focus returns to the superseding open\'s invoker').toBeFocused();
 	});
 
 	test('the trap holds BACKWARD too: Shift+Tab wraps to the last control, and a single-control viewer keeps focus', async ({
@@ -537,14 +519,16 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		await page.locator(`${TILE}[aria-label*="trap-a.png"]`).click();
 		await expect(page.locator(VIEWER)).toHaveCount(1);
 
-		// The controls, in DOM (trap) order: Close, Previous, Next, then the toolbar
-		// (Open, Download, Copy, Delete — TASK-2474). The trap edges are DERIVED, not
-		// named: the toolbar moved the "last control" off the Next button.
+		// The controls, in DOM (trap) order: Close, the toolbar (Open, Download, Copy,
+		// Delete — TASK-2474), then Previous, Next — the nav now TRAILS the toolbar
+		// because 3c-ii moved prev/next INTO the stage (which follows the toolbar in
+		// the DOM). The trap edges are DERIVED, not named: with the nav last again, the
+		// "last control" is the Next button, and the "first" is still Close.
 		const focused = () => page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? null);
 		expect(await focused(), 'focus entry is the first control').toBe('Close');
 
-		// FIRST → wraps to LAST. This is the branch. The last control is the last
-		// toolbar action; focus it once to learn its label, then prove the wrap.
+		// FIRST → wraps to LAST. This is the branch. The last control is the Next-image
+		// nav; focus it once to learn its label, then prove the wrap.
 		const lastLabel = await focusViewerLastControl(page);
 		expect(await focused()).toBe(lastLabel);
 		await page.locator(VIEWER).getByRole('button', { name: 'Close' }).focus();
@@ -553,12 +537,16 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 			lastLabel
 		);
 		// ...and from the middle it simply steps backward, so the wrap above is a
-		// wrap and not "Shift+Tab always lands on the last".
+		// wrap and not "Shift+Tab always lands on the last". With the nav trailing the
+		// toolbar, backward from Next steps to Previous, and one more step crosses INTO
+		// the toolbar — never a wrap to the last, never a jump straight to the first.
 		await page.locator(VIEWER).getByRole('button', { name: 'Next image' }).focus();
 		await page.keyboard.press('Shift+Tab');
 		expect(await focused()).toBe('Previous image');
 		await page.keyboard.press('Shift+Tab');
-		expect(await focused()).toBe('Close');
+		const intoToolbar = await focused();
+		expect(intoToolbar, 'a middle Shift+Tab steps backward, not a wrap to the last').not.toBe(lastLabel);
+		expect(intoToolbar, '...and not a jump to the first control').not.toBe('Close');
 		expect(await activeInViewer(page), 'backward traversal never left the viewer').toBe(true);
 
 		// The FORWARD wrap: from the last control, Tab returns to the first.
@@ -631,8 +619,8 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		const tabPrevented = () => page.evaluate(() => (window as unknown as { __tab: boolean[] }).__tab);
 
 		// CONTROL, viewer alone: a Tab the trap OWNS (from the LAST control, which
-		// wraps to the first) IS consumed. The last control is a toolbar action now
-		// (TASK-2474), so it is derived, not named. Without this the assertion below
+		// wraps to the first) IS consumed. The last control is the Next-image nav now
+		// (3c-ii moved it after the toolbar), so it is derived, not named. Without this the assertion below
 		// would pass against a viewer whose key handler never runs at all.
 		await focusViewerLastControl(page);
 		await page.keyboard.press('Tab');

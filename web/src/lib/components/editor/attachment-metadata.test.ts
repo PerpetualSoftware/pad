@@ -258,6 +258,73 @@ describe('revalidateAttachmentMetadata — existence probes ignore the cache', (
 	});
 });
 
+describe('the no-store cache option reaches the dispatched request (PLAN-2392 3c-ii T6)', () => {
+	// The always-revalidate-on-open probe must BYPASS the browser HTTP cache — the
+	// GET/HEAD endpoint sets `Cache-Control: max-age=3600`, so a cached 200 would
+	// hide a cross-tab / background delete. These assert on the actual fetch INIT
+	// the mock received, not a local constant, so they fail if the option is dropped
+	// anywhere between the caller and the wire.
+	it('forwards cache:no-store onto the fetch init when asked', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/png', 'content-length': '9' }));
+
+		await fetchAttachmentMetadata('ws', uuid, url, { cache: 'no-store' });
+
+		expect(fetchMock).toHaveBeenCalledWith(url(uuid), {
+			method: 'HEAD',
+			credentials: 'same-origin',
+			cache: 'no-store',
+		});
+	});
+
+	it('revalidate threads the cache option through invalidate-then-fetch', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/png', 'content-length': '9' }));
+
+		await revalidateAttachmentMetadata('ws', uuid, url, { cache: 'no-store' });
+
+		expect(fetchMock).toHaveBeenCalledWith(url(uuid), {
+			method: 'HEAD',
+			credentials: 'same-origin',
+			cache: 'no-store',
+		});
+	});
+
+	it('revalidate+no-store reaches the network even when a cached ok exists, and carries no-store', async () => {
+		// The property the surface RELIES on: a page-lifetime cached `ok` must not
+		// suppress the existence probe, and the probe that runs must bypass the browser
+		// HTTP cache. `revalidateAttachmentMetadata` invalidates the promise cache
+		// first, so a SECOND fetch fires — and it carries `no-store`.
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/png', 'content-length': '10' }));
+
+		// Prime the promise cache with a plain (cacheable) HEAD.
+		await fetchAttachmentMetadata('ws', uuid, url);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		// The forced open-probe: not served from the cached promise, and no-store.
+		await revalidateAttachmentMetadata('ws', uuid, url, { cache: 'no-store' });
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(fetchMock.mock.calls[1][1]).toEqual({
+			method: 'HEAD',
+			credentials: 'same-origin',
+			cache: 'no-store',
+		});
+	});
+
+	it('omits the cache field entirely when no option is passed — the plain HEAD is unchanged', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/png', 'content-length': '9' }));
+
+		await fetchAttachmentMetadata('ws', uuid, url);
+
+		// No `cache` key at all — not `cache: undefined`. A default-mode HEAD, exactly
+		// as before T6.
+		const init = fetchMock.mock.calls[0][1] as RequestInit;
+		expect('cache' in init).toBe(false);
+	});
+});
+
 describe('mimeToFormat', () => {
 	it('maps the recognized image MIMEs to the server-side format names', () => {
 		expect(mimeToFormat('image/jpeg')).toBe('jpeg');

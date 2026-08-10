@@ -2,6 +2,15 @@ import { test, expect } from './fixtures';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
 import type { APIRequestContext, Page } from '@playwright/test';
 import type { SuiteFixture } from './fixtures';
+import {
+	VIEWER,
+	VIEWER_FALLBACK,
+	VIEWER_FALLBACK_NAME,
+	VIEWER_FALLBACK_NOTE,
+	viewerDialog,
+	viewerDownloadAnchor,
+	viewerOpenAnchor
+} from './lib/attachment-viewer';
 
 /**
  * Item attachment strip — host-level coverage (PLAN-2382).
@@ -307,28 +316,30 @@ test.describe('item attachment strip', () => {
 		await expect(masterStrip).toHaveCount(0);
 	});
 
-	test('a file tile opens the options panel, from mouse and from the keyboard (PLAN-2392 phase 2)', async ({
+	test('a file tile opens the converged SURFACE (fallback arm), from mouse and from the keyboard (PLAN-2392 3c-ii)', async ({
 		page,
 		fixture,
 		request
 	}, testInfo) => {
 		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop-only surface');
 
-		// The ONE test that exercises the real producer→host wiring end to end.
-		// The unit suites necessarily stop short of it: the strip's tests mock
-		// the event bus, and the panel host's tests emit on the bus directly, so
-		// between them a broken `hostToken` thread through ItemDetail would pass
-		// everything (final review round 3). Only a real page has a real
-		// ItemDetail minting a real token.
+		// FALSIFIED + REWRITTEN for the converged surface (PLAN-2392 3c-ii, T4a/T4b).
+		// A file tile no longer opens a `role="menu"` options panel — that channel
+		// was retired. It now emits on the ONE surface channel and the ONE
+		// `AttachmentSurfaceHost` opens the grown `Lightbox` (a `role="dialog"`),
+		// showing the no-bytes fallback arm for a non-previewable-as-image file.
 		//
-		// It is also the only place "activates exactly once per key press"
-		// (DR-12) can actually be demonstrated: jsdom does not synthesise a
-		// button's activation click, so the unit test can only prove the
-		// narrower "no handler races the UA click".
+		// This is still the ONE test that exercises the real producer→host wiring
+		// end to end: the strip's unit tests mock the event bus and the host's tests
+		// emit on the bus directly, so between them a broken `hostToken` thread
+		// through ItemDetail would pass everything. Only a real page has a real
+		// ItemDetail minting a real token — and "activates exactly once per key
+		// press" (DR-12) can only be shown where the UA synthesises the activation
+		// click, which jsdom does not.
 		await page.setViewportSize(DESKTOP);
 		await browserLogin(page);
 
-		const doc = await seedDoc(fixture, request, 'Panel wiring');
+		const doc = await seedDoc(fixture, request, 'Surface wiring');
 		await uploadTextTo(fixture, request, doc.id, 'notes.txt');
 
 		await page.goto(itemUrl(fixture, doc.slug));
@@ -341,47 +352,58 @@ test.describe('item attachment strip', () => {
 		await expect(tile).toHaveAttribute('aria-label', /^Options for notes\.txt/);
 
 		await tile.click();
-		const panel = page.locator('[role="menu"]').filter({ hasText: 'notes.txt' });
-		await expect(panel).toBeVisible();
-		// Download is a REAL anchor carrying the filename: the server sends an
-		// inline disposition for most types, so a plain navigation would view
-		// rather than save (DR-16).
-		const download = panel.getByRole('menuitem', { name: 'Download' });
-		await expect(download).toHaveJSProperty('tagName', 'A');
-		await expect(download).toHaveAttribute('download', 'notes.txt');
-		// text/plain is browser-previewable, so Open is offered.
-		await expect(panel.getByRole('menuitem', { name: 'Open in new tab' })).toBeVisible();
+		// The converged surface opens — a role="dialog" naming the file, NOT a menu.
+		const surface = viewerDialog(page, 'notes.txt');
+		await expect(surface).toHaveCount(1);
+		await expect(page.locator('[role="menu"]')).toHaveCount(0);
+		// The no-bytes fallback arm: the family icon, the file's name, an honest
+		// "No preview available" — no <img>, no bytes for a non-raster type.
+		await expect(page.locator(VIEWER_FALLBACK)).toBeVisible();
+		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('notes.txt');
+		await expect(page.locator(VIEWER_FALLBACK_NOTE)).toHaveText('No preview available');
+		await expect(page.locator(`${VIEWER} .lightbox-image`)).toHaveCount(0);
+		// The toolbar carries the real Download anchor with the filename — the DR-16
+		// save semantics a plain navigation would lose. text/plain is
+		// browser-previewable, so Open in new tab is offered too.
+		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'notes.txt');
+		await expect(viewerOpenAnchor(page)).toBeVisible();
 
 		await page.keyboard.press('Escape');
-		await expect(panel).toHaveCount(0);
+		await expect(page.locator(VIEWER)).toHaveCount(0);
 
-		// Keyboard activation, for real this time: focus the tile and press each
-		// key. Exactly one panel opens per press — two would mean a hand-rolled
-		// handler firing alongside the UA's activation click.
+		// Keyboard activation, for real: focus the tile and press each key. EXACTLY
+		// ONE NAMED surface opens per press and NO menu — two viewers, or a leftover
+		// menu, would mean a hand-rolled handler firing alongside the UA's activation
+		// click (DR-12). Asserting the count AND the named dialog AND zero menus is
+		// what rules out a duplicate activation a bare count would miss.
 		for (const key of ['Enter', ' ']) {
 			await tile.focus();
 			await page.keyboard.press(key);
-			await expect(page.locator('[role="menu"]')).toHaveCount(1);
-			await page.keyboard.press('Escape');
+			await expect(viewerDialog(page, 'notes.txt')).toHaveCount(1);
+			await expect(page.locator(VIEWER)).toHaveCount(1);
 			await expect(page.locator('[role="menu"]')).toHaveCount(0);
+			await page.keyboard.press('Escape');
+			await expect(page.locator(VIEWER)).toHaveCount(0);
 		}
 	});
 
-	test('an editor file chip opens the same panel as a strip tile (PLAN-2392 DR-2)', async ({
+	test('an editor file chip opens the same SURFACE as a strip tile (PLAN-2392 3c-ii DR-2)', async ({
 		page,
 		fixture,
 		request
 	}, testInfo) => {
 		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop-only surface');
 
-		// The chip half of "the same panel wherever you meet an attachment".
-		// Unit coverage stops at the seam on both sides — the chip's tests mock
-		// the event bus and the host's inject events directly — so only a real
-		// page proves a real NodeView reaches a real host through the real bus.
+		// FALSIFIED + REWRITTEN: the chip half of "the same surface wherever you
+		// meet an attachment". Post-convergence the chip emits on the surface
+		// channel too, so a real NodeView reaches the ONE host through the real bus
+		// and opens the SAME `role="dialog"` a strip tile does — not a menu. Unit
+		// coverage stops at the seam on both sides (the chip's tests mock the bus,
+		// the host's inject events directly), so only a real page proves the thread.
 		await page.setViewportSize(DESKTOP);
 		await browserLogin(page);
 
-		const doc = await seedDoc(fixture, request, 'Chip panel wiring');
+		const doc = await seedDoc(fixture, request, 'Chip surface wiring');
 		await page.goto(itemUrl(fixture, doc.slug));
 
 		// Drop a NON-image so the editor renders a file chip rather than an
@@ -396,14 +418,16 @@ test.describe('item attachment strip', () => {
 		const chip = page.locator('.editor-content .ProseMirror button.file-chip').first();
 		await expect(chip).toBeVisible();
 		// A button, not a link: an anchor left the URL reachable by middle-click,
-		// straight past the panel (DR-12).
+		// straight past the surface (DR-12).
 		await expect(chip).toHaveJSProperty('tagName', 'BUTTON');
 
 		await chip.click();
-		const panel = page.locator('[role="menu"]').filter({ hasText: 'handbook.txt' });
-		await expect(panel).toBeVisible();
-		const download = panel.getByRole('menuitem', { name: 'Download' });
-		await expect(download).toHaveJSProperty('tagName', 'A');
-		await expect(download).toHaveAttribute('download', 'handbook.txt');
+		// The same converged surface, addressed by the file's own name.
+		await expect(viewerDialog(page, 'handbook.txt')).toHaveCount(1);
+		await expect(page.locator('[role="menu"]')).toHaveCount(0);
+		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('handbook.txt');
+		// The Download anchor carries the filename — even though a dropped chip's
+		// metadata may be partial, the download attribute is never dropped (DR-16).
+		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'handbook.txt');
 	});
 });

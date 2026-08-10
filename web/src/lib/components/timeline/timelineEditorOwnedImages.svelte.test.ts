@@ -21,20 +21,26 @@
 // this file exists rather than another stand-in.
 //
 // The two viewers are distinguishable, which is what makes "exactly once"
-// observable: the NodeView emits an open-viewer REQUEST on the shared channel
-// (TASK-2433 deleted its hand-rolled `<dialog>`; an `AttachmentViewerHost` owned
-// by `ItemDetail` mounts the one `Lightbox` in response, and no `ItemDetail` is
-// mounted here), while the timeline mounts `Lightbox` itself
-// (`.lightbox-backdrop`). Requests are counted off the REAL bus, addressability
+// observable — but they are now the SAME kind of event on the SAME channel
+// (TASK-2489 T4a). BOTH producers emit `notifyAttachmentSurfaceOpen` on the one
+// unified surface channel: the NodeView emits a surface request (TASK-2433
+// deleted its hand-rolled `<dialog>`; an `AttachmentSurfaceHost` owned by
+// `ItemDetail` mounts the one surface in response, and none is mounted here),
+// and the timeline ALSO emits a surface request now (invoker = the clicked body
+// `<img>`) instead of mounting `Lightbox` itself — so no `.lightbox-backdrop`
+// appears in this file. The two are told apart by the emit's INVOKER: the
+// NodeView's invoker is editor-owned (`isEditorOwnedImage`), the timeline's is a
+// rendered body image. Requests are counted off the REAL bus, addressability
 // filter included — this file's whole premise is that nothing is restated.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount, tick } from 'svelte';
 import type { Comment, TimelineEntry, TimelineResponse } from '$lib/types';
 import { __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
 import {
-	isAttachmentViewerEventForHost,
-	registerAttachmentViewerListener,
+	isAttachmentSurfaceEventForHost,
+	registerAttachmentSurfaceListener,
 } from '$lib/attachments/events';
+import { isEditorOwnedImage } from '$lib/attachments/editorOwnedImage';
 import { _resetEscapeStackForTests } from '$lib/stores/escapeStack';
 
 const PNG = '11111111-1111-4111-8111-111111111111';
@@ -169,26 +175,30 @@ function bodyImage(): HTMLElement {
 	return el;
 }
 
-/** Open-viewer requests the NodeView put on the bus, in this test's lifetime. */
-let nodeRequests: unknown[] = [];
+/** Open-surface requests either producer put on the bus, in this test's lifetime. */
+let surfaceRequests: import('$lib/attachments/events').AttachmentSurfaceOpenEvent[] = [];
 let disposeViewerListener: (() => void) | null = null;
 
 /**
- * Counted per owner so a double-open is visible. NOTE THE ASYMMETRY, which is
- * the shape of the change rather than a shortcut: `timeline` counts viewers
- * actually mounted, because ItemTimeline still mounts `Lightbox` itself, while
- * `node` counts open-viewer REQUESTS addressed to this host, because the
- * NodeView no longer mounts anything — an `ItemDetail`-owned
- * `AttachmentViewerHost` does, and no `ItemDetail` is mounted in this file.
- * A request that would reach that host is the strongest statement available
- * here; the request-to-viewer half is
+ * Counted per owner so a double-open is visible. BOTH producers now emit on the
+ * ONE unified surface channel (TASK-2489 T4a) — the NodeView no longer mounts
+ * anything (an `ItemDetail`-owned `AttachmentSurfaceHost` does, and none is
+ * mounted here) and the timeline no longer mounts its own `Lightbox` either, so
+ * `.lightbox-backdrop` never appears in this file. The two are therefore told
+ * apart NOT by where a viewer got mounted but by the emit's INVOKER: the
+ * NodeView's invoker is editor-owned (`isEditorOwnedImage`), the timeline's is a
+ * rendered body image. A request that would reach the host is the strongest
+ * statement available here; the request-to-viewer half is
  * `editor/attachmentImageViewerHost.svelte.test.ts`'s.
  */
 function viewers() {
-	return {
-		node: nodeRequests.length,
-		timeline: document.querySelectorAll('.lightbox-backdrop').length,
-	};
+	let node = 0,
+		timeline = 0;
+	for (const e of surfaceRequests) {
+		if (e.invoker && isEditorOwnedImage(e.invoker as HTMLElement)) node++;
+		else timeline++;
+	}
+	return { node, timeline };
 }
 
 /**
@@ -231,19 +241,19 @@ describe('ItemTimeline vs. a live editor inside it', () => {
 		commentUpdateMock.mockReset();
 		commentUpdateMock.mockResolvedValue(undefined);
 		props.visibleKinds = undefined;
-		nodeRequests = [];
+		surfaceRequests = [];
 		// The REAL channel, not a mock: an event that fails its addressability
 		// check reaches no host at runtime either, and counting pre-filter
 		// emissions would score a misaddressed request as a viewer the user can
 		// see. `hostToken` is set on the props for the same reason.
-		disposeViewerListener = registerAttachmentViewerListener((event) => {
-			// Addressed to THIS host, by the same predicate `AttachmentViewerHost`
+		disposeViewerListener = registerAttachmentSurfaceListener((event) => {
+			// Addressed to THIS host, by the same predicate `AttachmentSurfaceHost`
 			// uses. A raw count would score a misaddressed request as a viewer the
 			// user can see, when at runtime it reaches nobody.
-			if (!isAttachmentViewerEventForHost(event, { itemId: 'item-a', hostToken: 'host-1' })) {
+			if (!isAttachmentSurfaceEventForHost(event, { itemId: 'item-a', hostToken: 'host-1' })) {
 				return;
 			}
-			nodeRequests.push(event);
+			surfaceRequests.push(event);
 		});
 		host = document.body.appendChild(document.createElement('div'));
 		app = mount(ItemTimeline, { target: host, props }) as Record<string, unknown>;
@@ -255,8 +265,10 @@ describe('ItemTimeline vs. a live editor inside it', () => {
 		app = null;
 		disposeViewerListener?.();
 		disposeViewerListener = null;
-		nodeRequests = [];
+		surfaceRequests = [];
 		host.remove();
+		// Defensive: no `.lightbox-backdrop` is mounted in this file anymore
+		// (both producers emit on the surface channel), but harmless to sweep.
 		document.querySelectorAll('.lightbox-backdrop').forEach((d) => d.remove());
 	});
 

@@ -50,7 +50,7 @@ import {
 	fetchAttachmentMetadata
 } from './attachment-metadata';
 import {
-	notifyAttachmentPanelOpen,
+	notifyAttachmentSurfaceOpen,
 	registerAttachmentDeletionListener
 } from '$lib/attachments/events';
 import {
@@ -86,8 +86,8 @@ export interface AttachmentChipOptions {
 	workspaceSlug: string;
 	/**
 	 * Reads the host address (item + owning `ItemDetail` mount) to stamp on
-	 * open-panel events (PLAN-2392 DR-8). A reader rather than two strings
-	 * because one host is reused across an item switch and Tiptap options
+	 * attachment surface open events (PLAN-2392 DR-8). A reader rather than two
+	 * strings because one host is reused across an item switch and Tiptap options
 	 * cannot be written after configure — see `$lib/attachments/hostAddress`.
 	 */
 	address: AttachmentHostAddressReader;
@@ -374,10 +374,10 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			 * hence a reader. See `$lib/attachments/hostAddress`.
 			 *
 			 * An UNADDRESSED editor (no host token — no `ItemDetail` above it)
-			 * emits nothing: `notifyAttachmentPanelOpen` drops it rather than
+			 * emits nothing: `notifyAttachmentSurfaceOpen` drops it rather than
 			 * broadcasting to every mounted host, which is DR-8's whole point.
 			 * Every live mount site threads the address; a surface that doesn't
-			 * has no panel to open.
+			 * has no host to open on.
 			 *
 			 * Reads `currentUuid` (mutable) so a peer Yjs op swapping the chip's
 			 * target is honoured at activation time.
@@ -385,11 +385,29 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			const openPanel = (): void => {
 				if (!currentUuid || deleted) return;
 				const address = this.options.address();
-				notifyAttachmentPanelOpen({
+				// The unified surface as a SINGLE-attachment open (T4a: panel →
+				// surface). `workspaceSlug` is CAPTURED from the live address at emit —
+				// the pane can switch workspace under an open surface; `wrapper` becomes
+				// the surface's `invoker` (focus-return only). Seeds may be null (the
+				// chip's HEAD probe may not have resolved — DR-2); the surface fills them.
+				notifyAttachmentSurfaceOpen({
 					attachmentId: currentUuid,
+					workspaceSlug: address.workspaceSlug,
 					itemId: address.itemId,
 					hostToken: address.hostToken,
-					anchor: wrapper,
+					images: [
+						{
+							id: currentUuid,
+							alt: displayFilename(currentFilename || null),
+							filename: currentFilename || null,
+							mime_type: currentMime,
+							size_bytes: currentSize,
+							width: null,
+							height: null,
+						},
+					],
+					index: 0,
+					invoker: wrapper,
 					filename: currentFilename || null,
 					mime_type: currentMime,
 					size_bytes: currentSize,

@@ -1,8 +1,9 @@
 /**
  * The attachment surface's metadata machine (PLAN-2392 3c-i / TASK-2473),
- * lifted VERBATIM from `AttachmentDetailsPanel.svelte`'s internals so the panel
- * and — later — the converged viewer share ONE implementation rather than a
- * copy each.
+ * lifted VERBATIM from the options panel's internals so the panel and the
+ * converged surface shared ONE implementation rather than a copy each. The panel
+ * was retired in the T2b cutover (TASK-2488); the sole consumer now is the grown
+ * `Lightbox`, and this module is where the machine lives so it cannot drift.
  *
  * SEED THEN FETCH (DR-2, DR-10). A surface opens IMMEDIATELY with whatever the
  * open event carried (a list row has all three fields; a chip may have none)
@@ -69,6 +70,15 @@ export interface SurfaceMetadataAddress {
 	parentArchived: boolean;
 	/** Host revalidate signal — a bump forces an invalidate-then-fetch (DR-14). */
 	revalidateToken: number;
+	/**
+	 * Per-OPEN nonce (PLAN-2392 3c-ii T6). The host mints a fresh value each time
+	 * it accepts an open request; it joins the SUBJECT identity below (not the
+	 * reload stamp), so a reopen of the same (ws, att) is a new subject and the
+	 * OPENED entry gets exactly one forced `no-store` probe. Constant across the
+	 * navigations within one open, so arrowing does not force (3c-iii owns
+	 * navigation-step revalidation).
+	 */
+	openNonce: number;
 }
 
 /** The settled metadata state a renderer branches on. */
@@ -104,7 +114,12 @@ export function createSurfaceMetadata(
 ): SurfaceMetadata {
 	const identity = viewIdentity(() => {
 		const a = address();
-		return { ws: a.ws, att: a.attachmentId };
+		// The open-nonce joins the subject identity (T6): the host mints a fresh one
+		// per accepted open, so a REOPEN of the same (ws, att) is a genuinely new
+		// subject rather than a same-subject reload. It is CONSTANT within one open
+		// (navigation keeps it), so while a surface is up the fences key on exactly
+		// the (ws, att) they did before — no behavioral change mid-open.
+		return { ws: a.ws, att: a.attachmentId, nonce: String(a.openNonce) };
 	});
 	// 1. Request fence — restarted per read, so a Retry supersedes its predecessor.
 	const loadFence = createFence(identity);
@@ -121,6 +136,19 @@ export function createSurfaceMetadata(
 	// Seeded from the incoming token so a host that already bumped its counter
 	// doesn't read as a pending reload on the first render.
 	let seenReload = untrack(() => `${address().revalidateToken}:0`);
+	// The open-nonce this machine has already forced a probe for (T6). A nonce it
+	// has NOT seen is a fresh open, and the opened entry gets exactly one forced
+	// `no-store` probe; arrowing keeps the nonce, so navigation does not force.
+	//
+	// Deliberately NOT seeded from the incoming value, UNLIKE `seenReload` above:
+	// the reload stamp seeds to SWALLOW a pre-mount host bump (so an
+	// already-bumped revalidateToken doesn't read as a pending reload on first
+	// render — the trap documented at the retired AttachmentPanelHost.svelte:128);
+	// the nonce must do the OPPOSITE — always force on the first nonce it sees —
+	// because always-revalidate-on-open is the guarantee. The {#key request} host
+	// remounts this machine per open, so `null` here reliably forces the opened
+	// entry.
+	let forcedNonce: number | null = null;
 
 	// What the server told us, filling the gaps the event left.
 	let fetchedMime = $state<string | null>(null);
@@ -151,6 +179,7 @@ export function createSurfaceMetadata(
 		const seedSize = a.seed.size_bytes;
 		const reloadStamp = `${a.revalidateToken}:${forceReload}`;
 		const archivedParent = a.parentArchived;
+		const nonce = a.openNonce;
 
 		let forced = false;
 		untrack(() => {
@@ -182,6 +211,19 @@ export function createSurfaceMetadata(
 				// to the retryable error, not sit on "no longer available" (DR-10).
 				missing = false;
 			}
+			// Always-revalidate-on-open (T6): a nonce this machine has not forced for
+			// yet is a fresh open — force one `no-store` probe of the OPENED entry.
+			// Gated on exactly the probe's own precondition (`isOpen && req.key !==
+			// null`, the early-return below), so the nonce is consumed only when a probe
+			// will actually run: a not-yet-open or not-yet-addressable subject must not
+			// burn the nonce and leave a later real open (same nonce) taking the
+			// fast-path with no forced probe. Navigation keeps the nonce, so this lands
+			// once per open. Same `missing` reset as the reload path, for the same reason.
+			if (isOpen && req.key !== null && nonce !== forcedNonce) {
+				forcedNonce = nonce;
+				forced = true;
+				missing = false;
+			}
 		});
 
 		if (!isOpen || req.key === null) return;
@@ -207,7 +249,9 @@ export function createSurfaceMetadata(
 			// The workspace comes off the TOKEN, not the live prop: the request must
 			// name the workspace it was issued for even if the surface has moved on.
 			const result = forced
-				? await revalidateAttachmentMetadata(req.value.ws, req.value.att, downloadUrl)
+				? await revalidateAttachmentMetadata(req.value.ws, req.value.att, downloadUrl, {
+						cache: 'no-store',
+					})
 				: await fetchAttachmentMetadata(req.value.ws, req.value.att, downloadUrl);
 			clearTimeout(slowTimer);
 			if (req.stale()) return;

@@ -4,7 +4,7 @@
 // absence and a behavioural test cannot see one. TASK-2433 deleted
 // `openImageLightbox` / `closeLightbox` — a hand-rolled `<dialog>` the NodeView
 // appended to `document.body` and `showModal()`d — and routed activation onto
-// the viewer channel instead, so the `Lightbox` that `AttachmentViewerHost`
+// the surface channel instead, so the `Lightbox` that `AttachmentViewerHost`
 // mounts is the only viewer on THIS route. Everything the modal contract is
 // made of lives there: the lease-stacked backdrop, the focus trap and restore, the Escape
 // ordering, and the DR-16 filter re-applied over the whole set.
@@ -122,11 +122,11 @@ describe('attachment-image.ts defines no overlay of its own', () => {
 		expect(source).not.toMatch(/openImageLightbox|closeLightbox|attachment-image-lightbox/);
 	});
 
-	it('routes activation through the viewer channel instead', () => {
+	it('routes activation through the surface channel instead', () => {
 		// The other half of the same claim: "no overlay" is only the right
-		// absence if something else opens the viewer. A file that deleted the
+		// absence if something else opens the surface. A file that deleted the
 		// dialog and emitted nothing satisfies every assertion above.
-		expect(source).toMatch(/notifyViewerOpen\(/);
+		expect(source).toMatch(/notifyAttachmentSurfaceOpen\(/);
 	});
 
 	it('leaves no reference to the lightbox class anywhere in the app', () => {

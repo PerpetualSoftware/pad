@@ -3,10 +3,14 @@ import type { APIRequestContext, Page } from '@playwright/test';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
 import {
 	DESKTOP,
+	REAL_PDF,
 	REAL_PNG,
 	TILE,
 	VIEWER,
 	VIEWER_COUNTER,
+	VIEWER_FALLBACK,
+	VIEWER_FALLBACK_NAME,
+	VIEWER_FALLBACK_NOTE,
 	VIEWER_IMAGE,
 	authJson,
 	createCollection,
@@ -14,10 +18,13 @@ import {
 	deleteCollection,
 	deleteWorkspace,
 	dropFileIntoEditor,
+	escapeRe,
 	itemUrl,
 	postComment,
 	uploadAttachment,
 	viewerClose,
+	viewerDelete,
+	viewerDialog,
 	viewerNext,
 	viewerPrev
 } from './lib/attachment-viewer';
@@ -214,6 +221,58 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 		);
 	});
 
+	test('surface 5 — a strip FILE tile (the converged file route)', async ({ page, fixture, request }) => {
+		// The producer taxonomy GROWS the file route (PLAN-2392 3c-ii). The four
+		// surfaces above are all IMAGE producers reaching the raster arm; convergence
+		// adds a fifth path — a non-image tile emitting on the SAME surface channel,
+		// through the SAME host, onto the SAME `Lightbox`, drawing the no-bytes
+		// fallback arm. A single-item set, so ←/→ are no-ops (no counter, no nav) —
+		// asserted, since a future producer assembling a file set here would change
+		// what paging does. Escape / backdrop / Close all dismiss, exactly as for an
+		// image, because the modal chrome is shared.
+		await browserLogin(page);
+		const doc = await seedDoc(fixture, request, 'Parity file route');
+		await uploadAttachment(fixture, request, doc.id, 'route.pdf', 'application/pdf', REAL_PDF);
+		await page.goto(itemUrl(fixture, doc.slug));
+		const tile = page.locator(`${TILE}[aria-label*="route.pdf"]`);
+		await expect(tile).toBeVisible();
+
+		const open = async () => {
+			await tile.click();
+			await expect(viewerDialog(page, 'route.pdf')).toHaveCount(1);
+			// The fallback arm, not the raster arm: name + honest note, no <img>.
+			await expect(page.locator(VIEWER_FALLBACK)).toBeVisible();
+			await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('route.pdf');
+			await expect(page.locator(VIEWER_FALLBACK_NOTE)).toHaveText('No preview available');
+			await expect(page.locator(VIEWER_IMAGE)).toHaveCount(0);
+		};
+
+		// OPEN + ←/→ no-ops on the single-item file set.
+		await open();
+		await expect(page.locator(VIEWER_COUNTER)).toHaveCount(0);
+		await expect(viewerNext(page)).toHaveCount(0);
+		await expect(viewerPrev(page)).toHaveCount(0);
+		await page.keyboard.press('ArrowRight');
+		await page.keyboard.press('ArrowLeft');
+		await expect(page.locator(VIEWER)).toHaveCount(1);
+		await expect(page.locator(VIEWER_FALLBACK)).toBeVisible();
+
+		// ESCAPE
+		await page.keyboard.press('Escape');
+		await expect(page.locator(VIEWER)).toHaveCount(0);
+
+		// BACKDROP CLICK — the stage overlays are pointer-events:none, so a click on
+		// the empty area (including over the centred fallback) reaches the backdrop.
+		await open();
+		await page.locator(VIEWER).click({ position: { x: 4, y: 4 } });
+		await expect(page.locator(VIEWER)).toHaveCount(0);
+
+		// CLOSE BUTTON
+		await open();
+		await viewerClose(page).click();
+		await expect(page.locator(VIEWER)).toHaveCount(0);
+	});
+
 	test('Enter and Space open an inline image; a MODIFIED Enter is the comment editor\'s submit', async ({
 		page,
 		fixture,
@@ -332,8 +391,18 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 			const tile = page.getByRole('button', { name: new RegExp(`^View ${escapeRe(name)},`) });
 			await expect(tile).toHaveCount(1);
 			await tile.click();
-			// EXACT: the dialog's whole accessible name is the filename.
-			await expect(page.getByRole('dialog', { name, exact: true })).toHaveCount(1);
+			// The dialog names itself for the file (3c-ii T2b): the name now LEADS with
+			// the filename and carries a `", type · size"` tail (the header), so the
+			// hostile/bidi name must survive as the ANCHORED start of the label — not a
+			// bare exact-equals, which the T2b header growth broke.
+			await expect(viewerDialog(page, name)).toHaveCount(1);
+			// ENFORCE the growth (not just tolerate it): the whole accessible name is
+			// `"<name>, <type · size>"`, so a regression back to a bare-filename label
+			// is caught here — the tolerant addressing matcher above would accept it.
+			await expect(page.locator(VIEWER)).toHaveAttribute(
+				'aria-label',
+				new RegExp(`^${escapeRe(name)}, .+`)
+			);
 			await page.keyboard.press('Escape');
 			await expect(page.locator(VIEWER)).toHaveCount(0);
 		}
@@ -560,9 +629,73 @@ test.describe('attachment viewer — four-surface parity (TASK-2436)', () => {
 		// is named for the image that opened it. An `|Attachment viewer` fallback
 		// here would let an unnamed viewer satisfy the assertion.
 		await expect(page.locator(VIEWER)).toHaveCount(1);
-		await expect(
-			page.getByRole('dialog', { name: 'master-inline.png', exact: true })
-		).toHaveCount(1);
+		// Named for the image that opened it (3c-ii T2b: name leads with the file,
+		// tail is type · size). An `|Attachment viewer` fallback here would let an
+		// unnamed viewer satisfy the assertion; the anchored name rejects that.
+		await expect(viewerDialog(page, 'master-inline.png')).toHaveCount(1);
+	});
+
+	test('the PEEKED master withholds Delete while the ACTIVE pane opens the surface, and a peeked-side open UN-PEEKS (dual-host addressing)', async ({
+		page,
+		fixture,
+		request
+	}) => {
+		// The dual-`ItemDetail` peeked case (PLAN-2392 3c-ii T7). Two hosts co-exist —
+		// the master and the pane, here on DIFFERENT items — and the module-global
+		// surface bus addresses by `{itemId, hostToken}`, so an open FROM THE PANE must
+		// mount in exactly ONE host. This proves the pane-side routing (the surviving
+		// viewer is the pane's, and the count catches any host that wrongly ALSO
+		// mounts — the two hosts differ by item, so the address must resolve to one),
+		// the peeked master's withheld Delete, and — asserted, not fought — the
+		// invisible-freeze rule that interacting with a peeked control ACTIVATES that
+		// side (BUG-2263), so a peeked-side open un-peeks and its viewer is the
+		// now-active side's, Delete and all. (The `hostToken` half — two hosts on the
+		// SAME item — is exercised by the module-level addressing unit tests; here the
+		// items differ, so this leg is the item-identity + no-double-mount proof.)
+		await browserLogin(page);
+		const master = await seedDoc(fixture, request, 'Peek master');
+		const related = await seedDoc(fixture, request, 'Peek related');
+		await uploadAttachment(fixture, request, master.id, 'master-peek.png');
+		await uploadAttachment(fixture, request, related.id, 'pane-peek.png');
+
+		await page.goto(`${itemUrl(fixture, master.slug)}?item=${encodeURIComponent(related.slug)}`);
+		const pane = page.locator('.item-pane');
+		const masterHost = page.locator('.item-page-host > .item-page');
+		await expect(pane).toBeVisible();
+		// Click INTO the pane → the master freezes into the peeking state.
+		await pane.locator('.editor-wrapper .ProseMirror').first().click();
+		await expect(masterHost.locator('.editor-wrapper .ProseMirror').first()).toHaveAttribute(
+			'contenteditable',
+			'false'
+		);
+
+		// The peeked master's strip still SHOWS its tile (a read affordance) but its
+		// delete control is GONE — `mutationsEnabled=false` reached the peeked side.
+		await expect(masterHost.locator(TILE)).toHaveCount(1);
+		await expect(masterHost.locator('.att-delete')).toHaveCount(0);
+
+		// Open from the ACTIVE pane → EXACTLY ONE viewer, the pane's image, opened by
+		// the pane host. A broken address (ignoring the token) would ALSO open the
+		// master's host → count 2. The active side owns the item, so Delete is offered.
+		await pane.locator(TILE).first().click();
+		await expect(page.locator(VIEWER)).toHaveCount(1);
+		await expect(viewerDialog(page, 'pane-peek.png')).toHaveCount(1);
+		await expect(viewerDelete(page)).toBeVisible();
+		await page.keyboard.press('Escape');
+		await expect(page.locator(VIEWER)).toHaveCount(0);
+
+		// The un-peek, ASSERTED rather than fought: clicking the peeked master's tile
+		// ACTIVATES the master before the surface captures anything, so its viewer is
+		// the now-active side's — named for the master's image, WITH Delete — and the
+		// master's editor is editable again.
+		await masterHost.locator(TILE).first().click();
+		await expect(page.locator(VIEWER)).toHaveCount(1);
+		await expect(viewerDialog(page, 'master-peek.png')).toHaveCount(1);
+		await expect(viewerDelete(page)).toBeVisible();
+		await expect(masterHost.locator('.editor-wrapper .ProseMirror').first()).toHaveAttribute(
+			'contenteditable',
+			'true'
+		);
 	});
 });
 
@@ -582,8 +715,4 @@ async function uploadAttachmentTo(
 		}
 	);
 	if (!resp.ok()) throw new Error(`upload failed (${resp.status()}): ${await resp.text()}`);
-}
-
-function escapeRe(s: string): string {
-	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

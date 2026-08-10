@@ -121,7 +121,7 @@ if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
 // jsdom has no `ResizeObserver`. The attachment viewer (`Lightbox`) observes its
 // stage to re-clamp the zoom on viewport changes, and several suites mount it —
 // directly (`Lightbox.svelte.test.ts`) and through its producers
-// (`AttachmentViewerHost`, `ItemTimeline`, `ItemAttachmentStrip`). The component
+// (`AttachmentSurfaceHost`, `ItemTimeline`, `ItemAttachmentStrip`). The component
 // GUARDS on `typeof ResizeObserver === 'undefined'` (for SSR), so without this
 // shim it would not throw — it would simply SKIP the observer branch entirely,
 // leaving the resize path untested and unexercised in every suite that mounts

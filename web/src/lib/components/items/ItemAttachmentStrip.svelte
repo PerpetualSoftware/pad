@@ -53,18 +53,17 @@
 	import AttachmentDeleteConfirm, {
 		attachmentDeletePrompt,
 	} from '$lib/components/attachments/AttachmentDeleteConfirm.svelte';
-	import Lightbox from '$lib/components/common/Lightbox.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import {
 		announceAttachmentDeleted,
-		notifyAttachmentPanelOpen,
+		notifyAttachmentSurfaceOpen,
 		registerAttachmentDeletionListener,
 		registerAttachmentUploadListener,
-		// The viewer's image shape lives on the channel, not on the component
-		// (TASK-2431) — one declaration for the direct mounts and the bus alike.
-		// A type-only import, so the test's module mock is unaffected.
+		// The surface set's image shape lives on the channel, not on the component
+		// (TASK-2431 / T4a) — one declaration for every producer. A type-only
+		// import, so the test's module mock is unaffected.
 		type LightboxImage,
 	} from '$lib/attachments/events';
 	import { viewIdentity, createFence, createPaintFence } from '$lib/attachments/viewFence';
@@ -98,24 +97,13 @@
 		liveContent?: (() => string | null) | null;
 		/**
 		 * Identity of the `ItemDetail` mount that owns this strip
-		 * (PLAN-2392 DR-8 / TASK-2421). The strip is an EMITTER on the
-		 * open-panel channel, and the channel is module-global while
-		 * ItemDetail is mounted more than once (master + peeked pane) — so a
-		 * tile's event has to name its host, not just its item. Empty
-		 * disables addressing rather than broadcasting to every host.
+		 * (PLAN-2392 DR-8 / TASK-2421). The strip is an EMITTER on the attachment
+		 * surface channel, and the channel is module-global while ItemDetail is
+		 * mounted more than once (master + peeked pane) — so a tile's event has to
+		 * name its host, not just its item. Empty disables addressing rather than
+		 * broadcasting to every host.
 		 */
 		hostToken?: string;
-		/**
-		 * Viewer-toolbar context (TASK-2474), forwarded verbatim to the `Lightbox`
-		 * this strip mounts. Distinct from the tile-delete props above by design:
-		 * these carry the SAME vocabulary the panel host / viewer host use
-		 * (`mutationsEnabled` + content GETTERS), so `ItemDetail` threads one
-		 * contract to every Lightbox origin. `mutationsEnabled` defaults false →
-		 * read-only toolbar.
-		 */
-		mutationsEnabled?: boolean;
-		getItemContent?: () => string | null;
-		getLiveContent?: () => string | null;
 	}
 	let {
 		wsSlug,
@@ -125,9 +113,6 @@
 		itemContent = null,
 		liveContent = null,
 		hostToken = '',
-		mutationsEnabled = false,
-		getItemContent,
-		getLiveContent,
 	}: Props = $props();
 
 	// Hard bound on what the strip will ever hold (DR-9 / DR-11). Past this the
@@ -194,12 +179,6 @@
 
 	let attachments = $state<StripAttachment[]>([]);
 	let expanded = $state(false);
-	let lightbox = $state<{
-		images: LightboxImage[];
-		index: number;
-		/** The tile that opened it — focus goes back here on close (TASK-2431). */
-		invoker: HTMLElement | null;
-	} | null>(null);
 	/**
 	 * The delete confirmation currently on screen, if any (PLAN-2392 DR-18 /
 	 * TASK-2425). One at a time: opening a second supersedes the first, which
@@ -341,7 +320,6 @@
 				viewFence.invalidate();
 				attachments = [];
 				expanded = false;
-				lightbox = null;
 				// A confirmation left up for a row the user is no longer looking
 				// at must go with it — confirming it after the switch would
 				// DELETE the previous view's attachment from behind the new one
@@ -708,16 +686,37 @@
 	);
 
 	/**
-	 * `invoker` is the tile's own button — the viewer returns focus to it on
-	 * close. It has to be passed rather than inferred: `Lightbox` falls back to
-	 * whatever held focus at open, which is right for a click but says nothing
-	 * useful when the open came from somewhere else, and the fallback runs
-	 * AFTER the viewer's own focus entry in some orders.
+	 * An image tile opens the unified surface (T4a) on the strip's viewable set,
+	 * paging through its sibling images. Emits on the surface channel now rather
+	 * than mounting `Lightbox` directly — the host owns the mount + lifecycle, and
+	 * the event snapshot IS the capture (a later re-sort of `lightboxImages` can't
+	 * reach the open set).
+	 *
+	 * ENTRY-fenced (T4a): the clicked tile was painted for `paint`'s identity while
+	 * `wsSlug` / `itemId` are live and may already name a different view — a stale
+	 * activation after a workspace / item switch must not emit. `workspaceSlug` is
+	 * CAPTURED here for the same reason (DR-16): read live by the host it could
+	 * serve ws1's set from ws2's endpoint. `invoker` is the tile's own button — the
+	 * surface returns focus to it on close; passed rather than inferred because the
+	 * surface's held-focus-at-open fallback runs after its own focus entry.
 	 */
 	function openLightbox(att: StripAttachment, invoker: HTMLElement | null = null) {
+		if (!paint.isCurrent()) return;
 		const index = lightboxImages.findIndex((img) => img.id === att.id);
 		if (index < 0) return;
-		lightbox = { images: lightboxImages, index, invoker };
+		const target = lightboxImages[index];
+		notifyAttachmentSurfaceOpen({
+			attachmentId: att.id,
+			workspaceSlug: wsSlug,
+			itemId: itemId ?? '',
+			hostToken,
+			images: lightboxImages,
+			index,
+			invoker,
+			filename: target.filename,
+			mime_type: target.mime_type,
+			size_bytes: target.size_bytes,
+		});
 	}
 
 	/** What the file IS — the tooltip, and the base of the accessible name. */
@@ -738,30 +737,46 @@
 	}
 
 	/**
-	 * A file tile opens the options panel instead of downloading (DR-1).
+	 * A file tile opens the unified surface as a SINGLE-attachment open instead of
+	 * downloading (DR-1) — the file's fallback arm + toolbar. Emits on the surface
+	 * channel now (T4a: panel → surface); the `anchor` becomes the surface's
+	 * `invoker` (focus-return only — the converged surface is centered, not
+	 * anchored).
 	 *
 	 * ENTRY-fenced for the same reason `requestDelete` is: the clicked tile was
-	 * painted for `paint`'s identity, while `itemId` is live and may already
-	 * name a different view. `itemId` is the event's ROUTING field — which
-	 * `ItemDetail` mount shows the panel — so a stale click would open this
-	 * attachment's panel over a different item's pane.
-	 *
-	 * `anchor` is the tile itself: the panel positions against it and returns
-	 * focus to it on close, which is what makes keyboard activation land
-	 * somewhere sensible.
+	 * painted for `paint`'s identity, while `itemId` / `wsSlug` are live and may
+	 * already name a different view. `itemId` is the event's ROUTING field, so a
+	 * stale click would open over a different item's pane; `workspaceSlug` is
+	 * captured here (DR-16).
 	 */
 	function openOptions(att: StripAttachment, anchor: HTMLElement | null) {
 		if (!paint.isCurrent()) return;
-		notifyAttachmentPanelOpen({
+		notifyAttachmentSurfaceOpen({
 			attachmentId: att.id,
+			workspaceSlug: wsSlug,
 			itemId: itemId ?? '',
 			hostToken,
-			anchor,
-			// The strip always has all three from its list row — unlike an
-			// editor chip, whose HEAD probe may not have resolved (DR-2).
-			filename: att.filename,
+			images: [
+				{
+					id: att.id,
+					alt: displayFilename(att.filename),
+					filename: att.filename || null,
+					mime_type: att.mime_type,
+					size_bytes: att.size_bytes ?? null,
+					width: att.width ?? null,
+					height: att.height ?? null,
+				},
+			],
+			index: 0,
+			invoker: anchor,
+			// The strip always has all three from its list row — unlike an editor
+			// chip, whose HEAD probe may not have resolved (DR-2). Normalized to match
+			// images[0] EXACTLY (`filename || null`): a blank filename as `''` on the
+			// flat seed but `null` on the record would fail the notify consistency
+			// check and drop the open.
+			filename: att.filename || null,
 			mime_type: att.mime_type,
-			size_bytes: att.size_bytes,
+			size_bytes: att.size_bytes ?? null,
 		});
 	}
 
@@ -1098,38 +1113,11 @@
 {/if}
 
 <!--
-	Keyed per open (TASK-2431), the shape `AttachmentViewerHost` uses. `Lightbox`
-	seeds its INDEX once through `untrack`, so replacing `lightbox` while a
-	viewer is already up would reuse the instance and open the new set at the old
-	position. (Its MIME filter is `$derived` and would re-answer on its own —
-	the index is what cannot.) Nothing reaches that state today, the open viewer
-	being inert over everything that could cause it, which is why this belongs in
-	the structure rather than resting on a fact about the current UI.
-
-	Accepted cost, recorded: a keyed block DESTROYS the old instance before
-	creating the new one, so a viewer→viewer swap briefly releases the last
-	backdrop lease (un-inerting the app) and runs the old viewer's focus restore
-	before the new one takes focus. That is the same transient
-	`AttachmentViewerHost` has carried since TASK-2428, it is unreachable from
-	the UI (the open viewer inerts every control that could trigger it), and the
-	alternative — a reused instance showing a stale set — is the worse of the
-	two. Only a viewer→NULL→viewer sequence happens in practice, where the
-	release is meant to happen anyway.
+	The strip no longer mounts `Lightbox` directly (T4a, TASK-2489). Both tile
+	kinds now emit on the surface channel — `openLightbox` (image tiles) and
+	`openOptions` (file tiles) — and the ONE `AttachmentSurfaceHost` owns the mount,
+	the keyed-per-open remount, and the whole lifecycle.
 -->
-{#key lightbox}
-	{#if lightbox}
-		<Lightbox
-			images={lightbox.images}
-			index={lightbox.index}
-			{wsSlug}
-			invoker={lightbox.invoker}
-			{mutationsEnabled}
-			{getItemContent}
-			{getLiveContent}
-			onClose={() => (lightbox = null)}
-		/>
-	{/if}
-{/key}
 
 <style>
 	.attachment-strip {

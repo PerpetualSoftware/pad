@@ -90,6 +90,28 @@ export const MID_PNG = buildPng(800, 600, [90, 170, 90]);
  */
 export const HUGE_PNG = buildPng(4000, 2500, [150, 60, 150]);
 
+/**
+ * A real, allowlist-passing PDF (PLAN-2392 3c-ii T7). The server SNIFFS the
+ * bytes (`internal/attachments/mime.go`) rather than trusting the multipart
+ * Content-Type, so the fixture must carry the `%PDF-` signature `http.
+ * DetectContentType` maps to `application/pdf`. The `.pdf` extension agrees with
+ * the sniffed Document category, so `ValidateUpload` accepts it. A PDF is
+ * `canBrowserPreview` but NOT `canOpenInViewer` — the converged surface's file
+ * route: the no-bytes fallback arm WITH an Open action.
+ */
+export const REAL_PDF = Buffer.from(
+	'%PDF-1.4\n1 0 obj<< /Type /Catalog >>endobj\ntrailer<< /Root 1 0 R >>\n%%EOF\n',
+	'latin1'
+);
+/**
+ * A real, allowlist-passing ZIP (PLAN-2392 3c-ii T7). Starts with the `PK\x03\x04`
+ * local-file-header signature `http.DetectContentType` maps to `application/zip`;
+ * the `.zip` extension agrees with the sniffed Archive category. A ZIP is neither
+ * `canOpenInViewer` NOR `canBrowserPreview` — the file route WITHOUT an Open
+ * action, the negative half of the fallback-integration leg.
+ */
+export const REAL_ZIP = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(60)]);
+
 export const DESKTOP = { width: 1200, height: 900 };
 /** Below the 639.98px mobile breakpoint — BottomNav / DockedSheet branch. */
 export const MOBILE = { width: 390, height: 844 };
@@ -107,6 +129,12 @@ export const VIEWER_IMAGE = `${VIEWER} .lightbox-image`;
 export const VIEWER_COUNTER = `${VIEWER} .lightbox-counter`;
 /** The zoom/pan stage (the letterbox around the image). */
 export const VIEWER_STAGE = `${VIEWER} .lightbox-stage`;
+/**
+ * The PHONE-SHEET root (PLAN-2392 3c-ii / T5). The `.lightbox-sheet` class rides
+ * the SAME element as the viewer root — toggled off `viewport.isMobile` — so the
+ * sheet layout is a class fact on the dialog, addressable alongside the role.
+ */
+export const VIEWER_SHEET = '.attachment-viewer.lightbox-sheet[role="dialog"]';
 
 /** The viewer's controls, addressed by the accessible names TASK-2429 gave them. */
 export const viewerClose = (page: Page) => page.locator(VIEWER).getByRole('button', { name: 'Close' });
@@ -129,6 +157,9 @@ export const VIEWER_META_NAME = `${VIEWER} .lightbox-meta-name`;
 export const VIEWER_META_DETAIL = `${VIEWER} .lightbox-meta-detail`;
 export const VIEWER_FALLBACK = `${VIEWER} .lightbox-fallback`;
 export const VIEWER_FALLBACK_NAME = `${VIEWER} .lightbox-fallback-name`;
+export const VIEWER_FALLBACK_NOTE = `${VIEWER} .lightbox-fallback-note`;
+/** The single-item metadata-404 "no longer available" arm (soleMissing). */
+export const VIEWER_MISSING = `${VIEWER} .lightbox-missing`;
 export const VIEWER_DELETE_CONFIRM = `${VIEWER} .lightbox-delete-confirm`;
 
 /** Open in new tab — a real anchor (role "link"), so href/target are assertable. */
@@ -149,6 +180,26 @@ export const viewerConfirmDeleteRow = (page: Page) =>
 	page.locator(VIEWER_DELETE_CONFIRM).getByRole('menuitem', { name: 'Delete file' });
 export const viewerConfirmCancelRow = (page: Page) =>
 	page.locator(VIEWER_DELETE_CONFIRM).getByRole('menuitem', { name: 'Cancel' });
+
+/** Escape a filename for use inside a `RegExp` accessible-name match. */
+export function escapeRe(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * The viewer dialog addressed BY its displayed file NAME (PLAN-2392 3c-ii T2b).
+ *
+ * The dialog's accessible name is no longer the bare filename — it is
+ * `"<name>, <type · size>"` (the header the converged surface shows), so an
+ * `{ name, exact: true }` match now fails the instant the metadata header
+ * resolves. Anchoring a RegExp at the START of the name matches the filename and
+ * tolerates the `", type · size"` suffix, while still rejecting a truncated or
+ * mangled name and — via the `(,|$)` — a name that is only a PREFIX of a longer
+ * one. This is the one addressing helper every spec uses so the T2b label shape
+ * lives in ONE place.
+ */
+export const viewerDialog = (page: Page, name: string) =>
+	page.getByRole('dialog', { name: new RegExp(`^${escapeRe(name)}(,|$)`) });
 
 /**
  * The frontmost viewer's TABBABLE controls, in DOM (trap) order, as their

@@ -201,6 +201,11 @@ function lastFocusable(scope: HTMLElement = root()): HTMLElement {
 	return f[f.length - 1];
 }
 
+/** Whether the mobile sheet layout is selected on this root (TASK-2492 / T5). */
+function hasSheet(scope: HTMLElement = root()): boolean {
+	return scope.classList.contains('lightbox-sheet');
+}
+
 /** The `transform` inline style on the viewer's image (empty before it mounts). */
 function transformOf(scope: HTMLElement = root()): string {
 	return scope.querySelector<HTMLImageElement>('.lightbox-image')?.style.transform ?? '';
@@ -267,18 +272,25 @@ afterEach(() => {
 });
 
 describe('Lightbox — dialog semantics', () => {
-	it('is an aria-modal dialog named after the image', () => {
+	it('is an aria-modal dialog named after the image, plus its type', () => {
 		mountViewer();
 		expect(root().getAttribute('role')).toBe('dialog');
 		expect(root().getAttribute('aria-modal')).toBe('true');
-		expect(root().getAttribute('aria-label')).toBe('a diagram');
+		// The accessible name is the display name PLUS the type/size the header
+		// shows (3c-ii T2b) — computed from the same helper the component uses. Size
+		// is absent here (the seed carries none and the probe is async), so the label
+		// is "name, type".
+		const type = describeAttachmentType('image/png', null);
+		expect(root().getAttribute('aria-label')).toBe(`a diagram, ${type}`);
 	});
 
 	it('falls back to a generic name when the image has no alt', () => {
 		// An unnamed dialog is announced as nothing at all, so the fallback is
-		// part of the contract rather than a nicety.
+		// part of the contract rather than a nicety — now the display-name fallback
+		// ("Attachment") plus the type.
 		mountViewer({ images: [image(IMG_A, '')] });
-		expect(root().getAttribute('aria-label')).toBe('Attachment viewer');
+		const type = describeAttachmentType('image/png', null);
+		expect(root().getAttribute('aria-label')).toBe(`Attachment, ${type}`);
 	});
 
 	it('gives every control a real accessible name, not a glyph', () => {
@@ -308,51 +320,52 @@ describe('Lightbox — dialog semantics', () => {
 				image(IMG_B, 'second'),
 			],
 		});
-		expect(root().getAttribute('aria-label')).toBe('first');
+		const type = describeAttachmentType('image/png', null);
+		expect(root().getAttribute('aria-label')).toBe(`first, ${type}`);
 		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
 		flushSync();
-		expect(root().getAttribute('aria-label')).toBe('second');
+		expect(root().getAttribute('aria-label')).toBe(`second, ${type}`);
 	});
 });
 
-describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
+describe('Lightbox — admission and the stage arm (3c-ii T3)', () => {
 	/**
-	 * The producers filter their own sets, and these do not replace that. They
-	 * cover the case a producer's filter structurally cannot: the set is
-	 * captured at open, and ←/→ page through it for as long as the viewer is
-	 * up. Anything that arrives in the array — a stale capture, a future
-	 * producer that forgets — must still be unreachable frame by frame.
+	 * 3c-ii flips admission: the converged surface opens ANY attachment, so every
+	 * entry is navigable and safety moves to the ARM. A non-raster entry — an
+	 * unsafe/active type, a file, or a still-unresolved MIME — is KEPT and drawn as
+	 * the no-bytes icon fallback, where 3c-i dropped it. These rewrite the 3c-i
+	 * "at-open REFUSED" pins (deliberately falsified by the flip) to
+	 * admission+fallback assertions; the raster arm still only ever mounts bytes
+	 * for a positively-allowlisted RESOLVED MIME.
 	 */
 	function shown(): string {
 		return root().querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt') ?? '';
 	}
 
-	it('never shows a known non-allowlisted type, even when asked to open ON it', () => {
+	it('ADMITS a non-allowlisted type asked to open ON it, drawn as the fallback', () => {
 		mountViewer({
 			images: [image(IMG_A, 'png', 'image/png'), image(IMG_B, 'svg', 'image/svg+xml')],
 			index: 1,
 		});
-
-		// The requested image is refused, so the viewer opens on what is left
-		// rather than on the SVG — and with one member, there is no ←/→ at all.
-		expect(shown()).toBe('png');
-		expect(imageSrc()).toContain(IMG_A);
-		expect(root().querySelector('.lightbox-counter')).toBeNull();
-		expect(root().querySelector('.lightbox-nav')).toBeNull();
+		// The SVG is the requested index — no longer refused; it opens on the
+		// no-bytes fallback (no <img>), and both entries are navigable.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('2 / 2');
 	});
 
-	it('refuses an unsafe entry at open outright — NO fallback, not navigable (3a gate)', () => {
-		// TASK-2476 matrix, the security boundary: unsafe AT OPEN stays REFUSED (the
-		// 3a gate holds through 3c-i) — distinct from unsafe MID-VIEW, which is the
-		// fallback. So the SVG here is neither rendered NOR shown as a fallback, and
-		// the set is single-member.
+	it('admits an unsafe-at-open entry as a navigable fallback sibling (3c-i refusal retired)', () => {
 		mountViewer({ images: [image(IMG_A, 'png', 'image/png'), image(IMG_B, 'svg', 'image/svg+xml')] });
-		expect(root().querySelector('.lightbox-fallback')).toBeNull();
-		expect(root().querySelector('.lightbox-counter')).toBeNull();
-		expect(root().querySelector('.lightbox-image')?.getAttribute('alt')).toBe('png');
+		// Opens on A (raster); the SVG is a navigable sibling now, not dropped.
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+		expect(shown()).toBe('png');
+		press('ArrowRight');
+		// Paged onto the SVG: the fallback arm, no <img>.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
 	});
 
-	it('cannot be paged onto one with ←/→', () => {
+	it('pages onto an unsafe entry with ←/→, showing the fallback', () => {
 		mountViewer({
 			images: [
 				image(IMG_A, 'png', 'image/png'),
@@ -360,26 +373,19 @@ describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
 				image(IMG_C, 'jpeg', 'image/jpeg'),
 			],
 		});
-
-		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
-
-		const seen = [shown()];
-		for (let i = 0; i < 3; i++) {
-			press('ArrowRight');
-			seen.push(shown());
-		}
-		press('ArrowLeft');
-		seen.push(shown());
-
-		expect(seen).toEqual(['png', 'jpeg', 'png', 'jpeg', 'png']);
-		expect(seen).not.toContain('svg');
+		// All three navigable now.
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 3');
+		expect(shown()).toBe('png');
+		press('ArrowRight'); // B (svg) → fallback
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		press('ArrowRight'); // C (jpeg) → raster
+		expect(shown()).toBe('jpeg');
 	});
 
-	it('keeps the requested image when EARLIER members are filtered out', () => {
-		// The requested image is at position 1 in the given set and position 0
-		// in the filtered one. Carrying the NUMBER across — even clamped to the
-		// filtered length, which is the plausible wrong version — lands on the
-		// image after it. Only resolving by id opens what was asked for.
+	it('opens the requested image BY ID even with every member navigable', () => {
+		// index 1 names the SECOND element; with nothing filtered out it still
+		// resolves by id to that element, not a reindexed position.
 		mountViewer({
 			images: [
 				image(IMG_B, 'svg', 'image/svg+xml'),
@@ -388,56 +394,49 @@ describe('Lightbox — the last-mile open gate (TASK-2431)', () => {
 			],
 			index: 1,
 		});
-
 		expect(shown()).toBe('png');
-		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('2 / 3');
 	});
 
-	it('REFUSES an image whose type is not resolved', () => {
-		// This test previously asserted the opposite, on the reasoning that an
-		// inline image's probe is often unasked at click time. That reasoning
-		// belongs to the PRODUCER — which can wait for the probe — and asserting
-		// it HERE pinned open the exact hole the task exists to close: an emitter
-		// could hand over `[safe, unresolved]` and the user could arrow onto the
-		// unresolved one. This is the last thing between a set and a rendered
-		// image; "not yet known" is not evidence that a file is a PNG.
+	it('admits an unresolved (null-MIME) entry, showing the fallback until the probe resolves', () => {
+		// Synchronously — before the HEAD answers — a null MIME is not raster, so
+		// the fallback shows. The delayed reclassification to raster/PDF/ZIP is its
+		// own describe below. The probe is pinned pending so the sync state is
+		// unambiguous — on BOTH the plain and the forced (T6, the opened entry)
+		// paths, so the single opened null entry never resolves out of the fallback.
+		metaFetch.mockReturnValue(new Promise(() => {}));
+		metaRevalidate.mockReturnValue(new Promise(() => {}));
 		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
 		expect(root().querySelector('.lightbox-image')).toBeNull();
-		// An UNRESOLVED MIME is refused from navigation entirely — not even the
-		// fallback (that is for RESOLVED-unsafe mid-view entries, TASK-2476).
-		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
 	});
 
-	it('cannot be paged onto an unresolved sibling', () => {
+	it('pages onto an unresolved sibling, showing the fallback', () => {
+		metaFetch.mockReturnValue(new Promise(() => {}));
 		mountViewer({
 			images: [image(IMG_A, 'png'), image(IMG_B, 'unprobed', null), image(IMG_C, 'jpeg', 'image/jpeg')],
 		});
-
-		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
-		const seen = [shown()];
-		for (let i = 0; i < 3; i++) {
-			press('ArrowRight');
-			seen.push(shown());
-		}
-		expect(seen).toEqual(['png', 'jpeg', 'png', 'jpeg']);
-		expect(seen).not.toContain('unprobed');
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 3');
+		expect(shown()).toBe('png');
+		press('ArrowRight'); // B (unresolved) → fallback
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		press('ArrowRight'); // C (jpeg) → raster
+		expect(shown()).toBe('jpeg');
 	});
 
-	it('shows nothing at all rather than one refused image', () => {
+	it('shows the fallback for a single unsafe entry rather than an empty viewer', () => {
 		mountViewer({ images: [image(IMG_B, 'svg', 'image/svg+xml')] });
-
 		expect(root().querySelector('.lightbox-image')).toBeNull();
-		// A single UNSAFE-at-open entry is refused outright — no image AND no
-		// fallback (the fallback is mid-view only, TASK-2476).
-		expect(root().querySelector('.lightbox-fallback')).toBeNull();
-		// Still a real dialog with a way out — the failure mode is an empty
-		// viewer, never a rendered one.
+		// The single unsafe entry now SHOWS (as the fallback), where 3c-i left an
+		// empty viewer. Still a real dialog with a way out.
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
 		expect(closeButton()).not.toBeNull();
-		// And the arrows cannot divide by an empty set.
+		// Arrows are a no-op on a single-member set; still the fallback.
 		press('ArrowRight');
 		press('ArrowLeft');
 		expect(root().querySelector('.lightbox-image')).toBeNull();
-		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
 	});
 });
 
@@ -499,27 +498,31 @@ describe('Lightbox — the set changing under an OPEN viewer (TASK-2431)', () =>
 		expect(imageSrc()).toContain(IMG_A);
 	});
 
-	it('shows the fallback for an unsafe entry ADDED after open, but still refuses an unresolved one', () => {
-		// TASK-2476 matrix: added-while-open UNSAFE → fallback (navigable);
-		// added-while-open UNRESOLVED → refused-from-navigation (unchanged).
+	it('shows the fallback for BOTH an unsafe and an unresolved entry added after open', () => {
+		// 3c-ii admission flip: added-while-open UNSAFE and UNRESOLVED both admit
+		// now, both drawn as the fallback. The 3c-i "unresolved is still refused"
+		// cell is retired. The probe is pinned pending so the null-MIME entry stays
+		// unresolved (its delayed reclassification is covered separately).
+		metaFetch.mockReturnValue(new Promise(() => {}));
 		liveProps.images = [image(IMG_A, 'png')];
 		mountLive();
 
 		liveProps.images = [
 			image(IMG_A, 'png'),
-			image(IMG_B, 'svg', 'image/svg+xml'), // unsafe → fallback, navigable
-			image(IMG_C, 'unprobed', null), // unresolved → refused from nav
+			image(IMG_B, 'svg', 'image/svg+xml'), // unsafe → fallback
+			image(IMG_C, 'unprobed', null), // unresolved → fallback (was: refused)
 		];
 		flushSync();
 
-		// A (raster) + B (fallback) navigable; C (unresolved) is not — so 1 / 2.
-		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
-		press('ArrowRight');
-		// Landed on B: the fallback, no <img>.
+		// All three navigable now — 1 / 3.
+		expect(root().querySelector('.lightbox-counter')?.textContent).toBe('1 / 3');
+		press('ArrowRight'); // B (svg) → fallback
 		expect(root().querySelector('.lightbox-image')).toBeNull();
 		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
-		// The next step WRAPS back to A (two members) — the unresolved C is never shown.
-		press('ArrowRight');
+		press('ArrowRight'); // C (unresolved) → fallback too
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		press('ArrowRight'); // wrap to A → raster
 		expect(shown()).toBe('png');
 	});
 
@@ -535,6 +538,168 @@ describe('Lightbox — the set changing under an OPEN viewer (TASK-2431)', () =>
 
 		expect(root().querySelector('.lightbox-image')).toBeNull();
 		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+	});
+});
+
+describe('Lightbox — the file route and reclassification (3c-ii T3)', () => {
+	// The converged surface opens files and unresolved rows, drawing the fallback
+	// arm with a toolbar the descriptors shape per RESOLVED type, and — when a
+	// null-seed open's HEAD answers — RE-DERIVING both the arm and the toolbar.
+	function openTool(): Element | null {
+		return root().querySelector('.lightbox-toolbar [aria-label="Open in new tab"]');
+	}
+	function downloadTool(): Element | null {
+		return root().querySelector('.lightbox-toolbar [aria-label="Download"]');
+	}
+	// Let the metadata machine's async HEAD resolve: interleave a microtask drain
+	// with an effect flush so a reclassification (and any reload it triggers) settles.
+	async function settleAsync() {
+		for (let i = 0; i < 8; i++) {
+			await Promise.resolve();
+			flushSync();
+		}
+	}
+
+	it('opens a PDF on the fallback arm WITH an Open action', () => {
+		mountViewer({ images: [image(IMG_A, 'doc.pdf', 'application/pdf')] });
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		// canBrowserPreview(pdf) → Open present; Download always present.
+		expect(openTool()).not.toBeNull();
+		expect(downloadTool()).not.toBeNull();
+	});
+
+	it('opens a ZIP on the fallback arm WITHOUT an Open action', () => {
+		mountViewer({ images: [image(IMG_A, 'bundle.zip', 'application/zip')] });
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		// canBrowserPreview(zip) is false → no Open; Download still present.
+		expect(openTool()).toBeNull();
+		expect(downloadTool()).not.toBeNull();
+	});
+
+	it('reclassifies a null-seed entry to the RASTER arm when the probe resolves an image', async () => {
+		// T6: the opened entry is force-revalidated, so its resolved type arrives on
+		// the revalidation probe (not the plain seed-fill fetch).
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 2048 });
+		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
+		// Before the probe: the no-bytes fallback.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		await settleAsync();
+		// After: the resolved image reclassifies to the raster arm — the <img>
+		// mounts, the fallback is gone.
+		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+		expect(root().querySelector('.lightbox-image')).not.toBeNull();
+	});
+
+	it('reclassifies a null-seed entry to a PDF fallback WITH Open when the probe resolves PDF', async () => {
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 2048 });
+		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
+		// Null MIME → Open not applicable yet.
+		expect(openTool()).toBeNull();
+		await settleAsync();
+		// Resolved PDF: stays the fallback (PDF is not raster) but now offers Open.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		expect(openTool()).not.toBeNull();
+	});
+
+	it('reclassifies a null-seed entry to a ZIP fallback WITHOUT Open when the probe resolves ZIP', async () => {
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'application/zip', size: 2048 });
+		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
+		await settleAsync();
+		// Resolved ZIP: the fallback, and Open never appears.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
+		expect(openTool()).toBeNull();
+	});
+
+	it('gates every action inert on an archived-parent open while the probe is in flight', () => {
+		// An archived parent forces a reachability probe (metaRevalidate); until it
+		// answers, no live action fires on possibly-unreachable bytes. Probe pinned
+		// pending so the gated state is stable.
+		metaRevalidate.mockReturnValue(new Promise(() => {}));
+		mountViewer({
+			images: [image(IMG_A, 'doc.pdf', 'application/pdf')],
+			parentArchived: true,
+			mutationsEnabled: true,
+		});
+		const tools = [...root().querySelectorAll('.lightbox-toolbar .lightbox-tool')];
+		expect(tools.length).toBeGreaterThan(0);
+		for (const t of tools) {
+			const inert = t.hasAttribute('disabled') || t.getAttribute('aria-disabled') === 'true';
+			expect(inert, `${t.getAttribute('aria-label')} should be inert while unreachable`).toBe(true);
+		}
+	});
+
+	it('KEEPS archived-parent actions inert when the probe fails (transient), not just while pending', async () => {
+		// The gate is on the phase, not `slow`: a probe that fails (or times out to
+		// `transient`) leaves reachability UNCONFIRMED, so actions must stay inert —
+		// re-enabling them on a non-`ok` answer would offer live actions on bytes
+		// that may be unreachable.
+		metaRevalidate.mockResolvedValue({ status: 'transient' });
+		mountViewer({
+			images: [image(IMG_A, 'doc.pdf', 'application/pdf')],
+			parentArchived: true,
+			mutationsEnabled: true,
+		});
+		await settleAsync();
+		const tools = [...root().querySelectorAll('.lightbox-toolbar .lightbox-tool')];
+		expect(tools.length).toBeGreaterThan(0);
+		for (const t of tools) {
+			const inert = t.hasAttribute('disabled') || t.getAttribute('aria-disabled') === 'true';
+			expect(inert, `${t.getAttribute('aria-label')} should stay inert on a transient probe`).toBe(
+				true
+			);
+		}
+	});
+
+	it('re-inerts actions during a forced re-probe after a prior ok (ok → archived)', async () => {
+		// A live entry resolves reachable, then its parent archives under the open
+		// viewer: the machine re-probes (forced), and the fetched fields are retained
+		// so `phase` stays `ok` while that probe is in flight. The gate must go inert
+		// again on `slow` alone here — the T2a archive transition this anticipates.
+		metaFetch.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 2048 });
+		metaRevalidate.mockReturnValue(new Promise(() => {})); // the archive re-probe hangs
+		const props = $state<Props>({
+			images: [image(IMG_A, 'doc.pdf', 'application/pdf')],
+			wsSlug: 'ws-1',
+			onClose: () => {},
+			mutationsEnabled: true,
+			parentArchived: false,
+		});
+		const app = mount(Lightbox, { target: appRoot, props });
+		mounted.push(app);
+		flushSync();
+		await settleAsync(); // initial fetch → ok → actions live
+		expect(downloadTool()?.getAttribute('aria-disabled')).not.toBe('true');
+
+		// The parent archives under the open viewer → forced re-probe (hangs).
+		props.parentArchived = true;
+		flushSync();
+		const tools = [...root().querySelectorAll('.lightbox-toolbar .lightbox-tool')];
+		expect(tools.length).toBeGreaterThan(0);
+		for (const t of tools) {
+			const inert = t.hasAttribute('disabled') || t.getAttribute('aria-disabled') === 'true';
+			expect(inert, `${t.getAttribute('aria-label')} should re-inert on the archive re-probe`).toBe(
+				true
+			);
+		}
+	});
+
+	it('re-enables actions on an archived-parent open once the probe resolves reachable', async () => {
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 2048 });
+		mountViewer({
+			images: [image(IMG_A, 'doc.pdf', 'application/pdf')],
+			parentArchived: true,
+			mutationsEnabled: true,
+		});
+		await settleAsync();
+		// Reachable → the always-applicable Download is live again.
+		const dl = downloadTool();
+		expect(dl).not.toBeNull();
+		expect(dl?.getAttribute('aria-disabled')).not.toBe('true');
 	});
 });
 
@@ -611,7 +776,8 @@ describe('Lightbox — focus', () => {
 			],
 		});
 		// More than one focusable, so "first" is separable from "a"/"the root":
-		// close, prev, next, plus the toolbar's open/download/copy-link (TASK-2474).
+		// close, the toolbar's open/download/copy-link (TASK-2474), and prev/next
+		// (which now live inside the stage, so they trail the toolbar in DOM order).
 		const controls = focusables();
 		expect(controls.length).toBeGreaterThan(1);
 		expect(document.activeElement).toBe(controls[0]);
@@ -2546,13 +2712,14 @@ describe('Lightbox — DR-5b image loading (TASK-2459)', () => {
 		expect(panX()).toBeCloseTo(100);
 	});
 
-	it('DR-16: an all-unsafe set renders no image and issues no request', () => {
+	it('DR-16: an unsafe set renders the fallback with NO image and NO request', () => {
 		mountViewer({ images: [image(IMG_A, 'svg', 'image/svg+xml')] });
+		// The unsafe entry admits to the no-bytes fallback (3c-ii): no <img>, no
+		// loading spinner — the arm mounts and requests nothing. Where 3c-i refused
+		// it outright, 3c-ii shows the fallback, and the no-bytes invariant holds.
 		expect(root().querySelector('.lightbox-image')).toBeNull();
 		expect(root().querySelector('.lightbox-loading')).toBeNull();
-		// ...and NO fallback either: an all-unsafe set at open is refused outright
-		// (TASK-2476 — the fallback is a MID-VIEW cell, not an at-open one).
-		expect(root().querySelector('.lightbox-fallback')).toBeNull();
+		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
 	});
 
 	it('a same-id re-emit that FILLS dimensions re-runs the DR-5b policy', () => {
@@ -2771,6 +2938,207 @@ describe('Lightbox — mobile tap-to-load and zoom-past-fit (TASK-2460)', () => 
 		flushSync();
 		expect(root().querySelector('.lightbox-image')).toBeNull();
 		expect(root().querySelector('.lightbox-tap-load')).not.toBeNull();
+	});
+});
+
+// ── TASK-2492 — the AM-3 Lightbox-owned phone sheet layout ───────────────────
+//
+// WHAT JSDOM CANNOT PROVE, and is therefore T7's browser suite:
+//  • The bottom-anchored GEOMETRY — the dock sitting at the bottom edge and the
+//    stage filling the space above it — needs a layout engine.
+//  • The pan/zoom BOUNDS adapting to the smaller mobile stage (`readGeometry`
+//    over the resized box).
+//  • The `@media (forced-colors: active)` sheet-chrome fill/border being visible.
+//  • The DR-18 `@media (max-width: 768px)` label reveal on the phone.
+//  • Real TOUCH: native pinch still available (no `touch-action` change), no
+//    pointer capture on the sheet chrome, two-pointer input not swallowed — the
+//    3d handoff criterion.
+// The class is the SELECTION mechanism (a DOM fact) and the whole assertable
+// surface here: jsdom's getComputedStyle does NOT apply `<style>`-element rules
+// (the existing tap-to-load `pointer-events` assertions only ever assert
+// `.not.toBe(...)`, which passes on the empty string jsdom returns), so the CSS
+// layout itself — flex-direction, docking, `position: static` — is unassertable
+// and is named above for T7. What IS assertable, and is the byte-identical
+// guarantee, is that every sheet rule is scoped under `.lightbox-sheet`: with the
+// class ABSENT on desktop no sheet rule can match, so the desktop layout is
+// untouched by construction.
+describe('Lightbox — mobile sheet layout (3c-ii T5 / AM-3)', () => {
+	afterEach(() => {
+		// Every test here drives `mobileFlag`; make sure it can't leak to a later suite.
+		mobileFlag = false;
+		flushSync();
+	});
+
+	it('selects the sheet class ONLY on mobile (desktop path carries no sheet rule)', () => {
+		mobileFlag = false;
+		flushSync();
+		mountViewer();
+		// Desktop: no sheet class → none of the `.lightbox-sheet`-scoped rules match,
+		// so the desktop layout is byte-identical by construction.
+		expect(hasSheet()).toBe(false);
+		unmount(mounted.pop()!);
+
+		mobileFlag = true;
+		flushSync();
+		mountViewer();
+		expect(hasSheet()).toBe(true);
+	});
+
+	it('re-lays-out the SAME instance on a mid-open flip — zoom + element identity survive', () => {
+		mobileFlag = false;
+		flushSync();
+		mountViewer();
+		const rootBefore = root();
+		const imgBefore = rootBefore.querySelector('.lightbox-image');
+		expect(imgBefore).not.toBeNull();
+		expect(hasSheet(rootBefore)).toBe(false);
+		// Zoom past fit so there is real state to survive the re-layout.
+		expect(press('+')).toBe(true);
+		const scaledTo = scaleOf(rootBefore);
+		expect(scaledTo).toBeGreaterThan(1);
+		const srcBefore = imageSrc(rootBefore);
+
+		// Flip to mobile MID-OPEN.
+		mobileFlag = true;
+		flushSync();
+
+		// No remount: still exactly one viewer, the SAME root element, now sheet-classed.
+		expect(roots()).toHaveLength(1);
+		expect(root()).toBe(rootBefore);
+		expect(hasSheet()).toBe(true);
+		// The SAME <img> element AND the SAME src — the load effect untracks
+		// `platform`, so a flip neither reloads (src unchanged) nor re-keys the stage
+		// (element identity) — and the zoom transform is intact.
+		expect(root().querySelector('.lightbox-image')).toBe(imgBefore);
+		expect(imageSrc()).toBe(srcBefore);
+		expect(scaleOf()).toBe(scaledTo);
+
+		// ...and back to desktop: same instance again, sheet gone, zoom still there.
+		mobileFlag = false;
+		flushSync();
+		expect(roots()).toHaveLength(1);
+		expect(root()).toBe(rootBefore);
+		expect(hasSheet()).toBe(false);
+		expect(root().querySelector('.lightbox-image')).toBe(imgBefore);
+		expect(imageSrc()).toBe(srcBefore);
+		expect(scaleOf()).toBe(scaledTo);
+	});
+
+	it('keeps the docked chrome excluded from pan, wheel-zoom AND double-click', () => {
+		// The docked toolbar/meta are the SAME elements with the SAME classes, so they
+		// stay in all THREE gesture-exclusion `.closest()` lists (pointerdown /
+		// dblclick / WHEEL — the classic miss). Exercised with a real raster bitmap so
+		// each gesture otherwise COULD act; a live control at the end proves the
+		// handlers are armed and it is the exclusions that held.
+		mobileFlag = true;
+		flushSync();
+		// A SMALL sized image so the mobile THUMB cell renders a real <img> (a large or
+		// unknown-dimension image defers to tap-to-load, leaving nothing to zoom).
+		mountViewer({ images: [sized(IMG_A, 'wide', 2000, 100)] });
+		const toolbar = root().querySelector<HTMLElement>('.lightbox-toolbar')!;
+		const meta = root().querySelector<HTMLElement>('.lightbox-meta')!;
+		expect(toolbar).not.toBeNull();
+		expect(meta).not.toBeNull();
+
+		// (1) pointerdown on the docked toolbar does not arm/capture a pan.
+		const captureSpy = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = captureSpy;
+		toolbar.dispatchEvent(pointerEvent('pointerdown', 100, 700));
+		root().dispatchEvent(pointerEvent('pointermove', 340, 700)); // well past threshold
+		flushSync();
+		expect(captureSpy).not.toHaveBeenCalled();
+
+		// (2) a wheel over the docked meta is CONSUMED (the modal owns the wheel) but
+		//     does NOT zoom the image behind it.
+		expect(scaleOf()).toBe(1);
+		expect(wheel(meta, { deltaY: -120 })).toBe(true);
+		expect(scaleOf()).toBe(1);
+
+		// (3) a double-click on the docked toolbar does NOT toggle fit↔actual.
+		toolbar.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 100, clientY: 700 }));
+		flushSync();
+		expect(scaleOf()).toBe(1);
+		// CONTROL for (3): the SAME double-click over the backdrop DOES toggle to
+		// actual size — the dblclick handler is live, so the toolbar exclusion is what
+		// held (removing the handler would leave scale at 1 and pass without this).
+		root().dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 100, clientY: 100 }));
+		flushSync();
+		expect(scaleOf()).toBeGreaterThan(1);
+		expect(press('0')).toBe(true); // back to fit for the wheel leg
+		expect(scaleOf()).toBe(1);
+
+		// CONTROL for (2): the SAME wheel over the backdrop DOES zoom — the wheel
+		// handler is live, so the meta exclusion is what held (not a dead wheel path).
+		expect(wheel(root(), { deltaY: -120 })).toBe(true);
+		expect(scaleOf()).toBeGreaterThan(1);
+	});
+
+	it('does not dismiss on a click of the docked chrome (target is not the backdrop)', () => {
+		mobileFlag = true;
+		flushSync();
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		root()
+			.querySelector<HTMLElement>('.lightbox-meta')!
+			.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		root()
+			.querySelector<HTMLElement>('.lightbox-toolbar')!
+			.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		flushSync();
+		expect(onClose).not.toHaveBeenCalled();
+	});
+});
+
+describe('Lightbox — the modal contract holds UNDER the mobile sheet (3c-ii T5)', () => {
+	// The contract is layout-independent: every invariant the desktop suites assert
+	// must hold identically with the sheet class on. Re-run the load-bearing ones
+	// under the mobile viewport mock.
+	beforeEach(() => {
+		mobileFlag = true;
+		flushSync();
+	});
+	afterEach(() => {
+		mobileFlag = false;
+		flushSync();
+	});
+
+	it('is still an aria-modal dialog portaled to <body>, carrying both marker classes', () => {
+		mountViewer();
+		expect(hasSheet()).toBe(true);
+		expect(root().getAttribute('role')).toBe('dialog');
+		expect(root().getAttribute('aria-modal')).toBe('true');
+		expect(root().parentElement).toBe(document.body);
+		expect(root().classList.contains(VIEWER_ROOT_CLASS)).toBe(true);
+	});
+
+	it('still moves focus to the close button on open', () => {
+		mountViewer({ images: [image(IMG_A, 'first'), image(IMG_B, 'second')] });
+		expect(document.activeElement).toBe(closeButton());
+	});
+
+	it('still traps Tab — wraps forward off the last focusable', () => {
+		mountViewer({ images: [image(IMG_A, 'first'), image(IMG_B, 'second')] });
+		lastFocusable().focus();
+		expect(press('Tab')).toBe(true);
+		expect(document.activeElement).toBe(closeButton());
+	});
+
+	it('still owns Escape through the shared stack (no local window branch)', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		// A raw window keydown does NOT close — the stack is the sole owner.
+		expect(press('Escape')).toBe(false);
+		expect(onClose).not.toHaveBeenCalled();
+		expect(runTopEscape()).toBe(true);
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('still closes on a backdrop click', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		flushSync();
+		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 });
 
@@ -3003,8 +3371,10 @@ describe('Lightbox — action toolbar (TASK-2474)', () => {
 	});
 
 	it('shows no toolbar when the set is empty', () => {
-		// An unresolved-MIME image is filtered out of `viewable`, leaving no `img`.
-		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
+		// A genuinely empty set leaves no `img`, so no toolbar. (An unresolved-MIME
+		// entry no longer empties the set — 3c-ii admits it to the fallback, which
+		// DOES carry a toolbar; see the file-route describe.)
+		mountViewer({ images: [] });
 		expect(toolbar()).toBeNull();
 	});
 
@@ -3153,16 +3523,26 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 		flushSync();
 	}
 
-	it('renders filename, type and size from a complete seed without fetching', async () => {
+	it('renders a complete seed, and the forced open-probe (T6) fires ONCE with no-store and does not override the seed', async () => {
+		// T6 always-revalidate-on-open: even a complete seed (both MIME and size) is
+		// revalidated once per open with a `no-store` HEAD — the strip's old zero-probe
+		// fast path is gone, deliberately. The displayed fields still come from the
+		// SEED (seed-wins merge), so the header is unchanged; what changes is that a
+		// probe now fires, and it is the FORCED one.
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 2048 });
 		mountViewer({ images: [metaImage()] });
 		await settleAsync();
 		expect(metaName()).toBe('photo.png');
 		expect(metaDetail()).toBe(
 			`${describeAttachmentType('image/png', 'photo.png')} · ${formatBytes(2048)}`
 		);
-		// Seed carries both MIME and size, so no HEAD fires (DR-2's "fetch only what
-		// is null").
+		// Exactly one probe, and it is the forced revalidation — never the plain
+		// seed-fill fetch (which the old fast path would have skipped entirely).
+		expect(metaRevalidate).toHaveBeenCalledTimes(1);
 		expect(metaFetch).not.toHaveBeenCalled();
+		// The `cache: 'no-store'` option is inspected on the OPTIONS the mock actually
+		// received (4th arg), not a local constant — the browser-cache-bypass contract.
+		expect(metaRevalidate.mock.calls[0][3]).toEqual({ cache: 'no-store' });
 	});
 
 	it('falls back filename → alt when the filename is null', async () => {
@@ -3195,8 +3575,9 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 		// A viewer image always has a known MIME (the last-mile gate), so the
 		// type-omitted branch is unreachable here; what IS reachable is a null size
 		// that the fetch fails to fill. The detail must then be TYPE ONLY, with no
-		// stray " · " and no "0 B" (formatBytes is never fed null).
-		metaFetch.mockResolvedValue({ status: 'transient' });
+		// stray " · " and no "0 B" (formatBytes is never fed null). T6: the opened
+		// entry's probe is the forced revalidation.
+		metaRevalidate.mockResolvedValue({ status: 'transient' });
 		mountViewer({ images: [metaImage({ size_bytes: null })] });
 		await settleAsync();
 		expect(metaName()).toBe('photo.png');
@@ -3204,10 +3585,11 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 	});
 
 	it('fetches to fill a null size and updates the detail line', async () => {
-		metaFetch.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 4096 });
+		// T6: the opened entry is force-revalidated, so the fill arrives on that probe.
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 4096 });
 		mountViewer({ images: [metaImage({ size_bytes: null })] });
 		await settleAsync();
-		expect(metaFetch).toHaveBeenCalled();
+		expect(metaRevalidate).toHaveBeenCalled();
 		expect(metaDetail()).toContain(formatBytes(4096));
 	});
 
@@ -3216,8 +3598,9 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 		// family (application/pdf) plus a size. The size fills (was null) but the type
 		// must stay the seed's — fields merge seed-wins. The fetched family is chosen
 		// distinct from the seed's on purpose: `image/gif` also labels as "Image", so
-		// an overwrite bug would have slipped through; a PDF label would not.
-		metaFetch.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 4096 });
+		// an overwrite bug would have slipped through; a PDF label would not. T6: the
+		// opened entry's probe is the forced revalidation.
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 4096 });
 		mountViewer({ images: [metaImage({ filename: null, size_bytes: null })] });
 		await settleAsync();
 		const seededType = describeAttachmentType('image/png', null);
@@ -3226,7 +3609,9 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 	});
 
 	it('shows a retryable error beside the name on a transient failure, then recovers', async () => {
-		metaFetch.mockResolvedValue({ status: 'transient' });
+		// T6: the opened entry's probe is the forced revalidation — so BOTH the initial
+		// open probe and the Retry go through `metaRevalidate` (transient, then ok).
+		metaRevalidate.mockResolvedValue({ status: 'transient' });
 		mountViewer({ images: [metaImage({ size_bytes: null })] });
 		await settleAsync();
 		// Beside what it already knows — never a blank sheet (DR-10).
@@ -3660,13 +4045,17 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 	}
 
 	it('an authoritative metadata 404 (missing) for the shown image advances to a survivor', async () => {
-		metaFetch.mockImplementation((_ws: unknown, uuid: string) =>
+		// A (the OPENED entry) is probed via the forced revalidation (T6); B (reached by
+		// the advance) via the plain fetch. Both mocks return the same per-uuid answer
+		// so A 404s wherever its probe is dispatched from.
+		const perUuid = (_ws: unknown, uuid: string) =>
 			Promise.resolve(
 				uuid === IMG_A
 					? { status: 'missing' as const }
 					: { status: 'ok' as const, mime: 'image/png', size: 2048 }
-			)
-		);
+			);
+		metaFetch.mockImplementation(perUuid);
+		metaRevalidate.mockImplementation(perUuid);
 		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
 		await settleAsync();
 		// A's HEAD 404'd → A is tombstoned → advance to B; the set is now single.
@@ -3674,20 +4063,33 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 		expect(counterText()).toBeNull();
 	});
 
-	it('an authoritative metadata 404 for the ONLY image closes the viewer', async () => {
+	it('an authoritative metadata 404 for a SINGLE-item surface shows the inert overlay, not a close (3c-ii T2b)', async () => {
+		// The retired panel's behavior, preserved: a single file the user opened that
+		// turns out to be gone shows "no longer available" rather than flash-closing.
+		// (A multi-image set still closes on all-missing — the next test.)
 		const onClose = vi.fn();
-		metaFetch.mockResolvedValue({ status: 'missing' });
+		// T6: the single opened entry is force-revalidated, so its 404 lands on the
+		// revalidation probe.
+		metaRevalidate.mockResolvedValue({ status: 'missing' });
 		mountViewer({ images: [image(IMG_A, 'a')], onClose });
 		await settleAsync();
-		expect(onClose).toHaveBeenCalledTimes(1);
+		expect(onClose).not.toHaveBeenCalled();
+		const missing = root().querySelector('.lightbox-missing');
+		expect(missing).not.toBeNull();
+		expect(missing?.textContent).toContain('no longer available');
+		// No bytes: the missing arm mounts no <img>.
+		expect(root().querySelector('.lightbox-image')).toBeNull();
 	});
 
 	it('an ENTIRE set going missing cascades advance→advance→close (terminates)', async () => {
 		const onClose = vi.fn();
 		// Every image 404s: A advances to B, B's own probe 404s and advances to C,
 		// C's 404 empties the set → close. The effect re-runs once per subject change
-		// (each HEAD is async), so the cascade settles rather than looping.
+		// (each HEAD is async), so the cascade settles rather than looping. A (opened)
+		// probes via the forced revalidation, B/C (advanced-to) via the plain fetch —
+		// both mocks 404.
 		metaFetch.mockResolvedValue({ status: 'missing' });
+		metaRevalidate.mockResolvedValue({ status: 'missing' });
 		mountViewer({
 			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg'), image(IMG_C, 'c', 'image/gif')],
 			onClose,
@@ -3698,7 +4100,9 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 
 	it('a TRANSIENT metadata failure does NOT delete the shown image (DR-17)', async () => {
 		const onClose = vi.fn();
-		metaFetch.mockResolvedValue({ status: 'transient' });
+		// T6: the opened entry A is force-revalidated, so its transient answer arrives
+		// on the revalidation probe.
+		metaRevalidate.mockResolvedValue({ status: 'transient' });
 		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')], onClose });
 		await settleAsync();
 		// A non-404 failure is retryable, never a deletion — the viewer stays on A and

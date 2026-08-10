@@ -1,9 +1,10 @@
 // The whole route: inline image NodeView → the REAL bus → the REAL
-// `AttachmentViewerHost` → the REAL `Lightbox` (PLAN-2392 phase 3a / TASK-2433).
+// `AttachmentSurfaceHost` → the REAL `Lightbox` (PLAN-2392 phase 3a / TASK-2433;
+// converged onto the one surface host in 3c-ii).
 //
 // Every other spec for this change stops at the producer: they mock
-// `notifyViewerOpen` and assert the payload, which is the right shape for
-// asking "did the NodeView emit the correct request" and is deliberately blind
+// `notifyAttachmentSurfaceOpen` and assert the payload, which is the right shape
+// for asking "did the NodeView emit the correct request" and is deliberately blind
 // to whether anything is listening. That leaves the commit's actual headline
 // claim — a deleted `<dialog>` REPLACED by the shared viewer, not removed —
 // resting on two halves nobody joins. A host that stopped consuming, an
@@ -25,9 +26,9 @@ import StarterKit from '@tiptap/starter-kit';
 import { __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
 import { _resetEscapeStackForTests } from '$lib/stores/escapeStack';
 import {
-	isAttachmentPanelEventForHost,
-	registerAttachmentPanelListener,
-	type AttachmentPanelOpenEvent,
+	isAttachmentSurfaceEventForHost,
+	registerAttachmentSurfaceListener,
+	type AttachmentSurfaceOpenEvent,
 } from '$lib/attachments/events';
 
 const UUID = '11111111-1111-4111-8111-111111111111';
@@ -45,11 +46,11 @@ vi.mock('./attachment-metadata', () => ({
 }));
 
 const { AttachmentImage } = await import('./attachment-image');
-const { default: AttachmentViewerHost } = await import(
-	'$lib/components/attachments/AttachmentViewerHost.svelte'
-);
-const { default: AttachmentPanelHost } = await import(
-	'$lib/components/attachments/AttachmentPanelHost.svelte'
+// 3c-ii: the two hosts collapsed into the ONE `AttachmentSurfaceHost`, which
+// consumes the single surface channel. This whole-route test mounts it — the
+// raster arm for an image, the fallback arm for the SVG redirect.
+const { default: AttachmentSurfaceHost } = await import(
+	'$lib/components/attachments/AttachmentSurfaceHost.svelte'
 );
 
 let address = { workspaceSlug: 'ws', itemId: ITEM_ID, hostToken: HOST_TOKEN };
@@ -82,7 +83,10 @@ describe('inline image → viewer host → Lightbox', () => {
 	let host: Record<string, unknown> | null = null;
 
 	function mountHost(props: { itemId: string; hostToken: string }) {
-		host = mount(AttachmentViewerHost, { target: hostTarget, props }) as Record<string, unknown>;
+		host = mount(AttachmentSurfaceHost, {
+			target: hostTarget,
+			props,
+		}) as Record<string, unknown>;
 		flushSync();
 	}
 
@@ -208,103 +212,84 @@ describe('inline image → viewer host → Lightbox', () => {
 		expect(viewers()).toHaveLength(0);
 	});
 
-	it('REDIRECTS a non-allowlisted type into the real panel host', async () => {
+	it('REDIRECTS a non-allowlisted type onto the FALLBACK arm of the one surface (3c-ii)', async () => {
 		// The whole route for the redirect arm, with nothing between the NodeView
-		// and the panel stubbed: the real bus, the real `AttachmentPanelHost`, the
-		// real panel it mounts. The producer specs next door mock the bus, so a
-		// host that stopped consuming — or an address that could not route —
-		// would leave them green and leave the user with an image that does
-		// nothing, which is the exact failure this task replaced.
+		// and the surface stubbed. Pre-convergence this opened a separate panel host;
+		// now the ONE `AttachmentSurfaceHost` consumes the surface channel and the
+		// file-capable `Lightbox` opens the SVG on its NO-BYTES fallback arm — a real
+		// surface on screen (the completeness half), no raster `<img>` and no request
+		// (the security half). A host that stopped consuming would leave the producer
+		// specs next door green and the user with a tap that does nothing.
 		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 100 } as never);
-		mountHost({ itemId: ITEM_ID, hostToken: HOST_TOKEN });
-		const panelHost = mount(AttachmentPanelHost, {
-			target: hostTarget,
-			props: {
-				wsSlug: 'ws',
-				itemId: ITEM_ID,
-				hostToken: HOST_TOKEN,
-				mutationsEnabled: false,
-			},
-		}) as Record<string, unknown>;
-		try {
-			editor = makeEditor(editorTarget);
-
-			image().dispatchEvent(
-				new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })
-			);
-			await settle();
-
-			// No viewer — the security half.
-			expect(viewers()).toHaveLength(0);
-			// And a real panel on screen, for the attachment that was activated —
-			// the completeness half. A redirect nobody consumes is still a tap
-			// that does nothing.
-			const panel = document.body.querySelector<HTMLElement>('[role="menu"] .ap-header');
-			expect(panel).not.toBeNull();
-			// And it is about THIS attachment, not merely present: the MIME the
-			// probe returned and a download target carrying the uuid. A panel that
-			// opened on the wrong row would satisfy a presence check.
-			expect(panel?.querySelector('.ap-meta')?.getAttribute('title')).toBe('image/svg+xml');
-			expect(
-				document.body.querySelector<HTMLAnchorElement>('[role="menu"] a[download]')?.getAttribute('href')
-			).toContain(UUID);
-		} finally {
-			unmount(panelHost);
-		}
-	});
-
-	it('REDIRECTS a non-allowlisted type onto the real panel channel', async () => {
-		// TASK-2434's redirect, asserted through the REAL bus rather than a mock.
-		// The producer specs next door mock `notifyAttachmentPanelOpen`, so they
-		// see the call and are blind to what the channel does with it — and the
-		// channel drops any emission it judges unaddressable. An event that never
-		// leaves the bus is indistinguishable, from the producer's side, from the
-		// silent refusal this task replaced.
-		const seen: AttachmentPanelOpenEvent[] = [];
-		const dispose = registerAttachmentPanelListener((e) => seen.push(e));
-		try {
-			probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 100 } as never);
-			mountHost({ itemId: ITEM_ID, hostToken: HOST_TOKEN });
-			editor = makeEditor(editorTarget);
-
-			image().dispatchEvent(
-				new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })
-			);
-			await settle();
-
-			// No viewer — the security half.
-			expect(viewers()).toHaveLength(0);
-			// And it went SOMEWHERE — the completeness half.
-			expect(seen).toHaveLength(1);
-			expect(seen[0].attachmentId).toBe(UUID);
-			expect(seen[0].mime_type).toBe('image/svg+xml');
-			// Addressed well enough for a host to claim it. The channel's own
-			// predicate, not a re-implementation of it: a payload that reached a
-			// raw subscriber but that no host would match is still a tap that
-			// does nothing.
-			expect(
-				isAttachmentPanelEventForHost(seen[0], { itemId: ITEM_ID, hostToken: HOST_TOKEN })
-			).toBe(true);
-			expect(
-				isAttachmentPanelEventForHost(seen[0], { itemId: ITEM_ID, hostToken: 'another-mount' })
-			).toBe(false);
-		} finally {
-			dispose();
-		}
-	});
-
-	it('does not open for a MIME the viewer would filter back out', async () => {
-		// The producer's gate and the viewer's are the same gate, stated twice
-		// on purpose (TASK-2431). If the producer ever emitted an SVG, the
-		// viewer would filter it and mount an empty shell — the failure this
-		// asserts is absent.
-		probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 100 });
 		mountHost({ itemId: ITEM_ID, hostToken: HOST_TOKEN });
 		editor = makeEditor(editorTarget);
 
 		image().dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
 		await settle();
 
-		expect(viewers()).toHaveLength(0);
+		// One surface, and it is the fallback arm: no raster bytes for the SVG.
+		expect(viewers()).toHaveLength(1);
+		expect(document.body.querySelector('.lightbox-image')).toBeNull();
+		expect(document.body.querySelector('.lightbox-fallback')).not.toBeNull();
+		// And it is about THIS attachment: a download target carrying the uuid.
+		expect(
+			document.body
+				.querySelector<HTMLAnchorElement>('.lightbox-toolbar [aria-label="Download"]')
+				?.getAttribute('href')
+		).toContain(UUID);
 	});
+
+	it('emits the svg onto the SURFACE channel, addressably (producer contract)', async () => {
+		// TASK-2489's convergence, asserted through the REAL bus rather than a mock.
+		// The redirect distinction is gone: the NodeView no longer picks a panel
+		// vs viewer channel by MIME — it emits ONE surface event carrying the true
+		// svg MIME, and the surface's own renderer (the previous test, which mounts
+		// the host) draws it on the no-bytes fallback arm. The producer specs next
+		// door mock the notifier, so they see the call and are blind to what the
+		// channel does with it — and the channel drops any emission it judges
+		// unaddressable. An event that never leaves the bus is indistinguishable,
+		// from the producer's side, from a silent refusal.
+		const seen: AttachmentSurfaceOpenEvent[] = [];
+		const dispose = registerAttachmentSurfaceListener((e) => seen.push(e));
+		try {
+			probeMock.mockResolvedValue({ status: 'ok', mime: 'image/svg+xml', size: 100 } as never);
+			// No host mounted: this pins the PRODUCER contract (the NodeView emits an
+			// SVG onto the surface channel, addressably), independent of who consumes
+			// it. The host consuming it into the fallback arm is the previous test.
+			editor = makeEditor(editorTarget);
+
+			image().dispatchEvent(
+				new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 })
+			);
+			await settle();
+
+			// No surface — nothing is mounted to consume the channel here.
+			expect(viewers()).toHaveLength(0);
+			// And it went SOMEWHERE — the completeness half.
+			expect(seen).toHaveLength(1);
+			expect(seen[0].attachmentId).toBe(UUID);
+			// The true svg MIME rides through, both as the flat seed and on the image.
+			expect(seen[0].mime_type).toBe('image/svg+xml');
+			expect(seen[0].images[0].mime_type).toBe('image/svg+xml');
+			// Addressed well enough for a host to claim it. The channel's own
+			// predicate, not a re-implementation of it: a payload that reached a
+			// raw subscriber but that no host would match is still a tap that
+			// does nothing.
+			expect(
+				isAttachmentSurfaceEventForHost(seen[0], { itemId: ITEM_ID, hostToken: HOST_TOKEN })
+			).toBe(true);
+			expect(
+				isAttachmentSurfaceEventForHost(seen[0], { itemId: ITEM_ID, hostToken: 'another-mount' })
+			).toBe(false);
+		} finally {
+			dispose();
+		}
+	});
+
+	// (3c-ii T2b) The old "does not open for a MIME the viewer would filter back
+	// out" test is RETIRED: it asserted an SVG opened NOTHING, which held only while
+	// the surface was image-only. The converged surface admits an SVG and draws it
+	// on the no-bytes FALLBACK arm — the security guarantee moved from "no surface"
+	// to "no raster bytes", and the redirect test above pins exactly that (a surface
+	// present, `.lightbox-image` absent, `.lightbox-fallback` present).
 });
