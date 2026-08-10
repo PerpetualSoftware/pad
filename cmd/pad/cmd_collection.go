@@ -55,6 +55,11 @@ func collectionsCmd() *cobra.Command {
 				return cli.PrintJSON(colls)
 			}
 
+			if formatFlag == "markdown" {
+				cli.PrintCollectionMarkdown(colls)
+				return nil
+			}
+
 			cli.PrintCollectionTable(colls)
 			return nil
 		},

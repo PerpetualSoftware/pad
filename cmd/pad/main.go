@@ -124,7 +124,7 @@ func newRootCmd() *cobra.Command {
 	})
 
 	rootCmd.PersistentFlags().StringVar(&workspaceFlag, "workspace", "", "workspace slug override")
-	rootCmd.PersistentFlags().StringVar(&formatFlag, "format", "table", "output format: table, json (markdown on select commands, e.g. item show, project changelog)")
+	rootCmd.PersistentFlags().StringVar(&formatFlag, "format", "table", "output format: table, json, markdown (markdown on the list/show commands, e.g. item list, collection list, item show, project changelog)")
 	rootCmd.PersistentFlags().StringVar(&urlFlag, "url", "", "server URL override (e.g., https://app.getpad.dev)")
 
 	rootCmd.AddCommand(
