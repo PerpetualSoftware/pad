@@ -72,6 +72,27 @@ async function openViewer(page: Page): Promise<void> {
 	await expect(page.locator(VIEWER)).toHaveCount(1);
 }
 
+/**
+ * Open the strip's DELETE-CONFIRM BottomSheet for `filename` (PLAN-2392 3c-ii).
+ *
+ * Owner 4's co-mounted `BottomSheet` used to be the file-tile OPTIONS panel, but
+ * the converged surface retired that channel (a file tile now opens the viewer,
+ * not a menu). The strip's delete confirmation is still a `Menu` with
+ * `sheetOnMobile`, i.e. a real `.bs-sheet` at the mobile breakpoint — the
+ * surviving BottomSheet a user actually meets on this page. The `.att-delete`
+ * control is hover/focus-revealed, so a programmatic `click()` opens it without
+ * depending on a pointer hover the mobile viewport does not have. Firing only a
+ * `click` (no `pointerdown`) also means the sheet's outside-close does not later
+ * fire when a viewer is opened over it (the same trick the tile opens use).
+ */
+async function openStripDeleteSheet(page: Page, filename: string): Promise<void> {
+	await page
+		.locator('.attachment-strip .att-delete')
+		.and(page.getByRole('button', { name: `Delete ${filename}` }))
+		.evaluate((el) => (el as HTMLElement).click());
+	await expect(page.locator('.bs-sheet')).toBeVisible();
+}
+
 test.describe('attachment viewer — global key & gesture owners (TASK-2436)', () => {
 	test.beforeEach(async ({ page }, testInfo) => {
 		test.skip(
@@ -339,26 +360,18 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		fixture,
 		request
 	}) => {
-		// EMPTY-STACK REGRESSION for `BottomSheet`. The strip's own options panel
-		// is a `Menu` with `sheetOnMobile`, i.e. a real `BottomSheet`, so this
-		// uses the surface a user actually meets.
+		// EMPTY-STACK REGRESSION for `BottomSheet`. The strip's DELETE-CONFIRM is a
+		// `Menu` with `sheetOnMobile`, i.e. a real `BottomSheet` — the surviving
+		// BottomSheet a user meets on this page now the file-tile options panel is
+		// retired (PLAN-2392 3c-ii).
 		await page.setViewportSize(MOBILE);
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Owner sheet baseline');
 		await uploadAttachment(fixture, request, doc.id, 'pic.png');
-		await uploadAttachment(
-			fixture,
-			request,
-			doc.id,
-			'notes.txt',
-			'text/plain',
-			Buffer.from('notes\n')
-		);
 		await page.goto(itemUrl(fixture, doc.slug));
 
-		await page.locator(`${TILE}[aria-label*="notes.txt"]`).click();
+		await openStripDeleteSheet(page, 'pic.png');
 		const sheet = page.locator('.bs-sheet');
-		await expect(sheet).toBeVisible();
 		// The trap holds: Tab keeps focus inside the sheet.
 		for (let i = 0; i < 4; i++) {
 			await page.keyboard.press('Tab');
@@ -386,18 +399,14 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Owner sheet tab');
 		await uploadAttachment(fixture, request, doc.id, 'pic.png');
-		await uploadAttachment(
-			fixture,
-			request,
-			doc.id,
-			'notes.txt',
-			'text/plain',
-			Buffer.from('notes\n')
-		);
+		await uploadAttachment(fixture, request, doc.id, 'shot.png');
 		await page.goto(itemUrl(fixture, doc.slug));
 
-		await page.locator(`${TILE}[aria-label*="notes.txt"]`).click();
-		await expect(page.locator('.bs-sheet')).toBeVisible();
+		// Co-mount a BottomSheet (shot.png's delete confirm) and then a viewer over
+		// it (pic.png's tile). The tile open is a programmatic `click()` — only a
+		// `click`, no `pointerdown` — so the sheet's outside-close does not fire and
+		// it stays mounted BEHIND the frontmost viewer.
+		await openStripDeleteSheet(page, 'shot.png');
 		await page
 			.locator(`${TILE}[aria-label*="pic.png"]`)
 			.evaluate((el) => (el as HTMLElement).click());
@@ -437,19 +446,11 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'Owner sheet escape');
 		await uploadAttachment(fixture, request, doc.id, 'pic.png');
-		await uploadAttachment(
-			fixture,
-			request,
-			doc.id,
-			'notes.txt',
-			'text/plain',
-			Buffer.from('notes\n')
-		);
+		await uploadAttachment(fixture, request, doc.id, 'shot.png');
 		await page.goto(itemUrl(fixture, doc.slug));
 
-		await page.locator(`${TILE}[aria-label*="notes.txt"]`).click();
+		await openStripDeleteSheet(page, 'shot.png');
 		const sheet = page.locator('.bs-sheet');
-		await expect(sheet).toBeVisible();
 		await page
 			.locator(`${TILE}[aria-label*="pic.png"]`)
 			.evaluate((el) => (el as HTMLElement).click());

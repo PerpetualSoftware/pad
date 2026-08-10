@@ -455,6 +455,11 @@ async function stubVariants(page: Page, originalDelayMs = 0): Promise<void> {
 		const variant = url.searchParams.get('variant');
 		if (variant === 'thumb-md') return route.fulfill({ contentType: 'image/png', body: MID_PNG });
 		if (!variant) {
+			// The variant-less URL is BOTH the original image GET and the T6 metadata
+			// HEAD probe. Only the GET is the ORIGINAL bytes this stub delays/serves;
+			// let the HEAD reach the real server so the existence probe answers
+			// promptly (a delayed/stubbed HEAD would stall the metadata machine).
+			if (route.request().method() !== 'GET') return route.continue();
 			if (originalDelayMs) await new Promise((r) => setTimeout(r, originalDelayMs));
 			return route.fulfill({ contentType: 'image/png', body: BIG_PNG });
 		}
@@ -484,13 +489,21 @@ test.describe('attachment viewer — desktop loading policy (TASK-2461)', () => 
 		// arrived AND painted. A mere request-order check would pass an impl that
 		// fired both immediately; the finish→start ordering rules that out.
 		const timeline: string[] = [];
-		const isViewerReq = (u: string) =>
-			/\/attachments\/[^/?]+(\?variant=(thumb-md|original))?$/.test(u) && !u.includes('thumb-sm');
+		// GET-ONLY (PLAN-2392 3c-ii T6): the metadata machine now fires a `no-store`
+		// HEAD of the canonical (variant-less) URL on every open — which matches the
+		// variant-less arm of this regex and would land in the timeline as a spurious
+		// `original:start` at index 0, BEFORE the thumb. The image loads are GETs; the
+		// revalidation probe is a HEAD. Filtering to GET keeps this test about the
+		// thumb→original BITMAP swap, not the T6 existence probe (which leg 5 owns).
+		const isViewerReq = (r: import('@playwright/test').Request) =>
+			r.method() === 'GET' &&
+			/\/attachments\/[^/?]+(\?variant=(thumb-md|original))?$/.test(r.url()) &&
+			!r.url().includes('thumb-sm');
 		page.on('request', (r) => {
-			if (isViewerReq(r.url())) timeline.push((r.url().includes('variant=thumb-md') ? 'thumb-md' : 'original') + ':start');
+			if (isViewerReq(r)) timeline.push((r.url().includes('variant=thumb-md') ? 'thumb-md' : 'original') + ':start');
 		});
 		page.on('requestfinished', (r) => {
-			if (isViewerReq(r.url())) timeline.push((r.url().includes('variant=thumb-md') ? 'thumb-md' : 'original') + ':finish');
+			if (isViewerReq(r)) timeline.push((r.url().includes('variant=thumb-md') ? 'thumb-md' : 'original') + ':finish');
 		});
 		await stubVariants(page, 400);
 		await browserLogin(page);
@@ -545,7 +558,11 @@ test.describe('attachment viewer — desktop loading policy (TASK-2461)', () => 
 		// upgrade request the way a late `waitForRequest` would).
 		let aOriginalRequested = false;
 		page.on('request', (r) => {
-			if (r.url().includes(aId) && !r.url().includes('variant=')) aOriginalRequested = true;
+			// GET only: the T6 metadata HEAD hits this same variant-less URL, and
+			// counting it would let the switch race start before the ORIGINAL bytes
+			// are actually in flight — the whole premise of this test.
+			if (r.method() === 'GET' && r.url().includes(aId) && !r.url().includes('variant='))
+				aOriginalRequested = true;
 		});
 		await page.goto(itemUrl(fixture, doc.slug));
 		await expect(page.locator(TILE)).toHaveCount(2);
@@ -593,6 +610,11 @@ test.describe('attachment viewer — mobile DR-5b (TASK-2461)', () => {
 		await page.route('**/attachments/*', async (route) => {
 			const url = new URL(route.request().url());
 			if (/\/attachments\/[^/?]+$/.test(url.pathname) && !url.searchParams.get('variant')) {
+				// GET-ONLY (PLAN-2392 3c-ii T6): the metadata machine fires a `no-store`
+				// HEAD of this same variant-less URL on open. That is the existence
+				// probe, NOT the deferred ORIGINAL image fetch this test counts — let
+				// the real server answer it so metadata resolves, and don't count it.
+				if (route.request().method() !== 'GET') return route.continue();
 				originalRequests++;
 				return route.fulfill({ contentType: 'image/png', body: BIG_PNG });
 			}

@@ -4,11 +4,17 @@ import { browserLogin, seedDoc } from './lib/collab-helpers';
 import {
 	BIG_PNG,
 	DESKTOP,
+	REAL_PDF,
 	REAL_PNG,
+	REAL_ZIP,
 	TILE,
 	VIEWER,
 	VIEWER_IMAGE,
 	VIEWER_COUNTER,
+	VIEWER_FALLBACK,
+	VIEWER_FALLBACK_NAME,
+	VIEWER_FALLBACK_NOTE,
+	VIEWER_MISSING,
 	VIEWER_TOOLBAR,
 	VIEWER_META,
 	VIEWER_META_NAME,
@@ -19,6 +25,7 @@ import {
 	itemUrl,
 	postComment,
 	uploadAttachment,
+	viewerDialog,
 	viewerOpenAnchor,
 	viewerDownloadAnchor,
 	viewerCopyLink,
@@ -288,25 +295,262 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await expect(page.locator(VIEWER)).toHaveCount(1); // and it did not dismiss
 	});
 
-	// THE FALLBACK ARM + no-bytes invariant is NOT reachable through the real
-	// producers in a browser, and is jsdom-proven instead (TASK-2476). Why: the
-	// icon fallback only ever draws a NAVIGABLE unsafe entry, which exists solely
-	// from a MID-VIEW safe→unsafe MIME flip — and every producer SNAPSHOTS the
-	// viewer's image set at open (`ItemAttachmentStrip.openLightbox` copies the
-	// derived array; `AttachmentViewerHost` spreads `request.images`), so a shown
-	// image's MIME cannot change under the open viewer here. The AT-OPEN unsafe
-	// case never reaches the viewer either: the producers filter `canOpenInViewer`
-	// before emitting, so the last-mile gate (`unsafeAtOpenIds`) is defense in
-	// depth. Route-intercepting the metadata probe flips the HEADER's fetched MIME,
-	// which the seed overrides — it does not change the arm. The jsdom suite drives
-	// the flip by mutating the prop directly (the one thing a component test can do
-	// and a browser cannot), and asserts the no-bytes invariant (no <img>, detached
-	// src cleared, loader disposed) there. Left as a visible `fixme` rather than
-	// omitted so the coverage boundary is explicit.
-	test.fixme(
-		'the fallback arm on a mid-view MIME flip (jsdom-proven — unreachable via real producers)',
-		async () => {}
-	);
+	test('a PDF and a ZIP open the fallback arm through a REAL producer — Open for the PDF, none for the ZIP (PLAN-2392 3c-ii)', async ({
+		page,
+		fixture,
+		request
+	}) => {
+		// CLOSES THE 3c-i SCOPING NOTE. Under 3c-i the fallback arm was unreachable
+		// through a real producer — the producers filtered `canOpenInViewer` before
+		// emitting, so only images ever reached the viewer, and the arm was
+		// jsdom-only (a mid-view MIME flip driven by a prop write). 3c-ii converges
+		// the panel and the viewer: a file tile now EMITS on the surface channel, so
+		// a real PDF and a real ZIP open the grown `Lightbox` and draw the no-bytes
+		// fallback arm. This is the browser proof of ADMISSION (a non-raster row is
+		// navigable, not dropped) and the ARM (no <img>, no bytes) together, plus the
+		// per-type toolbar: Open for a browser-previewable PDF, NO Open for a ZIP.
+		await browserLogin(page);
+		const doc = await seedDoc(fixture, request, 'Fallback integration');
+		// Real magic bytes so the server's sniff-against-allowlist accepts them and
+		// stores the canonical MIME (the multipart Content-Type is not trusted).
+		await uploadAttachment(fixture, request, doc.id, 'report.pdf', 'application/pdf', REAL_PDF);
+		await uploadAttachment(fixture, request, doc.id, 'logs.zip', 'application/zip', REAL_ZIP);
+		await page.goto(itemUrl(fixture, doc.slug));
+		await expect(page.locator(TILE)).toHaveCount(2);
+
+		// ── The PDF: fallback arm, honest note, and Open IS offered ──
+		await page.locator(`${TILE}[aria-label*="report.pdf"]`).click();
+		await expect(viewerDialog(page, 'report.pdf')).toHaveCount(1);
+		await expect(page.locator(VIEWER_FALLBACK)).toBeVisible();
+		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('report.pdf');
+		await expect(page.locator(VIEWER_FALLBACK_NOTE)).toHaveText('No preview available');
+		// NO BYTES: the raster arm never mounted, so there is no <img> on the stage.
+		await expect(page.locator(VIEWER_IMAGE)).toHaveCount(0);
+		// A PDF is browser-previewable, so Open in new tab is offered — and Download
+		// always is, carrying the filename.
+		await expect(viewerOpenAnchor(page)).toBeVisible();
+		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'report.pdf');
+		await page.keyboard.press('Escape');
+		await expect(page.locator(VIEWER)).toHaveCount(0);
+
+		// ── The ZIP: same fallback arm, but Open is ABSENT (not previewable) ──
+		await page.locator(`${TILE}[aria-label*="logs.zip"]`).click();
+		await expect(viewerDialog(page, 'logs.zip')).toHaveCount(1);
+		await expect(page.locator(VIEWER_FALLBACK)).toBeVisible();
+		await expect(page.locator(VIEWER_FALLBACK_NAME)).toHaveText('logs.zip');
+		await expect(page.locator(VIEWER_FALLBACK_NOTE)).toHaveText('No preview available');
+		await expect(page.locator(VIEWER_IMAGE)).toHaveCount(0);
+		// A ZIP is NOT browser-previewable — the Open action does not apply, so the
+		// anchor is absent entirely (not merely disabled). Download still applies.
+		await expect(viewerOpenAnchor(page)).toHaveCount(0);
+		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'logs.zip');
+	});
+
+	test('every open forces exactly one no-store HEAD of the opened entry; arrowing forces none; a reopen forces another (PLAN-2392 3c-ii T6)', async ({
+		page,
+		fixture,
+		request
+	}) => {
+		// T6 always-revalidate-on-open, in a browser. The strip's list rows carry a
+		// COMPLETE seed (filename + MIME + size), so before T6 a strip open issued
+		// ZERO metadata HEADs — the machine short-circuits a complete seed. T6 mints
+		// a per-open nonce that joins the metadata subject identity, forcing exactly
+		// one `no-store` revalidating HEAD of the OPENED entry so a cross-tab /
+		// background delete the browser's `max-age` HEAD cache would hide is caught.
+		// Observable as the HEAD count: one per open, NONE while arrowing within an
+		// open (the nonce is constant), and another on a reopen (a fresh nonce).
+		await browserLogin(page);
+		const doc = await seedDoc(fixture, request, 'No-store reopen');
+		const a = await uploadAttachment(fixture, request, doc.id, 'ns-a.png');
+		const b = await uploadAttachment(fixture, request, doc.id, 'ns-b.png');
+
+		// Count HEADs per attachment id. The image bytes are GETs (thumb-sm for the
+		// tiles, thumb-md/original for the viewer); the metadata existence probe is a
+		// HEAD of the EXACT variant-less URL, so match the pathname with a `$` anchor
+		// (no `?variant`) — never a query-bearing URL.
+		// The EXACT canonical API path per id — a full-path compare, not a suffix, so a
+		// different workspace or a prefixed route can never be miscounted.
+		const attPath = (id: string) => `/api/v1/workspaces/${fixture.workspaceSlug}/attachments/${id}`;
+		const heads: Record<string, number> = { [a]: 0, [b]: 0 };
+		page.on('request', (r) => {
+			if (r.method() !== 'HEAD') return;
+			const u = new URL(r.url());
+			// EXACT variant-less canonical URL: no query at all (a `?variant=` HEAD, were
+			// one ever issued, must not be miscounted as the canonical existence probe).
+			if (u.search !== '') return;
+			for (const id of [a, b]) if (u.pathname === attPath(id)) heads[id] += 1;
+		});
+
+		await page.goto(itemUrl(fixture, doc.slug));
+		await expect(page.locator(TILE)).toHaveCount(2);
+		// BASELINE, before any open: the strip lists via GET, never a metadata HEAD,
+		// so no forced probe has fired yet. This makes the post-open count a proven
+		// DELTA of the open, not a pre-existing HEAD the open happens to inherit.
+		expect(heads[a], 'no HEAD before the first open').toBe(0);
+		expect(heads[b]).toBe(0);
+
+		// OPEN ns-a: exactly one forced HEAD of ns-a, and none of ns-b (only the
+		// opened entry is probed, not the whole set).
+		await page.locator(`${TILE}[aria-label*="ns-a.png"]`).click();
+		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
+		await expect.poll(() => heads[a], 'the opened entry gets one no-store HEAD').toBe(1);
+		expect(heads[b], 'a non-opened sibling is NOT probed at open').toBe(0);
+
+		// ARROW to ns-b within the SAME open: the nonce is constant across
+		// navigation, so no NEW forced HEAD fires for the arrival (3c-iii owns
+		// navigation-step revalidation).
+		await page.keyboard.press('ArrowRight');
+		await expect(page.locator(VIEWER_COUNTER)).toHaveText('2 / 2');
+		await page.keyboard.press('Escape');
+		await expect(page.locator(VIEWER)).toHaveCount(0);
+
+		// Now OPEN ns-b directly from its tile. This forces exactly one probe of ns-b
+		// — a DETERMINISTIC positive barrier that also proves the arrow above forced
+		// NONE: if arrowing had (wrongly) probed the arrival, ns-b's count would land
+		// on 2 here, not 1. The poll is the sync point; no timing crutch.
+		await page.locator(`${TILE}[aria-label*="ns-b.png"]`).click();
+		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
+		await expect.poll(() => heads[b], 'ns-b probed once — by its own open, not the earlier arrow').toBe(1);
+		await page.keyboard.press('Escape');
+		await expect(page.locator(VIEWER)).toHaveCount(0);
+
+		// REOPEN ns-a: a fresh open mints a fresh nonce → another forced HEAD, so its
+		// count reaches exactly 2 (its two opens), not more from the arrow-back. This
+		// poll is the final sync barrier; by the time it settles every earlier probe
+		// has landed, so the settled exact counts below are quiescent — heads[a] is
+		// its two opens (no arrow re-force) and heads[b] is its one direct open.
+		await page.locator(`${TILE}[aria-label*="ns-a.png"]`).click();
+		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
+		// Poll the PAIR to the settled exact state — ns-a its two opens (no arrow
+		// re-force), ns-b its one direct open (the arrow forced none).
+		await expect
+			.poll(() => `${heads[a]},${heads[b]}`, 'exactly {a:2, b:1} — no arrow re-force of either')
+			.toBe('2,1');
+	});
+
+	test('an archived-parent open is PROBE-GATED — the missing overlay, not a live surface (PLAN-2392 3c-ii DR-14)', async ({
+		page,
+		fixture,
+		request
+	}) => {
+		// THE ARCHIVED-AT-OPEN GATE. An archived parent makes attachment reads 404,
+		// so a complete strip seed (mime + size) is NOT evidence the bytes are
+		// REACHABLE (DR-14). The host threads `parentArchived` to the surface, which
+		// forces the metadata machine to PROBE rather than trust the seed; the probe
+		// 404s and the single-item surface settles on the inert "no longer available"
+		// missing overlay instead of a live image + working toolbar. Remove the gate
+		// (the host stops threading `parentArchived`) and the seed is trusted: no
+		// probe, so the raster arm loads bytes that 404 into the generic image-error
+		// state — never this overlay. That is the mutation this leg catches.
+		await browserLogin(page);
+		const doc = await seedDoc(fixture, request, 'Archived at open');
+		const attId = await uploadAttachment(fixture, request, doc.id, 'archived-shot.png');
+		// Record whether a HEAD probe of THIS attachment came back 404 — the
+		// reachability probe the gate forces. This is the request-level proof that
+		// the overlay is reached THROUGH the 404 probe, not incidentally.
+		const attPath = `/api/v1/workspaces/${fixture.workspaceSlug}/attachments/${attId}`;
+		let head404 = 0;
+		page.on('response', (r) => {
+			const rq = r.request();
+			if (rq.method() !== 'HEAD' || r.status() !== 404) return;
+			const u = new URL(rq.url());
+			// EXACT variant-less canonical URL of THIS attachment — the existence probe.
+			if (u.search === '' && u.pathname === attPath) head404 += 1;
+		});
+		await page.goto(itemUrl(fixture, doc.slug));
+		const tile = page.locator(TILE).first();
+		await expect(tile).toBeVisible();
+
+		// Archive (soft-delete) the parent from under the loaded page. The item GET
+		// still returns it (deleted_at set), so the page stays up with its banner and
+		// its already-loaded strip tile — this is the archived-AT-open path: the next
+		// open mounts the surface with `parentArchived` already true.
+		const del = await request.delete(
+			`/api/v1/workspaces/${fixture.workspaceSlug}/items/${doc.slug}`,
+			{ headers: { Authorization: `Bearer ${fixture.apiToken}` } }
+		);
+		expect(del.ok(), await del.text()).toBe(true);
+		// Wait for the archive to REACH the page (the SSE `item_archived` flip), so
+		// `parentArchived` is true before the open — otherwise the assertion is about
+		// a live open that raced the archive.
+		await expect(page.locator('.archived-banner')).toBeVisible();
+
+		// Open the surface. `parentArchived` is true, so the probe fires and 404s.
+		// Baseline the cumulative 404 counter so the assertion below is a proven
+		// DELTA of THIS open, not a probe that happened earlier in the test.
+		const before404 = head404;
+		await tile.click();
+		await expect(page.locator(VIEWER)).toHaveCount(1);
+		// BARRIER FIRST — the request-level proof: a 404 HEAD of this exact attachment
+		// (the archived-parent reachability probe) fired on THIS open. Asserting it
+		// BEFORE the overlay makes the overlay a consequence of the observed 404.
+		await expect.poll(() => head404, 'a 404 HEAD probe fired on this open').toBeGreaterThan(before404);
+		// The gate's tell: the single-item MISSING overlay, announced, with its
+		// "no longer available" copy — reached ONLY because the forced probe 404'd.
+		await expect(page.locator(VIEWER_MISSING)).toBeVisible();
+		await expect(page.locator(VIEWER_MISSING)).toContainText('no longer available');
+		// No bytes, and no generic image-error arm — the probe pre-empted the load.
+		await expect(page.locator(VIEWER_IMAGE)).toHaveCount(0);
+		await expect(page.locator(`${VIEWER} .lightbox-error`)).toHaveCount(0);
+		// EVERY toolbar action is inert (not just Open): the missing state drops both
+		// anchors' hrefs (so neither is a link), disables Copy-link, and Delete is
+		// absent (an archived parent withholds mutations).
+		await expect(viewerOpenAnchor(page), 'Open href dropped').toHaveCount(0);
+		await expect(viewerDownloadAnchor(page), 'Download href dropped').toHaveCount(0);
+		await expect(viewerCopyLink(page), 'Copy-link disabled').toBeDisabled();
+		await expect(viewerDelete(page), 'Delete withheld on an archived parent').toHaveCount(0);
+	});
+
+	test('archiving the parent while the surface is OPEN closes it (PLAN-2392 3c-ii DR-14, host lifecycle gate)', async ({
+		page,
+		fixture,
+		request
+	}) => {
+		// The archive-WHILE-OPEN half of the DR-14 parent lifecycle gate, which is
+		// the host's own — distinct from the metadata `missing` path (T6's forced
+		// probe reaches that too). An archived parent makes every open toolbar action
+		// 404, so the host CLOSES an open surface on the `parentArchived` false→true
+		// transition rather than leaving a live-looking toolbar over dead bytes.
+		// Break the host's transition-close and the surface lingers — the mutation
+		// this leg catches (the missing-overlay legs above cannot: they are satisfied
+		// by the metadata probe regardless of the host gate).
+		await browserLogin(page);
+		const doc = await seedDoc(fixture, request, 'Archive while open');
+		await uploadAttachment(fixture, request, doc.id, 'live-then-archived.png');
+		await page.goto(itemUrl(fixture, doc.slug));
+		await page.locator(TILE).first().click();
+		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
+		await expect(page.locator(VIEWER)).toHaveCount(1);
+		// Stamp BOTH the document AND the item-page element: a full reload clears the
+		// window stamp, and a subtree remount (ItemDetail re-created) replaces the
+		// stamped `.item-page` node. Both surviving proves the close is the host's
+		// client-side transition, not a reload OR a remount that would drop the viewer
+		// for a reason unrelated to the gate.
+		await page.evaluate(() => {
+			(window as unknown as { __spa?: number }).__spa = 1;
+			const el = document.querySelector('.item-page') as (HTMLElement & { __page?: number }) | null;
+			if (el) el.__page = 2;
+		});
+
+		// Archive the parent out from under the OPEN surface.
+		const del = await request.delete(
+			`/api/v1/workspaces/${fixture.workspaceSlug}/items/${doc.slug}`,
+			{ headers: { Authorization: `Bearer ${fixture.apiToken}` } }
+		);
+		expect(del.ok(), await del.text()).toBe(true);
+
+		// The `item_archived` SSE flips `parentArchived` false→true, and the host
+		// closes the open surface on that transition.
+		await expect(page.locator('.archived-banner')).toBeVisible();
+		await expect(page.locator(VIEWER), 'archiving the parent closes the open surface').toHaveCount(0);
+		expect(
+			await page.evaluate(() => {
+				const el = document.querySelector('.item-page') as (HTMLElement & { __page?: number }) | null;
+				return (window as unknown as { __spa?: number }).__spa === 1 && el?.__page === 2;
+			}),
+			'the close must be the client-side host transition — not a reload, and not a subtree remount'
+		).toBe(true);
+	});
 
 	test('a wheel over the toolbar neither zooms the image nor scrolls the page', async ({
 		page,
