@@ -31,6 +31,18 @@ export interface AttachmentMetadata {
 }
 
 /**
+ * Per-call fetch overrides (PLAN-2392 3c-ii T6). The one knob is `cache`, the
+ * standard `RequestInit.cache` mode: a forced existence probe passes
+ * `'no-store'` to bypass the browser HTTP cache (the endpoint sets
+ * `max-age=3600`), so it actually reaches the server rather than replaying a
+ * cached HEAD. Absent → fetch's default cache mode, i.e. the plain seed-fill
+ * HEAD is untouched.
+ */
+export interface MetadataFetchOptions {
+	cache?: RequestCache;
+}
+
+/**
  * The outcome of a metadata probe (PLAN-2392 DR-17).
  *
  * The three arms exist because callers need to tell "the row is gone"
@@ -73,17 +85,25 @@ const cache = new Map<string, Promise<AttachmentMetadataResult>>();
 export function fetchAttachmentMetadata(
 	workspaceSlug: string,
 	uuid: string,
-	getDownloadUrl: AttachmentUrlBuilder
+	getDownloadUrl: AttachmentUrlBuilder,
+	options?: MetadataFetchOptions
 ): Promise<AttachmentMetadataResult> {
 	const key = `${workspaceSlug}:${uuid}`;
 	const existing = cache.get(key);
 	if (existing) return existing;
 	const promise: Promise<AttachmentMetadataResult> = (async () => {
 		try {
-			const resp = await fetch(getDownloadUrl(uuid), {
-				method: 'HEAD',
-				credentials: 'same-origin'
-			});
+			const init: RequestInit = { method: 'HEAD', credentials: 'same-origin' };
+			// A forced existence probe passes `cache: 'no-store'` so the BROWSER
+			// HTTP cache cannot answer from the GET/HEAD's `Cache-Control:
+			// max-age=3600` (handlers_attachments.go). The promise cache above is
+			// per-page state we control; the HTTP cache is not, and a cached 200
+			// would hide a cross-tab / another-job delete — the exact thing an
+			// existence probe exists to catch (PLAN-2392 3c-ii T6). Only set when a
+			// caller asks: an unspecified `cache` leaves fetch on its default, so the
+			// plain seed-fill HEAD is unchanged.
+			if (options?.cache) init.cache = options.cache;
+			const resp = await fetch(getDownloadUrl(uuid), init);
 			if (resp.status === 404) return { status: 'missing' as const };
 			if (!resp.ok) return { status: 'transient' as const };
 			const ctype = resp.headers.get('content-type') ?? '';
@@ -143,10 +163,11 @@ export function invalidateAttachmentMetadata(workspaceSlug: string, uuid: string
 export function revalidateAttachmentMetadata(
 	workspaceSlug: string,
 	uuid: string,
-	getDownloadUrl: AttachmentUrlBuilder
+	getDownloadUrl: AttachmentUrlBuilder,
+	options?: MetadataFetchOptions
 ): Promise<AttachmentMetadataResult> {
 	invalidateAttachmentMetadata(workspaceSlug, uuid);
-	return fetchAttachmentMetadata(workspaceSlug, uuid, getDownloadUrl);
+	return fetchAttachmentMetadata(workspaceSlug, uuid, getDownloadUrl, options);
 }
 
 /**

@@ -149,6 +149,17 @@
 		 * always-revalidate-on-open `openNonce` layers onto this same forcing input.
 		 */
 		revalidateToken?: number;
+		/**
+		 * Per-OPEN nonce (PLAN-2392 3c-ii T6). The host mints a fresh value per
+		 * accepted open and rides it on the request (so the `{#key request}` remount
+		 * carries the matching nonce). It joins the metadata machine's SUBJECT
+		 * identity, forcing exactly one `no-store` revalidating HEAD of the opened
+		 * entry — the always-revalidate-on-open guarantee that catches a cross-tab /
+		 * background delete the browser's `max-age` HEAD cache would otherwise hide.
+		 * CONSTANT for the life of this mount (a new open remounts via `{#key}`), so
+		 * arrowing does not re-force. DEFAULT 0.
+		 */
+		openNonce?: number;
 	}
 
 	let {
@@ -162,6 +173,7 @@
 		getLiveContent,
 		parentArchived = false,
 		revalidateToken = 0,
+		openNonce = 0,
 	}: Props = $props();
 
 	/**
@@ -312,6 +324,7 @@
 		open: !!img,
 		parentArchived,
 		revalidateToken,
+		openNonce,
 	}));
 
 	// THE RESOLVED MIME, and THE STAGE ARM off it (3c-ii T3, TASK-2476 for the arm).
@@ -606,6 +619,12 @@
 	// `soleMissing` joins the key too: a single-item image whose 404 lands flips it
 	// true, and the load effect must re-fire to DISPOSE the loader (no bytes for a
 	// gone file) and let the missing overlay take the stage.
+	// The T6 `openNonce` deliberately does NOT join this key: a reopen is a WHOLE
+	// new `{#key request}` mount (fresh loader, empty state), so cross-open
+	// coherence is the remount's job, not the key's — and the nonce is constant
+	// within one open, so adding it would be inert anyway. The same-id
+	// safe→unsafe MIME flip that DOES need in-open coherence is already covered by
+	// `shownRenderer` above.
 	let loadKey = $derived(
 		`${img?.id ?? ''}:${img?.width ?? ''}:${img?.height ?? ''}:${shownRenderer ?? ''}:${soleMissing}`
 	);

@@ -184,19 +184,68 @@ describe('AttachmentSurfaceHost — the surface channel (TASK-2487 / TASK-2490)'
 		expect(surfaceOpen()).toBe(true);
 	});
 
-	it('EXACT-ONCE: an incomplete-seed open fires exactly ONE metadata probe', async () => {
-		// Incomplete seed (size null on both the flat seed and the record) → the
-		// surface completes it with a single HEAD.
+	it('EXACT-ONCE: an open fires exactly ONE forced no-store probe of the opened entry (T6)', async () => {
+		// T6 always-revalidate-on-open: the OPENED entry is always revalidated with a
+		// `no-store` HEAD — the host mints a per-open nonce, which forces the machine
+		// through the revalidation path (not the plain seed-fill HEAD) so a cross-tab
+		// delete the browser's max-age HEAD cache would hide is caught. Exactly ONE
+		// probe, and it is the forced one.
 		mountHost(propsA);
-		notifyAttachmentSurfaceOpen(
-			surfaceEvent({ size_bytes: null, images: [img(ATT_A, { size_bytes: null })] })
-		);
+		notifyAttachmentSurfaceOpen(surfaceEvent());
 		await settle();
 		expect(surfaceOpen()).toBe(true);
-		expect(metaFetch).toHaveBeenCalledTimes(1);
-		// The non-archived seed-completion path uses the plain HEAD, never the
-		// archived-parent revalidation probe.
-		expect(metaRevalidate).not.toHaveBeenCalled();
+		// One forced revalidation, none of the plain seed-fill fetches.
+		expect(metaRevalidate).toHaveBeenCalledTimes(1);
+		expect(metaFetch).not.toHaveBeenCalled();
+		// The forced probe carries `cache: 'no-store'` — inspect the OPTIONS the mock
+		// actually received (4th arg), not a local constant.
+		expect(metaRevalidate.mock.calls[0][3]).toEqual({ cache: 'no-store' });
+	});
+
+	it('REOPENING the same attachment fires a SECOND forced no-store probe (T6 nonce)', async () => {
+		// The browser-cache-bypass proof shape: a complete-seed open would normally
+		// short-circuit with zero HEADs, and even a re-probe could be served from the
+		// HTTP cache. T6 mints a FRESH per-open nonce, which (a) remounts the surface
+		// via {#key request} and (b) forces the machine down the no-store revalidation
+		// path again — so reopening the SAME attachment issues a genuinely new HEAD,
+		// not a cached answer. Two opens ⇒ two forced revalidations.
+		mountHost(propsA);
+		notifyAttachmentSurfaceOpen(surfaceEvent());
+		await settle();
+		expect(metaRevalidate).toHaveBeenCalledTimes(1);
+
+		// Reopen the very same attachment (a new accepted open ⇒ a new nonce).
+		notifyAttachmentSurfaceOpen(surfaceEvent());
+		await settle();
+		expect(surfaceOpen()).toBe(true);
+		expect(metaRevalidate).toHaveBeenCalledTimes(2);
+		// Both forced probes carried no-store.
+		expect(metaRevalidate.mock.calls[0][3]).toEqual({ cache: 'no-store' });
+		expect(metaRevalidate.mock.calls[1][3]).toEqual({ cache: 'no-store' });
+		// Never the plain seed-fill fetch for the opened entry.
+		expect(metaFetch).not.toHaveBeenCalled();
+	});
+
+	it('arrowing between entries issues NO additional forced probe (only the open does)', async () => {
+		// The guarantee covers the OPENED entry, not each navigation step (3c-iii owns
+		// that). Opening force-revalidates the first entry once; arrowing keeps the
+		// nonce, so it never forces again — the sibling here has an INCOMPLETE seed
+		// (null size), so it takes the PLAIN (cacheable) HEAD, proving navigation is on
+		// the non-forced path rather than simply not probing.
+		mountHost(propsA);
+		notifyAttachmentSurfaceOpen(
+			surfaceEvent({ images: [img(ATT_A), img(ATT_B, { alt: 'second', size_bytes: null })] })
+		);
+		await settle();
+		expect(metaRevalidate).toHaveBeenCalledTimes(1);
+		expect(metaFetch).not.toHaveBeenCalled();
+
+		// Arrow to the incomplete sibling — a plain seed-fill fetch, NOT a forced
+		// revalidation: the forced-probe count stays at the single open.
+		document.body.querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+		await settle();
+		expect(metaRevalidate).toHaveBeenCalledTimes(1); // still just the open's
+		expect(metaFetch).toHaveBeenCalledTimes(1); // the sibling's plain HEAD
 	});
 
 	it('keeps the CAPTURED workspace from the event, not any host default', async () => {
@@ -359,13 +408,11 @@ describe('AttachmentSurfaceHost — resource switch + deletion', () => {
 
 	it('a single open whose file 404s shows the inert overlay, not a close', async () => {
 		// A single-attachment open whose file turns out to be gone must show
-		// "no longer available" rather than flash-closing. An incomplete seed forces
-		// the probe, which 404s.
-		metaFetch.mockResolvedValue({ status: 'missing' });
+		// "no longer available" rather than flash-closing. T6: the opened entry is
+		// always force-revalidated, so the 404 arrives on the revalidation probe.
+		metaRevalidate.mockResolvedValue({ status: 'missing' });
 		mountHost(propsA);
-		notifyAttachmentSurfaceOpen(
-			surfaceEvent({ size_bytes: null, images: [img(ATT_A, { size_bytes: null })] })
-		);
+		notifyAttachmentSurfaceOpen(surfaceEvent());
 		await settle();
 		// Still open — the surface did not flash-close.
 		expect(surfaceOpen()).toBe(true);

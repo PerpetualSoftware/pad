@@ -95,9 +95,18 @@
 		parentArchived = false,
 	}: Props = $props();
 
-	let request = $state<AttachmentSurfaceOpenEvent | null>(null);
+	// The request carries the host-minted per-open nonce (T6) alongside the event,
+	// so the two travel as ONE unit through `{#key request}` — the remount can never
+	// carry a nonce that doesn't match its request.
+	let request = $state<(AttachmentSurfaceOpenEvent & { openNonce: number }) | null>(null);
 	// Host-owned forced-revalidation signal for the open surface (DR-14 restore).
 	let revalidateToken = $state(0);
+	// Per-OPEN nonce (PLAN-2392 3c-ii T6, always-revalidate-on-open). Incremented
+	// ONCE per accepted open below — never on navigation within a surface — and
+	// ridden on the request into `Lightbox`, where it forces exactly one `no-store`
+	// probe of the opened entry (catching a cross-tab / background delete the
+	// endpoint's `max-age` HEAD cache would otherwise hide).
+	let openNonce = $state(0);
 
 	/**
 	 * A close handler BOUND to the request it was rendered for, so a stale
@@ -109,7 +118,9 @@
 	 * lease (an element under the lease is not focusable), so the host threads the
 	 * `invoker` down rather than focusing it from a teardown that runs too early.
 	 */
-	function closeRequest(target: AttachmentSurfaceOpenEvent | null): () => void {
+	function closeRequest(
+		target: (AttachmentSurfaceOpenEvent & { openNonce: number }) | null
+	): () => void {
 		return () => {
 			if (target && request !== target) return;
 			request = null;
@@ -132,7 +143,15 @@
 	$effect(() => {
 		return registerAttachmentSurfaceListener((event) => {
 			if (!isAttachmentSurfaceEventForHost(event, { itemId, hostToken })) return;
-			request = event;
+			// Mint a fresh open-nonce per ACCEPTED open (T6). One per open — a later
+			// navigation within the surface does not re-mint — and bundled onto the
+			// request so the `{#key request}` remount hands the metadata machine a nonce
+			// it has not forced for, forcing one `no-store` probe of the opened entry.
+			// Read-then-write in a listener callback (not a tracked effect scope), so no
+			// CONVE-1688 self-write.
+			const nonce = openNonce + 1;
+			openNonce = nonce;
+			request = { ...event, openNonce: nonce };
 		});
 	});
 
@@ -203,6 +222,7 @@
 			{getLiveContent}
 			parentArchived={parentArchived === true}
 			{revalidateToken}
+			openNonce={request?.openNonce ?? 0}
 			onClose={closeRequest(request)}
 		/>
 	{/if}

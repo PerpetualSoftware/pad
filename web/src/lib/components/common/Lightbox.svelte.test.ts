@@ -397,8 +397,10 @@ describe('Lightbox — admission and the stage arm (3c-ii T3)', () => {
 		// Synchronously — before the HEAD answers — a null MIME is not raster, so
 		// the fallback shows. The delayed reclassification to raster/PDF/ZIP is its
 		// own describe below. The probe is pinned pending so the sync state is
-		// unambiguous.
+		// unambiguous — on BOTH the plain and the forced (T6, the opened entry)
+		// paths, so the single opened null entry never resolves out of the fallback.
 		metaFetch.mockReturnValue(new Promise(() => {}));
+		metaRevalidate.mockReturnValue(new Promise(() => {}));
 		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
 		expect(root().querySelector('.lightbox-image')).toBeNull();
 		expect(root().querySelector('.lightbox-fallback')).not.toBeNull();
@@ -572,7 +574,9 @@ describe('Lightbox — the file route and reclassification (3c-ii T3)', () => {
 	});
 
 	it('reclassifies a null-seed entry to the RASTER arm when the probe resolves an image', async () => {
-		metaFetch.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 2048 });
+		// T6: the opened entry is force-revalidated, so its resolved type arrives on
+		// the revalidation probe (not the plain seed-fill fetch).
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 2048 });
 		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
 		// Before the probe: the no-bytes fallback.
 		expect(root().querySelector('.lightbox-image')).toBeNull();
@@ -585,7 +589,7 @@ describe('Lightbox — the file route and reclassification (3c-ii T3)', () => {
 	});
 
 	it('reclassifies a null-seed entry to a PDF fallback WITH Open when the probe resolves PDF', async () => {
-		metaFetch.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 2048 });
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 2048 });
 		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
 		// Null MIME → Open not applicable yet.
 		expect(openTool()).toBeNull();
@@ -597,7 +601,7 @@ describe('Lightbox — the file route and reclassification (3c-ii T3)', () => {
 	});
 
 	it('reclassifies a null-seed entry to a ZIP fallback WITHOUT Open when the probe resolves ZIP', async () => {
-		metaFetch.mockResolvedValue({ status: 'ok', mime: 'application/zip', size: 2048 });
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'application/zip', size: 2048 });
 		mountViewer({ images: [image(IMG_A, 'unprobed', null)] });
 		await settleAsync();
 		// Resolved ZIP: the fallback, and Open never appears.
@@ -3312,16 +3316,26 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 		flushSync();
 	}
 
-	it('renders filename, type and size from a complete seed without fetching', async () => {
+	it('renders a complete seed, and the forced open-probe (T6) fires ONCE with no-store and does not override the seed', async () => {
+		// T6 always-revalidate-on-open: even a complete seed (both MIME and size) is
+		// revalidated once per open with a `no-store` HEAD — the strip's old zero-probe
+		// fast path is gone, deliberately. The displayed fields still come from the
+		// SEED (seed-wins merge), so the header is unchanged; what changes is that a
+		// probe now fires, and it is the FORCED one.
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 2048 });
 		mountViewer({ images: [metaImage()] });
 		await settleAsync();
 		expect(metaName()).toBe('photo.png');
 		expect(metaDetail()).toBe(
 			`${describeAttachmentType('image/png', 'photo.png')} · ${formatBytes(2048)}`
 		);
-		// Seed carries both MIME and size, so no HEAD fires (DR-2's "fetch only what
-		// is null").
+		// Exactly one probe, and it is the forced revalidation — never the plain
+		// seed-fill fetch (which the old fast path would have skipped entirely).
+		expect(metaRevalidate).toHaveBeenCalledTimes(1);
 		expect(metaFetch).not.toHaveBeenCalled();
+		// The `cache: 'no-store'` option is inspected on the OPTIONS the mock actually
+		// received (4th arg), not a local constant — the browser-cache-bypass contract.
+		expect(metaRevalidate.mock.calls[0][3]).toEqual({ cache: 'no-store' });
 	});
 
 	it('falls back filename → alt when the filename is null', async () => {
@@ -3354,8 +3368,9 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 		// A viewer image always has a known MIME (the last-mile gate), so the
 		// type-omitted branch is unreachable here; what IS reachable is a null size
 		// that the fetch fails to fill. The detail must then be TYPE ONLY, with no
-		// stray " · " and no "0 B" (formatBytes is never fed null).
-		metaFetch.mockResolvedValue({ status: 'transient' });
+		// stray " · " and no "0 B" (formatBytes is never fed null). T6: the opened
+		// entry's probe is the forced revalidation.
+		metaRevalidate.mockResolvedValue({ status: 'transient' });
 		mountViewer({ images: [metaImage({ size_bytes: null })] });
 		await settleAsync();
 		expect(metaName()).toBe('photo.png');
@@ -3363,10 +3378,11 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 	});
 
 	it('fetches to fill a null size and updates the detail line', async () => {
-		metaFetch.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 4096 });
+		// T6: the opened entry is force-revalidated, so the fill arrives on that probe.
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 4096 });
 		mountViewer({ images: [metaImage({ size_bytes: null })] });
 		await settleAsync();
-		expect(metaFetch).toHaveBeenCalled();
+		expect(metaRevalidate).toHaveBeenCalled();
 		expect(metaDetail()).toContain(formatBytes(4096));
 	});
 
@@ -3375,8 +3391,9 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 		// family (application/pdf) plus a size. The size fills (was null) but the type
 		// must stay the seed's — fields merge seed-wins. The fetched family is chosen
 		// distinct from the seed's on purpose: `image/gif` also labels as "Image", so
-		// an overwrite bug would have slipped through; a PDF label would not.
-		metaFetch.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 4096 });
+		// an overwrite bug would have slipped through; a PDF label would not. T6: the
+		// opened entry's probe is the forced revalidation.
+		metaRevalidate.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 4096 });
 		mountViewer({ images: [metaImage({ filename: null, size_bytes: null })] });
 		await settleAsync();
 		const seededType = describeAttachmentType('image/png', null);
@@ -3385,7 +3402,9 @@ describe('Lightbox — metadata header (TASK-2475)', () => {
 	});
 
 	it('shows a retryable error beside the name on a transient failure, then recovers', async () => {
-		metaFetch.mockResolvedValue({ status: 'transient' });
+		// T6: the opened entry's probe is the forced revalidation — so BOTH the initial
+		// open probe and the Retry go through `metaRevalidate` (transient, then ok).
+		metaRevalidate.mockResolvedValue({ status: 'transient' });
 		mountViewer({ images: [metaImage({ size_bytes: null })] });
 		await settleAsync();
 		// Beside what it already knows — never a blank sheet (DR-10).
@@ -3819,13 +3838,17 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 	}
 
 	it('an authoritative metadata 404 (missing) for the shown image advances to a survivor', async () => {
-		metaFetch.mockImplementation((_ws: unknown, uuid: string) =>
+		// A (the OPENED entry) is probed via the forced revalidation (T6); B (reached by
+		// the advance) via the plain fetch. Both mocks return the same per-uuid answer
+		// so A 404s wherever its probe is dispatched from.
+		const perUuid = (_ws: unknown, uuid: string) =>
 			Promise.resolve(
 				uuid === IMG_A
 					? { status: 'missing' as const }
 					: { status: 'ok' as const, mime: 'image/png', size: 2048 }
-			)
-		);
+			);
+		metaFetch.mockImplementation(perUuid);
+		metaRevalidate.mockImplementation(perUuid);
 		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')] });
 		await settleAsync();
 		// A's HEAD 404'd → A is tombstoned → advance to B; the set is now single.
@@ -3838,7 +3861,9 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 		// turns out to be gone shows "no longer available" rather than flash-closing.
 		// (A multi-image set still closes on all-missing — the next test.)
 		const onClose = vi.fn();
-		metaFetch.mockResolvedValue({ status: 'missing' });
+		// T6: the single opened entry is force-revalidated, so its 404 lands on the
+		// revalidation probe.
+		metaRevalidate.mockResolvedValue({ status: 'missing' });
 		mountViewer({ images: [image(IMG_A, 'a')], onClose });
 		await settleAsync();
 		expect(onClose).not.toHaveBeenCalled();
@@ -3853,8 +3878,11 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 		const onClose = vi.fn();
 		// Every image 404s: A advances to B, B's own probe 404s and advances to C,
 		// C's 404 empties the set → close. The effect re-runs once per subject change
-		// (each HEAD is async), so the cascade settles rather than looping.
+		// (each HEAD is async), so the cascade settles rather than looping. A (opened)
+		// probes via the forced revalidation, B/C (advanced-to) via the plain fetch —
+		// both mocks 404.
 		metaFetch.mockResolvedValue({ status: 'missing' });
+		metaRevalidate.mockResolvedValue({ status: 'missing' });
 		mountViewer({
 			images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg'), image(IMG_C, 'c', 'image/gif')],
 			onClose,
@@ -3865,7 +3893,9 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 
 	it('a TRANSIENT metadata failure does NOT delete the shown image (DR-17)', async () => {
 		const onClose = vi.fn();
-		metaFetch.mockResolvedValue({ status: 'transient' });
+		// T6: the opened entry A is force-revalidated, so its transient answer arrives
+		// on the revalidation probe.
+		metaRevalidate.mockResolvedValue({ status: 'transient' });
 		mountViewer({ images: [image(IMG_A, 'a'), image(IMG_B, 'b', 'image/jpeg')], onClose });
 		await settleAsync();
 		// A non-404 failure is retryable, never a deletion — the viewer stays on A and
