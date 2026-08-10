@@ -201,6 +201,11 @@ function lastFocusable(scope: HTMLElement = root()): HTMLElement {
 	return f[f.length - 1];
 }
 
+/** Whether the mobile sheet layout is selected on this root (TASK-2492 / T5). */
+function hasSheet(scope: HTMLElement = root()): boolean {
+	return scope.classList.contains('lightbox-sheet');
+}
+
 /** The `transform` inline style on the viewer's image (empty before it mounts). */
 function transformOf(scope: HTMLElement = root()): string {
 	return scope.querySelector<HTMLImageElement>('.lightbox-image')?.style.transform ?? '';
@@ -2932,6 +2937,207 @@ describe('Lightbox — mobile tap-to-load and zoom-past-fit (TASK-2460)', () => 
 		flushSync();
 		expect(root().querySelector('.lightbox-image')).toBeNull();
 		expect(root().querySelector('.lightbox-tap-load')).not.toBeNull();
+	});
+});
+
+// ── TASK-2492 — the AM-3 Lightbox-owned phone sheet layout ───────────────────
+//
+// WHAT JSDOM CANNOT PROVE, and is therefore T7's browser suite:
+//  • The bottom-anchored GEOMETRY — the dock sitting at the bottom edge and the
+//    stage filling the space above it — needs a layout engine.
+//  • The pan/zoom BOUNDS adapting to the smaller mobile stage (`readGeometry`
+//    over the resized box).
+//  • The `@media (forced-colors: active)` sheet-chrome fill/border being visible.
+//  • The DR-18 `@media (max-width: 768px)` label reveal on the phone.
+//  • Real TOUCH: native pinch still available (no `touch-action` change), no
+//    pointer capture on the sheet chrome, two-pointer input not swallowed — the
+//    3d handoff criterion.
+// The class is the SELECTION mechanism (a DOM fact) and the whole assertable
+// surface here: jsdom's getComputedStyle does NOT apply `<style>`-element rules
+// (the existing tap-to-load `pointer-events` assertions only ever assert
+// `.not.toBe(...)`, which passes on the empty string jsdom returns), so the CSS
+// layout itself — flex-direction, docking, `position: static` — is unassertable
+// and is named above for T7. What IS assertable, and is the byte-identical
+// guarantee, is that every sheet rule is scoped under `.lightbox-sheet`: with the
+// class ABSENT on desktop no sheet rule can match, so the desktop layout is
+// untouched by construction.
+describe('Lightbox — mobile sheet layout (3c-ii T5 / AM-3)', () => {
+	afterEach(() => {
+		// Every test here drives `mobileFlag`; make sure it can't leak to a later suite.
+		mobileFlag = false;
+		flushSync();
+	});
+
+	it('selects the sheet class ONLY on mobile (desktop path carries no sheet rule)', () => {
+		mobileFlag = false;
+		flushSync();
+		mountViewer();
+		// Desktop: no sheet class → none of the `.lightbox-sheet`-scoped rules match,
+		// so the desktop layout is byte-identical by construction.
+		expect(hasSheet()).toBe(false);
+		unmount(mounted.pop()!);
+
+		mobileFlag = true;
+		flushSync();
+		mountViewer();
+		expect(hasSheet()).toBe(true);
+	});
+
+	it('re-lays-out the SAME instance on a mid-open flip — zoom + element identity survive', () => {
+		mobileFlag = false;
+		flushSync();
+		mountViewer();
+		const rootBefore = root();
+		const imgBefore = rootBefore.querySelector('.lightbox-image');
+		expect(imgBefore).not.toBeNull();
+		expect(hasSheet(rootBefore)).toBe(false);
+		// Zoom past fit so there is real state to survive the re-layout.
+		expect(press('+')).toBe(true);
+		const scaledTo = scaleOf(rootBefore);
+		expect(scaledTo).toBeGreaterThan(1);
+		const srcBefore = imageSrc(rootBefore);
+
+		// Flip to mobile MID-OPEN.
+		mobileFlag = true;
+		flushSync();
+
+		// No remount: still exactly one viewer, the SAME root element, now sheet-classed.
+		expect(roots()).toHaveLength(1);
+		expect(root()).toBe(rootBefore);
+		expect(hasSheet()).toBe(true);
+		// The SAME <img> element AND the SAME src — the load effect untracks
+		// `platform`, so a flip neither reloads (src unchanged) nor re-keys the stage
+		// (element identity) — and the zoom transform is intact.
+		expect(root().querySelector('.lightbox-image')).toBe(imgBefore);
+		expect(imageSrc()).toBe(srcBefore);
+		expect(scaleOf()).toBe(scaledTo);
+
+		// ...and back to desktop: same instance again, sheet gone, zoom still there.
+		mobileFlag = false;
+		flushSync();
+		expect(roots()).toHaveLength(1);
+		expect(root()).toBe(rootBefore);
+		expect(hasSheet()).toBe(false);
+		expect(root().querySelector('.lightbox-image')).toBe(imgBefore);
+		expect(imageSrc()).toBe(srcBefore);
+		expect(scaleOf()).toBe(scaledTo);
+	});
+
+	it('keeps the docked chrome excluded from pan, wheel-zoom AND double-click', () => {
+		// The docked toolbar/meta are the SAME elements with the SAME classes, so they
+		// stay in all THREE gesture-exclusion `.closest()` lists (pointerdown /
+		// dblclick / WHEEL — the classic miss). Exercised with a real raster bitmap so
+		// each gesture otherwise COULD act; a live control at the end proves the
+		// handlers are armed and it is the exclusions that held.
+		mobileFlag = true;
+		flushSync();
+		// A SMALL sized image so the mobile THUMB cell renders a real <img> (a large or
+		// unknown-dimension image defers to tap-to-load, leaving nothing to zoom).
+		mountViewer({ images: [sized(IMG_A, 'wide', 2000, 100)] });
+		const toolbar = root().querySelector<HTMLElement>('.lightbox-toolbar')!;
+		const meta = root().querySelector<HTMLElement>('.lightbox-meta')!;
+		expect(toolbar).not.toBeNull();
+		expect(meta).not.toBeNull();
+
+		// (1) pointerdown on the docked toolbar does not arm/capture a pan.
+		const captureSpy = vi.fn();
+		(root() as unknown as { setPointerCapture: unknown }).setPointerCapture = captureSpy;
+		toolbar.dispatchEvent(pointerEvent('pointerdown', 100, 700));
+		root().dispatchEvent(pointerEvent('pointermove', 340, 700)); // well past threshold
+		flushSync();
+		expect(captureSpy).not.toHaveBeenCalled();
+
+		// (2) a wheel over the docked meta is CONSUMED (the modal owns the wheel) but
+		//     does NOT zoom the image behind it.
+		expect(scaleOf()).toBe(1);
+		expect(wheel(meta, { deltaY: -120 })).toBe(true);
+		expect(scaleOf()).toBe(1);
+
+		// (3) a double-click on the docked toolbar does NOT toggle fit↔actual.
+		toolbar.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 100, clientY: 700 }));
+		flushSync();
+		expect(scaleOf()).toBe(1);
+		// CONTROL for (3): the SAME double-click over the backdrop DOES toggle to
+		// actual size — the dblclick handler is live, so the toolbar exclusion is what
+		// held (removing the handler would leave scale at 1 and pass without this).
+		root().dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 100, clientY: 100 }));
+		flushSync();
+		expect(scaleOf()).toBeGreaterThan(1);
+		expect(press('0')).toBe(true); // back to fit for the wheel leg
+		expect(scaleOf()).toBe(1);
+
+		// CONTROL for (2): the SAME wheel over the backdrop DOES zoom — the wheel
+		// handler is live, so the meta exclusion is what held (not a dead wheel path).
+		expect(wheel(root(), { deltaY: -120 })).toBe(true);
+		expect(scaleOf()).toBeGreaterThan(1);
+	});
+
+	it('does not dismiss on a click of the docked chrome (target is not the backdrop)', () => {
+		mobileFlag = true;
+		flushSync();
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		root()
+			.querySelector<HTMLElement>('.lightbox-meta')!
+			.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		root()
+			.querySelector<HTMLElement>('.lightbox-toolbar')!
+			.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		flushSync();
+		expect(onClose).not.toHaveBeenCalled();
+	});
+});
+
+describe('Lightbox — the modal contract holds UNDER the mobile sheet (3c-ii T5)', () => {
+	// The contract is layout-independent: every invariant the desktop suites assert
+	// must hold identically with the sheet class on. Re-run the load-bearing ones
+	// under the mobile viewport mock.
+	beforeEach(() => {
+		mobileFlag = true;
+		flushSync();
+	});
+	afterEach(() => {
+		mobileFlag = false;
+		flushSync();
+	});
+
+	it('is still an aria-modal dialog portaled to <body>, carrying both marker classes', () => {
+		mountViewer();
+		expect(hasSheet()).toBe(true);
+		expect(root().getAttribute('role')).toBe('dialog');
+		expect(root().getAttribute('aria-modal')).toBe('true');
+		expect(root().parentElement).toBe(document.body);
+		expect(root().classList.contains(VIEWER_ROOT_CLASS)).toBe(true);
+	});
+
+	it('still moves focus to the close button on open', () => {
+		mountViewer({ images: [image(IMG_A, 'first'), image(IMG_B, 'second')] });
+		expect(document.activeElement).toBe(closeButton());
+	});
+
+	it('still traps Tab — wraps forward off the last focusable', () => {
+		mountViewer({ images: [image(IMG_A, 'first'), image(IMG_B, 'second')] });
+		lastFocusable().focus();
+		expect(press('Tab')).toBe(true);
+		expect(document.activeElement).toBe(closeButton());
+	});
+
+	it('still owns Escape through the shared stack (no local window branch)', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		// A raw window keydown does NOT close — the stack is the sole owner.
+		expect(press('Escape')).toBe(false);
+		expect(onClose).not.toHaveBeenCalled();
+		expect(runTopEscape()).toBe(true);
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('still closes on a backdrop click', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		flushSync();
+		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 });
 

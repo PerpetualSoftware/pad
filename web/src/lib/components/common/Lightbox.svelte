@@ -632,6 +632,18 @@
 	// alone must not reload — desktop→mobile must not abort an in-flight original,
 	// mobile→desktop must not retroactively auto-fetch (TASK-2459).
 	let platform = $derived<Platform>(viewport.isMobile ? 'mobile' : 'desktop');
+	// THE MOBILE SHEET LAYOUT SELECTOR (PLAN-2392 3c-ii / T5, AM-3). Off the SAME
+	// `viewport.isMobile` the platform reads, so the phone-sheet layout switches at
+	// the one app breakpoint. It toggles the `.lightbox-sheet` class on the root
+	// (below) and the stylesheet re-lays-out the existing chrome from it — a class,
+	// NOT a bare `@media`, deliberately: JS and CSS then share one breakpoint, and
+	// the flip is a DOM fact the modal-contract suite can drive and observe under
+	// its viewport mock. This is layout-only; the modal contract, the loader and the
+	// zoom state below are all layout-independent, so a flip mid-open re-lays out the
+	// SAME instance without touching any of them (no `{#key}` keys off it — that is
+	// what preserves the zoom/selection state across a breakpoint flip). Reading a
+	// store getter in a `$derived` is not an effect self-write (CONVE-1688).
+	let isSheet = $derived(viewport.isMobile);
 	// Whether a decoded bitmap exists to zoom / pan. False in the mobile `deferred`
 	// cell (a placeholder, nothing decoded), when there is no image, AND in the
 	// `error` state: `errored()` flips only the phase, leaving `displaySrc` set (the
@@ -1593,6 +1605,7 @@
 <div
 	bind:this={rootEl}
 	class="lightbox-backdrop {VIEWER_ROOT_CLASS}"
+	class:lightbox-sheet={isSheet}
 	role="dialog"
 	aria-modal="true"
 	aria-label={dialogLabel}
@@ -2412,6 +2425,110 @@
 		text-align: center;
 		color: var(--accent-red, #ff6b6b);
 		font-size: 0.8rem;
+	}
+
+	/* ── Mobile sheet layout (PLAN-2392 3c-ii / T5, AM-3) ────────────────────────
+	   The phone presentation of the converged surface. Selected by the
+	   `.lightbox-sheet` class the root toggles off `viewport.isMobile` (see the
+	   script) — NOT a bare `@media`, so JS and CSS share the one app breakpoint and
+	   the flip is a DOM fact the modal-contract jsdom suite can drive and read. This
+	   is a PURE RE-LAYOUT of the EXISTING chrome: the toolbar and meta leave their
+	   desktop absolute anchors and DOCK, stacked, to the bottom edge as a sheet; the
+	   stage yields them the room and fills the rest. No DOM node is added, moved, or
+	   re-keyed, so a breakpoint flip mid-open re-lays-out the SAME instance — the
+	   modal contract, the portal, the loader, the zoom transform and every
+	   gesture/Escape registration are untouched. Every rule here is scoped under
+	   `.lightbox-sheet`, so the DESKTOP layout is byte-identical. */
+	.lightbox-backdrop.lightbox-sheet {
+		/* Bottom-anchored: a content column with the chrome docked to the bottom. */
+		flex-direction: column;
+		align-items: stretch;
+		justify-content: flex-end;
+	}
+
+	/* The stage fills the space ABOVE the dock and yields its width to the phone.
+	   `min-height: 0` is load-bearing: a flex item's default `min-height: auto`
+	   refuses to shrink below its content, which would push the docked chrome off
+	   the bottom of the screen. The zoom coordinate system re-reads this smaller box
+	   live (`readGeometry`), so the pan/zoom bounds track the new geometry — a
+	   browser-only proof (T7).
+	   `position: relative` makes the stage the containing block for its OWN
+	   `inset: 0` overlays (the loading spinner, the mobile tap-to-load affordance,
+	   the no-preview fallback, the missing arm). Without it those absolutes resolve
+	   against the fixed backdrop — the FULL viewport — and would centre over the
+	   bottom dock instead of the shortened stage. On desktop the stage stays static
+	   and the overlays centre against the full-viewport backdrop, which coincides
+	   with the 92vh centred stage; the shortened sheet stage breaks that coincidence,
+	   so it establishes the containing block explicitly here (sheet-scoped, so
+	   desktop is unchanged). No fixed descendant exists, so this traps nothing. */
+	.lightbox-sheet .lightbox-stage {
+		position: relative;
+		width: 100vw;
+		height: auto;
+		flex: 1 1 auto;
+		min-height: 0;
+		order: 0;
+	}
+
+	/* META + TOOLBAR become flow items in the column so they dock, stacked, at the
+	   bottom with NO magic-number coordination between them — `order` alone puts
+	   content on top (0), then meta (1), then the toolbar as the very bottom bar (2),
+	   primary actions in thumb reach. They are the SAME elements with the SAME
+	   classes, so `.lightbox-toolbar` / `.lightbox-meta` still match all three
+	   pointer-exclusion `.closest()` lists (pointerdown / dblclick / wheel) — a
+	   press, double-click or wheel on the docked chrome stays excluded from the
+	   pan/zoom exactly as on desktop. Dropping to `position: static` also makes the
+	   desktop `:has(.lightbox-delete-confirm)` top-offset inert (a `top` on a static
+	   box is ignored); the confirm drill-down instead grows the toolbar upward and
+	   the stage yields, so it never collides with the top-right close. */
+	.lightbox-sheet .lightbox-meta,
+	.lightbox-sheet .lightbox-toolbar {
+		position: static;
+		inset: auto;
+		transform: none;
+		width: 100%;
+		max-width: none;
+		max-inline-size: none;
+		flex: none;
+		/* One sheet surface: a translucent plate, padded for touch, with a hairline
+		   top edge separating the dock from the content above. */
+		padding-inline: var(--space-3);
+		padding-block: var(--space-2);
+		background: rgba(0, 0, 0, 0.6);
+		border-top: 1px solid rgba(255, 255, 255, 0.12);
+	}
+	.lightbox-sheet .lightbox-meta {
+		order: 1;
+	}
+	.lightbox-sheet .lightbox-toolbar {
+		order: 2;
+	}
+
+	/* The counter can't stay bottom-centre — the toolbar dock is there now. Dock it
+	   to the top-LEFT (clearing the centring transform), unambiguously clear of the
+	   top-right close at any width or count length — a top-CENTRE counter could graze
+	   the close on a narrow phone. The top-left corner is free in the sheet (the meta
+	   moved into the bottom dock). */
+	.lightbox-sheet .lightbox-counter {
+		top: var(--space-3);
+		bottom: auto;
+		left: var(--space-3);
+		transform: none;
+	}
+
+	/* Forced-colors on the SHEET chrome (T5, DR-4). Forced-colors drops the docked
+	   plate's translucent fill and hairline border, so the sheet would merge into the
+	   content with no visible boundary — give the docked meta + toolbar an opaque
+	   Canvas fill and a real system-colour top edge. Scoped under `.lightbox-sheet`,
+	   so the desktop forced-colors rules below are unchanged. The inner tool buttons
+	   already get their `ButtonText` borders from the desktop block below (it is not
+	   sheet-scoped, so it applies here too). */
+	@media (forced-colors: active) {
+		.lightbox-sheet .lightbox-meta,
+		.lightbox-sheet .lightbox-toolbar {
+			background: Canvas;
+			border-top: 1px solid CanvasText;
+		}
 	}
 
 	/* Forced-colors (PLAN-2392 DR-4). The custom palette is discarded, so the
