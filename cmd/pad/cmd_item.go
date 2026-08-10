@@ -397,15 +397,23 @@ Examples:
 				return cli.PrintJSON(cli.ToItemSummaries(items))
 			}
 
-			if len(items) == 0 {
+			// Grouped when listing across collections, a single table when
+			// scoped to one — markdown mirrors the table layout.
+			grouped := len(args) == 0 && groupBy == ""
+
+			switch {
+			case formatFlag == "markdown":
+				if grouped {
+					renderItemsGroupedByCollectionMarkdown(os.Stdout, items)
+				} else {
+					cli.PrintItemMarkdown(items)
+				}
+			case len(items) == 0:
 				fmt.Println("No items found.")
 				return nil
-			}
-
-			// Group by collection if listing all
-			if len(args) == 0 && groupBy == "" {
+			case grouped:
 				printItemsGroupedByCollection(items)
-			} else {
+			default:
 				cli.PrintItemTable(items)
 			}
 
@@ -439,6 +447,49 @@ Examples:
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "filter by field value (repeatable): --field key=value")
 
 	return cmd
+}
+
+// renderItemsGroupedByCollectionMarkdown is the markdown counterpart of
+// printItemsGroupedByCollection (#898): one `## Icon Name (N)` heading per
+// collection, each followed by its own markdown table. Grouping is kept rather
+// than flattened so the markdown form carries the same information as the
+// table. Heading style matches `project changelog --format markdown`.
+func renderItemsGroupedByCollectionMarkdown(w io.Writer, items []models.Item) {
+	if len(items) == 0 {
+		fmt.Fprintln(w, "No items found.")
+		return
+	}
+
+	groups := make(map[string][]models.Item)
+	order := []string{}
+	for _, item := range items {
+		key := item.CollectionSlug
+		if _, exists := groups[key]; !exists {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], item)
+	}
+
+	for i, key := range order {
+		groupItems := groups[key]
+		// Sanitized, not raw: a newline or SGR sequence in a collection name or
+		// icon would otherwise inject document structure into the heading, which
+		// is the same hole the per-cell escaping closes inside the table.
+		// Sanitize the parts BEFORE joining, since sanitizing trims and would
+		// otherwise eat the separating space.
+		label := cli.SanitizeMarkdownText(key)
+		if groupItems[0].CollectionName != "" {
+			label = cli.SanitizeMarkdownText(groupItems[0].CollectionName)
+		}
+		if icon := cli.SanitizeMarkdownText(groupItems[0].CollectionIcon); icon != "" {
+			label = icon + " " + label
+		}
+		if i > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "## %s (%d)\n\n", label, len(groupItems))
+		cli.RenderItemMarkdown(w, groupItems)
+	}
 }
 
 func printItemsGroupedByCollection(items []models.Item) {
@@ -3081,8 +3132,16 @@ func starredCmd() *cobra.Command {
 				return cli.PrintJSON(items)
 			}
 
+			// Checked before the markdown branch so both formats give the
+			// command-specific message; the shared renderer would say the
+			// generic "No items found." here.
 			if len(items) == 0 {
 				fmt.Println("No starred items.")
+				return nil
+			}
+
+			if formatFlag == "markdown" {
+				cli.PrintItemMarkdown(items)
 				return nil
 			}
 
