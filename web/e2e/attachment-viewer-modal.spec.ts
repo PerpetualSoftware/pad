@@ -519,14 +519,16 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		await page.locator(`${TILE}[aria-label*="trap-a.png"]`).click();
 		await expect(page.locator(VIEWER)).toHaveCount(1);
 
-		// The controls, in DOM (trap) order: Close, Previous, Next, then the toolbar
-		// (Open, Download, Copy, Delete — TASK-2474). The trap edges are DERIVED, not
-		// named: the toolbar moved the "last control" off the Next button.
+		// The controls, in DOM (trap) order: Close, the toolbar (Open, Download, Copy,
+		// Delete — TASK-2474), then Previous, Next — the nav now TRAILS the toolbar
+		// because 3c-ii moved prev/next INTO the stage (which follows the toolbar in
+		// the DOM). The trap edges are DERIVED, not named: with the nav last again, the
+		// "last control" is the Next button, and the "first" is still Close.
 		const focused = () => page.evaluate(() => document.activeElement?.getAttribute('aria-label') ?? null);
 		expect(await focused(), 'focus entry is the first control').toBe('Close');
 
-		// FIRST → wraps to LAST. This is the branch. The last control is the last
-		// toolbar action; focus it once to learn its label, then prove the wrap.
+		// FIRST → wraps to LAST. This is the branch. The last control is the Next-image
+		// nav; focus it once to learn its label, then prove the wrap.
 		const lastLabel = await focusViewerLastControl(page);
 		expect(await focused()).toBe(lastLabel);
 		await page.locator(VIEWER).getByRole('button', { name: 'Close' }).focus();
@@ -535,12 +537,16 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 			lastLabel
 		);
 		// ...and from the middle it simply steps backward, so the wrap above is a
-		// wrap and not "Shift+Tab always lands on the last".
+		// wrap and not "Shift+Tab always lands on the last". With the nav trailing the
+		// toolbar, backward from Next steps to Previous, and one more step crosses INTO
+		// the toolbar — never a wrap to the last, never a jump straight to the first.
 		await page.locator(VIEWER).getByRole('button', { name: 'Next image' }).focus();
 		await page.keyboard.press('Shift+Tab');
 		expect(await focused()).toBe('Previous image');
 		await page.keyboard.press('Shift+Tab');
-		expect(await focused()).toBe('Close');
+		const intoToolbar = await focused();
+		expect(intoToolbar, 'a middle Shift+Tab steps backward, not a wrap to the last').not.toBe(lastLabel);
+		expect(intoToolbar, '...and not a jump to the first control').not.toBe('Close');
 		expect(await activeInViewer(page), 'backward traversal never left the viewer').toBe(true);
 
 		// The FORWARD wrap: from the last control, Tab returns to the first.
@@ -613,8 +619,8 @@ test.describe('attachment viewer — modal contract (TASK-2436)', () => {
 		const tabPrevented = () => page.evaluate(() => (window as unknown as { __tab: boolean[] }).__tab);
 
 		// CONTROL, viewer alone: a Tab the trap OWNS (from the LAST control, which
-		// wraps to the first) IS consumed. The last control is a toolbar action now
-		// (TASK-2474), so it is derived, not named. Without this the assertion below
+		// wraps to the first) IS consumed. The last control is the Next-image nav now
+		// (3c-ii moved it after the toolbar), so it is derived, not named. Without this the assertion below
 		// would pass against a viewer whose key handler never runs at all.
 		await focusViewerLastControl(page);
 		await page.keyboard.press('Tab');

@@ -19,7 +19,9 @@ import {
 	renderedScale,
 	uploadAttachment,
 	viewerCopyLink,
-	viewerDialog
+	viewerDialog,
+	viewerNext,
+	viewerPrev
 } from './lib/attachment-viewer';
 
 /**
@@ -127,6 +129,75 @@ test.describe('attachment viewer — mobile phone-sheet layout (PLAN-2392 3c-ii 
 		expect(inset.left, 'the --space-3 inset resolves to a real gutter').toBeGreaterThan(0);
 		expect(Math.abs(counter.left - inset.left), 'the counter sits at the left inset').toBeLessThan(3);
 		expect(Math.abs(counter.top - inset.top), 'the counter sits at the top inset').toBeLessThan(3);
+	});
+
+	test('the prev/next nav anchor to the SHORTENED stage, clear of the dock, and stay hittable on a short/landscape phone', async ({
+		page,
+		fixture,
+		request
+	}) => {
+		// THE 3c-ii NAV-PLACEMENT FIX. The prev/next arrows are `top: 50%` centred.
+		// On desktop and in a tall portrait phone the dock is a small fraction of the
+		// screen, so a viewport-centred arrow lands in the open stage. But on a SHORT
+		// viewport — a landscape phone, or portrait with the keyboard up — the docked
+		// meta+toolbar eat a big slice of the bottom, and an arrow centred on the FULL
+		// viewport lands in (or overlapping) the dock: obscured, or stealing the dock's
+		// taps. The fix moves the nav INSIDE the `position: relative` sheet stage, so
+		// `top: 50%` re-anchors to the SHORTENED stage box and the arrows clear the dock
+		// with no magic-number dock height. This is the browser-only geometry proof.
+		//
+		// A literal Pixel 7 landscape is 863px wide — past the 768px sheet breakpoint,
+		// so the sheet would not engage at all. The sheet's real domain is ≤768px wide;
+		// the trait that triggers the bug is the SHORT HEIGHT (the dock's fraction of the
+		// screen), so we use a short, landscape-shaped, in-sheet viewport.
+		await page.setViewportSize({ width: 720, height: 400 });
+		await browserLogin(page);
+		const doc = await seedDoc(fixture, request, 'Sheet nav placement');
+		// Two images so the nav (and counter) render — both are gated on a set > 1.
+		await uploadAttachment(fixture, request, doc.id, 'nav-a.png');
+		await uploadAttachment(fixture, request, doc.id, 'nav-b.png');
+		await page.goto(itemUrl(fixture, doc.slug));
+		await page.locator(TILE).first().click();
+		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
+		await expect(page.locator(VIEWER_SHEET)).toHaveCount(1);
+
+		// Both arrows are present and visible (multi-image set).
+		await expect(viewerPrev(page)).toBeVisible();
+		await expect(viewerNext(page)).toBeVisible();
+
+		const stage = (await box(page, VIEWER_STAGE))!;
+		const toolbar = (await box(page, VIEWER_TOOLBAR))!;
+		const prev = (await viewerPrev(page).boundingBox())!;
+		const next = (await viewerNext(page).boundingBox())!;
+		const vp = page.viewportSize()!;
+
+		// The dock genuinely shortens the stage on this viewport — the whole premise.
+		// The stage stops at the dock, and its centre sits WELL above the viewport
+		// centre (an arrow centred on the full viewport would therefore miss the stage).
+		expect(stage.bottom, 'the stage yields the bottom to the dock').toBeLessThanOrEqual(toolbar.top + 2);
+		const stageCenterY = stage.top + stage.h / 2;
+		expect(stageCenterY, 'the shortened stage centre is well above the viewport centre').toBeLessThan(vp.height / 2 - 20);
+
+		// THE FIX: each arrow's centre tracks the STAGE centre, not the viewport centre.
+		// This is the discriminator — with the nav docked to the fixed backdrop (the
+		// pre-fix DOM), both centres would sit at vp.height/2, a dock-half below here.
+		for (const [name, b] of [['prev', prev], ['next', next]] as const) {
+			const centerY = b.y + b.height / 2;
+			expect(Math.abs(centerY - stageCenterY), `the ${name} arrow centres on the stage, not the viewport`).toBeLessThan(6);
+			// Clear of the dock: the whole arrow sits above the toolbar's top edge …
+			expect(b.y + b.height, `the ${name} arrow sits fully above the dock`).toBeLessThanOrEqual(toolbar.top + 1);
+			// … and within the stage's vertical band (nav ∩ dock empty, nav ⊆ stage).
+			expect(b.y, `the ${name} arrow starts within the stage`).toBeGreaterThanOrEqual(stage.top - 1);
+			expect(b.y + b.height, `the ${name} arrow ends within the stage`).toBeLessThanOrEqual(stage.bottom + 1);
+		}
+
+		// HITTABLE, not merely positioned: a real click on each arrow navigates. The
+		// counter names the shown index over the set, so it is the navigation oracle.
+		await expect(page.locator(VIEWER_COUNTER)).toHaveText('1 / 2');
+		await viewerNext(page).click();
+		await expect(page.locator(VIEWER_COUNTER), 'clicking Next advances the set').toHaveText('2 / 2');
+		await viewerPrev(page).click();
+		await expect(page.locator(VIEWER_COUNTER), 'clicking Previous steps back').toHaveText('1 / 2');
 	});
 
 	test('a click on the empty stage closes the sheet; a click on the docked chrome does not', async ({

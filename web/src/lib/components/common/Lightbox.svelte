@@ -1634,27 +1634,6 @@
 		&#10005;
 	</button>
 
-	{#if hasMultiple}
-		<button
-			class="lightbox-nav prev"
-			type="button"
-			title="Previous (←)"
-			aria-label="Previous image"
-			onclick={prev}
-		>
-			&#8249;
-		</button>
-		<button
-			class="lightbox-nav next"
-			type="button"
-			title="Next (→)"
-			aria-label="Next image"
-			onclick={next}
-		>
-			&#8250;
-		</button>
-	{/if}
-
 	<!--
 		ACTION TOOLBAR (TASK-2474). The shared descriptor list, drawn over the
 		stage. The `.lightbox-toolbar` wrapper is the positioned pill AND the
@@ -1739,10 +1718,42 @@
 		is `pointer-events: none` so a click on the empty letterbox around the image
 		falls through to the backdrop and closes (exactly as it did when the image
 		was the only thing here); the image re-enables pointer events so a click ON
-		it does not close — and so 3c's drag / 3d's pinch have a target. The controls
-		sit ABOVE the stage (their own `z-index`), never inside it.
+		it does not close — and so 3c's drag / 3d's pinch have a target. The toolbar
+		and meta chrome sit ABOVE the stage (their own `z-index`), never inside it.
+
+		The prev/next nav are the ONE exception: they live INSIDE the stage (3c-ii
+		nav-placement fix). On desktop the stage is `position: static`, so their
+		`position: absolute` still resolves against the fixed backdrop — byte-identical
+		full-viewport centring. In the mobile sheet the stage is `position: relative`
+		(it docks the chrome to the bottom and shortens), so `top: 50%` re-anchors to
+		the SHORTENED stage box and the arrows clear the dock automatically — no
+		magic-number dock height. Because the stage is `pointer-events: none`, the nav
+		re-enables `pointer-events: auto` in its own rule (the same pattern the image
+		and the tap-to-load / retry buttons use); on desktop that value was already the
+		inherited default, so nothing changes there.
 	-->
 	<div class="lightbox-stage" bind:this={stageEl}>
+		{#if hasMultiple}
+			<button
+				class="lightbox-nav prev"
+				type="button"
+				title="Previous (←)"
+				aria-label="Previous image"
+				onclick={prev}
+			>
+				&#8249;
+			</button>
+			<button
+				class="lightbox-nav next"
+				type="button"
+				title="Next (→)"
+				aria-label="Next image"
+				onclick={next}
+			>
+				&#8250;
+			</button>
+		{/if}
+
 		{#if shownRenderer === 'raster-image' && loader.displaySrc}
 			<!--
 				KEYED ON THE LOAD TOKEN (TASK-2459). The <img> would otherwise persist
@@ -2227,6 +2238,11 @@
 		font-size: 1.8rem;
 		cursor: pointer;
 		line-height: 1;
+		/* The nav lives inside the `pointer-events: none` stage (see the template
+		   note), so it must re-enable pointer events to stay clickable. On desktop
+		   this is the already-inherited default (the backdrop is interactive), so the
+		   computed value is unchanged and the desktop layout stays byte-identical. */
+		pointer-events: auto;
 	}
 
 	.lightbox-nav:hover {

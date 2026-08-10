@@ -776,7 +776,8 @@ describe('Lightbox — focus', () => {
 			],
 		});
 		// More than one focusable, so "first" is separable from "a"/"the root":
-		// close, prev, next, plus the toolbar's open/download/copy-link (TASK-2474).
+		// close, the toolbar's open/download/copy-link (TASK-2474), and prev/next
+		// (which now live inside the stage, so they trail the toolbar in DOM order).
 		const controls = focusables();
 		expect(controls.length).toBeGreaterThan(1);
 		expect(document.activeElement).toBe(controls[0]);
