@@ -259,32 +259,33 @@ test('workspace export → import round-trip via web UI', async ({ page, fixture
 	expect(importedItem.content).not.toContain(`pad-attachment:${seeded.attachmentID}`);
 	expect(importedItem.content).toMatch(/pad-attachment:[0-9a-f-]{36}/);
 
-	// 5c. The rehydrated attachment row must be downloadable and
-	// the bytes must match the original PNG. This is the strongest
-	// possible round-trip assertion — every layer (export tar →
-	// import dispatch → rehydrate → storage backend → download)
-	// must work or the bytes won't match.
-	const attListResp = await request.get(`/api/v1/workspaces/${newSlug}/attachments`, {
-		headers: auth
-	});
-	if (!attListResp.ok()) {
-		throw new Error(
-			`imported attachments list failed (${attListResp.status()}): ${await attListResp.text()}`
-		);
-	}
-	const attList = (await attListResp.json()) as { attachments: { id: string; filename: string }[] };
-	expect(attList.attachments.length).toBeGreaterThan(0);
-	const newAtt = attList.attachments.find((a) => a.filename === 'roundtrip-logo.png');
-	expect(newAtt, 'imported attachment with the seeded filename should exist').toBeTruthy();
-	expect(newAtt!.id).not.toBe(seeded.attachmentID);
+	// 5c. Resolve the REWRITTEN reference straight from the imported
+	// content. The seeded attachment is a workspace-level row that the
+	// item references only through its markdown (item_id is NULL by
+	// design), so an item_id-scoped list can't see it — and the
+	// workspace-wide list defaults to limit 50 / created_at_desc,
+	// which silently drops the logo once the shared e2e workspace
+	// outgrows one page (sibling specs' fixtures did exactly that:
+	// BUG-2504 held main's CI red from 2026-08-06). The content URI is
+	// the contract the UI actually follows, so assert through it: the
+	// rewritten id must resolve, carry the seeded filename, and serve
+	// back the original bytes — every layer (export tar → import
+	// dispatch → rehydrate → storage backend → download) must work or
+	// the bytes won't match.
+	const newID = importedItem.content.match(/pad-attachment:([0-9a-f-]{36})/)![1];
+	expect(newID).not.toBe(seeded.attachmentID);
 
 	const blobResp = await request.get(
-		`/api/v1/workspaces/${newSlug}/attachments/${newAtt!.id}`,
+		`/api/v1/workspaces/${newSlug}/attachments/${newID}`,
 		{ headers: auth }
 	);
 	if (!blobResp.ok()) {
 		throw new Error(`download imported blob failed (${blobResp.status()})`);
 	}
+	expect(
+		blobResp.headers()['content-disposition'] ?? '',
+		'imported attachment should keep the seeded filename'
+	).toContain('filename="roundtrip-logo.png"');
 	const downloadedBytes = await blobResp.body();
 	expect(downloadedBytes.length).toBe(REAL_PNG.length);
 	expect(downloadedBytes.equals(REAL_PNG)).toBe(true);
