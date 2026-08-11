@@ -358,11 +358,11 @@ test.describe('attachment viewer — mobile phone-sheet layout (PLAN-2392 3c-ii 
 		expect(displays.length, 'the toolbar has labelled controls').toBeGreaterThan(0);
 		expect(displays.every((d) => d !== 'none'), 'every toolbar label is revealed on the phone').toBe(true);
 
-		// Native pinch preserved: neither the image NOR the stage restricts
-		// touch-action — both are `auto`, so the browser's own pinch-zoom stays live
-		// (a `none` OR a `pan-x`/`pan-y` would each block pinch before the 3d handler
-		// exists). The stage stays pointer-events:none so the letterbox still reaches
-		// the backdrop.
+		// The viewer OWNS touch now (3d / TASK-2518): the image AND the stage carry
+		// `touch-action: none`, so the browser's native pinch / scroll / double-tap-zoom
+		// don't compete with the pointer-driven pan / pinch / double-tap handlers. The
+		// stage stays pointer-events:none so a LETTERBOX touch still reaches the
+		// backdrop (which keeps touch-action:auto) and taps to close — the letterbox rule.
 		const facts = await page.evaluate((viewerSel) => {
 			const img = document.querySelector(`${viewerSel} .lightbox-image`) as HTMLElement | null;
 			const stage = document.querySelector(`${viewerSel} .lightbox-stage`) as HTMLElement | null;
@@ -372,8 +372,8 @@ test.describe('attachment viewer — mobile phone-sheet layout (PLAN-2392 3c-ii 
 				stagePointerEvents: stage ? getComputedStyle(stage).pointerEvents : null
 			};
 		}, '.attachment-viewer');
-		expect(facts.imgTouchAction, 'the image leaves touch-action auto (native pinch stays)').toBe('auto');
-		expect(facts.stageTouchAction, 'the stage leaves touch-action auto (native pinch stays)').toBe('auto');
+		expect(facts.imgTouchAction, 'the image takes touch-action none (the viewer owns touch)').toBe('none');
+		expect(facts.stageTouchAction, 'the stage takes touch-action none (the viewer owns touch)').toBe('none');
 		expect(facts.stagePointerEvents, 'the stage letterbox stays click-through to the backdrop').toBe('none');
 	});
 

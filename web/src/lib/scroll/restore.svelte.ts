@@ -60,11 +60,13 @@ import { isViewerFrontmost, VIEWER_ROOT_CLASS } from '$lib/a11y/viewerBackdrop';
  *    wheel / key / touch while open (the page behind is inert), so its own zoom
  *    / arrow-nav must not count as the user driving the page underneath it.
  *
- * Generalized across wheel / key / touch on purpose, not wheel-only: touch stays
- * native until phase 3d, so a viewer `touchmove` is NOT `defaultPrevented` and
- * only the origin check catches it; the viewer's arrow-nav (shipped 3a) IS
- * `defaultPrevented`, so either branch catches that. A genuine, non-viewer,
- * un-handled scroll passes both checks and still aborts the restore, as before.
+ * Generalized across wheel / key / touch on purpose, not wheel-only: the viewer now
+ * OWNS touch via pointer handlers + `touch-action: none` on the image (phase 3d /
+ * TASK-2518), but it handles POINTER events, not `touchmove` — so a viewer
+ * `touchmove` is still NOT `defaultPrevented`, and only the origin check catches it;
+ * the viewer's arrow-nav (shipped 3a) IS `defaultPrevented`, so either branch catches
+ * that. A genuine, non-viewer, un-handled scroll passes both checks and still aborts
+ * the restore, as before.
  */
 export function isModalViewerScrollInput(e: Event): boolean {
 	if (e.defaultPrevented) return true;
