@@ -1,4 +1,4 @@
-import { expect, type APIRequestContext, type Page } from '@playwright/test';
+import { expect, type APIRequestContext, type CDPSession, type Page } from '@playwright/test';
 import { crc32, deflateSync } from 'node:zlib';
 import type { SuiteFixture } from '../fixtures';
 
@@ -272,6 +272,116 @@ export function imageRect(page: Page, selector = VIEWER_IMAGE): Promise<DOMRect>
 		const r = el.getBoundingClientRect();
 		return { x: r.x, y: r.y, width: r.width, height: r.height, top: r.top, left: r.left, right: r.right, bottom: r.bottom } as DOMRect;
 	}, selector);
+}
+
+/** The RAW computed `transform` string on the frontmost viewer image — the exact
+ *  `translate(x,y) scale(s)` matrix the browser painted. Two reads being equal is
+ *  the "no jump" oracle (a degrade that reset or lurched changes the string). */
+export function transformOf(page: Page, selector = VIEWER_IMAGE): Promise<string> {
+	return page.evaluate((sel) => {
+		const all = document.querySelectorAll<HTMLElement>(sel);
+		const el = all[all.length - 1];
+		if (!el) throw new Error(`transformOf: no element for ${sel}`);
+		return getComputedStyle(el).transform;
+	}, selector);
+}
+
+/**
+ * The RENDERED scale once the CSS transition has settled (two equal reads). A
+ * pinch drops the transition (`.pinching`), but a discrete zoom / a toggle keeps
+ * the 0.15s ease, so measuring immediately after one samples a mid-animation
+ * matrix. Polls to a fixpoint (lifted from the zoom spec's `settledScale`).
+ */
+export async function settleScale(page: Page): Promise<number> {
+	let last = Number.NaN;
+	await expect
+		.poll(async () => {
+			const s = await renderedScale(page);
+			const stable = Math.abs(s - last) < 1e-3;
+			last = s;
+			return stable;
+		})
+		.toBe(true);
+	return renderedScale(page);
+}
+
+/**
+ * A real MULTI-TOUCH driver over the Chrome DevTools Protocol (PLAN-2392 3d /
+ * TASK-2519). Playwright's `page.touchscreen` is single-`tap` only, so genuine
+ * two-finger pinch / 2→1 degrade / all-cancel gestures — the whole point of the
+ * V3 device proof — need CDP's `Input.dispatchTouchEvent`, which injects real
+ * touch through the compositor into the Lightbox's pointer handlers (as opposed
+ * to synthesising `PointerEvent`s, which the unit suite already does).
+ *
+ * The semantics below are EMPIRICALLY PINNED to this Chromium (observed via
+ * `pointerdown/up/cancel` listeners, not assumed):
+ *
+ *  • `down` / `move` carry the FULL active-point set. Adding a point on a
+ *    `touchStart` promotes it (Chromium diffs the press against the prior frame);
+ *    `moveAll` moves several fingers in ONE frame, the way a real spread does.
+ *  • `lift(id)` sends `touchEnd` carrying the CHANGED (ending) point only —
+ *    Chromium fires `pointerup` for THAT id while the others stay down. VERIFIED
+ *    empirically against this Chromium (a `pointerup#<id>` listener fired for the
+ *    named point, and the 2→1 leg's degrade — which needs a SURVIVING co-founder —
+ *    arms green). Note this is the changed-touches convention, not the "remaining
+ *    active set" the CDP prose implies: an EMPTY `touchPoints` lifts a lone finger
+ *    (all-up), but a multi-touch lift MUST name the ending point, or `touchEnd:[]`
+ *    would release BOTH founders and there would be no survivor to degrade onto.
+ *  • `cancelAll()` is the ONLY cancel CDP exposes: `touchCancel` is
+ *    all-or-nothing and fires `pointercancel` for EVERY active pointer at once.
+ *    There is no per-pointer touchCancel, so the single-named-pointer
+ *    `pointercancel` degrade stays a UNIT-level proof (direct PointerEvent
+ *    dispatch); this class proves only the all-cancel teardown.
+ */
+export class CdpTouch {
+	private pts = new Map<number, { x: number; y: number }>();
+	private constructor(private readonly client: CDPSession) {}
+
+	static async attach(page: Page): Promise<CdpTouch> {
+		return new CdpTouch(await page.context().newCDPSession(page));
+	}
+
+	private frame(): Array<{ id: number; x: number; y: number }> {
+		return [...this.pts.entries()].map(([id, p]) => ({ id, x: p.x, y: p.y }));
+	}
+
+	/** Press a finger down at (x, y); sends `touchStart` with the full active set. */
+	async down(id: number, x: number, y: number): Promise<void> {
+		this.pts.set(id, { x, y });
+		await this.client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: this.frame() });
+	}
+
+	/** Move one finger; sends `touchMove` with the full active set. */
+	async move(id: number, x: number, y: number): Promise<void> {
+		this.pts.set(id, { x, y });
+		await this.client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: this.frame() });
+	}
+
+	/** Move several fingers in ONE frame — a genuine two-finger spread/converge. */
+	async moveAll(next: Array<{ id: number; x: number; y: number }>): Promise<void> {
+		for (const p of next) this.pts.set(p.id, { x: p.x, y: p.y });
+		await this.client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: this.frame() });
+	}
+
+	/** Lift ONE finger (the others stay down): `touchEnd` of the ending point. */
+	async lift(id: number): Promise<void> {
+		const p = this.pts.get(id);
+		if (!p) return;
+		this.pts.delete(id);
+		await this.client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [{ id, x: p.x, y: p.y }] });
+	}
+
+	/** A single-finger tap: down then up at the same point, no move. */
+	async tap(x: number, y: number, id = 0): Promise<void> {
+		await this.down(id, x, y);
+		await this.lift(id);
+	}
+
+	/** Cancel EVERY active pointer at once (CDP `touchCancel` is all-or-nothing). */
+	async cancelAll(): Promise<void> {
+		await this.client.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] });
+		this.pts.clear();
+	}
 }
 
 export function itemUrl(fixture: SuiteFixture, slug: string): string {
