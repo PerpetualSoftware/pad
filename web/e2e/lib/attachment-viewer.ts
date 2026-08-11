@@ -119,6 +119,14 @@ export const MOBILE = { width: 390, height: 844 };
 const STRIP = '.attachment-strip';
 export const TILE = `${STRIP} .att-tile`;
 /**
+ * The strip tile's per-tile delete control (PLAN-2392 3c-iii U5 / TASK-2514).
+ * Class-qualified inside the strip, mirroring `item-attachment-strip.spec.ts`'s
+ * local `DELETE_BTN` — lifted here because the U5 lifecycle proof deletes a
+ * strip attachment to fire `announceAttachmentDeleted` on the process-local bus,
+ * and a selector that drifted between the two specs would silently retarget one.
+ */
+export const STRIP_DELETE = `${STRIP} .att-delete`;
+/**
  * The viewer root. Class-qualified on PURPOSE (see the selector rule above);
  * `VIEWER_ROOT_CLASS` in `$lib/a11y/viewerBackdrop` is the same string, and
  * the manager's arbitration keys on it, so a rename that broke this locator
@@ -274,16 +282,56 @@ export function collectionUrl(fixture: SuiteFixture, query = ''): string {
 	return `/${fixture.adminUsername}/${fixture.workspaceSlug}/docs${query}`;
 }
 
-/** Upload a file bound to `itemId` so it lands in that item's strip. */
+/**
+ * Create a fresh, isolated workspace owned by the admin (PLAN-2392 3c-iii U5).
+ * The suite runs fully parallel against ONE server on ONE shared workspace, so
+ * its SSE stream carries every other spec's mutations — which starves the
+ * delta-sync cursor (a competing sync landing in the same second advances it
+ * past your own change, and the RFC3339-second `since` then drops it). A test
+ * that depends on the `items_bulk_updated` → `sync_required` → `/changes` path
+ * (the strip restore revalidation) must run on a stream NOTHING else touches.
+ * `startup` seeds a `docs` collection so the doc + strip have a home.
+ */
+export async function createWorkspace(
+	fixture: SuiteFixture,
+	request: APIRequestContext,
+	label: string
+): Promise<{ slug: string }> {
+	const resp = await request.post('/api/v1/workspaces', {
+		headers: authJson(fixture),
+		data: { name: `${label} ${Date.now()}`, template: 'startup' }
+	});
+	if (!resp.ok()) throw new Error(`workspace create failed (${resp.status()}): ${await resp.text()}`);
+	return (await resp.json()) as { slug: string };
+}
+
+/** Seed a doc item in an explicit workspace (the isolated-workspace analogue of
+ *  `seedDoc`, which is pinned to the shared suite workspace). */
+export async function createDoc(
+	fixture: SuiteFixture,
+	request: APIRequestContext,
+	wsSlug: string,
+	title: string
+): Promise<{ id: string; slug: string }> {
+	const resp = await request.post(`/api/v1/workspaces/${wsSlug}/collections/docs/items`, {
+		headers: authJson(fixture),
+		data: { title, fields: '{}', content: '' }
+	});
+	if (!resp.ok()) throw new Error(`doc create failed (${resp.status()}): ${await resp.text()}`);
+	return (await resp.json()) as { id: string; slug: string };
+}
+
+/** Upload a file bound to `itemId` so it lands in that item's strip. `ws`
+ *  defaults to the shared suite workspace; pass it for an isolated workspace. */
 export async function uploadAttachment(
 	fixture: SuiteFixture,
 	request: APIRequestContext,
 	itemId: string,
 	filename: string,
 	mimeType = 'image/png',
-	buffer: Buffer = REAL_PNG
+	buffer: Buffer = REAL_PNG,
+	ws: string = fixture.workspaceSlug
 ): Promise<string> {
-	const ws = fixture.workspaceSlug;
 	const resp = await request.post(
 		`/api/v1/workspaces/${ws}/attachments?item_id=${encodeURIComponent(itemId)}`,
 		{
@@ -403,6 +451,63 @@ export function authJson(fixture: SuiteFixture): Record<string, string> {
 		Authorization: `Bearer ${fixture.apiToken}`,
 		'Content-Type': 'application/json'
 	};
+}
+
+/**
+ * Archive (soft-delete) an item via the SINGLE-item endpoint (PLAN-2392 3c-iii
+ * U5). `DELETE /items/{slug}` sets `deleted_at`; the item GET still returns it,
+ * so the page stays up with its archived banner. Emits the per-item
+ * `item_archived` SSE.
+ */
+export async function archiveItem(
+	fixture: SuiteFixture,
+	request: APIRequestContext,
+	slug: string,
+	ws: string = fixture.workspaceSlug
+): Promise<void> {
+	const resp = await request.delete(`/api/v1/workspaces/${ws}/items/${slug}`, {
+		headers: { Authorization: `Bearer ${fixture.apiToken}` }
+	});
+	if (!resp.ok()) throw new Error(`archive failed (${resp.status()}): ${await resp.text()}`);
+}
+
+/**
+ * Restore an archived item via the SINGLE-item endpoint (PLAN-2392 3c-iii U5).
+ * `POST /items/{slug}/restore` clears `deleted_at`. Emits the per-item
+ * `item_restored` SSE.
+ */
+export async function restoreItem(
+	fixture: SuiteFixture,
+	request: APIRequestContext,
+	slug: string,
+	ws: string = fixture.workspaceSlug
+): Promise<void> {
+	const resp = await request.post(`/api/v1/workspaces/${ws}/items/${slug}/restore`, {
+		headers: { Authorization: `Bearer ${fixture.apiToken}` }
+	});
+	if (!resp.ok()) throw new Error(`restore failed (${resp.status()}): ${await resp.text()}`);
+}
+
+/**
+ * Bulk archive / restore via the LANE endpoint (PLAN-2392 3c-iii U5 / TASK-2511
+ * seam). `POST /items/bulk` emits ONE `items_bulk_updated` SSE per affected
+ * collection — carrying NO `item_id` (it routes only to `sync_required`). That
+ * is the exact path the prop-driven strip/timeline reconciliation must cover
+ * that a per-item `item_archived`/`item_restored` subscription would miss, so
+ * the U5 restore leg drives at least one transition through here.
+ */
+export async function bulkItems(
+	fixture: SuiteFixture,
+	request: APIRequestContext,
+	op: 'archive' | 'restore',
+	ids: string[],
+	ws: string = fixture.workspaceSlug
+): Promise<void> {
+	const resp = await request.post(`/api/v1/workspaces/${ws}/items/bulk`, {
+		headers: authJson(fixture),
+		data: { op, ids }
+	});
+	if (!resp.ok()) throw new Error(`bulk ${op} failed (${resp.status()}): ${await resp.text()}`);
 }
 
 /**

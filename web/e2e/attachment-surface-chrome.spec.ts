@@ -386,16 +386,21 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		// `heads` counts DISPATCHED probes; `headsDone` counts COMPLETED ones. The
 		// count barriers below poll on COMPLETION rather than dispatch so every earlier
 		// probe has fully landed before the next exact count is read — a settled-state
-		// sync point, not a timing crutch. `requestfinished` fires when the response is
-		// fully received.
+		// sync point, not a timing crutch.
+		//
+		// COMPLETION is keyed on the RESPONSE, not `requestfinished` (PLAN-2392 3c-iii
+		// U5): a bodyless HEAD gets its 200 headers and is then reported by Chromium as
+		// `net::ERR_ABORTED` — it fires `requestfailed`, NOT `requestfinished`, so a
+		// `requestfinished` barrier for a HEAD never completes. The `response` event
+		// fires with the arrived status, which is the true settle point for a HEAD.
 		const heads: Record<string, number> = { [a]: 0, [b]: 0 };
 		const headsDone: Record<string, number> = { [a]: 0, [b]: 0 };
 		page.on('request', (r) => {
 			const id = isCanonicalHead(r);
 			if (id) heads[id] += 1;
 		});
-		page.on('requestfinished', (r) => {
-			const id = isCanonicalHead(r);
+		page.on('response', (r) => {
+			const id = isCanonicalHead(r.request());
 			if (id) headsDone[id] += 1;
 		});
 
