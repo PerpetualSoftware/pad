@@ -5097,6 +5097,7 @@
 				canDelete={mutationsEnabled}
 				itemContent={itemMatchesRef ? item?.content : null}
 				liveContent={liveEditorMarkdown}
+				parentArchived={itemMatchesRef && isArchived}
 			/>
 
 			<!-- The unified attachment surface host is mounted at the TOP LEVEL, not
@@ -5617,6 +5618,7 @@
 				collectionId={item.collection_id}
 				frozen={false}
 				restoreFrozen={peeking}
+				parentArchived={itemMatchesRef && isArchived}
 				visibleKinds={activeTab === 'versions' ? ['version'] : ['comment', 'activity']}
 			/>
 		</div>

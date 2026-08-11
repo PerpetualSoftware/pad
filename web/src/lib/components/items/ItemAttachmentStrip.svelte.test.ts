@@ -148,6 +148,7 @@ const props = $state<{
 	itemContent: string | null;
 	liveContent: (() => string | null) | null;
 	hostToken: string;
+	parentArchived: boolean;
 	mutationsEnabled?: boolean;
 	getItemContent?: () => string | null;
 	getLiveContent?: () => string | null;
@@ -159,6 +160,7 @@ const props = $state<{
 	itemContent: null,
 	liveContent: null,
 	hostToken: 'host-1',
+	parentArchived: false,
 	mutationsEnabled: false,
 	getItemContent: undefined,
 	getLiveContent: undefined,
@@ -186,6 +188,7 @@ describe('ItemAttachmentStrip', () => {
 		props.canDelete = false;
 		props.itemContent = null;
 		props.liveContent = null;
+		props.parentArchived = false;
 		props.mutationsEnabled = false;
 		props.getItemContent = undefined;
 		props.getLiveContent = undefined;
@@ -1619,6 +1622,51 @@ describe('ItemAttachmentStrip', () => {
 		expect(listMock).toHaveBeenCalledOnce(); // no refetch
 	});
 
+	it('an upload during an open surface joins the STRIP but NOT the open set (PLAN-2392 3c-iii U4 / TASK-2513)', async () => {
+		// The open-set mutation contract, pinned end-to-end (DR-15 style) rather
+		// than assumed. An upload that lands while the surface is open must NOT
+		// retro-join its set, while the strip's own tile list — which subscribes to
+		// the upload bus — MUST gain the row. What THIS test pins is the NO-LIVE-FOLLOW
+		// half: the plausible wrong design is a host that synced new uploads into the
+		// open request, and the surface leg falsifies exactly that. (The other half of
+		// the snapshot contract — a producer mutating its OWN array/records in place
+		// after emit can't reach the surface — is the deep copy in
+		// notifyAttachmentSurfaceOpen, pinned directly at the module level by
+		// events.test.ts's deep-snapshot test.) The two legs here are independent: a
+		// dead upload bus fails the strip leg while leaving the surface leg green, and
+		// a live-following surface fails the surface leg while leaving the strip leg
+		// green — neither mechanism can mask the other.
+		listMock.mockResolvedValue(response([att({ id: 'img1' }), att({ id: 'img2' })]));
+		mountStrip('item-a');
+		await settle();
+		mountViewerHost();
+
+		// Open the surface on the strip's 2-image set, at image 1 of 2. The counter
+		// reads `position / total`, so its DENOMINATOR is the set size.
+		tiles()[0].click();
+		await settle();
+		expect(document.querySelector('.lightbox-backdrop')).not.toBeNull();
+		expect(document.querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+
+		// A THIRD image is uploaded while the surface is open. It is viewer-eligible
+		// (image/png), so a live-following surface would grow the denominator to
+		// "1 / 3" — which is exactly the wrong behavior this asserts against.
+		broadcastUpload('item-a', uploaded('img3'));
+		flushSync();
+
+		// Surface set UNCHANGED: still a 2-member set, still paging the emit-time
+		// snapshot.
+		expect(document.querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+		expect(
+			document.querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt')
+		).toBe('img1.png');
+
+		// Strip DID gain the upload — its own tile list follows the bus.
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names).toHaveLength(3);
+		expect(names.some((n) => n.includes('img3.png'))).toBe(true);
+	});
+
 	it('renders the strip from empty when the first upload lands', async () => {
 		// The strip renders nothing at all when empty, so this covers the
 		// transition from no-element to mounted.
@@ -2055,5 +2103,568 @@ describe('ItemAttachmentStrip', () => {
 		expect(document.querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt')).toBe(
 			'img2.png'
 		);
+	});
+
+	// ── Archive / restore revalidation (PLAN-2392 3c-iii U2 / TASK-2511) ──────
+	//
+	// The strip has NO SSE subscription: its only live inputs are the in-process
+	// delete/upload buses, so a restore that happened while this browser was
+	// elsewhere never reaches it and its rows keep rendering from the pre-archive
+	// fetch. `parentArchived` — threaded from ItemDetail, the same signal the
+	// timeline and surface host take — is the missing edge. Restore (true→false)
+	// re-fetches and MERGES over the current rows WITHOUT blanking, preserving
+	// tombstones / pending uploads / in-flight deletes / expanded state. Archive
+	// (false→true) is a content no-op. The latch is keyed to VIEW IDENTITY, so an
+	// archived→active item SWITCH is not misread as a restore.
+
+	it('treats a mount on an already-archived item as a level, not a restore edge', async () => {
+		// The latch is seeded from the initial prop, so an already-archived mount
+		// is a LEVEL — one fetch (the mount load), no spurious restore refetch.
+		props.parentArchived = true;
+		listMock.mockResolvedValue(response([att({ id: 'a1' })]));
+		mountStrip('item-a');
+		await settle();
+
+		expect(listMock).toHaveBeenCalledTimes(1);
+		expect(tiles()).toHaveLength(1);
+	});
+
+	it('revalidates on restore (archived true→false), merging fresh rows without blanking', async () => {
+		// Mount already-archived: the tiles are the pre-archive snapshot.
+		props.parentArchived = true;
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' })]));
+		mountStrip('item-a');
+		await settle();
+		expect(tiles()).toHaveLength(1);
+		expect(listMock).toHaveBeenCalledTimes(1);
+
+		// The restore refetch is DEFERRED so the pre-restore tile can be observed
+		// still on screen while it is in flight — the gentle path never blanks.
+		const revalidate = deferred<AttachmentListResponse>();
+		listMock.mockReturnValueOnce(revalidate.promise);
+		props.parentArchived = false;
+		flushSync();
+		expect(listMock).toHaveBeenCalledTimes(2);
+		expect(tiles()).toHaveLength(1);
+		expect(tiles()[0].getAttribute('aria-label')).toContain('a1.png');
+
+		// The response carries an attachment that appeared while archived.
+		revalidate.resolve(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		await settle();
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names).toHaveLength(2);
+		expect(names.some((n) => n.includes('a2.png'))).toBe(true);
+	});
+
+	it('does not refetch or blank on archive (false→true) — the content no-op contract', async () => {
+		props.parentArchived = false;
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		mountStrip('item-a');
+		await settle();
+		expect(tiles()).toHaveLength(2);
+		expect(listMock).toHaveBeenCalledTimes(1);
+
+		props.parentArchived = true;
+		flushSync();
+		await settle();
+
+		// Tiles keep their painted bytes; the archive edge issues no list() at all.
+		expect(tiles()).toHaveLength(2);
+		expect(listMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not double-load when an archived item switches to an active one', async () => {
+		// A(archived) → B(active) is a true→false transition in the raw prop, but a
+		// SWITCH, not a restore (round-3 P2). The switch's own load is the ONLY
+		// fetch; a value-only latch would fire a duplicate restore revalidation on
+		// top of it. The identity-keyed latch reseeds to B instead.
+		props.parentArchived = true;
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' })]));
+		mountStrip('item-a');
+		await settle();
+		expect(listMock).toHaveBeenCalledTimes(1);
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'b1' })]));
+		props.itemId = 'item-b';
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+
+		// Exactly TWO fetches: mount-A and switch-B. A third is the bug.
+		expect(listMock).toHaveBeenCalledTimes(2);
+		expect(tiles()).toHaveLength(1);
+		expect(tiles()[0].getAttribute('aria-label')).toContain('b1.png');
+	});
+
+	it('does not repaint an in-flight-deleted row when a restore revalidation lands first', async () => {
+		// round-3 P1: `deletedIds` is only tombstoned AFTER the delete's await, so
+		// a restore refetch in the optimistic-removal window would otherwise
+		// repaint the just-removed tile. The in-flight-delete marker excludes it.
+		props.parentArchived = true;
+		props.canDelete = true;
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		mountStrip('item-a');
+		await settle();
+		expect(tiles()).toHaveLength(2);
+
+		// Delete a1 with a DEFERRED delete, so its tombstone broadcast hasn't
+		// fired when the restore refetch resolves.
+		const del = deferred<void>();
+		deleteMock.mockReturnValueOnce(del.promise);
+		openConfirm(0); // a1 is the first tile's ×
+		clickConfirm();
+		expect(tiles()).toHaveLength(1); // optimistic removal of a1
+
+		// Restore. The refetch still lists a1 — its own DELETE hasn't committed —
+		// but a1 must NOT come back.
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+
+		let names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('a1.png'))).toBe(false);
+		expect(names.some((n) => n.includes('a2.png'))).toBe(true);
+
+		// The delete now resolves successfully: still gone, now tombstoned too.
+		del.resolve();
+		await settle();
+		names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('a1.png'))).toBe(false);
+		expect(deleteMock).toHaveBeenCalledWith('ws', 'a1');
+	});
+
+	it('preserves a pending upload through a restore revalidation', async () => {
+		props.parentArchived = true;
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' })]));
+		mountStrip('item-a');
+		await settle();
+
+		// A drop announced while archived — in `attachments` AND `pendingUploads`.
+		broadcastUpload('item-a', uploaded('fresh'));
+		flushSync();
+		expect(tiles()).toHaveLength(2);
+
+		// The restore refetch does NOT return `fresh` (the server doesn't know it
+		// yet). The gentle path must merge it back on top, not drop it.
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' })]));
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('fresh.png'))).toBe(true);
+		expect(names.some((n) => n.includes('a1.png'))).toBe(true);
+	});
+
+	it('does not resurrect a tombstoned row on a restore revalidation', async () => {
+		props.parentArchived = true;
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		mountStrip('item-a');
+		await settle();
+
+		// Another surface deleted a2 while archived.
+		broadcastDeletion('a2');
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+
+		// The restore refetch still lists a2 (its delete raced the server, or this
+		// GET predates it). The tombstone must win.
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('a2.png'))).toBe(false);
+		expect(names).toHaveLength(1);
+	});
+
+	it('preserves the expanded state across a restore revalidation', async () => {
+		props.parentArchived = true;
+		const rows = Array.from({ length: 12 }, (_, i) => att({ id: `a${i}` }));
+		listMock.mockResolvedValueOnce(response(rows));
+		mountStrip('item-a');
+		await settle();
+		expect(tiles()).toHaveLength(8);
+
+		// Expand — the non-retry load path would reset this to false.
+		target.querySelector<HTMLElement>('.att-more-expand')?.click();
+		flushSync();
+		expect(tiles()).toHaveLength(12);
+
+		listMock.mockResolvedValueOnce(response(rows));
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+
+		// Still expanded: the gentle path never touched `expanded`.
+		expect(tiles()).toHaveLength(12);
+		expect(target.querySelector('.att-more-expand')).toBeNull();
+	});
+
+	it('keeps the pre-restore rows when the restore revalidation fails', async () => {
+		props.parentArchived = true;
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' })]));
+		mountStrip('item-a');
+		await settle();
+		expect(tiles()).toHaveLength(1);
+
+		listMock.mockRejectedValueOnce(new Error('offline'));
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+
+		// A refresh failure is not authoritative: keep the good rows, and do NOT
+		// degrade to the blocking error row.
+		expect(tiles()).toHaveLength(1);
+		expect(tiles()[0].getAttribute('aria-label')).toContain('a1.png');
+		expect(errorRow()).toBeNull();
+	});
+
+	it('clears a stale load error when a restore revalidation succeeds', async () => {
+		// The initial load failed, leaving the error row up. A restore then fires a
+		// SUCCESSFUL revalidation, which must clear the stale error — otherwise the
+		// restored tiles render UNDER a lingering "Couldn't load" row.
+		props.parentArchived = true;
+		listMock.mockRejectedValueOnce(new Error('offline'));
+		mountStrip('item-a');
+		await settle();
+		expect(errorRow()).not.toBeNull();
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' })]));
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+
+		expect(errorRow()).toBeNull();
+		expect(tiles()).toHaveLength(1);
+	});
+
+	it('defers to a load still in flight instead of superseding it (no strand on failure)', async () => {
+		// A restore that superseded a still-pending mount load would strand the
+		// strip empty with no error/retry if the revalidation then failed (Codex
+		// round 2). The revalidation instead DEFERS: the in-flight load already
+		// returns the current list (archive doesn't delete attachments), so no
+		// second fetch is issued, and that load remains responsible for the outcome.
+		props.parentArchived = true;
+		const pending = deferred<AttachmentListResponse>();
+		listMock.mockReturnValueOnce(pending.promise);
+		mountStrip('item-a');
+		flushSync();
+		expect(listMock).toHaveBeenCalledTimes(1);
+
+		// Restore while the mount load is still in flight: no new fetch.
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+		expect(listMock).toHaveBeenCalledTimes(1);
+
+		// The original load completes and paints; nothing was stranded.
+		pending.resolve(response([att({ id: 'a1' })]));
+		await settle();
+		expect(tiles()).toHaveLength(1);
+		expect(tiles()[0].getAttribute('aria-label')).toContain('a1.png');
+	});
+
+	it('is not suppressed by a lingering stale prior-view load (per-view defer)', async () => {
+		// The defer guard is keyed PER VIEW. The api client has no request abort, so
+		// item A's load lingers in flight after a switch to B; a GLOBAL guard would
+		// let that stale A-load suppress B's genuine restore revalidation, leaving B
+		// stale with nothing to refetch it (Codex round 3).
+		props.parentArchived = true;
+		const aPending = deferred<AttachmentListResponse>(); // A's load never resolves
+		listMock.mockReturnValueOnce(aPending.promise);
+		mountStrip('item-a');
+		flushSync();
+		expect(listMock).toHaveBeenCalledTimes(1);
+
+		// Switch to B (still archived): B's load resolves; A's is still in flight.
+		listMock.mockResolvedValueOnce(response([att({ id: 'b1' })]));
+		props.itemId = 'item-b';
+		flushSync();
+		await settle();
+		expect(listMock).toHaveBeenCalledTimes(2);
+		expect(tiles()).toHaveLength(1);
+
+		// Restore B. B's own load is done; only A's stale load lingers. The restore
+		// revalidation must still run (per-view key), not defer to A's load.
+		listMock.mockResolvedValueOnce(response([att({ id: 'b1' }), att({ id: 'b2' })]));
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+
+		expect(listMock).toHaveBeenCalledTimes(3);
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('b2.png'))).toBe(true);
+	});
+
+	it('recomputes the continuation count from the restore response', async () => {
+		props.parentArchived = true;
+		const rows = Array.from({ length: 50 }, (_, i) => att({ id: `a${i}` }));
+		listMock.mockResolvedValueOnce({ attachments: rows, total: 120, limit: 50, offset: 0 });
+		mountStrip('item-a');
+		await settle();
+		expect(target.querySelector('a.att-more-link')?.textContent?.trim()).toBe('View all (120)');
+
+		// While archived, some were deleted elsewhere: the restore's total is lower.
+		// The continuation must track the fresh response, not stay frozen at 120.
+		listMock.mockResolvedValueOnce({ attachments: rows, total: 80, limit: 50, offset: 0 });
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+
+		expect(target.querySelector('a.att-more-link')?.textContent?.trim()).toBe('View all (80)');
+	});
+
+	it('keeps an open delete confirmation across a restore revalidation', async () => {
+		// The non-retry load path nulls `pendingDelete`; the gentle restore path
+		// must not — the confirmation is anchored to a row that still exists.
+		props.parentArchived = true;
+		props.canDelete = true;
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		mountStrip('item-a');
+		await settle();
+
+		openConfirm(0); // a1
+		expect(confirmPanel()).not.toBeNull();
+
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+
+		// Still open, and nothing sent: the restore reload preserved it.
+		expect(confirmPanel()).not.toBeNull();
+		expect(deleteMock).not.toHaveBeenCalled();
+	});
+
+	it('keeps a row excluded while a SECOND delete of the same id is still pending (ref-count)', async () => {
+		// A bare Set marker would let the FIRST delete's settle clear the id while a
+		// SECOND delete of the same id is still outstanding, so a restore refetch
+		// could repaint a row that is still being deleted (Codex round 2). The
+		// in-flight-delete marker is ref-counted.
+		props.parentArchived = true;
+		props.canDelete = true;
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		mountStrip('item-a');
+		await settle();
+		expect(tiles()).toHaveLength(2);
+
+		// First delete of a1 — deferred, and it will FAIL (so no tombstone latches;
+		// only the in-flight marker stands between a1 and a repaint).
+		let failFirst!: (e: Error) => void;
+		deleteMock.mockReturnValueOnce(new Promise<void>((_, reject) => (failFirst = reject)));
+		openConfirm(0); // a1
+		clickConfirm();
+		expect(tiles()).toHaveLength(1); // a1 optimistically removed
+
+		// a1 reappears while its delete is still in flight (a re-announced upload —
+		// it isn't tombstoned yet, so the row comes back), and the user deletes it
+		// again: a SECOND outstanding delete of the same id.
+		broadcastUpload('item-a', uploaded('a1'));
+		flushSync();
+		const del2 = deferred<void>();
+		deleteMock.mockReturnValueOnce(del2.promise);
+		openConfirm(0); // a1 again (newest-first, it is the first tile)
+		clickConfirm();
+
+		// The FIRST delete now fails and decrements ITS count — but the second is
+		// still pending, so a1 must stay marked in-flight.
+		failFirst(new Error('500'));
+		await settle();
+
+		// Restore: the refetch still lists a1. A bare Set (cleared by delete #1)
+		// would repaint it; the ref-count keeps it excluded because delete #2 is
+		// still outstanding.
+		listMock.mockResolvedValueOnce(response([att({ id: 'a1' }), att({ id: 'a2' })]));
+		props.parentArchived = false;
+		flushSync();
+		await settle();
+
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names.some((n) => n.includes('a1'))).toBe(false);
+		expect(names.some((n) => n.includes('a2'))).toBe(true);
+
+		// Drain: the second delete now succeeds; the marker fully releases and a1
+		// stays gone (now tombstoned). No leaked marker, no resurrection.
+		del2.resolve();
+		await settle();
+		const final = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(final.some((n) => n.includes('a1'))).toBe(false);
+		expect(final.some((n) => n.includes('a2'))).toBe(true);
+	});
+
+	// ── ORDINARY-LOAD in-flight-delete fence (PLAN-2392 3c-iii — load-path) ────
+	//
+	// U2 (TASK-2511) added the `inFlightDeletes` marker but applied it ONLY to the
+	// restore revalidation's merge. The ORDINARY load paths — the mount/retry
+	// response row filter, the pending-upload merge, and the load-FAILURE repaint —
+	// filtered on `deletedIds` alone. `deletedIds` is latched only AFTER a delete's
+	// API await (the deletion bus self-broadcast), so between an optimistic removal
+	// and that broadcast a row is gone from `attachments` but not yet tombstoned. An
+	// ordinary load whose response was issued (or is in flight) across that window
+	// can still carry the row and repaint the just-removed tile — the same hole the
+	// restore path already fences. These cover the three ordinary paths + the
+	// rollback discipline that must still repaint a genuinely failed delete.
+
+	it('does not repaint an in-flight-deleted row that an ordinary (retry) load returns', async () => {
+		// Path 1 — the response ROW filter (~:453). a1 is painted from a server load
+		// (surviving a failure as a pending upload → visible with a Retry), then a
+		// retry load returns a1 while a1's delete is in flight. `pendingAtRequest`
+		// already holds a1 at retry time, so the pending-upload merge excludes it via
+		// `covered` — leaving the response row filter as the ONLY thing between a1 and
+		// a repaint. That isolates path 1: dropping its `!isDeleting` guard resurrects
+		// a1 even though the merge leg's guard is untouched.
+		props.canDelete = true;
+		let rejectLoad1!: (e: Error) => void;
+		listMock.mockReturnValueOnce(
+			new Promise<AttachmentListResponse>((_, reject) => (rejectLoad1 = reject))
+		);
+		mountStrip('item-a');
+		flushSync();
+		broadcastUpload('item-a', uploaded('a1'));
+		flushSync();
+		rejectLoad1(new Error('offline'));
+		await settle();
+		expect(tiles()).toHaveLength(1); // a1 kept as a pending upload
+		expect(errorRow()).not.toBeNull();
+
+		// Retry: a1 stays painted while the retry load is in flight (isRetry never blanks).
+		const load2 = deferred<AttachmentListResponse>();
+		listMock.mockReturnValueOnce(load2.promise);
+		target.querySelector<HTMLElement>('.att-retry')!.click();
+		flushSync();
+
+		// Delete a1 — deferred, so its tombstone broadcast hasn't fired.
+		const del = deferred<void>();
+		deleteMock.mockReturnValueOnce(del.promise);
+		openConfirm(0);
+		clickConfirm();
+		expect(tiles()).toHaveLength(0); // optimistic removal
+
+		// The retry load lands mid-delete, still listing a1: the in-flight marker
+		// filters it out of the response rows, so a1 does NOT resurrect.
+		load2.resolve(response([att({ id: 'a1' })]));
+		await settle();
+		expect(tiles()).toHaveLength(0);
+
+		// The delete resolves: still gone, now tombstoned too — the durable filter
+		// takes over from the transient marker.
+		del.resolve();
+		await settle();
+		expect(tiles()).toHaveLength(0);
+		expect(deleteMock).toHaveBeenCalledWith('ws', 'a1');
+	});
+
+	it('does not resurrect an in-flight-deleted upload row through the pending-upload merge', async () => {
+		// Path 2 — the pending-upload MERGE (~:468). a1 is a pending upload the mount
+		// load's response does NOT return (the GET predates the upload), so a1 rides
+		// back only via `missed`. The mount load's `pendingAtRequest` snapshot was
+		// captured empty (before the upload), so `covered` is empty and cannot mask
+		// the effect — this isolates path 2: dropping its `!isDeleting` guard
+		// resurrects a1, while the response-row filter (raw is empty) is irrelevant.
+		props.canDelete = true;
+		const load1 = deferred<AttachmentListResponse>();
+		listMock.mockReturnValueOnce(load1.promise);
+		mountStrip('item-a');
+		flushSync();
+		broadcastUpload('item-a', uploaded('a1'));
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+
+		const del = deferred<void>();
+		deleteMock.mockReturnValueOnce(del.promise);
+		openConfirm(0);
+		clickConfirm();
+		expect(tiles()).toHaveLength(0); // optimistic removal
+
+		// The mount load resolves WITHOUT a1. a1 now lives only in the pending-upload
+		// buffer; the merge must not ride it back in while its delete is in flight.
+		load1.resolve(response([]));
+		await settle();
+		expect(tiles()).toHaveLength(0);
+
+		del.resolve();
+		await settle();
+		expect(tiles()).toHaveLength(0);
+	});
+
+	it('does not resurrect an in-flight-deleted upload row through the load-failure repaint', async () => {
+		// Path 3 — the load-FAILURE repaint (~:539). The catch arm repaints from the
+		// pending-upload buffer, which still holds a1. The in-flight marker must keep
+		// a1 out; dropping its `!isDeleting` guard resurrects a1 under the error row.
+		props.canDelete = true;
+		let rejectLoad1!: (e: Error) => void;
+		listMock.mockReturnValueOnce(
+			new Promise<AttachmentListResponse>((_, reject) => (rejectLoad1 = reject))
+		);
+		mountStrip('item-a');
+		flushSync();
+		broadcastUpload('item-a', uploaded('a1'));
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+
+		const del = deferred<void>();
+		deleteMock.mockReturnValueOnce(del.promise);
+		openConfirm(0);
+		clickConfirm();
+		expect(tiles()).toHaveLength(0); // optimistic removal
+
+		// The mount load now FAILS: its catch repaints from the pending buffer, but
+		// the in-flight marker keeps a1 out — no resurrection, just the error row.
+		rejectLoad1(new Error('offline'));
+		await settle();
+		expect(errorRow()).not.toBeNull();
+		expect(tiles()).toHaveLength(0);
+
+		del.resolve();
+		await settle();
+		expect(tiles()).toHaveLength(0);
+	});
+
+	it('rolls a row back into view when its delete fails, even though a list response landed mid-delete', async () => {
+		// The rollback discipline is a SETTLE-TIME correction and must survive the new
+		// filter: a genuinely failed delete re-inserts the row DIRECTLY into
+		// `attachments` (not through the filtered load paths), and the marker is
+		// cleared in performDelete's `finally` — which runs AFTER the catch re-inserts
+		// the row, so ordering never lets the filter swallow the rollback.
+		props.canDelete = true;
+		let rejectLoad1!: (e: Error) => void;
+		listMock.mockReturnValueOnce(
+			new Promise<AttachmentListResponse>((_, reject) => (rejectLoad1 = reject))
+		);
+		mountStrip('item-a');
+		flushSync();
+		broadcastUpload('item-a', uploaded('a1'));
+		flushSync();
+		rejectLoad1(new Error('offline'));
+		await settle();
+		expect(tiles()).toHaveLength(1);
+
+		const load2 = deferred<AttachmentListResponse>();
+		listMock.mockReturnValueOnce(load2.promise);
+		target.querySelector<HTMLElement>('.att-retry')!.click();
+		flushSync();
+
+		// Delete a1 — the DELETE will fail.
+		let rejectDel!: (e: Error) => void;
+		deleteMock.mockReturnValueOnce(new Promise<void>((_, reject) => (rejectDel = reject)));
+		openConfirm(0);
+		clickConfirm();
+		expect(tiles()).toHaveLength(0); // optimistic removal
+
+		// The retry load lands mid-delete, still listing a1: the marker hides it, so
+		// the tile does NOT come back on the load.
+		load2.resolve(response([att({ id: 'a1' })]));
+		await settle();
+		expect(tiles()).toHaveLength(0);
+
+		// The delete now FAILS: the row must roll back into view and toast.
+		rejectDel(new Error('500'));
+		await settle();
+		expect(tiles()).toHaveLength(1);
+		expect(tiles()[0].getAttribute('aria-label')).toContain('a1.png');
+		expect(toastMock).toHaveBeenCalled();
 	});
 });

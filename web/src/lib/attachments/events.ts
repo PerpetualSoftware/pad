@@ -225,6 +225,39 @@ export interface LightboxImage {
  * or a record inside it — after calling must not be able to reach into an open
  * surface, so the array AND each record are copied here. A shallow array copy is
  * not enough: the records stay shared references until each is spread.
+ *
+ * MUTATION INTO AN OPEN SET IS OUT OF SCOPE, BY CONTRACT (PLAN-2392 3c-iii U4 /
+ * TASK-2513). Scoped to THIS channel — the set as delivered by an emit: this
+ * channel adds no NEW member to an already-open set after emit, and no snapshotted
+ * record is mutated in place. (Downstream, a member's nullable display metadata may
+ * still be COMPLETED by probing — `surfaceMetadata` fills a null `mime_type` /
+ * `size_bytes` from a HEAD, the Lightbox normalizes a blank filename — augmenting
+ * what an already-present member shows, not adding or swapping one.) The one
+ * post-emit change to the set is member REMOVAL via DELETION reconciliation, which
+ * reaches the surface two ways — the separate delete channel
+ * (`registerAttachmentDeletionListener`) and the surface's own authoritative HEAD
+ * 404 while probing — and can only RETIRE a member, never add one; how the Lightbox
+ * then renders that (advance, close, or a sole-member missing state) is its own
+ * concern, documented there. Two consequences, both deliberate and pinned rather
+ * than assumed:
+ *   - UPLOAD during an open surface does NOT join that surface's set. The strip's
+ *     own tile list gains the row (its upload subscription), but the open surface
+ *     keeps the emit-time set — proven end-to-end in
+ *     `ItemAttachmentStrip.svelte.test.ts` ("upload during an open surface"). The
+ *     complementary half — a producer mutating its OWN array/records in place
+ *     after emit can't reach the surface — is the deep copy above, pinned directly
+ *     by this module's deep-snapshot test.
+ *   - A RENAME / metadata-change to a member cannot reach an open surface either,
+ *     because THE CHANNEL FOR IT DOES NOT EXIST YET. `api.attachments` has no
+ *     rename / update-in-place op — nothing edits an existing attachment's
+ *     metadata; its closest operation, `transform`, mints a NEW peer attachment
+ *     row rather than editing the source's metadata in place — and attachment
+ *     metadata is otherwise treated as immutable. So there is no in-process channel
+ *     by which a rename could reach an open surface; a member's caption could go
+ *     stale only via an out-of-band DB change nothing observes. There is no test for
+ *     this: nothing in the current tree can exercise it. If a rename op ever ships
+ *     it needs its own bus channel plus open-set reconciliation rules — routed to
+ *     IDEA-2515.
  */
 export interface AttachmentSurfaceOpenEvent {
 	/** UUID of the attachment the surface opens ON. */
