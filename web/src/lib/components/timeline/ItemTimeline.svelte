@@ -9,12 +9,20 @@
 	import TimelineActivityCard from './TimelineActivityCard.svelte';
 	import TimelineVersionCard from './TimelineVersionCard.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
-	import { fetchAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
+	import {
+		fetchAttachmentMetadata,
+		revalidateAttachmentMetadata,
+		invalidateAttachmentMetadata
+	} from '$lib/components/editor/attachment-metadata';
 	import { attachmentDownloadUrl, type AttachmentMeta } from '$lib/markdown/attachments';
 	import { canOpenInViewer } from '$lib/attachments/display';
 	import { isEditorOwnedImage } from '$lib/attachments/editorOwnedImage';
 	// One declaration of the surface set's image shape, on the channel (TASK-2431).
-	import { notifyAttachmentSurfaceOpen, type LightboxImage } from '$lib/attachments/events';
+	import {
+		notifyAttachmentSurfaceOpen,
+		registerAttachmentDeletionListener,
+		type LightboxImage
+	} from '$lib/attachments/events';
 	import { viewIdentity, createPaintFence } from '$lib/attachments/viewFence';
 	import CommentEditor from '$lib/components/CommentEditor.svelte';
 
@@ -83,9 +91,25 @@
 		 * callers outside an ItemDetail) disables addressing.
 		 */
 		hostToken?: string;
+		/**
+		 * PLAN-2392 3c-iii U1 (TASK-2510). The archive LEVEL of the item whose
+		 * `ItemDetail` owns this timeline, threaded from `ItemDetail` exactly as the
+		 * attachment surface host takes it (DR-14). Two jobs:
+		 *  - LEVEL: while true, every attachment probe goes through the no-store
+		 *    revalidation primitive, so an archived parent's genuine 404 lands as
+		 *    "missing" and a stale cached `ok` cannot repaint a broken `<img>`.
+		 *  - EDGES: false→true drops this item's cached attachment metadata + probe
+		 *    marks (so a re-render degrades to the missing path, not a broken image)
+		 *    and bumps the lifecycle epoch; true→false re-probes the unresolved set
+		 *    no-store so a restore escapes a `missing` cached while archived.
+		 * Item scoping is inherent to the prop — no SSE filter changes here, which is
+		 * what lets it cover BULK archive/restore (whose `items_bulk_updated` carries
+		 * no item_id). Defaults false → byte-identical for every existing caller.
+		 */
+		parentArchived?: boolean;
 	}
 
-	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '' }: Props = $props();
+	let { wsSlug, username = '', itemSlug, currentContent, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false }: Props = $props();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -123,36 +147,107 @@
 	// fires one HEAD per attachment without re-triggering on attMeta writes.
 	const probed = new Set<string>();
 
-	function probeAttachment(uuid: string) {
+	// UUIDs whose last probe did NOT yield metadata — a genuine `missing` (404)
+	// or a `transient` failure. Tracked EXPLICITLY because `probed` is
+	// non-reactive and a `missing` writes nothing to `attMeta`, so "clear a Set"
+	// alone would re-probe nothing on restore (PLAN-2392 3c-iii U1). The restore
+	// edge re-probes exactly this set.
+	const unresolved = new Set<string>();
+
+	// Deleted UUIDs — the deletion bus's authoritative, latched fact. A HEAD
+	// that resolves `ok` AFTER the delete must not repopulate `attMeta`, and the
+	// tombstone covers EVERY deleted id, not only ones already cached: a delayed
+	// probe for a not-yet-populated id must refuse to write too. Per-id, NOT the
+	// epoch — a single deletion must not fence the OTHER attachments' in-flight
+	// probes (PLAN-2392 3c-iii U1).
+	const tombstoned = new Set<string>();
+
+	// The per-timeline LIFECYCLE epoch — a plain `let` (non-reactive: read at
+	// probe dispatch, checked before write). Bumped by BOTH archive/restore prop
+	// edges. `revalidateAttachmentMetadata` invalidates the shared cache map but
+	// cannot cancel an already-dispatched promise, so a pre-archive `ok` or a
+	// pre-restore `missing` could otherwise overwrite the post-edge state — the
+	// epoch fence refuses any authoritative result whose dispatch epoch is stale.
+	let lifecycleEpoch = 0;
+
+	// Reactive re-probe trigger. The probe effect tracks this; the restore edge
+	// bumps it so the effect re-runs for exactly the unresolved set (clearing the
+	// non-reactive `probed` Set alone re-probes nothing — the effect tracks only
+	// `entries`).
+	let probeNonce = $state(0);
+
+	// Set true by the restore edge just before it bumps `probeNonce`, consumed
+	// (and reset) by the probe effect's next run: the restore re-probe must be
+	// no-store to ESCAPE a `missing` cached while the parent was archived, even
+	// though `parentArchived` is already false again by then. Plain `let`,
+	// read/written only under `untrack` — never a tracked-scope self-write.
+	let pendingRestoreNoStore = false;
+
+	// The attachment UUIDs referenced by the current comment/reply bodies. One
+	// definition, shared by the probe effect and the archive/restore edges so
+	// each targets exactly this item's attachments.
+	function referencedAttachmentIds(): Set<string> {
+		const ids = new Set<string>();
+		for (const entry of entries) {
+			if (entry.kind !== 'comment' || !entry.comment) continue;
+			for (const id of attachmentRefsIn(entry.comment.body)) ids.add(id);
+			for (const reply of entry.comment.replies ?? []) {
+				for (const id of attachmentRefsIn(reply.body)) ids.add(id);
+			}
+		}
+		return ids;
+	}
+
+	function probeAttachment(uuid: string, noStore: boolean) {
 		if (probed.has(uuid)) return;
 		probed.add(uuid);
-		// Capture the workspace identity before the HEAD probe. `attMeta` is a
-		// workspace-scoped attachment cache; ItemDetail reuses this panel across
-		// a no-{#key} item switch (its wsSlug/itemSlug props just change), so a
-		// probe resolving after a workspace switch must NOT write the old
-		// workspace's attachment metadata into the new item's cache (TASK-2112).
+		// Capture the workspace identity AND the lifecycle epoch before the HEAD.
+		// `attMeta` is a workspace-scoped attachment cache; ItemDetail reuses this
+		// panel across a no-{#key} item switch (its wsSlug/itemSlug props just
+		// change), so a probe resolving after a workspace switch must NOT write the
+		// old workspace's metadata into the new item's cache (TASK-2112). The epoch
+		// is the same discipline for archive/restore (PLAN-2392 3c-iii U1).
 		const reqWs = wsSlug;
-		fetchAttachmentMetadata(wsSlug, uuid, (id, variant) =>
-			attachmentDownloadUrl(wsSlug, id, variant)
-		).then((m) => {
-			// A transient failure (5xx / network) is not evidence about the
-			// row, and the helper deliberately doesn't cache it — so drop the
-			// probed mark too, or this panel could never ask again for the
-			// rest of the mount (PLAN-2392 DR-17). Note what this does and
-			// does not buy: clearing the mark makes the attachment eligible
-			// again on the NEXT run of the probe effect (a new comment, an
-			// edit, a remount), it does not schedule a retry of its own. A
-			// proactive retry belongs with the timeline's deletion
-			// subscription in phase 3c, not here. A `missing` result IS
-			// authoritative: leave the mark set and leave `attMeta` without an
-			// entry, which is what the renderer already degrades to a missing
-			// placeholder on.
+		const reqEpoch = lifecycleEpoch;
+		// LEVEL rule: while the parent is archived (or forced by a restore edge),
+		// bypass the shared module cache with a no-store revalidation so a stale
+		// cached `ok` cannot repaint a broken `<img>` and a genuine 404 lands as
+		// missing honestly. Otherwise the plain, cache-sharing HEAD.
+		const urlFor = (id: string, variant?: 'thumb-sm' | 'thumb-md' | 'original') =>
+			attachmentDownloadUrl(wsSlug, id, variant);
+		const probe = noStore
+			? revalidateAttachmentMetadata(wsSlug, uuid, urlFor, { cache: 'no-store' })
+			: fetchAttachmentMetadata(wsSlug, uuid, urlFor);
+		probe.then((m) => {
+			// A delete (tombstone) or a workspace switch makes this answer
+			// irrelevant — ignore it entirely.
+			if (tombstoned.has(uuid)) return;
+			if (reqWs !== wsSlug) return;
+			// A transient failure (5xx / network) is not evidence about the row,
+			// and the helper deliberately doesn't cache it — so drop the probed
+			// mark, leaving the attachment eligible again on the NEXT run of the
+			// probe effect (a new comment, an edit, a remount, a restore bump). It
+			// does not schedule a retry of its own (PLAN-2392 DR-17).
 			if (m.status === 'transient') {
 				probed.delete(uuid);
+				unresolved.add(uuid);
 				return;
 			}
-			if (m.status !== 'ok') return;
-			if (reqWs !== wsSlug) return;
+			// An authoritative ok/missing that lands AFTER a lifecycle edge must
+			// not overwrite the post-edge state (the epoch fence).
+			if (reqEpoch !== lifecycleEpoch) return;
+			if (m.status !== 'ok') {
+				// `missing` is authoritative: latch it unresolved and clear any
+				// stale entry so the renderer degrades to the missing placeholder.
+				unresolved.add(uuid);
+				if (attMeta.has(uuid)) {
+					const next = new Map(attMeta);
+					next.delete(uuid);
+					attMeta = next;
+				}
+				return;
+			}
+			unresolved.delete(uuid);
 			const next = new Map(attMeta);
 			// filename is left empty — the markdown alt text is the chip/img
 			// label, and renderAttachmentImage only falls back to filename
@@ -162,16 +257,120 @@
 		});
 	}
 
-	// Probe every attachment referenced by a comment or reply as the
-	// timeline loads / changes. Depends only on `entries`.
+	// Probe every attachment referenced by a comment or reply as the timeline
+	// loads / changes. Tracks `entries` (new/edited comments) and `probeNonce`
+	// (the restore re-probe trigger). `parentArchived` is read NON-reactively:
+	// the LEVEL is a dispatch-time decision, and the archive/restore EDGES are
+	// owned by the dedicated edge effect below — reading it reactively here would
+	// re-run (and needlessly re-probe) on every lifecycle flip.
 	$effect(() => {
-		for (const entry of entries) {
-			if (entry.kind !== 'comment' || !entry.comment) continue;
-			for (const id of attachmentRefsIn(entry.comment.body)) probeAttachment(id);
-			for (const reply of entry.comment.replies ?? []) {
-				for (const id of attachmentRefsIn(reply.body)) probeAttachment(id);
+		void probeNonce;
+		const ids = referencedAttachmentIds();
+		untrack(() => {
+			const noStore = parentArchived === true || pendingRestoreNoStore;
+			pendingRestoreNoStore = false;
+			for (const id of ids) probeAttachment(id, noStore);
+		});
+	});
+
+	// External attachment deletion (the app-wide bus, PLAN-2382). Drop the cached
+	// entry AND its probe mark so the comment-HTML renderer re-renders the
+	// reference through the missing path, and TOMBSTONE the id so an in-flight
+	// HEAD that resolves `ok` after the delete can't repopulate it. Self-broadcast
+	// is idempotent (the deleting surface already reconciled).
+	$effect(() => {
+		return registerAttachmentDeletionListener((uuid) => {
+			if (!uuid) return;
+			tombstoned.add(uuid);
+			probed.delete(uuid);
+			unresolved.delete(uuid);
+			if (attMeta.has(uuid)) {
+				const next = new Map(attMeta);
+				next.delete(uuid);
+				attMeta = next;
 			}
-		}
+		});
+	});
+
+	// Archive/restore LIFECYCLE edges (PLAN-2392 3c-iii U1 / DR-14). Threaded as a
+	// PROP from ItemDetail rather than an SSE subscription: the bulk
+	// archive/restore endpoints emit `items_bulk_updated` with NO item_id (routed
+	// only to sync_required), which a timeline-side item_archived/item_restored
+	// filter would miss — but ItemDetail reconciles `deleted_at` through BOTH the
+	// per-item events and the bulk sync path, and passes the settled level down.
+	// Edge-triggered off a LATCHED previous value (plain `let` + untrack — a
+	// $state read+written in one effect aborts its flush, CONVE-1688). Seeded from
+	// the initial prop so a mount on an already-archived item is a LEVEL, not an
+	// edge (the LEVEL rule in the probe effect covers it).
+	let prevArchived = untrack(() => parentArchived === true);
+	$effect(() => {
+		const archived = parentArchived === true;
+		untrack(() => {
+			if (archived === prevArchived) return;
+			prevArchived = archived;
+			lifecycleEpoch += 1;
+			// Every id this timeline holds ANY state for — referenced by the current
+			// comments, cached in `attMeta`, probed, or latched unresolved. BOTH edges
+			// reconcile over this whole set, not just the currently-referenced ids: an
+			// attachment resolved-then-unreferenced (or a probe still in flight) keeps
+			// `attMeta`/`probed` state that a later re-reference would otherwise replay
+			// — a stale `ok` painting a broken `<img>` against an archived parent, or a
+			// stale probe mark skipping the restore re-probe (Codex rounds 1-2, the
+			// symmetric P2). All of `attMeta`/`probed`/`unresolved` describe THIS
+			// timeline instance's own probes (UUIDs are globally unique), so the union
+			// never misattributes an entry to another item. After a no-{#key} workspace
+			// switch the union may still carry a PRIOR workspace's id (attMeta persists
+			// across the switch by design); discarding it from THIS instance's caches is
+			// benign (it re-probes on switch-back), and the shared-cache invalidate below
+			// keys on the CURRENT `wsSlug`, so a foreign id hits a `wsSlug:id` key that
+			// never exists — a no-op that correctly leaves the other workspace's (still
+			// valid) cache entry untouched.
+			const referenced = referencedAttachmentIds();
+			const tracked = new Set<string>(referenced);
+			for (const id of attMeta.keys()) tracked.add(id);
+			for (const id of probed) tracked.add(id);
+			for (const id of unresolved) tracked.add(id);
+			if (archived) {
+				// false→true: a cached `ok` renders a plain `<img>` with no error bridge
+				// to the missing presentation, so ANY tracked entry against the archived
+				// parent would show a BROKEN image on (re-)render. Drop every cached
+				// entry + probe mark and invalidate the shared cache so a re-render /
+				// re-reference goes through the no-store probe → missing path honestly.
+				// Already-painted thumbs keep their decoded bytes until re-render (the
+				// DR-14 posture); no eager re-probe.
+				for (const id of tracked) {
+					probed.delete(id);
+					unresolved.add(id);
+					invalidateAttachmentMetadata(wsSlug, id);
+				}
+				// `tracked` ⊇ every `attMeta` key, so this drops exactly the tracked
+				// cached entries — i.e. all of them.
+				if (attMeta.size) attMeta = new Map();
+			} else {
+				// true→false: re-probe every NOT-yet-resolved tracked id NO-STORE so a
+				// `missing` cached while archived is escaped; leave resolved `ok` entries
+				// alone (they survive archive, and re-probing them would be a redundant
+				// HEAD). Clearing the probe mark + invalidating for a not-currently-
+				// referenced id too is what lets a re-reference AFTER the restore
+				// re-probe instead of skipping on a stale probe mark / stale cached
+				// `missing` (Codex rounds 1-2). The probe effect iterates only
+				// CURRENTLY-referenced ids, so bump the reactive nonce (which forces this
+				// run no-store) when a referenced id needs re-probing; the rest re-probe
+				// when they are next referenced.
+				let bump = false;
+				for (const id of tracked) {
+					if (attMeta.has(id)) continue;
+					probed.delete(id);
+					unresolved.add(id);
+					invalidateAttachmentMetadata(wsSlug, id);
+					if (referenced.has(id)) bump = true;
+				}
+				if (bump) {
+					pendingRestoreNoStore = true;
+					probeNonce += 1;
+				}
+			}
+		});
 	});
 
 	let entryListEl: HTMLElement | undefined = $state();

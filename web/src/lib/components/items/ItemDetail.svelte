@@ -5617,6 +5617,7 @@
 				collectionId={item.collection_id}
 				frozen={false}
 				restoreFrozen={peeking}
+				parentArchived={itemMatchesRef && isArchived}
 				visibleKinds={activeTab === 'versions' ? ['version'] : ['comment', 'activity']}
 			/>
 		</div>
