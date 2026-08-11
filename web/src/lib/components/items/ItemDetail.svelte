@@ -5097,6 +5097,7 @@
 				canDelete={mutationsEnabled}
 				itemContent={itemMatchesRef ? item?.content : null}
 				liveContent={liveEditorMarkdown}
+				parentArchived={itemMatchesRef && isArchived}
 			/>
 
 			<!-- The unified attachment surface host is mounted at the TOP LEVEL, not

@@ -104,6 +104,26 @@
 		 * broadcasting to every host.
 		 */
 		hostToken?: string;
+		/**
+		 * The archive LEVEL of the item whose `ItemDetail` owns this strip
+		 * (PLAN-2392 3c-iii U2 / TASK-2511), threaded from `ItemDetail` exactly as
+		 * the timeline (U1) and the attachment surface host (DR-14) take it. The
+		 * strip has NO SSE subscription — its only live inputs are the in-process
+		 * delete/upload buses — so a restore that happened while this browser was
+		 * elsewhere never reaches it, and its rows keep rendering from the
+		 * pre-archive fetch (thumb URLs work again by accident, metadata may be
+		 * stale). This prop is the missing signal:
+		 *  - RESTORE (true→false edge): revalidate — re-fetch the attachment list
+		 *    and MERGE it over the current rows WITHOUT blanking them, preserving
+		 *    tombstones / pending uploads / in-flight deletes / expanded state.
+		 *  - ARCHIVE (false→true edge): a NO-OP on strip CONTENT. Tiles keep their
+		 *    painted bytes; the interaction paths already fail server-side (DR-14's
+		 *    404 correction). Deliberately not blanked.
+		 * Item scoping is inherent to the prop — no SSE filter — which is what lets
+		 * it cover BULK archive/restore (whose `items_bulk_updated` carries no
+		 * item_id). Defaults false → byte-identical for every existing caller.
+		 */
+		parentArchived?: boolean;
 	}
 	let {
 		wsSlug,
@@ -113,6 +133,7 @@
 		itemContent = null,
 		liveContent = null,
 		hostToken = '',
+		parentArchived = false,
 	}: Props = $props();
 
 	// Hard bound on what the strip will ever hold (DR-9 / DR-11). Past this the
@@ -282,6 +303,57 @@
 	// showed (Codex review of TASK-2385). Merged back on top of every response.
 	let pendingUploads: StripAttachment[] = [];
 
+	// list() requests currently fetching, counted PER VIEW KEY. A restore
+	// revalidation consults this to DEFER to a load already fetching THIS view
+	// rather than supersede it (PLAN-2392 3c-iii U2 / TASK-2511 — see
+	// `revalidateAfterRestore`). Per-view, not a single counter: the api client
+	// has no abort, so a superseded prior-view load lingers in flight after an
+	// A→B switch, and a global counter would let that stale A-load suppress B's
+	// genuine restore revalidation with nothing left to refetch B (Codex round 3).
+	const loadsInFlightByView = new Map<string, number>();
+	function viewLoadsInFlight(key: string | null): number {
+		return key === null ? 0 : (loadsInFlightByView.get(key) ?? 0);
+	}
+	function noteLoadStart(key: string | null) {
+		if (key === null) return;
+		loadsInFlightByView.set(key, (loadsInFlightByView.get(key) ?? 0) + 1);
+	}
+	function noteLoadEnd(key: string | null) {
+		if (key === null) return;
+		const n = (loadsInFlightByView.get(key) ?? 0) - 1;
+		if (n <= 0) loadsInFlightByView.delete(key);
+		else loadsInFlightByView.set(key, n);
+	}
+
+	// Ids with a DELETE request outstanding — the optimistic-removal window
+	// (PLAN-2392 3c-iii U2 / TASK-2511). `deletedIds` is only latched AFTER the
+	// delete's API await (via the deletion bus's self-broadcast in
+	// `performDelete`), so in the gap between the optimistic removal and that
+	// broadcast a row is gone from `attachments` but NOT yet tombstoned. The
+	// RESTORE revalidation re-fetches the list in exactly that window, and its
+	// response can still carry the row (its own DELETE hasn't committed, or the
+	// GET predates it) — repainting the tile the user just removed. The restore
+	// reload therefore excludes these ids too, not only tombstones.
+	//
+	// REF-COUNTED, not a bare Set: the same id can have two deletes outstanding
+	// (a load repaints an optimistically-removed-but-not-yet-tombstoned row and
+	// the user deletes it again), and the first to settle must not clear the
+	// marker while the second is still in flight (Codex round 2). Not bounded
+	// like `deletedIds`: it drains per delete, holding at most the handful of
+	// concurrently in-flight deletes, never a workspace-wide backlog.
+	const inFlightDeletes = new Map<string, number>();
+	function isDeleting(id: string): boolean {
+		return inFlightDeletes.has(id);
+	}
+	function markDeleting(id: string) {
+		inFlightDeletes.set(id, (inFlightDeletes.get(id) ?? 0) + 1);
+	}
+	function unmarkDeleting(id: string) {
+		const n = (inFlightDeletes.get(id) ?? 0) - 1;
+		if (n <= 0) inFlightDeletes.delete(id);
+		else inFlightDeletes.set(id, n);
+	}
+
 	$effect(() => {
 		// Restarting the request fence supersedes any response still in flight
 		// AND captures the identity this run belongs to. Reading the identity
@@ -351,6 +423,14 @@
 		}
 
 		void (async () => {
+			// Count this load as in flight for its view for the whole fetch
+			// (PLAN-2392 3c-iii U2 / TASK-2511). A restore revalidation DEFERS to a
+			// load already fetching THIS view — that load returns fresh-enough data
+			// (archive doesn't delete attachments), and superseding it would strand
+			// the strip empty if the revalidation then failed (Codex round 2). Keyed
+			// by `req.key` so a stale prior-view load can't suppress a genuine
+			// restore of the current view (Codex round 3).
+			noteLoadStart(req.key);
 			// Ids the pending buffer ALREADY held when this request went out. A
 			// response can be authoritative about exactly these — the row existed
 			// before the GET, so its absence is proof the row is gone (deleted by
@@ -459,6 +539,7 @@
 				attachments = capped(pendingUploads.filter((a) => !deletedIds.has(a.id)));
 				loadFailed = true;
 			} finally {
+				noteLoadEnd(req.key);
 				stopLoadingMarker();
 				if (!req.stale()) showLoading = false;
 			}
@@ -520,6 +601,141 @@
 		retryRequestedFor = painted.key;
 		retryNonce++;
 	}
+
+	/**
+	 * Re-fetch and reconcile the list after the parent item is RESTORED
+	 * (PLAN-2392 3c-iii U2 / TASK-2511). Deliberately a SEPARATE, gentler path
+	 * from the load effect's non-retry rerun, which blanks `attachments`,
+	 * `expanded`, `pendingDelete`, `deletedIds`, `pendingUploads` synchronously
+	 * before its fetch. A restore is a refresh of the SAME view, not a switch, so
+	 * this one:
+	 *   - never blanks: the current tiles stay painted until (and unless) the
+	 *     response replaces them, so a restore of an item with a slow list never
+	 *     flashes empty;
+	 *   - preserves the mutation state the reset path would wipe — deletion
+	 *     tombstones (`deletedIds`), pending uploads, the expanded/overflow state
+	 *     — and merges the response over them exactly as the load path's SUCCESS
+	 *     arm does, so a just-uploaded row isn't dropped and a just-deleted one
+	 *     isn't resurrected;
+	 *   - honours `inFlightDeletes`: a delete whose optimistic removal has run but
+	 *     whose tombstone broadcast hasn't yet must not be repainted by this
+	 *     refetch (round-3 P1).
+	 *
+	 * Fenced on `loadFence.restart()` like every other request: it SUPERSEDES an
+	 * in-flight load (and is superseded by a later switch / Retry / another
+	 * restore), and its captured token goes stale on a view change, so a response
+	 * that lands after the user moved on is discarded. A FAILED revalidation is
+	 * NOT authoritative and NOT surfaced as the error row: the strip already holds
+	 * a good list from before the archive, and degrading a refresh into a blocking
+	 * "Couldn't load" would be worse than keeping the slightly-stale-but-present
+	 * tiles. The next real load corrects it.
+	 */
+	async function revalidateAfterRestore() {
+		// DEFER to a load already fetching THIS view (Codex rounds 2-3). A restore
+		// is a refresh, and an in-flight load for this view — the mount fetch, a
+		// Retry — already returns the current list (archive doesn't delete
+		// attachments), so superseding it buys nothing and, if this revalidation
+		// then failed, would strand the strip empty with no rows and no
+		// error/retry. Keyed on the live view so a lingering stale prior-view load
+		// (no request abort) can't wrongly suppress this. Skip; that load paints.
+		if (viewLoadsInFlight(view.key()) > 0) return;
+		const req = loadFence.restart();
+		const { ws: reqWsSlug, item: reqItemId } = req.value;
+		if (!reqItemId || !reqWsSlug) return;
+		try {
+			const res = await api.attachments.list(reqWsSlug, {
+				item_id: reqItemId,
+				limit: MAX_FETCH,
+			});
+			if (req.stale()) return;
+			const raw = res.attachments ?? [];
+			// Exclude BOTH the tombstoned ids AND the ids with a delete still in
+			// flight: neither may be repainted (round-3 P1). This is the only
+			// difference from the load path's response filter, which sees just
+			// `deletedIds` because a fresh load runs with no optimistic delete
+			// outstanding against its own results.
+			const rows = raw
+				.filter((a) => !deletedIds.has(a.id) && !isDeleting(a.id))
+				.map(toStripAttachment);
+			const seen = new Set(rows.map((a) => a.id));
+			// Pending uploads the response did NOT return ride back on top, same as
+			// the load path — a drop announced while archived is otherwise lost.
+			// Deliberately NOT consumed here (unlike the load path's retention
+			// pass): a restore is a one-shot refresh, not the mount-time load whose
+			// buffer would grow forever, and "preserve pending uploads" is the U2
+			// contract.
+			const missed = pendingUploads.filter(
+				(a) => !seen.has(a.id) && !deletedIds.has(a.id) && !isDeleting(a.id)
+			);
+			const merged = [...missed, ...rows];
+			attachments = capped(merged);
+			// Continuation count recomputed off `total`, corrected the same three
+			// ways as the load path (deleted-in-page, uploads-not-returned, floor).
+			const reportedTotal = Math.max(
+				0,
+				(res.total ?? raw.length) - (raw.length - rows.length)
+			);
+			const trueTotal = Math.max(reportedTotal + missed.length, merged.length);
+			beyondStripCount = Math.max(0, trueTotal - attachments.length);
+			// A successful revalidation is an authoritative fresh listing, so it
+			// also clears a stale error left from an EARLIER failed load: without
+			// this the restored rows would render UNDER a lingering "Couldn't load"
+			// row (Codex round 1). The failure arm deliberately does NOT set it —
+			// a refresh failure is not authoritative (see the header).
+			loadFailed = false;
+		} catch {
+			// Swallowed by design (see the header): keep the pre-restore rows.
+		} finally {
+			// A settled revalidation is, by definition, not loading. The defer guard
+			// above means no same-view load was in flight when this ran, so
+			// `showLoading` is already false — this is a defensive invariant, not a
+			// live fix, and it self-suppresses if a later switch/Retry has since
+			// superseded us (that run owns its own marker). Symmetric with the load
+			// effect's finally.
+			if (!req.stale()) showLoading = false;
+		}
+	}
+
+	// Archive/restore LIFECYCLE edge (PLAN-2392 3c-iii U2 / TASK-2511). Threaded
+	// as a PROP from ItemDetail — the same signal the timeline (U1) and the
+	// surface host (DR-14) take — rather than an SSE subscription, so it covers
+	// BULK archive/restore (whose `items_bulk_updated` carries no item_id).
+	//
+	// Edge-triggered off a LATCHED previous value that is KEYED TO THE VIEW
+	// IDENTITY, not just the boolean: the strip persists across item switches (it
+	// lives outside ItemDetail's `{#key itemSlug}`), so an archived item A → an
+	// active item B is ALSO a true→false transition in the raw prop — but it is a
+	// SWITCH, not a restore, and honouring it would fire a duplicate racing load
+	// on top of the switch's own (round-3 P2). Reseeding the latch whenever the
+	// view key changes makes a switch reseed-not-fire. Only the true→false edge
+	// WITHIN one identity revalidates; the archive edge is a content no-op.
+	//
+	// Plain `let` latches read/written under `untrack` — a $state read+written in
+	// one tracked scope aborts its own flush (the Svelte self-write trap). Seeded
+	// from the initial props so a mount on an already-archived item is a LEVEL,
+	// not an edge.
+	let archivedLatchKey: string | null = untrack(() => view.key());
+	let prevArchived = untrack(() => parentArchived === true);
+	$effect(() => {
+		const archived = parentArchived === true;
+		// Tracked reads: the effect must re-run on a lifecycle flip AND on a view
+		// switch (so it can reseed the latch before the flip is misread as a
+		// restore).
+		const key = view.key();
+		untrack(() => {
+			if (key !== archivedLatchKey) {
+				// A switch (or an id becoming known/unknown). Reseed to the incoming
+				// item's level; do NOT treat the cross-item boolean change as an edge.
+				archivedLatchKey = key;
+				prevArchived = archived;
+				return;
+			}
+			if (archived === prevArchived) return;
+			prevArchived = archived;
+			// Only restore (true→false) reconciles content; archive is a no-op.
+			if (!archived) void revalidateAfterRestore();
+		});
+	});
 
 	// Deletions broadcast on the shared registry — from Settings → Storage, or
 	// from ANOTHER strip (the split-pane host mounts two ItemDetails, so two
@@ -881,6 +1097,16 @@
 		const reqWsSlug = req.value.ws;
 		const index = attachments.findIndex((a) => a.id === att.id);
 
+		// Mark the delete in-flight BEFORE the optimistic removal (PLAN-2392
+		// 3c-iii U2 / TASK-2511). The tombstone (`deletedIds`) is only latched
+		// AFTER the await — via the deletion bus's self-broadcast below — so
+		// between here and then the row is gone from `attachments` but not yet
+		// tombstoned. A restore revalidation refetching in that window would
+		// otherwise repaint it; `revalidateAfterRestore` excludes this set. Cleared
+		// when the call settles, by which point success/404 has handed off to the
+		// tombstone.
+		markDeleting(att.id);
+
 		// Optimistic removal.
 		attachments = attachments.filter((a) => a.id !== att.id);
 
@@ -952,6 +1178,14 @@
 					: `Couldn't delete ${displayFilename(att.filename)}.`,
 				'error'
 			);
+		} finally {
+			// Every exit path — 204, 404, stale, tombstoned, rollback — passes
+			// through here, so the in-flight marker never leaks. On success/404 the
+			// tombstone latched by the broadcast above already covers the id; on a
+			// genuine failure the row is back and must be repaintable again. Ref-
+			// counted, so a concurrent second delete of the same id keeps the marker
+			// until IT settles too.
+			unmarkDeleting(att.id);
 		}
 	}
 </script>
