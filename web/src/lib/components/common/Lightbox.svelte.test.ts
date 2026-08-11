@@ -2692,6 +2692,9 @@ describe('Lightbox — touch pan, pinch, double-tap (TASK-2518)', () => {
 		if (REAL_PC.releasePointerCapture === undefined)
 			delete (Element.prototype as unknown as Record<string, unknown>).releasePointerCapture;
 		else Element.prototype.releasePointerCapture = REAL_PC.releasePointerCapture;
+		// The flip-mid-pinch test (TASK-2521) drives `mobileFlag`; never let it leak.
+		mobileFlag = false;
+		flushSync();
 	});
 
 	function imageEl(): HTMLElement {
@@ -2927,6 +2930,104 @@ describe('Lightbox — touch pan, pinch, double-tap (TASK-2518)', () => {
 		// Cancel the LAST pointer → full clear (registry drained, gesture gone).
 		tcancel(340, 500, 1);
 		expect(app.__registrySize()).toBe(0);
+	});
+
+	// ── failed-promotion / stale-owner disarm + gate-on-degrade (TASK-2521) ──
+	type Drop = RS & { __dropGestureOwnerEntry: () => void };
+
+	it('missing-founder promotion DISARMS the stale pan; the incoming touch arms fresh', () => {
+		const app = mountPainted() as unknown as Drop;
+		zoomToActual(); // pan room so a fresh arm is observable
+		tdown(500, 500, 1); // a touch pan owner — registry entry present
+		expect(app.__registrySize()).toBe(1);
+		// Model a stale owner whose founder point was reconciled out from under its
+		// lingering arm — the exact state the promotion's missing-founder guard exists
+		// for. `maybeDrag`/`gesturePointerId` still claim ownership; the live point is gone.
+		app.__dropGestureOwnerEntry();
+		// A second image touch reaches the promotion, finds the founder missing, and must
+		// fully disarm the stale pan and treat THIS touch as a fresh first touch — NOT
+		// strand a phantom pan (which the pre-fix `return` left, eating every later
+		// gesture) and NOT seed a pinch from the dead point.
+		tdown(560, 500, 2);
+		expect(imageEl().classList.contains('pinching')).toBe(false);
+		// The incoming touch OWNS the pan now: past threshold it pans by its own delta.
+		// A stranded stale owner would have swallowed this move (id 2 ≠ the stale owner).
+		tmove(660, 500, 2);
+		expect(panX()).toBeCloseTo(100);
+		expect(captured).toContain(2);
+		expect(app.__registrySize()).toBe(1); // only the live touch — the stale entry dropped
+	});
+
+	it('a stale owner reconciled out of the registry is SUPERSEDED, never a phantom pinch', () => {
+		const app = mountPainted() as unknown as Drop;
+		zoomToActual(); // pan room
+		const scaleBefore = scaleOf();
+		const panBefore = panX();
+		tdown(400, 500, 1); // arm owner 1
+		app.__dropGestureOwnerEntry(); // its founder point is gone — stale, no live pointer
+		// A new touch 200px away WOULD pinch from a live owner. From the DEAD founder it
+		// must not: the promotion supersedes the stale owner with this fresh single touch.
+		tdown(600, 500, 2);
+		expect(imageEl().classList.contains('pinching')).toBe(false);
+		// It is a genuine single-touch PAN, not a two-finger zoom: the lone live finger
+		// pans by its delta and the scale never moves (a phantom pinch would have zoomed).
+		tmove(700, 500, 2);
+		expect(scaleOf()).toBeCloseTo(scaleBefore); // no zoom — no phantom pinch
+		expect(panX()).toBeCloseTo(panBefore + 100); // superseded → the live finger pans
+		expect(app.__registrySize()).toBe(1);
+	});
+
+	it('a native modal opening MID-PINCH degrades to a full clear, not a survivor pan', () => {
+		const dialog = document.body.appendChild(document.createElement('dialog'));
+		mockOpenModals([]); // establish :modal support with nothing open
+		const app = mountPainted() as unknown as RS;
+		tdown(300, 500, 1);
+		tdown(700, 500, 2); // pinch seeded
+		tmove(900, 500, 2); // zoomed
+		expect(imageEl().classList.contains('pinching')).toBe(true);
+		const scaleAfterPinch = scaleOf();
+		captured = [];
+		// A showModal() dialog opens above the viewer mid-pinch — the gates close.
+		mockOpenModals([dialog]);
+		// Lift one founder: the 2→1 degrade must GATE like every START path. Gates closed
+		// → full clear, NOT a survivor pan that would resume when the dialog later closes.
+		tup(300, 500, 1);
+		expect(imageEl().classList.contains('pinching')).toBe(false);
+		expect(imageEl().classList.contains('panning')).toBe(false); // no survivor pan armed
+		expect(app.__registrySize()).toBe(0); // full clear — the registry is drained
+		expect(captured).not.toContain(2); // the survivor was NOT captured as a pan owner
+		// Gates reopen; a fresh gesture arms cleanly from the post-clear scale.
+		mockOpenModals([]);
+		tdown(400, 500, 3);
+		tdown(600, 500, 4);
+		tmove(700, 500, 4);
+		expect(scaleOf()).toBeGreaterThan(scaleAfterPinch);
+	});
+
+	it('a viewport flip MID-PINCH does not jump the offset (rect-origin rebased midpoint)', () => {
+		mountPainted(); // desktop; stage rect mocked at origin (0,0)
+		tdown(400, 500, 1);
+		tdown(600, 500, 2); // startDist 200, midpoint 500
+		tmove(700, 500, 2); // curDist 300 → ×1.5, midpoint 500→550 tracked
+		expect(scaleOf()).toBeCloseTo(1.5);
+		const panBefore = panX();
+		const panYBefore = panY();
+		// The phone-sheet breakpoint flips: the sheet class toggles synchronously and the
+		// stage docks to the bottom, SHIFTING the stage rect ORIGIN — while the async
+		// ResizeObserver re-clamp has NOT fired. Re-mock the geometry with the shifted
+		// origin to model that synchronous layout move.
+		mobileFlag = true;
+		flushSync();
+		mockGeometry(root(), OVERFLOW_G, 100, 40);
+		// Continue the pinch in the SAME flush without moving the fingers: the midpoint
+		// baseline was seeded against the OLD rect origin, the fresh midpoint against the
+		// NEW one — mixing them would jump the pan by the origin shift. The rebase re-seeds
+		// the baseline (zero delta this step), so the offset holds and the scale
+		// (rect-independent) is unchanged. Without the fix panX jumps by −100 here.
+		tmove(700, 500, 2);
+		expect(scaleOf()).toBeCloseTo(1.5);
+		expect(panX()).toBeCloseTo(panBefore);
+		expect(panY()).toBeCloseTo(panYBefore);
 	});
 
 	// ── double-tap ──

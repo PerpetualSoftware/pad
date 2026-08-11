@@ -864,6 +864,15 @@
 	let pinchStartScale = 1; // zoom.scale at pinch start / re-entry rebase
 	let pinchPrevMidX = 0; // previous midpoint (stage-local px) for the translation term
 	let pinchPrevMidY = 0;
+	// The stage rect ORIGIN the midpoint baseline above was seeded against. The
+	// mobile sheet class flips synchronously with `viewport.isMobile` while the
+	// ResizeObserver re-clamp is async (TASK-2521): an immediate post-flip pinch move
+	// computes its midpoint against the NEW stage rect, but `pinchPrevMid{X,Y}` is
+	// still expressed against the OLD rect — mixing frames jumps the offset. Tracking
+	// the baseline's rect origin lets `onPinchMove` re-seed the baseline (zero delta
+	// that step) the moment the rect shifts, before the async re-clamp catches up.
+	let pinchPrevRectLeft = 0;
+	let pinchPrevRectTop = 0;
 	let pinchBelowMin = false; // true while curDist < PINCH_MIN_DIST (scale HELD)
 	// The pointer id whose capture we RELEASED on a 1→2 promotion — its
 	// `lostpointercapture` is our own surrender, not a browser theft, and must NOT
@@ -911,6 +920,8 @@
 					const rect = stageEl?.getBoundingClientRect();
 					pinchPrevMidX = (a.x + b.x) / 2 - (rect?.left ?? 0);
 					pinchPrevMidY = (a.y + b.y) / 2 - (rect?.top ?? 0);
+					pinchPrevRectLeft = rect?.left ?? 0;
+					pinchPrevRectTop = rect?.top ?? 0;
 					pinchBelowMin = false;
 				}
 			}
@@ -1116,14 +1127,20 @@
 		const el = rootEl;
 		const gatesOpen = !!el && pointerGatesOpen(el);
 		const armable = !chromeExcluded(e) && touchOnImage(e) && gesturesArmable && gatesOpen;
+		const ownerEntry = gesturePointerId !== null ? registry.get(gesturePointerId) : undefined;
 
 		// A live NON-touch (mouse/pen) gesture owns the surface — a touch is
 		// registry-only and must not disturb it (the existing "touch can't move/end a
-		// mouse drag" contract).
+		// mouse drag" contract). Require the owner entry PRESENT (TASK-2521): a stale
+		// owner whose entry was reconciled out has no live point — undefined `.type` is
+		// NOT a non-touch owner, and treating it as one would swallow this press and
+		// strand the stale arm; it falls through to the promotion/first-touch supersede
+		// instead.
 		if (
 			(maybeDrag || dragging) &&
 			gesturePointerId !== null &&
-			registry.get(gesturePointerId)?.type !== 'touch'
+			ownerEntry &&
+			ownerEntry.type !== 'touch'
 		) {
 			disarmDoubleTap();
 			return;
@@ -1133,12 +1150,16 @@
 			disarmDoubleTap();
 			return;
 		}
-		// A second touch over an existing single-touch pan → maybe PROMOTE to pinch.
+		// A second touch over an existing single-touch pan → maybe PROMOTE to pinch. A
+		// live non-touch owner already returned above, so the owner here is a touch owner
+		// (entry present) OR a stale owner whose founder point was reconciled out (entry
+		// absent). Both route through `tryPromoteToPinch`, which seeds the pinch from the
+		// two live points OR — on the missing founder — disarms the stale pan and
+		// supersedes it with THIS touch as a fresh first touch (TASK-2521).
 		if (
 			(maybeDrag || dragging) &&
 			gesturePointerId !== null &&
-			gesturePointerId !== e.pointerId &&
-			registry.get(gesturePointerId)?.type === 'touch'
+			gesturePointerId !== e.pointerId
 		) {
 			if (armable) tryPromoteToPinch(e);
 			else disarmDoubleTap(); // second finger on letterbox/chrome — stays a pan
@@ -1169,7 +1190,31 @@
 		const a = registry.get(ownerId);
 		const b = registry.get(e.pointerId);
 		if (!a || !b) {
+			// FAILED PROMOTION (TASK-2521): the owner's founder point is gone — a stale
+			// owner whose off-root pointerup was missed and whose entry was later
+			// reconciled out, so its pan scalars linger with no live point. The old
+			// `return` left `maybeDrag`/`dragging`/`gesturePointerId` set — a phantom pan
+			// that ate every later gesture. Fully disarm it the way a cancel does (release
+			// the capture, clear the scalars, drop the stale entry, disarm the tap), then
+			// treat THIS touch as a fresh first touch — superseding the stale owner exactly
+			// as the first-touch reconcile does. `cancelGesture` is not used: it clears the
+			// WHOLE registry, dropping this live incoming touch's own entry.
+			if (capturedPointerId !== null) {
+				try {
+					rootEl?.releasePointerCapture(capturedPointerId);
+				} catch {
+					// already released — ignore.
+				}
+				capturedPointerId = null;
+			}
+			maybeDrag = false;
+			dragging = false;
+			swallowLostCapture = null;
+			if (ownerId !== e.pointerId) registry.delete(ownerId);
+			gesturePointerId = null;
 			disarmDoubleTap();
+			armPan(e);
+			armTapCandidate();
 			return;
 		}
 		// Below the pinch threshold the two touches never become a pinch (the second
@@ -1211,6 +1256,8 @@
 		const rt = rect?.top ?? 0;
 		pinchPrevMidX = (a.x + b.x) / 2 - rl;
 		pinchPrevMidY = (a.y + b.y) / 2 - rt;
+		pinchPrevRectLeft = rl;
+		pinchPrevRectTop = rt;
 		pinchBelowMin = false;
 		pinching = true;
 		suppressClick = true; // a pinch is not a tap-to-close
@@ -1240,6 +1287,20 @@
 		const curDist = Math.hypot(b.x - a.x, b.y - a.y);
 		const midX = (a.x + b.x) / 2 - rect.left;
 		const midY = (a.y + b.y) / 2 - rect.top;
+		// FLIP-MID-PINCH rebase (TASK-2521): if the stage rect ORIGIN moved since the
+		// midpoint baseline was seeded — the mobile sheet class flips synchronously with
+		// the breakpoint while the ResizeObserver re-clamp is async — `pinchPrevMid{X,Y}`
+		// is expressed against the OLD rect and the fresh `mid{X,Y}` against the NEW one,
+		// so the translation term below would mix frames and jump. Re-seed the baseline
+		// from the CURRENT live points (zero translation this step; scale, which is
+		// rect-independent, still applies), then tracking resumes next move. Distance /
+		// scale need no rebase — they cancel the rect offset.
+		if (rect.left !== pinchPrevRectLeft || rect.top !== pinchPrevRectTop) {
+			pinchPrevMidX = midX;
+			pinchPrevMidY = midY;
+			pinchPrevRectLeft = rect.left;
+			pinchPrevRectTop = rect.top;
+		}
 		// Scale: ABSOLUTE from the baseline (startScale * curDist/startDist), with the
 		// PINCH_MIN_DIST guard. Below the threshold the ratio update is SKIPPED (scale
 		// HELD; the midpoint translation still applies), preventing a degenerate
@@ -1276,6 +1337,8 @@
 		zoom = clampState({ scale: nextScale, x, y }, g);
 		pinchPrevMidX = midX;
 		pinchPrevMidY = midY;
+		pinchPrevRectLeft = rect.left;
+		pinchPrevRectTop = rect.top;
 	}
 
 	// 2→1 DEGRADE: a founder ended while its co-founder is still down. Continue as a
@@ -1284,6 +1347,18 @@
 	// point (the next move is a pure delta from here).
 	function degradeToPan(survivorId: number): void {
 		const s = registry.get(survivorId);
+		const el = rootEl;
+		// GATE the degrade arm like every START path (TASK-2521): the pinch START (1094 /
+		// 1227 / onPinchMove) all check `pointerGatesOpen`, but the 2→1 degrade armed a
+		// survivor PAN unconditionally — so a native modal or a stacked viewer that
+		// became frontmost mid-pinch left a pan that would resume when that layer closed.
+		// Gates closed (or the survivor is gone) → full clear instead, exactly as
+		// `onPinchMove` aborts. Run BEFORE clearing `pinching` so `cancelGesture` sees the
+		// live pinch and drops the held `suppressClick` (its `wasPinching` arm).
+		if (!s || !el || !pointerGatesOpen(el)) {
+			cancelGesture();
+			return;
+		}
 		pinching = false;
 		pinchA = null;
 		pinchB = null;
@@ -1293,10 +1368,6 @@
 		// `lostpointercapture` would otherwise tear down this fresh pan. It is one-shot
 		// (cleared when swallowed) and reset by `armPan` / `cancelGesture` on the next
 		// gesture, so leaving it set across the degrade is safe.
-		if (!s) {
-			cancelGesture();
-			return;
-		}
 		gesturePointerId = survivorId;
 		maybeDrag = true;
 		dragging = true; // already past threshold — it was a pinch
@@ -1332,6 +1403,16 @@
 	// used by production code. Exposed on the mount() result / `bind:this`.
 	export function __registrySize(): number {
 		return registry.size;
+	}
+	// TEST-ONLY (TASK-2521). Drops the current gesture owner's registry entry WITHOUT
+	// touching its pan scalars — the one state a normal teardown never leaves, because
+	// every up/cancel/lost drains the entry AND clears the scalars in the same handler.
+	// It models a stale owner whose founder point was reconciled out from under a
+	// lingering arm, so the jsdom suite can drive the missing-founder promotion path
+	// (which is V1-unobservable otherwise, like `__registrySize`). Not used by
+	// production code.
+	export function __dropGestureOwnerEntry(): void {
+		if (gesturePointerId !== null) registry.delete(gesturePointerId);
 	}
 
 	function onPointerDown(e: PointerEvent) {
