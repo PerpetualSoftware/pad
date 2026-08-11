@@ -1622,6 +1622,51 @@ describe('ItemAttachmentStrip', () => {
 		expect(listMock).toHaveBeenCalledOnce(); // no refetch
 	});
 
+	it('an upload during an open surface joins the STRIP but NOT the open set (PLAN-2392 3c-iii U4 / TASK-2513)', async () => {
+		// The open-set mutation contract, pinned end-to-end (DR-15 style) rather
+		// than assumed. An upload that lands while the surface is open must NOT
+		// retro-join its set, while the strip's own tile list — which subscribes to
+		// the upload bus — MUST gain the row. What THIS test pins is the NO-LIVE-FOLLOW
+		// half: the plausible wrong design is a host that synced new uploads into the
+		// open request, and the surface leg falsifies exactly that. (The other half of
+		// the snapshot contract — a producer mutating its OWN array/records in place
+		// after emit can't reach the surface — is the deep copy in
+		// notifyAttachmentSurfaceOpen, pinned directly at the module level by
+		// events.test.ts's deep-snapshot test.) The two legs here are independent: a
+		// dead upload bus fails the strip leg while leaving the surface leg green, and
+		// a live-following surface fails the surface leg while leaving the strip leg
+		// green — neither mechanism can mask the other.
+		listMock.mockResolvedValue(response([att({ id: 'img1' }), att({ id: 'img2' })]));
+		mountStrip('item-a');
+		await settle();
+		mountViewerHost();
+
+		// Open the surface on the strip's 2-image set, at image 1 of 2. The counter
+		// reads `position / total`, so its DENOMINATOR is the set size.
+		tiles()[0].click();
+		await settle();
+		expect(document.querySelector('.lightbox-backdrop')).not.toBeNull();
+		expect(document.querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+
+		// A THIRD image is uploaded while the surface is open. It is viewer-eligible
+		// (image/png), so a live-following surface would grow the denominator to
+		// "1 / 3" — which is exactly the wrong behavior this asserts against.
+		broadcastUpload('item-a', uploaded('img3'));
+		flushSync();
+
+		// Surface set UNCHANGED: still a 2-member set, still paging the emit-time
+		// snapshot.
+		expect(document.querySelector('.lightbox-counter')?.textContent).toBe('1 / 2');
+		expect(
+			document.querySelector<HTMLImageElement>('.lightbox-image')?.getAttribute('alt')
+		).toBe('img1.png');
+
+		// Strip DID gain the upload — its own tile list follows the bus.
+		const names = tiles().map((el) => el.getAttribute('aria-label') ?? '');
+		expect(names).toHaveLength(3);
+		expect(names.some((n) => n.includes('img3.png'))).toBe(true);
+	});
+
 	it('renders the strip from empty when the first upload lands', async () => {
 		// The strip renders nothing at all when empty, so this covers the
 		// transition from no-element to mounted.
