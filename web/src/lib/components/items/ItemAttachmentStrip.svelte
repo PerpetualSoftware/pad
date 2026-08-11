@@ -450,7 +450,16 @@
 				});
 				if (req.stale()) return;
 				const raw = res.attachments ?? [];
-				const rows = raw.filter((a) => !deletedIds.has(a.id)).map(toStripAttachment);
+				// Exclude BOTH tombstoned ids AND ids with a delete still in flight
+				// (PLAN-2392 3c-iii — load-path fence). `deletedIds` is only latched
+				// AFTER a delete's API await, so between an optimistic removal and that
+				// broadcast a row is gone from `attachments` but not yet tombstoned. An
+				// ordinary list() response issued (or in flight) across that window can
+				// still carry the row and repaint the tile the user just removed — the
+				// same hole `revalidateAfterRestore` already fences on the restore path.
+				const rows = raw
+					.filter((a) => !deletedIds.has(a.id) && !isDeleting(a.id))
+					.map(toStripAttachment);
 				const seen = new Set(rows.map((a) => a.id));
 				// ...but only a COMPLETE page is authoritative about absence. The
 				// request is bounded at MAX_FETCH, so a truncated page may simply
@@ -466,7 +475,8 @@
 					typeof res.total === 'number' ? res.total <= raw.length : raw.length < MAX_FETCH;
 				const covered = pageIsComplete ? pendingAtRequest : new Set<string>();
 				const missed = pendingUploads.filter(
-					(a) => !seen.has(a.id) && !deletedIds.has(a.id) && !covered.has(a.id)
+					(a) =>
+						!seen.has(a.id) && !deletedIds.has(a.id) && !isDeleting(a.id) && !covered.has(a.id)
 				);
 				// Consume what this response covered. The exclusion above already
 				// makes every LATER load ignore these ids (a later request's own
@@ -536,7 +546,12 @@
 				// Keep anything uploaded while this request was in flight: the
 				// upload SUCCEEDED, so dropping it would hide a row the editor
 				// and server both have, until a remount (Codex review round 2).
-				attachments = capped(pendingUploads.filter((a) => !deletedIds.has(a.id)));
+				// A row with a delete still in flight is excluded here too — the
+				// failure arm repaints from the pending buffer, and an optimistically
+				// removed row must not ride back in on that repaint (load-path fence).
+				attachments = capped(
+					pendingUploads.filter((a) => !deletedIds.has(a.id) && !isDeleting(a.id))
+				);
 				loadFailed = true;
 			} finally {
 				noteLoadEnd(req.key);

@@ -2494,4 +2494,177 @@ describe('ItemAttachmentStrip', () => {
 		expect(final.some((n) => n.includes('a1'))).toBe(false);
 		expect(final.some((n) => n.includes('a2'))).toBe(true);
 	});
+
+	// ── ORDINARY-LOAD in-flight-delete fence (PLAN-2392 3c-iii — load-path) ────
+	//
+	// U2 (TASK-2511) added the `inFlightDeletes` marker but applied it ONLY to the
+	// restore revalidation's merge. The ORDINARY load paths — the mount/retry
+	// response row filter, the pending-upload merge, and the load-FAILURE repaint —
+	// filtered on `deletedIds` alone. `deletedIds` is latched only AFTER a delete's
+	// API await (the deletion bus self-broadcast), so between an optimistic removal
+	// and that broadcast a row is gone from `attachments` but not yet tombstoned. An
+	// ordinary load whose response was issued (or is in flight) across that window
+	// can still carry the row and repaint the just-removed tile — the same hole the
+	// restore path already fences. These cover the three ordinary paths + the
+	// rollback discipline that must still repaint a genuinely failed delete.
+
+	it('does not repaint an in-flight-deleted row that an ordinary (retry) load returns', async () => {
+		// Path 1 — the response ROW filter (~:453). a1 is painted from a server load
+		// (surviving a failure as a pending upload → visible with a Retry), then a
+		// retry load returns a1 while a1's delete is in flight. `pendingAtRequest`
+		// already holds a1 at retry time, so the pending-upload merge excludes it via
+		// `covered` — leaving the response row filter as the ONLY thing between a1 and
+		// a repaint. That isolates path 1: dropping its `!isDeleting` guard resurrects
+		// a1 even though the merge leg's guard is untouched.
+		props.canDelete = true;
+		let rejectLoad1!: (e: Error) => void;
+		listMock.mockReturnValueOnce(
+			new Promise<AttachmentListResponse>((_, reject) => (rejectLoad1 = reject))
+		);
+		mountStrip('item-a');
+		flushSync();
+		broadcastUpload('item-a', uploaded('a1'));
+		flushSync();
+		rejectLoad1(new Error('offline'));
+		await settle();
+		expect(tiles()).toHaveLength(1); // a1 kept as a pending upload
+		expect(errorRow()).not.toBeNull();
+
+		// Retry: a1 stays painted while the retry load is in flight (isRetry never blanks).
+		const load2 = deferred<AttachmentListResponse>();
+		listMock.mockReturnValueOnce(load2.promise);
+		target.querySelector<HTMLElement>('.att-retry')!.click();
+		flushSync();
+
+		// Delete a1 — deferred, so its tombstone broadcast hasn't fired.
+		const del = deferred<void>();
+		deleteMock.mockReturnValueOnce(del.promise);
+		openConfirm(0);
+		clickConfirm();
+		expect(tiles()).toHaveLength(0); // optimistic removal
+
+		// The retry load lands mid-delete, still listing a1: the in-flight marker
+		// filters it out of the response rows, so a1 does NOT resurrect.
+		load2.resolve(response([att({ id: 'a1' })]));
+		await settle();
+		expect(tiles()).toHaveLength(0);
+
+		// The delete resolves: still gone, now tombstoned too — the durable filter
+		// takes over from the transient marker.
+		del.resolve();
+		await settle();
+		expect(tiles()).toHaveLength(0);
+		expect(deleteMock).toHaveBeenCalledWith('ws', 'a1');
+	});
+
+	it('does not resurrect an in-flight-deleted upload row through the pending-upload merge', async () => {
+		// Path 2 — the pending-upload MERGE (~:468). a1 is a pending upload the mount
+		// load's response does NOT return (the GET predates the upload), so a1 rides
+		// back only via `missed`. The mount load's `pendingAtRequest` snapshot was
+		// captured empty (before the upload), so `covered` is empty and cannot mask
+		// the effect — this isolates path 2: dropping its `!isDeleting` guard
+		// resurrects a1, while the response-row filter (raw is empty) is irrelevant.
+		props.canDelete = true;
+		const load1 = deferred<AttachmentListResponse>();
+		listMock.mockReturnValueOnce(load1.promise);
+		mountStrip('item-a');
+		flushSync();
+		broadcastUpload('item-a', uploaded('a1'));
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+
+		const del = deferred<void>();
+		deleteMock.mockReturnValueOnce(del.promise);
+		openConfirm(0);
+		clickConfirm();
+		expect(tiles()).toHaveLength(0); // optimistic removal
+
+		// The mount load resolves WITHOUT a1. a1 now lives only in the pending-upload
+		// buffer; the merge must not ride it back in while its delete is in flight.
+		load1.resolve(response([]));
+		await settle();
+		expect(tiles()).toHaveLength(0);
+
+		del.resolve();
+		await settle();
+		expect(tiles()).toHaveLength(0);
+	});
+
+	it('does not resurrect an in-flight-deleted upload row through the load-failure repaint', async () => {
+		// Path 3 — the load-FAILURE repaint (~:539). The catch arm repaints from the
+		// pending-upload buffer, which still holds a1. The in-flight marker must keep
+		// a1 out; dropping its `!isDeleting` guard resurrects a1 under the error row.
+		props.canDelete = true;
+		let rejectLoad1!: (e: Error) => void;
+		listMock.mockReturnValueOnce(
+			new Promise<AttachmentListResponse>((_, reject) => (rejectLoad1 = reject))
+		);
+		mountStrip('item-a');
+		flushSync();
+		broadcastUpload('item-a', uploaded('a1'));
+		flushSync();
+		expect(tiles()).toHaveLength(1);
+
+		const del = deferred<void>();
+		deleteMock.mockReturnValueOnce(del.promise);
+		openConfirm(0);
+		clickConfirm();
+		expect(tiles()).toHaveLength(0); // optimistic removal
+
+		// The mount load now FAILS: its catch repaints from the pending buffer, but
+		// the in-flight marker keeps a1 out — no resurrection, just the error row.
+		rejectLoad1(new Error('offline'));
+		await settle();
+		expect(errorRow()).not.toBeNull();
+		expect(tiles()).toHaveLength(0);
+
+		del.resolve();
+		await settle();
+		expect(tiles()).toHaveLength(0);
+	});
+
+	it('rolls a row back into view when its delete fails, even though a list response landed mid-delete', async () => {
+		// The rollback discipline is a SETTLE-TIME correction and must survive the new
+		// filter: a genuinely failed delete re-inserts the row DIRECTLY into
+		// `attachments` (not through the filtered load paths), and the marker is
+		// cleared in performDelete's `finally` — which runs AFTER the catch re-inserts
+		// the row, so ordering never lets the filter swallow the rollback.
+		props.canDelete = true;
+		let rejectLoad1!: (e: Error) => void;
+		listMock.mockReturnValueOnce(
+			new Promise<AttachmentListResponse>((_, reject) => (rejectLoad1 = reject))
+		);
+		mountStrip('item-a');
+		flushSync();
+		broadcastUpload('item-a', uploaded('a1'));
+		flushSync();
+		rejectLoad1(new Error('offline'));
+		await settle();
+		expect(tiles()).toHaveLength(1);
+
+		const load2 = deferred<AttachmentListResponse>();
+		listMock.mockReturnValueOnce(load2.promise);
+		target.querySelector<HTMLElement>('.att-retry')!.click();
+		flushSync();
+
+		// Delete a1 — the DELETE will fail.
+		let rejectDel!: (e: Error) => void;
+		deleteMock.mockReturnValueOnce(new Promise<void>((_, reject) => (rejectDel = reject)));
+		openConfirm(0);
+		clickConfirm();
+		expect(tiles()).toHaveLength(0); // optimistic removal
+
+		// The retry load lands mid-delete, still listing a1: the marker hides it, so
+		// the tile does NOT come back on the load.
+		load2.resolve(response([att({ id: 'a1' })]));
+		await settle();
+		expect(tiles()).toHaveLength(0);
+
+		// The delete now FAILS: the row must roll back into view and toast.
+		rejectDel(new Error('500'));
+		await settle();
+		expect(tiles()).toHaveLength(1);
+		expect(tiles()[0].getAttribute('aria-label')).toContain('a1.png');
+		expect(toastMock).toHaveBeenCalled();
+	});
 });
