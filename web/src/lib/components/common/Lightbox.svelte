@@ -801,6 +801,21 @@
 	// otherwise engage or terminate an in-flight mouse drag (touch stays native
 	// until 3d).
 	let gesturePointerId: number | null = null;
+	// THE POINTER REGISTRY (PLAN-2392 phase 3d / TASK-2517). Every primary pointer
+	// that presses on the backdrop — mouse, pen AND touch — enters here keyed by
+	// `pointerId` with its down position + type; every up / cancel / capture-loss /
+	// teardown removes it. It is the multi-pointer plumbing V2's pinch needs (two
+	// live touch points at once), shipped INERT: V1 reads it for nothing, it only
+	// keeps the active-pointer set honest. The single-pointer drag still keys its
+	// OWNERSHIP off `gesturePointerId` above and its capture off `capturedPointerId`
+	// — the registry is their superset, and in the mouse-only case it holds exactly
+	// that one entry (the "1-entry case" the existing mouse suite pins byte-for-byte).
+	// A plain `let`, NOT `$state`: gesture internals are imperative, read/written
+	// only in pointer handlers + their teardowns, so no CONVE-1688 self-write; and
+	// instance-scoped (like every gesture scalar here) so stacked viewers never
+	// share a registry. V1 stores the DOWN position only — live position tracking is
+	// V2's (pinch) to add on move.
+	let registry = new Map<number, { x: number; y: number; type: string }>();
 	let dragStartClientX = 0;
 	let dragStartClientY = 0;
 	let dragOriginX = 0; // zoom.x at drag baseline
@@ -867,6 +882,7 @@
 	// moves), and — if a real pan was underway — still swallow the click it
 	// produces. The transform is LEFT WHERE IT WAS (the abort does not undo pan).
 	function abortGesture(e: PointerEvent): void {
+		registry.delete(e.pointerId); // reconcile the registry with the gesture teardown
 		const wasDragging = dragging;
 		maybeDrag = false;
 		dragging = false;
@@ -882,6 +898,14 @@
 	// `currentTarget` to hand `abortGesture`), so a stale gesture can neither pan
 	// the reloaded image after an A→unsafe→A flip nor leak into the next press.
 	function cancelGesture(): void {
+		// Registry hygiene runs UNCONDITIONALLY, BEFORE the no-gesture early return
+		// (round-2 P1): the bitmap has vanished, so no pointer can be gesturing over
+		// it. Drain the whole set — the mouse owner (if any) AND any touch pointers,
+		// which arm nothing in V1 but would otherwise leak here if the arm flip beats
+		// their pointerup/cancel, poisoning later pinch detection. Per-instance, so
+		// this never clears another viewer's registry. V2's pinch/tap-timer/baseline
+		// teardown joins this single path.
+		registry.clear();
 		if (!maybeDrag && !dragging) return;
 		const wasDragging = dragging;
 		maybeDrag = false;
@@ -898,9 +922,29 @@
 		if (wasDragging) armSuppressClear();
 	}
 
+	// TEST-ONLY (TASK-2517). The pointer registry is inert plumbing in V1, so a
+	// leak has NO V1-observable consequence — there is no indirect invariant that
+	// would catch it. This accessor lets the jsdom suite assert the drain invariant
+	// directly (registry empties on pointerup AND pointercancel, never leaks). Not
+	// used by production code. Exposed on the mount() result / `bind:this`.
+	export function __registrySize(): number {
+		return registry.size;
+	}
+
 	function onPointerDown(e: PointerEvent) {
 		if (e.button !== 0) return; // primary button only
-		if (e.pointerType === 'touch') return; // touch stays native until 3d
+		// EVERY primary pointer — mouse, pen AND touch — enters the registry FIRST,
+		// before any arm / gate / early-return below. `onPointerUp`/`onPointerCancel`
+		// delete by id before their own guards, so a press that never arms (touch,
+		// chrome, gated, no-bitmap) still drains cleanly (round-2 P1).
+		registry.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+		// V1 (TASK-2517): a TOUCH press enters the registry but arms NO drag and takes
+		// NO capture — touch pan is arbitration-unsound under `touch-action: auto` (the
+		// browser can claim the gesture and `pointercancel` mid-stream), so it is V2's.
+		// Taps still work: arming nothing, this press falls through to backdrop
+		// `onclick` (close), the chrome exclusion, or the deferred tap-to-load button —
+		// none of which the registry entry disturbs.
+		if (e.pointerType === 'touch') return;
 		// A second pointer (a pen, say) pressing mid-drag must NOT seize the gesture:
 		// re-arming below would replace `gesturePointerId` and hand the pan to the
 		// interloper. An active drag is owned until its own pointer releases.
@@ -910,6 +954,18 @@
 		// Clear it before any early return below, or a later control / gated press
 		// leaves `maybeDrag` latched and the next move engages a phantom drag from a
 		// dead baseline. (We already returned above if a drag is live.)
+		//
+		// Reconcile the REGISTRY at the SAME point (round-2 P1 leak-freedom): that
+		// stale owner's missed off-root up never ran `registry.delete`, so its entry
+		// would linger. Drop it here — but only when it is a DIFFERENT id than this
+		// press (a same-id re-press, e.g. a mouse, already refreshed its own entry via
+		// the `registry.set` at the top; deleting it would drop the live one). This
+		// mirrors the owner-scalar cleanup: the registry is reconciled at every
+		// DELIVERED interaction (this press, the buttons-released move, cancel, lost),
+		// which is the strongest the event model allows without capture.
+		if (gesturePointerId !== null && gesturePointerId !== e.pointerId) {
+			registry.delete(gesturePointerId);
+		}
 		maybeDrag = false;
 		// A press ON a control (close / nav / the DR-10 retry) is that control's
 		// click, never a pan: arming here would let a drag OFF a button still fire
@@ -996,6 +1052,9 @@
 	}
 
 	function onPointerUp(e: PointerEvent) {
+		registry.delete(e.pointerId); // hygiene FIRST — before the owner guards below,
+		// so a foreign / never-armed pointer (touch, chrome, gated) still drains and
+		// never leaks (round-2 P1).
 		if (!maybeDrag && !dragging) return; // not a gesture we started
 		if (e.pointerId !== gesturePointerId) return; // a foreign pointer can't end ours
 		const el = rootEl;
@@ -1025,12 +1084,18 @@
 	}
 
 	function onPointerCancel(e: PointerEvent) {
+		registry.delete(e.pointerId); // hygiene FIRST — under `touch-action: auto` the
+		// browser claims and `pointercancel`s touches ROUTINELY in the V1 window; a
+		// literal owner-guarded early-return would leak every one of them (round-2 P1).
 		if (!maybeDrag && !dragging) return; // no gesture to cancel
 		if (e.pointerId !== gesturePointerId) return;
 		abortGesture(e);
 	}
 
 	function onLostPointerCapture(e: PointerEvent) {
+		registry.delete(e.pointerId); // reconcile the registry on capture loss too (a
+		// real pointerup already deleted it, so this is a no-op there; it matters for an
+		// OS/browser-stolen capture that arrives with no up).
 		if (!maybeDrag && !dragging) return; // no gesture; ignore a stray capture-loss
 		if (e.pointerId !== gesturePointerId) return;
 		// Capture taken away (OS/browser, or our own release) — the gesture is over.
@@ -1330,6 +1395,13 @@
 		// next wheel/keyboard zoom rebases via `rebaseDrag`. Re-seeding here would be
 		// unobservable — and calling `rebaseDrag` (which reads `zoom`) inside this
 		// `zoom`-writing effect would self-invalidate it (CONVE-1688).
+		//
+		// The POINTER REGISTRY is deliberately NOT reconciled here (TASK-2517): a
+		// shown-image change is nav / a set-shrink, not a pointer up/down, so the
+		// physical pointer set is unchanged — the registry must keep tracking exactly
+		// the pointers still down (clearing one still held would desync it, and its
+		// eventual up would drain nothing). The bitmap-vanish teardown (below) owns
+		// registry hygiene for the arm-flip case, via `cancelGesture`.
 	});
 
 	// (Re)load whenever the SHOWN image changes — nav, a dimension fill, or a set

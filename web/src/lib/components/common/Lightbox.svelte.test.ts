@@ -2245,21 +2245,44 @@ describe('Lightbox — drag-to-pan and double-click (TASK-2458)', () => {
 		expect(root().querySelector('.lightbox-image')?.getAttribute('draggable')).toBe('false');
 	});
 
-	it('ignores a TOUCH pointer (native until 3d); a mouse pointer pans', () => {
+	// DELIBERATELY INVERTED from the pre-3d contract (TASK-2517, falsify-don't-
+	// contort). The former test here pinned "a touch pointerdown is IGNORED — no
+	// registry, no anything". V1 replaces it with the V1 touch contract, split into
+	// two honest halves: (a) a touch press+MOVE arms nothing (no capture, no pan) and
+	// the mouse path stays byte-identical; (b) a real touch TAP (press+up, NO move)
+	// still closes via the backdrop. Keeping them separate avoids conflating "no pan"
+	// with "tap closes" by injecting a click after an unrealistic 100px touch move.
+	it('V1: a TOUCH press+move arms nothing (no capture, no pan); the mouse path is byte-identical', () => {
 		mountViewer();
 		mockGeometry(root(), OVERFLOW_G);
 		zoomToActual();
 
+		// Touch press + move: no capture taken, the transform does not move (V1 arms
+		// no touch drag — touch pan is V2's).
 		root().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerType: 'touch' }));
 		root().dispatchEvent(pointerEvent('pointermove', 600, 500, { pointerType: 'touch' }));
 		flushSync();
 		expect(captured).toEqual([]);
+		expect(panX()).toBeCloseTo(0); // unmoved — no pan
 
+		// The mouse path is byte-identical: it still captures and pans.
 		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
 		root().dispatchEvent(pointerEvent('pointermove', 600, 500));
 		flushSync();
 		expect(captured).toContain(1);
 		expect(panX()).toBeCloseTo(100);
+	});
+
+	it('V1: a real TOUCH TAP (press+up, no move) still closes via the backdrop', () => {
+		const onClose = vi.fn();
+		mountViewer({ onClose });
+		// A genuine tap — down + up at the SAME point, no drag. Touch arms nothing, so
+		// `suppressClick` stays false and the tap's synthesized backdrop click closes,
+		// exactly as a plain backdrop click does (the V1 touch surface: taps).
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerType: 'touch' }));
+		root().dispatchEvent(pointerEvent('pointerup', 500, 500, { pointerType: 'touch', buttons: 0 }));
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 
 	it('drops the transform transition while dragging (image tracks the pointer), restoring it after', () => {
@@ -2347,6 +2370,92 @@ describe('Lightbox — drag-to-pan and double-click (TASK-2458)', () => {
 		expect(captured).toContain(1);
 		root().dispatchEvent(pointerEvent('pointercancel', 600, 500));
 		expect(released).toContain(1);
+	});
+
+	// ── registry hygiene: the pointer set drains, never leaks (round-2 P1) ──
+	//
+	// The registry is inert plumbing in V1, so a leak has no other observable
+	// consequence — assert the drain invariant directly via the test-only accessor.
+	type RegistrySized = { __registrySize: () => number };
+
+	it('drains the registry on pointerup AND on pointercancel — a touch leaves no entry', () => {
+		const app = mountViewer() as unknown as RegistrySized;
+		// A touch enters the registry...
+		root().dispatchEvent(pointerEvent('pointerdown', 300, 300, { pointerType: 'touch', pointerId: 7 }));
+		expect(app.__registrySize()).toBe(1);
+		// ...and its pointerup drains it (deleted BEFORE the owner guard — the touch
+		// never owned a gesture, so an owner-guarded early return would have leaked it).
+		root().dispatchEvent(
+			pointerEvent('pointerup', 300, 300, { pointerType: 'touch', pointerId: 7, buttons: 0 })
+		);
+		expect(app.__registrySize()).toBe(0);
+
+		// A browser-claimed touch (pointercancel under touch-action:auto) also drains.
+		root().dispatchEvent(pointerEvent('pointerdown', 300, 300, { pointerType: 'touch', pointerId: 8 }));
+		expect(app.__registrySize()).toBe(1);
+		root().dispatchEvent(pointerEvent('pointercancel', 300, 300, { pointerType: 'touch', pointerId: 8 }));
+		expect(app.__registrySize()).toBe(0);
+	});
+
+	it('a pointercancel STORM during a mouse drag leaves no leak and never ends the mouse gesture', () => {
+		const app = mountViewer() as unknown as RegistrySized;
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		// The mouse (id 1) owns the drag.
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerId: 1 }));
+		root().dispatchEvent(pointerEvent('pointermove', 600, 500, { pointerId: 1 }));
+		flushSync();
+		expect(panX()).toBeCloseTo(100);
+
+		// A storm of browser-claimed touches arrive and each cancels. Every delete runs
+		// FIRST, before the owner guard, so none leaks AND none ends the mouse drag.
+		for (const id of [2, 3, 4, 5]) {
+			root().dispatchEvent(pointerEvent('pointerdown', 200, 200, { pointerType: 'touch', pointerId: id }));
+		}
+		expect(app.__registrySize()).toBe(5); // the mouse owner + four live touches
+		for (const id of [2, 3, 4, 5]) {
+			root().dispatchEvent(pointerEvent('pointercancel', 200, 200, { pointerType: 'touch', pointerId: id }));
+		}
+		// The foreign touches drained; only the mouse owner remains.
+		expect(app.__registrySize()).toBe(1);
+		// The mouse drag is intact — its next move still pans...
+		root().dispatchEvent(pointerEvent('pointermove', 700, 500, { pointerId: 1 }));
+		flushSync();
+		expect(panX()).toBeCloseTo(200);
+		// ...and the mouse up drains the last entry.
+		root().dispatchEvent(pointerEvent('pointerup', 700, 500, { pointerId: 1, buttons: 0 }));
+		expect(app.__registrySize()).toBe(0);
+	});
+
+	it('a TOUCH tap on chrome arms nothing (no capture, no pan) and drains', () => {
+		const app = mountViewer() as unknown as RegistrySized;
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		const closeBtn = root().querySelector<HTMLButtonElement>('.lightbox-close')!;
+		// A touch press on the close chrome bubbles to the backdrop handler: it enters
+		// the registry, arms no drag, takes no capture, and the up drains it — the
+		// chrome's own click is left free to fire.
+		closeBtn.dispatchEvent(pointerEvent('pointerdown', 20, 20, { pointerType: 'touch', pointerId: 3 }));
+		expect(app.__registrySize()).toBe(1);
+		closeBtn.dispatchEvent(pointerEvent('pointerup', 20, 20, { pointerType: 'touch', pointerId: 3, buttons: 0 }));
+		flushSync();
+		expect(captured).toEqual([]);
+		expect(panX()).toBeCloseTo(0); // the chrome press engaged no pan on the stage
+		expect(app.__registrySize()).toBe(0);
+	});
+
+	it("a stale armed owner's missed off-root pointerup is reconciled out by the next press", () => {
+		const app = mountViewer() as unknown as RegistrySized;
+		mockGeometry(root(), OVERFLOW_G);
+		zoomToActual();
+		// A pen arms a drag (id 2) but its pointerup fires OFF-ROOT before capture — no
+		// up is ever delivered, so it can't self-delete. The entry is now in the registry.
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerType: 'pen', pointerId: 2 }));
+		expect(app.__registrySize()).toBe(1);
+		// A fresh mouse press (id 1) supersedes the stale armed gesture and reconciles
+		// the phantom pen entry out — leaving only the live pointer, not two.
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerId: 1 }));
+		expect(app.__registrySize()).toBe(1);
 	});
 
 	// ── gesture-state hygiene (round 1) ──
@@ -2926,6 +3035,24 @@ describe('Lightbox — mobile tap-to-load and zoom-past-fit (TASK-2460)', () => 
 		tapButton().click();
 		flushSync();
 		expect(imageSrc()).toContain(IMG_A);
+	});
+
+	it('V1: a TOUCH tap on the deferred affordance keeps first-tap priority (it loads)', () => {
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		const tap = tapButton();
+		expect(tap).not.toBeNull();
+		// A touch press on the affordance bubbles to the backdrop handler: in V1 it
+		// enters the registry but arms NOTHING and takes NO capture (the deferred cell
+		// has no bitmap anyway), so it does not swallow or pre-empt the tap. The tap's
+		// own click then issues the request — first-tap priority preserved.
+		tap.dispatchEvent(pointerEvent('pointerdown', 100, 100, { pointerType: 'touch', pointerId: 9 }));
+		tap.dispatchEvent(pointerEvent('pointerup', 100, 100, { pointerType: 'touch', pointerId: 9, buttons: 0 }));
+		flushSync();
+		expect(root().querySelector('.lightbox-image')).toBeNull(); // the tap-move alone loaded nothing
+		tap.click(); // the synthesized click the tap produces
+		flushSync();
+		expect(imageSrc()).toContain(IMG_A);
+		expect(root().querySelector('.lightbox-tap-load')).toBeNull(); // replaced by the image it loaded
 	});
 
 	it('mobile→desktop breakpoint flip does NOT retro-fetch: the affordance stays', () => {
