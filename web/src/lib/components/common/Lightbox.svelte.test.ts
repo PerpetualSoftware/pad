@@ -1967,18 +1967,32 @@ function pointerEvent(
 	type: string,
 	x: number,
 	y: number,
-	opts: { buttons?: number; pointerType?: string; button?: number; pointerId?: number } = {}
+	opts: {
+		buttons?: number;
+		pointerType?: string;
+		button?: number;
+		pointerId?: number;
+		timeStamp?: number;
+	} = {}
 ): Event {
 	const e = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
 	Object.defineProperty(e, 'pointerId', { value: opts.pointerId ?? 1 });
 	Object.defineProperty(e, 'buttons', { value: opts.buttons ?? 1 });
 	Object.defineProperty(e, 'button', { value: opts.button ?? 0 });
 	Object.defineProperty(e, 'pointerType', { value: opts.pointerType ?? 'mouse' });
+	// The double-tap detector times off `timeStamp` (TASK-2518); overridable so the
+	// boundary at DOUBLE_TAP_MS is deterministic. Left as the auto value otherwise.
+	if (opts.timeStamp !== undefined) Object.defineProperty(e, 'timeStamp', { value: opts.timeStamp });
 	return e;
 }
 
 function panX(scope: HTMLElement = root()): number {
 	const m = /translate\(([-\d.]+)px,/.exec(transformOf(scope));
+	return m ? Number(m[1]) : NaN;
+}
+
+function panY(scope: HTMLElement = root()): number {
+	const m = /translate\([-\d.]+px,\s*([-\d.]+)px\)/.exec(transformOf(scope));
 	return m ? Number(m[1]) : NaN;
 }
 
@@ -2245,20 +2259,19 @@ describe('Lightbox — drag-to-pan and double-click (TASK-2458)', () => {
 		expect(root().querySelector('.lightbox-image')?.getAttribute('draggable')).toBe('false');
 	});
 
-	// DELIBERATELY INVERTED from the pre-3d contract (TASK-2517, falsify-don't-
-	// contort). The former test here pinned "a touch pointerdown is IGNORED — no
-	// registry, no anything". V1 replaces it with the V1 touch contract, split into
-	// two honest halves: (a) a touch press+MOVE arms nothing (no capture, no pan) and
-	// the mouse path stays byte-identical; (b) a real touch TAP (press+up, NO move)
-	// still closes via the backdrop. Keeping them separate avoids conflating "no pan"
-	// with "tap closes" by injecting a click after an unrealistic 100px touch move.
-	it('V1: a TOUCH press+move arms nothing (no capture, no pan); the mouse path is byte-identical', () => {
+	// These dispatch on `root()` — the backdrop LETTERBOX. Touch gestures shipped in
+	// V2 (TASK-2518) but arm only on a PAINTED-IMAGE hit, so a letterbox touch STILL
+	// arms nothing: (a) a letterbox touch press+MOVE never pans (touch pan requires an
+	// image target; the mouse path — which arms over the backdrop — is byte-identical);
+	// (b) a real letterbox TAP (press+up, NO move) still closes via the backdrop. The
+	// V2 touch pan / pinch / double-tap tests dispatch on the IMAGE element instead.
+	it('a TOUCH press+move on the backdrop arms nothing (no capture, no pan); the mouse path is byte-identical', () => {
 		mountViewer();
 		mockGeometry(root(), OVERFLOW_G);
 		zoomToActual();
 
-		// Touch press + move: no capture taken, the transform does not move (V1 arms
-		// no touch drag — touch pan is V2's).
+		// Touch press + move on the letterbox: no capture taken, the transform does not
+		// move (touch pan arms only on a painted-image hit — the letterbox is not one).
 		root().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerType: 'touch' }));
 		root().dispatchEvent(pointerEvent('pointermove', 600, 500, { pointerType: 'touch' }));
 		flushSync();
@@ -2273,12 +2286,12 @@ describe('Lightbox — drag-to-pan and double-click (TASK-2458)', () => {
 		expect(panX()).toBeCloseTo(100);
 	});
 
-	it('V1: a real TOUCH TAP (press+up, no move) still closes via the backdrop', () => {
+	it('a real backdrop TOUCH TAP (press+up, no move) still closes via the backdrop', () => {
 		const onClose = vi.fn();
 		mountViewer({ onClose });
-		// A genuine tap — down + up at the SAME point, no drag. Touch arms nothing, so
-		// `suppressClick` stays false and the tap's synthesized backdrop click closes,
-		// exactly as a plain backdrop click does (the V1 touch surface: taps).
+		// A genuine letterbox tap — down + up at the SAME point, no drag. A backdrop touch
+		// arms nothing, so `suppressClick` stays false and the tap's synthesized backdrop
+		// click closes, exactly as a plain backdrop click does.
 		root().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerType: 'touch' }));
 		root().dispatchEvent(pointerEvent('pointerup', 500, 500, { pointerType: 'touch', buttons: 0 }));
 		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -2650,6 +2663,655 @@ describe('Lightbox — drag-to-pan and double-click (TASK-2458)', () => {
 		front.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
 		flushSync();
 		expect(scaleOf(front)).toBeCloseTo(2000 / 900); // frontmost did
+	});
+});
+
+// ── TASK-2518 — touch pan + pinch + double-tap (3d-V2) ───────────────────────
+//
+// The V1 touch suite above dispatches on `root()` (the backdrop letterbox), where
+// touch STILL arms nothing — V2 touch gestures begin only on a PAINTED-IMAGE hit,
+// so those pins stay green byte-for-byte. This suite dispatches on the IMAGE
+// element (so `e.target` passes the painted-image gate) and paints first (so
+// `gesturesArmable` is true — the painted rule).
+const ACTUAL_SCALE = 2000 / 900; // actualScale for OVERFLOW_G — the toggle target
+describe('Lightbox — touch pan, pinch, double-tap (TASK-2518)', () => {
+	beforeEach(() => {
+		captured = [];
+		released = [];
+		(Element.prototype as unknown as Record<string, unknown>).setPointerCapture = function (id: number) {
+			captured.push(id);
+		};
+		(Element.prototype as unknown as Record<string, unknown>).releasePointerCapture = function (id: number) {
+			released.push(id);
+		};
+	});
+	afterEach(() => {
+		if (REAL_PC.setPointerCapture === undefined)
+			delete (Element.prototype as unknown as Record<string, unknown>).setPointerCapture;
+		else Element.prototype.setPointerCapture = REAL_PC.setPointerCapture;
+		if (REAL_PC.releasePointerCapture === undefined)
+			delete (Element.prototype as unknown as Record<string, unknown>).releasePointerCapture;
+		else Element.prototype.releasePointerCapture = REAL_PC.releasePointerCapture;
+	});
+
+	function imageEl(): HTMLElement {
+		return root().querySelector<HTMLElement>('.lightbox-image')!;
+	}
+	/** Mount, mock OVERFLOW_G geometry, and DECODE — so `gesturesArmable` is true. */
+	function mountPainted(props: Partial<Props> = {}): ReturnType<typeof mount> {
+		const app = mountViewer(props);
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(2000, 2000); // paints → painted + paintedGen === loadToken
+		return app;
+	}
+	/** A touch pointer event, dispatched on the IMAGE by default (the painted-image hit). */
+	function tp(
+		type: string,
+		x: number,
+		y: number,
+		id: number,
+		opts: { ts?: number; buttons?: number; target?: HTMLElement } = {}
+	): void {
+		const target = opts.target ?? imageEl();
+		target.dispatchEvent(
+			pointerEvent(type, x, y, {
+				pointerType: 'touch',
+				pointerId: id,
+				buttons: opts.buttons,
+				timeStamp: opts.ts,
+			})
+		);
+		flushSync();
+	}
+	const tdown = (x: number, y: number, id: number, o: { ts?: number; target?: HTMLElement } = {}) =>
+		tp('pointerdown', x, y, id, { ...o, buttons: 1 });
+	const tmove = (x: number, y: number, id: number) => tp('pointermove', x, y, id, { buttons: 1 });
+	const tup = (x: number, y: number, id: number, o: { ts?: number; target?: HTMLElement } = {}) =>
+		tp('pointerup', x, y, id, { ...o, buttons: 0 });
+	const tcancel = (x: number, y: number, id: number) => tp('pointercancel', x, y, id, { buttons: 0 });
+	type RS = { __registrySize: () => number };
+
+	// ── touch pan ──
+	it('a FRESH single-touch drag on a zoomed image pans (registry size 1 — the direct leg)', () => {
+		const app = mountPainted() as unknown as RS;
+		zoomToActual(); // scale ~2.22, real pan room
+		expect(scaleOf()).toBeCloseTo(ACTUAL_SCALE);
+
+		tdown(500, 500, 1);
+		expect(app.__registrySize()).toBe(1); // one live touch — not a post-degrade artefact
+		tmove(600, 500, 1); // past threshold on the image → engages + captures
+		expect(captured).toContain(1);
+		expect(panX()).toBeCloseTo(100);
+		tup(600, 500, 1);
+	});
+
+	it('at FIT scale a touch drag ARMS + suppresses the click but applies NO offset', () => {
+		const onClose = vi.fn();
+		mountPainted({ onClose }); // fit — pan bound is zero
+		tdown(500, 500, 1);
+		tmove(560, 500, 1); // well past threshold
+		expect(captured).toContain(1); // armed + captured (click-suppression engaged)
+		expect(panX()).toBeCloseTo(0); // ...but no pan applied at fit
+		tup(560, 500, 1);
+		// The pan's synthesized click is swallowed — a pan attempt never closes.
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	// ── pinch ──
+	it('a two-finger spread zooms; the .pinching class disables the transform transition', () => {
+		mountPainted(); // fit
+		const image = imageEl();
+		tdown(400, 500, 1); // first finger → pan owner
+		tdown(600, 500, 2); // second finger on the image → promote (dist 200 ≥ 12)
+		expect(image.classList.contains('pinching')).toBe(true);
+		tmove(700, 500, 2); // widen: 200 → 300 → scale ×1.5
+		expect(scaleOf()).toBeCloseTo(1.5);
+		expect(panX()).toBeCloseTo(50); // midpoint 500→550 tracked
+		tup(700, 500, 2);
+		expect(imageEl().classList.contains('pinching')).toBe(false);
+	});
+
+	it('composed pinch keeps the image point under the midpoint (fit-start, off-centre, move+spread)', () => {
+		mountPainted(); // fit, centred: s0 = 1, t0 = 0
+		// The feature under the INITIAL midpoint (480,500), relative to stage centre.
+		const fx = 480 - 500;
+		const fy = 500 - 500;
+		tdown(400, 480, 1);
+		tdown(560, 520, 2); // pinch seeded from these — off-centre
+		// A simultaneous MOVE + SPREAD.
+		tmove(380, 470, 1);
+		tmove(620, 540, 2);
+		const s = scaleOf();
+		const finalMidX = (380 + 620) / 2;
+		const finalMidY = (470 + 540) / 2;
+		// The feature that was under the midpoint is STILL under the (moved) midpoint.
+		expect(500 + panX() + s * fx).toBeCloseTo(finalMidX);
+		expect(500 + panY() + s * fy).toBeCloseTo(finalMidY);
+	});
+
+	it('PINCH_MIN_DIST: founders exactly 12px apart ARM a pinch; 11.999px do NOT', () => {
+		mountPainted(); // fit
+		tdown(500, 500, 1);
+		tdown(512, 500, 2); // exactly 12 apart → arms
+		tmove(524, 500, 2); // widen 12 → 24 → ×2
+		expect(scaleOf()).toBeCloseTo(2);
+		tup(524, 500, 2);
+		tup(500, 500, 1);
+
+		mountPainted(); // fresh viewer, fit
+		tdown(500, 500, 3);
+		tdown(511.999, 500, 4); // below 12 → NOT a pinch; stays single-touch pan
+		tmove(524, 500, 4); // registry-only (not the owner) → nothing
+		tmove(400, 500, 3); // the owner pans (at fit → 0), never zooms
+		expect(scaleOf()).toBe(1); // no pinch ever armed
+	});
+
+	it('a degenerate converge below PINCH_MIN_DIST HOLDS the scale; re-crossing REBASES (no snap)', () => {
+		mountPainted(); // fit
+		tdown(480, 500, 1);
+		tdown(520, 500, 2); // startDist 40, startScale 1
+		tmove(600, 500, 2); // curDist 120 → ×3
+		expect(scaleOf()).toBeCloseTo(3);
+		// A FAST converge that crosses far→near in one move: curDist 5 < 12, so the ratio
+		// update is SKIPPED and the scale HOLDS at 3 (not the near-zero-distance jump to
+		// fit that recomputing 5/40 would produce).
+		tmove(485, 500, 2); // curDist 5 < 12
+		expect(scaleOf()).toBeCloseTo(3);
+		// Re-cross upward: REBASE startDist/startScale to (curDist, held=3), so the
+		// absolute ratio continues from 3 — WITHOUT the rebase it would be
+		// startScale(1)·25/startDist(40) = 0.625 → clamped to fit (1), a snap.
+		tmove(505, 500, 2); // curDist 25 ≥ 12
+		expect(scaleOf()).toBeCloseTo(3);
+		// And the rebase produced a LIVE baseline, not a permanent hold: widening further
+		// GROWS the scale from the held 3 (rebased startDist 25, startScale 3).
+		tmove(530, 500, 2); // curDist 50 → 3 · 50/25 = 6
+		expect(scaleOf()).toBeCloseTo(6);
+	});
+
+	it('pinch admission requires BOTH pointers on the image (image + letterbox does not zoom)', () => {
+		mountPainted(); // fit
+		tdown(400, 500, 1); // image finger → pan owner
+		// Second finger on the LETTERBOX (dispatched on the backdrop root) — not on the
+		// image, so no promotion; it stays a single-touch pan.
+		tdown(600, 500, 2, { target: root() });
+		tmove(700, 500, 2); // registry-only
+		tmove(300, 500, 1); // owner pans (fit → 0), never zooms
+		expect(scaleOf()).toBe(1); // no pinch
+	});
+
+	it('a THIRD touch mid-pinch is registry-only (scale + offset untouched)', () => {
+		const app = mountPainted() as unknown as RS;
+		tdown(400, 500, 1);
+		tdown(600, 500, 2);
+		tmove(700, 500, 2); // zoomed
+		const scaleBefore = scaleOf();
+		const panBefore = panX();
+		tdown(500, 300, 3); // a third finger
+		expect(app.__registrySize()).toBe(3);
+		expect(scaleOf()).toBeCloseTo(scaleBefore); // untouched
+		expect(panX()).toBeCloseTo(panBefore);
+		tup(500, 300, 3); // its up only drains it — never the 2→1 degrade
+		expect(app.__registrySize()).toBe(2);
+		expect(scaleOf()).toBeCloseTo(scaleBefore);
+		// The two FOUNDERS still drive the pinch (the third neither rebased nor stole it):
+		// widening founder 2 scales per the founders' baseline (startDist 200), unaffected.
+		tmove(750, 500, 2); // founders 400 & 750 → dist 350 → 1 · 350/200 = 1.75
+		expect(scaleOf()).toBeCloseTo(1.75);
+		// A third pointer's CANCEL (not just up) is likewise registry-only — no degrade.
+		tdown(500, 400, 4);
+		tcancel(500, 400, 4);
+		expect(app.__registrySize()).toBe(2);
+		expect(scaleOf()).toBeCloseTo(1.75);
+	});
+
+	// ── 1→2 promotion, 2→1 degrade, cancel routing ──
+	it('1→2 promotion: a pan past threshold + a second finger becomes a pinch (capture surrendered, no teardown)', () => {
+		mountPainted(); // fit
+		tdown(500, 500, 1);
+		tmove(520, 500, 1); // engages the pan → captures id 1
+		expect(captured).toContain(1);
+		released = [];
+		tdown(560, 500, 2); // second image finger → PROMOTE
+		expect(released).toContain(1); // the pan's capture is deliberately surrendered
+		// No teardown — the pinch is live: widening now zooms (seeded from BOTH points).
+		tmove(600, 500, 2); // 40 → 80 → ×2
+		expect(scaleOf()).toBeCloseTo(2);
+	});
+
+	it("the promoted owner's lostpointercapture is SWALLOWED (the new pinch survives)", () => {
+		const app = mountPainted() as unknown as RS;
+		tdown(500, 500, 1);
+		tmove(520, 500, 1); // capture id 1
+		tdown(560, 500, 2); // promote → releases id 1's capture
+		// The browser now delivers id 1's lostpointercapture (our own surrender): it must
+		// NOT tear the pinch down, and id 1 must stay in the registry.
+		root().dispatchEvent(pointerEvent('lostpointercapture', 520, 500, { pointerId: 1, pointerType: 'touch' }));
+		flushSync();
+		expect(app.__registrySize()).toBe(2); // founder kept
+		tmove(600, 500, 2); // still a pinch → zooms
+		expect(scaleOf()).toBeCloseTo(2);
+	});
+
+	it('2→1 degrade: a founder lifting continues as a pan on the SURVIVOR with no offset jump', () => {
+		mountPainted();
+		tdown(300, 500, 1);
+		tdown(700, 500, 2); // startDist 400
+		tmove(900, 500, 2); // curDist 600 → ×1.5, ample pan room (bound ±175)
+		const scaleAfterPinch = scaleOf();
+		const panAfterPinch = panX();
+		// Lift founder 1 → degrade to a pan on the survivor (id 2), rebased to its
+		// current position. No jump: the transform is unchanged until the survivor moves.
+		tup(300, 500, 1);
+		expect(scaleOf()).toBeCloseTo(scaleAfterPinch);
+		expect(panX()).toBeCloseTo(panAfterPinch);
+		expect(captured).toContain(2); // the survivor is captured as the pan owner
+		// Now the survivor pans by exactly its delta (no scale change, in-bounds).
+		tmove(850, 500, 2); // 900 → 850 = −50
+		expect(scaleOf()).toBeCloseTo(scaleAfterPinch); // pan, not zoom
+		expect(panX()).toBeCloseTo(panAfterPinch - 50);
+	});
+
+	it('cancel of ONE founder degrades; cancel of the LAST clears everything', () => {
+		const app = mountPainted() as unknown as RS;
+		tdown(300, 500, 1);
+		tdown(700, 500, 2);
+		tmove(760, 500, 2);
+		const scaleAfterPinch = scaleOf();
+		// Cancel a founder with a surviving co-founder → 2→1 degrade (pan continues).
+		tcancel(760, 500, 2);
+		expect(app.__registrySize()).toBe(1); // survivor still down
+		// The survivor (id 1) is now the pan owner — its move pans, does not zoom.
+		tmove(340, 500, 1);
+		expect(scaleOf()).toBeCloseTo(scaleAfterPinch);
+		// Cancel the LAST pointer → full clear (registry drained, gesture gone).
+		tcancel(340, 500, 1);
+		expect(app.__registrySize()).toBe(0);
+	});
+
+	// ── double-tap ──
+	it('a double-tap on the image toggles fit↔actual at the anchor; a single tap does nothing', () => {
+		const onClose = vi.fn();
+		mountPainted({ onClose });
+		// One tap: no toggle, no close (a single image tap has no action).
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 });
+		expect(scaleOf()).toBe(1);
+		expect(onClose).not.toHaveBeenCalled();
+		// Second qualifying tap at an OFF-CENTRE anchor (505,505): toggles to actual size
+		// ANCHORED there — the image point under the tap stays under the tap — still no close.
+		tdown(505, 505, 1, { ts: 1200 });
+		tup(505, 505, 1, { ts: 1200 });
+		expect(scaleOf()).toBeCloseTo(ACTUAL_SCALE);
+		// Anchor invariance: centre (500,500), tap 5px off → the feature under the tap
+		// (fx=fy=5 at fit) is still under (505,505). Wrong anchor arithmetic would fail here.
+		expect(500 + panX() + scaleOf() * 5).toBeCloseTo(505);
+		expect(500 + panY() + scaleOf() * 5).toBeCloseTo(505);
+		expect(onClose).not.toHaveBeenCalled();
+	});
+
+	it('DOUBLE_TAP_MS boundary: 300ms apart toggles, 301ms does not', () => {
+		mountPainted();
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 });
+		tdown(500, 500, 1, { ts: 1300 });
+		tup(500, 500, 1, { ts: 1300 }); // dt = 300 ≤ 300 → toggles
+		expect(scaleOf()).toBeCloseTo(ACTUAL_SCALE);
+
+		mountPainted();
+		tdown(500, 500, 2, { ts: 1000 });
+		tup(500, 500, 2, { ts: 1000 });
+		tdown(500, 500, 2, { ts: 1301 });
+		tup(500, 500, 2, { ts: 1301 }); // dt = 301 > 300 → does NOT toggle
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('DOUBLE_TAP_SLOP_PX boundary: 24px apart toggles, 25px does not', () => {
+		mountPainted();
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 });
+		tdown(524, 500, 1, { ts: 1100 });
+		tup(524, 500, 1, { ts: 1100 }); // dist 24 ≤ 24 → toggles
+		expect(scaleOf()).toBeCloseTo(ACTUAL_SCALE);
+
+		mountPainted();
+		tdown(500, 500, 2, { ts: 1000 });
+		tup(500, 500, 2, { ts: 1000 });
+		tdown(525, 500, 2, { ts: 1100 });
+		tup(525, 500, 2, { ts: 1100 }); // dist 25 > 24 → does NOT toggle
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('the detector DISARMS on a drag between taps', () => {
+		mountPainted();
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 }); // pending first tap
+		// A drag: engages past threshold → disarms the pending double-tap.
+		tdown(500, 500, 1, { ts: 1050 });
+		tmove(560, 500, 1);
+		tup(560, 500, 1, { ts: 1050 });
+		// A tap that WOULD have paired with the first now only starts a new one.
+		tdown(500, 500, 1, { ts: 1100 });
+		tup(500, 500, 1, { ts: 1100 });
+		expect(scaleOf()).toBe(1); // no toggle — the drag disarmed the detector
+	});
+
+	it('the detector DISARMS on a pinch between taps', () => {
+		mountPainted();
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 });
+		// A pinch (second pointer joins) disarms.
+		tdown(400, 500, 1, { ts: 1050 });
+		tdown(600, 500, 2);
+		tup(600, 500, 2);
+		tup(400, 500, 1, { ts: 1050 });
+		tdown(500, 500, 1, { ts: 1100 });
+		tup(500, 500, 1, { ts: 1100 });
+		expect(scaleOf()).toBe(1); // no toggle — the pinch disarmed the detector
+	});
+
+	it('the detector DISARMS on a chrome tap between taps', () => {
+		mountPainted();
+		const close = closeButton();
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 });
+		// A touch on chrome (no click dispatched → no close) disarms.
+		tdown(20, 20, 1, { ts: 1050, target: close });
+		tup(20, 20, 1, { ts: 1050, target: close });
+		tdown(500, 500, 1, { ts: 1100 });
+		tup(500, 500, 1, { ts: 1100 });
+		expect(scaleOf()).toBe(1); // no toggle — the chrome tap disarmed the detector
+	});
+
+	it('a backdrop single-tap closes with NO delay; an image tap does not close', () => {
+		const onClose = vi.fn();
+		mountPainted({ onClose });
+		// Image tap: no close (target is the image, not the backdrop), no delay machinery.
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 });
+		imageEl().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onClose).not.toHaveBeenCalled();
+		// Backdrop tap: closes immediately via the synthesized click (unchanged).
+		tp('pointerdown', 50, 50, 5, { buttons: 1, target: root() });
+		tp('pointerup', 50, 50, 5, { buttons: 0, target: root() });
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('compat dedup: a synthesized dblclick after a touch double-tap does not toggle twice', () => {
+		mountPainted();
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 });
+		tdown(500, 500, 1, { ts: 1100 });
+		tup(500, 500, 1, { ts: 1100 }); // our detector toggled → actual size
+		expect(scaleOf()).toBeCloseTo(ACTUAL_SCALE);
+		// The browser now synthesizes a dblclick from the double-tap — it must be
+		// IGNORED (last pointer was touch), or it would toggle back to fit.
+		imageEl().dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: 500, clientY: 500 }));
+		flushSync();
+		expect(scaleOf()).toBeCloseTo(ACTUAL_SCALE); // still actual — not toggled a second time
+	});
+
+	// ── the painted rule + retry generation gate ──
+	it('touch gestures are INERT until the bitmap PAINTS (no arm pre-decode)', () => {
+		mountViewer(); // NOT painted — img is loading (bitmapPresent, but painted false)
+		mockGeometry(root(), OVERFLOW_G);
+		// Two image fingers + a spread before any decode: nothing arms, nothing zooms.
+		tdown(400, 500, 1);
+		tdown(600, 500, 2);
+		tmove(700, 500, 2);
+		expect(scaleOf()).toBe(1); // inert — the painted rule
+		// After it paints, the SAME gesture zooms.
+		fireLoad(2000, 2000);
+		tdown(400, 500, 3);
+		tdown(600, 500, 4);
+		tmove(700, 500, 4);
+		expect(scaleOf()).toBeCloseTo(1.5);
+	});
+
+	it('touch gestures are INERT during retry-loading (stale module painted, fresh blank element)', () => {
+		// A large image: thumb paints, desktop auto-upgrades, the UPGRADE errors, retry
+		// re-mounts a blank element at a fresh generation. `loader.painted` is still true
+		// (stale), but the per-element paint generation is not — so gestures stay inert
+		// until the retried element decodes (round-6 P2).
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(1024, 768); // thumb decodes → painted; desktop requests the original
+		expect(imageSrc()).not.toContain('variant='); // upgrading to the original
+		// The original fails.
+		imageEl().dispatchEvent(new Event('error'));
+		flushSync();
+		expect(root().querySelector('.lightbox-retry')).not.toBeNull();
+		// Retry: a fresh, blank element at a NEW generation (still phase loading).
+		root().querySelector<HTMLButtonElement>('.lightbox-retry')!.click();
+		flushSync();
+		mockGeometry(root(), OVERFLOW_G);
+		// A double-tap during retry-loading is INERT (paintedGen ≠ loadToken).
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 });
+		tdown(500, 500, 1, { ts: 1100 });
+		tup(500, 500, 1, { ts: 1100 });
+		expect(scaleOf()).toBe(1); // inert during retry-loading
+		// Once the retried element decodes, gestures come back.
+		fireLoad(4000, 4000);
+		tdown(500, 500, 2, { ts: 2000 });
+		tup(500, 500, 2, { ts: 2000 });
+		tdown(500, 500, 2, { ts: 2100 });
+		tup(500, 500, 2, { ts: 2100 });
+		expect(scaleOf()).toBeGreaterThan(1); // armed again after the fresh decode
+	});
+
+	// ── regressions from the Codex review (round 1) ──
+	it('at MAX scale, spreading further does NOT drift the pan (k uses the clamped scale)', () => {
+		mountPainted(); // fit
+		const MAX = ACTUAL_SCALE * 4; // maxScale for OVERFLOW_G
+		// Pinch OUT to max, midpoint held OFF-CENTRE (600) so any k error is visible.
+		tdown(580, 500, 1);
+		tdown(620, 500, 2); // startDist 40, mid 600
+		tmove(420, 500, 1); // symmetric around 600
+		tmove(780, 500, 2); // curDist 360 → ×9 → clamped to MAX
+		expect(scaleOf()).toBeCloseTo(MAX);
+		const panAtMax = panX();
+		// Spread FURTHER, midpoint still 600: scale stays pinned at MAX, so the pan must
+		// NOT move — with the pre-fix raw-scale `k` it would drift.
+		tmove(400, 500, 1);
+		tmove(800, 500, 2); // curDist 400 → raw ×10, clamped MAX
+		expect(scaleOf()).toBeCloseTo(MAX);
+		expect(panX()).toBeCloseTo(panAtMax);
+	});
+
+	it("a delayed surrender lostpointercapture after a degrade does NOT kill the survivor pan", () => {
+		const app = mountPainted() as unknown as RS;
+		tdown(500, 500, 1);
+		tmove(520, 500, 1); // capture id 1
+		tdown(560, 500, 2); // promote → id 1's capture surrendered (swallow armed)
+		tmove(700, 500, 2); // zoom in so there is pan room
+		const scaleAfterPinch = scaleOf();
+		const panAfterPinch = panX();
+		// Founder 2 ends BEFORE id 1's deliberate lostpointercapture arrives → degrade to
+		// the survivor (id 1, at x=520). The swallow must remain armed for the in-flight loss.
+		tup(700, 500, 2);
+		expect(captured).toContain(1); // survivor (id 1) is captured as the pan owner
+		// The delayed loss for id 1 now arrives — it must be SWALLOWED, not tear the pan
+		// down, and id 1 must stay in the registry.
+		root().dispatchEvent(pointerEvent('lostpointercapture', 520, 500, { pointerId: 1, pointerType: 'touch' }));
+		flushSync();
+		expect(app.__registrySize()).toBe(1); // survivor kept
+		// Still the pan owner → the survivor pans by its EXACT delta (520 → 480 = −40), no
+		// zoom. A teardown that left the registry entry but stopped panning would fail here.
+		tmove(480, 500, 1);
+		expect(scaleOf()).toBeCloseTo(scaleAfterPinch);
+		expect(panX()).toBeCloseTo(panAfterPinch - 40);
+	});
+
+	it('a pinch torn down by bitmap loss does not leave suppressClick stuck (next backdrop tap closes)', async () => {
+		const onClose = vi.fn();
+		mountPainted({ onClose });
+		tdown(400, 500, 1);
+		tdown(600, 500, 2);
+		tmove(700, 500, 2); // pinch active → suppressClick is held true
+		// The bitmap vanishes: the reactive teardown FULL-CLEARS the pinch. A pinch never
+		// set `dragging`, so the fix clears the held `suppressClick` on `wasPinching`.
+		imageEl().dispatchEvent(new Event('error'));
+		flushSync();
+		await new Promise((r) => setTimeout(r, 0)); // let the suppress-clear timer fire
+		root().dispatchEvent(new MouseEvent('click', { bubbles: true }));
+		expect(onClose).toHaveBeenCalledTimes(1); // not swallowed by a stuck suppressClick
+	});
+
+	it('a double-tap whose first tap timeStamp is 0 still toggles (the sentinel is not 0)', () => {
+		mountPainted();
+		tdown(500, 500, 1, { ts: 0 });
+		tup(500, 500, 1, { ts: 0 }); // first tap at t=0 — a legitimate timeStamp
+		tdown(500, 500, 1, { ts: 100 });
+		tup(500, 500, 1, { ts: 100 }); // dt = 100 → toggles
+		expect(scaleOf()).toBeCloseTo(ACTUAL_SCALE);
+	});
+
+	it('a pending touch tap does NOT pair across an interleaving MOUSE interaction', () => {
+		mountPainted();
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 }); // pending first touch tap
+		// A mouse press between the taps disarms the detector (input device switched).
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerType: 'mouse', pointerId: 9 }));
+		root().dispatchEvent(pointerEvent('pointerup', 500, 500, { pointerType: 'mouse', pointerId: 9, buttons: 0 }));
+		flushSync();
+		tdown(500, 500, 1, { ts: 1100 });
+		tup(500, 500, 1, { ts: 1100 }); // would-be second tap
+		expect(scaleOf()).toBe(1); // no toggle — the mouse press disarmed the pending tap
+	});
+
+	it('a live touch pinch is torn down when a same-id reload remounts a blank element (arm lost)', () => {
+		liveProps.images = [image(IMG_A, 'a')];
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(2000, 2000); // painted
+		// Start a pinch.
+		imageEl().dispatchEvent(pointerEvent('pointerdown', 400, 500, { pointerType: 'touch', pointerId: 1 }));
+		flushSync();
+		imageEl().dispatchEvent(pointerEvent('pointerdown', 600, 500, { pointerType: 'touch', pointerId: 2 }));
+		flushSync();
+		imageEl().dispatchEvent(pointerEvent('pointermove', 700, 500, { pointerType: 'touch', pointerId: 2 }));
+		flushSync();
+		expect(scaleOf()).toBeGreaterThan(1);
+		expect(root().querySelector('.lightbox-image')!.classList.contains('pinching')).toBe(true);
+		// A same-id re-emit with dimensions flips loadKey → reload → a fresh BLANK element
+		// (loadToken bumps). bitmapPresent stays true (loading), but gesturesArmable goes
+		// false — so the live TOUCH pinch is torn down (the paint arm is lost).
+		liveProps.images = [sized(IMG_A, 'a', 5000, 5000)];
+		flushSync();
+		expect(root().querySelector('.lightbox-image')?.classList.contains('pinching') ?? false).toBe(false);
+		void app;
+	});
+
+	it('a pending first tap does NOT survive a navigation (no cross-image double-tap)', () => {
+		mountPainted({
+			images: [image(IMG_A, 'a'), image(IMG_B, 'b')],
+		});
+		// First tap on image A.
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 });
+		// Navigate to B — the reset-on-image-change disarms the pending tap.
+		root().querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
+		flushSync();
+		fireLoad(2000, 2000); // B paints
+		mockGeometry(root(), OVERFLOW_G);
+		// A single tap on B within the window must NOT pair with A's tap into a toggle.
+		tdown(500, 500, 1, { ts: 1100 });
+		tup(500, 500, 1, { ts: 1100 });
+		expect(scaleOf()).toBe(1);
+	});
+
+	it('touch gestures stay LIVE on a painted thumb during the thumb→original upgrade', () => {
+		// Desktop large image: the thumb decodes and PAINTS (arming gestures), then the
+		// original auto-upgrades in the background (SAME element, SAME token). Gestures
+		// must stay live on the thumb — the accept-gate arms on the thumb decode even
+		// though `decoded` repointed `displaySrc` to the original (the round-2 regression).
+		mountViewer({ images: [sized(IMG_A, 'big', 5000, 5000)] });
+		mockGeometry(root(), OVERFLOW_G);
+		expect(imageSrc()).toContain('variant=thumb-md');
+		fireLoad(1024, 768); // thumb decodes → painted; the original is now requested
+		expect(imageSrc()).not.toContain('variant='); // upgrading (phase loading, same element)
+		// A double-tap DURING the upgrade toggles — gestures are LIVE on the painted thumb.
+		tdown(500, 500, 1, { ts: 1000 });
+		tup(500, 500, 1, { ts: 1000 });
+		tdown(500, 500, 1, { ts: 1100 });
+		tup(500, 500, 1, { ts: 1100 });
+		expect(scaleOf()).toBeGreaterThan(1);
+	});
+
+	it('a mouse press does NOT seize an armed (not-yet-dragging) touch pan', () => {
+		mountPainted();
+		zoomToActual(); // pan room
+		tdown(500, 500, 1); // touch pan ARMED (maybeDrag), not yet dragging, uncaptured
+		// A mouse press mid-arm must be registry-only — not steal ownership onto itself.
+		imageEl().dispatchEvent(pointerEvent('pointerdown', 300, 300, { pointerType: 'mouse', pointerId: 9 }));
+		flushSync();
+		// The touch still owns the pan: its move past threshold pans by its delta.
+		tmove(600, 500, 1);
+		expect(panX()).toBeCloseTo(100);
+	});
+
+	it('a MOUSE pan tolerates the looser bitmapPresent arm (not torn down pre-paint)', () => {
+		mountViewer(); // NOT painted: bitmapPresent true (loading), gesturesArmable false
+		mockGeometry(root(), OVERFLOW_G);
+		const image = imageEl();
+		// A mouse drag engages over the loading (unpainted) image — mouse uses the looser
+		// `bitmapPresent` arm, so it arms where touch would not.
+		root().dispatchEvent(pointerEvent('pointerdown', 500, 500));
+		root().dispatchEvent(pointerEvent('pointermove', 560, 500));
+		flushSync();
+		// The reactive teardown must NOT abort it: only a live TOUCH gesture requires the
+		// paint arm; a mouse pan is left alone (`touchGestureLive()` is false for it).
+		expect(image.classList.contains('panning')).toBe(true);
+	});
+
+	it('a keyboard zoom mid-pinch REBASES the pinch baseline (the next move keeps it)', () => {
+		mountPainted(); // fit
+		tdown(400, 500, 1);
+		tdown(600, 500, 2); // startDist 200, startScale 1
+		tmove(700, 500, 2); // dist 300 → ×1.5
+		expect(scaleOf()).toBeCloseTo(1.5);
+		// A keyboard `+` zooms mid-pinch (hybrid input): `stepZoom` writes `zoom` AND
+		// rebases the pinch baseline to the current scale + founder distance.
+		expect(press('+')).toBe(true);
+		expect(scaleOf()).toBeCloseTo(1.875); // 1.5 × 1.25
+		// The next pinch move continues from the REBASED baseline (startScale 1.875,
+		// startDist 300): widening to 400 → 1.875 · 400/300 = 2.5. Without the rebase it
+		// would recompute from the stale pinch-start baseline (1 · 400/200 = 2.0),
+		// discarding the keyboard zoom.
+		tmove(800, 500, 2);
+		expect(scaleOf()).toBeCloseTo(2.5);
+	});
+
+	it('a pending first tap does NOT survive a same-id reload (no spurious toggle after repaint)', () => {
+		liveProps.images = [image(IMG_A, 'a')];
+		const app = mount(Lightbox, { target: appRoot, props: liveProps });
+		mounted.push(app);
+		flushSync();
+		mockGeometry(root(), OVERFLOW_G);
+		fireLoad(2000, 2000); // painted
+		// First tap.
+		imageEl().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerType: 'touch', pointerId: 1, timeStamp: 1000 }));
+		flushSync();
+		imageEl().dispatchEvent(pointerEvent('pointerup', 500, 500, { pointerType: 'touch', pointerId: 1, buttons: 0, timeStamp: 1000 }));
+		flushSync();
+		// A SAME-ID reload (dimension fill) flips gesturesArmable false with no live
+		// gesture — cancelGesture does not run (bitmapPresent stays true), so the effect's
+		// else-branch must drop the pending tap.
+		liveProps.images = [sized(IMG_A, 'a', 5000, 5000)];
+		flushSync();
+		fireLoad(1024, 768); // repaint
+		mockGeometry(root(), OVERFLOW_G);
+		// A tap now must NOT pair with the pre-reload tap.
+		imageEl().dispatchEvent(pointerEvent('pointerdown', 500, 500, { pointerType: 'touch', pointerId: 1, timeStamp: 1100 }));
+		flushSync();
+		imageEl().dispatchEvent(pointerEvent('pointerup', 500, 500, { pointerType: 'touch', pointerId: 1, buttons: 0, timeStamp: 1100 }));
+		flushSync();
+		expect(scaleOf()).toBe(1);
+		void app;
 	});
 });
 
@@ -3077,9 +3739,11 @@ describe('Lightbox — mobile tap-to-load and zoom-past-fit (TASK-2460)', () => 
 //    over the resized box).
 //  • The `@media (forced-colors: active)` sheet-chrome fill/border being visible.
 //  • The DR-18 `@media (max-width: 768px)` label reveal on the phone.
-//  • Real TOUCH: native pinch still available (no `touch-action` change), no
-//    pointer capture on the sheet chrome, two-pointer input not swallowed — the
-//    3d handoff criterion.
+//  • Real TOUCH (3d / TASK-2518): the image + stage carry `touch-action: none` and
+//    the viewer OWNS pan / pinch / double-tap through pointer handlers — native
+//    pinch is replaced, not preserved. A letterbox touch (the backdrop keeps
+//    `touch-action: auto`) still taps to close, and the sheet chrome is excluded
+//    from the gestures. A real browser (T7 / V3) proves the two-pointer geometry.
 // The class is the SELECTION mechanism (a DOM fact) and the whole assertable
 // surface here: jsdom's getComputedStyle does NOT apply `<style>`-element rules
 // (the existing tap-to-load `pointer-events` assertions only ever assert

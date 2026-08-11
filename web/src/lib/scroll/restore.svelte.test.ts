@@ -168,7 +168,8 @@ describe('scroll restoration — ignores frontmost-viewer and handled input (TAS
 		).toBe(false);
 	});
 
-	// ── touch (still native until 3d, so NOT defaultPrevented — only the origin check catches it) ──
+	// ── touch (the viewer owns touch via POINTER handlers since 3d, but a touchmove is
+	//    still NOT defaultPrevented — only the origin check catches it) ──
 	it('a TOUCHMOVE originating in the frontmost viewer does NOT abort the restore', () => {
 		expect(
 			driveRestore(() => frontmostViewer().dispatchEvent(new Event('touchmove', { bubbles: true })))

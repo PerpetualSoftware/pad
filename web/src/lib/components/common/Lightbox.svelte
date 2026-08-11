@@ -42,6 +42,7 @@
 	import {
 		reset as resetZoom,
 		clampState,
+		clampScale,
 		clampPan,
 		zoomTo,
 		toggleFitOrActual,
@@ -657,6 +658,30 @@
 		shownRenderer === 'raster-image' && !!img && !!loader.displaySrc && loader.phase !== 'error'
 	);
 
+	// THE PAINT-GENERATION SIGNAL (PLAN-2392 phase 3d / TASK-2518). The generation
+	// (`loader.loadToken`) whose CURRENTLY-MOUNTED <img> element has decoded its own
+	// bitmap. Set in the image's `onload` (below) to the live element's `data-gen`.
+	// A plain arm on `loader.painted` is NOT enough: `retry()` re-mounts the image in
+	// `phase: 'loading'` at a FRESH token WITHOUT resetting `painted`, so the module
+	// flag is stale for the new (blank) element — an upgrade-error → retry leaves
+	// `painted` true while the retried element's pixels are blank. Keying off the
+	// per-element generation makes retry-loading inert (gen !== loadToken) while the
+	// thumb→original UPGRADE stays live (same element, same token, already painted).
+	// `$state` (read by the derived below); written only in an event handler, so no
+	// CONVE-1688 self-write.
+	let paintedGen = $state(-1);
+	// Whether TOUCH gestures (pan / pinch / double-tap) may ARM: a decoded bitmap is
+	// on screen for the CURRENT element (round-1/3/4/6 P2). Stricter than
+	// `bitmapPresent` (which is true mid-load and mid-retry): the painted rule is
+	// PRE-FIRST-PAINT-only, so it stays true across a thumb→original upgrade (element
+	// reused, token unchanged) but false during initial-load and retry-loading (the
+	// re-mounted element has not decoded at the new token yet). Over the error overlay
+	// it is false via `bitmapPresent`'s `phase !== 'error'` leg. Mouse/pen keep the
+	// looser `bitmapPresent` arm (their existing behaviour); only touch tightens here.
+	let gesturesArmable = $derived(
+		bitmapPresent && loader.painted && paintedGen === loader.loadToken
+	);
+
 	// RELEASE THE BYTES AT UNMOUNT (TASK-2476). Disposing the loader clears its
 	// state, but the `<img>` Svelte is about to remove keeps its `src` — and thus a
 	// possibly in-flight native request and its decoded bitmap — alive on the
@@ -823,6 +848,45 @@
 	let lastClientX = 0; // last pointer position seen during the gesture
 	let lastClientY = 0;
 
+	// ── Touch pinch + double-tap (PLAN-2392 phase 3d / TASK-2518) ─────────────
+	//
+	// TWO-FINGER PINCH state, keyed to its two FOUNDING pointers. A third-and-beyond
+	// touch is registry-only (its down/up changes nothing here); only a FOUNDER
+	// ending routes the 2→1 degrade. Plain `lets` (imperative gesture internals,
+	// read/written only in the pointer handlers) except `pinching`, which is `$state`
+	// so the template can drop the transform transition during a pinch (as `.panning`
+	// does for a drag).
+	const PINCH_MIN_DIST = 12; // CSS px; below this the two touches are not a pinch
+	let pinching = $state(false);
+	let pinchA: number | null = null; // first founding pointer id
+	let pinchB: number | null = null; // second founding pointer id
+	let pinchStartDist = 0; // founder separation at pinch start / re-entry rebase
+	let pinchStartScale = 1; // zoom.scale at pinch start / re-entry rebase
+	let pinchPrevMidX = 0; // previous midpoint (stage-local px) for the translation term
+	let pinchPrevMidY = 0;
+	let pinchBelowMin = false; // true while curDist < PINCH_MIN_DIST (scale HELD)
+	// The pointer id whose capture we RELEASED on a 1→2 promotion — its
+	// `lostpointercapture` is our own surrender, not a browser theft, and must NOT
+	// tear down the new pinch. Cleared the instant that event is swallowed.
+	let swallowLostCapture: number | null = null;
+
+	// DOUBLE-TAP detector (touch-only, pointerup-timing). `DOUBLE_TAP_MS` /
+	// `DOUBLE_TAP_SLOP_PX` are named + boundary-tested. `lastTap*` records the FIRST
+	// qualifying tap (image-only); a second within the window+slop toggles fit↔actual
+	// at the tap anchor. The detector DISARMS (clears the pending first tap) on drag
+	// arming, pinch arming, a chrome/letterbox target, or a second pointer joining.
+	const DOUBLE_TAP_MS = 300;
+	const DOUBLE_TAP_SLOP_PX = 24;
+	let tapArmed = false; // the current touch press is still a tap candidate
+	let lastTapTime = -1; // timeStamp of the pending first tap; -1 = none (a real
+	// `timeStamp` can legitimately be 0, so 0 cannot be the sentinel)
+	let lastTapX = 0;
+	let lastTapY = 0;
+	// The last pointer type seen on pointerdown — the compat-dblclick dedup reads it:
+	// a browser may synthesize `dblclick` from a touch double-tap, and our own
+	// detector already handled that gesture, so `onDoubleClick` ignores a touch source.
+	let lastPointerType = '';
+
 	// Re-baseline the gesture to the CURRENT zoom + last pointer position. The drag
 	// computes `origin + total delta`, so anything that moves `zoom.{x,y}` from
 	// OUTSIDE the drag — wheel, `+`/`-`/`0` keys, a resize re-clamp — must rebase,
@@ -831,6 +895,27 @@
 	// between pointerdown and the drag threshold would otherwise leave the engage
 	// baseline stale. A no-op when no gesture is in flight.
 	function rebaseDrag(): void {
+		// A live PINCH re-seeds its OWN baseline to the current zoom + live founder
+		// distance / midpoint (TASK-2518): the same external zooms (keys / wheel / a
+		// resize re-clamp) that desync a pan's origin desync a pinch's absolute
+		// startScale and midpoint too, jumping the next pinch move. Skip while converged
+		// below the min-distance (the scale is intentionally HELD there).
+		if (pinching) {
+			const a = pinchA !== null ? registry.get(pinchA) : undefined;
+			const b = pinchB !== null ? registry.get(pinchB) : undefined;
+			if (a && b) {
+				const d = Math.hypot(b.x - a.x, b.y - a.y);
+				if (d >= PINCH_MIN_DIST) {
+					pinchStartDist = d;
+					pinchStartScale = zoom.scale;
+					const rect = stageEl?.getBoundingClientRect();
+					pinchPrevMidX = (a.x + b.x) / 2 - (rect?.left ?? 0);
+					pinchPrevMidY = (a.y + b.y) / 2 - (rect?.top ?? 0);
+					pinchBelowMin = false;
+				}
+			}
+			return;
+		}
 		if (!maybeDrag && !dragging) return;
 		dragOriginX = zoom.x;
 		dragOriginY = zoom.y;
@@ -887,6 +972,7 @@
 		maybeDrag = false;
 		dragging = false;
 		gesturePointerId = null;
+		disarmDoubleTap(); // an aborted gesture is not a tap
 		releaseCapture(e);
 		if (wasDragging) armSuppressClear();
 	}
@@ -906,11 +992,26 @@
 		// this never clears another viewer's registry. V2's pinch/tap-timer/baseline
 		// teardown joins this single path.
 		registry.clear();
-		if (!maybeDrag && !dragging) return;
+		// Drain the double-tap detector UNCONDITIONALLY too, before the no-gesture early
+		// return: a pending first tap must not survive a bitmap loss / navigation and
+		// pair with a tap on the NEXT image (round-1 P2, follow-up). It is cheap and
+		// idempotent when there is nothing pending.
+		disarmDoubleTap();
+		if (!maybeDrag && !dragging && !pinching) return;
 		const wasDragging = dragging;
+		const wasPinching = pinching;
 		maybeDrag = false;
 		dragging = false;
 		gesturePointerId = null;
+		// V2's pinch / double-tap / promotion state joins this ONE canonical full-clear
+		// (TASK-2518): the reactive bitmap-loss teardown, a nav / image change, and a
+		// cancel of the LAST pointer all reach it. Per-pointer degrade (2→1) is the only
+		// path that does NOT full-clear — it rebases to the survivor instead.
+		pinching = false;
+		pinchA = null;
+		pinchB = null;
+		pinchBelowMin = false;
+		swallowLostCapture = null;
 		if (capturedPointerId !== null) {
 			try {
 				rootEl?.releasePointerCapture(capturedPointerId);
@@ -919,7 +1020,309 @@
 			}
 			capturedPointerId = null;
 		}
-		if (wasDragging) armSuppressClear();
+		// Clear a stuck `suppressClick` for a torn-down PINCH too, not only a drag:
+		// `beginPinch` sets it, but a pinch never sets `dragging`, so `wasDragging`
+		// alone would leave it latched — swallowing the next genuine backdrop tap.
+		if (wasDragging || wasPinching) armSuppressClear();
+	}
+
+	// ── shared gesture predicates (TASK-2518) ────────────────────────────────
+	// The chrome/control exclusion carried by pointerdown AND double-click: a press
+	// on a control is that control's, never a pan / zoom. (Wheel uses a NARROWER
+	// list — toolbar+meta only — so it is not folded in here.)
+	function chromeExcluded(e: PointerEvent | MouseEvent): boolean {
+		return !!(e.target as Element | null)?.closest?.(
+			'.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar, .lightbox-meta'
+		);
+	}
+	// Whether a live gesture is a TOUCH one (a pinch, or a single-touch pan) — used by
+	// the reactive teardown to tear a touch gesture down when the paint arm is lost mid
+	// gesture (a same-id reload / nav remounts a blank element while `bitmapPresent`
+	// stays true). A mouse/pen pan tolerates the looser `bitmapPresent` arm, so it is
+	// excluded here.
+	function touchGestureLive(): boolean {
+		if (pinching) return true;
+		if ((maybeDrag || dragging) && gesturePointerId !== null) {
+			return registry.get(gesturePointerId)?.type === 'touch';
+		}
+		return false;
+	}
+	// A TOUCH gesture begins only on a PAINTED-IMAGE hit (round-2 / round-5 P2): the
+	// stage letterbox is `pointer-events: none`, so a letterbox touch lands on the
+	// backdrop (target is the root, not the image) and stays a native tap-to-close —
+	// only a touch whose target is the image itself arms pan / joins a pinch.
+	function touchOnImage(e: PointerEvent): boolean {
+		return (e.target as Element | null)?.closest?.('.lightbox-image') != null;
+	}
+
+	// Arm a single-pointer PAN from `e` — the shared body for the mouse/pen path and
+	// a first touch. Sets the owner + drag baseline; capture waits for the threshold.
+	function armPan(e: PointerEvent): void {
+		maybeDrag = true;
+		dragging = false;
+		gesturePointerId = e.pointerId;
+		suppressClick = false;
+		cancelSuppressClear(); // a fresh gesture — drop any prior pan's pending clear
+		swallowLostCapture = null;
+		// Capture the pan origin from the state at pointer-down, so every move computes
+		// origin + TOTAL delta — never delta-of-delta (the zoom module's "not
+		// associative" note). No `setPointerCapture` yet: capturing here would swallow
+		// dblclick.
+		dragStartClientX = e.clientX;
+		dragStartClientY = e.clientY;
+		lastClientX = e.clientX;
+		lastClientY = e.clientY;
+		dragOriginX = zoom.x;
+		dragOriginY = zoom.y;
+	}
+
+	// ── double-tap detector (touch-only) ──
+	function armTapCandidate(): void {
+		tapArmed = true;
+	}
+	// DISARM: this press is no longer a tap AND any pending first tap is dropped (a
+	// drag, pinch, chrome hit, or second pointer cancels a double-tap in progress).
+	function disarmDoubleTap(): void {
+		tapArmed = false;
+		lastTapTime = -1;
+	}
+	// Evaluate a completed TOUCH tap (a press+up on the image with no drag / pinch).
+	// A second qualifying tap within the window + slop toggles fit↔actual at the tap
+	// anchor; otherwise this tap becomes the pending first one.
+	function evalDoubleTap(e: PointerEvent): void {
+		const el = rootEl;
+		if (!el || !pointerGatesOpen(el) || !gesturesArmable) return;
+		const rect = stageEl?.getBoundingClientRect();
+		const g = readGeometry();
+		if (!rect || !g) return;
+		const t = e.timeStamp;
+		if (
+			lastTapTime >= 0 &&
+			t - lastTapTime <= DOUBLE_TAP_MS &&
+			Math.hypot(e.clientX - lastTapX, e.clientY - lastTapY) <= DOUBLE_TAP_SLOP_PX
+		) {
+			const anchor = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+			zoom = toggleFitOrActual(zoom, anchor, g);
+			lastTapTime = -1; // consumed — the pair is spent, not a founder for a third tap
+		} else {
+			lastTapTime = t;
+			lastTapX = e.clientX;
+			lastTapY = e.clientY;
+		}
+	}
+
+	// ── touch pointerdown: pan arm / pinch promotion / third-and-beyond ──
+	function onTouchDown(e: PointerEvent): void {
+		const el = rootEl;
+		const gatesOpen = !!el && pointerGatesOpen(el);
+		const armable = !chromeExcluded(e) && touchOnImage(e) && gesturesArmable && gatesOpen;
+
+		// A live NON-touch (mouse/pen) gesture owns the surface — a touch is
+		// registry-only and must not disturb it (the existing "touch can't move/end a
+		// mouse drag" contract).
+		if (
+			(maybeDrag || dragging) &&
+			gesturePointerId !== null &&
+			registry.get(gesturePointerId)?.type !== 'touch'
+		) {
+			disarmDoubleTap();
+			return;
+		}
+		// Already a two-founder pinch → third-and-beyond: registry-only, no effect.
+		if (pinching) {
+			disarmDoubleTap();
+			return;
+		}
+		// A second touch over an existing single-touch pan → maybe PROMOTE to pinch.
+		if (
+			(maybeDrag || dragging) &&
+			gesturePointerId !== null &&
+			gesturePointerId !== e.pointerId &&
+			registry.get(gesturePointerId)?.type === 'touch'
+		) {
+			if (armable) tryPromoteToPinch(e);
+			else disarmDoubleTap(); // second finger on letterbox/chrome — stays a pan
+			return;
+		}
+		// First touch.
+		if (!armable) {
+			// Letterbox / chrome / not-yet-painted: arm nothing (the press falls through
+			// to backdrop close, a control, or the tap-to-load button). Not a tap either.
+			disarmDoubleTap();
+			return;
+		}
+		// Supersede a stale armed owner (its off-root up was never delivered) — mirrors
+		// the mouse reconcile.
+		if (gesturePointerId !== null && gesturePointerId !== e.pointerId) {
+			registry.delete(gesturePointerId);
+		}
+		armPan(e);
+		armTapCandidate();
+	}
+
+	// 1→2 PROMOTION: a second image touch joins a single-touch pan. Surrender the
+	// pan's capture (swallowing its own lostpointercapture) and seed the pinch from
+	// BOTH live points — never A's origin, or the pinch would jump.
+	function tryPromoteToPinch(e: PointerEvent): void {
+		const ownerId = gesturePointerId;
+		if (ownerId === null) return;
+		const a = registry.get(ownerId);
+		const b = registry.get(e.pointerId);
+		if (!a || !b) {
+			disarmDoubleTap();
+			return;
+		}
+		// Below the pinch threshold the two touches never become a pinch (the second
+		// stays registry-only; the owner keeps its single-touch pan).
+		if (Math.hypot(b.x - a.x, b.y - a.y) < PINCH_MIN_DIST) {
+			disarmDoubleTap();
+			return;
+		}
+		if (capturedPointerId !== null) {
+			swallowLostCapture = capturedPointerId;
+			try {
+				rootEl?.releasePointerCapture(capturedPointerId);
+			} catch {
+				// already released — ignore.
+			}
+			capturedPointerId = null;
+		}
+		maybeDrag = false;
+		dragging = false;
+		gesturePointerId = null;
+		disarmDoubleTap(); // a second pointer joined
+		beginPinch(ownerId, e.pointerId, a, b);
+	}
+
+	// Seed the pinch baseline from two live points (a promotion, above). Callers
+	// guarantee the separation is >= PINCH_MIN_DIST.
+	function beginPinch(
+		idA: number,
+		idB: number,
+		a: { x: number; y: number },
+		b: { x: number; y: number }
+	): void {
+		pinchA = idA;
+		pinchB = idB;
+		pinchStartDist = Math.hypot(b.x - a.x, b.y - a.y);
+		pinchStartScale = zoom.scale;
+		const rect = stageEl?.getBoundingClientRect();
+		const rl = rect?.left ?? 0;
+		const rt = rect?.top ?? 0;
+		pinchPrevMidX = (a.x + b.x) / 2 - rl;
+		pinchPrevMidY = (a.y + b.y) / 2 - rt;
+		pinchBelowMin = false;
+		pinching = true;
+		suppressClick = true; // a pinch is not a tap-to-close
+		cancelSuppressClear();
+	}
+
+	// A pinch move — one of the two founders moved (its live position is already in
+	// the registry). Compose ONE candidate state at the FINAL scale and clamp ONCE
+	// (round-3 P1): the anchor-zoom offset around the PREVIOUS midpoint PLUS the
+	// midpoint translation, so the image point under the midpoint stays under it.
+	function onPinchMove(e: PointerEvent): void {
+		if (e.pointerId !== pinchA && e.pointerId !== pinchB) return; // extra: registry only
+		const el = rootEl;
+		if (!el || !pointerGatesOpen(el) || !bitmapPresent) {
+			cancelGesture();
+			return;
+		}
+		const a = pinchA !== null ? registry.get(pinchA) : undefined;
+		const b = pinchB !== null ? registry.get(pinchB) : undefined;
+		if (!a || !b) {
+			cancelGesture();
+			return;
+		}
+		const g = readGeometry();
+		const rect = stageEl?.getBoundingClientRect();
+		if (!g || !rect) return;
+		const curDist = Math.hypot(b.x - a.x, b.y - a.y);
+		const midX = (a.x + b.x) / 2 - rect.left;
+		const midY = (a.y + b.y) / 2 - rect.top;
+		// Scale: ABSOLUTE from the baseline (startScale * curDist/startDist), with the
+		// PINCH_MIN_DIST guard. Below the threshold the ratio update is SKIPPED (scale
+		// HELD; the midpoint translation still applies), preventing a degenerate
+		// near-zero distance from jumping the scale. On re-crossing upward, REBASE the
+		// baseline to the current distance + HELD scale so the absolute ratio does not
+		// snap back toward the original.
+		let targetScale = zoom.scale;
+		if (curDist < PINCH_MIN_DIST) {
+			pinchBelowMin = true;
+		} else {
+			if (pinchBelowMin) {
+				pinchStartDist = curDist;
+				pinchStartScale = zoom.scale;
+				pinchBelowMin = false;
+			}
+			targetScale = pinchStartScale * (curDist / pinchStartDist);
+		}
+		// Clamp the SCALE first, then build the offset from the CLAMPED scale (as
+		// `zoomTo` does): `k` must be the ratio actually applied, or spreading further
+		// once max scale is reached would keep translating `x/y` while the visible scale
+		// is pinned — a drift at the ceiling.
+		const nextScale = clampScale(targetScale, g);
+		// Offset: anchor-zoom around the PREVIOUS midpoint (keeping its image point
+		// fixed as we scale) PLUS the midpoint delta (moving that point to the CURRENT
+		// midpoint). `zoom.scale` is >= FIT, never a zero divide. Clamp PAN once at the
+		// new scale — clamping at the OLD scale would zero the translation at fit and
+		// lose midpoint tracking.
+		const centre = stageCenter(g);
+		const ux = pinchPrevMidX - centre.x;
+		const uy = pinchPrevMidY - centre.y;
+		const k = nextScale / zoom.scale;
+		const x = ux - k * (ux - zoom.x) + (midX - pinchPrevMidX);
+		const y = uy - k * (uy - zoom.y) + (midY - pinchPrevMidY);
+		zoom = clampState({ scale: nextScale, x, y }, g);
+		pinchPrevMidX = midX;
+		pinchPrevMidY = midY;
+	}
+
+	// 2→1 DEGRADE: a founder ended while its co-founder is still down. Continue as a
+	// single-touch pan rebased to the SURVIVOR's current position — no offset jump,
+	// because the drag origin is the CURRENT zoom and the baseline the survivor's live
+	// point (the next move is a pure delta from here).
+	function degradeToPan(survivorId: number): void {
+		const s = registry.get(survivorId);
+		pinching = false;
+		pinchA = null;
+		pinchB = null;
+		pinchBelowMin = false;
+		// Do NOT clear `swallowLostCapture` here: the promotion's deliberate release may
+		// still be in flight, and if that founder is now the SURVIVOR its delayed
+		// `lostpointercapture` would otherwise tear down this fresh pan. It is one-shot
+		// (cleared when swallowed) and reset by `armPan` / `cancelGesture` on the next
+		// gesture, so leaving it set across the degrade is safe.
+		if (!s) {
+			cancelGesture();
+			return;
+		}
+		gesturePointerId = survivorId;
+		maybeDrag = true;
+		dragging = true; // already past threshold — it was a pinch
+		suppressClick = true;
+		cancelSuppressClear();
+		dragStartClientX = s.x;
+		dragStartClientY = s.y;
+		lastClientX = s.x;
+		lastClientY = s.y;
+		dragOriginX = zoom.x;
+		dragOriginY = zoom.y;
+		try {
+			rootEl?.setPointerCapture(survivorId);
+			capturedPointerId = survivorId;
+		} catch {
+			capturedPointerId = null; // capture unsupported/failed — pan still works
+		}
+	}
+
+	// A founder's up/cancel during a pinch: degrade to the surviving FOUNDER if it is
+	// still down (extras never route this), else full-clear. The ending pointer was
+	// already removed from the registry by the caller.
+	function endPinchPointer(e: PointerEvent): void {
+		const other = e.pointerId === pinchA ? pinchB : pinchA;
+		if (other !== null && registry.has(other)) degradeToPan(other);
+		else cancelGesture();
 	}
 
 	// TEST-ONLY (TASK-2517). The pointer registry is inert plumbing in V1, so a
@@ -938,13 +1341,25 @@
 		// delete by id before their own guards, so a press that never arms (touch,
 		// chrome, gated, no-bitmap) still drains cleanly (round-2 P1).
 		registry.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
-		// V1 (TASK-2517): a TOUCH press enters the registry but arms NO drag and takes
-		// NO capture — touch pan is arbitration-unsound under `touch-action: auto` (the
-		// browser can claim the gesture and `pointercancel` mid-stream), so it is V2's.
-		// Taps still work: arming nothing, this press falls through to backdrop
-		// `onclick` (close), the chrome exclusion, or the deferred tap-to-load button —
-		// none of which the registry entry disturbs.
-		if (e.pointerType === 'touch') return;
+		lastPointerType = e.pointerType;
+		// TOUCH now has a full gesture surface (TASK-2518): pan on the painted image,
+		// two-finger pinch, and double-tap — all routed through `onTouchDown`, which
+		// arms only on painted-image hits (a letterbox touch stays a native tap-to-close)
+		// and owns the pinch promotion / third-and-beyond policy. The mouse/pen path
+		// below is UNCHANGED.
+		if (e.pointerType === 'touch') {
+			onTouchDown(e);
+			return;
+		}
+		// A live TOUCH gesture (a pinch, or an armed / engaged single-touch pan) OWNS the
+		// surface — a mouse/pen press is registry-only and must not seize it (the mirror
+		// of `onTouchDown`'s non-touch-owner guard, and stronger than the `dragging`-only
+		// guard below, which would miss an armed-but-not-yet-dragging touch or a pinch).
+		if (touchGestureLive()) return;
+		// A mouse/pen press ends any pending touch double-tap (TASK-2518): the user
+		// switched input device, so a touch tap before it must not pair with one after
+		// across the interleaving click.
+		disarmDoubleTap();
 		// A second pointer (a pen, say) pressing mid-drag must NOT seize the gesture:
 		// re-arming below would replace `gesturePointerId` and hand the pan to the
 		// interloper. An active drag is owned until its own pointer releases.
@@ -973,7 +1388,7 @@
 		// (the house pattern in ItemGraph excludes its interactive overlays the same
 		// way). Retry sits over the (broken) stage in the error state, so it needs
 		// the same exclusion as the always-present chrome.
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar, .lightbox-meta')) return;
+		if (chromeExcluded(e)) return;
 		// No decoded bitmap to pan (the mobile `deferred` placeholder shows no
 		// `<img>`) — do NOT arm a drag, so the gesture stays fully inert instead of
 		// capturing the pointer and latching `dragging` for a pan that can never
@@ -981,24 +1396,23 @@
 		if (!bitmapPresent) return;
 		const el = rootEl;
 		if (!el || !pointerGatesOpen(el)) return; // START gate
-		maybeDrag = true;
-		dragging = false;
-		gesturePointerId = e.pointerId;
-		suppressClick = false;
-		cancelSuppressClear(); // a fresh gesture — drop any prior pan's pending clear
-		dragStartClientX = e.clientX;
-		dragStartClientY = e.clientY;
-		lastClientX = e.clientX;
-		lastClientY = e.clientY;
-		// Capture the pan origin from the state at pointer-down, so every move
-		// computes origin + TOTAL delta — never delta-of-delta, which the zoom
-		// module warns loses the slack at a bound (its "gesture is not associative"
-		// note). No `setPointerCapture` yet: capturing here would swallow dblclick.
-		dragOriginX = zoom.x;
-		dragOriginY = zoom.y;
+		armPan(e);
 	}
 
 	function onPointerMove(e: PointerEvent) {
+		// Keep the live registry position current for ANY tracked pointer — pinch reads
+		// both founders' live positions from here, and a 2→1 degrade rebases to the
+		// survivor's registry position (TASK-2518).
+		const entry = registry.get(e.pointerId);
+		if (entry) {
+			entry.x = e.clientX;
+			entry.y = e.clientY;
+		}
+		// A live pinch: a founder move recomputes; an extra touch is registry-only.
+		if (pinching) {
+			onPinchMove(e);
+			return;
+		}
 		if (!maybeDrag) return;
 		if (e.pointerId !== gesturePointerId) return; // only the owning pointer drives
 		const el = rootEl;
@@ -1036,6 +1450,7 @@
 			// can't fire mid-pan and unsuppress us.
 			suppressClick = true;
 			cancelSuppressClear();
+			disarmDoubleTap(); // a drag is not a tap — cancel any pending double-tap
 			capturedPointerId = e.pointerId;
 			try {
 				(e.currentTarget as Element).setPointerCapture(e.pointerId);
@@ -1055,6 +1470,12 @@
 		registry.delete(e.pointerId); // hygiene FIRST — before the owner guards below,
 		// so a foreign / never-armed pointer (touch, chrome, gated) still drains and
 		// never leaks (round-2 P1).
+		// A founder lifting during a pinch DEGRADES to the survivor (2→1); an extra
+		// touch's up is registry-only (already drained above). Not a tap, either.
+		if (pinching) {
+			if (e.pointerId === pinchA || e.pointerId === pinchB) endPinchPointer(e);
+			return;
+		}
 		if (!maybeDrag && !dragging) return; // not a gesture we started
 		if (e.pointerId !== gesturePointerId) return; // a foreign pointer can't end ours
 		const el = rootEl;
@@ -1072,6 +1493,7 @@
 			abortGesture(e);
 			return;
 		}
+		const wasTap = !dragging && e.pointerType === 'touch' && tapArmed;
 		maybeDrag = false;
 		gesturePointerId = null;
 		if (dragging) {
@@ -1080,22 +1502,47 @@
 			// Keep the click this pan produces swallowed, then clear on the next tick
 			// so a later genuine click is unaffected.
 			armSuppressClear();
+		} else if (wasTap) {
+			// A touch TAP on the image (armed a pan, never dragged) — the double-tap
+			// detector. A single tap on the image has no action, so this introduces no
+			// close-delay; a second qualifying tap toggles fit↔actual (TASK-2518).
+			evalDoubleTap(e);
 		}
+		tapArmed = false;
 	}
 
 	function onPointerCancel(e: PointerEvent) {
-		registry.delete(e.pointerId); // hygiene FIRST — under `touch-action: auto` the
-		// browser claims and `pointercancel`s touches ROUTINELY in the V1 window; a
-		// literal owner-guarded early-return would leak every one of them (round-2 P1).
-		if (!maybeDrag && !dragging) return; // no gesture to cancel
+		registry.delete(e.pointerId); // hygiene FIRST — the browser claims and
+		// `pointercancel`s touches ROUTINELY; a literal owner-guarded early-return would
+		// leak every one of them (round-2 P1).
+		// PER-POINTER routing (round-3 P1): a founder cancel with a surviving co-founder
+		// is the 2→1 DEGRADE; an extra touch's cancel is registry-only.
+		if (pinching) {
+			if (e.pointerId === pinchA || e.pointerId === pinchB) endPinchPointer(e);
+			return;
+		}
+		if (!maybeDrag && !dragging) {
+			tapArmed = false; // a lone touch tap canceled — drop the candidate
+			return;
+		}
 		if (e.pointerId !== gesturePointerId) return;
 		abortGesture(e);
 	}
 
 	function onLostPointerCapture(e: PointerEvent) {
+		// A 1→2 promotion RELEASED the pan owner's capture deliberately — swallow that
+		// self-surrender so it does not tear down the new pinch, and KEEP the founder in
+		// the registry (deleting it would break the pinch, which reads its live position).
+		if (swallowLostCapture !== null && e.pointerId === swallowLostCapture) {
+			swallowLostCapture = null;
+			return;
+		}
 		registry.delete(e.pointerId); // reconcile the registry on capture loss too (a
 		// real pointerup already deleted it, so this is a no-op there; it matters for an
 		// OS/browser-stolen capture that arrives with no up).
+		// Pinch founders are not captured, so a capture-loss during a pinch is nothing to
+		// us (the only capture in flight was the just-swallowed promotion release).
+		if (pinching) return;
 		if (!maybeDrag && !dragging) return; // no gesture; ignore a stray capture-loss
 		if (e.pointerId !== gesturePointerId) return;
 		// Capture taken away (OS/browser, or our own release) — the gesture is over.
@@ -1118,10 +1565,15 @@
 		// gesture is either a drag or a double-click, never both. Same swallow the
 		// backdrop click consults.
 		if (suppressClick) return;
+		// COMPAT-DBLCLICK DEDUP (TASK-2518): a browser may synthesize `dblclick` from a
+		// touch double-tap, which our own pointerup-timing detector already handled — so
+		// a touch-sourced dblclick would toggle a SECOND time. Ignore it; only a genuine
+		// mouse/pen double-click reaches the toggle here.
+		if (lastPointerType === 'touch') return;
 		// A double-click ON a control (close / nav / retry) is that control's, not a
 		// zoom toggle — without this, double-clicking Next navigates twice AND
 		// toggles, or a double-click on Retry toggles zoom on the broken stage.
-		if ((e.target as Element | null)?.closest?.('.lightbox-close, .lightbox-nav, .lightbox-retry, .lightbox-tap-load, .lightbox-toolbar, .lightbox-meta')) return;
+		if (chromeExcluded(e)) return;
 		// Inert with no decoded bitmap (deferred placeholder / error UI) — the same
 		// guard the keys and wheel use (TASK-2461).
 		if (!bitmapPresent) return;
@@ -1389,6 +1841,10 @@
 		// image. Both are `$state` this effect never reads, so no self-invalidation.
 		toolbarBusy = false;
 		toolbarError = null;
+		// Drop any pending FIRST double-tap too (TASK-2518): the shown image changed, so
+		// a tap on the PREVIOUS image must not pair with one on this new image into a
+		// spurious toggle. A plain-let write, so no self-invalidation.
+		disarmDoubleTap();
 		// A drag live ACROSS the image change (arrow-nav mid-drag) is left with a
 		// stale baseline, and deliberately so: `resetZoom` is fit, where `clampPan`
 		// pins the pan to 0 for ANY baseline, so the next move can't jump; and the
@@ -1439,15 +1895,26 @@
 	// Drop the load on unmount (close) — one teardown, no dependencies.
 	$effect(() => () => loader.dispose());
 
-	// Reactively abort a live gesture the instant the bitmap goes away (TASK-2476).
-	// The pointer handlers catch a flip that arrives WITH an event (move / up), but
-	// the arm can flip to fallback from a PROP change while the pointer is held
-	// still — no event to carry the abort. Reads `bitmapPresent` (tracked) and
-	// tears the gesture down in `untrack` (it writes `dragging` etc., never read
-	// here), so it cannot self-invalidate (CONVE-1688).
+	// Reactively abort a live gesture the instant the bitmap goes away (TASK-2476), or
+	// the instant a TOUCH gesture's paint arm is lost (TASK-2518). The pointer handlers
+	// catch a flip that arrives WITH an event (move / up), but the arm can flip from a
+	// PROP change while the pointer is held still — no event to carry the abort. Two
+	// triggers: `!bitmapPresent` tears down ANY gesture (mouse included), and — when the
+	// bitmap is still present but `gesturesArmable` is false (a same-id reload / nav
+	// remounted a blank element mid-gesture) — a live TOUCH gesture too, since touch
+	// requires the painted element while a mouse pan tolerates the looser arm. Reads
+	// `bitmapPresent` + `gesturesArmable` (tracked) and tears down in `untrack` (it
+	// writes `dragging` etc., never read here), so it cannot self-invalidate (CONVE-1688).
 	$effect(() => {
-		if (bitmapPresent) return;
-		untrack(() => cancelGesture());
+		if (bitmapPresent && gesturesArmable) return;
+		untrack(() => {
+			if (!bitmapPresent || touchGestureLive()) cancelGesture();
+			// The paint arm is lost with no live gesture to tear down (e.g. a SAME-ID
+			// reload — dimension fill — which keeps `bitmapPresent` true so cancelGesture
+			// does not run): drop any pending FIRST tap, so a tap before the reload cannot
+			// pair with one after the element repaints into a spurious toggle (TASK-2518).
+			else disarmDoubleTap();
+		});
 	});
 
 	// Zoom-past-fit is the mobile THUMB cell's trigger to fetch the original
@@ -1858,13 +2325,22 @@
 					use:releaseImg
 					class="lightbox-image"
 					class:panning={dragging}
+					class:pinching={pinching}
 					src={loader.displaySrc}
 					data-gen={loader.loadToken}
 					alt={img.alt || 'Attachment'}
 					draggable="false"
 					onload={(e) => {
 						const el = e.currentTarget as HTMLImageElement;
-						loader.decoded(el.naturalWidth, el.naturalHeight, el.getAttribute('src') ?? '', Number(el.dataset.gen));
+						const decodedSrc = el.getAttribute('src') ?? '';
+						const gen = Number(el.dataset.gen);
+						// Snapshot the loader's fence inputs BEFORE `decoded()` runs — it
+						// MUTATES `displaySrc`/`loadToken` (the desktop thumb→original upgrade
+						// repoints `displaySrc` to the original), so comparing against them
+						// afterwards would reject the very thumb it just accepted.
+						const srcBefore = loader.displaySrc;
+						const tokenBefore = loader.loadToken;
+						loader.decoded(el.naturalWidth, el.naturalHeight, decodedSrc, gen);
 						// RE-CLAMP on a fresh bitmap. A same-id reload can change the geometry
 						// (an async dimension fill swaps a large original for a smaller thumb,
 						// lowering actualScale and MAX_SCALE), stranding the current scale above
@@ -1877,6 +2353,16 @@
 						// drive the current zoom. Event handler, so the `zoom` read/write is not a
 						// CONVE-1688 self-write.
 						if (el === imgEl) {
+							// Mark the paint generation ONLY when this decode was ACCEPTED — the
+							// SAME fence `decoded` applies, evaluated against the PRE-decode
+							// snapshot (round-3 P1). A stale / superseded-src load on the live
+							// element (a mid-swap retry race) must not arm touch gestures on pixels
+							// that are not the current request's; but a legitimately-accepted thumb
+							// MUST arm (gestures live on the thumb→original upgrade), which the
+							// snapshot preserves even though `decoded` repointed `displaySrc`.
+							if (decodedSrc !== '' && decodedSrc === srcBefore && gen === tokenBefore) {
+								paintedGen = gen;
+							}
 							const g = readGeometry();
 							if (g) {
 								zoom = clampState(zoom, g);
@@ -2084,11 +2570,19 @@
 		/*
 		 * The empty letterbox around the image is transparent to pointer events, so
 		 * a click there reaches the backdrop and closes — the pre-zoom behaviour.
-		 * The image below re-enables them. Deliberately NOT `touch-action: none`
-		 * here: that would kill native pinch before 3d's handler exists, leaving
-		 * phone users no zoom at all in the interval (out of TASK-2455's scope).
+		 * The image below re-enables them.
+		 *
+		 * `touch-action: none` NOW (PLAN-2392 phase 3d / TASK-2518): the viewer owns
+		 * touch pan / pinch / double-tap through pointer handlers, so native touch
+		 * behaviours (scroll, pinch-zoom, double-tap-zoom) must not also fire. The
+		 * LETTERBOX RULE: because the stage is `pointer-events: none`, a letterbox
+		 * touch lands on the BACKDROP — which keeps `touch-action: auto` — so a
+		 * letterbox touch stays a native tap-to-close and never pans; touch GESTURES
+		 * begin only on painted-image hits. A blanket `none` on the backdrop would
+		 * kill scroll arbitration for the whole layer with no gesture to serve it.
 		 */
 		pointer-events: none;
+		touch-action: none;
 	}
 
 	.lightbox-image {
@@ -2101,12 +2595,16 @@
 		pointer-events: auto;
 		transform-origin: center;
 		transition: transform 0.15s ease-out;
+		/* The viewer owns touch on the image — pan / pinch / double-tap via pointer
+		   handlers (TASK-2518); native touch behaviours must not compete. */
+		touch-action: none;
 	}
 
-	/* While DRAGGING, the image must track the pointer 1:1 — the easing transition
-	   would make it lag behind the cursor (TASK-2458). Discrete zoom (keys / wheel /
-	   double-click) keeps the transition. */
-	.lightbox-image.panning {
+	/* While DRAGGING or PINCHING, the image must track the pointer(s) 1:1 — the
+	   easing transition would make it lag behind (TASK-2458 / TASK-2518). Discrete
+	   zoom (keys / wheel / double-click / double-tap) keeps the transition. */
+	.lightbox-image.panning,
+	.lightbox-image.pinching {
 		transition: none;
 	}
 
