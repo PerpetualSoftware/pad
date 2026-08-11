@@ -27,6 +27,31 @@ const MAX_TOASTS = 5;
 const MAX_HISTORY = 20;
 const DEFAULT_DURATION = 3000;
 
+/**
+ * Test-surface kill switch for CROSS-ACTOR notification toasts (BUG-2334).
+ *
+ * The e2e suite shares one pad instance and one workspace, so items seeded by
+ * OTHER concurrently-running specs arrive over SSE and stack "X created: …"
+ * info toasts bottom-right — directly over bottom-right UI (the graph drawer's
+ * detail card), turning unrelated specs' clicks into a race. The shared e2e
+ * fixture sets this flag via addInitScript; the ONE call site that shows a
+ * toast for another actor's SSE event checks it.
+ *
+ * Scope is deliberately narrow: only toasts announcing ANOTHER actor's work is
+ * gated. Toasts the page earns with its own actions (copy results, errors,
+ * undo) are untouched, so specs still exercise — and can still be broken by —
+ * the real toast surface. Production never sets the flag; the e2e control leg
+ * pins the flag-off behavior so the product toast can't silently regress.
+ */
+export function quietExternalToasts(): boolean {
+	try {
+		return globalThis.localStorage?.getItem('pad:e2e-quiet-external-toasts') === '1';
+	} catch {
+		// Storage unavailable (privacy mode, sandboxed iframe): behave like prod.
+		return false;
+	}
+}
+
 let toasts = $state<Toast[]>([]);
 let history = $state<HistoryEntry[]>([]);
 let unreadCount = $state(0);

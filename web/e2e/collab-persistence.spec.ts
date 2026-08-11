@@ -1,4 +1,4 @@
-import { test, expect, type SuiteFixture } from './fixtures';
+import { test, expect, type SuiteFixture, quietCrossActorToasts } from './fixtures';
 import type { Browser, Page } from '@playwright/test';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
 
@@ -124,6 +124,10 @@ async function openSyncedEditor(
 		baseURL: fixture.baseURL,
 		extraHTTPHeaders: { Authorization: `Bearer ${fixture.apiToken}` }
 	});
+	// Self-built context: the shared fixture's cross-actor toast silence
+	// (BUG-2334) doesn't apply automatically — install it explicitly, this
+	// page lives inside the workspace and receives other specs' SSE traffic.
+	await quietCrossActorToasts(context);
 	const page = await context.newPage();
 	await browserLogin(page);
 	await page.goto(path);
