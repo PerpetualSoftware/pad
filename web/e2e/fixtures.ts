@@ -39,6 +39,26 @@ async function applyTokenAuth(context: BrowserContext, fixture: SuiteFixture) {
 	});
 }
 
+/**
+ * BUG-2334: silence CROSS-ACTOR "X created: …" SSE toasts in a context.
+ * Specs share one workspace, so other specs' seeding otherwise stacks
+ * toasts over bottom-right UI and races unrelated clicks. Page-own toasts
+ * are unaffected (see quietExternalToasts in the toast store). Applied to
+ * every built-in `context`; specs that build their OWN workspace-visiting
+ * contexts (browser.newContext) must call this too —
+ * sse-toast-quiet.spec.ts's control leg is the one deliberate exception,
+ * pinning the flag-off product behavior.
+ */
+export async function quietCrossActorToasts(context: BrowserContext): Promise<void> {
+	await context.addInitScript(() => {
+		try {
+			localStorage.setItem('pad:e2e-quiet-external-toasts', '1');
+		} catch {
+			// storage unavailable — fall through to prod behavior
+		}
+	});
+}
+
 // Standalone helper for the occasional spec that wants to build its
 // own isolated context (e.g. to assert unauthed behaviour).
 export function suiteFixture(): SuiteFixture {
@@ -52,6 +72,7 @@ export const test = base.extend<{ fixture: SuiteFixture }>({
 	context: async ({ context }, run) => {
 		const fixture = loadSuiteFixture();
 		await applyTokenAuth(context, fixture);
+		await quietCrossActorToasts(context);
 		await run(context);
 	},
 	fixture: async ({}, run) => {

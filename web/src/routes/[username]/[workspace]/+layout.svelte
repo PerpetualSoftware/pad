@@ -7,7 +7,7 @@
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { api } from '$lib/api/client';
-	import { toastStore } from '$lib/stores/toast.svelte';
+	import { toastStore, quietExternalToasts } from '$lib/stores/toast.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -162,7 +162,10 @@
 					} catch {
 						// Item might not be fetchable by event ID, refresh collection
 					}
-					if (isExternal) {
+					// `quietExternalToasts` is the BUG-2334 e2e kill switch for exactly
+					// this toast — the one place another actor's SSE traffic becomes a
+					// click-intercepting surface. See its doc in the toast store.
+					if (isExternal && !quietExternalToasts()) {
 						const who = event.actor === 'agent' ? 'Agent' : (event.actor_name || 'CLI');
 						const link = event.collection ? `/${username}/${wsSlug}/${event.collection}/${event.item_id}` : undefined;
 						toastStore.show(`${who} created: ${event.title}`, 'info', 4000, link);
