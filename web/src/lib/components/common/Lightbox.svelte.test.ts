@@ -4045,9 +4045,10 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 	}
 
 	it('an authoritative metadata 404 (missing) for the shown image advances to a survivor', async () => {
-		// A (the OPENED entry) is probed via the forced revalidation (T6); B (reached by
-		// the advance) via the plain fetch. Both mocks return the same per-uuid answer
-		// so A 404s wherever its probe is dispatched from.
+		// A (the OPENED entry) and B (reached by the advance) are BOTH probed via the
+		// forced revalidation — 3c-iii U3 forces one no-store probe per (open, entry)
+		// pair, advances included. Both mocks return the same per-uuid answer anyway, so
+		// A 404s wherever its probe is dispatched from.
 		const perUuid = (_ws: unknown, uuid: string) =>
 			Promise.resolve(
 				uuid === IMG_A
@@ -4086,8 +4087,8 @@ describe('Lightbox — deletion subscription (DR-5c / TASK-2477)', () => {
 		// Every image 404s: A advances to B, B's own probe 404s and advances to C,
 		// C's 404 empties the set → close. The effect re-runs once per subject change
 		// (each HEAD is async), so the cascade settles rather than looping. A (opened)
-		// probes via the forced revalidation, B/C (advanced-to) via the plain fetch —
-		// both mocks 404.
+		// AND B/C (advanced-to) all probe via the forced revalidation (3c-iii U3 forces
+		// per (open, entry) pair) — both mocks 404 regardless.
 		metaFetch.mockResolvedValue({ status: 'missing' });
 		metaRevalidate.mockResolvedValue({ status: 'missing' });
 		mountViewer({

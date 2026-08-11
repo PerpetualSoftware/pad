@@ -226,12 +226,12 @@ describe('AttachmentSurfaceHost — the surface channel (TASK-2487 / TASK-2490)'
 		expect(metaFetch).not.toHaveBeenCalled();
 	});
 
-	it('arrowing between entries issues NO additional forced probe (only the open does)', async () => {
-		// The guarantee covers the OPENED entry, not each navigation step (3c-iii owns
-		// that). Opening force-revalidates the first entry once; arrowing keeps the
-		// nonce, so it never forces again — the sibling here has an INCOMPLETE seed
-		// (null size), so it takes the PLAIN (cacheable) HEAD, proving navigation is on
-		// the non-forced path rather than simply not probing.
+	it('arrowing to a fresh entry forces one no-store probe of the arrival (3c-iii U3), while arrowing back does not re-probe', async () => {
+		// INVERTS the T6-era expectation. T6 forced only the OPENED entry; 3c-iii U3
+		// forces one `no-store` probe per (open, entry) pair, so arrowing to a
+		// not-yet-probed sibling revalidates it too (never the plain seed-fill fetch,
+		// even though the sibling here has an INCOMPLETE seed). Arrowing BACK to the
+		// already-probed first entry takes the fast path — no third probe.
 		mountHost(propsA);
 		notifyAttachmentSurfaceOpen(
 			surfaceEvent({ images: [img(ATT_A), img(ATT_B, { alt: 'second', size_bytes: null })] })
@@ -240,12 +240,18 @@ describe('AttachmentSurfaceHost — the surface channel (TASK-2487 / TASK-2490)'
 		expect(metaRevalidate).toHaveBeenCalledTimes(1);
 		expect(metaFetch).not.toHaveBeenCalled();
 
-		// Arrow to the incomplete sibling — a plain seed-fill fetch, NOT a forced
-		// revalidation: the forced-probe count stays at the single open.
+		// Arrow to the sibling — a forced no-store revalidation of the arrival, NOT the
+		// plain cacheable HEAD.
 		document.body.querySelector<HTMLButtonElement>('.lightbox-nav.next')!.click();
 		await settle();
-		expect(metaRevalidate).toHaveBeenCalledTimes(1); // still just the open's
-		expect(metaFetch).toHaveBeenCalledTimes(1); // the sibling's plain HEAD
+		expect(metaRevalidate).toHaveBeenCalledTimes(2); // the arrival's forced probe
+		expect(metaRevalidate.mock.calls[1][3]).toEqual({ cache: 'no-store' });
+		expect(metaFetch).not.toHaveBeenCalled(); // never the plain seed-fill HEAD
+
+		// Arrow BACK to the first entry — already probed under this nonce → no re-probe.
+		document.body.querySelector<HTMLButtonElement>('.lightbox-nav.prev')!.click();
+		await settle();
+		expect(metaRevalidate).toHaveBeenCalledTimes(2);
 	});
 
 	it('keeps the CAPTURED workspace from the event, not any host default', async () => {

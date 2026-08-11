@@ -71,12 +71,14 @@ export interface SurfaceMetadataAddress {
 	/** Host revalidate signal — a bump forces an invalidate-then-fetch (DR-14). */
 	revalidateToken: number;
 	/**
-	 * Per-OPEN nonce (PLAN-2392 3c-ii T6). The host mints a fresh value each time
-	 * it accepts an open request; it joins the SUBJECT identity below (not the
-	 * reload stamp), so a reopen of the same (ws, att) is a new subject and the
-	 * OPENED entry gets exactly one forced `no-store` probe. Constant across the
-	 * navigations within one open, so arrowing does not force (3c-iii owns
-	 * navigation-step revalidation).
+	 * Per-OPEN nonce (PLAN-2392 3c-ii T6, generalized by 3c-iii U3). The host mints
+	 * a fresh value each time it accepts an open request; it joins the SUBJECT
+	 * identity below (not the reload stamp), so a reopen of the same (ws, att) is a
+	 * new subject. Constant across the navigations WITHIN one open — but the machine
+	 * now forces one `no-store` probe per `(openNonce, attachment)` pair (U3), so the
+	 * opened entry AND every entry navigated to gets exactly one automatic
+	 * revalidation, while arrowing BACK to an already-probed entry within the same
+	 * open does not re-probe.
 	 */
 	openNonce: number;
 }
@@ -136,19 +138,29 @@ export function createSurfaceMetadata(
 	// Seeded from the incoming token so a host that already bumped its counter
 	// doesn't read as a pending reload on the first render.
 	let seenReload = untrack(() => `${address().revalidateToken}:0`);
-	// The open-nonce this machine has already forced a probe for (T6). A nonce it
-	// has NOT seen is a fresh open, and the opened entry gets exactly one forced
-	// `no-store` probe; arrowing keeps the nonce, so navigation does not force.
+	// The `(openNonce, attachment)` pairs this machine has already AUTOMATICALLY
+	// force-probed (T6, generalized to per-navigation-step by 3c-iii U3). Within one
+	// open the opened entry AND every entry navigated to gets exactly one forced
+	// `no-store` probe; the set records which pairs are done so arrowing BACK to an
+	// already-probed entry takes the fast path. Scoped to the live nonce — a REOPEN
+	// mints a fresh nonce, so the same (ws, att) is unseen again and re-probes.
+	//
+	// COMPLETION, NOT DISPATCH (round-2 P1). An id is recorded only when its forced
+	// probe RESOLVES non-stale (see the async continuation), never at dispatch: a
+	// probe discarded stale (arrow away before it resolves) leaves the pair unseen,
+	// so arrow-back re-probes rather than trusting the seed for a maybe-deleted entry.
+	// AUTOMATIC ONLY (round-4 P2): a Retry- or restore-driven forced probe (the
+	// reload path) does NOT record its id — the two mechanisms stay independent, so
+	// an arrow-back after a Retry still gets its one automatic probe if it never had one.
 	//
 	// Deliberately NOT seeded from the incoming value, UNLIKE `seenReload` above:
 	// the reload stamp seeds to SWALLOW a pre-mount host bump (so an
 	// already-bumped revalidateToken doesn't read as a pending reload on first
 	// render — the trap documented at the retired AttachmentPanelHost.svelte:128);
-	// the nonce must do the OPPOSITE — always force on the first nonce it sees —
-	// because always-revalidate-on-open is the guarantee. The {#key request} host
-	// remounts this machine per open, so `null` here reliably forces the opened
-	// entry.
-	let forcedNonce: number | null = null;
+	// this must do the OPPOSITE — always force on the first sight of each pair —
+	// because always-revalidate is the guarantee. The {#key request} host remounts
+	// this machine per open, so `null` here reliably forces the opened entry.
+	let forcedFor: { nonce: number; ids: Set<string> } | null = null;
 
 	// What the server told us, filling the gaps the event left.
 	let fetchedMime = $state<string | null>(null);
@@ -180,8 +192,12 @@ export function createSurfaceMetadata(
 		const reloadStamp = `${a.revalidateToken}:${forceReload}`;
 		const archivedParent = a.parentArchived;
 		const nonce = a.openNonce;
+		const att = a.attachmentId;
 
 		let forced = false;
+		// Whether THIS run's force is the automatic per-(nonce, att) revalidation —
+		// the only trigger that records the pair as seen when its probe completes.
+		let automaticForce = false;
 		untrack(() => {
 			// A genuine subject change: drop everything the previous attachment left
 			// behind, stop any in-flight continuation from reconciling, and abandon a
@@ -202,7 +218,8 @@ export function createSurfaceMetadata(
 			// can hold an `ok` observed before the archive — force it, routing through
 			// invalidate-then-fetch instead of replaying a stale success.
 			if (archivedParent) forced = true;
-			if (reloadStamp !== seenReload) {
+			const reloadForce = reloadStamp !== seenReload;
+			if (reloadForce) {
 				seenReload = reloadStamp;
 				forced = true;
 				// A forced revalidation exists because the previous answer may no
@@ -211,18 +228,26 @@ export function createSurfaceMetadata(
 				// to the retryable error, not sit on "no longer available" (DR-10).
 				missing = false;
 			}
-			// Always-revalidate-on-open (T6): a nonce this machine has not forced for
-			// yet is a fresh open — force one `no-store` probe of the OPENED entry.
-			// Gated on exactly the probe's own precondition (`isOpen && req.key !==
-			// null`, the early-return below), so the nonce is consumed only when a probe
-			// will actually run: a not-yet-open or not-yet-addressable subject must not
-			// burn the nonce and leave a later real open (same nonce) taking the
-			// fast-path with no forced probe. Navigation keeps the nonce, so this lands
-			// once per open. Same `missing` reset as the reload path, for the same reason.
-			if (isOpen && req.key !== null && nonce !== forcedNonce) {
-				forcedNonce = nonce;
+			// Always-revalidate-per-(open, entry) (T6, generalized by 3c-iii U3): scope
+			// the forced-set to the live nonce (a fresh open resets it), then force one
+			// `no-store` probe for a pair this machine has not yet AUTOMATICALLY probed
+			// to completion — the OPENED entry AND every entry navigated to. Gated on
+			// exactly the probe's own precondition (`isOpen && req.key !== null`, the
+			// early-return below), so a not-yet-open / not-yet-addressable subject
+			// neither probes nor records. Same `missing` reset as the reload path, for
+			// the same reason.
+			if (!forcedFor || forcedFor.nonce !== nonce) {
+				forcedFor = { nonce, ids: new Set() };
+			}
+			if (isOpen && req.key !== null && !forcedFor.ids.has(att)) {
 				forced = true;
 				missing = false;
+				// This run's forced probe is the pair's AUTOMATIC one only when it is not
+				// ALSO a reload (Retry/restore): those stay independent and never record,
+				// so an arrow-back after a Retry still gets its automatic probe. Recording
+				// happens on COMPLETION (the continuation), not here — a stale-discarded
+				// probe must leave the pair unseen.
+				if (!reloadForce) automaticForce = true;
 			}
 		});
 
@@ -255,6 +280,15 @@ export function createSurfaceMetadata(
 				: await fetchAttachmentMetadata(req.value.ws, req.value.att, downloadUrl);
 			clearTimeout(slowTimer);
 			if (req.stale()) return;
+			// Record this pair's AUTOMATIC probe as COMPLETE, now that it resolved for
+			// the still-current subject. Keyed to the pair THIS run dispatched for (`att`
+			// / `nonce` closed over), guarded on the live forced-set still belonging to
+			// that nonce — a stale-discarded probe returned above, leaving the pair
+			// unseen so arrow-back re-probes. `forcedFor` is a plain object, so this
+			// write starts no reactive dependency.
+			if (automaticForce && forcedFor && forcedFor.nonce === nonce) {
+				forcedFor.ids.add(att);
+			}
 			loading = false;
 			if (result.status === 'ok') {
 				fetchedMime = result.mime;

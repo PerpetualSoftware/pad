@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures';
-import type { Page } from '@playwright/test';
+import type { Page, Request } from '@playwright/test';
 import { browserLogin, seedDoc } from './lib/collab-helpers';
 import {
 	BIG_PNG,
@@ -346,19 +346,22 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		await expect(viewerDownloadAnchor(page)).toHaveAttribute('download', 'logs.zip');
 	});
 
-	test('every open forces exactly one no-store HEAD of the opened entry; arrowing forces none; a reopen forces another (PLAN-2392 3c-ii T6)', async ({
+	test('every open AND every navigation step forces one no-store HEAD per (open, entry); a reopen forces another (PLAN-2392 3c-iii U3)', async ({
 		page,
 		fixture,
 		request
 	}) => {
-		// T6 always-revalidate-on-open, in a browser. The strip's list rows carry a
-		// COMPLETE seed (filename + MIME + size), so before T6 a strip open issued
-		// ZERO metadata HEADs — the machine short-circuits a complete seed. T6 mints
-		// a per-open nonce that joins the metadata subject identity, forcing exactly
-		// one `no-store` revalidating HEAD of the OPENED entry so a cross-tab /
-		// background delete the browser's `max-age` HEAD cache would hide is caught.
-		// Observable as the HEAD count: one per open, NONE while arrowing within an
-		// open (the nonce is constant), and another on a reopen (a fresh nonce).
+		// 3c-iii U3 generalizes T6's always-revalidate-on-open to per navigation step,
+		// in a browser. The strip's list rows carry a COMPLETE seed (filename + MIME +
+		// size), so before T6 a strip open issued ZERO metadata HEADs. T6 forced one
+		// `no-store` HEAD of the OPENED entry; U3 forces one per (open, attachment)
+		// pair, so ARROWING to a not-yet-probed sibling revalidates it too — catching a
+		// cross-tab / background delete the browser's `max-age` HEAD cache would hide.
+		// Observable as the HEAD count: one on the open, one MORE when arrowing to a
+		// fresh entry, and a fresh probe on a reopen (a fresh nonce). (The complementary
+		// "arrowing BACK to an already-probed pair does NOT re-probe" is proven
+		// deterministically in surfaceMetadata.svelte.test.ts — it turns on a JS-internal
+		// mark with no race-free browser observable, so it is not asserted here.)
 		await browserLogin(page);
 		const doc = await seedDoc(fixture, request, 'No-store reopen');
 		const a = await uploadAttachment(fixture, request, doc.id, 'ns-a.png');
@@ -371,14 +374,29 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		// The EXACT canonical API path per id — a full-path compare, not a suffix, so a
 		// different workspace or a prefixed route can never be miscounted.
 		const attPath = (id: string) => `/api/v1/workspaces/${fixture.workspaceSlug}/attachments/${id}`;
-		const heads: Record<string, number> = { [a]: 0, [b]: 0 };
-		page.on('request', (r) => {
-			if (r.method() !== 'HEAD') return;
+		const isCanonicalHead = (r: Request) => {
+			if (r.method() !== 'HEAD') return null;
 			const u = new URL(r.url());
 			// EXACT variant-less canonical URL: no query at all (a `?variant=` HEAD, were
 			// one ever issued, must not be miscounted as the canonical existence probe).
-			if (u.search !== '') return;
-			for (const id of [a, b]) if (u.pathname === attPath(id)) heads[id] += 1;
+			if (u.search !== '') return null;
+			for (const id of [a, b]) if (u.pathname === attPath(id)) return id;
+			return null;
+		};
+		// `heads` counts DISPATCHED probes; `headsDone` counts COMPLETED ones. The
+		// count barriers below poll on COMPLETION rather than dispatch so every earlier
+		// probe has fully landed before the next exact count is read — a settled-state
+		// sync point, not a timing crutch. `requestfinished` fires when the response is
+		// fully received.
+		const heads: Record<string, number> = { [a]: 0, [b]: 0 };
+		const headsDone: Record<string, number> = { [a]: 0, [b]: 0 };
+		page.on('request', (r) => {
+			const id = isCanonicalHead(r);
+			if (id) heads[id] += 1;
+		});
+		page.on('requestfinished', (r) => {
+			const id = isCanonicalHead(r);
+			if (id) headsDone[id] += 1;
 		});
 
 		await page.goto(itemUrl(fixture, doc.slug));
@@ -390,41 +408,36 @@ test.describe('attachment viewer — 3c-i surface chrome (TASK-2484)', () => {
 		expect(heads[b]).toBe(0);
 
 		// OPEN ns-a: exactly one forced HEAD of ns-a, and none of ns-b (only the
-		// opened entry is probed, not the whole set).
+		// opened entry is probed at open, not the whole set). Barrier on COMPLETION so
+		// every earlier probe has landed before the next count is read.
 		await page.locator(`${TILE}[aria-label*="ns-a.png"]`).click();
 		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
-		await expect.poll(() => heads[a], 'the opened entry gets one no-store HEAD').toBe(1);
+		await expect.poll(() => headsDone[a], 'ns-a open probe completes').toBe(1);
+		expect(heads[a], 'the opened entry gets one no-store HEAD').toBe(1);
 		expect(heads[b], 'a non-opened sibling is NOT probed at open').toBe(0);
 
-		// ARROW to ns-b within the SAME open: the nonce is constant across
-		// navigation, so no NEW forced HEAD fires for the arrival (3c-iii owns
-		// navigation-step revalidation).
+		// ARROW to ns-b within the SAME open: THE U3 INVERSION. T6 forced only the
+		// opened entry, so arrowing here forced NOTHING and ns-b stayed at 0; U3 forces
+		// one no-store HEAD of the ARRIVAL (a fresh (nonce, entry) pair), so ns-b is now
+		// probed exactly once by the navigation step. ns-a is untouched by the arrow —
+		// it stays at 1, quiescent (no arrow-back is issued, so no count can transiently
+		// inflate; the reopen below is the only thing that moves ns-a again).
 		await page.keyboard.press('ArrowRight');
 		await expect(page.locator(VIEWER_COUNTER)).toHaveText('2 / 2');
+		await expect.poll(() => headsDone[b], 'arrowing to a fresh entry forces one no-store HEAD (U3)').toBe(1);
+		expect(heads[b]).toBe(1);
+		expect(heads[a], 'the arrow does not re-probe the departed entry').toBe(1);
 		await page.keyboard.press('Escape');
 		await expect(page.locator(VIEWER)).toHaveCount(0);
 
-		// Now OPEN ns-b directly from its tile. This forces exactly one probe of ns-b
-		// — a DETERMINISTIC positive barrier that also proves the arrow above forced
-		// NONE: if arrowing had (wrongly) probed the arrival, ns-b's count would land
-		// on 2 here, not 1. The poll is the sync point; no timing crutch.
-		await page.locator(`${TILE}[aria-label*="ns-b.png"]`).click();
-		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
-		await expect.poll(() => heads[b], 'ns-b probed once — by its own open, not the earlier arrow').toBe(1);
-		await page.keyboard.press('Escape');
-		await expect(page.locator(VIEWER)).toHaveCount(0);
-
-		// REOPEN ns-a: a fresh open mints a fresh nonce → another forced HEAD, so its
-		// count reaches exactly 2 (its two opens), not more from the arrow-back. This
-		// poll is the final sync barrier; by the time it settles every earlier probe
-		// has landed, so the settled exact counts below are quiescent — heads[a] is
-		// its two opens (no arrow re-force) and heads[b] is its one direct open.
+		// REOPEN ns-a: a fresh open mints a fresh nonce → every entry is unseen again,
+		// so ns-a is force-probed once more, reaching exactly 2 (its two opens). ns-a
+		// climbs 1→2 with no intervening probe, so this exact poll cannot false-green on
+		// a transient. ns-b remains at its single arrow-forced probe.
 		await page.locator(`${TILE}[aria-label*="ns-a.png"]`).click();
 		await expect(page.locator(VIEWER_IMAGE)).toBeVisible();
-		// Poll the PAIR to the settled exact state — ns-a its two opens (no arrow
-		// re-force), ns-b its one direct open (the arrow forced none).
 		await expect
-			.poll(() => `${heads[a]},${heads[b]}`, 'exactly {a:2, b:1} — no arrow re-force of either')
+			.poll(() => `${heads[a]},${heads[b]}`, 'exactly {a:2, b:1} — reopen re-forces ns-a; the arrow forced ns-b once')
 			.toBe('2,1');
 	});
 
