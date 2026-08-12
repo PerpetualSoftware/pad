@@ -102,9 +102,14 @@ pad item update <new-spec-ref> --status approved --comment "Approved in draft co
 ` + "```" + `
 
 If the user wants to circulate the draft for others to review before
-committing, leave it at ` + "`in-review`" + ` instead and stop here — the
-approval step happens later, either by rerunning this playbook or a plain
-` + "`pad item update <ref> --status approved`" + `.
+committing, move it to ` + "`in-review`" + ` instead and stop here:
+
+` + "```bash" + `
+pad item update <new-spec-ref> --status in-review --comment "Circulating for review before approval."
+` + "```" + `
+
+The approval step happens later, either by rerunning this playbook or a
+plain ` + "`pad item update <ref> --status approved`" + `.
 
 ### 6. Graduate the source item (graduation mode only — see Dispatch)
 
