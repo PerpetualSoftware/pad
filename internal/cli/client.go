@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -313,6 +314,54 @@ func (c *Client) ListStarredItems(wsSlug string, includeTerminal bool) ([]models
 		path += "?include_terminal=true"
 	}
 	return result, c.get(path, &result)
+}
+
+// CreateWatch creates (or replaces the predicate on) a durable watch for
+// the current user on an item (TASK-2533). predicate is the raw
+// `--until field=value` string, or "" for an unconditional watch.
+func (c *Client) CreateWatch(wsSlug, itemSlug, predicate string) (*models.Watch, error) {
+	var body interface{}
+	if predicate != "" {
+		body = map[string]string{"predicate": predicate}
+	}
+	var result models.Watch
+	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/watch", body, &result)
+}
+
+// DeleteWatch removes the current user's watch on an item.
+func (c *Client) DeleteWatch(wsSlug, itemSlug string) error {
+	return c.delete("/workspaces/" + wsSlug + "/items/" + itemSlug + "/watch")
+}
+
+// ListWatches returns every watch the current user holds, across all
+// workspaces they belong to (TASK-2533 — a watch is personal, not
+// workspace-scoped; see Store.ListWatchesForUser's doc comment).
+func (c *Client) ListWatches() ([]models.Watch, error) {
+	var result []models.Watch
+	return result, c.get("/watches", &result)
+}
+
+// NewWatchEventsStreamRequest builds an authenticated GET request for
+// GET /api/v1/events/stream (TASK-2533), used by
+// `pad watch --stream --for-session`. Deliberately returns the request
+// rather than doing the round trip itself: an SSE connection is meant to
+// stay open for a whole session, and both c.httpClient (10s timeout) and
+// c.streamClient (1h timeout, sized for bundle transfers) would
+// eventually kill it — the caller must supply its own zero-timeout
+// http.Client. lastEventID, when non-empty, is sent as Last-Event-ID for
+// resume.
+func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID string) (*http.Request, error) {
+	req, err := c.newRequest("GET", "/events/stream", nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Cache-Control", "no-cache")
+	if lastEventID != "" {
+		req.Header.Set("Last-Event-ID", lastEventID)
+	}
+	return req, nil
 }
 
 func (c *Client) MoveItem(wsSlug, itemSlug string, input map[string]any) (*models.Item, error) {

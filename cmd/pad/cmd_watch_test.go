@@ -1,0 +1,233 @@
+package main
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
+)
+
+// fakeSSEResponse wraps a raw SSE body string in an *http.Response
+// shaped enough for streamWatchEvents to read (it only touches .Body).
+func fakeSSEResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+// TestPadddBackoff_MonotonicUntilCap asserts the backoff grows with each
+// attempt and is capped — the decision logic behind "padd unreachable →
+// backoff retry, print nothing" (DOC-2479), unit-tested per the
+// dispatcher's ask instead of literally sleeping.
+func TestPadddBackoff_MonotonicUntilCap(t *testing.T) {
+	prev := time.Duration(0)
+	for attempt := 1; attempt <= 200; attempt++ {
+		d := padddBackoff(attempt)
+		if d < prev {
+			t.Fatalf("attempt %d: backoff %v is less than previous %v — expected non-decreasing", attempt, d, prev)
+		}
+		if d > padddBackoffCap {
+			t.Fatalf("attempt %d: backoff %v exceeds cap %v", attempt, d, padddBackoffCap)
+		}
+		prev = d
+	}
+	if got := padddBackoff(1000); got != padddBackoffCap {
+		t.Fatalf("expected a large attempt count to saturate at the cap %v, got %v", padddBackoffCap, got)
+	}
+}
+
+func TestPadddBackoff_NonPositiveAttemptTreatedAsFirst(t *testing.T) {
+	if got, want := padddBackoff(0), padddBackoff(1); got != want {
+		t.Fatalf("padddBackoff(0) = %v, want padddBackoff(1) = %v", got, want)
+	}
+	if got, want := padddBackoff(-5), padddBackoff(1); got != want {
+		t.Fatalf("padddBackoff(-5) = %v, want padddBackoff(1) = %v", got, want)
+	}
+}
+
+func TestNoPadTomlRetryInterval_IsAnHour(t *testing.T) {
+	// Pinned as an explicit assertion (not just "compiles") so a future
+	// edit to the constant fails a test, not just silently changes
+	// DOC-2479's specified cadence.
+	if noPadTomlRetryInterval != time.Hour {
+		t.Fatalf("expected the no-.pad.toml retry interval to be exactly 1 hour (DOC-2479), got %v", noPadTomlRetryInterval)
+	}
+}
+
+func TestFormatMonitorLine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   watchStreamPayload
+		want string
+	}{
+		{
+			name: "status change",
+			in:   watchStreamPayload{ItemRef: "TASK-214", Kind: "status-change", Actor: "Dave", Summary: "open → done"},
+			want: "PAD TASK-214 → status-change (Dave): open → done",
+		},
+		{
+			name: "assignment",
+			in:   watchStreamPayload{ItemRef: "BUG-5", Kind: "assignment", Actor: "Alice", Summary: "assigned to Alice"},
+			want: "PAD BUG-5 → assignment (Alice): assigned to Alice",
+		},
+		{
+			name: "comment",
+			in:   watchStreamPayload{ItemRef: "TASK-1", Kind: "comment", Actor: "Bob", Summary: "fix verified"},
+			want: "PAD TASK-1 → comment (Bob): fix verified",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := formatMonitorLine(c.in); got != c.want {
+				t.Errorf("formatMonitorLine(%+v) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestSleepOrDone_ReturnsTrueWhenDurationElapses(t *testing.T) {
+	ctx := context.Background()
+	if !sleepOrDone(ctx, time.Millisecond) {
+		t.Fatal("expected sleepOrDone to return true when the duration elapses uninterrupted")
+	}
+}
+
+func TestSleepOrDone_ReturnsFalseWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if sleepOrDone(ctx, time.Hour) {
+		t.Fatal("expected sleepOrDone to return false immediately for an already-cancelled context")
+	}
+}
+
+// TestMonitorClient_UnconfiguredReturnsError covers codex round 1
+// finding 5's core regression: monitorClient must return a plain error
+// for an unconfigured environment, never call os.Exit (this test
+// process completing at all, rather than terminating early, is the
+// proof) and never block waiting for interactive input — unlike
+// getClient()/getConfiguredConfig(), which do both.
+func TestMonitorClient_UnconfiguredReturnsError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PAD_URL", "")
+	t.Setenv("PAD_MODE", "")
+	t.Chdir(t.TempDir()) // no .pad.toml above this directory
+
+	_, err := monitorClient()
+	if err == nil {
+		t.Fatal("expected an error for an unconfigured client, got nil")
+	}
+}
+
+// TestRunWatchMonitor_NoPadToml_RespectsCancellation verifies the
+// no-.pad.toml silent-retry path (which sleeps for
+// noPadTomlRetryInterval — an hour) still returns promptly when the
+// context is cancelled, WITHOUT ever reaching client construction
+// (there is no configured client in this test's environment at all —
+// if the loop attempted to build one before the .pad.toml check, per
+// finding 5, it would have to do so via a path that can only return an
+// error or block; since this test provably completes quickly, neither
+// happened).
+func TestRunWatchMonitor_NoPadToml_RespectsCancellation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(t.TempDir()) // no .pad.toml above this directory
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- runWatchMonitor(ctx) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected nil error on cancellation, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runWatchMonitor did not return within 3s of context cancellation (still waiting on the 1h no-.pad.toml sleep?)")
+	}
+}
+
+// TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation
+// covers the ordering fix directly: a .pad.toml IS present (so the
+// no-workspace gate passes) but the client is unconfigured (no global
+// config.toml, no URL override in this .pad.toml) — monitorClient must
+// return a plain error that the loop folds into the backoff-retry path,
+// not an os.Exit or a blocked prompt. Proven the same way: the goroutine
+// returns promptly once the context is cancelled.
+func TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PAD_URL", "")
+	t.Setenv("PAD_MODE", "")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	if err := cli.WriteWorkspaceLink(workDir, "test-ws", ""); err != nil {
+		t.Fatalf("WriteWorkspaceLink: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- runWatchMonitor(ctx) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected nil error on cancellation, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runWatchMonitor did not return within 3s of context cancellation")
+	}
+}
+
+func TestStreamWatchEvents_ParsesNotificationsAndTracksLastEventID(t *testing.T) {
+	body := "id: 1\nevent: connected\ndata: {\"user_id\":\"u1\"}\n\n" +
+		"id: 2\nevent: notification\ndata: {\"item_ref\":\"TASK-1\",\"kind\":\"comment\",\"actor\":\"Dave\",\"summary\":\"looks good\"}\n\n" +
+		"id: 3\nevent: notification\ndata: {\"item_ref\":\"TASK-2\",\"kind\":\"status-change\",\"actor\":\"Dave\",\"summary\":\"open → done\"}\n\n"
+
+	resp := fakeSSEResponse(body)
+	lastID := streamWatchEvents(resp, "")
+	if lastID != "3" {
+		t.Fatalf("expected lastEventID to track the final id, got %q", lastID)
+	}
+}
+
+// TestStreamWatchEvents_SyncRequiredClearsLastEventID covers codex
+// round 1 finding 6: without this, a stale Last-Event-ID would be
+// resent on every reconnect after the server's replay buffer evicted
+// it, producing sync_required forever. sync_required carries no "id:"
+// line (server writes it with eventID=0), matching real wire behavior.
+func TestStreamWatchEvents_SyncRequiredClearsLastEventID(t *testing.T) {
+	body := "event: sync_required\ndata: {\"reason\":\"gap too large\"}\n\n"
+
+	resp := fakeSSEResponse(body)
+	lastID := streamWatchEvents(resp, "42") // resuming from a stale cursor
+	if lastID != "" {
+		t.Fatalf("expected sync_required to clear the cursor, got %q", lastID)
+	}
+}
+
+// TestStreamWatchEvents_SyncRequiredThenFreshNotification verifies the
+// cursor stays cleared through sync_required but a notification
+// arriving afterward on the SAME connection still updates it normally —
+// sync_required only resets the resume point, it doesn't disable
+// tracking for the rest of the stream.
+func TestStreamWatchEvents_SyncRequiredThenFreshNotification(t *testing.T) {
+	body := "event: sync_required\ndata: {\"reason\":\"gap too large\"}\n\n" +
+		"id: 99\nevent: notification\ndata: {\"item_ref\":\"TASK-9\",\"kind\":\"comment\",\"actor\":\"Dave\",\"summary\":\"hi\"}\n\n"
+
+	resp := fakeSSEResponse(body)
+	lastID := streamWatchEvents(resp, "42")
+	if lastID != "99" {
+		t.Fatalf("expected the post-sync_required notification's id to be tracked, got %q", lastID)
+	}
+}

@@ -35,6 +35,7 @@ import (
 	oauthpkg "github.com/PerpetualSoftware/pad/internal/oauth"
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
 	"github.com/google/uuid"
 	mcptransport "github.com/mark3labs/mcp-go/server"
@@ -653,6 +654,13 @@ func serveCmd() *cobra.Command {
 			// Wrap event bus with Prometheus instrumentation
 			eventBus = metrics.NewInstrumentedBus(eventBus, m)
 			srv.SetEventBus(eventBus)
+
+			// Watch/nudge notification bus (TASK-2533). In-process only —
+			// see internal/watchevents' package doc comment for the
+			// single-process/multi-instance limitation. No Redis-backed
+			// implementation exists yet, so this is unconditional (unlike
+			// eventBus above, which branches on PAD_REDIS_URL).
+			srv.SetWatchEventsBus(watchevents.New())
 
 			// Yjs collab room manager (PLAN-1248). Single-instance only
 			// today; multi-replica fanout via Redis is a deferred IDEA.

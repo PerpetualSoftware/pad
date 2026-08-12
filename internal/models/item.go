@@ -99,6 +99,37 @@ type Item struct {
 	Convention          *ItemConventionMetadata  `json:"convention,omitempty"`
 	ImplementationNotes []ItemImplementationNote `json:"implementation_notes,omitempty"`
 	DecisionLog         []ItemDecisionLogEntry   `json:"decision_log,omitempty"`
+
+	// LastMutation carries the status/assignment delta that THIS specific
+	// store call (UpdateItemWithParentLink / MoveItemWithPreCheck) produced,
+	// computed synchronously inside the same transaction that already writes
+	// the canonical status_transitions row (TASK-2533). It exists so the
+	// watch-notification pipeline can classify an update's kind
+	// (status-change / assignment) from a race-free, in-tx source of truth
+	// instead of a separate before/after snapshot pair racing against
+	// concurrent writers of the same item.
+	//
+	// Nil when the update touched neither the collection's done-field nor
+	// assigned_user_id. Never persisted, never populated by GetItem or any
+	// list/search path — only the two store functions above set it, and
+	// only on the *models.Item they hand back to their caller. `json:"-"`
+	// is deliberate: this is an internal signal for one in-process
+	// consumer, not a wire contract the API is committing to.
+	LastMutation *ItemMutationSignal `json:"-"`
+}
+
+// ItemMutationSignal is the race-free status/assignment delta attached to
+// models.Item.LastMutation. See that field's doc comment for why it exists
+// and who populates it.
+type ItemMutationSignal struct {
+	StatusChanged  bool
+	StatusFieldKey string
+	FromStatus     string
+	ToStatus       string
+
+	AssignmentChanged  bool
+	FromAssignedUserID string // "" = was unassigned
+	ToAssignedUserID   string // "" = now unassigned
 }
 
 // ComputeRef sets the Ref field from CollectionPrefix and ItemNumber.

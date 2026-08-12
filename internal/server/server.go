@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -34,6 +35,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/oauth"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"github.com/PerpetualSoftware/pad/internal/webhooks"
 )
 
@@ -44,6 +46,7 @@ type Server struct {
 	httpServer            *http.Server         // underlying HTTP server (set during ListenAndServe)
 	webFS                 fs.FS                // embedded web UI static files (optional)
 	events                events.EventBus      // real-time event bus (optional)
+	watchEvents           watchevents.Bus      // watch/nudge notification bus (optional, TASK-2533)
 	collab                *collab.RoomManager  // Yjs collab room manager (PLAN-1248); optional
 	webhooks              *webhooks.Dispatcher // webhook dispatcher (optional)
 	email                 *email.Sender        // transactional email sender (optional)
@@ -273,6 +276,29 @@ type Server struct {
 	// the driver surfaces an error), exercising BUG-2276 residual 1's commit-outcome
 	// reconciliation end-to-end through the real handler.
 	restoreAckFault func() error
+
+	// watchPredicatesLoadFault is a TEST SEAM (always nil in production,
+	// TASK-2533). When non-nil, loadWatchPredicates calls it before
+	// touching the store; a non-nil return short-circuits the real
+	// ListWatchesForUser call and is returned as the reload error —
+	// exercising GET /api/v1/events/stream's reval-tick error path
+	// (codex round 4: a watch-list reload failure must not also skip
+	// the identity/visibility refresh) deterministically, without
+	// needing to actually break the DB connection mid-test.
+	//
+	// atomic.Pointer, not a plain func field (codex round 5 finding 2):
+	// unlike restoreAckFault — set once, synchronously, before the single
+	// HTTP request that will read it, so goroutine-creation's own
+	// happens-before edge makes a plain field safe there — this seam is
+	// set by a test AFTER the SSE stream's background goroutine is
+	// already running and reading it on every reval tick. A plain field
+	// written from the test's goroutine while that goroutine reads it
+	// concurrently is a genuine, if timing-dependent, data race
+	// (verified: restoreAckFault's OWN usage doesn't share this flaw,
+	// since it's never touched after the goroutine that reads it starts,
+	// so it was intentionally left as a plain field rather than changed
+	// too).
+	watchPredicatesLoadFault atomic.Pointer[func() error]
 }
 
 // goAsync spawns fn in a goroutine that's tracked by s.bg, so Stop() can
@@ -694,6 +720,14 @@ func (s *Server) SetEventBus(bus events.EventBus) {
 	s.events = bus
 }
 
+// SetWatchEventsBus attaches the watch/nudge notification bus consumed by
+// GET /api/v1/events/stream (TASK-2533). Nil-checked by every producer and
+// by the stream handler, so a server constructed without one (e.g. a test
+// that doesn't exercise watches) still serves every other endpoint.
+func (s *Server) SetWatchEventsBus(bus watchevents.Bus) {
+	s.watchEvents = bus
+}
+
 // SetCollabRoomManager attaches a Yjs collab RoomManager (PLAN-1248).
 // When set, the /api/v1/collab/{itemID} WebSocket endpoint hands new
 // connections to the manager for op-log replay + fan-out. When nil,
@@ -1111,6 +1145,14 @@ func (s *Server) setupRouter() {
 		// SSE endpoint (outside jsonContentType middleware — but inherits auth)
 		r.Get("/api/v1/events", s.handleSSE)
 
+		// User-scoped watch/nudge event stream (TASK-2533, DOC-2479).
+		// Unlike /api/v1/events above, this is NOT workspace-scoped — a
+		// caller's watches and addressed-to-you assignments can span
+		// every workspace they belong to. Lives alongside the other SSE
+		// endpoint for the same "outside jsonContentType, inherits auth"
+		// reason.
+		r.Get("/api/v1/events/stream", s.handleWatchEventsStream)
+
 		// WebSocket endpoint for Yjs-based collaborative editing on a
 		// single item (PLAN-1248). Lives outside jsonContentType for
 		// the same reason as SSE: the response is a WS upgrade, not
@@ -1514,6 +1556,11 @@ func (s *Server) setupRouter() {
 						r.Get("/star", s.handleGetItemStarStatus)
 						r.Post("/star", s.handleStarItem)
 						r.Delete("/star", s.handleUnstarItem)
+						// Watches (TASK-2533): durable per-item subscriptions
+						// for the padd event-stream / plugin-monitor nudge
+						// pipeline. `pad watch <ref>` / `pad watch remove <ref>`.
+						r.Post("/watch", s.handleCreateWatch)
+						r.Delete("/watch", s.handleDeleteWatch)
 					})
 
 					// Links (v2)
@@ -1658,6 +1705,14 @@ func (s *Server) setupRouter() {
 
 			// Search
 			r.Get("/search", s.handleSearch)
+
+			// My watches (TASK-2533), cross-workspace — mirrors
+			// /auth/tokens' shape for a user-scoped-not-workspace-scoped
+			// resource. `pad watch list`. Create/delete are per-item and
+			// live under /workspaces/{ws}/items/{itemSlug}/watch instead
+			// (they need the item's workspace context to resolve the
+			// ref/slug the CLI's positional arg names).
+			r.Get("/watches", s.handleListWatches)
 
 			// MCP tool-surface descriptor (PLAN-1888 / TASK-1891). Serves
 			// the catalog JSON (the nine env.Catalog tools + per-action

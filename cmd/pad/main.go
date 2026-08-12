@@ -147,6 +147,8 @@ func newRootCmd() *cobra.Command {
 		mcpCmd(),
 		bootstrapCmd(),
 		playbookCmd(),
+		watchCmdGroup(),
+		sessionCmd(),
 	)
 
 	rootCmd.SetHelpCommand(helpCmd())

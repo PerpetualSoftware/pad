@@ -10,6 +10,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
 // handleListComments returns all comments for an item.
@@ -129,7 +130,34 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	s.publishCommentEvent(events.CommentCreated, workspaceID, item.ID, comment.ID, item.Title, item.CollectionSlug, actor, source)
 	s.dispatchWebhook(workspaceID, "comment.created", comment)
 
+	if s.watchEvents != nil {
+		s.watchEvents.Publish(watchevents.Notification{
+			WorkspaceID:  workspaceID,
+			ItemID:       item.ID,
+			CollectionID: item.CollectionID,
+			ItemRef:      item.Ref,
+			Kind:         watchevents.KindComment,
+			Actor:        actor,
+			ActorName:    actorNameFromRequest(r),
+			Summary:      truncateForSummary(comment.Body, 120),
+		})
+	}
+
 	writeJSON(w, http.StatusCreated, comment)
+}
+
+// truncateForSummary shortens a comment body (or any free-text field) to
+// a single-line notification summary. Collapses newlines to spaces first
+// so a multi-paragraph comment doesn't produce a multi-line CLI nudge
+// line — `pad watch --stream --for-session`'s contract is exactly one
+// stdout line per event.
+func truncateForSummary(body string, maxLen int) string {
+	body = strings.Join(strings.Fields(body), " ")
+	r := []rune(body)
+	if len(r) <= maxLen {
+		return body
+	}
+	return string(r[:maxLen]) + "…"
 }
 
 // handleDeleteComment removes a comment.
@@ -321,10 +349,33 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the item's collection slug for SSE filtering
 	replyCollSlug := ""
+	replyItemRef := ""
+	replyCollID := ""
 	if replyItem, err := s.store.GetItem(parentComment.ItemID); err == nil && replyItem != nil {
 		replyCollSlug = replyItem.CollectionSlug
+		replyItemRef = replyItem.Ref
+		replyCollID = replyItem.CollectionID
 	}
 	s.publishCommentEvent(events.CommentCreated, workspaceID, parentComment.ItemID, comment.ID, parentComment.ItemTitle, replyCollSlug, actor, source)
+
+	// TASK-2533 (codex round 1, finding 2): a reply is a SEPARATE code
+	// path from handleCreateComment — it calls store.CreateComment
+	// directly here, not via POST .../comments — and was missing this
+	// hook entirely. Same kind=comment notification as a top-level
+	// comment; a watcher shouldn't lose replies just because they landed
+	// one level deeper in the thread.
+	if s.watchEvents != nil {
+		s.watchEvents.Publish(watchevents.Notification{
+			WorkspaceID:  workspaceID,
+			ItemID:       parentComment.ItemID,
+			CollectionID: replyCollID,
+			ItemRef:      replyItemRef,
+			Kind:         watchevents.KindComment,
+			Actor:        actor,
+			ActorName:    actorNameFromRequest(r),
+			Summary:      truncateForSummary(comment.Body, 120),
+		})
+	}
 
 	writeJSON(w, http.StatusCreated, comment)
 }
