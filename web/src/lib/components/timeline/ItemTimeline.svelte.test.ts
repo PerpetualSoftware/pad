@@ -352,6 +352,22 @@ describe('ItemTimeline — a failed SSE refresh retries once (BUG-2508)', () => 
 		expect(timelineListMock.mock.calls.length).toBe(initialCalls + 2);
 	});
 
+	it('does not fire a retry after the component is destroyed', async () => {
+		render();
+		await settle();
+		timelineListMock.mockRejectedValue(new Error('network'));
+		await fireCommentEvent();
+		const callsAtUnmount = timelineListMock.mock.calls.length;
+
+		// Tear down while the retry is pending. The identity fence cannot cover
+		// this: a remounted panel can legitimately carry the same wsSlug/itemSlug,
+		// so "same identity" is not "still alive" (found in review).
+		unmount(app as never);
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		expect(timelineListMock.mock.calls.length).toBe(callsAtUnmount);
+	});
+
 	it('does not retry when the refresh succeeded', async () => {
 		render();
 		await settle();

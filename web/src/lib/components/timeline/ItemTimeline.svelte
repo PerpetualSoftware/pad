@@ -708,10 +708,13 @@
 	let sseRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Backoff before the single retry a failed SSE refresh gets (BUG-2508). */
 	const SSE_REFRESH_RETRY_MS = 2000;
+	/** Set by onDestroy; checked by every continuation that outlives the mount. */
+	let destroyed = false;
 
 	// Named rather than inline so the failure path can re-invoke it once. The
 	// `isRetry` flag is what bounds that to ONE extra attempt.
 	async function refreshFromSSE(isRetry = false) {
+		if (destroyed) return;
 		// Capture identity before the await — this same panel instance
 		// serves the next item after a no-{#key} switch, so a debounced
 		// refresh resolving late must not merge A's entries into B (TASK-2112).
@@ -719,6 +722,7 @@
 		const reqWs = wsSlug;
 		try {
 			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
+			if (destroyed) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			const freshIds = new Set(resp.entries.map((e) => e.id));
 			const existingIds = new Set(entries.map((e) => e.id));
@@ -753,6 +757,7 @@
 			// it reports. Deliberately not unbounded retries either — the
 			// debounce exists because SSE replay can hammer this endpoint, and
 			// a retry loop would reintroduce exactly that.
+			if (destroyed) return;
 			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
 			console.error('[timeline] SSE-driven refresh failed', err);
 			if (isRetry) return;
@@ -770,6 +775,14 @@
 
 	onDestroy(() => {
 		unsubscribe();
+		// The debounce timer AND the retry timer both live in `sseRefreshTimer`,
+		// and a rejected request can schedule a retry from its own catch AFTER
+		// teardown — the identity fence (reqSlug/reqWs) is not a teardown fence,
+		// since a remounted panel can legitimately hold the same identity. Clear
+		// the timer and latch `destroyed` so neither a pending debounce nor a late
+		// failure can fire into a dead component (found in review of BUG-2508).
+		destroyed = true;
+		clearTimeout(sseRefreshTimer);
 	});
 
 	let submitting: boolean = $state(false);
