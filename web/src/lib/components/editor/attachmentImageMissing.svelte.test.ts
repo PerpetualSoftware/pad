@@ -66,7 +66,9 @@ vi.mock('./attachment-metadata', () => ({
 
 const { AttachmentImage } = await import('./attachment-image');
 
-function makeEditor(element: HTMLElement): Editor {
+const DEFAULT_ADDRESS = () => ({ workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-1' });
+
+function makeEditor(element: HTMLElement, address = DEFAULT_ADDRESS): Editor {
 	return new Editor({
 		element,
 		extensions: [
@@ -77,7 +79,7 @@ function makeEditor(element: HTMLElement): Editor {
 				// A workspace IS supplied: the MIME probe is what the viewer gate
 				// reads, and with an empty one it never runs (which is itself the
 				// documented "unknown ⇒ keep today's behaviour" path).
-				address: () => ({ workspaceSlug: 'ws', itemId: 'item-A', hostToken: 'apanel-1' }),
+				address,
 				supportedFormats: () => [],
 				transform: async () => {
 					throw new Error('not used');
@@ -392,15 +394,116 @@ describe('inline image missing placeholder', () => {
 			expect(probeMock).not.toHaveBeenCalled();
 		});
 
-		it('unsubscribes on destroy — a signal must not reach a torn-down view', async () => {
+		/**
+		 * The ordering the first version of this fix got wrong: the restore probe
+		 * fenced on teardown and uuid only, so a deletion confirmed WHILE it was in
+		 * flight lost to the stale positive answer — a DR-17 resurrection reachable
+		 * in one interleaving.
+		 */
+		it('lets a deletion confirmed mid-probe WIN over a stale ok (DR-17)', async () => {
 			await latchViaArchivedWindowProbe();
+
+			let release: (r: ProbeResult) => void = () => {};
+			probeMock.mockImplementation(
+				() => new Promise<ProbeResult>((resolve) => (release = resolve))
+			);
+			announceRestore();
+			await settle();
+
+			// The row is deleted for real while the HEAD is still out.
+			for (const fn of deletionListeners) fn('uuid-1');
+			// …and only then does the probe answer, positively and out of date.
+			release({ status: 'ok', mime: 'image/png', size: 10 });
+			await settle();
+
+			// The END STATE alone proves nothing here: the placeholder stays visible
+			// until a `load` fires, so a broken fence looks identical at this instant.
+			// The observable consequence of a (wrong) heal is the cache-busted reload
+			// it arms — assert THAT.
+			expect(target.querySelector<HTMLImageElement>('img')?.getAttribute('src')).not.toContain(
+				'restored='
+			);
+			expect(placeholder().style.display).not.toBe('none');
+			expect(placeholder().title).toBe('This attachment has been deleted');
+			expect(target.querySelector<HTMLImageElement>('img')?.style.display).toBe('none');
+		});
+
+		it('does not drop an authoritative missing when two probes are in flight together', async () => {
+			await latchViaArchivedWindowProbe();
+
+			// Two restore signals land before either HEAD answers — both probes run,
+			// because the node is still presenting missing when each is dispatched.
+			const releases: Array<(r: ProbeResult) => void> = [];
+			probeMock.mockImplementation(
+				() => new Promise<ProbeResult>((resolve) => releases.push(resolve))
+			);
+			announceRestore();
+			announceRestore();
+			await settle();
+			expect(releases).toHaveLength(2);
+
+			// The optimistic one answers first and heals…
+			releases[0]({ status: 'ok', mime: 'image/png', size: 10 });
+			await settle();
+			target.querySelector<HTMLImageElement>('img')?.dispatchEvent(new Event('load'));
+			expect(placeholder().style.display).toBe('none');
+
+			// …then the second disagrees. `missing` is the authoritative existence
+			// answer this probe asked for, so it must LATCH rather than be dropped
+			// for having lost the race.
+			releases[1]({ status: 'missing' });
+			await settle();
+
+			expect(placeholder().style.display).not.toBe('none');
+			expect(placeholder().title).toBe('This attachment has been deleted');
+			expect(target.querySelector<HTMLImageElement>('img')?.style.display).toBe('none');
+		});
+
+		it('ignores an answer that lands after the workspace changed underneath it', async () => {
+			probeMock.mockResolvedValue({ status: 'missing' });
+			let ws = 'ws';
+			editor = makeEditor(target, () => ({ workspaceSlug: ws, itemId: 'item-A', hostToken: 'apanel-1' }));
+			failLoad();
+			await settle();
+			expect(placeholder().title).toBe('This attachment has been deleted');
+
+			let release: (r: ProbeResult) => void = () => {};
+			probeMock.mockImplementation(
+				() => new Promise<ProbeResult>((resolve) => (release = resolve))
+			);
+			announceRestore('item-A', 'ws');
+			await settle();
+
+			// The pane moves to another workspace while the HEAD is in flight; the
+			// answer describes the PREVIOUS workspace's copy.
+			ws = 'ws-b';
+			release({ status: 'ok', mime: 'image/png', size: 10 });
+			await settle();
+
+			// Again: the reload is what a heal would arm, and the placeholder's
+			// visibility alone would pass with the fence removed.
+			expect(target.querySelector<HTMLImageElement>('img')?.getAttribute('src')).not.toContain(
+				'restored='
+			);
+			expect(placeholder().style.display).not.toBe('none');
+			expect(target.querySelector<HTMLImageElement>('img')?.style.display).toBe('none');
+		});
+
+		it('unsubscribes on destroy — asserted on the registry, not on the end state', async () => {
+			await latchViaArchivedWindowProbe();
+			expect(restoreListeners.size).toBe(1);
+
 			editor?.destroy();
 			editor = undefined;
 			probeMock.mockClear();
 
+			// The registry is the only honest assertion here: a LEAKED listener
+			// would still see `destroyed` and return, so "no probe fired" stays
+			// green with the dispose call deleted (Codex, review of this commit).
+			expect(restoreListeners.size).toBe(0);
+
 			announceRestore();
 			await settle();
-
 			expect(probeMock).not.toHaveBeenCalled();
 		});
 	});

@@ -358,15 +358,66 @@ describe('editor chip → options panel', () => {
 			expect(revalidateMock).not.toHaveBeenCalled();
 		});
 
-		it('unsubscribes on destroy', async () => {
+		it('lets a deletion confirmed mid-probe WIN over a stale ok (DR-17)', async () => {
+			const el = await deadChipInWorkspace();
+
+			let release: (r: unknown) => void = () => {};
+			revalidateMock.mockImplementation(() => new Promise((resolve) => (release = resolve)));
+			announceRestore();
+			await Promise.resolve();
+
+			// Deleted for real while the HEAD is out…
+			for (const fn of deletionListeners) fn('uuid-1');
+			// …then the stale positive answer lands.
+			release({ status: 'ok', mime: 'application/pdf', size: 1 });
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(el.disabled).toBe(true);
+			expect(el.classList.contains('attachment-missing')).toBe(true);
+			el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+			expect(panelOpenMock).not.toHaveBeenCalled();
+		});
+
+		it('ignores an answer that lands after the workspace changed underneath it', async () => {
+			probeMock.mockResolvedValue({ status: 'missing' });
+			let ws = 'ws';
+			editor = makeEditor(target, () => ({ ...ADDRESS, workspaceSlug: ws }));
+			const el = chip();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(el.disabled).toBe(true);
+
+			let release: (r: unknown) => void = () => {};
+			revalidateMock.mockImplementation(() => new Promise((resolve) => (release = resolve)));
+			announceRestore('item-A', 'ws');
+			await Promise.resolve();
+
+			// The composer is reused across a workspace switch; this answer is about
+			// the PREVIOUS workspace's copy.
+			ws = 'ws-b';
+			release({ status: 'ok', mime: 'application/pdf', size: 1 });
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(el.disabled).toBe(true);
+		});
+
+		it('unsubscribes on destroy — asserted on the registry, not on the end state', async () => {
 			await deadChipInWorkspace();
+			expect(restoreListeners.size).toBe(1);
+
 			editor?.destroy();
 			editor = undefined;
 			revalidateMock.mockClear();
 
+			// A LEAKED listener would still see `destroyed` and return, so
+			// "no probe fired" stays green with the dispose call deleted. The
+			// registry is the assertion that actually fails then.
+			expect(restoreListeners.size).toBe(0);
+
 			announceRestore();
 			await Promise.resolve();
-
 			expect(revalidateMock).not.toHaveBeenCalled();
 		});
 	});

@@ -47,6 +47,7 @@
 		announceAttachmentParentRestored,
 		createAttachmentHostToken,
 	} from '$lib/attachments/events';
+	import { parentRestoreEdge } from '$lib/attachments/parentRestoreEdge';
 	import { createViewerResourceGen } from '$lib/attachments/viewerResource.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
@@ -850,21 +851,33 @@
 	 * silently strands unrelated reactivity nearby (CONVE-1688, and the same shape
 	 * ItemTimeline's lifecycle effect uses). Seeded from the current value so a
 	 * mount on an ALREADY-archived item is a level, not a spurious restore edge.
+	 *
+	 * The latch carries the item ID, not just the boolean: navigating AWAY from an
+	 * archived item also drops the level, and announcing a restore there is both
+	 * wrong and wasteful. `parentRestoreEdge` owns that distinction and is unit
+	 * tested on its own, because this component resists jsdom mounting.
 	 */
-	let prevItemArchived = untrack(() => itemMatchesRef && isArchived);
+	let prevArchivedItemId = untrack(() =>
+		itemMatchesRef && isArchived && item ? item.id : ''
+	);
 	$effect(() => {
-		const archived = itemMatchesRef && isArchived;
+		const matched = itemMatchesRef;
+		const archived = isArchived;
 		const id = item?.id ?? '';
 		const ws = wsSlug;
 		untrack(() => {
-			if (archived === prevItemArchived) return;
-			prevItemArchived = archived;
-			// Only the true→false edge is a restore. The false→true edge needs no
-			// announcement: the surfaces that must react to an ARCHIVE already take
-			// it as a prop, and a NodeView that has not probed yet will get an
-			// honest 404 from the server on its own.
-			if (archived || !id || !ws) return;
-			announceAttachmentParentRestored(ws, id);
+			const { nextArchivedItemId, restoredItemId } = parentRestoreEdge({
+				prevArchivedItemId,
+				matched,
+				archived,
+				itemId: id,
+			});
+			prevArchivedItemId = nextArchivedItemId;
+			// Only the restore direction is announced. An ARCHIVE needs none: the
+			// surfaces that must react to it already take it as a prop, and a
+			// NodeView that has not probed yet gets an honest 404 on its own.
+			if (!restoredItemId || !ws) return;
+			announceAttachmentParentRestored(ws, restoredItemId);
 		});
 	});
 

@@ -324,8 +324,16 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			 * type and state are independent and neither clobbers the other.
 			 */
 			let deleted = false;
+			// Bumped by EVERY authoritative deletion, and captured by the restore
+			// probe so a deletion landing mid-flight wins over a stale positive
+			// answer (BUG-2509 / Codex P1). A bare `deleted` re-check is not
+			// enough — the mark can be set and cleared again while one probe is in
+			// flight, and only a counter makes that visible to a continuation that
+			// looks once.
+			let deletionSeq = 0;
 			const markDeleted = (): void => {
 				deleted = true;
+				deletionSeq += 1;
 				wrapper.classList.add('attachment-missing');
 				// `disabled` is what makes the dead chip genuinely INERT (DR-12),
 				// not merely unclickable: a disabled button is unfocusable and
@@ -399,11 +407,29 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				if (event.workspaceSlug !== addr.workspaceSlug || event.itemId !== addr.itemId) return;
 				if (!deleted) return;
 				const forUuid = currentUuid;
-				revalidateAttachmentMetadata(addr.workspaceSlug, forUuid, this.options.getDownloadUrl, {
+				const probeWs = addr.workspaceSlug;
+				const seqAtStart = deletionSeq;
+				revalidateAttachmentMetadata(probeWs, forUuid, this.options.getDownloadUrl, {
 					cache: 'no-store',
 				}).then((result) => {
 					if (destroyed) return;
 					if (currentUuid !== forUuid) return; // superseded by a uuid swap
+					// Re-read the workspace rather than trusting the captured one: this
+					// chip outlives a workspace switch (the composer is reused), and an
+					// answer about ws-A's copy must not revive a chip now in ws-B.
+					if (this.options.address().workspaceSlug !== probeWs) return;
+					// A deletion confirmed while this HEAD was in flight is
+					// authoritative and wins over a stale positive answer — otherwise
+					// "restore probe starts → delete lands → probe resolves ok"
+					// re-enables a chip pointing at a row the server no longer has.
+					if (deletionSeq !== seqAtStart) return;
+					// `missing` is the authoritative answer this probe asked for, so it
+					// marks rather than doing nothing — which also settles two restore
+					// probes resolving out of order.
+					if (result.status === 'missing') {
+						markDeleted();
+						return;
+					}
 					if (result.status !== 'ok') return;
 					clearDeleted();
 					currentMime = result.mime;
