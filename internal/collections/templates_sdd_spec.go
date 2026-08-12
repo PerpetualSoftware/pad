@@ -21,7 +21,9 @@ import "encoding/json"
 const specPlaybookBody = `Draft a spec — either from a free-text topic or by graduating an existing
 Idea or Bug into one. Draft-first: the agent does the recon and produces a
 full draft before asking the user anything, then only asks about the gaps
-recon couldn't fill. Nothing gets created until the user approves in chat.
+recon couldn't fill. The draft is always presented in chat first — nothing
+is created until the user chooses to approve outright or circulate for
+review.
 
 ## Arguments
 
@@ -36,7 +38,7 @@ recon couldn't fill. Nothing gets created until the user approves in chat.
 Detect which mode from ` + "`target`" + `:
 
 - **Looks like a ref** (matches ` + "`^[A-Z]+-\\d+$`" + `) → resolve it (` + "`pad item show <target> --format json`" + `) and check its collection before deciding anything else:
-  - **Collection is the specs collection itself** → **resume mode**. This isn't a new draft — it's the continuation of an earlier ` + "`/pad spec`" + ` run (see Resume below). Never create a second spec for the same target.
+  - **Collection is the target collection for this run** (the resolved ` + "`collection`" + ` argument, default ` + "`specs`" + ` — check ` + "`pad collection list --format json`" + ` if the workspace renamed it, same as the ideas/bugs check below) → **resume mode**. This isn't a new draft — it's the continuation of an earlier ` + "`/pad spec`" + ` run (see Resume below). Never create a second spec for the same target.
   - **Collection is Ideas-like or Bugs-like** (slug ` + "`ideas`" + ` / ` + "`bugs`" + `, or — if the workspace renamed it — check ` + "`pad collection list --format json`" + ` for the collection the workspace actually uses for ideas/bugs) → **graduation mode**. The source item's body AND its full comment trail (` + "`pad item comments <target>`" + `) are the recon material — comment trails often carry the decision history that never made it into the body (design discussions, corrections, settled trade-offs). Read all of it before drafting.
   - **Any other collection** (e.g. a Task, a Doc) → **NOT graduation**. Ref resolution still succeeded, but the item isn't an Idea or a Bug, so nothing about it gets a status flip. Tell the user (e.g. "TASK-7 is a task, not an idea or bug — I'll use it as background context for a new spec instead of graduating it"), then fall through to new-topic mode using the item's body as extra recon material.
 - **Doesn't look like a ref, or doesn't resolve** → **new-topic mode**. Recon comes from the codebase and a workspace search instead of a source item.
@@ -44,7 +46,7 @@ Detect which mode from ` + "`target`" + `:
 ## Pre-flight
 
 1. **Confirm the target collection exists.** ` + "`pad collection list --format json`" + `. If ` + "`collection`" + ` doesn't resolve, ask which one to use.
-2. **Graduation mode: load the source item fully.** ` + "`pad item show <target> --format markdown`" + ` plus ` + "`pad item comments <target>`" + `. Read everything — this is the recon, not a formality.
+2. **Graduation mode: load the source item fully, then check for an existing graduation before creating anything.** ` + "`pad item show <target> --format markdown`" + ` plus ` + "`pad item comments <target>`" + `. Read everything — this is the recon, not a formality. Then, before drafting: does the trail already show a "Graduating into <spec-ref>" comment (written by an earlier run of this playbook's step 5)? If not, also search the specs collection (` + "`pad item search \"<target>\" --format json`" + ` scoped to specs, or list-and-scan if search misses it) for a spec whose Context section names this source — the skeleton always names the source there, so this finds even a spec created before a crash wiped out the marker comments (see step 5's note on this). If either check finds one: this run is really a resume, not a fresh draft — switch to resume mode with that spec as the target and skip straight to Resume below. Don't create a second spec for the same source.
 3. **New-topic mode: search for overlap.** ` + "`pad item search \"<target>\" --format json`" + ` across specs, ideas, and docs. If a closely related spec already exists (even a draft), tell the user and ask whether to extend it instead of starting fresh.
 4. **Resume mode: load the spec fully.** ` + "`pad item show <target> --format markdown`" + ` plus ` + "`pad item comments <target>`" + `. If this spec was created via graduation, step 5 leaves a graduation-link comment on it unconditionally at creation time — Reconcile (see Resume below) needs it, so load the comments before doing anything else.
 
@@ -59,7 +61,7 @@ Skip the Conversation section entirely; there's nothing to draft. Two parts: adj
   - If not yet: report the spec's current state (open questions, who's reviewing, etc. if known) and stop here — skip Reconcile, nothing changed.
 - **` + "`draft`" + `:** review never started. Report the draft and offer the same choice step 5 originally did — approve outright or circulate for review — and handle whichever the user picks the same way step 5 does.
 - **` + "`approved`" + ` or ` + "`implemented`" + `:** nothing to change — proceed straight to Reconcile below. This is deliberate: it's what makes graduation resolve even when nobody used this playbook to approve the spec (e.g. a plain manual ` + "`pad item update <target> --status approved`" + `).
-- **` + "`superseded`" + `:** report that and point at whatever spec replaced it, if findable, and stop — skip Reconcile.
+- **` + "`superseded`" + `:** report that and point at whatever spec replaced it, if findable. Before stopping, check this spec's own graduation marker (loaded in pre-flight): if it names a source that's still open, don't strand it — a superseded spec shouldn't itself flip anything to terminal, but the pending graduation carries forward to whichever spec replaced it. If a successor is findable, comment it with the same "Graduated from <source-ref> — ..." marker (citing the successor's own ref) so the successor's future Reconcile picks it up when IT gets approved. If no successor is findable, tell the user the graduation is stranded and needs manual handling. Either way, stop — skip this spec's own Reconcile.
 
 ### Reconcile (runs on every resume that reaches this point, regardless of which branch above ran)
 
@@ -123,14 +125,22 @@ pad item create <collection> "<title>" --field version="v1" --field area="<area>
 EOF
 ` + "```" + `
 
-**Graduation mode only:** immediately record the graduation link, before
-anything else runs — this needs to exist no matter which branch below
-happens next, or whether the run gets interrupted entirely between here
-and either branch completing:
+**Graduation mode only:** immediately record the graduation link on BOTH
+items, before anything else runs — this needs to exist no matter which
+branch below happens next, or whether the run gets interrupted entirely
+between here and either branch completing:
 
 ` + "```bash" + `
 pad item update <new-spec-ref> --comment "Graduated from <source-ref> — when this spec reaches approved, flip <source-ref> to its terminal status citing <new-spec-ref>."
+pad item update <source-ref> --comment "Graduating into <new-spec-ref> — pending approval."
 ` + "```" + `
+
+This shrinks the crash window but doesn't close it — a crash between
+` + "`pad item create`" + ` and these two comments is still possible. It isn't
+fatal: pre-flight step 2's existing-graduation check finds the spec by its
+Context section (which always names the source, marker or not) on the next
+run, so the recon check is the actual recovery mechanism, not atomicity
+this playbook can't promise.
 
 If the user approved outright in step 4, follow immediately with:
 
