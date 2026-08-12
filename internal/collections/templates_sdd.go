@@ -56,7 +56,7 @@ const specContentTemplate = `## Context
 ## Acceptance criteria
 
 - AC-1: <a statement an agent or reviewer could actually check against the diff or running behavior — if you can't say how you'd verify it, it belongs in Goals, not here>
-- AC-2: ...
+- AC-2: <the next verifiable criterion>
 
 ## Open questions
 
