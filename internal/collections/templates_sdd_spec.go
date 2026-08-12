@@ -46,7 +46,7 @@ Detect which mode from ` + "`target`" + `:
 ## Pre-flight
 
 1. **Confirm the target collection exists.** ` + "`pad collection list --format json`" + `. If ` + "`collection`" + ` doesn't resolve, ask which one to use.
-2. **Graduation mode: load the source item fully, then check for an existing graduation before creating anything.** ` + "`pad item show <target> --format markdown`" + ` plus ` + "`pad item comments <target>`" + `. Read everything — this is the recon, not a formality. Then, before drafting: does the trail already show a "Graduating into <spec-ref>" comment (written by an earlier run of this playbook's step 5)? If not, also search the specs collection (` + "`pad item search \"<target>\" --format json`" + ` scoped to specs, or list-and-scan if search misses it) for a spec whose Context section names this source — the skeleton always names the source there, so this finds even a spec created before a crash wiped out the marker comments (see step 5's note on this). If either check finds one: this run is really a resume, not a fresh draft — switch to resume mode with that spec as the target. Repair before proceeding if needed: if the found spec is missing either side's marker comment (the crash-window case from step 5), write both now — ` + "`pad item update <found-spec-ref> --comment \"Graduated from <target> — when this spec reaches approved, flip <target> to its terminal status citing <found-spec-ref>.\"`" + ` and ` + "`pad item update <target> --comment \"Graduating into <found-spec-ref> — pending approval.\"`" + ` — so Reconcile has what it needs and the recovery claim in step 5 is actually true, not just discoverable-but-inert. Then skip straight to Resume below, running its own pre-flight first (including loading the spec's comments — Reconcile depends on them). Don't create a duplicate within the resolved specs collection for the same source.
+2. **Graduation mode: load the source item fully, then check for an existing graduation before creating anything.** ` + "`pad item show <target> --format markdown`" + ` plus ` + "`pad item comments <target>`" + `. Read everything — this is the recon, not a formality. Then, before drafting: does the trail already show a "Graduating into <spec-ref>" comment (written by an earlier run of this playbook's step 5)? If not, also search the specs collection (` + "`pad item search \"<target>\" --format json`" + ` scoped to specs, or list-and-scan if search misses it) for a spec whose Context section names this source — step 3 mandates that citation in graduation mode precisely so this search works, and it finds even a spec created before a crash wiped out the marker comments (see step 5's note on this). If either check finds one: this run is really a resume, not a fresh draft — switch to resume mode with that spec as the target. Repair before proceeding if needed: if the found spec is missing either side's marker comment (the crash-window case from step 5), write both now — ` + "`pad item update <found-spec-ref> --comment \"Graduated from <target> — when this spec reaches approved, flip <target> to its terminal status citing <found-spec-ref>.\"`" + ` and ` + "`pad item update <target> --comment \"Graduating into <found-spec-ref> — pending approval.\"`" + ` — so Reconcile has what it needs and the recovery claim in step 5 is actually true, not just discoverable-but-inert. Then skip straight to Resume below, running its own pre-flight first (including loading the spec's comments — Reconcile depends on them). Don't create a duplicate within the resolved specs collection for the same source.
 3. **New-topic mode: search for overlap.** ` + "`pad item search \"<target>\" --format json`" + ` across specs, ideas, and docs. If a closely related spec already exists (even a draft), tell the user and ask whether to extend it instead of starting fresh.
 4. **Resume mode: load the spec fully.** ` + "`pad item show <target> --format markdown`" + ` plus ` + "`pad item comments <target>`" + `. If this spec was created via graduation, step 5 leaves a graduation-link comment on it unconditionally at creation time — Reconcile (see Resume below) needs it, so load the comments before doing anything else.
 
@@ -61,7 +61,7 @@ Skip the Conversation section entirely; there's nothing to draft. Two parts: adj
   - If not yet: report the spec's current state (open questions, who's reviewing, etc. if known) and stop here — skip Reconcile, nothing changed.
 - **` + "`draft`" + `:** review never started. Report the draft and offer the same choice step 5 originally did — approve outright or circulate for review — and handle whichever the user picks the same way step 5 does.
 - **` + "`approved`" + ` or ` + "`implemented`" + `:** nothing to change — proceed straight to Reconcile below. This is deliberate: it's what makes graduation resolve even when nobody used this playbook to approve the spec (e.g. a plain manual ` + "`pad item update <target> --status approved`" + `).
-- **` + "`superseded`" + `:** report that and point at whatever spec replaced it, if findable. Before stopping, check this spec's own graduation marker (loaded in pre-flight): if it names a source that's still open, don't strand it — a superseded spec shouldn't itself flip anything to terminal, but the pending graduation carries forward to whichever spec replaced it. If a successor is findable, comment it with the same "Graduated from <source-ref> — ..." marker (citing the successor's own ref). If the successor is already ` + "`approved`" + ` or ` + "`implemented`" + `, don't wait for a hypothetical future rerun — run Reconcile on it right now (it's idempotent, and the source ref is already in hand). Otherwise, the successor's own future Reconcile picks up the marker once it reaches approved. If no successor is findable, tell the user the graduation is stranded and needs manual handling. Either way, stop — skip this spec's own Reconcile.
+- **` + "`superseded`" + `:** report that and point at whatever spec replaced it, if findable. Before stopping, check this spec's own graduation marker (loaded in pre-flight): if it names a source that's still open, don't strand it — a superseded spec shouldn't itself flip anything to terminal, but the pending graduation carries forward. Find the LIVE HEAD of the supersession chain, not just the immediate successor: if the immediate successor is itself ` + "`superseded`" + `, follow its successor, and so on — bounded (cap at ~10 hops); if the chain loops back on itself or dead-ends (a successor ref that doesn't resolve) before reaching a live spec, stop walking and treat it as no successor found. Once a live head is found, it's the target for the rest of this branch: comment it with the same "Graduated from <source-ref> — ..." marker (citing its own ref). If it's already ` + "`approved`" + ` or ` + "`implemented`" + `, don't wait for a hypothetical future rerun — run Reconcile on it right now (it's idempotent, and the source ref is already in hand). Otherwise, its own future Reconcile picks up the marker once it reaches approved. If no live head is findable (chain dead-ends, loops, or there's no successor at all), tell the user the graduation is stranded and needs manual handling. Either way, stop — skip this spec's own Reconcile.
 
 ### Reconcile (runs on every resume that reaches this point, regardless of which branch above ran)
 
@@ -101,6 +101,14 @@ Assemble the draft using the collection's content skeleton (Context /
 Goals / Non-goals / Specified behavior / Acceptance criteria / Open
 questions) and post the WHOLE thing in chat before creating anything.
 
+**Graduation mode: the Context section MUST cite the source ref by ID**
+(e.g. "Grew from IDEA-12"), not just describe it in prose. The skeleton's
+own hint says "(if any)" because most specs aren't graduated — but for
+one that is, this citation is what makes crash recovery possible at all:
+it's the search key pre-flight step 2 and step 5's recovery path rely on
+to find this spec by its source. A description without the ID doesn't
+work as a search key.
+
 Two discipline passes before presenting:
 
 - **MUST→AC self-audit.** Every MUST statement in Specified behavior needs at least one AC-N that would catch a violation of it. For each orphaned MUST, either add the missing criterion or downgrade the statement to a SHOULD or a Goal — don't present a draft with untested MUSTs.
@@ -138,10 +146,10 @@ pad item update <source-ref> --comment "Graduating into <new-spec-ref> — pendi
 This shrinks the crash window but doesn't close it — a crash between
 ` + "`pad item create`" + ` and these two comments is still possible. It isn't
 fatal: pre-flight step 2's existing-graduation check finds the spec by its
-Context section (which always names the source, marker or not) on the next
-run, AND repairs any missing marker before resuming — so the recon check
-plus repair is the actual recovery mechanism, not atomicity this playbook
-can't promise.
+Context section on the next run — the source-ID citation step 3 mandates
+in graduation mode is the search key, marker or not — AND repairs any
+missing marker before resuming, so the recon check plus repair is the
+actual recovery mechanism, not atomicity this playbook can't promise.
 
 If the user approved outright in step 4, follow immediately with:
 
