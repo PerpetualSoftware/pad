@@ -1,48 +1,58 @@
 package collections
 
 // decomposePlaybookBody is the de-personalized body of the library
-// `decompose` playbook (PLAN-1397 T5). Takes a plan and turns its
-// implicit work into explicit child task items, with the user's
-// approval at every step.
+// `decompose` playbook (PLAN-1397 T5). Takes a plan (or, since IDEA-2527,
+// a spec) and turns its implicit work into explicit child task items,
+// with the user's approval at every step.
 //
-// Pairs naturally with the `plan` playbook (PLAN-1397 T4): `/pad plan`
-// creates a plan with a "## Task breakdown" section in the body;
-// `/pad decompose <PLAN-ref>` reads that section (plus any other
-// implicit work the body describes) and turns it into actual TASK
-// items linked back to the plan.
+// Pairs naturally with the `plan` playbook (PLAN-1397 T4) and, in the
+// `spec` template, with the `spec` playbook (IDEA-2527): both create a
+// parent item with a breakdown of work — a "## Task breakdown" section for
+// plans, a "## Implementation plan" section and/or "## Acceptance
+// criteria" for specs — and `/pad decompose <ref>` reads whichever is
+// present and turns it into actual TASK items linked back via `--parent`.
+//
+// Shared across every software-category template (startup, scrum,
+// product, spec) via softwareStarterPlaybookTitles / GetLibraryPlaybook
+// title lookup — the plan-or-spec generalization below is additive
+// wording only, so it stays coherent for templates with no Specs
+// collection (the spec-specific bullets simply never match their bodies).
 //
 // Mirrors the "Decomposition: 'Break plan X into tasks'" workflow in
 // skills/pad/SKILL.md so the conversational and invokable forms stay
 // in lockstep. Updates to one should propagate to the other (T7 docs
 // pass covers this).
-const decomposePlaybookBody = `Turn a plan into a set of child task items. The agent reads the plan
-body, proposes a task list, gets the user's approval, and creates the
-tasks linked back to the plan via ` + "`--parent`" + `.
+const decomposePlaybookBody = `Turn a plan or spec into a set of child task items. The agent reads the
+source item's body, proposes a task list, gets the user's approval, and
+creates the tasks linked back to the source via ` + "`--parent`" + `.
 
-This is the natural follow-up to the ` + "`plan`" + ` playbook: that one
-creates the plan with a breakdown in the body; this playbook turns
-that breakdown into actionable items the team can claim, work, and
-ship.
+This is the natural follow-up to the ` + "`plan`" + ` or ` + "`spec`" + `
+playbook: those create the parent item with a breakdown (a plan's task
+breakdown, or a spec's implementation plan / acceptance criteria) in the
+body; this playbook turns that breakdown into actionable items the team
+can claim, work, and ship.
 
 ## Arguments
 
-- ` + "`target`" + ` (required, ref) — the plan to decompose. Must resolve to an item in the plans-like collection.
+- ` + "`target`" + ` (required, ref) — the plan or spec to decompose. Must resolve to an item in the plans-like or specs-like collection.
 - ` + "`dry-run`" + ` (flag, default=false) — propose the task list but don't create anything. Use this to iterate on the proposed breakdown without committing.
 - ` + "`collection`" + ` (optional, string, default=tasks) — collection to create child items in. Some workspaces use ` + "`bugs`" + `, ` + "`work-items`" + `, or domain-specific equivalents.
 
 ## Pre-flight
 
-1. **Resolve the target.** Run ` + "`pad item show <target> --format markdown`" + ` and read the full body. If the ref doesn't resolve or isn't a plan-like item, stop and report — don't guess.
+1. **Resolve the target.** Run ` + "`pad item show <target> --format markdown`" + ` and read the full body. If the ref doesn't resolve or isn't a plan-like or spec-like item, stop and report — don't guess.
 2. **Verify the child collection exists.** Run ` + "`pad collection list --format json`" + ` and confirm the ` + "`collection`" + ` argument resolves. If it doesn't, ask the user which collection to use.
-3. **Load existing children.** Run ` + "`pad item list <collection> --parent <target> --all --format json`" + ` to see what's already linked. The plan may have been partially decomposed before — don't duplicate.
+3. **Load existing children.** Run ` + "`pad item list <collection> --parent <target> --all --format json`" + ` to see what's already linked. The source item may have been partially decomposed before — don't duplicate.
 
 ## Conversation
 
-### 1. Analyze the plan body
+### 1. Analyze the source body
 
-Read the plan's content and identify actionable work. Look for:
+Read the source item's content and identify actionable work. Look for:
 
-- An explicit ` + "`## Task breakdown`" + `, ` + "`## Tasks`" + `, or ` + "`## Task ordering`" + ` section — these are the easy wins; each bullet/line is a task candidate.
+- An explicit ` + "`## Task breakdown`" + `, ` + "`## Tasks`" + `, or ` + "`## Task ordering`" + ` section (the plan shape) — these are the easy wins; each bullet/line is a task candidate.
+- An explicit ` + "`## Implementation plan`" + ` section (the spec shape) — same treatment; each bullet/line is a task candidate.
+- No implementation plan section on a spec: fall back to ` + "`## Acceptance criteria`" + ` — one task per AC-N is a reasonable default breakdown when nothing more specific is given. Note in the proposal which ACs each task covers.
 - Checklist-style bullets in the body (` + "`- [ ] foo`" + ` or ` + "`1. foo`" + `).
 - Scope bullets that imply work (e.g. "Add OAuth provider config" in a scope list is a task).
 - Dependency markers in the body (e.g. "T1 is foundational", "depends on …", "after the migration") — capture these for step 5.
@@ -51,9 +61,9 @@ Read the plan's content and identify actionable work. Look for:
 
 Compare your candidate list against the existing children loaded in pre-flight. For each existing child whose title matches a candidate, drop the candidate (the work is already tracked). For each candidate without a matching existing child, keep it.
 
-If the existing children fully cover the plan, tell the user the plan is already decomposed and offer to:
+If the existing children fully cover the source item, tell the user it's already decomposed and offer to:
 - Run a status check (` + "`pad item list <collection> --parent <target> --all`" + `)
-- Identify any drift between the plan body and the children
+- Identify any drift between the source body and the children
 - Stop without creating anything
 
 ### 3. Propose the task list
@@ -61,13 +71,13 @@ If the existing children fully cover the plan, tell the user the plan is already
 Present the candidates as a numbered list. For each, include:
 
 - **Title** — short, action-oriented (one branch / one PR / one deliverable)
-- **Priority** — inferred from the plan body where possible (foundational tasks → high, content/polish → medium/low)
+- **Priority** — inferred from the source body where possible (foundational tasks → high, content/polish → medium/low)
 - **Dependency hint** — if step 1 surfaced ordering, note it (e.g. "T2 depends on T1")
 
 Sample:
 
 ` + "```" + `
-Proposed tasks for PLAN-N:
+Proposed tasks for <target-ref>:
   1. [high]   Foundational: <T1 title>
   2. [medium] <T2 title>           (depends on #1)
   3. [medium] <T3 title>           (depends on #1)
@@ -106,7 +116,7 @@ This records the dependency so downstream queries (` + "`pad item deps`" + `, ` 
 Summarize what was created:
 
 ` + "```" + `
-Decomposed PLAN-N into 5 tasks:
+Decomposed <target-ref> into 5 tasks:
   - TASK-X — Foundational: …
   - TASK-Y — …
   - …
@@ -115,16 +125,16 @@ Dependencies wired:
   - TASK-Y blocks TASK-Z
   - …
 
-Next: run the ship playbook on PLAN-N to start working through them (shortcut: ` + "`/pad ship PLAN-N`" + ` in Claude Code), or open TASK-X to dive into the first task.
+Next: run the ship playbook on <target-ref> to start working through them (shortcut: ` + "`/pad ship <target-ref>`" + ` in Claude Code), or open TASK-X to dive into the first task.
 ` + "```" + `
 
 ## Philosophy
 
-- **Reflect, don't invent.** The tasks should come from what the plan actually says, not from what the agent thinks a plan like this usually needs. If the plan is underspecified, surface that — don't paper over it with generic tasks.
+- **Reflect, don't invent.** The tasks should come from what the source item actually says, not from what the agent thinks work like this usually needs. If the source item is underspecified, surface that — don't paper over it with generic tasks.
 - **One unit of meaningful work per task.** What "meaningful" means depends on the workspace (a branch/PR for code; an interview round for hiring; a draft section for content). Check the workspace's conventions for sizing rules.
 - **Confirm before creating.** Especially in bulk operations — once 8 tasks are in the workspace, cleaning them up is a chore.
 - **Dependencies make ` + "`pad project next`" + ` smarter.** Wiring them up at decomposition time means the team gets accurate "what to work on now" guidance without manual triage later.
-- **Dry-run is cheap.** When the plan is large or ambiguous, run dry-run first to iterate on the breakdown before committing.
+- **Dry-run is cheap.** When the source item is large or ambiguous, run dry-run first to iterate on the breakdown before committing.
 `
 
 // decomposePlaybookArguments mirrors the body's `## Arguments`
