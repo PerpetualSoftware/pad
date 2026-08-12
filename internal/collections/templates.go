@@ -393,6 +393,20 @@ var (
 	SoftwarePlaybookScopes     = []string{"all", "backend", "frontend", "mobile", "devops"}
 )
 
+// SDD (spec-driven development) trigger vocabularies for the `spec`
+// template (IDEA-2527). These extend the software vocab above with the
+// three moments a spec's lifecycle introduces — drafting, approval, and
+// post-approval edits — rather than replacing it, since a spec workspace
+// is still a software workspace underneath: on-implement/on-pr-create/etc.
+// all still apply, they're just joined by on-spec-draft/on-spec-approve/
+// on-spec-change.
+var (
+	SpecConventionTriggers = append(copyStrings(SoftwareConventionTriggers), "on-spec-draft", "on-spec-approve", "on-spec-change")
+	SpecConventionScopes   = SoftwareConventionScopes
+	SpecPlaybookTriggers   = append(copyStrings(SoftwarePlaybookTriggers), "on-spec-draft", "on-spec-approve", "on-spec-change")
+	SpecPlaybookScopes     = SoftwarePlaybookScopes
+)
+
 // PlaybookInvocationSlugPattern is the canonical regex for playbook
 // invocation_slug values: lowercase letters, digits, and hyphens; no
 // leading/trailing hyphen; minimum two characters so single-letter slugs
@@ -829,6 +843,7 @@ var templates = []WorkspaceTemplate{
 	},
 	hiringTemplate(),
 	interviewingTemplate(),
+	specTemplate(),
 	{
 		// blank — minimal entry-point for the /pad onboard playbook
 		// flow (PLAN-1496 / TASK-1498; originally IDEA-1479).
