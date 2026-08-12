@@ -30,7 +30,7 @@ import (
 // newlines collapse to spaces, so a value carrying a line break can't inject
 // document structure. Pipes are left alone: they're only special inside a table.
 func SanitizeMarkdownText(s string) string {
-	s = sgrPattern.ReplaceAllString(s, "")
+	s = stripANSI(s)
 	s = strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(s)
 	return strings.TrimSpace(s)
 }
@@ -65,6 +65,37 @@ func writeMarkdownSeparator(w io.Writer, n int) {
 		cells[i] = "---"
 	}
 	writeMarkdownRow(w, cells...)
+}
+
+// RenderMarkdownTable writes headers, a separator, and one row per entry as a
+// GitHub-flavored markdown table. Every cell is escaped, so callers pass raw
+// values and never pre-format. Rows shorter than the header are padded with
+// empty cells and longer ones are truncated, so a ragged row can't shift the
+// column count and corrupt the table.
+//
+// This is the shared spine for the list commands' markdown output; a command
+// only has to name its columns and map its rows.
+func RenderMarkdownTable(w io.Writer, headers []string, rows [][]string) {
+	if len(headers) == 0 {
+		return
+	}
+
+	escaped := make([]string, len(headers))
+	for i, h := range headers {
+		escaped[i] = escapeMarkdownCell(h)
+	}
+	writeMarkdownRow(w, escaped...)
+	writeMarkdownSeparator(w, len(headers))
+
+	for _, row := range rows {
+		cells := make([]string, len(headers))
+		for i := range cells {
+			if i < len(row) {
+				cells[i] = escapeMarkdownCell(row[i])
+			}
+		}
+		writeMarkdownRow(w, cells...)
+	}
 }
 
 // PrintItemMarkdown prints items as a markdown table on stdout.

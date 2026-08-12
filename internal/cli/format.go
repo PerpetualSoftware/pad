@@ -133,20 +133,41 @@ func RelativeTime(t time.Time) string {
 	}
 }
 
-// sgrPattern matches ANSI SGR (Select Graphic Rendition) escape sequences —
-// the color/reset codes fatih/color emits on a TTY. Compiled once and reused
-// to measure the visible width of a colorized string. Declared at package
-// scope so the compile cost is paid a single time.
-var sgrPattern = regexp.MustCompile("\x1b\\[[0-9;]*m")
+// ansiPattern matches the zero-width escape and control sequences that can
+// appear in a string we are about to measure or render. Compiled once at package
+// scope so the cost is paid a single time.
+//
+// It deliberately covers more than SGR (#1076). The original pattern matched
+// only `ESC [ … m` — the colour codes fatih/color emits — so a non-SGR CSI
+// sequence, an OSC-8 hyperlink, or a stray control byte carried in stored data
+// survived "ANSI stripping" and either miscounted a table column or leaked into
+// markdown output that promised to be escape-free.
+//
+// The alternation is ordered: OSC first (it ends at BEL or ST and may contain
+// bytes the later alternatives would otherwise claim), then CSI, then the
+// two-character Fe escapes, then any remaining stray C0 control or DEL. TAB, LF,
+// and CR are excluded — they are meaningful whitespace, and callers that need
+// them normalized (SanitizeMarkdownText) handle them explicitly.
+var ansiPattern = regexp.MustCompile(
+	"\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)" + // OSC … BEL | ST  (e.g. OSC-8 hyperlinks)
+		"|\x1b\\[[0-9;?:<=>]*[ -/]*[@-~]" + // CSI … final byte (SGR, cursor moves, erases)
+		"|\x1b[@-Z\\\\-_]" + // two-character Fe escapes
+		"|[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]") // stray C0 controls + DEL (includes bare ESC)
 
-// displayWidth returns the visible column width of s: ANSI SGR escape
+// stripANSI removes escape and control sequences from s, leaving the visible
+// text. TAB, LF, and CR are preserved.
+func stripANSI(s string) string {
+	return ansiPattern.ReplaceAllString(s, "")
+}
+
+// displayWidth returns the visible column width of s: escape and control
 // sequences are stripped, then the remaining runes are counted. Every rune is
 // approximated as one column — emoji and other wide runes therefore
 // under-count. That is a pre-existing limitation of the CLI's table rendering
 // (matching the old tabwriter behavior) and is intentionally out of scope; the
 // alternative is a new go-runewidth dependency we don't want to add.
 func displayWidth(s string) int {
-	return utf8.RuneCountInString(sgrPattern.ReplaceAllString(s, ""))
+	return utf8.RuneCountInString(stripANSI(s))
 }
 
 // padCell left-aligns s in a column of the given visible width by appending
@@ -251,7 +272,7 @@ func renderItemTable(w io.Writer, items []models.Item, maxWidth int) {
 		// styling). This keeps displayWidth == rune count for the title, so
 		// truncateTitle can slice by runes without ever cutting mid-escape or
 		// mis-accounting the width budget.
-		r.title = sgrPattern.ReplaceAllString(item.Title, "")
+		r.title = stripANSI(item.Title)
 		r.archived = item.DeletedAt != nil
 
 		status, priority := itemStatusPriority(item.Fields)

@@ -936,6 +936,50 @@ enriched activity feed the web UI uses (item refs, titles, change details).`,
 				return nil
 			}
 
+			if formatFlag == "markdown" {
+				// Columns mirror what the terminal form shows: timestamp, actor,
+				// action, the item it touched, and the field-level changes.
+				rows := make([][]string, 0, len(activities))
+				for _, a := range activities {
+					actorName := a.ActorName
+					if actorName == "" {
+						actorName = a.Actor
+					}
+					if actorName == "" {
+						actorName = "unknown"
+					}
+
+					target := a.ItemTitle
+					if a.ItemRef != "" {
+						target = a.ItemRef
+						if a.ItemTitle != "" {
+							target += " " + a.ItemTitle
+						}
+					}
+
+					changes := ""
+					if a.Metadata != "" {
+						var meta struct {
+							Changes string `json:"changes"`
+						}
+						if json.Unmarshal([]byte(a.Metadata), &meta) == nil {
+							changes = meta.Changes
+						}
+					}
+
+					rows = append(rows, []string{
+						a.CreatedAt.Format("2006-01-02 15:04"),
+						actorName,
+						a.Action,
+						target,
+						changes,
+					})
+				}
+				cli.RenderMarkdownTable(os.Stdout,
+					[]string{"When", "Actor", "Action", "Item", "Changes"}, rows)
+				return nil
+			}
+
 			dim := color.New(color.Faint)
 			bold := color.New(color.Bold)
 			cyan := color.New(color.FgCyan)

@@ -2320,9 +2320,43 @@ func commentsCmd() *cobra.Command {
 				return cli.PrintJSON(comments)
 			}
 
+			if formatFlag == "markdown" {
+				renderCommentsMarkdown(os.Stdout, comments)
+				return nil
+			}
+
 			cli.PrintCommentTable(comments)
 			return nil
 		},
+	}
+}
+
+// renderCommentsMarkdown is the markdown counterpart of cli.PrintCommentTable.
+// Comments are not tabular — the terminal form prints an attribution line then
+// the body — so the markdown form keeps that shape rather than forcing a table.
+//
+// The body is written VERBATIM, not escaped: a comment body is authored as
+// markdown, so escaping it would turn its lists and code fences into literal
+// text. Only the attribution line, which we construct, is sanitized.
+func renderCommentsMarkdown(w io.Writer, comments []models.Comment) {
+	if len(comments) == 0 {
+		fmt.Fprintln(w, "No comments.")
+		return
+	}
+
+	for i, c := range comments {
+		badge := c.CreatedBy
+		if c.Author != "" && c.Author != c.CreatedBy {
+			badge = c.Author + " (" + c.CreatedBy + ")"
+		}
+		fmt.Fprintf(w, "**%s** · %s via %s\n\n",
+			cli.SanitizeMarkdownText(badge),
+			cli.SanitizeMarkdownText(cli.RelativeTime(c.CreatedAt)),
+			cli.SanitizeMarkdownText(c.Source))
+		fmt.Fprintln(w, c.Body)
+		if i < len(comments)-1 {
+			fmt.Fprintln(w)
+		}
 	}
 }
 
@@ -2579,6 +2613,12 @@ Example:
 			if ref != "" {
 				label = ref + " " + item.Title
 			}
+
+			if formatFlag == "markdown" {
+				renderDepsMarkdown(os.Stdout, label, blocks, blockedBy)
+				return nil
+			}
+
 			fmt.Printf("Dependencies for %s\n\n", cli.Bold.Sprint(label))
 
 			blocksHeader := color.New(color.FgYellow, color.Bold)
@@ -2609,6 +2649,38 @@ Example:
 			return nil
 		},
 	}
+}
+
+// renderDepsMarkdown is the markdown counterpart of `pad item deps`. The
+// terminal form is two coloured sections rather than a table, so markdown keeps
+// the sections and uses lists — colour is what carried the direction (yellow ->
+// out, red <- in), and headings carry it instead.
+func renderDepsMarkdown(w io.Writer, label string, blocks, blockedBy []models.ItemLink) {
+	fmt.Fprintf(w, "# Dependencies for %s\n\n", cli.SanitizeMarkdownText(label))
+
+	section := func(heading string, titles []string) {
+		fmt.Fprintf(w, "## %s\n\n", heading)
+		if len(titles) == 0 {
+			fmt.Fprint(w, "_none_\n\n")
+			return
+		}
+		for _, t := range titles {
+			fmt.Fprintf(w, "- %s\n", cli.SanitizeMarkdownText(t))
+		}
+		fmt.Fprintln(w)
+	}
+
+	outgoing := make([]string, 0, len(blocks))
+	for _, l := range blocks {
+		outgoing = append(outgoing, l.TargetTitle)
+	}
+	incoming := make([]string, 0, len(blockedBy))
+	for _, l := range blockedBy {
+		incoming = append(incoming, l.SourceTitle)
+	}
+
+	section("Blocks", outgoing)
+	section("Blocked by", incoming)
 }
 
 func unblockCmd() *cobra.Command {

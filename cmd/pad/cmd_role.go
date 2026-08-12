@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -42,6 +43,22 @@ func roleListCmd() *cobra.Command {
 				fmt.Println("Create one with: pad role create 'Implementer' --description 'Writes code, builds features'")
 				return nil
 			}
+			if formatFlag == "markdown" {
+				rows := make([][]string, 0, len(roles))
+				for _, r := range roles {
+					name := r.Name
+					if r.Icon != "" {
+						name = r.Icon + " " + name
+					}
+					rows = append(rows, []string{
+						r.Slug, name, r.Description, r.Tools, strconv.Itoa(r.ItemCount),
+					})
+				}
+				cli.RenderMarkdownTable(os.Stdout,
+					[]string{"Slug", "Name", "Description", "Tools", "Items"}, rows)
+				return nil
+			}
+
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "SLUG\tNAME\tDESCRIPTION\tTOOLS\tITEMS")
 			for _, r := range roles {
