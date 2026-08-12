@@ -46,18 +46,32 @@ Detect which mode from ` + "`target`" + `:
 1. **Confirm the target collection exists.** ` + "`pad collection list --format json`" + `. If ` + "`collection`" + ` doesn't resolve, ask which one to use.
 2. **Graduation mode: load the source item fully.** ` + "`pad item show <target> --format markdown`" + ` plus ` + "`pad item comments <target>`" + `. Read everything — this is the recon, not a formality.
 3. **New-topic mode: search for overlap.** ` + "`pad item search \"<target>\" --format json`" + ` across specs, ideas, and docs. If a closely related spec already exists (even a draft), tell the user and ask whether to extend it instead of starting fresh.
-4. **Resume mode: load the spec fully.** ` + "`pad item show <target> --format markdown`" + ` plus ` + "`pad item comments <target>`" + `. The comments are where a pending graduation marker from an earlier circulate branch (step 5) would live — check for one before doing anything else.
+4. **Resume mode: load the spec fully.** ` + "`pad item show <target> --format markdown`" + ` plus ` + "`pad item comments <target>`" + `. If this spec was created via graduation, step 5 leaves a graduation-link comment on it unconditionally at creation time — Reconcile (see Resume below) needs it, so load the comments before doing anything else.
 
 ## Resume — target is an existing spec
 
-Skip the Conversation section entirely; there's nothing to draft. Branch on the spec's current status instead:
+Skip the Conversation section entirely; there's nothing to draft. Two parts: adjust the spec's status per its current state (below), then always run Reconcile.
 
-- **` + "`in-review`" + `:** this is the normal case — resuming a draft that was circulated for review. Ask the user whether review is done and they want to approve now.
-  - If yes: ` + "`pad item update <target> --status approved --comment \"Approved after review.\"`" + `. Then check the comments loaded in pre-flight for a "Graduation pending approval" marker. If one's there, complete the graduation now — same mechanics as step 6 below, using the source ref named in the marker. Then offer the decompose hand-off (step 7).
-  - If not yet: report the spec's current state (open questions, who's reviewing, etc. if known) and stop — don't force approval.
+### Adjust status
+
+- **` + "`in-review`" + `:** the normal case — resuming a draft that was circulated for review. Ask the user whether review is done and they want to approve now.
+  - If yes: ` + "`pad item update <target> --status approved --comment \"Approved after review.\"`" + `.
+  - If not yet: report the spec's current state (open questions, who's reviewing, etc. if known) and stop here — skip Reconcile, nothing changed.
 - **` + "`draft`" + `:** review never started. Report the draft and offer the same choice step 5 originally did — approve outright or circulate for review — and handle whichever the user picks the same way step 5 does.
-- **` + "`approved`" + ` or ` + "`implemented`" + `:** already resolved, nothing to resume. Report the status and point at the natural next step (decompose if approved and not yet decomposed, ` + "`/pad verify`" + ` if implemented and not yet verified).
-- **` + "`superseded`" + `:** report that and point at whatever spec replaced it, if findable.
+- **` + "`approved`" + ` or ` + "`implemented`" + `:** nothing to change — proceed straight to Reconcile below. This is deliberate: it's what makes graduation resolve even when nobody used this playbook to approve the spec (e.g. a plain manual ` + "`pad item update <target> --status approved`" + `).
+- **` + "`superseded`" + `:** report that and point at whatever spec replaced it, if findable, and stop — skip Reconcile.
+
+### Reconcile (runs on every resume that reaches this point, regardless of which branch above ran)
+
+If this spec's status is now ` + "`approved`" + ` or ` + "`implemented`" + ` AND its comments (loaded in pre-flight) name a graduation source that hasn't already reached ITS OWN terminal status: complete the graduation — flip the source item to whatever its own collection schema defines as terminal (check ` + "`pad collection list --format json`" + ` for the source's collection's status field ` + "`terminal_options`" + `; if more than one option could apply, ask the user which fits), with a comment citing this spec:
+
+` + "```bash" + `
+pad item update <source-ref> --status <its-actual-terminal-status> --comment "Graduated into <spec-ref>."
+` + "```" + `
+
+Idempotent — if the source is already at its terminal status, or there's no graduation marker at all (a non-graduation spec), there's nothing to do; continue silently. This single rule is what makes graduation resolve regardless of how this resume was reached: a circulated draft finally getting approved, a rerun after a crash mid-graduation, or a rerun after someone flipped the spec's status manually outside this playbook entirely.
+
+If the spec is now ` + "`approved`" + `, offer the decompose hand-off (step 7).
 
 ## Conversation
 
@@ -109,11 +123,24 @@ pad item create <collection> "<title>" --field version="v1" --field area="<area>
 EOF
 ` + "```" + `
 
+**Graduation mode only:** immediately record the graduation link, before
+anything else runs — this needs to exist no matter which branch below
+happens next, or whether the run gets interrupted entirely between here
+and either branch completing:
+
+` + "```bash" + `
+pad item update <new-spec-ref> --comment "Graduated from <source-ref> — when this spec reaches approved, flip <source-ref> to its terminal status citing <new-spec-ref>."
+` + "```" + `
+
 If the user approved outright in step 4, follow immediately with:
 
 ` + "```bash" + `
 pad item update <new-spec-ref> --status approved --comment "Approved in draft conversation."
 ` + "```" + `
+
+Then run Reconcile (see Resume above) right here — the spec just became
+approved, and Reconcile is the one place graduation mechanics are
+described; don't repeat them.
 
 If the user wants to circulate the draft for others to review before
 committing, move it to ` + "`in-review`" + ` instead and stop here:
@@ -122,36 +149,16 @@ committing, move it to ` + "`in-review`" + ` instead and stop here:
 pad item update <new-spec-ref> --status in-review --comment "Circulating for review before approval."
 ` + "```" + `
 
-**Graduation mode only:** also record the pending graduation so a later
-resume can find it — the Context section already names the source, but
-this makes it mechanical:
-
-` + "```bash" + `
-pad item update <new-spec-ref> --comment "Graduation pending approval: <source-ref> — flip it to its terminal status when this spec is approved, citing <new-spec-ref>."
-` + "```" + `
-
 When review is done, rerun ` + "`/pad spec <new-spec-ref>`" + ` (or just say so
-in chat) — approval flips the spec AND graduates the source item. See
-Resume above for what that rerun does.
+in chat) — Resume above picks up from here, including Reconcile once the
+spec reaches approved.
 
-### 6. Graduate the source item (graduation mode only — see Dispatch)
+### 6. Graduate the source item
 
-Runs once the spec is approved — either right here in step 5's approve-
-outright branch, or later via Resume above if the draft was circulated
-first.
-
-Flip the source IDEA or BUG to whatever its OWN collection schema defines
-as terminal — don't hardcode a status name, collections define their own
-vocabulary (` + "`pad collection list --format json`" + ` and check the
-source item's collection's status field for ` + "`terminal_options`" + `; an
-Ideas collection typically uses ` + "`implemented`" + `, but read the actual
-schema rather than assuming). If more than one terminal option could
-apply, ask the user which one fits. Always include a comment citing the
-new spec:
-
-` + "```bash" + `
-pad item update <source-ref> --status <its-actual-terminal-status> --comment "Graduated into <new-spec-ref>."
-` + "```" + `
+This step is Reconcile (see Resume above), invoked here because step 5's
+approve-outright branch just moved the spec to ` + "`approved`" + ` for the
+first time. Graduation mechanics live in one place — Resume → Reconcile —
+referenced from both call sites rather than duplicated.
 
 ### 7. Offer next steps
 
