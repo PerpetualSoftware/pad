@@ -148,8 +148,8 @@ func (s *Store) CountAttachmentsForStorageKeyOutsideWorkspace(storageKey, worksp
 // takes a single workspace_id placeholder. Ordering rules (both SQLite
 // with foreign_keys=ON and Postgres enforce these):
 //
-//   - Item child rows (comments, item_versions, item_links, ...) before
-//     items — several carry RESTRICT FKs to items.
+//   - Item child rows (comments, item_versions, item_links, watches, ...)
+//     before items — several carry RESTRICT FKs to items.
 //   - Collection child rows (views, collection_grants,
 //     member_collection_access) before collections; items before
 //     collections (items.collection_id is RESTRICT).
@@ -188,6 +188,7 @@ var purgeWorkspaceChildDeletes = []struct{ what, query string }{
 	{"item workspace moves (target side)", `DELETE FROM item_workspace_moves WHERE target_workspace_id = ?`},
 	{"item grants", `DELETE FROM item_grants WHERE workspace_id = ?`},
 	{"status transitions", `DELETE FROM status_transitions WHERE workspace_id = ?`},
+	{"watches", `DELETE FROM watches WHERE workspace_id = ?`},
 	// --- items (self-ref parent_id NULLed by PurgeWorkspaceData first) ---
 	{"items", `DELETE FROM items WHERE workspace_id = ?`},
 	// --- collection child rows (before collections) ---
