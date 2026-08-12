@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
@@ -106,12 +107,20 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	}
 	defer s.watchEvents.Unsubscribe(ch)
 
-	watches, werr := s.loadWatchPredicates(user.ID)
+	watches, werr := s.loadWatchPredicates(r, user.ID)
 	if werr != nil {
 		slog.Warn("watch-events: failed to load caller's watches, denying watch-scoped matches",
 			"user_id", user.ID, "error", werr)
 		watches = map[string]string{} // fail closed, not open
 	}
+	// TASK-2533 codex round 2 finding 2: EVERY notification — watch-
+	// matched or addressed-to-you — must pass the same current-access
+	// check before delivery, not just watch-matched ones. visCache
+	// resolves per-workspace visibility lazily (a notification's
+	// workspace isn't known in advance the way `watches`' workspaces
+	// are) and is cleared on the same reval tick as `watches` below, so
+	// revoked access takes effect within one tick without a reconnect.
+	visCache := newWatchVisCache(s, r, user)
 
 	if err := writeSSEEvent(w, "connected", 0, map[string]string{"user_id": user.ID}); err != nil {
 		slog.Debug("watch-events: initial connected write failed, closing", "user_id", user.ID, "error", err)
@@ -130,7 +139,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			flusher.Flush()
 		} else {
 			for _, n := range missed {
-				if !watchNotificationVisible(watches, user.ID, n) {
+				if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, n) {
 					continue
 				}
 				if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
@@ -157,7 +166,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			if !ok {
 				return
 			}
-			if !watchNotificationVisible(watches, user.ID, n) {
+			if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, n) {
 				continue
 			}
 			if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
@@ -174,15 +183,52 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			flusher.Flush()
 
 		case <-reval.C:
-			fresh, ferr := s.loadWatchPredicates(user.ID)
+			fresh, ferr := s.loadWatchPredicates(r, user.ID)
 			if ferr != nil {
 				slog.Warn("watch-events: watch-list reload failed, keeping previous snapshot",
 					"user_id", user.ID, "error", ferr)
 				continue
 			}
 			watches = fresh
+			// Same cadence as the watches reload above: a revoked grant
+			// or membership must stop widening EITHER visibility source
+			// within one tick, not just the watch-matched one.
+			visCache.reset()
 		}
 	}
+}
+
+// watchVisCache resolves per-workspace watchAccessVisibility snapshots
+// lazily and caches them for the lifetime of one connection between
+// reval ticks (TASK-2533 codex round 2 finding 2). A notification's
+// workspace isn't known in advance the way the watches map's workspaces
+// are — an addressed-to-you assignment can arrive from ANY workspace the
+// caller has ever touched — so visibility is resolved on first sight of
+// each workspace rather than precomputed. reset() is called on the same
+// reval tick that reloads `watches`, so a revoked grant or membership
+// takes effect within one tick without requiring a reconnect.
+type watchVisCache struct {
+	s    *Server
+	r    *http.Request
+	user *models.User
+	m    map[string]watchAccessVisibility
+}
+
+func newWatchVisCache(s *Server, r *http.Request, user *models.User) *watchVisCache {
+	return &watchVisCache{s: s, r: r, user: user, m: make(map[string]watchAccessVisibility)}
+}
+
+func (c *watchVisCache) forWorkspace(workspaceID string) watchAccessVisibility {
+	if v, ok := c.m[workspaceID]; ok {
+		return v
+	}
+	v := c.s.computeWatchAccessVisibility(c.r, c.user, workspaceID)
+	c.m[workspaceID] = v
+	return v
+}
+
+func (c *watchVisCache) reset() {
+	c.m = make(map[string]watchAccessVisibility)
 }
 
 // loadWatchPredicates returns the caller's active watches as
@@ -191,12 +237,12 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 // watch on an item the caller can no longer see — workspace membership
 // or grant revoked after the watch was created — doesn't keep delivering
 // live nudges for it.
-func (s *Server) loadWatchPredicates(userID string) (map[string]string, error) {
+func (s *Server) loadWatchPredicates(r *http.Request, userID string) (map[string]string, error) {
 	list, err := s.store.ListWatchesForUser(userID)
 	if err != nil {
 		return nil, err
 	}
-	list = s.filterWatchesByCurrentAccess(userID, list)
+	list = s.filterWatchesByCurrentAccess(r, userID, list)
 	m := make(map[string]string, len(list))
 	for _, w := range list {
 		m[w.ItemID] = w.Predicate
@@ -209,11 +255,26 @@ func (s *Server) loadWatchPredicates(userID string) (map[string]string, error) {
 // handler so the DR-2 filtering rules are unit-testable without a live
 // SSE connection — mirrors sseEventVisibleFor's role in
 // handlers_events.go.
-func watchNotificationVisible(watches map[string]string, userID string, n watchevents.Notification) bool {
+func watchNotificationVisible(watches map[string]string, vis watchAccessVisibility, userID string, n watchevents.Notification) bool {
+	// TASK-2533 codex round 2 finding 2: the caller's CURRENT access to
+	// the notification's collection/item is checked FIRST and applies
+	// UNIFORMLY to every kind below — watch-matched and addressed-to-you
+	// alike. The addressed-to-you branch used to skip this entirely: an
+	// item can be assigned to a "specific"-access member whose granted
+	// collections don't include it at all (validateAssignmentScope only
+	// checks WORKSPACE membership, never collection access), and nothing
+	// clears an existing assignment when membership is later revoked —
+	// both are live, no-timing-required paths to leaking item_ref/
+	// workspace/summary via a bare "you were assigned" fact.
+	if !vis.allows(n.CollectionID, n.ItemID) {
+		return false
+	}
+
 	// Addressed-to-you: the item was just assigned to the caller. Fires
 	// regardless of whether the caller also holds an explicit watch on
 	// the item (a watch and an addressed-to-you event are independent
-	// reasons to be told).
+	// reasons to be told) — gated above by the SAME access check a
+	// watch-matched notification gets, not a bespoke one.
 	if n.Kind == watchevents.KindAssignment && n.AssignedUserID != "" && n.AssignedUserID == userID {
 		return true
 	}

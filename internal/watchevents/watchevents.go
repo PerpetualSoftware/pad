@@ -55,6 +55,12 @@ type Notification struct {
 	ID          int64
 	WorkspaceID string
 	ItemID      string
+	// CollectionID is the watched/assigned item's collection, needed so
+	// the stream handler can apply the SAME current-access visibility
+	// check to EVERY notification kind — watch-matched and
+	// addressed-to-you alike (TASK-2533 codex round 2 finding 2: the
+	// addressed-to-you branch used to skip this check entirely).
+	CollectionID string
 	// ItemRef is the human-facing issue ID ("TASK-214"), pre-resolved by
 	// the producer so the stream handler and the CLI's --for-session
 	// formatter never need a second lookup.

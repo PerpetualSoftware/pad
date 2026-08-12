@@ -132,13 +132,14 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 
 	if s.watchEvents != nil {
 		s.watchEvents.Publish(watchevents.Notification{
-			WorkspaceID: workspaceID,
-			ItemID:      item.ID,
-			ItemRef:     item.Ref,
-			Kind:        watchevents.KindComment,
-			Actor:       actor,
-			ActorName:   actorNameFromRequest(r),
-			Summary:     truncateForSummary(comment.Body, 120),
+			WorkspaceID:  workspaceID,
+			ItemID:       item.ID,
+			CollectionID: item.CollectionID,
+			ItemRef:      item.Ref,
+			Kind:         watchevents.KindComment,
+			Actor:        actor,
+			ActorName:    actorNameFromRequest(r),
+			Summary:      truncateForSummary(comment.Body, 120),
 		})
 	}
 
@@ -349,9 +350,11 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 	// Resolve the item's collection slug for SSE filtering
 	replyCollSlug := ""
 	replyItemRef := ""
+	replyCollID := ""
 	if replyItem, err := s.store.GetItem(parentComment.ItemID); err == nil && replyItem != nil {
 		replyCollSlug = replyItem.CollectionSlug
 		replyItemRef = replyItem.Ref
+		replyCollID = replyItem.CollectionID
 	}
 	s.publishCommentEvent(events.CommentCreated, workspaceID, parentComment.ItemID, comment.ID, parentComment.ItemTitle, replyCollSlug, actor, source)
 
@@ -363,13 +366,14 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 	// one level deeper in the thread.
 	if s.watchEvents != nil {
 		s.watchEvents.Publish(watchevents.Notification{
-			WorkspaceID: workspaceID,
-			ItemID:      parentComment.ItemID,
-			ItemRef:     replyItemRef,
-			Kind:        watchevents.KindComment,
-			Actor:       actor,
-			ActorName:   actorNameFromRequest(r),
-			Summary:     truncateForSummary(comment.Body, 120),
+			WorkspaceID:  workspaceID,
+			ItemID:       parentComment.ItemID,
+			CollectionID: replyCollID,
+			ItemRef:      replyItemRef,
+			Kind:         watchevents.KindComment,
+			Actor:        actor,
+			ActorName:    actorNameFromRequest(r),
+			Summary:      truncateForSummary(comment.Body, 120),
 		})
 	}
 

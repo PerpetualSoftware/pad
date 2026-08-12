@@ -767,6 +767,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 		s.watchEvents.Publish(watchevents.Notification{
 			WorkspaceID:    workspaceID,
 			ItemID:         item.ID,
+			CollectionID:   item.CollectionID,
 			ItemRef:        item.Ref,
 			Kind:           watchevents.KindAssignment,
 			Actor:          actor,
@@ -1600,13 +1601,14 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 			// kind=comment notification as the standalone endpoint.
 			if s.watchEvents != nil {
 				s.watchEvents.Publish(watchevents.Notification{
-					WorkspaceID: workspaceID,
-					ItemID:      updated.ID,
-					ItemRef:     updated.Ref,
-					Kind:        watchevents.KindComment,
-					Actor:       actor,
-					ActorName:   actorNameForUpdate,
-					Summary:     truncateForSummary(comment.Body, 120),
+					WorkspaceID:  workspaceID,
+					ItemID:       updated.ID,
+					CollectionID: updated.CollectionID,
+					ItemRef:      updated.Ref,
+					Kind:         watchevents.KindComment,
+					Actor:        actor,
+					ActorName:    actorNameForUpdate,
+					Summary:      truncateForSummary(comment.Body, 120),
 				})
 			}
 		}

@@ -62,6 +62,7 @@ func (s *Server) publishWatchNotifications(workspaceID string, updated *models.I
 		s.watchEvents.Publish(watchevents.Notification{
 			WorkspaceID:    workspaceID,
 			ItemID:         updated.ID,
+			CollectionID:   updated.CollectionID,
 			ItemRef:        updated.Ref,
 			Kind:           watchevents.KindStatusChange,
 			Actor:          actor,
@@ -84,6 +85,7 @@ func (s *Server) publishWatchNotifications(workspaceID string, updated *models.I
 		s.watchEvents.Publish(watchevents.Notification{
 			WorkspaceID:    workspaceID,
 			ItemID:         updated.ID,
+			CollectionID:   updated.CollectionID,
 			ItemRef:        updated.Ref,
 			Kind:           watchevents.KindAssignment,
 			Actor:          actor,

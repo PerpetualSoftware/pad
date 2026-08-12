@@ -517,7 +517,7 @@ func TestWatchNotificationVisible_UnconditionalWatch(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{"item-1": ""}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindComment}
-	if !watchNotificationVisible(watches, "user-1", n) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
 		t.Fatal("expected an unconditional watch to match any notification on the item")
 	}
 }
@@ -526,7 +526,7 @@ func TestWatchNotificationVisible_UnwatchedItemDenied(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{"item-1": ""}
 	n := watchevents.Notification{ItemID: "item-2", Kind: watchevents.KindComment}
-	if watchNotificationVisible(watches, "user-1", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
 		t.Fatal("expected an unwatched item's notification to be denied")
 	}
 }
@@ -535,7 +535,7 @@ func TestWatchNotificationVisible_PredicateGatesNonStatusKinds(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{"item-1": "status=done"}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindComment}
-	if watchNotificationVisible(watches, "user-1", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
 		t.Fatal("expected a predicated watch to suppress a comment notification")
 	}
 }
@@ -545,10 +545,10 @@ func TestWatchNotificationVisible_PredicateMatchesOnlyTargetValue(t *testing.T) 
 	watches := map[string]string{"item-1": "status=done"}
 	wrong := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindStatusChange, StatusFieldKey: "status", ToStatus: "in-progress"}
 	right := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindStatusChange, StatusFieldKey: "status", ToStatus: "done"}
-	if watchNotificationVisible(watches, "user-1", wrong) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", wrong) {
 		t.Fatal("expected the non-matching status transition to be denied")
 	}
-	if !watchNotificationVisible(watches, "user-1", right) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", right) {
 		t.Fatal("expected the matching status transition to be visible")
 	}
 }
@@ -557,7 +557,7 @@ func TestWatchNotificationVisible_AddressedToYouIgnoresWatchList(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{} // no watches at all
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindAssignment, AssignedUserID: "user-1"}
-	if !watchNotificationVisible(watches, "user-1", n) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
 		t.Fatal("expected an assignment-to-you notification to be visible with no watch")
 	}
 }
@@ -566,8 +566,270 @@ func TestWatchNotificationVisible_AssignmentToSomeoneElseDenied(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindAssignment, AssignedUserID: "user-2"}
-	if watchNotificationVisible(watches, "user-1", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
 		t.Fatal("expected an assignment to someone else to be denied")
+	}
+}
+
+// TestWatchNotificationVisible_AddressedToYouStillGatedByAccess covers
+// TASK-2533 codex round 2 finding 2: the addressed-to-you branch used to
+// return true unconditionally, with NO access check — an item assigned
+// to a "specific"-access member whose granted collections don't include
+// it (validateAssignmentScope only checks workspace membership, never
+// collection access — a completely ordinary, no-revocation-needed
+// scenario) would still leak. A zero-value watchAccessVisibility (no
+// full access, no granted collections/items) must deny an
+// assignment-to-you notification just as it would a watch-matched one.
+func TestWatchNotificationVisible_AddressedToYouStillGatedByAccess(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{}
+	deny := watchAccessVisibility{} // zero value: nothing visible
+	n := watchevents.Notification{
+		ItemID: "item-1", CollectionID: "coll-1",
+		Kind: watchevents.KindAssignment, AssignedUserID: "user-1",
+	}
+	if watchNotificationVisible(watches, deny, "user-1", n) {
+		t.Fatal("expected an assignment-to-you notification to be denied when the caller has no current access to the item's collection")
+	}
+
+	allow := watchAccessVisibility{visibleCollIDs: map[string]bool{"coll-1": true}}
+	if !watchNotificationVisible(watches, allow, "user-1", n) {
+		t.Fatal("expected the same notification to be visible once the collection is in the caller's current access")
+	}
+}
+
+// TestWatchEventsStream_AssignmentOutsideMemberCollectionAccessDenied is
+// the HTTP/SSE-level regression for TASK-2533 codex round 2 finding 2:
+// an item can be assigned to a "specific"-access member whose granted
+// collections do NOT include it — validateAssignmentScope
+// (internal/store/items.go) only checks WORKSPACE membership, never
+// collection access, so this needs no revocation timing at all, just an
+// ordinary assignment. The addressed-to-you path used to deliver it
+// anyway with zero access check.
+func TestWatchEventsStream_AssignmentOutsideMemberCollectionAccessDenied(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	slug := createWSWithCollections(t, srv)
+
+	// A second collection the restricted member WILL be granted, distinct
+	// from "tasks" where the assigned item actually lives.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
+		"name": "Docs Only", "icon": "doc",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create second collection: %d %s", rr.Code, rr.Body.String())
+	}
+	var otherColl models.Collection
+	parseJSON(t, rr, &otherColl)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items",
+		map[string]interface{}{"title": "Assign me", "fields": `{"status":"open"}`})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("seed item: %d %s", rr.Code, rr.Body.String())
+	}
+	var item models.Item
+	parseJSON(t, rr, &item)
+
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil {
+		t.Fatalf("GetWorkspaceBySlug: %v", err)
+	}
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email: "assign-owner@example.com", Name: "Owner", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser (owner): %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember (owner): %v", err)
+	}
+	ownerTok, err := srv.store.CreateAPIToken(owner.ID, models.APITokenCreate{Name: "assign-owner-test"}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken (owner): %v", err)
+	}
+
+	restricted, err := srv.store.CreateUser(models.UserCreate{
+		Email: "assign-restricted@example.com", Name: "Restricted", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser (restricted): %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, restricted.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember (restricted): %v", err)
+	}
+	// Granted ONLY the "Docs Only" collection — NOT "tasks", where the
+	// item being assigned actually lives.
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, restricted.ID, "specific", []string{otherColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+	restrictedTok, err := srv.store.CreateAPIToken(restricted.ID, models.APITokenCreate{Name: "assign-restricted-test"}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken (restricted): %v", err)
+	}
+
+	// An item in the GRANTED collection, watched BEFORE connecting (the
+	// watches map is loaded once at connect time and only reloaded on
+	// the 60s reval tick — creating this after connecting would make the
+	// "prove liveness" step below flaky/slow rather than deterministic).
+	rr = bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/collections/"+otherColl.Slug+"/items", ownerTok.Token,
+		map[string]interface{}{"title": "Visible item", "fields": "{}"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("seed visible item: %d %s", rr.Code, rr.Body.String())
+	}
+	var visibleItem models.Item
+	parseJSON(t, rr, &visibleItem)
+	if _, err := srv.store.CreateWatch(ws.ID, restricted.ID, visibleItem.ID, ""); err != nil {
+		t.Fatalf("CreateWatch: %v", err)
+	}
+
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectWatchStream(ctx, t, ts.URL, restrictedTok.Token)
+	waitForWatchEvent(t, ch, 3*time.Second) // connected
+
+	// Owner assigns the item (in "tasks") to the restricted member.
+	// validateAssignmentScope only checks workspace membership, so this
+	// succeeds even though the assignee can't see "tasks" at all.
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, ownerTok.Token,
+		map[string]interface{}{"assigned_user_id": restricted.ID})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("assign item: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Prove the stream is live and would have surfaced something: comment
+	// on the watched, GRANTED item, then assert THAT arrives instead of
+	// the assignment leaking first.
+	rr = bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+visibleItem.Slug+"/comments", ownerTok.Token,
+		map[string]interface{}{"body": "visible nudge"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("comment on visible item: %d %s", rr.Code, rr.Body.String())
+	}
+
+	ev := waitForWatchEvent(t, ch, 3*time.Second)
+	var payload watchEventPayload
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.ItemRef != visibleItem.Ref {
+		t.Fatalf("expected the VISIBLE item's ref %q first, got %q (kind %q) — the out-of-scope assignment leaked",
+			visibleItem.Ref, payload.ItemRef, payload.Kind)
+	}
+	if payload.Kind == watchevents.KindAssignment {
+		t.Fatalf("assignment notification leaked to a member with no access to the item's collection: %+v", payload)
+	}
+}
+
+// TestWatchEventsStream_ItemGrantGuestDoesNotSeeSiblingItem is the
+// HTTP/SSE-level regression for TASK-2533 codex round 2 finding 1: a
+// guest granted only item A must not receive stream notifications for
+// an ungranted sibling item B in the SAME collection, even if a watch
+// row exists on B (simulating access narrowed after the watch was
+// created — the exact scenario the delivery-time filter, not the
+// creation-time gate, has to catch).
+func TestWatchEventsStream_ItemGrantGuestDoesNotSeeSiblingItem(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	slug := createWSWithCollections(t, srv)
+
+	rrA := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items",
+		map[string]interface{}{"title": "Granted item", "fields": `{"status":"open"}`})
+	if rrA.Code != http.StatusCreated {
+		t.Fatalf("seed item A: %d %s", rrA.Code, rrA.Body.String())
+	}
+	var itemA models.Item
+	parseJSON(t, rrA, &itemA)
+
+	rrB := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items",
+		map[string]interface{}{"title": "Sibling item", "fields": `{"status":"open"}`})
+	if rrB.Code != http.StatusCreated {
+		t.Fatalf("seed item B: %d %s", rrB.Code, rrB.Body.String())
+	}
+	var itemB models.Item
+	parseJSON(t, rrB, &itemB)
+	if itemA.CollectionID != itemB.CollectionID {
+		t.Fatalf("test setup bug: items must share a collection")
+	}
+
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil {
+		t.Fatalf("GetWorkspaceBySlug: %v", err)
+	}
+
+	// Owner performs the mutations below — the guest below is deliberately
+	// NOT granted edit access to item B, so it must not be the guest's
+	// own token making that PATCH (it would be correctly rejected before
+	// ever reaching the notification pipeline, which is not what this
+	// test is exercising).
+	owner, err := srv.store.CreateUser(models.UserCreate{
+		Email: "sibling-stream-owner@example.com", Name: "Owner", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser (owner): %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("AddWorkspaceMember (owner): %v", err)
+	}
+	ownerTok, err := srv.store.CreateAPIToken(owner.ID, models.APITokenCreate{Name: "sibling-owner-test"}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken (owner): %v", err)
+	}
+
+	guest, err := srv.store.CreateUser(models.UserCreate{
+		Email: "sibling-stream-guest@example.com", Name: "Sibling Stream Guest", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser (guest): %v", err)
+	}
+	if _, err := srv.store.CreateItemGrant(ws.ID, itemA.ID, guest.ID, "view", guest.ID); err != nil {
+		t.Fatalf("CreateItemGrant: %v", err)
+	}
+	guestTok, err := srv.store.CreateAPIToken(guest.ID, models.APITokenCreate{Name: "sibling-guest-test"}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken (guest): %v", err)
+	}
+
+	// Watches on BOTH items, created directly at the store layer —
+	// simulating a watch on B that predates a since-narrowed grant
+	// (the API's creation-time requireItemVisible gate would correctly
+	// refuse to let the guest create this watch on B today; the
+	// delivery-time filter is what has to catch a STALE one).
+	if _, err := srv.store.CreateWatch(ws.ID, guest.ID, itemA.ID, ""); err != nil {
+		t.Fatalf("CreateWatch(A): %v", err)
+	}
+	if _, err := srv.store.CreateWatch(ws.ID, guest.ID, itemB.ID, ""); err != nil {
+		t.Fatalf("CreateWatch(B): %v", err)
+	}
+
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectWatchStream(ctx, t, ts.URL, guestTok.Token)
+	waitForWatchEvent(t, ch, 3*time.Second) // connected
+
+	// Mutate the UNGRANTED sibling B first — must not surface.
+	rr := bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+itemB.Slug, ownerTok.Token,
+		map[string]interface{}{"fields": `{"status":"done"}`})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update item B: %d %s", rr.Code, rr.Body.String())
+	}
+	// Then mutate the GRANTED item A — must surface, proving the stream
+	// is live and B's absence above wasn't just "nothing happened yet".
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+itemA.Slug, ownerTok.Token,
+		map[string]interface{}{"fields": `{"status":"done"}`})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update item A: %d %s", rr.Code, rr.Body.String())
+	}
+
+	ev := waitForWatchEvent(t, ch, 3*time.Second)
+	var payload watchEventPayload
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.ItemRef != itemA.Ref {
+		t.Fatalf("expected the GRANTED item A's ref %q first, got %q — ungranted sibling B leaked", itemA.Ref, payload.ItemRef)
 	}
 }
 

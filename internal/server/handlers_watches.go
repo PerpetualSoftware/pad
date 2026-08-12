@@ -141,7 +141,7 @@ func (s *Server) handleListWatches(w http.ResponseWriter, r *http.Request) {
 	// listing — a watch row survives a revoked workspace membership or
 	// grant, so without this a caller could see item/workspace metadata
 	// for access they no longer have. See filterWatchesByCurrentAccess.
-	watches = s.filterWatchesByCurrentAccess(userID, watches)
+	watches = s.filterWatchesByCurrentAccess(r, userID, watches)
 	if watches == nil {
 		watches = []models.Watch{}
 	}
