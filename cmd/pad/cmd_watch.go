@@ -1,0 +1,351 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
+	"text/tabwriter"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
+)
+
+// noPadTomlRetryInterval is how long `pad watch --stream --for-session`
+// sleeps before re-checking for a .pad.toml when none was found in the
+// directory tree — DOC-2479's silent-start contract: "no .pad.toml in
+// tree → sleep-retry hourly, print nothing".
+const noPadTomlRetryInterval = time.Hour
+
+// padddBackoffBase / padddBackoffCap bound the retry delay when padd is
+// unreachable (connection refused, non-200, or the stream drops
+// mid-read). DOC-2479 distinguishes this from the no-workspace case
+// above ("padd unreachable → backoff retry, print nothing") — a
+// persistently-down padd shouldn't hot-loop, but shouldn't make the
+// caller wait a full hour either, unlike the no-.pad.toml case where an
+// hour is the right cadence for "nothing to do until a workspace shows
+// up".
+const (
+	padddBackoffBase = 5 * time.Second
+	padddBackoffCap  = 5 * time.Minute
+)
+
+// padddBackoff computes the delay before the Nth reconnect attempt
+// (attempt=1 is the first retry after an initial failed connection).
+// Linear and capped — extracted as a pure function so the retry math is
+// unit-testable without a real clock (per the dispatcher's ask: "unit-
+// test the decision logic, don't literally sleep").
+func padddBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	d := time.Duration(attempt) * padddBackoffBase
+	if d > padddBackoffCap {
+		d = padddBackoffCap
+	}
+	return d
+}
+
+// watchStreamPayload mirrors server.watchEventPayload — the wire shape
+// of GET /api/v1/events/stream's "notification" events (DOC-2479):
+// {id, ts, workspace, item_ref, kind, actor, summary}.
+type watchStreamPayload struct {
+	ID        int64  `json:"id"`
+	Ts        int64  `json:"ts"`
+	Workspace string `json:"workspace"`
+	ItemRef   string `json:"item_ref"`
+	Kind      string `json:"kind"`
+	Actor     string `json:"actor"`
+	Summary   string `json:"summary"`
+}
+
+// formatMonitorLine renders one notification as the exact stdout-line
+// contract `pad watch --stream --for-session` promises (DOC-2479):
+// "PAD TASK-214 → done (Dave): fix verified" — one line, facts only, no
+// etiquette prose (that lives in the plugin skill per DR-4).
+//
+// TASK-2533 plan interpretation: DOC-2479's example names a target
+// STATUS VALUE and reads as though it combines two facts (a status
+// change AND an attached comment) into one line. This system publishes
+// one notification per fact (see server.publishWatchNotifications'
+// producer-coverage audit) rather than inventing a combining mechanism
+// DOC-2479 doesn't specify a wire shape for, so a
+// `pad item update --field status=done --comment "..."` call surfaces
+// as TWO lines here, and this formatter uses the notification's kind
+// (not a status value) as the arrow's target — it's the one thing every
+// kind (status-change / assignment / comment / the reserved ask) can
+// supply uniformly from the actual payload fields.
+func formatMonitorLine(p watchStreamPayload) string {
+	return fmt.Sprintf("PAD %s → %s (%s): %s", p.ItemRef, p.Kind, p.Actor, p.Summary)
+}
+
+// sleepOrDone waits for d or ctx cancellation, whichever comes first.
+// Returns false if ctx was cancelled — the caller should stop looping,
+// not schedule another retry, when that happens (Ctrl+C / SIGTERM
+// during a silent-retry wait must exit promptly, not after the full
+// interval).
+func sleepOrDone(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-time.After(d):
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+// watchCmdGroup is `pad watch` (TASK-2533). Named ...Group, not watchCmd,
+// because that identifier is already taken by `pad project watch`
+// (cmd_project.go) — a different, pre-existing command that streams a
+// whole workspace's activity feed for a human terminal. This command is
+// per-item and user-scoped; the two are unrelated beyond sharing the
+// English verb "watch".
+func watchCmdGroup() *cobra.Command {
+	var untilPredicate string
+	var stream bool
+	var forSession bool
+
+	cmd := &cobra.Command{
+		Use:   "watch [ref]",
+		Short: "Create a durable watch on an item, or run the session-monitor stream",
+		Long: `pad watch <ref>
+    Create (or update) a durable, server-side watch on an item. Watches
+    survive monitor restarts and padd restarts — they are not client-side
+    state.
+
+pad watch <ref> --until status=X
+    Same, but the item only notifies once its status-equivalent field
+    reaches X (an unconditional watch, the default, notifies on every
+    status-change / assignment / comment on the item).
+
+pad watch list
+    List your active watches, across every workspace you belong to.
+
+pad watch remove <ref>
+    Stop watching an item.
+
+pad watch --stream --for-session
+    The plugin monitor command (see monitors/monitors.json). Prints one
+    line per matching event to stdout in a fixed, machine-readable
+    format. Silent on startup when no workspace is linked or padd is
+    unreachable — see the DOC-2479 behavior contract in this command's
+    source. Not meant to be run by hand; the pad plugin's monitor entry
+    invokes it.`,
+		Args: cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if stream || forSession {
+				if !stream || !forSession {
+					return fmt.Errorf("--stream and --for-session must be used together")
+				}
+				if len(args) > 0 {
+					return fmt.Errorf("--stream --for-session does not take a ref argument")
+				}
+				return runWatchMonitor(cmd.Context())
+			}
+			if len(args) != 1 {
+				return cmd.Help()
+			}
+			return runCreateWatch(args[0], untilPredicate)
+		},
+	}
+
+	cmd.Flags().StringVar(&untilPredicate, "until", "", `optional predicate, e.g. --until status=done`)
+	cmd.Flags().BoolVar(&stream, "stream", false, "run the session-monitor stream (requires --for-session)")
+	cmd.Flags().BoolVar(&forSession, "for-session", false, "format output for the Claude Code plugin monitor (requires --stream)")
+
+	cmd.AddCommand(watchListCmd(), watchRemoveCmd())
+	return cmd
+}
+
+func runCreateWatch(ref, predicate string) error {
+	client, _ := getClient()
+	ws := getWorkspace()
+
+	w, err := client.CreateWatch(ws, ref, predicate)
+	if err != nil {
+		return err
+	}
+
+	if formatFlag == "json" {
+		return cli.PrintJSON(w)
+	}
+	if predicate != "" {
+		fmt.Printf("Watching %s until %s\n", w.ItemRef, predicate)
+	} else {
+		fmt.Printf("Watching %s\n", w.ItemRef)
+	}
+	return nil
+}
+
+func watchListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List your active watches",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			watches, err := client.ListWatches()
+			if err != nil {
+				return err
+			}
+
+			if formatFlag == "json" {
+				return cli.PrintJSON(watches)
+			}
+			if len(watches) == 0 {
+				fmt.Println("No active watches.")
+				return nil
+			}
+
+			tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+			fmt.Fprintln(tw, "REF\tWORKSPACE\tTITLE\tPREDICATE")
+			for _, w := range watches {
+				predicate := w.Predicate
+				if predicate == "" {
+					predicate = "-"
+				}
+				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", w.ItemRef, w.WorkspaceSlug, w.ItemTitle, predicate)
+			}
+			return tw.Flush()
+		},
+	}
+}
+
+func watchRemoveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "remove <ref>",
+		Short: "Stop watching an item",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			if err := client.DeleteWatch(ws, args[0]); err != nil {
+				return err
+			}
+			fmt.Printf("Stopped watching %s\n", args[0])
+			return nil
+		},
+	}
+}
+
+// runWatchMonitor is `pad watch --stream --for-session`'s main loop.
+// Implements DOC-2479's silent-start contract exactly:
+//   - no .pad.toml anywhere in the directory tree → sleep an hour,
+//     retry, print NOTHING (exiting would end the monitor process the
+//     plugin auto-started).
+//   - padd unreachable (dial failure, non-200, or the stream drops
+//     mid-read) → backoff-retry, print NOTHING.
+//   - a matching event → exactly one stdout line, formatMonitorLine.
+//
+// Runs until ctx is cancelled (Ctrl+C / SIGTERM) or, on the initial
+// call from Cobra's cmd.Context(), forever.
+func runWatchMonitor(ctx context.Context) error {
+	client, _ := getClient()
+
+	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var lastEventID string
+	attempt := 0
+
+	for {
+		if sigCtx.Err() != nil {
+			return nil
+		}
+
+		pt, _ := cli.LoadPadToml()
+		if pt == nil {
+			// Silent: no workspace linked anywhere above cwd. A
+			// directory can gain a .pad.toml later (pad workspace init
+			// run mid-session), so keep polling rather than exiting.
+			if !sleepOrDone(sigCtx, noPadTomlRetryInterval) {
+				return nil
+			}
+			continue
+		}
+
+		req, err := client.NewWatchEventsStreamRequest(sigCtx, lastEventID)
+		if err != nil {
+			attempt++
+			if !sleepOrDone(sigCtx, padddBackoff(attempt)) {
+				return nil
+			}
+			continue
+		}
+
+		// No timeout: an SSE connection is meant to stay open for the
+		// life of the monitor process. Deliberately a fresh client, not
+		// client.streamClient (1h cap) or the Client's default 10s
+		// client — see NewWatchEventsStreamRequest's doc comment.
+		httpClient := &http.Client{}
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			if sigCtx.Err() != nil {
+				return nil
+			}
+			attempt++
+			if !sleepOrDone(sigCtx, padddBackoff(attempt)) {
+				return nil
+			}
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			attempt++
+			if !sleepOrDone(sigCtx, padddBackoff(attempt)) {
+				return nil
+			}
+			continue
+		}
+
+		attempt = 0 // connected — reset backoff for the NEXT disconnect
+		lastEventID = streamWatchEvents(resp, lastEventID)
+		resp.Body.Close()
+
+		if sigCtx.Err() != nil {
+			return nil
+		}
+		// The stream ended (server closed it, network blip, padd
+		// restart). Last-Event-ID (captured in streamWatchEvents)
+		// resumes from here — no re-delivery, no gap silently
+		// swallowed beyond the replay buffer's own bounds.
+		attempt++
+		if !sleepOrDone(sigCtx, padddBackoff(attempt)) {
+			return nil
+		}
+	}
+}
+
+// streamWatchEvents reads SSE lines from an open connection, printing
+// formatMonitorLine for each "notification" event, until the body is
+// exhausted (connection closed) or a read error occurs. Returns the
+// last-seen event ID for Last-Event-ID resume on reconnect.
+func streamWatchEvents(resp *http.Response, lastEventID string) string {
+	scanner := bufio.NewScanner(resp.Body)
+	var eventType, data string
+	for scanner.Scan() {
+		line := scanner.Text()
+		switch {
+		case strings.HasPrefix(line, "id: "):
+			lastEventID = strings.TrimPrefix(line, "id: ")
+		case strings.HasPrefix(line, "event: "):
+			eventType = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			data = strings.TrimPrefix(line, "data: ")
+		case line == "":
+			if eventType == "notification" && data != "" {
+				var payload watchStreamPayload
+				if err := json.Unmarshal([]byte(data), &payload); err == nil {
+					fmt.Println(formatMonitorLine(payload))
+				}
+			}
+			eventType, data = "", ""
+		}
+	}
+	return lastEventID
+}
