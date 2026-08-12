@@ -67,8 +67,9 @@ For each task in order:
 ### 1. Load the task
 
 ` + "`pad item show <TASK-REF> --format markdown`" + ` — read the full content, not just
-the title. Check the parent plan's content for additional context. Load linked
-items if wiki-links are present.
+the title. Check the parent plan's or spec's content for additional context —
+for a spec parent, this includes its acceptance criteria, which the PR will
+need to cite in step 8. Load linked items if wiki-links are present.
 
 ### 2. Load conventions
 
@@ -139,7 +140,7 @@ gh pr create --title "<same as commit subject>" --body "$(cat <<'EOF'
 <what + why>
 
 ## Context
-Implements ` + "`<TASK-REF>`" + ` under ` + "`<PLAN-REF>`" + ` (if any).
+Implements ` + "`<TASK-REF>`" + ` under ` + "`<PARENT-REF>`" + ` (PLAN-ref or SPEC-ref, if any).
 
 ## Test plan
 - [x] build — clean
@@ -148,6 +149,14 @@ Implements ` + "`<TASK-REF>`" + ` under ` + "`<PLAN-REF>`" + ` (if any).
 EOF
 )"
 ` + "```" + `
+
+**If the parent is a spec**, don't stop at citing the ref — list which
+acceptance criteria this PR satisfies (e.g. "Implements TASK-12 under
+SPEC-4, satisfies AC-1, AC-2" in the Context section). This isn't
+optional polish: it's the spec template's own seeded on-pr-create
+convention ("PRs cite the spec and which criteria they satisfy"), and
+it's what makes ` + "`/pad verify`" + ` fast later — the reviewer walks the
+cited criteria instead of re-deriving what the PR was supposed to do.
 
 Capture the PR number from the output.
 
