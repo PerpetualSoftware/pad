@@ -256,3 +256,93 @@ drain:
 		t.Fatalf("expected all %d concurrently-published notifications to be observed exactly once, got %d", concurrentPublishes, concurrentSeen)
 	}
 }
+
+// TestMemoryBus_ConcurrentPublishUnsubscribeClose_NoPanic covers codex
+// round 2 finding 3: Publish used to snapshot subscriber channels under
+// the lock, release it, and send afterward — a window where a
+// concurrent Unsubscribe or Close could close a channel Publish was
+// about to send to. A send on a closed channel PANICS in Go, which
+// would have crashed the whole padd process (not just dropped one
+// subscriber's message), and the timing-dependent nature of the race
+// means -race alone does not reliably surface it — this test hammers
+// concurrent publish / subscribe / unsubscribe / close across many
+// iterations and short-lived channels specifically to provoke it, with
+// a recover() so a regression fails this test cleanly instead of
+// crashing the whole `go test` run.
+func TestMemoryBus_ConcurrentPublishUnsubscribeClose_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	for iter := 0; iter < 30; iter++ {
+		b := New()
+
+		const numChannels = 20
+		chs := make([]chan Notification, numChannels)
+		for i := range chs {
+			chs[i] = b.Subscribe()
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(3)
+
+		// Publisher: hammers Publish continuously while channels are
+		// being torn down concurrently below.
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("Publish panicked (iter %d): %v", iter, r)
+				}
+			}()
+			for i := 0; i < 200; i++ {
+				b.Publish(Notification{Kind: KindComment})
+			}
+		}()
+
+		// Unsubscriber: closes every channel while Publish is mid-flight.
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("Unsubscribe panicked (iter %d): %v", iter, r)
+				}
+			}()
+			for _, ch := range chs {
+				b.Unsubscribe(ch)
+			}
+		}()
+
+		// Churner: subscribes and immediately unsubscribes fresh
+		// channels throughout, maximizing the window a stale Publish
+		// snapshot (under the old code) could race against.
+		go func() {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("churn panicked (iter %d): %v", iter, r)
+				}
+			}()
+			for i := 0; i < 200; i++ {
+				ch := b.Subscribe()
+				b.Unsubscribe(ch)
+			}
+		}()
+
+		// Drain the original channels concurrently so Publish's
+		// non-blocking sends don't just fall through to "channel full"
+		// for the whole run (irrelevant to the race being tested, but
+		// keeps the scenario realistic).
+		var drainWg sync.WaitGroup
+		for _, ch := range chs {
+			drainWg.Add(1)
+			go func(ch chan Notification) {
+				defer drainWg.Done()
+				for range ch {
+				}
+			}(ch)
+		}
+
+		wg.Wait()
+		b.Close()
+		drainWg.Wait()
+	}
+}

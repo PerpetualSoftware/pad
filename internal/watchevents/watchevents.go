@@ -207,6 +207,10 @@ func (rb *replayBuffer) since(sinceID int64) []Notification {
 // yield a strictly-ordered buffer. Expected volume (status/assignment/
 // comment notifications, not a firehose) makes the lack of reader
 // concurrency a non-issue in practice.
+//
+// Publish also sends to every subscriber channel WHILE HOLDING mu
+// (codex round 2 finding 3 — see Publish's doc comment for why an
+// earlier "send after releasing the lock" version could panic).
 type MemoryBus struct {
 	mu          sync.Mutex
 	subscribers map[chan Notification]struct{}
@@ -228,28 +232,38 @@ func NewWithReplaySize(size int) *MemoryBus {
 	}
 }
 
+// Publish assigns a sequence ID, appends to the replay buffer, and sends
+// to every live subscriber — ALL under the same lock Unsubscribe/Close
+// use to remove-and-close a channel (codex round 2 finding 3, fixing a
+// send-on-closed-channel panic).
+//
+// The earlier version snapshotted subscriber channels under the lock,
+// released it, and sent afterward — reasoning that holding the lock
+// through a send would let a slow subscriber stall every other
+// Publish/Subscribe/EventsSince call. That reasoning didn't hold up: the
+// send below is already non-blocking (select/default — a full channel
+// is dropped-and-logged, never awaited), so it can't stall anything
+// regardless of the lock. What the released-lock version actually did
+// was open a window between the snapshot and the send where
+// Unsubscribe/Close could close a channel THIS call was about to send
+// to — a send on a closed channel panics in Go, crashing the whole
+// process (not a single subscriber's connection). Sending under the
+// lock costs nothing (the send is O(1) and non-blocking either way) and
+// closes that window structurally: Unsubscribe/Close can no longer run
+// between "this channel is still a live subscriber" and "send to it".
 func (b *MemoryBus) Publish(n Notification) {
 	if n.Timestamp == 0 {
 		n.Timestamp = time.Now().UnixMilli()
 	}
 
 	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	b.seq++
 	n.ID = b.seq
 	b.replay.append(n)
-	// Snapshot subscriber channels while still holding the lock so the
-	// fan-out below sees a membership consistent with this publish's
-	// position in the sequence, then release before the (potentially
-	// blocking-on-full-channel) sends — Publish must never hold the
-	// lock while sending, or a slow subscriber would stall every other
-	// Publish/Subscribe/EventsSince call, not just its own delivery.
-	subs := make([]chan Notification, 0, len(b.subscribers))
-	for ch := range b.subscribers {
-		subs = append(subs, ch)
-	}
-	b.mu.Unlock()
 
-	for _, ch := range subs {
+	for ch := range b.subscribers {
 		select {
 		case ch <- n:
 		default:
