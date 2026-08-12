@@ -83,18 +83,40 @@ type Notification struct {
 type Bus interface {
 	// Publish assigns the Notification a monotonic ID, stores it in the
 	// replay buffer, and fans it out to every live Subscribe channel.
+	// ID assignment and buffer insertion are atomic under one lock
+	// (codex round 1 finding 4): two concurrent Publish calls that got
+	// their IDs from separate critical sections could otherwise append
+	// to the replay buffer out of ID order, corrupting since()'s
+	// ordering assumptions.
 	Publish(n Notification)
 	// Subscribe returns a channel that receives every future
-	// Notification. There is exactly one logical stream (unlike
-	// internal/events.EventBus, which is workspace-scoped) — per-caller
-	// filtering happens in the consumer, not the bus, per DR-2.
+	// Notification, with NO replay. There is exactly one logical stream
+	// (unlike internal/events.EventBus, which is workspace-scoped) —
+	// per-caller filtering happens in the consumer, not the bus, per
+	// DR-2. Use this for a fresh (non-resuming) connection; use
+	// SubscribeAndReplaySince for a Last-Event-ID resume.
 	Subscribe() chan Notification
+	// SubscribeAndReplaySince atomically subscribes AND captures every
+	// buffered notification with ID > sinceID, under the SAME lock
+	// (codex round 1 finding 3). Subscribing and reading the replay
+	// buffer as two separate calls leaves a window where a Notification
+	// published in between lands in BOTH the replay set and the live
+	// channel — this closes that window structurally rather than
+	// requiring the consumer to dedupe by ID. Returns (ch, nil) if
+	// sinceID has been evicted from the buffer (gap too large — caller
+	// should treat this like the SSE handler's sync_required signal);
+	// the subscription is still valid in that case, only the replay is
+	// unavailable.
+	SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification)
 	// Unsubscribe removes a subscriber and closes its channel.
 	Unsubscribe(ch chan Notification)
 	// EventsSince returns buffered notifications with ID > sinceID, for
 	// Last-Event-ID resume. Returns nil if sinceID has been evicted from
 	// the buffer (gap too large — caller should treat this like the SSE
-	// handler's sync_required signal).
+	// handler's sync_required signal). Exposed as a standalone primitive
+	// for tests and any future caller that doesn't need the atomic
+	// subscribe-and-replay guarantee; GET /api/v1/events/stream uses
+	// SubscribeAndReplaySince instead, precisely to avoid that gap.
 	EventsSince(sinceID int64) []Notification
 	// Close shuts the bus down, closing every subscriber channel.
 	Close()
@@ -167,13 +189,23 @@ func (rb *replayBuffer) since(sinceID int64) []Notification {
 
 // MemoryBus is an in-process implementation of Bus. See the package doc
 // comment for its single-process limitation.
+//
+// A SINGLE mutex guards subscriber membership, sequence assignment, and
+// the replay buffer together (codex round 1 findings 3 + 4 — the two
+// were separate locks before, which allowed both out-of-ID-order buffer
+// insertion under concurrent Publish AND a subscribe-then-replay window
+// where a Notification could be delivered twice). This serializes
+// Publish/Subscribe/EventsSince with respect to each other, which is the
+// correct semantics for a monotonic sequence + ordered ring buffer
+// anyway — genuinely concurrent publishes cannot both proceed and still
+// yield a strictly-ordered buffer. Expected volume (status/assignment/
+// comment notifications, not a firehose) makes the lack of reader
+// concurrency a non-issue in practice.
 type MemoryBus struct {
-	mu          sync.RWMutex
+	mu          sync.Mutex
 	subscribers map[chan Notification]struct{}
 	seq         int64
-
-	replayMu sync.RWMutex
-	replay   *replayBuffer
+	replay      *replayBuffer
 }
 
 // New creates a MemoryBus with the default replay buffer size.
@@ -198,15 +230,20 @@ func (b *MemoryBus) Publish(n Notification) {
 	b.mu.Lock()
 	b.seq++
 	n.ID = b.seq
+	b.replay.append(n)
+	// Snapshot subscriber channels while still holding the lock so the
+	// fan-out below sees a membership consistent with this publish's
+	// position in the sequence, then release before the (potentially
+	// blocking-on-full-channel) sends — Publish must never hold the
+	// lock while sending, or a slow subscriber would stall every other
+	// Publish/Subscribe/EventsSince call, not just its own delivery.
+	subs := make([]chan Notification, 0, len(b.subscribers))
+	for ch := range b.subscribers {
+		subs = append(subs, ch)
+	}
 	b.mu.Unlock()
 
-	b.replayMu.Lock()
-	b.replay.append(n)
-	b.replayMu.Unlock()
-
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	for ch := range b.subscribers {
+	for _, ch := range subs {
 		select {
 		case ch <- n:
 		default:
@@ -223,6 +260,21 @@ func (b *MemoryBus) Subscribe() chan Notification {
 	return ch
 }
 
+// SubscribeAndReplaySince — see the Bus interface doc comment for why
+// this exists (codex round 1 finding 3). Subscribing and reading the
+// replay buffer under the SAME critical section that Publish also uses
+// means a Notification is either: published before this call (and thus
+// only in the returned replay slice), or published after (and thus only
+// delivered on the returned channel) — never both.
+func (b *MemoryBus) SubscribeAndReplaySince(sinceID int64) (chan Notification, []Notification) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	ch := make(chan Notification, 64)
+	b.subscribers[ch] = struct{}{}
+	missed := b.replay.since(sinceID)
+	return ch, missed
+}
+
 func (b *MemoryBus) Unsubscribe(ch chan Notification) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -233,8 +285,8 @@ func (b *MemoryBus) Unsubscribe(ch chan Notification) {
 }
 
 func (b *MemoryBus) EventsSince(sinceID int64) []Notification {
-	b.replayMu.RLock()
-	defer b.replayMu.RUnlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.replay.since(sinceID)
 }
 

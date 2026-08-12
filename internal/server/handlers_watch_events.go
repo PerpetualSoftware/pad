@@ -84,7 +84,26 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 
-	ch := s.watchEvents.Subscribe()
+	// Subscribe FIRST, replay (if resuming) as part of the SAME atomic
+	// call when a Last-Event-ID was supplied (codex round 1 finding 3):
+	// subscribing and separately reading the replay buffer left a window
+	// where a Notification published in between would be delivered
+	// TWICE — once from the replay loop below, once again from the live
+	// channel in the main select loop. SubscribeAndReplaySince closes
+	// that window structurally; see its doc comment in
+	// internal/watchevents.
+	var ch chan watchevents.Notification
+	var missed []watchevents.Notification
+	var lastID int64
+	if lastIDStr := r.Header.Get("Last-Event-ID"); lastIDStr != "" {
+		if parsed, perr := strconv.ParseInt(lastIDStr, 10, 64); perr == nil && parsed > 0 {
+			lastID = parsed
+			ch, missed = s.watchEvents.SubscribeAndReplaySince(lastID)
+		}
+	}
+	if ch == nil {
+		ch = s.watchEvents.Subscribe()
+	}
 	defer s.watchEvents.Unsubscribe(ch)
 
 	watches, werr := s.loadWatchPredicates(user.ID)
@@ -100,28 +119,25 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	}
 	flusher.Flush()
 
-	if lastIDStr := r.Header.Get("Last-Event-ID"); lastIDStr != "" {
-		if lastID, perr := strconv.ParseInt(lastIDStr, 10, 64); perr == nil && lastID > 0 {
-			missed := s.watchEvents.EventsSince(lastID)
-			if missed == nil {
-				if err := writeSSEEvent(w, "sync_required", 0, map[string]string{
-					"reason": "Notification buffer exceeded. Reconnect without Last-Event-ID to resync.",
-				}); err != nil {
-					slog.Debug("watch-events: sync_required write failed, closing", "user_id", user.ID, "error", err)
+	if lastID > 0 {
+		if missed == nil {
+			if err := writeSSEEvent(w, "sync_required", 0, map[string]string{
+				"reason": "Notification buffer exceeded. Reconnect without Last-Event-ID to resync.",
+			}); err != nil {
+				slog.Debug("watch-events: sync_required write failed, closing", "user_id", user.ID, "error", err)
+				return
+			}
+			flusher.Flush()
+		} else {
+			for _, n := range missed {
+				if !watchNotificationVisible(watches, user.ID, n) {
+					continue
+				}
+				if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
+					slog.Debug("watch-events: replay write failed, closing", "user_id", user.ID, "error", err)
 					return
 				}
 				flusher.Flush()
-			} else {
-				for _, n := range missed {
-					if !watchNotificationVisible(watches, user.ID, n) {
-						continue
-					}
-					if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
-						slog.Debug("watch-events: replay write failed, closing", "user_id", user.ID, "error", err)
-						return
-					}
-					flusher.Flush()
-				}
 			}
 		}
 	}
@@ -170,12 +186,17 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 }
 
 // loadWatchPredicates returns the caller's active watches as
-// itemID -> predicate ("" = unconditional).
+// itemID -> predicate ("" = unconditional). Filtered through
+// filterWatchesByCurrentAccess (TASK-2533 codex round 1 finding 1) so a
+// watch on an item the caller can no longer see — workspace membership
+// or grant revoked after the watch was created — doesn't keep delivering
+// live nudges for it.
 func (s *Server) loadWatchPredicates(userID string) (map[string]string, error) {
 	list, err := s.store.ListWatchesForUser(userID)
 	if err != nil {
 		return nil, err
 	}
+	list = s.filterWatchesByCurrentAccess(userID, list)
 	m := make(map[string]string, len(list))
 	for _, w := range list {
 		m[w.ItemID] = w.Predicate

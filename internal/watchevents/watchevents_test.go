@@ -1,6 +1,8 @@
 package watchevents
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -138,5 +140,119 @@ func TestMemoryBus_SlowSubscriberDoesNotBlockPublish(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("Publish blocked on a full subscriber channel")
+	}
+}
+
+// TestMemoryBus_ConcurrentPublish_MaintainsIDOrderInReplayBuffer covers
+// codex round 1 finding 4: sequence assignment and replay-buffer
+// insertion used to happen under SEPARATE locks, so two concurrent
+// Publish calls could append to the ring buffer out of ID order —
+// corrupting since()'s ordering assumptions (it walks the ring
+// oldest→newest and compares IDs, assuming monotonic order). Run with
+// -race; this also catches any residual lock-ordering issue in the
+// unified-lock fix.
+func TestMemoryBus_ConcurrentPublish_MaintainsIDOrderInReplayBuffer(t *testing.T) {
+	t.Parallel()
+	b := New()
+	defer b.Close()
+
+	const n = 200
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			b.Publish(Notification{Kind: KindComment, ItemRef: fmt.Sprintf("TASK-%d", i)})
+		}(i)
+	}
+	wg.Wait()
+
+	all := b.EventsSince(0)
+	if len(all) != n {
+		t.Fatalf("expected %d buffered events, got %d", n, len(all))
+	}
+	for i := 1; i < len(all); i++ {
+		if all[i].ID <= all[i-1].ID {
+			t.Fatalf("replay buffer out of ID order at index %d: %d then %d", i, all[i-1].ID, all[i].ID)
+		}
+	}
+	// IDs must be a dense, unique 1..n set — every concurrent Publish
+	// got its own sequence number with no duplicates and no gaps.
+	seenIDs := make(map[int64]bool, n)
+	for _, e := range all {
+		seenIDs[e.ID] = true
+	}
+	for id := int64(1); id <= n; id++ {
+		if !seenIDs[id] {
+			t.Fatalf("missing sequence ID %d after %d concurrent publishes", id, n)
+		}
+	}
+}
+
+// TestMemoryBus_SubscribeAndReplaySince_NoDuplicateUnderConcurrentPublish
+// covers codex round 1 finding 3: Subscribe() and EventsSince() used to
+// be two separate calls, leaving a window where a Notification published
+// in between would be delivered TWICE (once via replay, once via the
+// live channel). Publishes a batch of notifications immediately after
+// the atomic subscribe-and-replay call — the exact timing that was
+// racy under the old two-step sequence — and asserts every notification
+// ID is observed EXACTLY once across {replay result, live channel}.
+func TestMemoryBus_SubscribeAndReplaySince_NoDuplicateUnderConcurrentPublish(t *testing.T) {
+	t.Parallel()
+	b := New()
+	defer b.Close()
+
+	// Seed some history so there's a real replay window to resume into.
+	for i := 0; i < 5; i++ {
+		b.Publish(Notification{Kind: KindComment})
+	}
+	seeded := b.EventsSince(0)
+	sinceID := seeded[2].ID // resume from partway through history
+
+	ch, missed := b.SubscribeAndReplaySince(sinceID)
+	defer b.Unsubscribe(ch)
+
+	const concurrentPublishes = 20
+	var wg sync.WaitGroup
+	for i := 0; i < concurrentPublishes; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			b.Publish(Notification{Kind: KindStatusChange})
+		}()
+	}
+	wg.Wait()
+
+	seen := make(map[int64]int)
+	for _, n := range missed {
+		seen[n.ID]++
+	}
+	deadline := time.After(500 * time.Millisecond)
+drain:
+	for {
+		select {
+		case n := <-ch:
+			seen[n.ID]++
+		case <-deadline:
+			break drain
+		}
+	}
+
+	for id, count := range seen {
+		if count != 1 {
+			t.Errorf("notification ID %d delivered %d times, want exactly 1", id, count)
+		}
+	}
+	// None of the 20 concurrently-published notifications should be
+	// missing (they must all land on the live channel, since they were
+	// published strictly after the atomic subscribe returned).
+	concurrentSeen := 0
+	for id := range seen {
+		if id > seeded[len(seeded)-1].ID {
+			concurrentSeen++
+		}
+	}
+	if concurrentSeen != concurrentPublishes {
+		t.Fatalf("expected all %d concurrently-published notifications to be observed exactly once, got %d", concurrentPublishes, concurrentSeen)
 	}
 }
