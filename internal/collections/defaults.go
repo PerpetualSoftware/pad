@@ -20,7 +20,7 @@ type DefaultCollection struct {
 //
 // Tasks and Ideas are extracted into tasksCollection/ideasCollection
 // (templates.go, alongside docsCollection) so templates that want them
-// without a Plans collection — e.g. `spec` (IDEA-2527 / TASK-2528), where
+// without a Plans collection — e.g. `spec` (IDEA-2527), where
 // implementation-plan material lives in the spec body instead — can compose
 // the same seeded schema directly. Seeded output here is unchanged.
 func Defaults() []DefaultCollection {

@@ -135,7 +135,7 @@ type SeedPlaybook struct {
 }
 
 // tasksCollection returns the standard Tasks collection shared across
-// templates. Extracted from Defaults() (IDEA-2527 / TASK-2528) so templates
+// templates. Extracted from Defaults() (IDEA-2527) so templates
 // that want Tasks without Plans (e.g. the `spec` template, where
 // implementation-plan material lives in the spec body instead of a separate
 // collection) can compose it directly, mirroring the docsCollection pattern
@@ -196,7 +196,7 @@ func tasksCollection(sortOrder int) DefaultCollection {
 }
 
 // ideasCollection returns the standard Ideas collection shared across
-// templates. Extracted alongside tasksCollection (IDEA-2527 / TASK-2528) for
+// templates. Extracted alongside tasksCollection (IDEA-2527) for
 // the same reason: templates without a Plans collection still want Ideas.
 func ideasCollection(sortOrder int) DefaultCollection {
 	return DefaultCollection{
