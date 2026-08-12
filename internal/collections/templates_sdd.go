@@ -64,7 +64,7 @@ const specContentTemplate = `## Context
 
 ## Implementation plan
 
-<Optional. If it's useful to sketch build order or approach, it lives here instead of a separate Plans collection — decompose reads this section directly.>
+<Optional. If it's useful to sketch build order or approach, it lives here instead of a separate Plans collection — decompose reads this section directly. Delete this section if you don't need it; an unedited placeholder is treated as absent, same as if the heading were missing.>
 `
 
 // specsCollection returns the Specs collection: the spec template's
