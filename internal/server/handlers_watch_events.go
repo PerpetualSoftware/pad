@@ -207,18 +207,46 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 // each workspace rather than precomputed. reset() is called on the same
 // reval tick that reloads `watches`, so a revoked grant or membership
 // takes effect within one tick without requiring a reconnect.
+//
+// TASK-2533 codex round 3: the round-2 version's reset() cleared only
+// the per-workspace map — the cached *models.User itself was captured
+// ONCE at connect time and never re-fetched, so a mid-stream admin
+// demotion or disable left computeWatchAccessVisibility's admin bypass
+// running on stale Role/disabled data until reconnect, on BOTH delivery
+// paths (watch-matched and addressed-to-you alike, since both go through
+// this same cache). refreshUser (called by both the constructor and
+// reset, so the cadence matches computeSSEVisibility's own — see below)
+// closes that: it re-fetches the user fresh from the store every reval
+// tick, exactly like computeSSEVisibility does on ITS revalidation tick
+// in handlers_events.go (that function is invoked once at connect and
+// again only on each membershipCheck tick — never per event — so "per
+// cache reset" here IS "per tick" there; this is not a narrower cadence
+// than the thing it mirrors).
 type watchVisCache struct {
 	s    *Server
 	r    *http.Request
 	user *models.User
+	// deny, once true, makes forWorkspace return a deny-all
+	// watchAccessVisibility{} for every workspace without even calling
+	// computeWatchAccessVisibility — set by refreshUser when the user
+	// can't be confirmed live and unrestricted. Re-checked (and cleared,
+	// if the user becomes valid again) on every subsequent reset(), so a
+	// re-enabled or un-demoted user recovers on the next tick rather than
+	// staying stuck for the rest of the connection.
+	deny bool
 	m    map[string]watchAccessVisibility
 }
 
 func newWatchVisCache(s *Server, r *http.Request, user *models.User) *watchVisCache {
-	return &watchVisCache{s: s, r: r, user: user, m: make(map[string]watchAccessVisibility)}
+	c := &watchVisCache{s: s, r: r, user: user, m: make(map[string]watchAccessVisibility)}
+	c.refreshUser()
+	return c
 }
 
 func (c *watchVisCache) forWorkspace(workspaceID string) watchAccessVisibility {
+	if c.deny {
+		return watchAccessVisibility{}
+	}
 	if v, ok := c.m[workspaceID]; ok {
 		return v
 	}
@@ -229,6 +257,42 @@ func (c *watchVisCache) forWorkspace(workspaceID string) watchAccessVisibility {
 
 func (c *watchVisCache) reset() {
 	c.m = make(map[string]watchAccessVisibility)
+	c.refreshUser()
+}
+
+// refreshUser re-fetches c.user fresh from the store, mirroring
+// computeSSEVisibility's re-fetch (handlers_events.go) with ONE
+// deliberate, documented difference: computeSSEVisibility falls back to
+// the STALE cached user on a transient GetUser error or a deleted user,
+// reasoned as "a stale-but-previously-valid snapshot can't widen
+// visibility beyond what it already had, so don't punish a DB blip."
+// This function fails CLOSED instead (sets deny = true) on any of
+// {fetch error, user gone, user disabled} — not a blanket "mirror
+// exactly" claim, and it shouldn't be described as one. A nudge
+// stream's wrong failure mode is different from a browser SSE tab's:
+// delivering a fact (an assignment, a watched status change) to someone
+// who shouldn't see it is worse here than the stream going briefly
+// silent until the next successful tick, so this trades the SSE
+// handler's availability-leaning fallback for a stricter one.
+func (c *watchVisCache) refreshUser() {
+	fresh, err := c.s.store.GetUser(c.user.ID)
+	if err != nil {
+		slog.Warn("watch-events: GetUser failed during visibility recompute, denying until next tick",
+			"user_id", c.user.ID, "error", err)
+		c.deny = true
+		return
+	}
+	if fresh == nil {
+		// Deleted mid-connection.
+		c.deny = true
+		return
+	}
+	if fresh.IsDisabled() {
+		c.deny = true
+		return
+	}
+	c.user = fresh
+	c.deny = false
 }
 
 // loadWatchPredicates returns the caller's active watches as
