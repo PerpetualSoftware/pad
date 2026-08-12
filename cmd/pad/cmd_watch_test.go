@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
 // fakeSSEResponse wraps a raw SSE body string in an *http.Response
@@ -103,6 +105,90 @@ func TestSleepOrDone_ReturnsFalseWhenCancelled(t *testing.T) {
 	}
 }
 
+// TestMonitorClient_UnconfiguredReturnsError covers codex round 1
+// finding 5's core regression: monitorClient must return a plain error
+// for an unconfigured environment, never call os.Exit (this test
+// process completing at all, rather than terminating early, is the
+// proof) and never block waiting for interactive input — unlike
+// getClient()/getConfiguredConfig(), which do both.
+func TestMonitorClient_UnconfiguredReturnsError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PAD_URL", "")
+	t.Setenv("PAD_MODE", "")
+	t.Chdir(t.TempDir()) // no .pad.toml above this directory
+
+	_, err := monitorClient()
+	if err == nil {
+		t.Fatal("expected an error for an unconfigured client, got nil")
+	}
+}
+
+// TestRunWatchMonitor_NoPadToml_RespectsCancellation verifies the
+// no-.pad.toml silent-retry path (which sleeps for
+// noPadTomlRetryInterval — an hour) still returns promptly when the
+// context is cancelled, WITHOUT ever reaching client construction
+// (there is no configured client in this test's environment at all —
+// if the loop attempted to build one before the .pad.toml check, per
+// finding 5, it would have to do so via a path that can only return an
+// error or block; since this test provably completes quickly, neither
+// happened).
+func TestRunWatchMonitor_NoPadToml_RespectsCancellation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(t.TempDir()) // no .pad.toml above this directory
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- runWatchMonitor(ctx) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected nil error on cancellation, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runWatchMonitor did not return within 3s of context cancellation (still waiting on the 1h no-.pad.toml sleep?)")
+	}
+}
+
+// TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation
+// covers the ordering fix directly: a .pad.toml IS present (so the
+// no-workspace gate passes) but the client is unconfigured (no global
+// config.toml, no URL override in this .pad.toml) — monitorClient must
+// return a plain error that the loop folds into the backoff-retry path,
+// not an os.Exit or a blocked prompt. Proven the same way: the goroutine
+// returns promptly once the context is cancelled.
+func TestRunWatchMonitor_PadTomlPresentButUnconfigured_RespectsCancellation(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PAD_URL", "")
+	t.Setenv("PAD_MODE", "")
+
+	workDir := t.TempDir()
+	t.Chdir(workDir)
+	if err := cli.WriteWorkspaceLink(workDir, "test-ws", ""); err != nil {
+		t.Fatalf("WriteWorkspaceLink: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() { done <- runWatchMonitor(ctx) }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected nil error on cancellation, got %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runWatchMonitor did not return within 3s of context cancellation")
+	}
+}
+
 func TestStreamWatchEvents_ParsesNotificationsAndTracksLastEventID(t *testing.T) {
 	body := "id: 1\nevent: connected\ndata: {\"user_id\":\"u1\"}\n\n" +
 		"id: 2\nevent: notification\ndata: {\"item_ref\":\"TASK-1\",\"kind\":\"comment\",\"actor\":\"Dave\",\"summary\":\"looks good\"}\n\n" +
@@ -112,5 +198,36 @@ func TestStreamWatchEvents_ParsesNotificationsAndTracksLastEventID(t *testing.T)
 	lastID := streamWatchEvents(resp, "")
 	if lastID != "3" {
 		t.Fatalf("expected lastEventID to track the final id, got %q", lastID)
+	}
+}
+
+// TestStreamWatchEvents_SyncRequiredClearsLastEventID covers codex
+// round 1 finding 6: without this, a stale Last-Event-ID would be
+// resent on every reconnect after the server's replay buffer evicted
+// it, producing sync_required forever. sync_required carries no "id:"
+// line (server writes it with eventID=0), matching real wire behavior.
+func TestStreamWatchEvents_SyncRequiredClearsLastEventID(t *testing.T) {
+	body := "event: sync_required\ndata: {\"reason\":\"gap too large\"}\n\n"
+
+	resp := fakeSSEResponse(body)
+	lastID := streamWatchEvents(resp, "42") // resuming from a stale cursor
+	if lastID != "" {
+		t.Fatalf("expected sync_required to clear the cursor, got %q", lastID)
+	}
+}
+
+// TestStreamWatchEvents_SyncRequiredThenFreshNotification verifies the
+// cursor stays cleared through sync_required but a notification
+// arriving afterward on the SAME connection still updates it normally —
+// sync_required only resets the resume point, it doesn't disable
+// tracking for the rest of the stream.
+func TestStreamWatchEvents_SyncRequiredThenFreshNotification(t *testing.T) {
+	body := "event: sync_required\ndata: {\"reason\":\"gap too large\"}\n\n" +
+		"id: 99\nevent: notification\ndata: {\"item_ref\":\"TASK-9\",\"kind\":\"comment\",\"actor\":\"Dave\",\"summary\":\"hi\"}\n\n"
+
+	resp := fakeSSEResponse(body)
+	lastID := streamWatchEvents(resp, "42")
+	if lastID != "99" {
+		t.Fatalf("expected the post-sync_required notification's id to be tracked, got %q", lastID)
 	}
 }

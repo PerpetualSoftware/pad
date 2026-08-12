@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/config"
 )
 
 // noPadTomlRetryInterval is how long `pad watch --stream --for-session`
@@ -233,20 +234,65 @@ func watchRemoveCmd() *cobra.Command {
 	}
 }
 
+// monitorClient builds a Client for the monitor loop WITHOUT any of
+// getClient()'s side effects that are fatal (or interactive) for an
+// unattended background process (codex round 1 finding 5):
+// getConfiguredConfig() calls os.Exit(1) when the client isn't
+// configured and stdin isn't a TTY, or — worse, when a TTY IS attached —
+// launches an INTERACTIVE configuration wizard that blocks on stdin and
+// prints prose to stdout. Either behavior directly violates DOC-2479's
+// silent-start contract, which requires "not ready yet" to be a silent
+// retry, never a crash or a prompt.
+//
+// This reads config.toml + the directory's .pad.toml override the same
+// way getConfiguredConfig does, but treats "not configured" as a plain
+// returned error the caller can retry on instead of exiting. EnsureServer
+// (local-mode auto-start of the background padd process — the same
+// thing every other `pad` command does transparently on first use) is
+// still called, but its failure is likewise a plain error, not an exit.
+//
+// The ONLY genuinely unrecoverable state left is config.Load() failing
+// (e.g. ~/.pad is unwritable/permission-denied) — that's a broken-
+// machine condition no retry will fix, and it is the ONE case this
+// function still surfaces as an actual Go error up to the loop below,
+// which folds it into the same silent backoff-and-retry as every other
+// failure rather than exiting even then: an unattended monitor should
+// never terminate itself over a condition an operator might fix without
+// restarting the whole Claude Code session.
+func monitorClient() (*cli.Client, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	applyPadTomlOverride(cfg)
+	if !cfg.IsConfigured() {
+		return nil, fmt.Errorf("pad is not configured")
+	}
+	if err := cli.EnsureServer(cfg); err != nil {
+		return nil, fmt.Errorf("ensure server: %w", err)
+	}
+	return cli.NewClientFromURL(cfg.BaseURL()), nil
+}
+
 // runWatchMonitor is `pad watch --stream --for-session`'s main loop.
 // Implements DOC-2479's silent-start contract exactly:
 //   - no .pad.toml anywhere in the directory tree → sleep an hour,
 //     retry, print NOTHING (exiting would end the monitor process the
 //     plugin auto-started).
-//   - padd unreachable (dial failure, non-200, or the stream drops
-//     mid-read) → backoff-retry, print NOTHING.
+//   - client unconfigured, local server won't start, or padd otherwise
+//     unreachable (dial failure, non-200, or the stream drops mid-read)
+//     → backoff-retry, print NOTHING. See monitorClient's doc comment
+//     for exactly which conditions this folds into "unreachable" rather
+//     than treating as fatal.
 //   - a matching event → exactly one stdout line, formatMonitorLine.
 //
 // Runs until ctx is cancelled (Ctrl+C / SIGTERM) or, on the initial
-// call from Cobra's cmd.Context(), forever.
+// call from Cobra's cmd.Context(), forever. The .pad.toml check and
+// client construction both run INSIDE the loop, every iteration —
+// deliberately not hoisted above it — so a workspace linked or a padd
+// brought up mid-session is picked up on the next retry without a
+// process restart.
 func runWatchMonitor(ctx context.Context) error {
-	client, _ := getClient()
-
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -264,6 +310,15 @@ func runWatchMonitor(ctx context.Context) error {
 			// directory can gain a .pad.toml later (pad workspace init
 			// run mid-session), so keep polling rather than exiting.
 			if !sleepOrDone(sigCtx, noPadTomlRetryInterval) {
+				return nil
+			}
+			continue
+		}
+
+		client, err := monitorClient()
+		if err != nil {
+			attempt++
+			if !sleepOrDone(sigCtx, padddBackoff(attempt)) {
 				return nil
 			}
 			continue
@@ -325,6 +380,17 @@ func runWatchMonitor(ctx context.Context) error {
 // formatMonitorLine for each "notification" event, until the body is
 // exhausted (connection closed) or a read error occurs. Returns the
 // last-seen event ID for Last-Event-ID resume on reconnect.
+//
+// On "sync_required" (the server's signal that the requested
+// Last-Event-ID has been evicted from its replay buffer — TASK-2533
+// codex round 1 finding 6), this CLEARS the returned cursor rather than
+// leaving it at the stale value. Without this, the caller's next
+// reconnect would resend the SAME stale Last-Event-ID, the server would
+// respond sync_required again, forever — an unrecoverable resume loop
+// that only a process restart could break. Clearing it makes the next
+// reconnect a fresh (non-resuming) subscription instead, which is
+// exactly what sync_required is telling the caller to do: the gap is
+// too large to replay, stop trying.
 func streamWatchEvents(resp *http.Response, lastEventID string) string {
 	scanner := bufio.NewScanner(resp.Body)
 	var eventType, data string
@@ -338,11 +404,16 @@ func streamWatchEvents(resp *http.Response, lastEventID string) string {
 		case strings.HasPrefix(line, "data: "):
 			data = strings.TrimPrefix(line, "data: ")
 		case line == "":
-			if eventType == "notification" && data != "" {
-				var payload watchStreamPayload
-				if err := json.Unmarshal([]byte(data), &payload); err == nil {
-					fmt.Println(formatMonitorLine(payload))
+			switch eventType {
+			case "notification":
+				if data != "" {
+					var payload watchStreamPayload
+					if err := json.Unmarshal([]byte(data), &payload); err == nil {
+						fmt.Println(formatMonitorLine(payload))
+					}
 				}
+			case "sync_required":
+				lastEventID = ""
 			}
 			eventType, data = "", ""
 		}
