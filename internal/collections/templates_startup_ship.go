@@ -22,7 +22,7 @@ PRs is mechanical — the agent should just do it.
 
 ## Arguments
 
-- ` + "`target`" + ` (required, PLAN-ref | TASK-ref | comma-separated list) — what to ship
+- ` + "`target`" + ` (required, PLAN-ref | SPEC-ref | TASK-ref | comma-separated list) — what to ship
 - ` + "`stop-after-each`" + ` (flag, default=false) — pause for confirmation between merges
 - ` + "`merge-strategy`" + ` (enum: squash|merge|rebase, default=squash) — how PRs get merged
 - ` + "`limit`" + ` (number, optional) — ship at most N tasks from the list; unset = no limit
@@ -32,14 +32,16 @@ PRs is mechanical — the agent should just do it.
 
 ` + "`target`" + ` accepts either a single ref or a comma-separated list of refs:
 
-- **PLAN-ref** like ` + "`PLAN-9`" + ` — expand into its child tasks, ordered by ` + "`sort_order`" + `
-  then ` + "`created_at`" + `. Only include children with status in {open, todo, in-progress};
+- **PLAN-ref or SPEC-ref** like ` + "`PLAN-9`" + ` or ` + "`SPEC-4`" + ` — expand into its child tasks, ordered by ` + "`sort_order`" + `
+  then ` + "`created_at`" + `. Both are parenting artifacts with identical expansion mechanics —
+  a spec's children are wired the same way a plan's are (via ` + "`--parent`" + `, e.g. by the
+  ` + "`decompose`" + ` playbook). Only include children with status in {open, todo, in-progress};
   skip anything already done or cancelled.
 - **Task refs** like ` + "`TASK-10,TASK-11,TASK-12`" + ` — comma-separated when binding via the
   CLI / MCP. The agent's natural-language parser also accepts space-separated
   refs (` + "`/pad ship TASK-10 TASK-11 TASK-12`" + `) and collapses them into the same
   comma-separated form before binding. Order is preserved as given.
-- **Empty target** — ask the user which plan or tasks to ship.
+- **Empty target** — ask the user which plan, spec, or tasks to ship.
 
 ## Pre-flight checks
 
@@ -288,7 +290,7 @@ var shipPlaybookArguments = []map[string]any{
 		"name":        "target",
 		"type":        "string",
 		"required":    true,
-		"description": "PLAN-ref, TASK-ref, or comma-separated list of refs — what to ship.",
+		"description": "PLAN-ref, SPEC-ref, TASK-ref, or comma-separated list of refs — what to ship.",
 	},
 	{
 		"name":        "stop-after-each",
