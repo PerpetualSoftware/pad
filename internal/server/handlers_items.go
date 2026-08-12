@@ -19,6 +19,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
 // errStaleCollabSnapshot signals an UnderItemLock-wrapped
@@ -749,9 +750,31 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	}
 
 	actor, source := actorFromRequest(r)
+	actorNameForCreate := actorNameFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "created", r)
-	s.publishItemEventWithName(events.ItemCreated, workspaceID, item.ID, item.Title, coll.Slug, actor, actorNameFromRequest(r), source, item.Seq)
+	s.publishItemEventWithName(events.ItemCreated, workspaceID, item.ID, item.Title, coll.Slug, actor, actorNameForCreate, source, item.Seq)
 	s.dispatchWebhook(workspaceID, "item.created", item)
+
+	// Assignment-at-creation (TASK-2533): unlike an update, a freshly
+	// created item has no "before" state to diff — LastMutation doesn't
+	// apply here — so this is a direct, unconditional check rather than
+	// a call to publishWatchNotifications.
+	if s.watchEvents != nil && item.AssignedUserID != nil && *item.AssignedUserID != "" {
+		name := item.AssignedUserName
+		if name == "" {
+			name = *item.AssignedUserID
+		}
+		s.watchEvents.Publish(watchevents.Notification{
+			WorkspaceID:    workspaceID,
+			ItemID:         item.ID,
+			ItemRef:        item.Ref,
+			Kind:           watchevents.KindAssignment,
+			Actor:          actor,
+			ActorName:      actorNameForCreate,
+			Summary:        fmt.Sprintf("assigned to %s on creation", name),
+			AssignedUserID: *item.AssignedUserID,
+		})
+	}
 
 	return item, nil
 }
@@ -1542,8 +1565,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	actor, source := actorFromRequest(r)
 	activityID, _ := s.logActivityWithMetaReturningID(workspaceID, updated.ID, "updated", r, meta)
-	s.publishItemEventWithName(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameFromRequest(r), source, updated.Seq)
+	actorNameForUpdate := actorNameFromRequest(r)
+	s.publishItemEventWithName(events.ItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameForUpdate, source, updated.Seq)
 	s.dispatchWebhook(workspaceID, "item.updated", updated)
+	s.publishWatchNotifications(workspaceID, updated, actor, actorNameForUpdate)
 
 	// If a comment was attached to this update (e.g. explaining a status change),
 	// create a comment linked to the activity entry.
@@ -1568,6 +1593,22 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 				"comment": comment,
 				"changes": meta,
 			})
+			// TASK-2533: this comment is created via a DIFFERENT code
+			// path than handleCreateComment (store.CreateComment called
+			// directly, not through POST .../comments) — a bypass Rider
+			// 1's producer audit would otherwise miss. Same
+			// kind=comment notification as the standalone endpoint.
+			if s.watchEvents != nil {
+				s.watchEvents.Publish(watchevents.Notification{
+					WorkspaceID: workspaceID,
+					ItemID:      updated.ID,
+					ItemRef:     updated.Ref,
+					Kind:        watchevents.KindComment,
+					Actor:       actor,
+					ActorName:   actorNameForUpdate,
+					Summary:     truncateForSummary(comment.Body, 120),
+				})
+			}
 		}
 	}
 
@@ -1906,8 +1947,10 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	s.logActivityWithMeta(workspaceID, moved.ID, "moved", r, moveMeta)
 
 	// Publish events for both old and new collections
-	s.publishItemEventWithName(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameFromRequest(r), source, moved.Seq)
+	actorNameForMove := actorNameFromRequest(r)
+	s.publishItemEventWithName(events.ItemUpdated, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameForMove, source, moved.Seq)
 	s.dispatchWebhook(workspaceID, "item.moved", moved)
+	s.publishWatchNotifications(workspaceID, moved, actor, actorNameForMove)
 
 	moveVisIDs, _ := s.visibleCollectionIDs(r, workspaceID)
 	if err := s.enrichItemForResponse(moved, moveVisIDs); err != nil {

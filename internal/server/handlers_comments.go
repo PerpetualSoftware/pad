@@ -10,6 +10,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
 // handleListComments returns all comments for an item.
@@ -129,7 +130,33 @@ func (s *Server) handleCreateComment(w http.ResponseWriter, r *http.Request) {
 	s.publishCommentEvent(events.CommentCreated, workspaceID, item.ID, comment.ID, item.Title, item.CollectionSlug, actor, source)
 	s.dispatchWebhook(workspaceID, "comment.created", comment)
 
+	if s.watchEvents != nil {
+		s.watchEvents.Publish(watchevents.Notification{
+			WorkspaceID: workspaceID,
+			ItemID:      item.ID,
+			ItemRef:     item.Ref,
+			Kind:        watchevents.KindComment,
+			Actor:       actor,
+			ActorName:   actorNameFromRequest(r),
+			Summary:     truncateForSummary(comment.Body, 120),
+		})
+	}
+
 	writeJSON(w, http.StatusCreated, comment)
+}
+
+// truncateForSummary shortens a comment body (or any free-text field) to
+// a single-line notification summary. Collapses newlines to spaces first
+// so a multi-paragraph comment doesn't produce a multi-line CLI nudge
+// line — `pad watch --stream --for-session`'s contract is exactly one
+// stdout line per event.
+func truncateForSummary(body string, maxLen int) string {
+	body = strings.Join(strings.Fields(body), " ")
+	r := []rune(body)
+	if len(r) <= maxLen {
+		return body
+	}
+	return string(r[:maxLen]) + "…"
 }
 
 // handleDeleteComment removes a comment.
