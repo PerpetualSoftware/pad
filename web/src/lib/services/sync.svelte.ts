@@ -114,14 +114,20 @@ function createSyncService() {
 		syncing = true;
 		try {
 			const result = await determineSync(absence);
-			// `deliver` advances the cursor for an incremental result only once
-			// every consumer has applied it. For 'caught_up' nothing was missed;
-			// for 'full_refresh' the cursor stays put until markSynced().
-			await deliver(result);
+			// Only advance the cursor for incremental syncs (we know exactly
+			// what the server returned). For full_refresh, DON'T advance here —
+			// the cursor stays put until a page callback successfully reloads
+			// and calls markSynced(). This prevents data loss if the reload fails.
+			if (result.type === 'incremental') {
+				lastSyncTime = result.changes.server_time;
+			}
+			// For 'caught_up': cursor stays as-is (nothing was missed).
+			// For 'full_refresh': cursor stays as-is until markSynced() is called.
+			notify(result);
 		} catch {
 			// On error, tell pages to do a full refresh as a safe fallback.
 			// Don't advance cursor — retry on next tab resume.
-			await deliver({ type: 'full_refresh' });
+			notify({ type: 'full_refresh' });
 		} finally {
 			syncing = false;
 		}
@@ -177,54 +183,44 @@ function createSyncService() {
 	}
 
 	/**
-	 * Deliver to every consumer and report whether ALL of them applied it.
+	 * Deliver a result to every consumer.
 	 *
-	 * The isolation (one failing consumer must not break the others) is
-	 * unchanged. What changed is that failure is no longer INVISIBLE: the
-	 * result is reported back so the caller can decline to advance the cursor,
-	 * and the error is logged rather than dropped on the floor (BUG-2508).
+	 * Isolation is unchanged (one failing consumer must not break the others) and
+	 * so is TIMING: callbacks are invoked synchronously, in registration order,
+	 * and nothing here awaits them. What changed is that failure is no longer
+	 * INVISIBLE (BUG-2508).
 	 *
-	 * Each callback is AWAITED. Two of the five consumers are async, and the
-	 * previous `cb(result)` in a try/catch caught synchronous throws only — an
-	 * async consumer's rejection never reached that catch at all, so it was not
-	 * "caught and ignored" but unobserved entirely, surfacing as an unhandled
-	 * rejection and leaving the service believing the sync had been applied.
+	 * The try/catch below only ever caught SYNCHRONOUS throws. Two of the five
+	 * consumers are async, and `cb(result)` discarded the promise — so their
+	 * rejections never reached this catch at all. They were not "caught and
+	 * ignored"; they were unobserved, surfacing as unhandled rejections with
+	 * nothing tying them back to the sync that caused them. Attaching a handler
+	 * to whatever the callback returns closes that gap without awaiting it.
+	 *
+	 * DELIBERATELY NOT AWAITED, and deliberately not gating the cursor on the
+	 * outcome. Both were tried and reverted: the sync cursor advances on
+	 * delivery, not on application, and making it wait on consumers is a change
+	 * to the sync CONTRACT — every consumer would have to propagate failure
+	 * (today all four swallow it locally, so the gate would be inert), and one
+	 * permanently failing consumer would then pin the cursor for everyone against
+	 * an unbounded `/changes` window. That needs a bound and a design decision, so
+	 * it lives in its own item rather than here. This function's job is to make
+	 * the failures OBSERVABLE.
 	 */
-	async function notify(result: SyncResult): Promise<boolean> {
-		let appliedByAll = true;
-		await Promise.all(
-			[...callbacks].map(async (cb) => {
-				try {
-					await cb(result);
-				} catch (err) {
-					appliedByAll = false;
-					console.error('[sync] consumer failed to apply a sync result', result.type, err);
+	function notify(result: SyncResult) {
+		for (const cb of callbacks) {
+			try {
+				const returned = cb(result);
+				// Observe an async consumer's rejection. `catch` (not `await`) so
+				// consumers keep running concurrently and delivery stays synchronous.
+				if (returned && typeof (returned as Promise<void>).catch === 'function') {
+					(returned as Promise<void>).catch((err: unknown) => {
+						console.error('[sync] consumer failed to apply a sync result', result.type, err);
+					});
 				}
-			})
-		);
-		return appliedByAll;
-	}
-
-	/**
-	 * Deliver a result, then advance the cursor ONLY if every consumer applied it.
-	 *
-	 * The ordering is the fix (BUG-2508). The cursor used to advance BEFORE
-	 * delivery, so a consumer whose refetch failed left the cursor past changes
-	 * nobody had applied — and since `/changes` is asked from that cursor, the
-	 * server could never re-deliver them. The loss was permanent and silent.
-	 *
-	 * The `full_refresh` arm already had this discipline ("don't advance until
-	 * pages confirm success", via `markSynced`); this gives the incremental arm
-	 * the same one, which is what the two arms disagreeing about it should have
-	 * suggested long ago.
-	 *
-	 * No consumer reads `lastSyncTime` during a callback (checked across all
-	 * five), so moving the write after delivery changes nothing they observe.
-	 */
-	async function deliver(result: SyncResult): Promise<void> {
-		const appliedByAll = await notify(result);
-		if (appliedByAll && result.type === 'incremental') {
-			lastSyncTime = result.changes.server_time;
+			} catch (err) {
+				console.error('[sync] consumer threw applying a sync result', result.type, err);
+			}
 		}
 	}
 
@@ -257,10 +253,14 @@ function createSyncService() {
 				pendingSync = false;
 				// SSE told us there's a gap — try incremental, fall back to full
 				const result = await doIncrementalOrFull(MAX_INCREMENTAL_MS);
-				await deliver(result);
+				if (result.type === 'incremental') {
+					lastSyncTime = result.changes.server_time;
+				}
+				// For full_refresh: don't advance cursor until pages confirm success.
+				notify(result);
 			} while (pendingSync);
 		} catch {
-			await deliver({ type: 'full_refresh' });
+			notify({ type: 'full_refresh' });
 		} finally {
 			syncing = false;
 			pendingSync = false;
