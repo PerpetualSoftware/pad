@@ -28,7 +28,13 @@ export type SyncResult = {
 	type: 'full_refresh';     // Gap too large or error — caller should reload everything
 };
 
-type SyncCallback = (result: SyncResult) => void;
+/**
+ * A consumer of sync results. MAY be async: the service awaits what it returns,
+ * because whether the consumer actually applied the result is what decides
+ * whether the sync cursor may advance (BUG-2508). A callback that throws or
+ * rejects means "I did not apply this".
+ */
+type SyncCallback = (result: SyncResult) => void | Promise<void>;
 
 /**
  * How long the tab must have been hidden before we bother syncing at all.
@@ -47,6 +53,8 @@ function createSyncService() {
 	let lastSyncTime = $state<number>(Date.now());
 	let hiddenSince = $state<number>(0);
 	let syncing = $state<boolean>(false);
+	/** A sync_required that arrived mid-sync and still needs a pass (BUG-2508). */
+	let pendingSync = false;
 	let wsSlug = $state<string>('');
 	let initialized = false;
 
@@ -106,20 +114,14 @@ function createSyncService() {
 		syncing = true;
 		try {
 			const result = await determineSync(absence);
-			// Only advance the cursor for incremental syncs (we know exactly
-			// what the server returned). For full_refresh, DON'T advance here —
-			// the cursor stays put until a page callback successfully reloads
-			// and calls markSynced(). This prevents data loss if the reload fails.
-			if (result.type === 'incremental') {
-				lastSyncTime = result.changes.server_time;
-			}
-			// For 'caught_up': cursor stays as-is (nothing was missed).
-			// For 'full_refresh': cursor stays as-is until markSynced() is called.
-			notify(result);
+			// `deliver` advances the cursor for an incremental result only once
+			// every consumer has applied it. For 'caught_up' nothing was missed;
+			// for 'full_refresh' the cursor stays put until markSynced().
+			await deliver(result);
 		} catch {
 			// On error, tell pages to do a full refresh as a safe fallback.
 			// Don't advance cursor — retry on next tab resume.
-			notify({ type: 'full_refresh' });
+			await deliver({ type: 'full_refresh' });
 		} finally {
 			syncing = false;
 		}
@@ -174,13 +176,55 @@ function createSyncService() {
 		return () => { callbacks.delete(cb); };
 	}
 
-	function notify(result: SyncResult) {
-		for (const cb of callbacks) {
-			try {
-				cb(result);
-			} catch {
-				// Don't let one failing callback break others
-			}
+	/**
+	 * Deliver to every consumer and report whether ALL of them applied it.
+	 *
+	 * The isolation (one failing consumer must not break the others) is
+	 * unchanged. What changed is that failure is no longer INVISIBLE: the
+	 * result is reported back so the caller can decline to advance the cursor,
+	 * and the error is logged rather than dropped on the floor (BUG-2508).
+	 *
+	 * Each callback is AWAITED. Two of the five consumers are async, and the
+	 * previous `cb(result)` in a try/catch caught synchronous throws only — an
+	 * async consumer's rejection never reached that catch at all, so it was not
+	 * "caught and ignored" but unobserved entirely, surfacing as an unhandled
+	 * rejection and leaving the service believing the sync had been applied.
+	 */
+	async function notify(result: SyncResult): Promise<boolean> {
+		let appliedByAll = true;
+		await Promise.all(
+			[...callbacks].map(async (cb) => {
+				try {
+					await cb(result);
+				} catch (err) {
+					appliedByAll = false;
+					console.error('[sync] consumer failed to apply a sync result', result.type, err);
+				}
+			})
+		);
+		return appliedByAll;
+	}
+
+	/**
+	 * Deliver a result, then advance the cursor ONLY if every consumer applied it.
+	 *
+	 * The ordering is the fix (BUG-2508). The cursor used to advance BEFORE
+	 * delivery, so a consumer whose refetch failed left the cursor past changes
+	 * nobody had applied — and since `/changes` is asked from that cursor, the
+	 * server could never re-deliver them. The loss was permanent and silent.
+	 *
+	 * The `full_refresh` arm already had this discipline ("don't advance until
+	 * pages confirm success", via `markSynced`); this gives the incremental arm
+	 * the same one, which is what the two arms disagreeing about it should have
+	 * suggested long ago.
+	 *
+	 * No consumer reads `lastSyncTime` during a callback (checked across all
+	 * five), so moving the write after delivery changes nothing they observe.
+	 */
+	async function deliver(result: SyncResult): Promise<void> {
+		const appliedByAll = await notify(result);
+		if (appliedByAll && result.type === 'incremental') {
+			lastSyncTime = result.changes.server_time;
 		}
 	}
 
@@ -195,20 +239,31 @@ function createSyncService() {
 	 * change listener and runs the sync directly.
 	 */
 	async function triggerSync() {
-		if (syncing || !wsSlug) return;
+		if (!wsSlug) return;
+		// A sync_required arriving while one is in flight used to be DROPPED
+		// outright — an early return with nothing recording that it happened.
+		// The in-flight request was issued before that signal, so its window
+		// cannot cover it, and no later event re-announces the gap. Defer it
+		// instead: the loop below runs one more pass (BUG-2508).
+		if (syncing) {
+			pendingSync = true;
+			return;
+		}
 		syncing = true;
 		try {
-			// SSE told us there's a gap — try incremental, fall back to full
-			const result = await doIncrementalOrFull(MAX_INCREMENTAL_MS);
-			if (result.type === 'incremental') {
-				lastSyncTime = result.changes.server_time;
-			}
-			// For full_refresh: don't advance cursor until pages confirm success.
-			notify(result);
+			do {
+				// Cleared BEFORE the request, so a signal arriving DURING it is
+				// recorded rather than swallowed by the pass that predates it.
+				pendingSync = false;
+				// SSE told us there's a gap — try incremental, fall back to full
+				const result = await doIncrementalOrFull(MAX_INCREMENTAL_MS);
+				await deliver(result);
+			} while (pendingSync);
 		} catch {
-			notify({ type: 'full_refresh' });
+			await deliver({ type: 'full_refresh' });
 		} finally {
 			syncing = false;
+			pendingSync = false;
 		}
 	}
 
