@@ -123,9 +123,9 @@ Reference the task ref in the message body. Describe what changed AND why.
 git add -A && git commit -m "$(cat <<'EOF'
 feat(scope): short summary (TASK-REF)
 
-Longer description of what and why. Reference the parent Plan if relevant.
+Longer description of what and why. Reference the parent Plan or Spec if relevant.
 
-Parent: PLAN-XXX.
+Parent: PLAN-XXX / SPEC-XXX.
 EOF
 )"
 ` + "```" + `
@@ -230,6 +230,12 @@ If this was the last task under a plan, consider closing the plan too:
 ` + "```" + `bash
 pad item update PLAN-XXX --status completed --comment "All child tasks shipped."
 ` + "```" + `
+
+If the parent is a spec, don't flip its status directly — a spec's
+terminal state is gated by verification, not by "all tasks merged."
+Run the ` + "`verify`" + ` playbook instead (` + "`/pad verify SPEC-XXX`" + `): it walks
+the acceptance criteria against actual behavior and moves the spec to
+` + "`implemented`" + ` only when they hold.
 
 ### 12. Stop-between check
 
