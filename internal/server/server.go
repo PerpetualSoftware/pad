@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -284,7 +285,20 @@ type Server struct {
 	// (codex round 4: a watch-list reload failure must not also skip
 	// the identity/visibility refresh) deterministically, without
 	// needing to actually break the DB connection mid-test.
-	watchPredicatesLoadFault func() error
+	//
+	// atomic.Pointer, not a plain func field (codex round 5 finding 2):
+	// unlike restoreAckFault — set once, synchronously, before the single
+	// HTTP request that will read it, so goroutine-creation's own
+	// happens-before edge makes a plain field safe there — this seam is
+	// set by a test AFTER the SSE stream's background goroutine is
+	// already running and reading it on every reval tick. A plain field
+	// written from the test's goroutine while that goroutine reads it
+	// concurrently is a genuine, if timing-dependent, data race
+	// (verified: restoreAckFault's OWN usage doesn't share this flaw,
+	// since it's never touched after the goroutine that reads it starts,
+	// so it was intentionally left as a plain field rather than changed
+	// too).
+	watchPredicatesLoadFault atomic.Pointer[func() error]
 }
 
 // goAsync spawns fn in a goroutine that's tracked by s.bg, so Stop() can

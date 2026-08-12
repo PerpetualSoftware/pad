@@ -24,6 +24,21 @@ const watchEventsKeepaliveInterval = sseKeepaliveInterval
 // tick instead of requiring a reconnect.
 var watchListRevalInterval = 60 * time.Second
 
+// maxConsecutiveWatchReloadFailures bounds how many reval ticks in a row
+// a stale watch list is tolerated before it's cleared (TASK-2533 codex
+// round 5 finding 1). A single failed reload is ordinary, bounded
+// staleness — one tick behind, same as watchListRevalInterval's normal
+// "eventually consistent" contract — but an unbounded run of failures
+// would leave a DEAD watch set live indefinitely (a removed watch or a
+// deleted item keeps matching forever; a watch created during the outage
+// is silently missed forever), since visCache gates current ACCESS, not
+// whether a watch still legitimately exists. 3 ticks (a few reval
+// intervals) is long enough to ride out a transient blip without going
+// silent on watch-matched delivery for something genuinely temporary,
+// short enough that a real outage doesn't leave stale matches live
+// indefinitely.
+const maxConsecutiveWatchReloadFailures = 3
+
 // watchEventPayload is the wire shape GET /api/v1/events/stream emits,
 // per DOC-2479's contract exactly: {id, ts, workspace, item_ref, kind,
 // actor, summary}.
@@ -113,6 +128,10 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			"user_id", user.ID, "error", werr)
 		watches = map[string]string{} // fail closed, not open
 	}
+	// consecutiveWatchReloadFailures tracks reval ticks in a row where
+	// loadWatchPredicates errored — see the reval.C case below (TASK-2533
+	// codex round 5 finding 1).
+	consecutiveWatchReloadFailures := 0
 	// TASK-2533 codex round 2 finding 2: EVERY notification — watch-
 	// matched or addressed-to-you — must pass the same current-access
 	// check before delivery, not just watch-matched ones. visCache
@@ -200,19 +219,37 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 
 			fresh, ferr := s.loadWatchPredicates(r, user.ID)
 			if ferr != nil {
-				// Keep the STALE watch list rather than dropping all
-				// delivery for the tick: the list itself being one tick
-				// behind is a narrower, already-bounded staleness
-				// (mirrors watchListRevalInterval's own "eventually
-				// consistent" contract), and it's now gated by the
-				// FRESH visCache above regardless — a demoted/disabled
-				// user is denied via visCache even while watches stays
-				// stale. Dropping everything here would tie stream
-				// availability to an unrelated query's transient health.
-				slog.Warn("watch-events: watch-list reload failed, keeping previous watch snapshot (visibility was still refreshed)",
-					"user_id", user.ID, "error", ferr)
+				consecutiveWatchReloadFailures++
+				// TASK-2533 codex round 5 finding 1: keeping the stale
+				// watch list across a SINGLE reload failure is bounded
+				// staleness (one tick behind, matching
+				// watchListRevalInterval's normal "eventually
+				// consistent" contract) — but keeping it across an
+				// UNBOUNDED run of consecutive failures is not: a dead
+				// watch (removed, item deleted) keeps matching forever,
+				// and a watch created while every reload keeps failing
+				// is silently missed forever, since visCache gates
+				// CURRENT ACCESS, not whether a watch still legitimately
+				// exists. After maxConsecutiveWatchReloadFailures ticks
+				// of failure, fail closed on watch-matched delivery
+				// specifically: clear the set so it can no longer match
+				// anything stale. Addressed-to-you delivery is
+				// unaffected either way — it depends only on visCache,
+				// which was already refreshed above regardless of this
+				// failure.
+				if consecutiveWatchReloadFailures >= maxConsecutiveWatchReloadFailures {
+					if len(watches) > 0 {
+						slog.Warn("watch-events: watch-list reload failed repeatedly, clearing stale watch set (addressed-to-you delivery continues)",
+							"user_id", user.ID, "consecutive_failures", consecutiveWatchReloadFailures, "error", ferr)
+						watches = map[string]string{}
+					}
+				} else {
+					slog.Warn("watch-events: watch-list reload failed, keeping previous watch snapshot for now (visibility was still refreshed)",
+						"user_id", user.ID, "consecutive_failures", consecutiveWatchReloadFailures, "error", ferr)
+				}
 				continue
 			}
+			consecutiveWatchReloadFailures = 0
 			watches = fresh
 		}
 	}
@@ -322,8 +359,8 @@ func (c *watchVisCache) refreshUser() {
 // or grant revoked after the watch was created — doesn't keep delivering
 // live nudges for it.
 func (s *Server) loadWatchPredicates(r *http.Request, userID string) (map[string]string, error) {
-	if s.watchPredicatesLoadFault != nil {
-		if fe := s.watchPredicatesLoadFault(); fe != nil {
+	if fault := s.watchPredicatesLoadFault.Load(); fault != nil {
+		if fe := (*fault)(); fe != nil {
 			return nil, fe
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
 // TestWatchVisCache_DeniesAfterAdminDemotion covers TASK-2533 codex
@@ -264,10 +265,13 @@ func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.
 	}
 	waitForWatchEvent(t, ch, 3*time.Second)
 
-	// Force every subsequent reval tick's watch-list reload to fail...
-	srv.watchPredicatesLoadFault = func() error {
-		return errFakeWatchListReload
-	}
+	// Force every subsequent reval tick's watch-list reload to fail —
+	// via the atomic seam (TASK-2533 codex round 5 finding 2): this
+	// write happens AFTER the stream's background goroutine is already
+	// running and reading the seam on its own reval ticks, so a plain
+	// field here would race.
+	loadFault := func() error { return errFakeWatchListReload }
+	srv.watchPredicatesLoadFault.Store(&loadFault)
 	// ...AND disable the connected user, in the SAME window.
 	if err := srv.store.DisableUser(user.ID); err != nil {
 		t.Fatalf("DisableUser: %v", err)
@@ -303,3 +307,96 @@ var errFakeWatchListReload = &testWatchListReloadError{}
 type testWatchListReloadError struct{}
 
 func (*testWatchListReloadError) Error() string { return "forced watch-list reload failure (test)" }
+
+// TestWatchEventsStream_WatchSetClearedAfterPersistentReloadFailures
+// covers TASK-2533 codex round 5 finding 1: `watches = fresh` only ran
+// on the reload's success path, so under a PERSISTENT (not single-tick)
+// reload failure the watch set stayed live indefinitely — a dead watch
+// (removed, item deleted) would keep matching forever, and a watch
+// created during the outage would be silently missed forever, since
+// visCache gates current ACCESS, not whether a watch still legitimately
+// exists. Forces maxConsecutiveWatchReloadFailures+1 consecutive
+// failures via the fault seam and asserts: watch-matched delivery stops
+// once the bound is crossed, addressed-to-you delivery is unaffected
+// throughout (it never depended on the watch list), and watch-matched
+// delivery RESUMES once the fault is cleared and a reload succeeds
+// again — this is a bounded outage response, not a one-way ratchet.
+func TestWatchEventsStream_WatchSetClearedAfterPersistentReloadFailures(t *testing.T) {
+	// Deliberately NOT t.Parallel() — mutates watchListRevalInterval,
+	// same rationale as the other reval-interval tests in this file.
+	srv := testServerWithWatchEvents(t)
+	slug, item, tok, user := setupWatchTestUser(t, srv)
+
+	origInterval := watchListRevalInterval
+	watchListRevalInterval = 30 * time.Millisecond
+	t.Cleanup(func() { watchListRevalInterval = origInterval })
+
+	rr := bearerCall(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/watch", tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create watch: %d %s", rr.Code, rr.Body.String())
+	}
+
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectWatchStream(ctx, t, ts.URL, tok.Token)
+	waitForWatchEvent(t, ch, 3*time.Second) // connected
+
+	// Baseline: watch-matched delivery works before any of this.
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, tok.Token,
+		map[string]interface{}{"fields": `{"status":"done"}`})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update item (baseline): %d %s", rr.Code, rr.Body.String())
+	}
+	waitForWatchEvent(t, ch, 3*time.Second)
+
+	// Force every reload to fail, for MORE than the bound.
+	loadFault := func() error { return errFakeWatchListReload }
+	srv.watchPredicatesLoadFault.Store(&loadFault)
+	time.Sleep(time.Duration(maxConsecutiveWatchReloadFailures+2) * watchListRevalInterval)
+
+	// Watch-matched: must NOT deliver — the watch set was cleared once
+	// the failure bound was crossed.
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, tok.Token,
+		map[string]interface{}{"fields": `{"status":"in-progress"}`})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update item (during outage): %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Addressed-to-you: MUST still deliver — it depends only on
+	// visCache, which round 4 already decoupled from the reload outcome.
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, tok.Token,
+		map[string]interface{}{"assigned_user_id": user.ID})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("assign item (during outage): %d %s", rr.Code, rr.Body.String())
+	}
+
+	ev := waitForWatchEvent(t, ch, 3*time.Second)
+	var payload watchEventPayload
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.Kind != watchevents.KindAssignment {
+		t.Fatalf("expected the assignment notification (watch-matched delivery should have been suppressed by the outage), got kind %q: %+v", payload.Kind, payload)
+	}
+
+	// Recovery: clear the fault, let a reload succeed, and confirm
+	// watch-matched delivery resumes — this is a bounded response to an
+	// outage, not a permanent one-way ratchet.
+	srv.watchPredicatesLoadFault.Store(nil)
+	time.Sleep(2 * watchListRevalInterval)
+
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, tok.Token,
+		map[string]interface{}{"fields": `{"status":"done"}`})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update item (post-recovery): %d %s", rr.Code, rr.Body.String())
+	}
+	ev = waitForWatchEvent(t, ch, 3*time.Second)
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.Kind != watchevents.KindStatusChange {
+		t.Fatalf("expected watch-matched delivery to resume after the reload recovers, got kind %q: %+v", payload.Kind, payload)
+	}
+}
