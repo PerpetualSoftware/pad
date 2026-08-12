@@ -263,7 +263,7 @@ Run the `plan` invokable playbook — by intent ("let's plan <topic>") or the sh
 
 ### Decomposition: "Break plan X into tasks"
 
-Run the `decompose` invokable playbook — by intent ("break PLAN-2 into tasks") or the shortcut **`/pad decompose <PLAN-ref>`** (Claude Code) / `$pad decompose` (Codex) / `pad_playbook` `action: run, ref: decompose` (MCP). Accepts `target` (the plan ref), `dry-run` (propose without creating), and `collection` (default=tasks); handles child reconciliation, dependency wiring, and per-task confirmation. Same activation story as `plan` — check the bootstrap's `playbooks` array for `invocation_slug=decompose, status=active`; library activation otherwise.
+Run the `decompose` invokable playbook — by intent ("break PLAN-2 into tasks", or "break SPEC-4 into tasks" in a spec-driven workspace) or the shortcut **`/pad decompose <PLAN-ref|SPEC-ref>`** (Claude Code) / `$pad decompose` (Codex) / `pad_playbook` `action: run, ref: decompose` (MCP). Accepts `target` (the plan or spec ref), `dry-run` (propose without creating), and `collection` (default=tasks); handles child reconciliation, dependency wiring, and per-task confirmation. Same activation story as `plan` — check the bootstrap's `playbooks` array for `invocation_slug=decompose, status=active`; library activation otherwise.
 
 ### Status Check: "How are we doing?"
 

@@ -145,7 +145,7 @@ var decomposePlaybookArguments = []map[string]any{
 		"name":        "target",
 		"type":        "ref",
 		"required":    true,
-		"description": "The plan to decompose. Must resolve to a plan-like item.",
+		"description": "The plan or spec to decompose. Must resolve to a plan-like or spec-like item.",
 	},
 	{
 		"name":        "dry-run",
