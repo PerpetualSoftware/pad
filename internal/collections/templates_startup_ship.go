@@ -22,7 +22,7 @@ PRs is mechanical — the agent should just do it.
 
 ## Arguments
 
-- ` + "`target`" + ` (required, PLAN-ref | TASK-ref | comma-separated list) — what to ship
+- ` + "`target`" + ` (required, PLAN-ref | SPEC-ref | TASK-ref | comma-separated list) — what to ship
 - ` + "`stop-after-each`" + ` (flag, default=false) — pause for confirmation between merges
 - ` + "`merge-strategy`" + ` (enum: squash|merge|rebase, default=squash) — how PRs get merged
 - ` + "`limit`" + ` (number, optional) — ship at most N tasks from the list; unset = no limit
@@ -32,14 +32,16 @@ PRs is mechanical — the agent should just do it.
 
 ` + "`target`" + ` accepts either a single ref or a comma-separated list of refs:
 
-- **PLAN-ref** like ` + "`PLAN-9`" + ` — expand into its child tasks, ordered by ` + "`sort_order`" + `
-  then ` + "`created_at`" + `. Only include children with status in {open, todo, in-progress};
+- **PLAN-ref or SPEC-ref** like ` + "`PLAN-9`" + ` or ` + "`SPEC-4`" + ` — expand into its child tasks, ordered by ` + "`sort_order`" + `
+  then ` + "`created_at`" + `. Both are parenting artifacts with identical expansion mechanics —
+  a spec's children are wired the same way a plan's are (via ` + "`--parent`" + `, e.g. by the
+  ` + "`decompose`" + ` playbook). Only include children with status in {open, todo, in-progress};
   skip anything already done or cancelled.
 - **Task refs** like ` + "`TASK-10,TASK-11,TASK-12`" + ` — comma-separated when binding via the
   CLI / MCP. The agent's natural-language parser also accepts space-separated
   refs (` + "`/pad ship TASK-10 TASK-11 TASK-12`" + `) and collapses them into the same
   comma-separated form before binding. Order is preserved as given.
-- **Empty target** — ask the user which plan or tasks to ship.
+- **Empty target** — ask the user which plan, spec, or tasks to ship.
 
 ## Pre-flight checks
 
@@ -65,8 +67,9 @@ For each task in order:
 ### 1. Load the task
 
 ` + "`pad item show <TASK-REF> --format markdown`" + ` — read the full content, not just
-the title. Check the parent plan's content for additional context. Load linked
-items if wiki-links are present.
+the title. Check the parent plan's or spec's content for additional context —
+for a spec parent, this includes its acceptance criteria, which the PR will
+need to cite in step 8. Load linked items if wiki-links are present.
 
 ### 2. Load conventions
 
@@ -121,9 +124,9 @@ Reference the task ref in the message body. Describe what changed AND why.
 git add -A && git commit -m "$(cat <<'EOF'
 feat(scope): short summary (TASK-REF)
 
-Longer description of what and why. Reference the parent Plan if relevant.
+Longer description of what and why. Reference the parent Plan or Spec if relevant.
 
-Parent: PLAN-XXX.
+Parent: PLAN-XXX / SPEC-XXX.
 EOF
 )"
 ` + "```" + `
@@ -137,7 +140,7 @@ gh pr create --title "<same as commit subject>" --body "$(cat <<'EOF'
 <what + why>
 
 ## Context
-Implements ` + "`<TASK-REF>`" + ` under ` + "`<PLAN-REF>`" + ` (if any).
+Implements ` + "`<TASK-REF>`" + ` under ` + "`<PARENT-REF>`" + ` (PLAN-ref or SPEC-ref, if any).
 
 ## Test plan
 - [x] build — clean
@@ -146,6 +149,14 @@ Implements ` + "`<TASK-REF>`" + ` under ` + "`<PLAN-REF>`" + ` (if any).
 EOF
 )"
 ` + "```" + `
+
+**If the parent is a spec**, don't stop at citing the ref — list which
+acceptance criteria this PR satisfies (e.g. "Implements TASK-12 under
+SPEC-4, satisfies AC-1, AC-2" in the Context section). This isn't
+optional polish: it's the spec template's own seeded on-pr-create
+convention ("PRs cite the spec and which criteria they satisfy"), and
+it's what makes ` + "`/pad verify`" + ` fast later — the reviewer walks the
+cited criteria instead of re-deriving what the PR was supposed to do.
 
 Capture the PR number from the output.
 
@@ -229,6 +240,12 @@ If this was the last task under a plan, consider closing the plan too:
 pad item update PLAN-XXX --status completed --comment "All child tasks shipped."
 ` + "```" + `
 
+If the parent is a spec, don't flip its status directly — a spec's
+terminal state is gated by verification, not by "all tasks merged."
+Run the ` + "`verify`" + ` playbook instead (` + "`/pad verify SPEC-XXX`" + `): it walks
+the acceptance criteria against actual behavior and moves the spec to
+` + "`implemented`" + ` only when they hold.
+
 ### 12. Stop-between check
 
 If ` + "`stop-after-each`" + ` is set, report completion and ask the user whether to
@@ -288,7 +305,7 @@ var shipPlaybookArguments = []map[string]any{
 		"name":        "target",
 		"type":        "string",
 		"required":    true,
-		"description": "PLAN-ref, TASK-ref, or comma-separated list of refs — what to ship.",
+		"description": "PLAN-ref, SPEC-ref, TASK-ref, or comma-separated list of refs — what to ship.",
 	},
 	{
 		"name":        "stop-after-each",

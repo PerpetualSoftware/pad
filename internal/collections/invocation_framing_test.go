@@ -47,6 +47,9 @@ func TestInvocationFramingStaysNLCanonical(t *testing.T) {
 		"playbook_library_decompose.go body": decomposePlaybookBody,
 		"playbook_library_onboard.go body":   onboardPlaybookBody,
 		"templates_startup_ship.go body":     shipPlaybookBody,
+		"templates_sdd_spec.go body":         specPlaybookBody,
+		"templates_sdd_verify.go body":       verifyPlaybookBody,
+		"templates_sdd_extract.go body":      extractSpecsPlaybookBody,
 	}
 
 	// Canonical-framing phrasings to reject. Each matches "<framing verb> …

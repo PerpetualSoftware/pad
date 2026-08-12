@@ -17,102 +17,16 @@ type DefaultCollection struct {
 }
 
 // Defaults returns the six default collections for a new workspace.
+//
+// Tasks and Ideas are extracted into tasksCollection/ideasCollection
+// (templates.go, alongside docsCollection) so templates that want them
+// without a Plans collection — e.g. `spec` (IDEA-2527), where
+// implementation-plan material lives in the spec body instead — can compose
+// the same seeded schema directly. Seeded output here is unchanged.
 func Defaults() []DefaultCollection {
 	return []DefaultCollection{
-		{
-			Name:        "Tasks",
-			Slug:        "tasks",
-			Icon:        "✓",
-			Description: "Track work items, bugs, and to-dos",
-			SortOrder:   0,
-			Schema: models.CollectionSchema{
-				Fields: []models.FieldDef{
-					{
-						Key:             "status",
-						Label:           "Status",
-						Type:            "select",
-						Options:         []string{"open", "in-progress", "done", "cancelled"},
-						TerminalOptions: []string{"done", "cancelled"},
-						Default:         "open",
-						Required:        true,
-					},
-					{
-						Key:     "priority",
-						Label:   "Priority",
-						Type:    "select",
-						Options: []string{"low", "medium", "high", "critical"},
-						Default: "medium",
-					},
-					{
-						Key:   "due_date",
-						Label: "Due Date",
-						Type:  "date",
-					},
-					{
-						Key:     "effort",
-						Label:   "Effort",
-						Type:    "select",
-						Options: []string{"xs", "s", "m", "l", "xl"},
-					},
-				},
-			},
-			Settings: models.CollectionSettings{
-				Layout:       "fields-primary",
-				DefaultView:  "board",
-				BoardGroupBy: "status",
-				ListSortBy:   "priority",
-				QuickActions: []models.QuickAction{
-					{Label: "Implement this", Prompt: "/pad implement {ref} \"{title}\" (status: {status}, priority: {priority})", Scope: "item", Icon: "🔨"},
-					{Label: "Write tests", Prompt: "/pad write tests for {ref} \"{title}\"", Scope: "item", Icon: "🧪"},
-					{Label: "Explain this task", Prompt: "/pad explain {ref} \"{title}\" — what does it involve and why is it needed?", Scope: "item", Icon: "💬"},
-					{Label: "Triage open tasks", Prompt: "/pad triage all open tasks and suggest priorities", Scope: "collection", Icon: "📋"},
-					{Label: "Status report", Prompt: "/pad summarize progress on all tasks", Scope: "collection", Icon: "📊"},
-				},
-			},
-		},
-		{
-			Name:        "Ideas",
-			Slug:        "ideas",
-			Icon:        "💡",
-			Description: "Capture ideas, feature requests, and inspiration",
-			SortOrder:   1,
-			Schema: models.CollectionSchema{
-				Fields: []models.FieldDef{
-					{
-						Key:             "status",
-						Label:           "Status",
-						Type:            "select",
-						Options:         []string{"new", "exploring", "planned", "implemented", "rejected"},
-						TerminalOptions: []string{"implemented", "rejected"},
-						Default:         "new",
-						Required:        true,
-					},
-					{
-						Key:     "impact",
-						Label:   "Impact",
-						Type:    "select",
-						Options: []string{"low", "medium", "high"},
-					},
-					{
-						Key:   "category",
-						Label: "Category",
-						Type:  "text",
-					},
-				},
-			},
-			Settings: models.CollectionSettings{
-				Layout:      "balanced",
-				DefaultView: "board",
-				ListSortBy:  "created_at",
-				ListGroupBy: "status",
-				QuickActions: []models.QuickAction{
-					{Label: "Explore this idea", Prompt: "/pad explore {ref} \"{title}\" — research feasibility, trade-offs, and implementation approaches", Scope: "item", Icon: "🔍"},
-					{Label: "Break into tasks", Prompt: "/pad break down {ref} \"{title}\" into actionable tasks", Scope: "item", Icon: "📝"},
-					{Label: "Research this", Prompt: "/pad research {ref} \"{title}\" and summarize findings", Scope: "item", Icon: "📚"},
-					{Label: "Review all new ideas", Prompt: "/pad triage all new ideas and suggest which to pursue", Scope: "collection", Icon: "💡"},
-				},
-			},
-		},
+		tasksCollection(0),
+		ideasCollection(1),
 		{
 			Name:        "Plans",
 			Slug:        "plans",

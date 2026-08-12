@@ -134,6 +134,116 @@ type SeedPlaybook struct {
 	Fields  string // JSON string of field values (trigger, scope, status)
 }
 
+// tasksCollection returns the standard Tasks collection shared across
+// templates. Extracted from Defaults() (IDEA-2527) so templates
+// that want Tasks without Plans (e.g. the `spec` template, where
+// implementation-plan material lives in the spec body instead of a separate
+// collection) can compose it directly, mirroring the docsCollection pattern
+// below. Defaults() calls this too — the seeded schema is unchanged, only
+// where it lives moved.
+func tasksCollection(sortOrder int) DefaultCollection {
+	return DefaultCollection{
+		Name:        "Tasks",
+		Slug:        "tasks",
+		Icon:        "✓",
+		Description: "Track work items, bugs, and to-dos",
+		SortOrder:   sortOrder,
+		Schema: models.CollectionSchema{
+			Fields: []models.FieldDef{
+				{
+					Key:             "status",
+					Label:           "Status",
+					Type:            "select",
+					Options:         []string{"open", "in-progress", "done", "cancelled"},
+					TerminalOptions: []string{"done", "cancelled"},
+					Default:         "open",
+					Required:        true,
+				},
+				{
+					Key:     "priority",
+					Label:   "Priority",
+					Type:    "select",
+					Options: []string{"low", "medium", "high", "critical"},
+					Default: "medium",
+				},
+				{
+					Key:   "due_date",
+					Label: "Due Date",
+					Type:  "date",
+				},
+				{
+					Key:     "effort",
+					Label:   "Effort",
+					Type:    "select",
+					Options: []string{"xs", "s", "m", "l", "xl"},
+				},
+			},
+		},
+		Settings: models.CollectionSettings{
+			Layout:       "fields-primary",
+			DefaultView:  "board",
+			BoardGroupBy: "status",
+			ListSortBy:   "priority",
+			QuickActions: []models.QuickAction{
+				{Label: "Implement this", Prompt: "/pad implement {ref} \"{title}\" (status: {status}, priority: {priority})", Scope: "item", Icon: "🔨"},
+				{Label: "Write tests", Prompt: "/pad write tests for {ref} \"{title}\"", Scope: "item", Icon: "🧪"},
+				{Label: "Explain this task", Prompt: "/pad explain {ref} \"{title}\" — what does it involve and why is it needed?", Scope: "item", Icon: "💬"},
+				{Label: "Triage open tasks", Prompt: "/pad triage all open tasks and suggest priorities", Scope: "collection", Icon: "📋"},
+				{Label: "Status report", Prompt: "/pad summarize progress on all tasks", Scope: "collection", Icon: "📊"},
+			},
+		},
+	}
+}
+
+// ideasCollection returns the standard Ideas collection shared across
+// templates. Extracted alongside tasksCollection (IDEA-2527) for
+// the same reason: templates without a Plans collection still want Ideas.
+func ideasCollection(sortOrder int) DefaultCollection {
+	return DefaultCollection{
+		Name:        "Ideas",
+		Slug:        "ideas",
+		Icon:        "💡",
+		Description: "Capture ideas, feature requests, and inspiration",
+		SortOrder:   sortOrder,
+		Schema: models.CollectionSchema{
+			Fields: []models.FieldDef{
+				{
+					Key:             "status",
+					Label:           "Status",
+					Type:            "select",
+					Options:         []string{"new", "exploring", "planned", "implemented", "rejected"},
+					TerminalOptions: []string{"implemented", "rejected"},
+					Default:         "new",
+					Required:        true,
+				},
+				{
+					Key:     "impact",
+					Label:   "Impact",
+					Type:    "select",
+					Options: []string{"low", "medium", "high"},
+				},
+				{
+					Key:   "category",
+					Label: "Category",
+					Type:  "text",
+				},
+			},
+		},
+		Settings: models.CollectionSettings{
+			Layout:      "balanced",
+			DefaultView: "board",
+			ListSortBy:  "created_at",
+			ListGroupBy: "status",
+			QuickActions: []models.QuickAction{
+				{Label: "Explore this idea", Prompt: "/pad explore {ref} \"{title}\" — research feasibility, trade-offs, and implementation approaches", Scope: "item", Icon: "🔍"},
+				{Label: "Break into tasks", Prompt: "/pad break down {ref} \"{title}\" into actionable tasks", Scope: "item", Icon: "📝"},
+				{Label: "Research this", Prompt: "/pad research {ref} \"{title}\" and summarize findings", Scope: "item", Icon: "📚"},
+				{Label: "Review all new ideas", Prompt: "/pad triage all new ideas and suggest which to pursue", Scope: "collection", Icon: "💡"},
+			},
+		},
+	}
+}
+
 // docsCollection returns the standard Docs collection shared across templates.
 func docsCollection(sortOrder int) DefaultCollection {
 	return DefaultCollection{
@@ -281,6 +391,20 @@ var (
 	SoftwareConventionScopes   = []string{"all", "backend", "frontend", "mobile", "docs", "devops"}
 	SoftwarePlaybookTriggers   = []string{"on-implement", "on-triage", "on-release", "on-plan", "on-review", "on-deploy", "manual"}
 	SoftwarePlaybookScopes     = []string{"all", "backend", "frontend", "mobile", "devops"}
+)
+
+// SDD (spec-driven development) trigger vocabularies for the `spec`
+// template (IDEA-2527). These extend the software vocab above with the
+// three moments a spec's lifecycle introduces — drafting, approval, and
+// post-approval edits — rather than replacing it, since a spec workspace
+// is still a software workspace underneath: on-implement/on-pr-create/etc.
+// all still apply, they're just joined by on-spec-draft/on-spec-approve/
+// on-spec-change.
+var (
+	SpecConventionTriggers = append(copyStrings(SoftwareConventionTriggers), "on-spec-draft", "on-spec-approve", "on-spec-change")
+	SpecConventionScopes   = SoftwareConventionScopes
+	SpecPlaybookTriggers   = append(copyStrings(SoftwarePlaybookTriggers), "on-spec-draft", "on-spec-approve", "on-spec-change")
+	SpecPlaybookScopes     = SoftwarePlaybookScopes
 )
 
 // PlaybookInvocationSlugPattern is the canonical regex for playbook
@@ -719,6 +843,7 @@ var templates = []WorkspaceTemplate{
 	},
 	hiringTemplate(),
 	interviewingTemplate(),
+	specTemplate(),
 	{
 		// blank — minimal entry-point for the /pad onboard playbook
 		// flow (PLAN-1496 / TASK-1498; originally IDEA-1479).

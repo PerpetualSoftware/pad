@@ -115,6 +115,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Planning:**
 - "let's create a plan" → run the **plan** playbook (NL is the canonical entry; the `/pad plan <topic>` slug is the Claude-Code shortcut). Activate via library if the bootstrap's `playbooks` array lacks `invocation_slug=plan, status=active`.
 - "break plan 2 into tasks" → run the **decompose** playbook on PLAN-2 (shortcut: `/pad decompose PLAN-2`; same activation story)
+- "break SPEC-1 into tasks" → same playbook, targeting SPEC-1 instead (shortcut: `/pad decompose SPEC-1`) — spec-driven workspaces decompose specs the same way
 - "what's blocking us?" → Analyze open items and dependencies
 
 **Ideation:**
@@ -263,7 +264,7 @@ Run the `plan` invokable playbook — by intent ("let's plan <topic>") or the sh
 
 ### Decomposition: "Break plan X into tasks"
 
-Run the `decompose` invokable playbook — by intent ("break PLAN-2 into tasks") or the shortcut **`/pad decompose <PLAN-ref>`** (Claude Code) / `$pad decompose` (Codex) / `pad_playbook` `action: run, ref: decompose` (MCP). Accepts `target` (the plan ref), `dry-run` (propose without creating), and `collection` (default=tasks); handles child reconciliation, dependency wiring, and per-task confirmation. Same activation story as `plan` — check the bootstrap's `playbooks` array for `invocation_slug=decompose, status=active`; library activation otherwise.
+Run the `decompose` invokable playbook — by intent ("break PLAN-2 into tasks", or "break SPEC-4 into tasks" in a spec-driven workspace) or the shortcut **`/pad decompose <PLAN-ref|SPEC-ref>`** (Claude Code) / `$pad decompose` (Codex) / `pad_playbook` `action: run, ref: decompose` (MCP). Accepts `target` (the plan or spec ref), `dry-run` (propose without creating), and `collection` (default=tasks); handles child reconciliation, dependency wiring, and per-task confirmation. Same activation story as `plan` — check the bootstrap's `playbooks` array for `invocation_slug=decompose, status=active`; library activation otherwise.
 
 ### Status Check: "How are we doing?"
 
