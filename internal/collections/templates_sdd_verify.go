@@ -19,7 +19,7 @@ spec" step SDD tools promise and most don't deliver — it's what makes
 ## Pre-flight
 
 1. **Resolve the target.** ` + "`pad item show <target> --format markdown`" + `. If it doesn't resolve or isn't in the specs collection, stop and report.
-2. **Confirm it has acceptance criteria.** Parse the ` + "`## Acceptance criteria`" + ` section. If there are none (or the spec is still ` + "`draft`" + `), tell the user there's nothing to verify yet and stop — don't invent criteria to check.
+2. **Confirm it has acceptance criteria.** Parse the ` + "`## Acceptance criteria`" + ` section. If there are none (or the spec is still ` + "`draft`" + `), tell the user there's nothing to verify yet and stop — don't invent criteria to check. Otherwise note the spec's current status — you'll need it in Resolve to decide whether an all-pass result can actually flip the spec, since the flip is gated on approval, not just on criteria holding.
 3. **Load the relevant code.** If ` + "`diff-only`" + ` is set, ` + "`git diff <base>...HEAD`" + ` (or ` + "`git status`" + ` + ` + "`git diff`" + ` for uncommitted work). Otherwise, use the spec's ` + "`area`" + ` field and Specified behavior section to identify which code paths to check directly.
 
 ## Verification
@@ -48,13 +48,17 @@ N/M criteria pass.
 
 ## Resolve
 
-- **All criteria pass:** offer to flip the spec's status to ` + "`implemented`" + `:
+- **All criteria pass:** what happens next depends on the spec's current status — the flip to ` + "`implemented`" + ` is gated on approval, not just on the criteria holding:
+  - **Status is ` + "`approved`" + `:** offer to flip the spec's status to ` + "`implemented`" + `:
 
-  ` + "```bash" + `
-  pad item update <target> --status implemented --comment "Verified: all N acceptance criteria pass. <one-line summary>."
-  ` + "```" + `
+    ` + "```bash" + `
+    pad item update <target> --status implemented --comment "Verified: all N acceptance criteria pass. <one-line summary>."
+    ` + "```" + `
 
-  Ask before flipping — verification confirms the spec's claims hold, but the user may still want to hold status for other reasons (a pending rollout, a follow-up spec that supersedes part of this one, etc.).
+    Ask before flipping — verification confirms the spec's claims hold, but the user may still want to hold status for other reasons (a pending rollout, a follow-up spec that supersedes part of this one, etc.).
+  - **Status is already ` + "`implemented`" + ` (a re-verify):** nothing to flip — report that re-verification confirms the criteria still hold.
+  - **Status is ` + "`in-review`" + `:** don't flip. Report the pass, but tell the user the spec isn't approved yet — the criteria holding doesn't substitute for approval. Point them at finishing the review (` + "`pad item update <target> --status approved`" + ` once whoever's reviewing signs off).
+  - **Status is ` + "`superseded`" + `:** don't flip. Tell the user this spec was superseded — passing criteria on a superseded spec isn't actionable on its own. Point them at whatever spec replaced it (check the spec's body/comments for a reference, or search for one) since that's the one that should be verified and implemented going forward.
 
 - **Some criteria fail:** this is spec-code drift — per the workspace's ` + "`drift-is-a-bug`" + ` convention, decide which side is wrong. Either:
   - the code needs to change to satisfy the criterion (the common case — report the failures and let the user decide whether to fix now or track as a task), or
