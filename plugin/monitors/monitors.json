@@ -1,0 +1,7 @@
+[
+  {
+    "name": "pad-events",
+    "command": "pad watch --stream --for-session",
+    "description": "Pad item events: explicit subscriptions (pad watch <ref>) and items addressed to you (assignment, asks for your role). Silent when no .pad.toml is present or padd is unreachable."
+  }
+]

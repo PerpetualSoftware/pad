@@ -1,0 +1,13 @@
+{
+  "name": "pad",
+  "version": "0.1.0",
+  "description": "Talk to your project. Pad is local-first project management for developers and AI agents — this plugin gives Claude Code the /pad conversational surface, typed shortcuts, and live item-change notifications.",
+  "author": {
+    "name": "Perpetual Software",
+    "url": "https://getpad.dev"
+  },
+  "homepage": "https://getpad.dev",
+  "repository": "https://github.com/PerpetualSoftware/pad",
+  "license": "MIT",
+  "keywords": ["project-management", "tasks", "memory", "local-first", "agents"]
+}

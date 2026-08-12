@@ -1,0 +1,15 @@
+{
+  "name": "pad",
+  "owner": {
+    "name": "Perpetual Software",
+    "url": "https://getpad.dev"
+  },
+  "plugins": [
+    {
+      "name": "pad",
+      "source": "./plugin",
+      "description": "Talk to your project. Local-first project management for developers and AI agents."
+    }
+  ],
+  "description": "Official Pad marketplace — the pad plugin: conversational project management and live item notifications for Claude Code."
+}
