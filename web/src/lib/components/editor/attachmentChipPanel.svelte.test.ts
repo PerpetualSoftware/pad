@@ -19,17 +19,38 @@ import StarterKit from '@tiptap/starter-kit';
 const panelOpenMock = vi.fn<(event: Record<string, unknown>) => void>();
 const deletionListeners = new Set<(uuid: string) => void>();
 
+// Both bus channels FAN OUT to their subscribers rather than merely recording
+// the subscription: a mock that only spies leaves the NodeView subscribed to
+// nothing, and every test of how it REACTS passes vacuously (BUG-2509).
+const restoreListeners = new Set<(event: { workspaceSlug: string; itemId: string }) => void>();
+
 vi.mock('$lib/attachments/events', () => ({
 	notifyAttachmentSurfaceOpen: (event: Record<string, unknown>) => panelOpenMock(event),
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
 		deletionListeners.add(fn);
 		return () => deletionListeners.delete(fn);
 	},
+	registerAttachmentParentRestoredListener: (
+		fn: (event: { workspaceSlug: string; itemId: string }) => void
+	) => {
+		restoreListeners.add(fn);
+		return () => restoreListeners.delete(fn);
+	},
 }));
 
 const probeMock = vi.fn<(ws: string, uuid: string) => Promise<unknown>>();
+const revalidateMock =
+	vi.fn<(ws: string, uuid: string, options?: Record<string, unknown>) => Promise<unknown>>();
 vi.mock('./attachment-metadata', () => ({
 	fetchAttachmentMetadata: (ws: string, uuid: string) => probeMock(ws, uuid),
+	// Options are threaded rather than discarded: `cache: 'no-store'` is the whole
+	// point of the restore re-probe, so it has to be assertable (BUG-2509).
+	revalidateAttachmentMetadata: (
+		ws: string,
+		uuid: string,
+		_url: unknown,
+		options?: Record<string, unknown>
+	) => revalidateMock(ws, uuid, options),
 	invalidateAttachmentMetadata: () => {},
 }));
 
@@ -63,7 +84,10 @@ describe('editor chip → options panel', () => {
 
 	beforeEach(() => {
 		panelOpenMock.mockReset();
+		probeMock.mockReset();
+		revalidateMock.mockReset();
 		deletionListeners.clear();
+		restoreListeners.clear();
 		target = document.body.appendChild(document.createElement('div'));
 	});
 
@@ -239,6 +263,199 @@ describe('editor chip → options panel', () => {
 		live.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
 		expect(panelOpenMock).toHaveBeenCalledTimes(1);
 		expect(panelOpenMock.mock.calls[0][0]).toMatchObject({ attachmentId: 'uuid-2' });
+	});
+
+	/**
+	 * BUG-2509. The chip is the worse half of this bug and the non-obvious one:
+	 * an image has a load event, so a freshly built one repaints itself once the
+	 * bytes 200 again — a chip makes no request until clicked and knows only what
+	 * the cached HEAD told it. That is why remounting the editor healed the inline
+	 * image but left the chip dead through the whole page's life.
+	 */
+	describe('parent-item restore (BUG-2509)', () => {
+		function announceRestore(itemId = 'item-A', workspaceSlug = 'ws') {
+			for (const fn of restoreListeners) fn({ workspaceSlug, itemId });
+		}
+
+		/** A chip addressed in a real workspace, dead from an archived-window probe. */
+		async function deadChipInWorkspace(): Promise<HTMLButtonElement> {
+			probeMock.mockResolvedValue({ status: 'missing' });
+			editor = makeEditor(target, () => ({ ...ADDRESS, workspaceSlug: 'ws' }));
+			const el = chip();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(el.disabled).toBe(true);
+			return el;
+		}
+
+		it('comes back to life when the server says the row is reachable again', async () => {
+			const el = await deadChipInWorkspace();
+
+			revalidateMock.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 2048 });
+			announceRestore();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			// Every part of markDeleted() has to come off — `disabled` above all, or
+			// the chip announces itself as live and does nothing.
+			expect(el.disabled).toBe(false);
+			expect(el.classList.contains('attachment-missing')).toBe(false);
+			expect(el.hasAttribute('title')).toBe(false);
+			expect(el.getAttribute('aria-label')).not.toContain('deleted');
+			el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+			expect(panelOpenMock).toHaveBeenCalledTimes(1);
+		});
+
+		it('re-probes with no-store — the point is to escape what the archived window cached', async () => {
+			await deadChipInWorkspace();
+			revalidateMock.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 1 });
+
+			announceRestore();
+			await Promise.resolve();
+
+			// It must go through REVALIDATE, not the caching fetch, AND ask the
+			// network: the cached `missing` is exactly what it has to get past, and
+			// the endpoint sets max-age=3600 so the browser cache would answer too.
+			expect(revalidateMock).toHaveBeenCalledWith('ws', 'uuid-1', { cache: 'no-store' });
+		});
+
+		it('stays dead when the row is genuinely gone — restore is not an undo (DR-17)', async () => {
+			const el = await deadChipInWorkspace();
+
+			revalidateMock.mockResolvedValue({ status: 'missing' });
+			announceRestore();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(el.disabled).toBe(true);
+			expect(el.classList.contains('attachment-missing')).toBe(true);
+		});
+
+		it('stays dead on a transient re-probe — that answer is not evidence', async () => {
+			const el = await deadChipInWorkspace();
+
+			revalidateMock.mockResolvedValue({ status: 'transient' });
+			announceRestore();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(el.disabled).toBe(true);
+		});
+
+		it('ignores a signal addressed to another item or workspace', async () => {
+			const el = await deadChipInWorkspace();
+			revalidateMock.mockClear();
+
+			announceRestore('item-B');
+			announceRestore('item-A', 'other-ws');
+			await Promise.resolve();
+
+			expect(revalidateMock).not.toHaveBeenCalled();
+			expect(el.disabled).toBe(true);
+		});
+
+		it('does not probe for a chip that is not dead', async () => {
+			probeMock.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 1 });
+			editor = makeEditor(target, () => ({ ...ADDRESS, workspaceSlug: 'ws' }));
+			chip();
+			await Promise.resolve();
+			revalidateMock.mockClear();
+
+			announceRestore();
+			await Promise.resolve();
+
+			expect(revalidateMock).not.toHaveBeenCalled();
+		});
+
+		/**
+		 * The chip's construction probe is issued INSIDE the archived window — that
+		 * is the bug — so a restore arriving while it is in flight finds nothing to
+		 * heal (`deleted` is still false) and returns early. Without invalidating
+		 * that probe, its 404 then marks a chip the restore has already made live,
+		 * and no further signal is coming.
+		 */
+		it('discards a construction probe that answers 404 after the restore arrived', async () => {
+			let release: (r: unknown) => void = () => {};
+			probeMock.mockImplementation(() => new Promise((resolve) => (release = resolve)));
+			editor = makeEditor(target, () => ({ ...ADDRESS, workspaceSlug: 'ws' }));
+			const el = chip();
+			await Promise.resolve();
+			expect(el.disabled).toBe(false);
+
+			announceRestore();
+			await Promise.resolve();
+
+			// The archived window's answer, arriving too late to be true.
+			release({ status: 'missing' });
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(el.disabled).toBe(false);
+			expect(el.classList.contains('attachment-missing')).toBe(false);
+		});
+
+		it('lets a deletion confirmed mid-probe WIN over a stale ok (DR-17)', async () => {
+			const el = await deadChipInWorkspace();
+
+			let release: (r: unknown) => void = () => {};
+			revalidateMock.mockImplementation(() => new Promise((resolve) => (release = resolve)));
+			announceRestore();
+			await Promise.resolve();
+
+			// Deleted for real while the HEAD is out…
+			for (const fn of deletionListeners) fn('uuid-1');
+			// …then the stale positive answer lands.
+			release({ status: 'ok', mime: 'application/pdf', size: 1 });
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(el.disabled).toBe(true);
+			expect(el.classList.contains('attachment-missing')).toBe(true);
+			el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+			expect(panelOpenMock).not.toHaveBeenCalled();
+		});
+
+		it('ignores an answer that lands after the workspace changed underneath it', async () => {
+			probeMock.mockResolvedValue({ status: 'missing' });
+			let ws = 'ws';
+			editor = makeEditor(target, () => ({ ...ADDRESS, workspaceSlug: ws }));
+			const el = chip();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(el.disabled).toBe(true);
+
+			let release: (r: unknown) => void = () => {};
+			revalidateMock.mockImplementation(() => new Promise((resolve) => (release = resolve)));
+			announceRestore('item-A', 'ws');
+			await Promise.resolve();
+
+			// The composer is reused across a workspace switch; this answer is about
+			// the PREVIOUS workspace's copy.
+			ws = 'ws-b';
+			release({ status: 'ok', mime: 'application/pdf', size: 1 });
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(el.disabled).toBe(true);
+		});
+
+		it('unsubscribes on destroy — asserted on the registry, not on the end state', async () => {
+			await deadChipInWorkspace();
+			expect(restoreListeners.size).toBe(1);
+
+			editor?.destroy();
+			editor = undefined;
+			revalidateMock.mockClear();
+
+			// A LEAKED listener would still see `destroyed` and return, so
+			// "no probe fired" stays green with the dispose call deleted. The
+			// registry is the assertion that actually fails then.
+			expect(restoreListeners.size).toBe(0);
+
+			announceRestore();
+			await Promise.resolve();
+			expect(revalidateMock).not.toHaveBeenCalled();
+		});
 	});
 
 	it('offers no URL for a middle-click to bypass the panel with', () => {

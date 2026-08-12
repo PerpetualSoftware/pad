@@ -40,7 +40,8 @@ import {
 import { openCropModal, type CropResult } from './attachment-crop-modal';
 import {
 	notifyAttachmentSurfaceOpen,
-	registerAttachmentDeletionListener
+	registerAttachmentDeletionListener,
+	registerAttachmentParentRestoredListener
 } from '$lib/attachments/events';
 import {
 	type AttachmentHostAddressReader,
@@ -329,15 +330,16 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// Deletion is authoritative: a load still in flight when it lands
 			// must not be allowed to paint the image back (Codex round 15).
 			//
-			// SEAM WITH PLAN-2411 (stated, not built here): this latch is cleared
-			// ONLY by an authoritative RESTORE signal on 2411's channel — never by
-			// editor undo. DR-17 requires Ctrl-Z to leave an inert placeholder
-			// rather than resurrect a working attachment: the delete was a REST row
-			// mutation that Tiptap/Yjs history cannot roll back, so an undo that
-			// re-inserted the node would otherwise present a live-looking image for
-			// a row the server no longer has. `deleted` is closure-private and the
-			// bus is deletion-only, so 2411 must extend both; that is its work, and
-			// nothing in THIS file may clear the latch on a document event.
+			// The restore channel foreseen for PLAN-2411 now EXISTS (BUG-2509): the
+			// bus carries a parent-restore signal and this file subscribes to it
+			// below. What that channel does NOT do is clear the latch on the signal
+			// itself — it re-probes, and only an authoritative `ok` from the server
+			// clears anything. The DR-17 rule is unchanged and still holds: Ctrl-Z
+			// must leave an inert placeholder rather than resurrect a working
+			// attachment, because the delete was a REST row mutation Tiptap/Yjs
+			// history cannot roll back. Nothing in this file clears the latch on a
+			// DOCUMENT event; the only two things that clear it are a uuid swap (a
+			// different target entirely) and a server `ok`.
 			let deleted = false;
 			// True once the NodeView is torn down. Async continuations (HEAD
 			// probes, transform results) must not touch DOM after that.
@@ -544,10 +546,22 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 * owns the document; the delete was a REST row mutation it can't
 			 * roll back, so undo restores a node pointing at nothing.
 			 */
-			function latchMissing(forUuid: string) {
+			function latchMissing(forUuid: string, seqAtStart: number) {
 				if (destroyed || deleted) return;
 				if (!forUuid || currentUuid !== forUuid) return;
+				// The staleness fence lives HERE, not at the call sites, and the
+				// generation is a REQUIRED argument so it cannot be forgotten: every
+				// path into this function is an async probe answering a question it
+				// asked earlier, and three of them originally landed without a fence
+				// (the two toolbar MIME probes and the activation probe — found in
+				// review, after the first two were fixed one at a time). A latch is
+				// destructive and permanent, so "the caller will remember" is the
+				// wrong shape for it; capture `stateSeq` before your request and hand
+				// it over, and a probe that predates a restore, a heal or a uuid swap
+				// simply cannot re-kill the node.
+				if (stateSeq !== seqAtStart) return;
 				deleted = true;
+				stateSeq += 1;
 				// Same reason the deletion listener does this: an in-flight
 				// load's `load` event would otherwise paint the image back.
 				detachLoadListeners();
@@ -573,9 +587,13 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// (final review round 3).
 				const probeWs = opts.address().workspaceSlug;
 				if (!forUuid || !probeWs || deleted || destroyed) return;
+				const seqAtStart = stateSeq;
 				void revalidateAttachmentMetadata(probeWs, forUuid, opts.getDownloadUrl).then(
 					(result) => {
-						if (result.status === 'missing') latchMissing(forUuid);
+						// `latchMissing` applies the staleness fence itself; a restore
+						// (or any other authoritative transition) since this HEAD went
+						// out makes this answer unable to re-kill the node.
+						if (result.status === 'missing') latchMissing(forUuid, seqAtStart);
 					}
 				);
 			}
@@ -600,14 +618,140 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			if (currentUuid) loadImage(opts.getDownloadUrl(currentUuid, 'thumb-md'));
 			applyImageSemantics();
 
+			/**
+			 * This node's PRESENTATION generation (BUG-2509).
+			 *
+			 * Bumped by every authoritative transition — a deletion latched, a
+			 * `missing` latched, a successful heal, a uuid swap, and the receipt of
+			 * a restore signal.
+			 *
+			 * WHAT IT GOVERNS, precisely: the MISSING/present state — the latch and
+			 * the heal. `latchMissing` takes the captured generation as a required
+			 * argument and applies the fence itself, so every probe that can kill
+			 * this node is covered by construction rather than by remembering:
+			 *
+			 *   a probe may only latch if nothing authoritative has happened since
+			 *   it was issued.
+			 *
+			 * WHAT IT DOES NOT GOVERN: opening a viewer (`activationSeq` owns that —
+			 * a separate question with a separate lifetime) and the rotate/crop
+			 * transforms (fenced on uuid + editor state, and they mint a NEW
+			 * attachment rather than re-presenting this one). An activation's 404 arm
+			 * does latch, so it carries this generation too.
+			 *
+			 * A per-cause fence (only "did a delete land?") is not enough, and the
+			 * first version of this fix proved it in both directions: a stale
+			 * archived-window probe could re-latch a node the restore had already
+			 * healed, and a value-compared uuid (`currentUuid === forUuid`) passes
+			 * again after a swap AWAY AND BACK, letting a stale positive answer
+			 * revive an attachment deleted in between.
+			 */
+			let stateSeq = 0;
+
 			const disposeDeletionListener = registerAttachmentDeletionListener((deletedUuid) => {
 				if (deletedUuid !== currentUuid) return;
 				deleted = true;
+				stateSeq += 1;
 				// Drop the in-flight request's listeners: its `load` would
 				// otherwise fire after the delete and restore the image.
 				detachLoadListeners();
 				showMissing();
 				refresh();
+			});
+
+			/**
+			 * Parent-item RESTORE (BUG-2509).
+			 *
+			 * The counterpart to the deletion listener above, and deliberately NOT
+			 * its mirror image: that one is authoritative and latches, this one
+			 * carries no verdict and only prompts a re-ask. Archiving an item 404s
+			 * its attachments without deleting them, so a NodeView constructed
+			 * inside the archived window probes, gets the same 404 a deletion
+			 * gives, and latches `deleted` — which nothing then clears, because the
+			 * latch is closure-private and only a uuid swap resets it. Restoring
+			 * the parent left the node inert for the rest of the page's life.
+			 *
+			 * THE SERVER DECIDES, NOT THE SIGNAL. The re-probe is what clears the
+			 * latch, and only on an authoritative `ok`:
+			 *   - `missing`   — the row really is gone (deleted while the parent was
+			 *                   archived, say). Stay latched; this is exactly the
+			 *                   DR-17 case, and honouring the signal blindly here is
+			 *                   what would turn restore into an undo-resurrection
+			 *                   vector.
+			 *   - `transient` — no evidence either way. Stay as we are.
+			 * A signal that reaches the wrong node therefore costs one HEAD and
+			 * changes nothing, which is what makes routing-by-itemId safe.
+			 *
+			 * `no-store`, for the reason the timeline's restore re-probe uses it
+			 * (ItemTimeline's `pendingRestoreNoStore`): the endpoint sets
+			 * `max-age=3600`, and this probe exists precisely to escape what was
+			 * observed inside the archived window.
+			 */
+			const disposeRestoreListener = registerAttachmentParentRestoredListener((event) => {
+				if (destroyed || !currentUuid) return;
+				const addr = opts.address();
+				if (!addr.workspaceSlug || !addr.itemId) return;
+				if (event.workspaceSlug !== addr.workspaceSlug || event.itemId !== addr.itemId) return;
+				// Nothing to heal unless a placeholder is actually showing — either
+				// latched permanent or the retryable one (a probe that never landed,
+				// or landed `transient`, inside the archived window).
+				// A restore is an authoritative transition in its own right: every
+				// observation made BEFORE it is now stale, including a probe still in
+				// flight from the archived window. Bump before the early return below,
+				// so the invalidation happens even when this node has nothing to heal.
+				stateSeq += 1;
+				if (!deleted && missing.style.display === 'none') return;
+				const forUuid = currentUuid;
+				const probeWs = addr.workspaceSlug;
+				const seqAtStart = stateSeq;
+				void revalidateAttachmentMetadata(probeWs, forUuid, opts.getDownloadUrl, {
+					cache: 'no-store'
+				}).then((result) => {
+					// Fence on teardown and a uuid swap: this NodeView outlives a
+					// rotate/crop, and healing a node that has moved on would paint the
+					// previous attachment over the current one.
+					if (destroyed || currentUuid !== forUuid) return;
+					// And on the WORKSPACE, re-read live rather than trusted from
+					// capture: this editor outlives a workspace switch, so an answer
+					// about ws-A's copy must not heal a node now living in ws-B. Same
+					// fence ItemTimeline's probe uses (`reqWs !== wsSlug`).
+					//
+					// The `itemId` half is deliberately NOT re-checked here (raised in
+					// review; declined with reason). It is ROUTING, not ownership —
+					// stated as such on the surface channel — and the answer is about
+					// the ATTACHMENT, not the item: if this uuid is live in this
+					// workspace, healing the node showing it is correct no matter which
+					// item's host happens to be in front of the user. Fencing on it
+					// would imply a relationship the code does not have.
+					if (opts.address().workspaceSlug !== probeWs) return;
+					// ANY authoritative transition since this HEAD went out wins over
+					// it. The deletion case is the one that matters for DR-17: without
+					// this, "restore probe starts → delete is confirmed and broadcast →
+					// probe resolves ok" repaints a row the server no longer has.
+					if (stateSeq !== seqAtStart) return;
+					// A `missing` here is not "nothing to do" — it is the authoritative
+					// existence answer this probe asked for, so it LATCHES (which also
+					// settles two restore probes resolving out of order: the `missing`
+					// one is not silently dropped just because an `ok` got there first).
+					// `transient` is the only arm that says nothing and changes nothing.
+					if (result.status === 'missing') {
+						latchMissing(forUuid, seqAtStart);
+						return;
+					}
+					if (result.status !== 'ok') return;
+					deleted = false;
+					stateSeq += 1;
+					// Cache-bust for the same reason `retryLoad` does: the failed load
+					// is in the browser's HTTP cache, and re-assigning the identical
+					// URL can replay it instead of reaching the server.
+					const base = opts.getDownloadUrl(forUuid, 'thumb-md');
+					loadImage(`${base}${base.includes('?') ? '&' : '?'}restored=${Date.now()}`);
+					// The placeholder's copy, cursor, role and tabindex were all set for
+					// a permanent deletion; `refresh` re-gates the toolbar for a node
+					// that is openable again.
+					refresh();
+					applyImageSemantics();
+				});
 			});
 
 			// role/tabindex are set by showMissing(), which knows whether this is
@@ -753,6 +897,12 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				if (!fromWs) return;
 				activating = true;
 				const seq = ++activationSeq;
+				// The PRESENTATION generation as well (BUG-2509). `activationSeq`
+				// governs whether this gesture may still OPEN something; it says
+				// nothing about whether this answer may still LATCH, and the 404 arm
+				// below does exactly that. A probe issued while the parent was
+				// archived would otherwise re-kill an image the restore has healed.
+				const seqAtStart = stateSeq;
 				setActivationPending(true);
 				void fetchAttachmentMetadata(fromWs, forUuid, opts.getDownloadUrl)
 					.then((result) => {
@@ -793,7 +943,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// is for, so it deliberately precedes the presentability
 						// check below.
 						if (result.status === 'missing') {
-							latchMissing(forUuid);
+							latchMissing(forUuid, seqAtStart);
 							return;
 						}
 						// NOT AUTHORITATIVE. Stay retryable, latch nothing, open
@@ -1044,6 +1194,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				const toolbarProbeWs = opts.address().workspaceSlug;
 				if (currentUuid && toolbarProbeWs) {
 					const probeUuid = currentUuid;
+					const seqAtStart = stateSeq;
 					fetchAttachmentMetadata(toolbarProbeWs, probeUuid, opts.getDownloadUrl).then(
 						(result) => {
 							// Bail if the NodeView was torn down, or if its uuid
@@ -1055,7 +1206,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 							// A 404 here is the same authoritative signal the
 							// load path acts on (DR-17), and this probe may
 							// well beat the <img> to it.
-							if (result.status === 'missing') latchMissing(probeUuid);
+							if (result.status === 'missing') latchMissing(probeUuid, seqAtStart);
 							// `transient` leaves the MIME unknown rather than
 							// wrong: gating falls back to supportedFormats.
 							knownMime = result.status === 'ok' ? result.mime : null;
@@ -1241,6 +1392,10 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// The old uuid's state — whether a 404 placeholder or a
 						// confirmed deletion — says nothing about the new one.
 						deleted = false;
+						// And every continuation still resolving for the OLD target is
+						// now stale. Comparing `currentUuid` alone would let a swap AWAY
+						// AND BACK pass the check again (BUG-2509 / Codex round 2).
+						stateSeq += 1;
 						// Nor does an activation still resolving for it. That
 						// request is already fenced (its continuation compares
 						// `currentUuid`), so the latch is guarding nothing but the
@@ -1286,6 +1441,9 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						const updateProbeWs = opts.address().workspaceSlug;
 						if (toolbar && newUuid && updateProbeWs) {
 							const probeUuid = newUuid;
+							// Captured AFTER this swap's own bump, so the fence retires
+							// probes from before the swap, not this one.
+							const seqAtStart = stateSeq;
 							fetchAttachmentMetadata(
 								updateProbeWs,
 								probeUuid,
@@ -1293,7 +1451,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 							).then((result) => {
 								if (destroyed) return;
 								if (currentUuid !== probeUuid) return;
-								if (result.status === 'missing') latchMissing(probeUuid);
+								if (result.status === 'missing') latchMissing(probeUuid, seqAtStart);
 								knownMime = result.status === 'ok' ? result.mime : null;
 								applyImageSemantics();
 								if (!toolbar) return;
@@ -1338,6 +1496,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					destroyed = true;
 					detachLoadListeners();
 					disposeDeletionListener();
+					disposeRestoreListener();
 					// Tear down the refresher subscription so the
 					// module-level registry doesn't pile up stale
 					// callbacks across editor lifecycles (e.g. SPA

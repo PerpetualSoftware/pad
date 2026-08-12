@@ -19,7 +19,10 @@
  * (the strip treats a 404 on delete as authoritative for exactly that reason).
  */
 
-import { invalidateAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
+import {
+	invalidateAttachmentMetadata,
+	invalidateAttachmentMetadataForWorkspace,
+} from '$lib/components/editor/attachment-metadata';
 import type { AttachmentUploadResult } from '$lib/types';
 import { isAddressable } from '$lib/attachments/hostAddress';
 
@@ -61,6 +64,83 @@ export function announceAttachmentDeleted(workspaceSlug: string, uuid: string): 
 	if (!uuid) return;
 	notifyAttachmentDeleted(uuid);
 	invalidateAttachmentMetadata(workspaceSlug, uuid);
+}
+
+/**
+ * Parent-item RESTORE (BUG-2509).
+ *
+ * The deletion channel above is one-way by design: deletion is permanent, so a
+ * subscriber may LATCH it (DR-17 — editor undo must leave an inert placeholder
+ * rather than resurrect a row the server no longer has). Archive is the
+ * REVERSIBLE case that latch mishandles. Archiving an item 404s its attachments
+ * without deleting them, so any surface that probes inside that window observes
+ * the same "gone" the delete path produces, latches it as permanent, and stays
+ * dead after the restore — the editor NodeViews had no signal that could reach
+ * them, and the shared metadata cache had memoized the 404 besides.
+ *
+ * THIS CHANNEL CARRIES NO VERDICT. It says "an item you may hold attachments
+ * for just came back — go ask the server again", never "these attachments are
+ * live". Subscribers MUST re-probe and clear a latch only on an authoritative
+ * `ok`. That is what keeps it from becoming an undo-resurrection vector: an
+ * attachment genuinely DELETED while its parent was archived 404s on the
+ * re-probe and stays latched, and a mis-routed signal can at worst buy a
+ * wasted HEAD. The server is the authority; this is only a prompt to re-ask.
+ *
+ * Addressed by `itemId` (routing, as everywhere else on this bus), NOT by
+ * hostToken: a restore is a fact about the ITEM, and every mounted surface
+ * holding that item's attachments wants it — including the peeked pane showing
+ * the same item under a different host token.
+ */
+export interface AttachmentParentRestoredEvent {
+	workspaceSlug: string;
+	itemId: string;
+}
+
+const restoreListeners = new Set<(event: AttachmentParentRestoredEvent) => void>();
+
+/**
+ * Subscribe to parent-restore signals. Returns a dispose function — call it
+ * from the component's teardown / the NodeView's destroy(), or the listener
+ * leaks and fires into a dead view.
+ */
+export function registerAttachmentParentRestoredListener(
+	fn: (event: AttachmentParentRestoredEvent) => void
+): () => void {
+	restoreListeners.add(fn);
+	return () => restoreListeners.delete(fn);
+}
+
+/** Announce the restore to live views. Prefer `announceAttachmentParentRestored`. */
+export function notifyAttachmentParentRestored(workspaceSlug: string, itemId: string): void {
+	if (!workspaceSlug || !itemId) return;
+	const event: AttachmentParentRestoredEvent = { workspaceSlug, itemId };
+	for (const fn of restoreListeners) fn(event);
+}
+
+/**
+ * The full "this item's attachments may be reachable again" reconciliation, and
+ * the mirror of `announceAttachmentDeleted`: tell the live views AND drop the
+ * workspace's cached HEAD results.
+ *
+ * BOTH halves are load-bearing, and they cover DIFFERENT populations — this is
+ * the detail that makes one of them look redundant when it isn't:
+ *
+ *   - the NOTIFY reaches surfaces that are ALREADY MOUNTED and already latched.
+ *     A cache invalidation alone never reaches them: their latch is closure-
+ *     private state, not a cache read they will repeat.
+ *   - the INVALIDATE covers surfaces built LATER — the fresh NodeView the
+ *     branch flip mounts on restore, a comment editor opened afterwards. A
+ *     notify alone never reaches them: they did not exist when it fired, and
+ *     they would read the poisoned entry on construction and latch themselves.
+ *
+ * Order matters between them: invalidate FIRST, so a subscriber that re-probes
+ * synchronously inside the notify cannot be answered from the entry we are
+ * about to drop.
+ */
+export function announceAttachmentParentRestored(workspaceSlug: string, itemId: string): void {
+	if (!workspaceSlug || !itemId) return;
+	invalidateAttachmentMetadataForWorkspace(workspaceSlug);
+	notifyAttachmentParentRestored(workspaceSlug, itemId);
 }
 
 /**

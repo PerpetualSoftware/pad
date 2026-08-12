@@ -43,7 +43,11 @@
 	import CopyItemDialog from '$lib/components/items/CopyItemDialog.svelte';
 	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
 	import AttachmentSurfaceHost from '$lib/components/attachments/AttachmentSurfaceHost.svelte';
-	import { createAttachmentHostToken } from '$lib/attachments/events';
+	import {
+		announceAttachmentParentRestored,
+		createAttachmentHostToken,
+	} from '$lib/attachments/events';
+	import { reconcileArchivedState } from '$lib/attachments/archivedItemRegistry';
 	import { createViewerResourceGen } from '$lib/attachments/viewerResource.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
@@ -821,6 +825,51 @@
 	// half of the address changes with the item; the token does not, and does
 	// not need to — the pair is what disambiguates.)
 	const attachmentHostToken = createAttachmentHostToken();
+
+	/**
+	 * Archive → restore, announced on the attachment bus (BUG-2509).
+	 *
+	 * While an item is archived the server 404s its attachments (DR-13), so any
+	 * attachment surface that PROBES inside that window observes exactly what a
+	 * deletion produces and latches it as permanent. The strip and the timeline
+	 * already reconcile this themselves — they take `parentArchived` as a prop and
+	 * carry their own epoch + no-store re-probe (`ItemTimeline`'s
+	 * `pendingRestoreNoStore`). The editor NodeViews could not: their latch is
+	 * closure-private state inside a Tiptap view, unreachable from a prop, so they
+	 * needed a channel. This is that channel's one emitter.
+	 *
+	 * WHY THE EMIT IS NEEDED AT ALL WHEN THE EDITOR REMOUNTS: `canEdit` is forced
+	 * false while archived (see above), so an edit-permissioned user's restore
+	 * flips the content branch and builds a FRESH editor — which does not help,
+	 * because the shared HEAD cache memoized the archived window's 404 for the
+	 * page lifetime and the new NodeViews read it on construction. The announce
+	 * drops that cache as well as signalling the mounted views; both halves have
+	 * their own population (see `announceAttachmentParentRestored`).
+	 *
+	 * The decision is NOT an edge on the local level — see `archivedItemRegistry`
+	 * for why a per-mount latch both over- and under-fires (it announces on every
+	 * navigation away from an archived item, and misses a restore that happens
+	 * while the pane is showing something else). The registry is keyed by item and
+	 * outlives the mount; this effect is its adapter.
+	 *
+	 * `untrack` + no `$state` written here: a `$state` read AND written inside one
+	 * tracked scope self-depends, which aborts the flush and silently strands
+	 * unrelated reactivity nearby (CONVE-1688).
+	 */
+	$effect(() => {
+		const matched = itemMatchesRef;
+		const archived = isArchived;
+		const id = item?.id ?? '';
+		const ws = wsSlug;
+		untrack(() => {
+			const { restoredItemId } = reconcileArchivedState({ matched, archived, itemId: id });
+			// Only the restore direction is announced. An ARCHIVE needs none: the
+			// surfaces that must react to it already take it as a prop, and a
+			// NodeView that has not probed yet gets an honest 404 on its own.
+			if (!restoredItemId || !ws) return;
+			announceAttachmentParentRestored(ws, restoredItemId);
+		});
+	});
 
 	/**
 	 * The editor's LIVE markdown, or null when there is no live editor to

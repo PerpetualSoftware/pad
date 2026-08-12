@@ -55,6 +55,11 @@ const deletionListeners = new Set<(uuid: string) => void>();
 // EVERY activation emit (raster png, non-raster svg/pdf alike); there is no
 // second array to tell a redirect from a drop, because there is no redirect.
 const emitted: Array<Record<string, unknown>> = [];
+// The restore channel FANS OUT like the deletion one above: a mock that only
+// records the subscription leaves the NodeView subscribed to nothing, and every
+// test of how it REACTS passes vacuously (BUG-2509).
+const restoreListeners = new Set<(event: { workspaceSlug: string; itemId: string }) => void>();
+
 vi.mock('$lib/attachments/events', () => ({
 	notifyAttachmentSurfaceOpen: (event: Record<string, unknown>) => {
 		emitted.push(event);
@@ -62,6 +67,12 @@ vi.mock('$lib/attachments/events', () => ({
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
 		deletionListeners.add(fn);
 		return () => deletionListeners.delete(fn);
+	},
+	registerAttachmentParentRestoredListener: (
+		fn: (event: { workspaceSlug: string; itemId: string }) => void
+	) => {
+		restoreListeners.add(fn);
+		return () => restoreListeners.delete(fn);
 	},
 }));
 

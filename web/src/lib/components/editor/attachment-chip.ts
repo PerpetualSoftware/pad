@@ -47,11 +47,13 @@ import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import {
 	type AttachmentUrlBuilder,
 	type AttachmentVariant,
-	fetchAttachmentMetadata
+	fetchAttachmentMetadata,
+	revalidateAttachmentMetadata
 } from './attachment-metadata';
 import {
 	notifyAttachmentSurfaceOpen,
-	registerAttachmentDeletionListener
+	registerAttachmentDeletionListener,
+	registerAttachmentParentRestoredListener
 } from '$lib/attachments/events';
 import {
 	type AttachmentHostAddressReader,
@@ -322,8 +324,24 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			 * type and state are independent and neither clobbers the other.
 			 */
 			let deleted = false;
+			/**
+			 * This chip's PRESENTATION generation (BUG-2509). Bumped by every
+			 * authoritative transition — a deletion, a `missing` mark, a heal, a uuid
+			 * swap, and the receipt of a restore signal — and captured by every async
+			 * continuation that would mutate what the chip presents, so the rule is
+			 * structural: a continuation may only act if nothing authoritative has
+			 * happened since it started.
+			 *
+			 * The chip's own construction probe is why the restore signal has to bump
+			 * this even when there is nothing to heal: that probe is issued INSIDE the
+			 * archived window (that is the whole bug), and without the bump it could
+			 * land after the restore and mark a live chip dead, with no further signal
+			 * coming to undo it.
+			 */
+			let stateSeq = 0;
 			const markDeleted = (): void => {
 				deleted = true;
+				stateSeq += 1;
 				wrapper.classList.add('attachment-missing');
 				// `disabled` is what makes the dead chip genuinely INERT (DR-12),
 				// not merely unclickable: a disabled button is unfocusable and
@@ -345,6 +363,25 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				refreshAccessibleName();
 			};
 
+			/**
+			 * The exact inverse of `markDeleted`, factored out because there are now
+			 * TWO ways a chip stops being dead — a uuid swap (a different target) and
+			 * a parent-item restore (the same target, reachable again, BUG-2509) —
+			 * and every part of the mark has to come off in both. `disabled` is the
+			 * one that matters most: left set, the chip presents as live and does
+			 * nothing, which is worse than the dead state that at least says so.
+			 *
+			 * Size is NOT restored here — the caller owns it. A uuid swap has no size
+			 * yet (it re-probes), and the restore path fills it from its own probe.
+			 */
+			const clearDeleted = (): void => {
+				deleted = false;
+				stateSeq += 1;
+				wrapper.disabled = false;
+				wrapper.classList.remove('attachment-missing');
+				wrapper.removeAttribute('title');
+			};
+
 			// Set by destroy(). A HEAD probe outlives the NodeView that started
 			// it, and writing to detached DOM after teardown is at best wasted
 			// work — same fence shape as the `forUuid` check below.
@@ -352,6 +389,71 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 
 			const disposeDeletionListener = registerAttachmentDeletionListener((deletedUuid) => {
 				if (deletedUuid === currentUuid) markDeleted();
+			});
+
+			/**
+			 * Parent-item RESTORE (BUG-2509) — see the channel's own docstring for
+			 * why it carries no verdict and the server decides.
+			 *
+			 * The chip is the WORSE half of this bug, and the non-obvious half. An
+			 * image has a load event, so a freshly built one repaints itself the
+			 * moment the bytes 200 again; a chip makes no request until clicked and
+			 * knows only what the cached HEAD told it. That is why remounting the
+			 * editor healed the inline image but left the chip dead: the new chip
+			 * read the SAME page-lifetime `missing` the archived window had
+			 * memoized. So this listener and the cache invalidation in
+			 * `announceAttachmentParentRestored` are both required, and neither
+			 * covers the other's population.
+			 *
+			 * Only an authoritative `ok` clears the mark; `missing` (genuinely
+			 * deleted while the parent was archived) and `transient` (no evidence)
+			 * both leave the chip dead.
+			 */
+			const disposeRestoreListener = registerAttachmentParentRestoredListener((event) => {
+				if (destroyed || !currentUuid) return;
+				const addr = this.options.address();
+				if (!addr.workspaceSlug || !addr.itemId) return;
+				if (event.workspaceSlug !== addr.workspaceSlug || event.itemId !== addr.itemId) return;
+				// Authoritative transition in its own right: bump BEFORE the early
+				// return, so an in-flight construction probe from the archived window
+				// is invalidated even when this chip has nothing to heal.
+				stateSeq += 1;
+				if (!deleted) return;
+				const forUuid = currentUuid;
+				const probeWs = addr.workspaceSlug;
+				const seqAtStart = stateSeq;
+				revalidateAttachmentMetadata(probeWs, forUuid, this.options.getDownloadUrl, {
+					cache: 'no-store',
+				}).then((result) => {
+					if (destroyed) return;
+					if (currentUuid !== forUuid) return; // superseded by a uuid swap
+					// Re-read the workspace rather than trusting the captured one: this
+					// chip outlives a workspace switch (the composer is reused), and an
+					// answer about ws-A's copy must not revive a chip now in ws-B.
+					if (this.options.address().workspaceSlug !== probeWs) return;
+					// Any authoritative transition since this HEAD went out wins over
+					// it — for DR-17 the one that matters is a deletion, without which
+					// "restore probe starts → delete lands → probe resolves ok"
+					// re-enables a chip pointing at a row the server no longer has.
+					if (stateSeq !== seqAtStart) return;
+					// `missing` is the authoritative answer this probe asked for, so it
+					// marks rather than doing nothing — which also settles two restore
+					// probes resolving out of order.
+					if (result.status === 'missing') {
+						markDeleted();
+						return;
+					}
+					if (result.status !== 'ok') return;
+					clearDeleted();
+					currentMime = result.mime;
+					currentSize = result.size;
+					refreshHref();
+					refreshIcon();
+					const size =
+						Number.isFinite(result.size) && result.size > 0 ? formatBytes(result.size) : '';
+					sizeEl.textContent = size ? `· ${size}` : '';
+					refreshAccessibleName();
+				});
 			});
 
 			refreshHref();
@@ -490,6 +592,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				// workspace's attachment (final review round 3).
 				const probeWs = this.options.address().workspaceSlug;
 				if (!forUuid || !probeWs) return;
+				const seqAtStart = stateSeq;
 				fetchAttachmentMetadata(
 					probeWs,
 					forUuid,
@@ -498,6 +601,12 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 					if (destroyed) return; // NodeView torn down while HEAD was in flight
 					if (deleted) return; // the target is gone; don't un-mark the chip
 					if (currentUuid !== forUuid) return; // superseded
+					// Stale across an authoritative transition — in particular a RESTORE
+					// that arrived while this HEAD was out. This probe is normally
+					// ISSUED inside the archived window, so without this fence its 404
+					// marks a chip the restore has already made live again, and nothing
+					// further would arrive to undo it (BUG-2509 / Codex round 2).
+					if (stateSeq !== seqAtStart) return;
 					// A transient failure says nothing about whether the row
 					// exists — keep the filename-guess icon and stay
 					// retryable (PLAN-2392 DR-17).
@@ -543,17 +652,10 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 
 					if (newUuid !== currentUuid) {
 						currentUuid = newUuid;
-						// New target ⇒ the old deletion no longer applies. Undoing
-						// EVERY part of markDeleted() matters: `disabled` is what
-						// makes a dead chip inert, so leaving it set here would
-						// give a live chip that announces itself as live and does
-						// nothing — worse than the dead one, which at least says
-						// so. Reachable via a peer's uuid swap or a ProseMirror
-						// node replacement (orchestrator's full-diff review).
-						deleted = false;
-						wrapper.disabled = false;
-						wrapper.classList.remove('attachment-missing');
-						wrapper.removeAttribute('title');
+						// New target ⇒ the old deletion no longer applies. Reachable
+						// via a peer's uuid swap or a ProseMirror node replacement
+						// (orchestrator's full-diff review).
+						clearDeleted();
 						// New uuid ⇒ stale MIME / size; reset until HEAD probe
 						// returns for the new identifier.
 						currentMime = null;
@@ -581,6 +683,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				destroy() {
 					destroyed = true;
 					disposeDeletionListener();
+					disposeRestoreListener();
 				},
 			};
 		};

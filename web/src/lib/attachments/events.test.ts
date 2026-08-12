@@ -1,11 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AttachmentUploadResult } from '$lib/types';
+import { fetchAttachmentMetadata } from '$lib/components/editor/attachment-metadata';
 import {
+	announceAttachmentParentRestored,
 	createAttachmentHostToken,
 	isAttachmentSurfaceEventForHost,
 	notifyAttachmentSurfaceOpen,
 	registerAttachmentSurfaceListener,
+	notifyAttachmentParentRestored,
+	registerAttachmentParentRestoredListener,
 	toUploadedAttachment,
+	type AttachmentParentRestoredEvent,
 	type AttachmentSurfaceOpenEvent,
 	type LightboxImage,
 } from './events';
@@ -370,5 +375,89 @@ describe('unified surface open channel', () => {
 		off();
 		notifyAttachmentSurfaceOpen(surfaceEvent());
 		expect(seen).toHaveLength(1);
+	});
+});
+
+describe('parent-restore channel (BUG-2509)', () => {
+	const url = (id: string) => `/api/v1/workspaces/ws/attachments/${id}`;
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	it('delivers the workspace + item to subscribers and disposes cleanly', () => {
+		const seen: AttachmentParentRestoredEvent[] = [];
+		const off = registerAttachmentParentRestoredListener((e) => seen.push(e));
+		try {
+			notifyAttachmentParentRestored('ws', 'item-A');
+			expect(seen).toEqual([{ workspaceSlug: 'ws', itemId: 'item-A' }]);
+		} finally {
+			off();
+		}
+		notifyAttachmentParentRestored('ws', 'item-A');
+		expect(seen).toHaveLength(1);
+	});
+
+	it('drops an emission missing either identity — it addresses nobody', () => {
+		const seen: AttachmentParentRestoredEvent[] = [];
+		const off = registerAttachmentParentRestoredListener((e) => seen.push(e));
+		try {
+			notifyAttachmentParentRestored('', 'item-A');
+			notifyAttachmentParentRestored('ws', '');
+			expect(seen).toHaveLength(0);
+		} finally {
+			off();
+		}
+	});
+
+	/**
+	 * The ordering inside `announceAttachmentParentRestored` is load-bearing, not
+	 * cosmetic: a subscriber that re-probes SYNCHRONOUSLY on the signal must not be
+	 * answered from the very cache entry the announce exists to drop. Asserted
+	 * through the observable consequence — the probe reaches the network — rather
+	 * than by inspecting call order, so it stays true if the internals move.
+	 */
+	it('invalidates the metadata cache BEFORE notifying, so a listener re-probe reaches the server', async () => {
+		const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
+		vi.stubGlobal('fetch', fetchMock);
+
+		// Poison the cache the way an archived window does.
+		expect(await fetchAttachmentMetadata('ws', 'att-restore', url)).toEqual({ status: 'missing' });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		fetchMock.mockResolvedValue(
+			new Response(null, { status: 200, headers: { 'content-type': 'image/png', 'content-length': '3' } })
+		);
+
+		let observed: unknown;
+		const pending: Array<Promise<unknown>> = [];
+		const off = registerAttachmentParentRestoredListener((e) => {
+			pending.push(
+				fetchAttachmentMetadata(e.workspaceSlug, 'att-restore', url).then((r) => {
+					observed = r;
+				})
+			);
+		});
+		try {
+			announceAttachmentParentRestored('ws', 'item-A');
+			await Promise.all(pending);
+		} finally {
+			off();
+		}
+
+		expect(observed).toEqual({ status: 'ok', mime: 'image/png', size: 3 });
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('announce is a no-op without both identities', () => {
+		const seen: AttachmentParentRestoredEvent[] = [];
+		const off = registerAttachmentParentRestoredListener((e) => seen.push(e));
+		try {
+			announceAttachmentParentRestored('', 'item-A');
+			announceAttachmentParentRestored('ws', '');
+			expect(seen).toHaveLength(0);
+		} finally {
+			off();
+		}
 	});
 });

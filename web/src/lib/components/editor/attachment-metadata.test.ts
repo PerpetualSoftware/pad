@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
 	fetchAttachmentMetadata,
 	invalidateAttachmentMetadata,
+	invalidateAttachmentMetadataForWorkspace,
 	revalidateAttachmentMetadata,
 	mimeToFormat
 } from './attachment-metadata';
@@ -322,6 +323,60 @@ describe('the no-store cache option reaches the dispatched request (PLAN-2392 3c
 		// as before T6.
 		const init = fetchMock.mock.calls[0][1] as RequestInit;
 		expect('cache' in init).toBe(false);
+	});
+});
+
+describe('invalidateAttachmentMetadataForWorkspace (BUG-2509)', () => {
+	// The archived window is the whole reason this exists: while an item is
+	// archived the server 404s its attachments without deleting them, so a
+	// `missing` cached in that window is a fact with an expiry, memoized as
+	// though it had none.
+	it('drops a `missing` cached while the parent was archived, so a re-ask reaches the server', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(head(404));
+		expect(await fetchAttachmentMetadata('ws', uuid, url)).toEqual({ status: 'missing' });
+		// Without the invalidation the memo answers forever — this is the assertion
+		// that pins WHY remounting the editor did not heal the file chip.
+		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/png', 'content-length': '7' }));
+		expect(await fetchAttachmentMetadata('ws', uuid, url)).toEqual({ status: 'missing' });
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		invalidateAttachmentMetadataForWorkspace('ws');
+
+		expect(await fetchAttachmentMetadata('ws', uuid, url)).toEqual({
+			status: 'ok',
+			mime: 'image/png',
+			size: 7,
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it('is scoped to the workspace it names', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/png', 'content-length': '1' }));
+		await fetchAttachmentMetadata('ws-a', uuid, url);
+		await fetchAttachmentMetadata('ws-b', uuid, url);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+
+		invalidateAttachmentMetadataForWorkspace('ws-a');
+
+		// ws-b's entry survives; only ws-a re-asks. The keys share a `:` separator,
+		// so a naive `includes` would take both.
+		await fetchAttachmentMetadata('ws-b', uuid, url);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		await fetchAttachmentMetadata('ws-a', uuid, url);
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+	});
+
+	it('ignores an empty slug rather than clearing the whole cache', async () => {
+		const uuid = freshUuid();
+		fetchMock.mockResolvedValue(head(200, { 'content-type': 'image/png', 'content-length': '1' }));
+		await fetchAttachmentMetadata('ws', uuid, url);
+
+		invalidateAttachmentMetadataForWorkspace('');
+
+		await fetchAttachmentMetadata('ws', uuid, url);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 });
 

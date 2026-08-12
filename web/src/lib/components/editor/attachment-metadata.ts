@@ -12,7 +12,13 @@
  *     NodeView reuse the in-flight or settled fetch.
  *   - The cache lives for the page lifetime — attachment metadata is
  *     immutable (the row is content-addressed; transforms produce
- *     NEW rows), so there's no staleness concern.
+ *     NEW rows), so a settled `ok` cannot go stale.
+ *
+ * A settled `missing` CAN, and that is not a caveat on the above but a
+ * different fact: it describes REACHABILITY, not the row's contents.
+ * Archiving the parent item 404s its attachments without deleting them
+ * (DR-13), so a `missing` observed in that window expires when the item is
+ * restored — see `invalidateAttachmentMetadataForWorkspace` (BUG-2509).
  *
  * Callers never see an exception: every failure is reported through the
  * discriminated result below, so a surface with no workspace context
@@ -139,6 +145,39 @@ export function fetchAttachmentMetadata(
  */
 export function invalidateAttachmentMetadata(workspaceSlug: string, uuid: string): void {
 	cache.delete(`${workspaceSlug}:${uuid}`);
+}
+
+/**
+ * Drop every entry this workspace holds (BUG-2509).
+ *
+ * The module docstring's premise — a settled result is a durable fact about a
+ * content-addressed row, so `ok` and `missing` are both safe to keep for the
+ * page lifetime — is true for DELETION and false for ARCHIVE. Archiving the
+ * PARENT item 404s its attachments (handlers_attachments.go, DR-13) without
+ * touching the attachment rows, and restoring the parent brings them back. So a
+ * `missing` observed inside the archived window is a fact WITH AN EXPIRY, cached
+ * as though it had none: after the restore, every later reader of this cache —
+ * including a NodeView constructed fresh, which is why remounting the editor did
+ * not heal it — replays a 404 the server would no longer give.
+ *
+ * Called on the restore edge (`announceAttachmentParentRestored`), where the
+ * negative knowledge is exactly what has to go. It drops `ok` entries too rather
+ * than tracking per-entry status: this cache is a per-page memo, refilling it
+ * costs one HEAD per visible attachment, and "drop everything for the workspace"
+ * has no ordering hazard to get wrong. In-flight callers are unaffected — they
+ * already hold the promise; only future lookups re-ask.
+ *
+ * It does NOT weaken the DR-17 undo guard. Dropping a deletion-derived `missing`
+ * cannot resurrect anything, because every consumer re-probes and the SERVER is
+ * what answers: a genuinely deleted row 404s again and re-latches. The cache was
+ * never the authority — it was only ever a memo of one.
+ */
+export function invalidateAttachmentMetadataForWorkspace(workspaceSlug: string): void {
+	if (!workspaceSlug) return;
+	const prefix = `${workspaceSlug}:`;
+	for (const key of [...cache.keys()]) {
+		if (key.startsWith(prefix)) cache.delete(key);
+	}
 }
 
 /**
