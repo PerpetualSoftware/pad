@@ -43,7 +43,10 @@
 	import CopyItemDialog from '$lib/components/items/CopyItemDialog.svelte';
 	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
 	import AttachmentSurfaceHost from '$lib/components/attachments/AttachmentSurfaceHost.svelte';
-	import { createAttachmentHostToken } from '$lib/attachments/events';
+	import {
+		announceAttachmentParentRestored,
+		createAttachmentHostToken,
+	} from '$lib/attachments/events';
 	import { createViewerResourceGen } from '$lib/attachments/viewerResource.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
@@ -821,6 +824,49 @@
 	// half of the address changes with the item; the token does not, and does
 	// not need to — the pair is what disambiguates.)
 	const attachmentHostToken = createAttachmentHostToken();
+
+	/**
+	 * Archive → restore edge, announced on the attachment bus (BUG-2509).
+	 *
+	 * While an item is archived the server 404s its attachments (DR-13), so any
+	 * attachment surface that PROBES inside that window observes exactly what a
+	 * deletion produces and latches it as permanent. The strip and the timeline
+	 * already reconcile this themselves — they take `parentArchived` as a prop and
+	 * carry their own epoch + no-store re-probe (`ItemTimeline`'s
+	 * `pendingRestoreNoStore`). The editor NodeViews could not: their latch is
+	 * closure-private state inside a Tiptap view, unreachable from a prop, so they
+	 * needed a channel. This is that channel's one emitter.
+	 *
+	 * WHY THE EMIT IS NEEDED AT ALL WHEN THE EDITOR REMOUNTS: `canEdit` is forced
+	 * false while archived (see above), so an edit-permissioned user's restore
+	 * flips the content branch and builds a FRESH editor — which does not help,
+	 * because the shared HEAD cache memoized the archived window's 404 for the
+	 * page lifetime and the new NodeViews read it on construction. The announce
+	 * drops that cache as well as signalling the mounted views; both halves have
+	 * their own population (see `announceAttachmentParentRestored`).
+	 *
+	 * Edge-triggered off a LATCHED plain `let` under `untrack`, not a `$state`
+	 * read+written in one effect — that self-dependency aborts the flush and
+	 * silently strands unrelated reactivity nearby (CONVE-1688, and the same shape
+	 * ItemTimeline's lifecycle effect uses). Seeded from the current value so a
+	 * mount on an ALREADY-archived item is a level, not a spurious restore edge.
+	 */
+	let prevItemArchived = untrack(() => itemMatchesRef && isArchived);
+	$effect(() => {
+		const archived = itemMatchesRef && isArchived;
+		const id = item?.id ?? '';
+		const ws = wsSlug;
+		untrack(() => {
+			if (archived === prevItemArchived) return;
+			prevItemArchived = archived;
+			// Only the true→false edge is a restore. The false→true edge needs no
+			// announcement: the surfaces that must react to an ARCHIVE already take
+			// it as a prop, and a NodeView that has not probed yet will get an
+			// honest 404 from the server on its own.
+			if (archived || !id || !ws) return;
+			announceAttachmentParentRestored(ws, id);
+		});
+	});
 
 	/**
 	 * The editor's LIVE markdown, or null when there is no live editor to

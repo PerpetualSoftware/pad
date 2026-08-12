@@ -24,6 +24,11 @@ const deletionListeners = new Set<(uuid: string) => void>();
 // channel's own addressability filter. The gate under test is the NodeView's;
 // routing is `events.ts`'s and has its own spec.
 const emitted: Array<Record<string, unknown>> = [];
+// The restore channel FANS OUT like the deletion one above: a mock that only
+// records the subscription leaves the NodeView subscribed to nothing, and every
+// test of how it REACTS passes vacuously (BUG-2509).
+const restoreListeners = new Set<(event: { workspaceSlug: string; itemId: string }) => void>();
+
 vi.mock('$lib/attachments/events', () => ({
 	notifyAttachmentSurfaceOpen: (event: Record<string, unknown>) => {
 		emitted.push(event);
@@ -31,6 +36,12 @@ vi.mock('$lib/attachments/events', () => ({
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
 		deletionListeners.add(fn);
 		return () => deletionListeners.delete(fn);
+	},
+	registerAttachmentParentRestoredListener: (
+		fn: (event: { workspaceSlug: string; itemId: string }) => void
+	) => {
+		restoreListeners.add(fn);
+		return () => restoreListeners.delete(fn);
 	},
 }));
 
@@ -84,6 +95,7 @@ describe('inline image missing placeholder', () => {
 
 	beforeEach(() => {
 		deletionListeners.clear();
+		restoreListeners.clear();
 		emitted.length = 0;
 		probeMock.mockClear();
 		target = document.body.appendChild(document.createElement('div'));
@@ -280,6 +292,117 @@ describe('inline image missing placeholder', () => {
 		// The copy stops inviting a retry that cannot happen, too.
 		expect(el.title).toBe('This attachment has been deleted');
 		expect(el.title).not.toContain('retry');
+	});
+
+	/**
+	 * BUG-2509. Archiving an item 404s its attachments WITHOUT deleting them, so a
+	 * NodeView that probes inside that window observes exactly what a deletion
+	 * produces and latches it permanently — and nothing cleared that latch, because
+	 * only a uuid swap did and a restore does not change the uuid. These pin the
+	 * restore channel's contract: the signal PROMPTS a re-ask, the SERVER decides.
+	 */
+	describe('parent-item restore (BUG-2509)', () => {
+		/** Latch the permanent placeholder the way an archived-window probe does. */
+		async function latchViaArchivedWindowProbe() {
+			probeMock.mockResolvedValue({ status: 'missing' });
+			editor = makeEditor(target);
+			failLoad();
+			await settle();
+			expect(placeholder().title).toBe('This attachment has been deleted');
+			expect(target.querySelector<HTMLImageElement>('img')?.style.display).toBe('none');
+		}
+
+		function announceRestore(itemId = 'item-A', workspaceSlug = 'ws') {
+			for (const fn of restoreListeners) fn({ workspaceSlug, itemId });
+		}
+
+		it('heals a node latched during the archived window once the server says ok', async () => {
+			await latchViaArchivedWindowProbe();
+
+			probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 10 });
+			announceRestore();
+			await settle();
+
+			const img = target.querySelector<HTMLImageElement>('img[data-attachment-id]');
+			// The load is re-issued cache-busted, for the reason Retry is: the failed
+			// request is in the HTTP cache and re-assigning the same URL can replay it.
+			expect(img?.getAttribute('src')).toContain('restored=');
+			// `load` is what actually repaints; the NodeView must have re-armed for it.
+			img?.dispatchEvent(new Event('load'));
+			expect(img?.style.display).not.toBe('none');
+			expect(placeholder().style.display).toBe('none');
+		});
+
+		it('leaves a genuinely deleted attachment dead — restore is not an undo (DR-17)', async () => {
+			await latchViaArchivedWindowProbe();
+
+			// The row really is gone: deleted while the parent was archived.
+			probeMock.mockResolvedValue({ status: 'missing' });
+			announceRestore();
+			await settle();
+
+			expect(placeholder().style.display).not.toBe('none');
+			expect(placeholder().title).toBe('This attachment has been deleted');
+			expect(target.querySelector<HTMLImageElement>('img')?.style.display).toBe('none');
+		});
+
+		it('leaves the placeholder alone when the re-probe is transient — no evidence either way', async () => {
+			await latchViaArchivedWindowProbe();
+
+			probeMock.mockResolvedValue({ status: 'transient' });
+			announceRestore();
+			await settle();
+
+			expect(placeholder().style.display).not.toBe('none');
+			expect(target.querySelector<HTMLImageElement>('img')?.style.display).toBe('none');
+		});
+
+		it('ignores a signal for another item — routing is by address, not broadcast', async () => {
+			await latchViaArchivedWindowProbe();
+			probeMock.mockClear();
+
+			announceRestore('item-B');
+			await settle();
+
+			// Not even a wasted HEAD: the address filter runs before the probe.
+			expect(probeMock).not.toHaveBeenCalled();
+			expect(placeholder().style.display).not.toBe('none');
+		});
+
+		it('ignores a signal for another workspace', async () => {
+			await latchViaArchivedWindowProbe();
+			probeMock.mockClear();
+
+			announceRestore('item-A', 'other-ws');
+			await settle();
+
+			expect(probeMock).not.toHaveBeenCalled();
+			expect(placeholder().style.display).not.toBe('none');
+		});
+
+		it('does not probe at all when nothing is being presented as missing', async () => {
+			probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 10 });
+			editor = makeEditor(target);
+			await settle();
+			probeMock.mockClear();
+
+			announceRestore();
+			await settle();
+
+			expect(probeMock).not.toHaveBeenCalled();
+		});
+
+		it('unsubscribes on destroy — a signal must not reach a torn-down view', async () => {
+			await latchViaArchivedWindowProbe();
+			editor?.destroy();
+			editor = undefined;
+			probeMock.mockClear();
+
+			announceRestore();
+			await settle();
+
+			expect(probeMock).not.toHaveBeenCalled();
+		});
 	});
 
 	it('does not leave focus stranded on a placeholder that just went inert', () => {

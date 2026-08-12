@@ -40,7 +40,8 @@ import {
 import { openCropModal, type CropResult } from './attachment-crop-modal';
 import {
 	notifyAttachmentSurfaceOpen,
-	registerAttachmentDeletionListener
+	registerAttachmentDeletionListener,
+	registerAttachmentParentRestoredListener
 } from '$lib/attachments/events';
 import {
 	type AttachmentHostAddressReader,
@@ -608,6 +609,67 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				detachLoadListeners();
 				showMissing();
 				refresh();
+			});
+
+			/**
+			 * Parent-item RESTORE (BUG-2509).
+			 *
+			 * The counterpart to the deletion listener above, and deliberately NOT
+			 * its mirror image: that one is authoritative and latches, this one
+			 * carries no verdict and only prompts a re-ask. Archiving an item 404s
+			 * its attachments without deleting them, so a NodeView constructed
+			 * inside the archived window probes, gets the same 404 a deletion
+			 * gives, and latches `deleted` — which nothing then clears, because the
+			 * latch is closure-private and only a uuid swap resets it. Restoring
+			 * the parent left the node inert for the rest of the page's life.
+			 *
+			 * THE SERVER DECIDES, NOT THE SIGNAL. The re-probe is what clears the
+			 * latch, and only on an authoritative `ok`:
+			 *   - `missing`   — the row really is gone (deleted while the parent was
+			 *                   archived, say). Stay latched; this is exactly the
+			 *                   DR-17 case, and honouring the signal blindly here is
+			 *                   what would turn restore into an undo-resurrection
+			 *                   vector.
+			 *   - `transient` — no evidence either way. Stay as we are.
+			 * A signal that reaches the wrong node therefore costs one HEAD and
+			 * changes nothing, which is what makes routing-by-itemId safe.
+			 *
+			 * `no-store`, for the reason the timeline's restore re-probe uses it
+			 * (ItemTimeline's `pendingRestoreNoStore`): the endpoint sets
+			 * `max-age=3600`, and this probe exists precisely to escape what was
+			 * observed inside the archived window.
+			 */
+			const disposeRestoreListener = registerAttachmentParentRestoredListener((event) => {
+				if (destroyed || !currentUuid) return;
+				const addr = opts.address();
+				if (!addr.workspaceSlug || !addr.itemId) return;
+				if (event.workspaceSlug !== addr.workspaceSlug || event.itemId !== addr.itemId) return;
+				// Nothing to heal unless a placeholder is actually showing — either
+				// latched permanent or the retryable one (a probe that never landed,
+				// or landed `transient`, inside the archived window).
+				if (!deleted && missing.style.display === 'none') return;
+				const forUuid = currentUuid;
+				const probeWs = addr.workspaceSlug;
+				void revalidateAttachmentMetadata(probeWs, forUuid, opts.getDownloadUrl, {
+					cache: 'no-store'
+				}).then((result) => {
+					// Fence on BOTH teardown and a uuid swap: this NodeView outlives a
+					// rotate/crop, and healing a node that has moved on would paint the
+					// previous attachment over the current one.
+					if (destroyed || currentUuid !== forUuid) return;
+					if (result.status !== 'ok') return;
+					deleted = false;
+					// Cache-bust for the same reason `retryLoad` does: the failed load
+					// is in the browser's HTTP cache, and re-assigning the identical
+					// URL can replay it instead of reaching the server.
+					const base = opts.getDownloadUrl(forUuid, 'thumb-md');
+					loadImage(`${base}${base.includes('?') ? '&' : '?'}restored=${Date.now()}`);
+					// The placeholder's copy, cursor, role and tabindex were all set for
+					// a permanent deletion; `refresh` re-gates the toolbar for a node
+					// that is openable again.
+					refresh();
+					applyImageSemantics();
+				});
 			});
 
 			// role/tabindex are set by showMissing(), which knows whether this is
@@ -1338,6 +1400,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					destroyed = true;
 					detachLoadListeners();
 					disposeDeletionListener();
+					disposeRestoreListener();
 					// Tear down the refresher subscription so the
 					// module-level registry doesn't pile up stale
 					// callbacks across editor lifecycles (e.g. SPA

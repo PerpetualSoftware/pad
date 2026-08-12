@@ -19,17 +19,30 @@ import StarterKit from '@tiptap/starter-kit';
 const panelOpenMock = vi.fn<(event: Record<string, unknown>) => void>();
 const deletionListeners = new Set<(uuid: string) => void>();
 
+// Both bus channels FAN OUT to their subscribers rather than merely recording
+// the subscription: a mock that only spies leaves the NodeView subscribed to
+// nothing, and every test of how it REACTS passes vacuously (BUG-2509).
+const restoreListeners = new Set<(event: { workspaceSlug: string; itemId: string }) => void>();
+
 vi.mock('$lib/attachments/events', () => ({
 	notifyAttachmentSurfaceOpen: (event: Record<string, unknown>) => panelOpenMock(event),
 	registerAttachmentDeletionListener: (fn: (uuid: string) => void) => {
 		deletionListeners.add(fn);
 		return () => deletionListeners.delete(fn);
 	},
+	registerAttachmentParentRestoredListener: (
+		fn: (event: { workspaceSlug: string; itemId: string }) => void
+	) => {
+		restoreListeners.add(fn);
+		return () => restoreListeners.delete(fn);
+	},
 }));
 
 const probeMock = vi.fn<(ws: string, uuid: string) => Promise<unknown>>();
+const revalidateMock = vi.fn<(ws: string, uuid: string) => Promise<unknown>>();
 vi.mock('./attachment-metadata', () => ({
 	fetchAttachmentMetadata: (ws: string, uuid: string) => probeMock(ws, uuid),
+	revalidateAttachmentMetadata: (ws: string, uuid: string) => revalidateMock(ws, uuid),
 	invalidateAttachmentMetadata: () => {},
 }));
 
@@ -63,7 +76,10 @@ describe('editor chip → options panel', () => {
 
 	beforeEach(() => {
 		panelOpenMock.mockReset();
+		probeMock.mockReset();
+		revalidateMock.mockReset();
 		deletionListeners.clear();
+		restoreListeners.clear();
 		target = document.body.appendChild(document.createElement('div'));
 	});
 
@@ -239,6 +255,120 @@ describe('editor chip → options panel', () => {
 		live.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
 		expect(panelOpenMock).toHaveBeenCalledTimes(1);
 		expect(panelOpenMock.mock.calls[0][0]).toMatchObject({ attachmentId: 'uuid-2' });
+	});
+
+	/**
+	 * BUG-2509. The chip is the worse half of this bug and the non-obvious one:
+	 * an image has a load event, so a freshly built one repaints itself once the
+	 * bytes 200 again — a chip makes no request until clicked and knows only what
+	 * the cached HEAD told it. That is why remounting the editor healed the inline
+	 * image but left the chip dead through the whole page's life.
+	 */
+	describe('parent-item restore (BUG-2509)', () => {
+		function announceRestore(itemId = 'item-A', workspaceSlug = 'ws') {
+			for (const fn of restoreListeners) fn({ workspaceSlug, itemId });
+		}
+
+		/** A chip addressed in a real workspace, dead from an archived-window probe. */
+		async function deadChipInWorkspace(): Promise<HTMLButtonElement> {
+			probeMock.mockResolvedValue({ status: 'missing' });
+			editor = makeEditor(target, () => ({ ...ADDRESS, workspaceSlug: 'ws' }));
+			const el = chip();
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(el.disabled).toBe(true);
+			return el;
+		}
+
+		it('comes back to life when the server says the row is reachable again', async () => {
+			const el = await deadChipInWorkspace();
+
+			revalidateMock.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 2048 });
+			announceRestore();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			// Every part of markDeleted() has to come off — `disabled` above all, or
+			// the chip announces itself as live and does nothing.
+			expect(el.disabled).toBe(false);
+			expect(el.classList.contains('attachment-missing')).toBe(false);
+			expect(el.hasAttribute('title')).toBe(false);
+			expect(el.getAttribute('aria-label')).not.toContain('deleted');
+			el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+			expect(panelOpenMock).toHaveBeenCalledTimes(1);
+		});
+
+		it('re-probes with no-store — the point is to escape what the archived window cached', async () => {
+			await deadChipInWorkspace();
+			revalidateMock.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 1 });
+
+			announceRestore();
+			await Promise.resolve();
+
+			// It must go through REVALIDATE, not the caching fetch: the cached
+			// `missing` is exactly what it has to get past.
+			expect(revalidateMock).toHaveBeenCalledWith('ws', 'uuid-1');
+		});
+
+		it('stays dead when the row is genuinely gone — restore is not an undo (DR-17)', async () => {
+			const el = await deadChipInWorkspace();
+
+			revalidateMock.mockResolvedValue({ status: 'missing' });
+			announceRestore();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(el.disabled).toBe(true);
+			expect(el.classList.contains('attachment-missing')).toBe(true);
+		});
+
+		it('stays dead on a transient re-probe — that answer is not evidence', async () => {
+			const el = await deadChipInWorkspace();
+
+			revalidateMock.mockResolvedValue({ status: 'transient' });
+			announceRestore();
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(el.disabled).toBe(true);
+		});
+
+		it('ignores a signal addressed to another item or workspace', async () => {
+			const el = await deadChipInWorkspace();
+			revalidateMock.mockClear();
+
+			announceRestore('item-B');
+			announceRestore('item-A', 'other-ws');
+			await Promise.resolve();
+
+			expect(revalidateMock).not.toHaveBeenCalled();
+			expect(el.disabled).toBe(true);
+		});
+
+		it('does not probe for a chip that is not dead', async () => {
+			probeMock.mockResolvedValue({ status: 'ok', mime: 'application/pdf', size: 1 });
+			editor = makeEditor(target, () => ({ ...ADDRESS, workspaceSlug: 'ws' }));
+			chip();
+			await Promise.resolve();
+			revalidateMock.mockClear();
+
+			announceRestore();
+			await Promise.resolve();
+
+			expect(revalidateMock).not.toHaveBeenCalled();
+		});
+
+		it('unsubscribes on destroy', async () => {
+			await deadChipInWorkspace();
+			editor?.destroy();
+			editor = undefined;
+			revalidateMock.mockClear();
+
+			announceRestore();
+			await Promise.resolve();
+
+			expect(revalidateMock).not.toHaveBeenCalled();
+		});
 	});
 
 	it('offers no URL for a middle-click to bypass the panel with', () => {
