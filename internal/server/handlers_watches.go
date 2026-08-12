@@ -5,6 +5,8 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // watchCreateRequest is the body of POST .../items/{itemSlug}/watch.
@@ -134,6 +136,14 @@ func (s *Server) handleListWatches(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeInternalError(w, err)
 		return
+	}
+	// TASK-2533 codex round 1 finding 1: re-check current access before
+	// listing — a watch row survives a revoked workspace membership or
+	// grant, so without this a caller could see item/workspace metadata
+	// for access they no longer have. See filterWatchesByCurrentAccess.
+	watches = s.filterWatchesByCurrentAccess(userID, watches)
+	if watches == nil {
+		watches = []models.Watch{}
 	}
 
 	writeJSON(w, http.StatusOK, watches)

@@ -51,18 +51,26 @@ func (s *Store) GetWatchByUserItem(userID, itemID string) (*models.Watch, error)
 
 // ListWatchesForUser returns every watch a user holds, across ALL
 // workspaces they're a member of, newest first — enriched with the
-// watched item's ref/title/slug and its workspace's slug so both
-// `pad watch list` and the event-stream handler's per-connection watch
-// map can use it directly without a second round trip per row.
+// watched item's ref/title/slug/collection ID and its workspace's slug
+// so both `pad watch list` and the event-stream handler's per-connection
+// watch map can use it directly without a second round trip per row.
 //
 // Deliberately unscoped by workspace (unlike most list methods in this
 // file): a watch is a personal subscription, not a workspace resource,
 // and the event-stream handler is inherently cross-workspace — it needs
 // every watch a caller holds to filter one global notification stream.
+//
+// IMPORTANT: this does NOT re-check the caller's CURRENT access to the
+// watched item — it only reflects the watches table, which durably
+// outlives a workspace membership or grant revocation. Callers MUST run
+// the result through server.filterWatchesByCurrentAccess (or an
+// equivalent live-access check) before using it to gate delivery or a
+// listing response; not doing so leaks item/workspace metadata for
+// access the caller no longer has (TASK-2533, codex round 1 finding 1).
 func (s *Store) ListWatchesForUser(userID string) ([]models.Watch, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT w.id, w.workspace_id, w.user_id, w.item_id, w.predicate, w.created_at,
-		       i.title, i.slug, i.item_number, c.prefix, ws.slug
+		       i.title, i.slug, i.collection_id, i.item_number, c.prefix, ws.slug
 		FROM watches w
 		JOIN items i ON i.id = w.item_id
 		JOIN collections c ON c.id = i.collection_id
@@ -83,7 +91,7 @@ func (s *Store) ListWatchesForUser(userID string) ([]models.Watch, error) {
 		var itemNumber sql.NullInt64
 		var prefix string
 		if err := rows.Scan(&w.ID, &w.WorkspaceID, &w.UserID, &w.ItemID, &predicate, &createdAt,
-			&w.ItemTitle, &w.ItemSlug, &itemNumber, &prefix, &w.WorkspaceSlug); err != nil {
+			&w.ItemTitle, &w.ItemSlug, &w.ItemCollectionID, &itemNumber, &prefix, &w.WorkspaceSlug); err != nil {
 			return nil, fmt.Errorf("scan watch: %w", err)
 		}
 		w.Predicate = predicate.String
