@@ -330,15 +330,16 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			// Deletion is authoritative: a load still in flight when it lands
 			// must not be allowed to paint the image back (Codex round 15).
 			//
-			// SEAM WITH PLAN-2411 (stated, not built here): this latch is cleared
-			// ONLY by an authoritative RESTORE signal on 2411's channel — never by
-			// editor undo. DR-17 requires Ctrl-Z to leave an inert placeholder
-			// rather than resurrect a working attachment: the delete was a REST row
-			// mutation that Tiptap/Yjs history cannot roll back, so an undo that
-			// re-inserted the node would otherwise present a live-looking image for
-			// a row the server no longer has. `deleted` is closure-private and the
-			// bus is deletion-only, so 2411 must extend both; that is its work, and
-			// nothing in THIS file may clear the latch on a document event.
+			// The restore channel foreseen for PLAN-2411 now EXISTS (BUG-2509): the
+			// bus carries a parent-restore signal and this file subscribes to it
+			// below. What that channel does NOT do is clear the latch on the signal
+			// itself — it re-probes, and only an authoritative `ok` from the server
+			// clears anything. The DR-17 rule is unchanged and still holds: Ctrl-Z
+			// must leave an inert placeholder rather than resurrect a working
+			// attachment, because the delete was a REST row mutation Tiptap/Yjs
+			// history cannot roll back. Nothing in this file clears the latch on a
+			// DOCUMENT event; the only two things that clear it are a uuid swap (a
+			// different target entirely) and a server `ok`.
 			let deleted = false;
 			// True once the NodeView is torn down. Async continuations (HEAD
 			// probes, transform results) must not touch DOM after that.
@@ -545,9 +546,20 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 * owns the document; the delete was a REST row mutation it can't
 			 * roll back, so undo restores a node pointing at nothing.
 			 */
-			function latchMissing(forUuid: string) {
+			function latchMissing(forUuid: string, seqAtStart: number) {
 				if (destroyed || deleted) return;
 				if (!forUuid || currentUuid !== forUuid) return;
+				// The staleness fence lives HERE, not at the call sites, and the
+				// generation is a REQUIRED argument so it cannot be forgotten: every
+				// path into this function is an async probe answering a question it
+				// asked earlier, and three of them originally landed without a fence
+				// (the two toolbar MIME probes and the activation probe — found in
+				// review, after the first two were fixed one at a time). A latch is
+				// destructive and permanent, so "the caller will remember" is the
+				// wrong shape for it; capture `stateSeq` before your request and hand
+				// it over, and a probe that predates a restore, a heal or a uuid swap
+				// simply cannot re-kill the node.
+				if (stateSeq !== seqAtStart) return;
 				deleted = true;
 				stateSeq += 1;
 				// Same reason the deletion listener does this: an in-flight
@@ -578,11 +590,10 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				const seqAtStart = stateSeq;
 				void revalidateAttachmentMetadata(probeWs, forUuid, opts.getDownloadUrl).then(
 					(result) => {
-						// A restore (or any other authoritative transition) since this
-						// HEAD went out makes its answer stale — and this one LATCHES, so
-						// acting on it would re-kill a node the restore just healed.
-						if (stateSeq !== seqAtStart) return;
-						if (result.status === 'missing') latchMissing(forUuid);
+						// `latchMissing` applies the staleness fence itself; a restore
+						// (or any other authoritative transition) since this HEAD went
+						// out makes this answer unable to re-kill the node.
+						if (result.status === 'missing') latchMissing(forUuid, seqAtStart);
 					}
 				);
 			}
@@ -612,12 +623,21 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			 *
 			 * Bumped by every authoritative transition — a deletion latched, a
 			 * `missing` latched, a successful heal, a uuid swap, and the receipt of
-			 * a restore signal. Every async continuation that would MUTATE what this
-			 * node presents captures it before its request and re-checks it after,
-			 * so the invariant is structural rather than a list of cases:
+			 * a restore signal.
 			 *
-			 *   a continuation may only act if nothing authoritative has happened
-			 *   since it started.
+			 * WHAT IT GOVERNS, precisely: the MISSING/present state — the latch and
+			 * the heal. `latchMissing` takes the captured generation as a required
+			 * argument and applies the fence itself, so every probe that can kill
+			 * this node is covered by construction rather than by remembering:
+			 *
+			 *   a probe may only latch if nothing authoritative has happened since
+			 *   it was issued.
+			 *
+			 * WHAT IT DOES NOT GOVERN: opening a viewer (`activationSeq` owns that —
+			 * a separate question with a separate lifetime) and the rotate/crop
+			 * transforms (fenced on uuid + editor state, and they mint a NEW
+			 * attachment rather than re-presenting this one). An activation's 404 arm
+			 * does latch, so it carries this generation too.
 			 *
 			 * A per-cause fence (only "did a delete land?") is not enough, and the
 			 * first version of this fix proved it in both directions: a stale
@@ -695,6 +715,14 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					// capture: this editor outlives a workspace switch, so an answer
 					// about ws-A's copy must not heal a node now living in ws-B. Same
 					// fence ItemTimeline's probe uses (`reqWs !== wsSlug`).
+					//
+					// The `itemId` half is deliberately NOT re-checked here (raised in
+					// review; declined with reason). It is ROUTING, not ownership —
+					// stated as such on the surface channel — and the answer is about
+					// the ATTACHMENT, not the item: if this uuid is live in this
+					// workspace, healing the node showing it is correct no matter which
+					// item's host happens to be in front of the user. Fencing on it
+					// would imply a relationship the code does not have.
 					if (opts.address().workspaceSlug !== probeWs) return;
 					// ANY authoritative transition since this HEAD went out wins over
 					// it. The deletion case is the one that matters for DR-17: without
@@ -707,7 +735,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					// one is not silently dropped just because an `ok` got there first).
 					// `transient` is the only arm that says nothing and changes nothing.
 					if (result.status === 'missing') {
-						latchMissing(forUuid);
+						latchMissing(forUuid, seqAtStart);
 						return;
 					}
 					if (result.status !== 'ok') return;
@@ -869,6 +897,12 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				if (!fromWs) return;
 				activating = true;
 				const seq = ++activationSeq;
+				// The PRESENTATION generation as well (BUG-2509). `activationSeq`
+				// governs whether this gesture may still OPEN something; it says
+				// nothing about whether this answer may still LATCH, and the 404 arm
+				// below does exactly that. A probe issued while the parent was
+				// archived would otherwise re-kill an image the restore has healed.
+				const seqAtStart = stateSeq;
 				setActivationPending(true);
 				void fetchAttachmentMetadata(fromWs, forUuid, opts.getDownloadUrl)
 					.then((result) => {
@@ -909,7 +943,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// is for, so it deliberately precedes the presentability
 						// check below.
 						if (result.status === 'missing') {
-							latchMissing(forUuid);
+							latchMissing(forUuid, seqAtStart);
 							return;
 						}
 						// NOT AUTHORITATIVE. Stay retryable, latch nothing, open
@@ -1160,6 +1194,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				const toolbarProbeWs = opts.address().workspaceSlug;
 				if (currentUuid && toolbarProbeWs) {
 					const probeUuid = currentUuid;
+					const seqAtStart = stateSeq;
 					fetchAttachmentMetadata(toolbarProbeWs, probeUuid, opts.getDownloadUrl).then(
 						(result) => {
 							// Bail if the NodeView was torn down, or if its uuid
@@ -1171,7 +1206,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 							// A 404 here is the same authoritative signal the
 							// load path acts on (DR-17), and this probe may
 							// well beat the <img> to it.
-							if (result.status === 'missing') latchMissing(probeUuid);
+							if (result.status === 'missing') latchMissing(probeUuid, seqAtStart);
 							// `transient` leaves the MIME unknown rather than
 							// wrong: gating falls back to supportedFormats.
 							knownMime = result.status === 'ok' ? result.mime : null;
@@ -1406,6 +1441,9 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						const updateProbeWs = opts.address().workspaceSlug;
 						if (toolbar && newUuid && updateProbeWs) {
 							const probeUuid = newUuid;
+							// Captured AFTER this swap's own bump, so the fence retires
+							// probes from before the swap, not this one.
+							const seqAtStart = stateSeq;
 							fetchAttachmentMetadata(
 								updateProbeWs,
 								probeUuid,
@@ -1413,7 +1451,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 							).then((result) => {
 								if (destroyed) return;
 								if (currentUuid !== probeUuid) return;
-								if (result.status === 'missing') latchMissing(probeUuid);
+								if (result.status === 'missing') latchMissing(probeUuid, seqAtStart);
 								knownMime = result.status === 'ok' ? result.mime : null;
 								applyImageSemantics();
 								if (!toolbar) return;

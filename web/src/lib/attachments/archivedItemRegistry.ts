@@ -35,6 +35,15 @@
  * workspace is carried on the announce itself, from the emitting host.
  */
 
+/**
+ * Unbounded for the page's lifetime, deliberately (raised in review; declined
+ * with reason). It holds one uuid string per item this tab has SEEN archived and
+ * not yet seen live again — bounded in practice by how many archived items a
+ * person opens in one session. Eviction is the risky option, not the safe one:
+ * dropping a mark early reintroduces exactly the bug this exists to fix, silently
+ * and only for users whose session ran long enough. A leak measured in bytes is
+ * the better trade against a correctness regression measured in dead attachments.
+ */
 const seenArchived = new Set<string>();
 
 /** Remember that `itemId` is currently archived. Idempotent. */

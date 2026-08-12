@@ -599,6 +599,41 @@ describe('inline image missing placeholder', () => {
 			);
 		});
 
+		/**
+		 * `latchMissing` takes the generation as a REQUIRED argument precisely so a
+		 * probe that is not the restore probe cannot forget it. The toolbar MIME
+		 * probe is one of the three that originally did (found in review round 3):
+		 * issued while the parent was archived, it answers 404 and would re-kill the
+		 * image the restore had already healed.
+		 */
+		it('ignores a toolbar MIME probe that answers 404 after the restore healed', async () => {
+			let releaseToolbar: (r: ProbeResult) => void = () => {};
+			probeMock.mockImplementation(
+				() => new Promise<ProbeResult>((resolve) => (releaseToolbar = resolve))
+			);
+			editor = makeEditor(target);
+			// The toolbar is built lazily on `selectNode`, and its MIME probe fires
+			// with it — a NodeSelection is what actually gets there (`selectAll` does
+			// not, which made the first version of this test pass vacuously).
+			editor.commands.setNodeSelection(1);
+			await settle();
+			const stale = releaseToolbar;
+			// Prove the probe under test actually ran, rather than leaving `stale` as
+			// the no-op default.
+			expect(probeMock).toHaveBeenCalled();
+
+			probeMock.mockResolvedValue({ status: 'ok', mime: 'image/png', size: 10 });
+			announceRestore();
+			await settle();
+
+			// The archived window's toolbar probe finally answers, far too late.
+			stale({ status: 'missing' });
+			await settle();
+
+			expect(placeholder().style.display).toBe('none');
+			expect(placeholder().title).not.toBe('This attachment has been deleted');
+		});
+
 		it('unsubscribes on destroy — asserted on the registry, not on the end state', async () => {
 			await latchViaArchivedWindowProbe();
 			expect(restoreListeners.size).toBe(1);

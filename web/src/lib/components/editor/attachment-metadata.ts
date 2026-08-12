@@ -12,7 +12,13 @@
  *     NodeView reuse the in-flight or settled fetch.
  *   - The cache lives for the page lifetime — attachment metadata is
  *     immutable (the row is content-addressed; transforms produce
- *     NEW rows), so there's no staleness concern.
+ *     NEW rows), so a settled `ok` cannot go stale.
+ *
+ * A settled `missing` CAN, and that is not a caveat on the above but a
+ * different fact: it describes REACHABILITY, not the row's contents.
+ * Archiving the parent item 404s its attachments without deleting them
+ * (DR-13), so a `missing` observed in that window expires when the item is
+ * restored — see `invalidateAttachmentMetadataForWorkspace` (BUG-2509).
  *
  * Callers never see an exception: every failure is reported through the
  * discriminated result below, so a surface with no workspace context
