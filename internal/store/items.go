@@ -2096,6 +2096,13 @@ func (s *Store) updateItemWithParentLinkOnce(
 		return nil, err
 	}
 
+	// mutSignal accumulates the race-free status/assignment delta this call
+	// produces (TASK-2533 / models.ItemMutationSignal). Populated below,
+	// right alongside the status_transitions write and the final in-tx
+	// re-read, then attached to the returned item only if something
+	// actually changed.
+	var mutSignal models.ItemMutationSignal
+
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -2499,6 +2506,10 @@ func (s *Store) updateItemWithParentLinkOnce(
 			`), newID(), id, existing.WorkspaceID, existing.CollectionID, doneKey, statusBefore, newStatus, ts); err != nil {
 				return nil, fmt.Errorf("record status transition: %w", err)
 			}
+			mutSignal.StatusChanged = true
+			mutSignal.StatusFieldKey = doneKey
+			mutSignal.FromStatus = statusBefore
+			mutSignal.ToStatus = newStatus
 		}
 	}
 
@@ -2585,6 +2596,30 @@ func (s *Store) updateItemWithParentLinkOnce(
 	}
 	if updated == nil {
 		return nil, nil
+	}
+
+	// Assignment delta, read from the same in-tx before/after snapshots
+	// used for the status delta above — `existing` is this transaction's
+	// pre-write view (either the pre-tx read or the post-lock re-read at
+	// line ~2189), `updated` is this transaction's own committed write.
+	// Comparing the two committed values (rather than re-deriving "after"
+	// from input.AssignedUserID / ClearAssignedUser) sidesteps having to
+	// duplicate that tri-state set/clear/untouched logic here.
+	beforeAssignee, afterAssignee := "", ""
+	if existing.AssignedUserID != nil {
+		beforeAssignee = *existing.AssignedUserID
+	}
+	if updated.AssignedUserID != nil {
+		afterAssignee = *updated.AssignedUserID
+	}
+	if beforeAssignee != afterAssignee {
+		mutSignal.AssignmentChanged = true
+		mutSignal.FromAssignedUserID = beforeAssignee
+		mutSignal.ToAssignedUserID = afterAssignee
+	}
+	if mutSignal.StatusChanged || mutSignal.AssignmentChanged {
+		sig := mutSignal
+		updated.LastMutation = &sig
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -4467,7 +4502,22 @@ func (s *Store) moveItemWithPreCheckOnce(
 		return nil, err
 	}
 
-	return s.GetItem(itemID)
+	result, err := s.GetItem(itemID)
+	if err != nil || result == nil {
+		return result, err
+	}
+	// Same race-free-delta rationale as updateItemWithParentLinkOnce
+	// (TASK-2533): oldStatus/newStatus were captured under the write lock
+	// above, so this is safe to attach post-commit.
+	if newStatus != oldStatus {
+		result.LastMutation = &models.ItemMutationSignal{
+			StatusChanged:  true,
+			StatusFieldKey: moveDoneKey,
+			FromStatus:     oldStatus,
+			ToStatus:       newStatus,
+		}
+	}
+	return result, nil
 }
 
 // --- Helpers ---
