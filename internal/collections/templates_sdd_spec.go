@@ -25,18 +25,19 @@ recon couldn't fill. Nothing gets created until the user approves in chat.
 
 ## Arguments
 
-- ` + "`target`" + ` (optional, string OR ref) — what to spec. Accepts either:
+- ` + "`target`" + ` (required, string OR ref) — what to spec. Accepts either:
   - **A free-text topic** (e.g. "rate limiting for the webhook endpoint") — the normal "draft a new spec" path.
-  - **An IDEA-ref or BUG-ref** (e.g. ` + "`IDEA-12`" + `, ` + "`BUG-88`" + `) — the graduation path: an idea or bug becomes the spec's source material instead of a blank slate.
-  - **Empty** — ask the user what they want to spec.
+  - **An IDEA-ref or BUG-ref** (e.g. ` + "`IDEA-12`" + `, ` + "`BUG-88`" + `) — the graduation path: an idea or bug becomes the spec's source material instead of a blank slate. Only refs that resolve to an Ideas-like or Bugs-like collection actually graduate (see Dispatch below) — anything else is treated as recon context for a new-topic draft.
 - ` + "`collection`" + ` (optional, string, default=specs) — collection to create the spec in.
 
 ## Dispatch — new topic vs. graduate an existing ref
 
 Detect which mode from ` + "`target`" + `:
 
-- **Looks like a ref** (matches ` + "`^[A-Z]+-\\d+$`" + ` and resolves to a real item) → **graduation mode**. The source item's body AND its full comment trail (` + "`pad item comments <ref>`" + `) are the recon material — comment trails often carry the decision history that never made it into the body (design discussions, corrections, settled trade-offs). Read all of it before drafting.
-- **Otherwise** → **new-topic mode**. Recon comes from the codebase and a workspace search instead of a source item.
+- **Looks like a ref** (matches ` + "`^[A-Z]+-\\d+$`" + `) → resolve it (` + "`pad item show <target> --format json`" + `) and check its collection before deciding anything else:
+  - **Collection is Ideas-like or Bugs-like** (slug ` + "`ideas`" + ` / ` + "`bugs`" + `, or — if the workspace renamed it — check ` + "`pad collection list --format json`" + ` for the collection the workspace actually uses for ideas/bugs) → **graduation mode**. The source item's body AND its full comment trail (` + "`pad item comments <target>`" + `) are the recon material — comment trails often carry the decision history that never made it into the body (design discussions, corrections, settled trade-offs). Read all of it before drafting.
+  - **Any other collection** (e.g. a Task, a Doc) → **NOT graduation**. Ref resolution still succeeded, but the item isn't an Idea or a Bug, so nothing about it gets a status flip. Tell the user (e.g. "TASK-7 is a task, not an idea or bug — I'll use it as background context for a new spec instead of graduating it"), then fall through to new-topic mode using the item's body as extra recon material.
+- **Doesn't look like a ref, or doesn't resolve** → **new-topic mode**. Recon comes from the codebase and a workspace search instead of a source item.
 
 ## Pre-flight
 
@@ -105,7 +106,7 @@ committing, leave it at ` + "`in-review`" + ` instead and stop here — the
 approval step happens later, either by rerunning this playbook or a plain
 ` + "`pad item update <ref> --status approved`" + `.
 
-### 6. Graduate the source item (graduation mode only)
+### 6. Graduate the source item (graduation mode only — see Dispatch)
 
 Flip the source IDEA or BUG to whatever its OWN collection schema defines
 as terminal — don't hardcode a status name, collections define their own
@@ -140,7 +141,8 @@ var specPlaybookArguments = []map[string]any{
 	{
 		"name":        "target",
 		"type":        "string",
-		"description": "What to spec. Free-text topic for a new draft, or an IDEA-ref/BUG-ref to graduate an existing item into a spec.",
+		"required":    true,
+		"description": "What to spec. Free-text topic for a new draft, or an IDEA-ref/BUG-ref to graduate an existing item into a spec (only if it resolves to an Ideas-like or Bugs-like collection — otherwise it's used as recon context instead).",
 	},
 	{
 		"name":        "collection",

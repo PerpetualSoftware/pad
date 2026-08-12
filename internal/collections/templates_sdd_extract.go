@@ -24,7 +24,7 @@ that turns out to be a bug rather than intended behavior.
 
 ## Arguments
 
-- ` + "`target`" + ` (optional, string) — a path, package, module, or subsystem description (e.g. ` + "`internal/server/handlers_workspaces.go`" + `, "the auth flow", "webhook delivery"). Empty means the agent should ask what area to extract from — never default to the whole codebase.
+- ` + "`target`" + ` (optional, string) — a path, package, module, or subsystem description (e.g. ` + "`internal/server/handlers_workspaces.go`" + `, "the auth flow", "webhook delivery"). Since ` + "`target`" + ` is optional, the strict CLI/MCP path requires it as key=value, not positional: ` + "`pad playbook run extract-specs target=\"<subsystem hint>\"`" + `. A bare ` + "`/pad extract-specs`" + ` invocation (no target) is a designed flow too — the agent should ask what area to extract from — never default to the whole codebase.
 - ` + "`dry-run`" + ` (flag, default=false) — propose the subsystem map and draft specs but don't create anything. Use to iterate before committing.
 
 ## Scope discipline — incremental, never a sweep

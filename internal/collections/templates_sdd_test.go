@@ -303,3 +303,55 @@ func TestSpecTemplateStarterPlaybooks(t *testing.T) {
 		}
 	}
 }
+
+// specPlaybookArgRequired finds an argument by name in a playbook's Fields
+// JSON and reports whether it's marked required.
+func specPlaybookArgRequired(t *testing.T, fieldsJSON, argName string) bool {
+	t.Helper()
+	var fields specPlaybookFields
+	if err := json.Unmarshal([]byte(fieldsJSON), &fields); err != nil {
+		t.Fatalf("invalid Fields JSON: %v", err)
+	}
+	for _, arg := range fields.Arguments {
+		if name, _ := arg["name"].(string); name == argName {
+			req, _ := arg["required"].(bool)
+			return req
+		}
+	}
+	t.Fatalf("argument %q not found", argName)
+	return false
+}
+
+// TestSpecPlaybookTargetArgumentRequirement guards against the strict
+// CLI/MCP parser bug from codex round 1: only REQUIRED args can be filled
+// positionally (internal/server/handlers_playbooks.go), so `spec`'s
+// `target` must be required (matching `plan`'s `topic`) or
+// `pad playbook run spec "<topic>"` silently fails to bind it.
+// `extract-specs`'s `target` stays optional by design — bare invocation is
+// a supported flow — so it must NOT be required.
+func TestSpecPlaybookTargetArgumentRequirement(t *testing.T) {
+	tmpl := GetTemplate("spec")
+	if tmpl == nil {
+		t.Fatal("spec template missing")
+	}
+	byTitle := make(map[string]SeedPlaybook, len(tmpl.Playbooks))
+	for _, p := range tmpl.Playbooks {
+		byTitle[p.Title] = p
+	}
+
+	spec, ok := byTitle["Draft a spec"]
+	if !ok {
+		t.Fatal("spec template missing the \"Draft a spec\" playbook")
+	}
+	if !specPlaybookArgRequired(t, spec.Fields, "target") {
+		t.Error(`"Draft a spec" playbook's target argument must be required=true — positional CLI/MCP binding only fills required args`)
+	}
+
+	extract, ok := byTitle["Extract specs from the codebase"]
+	if !ok {
+		t.Fatal("spec template missing the \"Extract specs from the codebase\" playbook")
+	}
+	if specPlaybookArgRequired(t, extract.Fields, "target") {
+		t.Error(`"Extract specs from the codebase" playbook's target argument must stay optional — bare invocation is a designed flow`)
+	}
+}
