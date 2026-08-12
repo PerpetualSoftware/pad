@@ -213,7 +213,23 @@ func TestLastMutation_AssignmentDelta_NotMisattributedUnderConcurrentWrite(t *te
 	time.Sleep(50 * time.Millisecond)
 	close(releaseTx2)
 
-	wg.Wait()
+	// Bounded wait, not an unconditional wg.Wait(): TX2 is released
+	// unconditionally above regardless of scheduler contention, so both
+	// goroutines are guaranteed to make progress — but a bare wg.Wait()
+	// still has no ceiling on how long that progress can legitimately take
+	// under real DB lock contention. 10s is generous for a two-row update
+	// even on a slow, shared runner; if it's ever exceeded, fail fast with
+	// a clear diagnostic instead of silently eating test-binary budget.
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for TX1/TX2 to complete — synchronization assumption broke down under contention")
+	}
 
 	if tx2Err != nil {
 		t.Fatalf("TX2 (assignment): %v", tx2Err)
