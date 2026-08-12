@@ -348,10 +348,30 @@ func (s *Server) handleCreateReply(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the item's collection slug for SSE filtering
 	replyCollSlug := ""
+	replyItemRef := ""
 	if replyItem, err := s.store.GetItem(parentComment.ItemID); err == nil && replyItem != nil {
 		replyCollSlug = replyItem.CollectionSlug
+		replyItemRef = replyItem.Ref
 	}
 	s.publishCommentEvent(events.CommentCreated, workspaceID, parentComment.ItemID, comment.ID, parentComment.ItemTitle, replyCollSlug, actor, source)
+
+	// TASK-2533 (codex round 1, finding 2): a reply is a SEPARATE code
+	// path from handleCreateComment — it calls store.CreateComment
+	// directly here, not via POST .../comments — and was missing this
+	// hook entirely. Same kind=comment notification as a top-level
+	// comment; a watcher shouldn't lose replies just because they landed
+	// one level deeper in the thread.
+	if s.watchEvents != nil {
+		s.watchEvents.Publish(watchevents.Notification{
+			WorkspaceID: workspaceID,
+			ItemID:      parentComment.ItemID,
+			ItemRef:     replyItemRef,
+			Kind:        watchevents.KindComment,
+			Actor:       actor,
+			ActorName:   actorNameFromRequest(r),
+			Summary:     truncateForSummary(comment.Body, 120),
+		})
+	}
 
 	writeJSON(w, http.StatusCreated, comment)
 }

@@ -358,6 +358,59 @@ func TestWatchEventsStream_CommentNotification(t *testing.T) {
 	}
 }
 
+// TestWatchEventsStream_ReplyNotification covers codex round-1 finding 2:
+// handleCreateReply is a SEPARATE code path from handleCreateComment (it
+// calls store.CreateComment directly via POST .../comments/{id}/replies,
+// not POST .../comments) and was missing the watch-notification hook
+// entirely — a reply to a comment on a watched item produced zero
+// notification. Verifies the fix.
+func TestWatchEventsStream_ReplyNotification(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	rr := bearerCall(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/watch", tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create watch: %d %s", rr.Code, rr.Body.String())
+	}
+
+	rr = bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/comments", tok.Token,
+		map[string]interface{}{"body": "top-level comment"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create comment: %d %s", rr.Code, rr.Body.String())
+	}
+	var parent models.Comment
+	parseJSON(t, rr, &parent)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectWatchStream(ctx, t, ts.URL, tok.Token)
+	waitForWatchEvent(t, ch, 3*time.Second) // connected
+
+	rr = bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/comments/"+parent.ID+"/replies", tok.Token,
+		map[string]interface{}{"body": "a reply worth nudging about"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create reply: %d %s", rr.Code, rr.Body.String())
+	}
+
+	ev := waitForWatchEvent(t, ch, 3*time.Second)
+	var payload watchEventPayload
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.Kind != watchevents.KindComment {
+		t.Fatalf("expected kind %q, got %q", watchevents.KindComment, payload.Kind)
+	}
+	if payload.Summary != "a reply worth nudging about" {
+		t.Fatalf("expected summary to be the reply body, got %q", payload.Summary)
+	}
+	if payload.ItemRef != item.Ref {
+		t.Fatalf("expected item_ref %q, got %q", item.Ref, payload.ItemRef)
+	}
+}
+
 // TestWatchEventsStream_BulkAssignFires exercises the producer-coverage
 // claim in publishWatchNotifications' doc comment (TASK-2533 audit): a
 // bulk "assign" op (which calls store.UpdateItem directly, bypassing
