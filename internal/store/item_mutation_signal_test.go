@@ -1,7 +1,10 @@
 package store
 
 import (
+	"database/sql"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -134,5 +137,102 @@ func TestLastMutation_NoOpOnMoveWithoutStatusChange(t *testing.T) {
 	}
 	if moved.LastMutation != nil {
 		t.Fatalf("expected LastMutation to stay nil, got %+v", moved.LastMutation)
+	}
+}
+
+// TestLastMutation_AssignmentDelta_NotMisattributedUnderConcurrentWrite
+// covers TASK-2533 codex round 2 finding 4: the assignment-delta capture
+// used to compare against `existing`, which stayed the STALE pre-tx
+// snapshot for any update that triggered none of {precheck,
+// ExpectedUpdatedAt, FieldsPatch} — including a plain title-only update.
+// A concurrent OTHER transaction's assignment change landing between
+// this transaction's pre-tx read and its lock acquisition would get
+// misattributed to THIS transaction: a title-only update would report a
+// spurious AssignmentChanged for a change it never made, duplicating the
+// real one the OTHER transaction already reported correctly.
+//
+// Reproduces the exact interleaving using UpdateItemWithPreCheck's
+// precheck hook as a synchronization point: TX2 (the real assignment
+// change) blocks INSIDE its precheck — after acquiring the write lock,
+// before its own UPDATE statement runs — while TX1 (a concurrent
+// title-only update, no precheck) runs its pre-tx GetItem (WAL mode: not
+// blocked by TX2's held write lock) and then blocks on its own
+// tx.Begin() (BEGIN IMMEDIATE) until TX2 commits and releases the lock.
+func TestLastMutation_AssignmentDelta_NotMisattributedUnderConcurrentWrite(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	wsID, colID := newTransitionTestWorkspace(t, s)
+	item := createTestItem(t, s, wsID, colID, "Contested", "")
+	assignee := createTestUser(t, s, "assignee2@example.com", "Assignee Two", "pw")
+	if err := s.AddWorkspaceMember(wsID, assignee.ID, "editor"); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	tx2InPrecheck := make(chan struct{})
+	releaseTx2 := make(chan struct{})
+	tx1Started := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	var tx2Result *models.Item
+	var tx2Err error
+	go func() {
+		defer wg.Done()
+		precheck := func(tx *sql.Tx, existing *models.Item) error {
+			close(tx2InPrecheck)
+			<-releaseTx2
+			return nil
+		}
+		tx2Result, tx2Err = s.UpdateItemWithPreCheck(item.ID,
+			models.ItemUpdate{AssignedUserID: &assignee.ID}, precheck)
+	}()
+
+	var tx1Result *models.Item
+	var tx1Err error
+	go func() {
+		defer wg.Done()
+		<-tx2InPrecheck // wait until TX2 holds the write lock but hasn't committed
+		close(tx1Started)
+		newTitle := "Contested (renamed)"
+		// TX1's own pre-tx GetItem (inside UpdateItem) runs here, racing
+		// ahead of TX2's held write lock (WAL mode: a plain SELECT isn't
+		// blocked by it) — it must see the PRE-TX2 assignee (nil), which
+		// is the whole point: this is the stale snapshot that must NOT
+		// leak into TX1's delta once TX2 has committed by the time TX1
+		// actually acquires the lock and writes. TX1's own tx.Begin()
+		// (BEGIN IMMEDIATE) blocks right after, until TX2 releases the
+		// lock below.
+		tx1Result, tx1Err = s.UpdateItem(item.ID, models.ItemUpdate{Title: &newTitle})
+	}()
+
+	<-tx1Started
+	// Give TX1's pre-tx GetItem (fast, non-blocking SELECT) time to
+	// actually complete and TX1's tx.Begin() time to actually block on
+	// TX2's held lock, before letting TX2 proceed to commit.
+	time.Sleep(50 * time.Millisecond)
+	close(releaseTx2)
+
+	wg.Wait()
+
+	if tx2Err != nil {
+		t.Fatalf("TX2 (assignment): %v", tx2Err)
+	}
+	if tx1Err != nil {
+		t.Fatalf("TX1 (title-only): %v", tx1Err)
+	}
+
+	if tx2Result.LastMutation == nil || !tx2Result.LastMutation.AssignmentChanged {
+		t.Fatalf("expected TX2 to correctly report AssignmentChanged, got %+v", tx2Result.LastMutation)
+	}
+	if tx2Result.LastMutation.ToAssignedUserID != assignee.ID {
+		t.Fatalf("expected TX2's ToAssignedUserID to be %q, got %q", assignee.ID, tx2Result.LastMutation.ToAssignedUserID)
+	}
+
+	// The bug: TX1 never touched assignment, but with a stale `existing`
+	// it would see (pre-TX2 nil) vs (post-TX2 assignee.ID) and wrongly
+	// report AssignmentChanged for a transition it didn't make.
+	if tx1Result.LastMutation != nil && tx1Result.LastMutation.AssignmentChanged {
+		t.Fatalf("TX1 (title-only update) must NOT report AssignmentChanged — that transition belongs to TX2 alone, got %+v", tx1Result.LastMutation)
 	}
 }

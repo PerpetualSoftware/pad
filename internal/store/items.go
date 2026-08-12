@@ -2181,9 +2181,28 @@ func (s *Store) updateItemWithParentLinkOnce(
 	// open-children precheck, and the field-level merge all need the item's
 	// state as seen UNDER the write lock — the pre-tx `existing` was read
 	// before the locks, so a concurrent writer could have superseded it.
-	// Re-read ONCE, in-tx, when any of those is active and reuse the snapshot
-	// for all three (plus the status-transition capture below).
-	if precheck != nil || input.ExpectedUpdatedAt != "" || input.FieldsPatch != nil {
+	//
+	// TASK-2533 codex round 2 finding 4: this used to be conditional
+	// (precheck != nil || ExpectedUpdatedAt != "" || FieldsPatch != nil),
+	// which left `existing` as the STALE pre-tx snapshot for any update
+	// that touched none of those three — including a plain assignment
+	// change. The status-transition capture below defended against this
+	// itself with its OWN separate re-read (conditional on precheck ==
+	// nil), but the LastMutation assignment-delta capture (further down)
+	// used `existing.AssignedUserID` directly with no such guard: a
+	// concurrent OTHER transaction's assignment change landing between
+	// this transaction's pre-tx read and its lock acquisition could get
+	// misattributed to THIS transaction (spurious/duplicate
+	// AssignmentChanged for an update that never touched assignment at
+	// all), or the reverse (a real change this transaction DID make
+	// compared against the wrong prior value). Re-reading UNCONDITIONALLY
+	// here — once, right after the locks are held and before any SET-
+	// clause building or the UPDATE itself — closes that for every
+	// existing.* comparison in this function at once, not just the ones
+	// that happen to remember to guard themselves. The extra SELECT is
+	// one row, under locks this function already holds; correctness here
+	// is worth more than skipping it in the common case.
+	{
 		fresh, ferr := s.getItemTx(tx, id)
 		if ferr != nil {
 			return nil, fmt.Errorf("re-read item under lock: %w", ferr)
@@ -2446,23 +2465,17 @@ func (s *Store) updateItemWithParentLinkOnce(
 	}
 
 	// Capture the pre-update status BEFORE the UPDATE runs, so the
-	// transition log below records an accurate from_status. It must reflect
-	// the locked, in-tx state: when a precheck ran, `existing` was already
-	// replaced with the fresh in-tx snapshot above; otherwise `existing` is
-	// the pre-tx read, which a concurrent update (now serialized behind the
-	// workspace/parent locks we hold) could have superseded — re-read in-tx
-	// in that case. Reading here, before the UPDATE, is essential: a re-read
-	// after the UPDATE would see the new status and the hop would vanish.
+	// transition log below records an accurate from_status. `existing` is
+	// now UNCONDITIONALLY the locked, in-tx snapshot (see the re-read
+	// above, widened by TASK-2533 codex round 2 finding 4 to cover every
+	// existing.* comparison in this function, not just this one) — no
+	// separate defensive re-read needed here anymore. Reading here,
+	// before the UPDATE, is essential: a re-read after the UPDATE would
+	// see the new status and the hop would vanish.
 	var statusBefore, doneKey string
 	if input.Fields != nil {
 		doneKey = s.doneFieldKey(existing.CollectionID)
-		oldFields := existing.Fields
-		if precheck == nil {
-			if fresh, ferr := s.getItemTx(tx, id); ferr == nil && fresh != nil {
-				oldFields = fresh.Fields
-			}
-		}
-		statusBefore = extractFieldValue(oldFields, doneKey)
+		statusBefore = extractFieldValue(existing.Fields, doneKey)
 	}
 
 	args = append(args, id)
@@ -2599,12 +2612,12 @@ func (s *Store) updateItemWithParentLinkOnce(
 	}
 
 	// Assignment delta, read from the same in-tx before/after snapshots
-	// used for the status delta above — `existing` is this transaction's
-	// pre-write view (either the pre-tx read or the post-lock re-read at
-	// line ~2189), `updated` is this transaction's own committed write.
-	// Comparing the two committed values (rather than re-deriving "after"
-	// from input.AssignedUserID / ClearAssignedUser) sidesteps having to
-	// duplicate that tri-state set/clear/untouched logic here.
+	// used for the status delta above — `existing` is now UNCONDITIONALLY
+	// this transaction's locked, in-tx pre-write view (TASK-2533 codex
+	// round 2 finding 4), `updated` is this transaction's own committed
+	// write. Comparing the two committed values (rather than re-deriving
+	// "after" from input.AssignedUserID / ClearAssignedUser) sidesteps
+	// having to duplicate that tri-state set/clear/untouched logic here.
 	beforeAssignee, afterAssignee := "", ""
 	if existing.AssignedUserID != nil {
 		beforeAssignee = *existing.AssignedUserID
