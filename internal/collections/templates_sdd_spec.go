@@ -28,6 +28,7 @@ recon couldn't fill. Nothing gets created until the user approves in chat.
 - ` + "`target`" + ` (required, string OR ref) — what to spec. Accepts either:
   - **A free-text topic** (e.g. "rate limiting for the webhook endpoint") — the normal "draft a new spec" path.
   - **An IDEA-ref or BUG-ref** (e.g. ` + "`IDEA-12`" + `, ` + "`BUG-88`" + `) — the graduation path: an idea or bug becomes the spec's source material instead of a blank slate. Only refs that resolve to an Ideas-like or Bugs-like collection actually graduate (see Dispatch below) — anything else is treated as recon context for a new-topic draft.
+  - **A SPEC-ref** (e.g. ` + "`SPEC-4`" + `) — resume mode: continues an earlier ` + "`/pad spec`" + ` run instead of starting a new one (e.g. finishing approval on a spec left ` + "`in-review`" + `, and completing any graduation that was left pending). Never creates a second spec.
 - ` + "`collection`" + ` (optional, string, default=specs) — collection to create the spec in.
 
 ## Dispatch — new topic vs. graduate an existing ref
@@ -35,6 +36,7 @@ recon couldn't fill. Nothing gets created until the user approves in chat.
 Detect which mode from ` + "`target`" + `:
 
 - **Looks like a ref** (matches ` + "`^[A-Z]+-\\d+$`" + `) → resolve it (` + "`pad item show <target> --format json`" + `) and check its collection before deciding anything else:
+  - **Collection is the specs collection itself** → **resume mode**. This isn't a new draft — it's the continuation of an earlier ` + "`/pad spec`" + ` run (see Resume below). Never create a second spec for the same target.
   - **Collection is Ideas-like or Bugs-like** (slug ` + "`ideas`" + ` / ` + "`bugs`" + `, or — if the workspace renamed it — check ` + "`pad collection list --format json`" + ` for the collection the workspace actually uses for ideas/bugs) → **graduation mode**. The source item's body AND its full comment trail (` + "`pad item comments <target>`" + `) are the recon material — comment trails often carry the decision history that never made it into the body (design discussions, corrections, settled trade-offs). Read all of it before drafting.
   - **Any other collection** (e.g. a Task, a Doc) → **NOT graduation**. Ref resolution still succeeded, but the item isn't an Idea or a Bug, so nothing about it gets a status flip. Tell the user (e.g. "TASK-7 is a task, not an idea or bug — I'll use it as background context for a new spec instead of graduating it"), then fall through to new-topic mode using the item's body as extra recon material.
 - **Doesn't look like a ref, or doesn't resolve** → **new-topic mode**. Recon comes from the codebase and a workspace search instead of a source item.
@@ -44,6 +46,18 @@ Detect which mode from ` + "`target`" + `:
 1. **Confirm the target collection exists.** ` + "`pad collection list --format json`" + `. If ` + "`collection`" + ` doesn't resolve, ask which one to use.
 2. **Graduation mode: load the source item fully.** ` + "`pad item show <target> --format markdown`" + ` plus ` + "`pad item comments <target>`" + `. Read everything — this is the recon, not a formality.
 3. **New-topic mode: search for overlap.** ` + "`pad item search \"<target>\" --format json`" + ` across specs, ideas, and docs. If a closely related spec already exists (even a draft), tell the user and ask whether to extend it instead of starting fresh.
+4. **Resume mode: load the spec fully.** ` + "`pad item show <target> --format markdown`" + ` plus ` + "`pad item comments <target>`" + `. The comments are where a pending graduation marker from an earlier circulate branch (step 5) would live — check for one before doing anything else.
+
+## Resume — target is an existing spec
+
+Skip the Conversation section entirely; there's nothing to draft. Branch on the spec's current status instead:
+
+- **` + "`in-review`" + `:** this is the normal case — resuming a draft that was circulated for review. Ask the user whether review is done and they want to approve now.
+  - If yes: ` + "`pad item update <target> --status approved --comment \"Approved after review.\"`" + `. Then check the comments loaded in pre-flight for a "Graduation pending approval" marker. If one's there, complete the graduation now — same mechanics as step 6 below, using the source ref named in the marker. Then offer the decompose hand-off (step 7).
+  - If not yet: report the spec's current state (open questions, who's reviewing, etc. if known) and stop — don't force approval.
+- **` + "`draft`" + `:** review never started. Report the draft and offer the same choice step 5 originally did — approve outright or circulate for review — and handle whichever the user picks the same way step 5 does.
+- **` + "`approved`" + ` or ` + "`implemented`" + `:** already resolved, nothing to resume. Report the status and point at the natural next step (decompose if approved and not yet decomposed, ` + "`/pad verify`" + ` if implemented and not yet verified).
+- **` + "`superseded`" + `:** report that and point at whatever spec replaced it, if findable.
 
 ## Conversation
 
@@ -108,10 +122,23 @@ committing, move it to ` + "`in-review`" + ` instead and stop here:
 pad item update <new-spec-ref> --status in-review --comment "Circulating for review before approval."
 ` + "```" + `
 
-The approval step happens later, either by rerunning this playbook or a
-plain ` + "`pad item update <ref> --status approved`" + `.
+**Graduation mode only:** also record the pending graduation so a later
+resume can find it — the Context section already names the source, but
+this makes it mechanical:
+
+` + "```bash" + `
+pad item update <new-spec-ref> --comment "Graduation pending approval: <source-ref> — flip it to its terminal status when this spec is approved, citing <new-spec-ref>."
+` + "```" + `
+
+When review is done, rerun ` + "`/pad spec <new-spec-ref>`" + ` (or just say so
+in chat) — approval flips the spec AND graduates the source item. See
+Resume above for what that rerun does.
 
 ### 6. Graduate the source item (graduation mode only — see Dispatch)
+
+Runs once the spec is approved — either right here in step 5's approve-
+outright branch, or later via Resume above if the draft was circulated
+first.
 
 Flip the source IDEA or BUG to whatever its OWN collection schema defines
 as terminal — don't hardcode a status name, collections define their own
@@ -147,7 +174,7 @@ var specPlaybookArguments = []map[string]any{
 		"name":        "target",
 		"type":        "string",
 		"required":    true,
-		"description": "What to spec. Free-text topic for a new draft, or an IDEA-ref/BUG-ref to graduate an existing item into a spec (only if it resolves to an Ideas-like or Bugs-like collection — otherwise it's used as recon context instead).",
+		"description": "What to spec. Free-text topic for a new draft, an IDEA-ref/BUG-ref to graduate an existing item into a spec (only if it resolves to an Ideas-like or Bugs-like collection — otherwise it's used as recon context instead), or a SPEC-ref to resume an earlier /pad spec run (e.g. finishing approval on a spec left in-review) — never creates a second spec.",
 	},
 	{
 		"name":        "collection",
