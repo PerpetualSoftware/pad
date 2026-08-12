@@ -39,10 +39,18 @@ vi.mock('$lib/attachments/events', () => ({
 }));
 
 const probeMock = vi.fn<(ws: string, uuid: string) => Promise<unknown>>();
-const revalidateMock = vi.fn<(ws: string, uuid: string) => Promise<unknown>>();
+const revalidateMock =
+	vi.fn<(ws: string, uuid: string, options?: Record<string, unknown>) => Promise<unknown>>();
 vi.mock('./attachment-metadata', () => ({
 	fetchAttachmentMetadata: (ws: string, uuid: string) => probeMock(ws, uuid),
-	revalidateAttachmentMetadata: (ws: string, uuid: string) => revalidateMock(ws, uuid),
+	// Options are threaded rather than discarded: `cache: 'no-store'` is the whole
+	// point of the restore re-probe, so it has to be assertable (BUG-2509).
+	revalidateAttachmentMetadata: (
+		ws: string,
+		uuid: string,
+		_url: unknown,
+		options?: Record<string, unknown>
+	) => revalidateMock(ws, uuid, options),
 	invalidateAttachmentMetadata: () => {},
 }));
 
@@ -305,9 +313,10 @@ describe('editor chip → options panel', () => {
 			announceRestore();
 			await Promise.resolve();
 
-			// It must go through REVALIDATE, not the caching fetch: the cached
-			// `missing` is exactly what it has to get past.
-			expect(revalidateMock).toHaveBeenCalledWith('ws', 'uuid-1');
+			// It must go through REVALIDATE, not the caching fetch, AND ask the
+			// network: the cached `missing` is exactly what it has to get past, and
+			// the endpoint sets max-age=3600 so the browser cache would answer too.
+			expect(revalidateMock).toHaveBeenCalledWith('ws', 'uuid-1', { cache: 'no-store' });
 		});
 
 		it('stays dead when the row is genuinely gone — restore is not an undo (DR-17)', async () => {
@@ -356,6 +365,33 @@ describe('editor chip → options panel', () => {
 			await Promise.resolve();
 
 			expect(revalidateMock).not.toHaveBeenCalled();
+		});
+
+		/**
+		 * The chip's construction probe is issued INSIDE the archived window — that
+		 * is the bug — so a restore arriving while it is in flight finds nothing to
+		 * heal (`deleted` is still false) and returns early. Without invalidating
+		 * that probe, its 404 then marks a chip the restore has already made live,
+		 * and no further signal is coming.
+		 */
+		it('discards a construction probe that answers 404 after the restore arrived', async () => {
+			let release: (r: unknown) => void = () => {};
+			probeMock.mockImplementation(() => new Promise((resolve) => (release = resolve)));
+			editor = makeEditor(target, () => ({ ...ADDRESS, workspaceSlug: 'ws' }));
+			const el = chip();
+			await Promise.resolve();
+			expect(el.disabled).toBe(false);
+
+			announceRestore();
+			await Promise.resolve();
+
+			// The archived window's answer, arriving too late to be true.
+			release({ status: 'missing' });
+			await Promise.resolve();
+			await Promise.resolve();
+
+			expect(el.disabled).toBe(false);
+			expect(el.classList.contains('attachment-missing')).toBe(false);
 		});
 
 		it('lets a deletion confirmed mid-probe WIN over a stale ok (DR-17)', async () => {

@@ -47,7 +47,7 @@
 		announceAttachmentParentRestored,
 		createAttachmentHostToken,
 	} from '$lib/attachments/events';
-	import { parentRestoreEdge } from '$lib/attachments/parentRestoreEdge';
+	import { reconcileArchivedState } from '$lib/attachments/archivedItemRegistry';
 	import { createViewerResourceGen } from '$lib/attachments/viewerResource.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { repairDeadItemLastRoute } from '$lib/collections/paneUrlParams';
@@ -827,7 +827,7 @@
 	const attachmentHostToken = createAttachmentHostToken();
 
 	/**
-	 * Archive → restore edge, announced on the attachment bus (BUG-2509).
+	 * Archive → restore, announced on the attachment bus (BUG-2509).
 	 *
 	 * While an item is archived the server 404s its attachments (DR-13), so any
 	 * attachment surface that PROBES inside that window observes exactly what a
@@ -846,33 +846,23 @@
 	 * drops that cache as well as signalling the mounted views; both halves have
 	 * their own population (see `announceAttachmentParentRestored`).
 	 *
-	 * Edge-triggered off a LATCHED plain `let` under `untrack`, not a `$state`
-	 * read+written in one effect — that self-dependency aborts the flush and
-	 * silently strands unrelated reactivity nearby (CONVE-1688, and the same shape
-	 * ItemTimeline's lifecycle effect uses). Seeded from the current value so a
-	 * mount on an ALREADY-archived item is a level, not a spurious restore edge.
+	 * The decision is NOT an edge on the local level — see `archivedItemRegistry`
+	 * for why a per-mount latch both over- and under-fires (it announces on every
+	 * navigation away from an archived item, and misses a restore that happens
+	 * while the pane is showing something else). The registry is keyed by item and
+	 * outlives the mount; this effect is its adapter.
 	 *
-	 * The latch carries the item ID, not just the boolean: navigating AWAY from an
-	 * archived item also drops the level, and announcing a restore there is both
-	 * wrong and wasteful. `parentRestoreEdge` owns that distinction and is unit
-	 * tested on its own, because this component resists jsdom mounting.
+	 * `untrack` + no `$state` written here: a `$state` read AND written inside one
+	 * tracked scope self-depends, which aborts the flush and silently strands
+	 * unrelated reactivity nearby (CONVE-1688).
 	 */
-	let prevArchivedItemId = untrack(() =>
-		itemMatchesRef && isArchived && item ? item.id : ''
-	);
 	$effect(() => {
 		const matched = itemMatchesRef;
 		const archived = isArchived;
 		const id = item?.id ?? '';
 		const ws = wsSlug;
 		untrack(() => {
-			const { nextArchivedItemId, restoredItemId } = parentRestoreEdge({
-				prevArchivedItemId,
-				matched,
-				archived,
-				itemId: id,
-			});
-			prevArchivedItemId = nextArchivedItemId;
+			const { restoredItemId } = reconcileArchivedState({ matched, archived, itemId: id });
 			// Only the restore direction is announced. An ARCHIVE needs none: the
 			// surfaces that must react to it already take it as a prop, and a
 			// NodeView that has not probed yet gets an honest 404 on its own.

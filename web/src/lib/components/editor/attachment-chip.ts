@@ -324,16 +324,24 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			 * type and state are independent and neither clobbers the other.
 			 */
 			let deleted = false;
-			// Bumped by EVERY authoritative deletion, and captured by the restore
-			// probe so a deletion landing mid-flight wins over a stale positive
-			// answer (BUG-2509 / Codex P1). A bare `deleted` re-check is not
-			// enough — the mark can be set and cleared again while one probe is in
-			// flight, and only a counter makes that visible to a continuation that
-			// looks once.
-			let deletionSeq = 0;
+			/**
+			 * This chip's PRESENTATION generation (BUG-2509). Bumped by every
+			 * authoritative transition — a deletion, a `missing` mark, a heal, a uuid
+			 * swap, and the receipt of a restore signal — and captured by every async
+			 * continuation that would mutate what the chip presents, so the rule is
+			 * structural: a continuation may only act if nothing authoritative has
+			 * happened since it started.
+			 *
+			 * The chip's own construction probe is why the restore signal has to bump
+			 * this even when there is nothing to heal: that probe is issued INSIDE the
+			 * archived window (that is the whole bug), and without the bump it could
+			 * land after the restore and mark a live chip dead, with no further signal
+			 * coming to undo it.
+			 */
+			let stateSeq = 0;
 			const markDeleted = (): void => {
 				deleted = true;
-				deletionSeq += 1;
+				stateSeq += 1;
 				wrapper.classList.add('attachment-missing');
 				// `disabled` is what makes the dead chip genuinely INERT (DR-12),
 				// not merely unclickable: a disabled button is unfocusable and
@@ -368,6 +376,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 			 */
 			const clearDeleted = (): void => {
 				deleted = false;
+				stateSeq += 1;
 				wrapper.disabled = false;
 				wrapper.classList.remove('attachment-missing');
 				wrapper.removeAttribute('title');
@@ -405,10 +414,14 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				const addr = this.options.address();
 				if (!addr.workspaceSlug || !addr.itemId) return;
 				if (event.workspaceSlug !== addr.workspaceSlug || event.itemId !== addr.itemId) return;
+				// Authoritative transition in its own right: bump BEFORE the early
+				// return, so an in-flight construction probe from the archived window
+				// is invalidated even when this chip has nothing to heal.
+				stateSeq += 1;
 				if (!deleted) return;
 				const forUuid = currentUuid;
 				const probeWs = addr.workspaceSlug;
-				const seqAtStart = deletionSeq;
+				const seqAtStart = stateSeq;
 				revalidateAttachmentMetadata(probeWs, forUuid, this.options.getDownloadUrl, {
 					cache: 'no-store',
 				}).then((result) => {
@@ -418,11 +431,11 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 					// chip outlives a workspace switch (the composer is reused), and an
 					// answer about ws-A's copy must not revive a chip now in ws-B.
 					if (this.options.address().workspaceSlug !== probeWs) return;
-					// A deletion confirmed while this HEAD was in flight is
-					// authoritative and wins over a stale positive answer — otherwise
+					// Any authoritative transition since this HEAD went out wins over
+					// it — for DR-17 the one that matters is a deletion, without which
 					// "restore probe starts → delete lands → probe resolves ok"
 					// re-enables a chip pointing at a row the server no longer has.
-					if (deletionSeq !== seqAtStart) return;
+					if (stateSeq !== seqAtStart) return;
 					// `missing` is the authoritative answer this probe asked for, so it
 					// marks rather than doing nothing — which also settles two restore
 					// probes resolving out of order.
@@ -579,6 +592,7 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 				// workspace's attachment (final review round 3).
 				const probeWs = this.options.address().workspaceSlug;
 				if (!forUuid || !probeWs) return;
+				const seqAtStart = stateSeq;
 				fetchAttachmentMetadata(
 					probeWs,
 					forUuid,
@@ -587,6 +601,12 @@ export const AttachmentChip = Node.create<AttachmentChipOptions>({
 					if (destroyed) return; // NodeView torn down while HEAD was in flight
 					if (deleted) return; // the target is gone; don't un-mark the chip
 					if (currentUuid !== forUuid) return; // superseded
+					// Stale across an authoritative transition — in particular a RESTORE
+					// that arrived while this HEAD was out. This probe is normally
+					// ISSUED inside the archived window, so without this fence its 404
+					// marks a chip the restore has already made live again, and nothing
+					// further would arrive to undo it (BUG-2509 / Codex round 2).
+					if (stateSeq !== seqAtStart) return;
 					// A transient failure says nothing about whether the row
 					// exists — keep the filename-guess icon and stay
 					// retryable (PLAN-2392 DR-17).

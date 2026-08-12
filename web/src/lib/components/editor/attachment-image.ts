@@ -549,7 +549,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				if (destroyed || deleted) return;
 				if (!forUuid || currentUuid !== forUuid) return;
 				deleted = true;
-				deletionSeq += 1;
+				stateSeq += 1;
 				// Same reason the deletion listener does this: an in-flight
 				// load's `load` event would otherwise paint the image back.
 				detachLoadListeners();
@@ -575,8 +575,13 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// (final review round 3).
 				const probeWs = opts.address().workspaceSlug;
 				if (!forUuid || !probeWs || deleted || destroyed) return;
+				const seqAtStart = stateSeq;
 				void revalidateAttachmentMetadata(probeWs, forUuid, opts.getDownloadUrl).then(
 					(result) => {
+						// A restore (or any other authoritative transition) since this
+						// HEAD went out makes its answer stale — and this one LATCHES, so
+						// acting on it would re-kill a node the restore just healed.
+						if (stateSeq !== seqAtStart) return;
 						if (result.status === 'missing') latchMissing(forUuid);
 					}
 				);
@@ -602,18 +607,31 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 			if (currentUuid) loadImage(opts.getDownloadUrl(currentUuid, 'thumb-md'));
 			applyImageSemantics();
 
-			// Bumped by EVERY authoritative deletion latch, and captured by the
-			// restore probe so a deletion that lands mid-flight wins (BUG-2509 /
-			// Codex P1). A bare `deleted` re-check would not be enough: the latch
-			// can be set and cleared again while one probe is in flight, and a
-			// counter is what makes that visible to a continuation that only ever
-			// looks once.
-			let deletionSeq = 0;
+			/**
+			 * This node's PRESENTATION generation (BUG-2509).
+			 *
+			 * Bumped by every authoritative transition — a deletion latched, a
+			 * `missing` latched, a successful heal, a uuid swap, and the receipt of
+			 * a restore signal. Every async continuation that would MUTATE what this
+			 * node presents captures it before its request and re-checks it after,
+			 * so the invariant is structural rather than a list of cases:
+			 *
+			 *   a continuation may only act if nothing authoritative has happened
+			 *   since it started.
+			 *
+			 * A per-cause fence (only "did a delete land?") is not enough, and the
+			 * first version of this fix proved it in both directions: a stale
+			 * archived-window probe could re-latch a node the restore had already
+			 * healed, and a value-compared uuid (`currentUuid === forUuid`) passes
+			 * again after a swap AWAY AND BACK, letting a stale positive answer
+			 * revive an attachment deleted in between.
+			 */
+			let stateSeq = 0;
 
 			const disposeDeletionListener = registerAttachmentDeletionListener((deletedUuid) => {
 				if (deletedUuid !== currentUuid) return;
 				deleted = true;
-				deletionSeq += 1;
+				stateSeq += 1;
 				// Drop the in-flight request's listeners: its `load` would
 				// otherwise fire after the delete and restore the image.
 				detachLoadListeners();
@@ -657,10 +675,15 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 				// Nothing to heal unless a placeholder is actually showing — either
 				// latched permanent or the retryable one (a probe that never landed,
 				// or landed `transient`, inside the archived window).
+				// A restore is an authoritative transition in its own right: every
+				// observation made BEFORE it is now stale, including a probe still in
+				// flight from the archived window. Bump before the early return below,
+				// so the invalidation happens even when this node has nothing to heal.
+				stateSeq += 1;
 				if (!deleted && missing.style.display === 'none') return;
 				const forUuid = currentUuid;
 				const probeWs = addr.workspaceSlug;
-				const seqAtStart = deletionSeq;
+				const seqAtStart = stateSeq;
 				void revalidateAttachmentMetadata(probeWs, forUuid, opts.getDownloadUrl, {
 					cache: 'no-store'
 				}).then((result) => {
@@ -673,13 +696,11 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					// about ws-A's copy must not heal a node now living in ws-B. Same
 					// fence ItemTimeline's probe uses (`reqWs !== wsSlug`).
 					if (opts.address().workspaceSlug !== probeWs) return;
-					// A DELETION confirmed while this HEAD was in flight is
-					// authoritative and WINS, however stale-but-positive this answer
-					// is. Without this the sequence "restore probe starts → delete is
-					// confirmed and broadcast → probe resolves ok" repaints a row the
-					// server no longer has — the DR-17 resurrection this channel is
-					// otherwise careful to make impossible.
-					if (deletionSeq !== seqAtStart) return;
+					// ANY authoritative transition since this HEAD went out wins over
+					// it. The deletion case is the one that matters for DR-17: without
+					// this, "restore probe starts → delete is confirmed and broadcast →
+					// probe resolves ok" repaints a row the server no longer has.
+					if (stateSeq !== seqAtStart) return;
 					// A `missing` here is not "nothing to do" — it is the authoritative
 					// existence answer this probe asked for, so it LATCHES (which also
 					// settles two restore probes resolving out of order: the `missing`
@@ -691,6 +712,7 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 					}
 					if (result.status !== 'ok') return;
 					deleted = false;
+					stateSeq += 1;
 					// Cache-bust for the same reason `retryLoad` does: the failed load
 					// is in the browser's HTTP cache, and re-assigning the identical
 					// URL can replay it instead of reaching the server.
@@ -1335,6 +1357,10 @@ export const AttachmentImage = Node.create<AttachmentImageOptions>({
 						// The old uuid's state — whether a 404 placeholder or a
 						// confirmed deletion — says nothing about the new one.
 						deleted = false;
+						// And every continuation still resolving for the OLD target is
+						// now stale. Comparing `currentUuid` alone would let a swap AWAY
+						// AND BACK pass the check again (BUG-2509 / Codex round 2).
+						stateSeq += 1;
 						// Nor does an activation still resolving for it. That
 						// request is already fenced (its continuation compares
 						// `currentUuid`), so the latch is guarding nothing but the
