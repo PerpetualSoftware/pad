@@ -275,6 +275,16 @@ type Server struct {
 	// the driver surfaces an error), exercising BUG-2276 residual 1's commit-outcome
 	// reconciliation end-to-end through the real handler.
 	restoreAckFault func() error
+
+	// watchPredicatesLoadFault is a TEST SEAM (always nil in production,
+	// TASK-2533). When non-nil, loadWatchPredicates calls it before
+	// touching the store; a non-nil return short-circuits the real
+	// ListWatchesForUser call and is returned as the reload error —
+	// exercising GET /api/v1/events/stream's reval-tick error path
+	// (codex round 4: a watch-list reload failure must not also skip
+	// the identity/visibility refresh) deterministically, without
+	// needing to actually break the DB connection mid-test.
+	watchPredicatesLoadFault func() error
 }
 
 // goAsync spawns fn in a goroutine that's tracked by s.bg, so Stop() can

@@ -183,17 +183,37 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			flusher.Flush()
 
 		case <-reval.C:
+			// TASK-2533 codex round 4: reset the identity/visibility
+			// cache FIRST, unconditionally, BEFORE attempting the watch-
+			// list reload — the two used to be coupled (visCache.reset()
+			// only ran on the reload's success path), so a
+			// ListWatchesForUser error skipped the reset via `continue`
+			// and kept the STALE user/visibility live for exactly as
+			// long as that unrelated query kept failing. A demoted or
+			// disabled user would keep being treated as admin-visible
+			// through the whole error window. refreshUser (inside
+			// reset()) has its own fail-closed handling for ITS OWN
+			// fetch failures, so this can never make things WORSE than
+			// before — it can only stop tying an unrelated failure mode
+			// to it.
+			visCache.reset()
+
 			fresh, ferr := s.loadWatchPredicates(r, user.ID)
 			if ferr != nil {
-				slog.Warn("watch-events: watch-list reload failed, keeping previous snapshot",
+				// Keep the STALE watch list rather than dropping all
+				// delivery for the tick: the list itself being one tick
+				// behind is a narrower, already-bounded staleness
+				// (mirrors watchListRevalInterval's own "eventually
+				// consistent" contract), and it's now gated by the
+				// FRESH visCache above regardless — a demoted/disabled
+				// user is denied via visCache even while watches stays
+				// stale. Dropping everything here would tie stream
+				// availability to an unrelated query's transient health.
+				slog.Warn("watch-events: watch-list reload failed, keeping previous watch snapshot (visibility was still refreshed)",
 					"user_id", user.ID, "error", ferr)
 				continue
 			}
 			watches = fresh
-			// Same cadence as the watches reload above: a revoked grant
-			// or membership must stop widening EITHER visibility source
-			// within one tick, not just the watch-matched one.
-			visCache.reset()
 		}
 	}
 }
@@ -302,6 +322,11 @@ func (c *watchVisCache) refreshUser() {
 // or grant revoked after the watch was created — doesn't keep delivering
 // live nudges for it.
 func (s *Server) loadWatchPredicates(r *http.Request, userID string) (map[string]string, error) {
+	if s.watchPredicatesLoadFault != nil {
+		if fe := s.watchPredicatesLoadFault(); fe != nil {
+			return nil, fe
+		}
+	}
 	list, err := s.store.ListWatchesForUser(userID)
 	if err != nil {
 		return nil, err
