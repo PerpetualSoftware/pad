@@ -115,6 +115,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Planning:**
 - "let's create a plan" → run the **plan** playbook (NL is the canonical entry; the `/pad plan <topic>` slug is the Claude-Code shortcut). Activate via library if the bootstrap's `playbooks` array lacks `invocation_slug=plan, status=active`.
 - "break plan 2 into tasks" → run the **decompose** playbook on PLAN-2 (shortcut: `/pad decompose PLAN-2`; same activation story)
+- "break SPEC-1 into tasks" → same playbook, targeting SPEC-1 instead (shortcut: `/pad decompose SPEC-1`) — spec-driven workspaces decompose specs the same way
 - "what's blocking us?" → Analyze open items and dependencies
 
 **Ideation:**
