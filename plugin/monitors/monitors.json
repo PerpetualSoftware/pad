@@ -1,7 +1,7 @@
 [
   {
     "name": "pad-events",
-    "command": "while ! command -v pad >/dev/null 2>&1; do sleep 3600; done; exec pad watch --stream --for-session",
+    "command": "while ! pad watch --help >/dev/null 2>&1; do sleep 3600; done; exec pad watch --stream --for-session",
     "description": "Pad item events: explicit subscriptions (pad watch <ref>) and items addressed to you (assignment, asks for your role). Silent when the pad CLI isn't installed, no .pad.toml is present, or padd is unreachable."
   }
 ]
