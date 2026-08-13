@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,60 @@ func TestPushToItem_RequiresMessage(t *testing.T) {
 		if rr.Code != http.StatusBadRequest {
 			t.Fatalf("body %q: expected 400, got %d (body: %s)", body, rr.Code, rr.Body.String())
 		}
+	}
+}
+
+// TestPushToItem_RejectsOverLongMessage covers the 400-over-cap
+// validation (dispatcher review round 1): a message whose COLLAPSED
+// length exceeds maxPushMessageLen is rejected rather than silently
+// truncated — the message is the payload, not a preview, so truncation
+// would corrupt what the user asked for. Built with extra internal
+// whitespace so this also pins that the cap is measured AFTER
+// whitespace collapse, not before (a message that's only over-length
+// due to now-collapsed whitespace must NOT be rejected).
+func TestPushToItem_RejectsOverLongMessage(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+
+	overLong := strings.Repeat("a  \n  ", maxPushMessageLen) // collapses to > maxPushMessageLen chars
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": overLong})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an over-cap message, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestPushToItem_MessageAtCapSurvivesIntact proves a message whose
+// COLLAPSED length is exactly at maxPushMessageLen is accepted and
+// delivered byte-for-byte (not silently truncated at the boundary) —
+// the counterpart to the over-cap rejection test above.
+func TestPushToItem_MessageAtCapSurvivesIntact(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectWatchStream(ctx, t, ts.URL, tok.Token)
+	waitForWatchEvent(t, ch, 3*time.Second) // connected
+
+	atCap := strings.Repeat("a", maxPushMessageLen) // already whitespace-free: collapse is a no-op
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": atCap})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a message exactly at the cap, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+
+	ev := waitForWatchEvent(t, ch, 3*time.Second)
+	var payload watchEventPayload
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.Summary != atCap {
+		t.Fatalf("expected the at-cap message to survive collapse+publish intact (len %d), got len %d", len(atCap), len(payload.Summary))
 	}
 }
 

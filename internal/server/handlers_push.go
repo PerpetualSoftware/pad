@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -13,6 +14,23 @@ import (
 type pushRequest struct {
 	Message string `json:"message"`
 }
+
+// maxPushMessageLen bounds a push's instruction text, measured in runes
+// AFTER whitespace collapse (dispatcher review round 1). Two
+// constraints in tension set this: a push message is a free-form
+// instruction, not a short label — truncating one the way
+// truncateForSummary shortens a comment preview would silently corrupt
+// what the user actually asked for, and unlike a comment (whose full
+// body is still fetchable via `pad item show`), a push has no
+// persistence to recover the untruncated text from (see
+// handlePushToItem's doc comment). But Notification.Summary rides a
+// single stdout line into a plugin monitor / terminal session (`pad
+// watch --stream --for-session`'s one-line-per-event wire contract), so
+// it can't be unbounded either. 4096 runes gives several paragraphs of
+// headroom — comfortably more than any reasonable single instruction —
+// while keeping that one line a sane size; a message over the cap is
+// rejected with a 400 rather than silently truncated.
+const maxPushMessageLen = 4096
 
 // handlePushToItem publishes a self-addressed watchevents.KindPush
 // notification (IDEA-2544 Phase 1) — the "push this to my agent" verb:
@@ -80,6 +98,11 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 	message := strings.Join(strings.Fields(input.Message), " ")
 	if message == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "message must not be empty")
+		return
+	}
+	if length := len([]rune(message)); length > maxPushMessageLen {
+		writeError(w, http.StatusBadRequest, "bad_request",
+			fmt.Sprintf("message must be %d characters or fewer after whitespace collapse (got %d)", maxPushMessageLen, length))
 		return
 	}
 
