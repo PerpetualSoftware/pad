@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
 // maxPushMessageLenForHelp mirrors server.maxPushMessageLen
@@ -55,10 +57,14 @@ func pushCmd() *cobra.Command {
 			client, _ := getClient()
 			ws := getWorkspace()
 
-			if err := client.PushItem(ws, args[0], trimmed); err != nil {
+			result, err := client.PushItem(ws, args[0], trimmed)
+			if err != nil {
 				return err
 			}
 
+			if formatFlag == "json" {
+				return cli.PrintJSON(result)
+			}
 			fmt.Printf("Pushed %s\n", args[0])
 			return nil
 		},

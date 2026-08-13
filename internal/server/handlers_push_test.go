@@ -34,6 +34,41 @@ func TestPushToItem_RequiresMessage(t *testing.T) {
 	}
 }
 
+// TestPushToItem_ResponseCarriesWorkspaceSlug covers the P2 finding
+// (dispatcher review round 2, codex): a successful push's JSON response
+// must carry ref/workspace/pushed/message so `pad push --format json`
+// has something real to print, and workspace must be the CANONICAL
+// slug (not merely whatever the URL happened to contain) — same
+// disambiguation rationale as the monitor line's workspace prefix.
+func TestPushToItem_ResponseCarriesWorkspaceSlug(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "triage this"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", rr.Code, rr.Body.String())
+	}
+
+	var resp pushResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.Ref != item.Ref {
+		t.Fatalf("expected ref %q, got %q", item.Ref, resp.Ref)
+	}
+	if resp.Workspace != slug {
+		t.Fatalf("expected workspace %q, got %q", slug, resp.Workspace)
+	}
+	if !resp.Pushed {
+		t.Fatal("expected pushed: true")
+	}
+	if resp.Message != "triage this" {
+		t.Fatalf("expected message %q, got %q", "triage this", resp.Message)
+	}
+}
+
 // TestPushToItem_RejectsOverLongMessage covers the 400-over-cap
 // validation (dispatcher review round 1): a message whose COLLAPSED
 // length exceeds maxPushMessageLen is rejected rather than silently

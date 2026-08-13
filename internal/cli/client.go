@@ -334,13 +334,27 @@ func (c *Client) DeleteWatch(wsSlug, itemSlug string) error {
 	return c.delete("/workspaces/" + wsSlug + "/items/" + itemSlug + "/watch")
 }
 
+// PushResult is the response body of a successful pad push, mirroring
+// server.pushResponse's wire shape. Workspace is the CANONICAL slug the
+// server resolved the push against (dispatcher review round 2, codex
+// P1/P2) — a JSON consumer needs it because the notification stream is
+// user-scoped across every workspace the caller belongs to, not just
+// the one this call happened to target.
+type PushResult struct {
+	Ref       string `json:"ref"`
+	Workspace string `json:"workspace"`
+	Pushed    bool   `json:"pushed"`
+	Message   string `json:"message"`
+}
+
 // PushItem publishes a self-addressed push notification (IDEA-2544
 // Phase 1) on an item, over the same watch-events bus/stream `pad watch
 // --stream --for-session` consumes. Transient, fire-and-forget — see
 // server.handlePushToItem's doc comment for the no-durability rationale.
-func (c *Client) PushItem(wsSlug, itemSlug, message string) error {
+func (c *Client) PushItem(wsSlug, itemSlug, message string) (*PushResult, error) {
 	body := map[string]string{"message": message}
-	return c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/push", body, nil)
+	var result PushResult
+	return &result, c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/push", body, &result)
 }
 
 // ListWatches returns every watch the current user holds, across all

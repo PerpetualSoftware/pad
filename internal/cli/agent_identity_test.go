@@ -162,7 +162,7 @@ func TestPushItemSendsResolvedAgentHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if err := NewClientFromURL(srv.URL).PushItem("demo", "TASK-1", "triage this"); err != nil {
+	if _, err := NewClientFromURL(srv.URL).PushItem("demo", "TASK-1", "triage this"); err != nil {
 		t.Fatalf("PushItem: %v", err)
 	}
 	if !seen {

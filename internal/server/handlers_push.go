@@ -15,6 +15,19 @@ type pushRequest struct {
 	Message string `json:"message"`
 }
 
+// pushResponse is the body of a successful push (dispatcher review round
+// 2, codex P2: `pad push --format json` needs a real shape, not a
+// discarded response). Workspace is included per the round-2 P1 fix's
+// same rationale — the stream is user-scoped across every workspace the
+// caller belongs to, so a JSON consumer needs it disambiguated same as
+// the monitor line does.
+type pushResponse struct {
+	Ref       string `json:"ref"`
+	Workspace string `json:"workspace"`
+	Pushed    bool   `json:"pushed"`
+	Message   string `json:"message"`
+}
+
 // maxPushMessageLen bounds a push's instruction text, measured in runes
 // AFTER whitespace collapse (dispatcher review round 1). Two
 // constraints in tension set this: a push message is a free-form
@@ -58,10 +71,18 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	workspaceID, ok := s.getWorkspaceID(w, r)
+	// Full workspace object, not just the ID (getWorkspaceID), so the
+	// response can echo the CANONICAL slug — the caller may have passed
+	// an ID in the URL, and pushResponse.Workspace exists specifically
+	// to disambiguate which workspace a JSON consumer should resolve the
+	// ref against (same rationale as the monitor line's workspace
+	// prefix), so it needs to be the real slug, not an echo of whatever
+	// the URL happened to contain.
+	ws, ok := s.getWorkspace(w, r)
 	if !ok {
 		return
 	}
+	workspaceID := ws.ID
 
 	itemSlug := chi.URLParam(r, "itemSlug")
 	item, err := s.store.ResolveItem(workspaceID, itemSlug)
@@ -121,9 +142,10 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 		TargetUserID: userID,
 	})
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ref":     item.Ref,
-		"pushed":  true,
-		"message": message,
+	writeJSON(w, http.StatusOK, pushResponse{
+		Ref:       item.Ref,
+		Workspace: ws.Slug,
+		Pushed:    true,
+		Message:   message,
 	})
 }
