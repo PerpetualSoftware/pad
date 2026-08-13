@@ -140,12 +140,19 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 		Content: body,
 		Fields:  string(fieldsJSON),
 	}
-	// Attribution: a normal agent/api create. Source is left blank here so
-	// createItemChecked stamps it from the request auth context (cli/web),
-	// matching every other create path.
-	if u := currentUser(r); u != nil {
-		input.CreatedBy = u.ID
-	}
+	// Attribution: a normal agent/api create. CreatedBy and Source are both
+	// left blank so createItemChecked stamps them from the request auth
+	// context, matching every other create path.
+	//
+	// This used to set CreatedBy to the user's UUID, which is the wrong
+	// DOMAIN for the field, not just the wrong value: created_by holds the
+	// role — "user" or "agent" — and consumers compare it to those literals
+	// (CommentThread.svelte, TimelineVersionCard.svelte). An imported item
+	// therefore matched neither and rendered as neither. Found while fixing
+	// BUG-2542; it also would have defeated that fix here, since a non-empty
+	// CreatedBy suppresses the actor stamp. The user's identity is already
+	// carried by the items.created_by_user_id column, which no create path
+	// currently populates — separate gap, not widened into this change.
 
 	// Enforce the workspace item-count limit (workspace-scoped), identical to
 	// handleCreateItem. Writes the 403 plan_limit_exceeded response itself when
