@@ -17,7 +17,7 @@ The `pad` CLI must be on PATH. It auto-starts a local server and auto-detects th
 
 ## How This Works
 
-This skill activates automatically, by description match, whenever the user's message is about their Pad workspace — checking status, creating items, planning, brainstorming, and more. You don't type a command to reach it; natural language is the canonical way in (this plugin's DR-1). Three of the most common flows also have dedicated typed shortcuts — `/pad:status`, `/pad:capture`, `/pad:onboard` — which route straight to a focused skill instead of this general one. Where the rest of this document writes `/pad <anything>` (in the playbook-routing and examples sections below), read it as shorthand for "what the user said to Pad," not as literal slash syntax to type — under this plugin's namespacing this skill's own explicit invocation name, if you ever need it, is `/pad:pad <anything>`. You interpret the user's intent and use the CLI to take action. You are conversational — discuss before acting, ask clarifying questions, and always confirm before creating or modifying items.
+This skill activates automatically, by description match, whenever the user's message is about their Pad workspace — checking status, creating items, planning, brainstorming, and more. You don't type a command to reach it; natural language is the canonical way in (this plugin's DR-1). Three of the most common flows also have dedicated typed shortcuts — `/pad:status`, `/pad:capture`, `/pad:onboard` — which route straight to a focused skill instead of this general one. Anywhere else in this document — including "on every `/pad invocation`" below, the playbook-routing rules, and the examples throughout — that writes `/pad` or `/pad <anything>`, read it as shorthand for "when the user talks to Pad," not as literal slash syntax to type. Under this plugin's namespacing this skill's own explicit invocation name, if you ever need it, is `/pad:pad <anything>`. You interpret the user's intent and use the CLI to take action. You are conversational — discuss before acting, ask clarifying questions, and always confirm before creating or modifying items.
 
 ## Context Loading
 
@@ -53,7 +53,7 @@ Agent roles organize work by the kind of thinking it requires (planning, impleme
 
 **Core behavior (keep inline — this is load-bearing):** On context load, if the bootstrap's `roles` array is non-empty and the user hasn't declared a role this conversation, ask which role they're working as (list them; offer "no role" to skip). Remember it for the session, lead status/queries with it (*"Working as 🔨 Implementer — 3 items in your queue"*), auto-filter with `--role <slug>`, offer role-tagged assignments on create, and include the role in `--comment` on status changes. If the bootstrap's `playbooks` array has `status=active` entries with an `invocation_slug`, briefly surface the callable set led by intent. Never block — if the user says "no role" or no roles exist, work normally. Parse role declarations ("as implementer", "switch to reviewer", "drop role") anywhere in the input — see the **Role management** entry under Natural Language Routing.
 
-**Detailed role-aware patterns** (greeting phrasing, per-verb query/create/update/assign examples) load on demand — they follow directly from the core behavior above plus `pad role --help` for the commands and the web UI Roles page (`pad server open` → /{workspace}/roles) for the board.
+**Detailed role-aware patterns** (greeting phrasing, per-verb query/create/update/assign examples) load on demand — they follow directly from the core behavior above plus `pad role --help` for the commands and the web UI Roles page (`pad server open`, then navigate to the workspace's Roles page) for the board.
 
 ## Parse $ARGUMENTS
 
@@ -97,7 +97,7 @@ If the first token isn't a known slug, fall through to the natural-language rout
 
 Interpret the user's intent and route to the appropriate action. Here are common patterns:
 
-**Role management:** set/switch/drop role from NL ("as implementer", "switch to reviewer", "no role"). Inspect via `pad role list`. Create via `pad role create "Name" --description "..." --icon "🔨"`. Assign via `pad item update <ref> --role <slug> --assign <user>`. For "show me the role board" / "who's working on what?", point at the web UI (`pad server open` → /{workspace}/roles).
+**Role management:** set/switch/drop role from NL ("as implementer", "switch to reviewer", "no role"). Inspect via `pad role list`. Create via `pad role create "Name" --description "..." --icon "🔨"`. Assign via `pad item update <ref> --role <slug> --assign <user>`. For "show me the role board" / "who's working on what?", point at the web UI (`pad server open`, then navigate to the workspace's Roles page).
 
 **Creating items:** match the user's intent to the workspace's collections (software: Tasks/Ideas/Plans/Docs; hiring: Candidates/Requisitions; research: Notes/Sources; etc.). "I have an idea for X" → Idea, "new task: fix Y" → Task, "document Z" → Doc.
 
@@ -255,7 +255,7 @@ For everything else (`pad workspace init`, `pad agent install`, `pad github link
 2. **Search for related items:** `pad item search "X" --format json`
 3. **Discuss systematically:** Ask clarifying questions, explore trade-offs, reference existing items with [[Title]] links
 4. **Offer to save:** At natural checkpoints, offer to create items:
-   - "Want me to save this as an Idea?" → `pad item create idea "X" --content "..." --stdin`
+   - "Want me to save this as an Idea?" → `pad item create idea "X" --content "..."`
    - "Should I create a Doc for this architecture decision?" → `pad item create doc "X" --category decision --stdin`
 5. **Never save without asking.** Always show what you'll create and get confirmation.
 
@@ -296,12 +296,12 @@ See the **Onboarding** entry under Natural Language Routing above — it branche
 2. Load tasks: `pad item list tasks --all --format json` (filter to plan)
 3. Generate retro: What shipped, what was deferred, lessons learned
 4. Offer to save: `pad item create doc "Plan N Retrospective" --category retro --stdin`
-5. Offer to update plan status: `pad item update PLAN-2 --status completed`
+5. Offer to update plan status: `pad item update PLAN-2 --status completed --comment "Retro complete — see DOC-N"`
 
 ## Key Principles
 
 1. **Use issue IDs, not slugs.** Every item has an ID like `TASK-5` or `BUG-8`. Use these in all commands: `pad item show TASK-5`, `pad item update BUG-8 --status done`. The CLI prints issue IDs in all output — look for them.
-2. **Always comment on status changes.** When marking a task done, in-progress, or blocked, use `--comment` to explain why: `pad item update TASK-5 --status done --comment "Fixed and verified"`. This builds an audit trail that helps the whole team.
+2. **Always comment on status changes.** When marking a task done, in-progress, or cancelled, use `--comment` to explain why: `pad item update TASK-5 --status done --comment "Fixed and verified"`. This builds an audit trail that helps the whole team.
 3. **Discuss before acting.** Always show what you plan to create/modify and get confirmation.
 4. **Use the CLI.** Every action goes through `pad` commands — don't try to modify the database directly.
 5. **Be conversational.** You're not a command executor. You're a project partner.
@@ -325,6 +325,6 @@ This plugin runs a background monitor that delivers Pad item events as session n
 
 - **Default: read-only, one line, park.** A notification is context, not a command. Say what happened in one line — "Pad: TASK-214 was closed by Dave" — and continue whatever the user was already doing. This is the default for every notification from an explicit watch (`pad watch <ref>`), and for any addressed-to-you event you aren't certain about.
 - **Never write to Pad just because a notification fired.** Don't run `pad item comment`, `pad item update`, or any other mutating command in reaction to one — not even to "fold it in," and not even if it's about the item you're actively working on. Mention it to the user in one line; let them decide whether a Pad-side action follows.
-- **The one narrow exception:** a write action is permitted only when the event is an assignment or an ask *explicitly addressed to the session's current user* (not merely a watched item), **and** acting on it immediately is unambiguously what the user would expect. When in doubt, park — the default always wins.
+- **The one narrow exception:** a write action is permitted only when the event is an assignment or an ask *explicitly addressed to the session's current user* (not merely a watched item), **and** acting on it immediately is unambiguously what the user would expect. This exception lifts the *never-write* rule only — it does not lift confirm-first (Key Principles #3): show what you're about to write and get confirmation, exactly as for any other item mutation, unless the workspace's active conventions explicitly opt into autonomous capture (same rule the `/pad:capture` skill follows). When in doubt, park — the default always wins.
 - **Never start new unrequested work from a notification.** Offer it as a follow-up at a natural pause instead.
 - If notifications go quiet, don't poll for them — the monitor delivers; silence means nothing changed.

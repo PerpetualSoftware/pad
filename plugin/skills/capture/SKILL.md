@@ -5,7 +5,10 @@ allowed-tools: ["Bash"]
 ---
 
 If the `pad` CLI is missing (command not found), say so and point at
-https://getpad.dev/install — don't retry or guess at alternate paths.
+https://getpad.dev/install — don't retry or guess at alternate paths. If no
+`.pad.toml` is found in the directory tree, this project isn't linked to a
+Pad workspace yet — say so and run `pad workspace init` (interactive;
+surface its prompts) before capturing anything.
 
 Capture `$ARGUMENTS` into the Pad workspace as the item type it most resembles
 (idea, task, bug, note). Run `pad collection list --format json` to see the
