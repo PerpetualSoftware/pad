@@ -1,5 +1,5 @@
-import { expect, type Request } from '@playwright/test';
-import { test, quietCrossActorToasts } from './fixtures';
+import { expect, type APIRequestContext, type Page, type Request } from '@playwright/test';
+import { test, quietCrossActorToasts, type SuiteFixture } from './fixtures';
 
 /**
  * BUG-2539 — a bulk archive landing in the same wall-clock second as the page's
@@ -11,28 +11,36 @@ import { test, quietCrossActorToasts } from './fixtures';
  * end: the archived banner appears in the page that was already open, without a
  * reload.
  *
- * The two legs are named after the MECHANISM, not a millisecond offset. An
- * earlier version fired the archive at a fixed delay after navigation start;
- * that reproduced on an idle machine and stopped reproducing under parallel
- * workers, because a slow load put the page's own item read AFTER the archive —
- * at which point the page renders an archived row from the start and the sync
- * path is never exercised. The legs now wait for the preconditions instead:
+ * The legs are named after the MECHANISM, and — this is the part that took
+ * three tries to get right — each one PROVES it hit that mechanism using
+ * server-attested values, then retries if it did not:
  *
- *   - the page has READ a live row (server-attested, `deleted_at: null`), and
- *   - its EventSource is subscribed (the /events response headers have
- *     arrived — the handler subscribes before writing them),
+ *   - the cursor second is the `server_time` of the page's FIRST `/changes`
+ *     (the seed `setWorkspace` fires on mount, which is what `lastSyncTime`
+ *     becomes);
+ *   - the archive second is the `deleted_at` the server stored.
  *
- * and only then archive: immediately (same second as the page's sync cursor —
- * the reproducing case) or after crossing the next second boundary (the control
- * that behaved even before the fix).
+ * The same-second leg requires those to be equal, the boundary leg requires
+ * them to differ, and a misaligned attempt is retried on a fresh workspace
+ * rather than asserted on. Without that check the reproducing leg can drift
+ * across a second boundary on a slow machine, quietly become a second control,
+ * and pass against the very query it is supposed to convict.
  *
- * The oracle requires all three of:
+ * Preconditions before archiving, so the leg exercises the sync path at all:
+ * the page has READ a live row (a GET whose body carries no `deleted_at`) and
+ * its EventSource is subscribed (the /events response headers have arrived —
+ * the handler subscribes before writing them). An earlier revision fired at a
+ * fixed offset from navigation start instead; under parallel workers a slow
+ * load put the page's read AFTER the archive, so it rendered an already-
+ * archived row and no sync was involved.
+ *
+ * The oracle then requires:
  *   1. the page read a live row — otherwise no sync was involved;
- *   2. the deletion arrived on a `/changes` that is neither the cursor-seeding
- *      one (ordinal 0, fired by setWorkspace on mount) nor issued before the
- *      archive. Both checks are kept so a RETRIED seed cannot pass on ordinal
- *      alone. The URL match is anchored so `/items-changes` — a different,
- *      seq-based endpoint — cannot consume ordinals;
+ *   2. the deletion arrived on a `/changes` that is neither the seed (ordinal
+ *      0) nor issued before the archive. Both are checked so a RETRIED seed
+ *      cannot pass on ordinal alone. The URL match is anchored so
+ *      `/items-changes` — a different, seq-based endpoint — cannot consume
+ *      ordinals;
  *   3. the banner rendered.
  *
  * Ground truth for archived-ness is the server's `deleted_at`, never the UI:
@@ -42,17 +50,21 @@ import { test, quietCrossActorToasts } from './fixtures';
 
 const CHANGES_RE = /\/api\/v1\/workspaces\/[^/]+\/changes(\?|$)/;
 const ITEM_GET_RE = /\/api\/v1\/workspaces\/[^/]+\/items\/[^/?]+$/;
+const ALIGNMENT_ATTEMPTS = 6;
 
 const LEGS = [
-	{
-		name: 'in the same second as the page cursor (the reproducing case)',
-		crossSecondBoundary: false
-	},
-	{
-		name: 'after the next second boundary (control)',
-		crossSecondBoundary: true
-	}
+	{ name: 'in the same second as the page cursor (the reproducing case)', crossSecondBoundary: false },
+	{ name: 'after the next second boundary (control)', crossSecondBoundary: true }
 ] as const;
+
+/** RFC3339 whole-second string, the shape the server stores and returns. */
+function secondOf(unixMs: number): string {
+	return new Date(Math.floor(unixMs / 1000) * 1000).toISOString().replace('.000Z', 'Z');
+}
+
+type Attempt =
+	| { outcome: 'misaligned'; cursorSecond: string | null; archiveSecond: string | null }
+	| { outcome: 'checked' };
 
 LEGS.forEach((leg, idx) => {
 	test(`BUG-2539: a bulk archive ${leg.name} reaches the open item`, async ({
@@ -63,80 +75,112 @@ LEGS.forEach((leg, idx) => {
 	}) => {
 		await quietCrossActorToasts(context);
 
-		const auth = { Authorization: `Bearer ${fixture.apiToken}` };
-		let createdSlug: string | null = null;
-		let cleanup: { ok: boolean; body: string } | null = null;
+		let last: Attempt = { outcome: 'misaligned', cursorSecond: null, archiveSecond: null };
+		for (let attempt = 1; attempt <= ALIGNMENT_ATTEMPTS; attempt++) {
+			last = await runLeg({ page, request, fixture, idx, attempt, crossSecondBoundary: leg.crossSecondBoundary });
+			if (last.outcome === 'checked') return;
+		}
+		throw new Error(
+			`could not land the archive ${leg.crossSecondBoundary ? 'past' : 'inside'} the cursor's second ` +
+				`after ${ALIGNMENT_ATTEMPTS} attempts (last: cursor=${last.cursorSecond} archive=${last.archiveSecond})`
+		);
+	});
+});
+
+async function runLeg(opts: {
+	page: Page;
+	request: APIRequestContext;
+	fixture: SuiteFixture;
+	idx: number;
+	attempt: number;
+	crossSecondBoundary: boolean;
+}): Promise<Attempt> {
+	const { page, request, fixture, idx, attempt, crossSecondBoundary } = opts;
+	const auth = { Authorization: `Bearer ${fixture.apiToken}` };
+	// Assigned from the slug we ASKED for, before any parse, so a malformed
+	// success response cannot leak the workspace. Overwritten with the server's
+	// slug (it uniquifies on collision) as soon as that is known.
+	let createdSlug: string | null = null;
+
+	try {
+		// Own workspace: the shared suite workspace carries cross-spec mutation
+		// traffic that muddies a cursor-sensitive leg.
+		const slug = `b2539-${idx}-${attempt}-${Date.now().toString(36)}`;
+		createdSlug = slug;
+		const wsResp = await request.post('/api/v1/workspaces', {
+			headers: auth,
+			data: { name: `BUG-2539 ${idx}`, slug, template: 'startup' }
+		});
+		expect(wsResp.ok(), await wsResp.text()).toBeTruthy();
+		const ws = (await wsResp.json()) as { slug: string };
+		createdSlug = ws.slug;
+
+		const itemResp = await request.post(`/api/v1/workspaces/${ws.slug}/collections/tasks/items`, {
+			headers: auth,
+			data: { title: `sync-window probe ${idx}` }
+		});
+		expect(itemResp.ok(), await itemResp.text()).toBeTruthy();
+		const item = (await itemResp.json()) as { id: string; slug: string };
+
+		// `archiveSentAt` is stamped before the POST is issued, so "issued after
+		// the archive went out" needs nothing to have resolved.
+		let archiveSentAt = Number.POSITIVE_INFINITY;
+		let seedServerTime: number | null = null;
+		const changesOrder = new Map<Request, number>();
+		const changesIssuedAt = new Map<Request, number>();
+		let changesSeen = 0;
+
+		const onRequest = (r: Request) => {
+			if (CHANGES_RE.test(r.url())) {
+				changesOrder.set(r, changesSeen++);
+				changesIssuedAt.set(r, Date.now());
+			}
+		};
+		page.on('request', onRequest);
+
+		let readLiveRow = false;
+		let incrementalCarriedDeletion = false;
+		const inFlight: Promise<void>[] = [];
+		const onResponse = (resp: import('@playwright/test').Response) => {
+			inFlight.push(
+				(async () => {
+					try {
+						if (CHANGES_RE.test(resp.url())) {
+							const order = changesOrder.get(resp.request());
+							const issued = changesIssuedAt.get(resp.request());
+							const body = (await resp.json()) as { deleted?: string[]; server_time?: number };
+							// The seed's server_time is what the client keeps as
+							// lastSyncTime — the cursor the failing sync used.
+							if (order === 0 && typeof body.server_time === 'number') {
+								seedServerTime = body.server_time;
+							}
+							if (
+								order !== undefined &&
+								order > 0 &&
+								issued !== undefined &&
+								issued >= archiveSentAt &&
+								body.deleted?.includes(item.id)
+							) {
+								incrementalCarriedDeletion = true;
+							}
+						} else if (ITEM_GET_RE.test(resp.url()) && resp.request().method() === 'GET') {
+							// A live row omits deleted_at entirely (omitempty), so
+							// this is a falsy check, not a null check.
+							const body = (await resp.json()) as { id?: string; deleted_at?: string | null };
+							if (body.id === item.id && !body.deleted_at) readLiveRow = true;
+						}
+					} catch {
+						/* non-JSON body — ignore */
+					}
+				})()
+			);
+		};
+		page.on('response', onResponse);
 
 		try {
-			// Own workspace: the shared suite workspace carries cross-spec
-			// mutation traffic that muddies a cursor-sensitive leg.
-			const slug = `b2539-${idx}-${Date.now().toString(36)}`;
-			const wsResp = await request.post('/api/v1/workspaces', {
-				headers: auth,
-				data: { name: `BUG-2539 ${idx}`, slug, template: 'startup' }
-			});
-			expect(wsResp.ok(), await wsResp.text()).toBeTruthy();
-			const ws = (await wsResp.json()) as { slug: string };
-			createdSlug = ws.slug;
-
-			const itemResp = await request.post(
-				`/api/v1/workspaces/${ws.slug}/collections/tasks/items`,
-				{ headers: auth, data: { title: `sync-window probe ${idx}` } }
-			);
-			expect(itemResp.ok(), await itemResp.text()).toBeTruthy();
-			const item = (await itemResp.json()) as { id: string; slug: string };
-
-			// `archiveSentAt` is stamped before the POST is issued, so "issued
-			// after the archive went out" needs nothing to have resolved.
-			let archiveSentAt = Number.POSITIVE_INFINITY;
-			const changesOrder = new Map<Request, number>();
-			const changesIssuedAt = new Map<Request, number>();
-			let changesSeen = 0;
-
-			page.on('request', (r) => {
-				if (CHANGES_RE.test(r.url())) {
-					changesOrder.set(r, changesSeen++);
-					changesIssuedAt.set(r, Date.now());
-				}
-			});
-
-			let readLiveRow = false;
-			let incrementalCarriedDeletion = false;
-			const inFlight: Promise<void>[] = [];
-			page.on('response', (resp) => {
-				inFlight.push(
-					(async () => {
-						try {
-							if (CHANGES_RE.test(resp.url())) {
-								const order = changesOrder.get(resp.request());
-								const issued = changesIssuedAt.get(resp.request());
-								const body = (await resp.json()) as { deleted?: string[] };
-								if (
-									order !== undefined &&
-									order > 0 &&
-									issued !== undefined &&
-									issued >= archiveSentAt &&
-									body.deleted?.includes(item.id)
-								) {
-									incrementalCarriedDeletion = true;
-								}
-							} else if (ITEM_GET_RE.test(resp.url()) && resp.request().method() === 'GET') {
-								const body = (await resp.json()) as { id?: string; deleted_at?: string | null };
-								if (body.id === item.id && !body.deleted_at) readLiveRow = true;
-							}
-						} catch {
-							/* non-JSON body — ignore */
-						}
-					})()
-				);
-			});
-
 			// The SSE handler subscribes BEFORE writing its response headers, so
-			// this resolving means the server is ready to deliver the archive
-			// event to this page.
+			// this resolving means the server can deliver the archive event here.
 			const sseSubscribed = page.waitForResponse((r) => r.url().includes('/api/v1/events'));
-			// A GET of this item whose body carries deleted_at null — the page
-			// has a live row on screen.
 			const liveRowRead = page.waitForResponse(async (r) => {
 				if (!ITEM_GET_RE.test(r.url()) || r.request().method() !== 'GET') return false;
 				try {
@@ -147,13 +191,14 @@ LEGS.forEach((leg, idx) => {
 				}
 			});
 
-			const itemUrl = `/${fixture.adminUsername}/${ws.slug}/tasks/${item.id}`;
-			await page.goto(itemUrl, { waitUntil: 'domcontentloaded' });
+			await page.goto(`/${fixture.adminUsername}/${ws.slug}/tasks/${item.id}`, {
+				waitUntil: 'domcontentloaded'
+			});
 			await Promise.all([sseSubscribed, liveRowRead]);
 
-			if (leg.crossSecondBoundary) {
-				// Push the archive past the second the page's cursor sits in,
-				// plus a small margin so a clock tick can't land it back inside.
+			if (crossSecondBoundary) {
+				// Push past the second the cursor sits in, plus a margin so a
+				// clock tick cannot land the archive back inside it.
 				await page.waitForTimeout(1000 - (Date.now() % 1000) + 120);
 			}
 
@@ -172,6 +217,16 @@ LEGS.forEach((leg, idx) => {
 			const checked = (await check.json()) as { deleted_at: string | null };
 			expect(checked.deleted_at, 'archive must land server-side').not.toBeNull();
 
+			// Did this attempt actually hit the mechanism it is named after?
+			// Both sides are server values: the cursor the client kept, and the
+			// timestamp the server stored.
+			const cursorSecond = seedServerTime === null ? null : secondOf(seedServerTime);
+			const archiveSecond = checked.deleted_at;
+			const sameSecond = cursorSecond !== null && cursorSecond === archiveSecond;
+			if (sameSecond === crossSecondBoundary) {
+				return { outcome: 'misaligned', cursorSecond, archiveSecond };
+			}
+
 			// The open page must learn about it without a reload.
 			await expect(page.locator('.archived-banner')).toBeVisible({ timeout: 10_000 });
 			// Drain until no new handler was queued while awaiting.
@@ -180,14 +235,16 @@ LEGS.forEach((leg, idx) => {
 				await Promise.all(inFlight);
 			}
 
-			// Both messages carry the recorded state. This leg has flaked rarely
-			// (twice in ~70 local runs) and both times the artifacts were gone
-			// before they could be read, so a recurrence has to explain itself
-			// from the failure text alone.
+			// Messages carry the recorded state: this leg flaked twice in ~70
+			// runs of an earlier revision and the artifacts were cleared by the
+			// next run before they could be read, so a recurrence has to explain
+			// itself from the failure text alone.
 			const diag = JSON.stringify({
+				attempt,
+				cursorSecond,
+				archiveSecond,
 				changesSeen,
 				changesAfterArchive: [...changesIssuedAt.values()].filter((t) => t >= archiveSentAt).length,
-				archiveSentAt,
 				readLiveRow,
 				incrementalCarriedDeletion,
 				responsesObserved: inFlight.length
@@ -200,15 +257,18 @@ LEGS.forEach((leg, idx) => {
 				incrementalCarriedDeletion,
 				`the deletion must arrive on a /changes issued after the archive and after the page's cursor-seeding one — not the seed, and not a reload — ${diag}`
 			).toBeTruthy();
+			return { outcome: 'checked' };
 		} finally {
-			if (createdSlug) {
-				const del = await request.delete(`/api/v1/workspaces/${createdSlug}`, { headers: auth });
-				// Recorded, not asserted here: throwing from `finally` would
-				// replace the real failure with a cleanup one.
-				cleanup = { ok: del.ok(), body: await del.text() };
-			}
+			page.off('request', onRequest);
+			page.off('response', onResponse);
 		}
-
-		expect(cleanup?.ok, `scratch workspace cleanup failed: ${cleanup?.body}`).toBeTruthy();
-	});
-});
+	} finally {
+		if (createdSlug) {
+			// Swallowed on purpose: throwing from here would replace the real
+			// failure with a cleanup one.
+			await request
+				.delete(`/api/v1/workspaces/${createdSlug}`, { headers: auth })
+				.catch(() => undefined);
+		}
+	}
+}
