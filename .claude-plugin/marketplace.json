@@ -1,0 +1,15 @@
+{
+  "name": "pad",
+  "owner": {
+    "name": "Perpetual Software",
+    "url": "https://getpad.dev"
+  },
+  "plugins": [
+    {
+      "name": "pad",
+      "source": "./plugin",
+      "description": "Talk to your project. Pad is local-first project management for developers and AI agents — this plugin gives Claude Code a conversational Pad skill, typed shortcuts (/pad:status, /pad:capture, /pad:onboard), and live item-change notifications."
+    }
+  ],
+  "description": "Official Pad marketplace — the pad plugin: conversational project management and live item notifications for Claude Code."
+}
