@@ -148,3 +148,44 @@ func createTestWorkspaceViaAPI(t *testing.T, srv *Server) string {
 	}
 	return ws.Slug
 }
+
+// Non-parent links (blocks / blocked-by / relates) went through a different
+// store call than parent links and never carried the actor, so an agent's
+// `pad item block` recorded a human. Parent links were already correct, so the
+// human leg here is the control that proves the assertion isn't just reading a
+// hardcoded default.
+func TestItemLinkAttribution_AgentVsHuman(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		agent string
+		want  string
+	}{
+		{name: "agent link", agent: "claude-code", want: "agent"},
+		{name: "human link (control)", agent: "", want: "user"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+			ws := createTestWorkspaceViaAPI(t, srv)
+
+			mk := func(title string) models.Item {
+				rr := doAttributionRequest(t, srv, tc.agent, "POST",
+					"/api/v1/workspaces/"+ws+"/collections/tasks/items",
+					map[string]any{"title": title})
+				var it models.Item
+				decodeAttributionBody(t, rr, &it)
+				return it
+			}
+			src, tgt := mk("link source"), mk("link target")
+
+			rr := doAttributionRequest(t, srv, tc.agent, "POST",
+				"/api/v1/workspaces/"+ws+"/items/"+src.Slug+"/links",
+				map[string]any{"target_id": tgt.ID, "link_type": "blocks"})
+			var link models.ItemLink
+			decodeAttributionBody(t, rr, &link)
+
+			if link.CreatedBy != tc.want {
+				t.Errorf("link created_by = %q, want %q (X-Pad-Agent=%q)", link.CreatedBy, tc.want, tc.agent)
+			}
+		})
+	}
+}
