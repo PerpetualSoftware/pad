@@ -66,3 +66,21 @@ func detectAgentRuntime() string {
 	}
 	return ""
 }
+
+// ActorKind is the writer role — "agent" or "user" — as this process can best
+// describe itself. Same self-declared signal as ResolveAgentName, just reduced
+// to the enum the created_by / last_modified_by fields hold.
+//
+// Use it ONLY where the client is the last party that could know: structured
+// entries embedded in an item's fields JSON (implementation notes, decision
+// log) are written whole by the CLI and the server never parses them for
+// attribution, so nobody downstream can fill this in. Everywhere else, leave
+// attribution empty and let the server stamp it from the request — an explicit
+// value suppresses that stamp, which is how the CLI used to record every agent
+// note as a human one (BUG-2542).
+func ActorKind() string {
+	if ResolveAgentName() != "" {
+		return "agent"
+	}
+	return "user"
+}

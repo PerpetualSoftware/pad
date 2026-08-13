@@ -49,10 +49,13 @@ func noteCmd() *cobra.Command {
 				Summary:   strings.TrimSpace(args[1]),
 				Details:   body,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
-				// CreatedBy left empty: the SERVER stamps the writer from the
-				// request (BUG-2542). Asserting "user" here made every agent
-				// note claim a human wrote it, and an explicit value suppresses
-				// the stamp.
+				// The server never parses this entry — it lives inside the
+				// item's fields JSON — so the client is the last party that
+				// could know who wrote it. Hardcoding "user" here made every
+				// agent note claim a human wrote it (BUG-2542); leaving it
+				// empty would have left it authorless, since nothing
+				// downstream fills it in. Self-declared, like the header.
+				CreatedBy: cli.ActorKind(),
 			}
 			fields, err := models.AppendImplementationNote(item.Fields, entry)
 			if err != nil {
@@ -118,10 +121,13 @@ func decideCmd() *cobra.Command {
 				Decision:  strings.TrimSpace(args[1]),
 				Rationale: body,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
-				// CreatedBy left empty: the SERVER stamps the writer from the
-				// request (BUG-2542). Asserting "user" here made every agent
-				// note claim a human wrote it, and an explicit value suppresses
-				// the stamp.
+				// The server never parses this entry — it lives inside the
+				// item's fields JSON — so the client is the last party that
+				// could know who wrote it. Hardcoding "user" here made every
+				// agent note claim a human wrote it (BUG-2542); leaving it
+				// empty would have left it authorless, since nothing
+				// downstream fills it in. Self-declared, like the header.
+				CreatedBy: cli.ActorKind(),
 			}
 			fields, err := models.AppendDecisionLogEntry(item.Fields, entry)
 			if err != nil {

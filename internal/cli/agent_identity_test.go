@@ -134,3 +134,34 @@ func TestClientSendsResolvedAgentHeader(t *testing.T) {
 		})
 	}
 }
+
+// ActorKind backs the one place the client must self-describe: structured
+// entries inside an item's fields JSON, which the server never parses. An
+// earlier revision of the BUG-2542 fix removed the CLI's hardcoded "user"
+// there on the theory that the server would stamp it — it does not, and the
+// entries would have been written authorless.
+func TestActorKind(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{name: "agent session", env: map[string]string{"CLAUDECODE": "1"}, want: "agent"},
+		{name: "explicit PAD_AGENT", env: map[string]string{"PAD_AGENT": "some-harness"}, want: "agent"},
+		{name: "human shell", env: nil, want: "user"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chdir(t, t.TempDir())
+			for _, k := range []string{"PAD_AGENT", "CLAUDECODE"} {
+				t.Setenv(k, "")
+				os.Unsetenv(k)
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if got := ActorKind(); got != tc.want {
+				t.Errorf("ActorKind() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
