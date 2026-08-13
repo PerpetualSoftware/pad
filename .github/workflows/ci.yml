@@ -19,6 +19,14 @@ permissions:
 
 jobs:
   go:
+    # Backstop only. A hung TEST is caught by -timeout=45m on the steps
+    # below, which fails fast AND prints the goroutine dump that tells
+    # you which test hung; this cap exists because a job with no
+    # timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
+    # that isn't a single test (a wedged service container, a stuck
+    # download) would otherwise sit there. Deliberately well above the
+    # two 45m test steps so it never fires before they do (TASK-2545).
+    timeout-minutes: 100
     name: Go
     runs-on: ubuntu-latest
     steps:
@@ -212,6 +220,14 @@ jobs:
           }
 
   go-postgres:
+    # Backstop only. A hung TEST is caught by -timeout=45m on the steps
+    # below, which fails fast AND prints the goroutine dump that tells
+    # you which test hung; this cap exists because a job with no
+    # timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
+    # that isn't a single test (a wedged service container, a stuck
+    # download) would otherwise sit there. Deliberately well above the
+    # two 45m test steps so it never fires before they do (TASK-2545).
+    timeout-minutes: 100
     name: Go (PostgreSQL)
     runs-on: ubuntu-latest
     services:
