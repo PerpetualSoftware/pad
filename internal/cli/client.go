@@ -334,6 +334,15 @@ func (c *Client) DeleteWatch(wsSlug, itemSlug string) error {
 	return c.delete("/workspaces/" + wsSlug + "/items/" + itemSlug + "/watch")
 }
 
+// PushItem publishes a self-addressed push notification (IDEA-2544
+// Phase 1) on an item, over the same watch-events bus/stream `pad watch
+// --stream --for-session` consumes. Transient, fire-and-forget — see
+// server.handlePushToItem's doc comment for the no-durability rationale.
+func (c *Client) PushItem(wsSlug, itemSlug, message string) error {
+	body := map[string]string{"message": message}
+	return c.post("/workspaces/"+wsSlug+"/items/"+itemSlug+"/push", body, nil)
+}
+
 // ListWatches returns every watch the current user holds, across all
 // workspaces they belong to (TASK-2533 — a watch is personal, not
 // workspace-scoped; see Store.ListWatchesForUser's doc comment).

@@ -571,6 +571,55 @@ func TestWatchNotificationVisible_AssignmentToSomeoneElseDenied(t *testing.T) {
 	}
 }
 
+// TestWatchNotificationVisible_PushToYou mirrors
+// TestWatchNotificationVisible_AddressedToYouIgnoresWatchList for
+// KindPush (IDEA-2544 Phase 1): a push fires purely off TargetUserID,
+// independent of any watch.
+func TestWatchNotificationVisible_PushToYou(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{} // no watches at all
+	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-1"}
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+		t.Fatal("expected a push-to-you notification to be visible with no watch")
+	}
+}
+
+// TestWatchNotificationVisible_PushToSomeoneElseDenied mirrors
+// TestWatchNotificationVisible_AssignmentToSomeoneElseDenied for
+// KindPush: Phase 1 only ever publishes self-addressed pushes, but the
+// delivery rule itself must still deny a push addressed to a different
+// user, exactly like the assignment branch.
+func TestWatchNotificationVisible_PushToSomeoneElseDenied(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{}
+	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-2"}
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+		t.Fatal("expected a push addressed to someone else to be denied")
+	}
+}
+
+// TestWatchNotificationVisible_PushStillGatedByAccess mirrors
+// TestWatchNotificationVisible_AddressedToYouStillGatedByAccess: the
+// SAME current-access check that gates every other kind must also gate
+// a push-to-you notification, not just the assignment branch.
+func TestWatchNotificationVisible_PushStillGatedByAccess(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{}
+	deny := watchAccessVisibility{} // zero value: nothing visible
+	n := watchevents.Notification{
+		ItemID: "item-1", CollectionID: "coll-1",
+		Kind: watchevents.KindPush, TargetUserID: "user-1",
+	}
+	if watchNotificationVisible(watches, deny, "user-1", n) {
+		t.Fatal("expected a push-to-you notification to be denied when the caller has no current access to the item's collection")
+	}
+
+	allow := watchAccessVisibility{visibleCollIDs: map[string]bool{"coll-1": true}}
+	if !watchNotificationVisible(watches, allow, "user-1", n) {
+		t.Fatal("expected a push-to-you notification to be visible once the caller has current access to the item's collection")
+	}
+}
+
 // TestWatchNotificationVisible_AddressedToYouStillGatedByAccess covers
 // TASK-2533 codex round 2 finding 2: the addressed-to-you branch used to
 // return true unconditionally, with NO access check — an item assigned

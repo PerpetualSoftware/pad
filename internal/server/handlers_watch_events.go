@@ -405,6 +405,17 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 		return true
 	}
 
+	// Push (IDEA-2544 Phase 1): human→harness addressed dispatch, same
+	// shape as the assignment branch above — TargetUserID is the
+	// generalized addressed-to field the two share. Phase 1 only ever
+	// publishes self-addressed pushes (TargetUserID == the pushing
+	// user's own ID), but the delivery rule itself doesn't assume that;
+	// it just compares TargetUserID against the connected caller like
+	// AssignedUserID above.
+	if n.Kind == watchevents.KindPush && n.TargetUserID != "" && n.TargetUserID == userID {
+		return true
+	}
+
 	predicate, watched := watches[n.ItemID]
 	if !watched {
 		return false

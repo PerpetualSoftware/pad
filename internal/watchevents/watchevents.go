@@ -42,6 +42,15 @@ const (
 	// enum so the wire contract doesn't have to change when a producer
 	// eventually exists.
 	KindAsk = "ask"
+	// KindPush is IDEA-2544 Phase 1's human→harness addressed-dispatch
+	// event: POST .../items/{itemSlug}/push publishes exactly one of
+	// these, self-addressed (TargetUserID == the pushing user), any time
+	// a user wants to put an item + instruction in front of their own
+	// harness right now rather than waiting on assignment/watch
+	// semantics. KindAsk is push's reserved sibling in the other
+	// direction (harness→human) — see TargetUserID's doc comment for the
+	// shared envelope shape the two are meant to converge on.
+	KindPush = "push"
 )
 
 // Notification is one watch-worthy fact: an item's status changed, it was
@@ -74,6 +83,21 @@ type Notification struct {
 	// addressed-to-you check compares this directly against the
 	// connected caller's user ID — see server.sseWatchVisible.
 	AssignedUserID string
+	// TargetUserID is IDEA-2544's generalized addressed-to field:
+	// populated on Kind == KindPush with the user the push is addressed
+	// to (Phase 1 always sets this to the pushing user's own ID —
+	// self-addressed only, per Dave's product call that pushing into
+	// someone else's session is a consent question, not a code
+	// question). watchNotificationVisible compares this directly against
+	// the connected caller's user ID, exactly like AssignedUserID's role
+	// for KindAssignment. Reserved KindAsk is expected to share this same
+	// field (harness→human addressed traffic) rather than growing its
+	// own, once it has a producer. Deliberately NOT part of
+	// watchEventPayload's wire shape (server.go) — it exists purely to
+	// gate delivery server-side; a client never needs to know who else a
+	// notification could have been addressed to, and echoing it back
+	// would leak a user ID for no consumer that needs it.
+	TargetUserID string
 	// StatusFieldKey / ToStatus are populated on Kind == KindStatusChange,
 	// mirroring models.ItemMutationSignal, so the `--until field=value`
 	// watch predicate can be evaluated against a Notification directly
