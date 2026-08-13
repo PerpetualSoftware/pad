@@ -45,6 +45,8 @@ If the conventions list includes items, treat them as project rules you must fol
 
 Bootstrap replaces the four separate calls the skill used to make (`pad project dashboard`, `pad collection list`, `pad item list conventions ...`, `pad role list`). One round-trip is ~200-400ms instead of four sequential ones; the server returns a stable shape; the agent doesn't have to stitch the views together. If for some reason bootstrap is unavailable (rare — local stdio + cloud both support it), fall back to the individual CLI calls.
 
+**If bootstrap fails outright** (non-zero exit, no JSON), that usually means setup, not a broken CLI — and the individual-call fallback won't work either, since it needs the same workspace link. Read the stderr, and do NOT try to fix it by running `pad workspace init` blind: on a machine that is configured but not authenticated it hangs indefinitely printing a browser-setup URL, with no timeout and no non-interactive fallback, which wedges your tool call instead of failing it. Run `pad auth whoami` first — it is fast, never blocks on input, and works regardless of workspace-link state. Only if it reports a real user is self-healing safe (`pad workspace init`, then retry bootstrap). Otherwise setup isn't finished: tell the user to run `pad init` themselves in an interactive terminal, and stop.
+
 ## Role Awareness
 
 Agent roles organize work by the kind of thinking it requires (planning, implementing, reviewing, researching). Items can be assigned to a (user, role) pair. Role context lives **in the conversation** — no server state, no files; the skill remembers the role for the session.
