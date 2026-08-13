@@ -33,7 +33,7 @@ The returned `AgentBootstrap` blob carries everything the skill needs to start a
 - `user { name, email, id }` — who's talking
 - `collections [...]` — schemas (drives `pad item create`/`update` field validation)
 - `conventions [...]` — full bodies of `trigger=always, status=active` items. **Must-follow project rules.**
-- `convention_index [...]` — METADATA ONLY (`ref`, `title`, `trigger`, `role`; NO bodies) for **every** active convention, including the triggered ones whose bodies are NOT in `conventions`. This is your map of what triggered rules exist — e.g. if it lists ten `trigger=on-implement` entries, you know to pull those bodies before writing code. Load bodies on demand with `pad item list conventions --field trigger=<trigger> --field status=active` only when the matching trigger fires.
+- `convention_index [...]` — METADATA ONLY (`ref`, `title`, `trigger`, `role`; NO bodies) for **every** active convention, including the triggered ones whose bodies are NOT in `conventions`. This is your map of what triggered rules exist — e.g. if it lists ten `trigger=on-implement` entries, you know to pull those bodies before writing code. Load bodies on demand with `pad item list conventions --field trigger=<trigger> --field status=active --format json --full` only when the matching trigger fires — without `--full` the list comes back in the summary shape, which has no `content` at all.
 - `roles [...]` — agent roles configured in the workspace
 - `playbooks [...]` — METADATA ONLY: `ref`, `title`, `slug`, `invocation_slug`, `trigger`, `scope`, `status`, `has_arguments`, `summary`. Full bodies load on invocation via `pad playbook show <slug>`.
 - `dashboard {...}` — active items, attention, suggested next, recent activity. Five sub-arrays are capped to 5 entries each (`attention`, `recent_activity`, `active_items`, `active_plans`, `by_role`); each pairs with a `<name>_overflow_count` int field surfaced when truncation kicked in. Use `pad project dashboard` to pull the full set when any overflow > 0.
@@ -45,13 +45,15 @@ If the conventions list includes items, treat them as project rules you must fol
 
 Bootstrap replaces the four separate calls the skill used to make (`pad project dashboard`, `pad collection list`, `pad item list conventions ...`, `pad role list`). One round-trip is ~200-400ms instead of four sequential ones; the server returns a stable shape; the agent doesn't have to stitch the views together. If for some reason bootstrap is unavailable (rare — local stdio + cloud both support it), fall back to the individual CLI calls.
 
+**If bootstrap fails outright** (non-zero exit, no JSON), that usually means setup, not a broken CLI — and the individual-call fallback won't work either, since it needs the same workspace link. Read the stderr, and do NOT try to fix it by running `pad workspace init` blind: on a machine that is configured but not authenticated it drops into an interactive browser auth/setup flow and polls, printing a URL and waiting for a human to finish in a browser. That is bounded (the auth session expires after ~5 minutes, ~20 for first-admin setup) but it still blocks your tool call for minutes with no non-interactive way through. Run `pad auth whoami` first — in non-interactive use it returns immediately without waiting on a browser, and it works regardless of workspace-link state. Only if it reports a real user is self-healing safe (`pad workspace init`, then retry bootstrap). Otherwise setup isn't finished: tell the user to run `pad init` themselves in an interactive terminal, and stop.
+
 ## Role Awareness
 
 Agent roles organize work by the kind of thinking it requires (planning, implementing, reviewing, researching). Items can be assigned to a (user, role) pair. Role context lives **in the conversation** — no server state, no files; the skill remembers the role for the session.
 
 **Core behavior (keep inline — this is load-bearing):** On context load, if the bootstrap's `roles` array is non-empty and the user hasn't declared a role this conversation, ask which role they're working as (list them; offer "no role" to skip). Remember it for the session, lead status/queries with it (*"Working as 🔨 Implementer — 3 items in your queue"*), auto-filter with `--role <slug>`, offer role-tagged assignments on create, and include the role in `--comment` on status changes. If the bootstrap's `playbooks` array has `status=active` entries with an `invocation_slug`, briefly surface the callable set led by intent. Never block — if the user says "no role" or no roles exist, work normally. Parse role declarations ("as implementer", "switch to reviewer", "drop role") anywhere in the input — see the **Role management** entry under Natural Language Routing.
 
-**Detailed role-aware patterns** (greeting phrasing, per-verb query/create/update/assign examples) load on demand — they follow directly from the core behavior above plus `pad role --help` for the commands and the web UI Roles page (`pad server open` → /{workspace}/roles) for the board.
+**Detailed role-aware patterns** (greeting phrasing, per-verb query/create/update/assign examples) load on demand — they follow directly from the core behavior above plus `pad role --help` for the commands and the web UI Roles page (`pad server open`, then navigate to the workspace's Roles page) for the board.
 
 ## Parse $ARGUMENTS
 
@@ -95,7 +97,7 @@ If the first token isn't a known slug, fall through to the natural-language rout
 
 Interpret the user's intent and route to the appropriate action. Here are common patterns:
 
-**Role management:** set/switch/drop role from NL ("as implementer", "switch to reviewer", "no role"). Inspect via `pad role list`. Create via `pad role create "Name" --description "..." --icon "🔨"`. Assign via `pad item update <ref> --role <slug> --assign <user>`. For "show me the role board" / "who's working on what?", point at the web UI (`pad server open` → /{workspace}/roles).
+**Role management:** set/switch/drop role from NL ("as implementer", "switch to reviewer", "no role"). Inspect via `pad role list`. Create via `pad role create "Name" --description "..." --icon "🔨"`. Assign via `pad item update <ref> --role <slug> --assign <user>`. For "show me the role board" / "who's working on what?", point at the web UI (`pad server open`, then navigate to the workspace's Roles page).
 
 **Creating items:** match the user's intent to the workspace's collections (software: Tasks/Ideas/Plans/Docs; hiring: Candidates/Requisitions; research: Notes/Sources; etc.). "I have an idea for X" → Idea, "new task: fix Y" → Task, "document Z" → Doc.
 
@@ -108,7 +110,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Updating:** `pad item update <ref> --status X --comment "..."` — **always** include `--comment` on status changes to explain *why*. The audit trail is the whole point. Same pattern for priority/role/assign changes.
 
-**Working with attachments:** items reference attachments as `![alt](pad-attachment:<uuid>)` (images) or `[label](pad-attachment:<uuid>)` (files). To inspect or read bytes, always use `pad attachment {list|show|view|upload|download}`. `view <uuid>` writes the bytes to a temp file and prints the path — compose with `IMG=$(pad attachment view <uuid>) && open "$IMG"`.
+**Working with attachments:** items reference attachments as `![alt](pad-attachment:<uuid>)` (images) or `[label](pad-attachment:<uuid>)` (files). To inspect or read bytes, always use `pad attachment {list|show|view|upload|download}`. `view <uuid>` writes the bytes to a temp file and prints the path — compose with `IMG=$(pad attachment view <uuid>)`, then open it with whatever the platform has (`open "$IMG"` on macOS, `xdg-open "$IMG"` on Linux) or just read/describe the file directly.
 
 **Hard rule for agents:** NEVER read directly from `~/.pad/attachments/<storage_key>`. That bypasses ACLs, breaks on Pad Cloud / remote / Postgres / S3 deployments, and skips the variant pipeline (thumbnails, EXIF strip, server-side rotate/crop). Always go through the CLI.
 
@@ -148,17 +150,17 @@ If a role is active, load **both** role-specific and global conventions (convent
 
 ```bash
 # Template — replace <trigger> with a concrete value from the workspace's schema:
-pad item list conventions --field trigger=<trigger> --field status=active --field role=<role> --format json  # Role-specific
-pad item list conventions --field trigger=<trigger> --field status=active --format json                      # All (includes global)
-pad item list playbooks  --field trigger=<trigger> --field status=active --format json
+pad item list conventions --field trigger=<trigger> --field status=active --field role=<role> --format json --full  # Role-specific
+pad item list conventions --field trigger=<trigger> --field status=active --format json --full               # All (includes global)
+pad item list playbooks  --field trigger=<trigger> --field status=active --format json --full
 
 # Concrete examples in a software workspace (role="implementer"):
-pad item list conventions --field trigger=on-implement --field status=active --format json
-pad item list conventions --field trigger=on-commit    --field status=active --format json
-pad item list playbooks   --field trigger=on-review    --field status=active --format json
+pad item list conventions --field trigger=on-implement --field status=active --format json --full
+pad item list conventions --field trigger=on-commit    --field status=active --format json --full
+pad item list playbooks   --field trigger=on-review    --field status=active --format json --full
 
 # Always-on conventions apply regardless of action:
-pad item list conventions --field trigger=always --field status=active --format json
+pad item list conventions --field trigger=always --field status=active --format json --full
 ```
 
 When loading both role-specific and global conventions, deduplicate — if the same convention appears in both results, follow it once. Role-specific conventions may override global ones when they conflict.
@@ -226,7 +228,7 @@ pad attachment upload <item-ref|-> <path> [--filename "..."]
 pad attachment download <id> <out-path>
 ```
 
-`view <id>` composes cleanly: `IMG=$(pad attachment view <uuid>) && open "$IMG"`.
+`view <id>` composes cleanly: `IMG=$(pad attachment view <uuid>)`, then open it with whatever the platform has (`open "$IMG"` on macOS, `xdg-open "$IMG"` on Linux) or just read/describe the file directly.
 
 ### Collections
 ```bash
@@ -254,7 +256,7 @@ For everything else (`pad workspace init`, `pad agent install`, `pad github link
 2. **Search for related items:** `pad item search "X" --format json`
 3. **Discuss systematically:** Ask clarifying questions, explore trade-offs, reference existing items with [[Title]] links
 4. **Offer to save:** At natural checkpoints, offer to create items:
-   - "Want me to save this as an Idea?" → `pad item create idea "X" --content "..." --stdin`
+   - "Want me to save this as an Idea?" → `pad item create idea "X" --content "..."`
    - "Should I create a Doc for this architecture decision?" → `pad item create doc "X" --category decision --stdin`
 5. **Never save without asking.** Always show what you'll create and get confirmation.
 
@@ -292,15 +294,15 @@ Run the **onboard** invokable playbook — see the **Onboarding** entry under Na
 ### Retrospective: "Plan X is done, let's retro"
 
 1. Load the plan: `pad item show PLAN-2 --format markdown`
-2. Load tasks: `pad item list tasks --all --format json` (filter to plan)
+2. Load tasks: `pad item list tasks --all --format json --full` (filter to plan) — `--full` matters here: a retro needs the actual content/notes on each task, not just titles
 3. Generate retro: What shipped, what was deferred, lessons learned
 4. Offer to save: `pad item create doc "Plan N Retrospective" --category retro --stdin`
-5. Offer to update plan status: `pad item update PLAN-2 --status completed`
+5. Offer to update plan status: `pad item update PLAN-2 --status completed --comment "Retro complete — see DOC-N"`
 
 ## Key Principles
 
 1. **Use issue IDs, not slugs.** Every item has an ID like `TASK-5` or `BUG-8`. Use these in all commands: `pad item show TASK-5`, `pad item update BUG-8 --status done`. The CLI prints issue IDs in all output — look for them.
-2. **Always comment on status changes.** When marking a task done, in-progress, or blocked, use `--comment` to explain why: `pad item update TASK-5 --status done --comment "Fixed and verified"`. This builds an audit trail that helps the whole team.
+2. **Always comment on status changes.** When marking a task done, in-progress, or cancelled, use `--comment` to explain why: `pad item update TASK-5 --status done --comment "Fixed and verified"`. This builds an audit trail that helps the whole team.
 3. **Discuss before acting.** Always show what you plan to create/modify and get confirmation.
 4. **Use the CLI.** Every action goes through `pad` commands — don't try to modify the database directly.
 5. **Be conversational.** You're not a command executor. You're a project partner.
