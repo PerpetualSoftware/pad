@@ -175,16 +175,31 @@ func TestItemLinkAttribution_AgentVsHuman(t *testing.T) {
 				decodeAttributionBody(t, rr, &it)
 				return it
 			}
-			src, tgt := mk("link source"), mk("link target")
+			src := mk("link source")
 
-			rr := doAttributionRequest(t, srv, tc.agent, "POST",
-				"/api/v1/workspaces/"+ws+"/items/"+src.Slug+"/links",
-				map[string]any{"target_id": tgt.ID, "link_type": "blocks"})
-			var link models.ItemLink
-			decodeAttributionBody(t, rr, &link)
+			// Every non-parent type in models.ItemLinkType*, not just
+			// `blocks`. They share routing, so one case would arguably do —
+			// but "shared routing makes the rest fine" is exactly the
+			// assumption a table costs nothing to stop assuming. It earned
+			// that immediately: the first version of this list included
+			// `blocked-by`, which is CLI surface sugar that inverts
+			// source/target into a `blocks` row, not a stored link type. The
+			// API rejects it with 400, on BOTH writer legs — which is also
+			// how you can tell that failure apart from an attribution one.
+			for _, linkType := range []string{"blocks", "related", "implements", "supersedes", "split_from"} {
+				t.Run(linkType, func(t *testing.T) {
+					target := mk("link target " + linkType)
+					rr := doAttributionRequest(t, srv, tc.agent, "POST",
+						"/api/v1/workspaces/"+ws+"/items/"+src.Slug+"/links",
+						map[string]any{"target_id": target.ID, "link_type": linkType})
+					var link models.ItemLink
+					decodeAttributionBody(t, rr, &link)
 
-			if link.CreatedBy != tc.want {
-				t.Errorf("link created_by = %q, want %q (X-Pad-Agent=%q)", link.CreatedBy, tc.want, tc.agent)
+					if link.CreatedBy != tc.want {
+						t.Errorf("%s link created_by = %q, want %q (X-Pad-Agent=%q)",
+							linkType, link.CreatedBy, tc.want, tc.agent)
+					}
+				})
 			}
 		})
 	}
