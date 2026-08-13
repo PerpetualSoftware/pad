@@ -4784,10 +4784,14 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 // second and no later query reaches back for it: a bulk archive ~450ms after a
 // page seeded its cursor left the item rendering as live indefinitely.
 //
-// `>=` against the truncated second may re-deliver changes from the boundary
-// second that the caller already has. That is the cheap direction to be wrong
-// in — every consumer of this endpoint applies server state idempotently — and
-// it is bounded to one second of changes per sync. Sub-second storage would be
+// `>=` against the truncated second makes the endpoint AT-LEAST-ONCE at the
+// second boundary: rows written inside the cursor's second come back again, and
+// come back on every sync whose cursor stays inside that second, so a burst of
+// rapid syncs can repeat them more than once. That is the cheap direction to be
+// wrong in, because the payload is server STATE rather than a delta to apply on
+// top of what the caller has — every in-tree consumer overwrites its row from
+// it, so a repeat is a no-op rather than a double-apply. A future consumer that
+// treats these rows as increments would not be safe here. Sub-second storage would be
 // the other fix, but items timestamps are second-precision throughout and
 // mixing formats in one column breaks the lexicographic ordering these string
 // comparisons rely on ("…20.451Z" sorts BEFORE "…20Z"), so precision is a
