@@ -4770,11 +4770,34 @@ func scanItems(rows *sql.Rows) ([]models.Item, error) {
 // items that were deleted (hard-deleted or archived) since the timestamp.
 //
 // The updated list includes both active AND recently archived items (those with
-// deleted_at > since). This lets the frontend update archived views correctly —
-// an item that was just archived needs its full data to appear in archived views,
-// not just its ID in the deleted list.
+// deleted_at at/after since). This lets the frontend update archived views
+// correctly — an item that was just archived needs its full data to appear in
+// archived views, not just its ID in the deleted list.
+//
+// The cursor comparison is INCLUSIVE of its own second, deliberately (BUG-2539).
+// items.updated_at / items.deleted_at are written at RFC3339 whole-second
+// precision (store.now()), while the caller's cursor is a unix-MILLISECOND value
+// — normally the previous response's server_time. Formatting that cursor for
+// comparison truncates it DOWN to the second, so with a strict `>` every change
+// that landed in the cursor's own second compares equal and is dropped. It is
+// dropped PERMANENTLY, because the caller then advances its cursor past that
+// second and no later query reaches back for it: a bulk archive ~450ms after a
+// page seeded its cursor left the item rendering as live indefinitely.
+//
+// `>=` against the truncated second makes the endpoint AT-LEAST-ONCE at the
+// second boundary: rows written inside the cursor's second come back again, and
+// come back on every sync whose cursor stays inside that second, so a burst of
+// rapid syncs can repeat them more than once. That is the cheap direction to be
+// wrong in, because the payload is server STATE rather than a delta to apply on
+// top of what the caller has — every in-tree consumer overwrites its row from
+// it, so a repeat is a no-op rather than a double-apply. A future consumer that
+// treats these rows as increments would not be safe here. Sub-second storage would be
+// the other fix, but items timestamps are second-precision throughout and
+// mixing formats in one column breaks the lexicographic ordering these string
+// comparisons rely on ("…20.451Z" sorts BEFORE "…20Z"), so precision is a
+// migration, not a one-line change.
 func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated []models.Item, deletedIDs []string, err error) {
-	sinceStr := since.UTC().Format(time.RFC3339)
+	sinceStr := since.UTC().Truncate(time.Second).Format(time.RFC3339)
 
 	// Fetch updated items: active items modified since the timestamp,
 	// PLUS items archived since the timestamp (so archived views can update).
@@ -4791,8 +4814,8 @@ func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		WHERE i.workspace_id = ?
-		  AND i.updated_at > ?
-		  AND (i.deleted_at IS NULL OR i.deleted_at > ?)
+		  AND i.updated_at >= ?
+		  AND (i.deleted_at IS NULL OR i.deleted_at >= ?)
 		ORDER BY i.updated_at ASC
 	`)
 
@@ -4811,7 +4834,7 @@ func (s *Store) ItemsModifiedSince(workspaceID string, since time.Time) (updated
 		SELECT id FROM items
 		WHERE workspace_id = ?
 		  AND deleted_at IS NOT NULL
-		  AND deleted_at > ?
+		  AND deleted_at >= ?
 	`)
 	delRows, err := s.db.Query(delQuery, workspaceID, sinceStr)
 	if err != nil {
