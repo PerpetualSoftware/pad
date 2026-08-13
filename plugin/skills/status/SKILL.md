@@ -10,5 +10,11 @@ failure modes:
 - No `.pad.toml` found in the directory tree: say this project isn't linked to a Pad
   workspace yet and suggest `/pad:onboard`.
 
+If the response's `needs_onboarding` field is true, lead with the same active offer
+the main skill uses — before anything else: "This workspace is brand new and isn't
+set up yet. Want me to set it up? I'll ask a few quick questions and adapt it to your
+project." This is an offer, not an auto-run; mention `/pad:onboard` as the shortcut
+for later.
+
 Otherwise, present it conversationally: collection summaries, active plan progress,
 attention items (stalled/overdue), and suggested next actions.
