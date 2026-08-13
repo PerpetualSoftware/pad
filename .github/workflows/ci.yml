@@ -19,6 +19,16 @@ permissions:
 
 jobs:
   go:
+    # Backstop only. A hung TEST is caught by -timeout=45m on the steps
+    # below, which fails fast AND prints the goroutine dump that tells
+    # you which test hung; this cap exists because a job with no
+    # timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
+    # that isn't a single test (a wedged service container, a stuck
+    # download) would otherwise sit there. Set well above the two 45m test
+    # steps so that in practice the per-binary timeout is what fires — not a
+    # guarantee, since this cap covers setup and every step, not just those
+    # two (TASK-2545).
+    timeout-minutes: 100
     name: Go
     runs-on: ubuntu-latest
     steps:
@@ -96,15 +106,28 @@ jobs:
           "$(go env GOPATH)/bin/govulncheck" -mode binary pad-vulnscan
 
       - name: Run tests
-        run: go test ./...
+        # -timeout is EXPLICIT here on purpose. `go test` without it uses a
+        # 10m per-test-binary default that nobody chose. The two race steps
+        # in this file were raised to 45m when the suite outgrew 30m
+        # (BUG-1913) while their non-race siblings silently kept the
+        # default — which is how the PostgreSQL leg below panicked at 10m on
+        # the v0.13.0 release commit (TASK-2545, which also found the ~40
+        # minutes it cost the cut and the goroutine dump showing nothing
+        # actually hung). Matching the race
+        # legs keeps ONE number in this file. It is a hang-catcher, not a
+        # performance budget: the signal for "the suite got slow" is job
+        # wall-clock, not this value.
+        run: go test -timeout=45m ./...
 
       - name: Run tests with race detector
         # Runs on both push-to-main AND pull_request. Previously gated to
         # main only because GitHub Actions minutes were billed on private
         # repos; the repo is public now, so PR minutes are free and we'd
         # rather catch race regressions on the contributing branch than
-        # after merge. See BUG-1371 (also dropped test-only bcrypt cost
-        # via TestMain so this step stays well under the 30m budget).
+        # after merge. See BUG-1371 (also dropped test-only bcrypt cost via
+        # TestMain, which brought this step back under the then-30m budget —
+        # it did NOT raise the budget; BUG-1913 later did, 30m→45m, when the
+        # suite outgrew it again).
         #
         # Default 10m is tight: the full server-package suite under -race
         # measures ~13m locally on a developer laptop after BUG-851 (the
@@ -203,6 +226,16 @@ jobs:
           }
 
   go-postgres:
+    # Backstop only. A hung TEST is caught by -timeout=45m on the steps
+    # below, which fails fast AND prints the goroutine dump that tells
+    # you which test hung; this cap exists because a job with no
+    # timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
+    # that isn't a single test (a wedged service container, a stuck
+    # download) would otherwise sit there. Set well above the two 45m test
+    # steps so that in practice the per-binary timeout is what fires — not a
+    # guarantee, since this cap covers setup and every step, not just those
+    # two (TASK-2545).
+    timeout-minutes: 100
     name: Go (PostgreSQL)
     runs-on: ubuntu-latest
     services:
@@ -237,7 +270,17 @@ jobs:
       - name: Run tests against PostgreSQL
         env:
           PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
-        run: go test ./... -count=1
+        # Explicit -timeout: see the SQLite "Run tests" step. This is the
+        # binary that actually blew the 10m default — internal/store creates a
+        # fresh database AND replays the full migration chain per test
+        # (~0.43s each locally), so the package's runtime grows linearly with
+        # the test count. Measured on a dev box at 212d59e7: internal/store
+        # 280s, whole PG suite 4m43s wall. CI's own runtime is UNMEASURED
+        # here; all that follows from the panic is that its store binary
+        # exceeded 10m, i.e. >2.14x this box on that package. (An earlier
+        # version of this comment said "~2x slower, which put store over
+        # 10m" — 280s x 2 is 9m20s, so that explained nothing.)
+        run: go test -timeout=45m ./... -count=1
 
       - name: Run tests with race detector against PostgreSQL
         env:

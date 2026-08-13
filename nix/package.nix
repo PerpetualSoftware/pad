@@ -79,7 +79,10 @@ buildGoModule {
     # needs DNS/network the Nix build sandbox deliberately doesn't have.
     # Everything else in the package (invalid schemes, private-IP
     # rejection, etc.) needs no network and still runs.
-    go test -skip 'TestValidateWebhookURL/valid_(https|http|with_port|with_path)$' ./...
+    # -timeout is explicit for the same reason as CI and the Makefile: the
+    # 10m default is a budget nobody chose (TASK-2545). This runs in the
+    # Nix sandbox via .github/workflows/nix.yml.
+    go test -timeout=45m -skip 'TestValidateWebhookURL/valid_(https|http|with_port|with_path)$' ./...
     runHook postCheck
   '';
 

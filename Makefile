@@ -51,14 +51,17 @@ install: build
 	@$(INSTALL_DIR)/$(BINARY) auth whoami 2>/dev/null || true
 	@echo "Server restarted."
 
+# -timeout matches CI (see .github/workflows/ci.yml). Without it `go test`
+# uses a 10m per-test-binary default nobody chose — the shape that killed
+# the v0.13.0 release pre-flight (TASK-2545).
 test:
-	go test ./... -v
+	go test -timeout=45m ./... -v
 
 # Run tests against PostgreSQL (starts a container automatically).
 # Uses port 5445 to avoid conflicts with any local PostgreSQL.
 test-pg:
 	docker compose -f docker-compose.test.yml up -d --wait
-	PAD_TEST_POSTGRES_URL="postgres://pad:pad@localhost:5445/pad?sslmode=disable" go test ./... -v -count=1; \
+	PAD_TEST_POSTGRES_URL="postgres://pad:pad@localhost:5445/pad?sslmode=disable" go test -timeout=45m ./... -v -count=1; \
 		EXIT_CODE=$$?; \
 		docker compose -f docker-compose.test.yml down -v; \
 		exit $$EXIT_CODE
@@ -164,7 +167,7 @@ web-test:
 # `make install` stays lightweight (build + restart only) so the inner
 # dev loop is fast; opt into `check` when you're ready to push.
 check: lint
-	go test ./...
+	go test -timeout=45m ./...
 	$(MAKE) vuln
 	$(MAKE) web-check
 	$(MAKE) web-test

@@ -66,7 +66,12 @@ jobs:
         run: mkdir -p web/build && echo "placeholder" > web/build/.gitkeep
 
       - name: Run tests
-        run: go test ./...
+        # Explicit -timeout, same reasoning as ci.yml's steps (TASK-2545):
+        # `go test` defaults to 10m per test binary, and this is the RELEASE
+        # gate — the one place an unchosen default is most expensive. SQLite
+        # only here (no PAD_TEST_POSTGRES_URL), so it is the faster driver,
+        # but it grows on the same curve.
+        run: go test -timeout=45m ./...
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
