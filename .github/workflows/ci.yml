@@ -96,7 +96,16 @@ jobs:
           "$(go env GOPATH)/bin/govulncheck" -mode binary pad-vulnscan
 
       - name: Run tests
-        run: go test ./...
+        # -timeout is EXPLICIT here on purpose. `go test` without it uses a
+        # 10m per-test-binary default that nobody chose, and the two race
+        # steps in this file were raised to 45m twice (BUG-1371, BUG-1913)
+        # while their non-race siblings silently kept the default — which is
+        # how the PostgreSQL leg below panicked at 10m on the v0.13.0 release
+        # commit and cost the cut ~40 minutes (TASK-2545). Matching the race
+        # legs keeps ONE number in this file. It is a hang-catcher, not a
+        # performance budget: the signal for "the suite got slow" is job
+        # wall-clock, not this value.
+        run: go test -timeout=45m ./...
 
       - name: Run tests with race detector
         # Runs on both push-to-main AND pull_request. Previously gated to
@@ -237,7 +246,14 @@ jobs:
       - name: Run tests against PostgreSQL
         env:
           PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
-        run: go test ./... -count=1
+        # Explicit -timeout: see the SQLite "Run tests" step. This is the
+        # binary that actually blew the 10m default — internal/store creates a
+        # fresh database AND replays the full migration chain per test
+        # (~0.43s each locally), so the package's runtime grows linearly with
+        # the test count. Measured on a dev box at 212d59e7: internal/store
+        # 280s, whole PG suite 4m43s wall; CI runners are ~2x slower, which
+        # put store over 10m.
+        run: go test -timeout=45m ./... -count=1
 
       - name: Run tests with race detector against PostgreSQL
         env:
