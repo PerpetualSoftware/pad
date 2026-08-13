@@ -598,6 +598,39 @@ func TestWatchNotificationVisible_PushToSomeoneElseDenied(t *testing.T) {
 	}
 }
 
+// TestWatchNotificationVisible_PushToSomeoneElseDeniedEvenWithUnconditionalWatch
+// covers codex round 1's P1 finding: the original push branch returned
+// true only on a match and otherwise FELL THROUGH to the watch-map
+// check below it — so a non-target caller holding an unconditional
+// watch on the item still received the push (instruction text
+// included), because an unconditional watch matches "any notification
+// on this item". TestWatchNotificationVisible_PushToSomeoneElseDenied
+// used an EMPTY watch map, which never exercised that fall-through path
+// at all. Push must be exclusive of watch-matched delivery: watching an
+// item grants no claim on private dispatch someone else addressed to
+// their own session — see the doc comment on the push branch in
+// watchNotificationVisible.
+func TestWatchNotificationVisible_PushToSomeoneElseDeniedEvenWithUnconditionalWatch(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{"item-1": ""} // unconditional watch on the item
+	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-2"}
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+		t.Fatal("expected a push addressed to someone else to be denied even when the caller holds an unconditional watch on the item")
+	}
+}
+
+// TestWatchNotificationVisible_PushToSomeoneElseDeniedEvenWithPredicateWatch
+// is the predicated-watch variant of the same fall-through blind spot —
+// same shape, a non-empty predicate instead of an unconditional watch.
+func TestWatchNotificationVisible_PushToSomeoneElseDeniedEvenWithPredicateWatch(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{"item-1": "status=done"}
+	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-2"}
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+		t.Fatal("expected a push addressed to someone else to be denied even when the caller holds a predicated watch on the item")
+	}
+}
+
 // TestWatchNotificationVisible_PushStillGatedByAccess mirrors
 // TestWatchNotificationVisible_AddressedToYouStillGatedByAccess: the
 // SAME current-access check that gates every other kind must also gate

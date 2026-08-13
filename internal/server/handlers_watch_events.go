@@ -405,15 +405,28 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 		return true
 	}
 
-	// Push (IDEA-2544 Phase 1): human→harness addressed dispatch, same
-	// shape as the assignment branch above — TargetUserID is the
-	// generalized addressed-to field the two share. Phase 1 only ever
-	// publishes self-addressed pushes (TargetUserID == the pushing
-	// user's own ID), but the delivery rule itself doesn't assume that;
-	// it just compares TargetUserID against the connected caller like
-	// AssignedUserID above.
-	if n.Kind == watchevents.KindPush && n.TargetUserID != "" && n.TargetUserID == userID {
-		return true
+	// Push (IDEA-2544 Phase 1) is semantically DIFFERENT from assignment,
+	// not just a same-shaped variant, and that difference is why this
+	// branch RETURNS here — for either outcome — instead of falling
+	// through like the assignment branch above does. Assignment is an
+	// item-level event: it's ordinary, expected behavior for someone who
+	// already holds an unconditional watch on the item to also see who
+	// it got assigned to (`pad watch --help` promises exactly that — any
+	// notification on a watched item fires). A push is addressed PRIVATE
+	// dispatch: one specific user putting an item + instruction in front
+	// of their OWN session, not a fact about the item that anyone
+	// watching it has a claim on. Watching an item must not leak a push
+	// someone else addressed to themselves — that's the whole point of
+	// TargetUserID gating it (dispatcher review round 2, codex P1: the
+	// original code fell through to the watch-map check on a
+	// non-matching TargetUserID, so any unconditional watcher on the item
+	// received every push addressed to every other user, instruction
+	// text included). Phase 4's session targeting is expected to inherit
+	// this same "addressed traffic is exclusive of watch-matched
+	// delivery" semantics, so it's pinned explicitly here rather than
+	// left to fall out of the shared TargetUserID field's shape.
+	if n.Kind == watchevents.KindPush {
+		return n.TargetUserID != "" && n.TargetUserID == userID
 	}
 
 	predicate, watched := watches[n.ItemID]
