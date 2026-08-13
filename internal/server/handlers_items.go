@@ -708,9 +708,21 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	// on.
 	// If a client explicitly sent a source in the body (e.g. an agent
 	// marking itself as 'skill'), respect it.
-	if input.Source == "" {
-		_, src := actorFromRequest(r)
-		input.Source = src
+	if input.Source == "" || input.CreatedBy == "" {
+		actor, src := actorFromRequest(r)
+		if input.Source == "" {
+			input.Source = src
+		}
+		// BUG-2542: the actor half used to be discarded here, so every item
+		// created through this path fell through to store.CreateItem's
+		// `created_by = "user"` default — even for an agent that DID send
+		// X-Pad-Agent. Comments have always stamped it (handlers_comments.go);
+		// item creation silently did not, which made the skill's "items you
+		// create will have created_by: agent" contract false on its own terms.
+		// Same shape as Source: an explicit body value wins.
+		if input.CreatedBy == "" {
+			input.CreatedBy = actor
+		}
 	}
 
 	item, err := s.store.CreateItem(workspaceID, coll.ID, input)
@@ -1284,6 +1296,16 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	// 6 of TASK-1309 [P2].
 	if collabSnapshot {
 		input.VersionSource = "collab-snapshot"
+	}
+
+	// BUG-2542: stamp the writer on single-item updates. Bulk ops already do
+	// this (handlers_items_bulk.go), but this path did not, so an agent's
+	// PATCH left last_modified_by at store.UpdateItem's "user" default and an
+	// item edited only by agents read as human-edited. An explicit body value
+	// wins, matching Source/CreatedBy on the create path.
+	if input.LastModifiedBy == "" {
+		updateActor, _ := actorFromRequest(r)
+		input.LastModifiedBy = updateActor
 	}
 
 	// Server-side gate: reject collab-snapshot PATCHes whose
