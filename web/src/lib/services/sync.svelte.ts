@@ -28,7 +28,13 @@ export type SyncResult = {
 	type: 'full_refresh';     // Gap too large or error — caller should reload everything
 };
 
-type SyncCallback = (result: SyncResult) => void;
+/**
+ * A consumer of sync results. MAY be async: the service awaits what it returns,
+ * because whether the consumer actually applied the result is what decides
+ * whether the sync cursor may advance (BUG-2508). A callback that throws or
+ * rejects means "I did not apply this".
+ */
+type SyncCallback = (result: SyncResult) => void | Promise<void>;
 
 /**
  * How long the tab must have been hidden before we bother syncing at all.
@@ -47,6 +53,8 @@ function createSyncService() {
 	let lastSyncTime = $state<number>(Date.now());
 	let hiddenSince = $state<number>(0);
 	let syncing = $state<boolean>(false);
+	/** A sync_required that arrived mid-sync and still needs a pass (BUG-2508). */
+	let pendingSync = false;
 	let wsSlug = $state<string>('');
 	let initialized = false;
 
@@ -174,12 +182,44 @@ function createSyncService() {
 		return () => { callbacks.delete(cb); };
 	}
 
+	/**
+	 * Deliver a result to every consumer.
+	 *
+	 * Isolation is unchanged (one failing consumer must not break the others) and
+	 * so is TIMING: callbacks are invoked synchronously, in registration order,
+	 * and nothing here awaits them. What changed is that failure is no longer
+	 * INVISIBLE (BUG-2508).
+	 *
+	 * The try/catch below only ever caught SYNCHRONOUS throws. Two of the five
+	 * consumers are async, and `cb(result)` discarded the promise — so their
+	 * rejections never reached this catch at all. They were not "caught and
+	 * ignored"; they were unobserved, surfacing as unhandled rejections with
+	 * nothing tying them back to the sync that caused them. Attaching a handler
+	 * to whatever the callback returns closes that gap without awaiting it.
+	 *
+	 * DELIBERATELY NOT AWAITED, and deliberately not gating the cursor on the
+	 * outcome. Both were tried and reverted: the sync cursor advances on
+	 * delivery, not on application, and making it wait on consumers is a change
+	 * to the sync CONTRACT — every consumer would have to propagate failure
+	 * (today all four swallow it locally, so the gate would be inert), and one
+	 * permanently failing consumer would then pin the cursor for everyone against
+	 * an unbounded `/changes` window. That needs a bound and a design decision, so
+	 * it lives in its own item rather than here. This function's job is to make
+	 * the failures OBSERVABLE.
+	 */
 	function notify(result: SyncResult) {
 		for (const cb of callbacks) {
 			try {
-				cb(result);
-			} catch {
-				// Don't let one failing callback break others
+				const returned = cb(result);
+				// Observe an async consumer's rejection. `catch` (not `await`) so
+				// consumers keep running concurrently and delivery stays synchronous.
+				if (returned && typeof (returned as Promise<void>).catch === 'function') {
+					(returned as Promise<void>).catch((err: unknown) => {
+						console.error('[sync] consumer failed to apply a sync result', result.type, err);
+					});
+				}
+			} catch (err) {
+				console.error('[sync] consumer threw applying a sync result', result.type, err);
 			}
 		}
 	}
@@ -195,20 +235,35 @@ function createSyncService() {
 	 * change listener and runs the sync directly.
 	 */
 	async function triggerSync() {
-		if (syncing || !wsSlug) return;
+		if (!wsSlug) return;
+		// A sync_required arriving while one is in flight used to be DROPPED
+		// outright — an early return with nothing recording that it happened.
+		// The in-flight request was issued before that signal, so its window
+		// cannot cover it, and no later event re-announces the gap. Defer it
+		// instead: the loop below runs one more pass (BUG-2508).
+		if (syncing) {
+			pendingSync = true;
+			return;
+		}
 		syncing = true;
 		try {
-			// SSE told us there's a gap — try incremental, fall back to full
-			const result = await doIncrementalOrFull(MAX_INCREMENTAL_MS);
-			if (result.type === 'incremental') {
-				lastSyncTime = result.changes.server_time;
-			}
-			// For full_refresh: don't advance cursor until pages confirm success.
-			notify(result);
+			do {
+				// Cleared BEFORE the request, so a signal arriving DURING it is
+				// recorded rather than swallowed by the pass that predates it.
+				pendingSync = false;
+				// SSE told us there's a gap — try incremental, fall back to full
+				const result = await doIncrementalOrFull(MAX_INCREMENTAL_MS);
+				if (result.type === 'incremental') {
+					lastSyncTime = result.changes.server_time;
+				}
+				// For full_refresh: don't advance cursor until pages confirm success.
+				notify(result);
+			} while (pendingSync);
 		} catch {
 			notify({ type: 'full_refresh' });
 		} finally {
 			syncing = false;
+			pendingSync = false;
 		}
 	}
 

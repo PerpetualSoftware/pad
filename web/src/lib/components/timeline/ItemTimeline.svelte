@@ -706,47 +706,83 @@
 	// Debounce SSE-driven refreshes so rapid-fire event replays (e.g. on
 	// page reconnect) don't hammer the timeline endpoint.
 	let sseRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Backoff before the single retry a failed SSE refresh gets (BUG-2508). */
+	const SSE_REFRESH_RETRY_MS = 2000;
+	/** Set by onDestroy; checked by every continuation that outlives the mount. */
+	let destroyed = false;
+
+	// Named rather than inline so the failure path can re-invoke it once. The
+	// `isRetry` flag is what bounds that to ONE extra attempt.
+	async function refreshFromSSE(isRetry = false) {
+		if (destroyed) return;
+		// Capture identity before the await — this same panel instance
+		// serves the next item after a no-{#key} switch, so a debounced
+		// refresh resolving late must not merge A's entries into B (TASK-2112).
+		const reqSlug = itemSlug;
+		const reqWs = wsSlug;
+		try {
+			const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
+			if (destroyed) return;
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			const freshIds = new Set(resp.entries.map((e) => e.id));
+			const existingIds = new Set(entries.map((e) => e.id));
+
+			// Prepend genuinely new entries.
+			const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
+
+			// Update existing entries from the fresh response (e.g., reaction changes).
+			// Remove entries that were previously on the first page but are now gone (deleted).
+			// Keep all entries from older pages (loaded via "Load more") untouched.
+			const freshById = new Map(resp.entries.map((e) => [e.id, e]));
+			const updatedExisting = entries
+				.filter((e) => {
+					if (firstPageIds.has(e.id) && !freshIds.has(e.id)) return false;
+					return true;
+				})
+				.map((e) => freshById.get(e.id) ?? e);
+
+			entries = [...newEntries, ...updatedExisting];
+			firstPageIds = freshIds;
+		} catch (err) {
+			// A failed SSE-driven refresh is not fatal — the timeline keeps
+			// showing what it already has — but silently dropping it leaves
+			// the panel quietly missing a comment somebody else just posted,
+			// with nothing indicating it and NO RETRY: the next refresh only
+			// comes with the next relevant SSE event, which may never arrive
+			// (BUG-2508).
+			//
+			// So log it, and retry ONCE on a longer delay. Deliberately not an
+			// `error` banner: this is a background refresh, and a
+			// modal-weight failure surface for it would be worse than the bug
+			// it reports. Deliberately not unbounded retries either — the
+			// debounce exists because SSE replay can hammer this endpoint, and
+			// a retry loop would reintroduce exactly that.
+			if (destroyed) return;
+			if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
+			console.error('[timeline] SSE-driven refresh failed', err);
+			if (isRetry) return;
+			clearTimeout(sseRefreshTimer);
+			sseRefreshTimer = setTimeout(() => void refreshFromSSE(true), SSE_REFRESH_RETRY_MS);
+		}
+	}
 
 	const unsubscribe = sseService.onItemEvent((event) => {
 		if (relevantEvents.has(event.type)) {
 			clearTimeout(sseRefreshTimer);
-			sseRefreshTimer = setTimeout(async () => {
-				// Capture identity before the await — this same panel instance
-				// serves the next item after a no-{#key} switch, so a debounced
-				// refresh resolving late must not merge A's entries into B (TASK-2112).
-				const reqSlug = itemSlug;
-				const reqWs = wsSlug;
-				try {
-					const resp: TimelineResponse = await api.timeline.list(reqWs, reqSlug);
-					if (reqSlug !== itemSlug || reqWs !== wsSlug) return;
-					const freshIds = new Set(resp.entries.map((e) => e.id));
-					const existingIds = new Set(entries.map((e) => e.id));
-
-					// Prepend genuinely new entries.
-					const newEntries = resp.entries.filter((e) => !existingIds.has(e.id));
-
-					// Update existing entries from the fresh response (e.g., reaction changes).
-					// Remove entries that were previously on the first page but are now gone (deleted).
-					// Keep all entries from older pages (loaded via "Load more") untouched.
-					const freshById = new Map(resp.entries.map((e) => [e.id, e]));
-					const updatedExisting = entries
-						.filter((e) => {
-							if (firstPageIds.has(e.id) && !freshIds.has(e.id)) return false;
-							return true;
-						})
-						.map((e) => freshById.get(e.id) ?? e);
-
-					entries = [...newEntries, ...updatedExisting];
-					firstPageIds = freshIds;
-				} catch {
-					// Silently ignore SSE refresh failures.
-				}
-			}, 500);
+			sseRefreshTimer = setTimeout(() => void refreshFromSSE(), 500);
 		}
 	});
 
 	onDestroy(() => {
 		unsubscribe();
+		// The debounce timer AND the retry timer both live in `sseRefreshTimer`,
+		// and a rejected request can schedule a retry from its own catch AFTER
+		// teardown — the identity fence (reqSlug/reqWs) is not a teardown fence,
+		// since a remounted panel can legitimately hold the same identity. Clear
+		// the timer and latch `destroyed` so neither a pending debounce nor a late
+		// failure can fire into a dead component (found in review of BUG-2508).
+		destroyed = true;
+		clearTimeout(sseRefreshTimer);
 	});
 
 	let submitting: boolean = $state(false);

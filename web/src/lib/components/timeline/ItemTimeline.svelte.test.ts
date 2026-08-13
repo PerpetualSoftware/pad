@@ -58,8 +58,20 @@ vi.mock('$lib/api/client', () => ({
 	},
 }));
 
+// The SSE mock FANS OUT rather than only recording the subscription: a mock that
+// just returns a disposer leaves the component subscribed to nothing, and any
+// test of how it REACTS to an event passes vacuously (BUG-2509's lesson, applied
+// here for BUG-2508's retry test below).
+let itemEventCb: ((event: { type: string }) => void) | undefined;
 vi.mock('$lib/services/sse.svelte', () => ({
-	sseService: { onItemEvent: () => () => {} },
+	sseService: {
+		onItemEvent: (cb: (event: { type: string }) => void) => {
+			itemEventCb = cb;
+			return () => {
+				itemEventCb = undefined;
+			};
+		},
+	},
 }));
 
 vi.mock('$lib/stores/auth.svelte', () => ({
@@ -294,6 +306,81 @@ afterEach(() => {
 	// afterEach does the same).
 	__resetViewerBackdropForTests();
 	_resetEscapeStackForTests();
+});
+
+/**
+ * BUG-2508. The SSE-driven refresh used to catch its failures and do nothing at
+ * all with them: no log, no retry, no indication. The panel is then quietly
+ * missing a comment somebody else just posted, and the next refresh only comes
+ * with the NEXT relevant SSE event, which may never arrive.
+ *
+ * Asserted on the REQUESTS the component issues, not on rendered entries: a
+ * timeline that never refreshed and one that refreshed successfully with nothing
+ * new look identical on screen (CONVE-12).
+ */
+describe('ItemTimeline — a failed SSE refresh retries once (BUG-2508)', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	async function fireCommentEvent() {
+		itemEventCb?.({ type: 'comment_created' });
+		await vi.advanceTimersByTimeAsync(600); // past the 500ms debounce
+	}
+
+	it('retries after a failed refresh, and stops after the retry', async () => {
+		render();
+		await settle();
+		const initialCalls = timelineListMock.mock.calls.length;
+
+		// Both the debounced refresh and its retry fail.
+		timelineListMock.mockRejectedValue(new Error('network'));
+		await fireCommentEvent();
+		expect(timelineListMock.mock.calls.length).toBe(initialCalls + 1);
+
+		await vi.advanceTimersByTimeAsync(2100); // past the retry backoff
+		expect(timelineListMock.mock.calls.length).toBe(initialCalls + 2);
+
+		// Bounded: the retry's own failure does not schedule another. The debounce
+		// exists because SSE replay can hammer this endpoint, and an unbounded
+		// retry loop would reintroduce exactly that.
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(timelineListMock.mock.calls.length).toBe(initialCalls + 2);
+	});
+
+	it('does not fire a retry after the component is destroyed', async () => {
+		render();
+		await settle();
+		timelineListMock.mockRejectedValue(new Error('network'));
+		await fireCommentEvent();
+		const callsAtUnmount = timelineListMock.mock.calls.length;
+
+		// Tear down while the retry is pending. The identity fence cannot cover
+		// this: a remounted panel can legitimately carry the same wsSlug/itemSlug,
+		// so "same identity" is not "still alive" (found in review).
+		unmount(app as never);
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		expect(timelineListMock.mock.calls.length).toBe(callsAtUnmount);
+	});
+
+	it('does not retry when the refresh succeeded', async () => {
+		render();
+		await settle();
+		const initialCalls = timelineListMock.mock.calls.length;
+
+		await fireCommentEvent();
+		expect(timelineListMock.mock.calls.length).toBe(initialCalls + 1);
+
+		// The control leg: without it, a "fix" that retries unconditionally would
+		// pass the test above while doubling every successful refresh.
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(timelineListMock.mock.calls.length).toBe(initialCalls + 1);
+	});
 });
 
 describe('ItemTimeline — viewer open gate (TASK-2431)', () => {
