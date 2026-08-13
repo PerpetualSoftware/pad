@@ -49,7 +49,10 @@ func noteCmd() *cobra.Command {
 				Summary:   strings.TrimSpace(args[1]),
 				Details:   body,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
-				CreatedBy: "user",
+				// CreatedBy left empty: the SERVER stamps the writer from the
+				// request (BUG-2542). Asserting "user" here made every agent
+				// note claim a human wrote it, and an explicit value suppresses
+				// the stamp.
 			}
 			fields, err := models.AppendImplementationNote(item.Fields, entry)
 			if err != nil {
@@ -58,7 +61,7 @@ func noteCmd() *cobra.Command {
 
 			updated, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
 				Fields:         &fields,
-				LastModifiedBy: "user",
+				// LastModifiedBy left empty — server-stamped (BUG-2542).
 				Source:         "cli",
 			})
 			if err != nil {
@@ -115,7 +118,10 @@ func decideCmd() *cobra.Command {
 				Decision:  strings.TrimSpace(args[1]),
 				Rationale: body,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
-				CreatedBy: "user",
+				// CreatedBy left empty: the SERVER stamps the writer from the
+				// request (BUG-2542). Asserting "user" here made every agent
+				// note claim a human wrote it, and an explicit value suppresses
+				// the stamp.
 			}
 			fields, err := models.AppendDecisionLogEntry(item.Fields, entry)
 			if err != nil {
@@ -124,7 +130,7 @@ func decideCmd() *cobra.Command {
 
 			updated, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
 				Fields:         &fields,
-				LastModifiedBy: "user",
+				// LastModifiedBy left empty — server-stamped (BUG-2542).
 				Source:         "cli",
 			})
 			if err != nil {

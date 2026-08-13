@@ -42,10 +42,12 @@ func TestItemAttribution_AgentVsHuman(t *testing.T) {
 			if item.CreatedBy != tc.want {
 				t.Errorf("created_by = %q, want %q (X-Pad-Agent=%q)", item.CreatedBy, tc.want, tc.agent)
 			}
-			// Source is the pre-existing behaviour and must not regress: both
-			// legs authenticate the same way, so both are "web" here.
-			if item.Source == "" {
-				t.Errorf("source was left empty; the create path must still stamp it")
+			// Source is pre-existing behaviour and must not regress. Both legs
+			// authenticate the same way here (no Authorization header, no API
+			// token), so actorFromRequest returns "web" for both — assert the
+			// value, not merely that something was written.
+			if item.Source != "web" {
+				t.Errorf("source = %q, want %q", item.Source, "web")
 			}
 
 			// The updater is deliberately the OTHER kind of writer. Patching

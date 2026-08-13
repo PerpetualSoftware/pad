@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -85,4 +87,50 @@ func chdir(t *testing.T, dir string) {
 		t.Fatalf("chdir: %v", err)
 	}
 	t.Cleanup(func() { _ = os.Chdir(prev) })
+}
+
+// The resolver is only half the path: its value has to reach the wire as
+// X-Pad-Agent, which is the header the server keys attribution on. The
+// server-side tests inject that header directly, so without this the
+// resolver could be correct and the client still send nothing (which is
+// exactly the pre-BUG-2542 state).
+func TestClientSendsResolvedAgentHeader(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{name: "agent session sends the header", env: map[string]string{"CLAUDECODE": "1"}, want: "claude-code"},
+		{name: "human shell sends none", env: nil, want: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chdir(t, t.TempDir())
+			for _, k := range []string{"PAD_AGENT", "CLAUDECODE"} {
+				t.Setenv(k, "")
+				os.Unsetenv(k)
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+
+			var got string
+			var seen bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got, seen = r.Header.Get("X-Pad-Agent"), true
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"status":"ok"}`))
+			}))
+			defer srv.Close()
+
+			if err := NewClientFromURL(srv.URL).Health(); err != nil {
+				t.Fatalf("health: %v", err)
+			}
+			if !seen {
+				t.Fatal("server never saw the request")
+			}
+			if got != tc.want {
+				t.Errorf("X-Pad-Agent = %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
