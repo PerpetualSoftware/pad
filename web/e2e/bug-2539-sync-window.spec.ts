@@ -48,8 +48,15 @@ import { test, quietCrossActorToasts, type SuiteFixture } from './fixtures';
  * but not shown", which is the failure mode under test.
  */
 
-const CHANGES_RE = /\/api\/v1\/workspaces\/[^/]+\/changes(\?|$)/;
-const ITEM_GET_RE = /\/api\/v1\/workspaces\/[^/]+\/items\/[^/?]+$/;
+// Matchers are built PER ATTEMPT and scoped to that attempt's workspace. A
+// retry reuses the page, which is still showing the previous attempt's
+// workspace when the listeners go on — an in-flight /changes from that one
+// would otherwise take ordinal 0 and be mistaken for the new seed (Codex P2).
+const changesReFor = (wsSlug: string) =>
+	new RegExp(`/api/v1/workspaces/${wsSlug}/changes(\\?|$)`);
+const itemGetReFor = (wsSlug: string) =>
+	new RegExp(`/api/v1/workspaces/${wsSlug}/items/[^/?]+$`);
+const eventsUrlFor = (wsSlug: string) => `/api/v1/events?workspace=${wsSlug}`;
 const ALIGNMENT_ATTEMPTS = 6;
 
 const LEGS = [
@@ -130,6 +137,8 @@ async function runLeg(opts: {
 		const changesIssuedAt = new Map<Request, number>();
 		let changesSeen = 0;
 
+		const CHANGES_RE = changesReFor(ws.slug);
+		const ITEM_GET_RE = itemGetReFor(ws.slug);
 		const onRequest = (r: Request) => {
 			if (CHANGES_RE.test(r.url())) {
 				changesOrder.set(r, changesSeen++);
@@ -180,7 +189,7 @@ async function runLeg(opts: {
 		try {
 			// The SSE handler subscribes BEFORE writing its response headers, so
 			// this resolving means the server can deliver the archive event here.
-			const sseSubscribed = page.waitForResponse((r) => r.url().includes('/api/v1/events'));
+			const sseSubscribed = page.waitForResponse((r) => r.url().includes(eventsUrlFor(ws.slug)));
 			const liveRowRead = page.waitForResponse(async (r) => {
 				if (!ITEM_GET_RE.test(r.url()) || r.request().method() !== 'GET') return false;
 				try {
@@ -222,7 +231,12 @@ async function runLeg(opts: {
 			// timestamp the server stored.
 			const cursorSecond = seedServerTime === null ? null : secondOf(seedServerTime);
 			const archiveSecond = checked.deleted_at;
-			const sameSecond = cursorSecond !== null && cursorSecond === archiveSecond;
+			// A seed we never observed proves NEITHER equality nor difference —
+			// retry rather than let the control leg pass on an unknown (Codex P2).
+			if (cursorSecond === null) {
+				return { outcome: 'misaligned', cursorSecond, archiveSecond };
+			}
+			const sameSecond = cursorSecond === archiveSecond;
 			if (sameSecond === crossSecondBoundary) {
 				return { outcome: 'misaligned', cursorSecond, archiveSecond };
 			}
