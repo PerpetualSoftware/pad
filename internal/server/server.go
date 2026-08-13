@@ -1561,6 +1561,11 @@ func (s *Server) setupRouter() {
 						// pipeline. `pad watch <ref>` / `pad watch remove <ref>`.
 						r.Post("/watch", s.handleCreateWatch)
 						r.Delete("/watch", s.handleDeleteWatch)
+						// Push (IDEA-2544 Phase 1): transient, self-addressed
+						// human→harness dispatch over the SAME watch-events
+						// bus/stream — no durable row, see handlePushToItem's
+						// doc comment. `pad push <ref> -m "message"`.
+						r.Post("/push", s.handlePushToItem)
 					})
 
 					// Links (v2)

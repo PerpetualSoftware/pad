@@ -69,8 +69,8 @@ type watchStreamPayload struct {
 
 // formatMonitorLine renders one notification as the exact stdout-line
 // contract `pad watch --stream --for-session` promises (DOC-2479):
-// "PAD TASK-214 → done (Dave): fix verified" — one line, facts only, no
-// etiquette prose (that lives in the plugin skill per DR-4).
+// "PAD demo/TASK-214 → done (Dave): fix verified" — one line, facts
+// only, no etiquette prose (that lives in the plugin skill per DR-4).
 //
 // TASK-2533 plan interpretation: DOC-2479's example names a target
 // STATUS VALUE and reads as though it combines two facts (a status
@@ -83,8 +83,26 @@ type watchStreamPayload struct {
 // (not a status value) as the arrow's target — it's the one thing every
 // kind (status-change / assignment / comment / the reserved ask) can
 // supply uniformly from the actual payload fields.
+//
+// The workspace slug prefix (IDEA-2544 Phase 1, dispatcher review round
+// 2, codex P1) is UNIVERSAL — every kind, not push-specific — because
+// the ambiguity it closes predates push: GET /api/v1/events/stream is
+// user-scoped ACROSS every workspace the caller belongs to (a watch is
+// personal, not workspace-scoped — see Store.ListWatchesForUser), so
+// ANY kind can arrive for a workspace other than the one linked in the
+// caller's cwd, not just push. The payload already carried Workspace
+// (DOC-2479's wire contract); it was simply never rendered. Dropping it
+// silently means a session linked to workspace A that receives a
+// notification for workspace B resolves the wrong item (or 404s) with
+// no signal in the line that anything was off. Safe to change
+// universally: formatMonitorLine's only consumer is this file's own
+// fmt.Println (grepped plugin/ and skills/ for anything else parsing
+// "PAD ..." lines — there is none; the Claude Code plugin host ingests
+// the stdout line as free-text session-notification prose, not a
+// structured format any code parses), so there is no wire-format
+// consumer to break by adding a field.
 func formatMonitorLine(p watchStreamPayload) string {
-	return fmt.Sprintf("PAD %s → %s (%s): %s", p.ItemRef, p.Kind, p.Actor, p.Summary)
+	return fmt.Sprintf("PAD %s/%s → %s (%s): %s", p.Workspace, p.ItemRef, p.Kind, p.Actor, p.Summary)
 }
 
 // sleepOrDone waits for d or ctx cancellation, whichever comes first.

@@ -135,6 +135,44 @@ func TestClientSendsResolvedAgentHeader(t *testing.T) {
 	}
 }
 
+// TestPushItemSendsResolvedAgentHeader (IDEA-2544 Phase 1, dispatcher
+// review) pins that PushItem inherits X-Pad-Agent the same as every
+// other mutating client method, rather than assuming: PushItem doesn't
+// build its own request, it goes through c.post -> c.newRequest like
+// CreateWatch and everything else, so the BUG-2542 fix upgraded it for
+// free — but "the code path implies it" and "verified against a live
+// request" are different claims, and only the second belongs in a
+// report. Also confirms the server side of the loop: handlePushToItem's
+// actor/actorName come from actorFromRequest/actorNameFromRequest,
+// which read this exact header.
+func TestPushItemSendsResolvedAgentHeader(t *testing.T) {
+	chdir(t, t.TempDir())
+	for _, k := range []string{"PAD_AGENT", "CLAUDECODE"} {
+		t.Setenv(k, "")
+		os.Unsetenv(k)
+	}
+	t.Setenv("CLAUDECODE", "1")
+
+	var got string
+	var seen bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, seen = r.Header.Get("X-Pad-Agent"), true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ref":"TASK-1","pushed":true}`))
+	}))
+	defer srv.Close()
+
+	if _, err := NewClientFromURL(srv.URL).PushItem("demo", "TASK-1", "triage this"); err != nil {
+		t.Fatalf("PushItem: %v", err)
+	}
+	if !seen {
+		t.Fatal("server never saw the request")
+	}
+	if got != "claude-code" {
+		t.Errorf("X-Pad-Agent = %q, want %q", got, "claude-code")
+	}
+}
+
 // ActorKind backs the one place the client must self-describe: structured
 // entries inside an item's fields JSON, which the server never parses. An
 // earlier revision of the BUG-2542 fix removed the CLI's hardcoded "user"

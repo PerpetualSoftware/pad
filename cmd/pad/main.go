@@ -148,6 +148,7 @@ func newRootCmd() *cobra.Command {
 		bootstrapCmd(),
 		playbookCmd(),
 		watchCmdGroup(),
+		pushCmd(),
 		sessionCmd(),
 	)
 

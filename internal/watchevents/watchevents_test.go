@@ -30,6 +30,41 @@ func TestMemoryBus_PublishDeliversToSubscriber(t *testing.T) {
 	}
 }
 
+// TestMemoryBus_PublishDeliversPushWithTargetUserID covers IDEA-2544
+// Phase 1: KindPush and TargetUserID must round-trip through Publish
+// like any other kind/field — the bus itself is kind-agnostic, but this
+// pins that a new kind + a new addressed-to field don't need any bus
+// changes to work, matching the plan's "zero formatter/bus changes"
+// claim for a new kind.
+func TestMemoryBus_PublishDeliversPushWithTargetUserID(t *testing.T) {
+	t.Parallel()
+	b := New()
+	defer b.Close()
+
+	ch := b.Subscribe()
+	defer b.Unsubscribe(ch)
+
+	b.Publish(Notification{
+		WorkspaceID:  "ws1",
+		ItemID:       "item1",
+		Kind:         KindPush,
+		Summary:      "triage this",
+		TargetUserID: "user-1",
+	})
+
+	select {
+	case n := <-ch:
+		if n.Kind != KindPush {
+			t.Fatalf("expected kind %q, got %q", KindPush, n.Kind)
+		}
+		if n.TargetUserID != "user-1" {
+			t.Fatalf("expected TargetUserID %q, got %q", "user-1", n.TargetUserID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for notification")
+	}
+}
+
 func TestMemoryBus_UnsubscribeClosesChannel(t *testing.T) {
 	t.Parallel()
 	b := New()

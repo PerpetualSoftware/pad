@@ -67,18 +67,28 @@ func TestFormatMonitorLine(t *testing.T) {
 	}{
 		{
 			name: "status change",
-			in:   watchStreamPayload{ItemRef: "TASK-214", Kind: "status-change", Actor: "Dave", Summary: "open → done"},
-			want: "PAD TASK-214 → status-change (Dave): open → done",
+			in:   watchStreamPayload{Workspace: "demo", ItemRef: "TASK-214", Kind: "status-change", Actor: "Dave", Summary: "open → done"},
+			want: "PAD demo/TASK-214 → status-change (Dave): open → done",
 		},
 		{
 			name: "assignment",
-			in:   watchStreamPayload{ItemRef: "BUG-5", Kind: "assignment", Actor: "Alice", Summary: "assigned to Alice"},
-			want: "PAD BUG-5 → assignment (Alice): assigned to Alice",
+			in:   watchStreamPayload{Workspace: "demo", ItemRef: "BUG-5", Kind: "assignment", Actor: "Alice", Summary: "assigned to Alice"},
+			want: "PAD demo/BUG-5 → assignment (Alice): assigned to Alice",
 		},
 		{
 			name: "comment",
-			in:   watchStreamPayload{ItemRef: "TASK-1", Kind: "comment", Actor: "Bob", Summary: "fix verified"},
-			want: "PAD TASK-1 → comment (Bob): fix verified",
+			in:   watchStreamPayload{Workspace: "demo", ItemRef: "TASK-1", Kind: "comment", Actor: "Bob", Summary: "fix verified"},
+			want: "PAD demo/TASK-1 → comment (Bob): fix verified",
+		},
+		{
+			// IDEA-2544 Phase 1, dispatcher review round 2 (codex P1): the
+			// workspace prefix matters most here — push carries an
+			// instruction, so a caller resolving it against the wrong
+			// linked workspace is a worse failure mode than for a passive
+			// fact.
+			name: "push, different workspace than the item ref alone would suggest",
+			in:   watchStreamPayload{Workspace: "other-workspace", ItemRef: "TASK-9", Kind: "push", Actor: "Dave", Summary: "triage this with the triage playbook"},
+			want: "PAD other-workspace/TASK-9 → push (Dave): triage this with the triage playbook",
 		},
 	}
 	for _, c := range cases {
