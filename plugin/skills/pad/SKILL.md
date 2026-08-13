@@ -38,7 +38,7 @@ The returned `AgentBootstrap` blob carries everything the skill needs to start a
 - `user { name, email, id }` — who's talking
 - `collections [...]` — schemas (drives `pad item create`/`update` field validation)
 - `conventions [...]` — full bodies of `trigger=always, status=active` items. **Must-follow project rules.**
-- `convention_index [...]` — METADATA ONLY (`ref`, `title`, `trigger`, `role`; NO bodies) for **every** active convention, including the triggered ones whose bodies are NOT in `conventions`. This is your map of what triggered rules exist — e.g. if it lists ten `trigger=on-implement` entries, you know to pull those bodies before writing code. Load bodies on demand with `pad item list conventions --field trigger=<trigger> --field status=active` only when the matching trigger fires.
+- `convention_index [...]` — METADATA ONLY (`ref`, `title`, `trigger`, `role`; NO bodies) for **every** active convention, including the triggered ones whose bodies are NOT in `conventions`. This is your map of what triggered rules exist — e.g. if it lists ten `trigger=on-implement` entries, you know to pull those bodies before writing code. Load bodies on demand with `pad item list conventions --field trigger=<trigger> --field status=active --format json --full` only when the matching trigger fires.
 - `roles [...]` — agent roles configured in the workspace
 - `playbooks [...]` — METADATA ONLY: `ref`, `title`, `slug`, `invocation_slug`, `trigger`, `scope`, `status`, `has_arguments`, `summary`. Full bodies load on invocation via `pad playbook show <slug>`.
 - `dashboard {...}` — active items, attention, suggested next, recent activity. Five sub-arrays are capped to 5 entries each (`attention`, `recent_activity`, `active_items`, `active_plans`, `by_role`); each pairs with a `<name>_overflow_count` int field surfaced when truncation kicked in. Use `pad project dashboard` to pull the full set when any overflow > 0.
@@ -156,17 +156,17 @@ If a role is active, load **both** role-specific and global conventions (convent
 
 ```bash
 # Template — replace <trigger> with a concrete value from the workspace's schema:
-pad item list conventions --field trigger=<trigger> --field status=active --field role=<role> --format json  # Role-specific
-pad item list conventions --field trigger=<trigger> --field status=active --format json                      # All (includes global)
-pad item list playbooks  --field trigger=<trigger> --field status=active --format json
+pad item list conventions --field trigger=<trigger> --field status=active --field role=<role> --format json --full  # Role-specific
+pad item list conventions --field trigger=<trigger> --field status=active --format json --full                      # All (includes global)
+pad item list playbooks  --field trigger=<trigger> --field status=active --format json --full
 
 # Concrete examples in a software workspace (role="implementer"):
-pad item list conventions --field trigger=on-implement --field status=active --format json
-pad item list conventions --field trigger=on-commit    --field status=active --format json
-pad item list playbooks   --field trigger=on-review    --field status=active --format json
+pad item list conventions --field trigger=on-implement --field status=active --format json --full
+pad item list conventions --field trigger=on-commit    --field status=active --format json --full
+pad item list playbooks   --field trigger=on-review    --field status=active --format json --full
 
 # Always-on conventions apply regardless of action:
-pad item list conventions --field trigger=always --field status=active --format json
+pad item list conventions --field trigger=always --field status=active --format json --full
 ```
 
 When loading both role-specific and global conventions, deduplicate — if the same convention appears in both results, follow it once. Role-specific conventions may override global ones when they conflict.
@@ -300,7 +300,7 @@ See the **Onboarding** entry under Natural Language Routing above — it branche
 ### Retrospective: "Plan X is done, let's retro"
 
 1. Load the plan: `pad item show PLAN-2 --format markdown`
-2. Load tasks: `pad item list tasks --all --format json` (filter to plan)
+2. Load tasks: `pad item list tasks --all --format json --full` (filter to plan) — `--full` matters here: a retro needs the actual content/notes on each task, not just titles
 3. Generate retro: What shipped, what was deferred, lessons learned
 4. Offer to save: `pad item create doc "Plan N Retrospective" --category retro --stdin`
 5. Offer to update plan status: `pad item update PLAN-2 --status completed --comment "Retro complete — see DOC-N"`

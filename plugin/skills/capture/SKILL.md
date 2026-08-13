@@ -15,15 +15,22 @@ configured, session expired), this machine hasn't finished setup — don't run
 on a browser-based setup flow); tell the user to run `pad init` themselves in
 an interactive terminal (in Claude Code, suggest `! pad init`) and stop.
 
-Capture `$ARGUMENTS` into the Pad workspace as the item type it most resembles
-(idea, task, bug, note). Run `pad collection list --format json` to see the
-workspace's collections, pick the best fit, then show what you're about to
-create (collection, title, content) and confirm before running
-`pad item create <collection> "<title>" --content "..."`. Keep the title
-short; put nuance in the content.
+Before creating, run `pad item list conventions --field trigger=always
+--field status=active --format json --full` and apply whatever it returns —
+always-on conventions are project rules the workspace has made mandatory
+(privacy, sizing, format, etc.), and low-ceremony capture means skipping the
+full bootstrap weight (dashboard, playbooks, roles), not skipping mandatory
+rules. This is the only context load this skill does; it's deliberately
+narrower than the main skill's full bootstrap.
 
-**Exception:** if the workspace's active conventions explicitly opt into
-autonomous capture (check `pad item list conventions --field trigger=always
---field status=active` for a rule that says so), skip the confirmation —
-create immediately and confirm with the new issue ID in one line, no
-ceremony. Confirm-first is the default for everyone else.
+Capture `$ARGUMENTS` into the Pad workspace as the item type it most
+resembles (idea, task, bug, note), following any conventions just loaded.
+Run `pad collection list --format json` to see the workspace's collections,
+pick the best fit, then show what you're about to create (collection, title,
+content) and confirm before running `pad item create <collection> "<title>"
+--content "..."`. Keep the title short; put nuance in the content.
+
+**Exception:** if any loaded convention explicitly opts into autonomous
+capture, skip the confirmation — create immediately and confirm with the new
+issue ID in one line, no ceremony. Confirm-first is the default for everyone
+else.

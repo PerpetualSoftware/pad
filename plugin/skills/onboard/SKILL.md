@@ -22,7 +22,17 @@ authenticated:
   in their own terminal. Stop here; there's nothing more this skill can do
   until that completes.
 
-Once linked, run `pad bootstrap --format json`: if `needs_onboarding` is true,
-offer the workspace onboarding flow — scan the codebase (README, build config,
-CI), suggest starter conventions with the project's real commands, and propose
-an initial plan. Create items only after the user confirms the shape.
+Once linked, run `pad bootstrap --format json`:
+- If `needs_onboarding` is true, offer the workspace onboarding flow — scan
+  the codebase (README, build config, CI), suggest starter conventions with
+  the project's real commands, and propose an initial plan. Create items only
+  after the user confirms the shape.
+- If `needs_onboarding` is false, this workspace is already set up — say so
+  and briefly summarize what exists (e.g. how many collections and active
+  conventions, from the bootstrap payload's `collections` and
+  `convention_index` arrays), then offer the extend/audit flow instead of
+  re-running first-time setup: add a new section (collection, convention,
+  role, or playbook), review existing conventions against the current
+  codebase, or do nothing if everything already looks right. Same
+  confirm-before-creating rule as everywhere else — never assume the
+  extend/audit answer.
