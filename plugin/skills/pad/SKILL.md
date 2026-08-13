@@ -17,7 +17,7 @@ The `pad` CLI must be on PATH. It auto-starts a local server and auto-detects th
 
 ## How This Works
 
-There is **one command**: `/pad <anything>`. You interpret the user's intent and use the CLI to take action. Typed shortcuts exist for the three most common entries — `/pad:status`, `/pad:capture`, `/pad:onboard` — but this conversational surface is the main path. You are conversational — discuss before acting, ask clarifying questions, and always confirm before creating or modifying items.
+This skill activates automatically, by description match, whenever the user's message is about their Pad workspace — checking status, creating items, planning, brainstorming, and more. You don't type a command to reach it; natural language is the canonical way in (this plugin's DR-1). Three of the most common flows also have dedicated typed shortcuts — `/pad:status`, `/pad:capture`, `/pad:onboard` — which route straight to a focused skill instead of this general one. Where the rest of this document writes `/pad <anything>` (in the playbook-routing and examples sections below), read it as shorthand for "what the user said to Pad," not as literal slash syntax to type — under this plugin's namespacing this skill's own explicit invocation name, if you ever need it, is `/pad:pad <anything>`. You interpret the user's intent and use the CLI to take action. You are conversational — discuss before acting, ask clarifying questions, and always confirm before creating or modifying items.
 
 ## Context Loading
 
@@ -26,6 +26,8 @@ On every `/pad` invocation, start by loading workspace context with a single cal
 ```bash
 pad bootstrap --format json   # one round-trip: workspace + user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity
 ```
+
+**If this fails** (non-zero exit, no JSON on stdout, stderr reads `Error: no workspace linked. Run 'pad workspace init' to create one`), the project simply isn't linked to a Pad workspace yet — this is expected for a brand-new project, not a broken CLI. Don't report it as an error. Route to setup instead: tell the user this project isn't linked, and if they want to proceed, run `pad workspace init` (interactive; surface its prompts — exactly what `/pad:onboard` does). Once it completes, retry `pad bootstrap --format json`; it will succeed now that `.pad.toml` exists. See the **Onboarding** entry under Natural Language Routing below for the full branch.
 
 The returned `AgentBootstrap` blob carries everything the skill needs to start a session:
 
@@ -108,7 +110,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Updating:** `pad item update <ref> --status X --comment "..."` — **always** include `--comment` on status changes to explain *why*. The audit trail is the whole point. Same pattern for priority/role/assign changes.
 
-**Working with attachments:** items reference attachments as `![alt](pad-attachment:<uuid>)` (images) or `[label](pad-attachment:<uuid>)` (files). To inspect or read bytes, always use `pad attachment {list|show|view|upload|download}`. `view <uuid>` writes the bytes to a temp file and prints the path — compose with `IMG=$(pad attachment view <uuid>) && open "$IMG"`.
+**Working with attachments:** items reference attachments as `![alt](pad-attachment:<uuid>)` (images) or `[label](pad-attachment:<uuid>)` (files). To inspect or read bytes, always use `pad attachment {list|show|view|upload|download}`. `view <uuid>` writes the bytes to a temp file and prints the path — compose with `IMG=$(pad attachment view <uuid>)`, then open it with whatever's available on the platform (`open "$IMG"` on macOS, `xdg-open "$IMG"` on Linux) or just read/describe the file directly.
 
 **Hard rule for agents:** NEVER read directly from `~/.pad/attachments/<storage_key>`. That bypasses ACLs, breaks on Pad Cloud / remote / Postgres / S3 deployments, and skips the variant pipeline (thumbnails, EXIF strip, server-side rotate/crop). Always go through the CLI.
 
@@ -130,7 +132,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Retrospective:** "plan X is done, let's retro" → Review completed work via the playbook (or inline if none active), save retro as a Doc.
 
 **Onboarding:**
-- "set up my workspace" / "onboard me" / "scan this codebase" → **run the onboard playbook.** Natural language is the canonical trigger; `/pad onboard` and the typed `/pad:onboard` are equivalent shortcuts into the same playbook. To run it, load the body and follow it: `pad playbook show onboard --format markdown`. Activate via library first if the bootstrap's `playbooks` array lacks `invocation_slug=onboard, status=active`. The playbook's body is the script — interview, codebase scan if available, adapt seeded artifacts to the project, seed a first item.
+- "set up my workspace" / "onboard me" / "scan this codebase" → **first check whether a workspace is linked yet.** If `pad bootstrap` failed with "no workspace linked" (see Context Loading above — the common case for a brand-new project), there's no workspace yet and therefore no onboard *playbook* to load: run `pad workspace init` first (interactive; surface its prompts), then retry bootstrap. **Once a workspace is linked**, run the onboard *playbook*: natural language is the canonical trigger, and the typed `/pad:onboard` is a shortcut into the same flow. Load the body and follow it: `pad playbook show onboard --format markdown`. Activate via library first if the bootstrap's `playbooks` array lacks `invocation_slug=onboard, status=active`. The playbook's body is the script — interview, codebase scan if available, adapt seeded artifacts to the project, seed a first item.
 - "use pad to get IDEA-1" → also runs the onboard playbook. Legacy phrasing from before PLAN-1496; the IDEA-1/PLAN-2/TASK-3/DOC-4 seed-item pattern was retired. Don't try to fetch `IDEA-1` directly — newly-created workspaces don't have it.
 
 **Creating a playbook:** "save this workflow as a playbook" / "let's make a playbook for X" / "I want a reusable workflow for this" → create an item in the `playbooks` collection. Two fields make it user-callable: **`invocation_slug`** (optional kebab-case 2+ chars — enables intent invocation plus the `/pad <slug>` shortcut; leave blank for trigger-only playbooks) and **`arguments`** (optional JSON array of `{name,type,required,default,description,enum}`; mirror it in the body's `## Arguments` section). **Activation gotcha:** new playbooks default to `status=draft` and slug/trigger routing only dispatches `status=active` — ALWAYS pass `--field status=active` (or flip it in the Web UI) or the shortcut silently falls through to NL routing. Full authoring detail (exact CLI flags, `--stdin` body, the form-based editor) loads on demand: `pad item create playbook --help` and the Web UI playbook editor (`pad server open` → `/{username}/{workspace}/playbooks` → "+ New Playbook"). After creation, tell the user how to invoke it — by intent plus the `/pad <slug>` shortcut, or (trigger-only) the action that auto-loads it.
@@ -225,7 +227,7 @@ pad attachment upload <item-ref|-> <path> [--filename "..."]
 pad attachment download <id> <out-path>
 ```
 
-`view <id>` composes cleanly: `IMG=$(pad attachment view <uuid>) && open "$IMG"`.
+`view <id>` composes cleanly: `IMG=$(pad attachment view <uuid>)`, then open it with whatever's available on the platform (`open "$IMG"` on macOS, `xdg-open "$IMG"` on Linux) or just read/describe the file directly.
 
 ### Collections
 ```bash
@@ -286,7 +288,7 @@ Run the `decompose` invokable playbook — by intent ("break PLAN-2 into tasks")
 
 ### Onboarding
 
-Run the **onboard** invokable playbook — see the **Onboarding** entry under Natural Language Routing above. Natural language ("set up my workspace") is the canonical trigger; `/pad onboard` and the typed `/pad:onboard` are shortcuts into the same playbook. The playbook body is the canonical instruction set (interview flow, codebase scan if available, collection/convention/role/playbook adaptation, first-item seed). Don't reimplement it here; this skill is the dispatcher, the playbook is the script. PLAN-1496 / TASK-1499 retired the standalone Onboarding workflow that used to live in this file.
+See the **Onboarding** entry under Natural Language Routing above — it branches on whether a workspace is linked yet (`pad workspace init` first if not) before running the onboard invokable playbook. Natural language ("set up my workspace") is the canonical trigger; the typed `/pad:onboard` is a shortcut into the same flow. The playbook body is the canonical instruction set (interview flow, codebase scan if available, collection/convention/role/playbook adaptation, first-item seed). Don't reimplement it here; this skill is the dispatcher, the playbook is the script. PLAN-1496 / TASK-1499 retired the standalone Onboarding workflow that used to live in this file.
 
 ### Retrospective: "Plan X is done, let's retro"
 

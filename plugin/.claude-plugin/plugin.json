@@ -8,6 +8,6 @@
   },
   "homepage": "https://getpad.dev",
   "repository": "https://github.com/PerpetualSoftware/pad",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": ["project-management", "tasks", "memory", "local-first", "agents"]
 }
