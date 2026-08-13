@@ -63,9 +63,9 @@ func noteCmd() *cobra.Command {
 			}
 
 			updated, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				Fields:         &fields,
+				Fields: &fields,
 				// LastModifiedBy left empty — server-stamped (BUG-2542).
-				Source:         "cli",
+				Source: "cli",
 			})
 			if err != nil {
 				return err
@@ -135,9 +135,9 @@ func decideCmd() *cobra.Command {
 			}
 
 			updated, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				Fields:         &fields,
+				Fields: &fields,
 				// LastModifiedBy left empty — server-stamped (BUG-2542).
-				Source:         "cli",
+				Source: "cli",
 			})
 			if err != nil {
 				return err
