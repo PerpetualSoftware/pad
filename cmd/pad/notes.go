@@ -49,7 +49,13 @@ func noteCmd() *cobra.Command {
 				Summary:   strings.TrimSpace(args[1]),
 				Details:   body,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
-				CreatedBy: "user",
+				// The server never parses this entry — it lives inside the
+				// item's fields JSON — so the client is the last party that
+				// could know who wrote it. Hardcoding "user" here made every
+				// agent note claim a human wrote it (BUG-2542); leaving it
+				// empty would have left it authorless, since nothing
+				// downstream fills it in. Self-declared, like the header.
+				CreatedBy: cli.ActorKind(),
 			}
 			fields, err := models.AppendImplementationNote(item.Fields, entry)
 			if err != nil {
@@ -57,9 +63,9 @@ func noteCmd() *cobra.Command {
 			}
 
 			updated, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				Fields:         &fields,
-				LastModifiedBy: "user",
-				Source:         "cli",
+				Fields: &fields,
+				// LastModifiedBy left empty — server-stamped (BUG-2542).
+				Source: "cli",
 			})
 			if err != nil {
 				return err
@@ -115,7 +121,13 @@ func decideCmd() *cobra.Command {
 				Decision:  strings.TrimSpace(args[1]),
 				Rationale: body,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
-				CreatedBy: "user",
+				// The server never parses this entry — it lives inside the
+				// item's fields JSON — so the client is the last party that
+				// could know who wrote it. Hardcoding "user" here made every
+				// agent note claim a human wrote it (BUG-2542); leaving it
+				// empty would have left it authorless, since nothing
+				// downstream fills it in. Self-declared, like the header.
+				CreatedBy: cli.ActorKind(),
 			}
 			fields, err := models.AppendDecisionLogEntry(item.Fields, entry)
 			if err != nil {
@@ -123,9 +135,9 @@ func decideCmd() *cobra.Command {
 			}
 
 			updated, err := client.UpdateItem(ws, item.Slug, models.ItemUpdate{
-				Fields:         &fields,
-				LastModifiedBy: "user",
-				Source:         "cli",
+				Fields: &fields,
+				// LastModifiedBy left empty — server-stamped (BUG-2542).
+				Source: "cli",
 			})
 			if err != nil {
 				return err

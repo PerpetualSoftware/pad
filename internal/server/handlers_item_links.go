@@ -158,6 +158,16 @@ func (s *Server) handleCreateItemLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Non-parent links (blocks / blocked-by / relates / implements) fall
+	// through to here. The CLI doesn't send created_by, so the store defaulted
+	// it to "user" and an agent's `pad item block` recorded a human. The parent
+	// branch above already passes the actor to SetParentLink; this mirrors it.
+	// An explicit body value still wins, same as everywhere else (BUG-2542).
+	if input.CreatedBy == "" {
+		linkActor, _ := actorFromRequest(r)
+		input.CreatedBy = linkActor
+	}
+
 	link, err := s.store.CreateItemLink(workspaceID, input, item.ID)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {

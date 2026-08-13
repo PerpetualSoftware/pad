@@ -152,13 +152,18 @@ func (s *Server) handleRestoreItemVersion(w http.ResponseWriter, r *http.Request
 	// client lazy-seeds from the restored content; the boundary rejects any
 	// in-flight pre-restore snapshot. This replaces the earlier
 	// applier/epoch/watermark routing: prune+reseed needs none of it.
+	// Stamp the writer from the request rather than hardcoding user/web: a
+	// restore driven by an agent used to record itself as a human web edit
+	// (BUG-2542). Source falls back to "web" for cookie-authenticated callers,
+	// which is what actorFromRequest already returns for them.
+	restoreActor, restoreSource := actorFromRequest(r)
 	content := targetVersion.Content
 	summary := "Restored from version " + targetVersion.CreatedAt.Format("Jan 2, 2006 3:04 PM")
 	input := models.ItemUpdate{
 		Content:        &content,
 		ChangeSummary:  summary,
-		LastModifiedBy: "user",
-		Source:         "web",
+		LastModifiedBy: restoreActor,
+		Source:         restoreSource,
 		// A restore must always leave an undo point + a version bracketing the
 		// content it moves items.content back to, even on a repeat restore within
 		// the version-throttle window (VersionThrottleInterval = 1h).

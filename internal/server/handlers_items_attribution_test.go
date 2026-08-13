@@ -1,0 +1,206 @@
+package server
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+)
+
+// BUG-2542. Two write paths took the actor from actorFromRequest and dropped
+// it: item CREATE discarded it entirely (keeping only source), and the
+// single-item PATCH never set LastModifiedBy at all. Both then fell through to
+// the store's `"user"` defaults, so an item created and edited exclusively by
+// an agent — one that DID send X-Pad-Agent — read back as human-authored.
+//
+// Every case runs twice, agent and human, because the bug's signature is that
+// the two are indistinguishable. A test that only asserted the agent leg would
+// pass against a server that hardcoded "agent", which is the same defect
+// pointing the other way.
+func TestItemAttribution_AgentVsHuman(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		agent string // X-Pad-Agent value; empty = human
+		want  string
+	}{
+		{name: "agent write", agent: "claude-code", want: "agent"},
+		{name: "human write (control)", agent: "", want: "user"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+			ws := createTestWorkspaceViaAPI(t, srv)
+
+			created := doAttributionRequest(t, srv, tc.agent, "POST",
+				"/api/v1/workspaces/"+ws+"/collections/tasks/items",
+				map[string]any{"title": "attribution probe"})
+			var item models.Item
+			decodeAttributionBody(t, created, &item)
+
+			if item.CreatedBy != tc.want {
+				t.Errorf("created_by = %q, want %q (X-Pad-Agent=%q)", item.CreatedBy, tc.want, tc.agent)
+			}
+			// Source is pre-existing behaviour and must not regress. Both legs
+			// authenticate the same way here (no Authorization header, no API
+			// token), so actorFromRequest returns "web" for both — assert the
+			// value, not merely that something was written.
+			if item.Source != "web" {
+				t.Errorf("source = %q, want %q", item.Source, "web")
+			}
+
+			// The updater is deliberately the OTHER kind of writer. Patching
+			// with the same one proves nothing: insertItemTx seeds
+			// last_modified_by FROM created_by, so a same-writer update leaves
+			// the expected value in place whether or not the PATCH stamps
+			// anything — verified by reverting the update stamp alone, which
+			// that version of this test passed. The cross leg is the only
+			// shape where the update stamp is the sole mechanism that can
+			// produce the result.
+			crossAgent, crossWant := "", "user"
+			if tc.agent == "" {
+				crossAgent, crossWant = "claude-code", "agent"
+			}
+			updated := doAttributionRequest(t, srv, crossAgent, "PATCH",
+				"/api/v1/workspaces/"+ws+"/items/"+item.Slug,
+				map[string]any{"title": "attribution probe (edited)"})
+			var after models.Item
+			decodeAttributionBody(t, updated, &after)
+
+			if after.LastModifiedBy != crossWant {
+				t.Errorf("last_modified_by after a %s edit = %q, want %q (creator was %q)",
+					crossWant, after.LastModifiedBy, crossWant, tc.want)
+			}
+			// created_by must NOT be rewritten by whoever edited it.
+			if after.CreatedBy != tc.want {
+				t.Errorf("created_by after update = %q, want %q — an edit must not restamp the creator", after.CreatedBy, tc.want)
+			}
+		})
+	}
+}
+
+// An explicit body value still wins, so a caller that knows better than the
+// header (an agent recording a write it made on a human's behalf, say) is not
+// overridden by it. This is the contract the Source field already had.
+func TestItemAttribution_ExplicitBodyValueWins(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+
+	rr := doAttributionRequest(t, srv, "claude-code", "POST",
+		"/api/v1/workspaces/"+ws+"/collections/tasks/items",
+		map[string]any{"title": "explicit", "created_by": "user"})
+	var item models.Item
+	decodeAttributionBody(t, rr, &item)
+
+	if item.CreatedBy != "user" {
+		t.Errorf("created_by = %q, want %q — an explicit body value must beat the header", item.CreatedBy, "user")
+	}
+}
+
+func doAttributionRequest(t *testing.T, srv *Server, agent, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var r io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("marshal body: %v", err)
+		}
+		r = bytes.NewReader(data)
+	}
+	req := httptest.NewRequest(method, path, r)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if agent != "" {
+		req.Header.Set("X-Pad-Agent", agent)
+	}
+	req.RemoteAddr = "192.0.2.1:1234"
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+	if rr.Code != 200 && rr.Code != 201 {
+		t.Fatalf("%s %s = %d: %s", method, path, rr.Code, rr.Body.String())
+	}
+	return rr
+}
+
+func decodeAttributionBody(t *testing.T, rr *httptest.ResponseRecorder, out any) {
+	t.Helper()
+	if err := json.Unmarshal(rr.Body.Bytes(), out); err != nil {
+		t.Fatalf("decode response: %v (body: %s)", err, rr.Body.String())
+	}
+}
+
+func createTestWorkspaceViaAPI(t *testing.T, srv *Server) string {
+	t.Helper()
+	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]any{
+		"name": "Attribution", "slug": "attribution", "template": "startup",
+	})
+	if rr.Code != 200 && rr.Code != 201 {
+		t.Fatalf("create workspace = %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws struct {
+		Slug string `json:"slug"`
+	}
+	decodeAttributionBody(t, rr, &ws)
+	if ws.Slug == "" {
+		t.Fatal("workspace create returned no slug")
+	}
+	return ws.Slug
+}
+
+// Non-parent links (blocks / blocked-by / relates) went through a different
+// store call than parent links and never carried the actor, so an agent's
+// `pad item block` recorded a human. Parent links were already correct, so the
+// human leg here is the control that proves the assertion isn't just reading a
+// hardcoded default.
+func TestItemLinkAttribution_AgentVsHuman(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		agent string
+		want  string
+	}{
+		{name: "agent link", agent: "claude-code", want: "agent"},
+		{name: "human link (control)", agent: "", want: "user"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testServer(t)
+			ws := createTestWorkspaceViaAPI(t, srv)
+
+			mk := func(title string) models.Item {
+				rr := doAttributionRequest(t, srv, tc.agent, "POST",
+					"/api/v1/workspaces/"+ws+"/collections/tasks/items",
+					map[string]any{"title": title})
+				var it models.Item
+				decodeAttributionBody(t, rr, &it)
+				return it
+			}
+			src := mk("link source")
+
+			// Every non-parent type in models.ItemLinkType*, not just
+			// `blocks`. They share routing, so one case would arguably do —
+			// but "shared routing makes the rest fine" is exactly the
+			// assumption a table costs nothing to stop assuming. It earned
+			// that immediately: the first version of this list included
+			// `blocked-by`, which is CLI surface sugar that inverts
+			// source/target into a `blocks` row, not a stored link type. The
+			// API rejects it with 400, on BOTH writer legs — which is also
+			// how you can tell that failure apart from an attribution one.
+			for _, linkType := range []string{"blocks", "related", "implements", "supersedes", "split_from"} {
+				t.Run(linkType, func(t *testing.T) {
+					target := mk("link target " + linkType)
+					rr := doAttributionRequest(t, srv, tc.agent, "POST",
+						"/api/v1/workspaces/"+ws+"/items/"+src.Slug+"/links",
+						map[string]any{"target_id": target.ID, "link_type": linkType})
+					var link models.ItemLink
+					decodeAttributionBody(t, rr, &link)
+
+					if link.CreatedBy != tc.want {
+						t.Errorf("%s link created_by = %q, want %q (X-Pad-Agent=%q)",
+							linkType, link.CreatedBy, tc.want, tc.agent)
+					}
+				})
+			}
+		})
+	}
+}

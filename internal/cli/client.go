@@ -69,10 +69,11 @@ func NewClientFromURL(baseURL string) *Client {
 		}
 	}
 
-	// Auto-load agent name from .pad.toml if available
-	if pt, _ := LoadPadToml(); pt != nil && pt.AgentName != "" {
-		c.agentName = pt.AgentName
-	}
+	// Resolve the agent identity that becomes X-Pad-Agent. Used to read
+	// .pad.toml's agent_name and nothing else, which meant any workspace that
+	// had not opted in recorded agent writes as human ones (BUG-2542). See
+	// ResolveAgentName for the precedence and for what this signal cannot do.
+	c.agentName = ResolveAgentName()
 
 	return c
 }
