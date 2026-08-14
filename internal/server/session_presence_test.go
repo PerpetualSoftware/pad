@@ -14,9 +14,9 @@ func TestMemorySessionPresence_AddListRemove(t *testing.T) {
 		t.Fatalf("expected no sessions for an unknown user, got %d", len(got))
 	}
 
-	a := p.Add("u1", "docapp")
-	b := p.Add("u1", "voiapp")
-	other := p.Add("u2", "poker")
+	a := p.Add("u1", SessionIdentity{Label: "docapp"})
+	b := p.Add("u1", SessionIdentity{Label: "voiapp"})
+	other := p.Add("u2", SessionIdentity{Label: "poker"})
 
 	if a == b {
 		t.Fatal("two connections for the same user must get distinct ids")
@@ -57,7 +57,7 @@ func TestMemorySessionPresence_RemoveIsForgiving(t *testing.T) {
 	p.Remove("nobody", "no-such-session") // unknown user
 	p.Remove("u1", "")                    // empty id (Add never ran)
 
-	id := p.Add("u1", "")
+	id := p.Add("u1", SessionIdentity{})
 	p.Remove("u1", id)
 	p.Remove("u1", id) // double-remove: idempotent, not a panic
 
@@ -106,7 +106,7 @@ func TestMemorySessionPresence_ListIsOldestFirstAndStable(t *testing.T) {
 func TestMemorySessionPresence_ListReturnsACopy(t *testing.T) {
 	t.Parallel()
 	p := NewMemorySessionPresence()
-	id := p.Add("u1", "docapp")
+	id := p.Add("u1", SessionIdentity{Label: "docapp"})
 
 	got := p.ListForUser("u1")
 	got[0].Label = "tampered"
@@ -133,7 +133,7 @@ func TestMemorySessionPresence_ConcurrentAccess(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
-				id := p.Add("u1", "")
+				id := p.Add("u1", SessionIdentity{})
 				p.ListForUser("u1")
 				p.Remove("u1", id)
 			}

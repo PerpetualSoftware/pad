@@ -138,10 +138,11 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// nowhere-push this feature exists to prevent, but with a
 	// confident label on it.
 	//
-	// The label is empty until S2 (TASK-2560) teaches the client to
-	// carry its `pad session register` identity; a count needs no name.
+	// The identity is whatever the client claimed in its request
+	// headers (S2, TASK-2560) — sanitized, never verified, and empty
+	// for any client that doesn't say. See SessionIdentity.
 	if s.sessionPresence != nil {
-		sessionID := s.sessionPresence.Add(user.ID, "")
+		sessionID := s.sessionPresence.Add(user.ID, parseSessionIdentity(r))
 		defer s.sessionPresence.Remove(user.ID, sessionID)
 	}
 

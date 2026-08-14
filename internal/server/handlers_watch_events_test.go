@@ -32,6 +32,15 @@ type watchSSEEvent struct {
 // token and returns a channel of parsed SSE events.
 func connectWatchStream(ctx context.Context, t *testing.T, baseURL, token string) <-chan watchSSEEvent {
 	t.Helper()
+	return connectWatchStreamWithHeaders(ctx, t, baseURL, token, nil)
+}
+
+// connectWatchStreamWithHeaders is connectWatchStream plus arbitrary
+// request headers — the seam the session-identity headers need
+// (PLAN-2558 S2, TASK-2560), since those ride the stream request
+// itself.
+func connectWatchStreamWithHeaders(ctx context.Context, t *testing.T, baseURL, token string, headers map[string]string) <-chan watchSSEEvent {
+	t.Helper()
 	ch := make(chan watchSSEEvent, 32)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/api/v1/events/stream", nil)
@@ -40,6 +49,9 @@ func connectWatchStream(ctx context.Context, t *testing.T, baseURL, token string
 	}
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 
 	resp, err := http.DefaultClient.Do(req)

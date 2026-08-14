@@ -54,13 +54,31 @@ import (
 // LiveSession is one currently-connected user-scoped event stream —
 // i.e. one `GET /api/v1/events/stream` connection being held open.
 //
-// The identity fields are deliberately thin in S1. Label is empty until
-// S2 teaches the stream connection to carry the `pad session register`
-// payload (cwd basename, pid) it already writes to
-// ~/.pad/sessions/<pid>.json; until then a session is an opaque id and
-// a connect time, which is all a COUNT needs. Note that S2 must send
-// the label only — never messaging_socket_path, which is local-machine
-// state with no business crossing the wire.
+// STALENESS (moved here in S2 from where S1 left it, wedged above
+// Label, where it read as documenting the name rather than the entry —
+// it is a property of every field below). A session in this list is
+// "connected" as of the last time the server could tell, which is not
+// the same as "connected now". A CLEAN disconnect deregisters
+// immediately (the stream handler's ctx.Done fires and its defer runs).
+// An UNGRACEFUL one — half-open TCP, closed laptop, dropped network —
+// is invisible to the server until the next keepalive write fails, and
+// watchEventsKeepaliveInterval is 30s. So this list can name a listener
+// that is already gone, for up to ~30 seconds.
+//
+// That bound is acceptable for push, which is fire-and-forget either
+// way: a push to a session that died 5 seconds ago costs a message that
+// would have been lost regardless. It is NOT acceptable as a delivery
+// guarantee, and consumers must not upgrade it into one — "one session
+// connected" is honest, "this will be delivered" is not (PLAN-2558 S3).
+//
+// Shortening the window means shortening the keepalive, which costs
+// every idle connection real traffic. Not worth it for a
+// fire-and-forget channel; revisit only if a consumer appears that
+// genuinely needs delivery confidence, and give that consumer an ack
+// rather than a faster heartbeat.
+//
+// Label and PID arrive from the client (S2) and are self-declared —
+// see SessionIdentity.
 type LiveSession struct {
 	// ID is server-generated per connection, not per client. A client
 	// that reconnects (including the Last-Event-ID resume path) gets a
@@ -68,33 +86,46 @@ type LiveSession struct {
 	// resumed stream is a different open connection. Callers must not
 	// treat this as a stable client identity.
 	ID string `json:"id"`
-	// STALENESS. A session in this list is "connected" as of the last
-	// time the server could tell, which is not the same as "connected
-	// now". A CLEAN disconnect deregisters immediately (the stream
-	// handler's ctx.Done fires and its defer runs). An UNGRACEFUL one
-	// — half-open TCP, closed laptop, dropped network — is invisible
-	// to the server until the next keepalive write fails, and
-	// watchEventsKeepaliveInterval is 30s. So this list can name a
-	// listener that is already gone, for up to ~30 seconds.
-	//
-	// That bound is acceptable for push, which is fire-and-forget
-	// either way: a push to a session that died 5 seconds ago costs a
-	// message that would have been lost regardless. It is NOT
-	// acceptable as a delivery guarantee, and consumers must not
-	// upgrade it into one — "one session connected" is honest, "this
-	// will be delivered" is not (PLAN-2558 S3).
-	//
-	// Shortening the window means shortening the keepalive, which
-	// costs every idle connection real traffic. Not worth it for a
-	// fire-and-forget channel; revisit only if a consumer appears that
-	// genuinely needs delivery confidence, and give that consumer an
-	// ack rather than a faster heartbeat.
 	// Label is a human-meaningful name for the session ("docapp"),
-	// populated in S2. Empty means "unlabelled", not "unknown user" —
+	// populated in S2 from the connecting client's working-directory
+	// basename. Empty means "unlabelled", not "unknown user" —
 	// consumers should fall back to the id, never hide the session.
 	Label string `json:"label,omitempty"`
+	// PID is the connecting client process's own pid, or 0 when it
+	// didn't say (S2). It exists to disambiguate two sessions that
+	// share a label — two agents in the same checkout both report
+	// "docapp" — not to identify a process the server can act on.
+	PID int `json:"pid,omitempty"`
 	// ConnectedAt is when the stream opened, UTC.
 	ConnectedAt time.Time `json:"connected_at"`
+}
+
+// SessionIdentity is what a connecting client tells the server about
+// itself when it opens a stream (PLAN-2558 S2, TASK-2560).
+//
+// SELF-DECLARED, NOT VERIFIED — the same honesty-not-verification line
+// BUG-2542 drew for actor attribution. Nothing here is checked against
+// anything: a client can claim any label and any pid. That is
+// acceptable precisely because the blast radius is the caller's own
+// row — GET /api/v1/sessions is self-scoped with no admin view
+// (handlers_sessions.go), so the only list a lying client corrupts is
+// its own. Do not build anything on these fields that would need them
+// to be trustworthy; if that day comes, the fix is a server-side
+// identity, not tighter validation of a claim.
+//
+// What is deliberately NOT here: messaging_socket_path. `pad session
+// register` records it locally (internal/cli/session_registry.go) and
+// it must not cross the wire — a filesystem path on the user's machine
+// is of no use to the server and every use to anyone who shouldn't
+// have it. Nor does the full cwd cross: the basename is what a picker
+// needs, while the absolute path leaks the home directory (and usually
+// the account name) for no gain.
+type SessionIdentity struct {
+	// Label is a short human-meaningful name, already sanitized by
+	// parseSessionIdentity before it reaches the registry.
+	Label string
+	// PID is the client's own process id, or 0 for "not stated".
+	PID int
 }
 
 // SessionPresence tracks which of a user's event streams are open right
@@ -125,7 +156,9 @@ type LiveSession struct {
 type SessionPresence interface {
 	// Add registers a newly-opened stream for userID and returns the
 	// session's generated id, which the caller MUST pass to Remove.
-	Add(userID string, label string) string
+	// The identity is whatever the client claimed about itself, already
+	// sanitized — see SessionIdentity on why it is never trusted.
+	Add(userID string, ident SessionIdentity) string
 	// Remove deregisters a session. It must be idempotent and must not
 	// panic on an unknown id — the stream handler calls it from a defer
 	// that also runs on paths where Add may not have been reached.
@@ -154,12 +187,17 @@ func NewMemorySessionPresence() *MemorySessionPresence {
 }
 
 // Add implements SessionPresence.
-func (p *MemorySessionPresence) Add(userID string, label string) string {
+func (p *MemorySessionPresence) Add(userID string, ident SessionIdentity) string {
 	id := uuid.NewString()
 	// Stamp the time OUTSIDE the lock — time.Now can be comparatively
 	// slow on some platforms and there is no correctness reason to hold
 	// writers behind it.
-	sess := LiveSession{ID: id, Label: label, ConnectedAt: time.Now().UTC()}
+	sess := LiveSession{
+		ID:          id,
+		Label:       ident.Label,
+		PID:         ident.PID,
+		ConnectedAt: time.Now().UTC(),
+	}
 
 	p.mu.Lock()
 	defer p.mu.Unlock()

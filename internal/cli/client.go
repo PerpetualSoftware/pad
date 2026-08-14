@@ -365,6 +365,29 @@ func (c *Client) ListWatches() ([]models.Watch, error) {
 	return result, c.get("/watches", &result)
 }
 
+// StreamSessionIdentity is what a monitor tells the server about itself
+// when it opens the event stream (PLAN-2558 S2, TASK-2560), so the
+// server's presence registry can name the session instead of showing an
+// opaque uuid.
+//
+// The two fields are the wire-safe half of what `pad session register`
+// records locally (internal/cli/session_registry.go). What is missing
+// is the point: MessagingSocketPath never leaves this machine, and the
+// cwd travels as a BASENAME, because "docapp" is what a session picker
+// needs while "/home/dave/Dev/docapp" additionally hands over a home
+// directory and an account name.
+//
+// Both fields are optional. A zero value produces the pre-S2 behaviour:
+// an unlabelled session that still receives every event.
+type StreamSessionIdentity struct {
+	// Label names the session for a human — the working directory's
+	// basename ("docapp"). The server sanitizes and truncates it.
+	Label string
+	// PID is this process's own pid, for telling two sessions with the
+	// same label apart.
+	PID int
+}
+
 // NewWatchEventsStreamRequest builds an authenticated GET request for
 // GET /api/v1/events/stream (TASK-2533), used by
 // `pad watch --stream --for-session`. Deliberately returns the request
@@ -373,8 +396,8 @@ func (c *Client) ListWatches() ([]models.Watch, error) {
 // c.streamClient (1h timeout, sized for bundle transfers) would
 // eventually kill it — the caller must supply its own zero-timeout
 // http.Client. lastEventID, when non-empty, is sent as Last-Event-ID for
-// resume.
-func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID string) (*http.Request, error) {
+// resume; ident, when non-zero, announces the session (S2).
+func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID string, ident StreamSessionIdentity) (*http.Request, error) {
 	req, err := c.newRequest("GET", "/events/stream", nil)
 	if err != nil {
 		return nil, err
@@ -384,6 +407,12 @@ func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID st
 	req.Header.Set("Cache-Control", "no-cache")
 	if lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)
+	}
+	if ident.Label != "" {
+		req.Header.Set("X-Pad-Session-Label", ident.Label)
+	}
+	if ident.PID > 0 {
+		req.Header.Set("X-Pad-Session-Pid", strconv.Itoa(ident.PID))
 	}
 	return req, nil
 }
