@@ -247,23 +247,61 @@ func TestWatchEventsStream_SuppressesUnwatchedItem(t *testing.T) {
 	}
 }
 
-func TestWatchEventsStream_AddressedToYou_Assignment(t *testing.T) {
+// TestWatchEventsStream_AssignmentIsNotAddressedToYou is the inverted
+// successor of TASK-2533's TestWatchEventsStream_AddressedToYou_Assignment,
+// which asserted the opposite: that assigning an UNWATCHED item to the
+// connected user surfaced on their stream. IDEA-2544 Phase 2 (TASK-2551)
+// removed that delivery path outright — assignment is bookkeeping, push
+// is dispatch — so the same setup must now stay silent.
+//
+// Structured so a silent stream can't pass it by accident (team CONVE-12:
+// an end-state assertion is only evidence when no OTHER mechanism
+// produces the same end state). Both legs are published on the SAME bus
+// in order, so receiving the WATCHED item's assignment proves the
+// unwatched one was filtered rather than merely slow — no sleep, no
+// timing window. The control leg also pins the half of the rule that
+// SURVIVED: an unconditional watch still delivers assignment
+// notifications, exactly as `pad watch --help` promises.
+func TestWatchEventsStream_AssignmentIsNotAddressedToYou(t *testing.T) {
 	t.Parallel()
 	srv := testServerWithWatchEvents(t)
 	slug, item, tok, user := setupWatchTestUser(t, srv)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 
-	// No explicit watch — this must fire purely via addressed-to-you.
+	// The control item, watched BEFORE connecting (the watches map is
+	// loaded once at connect time — same rationale as the other
+	// watch-before-connect setups in this file).
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", tok.Token,
+		map[string]interface{}{"title": "Watched control", "fields": `{"status":"open"}`})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("seed watched item: %d %s", rr.Code, rr.Body.String())
+	}
+	var watched models.Item
+	parseJSON(t, rr, &watched)
+	rr = bearerCall(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+watched.Slug+"/watch", tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create watch: %d %s", rr.Code, rr.Body.String())
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch := connectWatchStream(ctx, t, ts.URL, tok.Token)
 	waitForWatchEvent(t, ch, 3*time.Second) // connected
 
-	rr := bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, tok.Token,
+	// Leg 1: assign the UNWATCHED item to the connected user. Pre-Phase-2
+	// this fired via addressed-to-you; it must now be silent.
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, tok.Token,
 		map[string]interface{}{"assigned_user_id": user.ID})
 	if rr.Code != http.StatusOK {
-		t.Fatalf("assign item: %d %s", rr.Code, rr.Body.String())
+		t.Fatalf("assign unwatched item: %d %s", rr.Code, rr.Body.String())
+	}
+	// Leg 2: assign the WATCHED item — must surface, proving the stream is
+	// live and leg 1's absence isn't just "nothing happened yet".
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+watched.Slug, tok.Token,
+		map[string]interface{}{"assigned_user_id": user.ID})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("assign watched item: %d %s", rr.Code, rr.Body.String())
 	}
 
 	ev := waitForWatchEvent(t, ch, 3*time.Second)
@@ -271,11 +309,11 @@ func TestWatchEventsStream_AddressedToYou_Assignment(t *testing.T) {
 	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
 		t.Fatalf("parse payload: %v", err)
 	}
+	if payload.ItemRef != watched.Ref {
+		t.Fatalf("expected the WATCHED item's ref %q first, got %q — assignment is still being delivered addressed-to-you", watched.Ref, payload.ItemRef)
+	}
 	if payload.Kind != watchevents.KindAssignment {
 		t.Fatalf("expected kind %q, got %q", watchevents.KindAssignment, payload.Kind)
-	}
-	if payload.ItemRef != item.Ref {
-		t.Fatalf("expected item_ref %q, got %q", item.Ref, payload.ItemRef)
 	}
 }
 
@@ -414,15 +452,26 @@ func TestWatchEventsStream_ReplyNotification(t *testing.T) {
 // TestWatchEventsStream_BulkAssignFires exercises the producer-coverage
 // claim in publishWatchNotifications' doc comment (TASK-2533 audit): a
 // bulk "assign" op (which calls store.UpdateItem directly, bypassing
-// handleUpdateItem entirely) must still surface an addressed-to-you
-// assignment notification — proving the fix belongs at the store layer
+// handleUpdateItem entirely) must still surface an assignment
+// notification — proving the fix belongs at the store layer
 // (LastMutation), not in each individual HTTP handler.
+//
+// The delivery vehicle is an explicit WATCH on the item, not the
+// caller's own assignment: IDEA-2544 Phase 2 (TASK-2551) dropped
+// addressed-to-you assignment delivery, which is what this test used to
+// ride on. The producer claim under test is unchanged — only the reason
+// the notification reaches this stream is.
 func TestWatchEventsStream_BulkAssignFires(t *testing.T) {
 	t.Parallel()
 	srv := testServerWithWatchEvents(t)
 	slug, item, tok, user := setupWatchTestUser(t, srv)
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
+
+	rr0 := bearerCall(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/watch", tok.Token, nil)
+	if rr0.Code != http.StatusOK {
+		t.Fatalf("create watch: %d %s", rr0.Code, rr0.Body.String())
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -553,12 +602,21 @@ func TestWatchNotificationVisible_PredicateMatchesOnlyTargetValue(t *testing.T) 
 	}
 }
 
-func TestWatchNotificationVisible_AddressedToYouIgnoresWatchList(t *testing.T) {
+// TestWatchNotificationVisible_AssignmentToYouNeedsAWatch replaces
+// TASK-2533's TestWatchNotificationVisible_AddressedToYouIgnoresWatchList,
+// which asserted the exact opposite. IDEA-2544 Phase 2 (TASK-2551):
+// assignment is no longer addressed traffic, so being the new assignee
+// buys nothing — a watch is now the ONLY way a KindAssignment
+// notification reaches a caller. Both legs run against the same
+// notification so the watch map is provably the only variable.
+func TestWatchNotificationVisible_AssignmentToYouNeedsAWatch(t *testing.T) {
 	t.Parallel()
-	watches := map[string]string{} // no watches at all
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindAssignment, AssignedUserID: "user-1"}
-	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
-		t.Fatal("expected an assignment-to-you notification to be visible with no watch")
+	if watchNotificationVisible(map[string]string{}, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+		t.Fatal("expected an assignment-to-you notification to be denied with no watch on the item")
+	}
+	if !watchNotificationVisible(map[string]string{"item-1": ""}, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+		t.Fatal("expected the same assignment to be visible to a caller holding an unconditional watch")
 	}
 }
 
@@ -568,6 +626,25 @@ func TestWatchNotificationVisible_AssignmentToSomeoneElseDenied(t *testing.T) {
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindAssignment, AssignedUserID: "user-2"}
 	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
 		t.Fatal("expected an assignment to someone else to be denied")
+	}
+}
+
+// TestWatchNotificationVisible_AssignmentToSomeoneElseVisibleToWatcher
+// pins the deliberate asymmetry between assignment and push after
+// IDEA-2544 Phase 2. Push is private dispatch and is EXCLUSIVE of
+// watch-matched delivery (see the Push* tests below): an unconditional
+// watch must not leak a push addressed to someone else. An assignment is
+// an ordinary item-level fact, so the opposite is true — a watcher is
+// entitled to see who the item got assigned to, whoever that is. Without
+// this test, deleting the KindAssignment fall-through in favour of a
+// push-style `return n.AssignedUserID == userID` would look correct: the
+// Phase 2 tests above would all still pass.
+func TestWatchNotificationVisible_AssignmentToSomeoneElseVisibleToWatcher(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{"item-1": ""} // unconditional watch
+	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindAssignment, AssignedUserID: "user-2"}
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+		t.Fatal("expected an unconditional watcher to see an assignment to someone else — an assignment is an item-level fact, not private dispatch")
 	}
 }
 
@@ -653,25 +730,33 @@ func TestWatchNotificationVisible_PushStillGatedByAccess(t *testing.T) {
 	}
 }
 
-// TestWatchNotificationVisible_AddressedToYouStillGatedByAccess covers
+// TestWatchNotificationVisible_AssignmentStillGatedByAccess covers
 // TASK-2533 codex round 2 finding 2: the addressed-to-you branch used to
 // return true unconditionally, with NO access check — an item assigned
 // to a "specific"-access member whose granted collections don't include
 // it (validateAssignmentScope only checks workspace membership, never
 // collection access — a completely ordinary, no-revocation-needed
 // scenario) would still leak. A zero-value watchAccessVisibility (no
-// full access, no granted collections/items) must deny an
-// assignment-to-you notification just as it would a watch-matched one.
-func TestWatchNotificationVisible_AddressedToYouStillGatedByAccess(t *testing.T) {
+// full access, no granted collections/items) must deny an assignment
+// notification just as it would any other kind.
+//
+// IDEA-2544 Phase 2 (TASK-2551) deleted that branch, so the specific
+// leak is now structurally impossible — but the ordering rule it taught
+// (access is checked FIRST, uniformly, before any per-kind logic) is
+// still live and still worth pinning. The caller therefore holds an
+// unconditional WATCH here: without it the denial leg would pass for the
+// uninteresting reason that nothing matches at all (team CONVE-12), and
+// the access check would never be the thing under test.
+func TestWatchNotificationVisible_AssignmentStillGatedByAccess(t *testing.T) {
 	t.Parallel()
-	watches := map[string]string{}
+	watches := map[string]string{"item-1": ""}
 	deny := watchAccessVisibility{} // zero value: nothing visible
 	n := watchevents.Notification{
 		ItemID: "item-1", CollectionID: "coll-1",
 		Kind: watchevents.KindAssignment, AssignedUserID: "user-1",
 	}
 	if watchNotificationVisible(watches, deny, "user-1", n) {
-		t.Fatal("expected an assignment-to-you notification to be denied when the caller has no current access to the item's collection")
+		t.Fatal("expected a watch-matched assignment notification to be denied when the caller has no current access to the item's collection")
 	}
 
 	allow := watchAccessVisibility{visibleCollIDs: map[string]bool{"coll-1": true}}
@@ -688,6 +773,19 @@ func TestWatchNotificationVisible_AddressedToYouStillGatedByAccess(t *testing.T)
 // collection access, so this needs no revocation timing at all, just an
 // ordinary assignment. The addressed-to-you path used to deliver it
 // anyway with zero access check.
+//
+// Honest limitation after IDEA-2544 Phase 2 (TASK-2551), stated rather
+// than left for a reader to assume otherwise (team CONVE-12): the
+// restricted member now has TWO independent reasons not to receive this
+// assignment — no access to "tasks" AND no watch on the item — and this
+// test cannot separate them, because loadWatchPredicates drops watches
+// on inaccessible items before the visibility check ever runs, so the
+// setup that would isolate the access gate is unreachable over HTTP. It
+// is kept as an end-to-end guard that the leak stays closed, not as
+// evidence of WHICH gate closes it; the discriminating coverage for that
+// is TestWatchNotificationVisible_AssignmentStillGatedByAccess (unit,
+// watch present) and the mid-stream revocation tests in
+// handlers_watch_vis_cache_test.go.
 func TestWatchEventsStream_AssignmentOutsideMemberCollectionAccessDenied(t *testing.T) {
 	t.Parallel()
 	srv := testServerWithWatchEvents(t)

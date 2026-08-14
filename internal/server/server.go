@@ -1158,7 +1158,7 @@ func (s *Server) setupRouter() {
 
 		// User-scoped watch/nudge event stream (TASK-2533, DOC-2479).
 		// Unlike /api/v1/events above, this is NOT workspace-scoped — a
-		// caller's watches and addressed-to-you assignments can span
+		// caller's watches and addressed pushes can span
 		// every workspace they belong to. Lives alongside the other SSE
 		// endpoint for the same "outside jsonContentType, inherits auth"
 		// reason.
