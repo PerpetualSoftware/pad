@@ -182,6 +182,22 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Allow Go to fetch the toolchain go.mod pins
+        # This job never needed the override before: `go-version-file` reads
+        # go.mod's `go` directive, so setup-go installed exactly the floor and
+        # GOTOOLCHAIN=local had nothing to block. BUG-2565's `toolchain
+        # go1.26.6` changes that — under `local` this job would keep smoke-
+        # testing a 1.26.5 binary while every other job (and every release
+        # artifact) moved to 1.26.6, which is the pins-disagree failure mode
+        # rather than a gate failure: nothing here goes red, the platform
+        # smoke coverage just silently stops matching what ships.
+        #
+        # pwsh, not bash, in this job (see `defaults.run.shell` above), so
+        # this uses the documented Out-File form with an explicit encoding
+        # rather than `>>` — PowerShell's redirection encoding is version-
+        # dependent and a UTF-16 $GITHUB_ENV line is silently ignored.
+        run: '"GOTOOLCHAIN=auto" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8'
+
       - name: Create web build placeholder
         run: |
           New-Item -ItemType Directory -Force web/build | Out-Null
