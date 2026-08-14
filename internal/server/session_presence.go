@@ -68,6 +68,27 @@ type LiveSession struct {
 	// resumed stream is a different open connection. Callers must not
 	// treat this as a stable client identity.
 	ID string `json:"id"`
+	// STALENESS. A session in this list is "connected" as of the last
+	// time the server could tell, which is not the same as "connected
+	// now". A CLEAN disconnect deregisters immediately (the stream
+	// handler's ctx.Done fires and its defer runs). An UNGRACEFUL one
+	// — half-open TCP, closed laptop, dropped network — is invisible
+	// to the server until the next keepalive write fails, and
+	// watchEventsKeepaliveInterval is 30s. So this list can name a
+	// listener that is already gone, for up to ~30 seconds.
+	//
+	// That bound is acceptable for push, which is fire-and-forget
+	// either way: a push to a session that died 5 seconds ago costs a
+	// message that would have been lost regardless. It is NOT
+	// acceptable as a delivery guarantee, and consumers must not
+	// upgrade it into one — "one session connected" is honest, "this
+	// will be delivered" is not (PLAN-2558 S3).
+	//
+	// Shortening the window means shortening the keepalive, which
+	// costs every idle connection real traffic. Not worth it for a
+	// fire-and-forget channel; revisit only if a consumer appears that
+	// genuinely needs delivery confidence, and give that consumer an
+	// ack rather than a faster heartbeat.
 	// Label is a human-meaningful name for the session ("docapp"),
 	// populated in S2. Empty means "unlabelled", not "unknown user" —
 	// consumers should fall back to the id, never hide the session.
@@ -80,6 +101,27 @@ type LiveSession struct {
 // now. Implementations must be safe for concurrent use: Add/Remove are
 // called from each stream connection's own goroutine while ListForUser
 // is served from unrelated request goroutines.
+//
+// CONSTRAINT ON ANY OUT-OF-PROCESS IMPLEMENTATION (codex round 2, P2,
+// refined). Server.Shutdown delegates to http.Server.Shutdown, and Go's
+// stdlib does NOT cancel an in-flight handler's request context there —
+// it waits for the handler to return. SSE handlers only return on their
+// own ctx.Done or a failed write, so a shutdown leaves stream handlers
+// (and their presence entries) hanging until something else knocks them
+// loose.
+//
+// For MemorySessionPresence this is harmless, and saying so is the
+// point: the registry lives in the process that is going away, so its
+// entries die with it. There is nothing to reap.
+//
+// A Redis-backed implementation does NOT inherit that mercy. Its
+// entries outlive the process that wrote them, so a hard shutdown or a
+// crash strands them, and the list starts naming sessions belonging to
+// an instance that no longer exists — permanently, not for 30 seconds.
+// Such an implementation MUST carry its own reaping story (TTL with
+// heartbeat renewal, or ownership keyed by instance id and swept on
+// startup). Do not port MemorySessionPresence's lifecycle assumptions
+// across; they are load-bearing on the in-process case only.
 type SessionPresence interface {
 	// Add registers a newly-opened stream for userID and returns the
 	// session's generated id, which the caller MUST pass to Remove.

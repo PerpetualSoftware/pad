@@ -50,6 +50,22 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Codex round 2, P2. writeJSON sets no Cache-Control and the
+	// jsonContentType middleware only sets Content-Type, so without
+	// this the response is heuristically cacheable. Two reasons that's
+	// wrong here, beyond matching the house pattern for per-user
+	// sensitive responses (handlers_attachments.go:585):
+	//
+	//  1. Cross-context staleness. This body is scoped to ONE user; a
+	//     shared cache serving it to another is a presence leak about a
+	//     person, which is the same boundary this endpoint's missing
+	//     admin view exists to hold.
+	//  2. It is a liveness answer with a short shelf life (see
+	//     LiveSession's staleness note). A cached "1 session connected"
+	//     is precisely the confident-but-wrong answer the whole slice
+	//     exists to prevent.
+	w.Header().Set("Cache-Control", "private, no-store")
+
 	sessions := s.sessionPresence.ListForUser(user.ID)
 	writeJSON(w, http.StatusOK, sessionsResponse{Sessions: sessions, Count: len(sessions)})
 }

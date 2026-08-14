@@ -87,6 +87,33 @@ func TestListSessions_EmptyWhenNothingConnected(t *testing.T) {
 	}
 }
 
+// TestListSessions_IsNotCacheable pins the Cache-Control header (codex
+// round 2, P2). The response is both per-user sensitive and short-lived
+// by nature, so a cached copy is wrong in two independent ways — see
+// handleListSessions.
+func TestListSessions_IsNotCacheable(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	_, _, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/sessions", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("expected Cache-Control %q, got %q", "private, no-store", got)
+	}
+}
+
 // TestListSessions_ReflectsAnOpenStream is the end-to-end shape of the
 // slice: open a stream, see it; drop the stream, stop seeing it. The
 // disconnect half is the one that matters — a leaked entry makes the UI
