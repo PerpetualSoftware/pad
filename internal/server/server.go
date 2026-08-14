@@ -47,6 +47,7 @@ type Server struct {
 	webFS                 fs.FS                // embedded web UI static files (optional)
 	events                events.EventBus      // real-time event bus (optional)
 	watchEvents           watchevents.Bus      // watch/nudge notification bus (optional, TASK-2533)
+	sessionPresence       SessionPresence      // live event-stream connections per user (optional, PLAN-2558 S1)
 	collab                *collab.RoomManager  // Yjs collab room manager (PLAN-1248); optional
 	webhooks              *webhooks.Dispatcher // webhook dispatcher (optional)
 	email                 *email.Sender        // transactional email sender (optional)
@@ -728,6 +729,16 @@ func (s *Server) SetWatchEventsBus(bus watchevents.Bus) {
 	s.watchEvents = bus
 }
 
+// SetSessionPresence attaches the live-session registry read by
+// GET /api/v1/sessions and written by GET /api/v1/events/stream
+// (PLAN-2558 S1). Nil-checked at both ends, so a server constructed
+// without one still streams events — it just can't answer "who is
+// listening?", and says so with a 503 rather than an empty list (see
+// handleListSessions).
+func (s *Server) SetSessionPresence(p SessionPresence) {
+	s.sessionPresence = p
+}
+
 // SetCollabRoomManager attaches a Yjs collab RoomManager (PLAN-1248).
 // When set, the /api/v1/collab/{itemID} WebSocket endpoint hands new
 // connections to the manager for op-log replay + fan-out. When nil,
@@ -1152,6 +1163,15 @@ func (s *Server) setupRouter() {
 		// endpoint for the same "outside jsonContentType, inherits auth"
 		// reason.
 		r.Get("/api/v1/events/stream", s.handleWatchEventsStream)
+
+		// Live-session presence (PLAN-2558 S1) — the READ side of the
+		// registry the stream above writes. Mounted here beside the
+		// endpoint it reports on rather than in the /api/v1 Route block
+		// below: the two are one feature, and a reader asking "what
+		// fills this list?" should find the answer on the adjacent
+		// line. Self-scoped; see handleListSessions on why there is
+		// deliberately no admin view.
+		r.Get("/api/v1/sessions", s.handleListSessions)
 
 		// WebSocket endpoint for Yjs-based collaborative editing on a
 		// single item (PLAN-1248). Lives outside jsonContentType for

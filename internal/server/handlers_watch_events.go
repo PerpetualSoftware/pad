@@ -122,6 +122,26 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	}
 	defer s.watchEvents.Unsubscribe(ch)
 
+	// Presence registration (PLAN-2558 S1). Deliberately bracketed to
+	// the SUBSCRIPTION's lifetime rather than the request's: a session
+	// counts as "listening" for exactly as long as it can actually
+	// receive a notification, which is what a push's honesty check is
+	// really asking about. Registering here also means the defer pairs
+	// with Unsubscribe's on the adjacent line, so every exit path below
+	// — client disconnect via ctx.Done, a failed SSE write, the
+	// replay-loop returns, the reval-tick paths — releases both or
+	// neither. A leaked entry is the one failure that matters: it makes
+	// the UI claim a listener that is gone, i.e. exactly the silent-
+	// nowhere-push this feature exists to prevent, but with a
+	// confident label on it.
+	//
+	// The label is empty until S2 (TASK-2560) teaches the client to
+	// carry its `pad session register` identity; a count needs no name.
+	if s.sessionPresence != nil {
+		sessionID := s.sessionPresence.Add(user.ID, "")
+		defer s.sessionPresence.Remove(user.ID, sessionID)
+	}
+
 	watches, werr := s.loadWatchPredicates(r, user.ID)
 	if werr != nil {
 		slog.Warn("watch-events: failed to load caller's watches, denying watch-scoped matches",
