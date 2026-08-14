@@ -662,6 +662,17 @@ func serveCmd() *cobra.Command {
 			// eventBus above, which branches on PAD_REDIS_URL).
 			srv.SetWatchEventsBus(watchevents.New())
 
+			// Live-session presence registry (PLAN-2558 S1). Wired
+			// unconditionally for the same reason and with the same
+			// caveat as the watch bus directly above: in-process only,
+			// no Redis-backed implementation yet. It reports on the
+			// same connections that bus feeds, so the two share a
+			// lifetime and a limitation — see
+			// internal/server/session_presence.go's SINGLE-PROCESS
+			// LIMITATION note before putting the web-UI push surface
+			// (PLAN-2558 S3) in front of a multi-process deployment.
+			srv.SetSessionPresence(server.NewMemorySessionPresence())
+
 			// Yjs collab room manager (PLAN-1248). Single-instance only
 			// today; multi-replica fanout via Redis is a deferred IDEA.
 			// MemoryOpBus is in-process; the OpBus interface keeps the
