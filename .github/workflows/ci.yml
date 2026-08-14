@@ -179,24 +179,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        # No GOTOOLCHAIN=auto step here, unlike every other Go job in this
+        # file, and the reason is worth stating because the asymmetry looks
+        # like an oversight: `go-version-file` makes setup-go PARSE go.mod
+        # itself, and v7's parser prefers the `toolchain` directive over the
+        # `go` directive, so it installs go1.26.6 (BUG-2565) directly. The
+        # GOTOOLCHAIN=local it then exports is satisfied by that install —
+        # nothing left to fetch. The other jobs pass `go-version: "1.26"`,
+        # which never reads go.mod at all, so they genuinely need `auto` to
+        # pick the toolchain line up at build time.
+        #
+        # The one way this silently regresses: setup-go's parser falls back
+        # to the `go` directive when GOTOOLCHAIN is ALREADY `local` in the
+        # environment at parse time (installer.ts parseGoVersionFile). So if
+        # a job- or workflow-level `env: GOTOOLCHAIN: local` is ever added
+        # above this step, these smoke binaries drop to the 1.26.5 floor
+        # while everything else ships 1.26.6 — no red, just coverage that
+        # quietly stops matching the artifact.
         with:
           go-version-file: go.mod
-
-      - name: Allow Go to fetch the toolchain go.mod pins
-        # This job never needed the override before: `go-version-file` reads
-        # go.mod's `go` directive, so setup-go installed exactly the floor and
-        # GOTOOLCHAIN=local had nothing to block. BUG-2565's `toolchain
-        # go1.26.6` changes that — under `local` this job would keep smoke-
-        # testing a 1.26.5 binary while every other job (and every release
-        # artifact) moved to 1.26.6, which is the pins-disagree failure mode
-        # rather than a gate failure: nothing here goes red, the platform
-        # smoke coverage just silently stops matching what ships.
-        #
-        # pwsh, not bash, in this job (see `defaults.run.shell` above), so
-        # this uses the documented Out-File form with an explicit encoding
-        # rather than `>>` — PowerShell's redirection encoding is version-
-        # dependent and a UTF-16 $GITHUB_ENV line is silently ignored.
-        run: '"GOTOOLCHAIN=auto" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8'
 
       - name: Create web build placeholder
         run: |
