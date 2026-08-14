@@ -2,6 +2,19 @@ module github.com/PerpetualSoftware/pad
 
 go 1.26.5
 
+// BUG-2565: build with go1.26.6, which fixes 8 reachable standard-library
+// advisories (GO-2026-5942 and friends — net.Resolver.LookupCNAME,
+// http.Client.Do) that turned CI's govulncheck gate red on 2026-08-13
+// without any commit causing it. A `toolchain` line, not a raise of the
+// `go` directive above, on purpose: GOTOOLCHAIN=auto (every GitHub
+// Actions job sets it) fetches 1.26.6 and stamps it into the binary,
+// while builders pinned to GOTOOLCHAIN=local ignore this line and keep
+// satisfying the 1.26.5 floor. nixpkgs nixos-26.05 still ships go 1.26.5,
+// so raising the floor would break the Nix build outright; see BUG-2567
+// for the Nix-packaged binary, which stays on 1.26.5 until nixpkgs
+// catches up.
+toolchain go1.26.6
+
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.2

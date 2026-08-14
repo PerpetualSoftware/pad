@@ -45,7 +45,15 @@ jobs:
         # its manifest (1.26.4 here), so every `go` command fails with
         # "go.mod requires go >= 1.26.5 (running go 1.26.4)". Written AFTER
         # setup-go so it wins the $GITHUB_ENV last-write; `auto` lets Go pull
-        # 1.26.5 on demand. Added after #896 raised the go.mod floor.
+        # what go.mod asks for on demand. Added after #896 raised the go.mod
+        # floor.
+        #
+        # Load-bearing for the govulncheck step below as of BUG-2565: go.mod
+        # also carries `toolchain go1.26.6`, which is what actually gets
+        # stamped into the scanned binary and clears 8 reachable stdlib
+        # advisories. `auto` is what honours that line — under `local` the
+        # build silently falls back to whatever patch setup-go installed and
+        # the gate goes red again.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - name: Create web build placeholder for embed
@@ -261,7 +269,8 @@ jobs:
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job — setup-go pins
-        # GOTOOLCHAIN=local, blocking the 1.26.5 fetch go.mod requires.
+        # GOTOOLCHAIN=local, blocking the toolchain fetch go.mod requires
+        # (`go 1.26.5` floor, `toolchain go1.26.6` per BUG-2565).
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - name: Create web build placeholder for embed
@@ -358,8 +367,9 @@ jobs:
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job — setup-go pins
-        # GOTOOLCHAIN=local, blocking the 1.26.5 fetch go.mod requires
-        # (the "Build pad binary" step below fails without this).
+        # GOTOOLCHAIN=local, blocking the toolchain fetch go.mod requires
+        # (`go 1.26.5` floor, `toolchain go1.26.6` per BUG-2565; the
+        # "Build pad binary" step below fails without this).
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0

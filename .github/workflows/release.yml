@@ -51,9 +51,12 @@ jobs:
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # actions/setup-go pins GOTOOLCHAIN=local, which blocks the toolchain
-        # go.mod requires (`go 1.26.5`) from being fetched. `auto`, written
-        # after setup-go so it wins the $GITHUB_ENV last-write, lets Go pull
-        # it on demand. Mirrors the CI workflow; see #896.
+        # go.mod requires (`go 1.26.5` floor, `toolchain go1.26.6`) from being
+        # fetched. `auto`, written after setup-go so it wins the $GITHUB_ENV
+        # last-write, lets Go pull it on demand. Mirrors the CI workflow; see
+        # #896. As of BUG-2565 this also decides which stdlib the RELEASED
+        # binaries carry — under `local` they would ship the 1.26.5 stdlib and
+        # its 8 reachable advisories.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
