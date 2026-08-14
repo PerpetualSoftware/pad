@@ -43,15 +43,21 @@ import (
 //
 // Known limitation (flagged, not fixed, in Phase 1): unlike the existing
 // SSE/webhook bulk path (publishBulkItemsEvent), this does NOT collapse
-// N per-item bulk mutations into one batch notification. A "bulk-assign
-// 50 items to me" would surface 50 individual assignment notifications
+// N per-item bulk mutations into one batch notification. A bulk mutation
+// touching 50 watched items still surfaces 50 individual notifications
 // to the plugin monitor in a burst — in tension with PLAN-2469's noise-
 // discipline principle. Each notification is still correctly scoped by
-// the caller's own watches/addressed-to-you filter (a fundamentally
-// narrower audience than the workspace-wide SSE firehose the existing
-// batching was built to protect), so this is a burst-noise concern, not
-// a leak — deferred rather than building ad-hoc coalescing beyond what
-// DOC-2479 specs.
+// the caller's own watch filter (a fundamentally narrower audience than
+// the workspace-wide SSE firehose the existing batching was built to
+// protect), so this is a burst-noise concern, not a leak — deferred
+// rather than building ad-hoc coalescing beyond what DOC-2479 specs.
+//
+// IDEA-2544 Phase 2 (TASK-2551) shrank the worst case: the motivating
+// example was "bulk-assign 50 items to me", which sprayed 50
+// addressed-to-you notifications at someone who had asked for none of
+// them. Assignment no longer delivers that way, so the remaining burst
+// requires 50 items the caller explicitly watched — noise they opted
+// into, one notification per fact they asked to hear about.
 func (s *Server) publishWatchNotifications(workspaceID string, updated *models.Item, actor, actorName string) {
 	if s.watchEvents == nil || updated == nil || updated.LastMutation == nil {
 		return

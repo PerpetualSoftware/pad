@@ -79,9 +79,15 @@ type Notification struct {
 	ActorName string
 	Summary   string
 	// AssignedUserID is populated on Kind == KindAssignment with the
-	// item's NEW assignee (empty string = unassigned). The
-	// addressed-to-you check compares this directly against the
-	// connected caller's user ID — see server.sseWatchVisible.
+	// item's NEW assignee (empty string = unassigned). It no longer gates
+	// delivery: IDEA-2544 Phase 2 (TASK-2551) dropped assignment from the
+	// addressed-to-you stream entirely — assignment is bookkeeping, push
+	// is dispatch — so a KindAssignment notification now reaches a caller
+	// only via an explicit watch on the item, exactly like every other
+	// item-level fact (see server.watchNotificationVisible). Producers
+	// keep populating it: it's the assignment's payload, it costs
+	// nothing, and any future opt-in re-addressing (a per-watch flag, a
+	// config key) needs it in place to be a consumer-side change only.
 	AssignedUserID string
 	// TargetUserID is IDEA-2544's generalized addressed-to field:
 	// populated on Kind == KindPush with the user the push is addressed

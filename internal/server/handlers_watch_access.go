@@ -60,7 +60,7 @@ func (s *Server) filterWatchesByCurrentAccess(r *http.Request, userID string, wa
 }
 
 // watchAccessVisibility is filterWatchesByCurrentAccess's (and, as of
-// codex round 2 finding 2, the addressed-to-you check's) per-workspace
+// codex round 2 finding 2, the addressed-delivery check's) per-workspace
 // visibility snapshot. Deliberately keyed by ID (collection ID / item
 // ID), unlike handlers_events.go's sseVisibility, which is keyed by
 // collection SLUG because it routes live workspace-scoped events that
@@ -130,12 +130,12 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 // "every call site filters a caller's OWN watches, so this can't leak
 // another user's data." That reasoning held for watch-matched
 // notifications, but finding 2 is exactly the case where it doesn't:
-// the addressed-to-you/assignment path is now ALSO gated by this
-// function (handlers_watch_events.go), and an addressed-to-you
-// notification is, by definition, about something that happened TO the
+// the addressed-delivery path is now ALSO gated by this
+// function (handlers_watch_events.go), and an addressed
+// notification is, by definition, about something aimed AT the
 // connected user in a workspace — a bearer-borne admin token (a leaked
 // PAT, a compromised CI credential) being unconditionally trusted to see
-// EVERY workspace's assignment activity for "themselves" is exactly the
+// EVERY workspace's addressed traffic for "themselves" is exactly the
 // blast-radius BUG-1616 exists to bound. There is no watch-specific
 // exemption from that reasoning; this now mirrors computeSSEVisibility's
 // bearer-vs-cookie distinction exactly, so admin access to watch/nudge

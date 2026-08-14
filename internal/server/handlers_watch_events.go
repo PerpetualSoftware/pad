@@ -58,21 +58,24 @@ type watchEventPayload struct {
 //
 // Unlike handleSSE (GET /api/v1/events, workspace-scoped), this stream is
 // USER-scoped and spans every workspace the caller belongs to — a watch
-// or an assignment can land in any of them. It is filtered, server-side,
+// or a push can land in any of them. It is filtered, server-side,
 // to exactly two things (DR-2: no firehose, no wildcard subscriptions):
 //
 //  1. Notifications on an item the caller has an explicit watch on
 //     (internal/store's watches table), gated by that watch's optional
 //     `--until field=value` predicate.
-//  2. "Addressed to you": the item was JUST assigned to the caller.
-//     (Phase 1 narrowing, confirmed with the dispatcher: DOC-2479 also
-//     describes a "human-gate-shaped collection targets your ... active
-//     role" half of addressed-to-you, but this codebase has neither a
-//     Collection.Kind field nor any user→active-role binding to ground
-//     that mechanically — `pad session register` is the natural future
-//     hook for a session-carried role identity, see cmd_session.go. Only
-//     the assignment half is implemented; watchevents.KindAsk stays in
-//     the wire-contract enum with no producer until that exists.)
+//  2. "Addressed to you": traffic a user deliberately aimed at their own
+//     harness — today exactly KindPush (IDEA-2544 Phase 1). Assignment
+//     USED to qualify; IDEA-2544 Phase 2 (TASK-2551) removed it, because
+//     assignment is bookkeeping and push is dispatch — see
+//     watchNotificationVisible. watchevents.KindAsk is addressed traffic
+//     in the other direction (harness→human) and stays in the
+//     wire-contract enum with no producer: grounding DOC-2479's
+//     "human-gate-shaped collection targets your ... active role" half
+//     mechanically needs either a Collection.Kind field or a
+//     user→active-role binding, and this codebase has neither today
+//     (`pad session register` is the natural future hook for a
+//     session-carried role identity, see cmd_session.go).
 func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request) {
 	if s.watchEvents == nil {
 		writeError(w, http.StatusServiceUnavailable, "unavailable", "Watch event streaming is not available")
@@ -133,7 +136,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// codex round 5 finding 1).
 	consecutiveWatchReloadFailures := 0
 	// TASK-2533 codex round 2 finding 2: EVERY notification — watch-
-	// matched or addressed-to-you — must pass the same current-access
+	// matched or addressed (KindPush) — must pass the same current-access
 	// check before delivery, not just watch-matched ones. visCache
 	// resolves per-workspace visibility lazily (a notification's
 	// workspace isn't known in advance the way `watches`' workspaces
@@ -233,13 +236,14 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 				// exists. After maxConsecutiveWatchReloadFailures ticks
 				// of failure, fail closed on watch-matched delivery
 				// specifically: clear the set so it can no longer match
-				// anything stale. Addressed-to-you delivery is
-				// unaffected either way — it depends only on visCache,
-				// which was already refreshed above regardless of this
+				// anything stale. Addressed delivery (KindPush — see
+				// watchNotificationVisible) is unaffected either way:
+				// it depends only on TargetUserID and visCache, which
+				// was already refreshed above regardless of this
 				// failure.
 				if consecutiveWatchReloadFailures >= maxConsecutiveWatchReloadFailures {
 					if len(watches) > 0 {
-						slog.Warn("watch-events: watch-list reload failed repeatedly, clearing stale watch set (addressed-to-you delivery continues)",
+						slog.Warn("watch-events: watch-list reload failed repeatedly, clearing stale watch set (addressed push delivery continues)",
 							"user_id", user.ID, "consecutive_failures", consecutiveWatchReloadFailures, "error", ferr)
 						watches = map[string]string{}
 					}
@@ -396,14 +400,22 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 		return false
 	}
 
-	// Addressed-to-you: the item was just assigned to the caller. Fires
-	// regardless of whether the caller also holds an explicit watch on
-	// the item (a watch and an addressed-to-you event are independent
-	// reasons to be told) — gated above by the SAME access check a
-	// watch-matched notification gets, not a bespoke one.
-	if n.Kind == watchevents.KindAssignment && n.AssignedUserID != "" && n.AssignedUserID == userID {
-		return true
-	}
+	// IDEA-2544 Phase 2 (TASK-2551): assignment is NOT addressed traffic.
+	// There used to be a branch here delivering a KindAssignment
+	// notification to its new assignee whether or not they watched the
+	// item. Dave's product call (day-33) removed it outright — no opt-in
+	// flag, no config key: assignment is bookkeeping (who owns this),
+	// push is dispatch (where attention goes now), and conflating them
+	// meant one triage session assigning N items sprayed N notifications
+	// into every open session of the assignee. KindAssignment now reaches
+	// a caller only the way any other item-level fact does — via an
+	// explicit watch, matched below — which is what `pad watch --help`
+	// already promises an unconditional watch delivers. Producers still
+	// publish assignment notifications onto the bus (handlers_items.go,
+	// handlers_watch_notify.go) and Notification.AssignedUserID is still
+	// populated; only the addressed DELIVERY is gone, so a watcher's line
+	// is unchanged and re-introducing an opt-in later needs no producer
+	// work.
 
 	// Push (IDEA-2544 Phase 1) is semantically DIFFERENT from assignment,
 	// not just a same-shaped variant, and that difference is why this

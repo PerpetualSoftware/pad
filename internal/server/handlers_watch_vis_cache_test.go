@@ -208,29 +208,81 @@ func TestWatchEventsStream_StopsDeliveringAfterUserDisabled(t *testing.T) {
 // user kept receiving previously-visible content through the whole
 // error window. Reproduces this with a forced, persistent watch-list
 // reload fault (via the watchPredicatesLoadFault test seam) active
-// across the SAME tick the connected user is disabled on, and asserts
-// the addressed-to-you delivery path (which depends only on visCache,
-// never on the watch list) is denied anyway — proving reset() now runs
-// unconditionally rather than being coupled to the reload's success.
+// across the SAME tick the connected user's access is narrowed, and
+// asserts delivery for the now-invisible item is denied anyway —
+// proving reset() runs unconditionally rather than being coupled to the
+// reload's success.
 //
-// Uses "disabled" rather than "demoted admin" for the actor under test:
-// the admin-bypass path requires cookie-session auth (BUG-1616 is
-// bearer-vs-cookie gated), which this bearer-token HTTP/SSE test
-// harness doesn't exercise — round 3's TestWatchVisCache_DeniesAfterAdminDemotion
-// already covers visCache's OWN demotion handling directly at the unit
-// level. This test is about the CALLER's ordering bug in
-// handleWatchEventsStream's reval branch, not about re-proving
-// refreshUser's per-condition correctness, and "disabled" exercises the
-// identical reset()-must-run-unconditionally code path.
+// Two things this test has to keep true at once, and how it does it:
+//
+//   - The probe must ride WATCH-MATCHED delivery. It used to ride
+//     addressed-to-you assignment, which IDEA-2544 Phase 2 (TASK-2551)
+//     deleted; push, the surviving addressed path, is self-addressed
+//     only, so there is no way for a second actor to publish addressed
+//     traffic at a user whose access is being revoked underneath them.
+//   - A watch-matched probe brings a SECOND mechanism that produces the
+//     same silence: once maxConsecutiveWatchReloadFailures is crossed,
+//     the handler clears the watch set wholesale (round 5 finding 1,
+//     covered by the test below). A bare "nothing arrived" assertion
+//     would pass on that alone (team CONVE-12). The control leg closes
+//     it: a watch on an item in a STILL-granted collection must keep
+//     delivering in the same window, which is only possible while the
+//     watch set is still live — so the revoked item's silence can only
+//     be visCache.
+//
+// Uses collection-access revocation rather than "disabled" (round 4's
+// original vehicle) because a disabled user denies everything, control
+// leg included. Same reset()-must-run-unconditionally code path:
+// visCache.reset() re-derives per-workspace visibility AND re-fetches
+// the user. TestWatchEventsStream_StopsDeliveringAfterUserDisabled above
+// keeps the disabled-user path covered end to end, and
+// TestWatchVisCache_DeniesAfterUserDisabled covers refreshUser directly.
 func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.T) {
 	// Deliberately NOT t.Parallel() — mutates watchListRevalInterval,
 	// same rationale as TestWatchEventsStream_StopsDeliveringAfterUserDisabled above.
 	srv := testServerWithWatchEvents(t)
-	slug, item, tok, user := setupWatchTestUser(t, srv)
+	slug := createWSWithCollections(t, srv)
 
+	// 200ms rather than the 50ms its siblings use, deliberately: the
+	// control leg below is only meaningful while the watch set is still
+	// live, and the handler clears it after maxConsecutiveWatchReloadFailures
+	// consecutive faulting ticks. One tick (300ms sleep) is enough to
+	// prove reset() ran; the bound needs three (600ms+), leaving a wide
+	// margin before the second mechanism could start producing the same
+	// silence. At 50ms the two were ~30ms apart and the control leg lost
+	// the race under ordinary scheduling.
 	origInterval := watchListRevalInterval
-	watchListRevalInterval = 50 * time.Millisecond
+	watchListRevalInterval = 200 * time.Millisecond
 	t.Cleanup(func() { watchListRevalInterval = origInterval })
+
+	// A second collection, which the member KEEPS access to when
+	// "tasks" is revoked below — it hosts the control item.
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]interface{}{
+		"name": "Still Granted", "icon": "doc",
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create second collection: %d %s", rr.Code, rr.Body.String())
+	}
+	var grantedColl models.Collection
+	parseJSON(t, rr, &grantedColl)
+
+	// Both items seeded BEFORE any user exists, while doRequest's
+	// fresh-install auth bypass still applies.
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items",
+		map[string]interface{}{"title": "Soon invisible", "fields": `{"status":"open"}`})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("seed revoked-collection item: %d %s", rr.Code, rr.Body.String())
+	}
+	var revokedItem models.Item
+	parseJSON(t, rr, &revokedItem)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/"+grantedColl.Slug+"/items",
+		map[string]interface{}{"title": "Stays visible", "fields": "{}"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("seed granted-collection item: %d %s", rr.Code, rr.Body.String())
+	}
+	var controlItem models.Item
+	parseJSON(t, rr, &controlItem)
 
 	ws, err := srv.store.GetWorkspaceBySlug(slug)
 	if err != nil {
@@ -243,25 +295,49 @@ func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.
 		t.Fatalf("create actor: %v", err)
 	}
 	if err := srv.store.AddWorkspaceMember(ws.ID, actor.ID, "owner"); err != nil {
-		t.Fatalf("AddWorkspaceMember: %v", err)
+		t.Fatalf("AddWorkspaceMember (actor): %v", err)
 	}
 	actorTok, err := srv.store.CreateAPIToken(actor.ID, models.APITokenCreate{Name: "reval-fault-actor-test"}, 0, 0)
 	if err != nil {
-		t.Fatalf("CreateAPIToken: %v", err)
+		t.Fatalf("CreateAPIToken (actor): %v", err)
+	}
+
+	// The connected user: an ordinary member (no collection_access row,
+	// so full workspace access) until the revocation below.
+	member, err := srv.store.CreateUser(models.UserCreate{
+		Email: "reval-fault-member@example.com", Name: "Member", Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("create member: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, member.ID, "editor"); err != nil {
+		t.Fatalf("AddWorkspaceMember (member): %v", err)
+	}
+	memberTok, err := srv.store.CreateAPIToken(member.ID, models.APITokenCreate{Name: "reval-fault-member-test"}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken (member): %v", err)
+	}
+	// Watches created before connecting — the map is loaded once at
+	// connect time, and the forced fault below stops it reloading.
+	if _, err := srv.store.CreateWatch(ws.ID, member.ID, revokedItem.ID, ""); err != nil {
+		t.Fatalf("CreateWatch (revoked item): %v", err)
+	}
+	if _, err := srv.store.CreateWatch(ws.ID, member.ID, controlItem.ID, ""); err != nil {
+		t.Fatalf("CreateWatch (control item): %v", err)
 	}
 
 	ts := httptest.NewServer(srv)
 	defer ts.Close()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch := connectWatchStream(ctx, t, ts.URL, tok.Token)
+	ch := connectWatchStream(ctx, t, ts.URL, memberTok.Token)
 	waitForWatchEvent(t, ch, 3*time.Second) // connected
 
-	// Baseline: addressed-to-you delivery works before any of this.
-	rr := bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, actorTok.Token,
-		map[string]interface{}{"assigned_user_id": user.ID})
+	// Baseline: watch-matched delivery works before any of this.
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+revokedItem.Slug, actorTok.Token,
+		map[string]interface{}{"fields": `{"status":"done"}`})
 	if rr.Code != http.StatusOK {
-		t.Fatalf("assign item (baseline): %d %s", rr.Code, rr.Body.String())
+		t.Fatalf("update revoked-collection item (baseline): %d %s", rr.Code, rr.Body.String())
 	}
 	waitForWatchEvent(t, ch, 3*time.Second)
 
@@ -272,31 +348,38 @@ func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.
 	// field here would race.
 	loadFault := func() error { return errFakeWatchListReload }
 	srv.watchPredicatesLoadFault.Store(&loadFault)
-	// ...AND disable the connected user, in the SAME window.
-	if err := srv.store.DisableUser(user.ID); err != nil {
-		t.Fatalf("DisableUser: %v", err)
+	// ...AND narrow the connected member's access, in the SAME window:
+	// everything except the collection holding the control item.
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, member.ID, "specific", []string{grantedColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
 	}
-	time.Sleep(150 * time.Millisecond) // several reval ticks, all with the forced fault active
+	time.Sleep(300 * time.Millisecond) // one reval tick with the forced fault active, well short of the clear-the-watch-set bound
 
-	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, actorTok.Token,
-		map[string]interface{}{"assigned_user_id": actor.ID})
+	// Must NOT deliver: the collection is no longer visible to the
+	// member, and reset() has to have run despite the reload fault for
+	// the handler to know that.
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+revokedItem.Slug, actorTok.Token,
+		map[string]interface{}{"fields": `{"status":"in-progress"}`})
 	if rr.Code != http.StatusOK {
-		t.Fatalf("reassign away: %d %s", rr.Code, rr.Body.String())
+		t.Fatalf("update revoked-collection item (post-revocation): %d %s", rr.Code, rr.Body.String())
 	}
-	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, actorTok.Token,
-		map[string]interface{}{"assigned_user_id": user.ID})
-	if rr.Code != http.StatusOK {
-		t.Fatalf("re-assign (post-disable): %d %s", rr.Code, rr.Body.String())
+	// Control: still-granted collection, same stream, same window — must
+	// deliver, proving the watch set is still live and the silence above
+	// is visCache's doing rather than a cleared watch map.
+	rr = bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+controlItem.Slug+"/comments", actorTok.Token,
+		map[string]interface{}{"body": "control nudge"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("comment on control item: %d %s", rr.Code, rr.Body.String())
 	}
 
-	select {
-	case ev, ok := <-ch:
-		if ok {
-			t.Fatalf("expected no delivery for a disabled user even though the watch-list reload is also failing every tick, got %+v (data: %s)", ev, ev.Data)
-		}
-	case <-time.After(1 * time.Second):
-		// No event arrived — correct: visCache.reset() (and its
-		// fail-closed refreshUser) ran despite the reload fault.
+	ev := waitForWatchEvent(t, ch, 3*time.Second)
+	var payload watchEventPayload
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.ItemRef != controlItem.Ref {
+		t.Fatalf("expected the still-granted item's notification %q, got %q — the revoked collection's item leaked despite the access change (visCache.reset() did not run on the faulting reval tick)",
+			controlItem.Ref, payload.ItemRef)
 	}
 }
 
@@ -317,15 +400,21 @@ func (*testWatchListReloadError) Error() string { return "forced watch-list relo
 // visCache gates current ACCESS, not whether a watch still legitimately
 // exists. Forces maxConsecutiveWatchReloadFailures+1 consecutive
 // failures via the fault seam and asserts: watch-matched delivery stops
-// once the bound is crossed, addressed-to-you delivery is unaffected
-// throughout (it never depended on the watch list), and watch-matched
-// delivery RESUMES once the fault is cleared and a reload succeeds
-// again — this is a bounded outage response, not a one-way ratchet.
+// once the bound is crossed, ADDRESSED delivery is unaffected throughout
+// (it never depended on the watch list), and watch-matched delivery
+// RESUMES once the fault is cleared and a reload succeeds again — this
+// is a bounded outage response, not a one-way ratchet.
+//
+// The addressed leg is a PUSH. It was an assignment-to-self until
+// IDEA-2544 Phase 2 (TASK-2551) dropped assignment from the addressed
+// stream; KindPush is now the only addressed kind, and it carries the
+// same property the leg is here to prove — delivery gated by
+// TargetUserID and visCache alone, never by the watch map.
 func TestWatchEventsStream_WatchSetClearedAfterPersistentReloadFailures(t *testing.T) {
 	// Deliberately NOT t.Parallel() — mutates watchListRevalInterval,
 	// same rationale as the other reval-interval tests in this file.
 	srv := testServerWithWatchEvents(t)
-	slug, item, tok, user := setupWatchTestUser(t, srv)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
 
 	origInterval := watchListRevalInterval
 	watchListRevalInterval = 30 * time.Millisecond
@@ -364,12 +453,13 @@ func TestWatchEventsStream_WatchSetClearedAfterPersistentReloadFailures(t *testi
 		t.Fatalf("update item (during outage): %d %s", rr.Code, rr.Body.String())
 	}
 
-	// Addressed-to-you: MUST still deliver — it depends only on
-	// visCache, which round 4 already decoupled from the reload outcome.
-	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, tok.Token,
-		map[string]interface{}{"assigned_user_id": user.ID})
+	// Addressed (push): MUST still deliver — it depends only on
+	// TargetUserID and visCache, which round 4 already decoupled from
+	// the reload outcome.
+	rr = bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "still addressed during the outage"})
 	if rr.Code != http.StatusOK {
-		t.Fatalf("assign item (during outage): %d %s", rr.Code, rr.Body.String())
+		t.Fatalf("push item (during outage): %d %s", rr.Code, rr.Body.String())
 	}
 
 	ev := waitForWatchEvent(t, ch, 3*time.Second)
@@ -377,8 +467,8 @@ func TestWatchEventsStream_WatchSetClearedAfterPersistentReloadFailures(t *testi
 	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
 		t.Fatalf("parse payload: %v", err)
 	}
-	if payload.Kind != watchevents.KindAssignment {
-		t.Fatalf("expected the assignment notification (watch-matched delivery should have been suppressed by the outage), got kind %q: %+v", payload.Kind, payload)
+	if payload.Kind != watchevents.KindPush {
+		t.Fatalf("expected the push notification (watch-matched delivery should have been suppressed by the outage), got kind %q: %+v", payload.Kind, payload)
 	}
 
 	// Recovery: clear the fault, let a reload succeed, and confirm
