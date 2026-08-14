@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -239,5 +241,48 @@ func TestStreamWatchEvents_SyncRequiredThenFreshNotification(t *testing.T) {
 	lastID := streamWatchEvents(resp, "42")
 	if lastID != "99" {
 		t.Fatalf("expected the post-sync_required notification's id to be tracked, got %q", lastID)
+	}
+}
+
+// TestMonitorSessionIdentity_UsesCwdBasename is the privacy regression
+// for PLAN-2558 S2. The promise is that a session announces "docapp",
+// never "/home/someone/Dev/docapp" — the basename is what a picker
+// needs, while the full path additionally hands the server (and its
+// logs, and every consumer of GET /api/v1/sessions) a home directory
+// and usually an account name. That failure would be invisible until
+// somebody read a session list, which is exactly why it is pinned here
+// rather than trusted to the one-line implementation.
+func TestMonitorSessionIdentity_UsesCwdBasename(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "docapp")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Chdir(dir)
+
+	ident := monitorSessionIdentity()
+	if ident.Label != "docapp" {
+		t.Fatalf("label = %q, want %q", ident.Label, "docapp")
+	}
+	if strings.ContainsRune(ident.Label, filepath.Separator) {
+		t.Fatalf("label must never contain a path separator, got %q", ident.Label)
+	}
+	if ident.PID != os.Getpid() {
+		t.Fatalf("pid = %d, want this process's own pid %d", ident.PID, os.Getpid())
+	}
+}
+
+// TestMonitorSessionIdentity_RootCwdIsUnlabelled covers the degenerate
+// directory: filepath.Base("/") is "/", which names nothing and would
+// put a bare separator in the picker. An unlabelled session is the
+// honest answer there — consumers already fall back to the id.
+func TestMonitorSessionIdentity_RootCwdIsUnlabelled(t *testing.T) {
+	t.Chdir(string(filepath.Separator))
+
+	ident := monitorSessionIdentity()
+	if ident.Label != "" {
+		t.Fatalf("expected no label at the filesystem root, got %q", ident.Label)
+	}
+	if ident.PID != os.Getpid() {
+		t.Fatalf("pid = %d, want %d — the pid is still worth sending", ident.PID, os.Getpid())
 	}
 }

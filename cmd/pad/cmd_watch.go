@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -310,6 +311,45 @@ func monitorClient() (*cli.Client, error) {
 // deliberately not hoisted above it — so a workspace linked or a padd
 // brought up mid-session is picked up on the next retry without a
 // process restart.
+// monitorSessionIdentity describes THIS monitor process to the server's
+// presence registry (PLAN-2558 S2, TASK-2560): the working directory's
+// basename as a human-readable label, plus this process's own pid.
+//
+// WHY NOT READ ~/.pad/sessions/, given that this slice exists to give
+// `pad session register` a consumer. Because the monitor cannot tell
+// WHICH registry entry is its own session without guessing. The entries
+// are written by whatever process ran `pad session register` — an agent
+// harness, a different pid — and the only fields available to match on
+// are pid and cwd. Two agent sessions in the same checkout produce two
+// entries with identical cwd, and picking "the newest" would be a
+// coin flip that puts a wrong-but-confident name in the S5 target
+// picker. Process ancestry would settle it exactly, and is
+// platform-specific (this binary ships for macOS and Windows too), so
+// it is not a slice-S2 shape.
+//
+// The monitor's own cwd + pid are never wrong, and they answer the
+// question the label exists to answer: which project is this session
+// working in. The registry's remaining value — correlating a stream to
+// the agent session that spawned it — needs an identifier the harness
+// passes down, not a heuristic; that is worth doing when something
+// actually needs it, and worth NOT faking until then.
+//
+// Failures are silent by construction: os.Getwd can fail (a deleted
+// cwd), and the answer is an unlabelled session, not a dead monitor.
+// This whole file's contract is "print nothing, keep running" (see
+// runWatchMonitor's doc comment).
+func monitorSessionIdentity() cli.StreamSessionIdentity {
+	ident := cli.StreamSessionIdentity{PID: os.Getpid()}
+	if cwd, err := os.Getwd(); err == nil {
+		// filepath.Base("/") is "/" and Base("") is "." — neither names
+		// anything, so drop them rather than labelling a session "/".
+		if base := filepath.Base(cwd); base != "" && base != "." && base != string(filepath.Separator) {
+			ident.Label = base
+		}
+	}
+	return ident
+}
+
 func runWatchMonitor(ctx context.Context) error {
 	sigCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -342,7 +382,7 @@ func runWatchMonitor(ctx context.Context) error {
 			continue
 		}
 
-		req, err := client.NewWatchEventsStreamRequest(sigCtx, lastEventID)
+		req, err := client.NewWatchEventsStreamRequest(sigCtx, lastEventID, monitorSessionIdentity())
 		if err != nil {
 			attempt++
 			if !sleepOrDone(sigCtx, padddBackoff(attempt)) {

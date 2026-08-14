@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -365,6 +366,29 @@ func (c *Client) ListWatches() ([]models.Watch, error) {
 	return result, c.get("/watches", &result)
 }
 
+// StreamSessionIdentity is what a monitor tells the server about itself
+// when it opens the event stream (PLAN-2558 S2, TASK-2560), so the
+// server's presence registry can name the session instead of showing an
+// opaque uuid.
+//
+// The two fields are the wire-safe half of what `pad session register`
+// records locally (internal/cli/session_registry.go). What is missing
+// is the point: MessagingSocketPath never leaves this machine, and the
+// cwd travels as a BASENAME, because "docapp" is what a session picker
+// needs while "/home/dave/Dev/docapp" additionally hands over a home
+// directory and an account name.
+//
+// Both fields are optional. A zero value produces the pre-S2 behaviour:
+// an unlabelled session that still receives every event.
+type StreamSessionIdentity struct {
+	// Label names the session for a human — the working directory's
+	// basename ("docapp"). The server sanitizes and truncates it.
+	Label string
+	// PID is this process's own pid, for telling two sessions with the
+	// same label apart.
+	PID int
+}
+
 // NewWatchEventsStreamRequest builds an authenticated GET request for
 // GET /api/v1/events/stream (TASK-2533), used by
 // `pad watch --stream --for-session`. Deliberately returns the request
@@ -373,8 +397,8 @@ func (c *Client) ListWatches() ([]models.Watch, error) {
 // c.streamClient (1h timeout, sized for bundle transfers) would
 // eventually kill it — the caller must supply its own zero-timeout
 // http.Client. lastEventID, when non-empty, is sent as Last-Event-ID for
-// resume.
-func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID string) (*http.Request, error) {
+// resume; ident, when non-zero, announces the session (S2).
+func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID string, ident StreamSessionIdentity) (*http.Request, error) {
 	req, err := c.newRequest("GET", "/events/stream", nil)
 	if err != nil {
 		return nil, err
@@ -385,7 +409,61 @@ func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID st
 	if lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
+	if label := headerSafeLabel(ident.Label); label != "" {
+		req.Header.Set("X-Pad-Session-Label", label)
+	}
+	if ident.PID > 0 {
+		req.Header.Set("X-Pad-Session-Pid", strconv.Itoa(ident.PID))
+	}
 	return req, nil
+}
+
+// maxHeaderLabelLen bounds the label the client is willing to put on
+// the wire, in runes. It is deliberately looser than the server's own
+// cap (server.maxSessionLabelLen, 64): the server decides what a label
+// should LOOK like, while this only has to keep the request from being
+// absurd. Leaving the two independent means neither has to be kept in
+// sync with the other to stay correct.
+const maxHeaderLabelLen = 256
+
+// headerSafeLabel makes a label safe to put in an HTTP header value, or
+// returns "" if nothing usable survives.
+//
+// This is not belt-and-braces for the server's sanitizer — it fixes a
+// failure the server can never see. Unix directory names may contain
+// newlines, tabs and other control bytes ("doc\napp" is a legal
+// directory), and Go's http.Client REFUSES to send a request whose
+// header value contains one: Do returns "invalid header field value"
+// and the request never leaves. In the monitor that surfaces as a
+// connection error, which its retry loop treats like an unreachable
+// padd — so a user who happened to name a directory with a newline
+// would get no notifications at all, forever, silently, because the
+// monitor prints nothing by contract. Losing the label is a cosmetic
+// problem; losing the stream is not, and the cause would be invisible.
+//
+// Reproduced before fixing (a real directory, a real client) rather
+// than reasoned about: the client-side refusal is what makes this
+// unfixable server-side.
+func headerSafeLabel(label string) string {
+	if label == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(label))
+	for _, r := range label {
+		// The server collapses whitespace and trims; the client's only
+		// job is to not build an unsendable request, so anything
+		// non-printable is simply dropped. Space itself is printable
+		// and legal in a header value, so it survives.
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if runes := []rune(out); len(runes) > maxHeaderLabelLen {
+		out = strings.TrimSpace(string(runes[:maxHeaderLabelLen]))
+	}
+	return out
 }
 
 func (c *Client) MoveItem(wsSlug, itemSlug string, input map[string]any) (*models.Item, error) {

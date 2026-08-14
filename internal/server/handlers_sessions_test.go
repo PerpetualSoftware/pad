@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -205,5 +206,134 @@ func TestListSessions_IsSelfScoped(t *testing.T) {
 	}
 	if _, body := getSessions(t, ts.URL, tokB.Token); body.Count != 0 {
 		t.Fatalf("user B must not see user A's session, got count=%d sessions=%+v", body.Count, body.Sessions)
+	}
+}
+
+// TestListSessions_CarriesClientDeclaredIdentity is PLAN-2558 S2's
+// end-to-end leg: the label and pid a client announces on the stream
+// request come back on its own session row. Without this, S1's registry
+// is a count and S5's picker has nothing to show.
+//
+// The no-headers leg is not decoration. It is the compatibility
+// contract — a pre-S2 client (or any client that declines to say) must
+// still register, unlabelled, and still stream. Asserting only the
+// labelled case would pass equally well if the handler had started
+// REQUIRING the headers, which would silently drop every older monitor
+// out of presence.
+func TestListSessions_CarriesClientDeclaredIdentity(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	_, _, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch := connectWatchStreamWithHeaders(ctx, t, ts.URL, tok.Token, map[string]string{
+		sessionLabelHeader: "docapp",
+		sessionPIDHeader:   "4242",
+	})
+	if ev := waitForWatchEvent(t, ch, 3*time.Second); ev.Type != "connected" {
+		t.Fatalf("expected 'connected', got %q", ev.Type)
+	}
+
+	status, body := getSessions(t, ts.URL, tok.Token)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if len(body.Sessions) != 1 {
+		t.Fatalf("expected exactly 1 live session, got %+v", body.Sessions)
+	}
+	if body.Sessions[0].Label != "docapp" {
+		t.Fatalf("label = %q, want %q — the client's announcement never reached the registry", body.Sessions[0].Label, "docapp")
+	}
+	if body.Sessions[0].PID != 4242 {
+		t.Fatalf("pid = %d, want 4242", body.Sessions[0].PID)
+	}
+}
+
+func TestListSessions_UnannouncedSessionStillRegisters(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	_, _, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ch := connectWatchStream(ctx, t, ts.URL, tok.Token) // no identity headers
+	if ev := waitForWatchEvent(t, ch, 3*time.Second); ev.Type != "connected" {
+		t.Fatalf("expected 'connected', got %q", ev.Type)
+	}
+
+	status, body := getSessions(t, ts.URL, tok.Token)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d", status)
+	}
+	if len(body.Sessions) != 1 {
+		t.Fatalf("a client that announces nothing must still be listed, got %+v", body.Sessions)
+	}
+	if body.Sessions[0].Label != "" || body.Sessions[0].PID != 0 {
+		t.Fatalf("expected an unlabelled session, got label=%q pid=%d", body.Sessions[0].Label, body.Sessions[0].PID)
+	}
+	if body.Sessions[0].ID == "" {
+		t.Fatal("an unlabelled session still needs its server-generated id — that is what consumers fall back to")
+	}
+}
+
+// TestListSessions_HostileIdentityIsSanitizedOnTheWire checks the
+// sanitizer where it matters to a consumer: in the response body, not
+// just at the unit boundary. An unbounded label is a UI problem nobody
+// planned for, and a negative pid is a nonsense number in a picker.
+//
+// What this test deliberately does NOT try to send is a control
+// character. Go's server answers 400 Bad Request to a header value
+// containing one, before any handler runs (verified with a raw socket,
+// because Go's client refuses to send one so a normal client test
+// cannot tell the two refusals apart). So that arm of the sanitizer is
+// unreachable over HTTP and belongs to the unit tests in
+// session_identity_test.go, where it is covered as the defence in
+// depth it actually is. Asserting it here would have been a test that
+// passes because the transport refused the input, while reading as
+// though the sanitizer did the work.
+func TestListSessions_HostileIdentityIsSanitizedOnTheWire(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	_, _, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// A tab (legal in a header value) plus a label far over the cap —
+	// both things a real client can genuinely put on the wire.
+	hostile := "evil\tproject" + strings.Repeat("x", maxSessionLabelLen*2)
+	ch := connectWatchStreamWithHeaders(ctx, t, ts.URL, tok.Token, map[string]string{
+		sessionLabelHeader: hostile,
+		sessionPIDHeader:   "-1",
+	})
+	if ev := waitForWatchEvent(t, ch, 3*time.Second); ev.Type != "connected" {
+		t.Fatalf("expected 'connected', got %q", ev.Type)
+	}
+
+	_, body := getSessions(t, ts.URL, tok.Token)
+	if len(body.Sessions) != 1 {
+		t.Fatalf("expected 1 session, got %+v", body.Sessions)
+	}
+	got := body.Sessions[0]
+	if strings.ContainsRune(got.Label, '\t') {
+		t.Fatalf("raw tab survived to the response body: %q", got.Label)
+	}
+	if !strings.HasPrefix(got.Label, "evil project") {
+		t.Fatalf("expected the tab collapsed to a single space, got %q", got.Label)
+	}
+	if len([]rune(got.Label)) > maxSessionLabelLen {
+		t.Fatalf("label of %d runes exceeded the %d cap: %q", len([]rune(got.Label)), maxSessionLabelLen, got.Label)
+	}
+	if got.PID != 0 {
+		t.Fatalf("a negative pid must land on the not-stated sentinel, got %d", got.PID)
 	}
 }
