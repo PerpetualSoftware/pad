@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -408,13 +409,61 @@ func (c *Client) NewWatchEventsStreamRequest(ctx context.Context, lastEventID st
 	if lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
-	if ident.Label != "" {
-		req.Header.Set("X-Pad-Session-Label", ident.Label)
+	if label := headerSafeLabel(ident.Label); label != "" {
+		req.Header.Set("X-Pad-Session-Label", label)
 	}
 	if ident.PID > 0 {
 		req.Header.Set("X-Pad-Session-Pid", strconv.Itoa(ident.PID))
 	}
 	return req, nil
+}
+
+// maxHeaderLabelLen bounds the label the client is willing to put on
+// the wire, in runes. It is deliberately looser than the server's own
+// cap (server.maxSessionLabelLen, 64): the server decides what a label
+// should LOOK like, while this only has to keep the request from being
+// absurd. Leaving the two independent means neither has to be kept in
+// sync with the other to stay correct.
+const maxHeaderLabelLen = 256
+
+// headerSafeLabel makes a label safe to put in an HTTP header value, or
+// returns "" if nothing usable survives.
+//
+// This is not belt-and-braces for the server's sanitizer — it fixes a
+// failure the server can never see. Unix directory names may contain
+// newlines, tabs and other control bytes ("doc\napp" is a legal
+// directory), and Go's http.Client REFUSES to send a request whose
+// header value contains one: Do returns "invalid header field value"
+// and the request never leaves. In the monitor that surfaces as a
+// connection error, which its retry loop treats like an unreachable
+// padd — so a user who happened to name a directory with a newline
+// would get no notifications at all, forever, silently, because the
+// monitor prints nothing by contract. Losing the label is a cosmetic
+// problem; losing the stream is not, and the cause would be invisible.
+//
+// Reproduced before fixing (a real directory, a real client) rather
+// than reasoned about: the client-side refusal is what makes this
+// unfixable server-side.
+func headerSafeLabel(label string) string {
+	if label == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(label))
+	for _, r := range label {
+		// The server collapses whitespace and trims; the client's only
+		// job is to not build an unsendable request, so anything
+		// non-printable is simply dropped. Space itself is printable
+		// and legal in a header value, so it survives.
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+		}
+	}
+	out := strings.TrimSpace(b.String())
+	if runes := []rune(out); len(runes) > maxHeaderLabelLen {
+		out = strings.TrimSpace(string(runes[:maxHeaderLabelLen]))
+	}
+	return out
 }
 
 func (c *Client) MoveItem(wsSlug, itemSlug string, input map[string]any) (*models.Item, error) {
