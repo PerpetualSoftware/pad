@@ -467,3 +467,121 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		live.host.remove();
 	});
 });
+
+describe('QuickActionsMenu presence staleness (codex round 1)', () => {
+	beforeEach(() => {
+		toastShow.mockReset();
+		sessionsListMock.mockReset();
+		pushMock.mockReset();
+		copyMock.mockReset();
+		copyMock.mockResolvedValue(true);
+	});
+
+	it('stops trusting a count whose refreshes have stopped landing', async () => {
+		// A FAILED poll already degrades to 'unknown'. A poll that HANGS does
+		// not — it just never writes, so without an expiry the menu goes on
+		// offering a push against a session that may be long gone, which is the
+		// one direction that loses the user's instruction.
+		vi.useFakeTimers();
+		try {
+			sessionsListMock.mockResolvedValueOnce({ sessions: [{ id: 's1' }], count: 1 });
+			// Every poll after the first hangs forever.
+			sessionsListMock.mockReturnValue(new Promise(() => {}));
+
+			const { host, component } = mountMenu();
+			(host.querySelector('.trigger-btn') as HTMLButtonElement).click();
+			flushSync();
+			await vi.advanceTimersByTimeAsync(0);
+			flushSync();
+
+			// The first read landed: the menu is armed to push.
+			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+				'Pushes to your connected agent session'
+			);
+
+			// Four poll intervals later — nothing has refreshed it. (The TAGLINE
+			// can lag the expiry by up to one interval, since only a tick
+			// rewrites it; the routing decision does not — see the next test.)
+			await vi.advanceTimersByTimeAsync(41_000);
+			flushSync();
+			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+				'Can’t tell if an agent is connected — actions copy to your clipboard'
+			);
+
+			actionRow(host, 'Ship it').click();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(pushMock).not.toHaveBeenCalled();
+			expect(copyMock).toHaveBeenCalledWith('Ship TASK-14');
+			expect(toastShow.mock.calls[0][0]).toContain('Couldn’t check for agent sessions');
+
+			unmount(component);
+			host.remove();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('refuses a stale count at click time, between poll ticks', async () => {
+		// The expiry must be checked where the DECISION is made, not only on
+		// the poll tick. A tick-only expiry leaves a window of up to one whole
+		// interval in which the menu still pushes against a count it has
+		// already outlived — and this is exactly the window a click lands in.
+		vi.useFakeTimers();
+		try {
+			sessionsListMock.mockResolvedValueOnce({ sessions: [{ id: 's1' }], count: 1 });
+			sessionsListMock.mockReturnValue(new Promise(() => {}));
+
+			const { host, component } = mountMenu();
+			(host.querySelector('.trigger-btn') as HTMLButtonElement).click();
+			flushSync();
+			await vi.advanceTimersByTimeAsync(0);
+			flushSync();
+
+			// Past the bound, but BEFORE the tick that would rewrite the tagline.
+			await vi.advanceTimersByTimeAsync(31_000);
+			flushSync();
+			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+				'Pushes to your connected agent session'
+			);
+
+			actionRow(host, 'Ship it').click();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(pushMock).not.toHaveBeenCalled();
+			expect(copyMock).toHaveBeenCalledWith('Ship TASK-14');
+
+			unmount(component);
+			host.remove();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not expire an answer that is still being refreshed', async () => {
+		// The control leg: with polls landing, the same elapsed time must NOT
+		// downgrade the answer — an expiry that fires on a healthy connection
+		// would silently retire the whole feature.
+		vi.useFakeTimers();
+		try {
+			sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1' }], count: 1 });
+
+			const { host, component } = mountMenu();
+			(host.querySelector('.trigger-btn') as HTMLButtonElement).click();
+			flushSync();
+			await vi.advanceTimersByTimeAsync(31_000);
+			flushSync();
+
+			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+				'Pushes to your connected agent session'
+			);
+			actionRow(host, 'Ship it').click();
+			await vi.advanceTimersByTimeAsync(0);
+			expect(pushMock).toHaveBeenCalledTimes(1);
+			expect(copyMock).not.toHaveBeenCalled();
+
+			unmount(component);
+			host.remove();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});

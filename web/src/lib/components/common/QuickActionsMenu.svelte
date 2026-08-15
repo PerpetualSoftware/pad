@@ -134,10 +134,28 @@
 	 */
 	const PRESENCE_POLL_MS = 10_000;
 
+	/**
+	 * How stale a 'known' answer may get before it degrades to "can't tell".
+	 *
+	 * A FAILED poll already lands as 'unknown'. A poll that HANGS does not — it
+	 * simply never writes, leaving the last count in place indefinitely while
+	 * the menu goes on offering a push into a session that may be long gone.
+	 * That is the losing direction, so a known answer expires.
+	 *
+	 * 30s is not arbitrary: it is the server's own worst-case presence staleness
+	 * (`watchEventsKeepaliveInterval` — an ungraceful disconnect is invisible
+	 * until the next keepalive write fails). Past it an un-refreshed count is no
+	 * more informative than no count. Three poll intervals must fail in a row to
+	 * reach it. Same bound and same reasoning as PushToAgentDialog.
+	 */
+	const PRESENCE_MAX_AGE_MS = 30_000;
+
 	/** What we know about who is listening; null until the first read of this
 	 *  opening lands. Null is treated as 'unknown' by `routePrompt` — "haven't
 	 *  heard" and "couldn't hear" license the same conclusion. */
 	let presence = $state<PushPresence | null>(null);
+	/** Wall-clock of the last SUCCESSFUL presence read, for the expiry above. */
+	let lastAnsweredAt = 0;
 	/** True while a push is in flight. The endpoint has NO idempotency key, so
 	 *  a second dispatch would deliver the instruction twice. */
 	let dispatching = $state(false);
@@ -160,6 +178,7 @@
 			const resp = await api.sessions.list();
 			if (!stillCurrent()) return;
 			presenceAppliedSeq = seq;
+			lastAnsweredAt = Date.now();
 			// `sessions.length` over `count`: the array is what the server
 			// actually enumerated, and the two can only disagree if something is
 			// wrong — in which case the enumeration is the honest one.
@@ -176,6 +195,23 @@
 		}
 	}
 
+	/** True when a 'known' answer has stopped being refreshed for longer than
+	 *  the server's own presence staleness bound. */
+	function presenceExpired(): boolean {
+		return presence?.state === 'known' && Date.now() - lastAnsweredAt > PRESENCE_MAX_AGE_MS;
+	}
+
+	/**
+	 * `presence`, downgraded to 'unknown' if it has gone stale.
+	 *
+	 * Read at CLICK time as well as on the poll tick, because a click can land
+	 * up to one whole poll interval after the answer expires — and routing is
+	 * the decision that actually costs something when it uses a dead count.
+	 */
+	function currentPresence(): PushPresence | null {
+		return presenceExpired() ? { state: 'unknown' } : presence;
+	}
+
 	// CONVE-1688: the tracked scope reads only `open` and `pushable`; every
 	// $state write is inside `untrack`, so the effect cannot self-invalidate.
 	$effect(() => {
@@ -183,10 +219,22 @@
 		const gen = untrack(() => {
 			presenceAppliedSeq = 0;
 			presence = null;
+			lastAnsweredAt = 0;
 			return ++presenceGen;
 		});
 		void readPresence(gen);
-		const timer = setInterval(() => void readPresence(gen), PRESENCE_POLL_MS);
+		const timer = setInterval(() => {
+			if (presenceExpired()) {
+				presence = { state: 'unknown' };
+				// Retire every request already in flight. Those were issued BEFORE
+				// the expiry, so their answers describe the server as it was back
+				// then — letting one land now would restore the very count we just
+				// declared too old to trust. The read issued immediately below
+				// carries a newer seq and still applies.
+				presenceAppliedSeq = presenceSeq;
+			}
+			void readPresence(gen);
+		}, PRESENCE_POLL_MS);
 		return () => {
 			clearInterval(timer);
 			// Retire in-flight reads so a late answer can't write into the next
@@ -230,8 +278,11 @@
 		const prompt = resolvePrompt(action);
 		const ws = wsSlug;
 		const target = pushable && item ? item.slug : null;
-		const knownCount = presence?.state === 'known' ? presence.count : 0;
-		const route = routePrompt(prompt, target, presence);
+		// The staleness-aware read, not the raw state: a click can land a whole
+		// poll interval after a 'known' answer expired.
+		const known = currentPresence();
+		const knownCount = known?.state === 'known' ? known.count : 0;
+		const route = routePrompt(prompt, target, known);
 		open = false;
 		resetCreateForm();
 
