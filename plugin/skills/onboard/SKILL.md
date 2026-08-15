@@ -20,10 +20,12 @@ check whether this machine is already configured and authenticated:
   tool call for minutes with no non-interactive fallback (the server expires
   that session after ~5 minutes, ~20 for first-admin setup, so it does end —
   but the poll has no limit of its own and only stops when the server says so).
-  `pad init` is no safer as a probe — verified live, it drops into the same
-  browser login and blocks identically. Tell the user to run `pad init`
-  themselves in an interactive terminal — in Claude Code,
-  suggest they type `! pad init` to run it directly in their own terminal.
+  `pad init` is not a safer probe either: verified live, it fails fast only
+  when the machine is genuinely unconfigured, and in the configured-but-
+  unauthenticated case it drops into the same browser login and blocks
+  identically. Tell the user to run `pad init` themselves in an interactive
+  terminal — in Claude Code, suggest they type `! pad init` to run it directly
+  in their own terminal.
   Stop here; there's nothing more this skill can do until that completes.
 
 Once linked, run `pad bootstrap --format json`:
