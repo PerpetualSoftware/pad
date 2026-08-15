@@ -295,7 +295,7 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 		        (SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?),
 		        ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)
 	`), id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
-		s.dialect.BoolToInt(input.Pinned), input.ParentID, input.AssignedUserID, input.AgentRoleID,
+		s.dialect.BoolToInt(input.Pinned), input.ParentID, nullIfEmptyID(input.AssignedUserID), nullIfEmptyID(input.AgentRoleID),
 		createdBy, createdBy, source, workspaceID, ts, ts, contentFlushedAt, contentFlushedOpLogID, workspaceID)
 	if err != nil {
 		return err
@@ -409,6 +409,18 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 // Returns the created item read back inside the tx, so the caller can consume
 // its committed slug / item_number / seq (DR-14 fanout) without a second
 // round-trip after COMMIT.
+// nullIfEmptyID maps a nil-or-empty ID pointer to SQL NULL. Nullable FK
+// columns (assigned_user_id, agent_role_id) need this at bind time: a JSON
+// client that blanks the field sends "", which validateAssignmentScope
+// deliberately skips, and binding "" verbatim fails the FK instead of
+// clearing the column (BUG-2566).
+func nullIfEmptyID(p *string) any {
+	if p == nil || *p == "" {
+		return nil
+	}
+	return *p
+}
+
 func (s *Store) createItemTx(tx *sql.Tx, workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
 	return s.createItemTxWithID(tx, newID(), workspaceID, collectionID, input)
 }
@@ -2443,16 +2455,21 @@ func (s *Store) updateItemWithParentLinkOnce(
 		sets = append(sets, "parent_id = ?")
 		args = append(args, *input.ParentID)
 	}
-	if input.AssignedUserID != nil {
+	// An explicit empty string clears the assignment, same as
+	// ClearAssignedUser / ClearAgentRole: it's what a JSON client sends
+	// when a user blanks the field, validateAssignmentScope already
+	// treats "" as "nothing to validate", and binding it verbatim would
+	// hit the FK instead of writing NULL (BUG-2566).
+	if input.AssignedUserID != nil && *input.AssignedUserID != "" {
 		sets = append(sets, "assigned_user_id = ?")
 		args = append(args, *input.AssignedUserID)
-	} else if input.ClearAssignedUser {
+	} else if input.ClearAssignedUser || (input.AssignedUserID != nil && *input.AssignedUserID == "") {
 		sets = append(sets, "assigned_user_id = NULL")
 	}
-	if input.AgentRoleID != nil {
+	if input.AgentRoleID != nil && *input.AgentRoleID != "" {
 		sets = append(sets, "agent_role_id = ?")
 		args = append(args, *input.AgentRoleID)
-	} else if input.ClearAgentRole {
+	} else if input.ClearAgentRole || (input.AgentRoleID != nil && *input.AgentRoleID == "") {
 		sets = append(sets, "agent_role_id = NULL")
 	}
 	if input.LastModifiedBy != "" {
