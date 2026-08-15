@@ -104,6 +104,21 @@ type Notification struct {
 	// notification could have been addressed to, and echoing it back
 	// would leak a user ID for no consumer that needs it.
 	TargetUserID string
+	// TargetSessionID narrows TargetUserID to one of that user's live
+	// event-stream connections (PLAN-2558 S5, TASK-2588). Populated only
+	// on Kind == KindPush, and only when the pusher named a specific
+	// session id from the S1 presence registry (GET /api/v1/sessions);
+	// empty means "every one of TargetUserID's connected sessions" —
+	// broadcast is targeted-with-an-empty-predicate, not a separate
+	// code path. watchNotificationVisible checks this against the
+	// SAME session id session_presence.go handed the connection at
+	// Add() time, exactly parallel to how TargetUserID gates against
+	// the connected caller's user id. An id that names no live session
+	// (vanished, mistyped, or — deliberately indistinguishable from
+	// either — belonging to a DIFFERENT user) simply matches nothing:
+	// there is no separate "not found" signal here, by design, because
+	// this field must never become an existence oracle across users.
+	TargetSessionID string
 	// StatusFieldKey / ToStatus are populated on Kind == KindStatusChange,
 	// mirroring models.ItemMutationSignal, so the `--until field=value`
 	// watch predicate can be evaluated against a Notification directly
