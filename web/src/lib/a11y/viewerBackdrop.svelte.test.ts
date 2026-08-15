@@ -16,6 +16,13 @@ import {
 // selection path instead of always seeing an empty candidate list.
 const realGetClientRects = HTMLElement.prototype.getClientRects;
 
+// `mockOpenModals` can run more than once per test; `vi.spyOn` on an already-
+// spied method hands back the SAME spy, so a "real function" captured at that
+// point is the spy itself and the pass-through branch recurses. Capture the
+// pristine probes before any spy exists — at module load.
+const REAL_QUERY_ALL = document.querySelectorAll.bind(document);
+const REAL_MATCHES = Element.prototype.matches;
+
 /** A direct child of `<body>` — the shape a portaled viewer root has. */
 function bodyChild(id: string, html = ''): HTMLElement {
 	const el = document.createElement('div');
@@ -46,7 +53,7 @@ function mockOpenModals(
 ): void {
 	const isModal = (el: Element) =>
 		typeof oracle === 'function' ? oracle(el) : oracle.includes(el);
-	const realQueryAll = document.querySelectorAll.bind(document);
+	const realQueryAll = REAL_QUERY_ALL;
 	vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
 		selectorLog?.push(selector);
 		if (selector !== 'dialog:modal') return realQueryAll(selector);
@@ -54,7 +61,7 @@ function mockOpenModals(
 		// opens mid-lease) is reflected the way a real engine would.
 		return Array.from(realQueryAll('dialog')).filter(isModal) as unknown as NodeListOf<Element>;
 	});
-	const realMatches = Element.prototype.matches;
+	const realMatches = REAL_MATCHES;
 	vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
 		this: Element,
 		selector: string,
@@ -687,7 +694,7 @@ describe('isBlockedByModal', () => {
 			const dialog = openModal('<button id="d">d</button>');
 			dialog.setAttribute('open', '');
 
-			const realQueryAll = document.querySelectorAll.bind(document);
+			const realQueryAll = REAL_QUERY_ALL;
 			const probe = vi
 				.spyOn(document, 'querySelectorAll')
 				.mockImplementation((selector: string) => {

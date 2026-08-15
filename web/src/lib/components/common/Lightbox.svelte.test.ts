@@ -71,6 +71,14 @@ vi.mock('$lib/components/editor/attachment-metadata', () => ({
 	invalidateAttachmentMetadata: vi.fn(),
 }));
 
+// The `mockOpenModals` helpers below re-spy `querySelectorAll` / `matches`
+// mid-test; `vi.spyOn` on an already-spied method hands back the SAME spy, so
+// a "real function" captured at that point is the spy itself and the pass-
+// through branch recurses. The pristine probes must be captured before any
+// spy exists — here, at module load.
+const REAL_QUERY_ALL = document.querySelectorAll.bind(document);
+const REAL_MATCHES = Element.prototype.matches;
+
 // TASK-2429 — the DR-4b modal contract on the attachment viewer.
 //
 // WHAT JSDOM CANNOT PROVE, and is therefore TASK-2436's browser suite (DR-9):
@@ -1194,14 +1202,14 @@ describe('Lightbox — a native modal opened OVER the viewer', () => {
 	 * the module makes (`querySelectorAll` and `Element.matches`) are covered.
 	 */
 	function mockOpenModals(modals: Element[]): void {
-		const realQueryAll = document.querySelectorAll.bind(document);
+		const realQueryAll = REAL_QUERY_ALL;
 		vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
 			if (selector !== 'dialog:modal') return realQueryAll(selector);
 			return Array.from(realQueryAll('dialog')).filter((d) =>
 				modals.includes(d)
 			) as unknown as NodeListOf<Element>;
 		});
-		const realMatches = Element.prototype.matches;
+		const realMatches = REAL_MATCHES;
 		vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
 			this: Element,
 			selector: string
@@ -1429,14 +1437,14 @@ describe('Lightbox — zoom keys are ARBITRATED, not just handled', () => {
 	// gets its own leg with a positive control.
 
 	function mockOpenModals(modals: Element[]): void {
-		const realQueryAll = document.querySelectorAll.bind(document);
+		const realQueryAll = REAL_QUERY_ALL;
 		vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
 			if (selector !== 'dialog:modal') return realQueryAll(selector);
 			return Array.from(realQueryAll('dialog')).filter((d) =>
 				modals.includes(d)
 			) as unknown as NodeListOf<Element>;
 		});
-		const realMatches = Element.prototype.matches;
+		const realMatches = REAL_MATCHES;
 		vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
 			this: Element,
 			selector: string
@@ -1798,14 +1806,14 @@ function mockGeometry(scope: HTMLElement, g: Geometry, rectLeft = 0, rectTop = 0
 
 describe('Lightbox — wheel zoom (TASK-2457)', () => {
 	function mockOpenModals(modals: Element[]): void {
-		const realQueryAll = document.querySelectorAll.bind(document);
+		const realQueryAll = REAL_QUERY_ALL;
 		vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
 			if (selector !== 'dialog:modal') return realQueryAll(selector);
 			return Array.from(realQueryAll('dialog')).filter((d) =>
 				modals.includes(d)
 			) as unknown as NodeListOf<Element>;
 		});
-		const realMatches = Element.prototype.matches;
+		const realMatches = REAL_MATCHES;
 		vi.spyOn(Element.prototype, 'matches').mockImplementation(function (
 			this: Element,
 			selector: string
@@ -2014,14 +2022,14 @@ function zoomToActual(scope: HTMLElement = root()): void {
 const ACTUAL_BOUND = (OVERFLOW_G.fittedW * (OVERFLOW_G.naturalW / OVERFLOW_G.fittedW) - OVERFLOW_G.stageW) / 2;
 
 function mockOpenModals(modals: Element[]): void {
-	const realQueryAll = document.querySelectorAll.bind(document);
+	const realQueryAll = REAL_QUERY_ALL;
 	vi.spyOn(document, 'querySelectorAll').mockImplementation((selector: string) => {
 		if (selector !== 'dialog:modal') return realQueryAll(selector);
 		return Array.from(realQueryAll('dialog')).filter((d) =>
 			modals.includes(d)
 		) as unknown as NodeListOf<Element>;
 	});
-	const realMatches = Element.prototype.matches;
+	const realMatches = REAL_MATCHES;
 	vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
 		if (selector !== 'dialog:modal') return realMatches.call(this, selector);
 		return realMatches.call(this, 'dialog') && modals.includes(this);
