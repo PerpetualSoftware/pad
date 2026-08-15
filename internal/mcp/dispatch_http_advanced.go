@@ -466,11 +466,22 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// liftFieldsToColumns above — every one of those can leave a
 		// competing `patch["parent"]` behind, same reasoning as the
 		// assigned-user conflict check below.
+		//
+		// Checked against BOTH "parent" and "plan" (codex round 1 [P1]):
+		// extractParentLink resolves the link from EITHER key with no early
+		// exit — `for _, key := range []string{"parent", "plan"}` — so a
+		// competing value reaching the wire as `field: ["plan=<ref>"]`
+		// bypassed a check that only looked at patch["parent"], and its
+		// "plan" entry then overwrote this method's `patch["parent"] = ""`
+		// server-side (the LATER key in that loop wins because neither
+		// iteration exits early). Checking both closes the alias bypass.
 		if clear, _ := input["clear_parent"].(bool); clear {
-			if v, _ := patch["parent"].(string); v != "" {
-				return validationFailedResult(cmdKey,
-					"clear_parent conflicts with setting a parent in the same update",
-					"Drop one: either clear the parent or set it, not both."), nil
+			for _, key := range []string{"parent", "plan"} {
+				if v, _ := patch[key].(string); v != "" {
+					return validationFailedResult(cmdKey,
+						fmt.Sprintf("clear_parent conflicts with setting a parent in the same update (via %q)", key),
+						"Drop one: either clear the parent or set it, not both."), nil
+				}
 			}
 			patch["parent"] = ""
 		}

@@ -201,11 +201,15 @@ func TestMCPUpdate_EmptyParentIsStillANoOp(t *testing.T) {
 }
 
 // TestMCPUpdate_ClearParentConflictIsRejected mirrors
-// TestMCPUpdate_ClearConflictsAreRejected: both routes to a competing value
-// are covered because they land in `patch["parent"]` at DIFFERENT points —
-// the named `parent` param directly, and `field: ["parent=…"]` via the
-// --field overlay, which runs before clear_parent's own check but after the
-// named-flag loop.
+// TestMCPUpdate_ClearConflictsAreRejected: three routes to a competing value
+// are covered. `parent` and `field: ["parent=…"]` both land in
+// `patch["parent"]` (the named param directly, and the --field overlay,
+// which runs before clear_parent's own check but after the named-flag
+// loop). `field: ["plan=…"]` is the THIRD route, added by codex round 1
+// [P1]: extractParentLink (internal/server/handlers_items.go) resolves the
+// parent link from either a "parent" or a "plan" key with no early exit —
+// the loop's LATER key wins — so a check that only inspected
+// `patch["parent"]` missed a competing `patch["plan"]` entirely.
 func TestMCPUpdate_ClearParentConflictIsRejected(t *testing.T) {
 	// A second item to use as the "competing" parent value.
 	setupParent := func(t *testing.T, f *parentFixture) *models.Item {
@@ -243,6 +247,24 @@ func TestMCPUpdate_ClearParentConflictIsRejected(t *testing.T) {
 			"workspace":    f.workspace.Slug,
 			"ref":          f.child.Slug,
 			"field":        []any{"parent=" + other.Slug},
+			"clear_parent": true,
+		})
+		if !strings.Contains(msg, "conflicts with") {
+			t.Fatalf("unexpected refusal message: %s", msg)
+		}
+		if link := f.parentLink(t); link == nil || link.TargetID != f.parent.ID {
+			t.Fatalf("a refused conflict must not touch the parent link; got %v", link)
+		}
+	})
+
+	t.Run("lifted field plan alias + clear", func(t *testing.T) {
+		f := newParentFixture(t)
+		other := setupParent(t, f)
+
+		msg := f.dispatchExpectingError(t, []string{"item", "update"}, map[string]any{
+			"workspace":    f.workspace.Slug,
+			"ref":          f.child.Slug,
+			"field":        []any{"plan=" + other.Slug},
 			"clear_parent": true,
 		})
 		if !strings.Contains(msg, "conflicts with") {

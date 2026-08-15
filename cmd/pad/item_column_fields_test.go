@@ -567,9 +567,88 @@ func TestItemUpdate_ClearParentConflictsWithParentFlag(t *testing.T) {
 	if !strings.Contains(err.Error(), "conflicts with") {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// The outcome, not just the message: the conflict is caught before the
-	// --parent ref is even resolved, so no PATCH (and no parent-lookup GET)
-	// may reach the server.
+	// The outcome, not just the message: whatever GETs the --parent
+	// resolution needed along the way, no PATCH may reach the server for a
+	// rejected conflict.
+	if patched {
+		t.Fatal("no PATCH may be issued for a rejected conflict")
+	}
+}
+
+// TestItemUpdate_ClearParentConflictsWithFieldParentFlag and
+// TestItemUpdate_ClearParentConflictsWithFieldPlanFlag cover the two bypass
+// routes codex round 1 [P1] found: the conflict check used to run BEFORE the
+// --field loop and only inspected --parent's own value, so
+// `--clear-parent --field parent=X` reached the wire with the --field
+// entry silently overwriting the earlier `patch["parent"] = ""`, and
+// `--clear-parent --field plan=X` bypassed the check entirely (extractParentLink
+// resolves the parent link from either a "parent" or a "plan" key
+// server-side, with the LATER key in its own loop winning on conflict —
+// neither of those was covered by a check that only looked at "parent"
+// before the --field values were even in the patch).
+func TestItemUpdate_ClearParentConflictsWithFieldParentFlag(t *testing.T) {
+	patched := false
+	setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			patched = true
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "item-1", "slug": "unassign-me"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "item-1", "slug": "unassign-me", "collection_slug": "tasks",
+			"collection_prefix": "TASK", "item_number": 9, "fields": `{"status":"open"}`,
+			"schema": `{"fields":[{"key":"status","type":"select"}]}`,
+		})
+	}))
+
+	cmd := updateCmd()
+	cmd.SetArgs([]string{"TASK-9", "--clear-parent", "--field", "parent=PLAN-1"})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	err := cmd.Execute()
+
+	if err == nil {
+		t.Fatal("--clear-parent + --field parent=X must be refused, not silently resolved")
+	}
+	if !strings.Contains(err.Error(), "conflicts with") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if patched {
+		t.Fatal("no PATCH may be issued for a rejected conflict")
+	}
+}
+
+func TestItemUpdate_ClearParentConflictsWithFieldPlanFlag(t *testing.T) {
+	patched := false
+	setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			patched = true
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "item-1", "slug": "unassign-me"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": "item-1", "slug": "unassign-me", "collection_slug": "tasks",
+			"collection_prefix": "TASK", "item_number": 9, "fields": `{"status":"open"}`,
+			"schema": `{"fields":[{"key":"status","type":"select"}]}`,
+		})
+	}))
+
+	cmd := updateCmd()
+	cmd.SetArgs([]string{"TASK-9", "--clear-parent", "--field", "plan=PLAN-1"})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	err := cmd.Execute()
+
+	if err == nil {
+		t.Fatal("--clear-parent + --field plan=X must be refused, not silently resolved — \"plan\" is the alias extractParentLink also reads")
+	}
+	if !strings.Contains(err.Error(), "conflicts with") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if patched {
 		t.Fatal("no PATCH may be issued for a rejected conflict")
 	}

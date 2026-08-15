@@ -1027,17 +1027,6 @@ Examples:
 			// writer's change on the last write.
 			parentRef := parentFlag
 
-			// --clear-parent conflicts with --parent, checked up front so the
-			// error fires before any GetItem/GetCollection network calls
-			// below (mirrors the --clear-assigned-user / --clear-agent-role
-			// checks, which are placed after resolution instead because
-			// those flags have no direct-value counterpart to race with here
-			// — --parent's value is known immediately, no resolution needed
-			// to detect the conflict).
-			if clearParent && parentRef != "" {
-				return fmt.Errorf("--clear-parent conflicts with setting a parent in the same update; drop one")
-			}
-
 			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0 || clearParent
 			if hasFieldChanges {
 				patch := make(map[string]interface{})
@@ -1054,16 +1043,6 @@ Examples:
 						return fmt.Errorf("parent %q not found: %w", parentRef, err)
 					}
 					patch["parent"] = parentItem.ID
-				}
-				if clearParent {
-					// Present-but-empty is the server's clear signal
-					// (extractParentLink in internal/server/handlers_items.go):
-					// parentProvided becomes true whenever the "parent" key
-					// exists in fields_patch, and an empty value clears the
-					// link rather than setting it. An absent key (the old
-					// `--parent ""` no-op below this block used to produce)
-					// never reaches parentProvided at all.
-					patch["parent"] = ""
 				}
 				if category != "" {
 					patch["category"] = category
@@ -1090,6 +1069,35 @@ Examples:
 				// them as column writes. Applied BEFORE --assign / --role below,
 				// so those dedicated flags win on conflict.
 				liftColumnFields(patch, collSchema).apply(&input.AssignedUserID, &input.AgentRoleID)
+
+				// --clear-parent, checked HERE — after the named --parent
+				// resolution, the --field overlay, AND liftColumnFields —
+				// not up front (codex round 1 [P1]). extractParentLink
+				// (internal/server/handlers_items.go) resolves the parent
+				// link from EITHER a "parent" or a "plan" key in fields_patch,
+				// so a competing value can arrive by three different routes:
+				// --parent itself, --field parent=<ref>, or the "plan" alias
+				// via --field plan=<ref>. An early check right after --parent
+				// only caught the first; `--clear-parent --field parent=X`
+				// (or `--field plan=X`) reached the wire unrejected and the
+				// `if clearParent { patch["parent"] = "" }` that used to sit
+				// beside it ran BEFORE the --field loop, so the loop's
+				// `patch[kv[:idx]] = ...` silently overwrote the clear with
+				// the set. Checking both keys after every patch-building step
+				// closes both bypasses at once.
+				if clearParent {
+					for _, key := range []string{"parent", "plan"} {
+						if v, ok := patch[key].(string); ok && v != "" {
+							return fmt.Errorf("--clear-parent conflicts with setting a parent in the same update (via %q); drop one", key)
+						}
+					}
+					// Present-but-empty is the server's clear signal: parentProvided
+					// becomes true whenever the "parent" key exists in fields_patch,
+					// and an empty value clears the link rather than setting it. An
+					// absent key (the old `--parent ""` no-op) never reaches
+					// parentProvided at all.
+					patch["parent"] = ""
+				}
 
 				// An empty patch never reaches the wire: ItemUpdate.FieldsPatch
 				// carries `omitempty`, so `--field assigned_user_id=` on its own
