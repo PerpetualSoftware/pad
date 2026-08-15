@@ -476,6 +476,37 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// server-side (the LATER key in that loop wins because neither
 		// iteration exits early). Checking both closes the alias bypass.
 		if clear, _ := input["clear_parent"].(bool); clear {
+			// Refuse when the TARGET COLLECTION'S SCHEMA declares its own
+			// "parent" or "plan" field (codex round 2 finding #2).
+			// extractParentLink (internal/server/handlers_items.go ~L606-610,
+			// pre-existing documented policy: "Skip this if the schema
+			// actually defines a field with that key") skips hierarchy
+			// handling ENTIRELY for a schema-shadowed key and instead lets it
+			// fall through as an ordinary field write — so on a shadowed
+			// collection, `patch["parent"] = ""` below would report success
+			// while silently blanking the user's data field AND leaving the
+			// real hierarchy link untouched. Reproduced empirically before
+			// this guard existed: IsError=false, hierarchy link unchanged,
+			// fields blob "parent" -> "".
+			//
+			// The wire shape {"parent":""} cannot distinguish clear-hierarchy
+			// intent from a legitimate blank-my-schema-field write once it
+			// reaches the server — the ambiguity is created HERE, at the
+			// surface that accepted clear_parent, so this surface must refuse
+			// rather than push the decision server-side.
+			//
+			// One extra GetCollection-equivalent call, paid ONLY on this path
+			// (clear_parent=true) — the common update path fetches no schema
+			// today and shouldn't start paying for one.
+			shadowedKey, serr := d.collectionSchemaShadowsParent(ctx, user, workspace, prefetchRec)
+			if serr != nil {
+				return dispatcherErrorResult(cmdKey, "check collection schema for clear_parent", serr), nil
+			}
+			if shadowedKey != "" {
+				return validationFailedResult(cmdKey,
+					fmt.Sprintf("this collection defines its own %q field, so clear_parent can't be expressed for it", shadowedKey),
+					""), nil
+			}
 			for _, key := range []string{"parent", "plan"} {
 				if v, _ := patch[key].(string); v != "" {
 					return validationFailedResult(cmdKey,
@@ -532,6 +563,75 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 
 	// Step 3: PATCH.
 	return d.executeRequest(ctx, cmdKey, user, http.MethodPatch, itemPath, body)
+}
+
+// collectionSchemaShadowsParent reports whether the item's collection
+// declares its own schema field named "parent" or "plan" — the case where
+// extractParentLink (internal/server/handlers_items.go ~L606-610) treats
+// that key as an ORDINARY data field instead of hierarchy, so a
+// clear_parent request would silently blank the field and leave the real
+// hierarchy link untouched (codex round 2 finding #2 / BUG-2078). Returns
+// the shadowed key name ("parent" or "plan") when found, "" when the
+// collection is clear to use clear_parent normally.
+//
+// prefetchItem is the Step-1 prefetch dispatchItemUpdate already ran (its
+// body is the full item, including collection_slug) — reused here rather
+// than re-fetched, so the ONLY new network call this adds is the
+// collection lookup itself, and only on the clear_parent path.
+func (d *HTTPHandlerDispatcher) collectionSchemaShadowsParent(
+	ctx context.Context,
+	user *models.User,
+	workspace string,
+	prefetchItem *httptest.ResponseRecorder,
+) (string, error) {
+	var item struct {
+		CollectionSlug string `json:"collection_slug"`
+	}
+	if err := json.Unmarshal(prefetchItem.Body.Bytes(), &item); err != nil {
+		return "", fmt.Errorf("parse prefetched item: %w", err)
+	}
+	if item.CollectionSlug == "" {
+		return "", nil
+	}
+
+	path := "/api/v1/workspaces/" + url.PathEscape(workspace) +
+		"/collections/" + url.PathEscape(item.CollectionSlug)
+	req, err := d.buildAuthedRequest(ctx, http.MethodGet, path, nil, user)
+	if err != nil {
+		return "", fmt.Errorf("build collection request: %w", err)
+	}
+	rec := httptest.NewRecorder()
+	d.Handler.ServeHTTP(rec, req)
+	if rec.Code >= 400 {
+		body := strings.TrimSpace(rec.Body.String())
+		if body == "" {
+			body = http.StatusText(rec.Code)
+		}
+		return "", fmt.Errorf("get collection %q: %d %s", item.CollectionSlug, rec.Code, body)
+	}
+
+	var coll struct {
+		Schema string `json:"schema"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &coll); err != nil {
+		return "", fmt.Errorf("parse collection response: %w", err)
+	}
+	var schema models.CollectionSchema
+	if coll.Schema != "" {
+		// Schema-fetch/parse failure degrades to "not shadowed" rather than
+		// erroring the whole update — mirrors the CLI's collSchema fetch,
+		// which the same trade-off already accepts (cmd/pad/cmd_item.go: a
+		// failed GetCollection there leaves collSchema at its zero value and
+		// --field values just stay untyped strings instead of blocking the
+		// update).
+		_ = json.Unmarshal([]byte(coll.Schema), &schema)
+	}
+	for _, f := range schema.Fields {
+		if f.Key == "parent" || f.Key == "plan" {
+			return f.Key, nil
+		}
+	}
+	return "", nil
 }
 
 // hasFieldChanges reports whether the input has any value that

@@ -275,3 +275,104 @@ func TestMCPUpdate_ClearParentConflictIsRejected(t *testing.T) {
 		}
 	})
 }
+
+// TestMCPUpdate_ClearParentRefusedWhenSchemaShadowsField promotes the
+// empirical repro from the codex round 2 finding #2 investigation to a
+// permanent regression test. BEFORE this guard existed, dispatching
+// clear_parent against a collection whose schema declares its own "parent"
+// (or "plan") field reported SUCCESS while silently blanking the data
+// field and leaving the real hierarchy link completely untouched —
+// reproduced directly: IsError=false, hierarchy link unchanged, fields
+// blob "parent" -> "". extractParentLink (internal/server/handlers_items.go
+// ~L606-610) treats a schema-shadowed key as an ordinary field write, not
+// hierarchy, so the wire shape {"parent":""} is ambiguous once it reaches
+// the server — this surface must refuse rather than guess.
+func TestMCPUpdate_ClearParentRefusedWhenSchemaShadowsField(t *testing.T) {
+	for _, shadowKey := range []string{"parent", "plan"} {
+		t.Run(shadowKey, func(t *testing.T) {
+			s := storetest.NewSQLite(t)
+			srv := server.New(s)
+			t.Cleanup(srv.Stop)
+
+			owner, err := s.CreateUser(models.UserCreate{
+				Email: "shadow-" + shadowKey + "@example.com", Name: "Shadow",
+				Password: "correct-horse-battery-staple",
+			})
+			if err != nil {
+				t.Fatalf("CreateUser: %v", err)
+			}
+			ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Shadow WS", Slug: "shadow-ws-" + shadowKey, OwnerID: owner.ID})
+			if err != nil {
+				t.Fatalf("CreateWorkspace: %v", err)
+			}
+			if err := s.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+				t.Fatalf("AddWorkspaceMember: %v", err)
+			}
+
+			coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+				Name: "Docs", Slug: "docs", Prefix: "DOC",
+				Schema: `{"fields":[{"key":"` + shadowKey + `","type":"text"}]}`,
+			})
+			if err != nil {
+				t.Fatalf("CreateCollection: %v", err)
+			}
+
+			realParent, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Real parent"})
+			if err != nil {
+				t.Fatalf("CreateItem (parent): %v", err)
+			}
+			child, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+				Title: "Child", Fields: `{"` + shadowKey + `":"grandpa"}`,
+			})
+			if err != nil {
+				t.Fatalf("CreateItem (child): %v", err)
+			}
+			if _, err := s.UpdateItemWithParentLink(
+				child.ID, models.ItemUpdate{}, nil,
+				&store.ParentLinkUpdate{Provided: true, ParentID: realParent.ID, WorkspaceID: ws.ID, CreatedBy: "user"},
+			); err != nil {
+				t.Fatalf("seed parent link: %v", err)
+			}
+
+			d := &HTTPHandlerDispatcher{
+				Handler:      srv,
+				UserResolver: func(context.Context) *models.User { return owner },
+			}
+			ctx := WithDispatchInput(context.Background(), map[string]any{
+				"workspace":    ws.Slug,
+				"ref":          child.Slug,
+				"clear_parent": true,
+			})
+			res, err := d.Dispatch(ctx, []string{"item", "update"}, nil)
+			if err != nil {
+				t.Fatalf("Dispatch errored at transport: %v", err)
+			}
+			if !res.IsError {
+				t.Fatalf("clear_parent must be refused when the schema shadows %q; got success: %s", shadowKey, textOf(res))
+			}
+			msg := textOf(res)
+			if !strings.Contains(msg, shadowKey) || !strings.Contains(msg, "can't be expressed") {
+				t.Fatalf("unexpected refusal message: %s", msg)
+			}
+
+			// The outcome, not just the message: a refused clear must leave
+			// BOTH the real hierarchy link and the schema-declared data
+			// field exactly as they were — the opposite of what happened
+			// before this guard existed.
+			link, err := s.GetParentForItem(child.ID)
+			if err != nil {
+				t.Fatalf("GetParentForItem: %v", err)
+			}
+			if link == nil || link.TargetID != realParent.ID {
+				t.Fatalf("a refused clear must not touch the real hierarchy link; got %v", link)
+			}
+			got, err := s.GetItem(child.ID)
+			if err != nil {
+				t.Fatalf("GetItem: %v", err)
+			}
+			if !strings.Contains(got.Fields, `"`+shadowKey+`":"grandpa"`) {
+				t.Fatalf("a refused clear must not touch the schema-declared data field; fields = %s", got.Fields)
+			}
+		})
+	}
+}

@@ -654,6 +654,52 @@ func TestItemUpdate_ClearParentConflictsWithFieldPlanFlag(t *testing.T) {
 	}
 }
 
+// TestItemUpdate_ClearParentRefusedWhenSchemaShadowsField promotes the
+// empirical repro from the codex round 2 finding #2 investigation to a
+// permanent regression test. Before this guard existed, dispatching
+// --clear-parent against a collection whose schema declares its own
+// "parent" (or "plan") field reported SUCCESS while silently blanking the
+// data field and leaving the real hierarchy link completely untouched —
+// extractParentLink (internal/server/handlers_items.go ~L606-610) treats a
+// schema-shadowed key as an ordinary field write, not hierarchy.
+func TestItemUpdate_ClearParentRefusedWhenSchemaShadowsField(t *testing.T) {
+	for _, shadowKey := range []string{"parent", "plan"} {
+		t.Run(shadowKey, func(t *testing.T) {
+			patched := false
+			setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPatch {
+					patched = true
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": "item-1", "slug": "shadowed"})
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"id": "item-1", "slug": "shadowed", "collection_slug": "docs",
+					"collection_prefix": "DOC", "item_number": 1, "fields": `{"` + shadowKey + `":"grandpa"}`,
+					"schema": `{"fields":[{"key":"` + shadowKey + `","type":"text"}]}`,
+				})
+			}))
+
+			cmd := updateCmd()
+			cmd.SetArgs([]string{"DOC-1", "--clear-parent"})
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+			err := cmd.Execute()
+
+			if err == nil {
+				t.Fatalf("--clear-parent must be refused when the schema declares its own %q field", shadowKey)
+			}
+			if !strings.Contains(err.Error(), shadowKey) || !strings.Contains(err.Error(), "can't be expressed") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if patched {
+				t.Fatal("no PATCH may be issued when the schema shadows the flag")
+			}
+		})
+	}
+}
+
 // TestItemCreate_HasNoClearParentFlag mirrors TestItemCreate_HasNoClearFlags
 // for the same asymmetry: an item has no parent unless one is given at
 // create, so a create-time clear would be a no-op teaching a wrong

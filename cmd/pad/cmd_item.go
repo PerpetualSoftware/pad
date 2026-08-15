@@ -1086,6 +1086,34 @@ Examples:
 				// the set. Checking both keys after every patch-building step
 				// closes both bypasses at once.
 				if clearParent {
+					// Refuse when the TARGET COLLECTION'S SCHEMA declares its
+					// own "parent" or "plan" field (codex round 2 finding #2).
+					// extractParentLink (internal/server/handlers_items.go
+					// ~L606-610, pre-existing documented policy: "Skip this
+					// if the schema actually defines a field with that key")
+					// skips hierarchy handling ENTIRELY for a schema-shadowed
+					// key and instead lets it fall through as an ordinary
+					// field write — so on a shadowed collection,
+					// `patch["parent"] = ""` below would report success while
+					// silently blanking the user's data field AND leaving
+					// the real hierarchy link untouched. Reproduced
+					// empirically before this guard existed: success
+					// reported, hierarchy link unchanged, fields blob
+					// "parent" -> "".
+					//
+					// The wire shape {"parent":""} cannot distinguish
+					// clear-hierarchy intent from a legitimate
+					// blank-my-schema-field write once it reaches the
+					// server — the ambiguity is created HERE, at the surface
+					// that accepted --clear-parent, so this surface must
+					// refuse rather than push the decision server-side.
+					// collSchema is already fetched above for --field type
+					// parsing, so this check is free — no extra request.
+					for _, f := range collSchema.Fields {
+						if f.Key == "parent" || f.Key == "plan" {
+							return fmt.Errorf("--clear-parent: this collection defines its own %q field, so the hierarchy-clear flag can't be expressed for it", f.Key)
+						}
+					}
 					for _, key := range []string{"parent", "plan"} {
 						if v, ok := patch[key].(string); ok && v != "" {
 							return fmt.Errorf("--clear-parent conflicts with setting a parent in the same update (via %q); drop one", key)
