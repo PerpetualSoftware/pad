@@ -141,6 +141,10 @@ homebrew_casks:
     homepage: "https://getpad.dev"
     description: "Project Management for the agent era"
     license: "Apache-2.0"
+    # Prerelease tags (vX.Y.Z-rc.N) must not reach the tap: without this,
+    # goreleaser uploads the cask for RCs too and `brew install` serves a
+    # prerelease to the public until the stable tag overwrites it (BUG-2524).
+    skip_upload: auto
 
 # dockers_v2 replaces the legacy `dockers:` + `docker_manifests:` blocks.
 # A single declaration handles multi-platform builds via buildx; goreleaser
@@ -151,7 +155,10 @@ dockers_v2:
       - "ghcr.io/perpetualsoftware/pad"
     tags:
       - "{{ .Version }}"
-      - "latest"
+      # Only stable tags move the floating :latest tag — a template that
+      # evaluates empty is skipped, so RCs publish only their own
+      # :X.Y.Z-rc.N tag and never overwrite :latest (BUG-2524).
+      - "{{ if not .Prerelease }}latest{{ end }}"
     dockerfile: Dockerfile.goreleaser
     extra_files:
       - web/build
