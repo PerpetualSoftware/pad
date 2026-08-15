@@ -103,7 +103,34 @@ const CmdhelpVersion = "0.1"
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
 //
-//   - "0.16" — current. TASK-2571: an MCP agent can now UNASSIGN an item.
+//   - "0.17" — current. BUG-2583: unassign now works on the LOCAL STDIO
+//     transport too, closing the gap v0.16 documented. No tool, action, or
+//     parameter shape changed — another BEHAVIOUR bump, same grounds as
+//     v0.16 and v0.9.
+//
+//     v0.16 fixed the two filters in the remote dispatcher. Local stdio MCP
+//     goes nowhere near them: ExecDispatcher shells out to the `pad` CLI,
+//     and the CLI wrote `--field assigned_user_id=<uuid>` into the item's
+//     FIELDS JSON BLOB while the column stayed stale — then printed
+//     "Updated TASK-9". A success message for a write that did nothing the
+//     caller asked for, and a blob key shadowing a real column's name.
+//     `cmd/pad/cmd_item.go` now lifts columnFieldKeys onto the columns on
+//     both create and update, mirroring liftFieldsToColumns (and its
+//     INVARIANT) on the MCP side, so the two surfaces stop diverging.
+//
+//     TWO compat changes, ruled separately: (1) NON-empty
+//     `--field assigned_user_id=<uuid>` now writes the COLUMN and no longer
+//     writes the blob key — accepted on the grounds that relying on the old
+//     behaviour is relying on a shadowing defect; (2) EMPTY clears the
+//     column, which falls out of the lift and inherits BUG-2566's store
+//     semantics. `agent_role_id` gets identical treatment. Existing stray
+//     blob keys are left alone — this stops minting new ones; a cleanup
+//     sweep would be its own change.
+//
+//     Still true from v0.16: an empty `assign` / `role` does NOT clear on
+//     either transport, deliberately (IDEA-2584) — see resolveAssignName.
+//
+//   - "0.16" — historical. TASK-2571: an MCP agent can now UNASSIGN an item.
 //     No tool, action, or parameter shape changes — this is a BEHAVIOUR
 //     change, bumped on the same grounds as v0.9 (which moved for a return
 //     shape with an unchanged signature): an empty-string
@@ -142,7 +169,8 @@ const CmdhelpVersion = "0.1"
 //     column stayed set) instead of being lifted onto the column the way
 //     liftFieldsToColumns does for HTTP. That is a separate defect with a
 //     CLI-wide blast radius, tracked as BUG-2583 — do not read this
-//     entry as covering it. The schema-declared `assign` / `role`
+//     entry as covering it. CLOSED IN v0.17 BELOW; this paragraph
+//     describes v0.16 only. The schema-declared `assign` / `role`
 //     aliases also still no-op on both transports (IDEA-2584); see
 //     resolveAssignName for why an empty alias is deliberately NOT a
 //     clear.
@@ -314,7 +342,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.16"
+const ToolSurfaceVersion = "0.17"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

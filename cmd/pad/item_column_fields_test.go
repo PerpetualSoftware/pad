@@ -1,0 +1,253 @@
+package main
+
+// BUG-2583 — `--field assigned_user_id=…` must write the COLUMN, not the
+// item's fields JSON blob.
+//
+// Before this fix the CLI stuffed the pair into the fields blob and left the
+// column untouched, then printed "Updated TASK-9". Two defects in one: a
+// success message for a write that did nothing the user asked for, and a blob
+// key shadowing a real column's name so the CLI surface diverged from
+// store/HTTP/MCP truth. The empty-string case was the same defect wearing a
+// worse hat — it was the only route an agent had to unassign, and local stdio
+// MCP (Claude Desktop / Cursor) inherits it by shelling out to this CLI.
+//
+// These tests assert what the CLI puts ON THE WIRE, which is precisely where
+// the defect lived. The store half of the contract — that an empty ID clears
+// to NULL — is already pinned by internal/store/items_empty_assignment_test.go
+// (BUG-2566), and the remote-MCP half by
+// internal/mcp/dispatch_http_clear_assignment_test.go (TASK-2571).
+
+import (
+	"encoding/json"
+	"net/http"
+	"strings"
+	"testing"
+)
+
+// captureUpdateBody runs `item update` against a fake server and returns the
+// decoded PATCH body. The GET is the CLI's own pre-fetch (it resolves the item
+// and its collection before building the patch).
+func captureUpdateBody(t *testing.T, args ...string) map[string]any {
+	t.Helper()
+	var body map[string]any
+	setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "item-1", "slug": "unassign-me", "title": "Unassign me",
+				"collection_slug": "tasks", "collection_prefix": "TASK",
+				"item_number": 9, "fields": `{"status":"open"}`,
+				"schema": `{"fields":[{"key":"status","type":"select"}]}`,
+			})
+		case http.MethodPatch:
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "item-1", "slug": "unassign-me", "title": "Unassign me",
+				"collection_slug": "tasks", "fields": `{"status":"open"}`,
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{})
+		}
+	}))
+
+	cmd := updateCmd()
+	cmd.SetArgs(args)
+	cmd.SilenceUsage = true
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute update %v: %v", args, err)
+	}
+	if body == nil {
+		t.Fatalf("no PATCH was issued for %v", args)
+	}
+	return body
+}
+
+func fieldsPatchOf(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+	raw, ok := body["fields_patch"]
+	if !ok || raw == nil {
+		return nil
+	}
+	m, ok := raw.(map[string]any)
+	if !ok {
+		t.Fatalf("fields_patch is %T, want an object", raw)
+	}
+	return m
+}
+
+func TestItemUpdate_NonEmptyAssignedUserIDLiftsToColumn(t *testing.T) {
+	// Q1 of the ruling: the compat change. This value used to land in the
+	// fields blob while the column stayed stale.
+	body := captureUpdateBody(t, "TASK-9", "--field", "assigned_user_id=user-42")
+
+	if got := body["assigned_user_id"]; got != "user-42" {
+		t.Fatalf("assigned_user_id column = %v, want %q", got, "user-42")
+	}
+	if fp := fieldsPatchOf(t, body); fp != nil {
+		if _, leaked := fp["assigned_user_id"]; leaked {
+			t.Fatalf("assigned_user_id must NOT also be written to the fields blob; fields_patch = %v", fp)
+		}
+	}
+}
+
+func TestItemUpdate_EmptyAssignedUserIDClearsTheColumn(t *testing.T) {
+	// Q2 of the ruling: falls out of the lift. The empty string reaches the
+	// column, where the store's BUG-2566 semantics turn it into NULL.
+	body := captureUpdateBody(t, "TASK-9", "--field", "assigned_user_id=")
+
+	got, present := body["assigned_user_id"]
+	if !present {
+		t.Fatal("assigned_user_id must be SENT for an empty value — omitting it is the no-op this fixes")
+	}
+	if got != "" {
+		t.Fatalf("assigned_user_id = %v, want the empty string (clear-to-NULL)", got)
+	}
+	// With nothing else in the patch, `fields_patch` must be ABSENT from the
+	// body — not present-and-empty. Asserted on KEY PRESENCE, deliberately:
+	// `len(fp) != 0` passes either way, so it discriminates nothing (found by
+	// mutating `omitempty` off the model field and watching the test stay
+	// green). Delivered today by ItemUpdate.FieldsPatch's `omitempty`; this
+	// pins it so an empty patch never asks the server to load, validate and
+	// merge nothing.
+	if _, present := body["fields_patch"]; present {
+		t.Fatalf("a lift-only update must send NO fields_patch key; body = %v", body)
+	}
+}
+
+func TestItemUpdate_AgentRoleIDGetsIdenticalTreatment(t *testing.T) {
+	// The ruling requires the sibling column move in the same change.
+	set := captureUpdateBody(t, "TASK-9", "--field", "agent_role_id=role-7")
+	if got := set["agent_role_id"]; got != "role-7" {
+		t.Fatalf("agent_role_id column = %v, want %q", got, "role-7")
+	}
+	if fp := fieldsPatchOf(t, set); fp != nil {
+		if _, leaked := fp["agent_role_id"]; leaked {
+			t.Fatalf("agent_role_id leaked into the fields blob: %v", fp)
+		}
+	}
+
+	clear := captureUpdateBody(t, "TASK-9", "--field", "agent_role_id=")
+	got, present := clear["agent_role_id"]
+	if !present || got != "" {
+		t.Fatalf("empty agent_role_id must be sent as \"\"; present=%v got=%v", present, got)
+	}
+}
+
+func TestItemUpdate_OtherFieldsStillGoToTheBlob(t *testing.T) {
+	// The lift must be surgical. A real schema field alongside a lifted key
+	// still travels in fields_patch, and the patch is still sent.
+	body := captureUpdateBody(t, "TASK-9",
+		"--field", "assigned_user_id=user-42",
+		"--field", "status=done")
+
+	if got := body["assigned_user_id"]; got != "user-42" {
+		t.Fatalf("assigned_user_id column = %v, want %q", got, "user-42")
+	}
+	fp := fieldsPatchOf(t, body)
+	if fp == nil {
+		t.Fatal("fields_patch must still be sent when a non-column field is set")
+	}
+	if fp["status"] != "done" {
+		t.Fatalf("fields_patch.status = %v, want %q", fp["status"], "done")
+	}
+	if _, leaked := fp["assigned_user_id"]; leaked {
+		t.Fatalf("assigned_user_id leaked into the fields blob: %v", fp)
+	}
+}
+
+// TestLiftColumnFields_LeavesNonStringsInTheBlob covers the one case where
+// NOT lifting is correct: a collection that genuinely DECLARES a field named
+// `assigned_user_id` can make parseFieldFlag return a typed non-string. That
+// value cannot address a column, so dropping it would be silent data loss —
+// it stays in the blob, which is what happens today.
+func TestLiftColumnFields_LeavesNonStringsInTheBlob(t *testing.T) {
+	fields := map[string]interface{}{
+		"assigned_user_id": 42.0,
+		"agent_role_id":    "role-7",
+	}
+	got := liftColumnFields(fields)
+
+	if got.AssignedUserID != nil {
+		t.Fatalf("a non-string must not be lifted; got %q", *got.AssignedUserID)
+	}
+	if _, still := fields["assigned_user_id"]; !still {
+		t.Fatal("a non-string must be LEFT in the fields map, not dropped")
+	}
+	if got.AgentRoleID == nil || *got.AgentRoleID != "role-7" {
+		t.Fatalf("the sibling string key should still lift; got %v", got.AgentRoleID)
+	}
+	if _, still := fields["agent_role_id"]; still {
+		t.Fatal("a lifted key must be removed from the fields map")
+	}
+}
+
+// TestLiftColumnFields_TagsIsNotLiftable pins the INVARIANT on
+// columnFieldKeys. `tags` is a column too, but an empty write corrupts it
+// (JSONB on Postgres) rather than clearing it — the same guard the MCP side
+// keeps for the same reason. If someone adds it to the list, this fails.
+func TestLiftColumnFields_TagsIsNotLiftable(t *testing.T) {
+	for _, key := range columnFieldKeys {
+		if key == "tags" {
+			t.Fatal("`tags` must never be in columnFieldKeys — an empty write corrupts the column rather than clearing it")
+		}
+	}
+
+	fields := map[string]interface{}{"tags": ""}
+	liftColumnFields(fields)
+	if _, still := fields["tags"]; !still {
+		t.Fatal("`tags` must be left in the fields map, not lifted to a column")
+	}
+}
+
+// TestItemUpdate_DedicatedFlagWinsOverLiftedField pins the precedence the
+// lift's doc comment claims, and mirrors liftFieldsToColumns' "caller-supplied
+// top-level values win" rule on the MCP side. `--assign` names a person and
+// costs a lookup; `--field assigned_user_id=` is the raw escape hatch. When
+// both are given the named intent wins — and the ORDER of the two blocks in
+// the command is what delivers that, which is exactly the kind of thing that
+// gets reordered by accident.
+func TestItemUpdate_DedicatedFlagWinsOverLiftedField(t *testing.T) {
+	var body map[string]any
+	setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch:
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "item-1", "slug": "unassign-me", "title": "Unassign me",
+				"collection_slug": "tasks", "fields": `{"status":"open"}`,
+			})
+		case strings.HasSuffix(r.URL.Path, "/members"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"members": []map[string]any{
+					{"user_id": "user-from-assign", "user_name": "Wren", "user_email": "wren@example.com"},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "item-1", "slug": "unassign-me", "title": "Unassign me",
+				"collection_slug": "tasks", "collection_prefix": "TASK",
+				"item_number": 9, "fields": `{"status":"open"}`,
+				"schema": `{"fields":[{"key":"status","type":"select"}]}`,
+			})
+		}
+	}))
+
+	cmd := updateCmd()
+	cmd.SetArgs([]string{"TASK-9", "--field", "assigned_user_id=user-from-field", "--assign", "Wren"})
+	cmd.SilenceUsage = true
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute update: %v", err)
+	}
+	if body == nil {
+		t.Fatal("no PATCH was issued")
+	}
+	if got := body["assigned_user_id"]; got != "user-from-assign" {
+		t.Fatalf("assigned_user_id = %v, want the --assign resolution to win", got)
+	}
+}

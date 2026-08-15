@@ -349,7 +349,7 @@ directory for `claude-code`, and an `[mcp_servers.pad]` table in
 project-scoped, it's install-on-request only — `--all` and `pad mcp status` cover
 the per-user clients (including Codex) and skip it.
 
-**Tool catalog (v0.16)** — ten resource × action tools plus `pad_set_workspace` (eleven total), no flat verb explosion. `pad_item.list` accepts `unparented: true` (mutually exclusive with `parent`) to select items with no parent or implements relationship:
+**Tool catalog (v0.17)** — ten resource × action tools plus `pad_set_workspace` (eleven total), no flat verb explosion. `pad_item.list` accepts `unparented: true` (mutually exclusive with `parent`) to select items with no parent or implements relationship:
 
 | Tool | Actions |
 |---|---|
@@ -378,7 +378,7 @@ initialize handshake under `capabilities.experimental.padCmdhelp` and
 `pad://_meta/version`):
 
 - `cmdhelp_version: "0.1"` — CLI help-tree contract (used at dispatch time)
-- `tool_surface_version: "0.16"` — MCP tool catalog contract (v0.5 added `pad_library`; v0.6 `pad_item.backlinks`; v0.7 `pad_item` `export`/`import`; v0.8 `pad_workspace` `deleted`/`restore`; v0.9 made `pad_item.list` summary-shaped by default with a default+max result cap; v0.10 enforced the draft-playbook gate server-side on `pad_playbook.run` with an `allow_draft` escape hatch; v0.11 added the read-only `pad_attachment` tool (`list`/`show`); v0.12 added `pad_project.activity` (agent-accessible non-streaming activity feed); v0.13 added `pad_project` `ready`/`stale` (agent-oriented backlog + attention queries); v0.14 added `pad_item` `history` + optimistic concurrency (TASK-2022); v0.15 added the `pad_item.list` `unparented` parameter (TASK-2096); v0.16 made an empty-string `assigned_user_id` / `agent_role_id` CLEAR the assignment instead of being silently dropped, so an agent can finally unassign an item (TASK-2571); see `internal/mcp/version.go` for the full changelog)
+- `tool_surface_version: "0.17"` — MCP tool catalog contract (v0.5 added `pad_library`; v0.6 `pad_item.backlinks`; v0.7 `pad_item` `export`/`import`; v0.8 `pad_workspace` `deleted`/`restore`; v0.9 made `pad_item.list` summary-shaped by default with a default+max result cap; v0.10 enforced the draft-playbook gate server-side on `pad_playbook.run` with an `allow_draft` escape hatch; v0.11 added the read-only `pad_attachment` tool (`list`/`show`); v0.12 added `pad_project.activity` (agent-accessible non-streaming activity feed); v0.13 added `pad_project` `ready`/`stale` (agent-oriented backlog + attention queries); v0.14 added `pad_item` `history` + optimistic concurrency (TASK-2022); v0.15 added the `pad_item.list` `unparented` parameter (TASK-2096); v0.16 made an empty-string `assigned_user_id` / `agent_role_id` CLEAR the assignment instead of being silently dropped, so an agent can finally unassign an item (TASK-2571); v0.17 carried that to the LOCAL STDIO transport by teaching the CLI to lift those keys onto their columns instead of into the fields blob (BUG-2583); see `internal/mcp/version.go` for the full changelog)
 
 External agents pin against these so a future rename doesn't break them
 silently. Errors come back as structured envelopes (`{error: {code,
