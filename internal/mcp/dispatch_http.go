@@ -787,6 +787,13 @@ func mapItemCreate(input map[string]any) (method, path string, body []byte, err 
 	// before the mapper runs, so by the time we get here a name has
 	// already been resolved to a UUID. If the resolved ID is set,
 	// pass it through to the handler.
+	// The empty-string filter STAYS on create, unlike the matching
+	// branches in mapItemUpdate (TASK-2571). On an update `""` is a
+	// meaningful instruction — clear the assignment — but a brand-new
+	// item has no assignment to clear, and CreateItem nulls an empty ID
+	// anyway (BUG-2566), so forwarding or dropping it produce the same
+	// row. The filter is kept because it makes the no-op explicit rather
+	// than incidental; there is no behaviour riding on this line.
 	if v, ok := input["assigned_user_id"].(string); ok && v != "" {
 		payload["assigned_user_id"] = v
 	}
@@ -854,6 +861,13 @@ func isStringType(v any) bool {
 // no-op. Keep the list short; a real flag in cmdhelp is preferable
 // long-term (the eventual TASK-968 follow-up should add named
 // inputs for these).
+//
+// INVARIANT (TASK-2571): every key here must have defined
+// clear-to-NULL semantics for the empty string at the store, because
+// liftFieldsToColumns forwards `""` verbatim rather than skipping it.
+// Both current members do (BUG-2566). A key whose column would instead
+// be CORRUPTED by an empty write — `tags` is the canonical example,
+// JSONB on Postgres — does not belong in this list at all.
 var columnFieldKeys = []string{
 	"agent_role_id",
 	"assigned_user_id",
@@ -878,9 +892,12 @@ func liftFieldsToColumns(fields, payload map[string]any) {
 		if _, alreadyTopLevel := payload[key]; alreadyTopLevel {
 			continue
 		}
-		if s, ok := v.(string); ok && s == "" {
-			continue
-		}
+		// An empty string used to be dropped here, which made
+		// `--field assigned_user_id=` a silent no-op — the only
+		// MCP-reachable way to unassign an item, and it did nothing
+		// (TASK-2571). It is now forwarded, because for every key in
+		// columnFieldKeys `""` means clear-to-NULL at the store
+		// (BUG-2566). See that list's INVARIANT before adding a key.
 		payload[key] = v
 	}
 }

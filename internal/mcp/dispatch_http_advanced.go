@@ -41,6 +41,28 @@ func (d *HTTPHandlerDispatcher) resolveAssignName(
 	}
 	assign, _ := rawAssign.(string)
 	if assign == "" {
+		// An EMPTY `assign` is deliberately still a no-op, and this is
+		// the one place in TASK-2571 where the fix stops short. Do not
+		// "finish the job" by mapping it to a clear without reading
+		// this first — codex round 1 proposed exactly that.
+		//
+		// `assign` is SCHEMA-DECLARED (catalog_item.go), unlike
+		// `assigned_user_id`, which an agent can only reach by knowing
+		// it exists. Every other schema-declared string on this mapper
+		// — title, content, comment, tags — follows one convention:
+		// empty means NOT PROVIDED. An MCP client that fills declared
+		// optional params with "" rather than omitting them is
+		// therefore harmless today; making `assign: ""` mean "clear"
+		// would turn that same client into one that silently unassigns
+		// every item it touches. Destructive, silent, and inconsistent
+		// with the four params beside it.
+		//
+		// The gap is real — an agent reading the schema will reach for
+		// `assign: ""` and get a lie — but the remedy is explicit
+		// `clear_assigned_user` / `clear_agent_role` params (option (b)
+		// on TASK-2571, deferred by the lead as additive sugar), not a
+		// destructive meaning bolted onto an optional string. Tracked
+		// separately; the MCP instructions name the ID form meanwhile.
 		return input, nil
 	}
 	// Already-resolved? If the caller used `--field assigned_user_id=<uuid>`
@@ -100,6 +122,8 @@ func (d *HTTPHandlerDispatcher) resolveRoleSlug(
 	}
 	role, _ := rawRole.(string)
 	if role == "" {
+		// Empty `role` stays a no-op for the same reason an empty
+		// `assign` does — see the long note in resolveAssignName.
 		return input, nil
 	}
 	out := cloneStringMap(input)
@@ -337,10 +361,32 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 			payload["tags"] = v
 		}
 	}
-	if v, ok := input["assigned_user_id"].(string); ok && v != "" {
+	// Empty string is forwarded, NOT filtered — it means "clear this
+	// assignment" (TASK-2571).
+	//
+	// The filter above it was right when it was written: `""` had no
+	// defined meaning at the store, so passing it through bound an
+	// empty string into a FK column and failed with a driver-specific
+	// 500. BUG-2566 gave `""` clear-to-NULL semantics for exactly these
+	// two columns, and the HTTP surface has inherited that since — so
+	// filtering here now makes MCP the odd surface out: an agent has no
+	// way to unassign an item, and `assigned_user_id=""` is a silent
+	// no-op rather than either a clear or an error.
+	//
+	// This is a deliberate behaviour change on the MCP surface. Anyone
+	// sending `""` today gets a no-op; they will now get a clear. That
+	// is the correct reading of the input — nobody sends an empty
+	// assignment ID meaning "leave it alone" — and the no-op is the
+	// surprising half of the pair.
+	//
+	// NOTE the contrast with `tags` immediately above, whose empty-string
+	// filter STAYS (codex #547 r3 P2): `tags: ""` is not a clear, it is a
+	// corrupt write into a JSONB/TEXT column. Same-looking guard, opposite
+	// justification — do not "unify" them.
+	if v, ok := input["assigned_user_id"].(string); ok {
 		payload["assigned_user_id"] = v
 	}
-	if v, ok := input["agent_role_id"].(string); ok && v != "" {
+	if v, ok := input["agent_role_id"].(string); ok {
 		payload["agent_role_id"] = v
 	}
 	if b, ok := input["pinned"].(bool); ok {
