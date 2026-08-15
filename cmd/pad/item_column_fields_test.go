@@ -352,3 +352,116 @@ func TestLiftColumnFields_DeclaredKeyIsNotLifted(t *testing.T) {
 		t.Fatal("the undeclared key should have been removed from the blob")
 	}
 }
+
+// ── IDEA-2584: the canonical clear form ─────────────────────────────────────
+//
+// `--field assigned_user_id=` (BUG-2583) works but is an escape hatch nobody
+// can discover from a tool schema. These flags are the discoverable name for
+// the same store behaviour — and the only form that survives the trip to
+// local stdio MCP, since BuildCLIArgs emits the CLI's REAL flags and a
+// declared param with no flag behind it is simply dropped.
+
+func TestItemUpdate_ClearAssignedUserFlag(t *testing.T) {
+	body := captureUpdateBody(t, "TASK-9", "--clear-assigned-user")
+
+	if body["clear_assigned_user"] != true {
+		t.Fatalf("clear_assigned_user = %v, want true", body["clear_assigned_user"])
+	}
+	// The sibling must NOT be set — clearing one is not clearing both.
+	if _, present := body["clear_agent_role"]; present {
+		t.Fatalf("clear_agent_role must be absent; body = %v", body)
+	}
+	// And no assignment column write should ride along.
+	if _, present := body["assigned_user_id"]; present {
+		t.Fatalf("clear must not also send assigned_user_id; body = %v", body)
+	}
+}
+
+func TestItemUpdate_ClearAgentRoleFlag(t *testing.T) {
+	body := captureUpdateBody(t, "TASK-9", "--clear-agent-role")
+
+	if body["clear_agent_role"] != true {
+		t.Fatalf("clear_agent_role = %v, want true", body["clear_agent_role"])
+	}
+	if _, present := body["clear_assigned_user"]; present {
+		t.Fatalf("clear_assigned_user must be absent; body = %v", body)
+	}
+}
+
+func TestItemUpdate_ClearFlagsAbsentWhenNotPassed(t *testing.T) {
+	// `omitempty` on the model means an unset flag must not appear at all —
+	// a `clear_assigned_user: false` on the wire would be harmless today but
+	// is exactly the shape a future server-side "explicitly false" check
+	// would misread.
+	body := captureUpdateBody(t, "TASK-9", "--status", "done")
+
+	for _, key := range []string{"clear_assigned_user", "clear_agent_role"} {
+		if _, present := body[key]; present {
+			t.Fatalf("%s must be absent when the flag wasn't passed; body = %v", key, body)
+		}
+	}
+}
+
+// TestItemUpdate_ExplicitClearBeatsAssign pins the precedence recorded at the
+// call site, which is the OPPOSITE of the --field lift's. `--assign wren
+// --clear-assigned-user` is a contradiction the user typed; honouring the
+// explicit clear is the reading that cannot silently assign somebody.
+func TestItemUpdate_ExplicitClearBeatsAssign(t *testing.T) {
+	var body map[string]any
+	setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch:
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "item-1", "slug": "unassign-me", "collection_slug": "tasks",
+			})
+		case strings.HasSuffix(r.URL.Path, "/members"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"members": []map[string]any{
+					{"user_id": "user-from-assign", "user_name": "Wren", "user_email": "wren@example.com"},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "item-1", "slug": "unassign-me", "collection_slug": "tasks",
+				"collection_prefix": "TASK", "item_number": 9, "fields": `{"status":"open"}`,
+				"schema": `{"fields":[{"key":"status","type":"select"}]}`,
+			})
+		}
+	}))
+
+	cmd := updateCmd()
+	cmd.SetArgs([]string{"TASK-9", "--assign", "Wren", "--clear-assigned-user"})
+	cmd.SilenceUsage = true
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute update: %v", err)
+	}
+	if body["clear_assigned_user"] != true {
+		t.Fatalf("an explicit clear must win over --assign; body = %v", body)
+	}
+}
+
+// TestItemCreate_HasNoClearFlags pins the deliberate asymmetry (IDEA-2584
+// ruling 2). Clearing at create is a request to not-set something never set;
+// the only honest behaviour is a no-op, which teaches a wrong affordance. If
+// someone "completes the pair", this fails and they meet the reasoning.
+func TestItemCreate_HasNoClearFlags(t *testing.T) {
+	create := createCmd()
+	for _, name := range []string{"clear-assigned-user", "clear-agent-role"} {
+		if f := create.Flags().Lookup(name); f != nil {
+			t.Fatalf("`item create` must NOT have --%s: clearing at create is a no-op by construction. "+
+				"See the flag-registration comment in updateCmd before adding it.", name)
+		}
+	}
+	// Control: the flags DO exist on update, so this test fails for the
+	// right reason rather than because the names drifted.
+	update := updateCmd()
+	for _, name := range []string{"clear-assigned-user", "clear-agent-role"} {
+		if f := update.Flags().Lookup(name); f == nil {
+			t.Fatalf("`item update` should have --%s", name)
+		}
+	}
+}

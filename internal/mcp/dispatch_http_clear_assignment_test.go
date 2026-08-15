@@ -261,3 +261,76 @@ func TestMCPUpdate_EmptyAssignAliasIsStillANoOp(t *testing.T) {
 		t.Fatalf("empty `role` must not clear the role; got %v", got.AgentRoleID)
 	}
 }
+
+// ── IDEA-2584: clear_assigned_user / clear_agent_role over remote MCP ───────
+//
+// The empty-string form (above) works but is undiscoverable — the catalog
+// exposes `assign` and `field`, not the ID params. These booleans are the
+// canonical, schema-visible clear. Same full-stack shape as the tests above:
+// real server, real store, assert the item actually ends up unassigned.
+
+func TestMCPUpdate_ClearAssignedUserBoolean(t *testing.T) {
+	f := newClearFixture(t)
+
+	f.dispatch(t, []string{"item", "update"}, map[string]any{
+		"workspace":           f.workspace.Slug,
+		"ref":                 f.item.Slug,
+		"clear_assigned_user": true,
+	})
+
+	got := f.reload(t)
+	if got.AssignedUserID != nil {
+		t.Fatalf("assignment should be cleared, got %q", *got.AssignedUserID)
+	}
+	// Clearing one must not clear the other.
+	if got.AgentRoleID == nil || *got.AgentRoleID != f.role.ID {
+		t.Fatalf("role should be untouched, got %v want %q", got.AgentRoleID, f.role.ID)
+	}
+}
+
+func TestMCPUpdate_ClearAgentRoleBoolean(t *testing.T) {
+	f := newClearFixture(t)
+
+	f.dispatch(t, []string{"item", "update"}, map[string]any{
+		"workspace":        f.workspace.Slug,
+		"ref":              f.item.Slug,
+		"clear_agent_role": true,
+	})
+
+	got := f.reload(t)
+	if got.AgentRoleID != nil {
+		t.Fatalf("role should be cleared, got %q", *got.AgentRoleID)
+	}
+	if got.AssignedUserID == nil || *got.AssignedUserID != f.owner.ID {
+		t.Fatalf("assignment should be untouched, got %v", got.AssignedUserID)
+	}
+}
+
+// TestMCPUpdate_ClearFalseIsNotAClear is the guard that makes the boolean
+// safe to declare in the schema at all. A client that fills every declared
+// param with its zero value must not unassign anything — that is the exact
+// hazard that ruled OUT giving `assign: ""` a destructive meaning, and it
+// would be self-defeating to reintroduce it here.
+func TestMCPUpdate_ClearFalseIsNotAClear(t *testing.T) {
+	f := newClearFixture(t)
+
+	f.dispatch(t, []string{"item", "update"}, map[string]any{
+		"workspace":           f.workspace.Slug,
+		"ref":                 f.item.Slug,
+		"clear_assigned_user": false,
+		"clear_agent_role":    false,
+		"title":               "Touched but still assigned",
+	})
+
+	got := f.reload(t)
+	if got.AssignedUserID == nil || *got.AssignedUserID != f.owner.ID {
+		t.Fatalf("clear_assigned_user=false must NOT clear; got %v", got.AssignedUserID)
+	}
+	if got.AgentRoleID == nil || *got.AgentRoleID != f.role.ID {
+		t.Fatalf("clear_agent_role=false must NOT clear; got %v", got.AgentRoleID)
+	}
+	// The rest of the update still applied — false is inert, not a veto.
+	if got.Title != "Touched but still assigned" {
+		t.Fatalf("the update should still have applied; title = %q", got.Title)
+	}
+}

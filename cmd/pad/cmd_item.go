@@ -947,6 +947,8 @@ func updateCmd() *cobra.Command {
 		force             bool
 		sortOrder         int
 		expectedUpdatedAt string
+		clearAssignedUser bool
+		clearAgentRole    bool
 	)
 
 	cmd := &cobra.Command{
@@ -1111,6 +1113,29 @@ Examples:
 				input.AgentRoleID = &role.ID
 			}
 
+			// --clear-assigned-user / --clear-agent-role (IDEA-2584).
+			//
+			// Set AFTER --assign / --role so an explicit clear wins if both
+			// are given. That order is the opposite of the --field lift's
+			// (which yields to the dedicated flags), and deliberately so:
+			// `--assign wren --clear-assigned-user` is a contradiction the
+			// user typed, and the destructive-but-explicit reading is the
+			// safer one to honour — it cannot silently assign someone.
+			//
+			// These reach `ClearAssignedUser` / `ClearAgentRole`, which the
+			// store has honoured since BUG-2566 on the same branch as the
+			// empty-string form. Nothing new server-side; this is the
+			// DISCOVERABLE name for a clear, and the only one that survives
+			// the MCP catalog (a bareword bool becomes a bareword flag
+			// through BuildCLIArgs, so stdio agents get it too — a bare
+			// `assigned_user_id: ""` param cannot reach stdio at all).
+			if clearAssignedUser {
+				input.ClearAssignedUser = true
+			}
+			if clearAgentRole {
+				input.ClearAgentRole = true
+			}
+
 			updated, err := client.UpdateItem(ws, slug, input)
 			if err != nil {
 				// IDEA-1494: render the open-children list when the
@@ -1167,6 +1192,16 @@ Examples:
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
 	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")
 	cmd.Flags().StringVar(&expectedUpdatedAt, "expected-updated-at", "", "optimistic concurrency: RFC3339 updated_at you last read; the update is rejected with a conflict (exit non-zero) if the item changed since")
+	// UPDATE ONLY, and deliberately asymmetric with `item create` — do NOT
+	// "complete" the pair by adding these there (IDEA-2584 ruling). Clearing
+	// at create is a request to not-set something that was never set: the
+	// only honest behaviour is a no-op, which teaches agents a wrong
+	// affordance and pads every create call's schema for nothing. An item is
+	// created unassigned unless --assign is given. If a future need appears
+	// (create-from-template stripping an inherited assignee, say), that is a
+	// new decision with its own grounds, not the completion of this one.
+	cmd.Flags().BoolVar(&clearAssignedUser, "clear-assigned-user", false, "unassign the item (clear assigned_user_id)")
+	cmd.Flags().BoolVar(&clearAgentRole, "clear-agent-role", false, "clear the item's agent role (agent_role_id)")
 
 	return cmd
 }

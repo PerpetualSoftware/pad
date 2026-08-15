@@ -392,6 +392,22 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	if b, ok := input["pinned"].(bool); ok {
 		payload["pinned"] = b
 	}
+	// The canonical clear form (IDEA-2584). Forwarded verbatim, same shape as
+	// `pinned` above — NOT guarded on the value being true.
+	//
+	// A `&& b` guard here would read as the thing protecting a client that
+	// pads every declared param with its zero value, and it would be lying:
+	// what actually makes `false` inert is the STORE, which clears only on
+	// `input.ClearAssignedUser || <empty-string form>`. The guard would drop a
+	// key that was already harmless. Pinned by
+	// TestMCPUpdate_ClearFalseIsNotAClear, which fails if this ever forwards a
+	// hardcoded true instead of the caller's value.
+	if b, ok := input["clear_assigned_user"].(bool); ok {
+		payload["clear_assigned_user"] = b
+	}
+	if b, ok := input["clear_agent_role"].(bool); ok {
+		payload["clear_agent_role"] = b
+	}
 	// IDEA-1494: forward the open-children guard override. When set,
 	// the server-side handler skips the guard and still records the
 	// status transition. Same wire shape the CLI uses (`force: true`

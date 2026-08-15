@@ -103,7 +103,46 @@ const CmdhelpVersion = "0.1"
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
 //
-//   - "0.17" — current. BUG-2583: unassign now works on the LOCAL STDIO
+//   - "0.18" — current. IDEA-2584: `clear_assigned_user` / `clear_agent_role`
+//     booleans on `pad_item`, the canonical and DISCOVERABLE way to unassign.
+//     Additive param bump, v0.5 / v0.6 precedent — no existing tool, action or
+//     param changed shape, and v0.16/v0.17's empty-string forms keep working
+//     and are NOT deprecated.
+//
+//     What this closes: v0.16 and v0.17 made the clear WORK, but the params
+//     that do it (`assigned_user_id` / `agent_role_id`) were never in the
+//     catalog. An agent reading the schema to find out how to unassign saw
+//     only `assign` (a name) and reached for `assign: ""`, which is a no-op
+//     and stays one. The capability existed; nothing advertised it.
+//
+//     WHY BOOLEANS, not the empty-string params declared as-is. Two reasons,
+//     and the second is decisive:
+//     1. An empty DECLARED string is inert everywhere else on this tool
+//     (title, content, comment, tags), so a client that pads optional
+//     params with "" is harmless today. Giving one a destructive meaning
+//     would turn that client into one that silently unassigns everything
+//     it touches. A boolean carries its meaning in its name.
+//     2. Only a boolean can reach LOCAL STDIO. BuildCLIArgs emits the CLI's
+//     REAL flags, so a catalog param with no flag behind it is dropped
+//     before dispatch — declaring `assigned_user_id` would have left the
+//     direct form remote-only, i.e. would not have closed the gap it
+//     exists to close. These map to `--clear-assigned-user` /
+//     `--clear-agent-role`, new bareword flags on `pad item update`,
+//     exactly as `allow_draft` maps to `--allow-draft`.
+//
+//     UPDATE ONLY, deliberately asymmetric with create: clearing at create is
+//     a request to not-set something never set, so the only honest behaviour
+//     is a no-op — which teaches a wrong affordance and pads every create
+//     call's schema. `item create` has no such flags and a test fails if
+//     someone adds them. An item is created unassigned unless `assign` is
+//     given.
+//
+//     Server-side this is WIRING, not new semantics:
+//     models.ItemUpdate.ClearAssignedUser / ClearAgentRole already existed and
+//     the store has honoured them since BUG-2566, on the same branch as the
+//     empty-string form.
+//
+//   - "0.17" — historical. BUG-2583: unassign now works on the LOCAL STDIO
 //     transport too, closing the gap v0.16 documented. No tool, action, or
 //     parameter shape changed — another BEHAVIOUR bump, same grounds as
 //     v0.16 and v0.9.
@@ -351,7 +390,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.17"
+const ToolSurfaceVersion = "0.18"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
