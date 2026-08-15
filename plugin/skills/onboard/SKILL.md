@@ -14,13 +14,15 @@ authenticated:
   non-interactively.
 - If it reports "not configured," "session expired," or anything other than a
   real user, this machine hasn't finished setup yet. Do **not** run `pad init`
-  or `pad workspace init` yourself — verified live, `pad workspace init` can
-  hang indefinitely waiting on a browser-based setup flow with no
-  non-interactive fallback, and `pad init` needs an interactive terminal for
-  the same step. Tell the user to run `pad init` themselves in an interactive
-  terminal — in Claude Code, suggest they type `! pad init` to run it directly
-  in their own terminal. Stop here; there's nothing more this skill can do
-  until that completes.
+  or `pad workspace init` yourself — `pad workspace init` drops into a
+  browser-based auth flow and polls for a human to approve it, blocking your
+  tool call for minutes with no non-interactive fallback (the server expires
+  that session after ~5 minutes, ~20 for first-admin setup, so it does end —
+  but the poll has no limit of its own and only stops when the server says so).
+  `pad init` needs an interactive terminal for the same step. Tell the user to
+  run `pad init` themselves in an interactive terminal — in Claude Code,
+  suggest they type `! pad init` to run it directly in their own terminal.
+  Stop here; there's nothing more this skill can do until that completes.
 
 Once linked, run `pad bootstrap --format json`:
 - If `needs_onboarding` is true, offer the workspace onboarding flow — scan
