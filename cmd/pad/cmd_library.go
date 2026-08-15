@@ -79,6 +79,63 @@ Examples:
 				}
 			}
 
+			if formatFlag == "markdown" {
+				// The library is category-nested, so markdown mirrors that with a
+				// heading per section and per category, then one table each. The
+				// terminal form packs enforcement and surfaces into bracket tags
+				// beside the trigger; a table gives them their own columns instead.
+				if showConventions {
+					fmt.Println("# Conventions")
+					for _, cat := range lib.Categories {
+						fmt.Printf("\n## %s\n\n", cli.SanitizeMarkdownText(cat.Name))
+						if cat.Description != "" {
+							fmt.Printf("%s\n\n", cli.SanitizeMarkdownText(cat.Description))
+						}
+						rows := make([][]string, 0, len(cat.Conventions))
+						for _, conv := range cat.Conventions {
+							rows = append(rows, []string{
+								conv.Title, conv.Trigger, conv.Enforcement,
+								strings.Join(conv.Surfaces, ", "),
+							})
+						}
+						cli.RenderMarkdownTable(os.Stdout,
+							[]string{"Title", "Trigger", "Enforcement", "Surfaces"}, rows)
+					}
+				}
+
+				if showPlaybooks {
+					if showConventions {
+						fmt.Println()
+					}
+					fmt.Println("# Playbooks")
+					for _, cat := range plib.Categories {
+						fmt.Printf("\n## %s\n\n", cli.SanitizeMarkdownText(cat.Name))
+						if cat.Description != "" {
+							fmt.Printf("%s\n\n", cli.SanitizeMarkdownText(cat.Description))
+						}
+						rows := make([][]string, 0, len(cat.Playbooks))
+						for _, pb := range cat.Playbooks {
+							invocation := ""
+							if pb.InvocationSlug != "" {
+								invocation = "/pad " + pb.InvocationSlug
+							}
+							// Summaries are not truncated here: markdown output
+							// isn't width-bound the way the terminal table is.
+							summary := ""
+							if !fullFlag {
+								summary = pb.Summary
+							}
+							rows = append(rows, []string{
+								pb.Title, pb.Trigger, pb.Scope, invocation, summary,
+							})
+						}
+						cli.RenderMarkdownTable(os.Stdout,
+							[]string{"Title", "Trigger", "Scope", "Invocation", "Summary"}, rows)
+					}
+				}
+				return nil
+			}
+
 			// Table output.
 			if showConventions {
 				fmt.Printf("\n=== CONVENTIONS ===\n")

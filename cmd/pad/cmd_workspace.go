@@ -123,6 +123,34 @@ func membersCmd() *cobra.Command {
 				return nil
 			}
 
+			var invitations []struct {
+				Email string `json:"email"`
+				Role  string `json:"role"`
+				Code  string `json:"code"`
+			}
+
+			if formatFlag == "markdown" {
+				rows := make([][]string, 0, len(members))
+				for _, m := range members {
+					rows = append(rows, []string{m.UserName, m.UserEmail, m.Role})
+				}
+				cli.RenderMarkdownTable(os.Stdout, []string{"Name", "Email", "Role"}, rows)
+
+				json.Unmarshal(result.Invitations, &invitations)
+				if len(invitations) > 0 {
+					fmt.Println()
+					fmt.Println("## Pending invitations")
+					fmt.Println()
+					inviteRows := make([][]string, 0, len(invitations))
+					for _, inv := range invitations {
+						inviteRows = append(inviteRows, []string{inv.Email, inv.Role, inv.Code})
+					}
+					cli.RenderMarkdownTable(os.Stdout,
+						[]string{"Email", "Role", "Join code"}, inviteRows)
+				}
+				return nil
+			}
+
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "NAME\tEMAIL\tROLE")
 			for _, m := range members {
@@ -130,11 +158,6 @@ func membersCmd() *cobra.Command {
 			}
 			w.Flush()
 
-			var invitations []struct {
-				Email string `json:"email"`
-				Role  string `json:"role"`
-				Code  string `json:"code"`
-			}
 			json.Unmarshal(result.Invitations, &invitations)
 
 			if len(invitations) > 0 {

@@ -528,8 +528,13 @@ resolves it to a UUID before calling the API.`,
 				return nil
 			}
 
+			markdown := formatFlag == "markdown"
+			var mdRows [][]string
+
 			tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			fmt.Fprintln(tw, "ID\tMIME\tSIZE\tFILENAME\tITEM\tCREATED")
+			if !markdown {
+				fmt.Fprintln(tw, "ID\tMIME\tSIZE\tFILENAME\tITEM\tCREATED")
+			}
 			for _, raw := range resp.Attachments {
 				var row struct {
 					ID             string  `json:"id"`
@@ -559,9 +564,25 @@ resolves it to a UUID before calling the API.`,
 				if t, err := time.Parse(time.RFC3339, row.CreatedAt); err == nil {
 					created = t.Format("2006-01-02 15:04")
 				}
+				if markdown {
+					mdRows = append(mdRows, []string{
+						short, row.MimeType, humanSize(row.SizeBytes), row.Filename, item, created,
+					})
+					continue
+				}
 				fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
 					short, row.MimeType, humanSize(row.SizeBytes), row.Filename, item, created)
 			}
+
+			if markdown {
+				cli.RenderMarkdownTable(os.Stdout,
+					[]string{"ID", "MIME", "Size", "Filename", "Item", "Created"}, mdRows)
+				// Pagination footer as prose, so it can't be mistaken for a row.
+				fmt.Printf("\n_%d of %d (limit %d, offset %d)_\n",
+					len(resp.Attachments), resp.Total, resp.Limit, resp.Offset)
+				return nil
+			}
+
 			tw.Flush()
 			fmt.Printf("\n%d of %d (limit %d, offset %d)\n", len(resp.Attachments), resp.Total, resp.Limit, resp.Offset)
 			return nil
