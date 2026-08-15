@@ -52,19 +52,25 @@ const CmdhelpVersion = "0.1"
 //     3-stage rollout; never bumped during rollout because the
 //     user-visible surface was a transitional mix of v0.1 walker
 //     output + the partial v0.2 catalog.
+//
 //   - "0.2" — historical. Hand-curated resource × action catalog
 //     (PLAN-969, TASK-981). The cmdhelp leaf walker retired; tools/list
 //     advertises only the catalog (~7 tools + pad_set_workspace).
+//
 //   - "0.3" — historical. PLAN-1377 / TASK-1380:
+//
 //   - pad_meta gains an action: bootstrap that returns the
 //     AgentBootstrap blob (and pad_meta.Schema.Workspace flipped
 //     to true so the workspace param is available to that action).
+//
 //   - pad_set_workspace's response shape extends from
 //     {workspace, status} to {workspace, status, bootstrap?} —
 //     the embedded blob lets one call hand the agent full session
 //     context. Purely additive; older clients that ignore unknown
 //     keys keep working.
+//
 //   - pad://workspace/{ws}/bootstrap resource added.
+//
 //   - "0.5" — historical. PLAN-1560 / TASK-1563: adds `pad_library` to
 //     the catalog as the ninth resource × action tool. Three actions —
 //     list / get / activate — surface the global convention + playbook
@@ -72,6 +78,7 @@ const CmdhelpVersion = "0.1"
 //     existing tool/action/param/bootstrap shapes changed. Backwards-
 //     compatible for any v0.4 consumer that doesn't enumerate the new
 //     tool.
+//
 //   - "0.6" — historical. PLAN-1593 / TASK-1596: adds `backlinks` action
 //     to `pad_item` so MCP callers can answer "what mentions X?"
 //     without scanning the full content corpus. Adds `offset` to the
@@ -79,6 +86,7 @@ const CmdhelpVersion = "0.1"
 //     pagination. Pure addition; existing pad_item actions unchanged.
 //     Backwards-compatible for v0.5 consumers that don't enumerate
 //     the new action.
+//
 //   - "0.7" — historical. Artifact export/import (Phase 5): adds two
 //     actions to `pad_item` mirroring the CLI `pad item export` /
 //     `pad item import`. `export` (read-only) takes `ref` and returns
@@ -94,11 +102,52 @@ const CmdhelpVersion = "0.1"
 //     the `artifact` param to the vocabulary. Pure addition; existing
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
-//   - "0.15" — current. TASK-2096: adds the `unparented` boolean parameter
+//
+//   - "0.16" — current. TASK-2571: an MCP agent can now UNASSIGN an item.
+//     No tool, action, or parameter shape changes — this is a BEHAVIOUR
+//     change, bumped on the same grounds as v0.9 (which moved for a return
+//     shape with an unchanged signature): an empty-string
+//     `assigned_user_id` / `agent_role_id`, whether passed at the top level
+//     or via `field: ["assigned_user_id="]`, was silently dropped by the
+//     dispatcher and is now forwarded as a clear-to-NULL.
+//
+//     Compat posture: ACCEPTED, not worked around. A caller sending `""`
+//     today gets a no-op; after this they get a clear. That is the correct
+//     reading of the input — nobody sends an empty assignment ID meaning
+//     "leave it alone" — and the no-op was the surprising half. The store
+//     has had defined clear-to-NULL semantics for exactly these two columns
+//     since BUG-2566 and the HTTP surface inherited them, so this is
+//     uniformity restoration: MCP was the only surface with no way to
+//     unassign.
+//
+//     Deliberately NOT changed: the empty-string filter on `tags` at the
+//     same call site (codex #547 r3 P2). `tags: ""` is not a clear, it is a
+//     corrupt write into a JSONB/TEXT column. Same-looking guard, opposite
+//     justification.
+//
+//     Also not done: `clear_assigned_user` / `clear_agent_role` schema flags
+//     mirroring the HTTP body (option (b) on the task). Additive sugar; file
+//     separately if agent discoverability turns out to want it.
+//
+//     TRANSPORT SCOPE, verified live rather than assumed. This fixes the
+//     REMOTE /mcp transport (HTTPHandlerDispatcher), which is where both
+//     filters lived. LOCAL STDIO MCP — `pad mcp serve`, i.e. Claude
+//     Desktop / Cursor / Windsurf — still cannot clear an assignment,
+//     because ExecDispatcher shells out to the CLI and the CLI has no
+//     unassign at all: `--assign` / `--role` skip on empty, and
+//     `--field assigned_user_id=` lands in the item's fields JSON blob
+//     (observed: fields became {"assigned_user_id":"",...} while the
+//     column stayed set) instead of being lifted onto the column the way
+//     liftFieldsToColumns does for HTTP. That is a separate defect with a
+//     CLI-wide blast radius, tracked on its own item — do not read this
+//     entry as covering it.
+//
+//   - "0.15" — historical. TASK-2096: adds the `unparented` boolean parameter
 //     to `pad_item.list`, mutually exclusive with `parent`, and forwards it
 //     through both local exec and remote HTTP dispatchers. The parameter
 //     selects items with neither the legacy parent_id column nor an outgoing
 //     parent/implements relationship.
+//
 //   - "0.14" — historical. TASK-2022: adds a `history` action to `pad_item`
 //     (read-only item version history — newest-first metadata: id,
 //     created_at, created_by, source, change_summary; the resolved
@@ -113,6 +162,7 @@ const CmdhelpVersion = "0.1"
 //     path plus a new action and a new param, hence the version bump.
 //     Pure addition to the action enum + param vocabulary; existing
 //     pad_item actions/params are unchanged and backwards-compatible.
+//
 //   - "0.13" — TASK-2019: agent-oriented backlog queries.
 //     Adds `ready` + `stale` actions to `pad_project`, mirroring the
 //     existing CLI `pad project ready` / `pad project stale`. `ready`
@@ -128,6 +178,7 @@ const CmdhelpVersion = "0.1"
 //     read-only actions; existing pad_project actions unchanged.
 //     Backwards-compatible for v0.12 consumers that don't enumerate the
 //     new actions.
+//
 //   - "0.12" — TASK-2018: agent-accessible activity feed.
 //     Adds an `activity` action to `pad_project` mirroring the new CLI
 //     `pad project activity [--limit N] [--actor user|agent] [--since DATE]`.
@@ -145,6 +196,7 @@ const CmdhelpVersion = "0.1"
 //     params; existing pad_project actions unchanged. Backwards-
 //     compatible for v0.11 consumers that don't enumerate the new
 //     action.
+//
 //   - "0.11" — TASK-2017: read-only attachments surface.
 //     Adds a new `pad_attachment` tool (the tenth resource × action
 //     tool) with two read-only actions — `list` and `show` — mirroring
@@ -162,6 +214,7 @@ const CmdhelpVersion = "0.1"
 //     enumerate the new tool. The base64 image RESOURCE for multimodal
 //     agents was tracked separately (TASK-2076/2077) and shipped later
 //     in PR #930; it was not part of this bump.
+//
 //   - "0.10" — BUG-2020: server-side draft-playbook gate.
 //     `pad_playbook.run` now refuses a playbook whose status isn't
 //     "active" (a draft still being authored) with a structured
@@ -173,11 +226,14 @@ const CmdhelpVersion = "0.1"
 //     that don't set allow_draft — except that running a draft (which
 //     the skill already told agents not to do) now errors instead of
 //     silently returning the body.
+//
 //   - "0.9" — TASK-2000: `pad_item.list` is now summary-shaped
 //     and bounded. Two changes for agent-token thrift:
+//
 //   - The `list` action injects a default `limit` (50) and clamps an
 //     oversized one (max 300), mirroring the backlinks default/max, so
 //     a bare agent list can't dump the whole workspace into context.
+//
 //   - The list RESULT shape changed: `pad item list` (which the
 //     ExecDispatcher shells out to) now defaults to a token-light
 //     SUMMARY projection — the rich `content` body is replaced by a
@@ -192,6 +248,7 @@ const CmdhelpVersion = "0.1"
 //     fetch it per-item via action=get). No action-enum or param
 //     removals; `limit` semantics unchanged for callers that pass one
 //     under the max.
+//
 //   - "0.8" — historical. TASK-1973: workspace soft-delete recovery.
 //     Adds two actions to `pad_workspace` mirroring the CLI
 //     `pad workspace deleted` / `pad workspace restore` (TASK-1972):
@@ -203,20 +260,26 @@ const CmdhelpVersion = "0.1"
 //     new params. Pure addition; existing pad_workspace actions
 //     unchanged. Backwards-compatible for v0.7 consumers that don't
 //     enumerate the new actions.
+//
 //   - "0.4" — PLAN-1410: comprehensive bootstrap-payload
 //     trim, cutting ~40% of bytes off the AgentBootstrap response.
 //     Same tool catalog (still eight resource × action tools +
 //     pad_set_workspace); the shape changes are entirely inside the
 //     bootstrap JSON those tools/resources return:
+//
 //   - Slim BootstrapCollection projection (TASK-1412): drops `id`,
 //     `workspace_id`, `created_at`, `updated_at`, `settings`;
 //     `schema` is now a nested JSON object rather than an
 //     escaped JSON-encoded string.
+//
 //   - Slim BootstrapRole projection (TASK-1423): drops `id`,
 //     `workspace_id`, `tools`, `created_at`, `updated_at`.
+//
 //   - Convention `slug` dropped (TASK-1413) — agent addresses by ref.
+//
 //   - Top-level `recent_activity` removed (TASK-1413) — was a
 //     bit-for-bit duplicate of `dashboard.recent_activity`.
+//
 //   - BootstrapDashboard wrapper caps five dashboard sub-arrays
 //     (attention, recent_activity, active_items, active_plans,
 //     by_role) at 5 entries each, with parallel
@@ -224,6 +287,7 @@ const CmdhelpVersion = "0.1"
 //     fired. TASK-1413 added the first two; TASK-1422 added the
 //     remaining three. suggested_next deliberately excluded —
 //     already capped to 3 upstream in buildDashboardResponse.
+//
 //   - Schema field `label` omitted when label == TitleCase(key)
 //     (TASK-1424); custom labels preserved.
 //
@@ -245,7 +309,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.15"
+const ToolSurfaceVersion = "0.16"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

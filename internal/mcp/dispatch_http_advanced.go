@@ -337,10 +337,32 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 			payload["tags"] = v
 		}
 	}
-	if v, ok := input["assigned_user_id"].(string); ok && v != "" {
+	// Empty string is forwarded, NOT filtered — it means "clear this
+	// assignment" (TASK-2571).
+	//
+	// The filter above it was right when it was written: `""` had no
+	// defined meaning at the store, so passing it through bound an
+	// empty string into a FK column and failed with a driver-specific
+	// 500. BUG-2566 gave `""` clear-to-NULL semantics for exactly these
+	// two columns, and the HTTP surface has inherited that since — so
+	// filtering here now makes MCP the odd surface out: an agent has no
+	// way to unassign an item, and `assigned_user_id=""` is a silent
+	// no-op rather than either a clear or an error.
+	//
+	// This is a deliberate behaviour change on the MCP surface. Anyone
+	// sending `""` today gets a no-op; they will now get a clear. That
+	// is the correct reading of the input — nobody sends an empty
+	// assignment ID meaning "leave it alone" — and the no-op is the
+	// surprising half of the pair.
+	//
+	// NOTE the contrast with `tags` immediately above, whose empty-string
+	// filter STAYS (codex #547 r3 P2): `tags: ""` is not a clear, it is a
+	// corrupt write into a JSONB/TEXT column. Same-looking guard, opposite
+	// justification — do not "unify" them.
+	if v, ok := input["assigned_user_id"].(string); ok {
 		payload["assigned_user_id"] = v
 	}
-	if v, ok := input["agent_role_id"].(string); ok && v != "" {
+	if v, ok := input["agent_role_id"].(string); ok {
 		payload["agent_role_id"] = v
 	}
 	if b, ok := input["pinned"].(bool); ok {
