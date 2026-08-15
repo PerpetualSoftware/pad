@@ -551,11 +551,12 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 		}
 	});
 
-	it('refuses a stale count at click time, between poll ticks', async () => {
-		// The expiry must be checked where the DECISION is made, not only on
-		// the poll tick. A tick-only expiry leaves a window of up to one whole
-		// interval in which the menu still pushes against a count it has
-		// already outlived — and this is exactly the window a click lands in.
+	it('refuses a stale count at click time even if the expiry timer never ran', async () => {
+		// A timer is a request, not a guarantee: browsers throttle timers hard
+		// in a backgrounded tab, so the expiry can fire long after it came due —
+		// including after the user has come back and clicked. Modelled by moving
+		// the CLOCK without running any timer, which is exactly what throttling
+		// looks like from the component's point of view.
 		vi.useFakeTimers();
 		try {
 			sessionsListMock.mockResolvedValueOnce({ sessions: [{ id: 's1' }], count: 1 });
@@ -567,17 +568,55 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			await vi.advanceTimersByTimeAsync(0);
 			flushSync();
 
-			// Past the bound, but BEFORE the tick that would rewrite the tagline.
-			await vi.advanceTimersByTimeAsync(31_000);
+			// Clock jumps well past the bound; NO timer fires, so the display
+			// still shows what the last successful read said.
+			vi.setSystemTime(Date.now() + 5 * 60_000);
 			flushSync();
 			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
 				'Pushes to your connected agent session'
 			);
 
+			// The decision must not inherit that staleness.
 			actionRow(host, 'Ship it').click();
 			await vi.advanceTimersByTimeAsync(0);
 			expect(pushMock).not.toHaveBeenCalled();
 			expect(copyMock).toHaveBeenCalledWith('Ship TASK-14');
+
+			unmount(component);
+			host.remove();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('flips the footer line the moment the answer comes due, not a poll later', async () => {
+		// The line's whole job is to say what the next click will do, so it must
+		// not go on advertising a push for up to a full poll interval after the
+		// routing has already switched to the clipboard.
+		vi.useFakeTimers();
+		try {
+			sessionsListMock.mockResolvedValueOnce({ sessions: [{ id: 's1' }], count: 1 });
+			sessionsListMock.mockReturnValue(new Promise(() => {}));
+
+			const { host, component } = mountMenu();
+			(host.querySelector('.trigger-btn') as HTMLButtonElement).click();
+			flushSync();
+			await vi.advanceTimersByTimeAsync(0);
+			flushSync();
+
+			// Just before the bound: still armed.
+			await vi.advanceTimersByTimeAsync(29_000);
+			flushSync();
+			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+				'Pushes to your connected agent session'
+			);
+
+			// Just past it — and well before the next 10s poll tick at t=40s.
+			await vi.advanceTimersByTimeAsync(1_500);
+			flushSync();
+			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+				'Can’t tell if an agent is connected — actions copy to your clipboard'
+			);
 
 			unmount(component);
 			host.remove();

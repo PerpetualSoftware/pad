@@ -179,6 +179,7 @@
 			if (!stillCurrent()) return;
 			presenceAppliedSeq = seq;
 			lastAnsweredAt = Date.now();
+			armExpiry();
 			// `sessions.length` over `count`: the array is what the server
 			// actually enumerated, and the two can only disagree if something is
 			// wrong — in which case the enumeration is the honest one.
@@ -186,6 +187,8 @@
 		} catch {
 			if (!stillCurrent()) return;
 			presenceAppliedSeq = seq;
+			// Already the state expiry would produce; nothing left to expire.
+			clearTimeout(expiryTimer);
 			// Every failure lands here as 'unknown', NEVER as zero — a 503 (no
 			// presence registry), a 401 (no resolved user, which is also the
 			// answer for a logged-out viewer) and a dead network are all "we
@@ -202,11 +205,40 @@
 	}
 
 	/**
+	 * Expire the displayed answer, and retire every read already in flight —
+	 * those were issued BEFORE the expiry, so their answers describe the server
+	 * as it was back then, and letting one land now would restore the very count
+	 * we just declared too old to trust. The next poll carries a newer seq and
+	 * still applies.
+	 */
+	function expirePresence() {
+		presence = { state: 'unknown' };
+		presenceAppliedSeq = presenceSeq;
+	}
+
+	/**
+	 * Fire the expiry at the moment it comes due, rather than waiting for the
+	 * next poll tick to notice (codex round 3).
+	 *
+	 * Without this the footer line kept saying "Pushes to your connected agent
+	 * session" for up to a full poll interval after the routing had already
+	 * switched to the clipboard — the menu contradicting itself, on the one line
+	 * whose entire job is to say what the next click will do.
+	 */
+	function armExpiry() {
+		clearTimeout(expiryTimer);
+		expiryTimer = setTimeout(expirePresence, PRESENCE_MAX_AGE_MS);
+	}
+	let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/**
 	 * `presence`, downgraded to 'unknown' if it has gone stale.
 	 *
-	 * Read at CLICK time as well as on the poll tick, because a click can land
-	 * up to one whole poll interval after the answer expires — and routing is
-	 * the decision that actually costs something when it uses a dead count.
+	 * Belt AND braces with `armExpiry`, deliberately: a timer is a request, not
+	 * a guarantee. Browsers throttle timers hard in a backgrounded tab, so the
+	 * expiry can fire arbitrarily late — long after a user has returned to the
+	 * tab and clicked. The timer is what keeps the DISPLAY honest; this check is
+	 * what keeps the DECISION correct, and only the decision can lose a message.
 	 */
 	function currentPresence(): PushPresence | null {
 		return presenceExpired() ? { state: 'unknown' } : presence;
@@ -224,19 +256,15 @@
 		});
 		void readPresence(gen);
 		const timer = setInterval(() => {
-			if (presenceExpired()) {
-				presence = { state: 'unknown' };
-				// Retire every request already in flight. Those were issued BEFORE
-				// the expiry, so their answers describe the server as it was back
-				// then — letting one land now would restore the very count we just
-				// declared too old to trust. The read issued immediately below
-				// carries a newer seq and still applies.
-				presenceAppliedSeq = presenceSeq;
-			}
+			// Catches the throttled-timer case: if `expiryTimer` ran late, the
+			// answer is already past its bound and must not survive to the next
+			// tick just because a timeout was delayed.
+			if (presenceExpired()) expirePresence();
 			void readPresence(gen);
 		}, PRESENCE_POLL_MS);
 		return () => {
 			clearInterval(timer);
+			clearTimeout(expiryTimer);
 			// Retire in-flight reads so a late answer can't write into the next
 			// opening (or into a closed menu's stale `presence`).
 			presenceGen += 1;
