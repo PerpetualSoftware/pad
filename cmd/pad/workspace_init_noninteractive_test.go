@@ -81,8 +81,8 @@ func TestWorkspaceInitNonTTYSetupRequired(t *testing.T) {
 	if !strings.Contains(err.Error(), "not been initialized yet") {
 		t.Errorf("error %q should mention the instance is not initialized", err.Error())
 	}
-	if !strings.Contains(err.Error(), "pad init") {
-		t.Errorf("error %q should point at 'pad init' for non-interactive bootstrap", err.Error())
+	if !strings.Contains(err.Error(), "pad auth setup") {
+		t.Errorf("error %q should point at 'pad auth setup' for non-interactive bootstrap", err.Error())
 	}
 }
 

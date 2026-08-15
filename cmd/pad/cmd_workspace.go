@@ -542,11 +542,22 @@ a workspace in one step.`,
 				// complete instead of failing fast with an actionable hint.
 				if !canPromptForConfig() {
 					printSetupRequiredHint(cfg)
+					// Deliberately NOT suggesting `pad init` here even
+					// though it accepts the same headless flags: pad init
+					// creates its own CWD-named workspace as a side effect,
+					// silently eating this command's workspace name/
+					// --template — a re-run of `pad workspace init <name>
+					// --template <t>` afterwards short-circuits on the
+					// link pad init just created (init.go's name-driven
+					// path) with no signal that <name>/<t> were ignored.
+					// `pad auth setup` bootstraps the admin account only,
+					// no workspace side effects, so re-running the
+					// original command afterwards does what the caller
+					// asked for.
 					return fmt.Errorf(
 						"this Pad instance has not been initialized yet.\n" +
-							"Run 'pad init --email you@example.com --name \"Your Name\" --password <pass>' " +
-							"for non-interactive bootstrap (creates the admin account and the workspace),\n" +
-							"or run 'pad auth setup' in an interactive terminal, then re-run 'pad workspace init'.")
+							"Run 'pad auth setup --email you@example.com --name \"Your Name\" --password <pass>' " +
+							"for non-interactive bootstrap, then re-run this 'pad workspace init' command.")
 				}
 				// Fresh local instance: drive the full first-run setup
 				// (create the first admin + authorize this CLI) inline so
@@ -569,12 +580,16 @@ a workspace in one step.`,
 					// the first admin account (init.go:144-165) and this
 					// instance is already set up — `pad init` would just
 					// fall through to its own ungated re-auth step (Step 4,
-					// tracked separately as BUG-2592). Don't suggest a
-					// mechanism that doesn't exist yet.
+					// tracked separately as BUG-2592). `pad auth login
+					// --interactive` IS usable non-interactively though:
+					// doInteractiveLogin (cmd_auth.go:554+) reads
+					// email/password off a plain bufio.Reader with no TTY
+					// gate, so piping credentials to it works (BUG-1886
+					// made the shared reader piped-bytes-safe).
 					return fmt.Errorf(
 						"not authenticated. Run 'pad auth login' in an interactive terminal, " +
-							"then re-run 'pad workspace init'. There is no non-interactive login " +
-							"path for an already-initialized server yet (BUG-2592).")
+							"or pipe credentials to 'pad auth login --interactive' for scripted use; " +
+							"then re-run 'pad workspace init'.")
 				}
 				fmt.Println("Log in to continue.")
 				fmt.Println()
