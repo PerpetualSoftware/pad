@@ -362,6 +362,18 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 	return nil
 }
 
+// nullIfEmptyID maps a nil-or-empty ID pointer to SQL NULL. Nullable FK
+// columns (assigned_user_id, agent_role_id) need this at bind time: a JSON
+// client that blanks the field sends "", which validateAssignmentScope
+// deliberately skips, and binding "" verbatim fails the FK instead of
+// clearing the column (BUG-2566).
+func nullIfEmptyID(p *string) any {
+	if p == nil || *p == "" {
+		return nil
+	}
+	return *p
+}
+
 // createItemTx is the tx-taking form of item creation (PLAN-2357 / DR-9a) and
 // the single implementation behind BOTH CreateItem and the cross-workspace
 // copy path. It performs the ENTIRE create pipeline — defaults,
@@ -409,18 +421,6 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 // Returns the created item read back inside the tx, so the caller can consume
 // its committed slug / item_number / seq (DR-14 fanout) without a second
 // round-trip after COMMIT.
-// nullIfEmptyID maps a nil-or-empty ID pointer to SQL NULL. Nullable FK
-// columns (assigned_user_id, agent_role_id) need this at bind time: a JSON
-// client that blanks the field sends "", which validateAssignmentScope
-// deliberately skips, and binding "" verbatim fails the FK instead of
-// clearing the column (BUG-2566).
-func nullIfEmptyID(p *string) any {
-	if p == nil || *p == "" {
-		return nil
-	}
-	return *p
-}
-
 func (s *Store) createItemTx(tx *sql.Tx, workspaceID, collectionID string, input models.ItemCreate) (*models.Item, error) {
 	return s.createItemTxWithID(tx, newID(), workspaceID, collectionID, input)
 }
