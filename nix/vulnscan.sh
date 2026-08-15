@@ -39,14 +39,30 @@ if ! "$GOVULNCHECK" -mode binary -format json "$BINARY" > "$scan_json"; then
   exit 2
 fi
 
-# A finding whose top trace frame carries a function is one govulncheck
-# considers reachable — the same criterion that drives text mode's
-# "Your code is affected" list and its failing exit code. On this stripped
-# binary (-s -w) precision degrades to module level, which is why the
-# accepted list carries module-level entries; see the comments there.
+# Integrity guard: govulncheck's JSON stream opens with a config message
+# stating the scan mode. Its absence means empty/garbled output — a scan
+# that never ran can't be allowed to read as a clean pass — and a mode
+# other than "binary" means govulncheck silently did something other than
+# what this gate is asserting about the artifact.
+scan_mode="$(jq -r 'select(.config != null) | .config.scan_mode' "$scan_json" | head -1)" \
+  || { echo "vulnscan: could not parse govulncheck JSON output" >&2; exit 2; }
+if [ "$scan_mode" != "binary" ]; then
+  echo "vulnscan: govulncheck output has no binary-mode config message (scan_mode='${scan_mode}') — refusing to treat as a clean scan" >&2
+  exit 2
+fi
+
+# Govulncheck emits progressive findings per advisory (module-level, then
+# package, then symbol). One whose top trace frame carries a function is
+# one govulncheck considers reachable — the same criterion that drives
+# text mode's "Your code is affected" list and its failing exit code.
+# Advisories with ONLY functionless findings are govulncheck's
+# informational tier (imported/required but not called); text mode does
+# not fail on those and neither does this gate — matching ci.yml's
+# govulncheck job semantics.
 reported="$(jq -r 'select(.finding != null)
                    | select(.finding.trace[0].function != null)
-                   | .finding.osv' "$scan_json" | sort -u)"
+                   | .finding.osv' "$scan_json" | sort -u)" \
+  || { echo "vulnscan: could not parse govulncheck JSON output" >&2; exit 2; }
 
 accepted="$(sed -e 's/#.*//' -e 's/[[:space:]].*//' -e '/^$/d' "$ACCEPTED_FILE" | sort -u)"
 

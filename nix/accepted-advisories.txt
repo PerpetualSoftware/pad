@@ -24,14 +24,15 @@ GO-2026-6090  crypto/tls: post-handshake message limit
 GO-2026-6091  html/template: JS regexp context tracking
 GO-2026-6218  net/url: quadratic resolvePath
 #
-# ── Module-level precision artifacts of the stripped binary (3) ──────────
-# nix/package.nix builds with ldflags "-s -w", which strips the symbol
-# table govulncheck needs for call-graph precision, so it degrades to
-# module-level reporting on this artifact. A symbol-precise scan of the
-# same source (unstripped build, 2026-08-15) shows all three UNCALLED —
-# these are import-only, not reachable. They do NOT clear with the Go
-# backport; they clear when the dependency is bumped past the advisory or
-# dropped.
+# ── Precision artifacts of the stripped binary (3) ───────────────────────
+# nix/package.nix builds with ldflags "-s -w", which strips the symbols
+# govulncheck needs to prune its call graph, so on this artifact it
+# treats every vulnerable symbol of an imported package as potentially
+# called and reports these three as affected. A symbol-precise scan of
+# the same source (unstripped build, 2026-08-15) shows all three
+# UNCALLED — import-only, not reachable. They do NOT clear with the Go
+# backport; they clear when the dependency is bumped past the advisory
+# or dropped.
 GO-2026-4985  otel OTLP exporter: oversized HTTP response bodies (uncalled)
 GO-2026-5932  x/crypto/openpgp: unmaintained (uncalled)
 GO-2026-6222  x/image VP8L decode: memory allocation (uncalled)
