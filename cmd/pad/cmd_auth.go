@@ -448,12 +448,13 @@ var cliAuthPollInterval = 2 * time.Second
 // shrink it.
 var cliAuthPollTimeout = 20 * time.Minute
 
-// cliAuthMaxConsecutivePollErrs bounds consecutive transient poll errors
-// before pollAndSaveCLIAuth gives up with a network-shaped error, so a
-// permanently unreachable server fails fast instead of waiting out the full
-// cliAuthPollTimeout for a generic timeout message. Resets on any successful
-// poll (including "pending"), so an isolated blip doesn't count against it.
-// var (not const) so tests can shrink it.
+// cliAuthMaxConsecutivePollErrs bounds consecutive poll failures before
+// pollAndSaveCLIAuth gives up, so a persistently failing server — whether
+// unreachable or reachable-but-erroring (client.get returns an error for
+// both transport failures and non-2xx responses) — fails fast instead of
+// waiting out the full cliAuthPollTimeout for a generic timeout message.
+// Resets on any successful poll (including "pending"), so an isolated blip
+// doesn't count against it. var (not const) so tests can shrink it.
 var cliAuthMaxConsecutivePollErrs = 5
 
 // pollAndSaveCLIAuth polls a pending CLI auth session until it is approved,
@@ -499,15 +500,19 @@ func pollAndSaveCLIAuth(ctx context.Context, client *cli.Client, cfg *config.Con
 		case <-ticker.C:
 			status, err := client.PollCLIAuthSession(sess.SessionCode)
 			if err != nil {
-				// Transient network errors — keep polling, but only up to
-				// cliAuthMaxConsecutivePollErrs in a row. Beyond that the
-				// server is almost certainly gone, and a network-shaped
-				// error surfaces the real cause faster than waiting out
-				// cliAuthPollTimeout for a generic timeout message.
+				// Transient poll errors — keep polling, but only up to
+				// cliAuthMaxConsecutivePollErrs in a row. Beyond that,
+				// something is persistently wrong (unreachable server or a
+				// server that keeps erroring), and bailing out surfaces the
+				// wrapped cause faster than waiting out cliAuthPollTimeout
+				// for a generic timeout message. Avoid claiming a specific
+				// cause ("could not reach server") in the headline: err can
+				// be either a transport failure or a non-2xx HTTP response,
+				// and %w already carries the real one.
 				consecutiveErrs++
 				lastErr = err
 				if consecutiveErrs >= cliAuthMaxConsecutivePollErrs {
-					return fmt.Errorf("could not reach server while waiting for approval (%d consecutive failures): %w", consecutiveErrs, lastErr)
+					return fmt.Errorf("polling for approval failed %d times in a row: %w", consecutiveErrs, lastErr)
 				}
 				continue
 			}

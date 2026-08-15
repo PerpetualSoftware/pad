@@ -88,9 +88,10 @@ func TestPollAndSaveCLIAuth_TimeoutFires(t *testing.T) {
 }
 
 // TestPollAndSaveCLIAuth_ConsecutiveErrorsBound asserts a server that only
-// ever errors trips the consecutive-error bound with a network-shaped error
-// well before the (much larger) wall-clock timeout would fire, and that the
-// error wraps the last poll failure.
+// ever errors (here, persistent HTTP 500s — client.get returns an error for
+// non-2xx responses too, not just transport failures) trips the
+// consecutive-error bound well before the (much larger) wall-clock timeout
+// would fire, and that the error wraps the last poll failure.
 func TestPollAndSaveCLIAuth_ConsecutiveErrorsBound(t *testing.T) {
 	withFastCLIAuthPolling(t, 5*time.Millisecond, 5*time.Second, 3)
 
@@ -109,8 +110,11 @@ func TestPollAndSaveCLIAuth_ConsecutiveErrorsBound(t *testing.T) {
 	if err == nil {
 		t.Fatal("pollAndSaveCLIAuth returned nil after repeated poll errors, want error")
 	}
-	if !strings.Contains(err.Error(), "could not reach server") {
-		t.Errorf("error %q should mention the server being unreachable", err.Error())
+	if !strings.Contains(err.Error(), "polling for approval failed") {
+		t.Errorf("error %q should mention the poll failures", err.Error())
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error %q should wrap the underlying poll error", err.Error())
 	}
 	if elapsed >= 5*time.Second {
 		t.Errorf("took %s — consecutive-error bound should fire well before the wall-clock timeout", elapsed)
