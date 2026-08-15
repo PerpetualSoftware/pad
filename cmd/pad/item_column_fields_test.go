@@ -251,3 +251,65 @@ func TestItemUpdate_DedicatedFlagWinsOverLiftedField(t *testing.T) {
 		t.Fatalf("assigned_user_id = %v, want the --assign resolution to win", got)
 	}
 }
+
+// TestItemCreate_LiftsColumnFields covers the create half. `item create`
+// builds its fields map and marshals it into ItemCreate.Fields, so a
+// column-named key there would be baked into the blob at birth — the same
+// defect as update, just harder to notice because there's no prior value to
+// contradict.
+func TestItemCreate_LiftsColumnFields(t *testing.T) {
+	var body map[string]any
+	setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "item-1", "slug": "new-one", "title": "New one",
+				"collection_name": "Tasks", "collection_slug": "tasks",
+			})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"slug": "tasks", "schema": `{"fields":[{"key":"status","type":"select"}]}`,
+		})
+	}))
+
+	cmd := createCmd()
+	cmd.SetArgs([]string{"tasks", "New one",
+		"--field", "assigned_user_id=user-42",
+		"--field", "agent_role_id=role-7",
+		"--field", "status=open"})
+	cmd.SilenceUsage = true
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute create: %v", err)
+	}
+	if body == nil {
+		t.Fatal("no POST was issued")
+	}
+
+	if got := body["assigned_user_id"]; got != "user-42" {
+		t.Fatalf("assigned_user_id column = %v, want %q", got, "user-42")
+	}
+	if got := body["agent_role_id"]; got != "role-7" {
+		t.Fatalf("agent_role_id column = %v, want %q", got, "role-7")
+	}
+
+	// ItemCreate.Fields is a JSON-encoded STRING, not an object — so the
+	// leak check has to parse it rather than index the body.
+	rawFields, _ := body["fields"].(string)
+	var fields map[string]any
+	if rawFields != "" {
+		if err := json.Unmarshal([]byte(rawFields), &fields); err != nil {
+			t.Fatalf("fields is not JSON: %v (raw=%q)", err, rawFields)
+		}
+	}
+	for _, key := range columnFieldKeys {
+		if _, leaked := fields[key]; leaked {
+			t.Fatalf("%s was baked into the fields blob at create time: %v", key, fields)
+		}
+	}
+	if fields["status"] != "open" {
+		t.Fatalf("a real schema field must still reach the blob; fields = %v", fields)
+	}
+}
