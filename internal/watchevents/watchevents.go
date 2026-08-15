@@ -43,13 +43,18 @@ const (
 	// eventually exists.
 	KindAsk = "ask"
 	// KindPush is IDEA-2544 Phase 1's human→harness addressed-dispatch
-	// event: POST .../items/{itemSlug}/push publishes exactly one of
-	// these, self-addressed (TargetUserID == the pushing user), any time
-	// a user wants to put an item + instruction in front of their own
-	// harness right now rather than waiting on assignment/watch
-	// semantics. KindAsk is push's reserved sibling in the other
-	// direction (harness→human) — see TargetUserID's doc comment for the
-	// shared envelope shape the two are meant to converge on.
+	// event: POST .../items/{itemSlug}/push accepts one of these,
+	// self-addressed (TargetUserID == the pushing user), any time a user
+	// wants to put an item + instruction in front of their own harness
+	// right now rather than waiting on assignment/watch semantics. NOT
+	// "publishes exactly one" unconditionally as of PLAN-2558 S5
+	// (TASK-2588): handlePushToItem decides whether to publish at all —
+	// a session-targeted request whose id matches no live session skips
+	// the publish entirely (a guaranteed no-op; see TargetSessionID and
+	// pushResponse.DeliveredSessions' doc comments in handlers_push.go).
+	// KindAsk is push's reserved sibling in the other direction
+	// (harness→human) — see TargetUserID's doc comment for the shared
+	// envelope shape the two are meant to converge on.
 	KindPush = "push"
 )
 

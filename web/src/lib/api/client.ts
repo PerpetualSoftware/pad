@@ -1428,10 +1428,15 @@ export const api = {
 		 * TASK-2588 — an id from `api.sessions.list()`).
 		 *
 		 * Fire-and-forget: there is no durable inbox and no ack, so a
-		 * resolved promise means "published to the bus", never "an agent read
-		 * it". Pair the call site with `api.sessions.list()` so the user
-		 * knows whether anything is listening BEFORE they click — that pairing
-		 * is the entire reason this endpoint has a web surface.
+		 * resolved promise means "accepted and processed" (`pushed: true` in
+		 * ItemPushResult), never "an agent read it" — and, as of PLAN-2558
+		 * S5, not even "published to the bus" unconditionally: a targeted
+		 * request whose `targetSessionId` matches no live session resolves
+		 * with `delivered_sessions: 0` and the server skips the publish
+		 * entirely (see ItemPushResult's doc comment). Pair the call site
+		 * with `api.sessions.list()` so the user knows whether anything is
+		 * listening BEFORE they click — that pairing is the entire reason
+		 * this endpoint has a web surface.
 		 *
 		 * Self-addressed only; there is no cross-user target, by design (see
 		 * handlePushToItem) — `targetSessionId` can only narrow delivery
