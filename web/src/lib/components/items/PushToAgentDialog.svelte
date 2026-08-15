@@ -290,6 +290,12 @@ server tells you not to run would cost honesty in the case that actually ships.
 				sessions = [];
 				presenceState = 'unknown';
 				presenceReason = 'The last check was a while ago and hasn’t refreshed.';
+				// Retire every request already in flight (codex round 3). Those
+				// were issued BEFORE the expiry, so their answers describe the
+				// server as it was back then — letting one land now would restore
+				// the very count we just declared too old to trust. The poll
+				// issued immediately below carries a newer seq and still applies.
+				presenceAppliedSeq = presenceSeq;
 			}
 			void refreshPresence(gen);
 		}, PRESENCE_POLL_MS);
@@ -339,7 +345,11 @@ server tells you not to run would cost honesty in the case that actually ships.
 		'permission_denied', // workspace-access middleware
 		'unavailable', // the bus isn't wired — nothing to publish TO
 		'rate_limited', // the client's own 429 shape; the handler never ran
-		'plan_limit_exceeded'
+		'plan_limit_exceeded',
+		// Middleware, so strictly before the handler: nothing can have been
+		// published by the time either of these is written.
+		'csrf_error',
+		'email_not_verified'
 	]);
 
 	async function handleSend() {

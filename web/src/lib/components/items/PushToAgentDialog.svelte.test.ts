@@ -439,6 +439,53 @@ describe('PushToAgentDialog — message handling', () => {
 		expect(button('Push').disabled).toBe(false);
 	});
 
+	it('re-arms Push on a middleware refusal (CSRF), which is strictly pre-publish', async () => {
+		pushMock.mockRejectedValueOnce(
+			new PadApiError({ code: 'csrf_error', message: 'CSRF token mismatch' })
+		);
+		await mountSettled();
+
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		expect(button('Push').disabled).toBe(false);
+		expect(bodyText()).toContain('CSRF token mismatch');
+		expect(bodyText()).not.toContain('can’t tell whether this was sent');
+	});
+
+	it('does not let a pre-expiry poll restore the count it just declared too old', async () => {
+		vi.useFakeTimers();
+		// First read answers "one". The poll issued at t=10s hangs long enough
+		// to outlive the expiry, then finally answers — with the state as it was
+		// at t=10s.
+		let releaseStalled: (v: unknown) => void = () => {};
+		sessionsListMock.mockResolvedValueOnce(sessions(1));
+		sessionsListMock.mockImplementationOnce(
+			() => new Promise((resolve) => (releaseStalled = resolve))
+		);
+		sessionsListMock.mockImplementation(() => new Promise(() => {}));
+
+		render(PushToAgentDialog, { props: baseProps() });
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+		expect(bodyText()).toContain('1 session connected');
+
+		await vi.advanceTimersByTimeAsync(40_000);
+		flushSync();
+		expect(bodyText()).toContain('Can’t tell whether any agent session is connected');
+
+		// The stalled pre-expiry poll finally lands. Its data is older than the
+		// expiry we just applied, so it must be dropped rather than reinstating
+		// "1 session connected".
+		releaseStalled(sessions(1));
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+
+		expect(bodyText()).not.toContain('1 session connected');
+		expect(bodyText()).toContain('Can’t tell whether any agent session is connected');
+	});
+
 	it('surfaces a failed push in the dialog and does NOT retry it', async () => {
 		pushMock.mockRejectedValue(
 			new PadApiError({ code: 'bad_request', message: 'message must not be empty' })
