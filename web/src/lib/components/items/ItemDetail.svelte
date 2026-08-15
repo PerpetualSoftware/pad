@@ -41,6 +41,7 @@
 	import EditCollectionModal from '$lib/components/collections/EditCollectionModal.svelte';
 	import ShareDialog from '$lib/components/ShareDialog.svelte';
 	import CopyItemDialog from '$lib/components/items/CopyItemDialog.svelte';
+	import PushToAgentDialog from '$lib/components/items/PushToAgentDialog.svelte';
 	import ItemAttachmentStrip from '$lib/components/items/ItemAttachmentStrip.svelte';
 	import AttachmentSurfaceHost from '$lib/components/attachments/AttachmentSurfaceHost.svelte';
 	import {
@@ -1536,6 +1537,10 @@
 		// re-open a fresh one pointed at B, silently retargeting a mutation the
 		// user set up for A.
 		copyDialogOpen = false;
+		// Same ownership story for the push composer, and the same failure if
+		// it is skipped: the dialog is {#key itemSlug}-remounted, so a stale
+		// `true` silently reopens it pointed at B carrying A's typed message.
+		pushDialogOpen = false;
 		editCollectionOpen = false;
 		showGraph = false;
 		backlinksCount = 0;
@@ -3851,6 +3856,29 @@
 		paneMenuTrigger?.focus();
 	}
 
+	// ── Push to agent (PLAN-2558 S3 / IDEA-2544 Phase 3) ────────────────────
+
+	let pushDialogOpen = $state(false);
+
+	/**
+	 * Whether to offer "Push to agent…" at all. Push is SELF-ADDRESSED — the
+	 * server always targets the caller's own user id, never a request-supplied
+	 * one — so the gate is "is there a resolved user", not `canEdit`: a viewer
+	 * pushing an item into their own session is reading, not writing. Without a
+	 * resolved user (a workspace-scoped token, a share-link guest, the
+	 * fresh-install no-auth window) the endpoint 401s, so the row would be a
+	 * button that cannot work.
+	 */
+	let canPush = $derived(authStore.authenticated);
+
+	/** Same focus-restore contract as `closeCopyDialog` — see its doc comment
+	 *  for why the ⋯ trigger, and why the `tick()` is load-bearing. */
+	async function closePushDialog() {
+		pushDialogOpen = false;
+		await tick();
+		paneMenuTrigger?.focus();
+	}
+
 	/**
 	 * Foreground-flush whatever the user has typed into `items.content` before a
 	 * copy previews or commits. Resolves false when the flush FAILED, which
@@ -4828,6 +4856,22 @@
 								Copy or move to workspace…
 							</MenuItem>
 						{/if}
+						{#if canPush}
+							<!-- Launcher only; the composer is a Modal. Gated on a
+							     resolved user rather than `canEdit` — the push is
+							     addressed to the caller's OWN sessions, so a viewer
+							     qualifies (see `canPush`). -->
+							<MenuItem
+								icon="➤"
+								onclick={() => {
+									paneMenuOpen = false;
+									paneMenuView = 'root';
+									pushDialogOpen = true;
+								}}
+							>
+								Push to agent…
+							</MenuItem>
+						{/if}
 						{#if isOwner}
 							<MenuItem icon="⇗" onclick={() => { paneMenuOpen = false; shareDialogOpen = true; }}>
 								Share…
@@ -5698,6 +5742,27 @@
 				flushContent={flushContentBeforeCopy}
 				onmove={handleMove}
 				oncopied={handleCopied}
+			/>
+		{/key}
+	{/if}
+
+	{#if canPush && item}
+		<!--
+			Push-to-agent composer (PLAN-2558 S3).
+
+			{#key itemSlug}: same reasoning as the copy dialog above — this pane is
+			persistent, and the composed message belongs to ONE item. Remounting on
+			switch also drops the presence poll's interval with the old instance.
+			Not wrapped in {#if open}: Modal's consumer contract.
+		-->
+		{#key itemSlug}
+			<PushToAgentDialog
+				open={pushDialogOpen}
+				onclose={closePushDialog}
+				{wsSlug}
+				itemSlug={item.slug}
+				itemRef={formatItemRef(item) || item.slug}
+				itemTitle={item.title}
 			/>
 		{/key}
 	{/if}

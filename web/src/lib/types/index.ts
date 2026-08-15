@@ -1786,6 +1786,63 @@ export interface ServerCapabilities {
 }
 
 /**
+ * One currently-connected agent session — a `GET /api/v1/events/stream`
+ * connection the server is holding open for the calling user (PLAN-2558 S1,
+ * `internal/server/session_presence.go`).
+ *
+ * STALENESS, restated here because this is the type a UI holds: an entry
+ * means "connected as of the last time the server could tell", not
+ * "connected now". A clean disconnect deregisters immediately; an ungraceful
+ * one (closed laptop, dropped network) is invisible until the next keepalive
+ * write fails, up to ~30s later. Fine for a fire-and-forget push; NOT a
+ * delivery guarantee, and consumers must not word it as one — "one session
+ * connected" is honest, "this will be delivered" is not.
+ *
+ * `label` and `pid` are SELF-DECLARED by the connecting client (S2) and
+ * verified against nothing. That is safe only because the list is self-scoped
+ * — a lying client corrupts nobody's list but its own. Never build anything
+ * on them that needs them to be true.
+ */
+export interface LiveSession {
+	/** Server-generated per CONNECTION, not per client: a reconnect (including
+	 *  a Last-Event-ID resume) gets a new id. Not a stable client identity. */
+	id: string;
+	/** Human-meaningful name, from the client's working-directory basename.
+	 *  Absent means "unlabelled" — fall back to the id, never hide the row. */
+	label?: string;
+	/** The client process's own pid, absent when it didn't say. Disambiguates
+	 *  two sessions sharing a label; not a process the server can act on. */
+	pid?: number;
+	/** When the stream opened (UTC, ISO-8601). */
+	connected_at: string;
+}
+
+/** Body of GET /api/v1/sessions. `count` is redundant with `sessions.length`
+ *  and is sent anyway so "is anything listening?" is a one-field read. */
+export interface LiveSessionsResponse {
+	sessions: LiveSession[];
+	count: number;
+}
+
+/**
+ * Result of POST /workspaces/{ws}/items/{slug}/push (IDEA-2544 Phase 1).
+ *
+ * `pushed: true` means the notification was PUBLISHED to the event bus — not
+ * that any session received it. A push has no durable backing and no ack, so
+ * there is nothing here that could report delivery, and callers must not
+ * present this as confirmation that an agent saw it.
+ *
+ * `message` echoes the server's whitespace-collapsed form, which is what
+ * actually went on the wire — it may differ from what the user typed.
+ */
+export interface ItemPushResult {
+	ref: string;
+	workspace: string;
+	pushed: boolean;
+	message: string;
+}
+
+/**
  * Consolidated quota summary returned by
  * GET /api/v1/workspaces/{ws}/storage/usage.
  *

@@ -67,6 +67,8 @@ import type {
 	AttachmentTransformRequest,
 	AttachmentTransformResult,
 	ServerCapabilities,
+	LiveSessionsResponse,
+	ItemPushResult,
 	WorkspaceStorageInfo,
 	AttachmentListFilters,
 	AttachmentListResponse,
@@ -1417,7 +1419,55 @@ export const api = {
 
 		/** List all starred items in a workspace for the current user */
 		starred: (ws: string, params?: {include_terminal?: boolean}) =>
-			request<Item[]>(`/workspaces/${ws}/starred${qs(params)}`)
+			request<Item[]>(`/workspaces/${ws}/starred${qs(params)}`),
+
+		/**
+		 * Push an instruction about this item to the caller's OWN connected
+		 * agent sessions (IDEA-2544 Phase 1 / PLAN-2558 S3).
+		 *
+		 * Fire-and-forget: there is no durable inbox and no ack, so a
+		 * resolved promise means "published to the bus", never "an agent read
+		 * it". Pair the call site with `api.sessions.list()` so the user
+		 * knows whether anything is listening BEFORE they click — that pairing
+		 * is the entire reason this endpoint has a web surface.
+		 *
+		 * Self-addressed only; there is no target parameter, by design (see
+		 * handlePushToItem). `message` is collapsed and bounded server-side —
+		 * use `$lib/push/message` to apply the same rules in the composer so
+		 * over-length text is caught before it becomes a 400.
+		 *
+		 * NEVER auto-retry this. Like the copy endpoint it carries no
+		 * idempotency key, so a retry after an ambiguous failure can deliver
+		 * the same instruction twice.
+		 */
+		push: (ws: string, itemSlug: string, message: string) =>
+			request<ItemPushResult>(`/workspaces/${ws}/items/${itemSlug}/push`, {
+				method: 'POST',
+				body: JSON.stringify({ message })
+			})
+	},
+
+	// ── Agent session presence (PLAN-2558 S1) ────────────────────────────────
+
+	sessions: {
+		/**
+		 * The caller's own live event-stream connections.
+		 *
+		 * Deliberately NOT workspace-scoped: the stream is user-scoped across
+		 * every workspace the caller belongs to, so presence is too.
+		 *
+		 * Failure modes a caller must distinguish rather than flatten:
+		 *  - 503 `unavailable` — the server has no presence registry wired.
+		 *    That is "cannot tell", NOT "nobody is listening"; rendering it as
+		 *    zero is the exact lie this endpoint exists to prevent.
+		 *  - 401 — no resolved user (workspace token, or the fresh-install
+		 *    no-auth window). Also "cannot tell".
+		 *
+		 * The response is `Cache-Control: private, no-store` server-side; it
+		 * is a liveness answer with a short shelf life, so callers should
+		 * re-read it rather than hold one.
+		 */
+		list: () => request<LiveSessionsResponse>('/sessions')
 	},
 
 	// ── Versions ──────────────────────────────────────────────────────────────

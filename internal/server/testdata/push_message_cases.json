@@ -1,0 +1,172 @@
+{
+  "_comment": [
+    "Shared fixture for the push-message whitespace-collapse contract (PLAN-2558 S3).",
+    "Consumed by TWO suites that must agree:",
+    "",
+    "  - internal/server/push_message_collapse_test.go asserts these are what the",
+    "    SERVER actually does: strings.Join(strings.Fields(s), \" \") plus",
+    "    len([]rune(...)), the exact pair handlePushToItem applies before its",
+    "    empty check and its maxPushMessageLen check. That test is the authority;",
+    "    this table is only true because it passes.",
+    "  - web/src/lib/push/message.test.ts asserts the composer's client-side",
+    "    accounting produces the same answers, so an over-length message is caught",
+    "    in the UI instead of coming back as a 400.",
+    "",
+    "The interesting cases pin the places Go's unicode.IsSpace and JavaScript's",
+    "\\s DISAGREE: U+0085 (Go: space, JS: not) and U+FEFF (JS: space, Go: not).",
+    "A client written against \\s is wrong in BOTH directions there, and both",
+    "characters arrive routinely via paste."
+  ],
+  "cases": [
+    {
+      "name": "plain text is unchanged",
+      "raw": "hello world",
+      "collapsed": "hello world",
+      "runes": 11
+    },
+    {
+      "name": "empty stays empty",
+      "raw": "",
+      "collapsed": "",
+      "runes": 0
+    },
+    {
+      "name": "whitespace-only collapses to empty (the server's 400 condition)",
+      "raw": "   \n\t ",
+      "collapsed": "",
+      "runes": 0
+    },
+    {
+      "name": "newline becomes a single space",
+      "raw": "a\nb",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "CRLF is one separator, not two",
+      "raw": "a\r\nb",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "a run of spaces becomes one",
+      "raw": "a   b",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "mixed run of tab/newline/space becomes one",
+      "raw": "a \t\n  b",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "leading and trailing whitespace is trimmed",
+      "raw": "   a  ",
+      "collapsed": "a",
+      "runes": 1
+    },
+    {
+      "name": "U+000B vertical tab is whitespace",
+      "raw": "a\u000bb",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "U+000C form feed is whitespace",
+      "raw": "a\fb",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "U+0085 NEL is whitespace to Go but NOT to JS backslash-s",
+      "raw": "a\u0085b",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "U+00A0 NBSP is whitespace to both",
+      "raw": "a\u00a0b",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "U+1680 OGHAM SPACE MARK is whitespace",
+      "raw": "a\u1680b",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "U+2003 EM SPACE is whitespace",
+      "raw": "a\u2003b",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "U+2028 LINE SEPARATOR is whitespace",
+      "raw": "a\u2028b",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "U+2029 PARAGRAPH SEPARATOR is whitespace",
+      "raw": "a\u2029b",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "U+202F NARROW NO-BREAK SPACE is whitespace",
+      "raw": "a\u202fb",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "U+205F MEDIUM MATHEMATICAL SPACE is whitespace",
+      "raw": "a\u205fb",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "U+3000 IDEOGRAPHIC SPACE is whitespace",
+      "raw": "a\u3000b",
+      "collapsed": "a b",
+      "runes": 3
+    },
+    {
+      "name": "U+FEFF BOM is NOT whitespace to Go, though JS backslash-s says it is",
+      "raw": "a\ufeffb",
+      "collapsed": "a\ufeffb",
+      "runes": 3
+    },
+    {
+      "name": "U+200B ZWSP is whitespace to neither",
+      "raw": "a\u200bb",
+      "collapsed": "a\u200bb",
+      "runes": 3
+    },
+    {
+      "name": "U+180E MONGOLIAN VOWEL SEPARATOR is not whitespace in current Unicode",
+      "raw": "a\u180eb",
+      "collapsed": "a\u180eb",
+      "runes": 3
+    },
+    {
+      "name": "an astral emoji is ONE rune, not two UTF-16 units",
+      "raw": "a \ud83d\udc4d b",
+      "collapsed": "a \ud83d\udc4d b",
+      "runes": 5
+    },
+    {
+      "name": "a combining sequence counts as two runes",
+      "raw": "e\u0301",
+      "collapsed": "e\u0301",
+      "runes": 2
+    },
+    {
+      "name": "a realistic multi-line instruction arrives as one line",
+      "raw": "Fix the bug.\n\n  Steps:\n   1. repro\n   2. patch\n",
+      "collapsed": "Fix the bug. Steps: 1. repro 2. patch",
+      "runes": 37
+    }
+  ]
+}
