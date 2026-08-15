@@ -178,6 +178,90 @@ describe('SSE first-connect sync coverage (BUG-2540)', () => {
 		sse.disconnect();
 	});
 
+	it('arms on the lock-failure fallback path', async () => {
+		// The third arming site: navigator.locks.request rejects (exotic
+		// cross-origin / iframe cases). The service closes BC and opens a
+		// per-tab EventSource, which needs the same coverage as the granted
+		// path — and reaches openEventSource by yet another route, so neither
+		// of the tests above exercises it.
+		Object.defineProperty(globalThis.navigator, 'locks', {
+			value: {
+				request: () => Promise.reject(new Error('lock unavailable')),
+				query: async () => ({ held: [], pending: [] })
+			},
+			configurable: true,
+			writable: true
+		});
+		const sse = await loadService();
+		const onSync = vi.fn();
+		sse.onSyncRequired(onSync);
+
+		sse.connect('ws-lockfail');
+		// The rejection lands in a microtask, and .catch() opens the source.
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(sources).toHaveLength(1);
+		sources[0].fireOpen();
+		expect(onSync).toHaveBeenCalledTimes(1);
+
+		sse.disconnect();
+	});
+
+	it('does not let a stale source claim the NEXT connection’s pending sync', async () => {
+		// `close()` does not retract already-queued event tasks, so on a fast
+		// workspace switch source A's `connected` handler can still run after B
+		// exists. Without the source-identity check it would clear the shared
+		// flag and B's own open would skip the sync it actually needed —
+		// silently reopening the exact gap this fix closes, on the switch path
+		// where a fresh read is most likely to be stale.
+		const sse = await loadService();
+		const onSync = vi.fn();
+		sse.onSyncRequired(onSync);
+
+		sse.connect('ws-1');
+		await Promise.resolve();
+		await Promise.resolve();
+		const sourceA = sources[0];
+
+		// Switch before A ever opened.
+		sse.connect('ws-2');
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(sources).toHaveLength(2);
+		const sourceB = sources[1];
+		expect(sourceA.closed).toBe(true);
+
+		// A's queued handler finally runs. It must be ignored entirely.
+		sourceA.fireConnected();
+		sourceA.fireOpen();
+		expect(onSync).not.toHaveBeenCalled();
+
+		// B's own open still finds the flag armed and does its job.
+		sourceB.fireOpen();
+		expect(onSync).toHaveBeenCalledTimes(1);
+
+		sse.disconnect();
+	});
+
+	it('does not carry an unclaimed arm across a disconnect', async () => {
+		const sse = await loadService();
+		const onSync = vi.fn();
+		sse.onSyncRequired(onSync);
+
+		sse.connect('ws-x');
+		await Promise.resolve();
+		await Promise.resolve();
+		const stale = sources[0];
+		sse.disconnect();
+
+		// The torn-down source opening afterwards must dispatch nothing —
+		// both the identity check and the teardown reset stand in its way.
+		stale.fireOpen();
+		expect(onSync).not.toHaveBeenCalled();
+	});
+
 	it('re-arms for the next connect, so a workspace switch is covered too', async () => {
 		const sse = await loadService();
 		const onSync = vi.fn();

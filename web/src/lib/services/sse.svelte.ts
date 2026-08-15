@@ -196,40 +196,59 @@ function createSSEService() {
 
 	function openEventSource(workspaceSlug: string) {
 		const url = `/api/v1/events?workspace=${encodeURIComponent(workspaceSlug)}`;
-		eventSource = new EventSource(url);
+		const source = new EventSource(url);
+		eventSource = source;
 
-		eventSource.onopen = () => {
-			status = 'connected';
-			broadcast({ type: 'status', status: 'connected' });
-			if (pendingSyncOnConnect) {
-				pendingSyncOnConnect = false;
-				dispatchSyncRequired();
-				broadcast({ type: 'sync_required' });
-			}
+		/**
+		 * Claim the pending connect-sync, but only on behalf of the
+		 * CURRENT connection.
+		 *
+		 * The identity check is load-bearing (codex review). `close()`
+		 * does not retract already-queued event tasks, so on a fast
+		 * workspace switch source A's `connected`/`onopen` handler can
+		 * still run after B has been created. Without `source ===
+		 * eventSource` it would clear the shared flag and broadcast on
+		 * B's channel — and B's own open, when it arrived, would find
+		 * the flag already false and SKIP the sync it actually needed.
+		 * The gap this whole fix exists to close would silently reopen,
+		 * on exactly the switch path where a fresh read is most likely
+		 * to be stale.
+		 */
+		const claimPendingSync = () => {
+			if (source !== eventSource) return;
+			if (!pendingSyncOnConnect) return;
+			pendingSyncOnConnect = false;
+			dispatchSyncRequired();
+			broadcast({ type: 'sync_required' });
 		};
 
-		eventSource.onerror = () => {
+		source.onopen = () => {
+			if (source !== eventSource) return;
+			status = 'connected';
+			broadcast({ type: 'status', status: 'connected' });
+			claimPendingSync();
+		};
+
+		source.onerror = () => {
+			if (source !== eventSource) return;
 			status = 'reconnecting';
 			broadcast({ type: 'status', status: 'reconnecting' });
 			// EventSource auto-reconnects and sends Last-Event-ID.
 			// The server replays missed events from its buffer.
 		};
 
-		eventSource.addEventListener('connected', () => {
+		source.addEventListener('connected', () => {
+			if (source !== eventSource) return;
 			status = 'connected';
 			broadcast({ type: 'status', status: 'connected' });
 			// Mirror onopen — some platforms fire `connected`
 			// reliably before `onopen` on reconnect, others vice
 			// versa. Whichever fires first claims the pending sync.
-			if (pendingSyncOnConnect) {
-				pendingSyncOnConnect = false;
-				dispatchSyncRequired();
-				broadcast({ type: 'sync_required' });
-			}
+			claimPendingSync();
 		});
 
 		// Handle sync_required: server's replay buffer couldn't cover the gap.
-		eventSource.addEventListener('sync_required', () => {
+		source.addEventListener('sync_required', () => {
 			dispatchSyncRequired();
 			broadcast({ type: 'sync_required' });
 		});
@@ -241,7 +260,7 @@ function createSSEService() {
 		// through the same incremental backfill the gap path uses — a
 		// /items-changes delta reconciles every affected row by seq.
 		// Broadcast so peer tabs reconcile too.
-		eventSource.addEventListener('items_bulk_updated', () => {
+		source.addEventListener('items_bulk_updated', () => {
 			dispatchSyncRequired();
 			broadcast({ type: 'sync_required' });
 		});
@@ -251,7 +270,7 @@ function createSSEService() {
 		// must close the EventSource ourselves — otherwise the browser
 		// auto-reconnect would tight-loop on a 401 or a stream that
 		// immediately closes again, hammering /api/v1/events.
-		eventSource.addEventListener('unauthorized', () => {
+		source.addEventListener('unauthorized', () => {
 			status = 'unauthorized';
 			broadcast({ type: 'status', status: 'unauthorized' });
 			if (eventSource) {
@@ -262,7 +281,7 @@ function createSSEService() {
 		});
 
 		for (const eventType of ITEM_EVENTS) {
-			eventSource.addEventListener(eventType, (e: MessageEvent) => {
+			source.addEventListener(eventType, (e: MessageEvent) => {
 				const data: ItemEvent = JSON.parse(e.data);
 				dispatchItemEvent(data);
 				broadcast({ type: 'item_event', event: data });
@@ -418,6 +437,18 @@ function createSSEService() {
 		currentWorkspace = '';
 		isLeader = false;
 		status = 'disconnected';
+		// Don't carry an unclaimed arm across a teardown (codex review).
+		//
+		// Belt-and-braces, and labelled as such rather than implied to be
+		// load-bearing: mutation-testing says the source-identity checks in
+		// openEventSource are what actually stop a torn-down connection from
+		// claiming a later one's sync — removing THIS line alone changes no
+		// observable behaviour, while removing those checks does. It is kept
+		// because leaving per-connection state set after the connection is
+		// gone is how the stale-source bug arose in the first place, and a
+		// future caller that arms conditionally would inherit a flag it never
+		// set.
+		pendingSyncOnConnect = false;
 	}
 
 	/** Force reconnect (e.g., after auth change). */
