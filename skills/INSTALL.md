@@ -21,7 +21,7 @@ cd ~/projects/myapp
 pad workspace init "My App"
 ```
 
-`pad workspace init` will detect that the `/pad` skill isn't installed and offer to install it for detected tools. You can also install manually:
+`pad workspace init` will detect that the `/pad` skill isn't installed and offer to install it for detected tools — interactively it prompts (Y/n); non-interactively (stdin or stdout isn't a terminal) it installs silently for all detected tools instead of prompting. You can also install manually:
 
 ```bash
 pad agent install claude     # Install for Claude Code
