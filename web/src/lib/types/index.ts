@@ -1825,7 +1825,8 @@ export interface LiveSessionsResponse {
 }
 
 /**
- * Result of POST /workspaces/{ws}/items/{slug}/push (IDEA-2544 Phase 1).
+ * Result of POST /workspaces/{ws}/items/{slug}/push (IDEA-2544 Phase 1 /
+ * PLAN-2558 S5, TASK-2588).
  *
  * `pushed: true` means the notification was PUBLISHED to the event bus — not
  * that any session received it. A push has no durable backing and no ack, so
@@ -1834,12 +1835,24 @@ export interface LiveSessionsResponse {
  *
  * `message` echoes the server's whitespace-collapsed form, which is what
  * actually went on the wire — it may differ from what the user typed.
+ *
+ * `delivered_sessions` counts how many of the caller's own live sessions
+ * (the S1 presence registry, GET /api/v1/sessions — narrowed by
+ * `target_session_id` if the request set one) matched AT PUSH TIME. It is a
+ * PREDICTION read from the same registry the picker itself reads, not a
+ * delivery receipt: it carries the registry's own staleness window (up to
+ * ~30s behind an ungracefully-dropped connection — see `LiveSession`) and
+ * there is still no ack from the receiving side. Callers must not present
+ * a nonzero count as confirmed delivery; the 0-vs-nonzero distinction is
+ * what's load-bearing — a targeted push with `delivered_sessions === 0`
+ * means it reached nobody (the target vanished, or never existed).
  */
 export interface ItemPushResult {
 	ref: string;
 	workspace: string;
 	pushed: boolean;
 	message: string;
+	delivered_sessions: number;
 }
 
 /**

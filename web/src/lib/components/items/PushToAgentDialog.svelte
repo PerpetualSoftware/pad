@@ -1,7 +1,19 @@
 <!--
 @component
 PushToAgentDialog — compose an instruction about an item and push it to the
-user's own connected agent sessions (PLAN-2558 S3, IDEA-2544 Phase 3).
+user's own connected agent sessions (PLAN-2558 S3, IDEA-2544 Phase 3), or to
+one specific session (PLAN-2558 S5, TASK-2588) via the target picker below
+the presence line.
+
+THE TARGET PICKER REUSES THE PRESENCE READ, IT DOESN'T ADD ONE. `sessions`
+below is already fetched for the presence line's own count; the picker's
+options are that same array, so there is no second `GET /api/v1/sessions`
+and the two surfaces can never disagree about who's connected. A targeted
+send whose `delivered_sessions` comes back 0 (the addressed session vanished
+between the last poll and the click — the same staleness window the presence
+line already carries) toasts and re-polls rather than closing: zero delivery
+means nothing was sent, so nothing is duplicated by trying again against a
+freshly-read list.
 
 Built on the shared `Modal` primitive, same as CopyItemDialog: the composer
 needs more room than the pane menu's drill-down affords, and the native
@@ -91,6 +103,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 	const textareaId = `push-dialog-message-${uid}`;
 	const counterId = `push-dialog-counter-${uid}`;
 	const noteId = `push-dialog-note-${uid}`;
+	const targetId = `push-dialog-target-${uid}`;
 
 	/**
 	 * Presence re-read cadence while the dialog is open. A session can connect
@@ -137,6 +150,14 @@ server tells you not to run would cost honesty in the case that actually ships.
 	let presenceReason = $state('');
 
 	let message = $state('');
+	/**
+	 * The chosen target, or '' for broadcast (PLAN-2558 S5, TASK-2588).
+	 * Populated from `sessions` (the same presence read the count above
+	 * uses — no separate fetch), so it degrades exactly the way the
+	 * count does: an id that drops out of `sessions` on the next poll
+	 * simply stops being an option, same as any other session leaving.
+	 */
+	let selectedSessionId = $state('');
 	let sending = $state(false);
 	let sendError = $state('');
 	/**
@@ -272,6 +293,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 			presenceGen += 1;
 			presenceAppliedSeq = 0;
 			message = defaultPushMessage(itemRef, itemTitle);
+			selectedSessionId = '';
 			sending = false;
 			sendError = '';
 			outcomeUnknown = false;
@@ -333,13 +355,38 @@ server tells you not to run would cost honesty in the case that actually ships.
 		// and only liveness distinguishes A's stale continuation from B's.
 		const gen = presenceGen;
 		const stillMine = () => !destroyed && gen === presenceGen;
+		// Captured before the await, same as every other read of reactive
+		// state in this function — `selectedSessionId` can't actually change
+		// while `sending` disables the picker, but the pattern is load-bearing
+		// elsewhere in this file and cheap to keep consistent here too.
+		const target = selectedSessionId;
 		sending = true;
 		sendError = '';
 		try {
 			// NEVER retried automatically, at this call site or any other: the
-			// endpoint carries no idempotency key.
-			await api.items.push(wsSlug, itemSlug, collapsed);
+			// endpoint carries no idempotency key. Broadcast keeps the exact
+			// pre-S5 3-argument call — only a non-empty target adds the 4th.
+			const result = target
+				? await api.items.push(wsSlug, itemSlug, collapsed, target)
+				: await api.items.push(wsSlug, itemSlug, collapsed);
 			sending = false;
+			if (target && result.delivered_sessions === 0) {
+				// A targeted push that reached nobody: the notification WAS
+				// published (result.pushed is still true), but the addressed
+				// session vanished between the picker's last read and this
+				// click — the same ~30s staleness window every presence
+				// answer on this surface carries. Zero delivery means
+				// nothing to duplicate, so — unlike every other outcome here
+				// — it is safe to leave Push re-armed rather than closing:
+				// drop the stale selection back to broadcast and re-read
+				// presence so the picker reflects what is actually still
+				// connected, then let the user resend to a live target.
+				toastStore.show('that session is gone — refresh the list', 'error');
+				if (!stillMine()) return;
+				selectedSessionId = '';
+				void refreshPresence(gen);
+				return;
+			}
 			// The toast fires even if this instance is gone — the push really
 			// happened, and suppressing the confirmation would be the dishonest
 			// half. Honest past tense: the notification was PUBLISHED. Whether an
@@ -455,6 +502,26 @@ server tells you not to run would cost honesty in the case that actually ships.
 				</ul>
 			{/if}
 		</section>
+
+		<!-- ── Target ────────────────────────────────────────────────────────
+		     Only rendered once there is something to pick between (PLAN-2558
+		     S5, TASK-2588) — with zero sessions Send is already disabled by
+		     `noListeners`, so a picker here would offer a choice that can't be
+		     acted on. Broadcast is the default on every fresh open (Fresh-on-
+		     open reset above), never a remembered previous target. -->
+		{#if sessionCount > 0}
+			<section class="section">
+				<label class="field-label" for={targetId}>Send to</label>
+				<select id={targetId} class="target-picker" bind:value={selectedSessionId} disabled={sending}>
+					<option value=""
+						>All connected sessions ({sessionCount})</option
+					>
+					{#each sessions as session (session.id)}
+						<option value={session.id}>{sessionName(session)}</option>
+					{/each}
+				</select>
+			</section>
+		{/if}
 
 		<!-- ── Message ───────────────────────────────────────────────────── -->
 		<section class="section">
@@ -594,6 +661,12 @@ server tells you not to run would cost honesty in the case that actually ships.
 
 	/* Border / background / padding come from app.css's global
 	   `input, textarea, select` rule — only the box behaviour is local. */
+	/* Border / background / padding come from app.css's global
+	   `input, textarea, select` rule, same as .composer above. */
+	.target-picker {
+		width: 100%;
+		box-sizing: border-box;
+	}
 	.composer {
 		width: 100%;
 		box-sizing: border-box;
