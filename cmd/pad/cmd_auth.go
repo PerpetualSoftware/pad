@@ -429,6 +429,33 @@ func doBrowserLogin(client *cli.Client, cfg *config.Config) error {
 	return pollAndSaveCLIAuth(ctx, client, cfg, sess)
 }
 
+// cliAuthPollInterval is how often pollAndSaveCLIAuth re-checks the CLI auth
+// session. var (not const) so tests can shrink it. Matches
+// bootstrapPollInterval's cadence (internal/cli/bootstrap.go).
+var cliAuthPollInterval = 2 * time.Second
+
+// cliAuthPollTimeout caps how long pollAndSaveCLIAuth waits for approval on
+// its own, independent of the server-side session TTL (BUG-2572: without
+// this, an unreachable server after session creation left the loop with no
+// exit but Ctrl-C). Sized to the LONGER of the two server TTLs
+// (cliAuthSetupSessionTTL, 20m in internal/store/cli_auth_sessions.go) —
+// this helper is shared by the plain 5m login flow and the 20m first-run
+// setup handoff, and the caller doesn't tell it which one it got, so a
+// single conservative bound avoids falsely cutting the setup flow short.
+// The login flow's server-side "expired" status fires well before this in
+// the common case; this timer only matters once the server has gone
+// unreachable, same as bootstrapPollTimeout. var (not const) so tests can
+// shrink it.
+var cliAuthPollTimeout = 20 * time.Minute
+
+// cliAuthMaxConsecutivePollErrs bounds consecutive transient poll errors
+// before pollAndSaveCLIAuth gives up with a network-shaped error, so a
+// permanently unreachable server fails fast instead of waiting out the full
+// cliAuthPollTimeout for a generic timeout message. Resets on any successful
+// poll (including "pending"), so an isolated blip doesn't count against it.
+// var (not const) so tests can shrink it.
+var cliAuthMaxConsecutivePollErrs = 5
+
 // pollAndSaveCLIAuth polls a pending CLI auth session until it is approved,
 // then persists the issued token as credentials for cfg.BaseURL(). It is the
 // shared tail of every browser auth flow: doBrowserLogin (which prints its
@@ -438,9 +465,16 @@ func doBrowserLogin(client *cli.Client, cfg *config.Config) error {
 // cancellation this returns errCancelled so the standard "Cancelled." +
 // exit-130 path fires.
 func pollAndSaveCLIAuth(ctx context.Context, client *cli.Client, cfg *config.Config, sess *cli.CLIAuthSessionResponse) error {
-	// Poll until approved, expired, or cancelled
-	ticker := time.NewTicker(2 * time.Second)
+	// Poll until approved, expired, timed out, cancelled, or the server has
+	// been unreachable for too many consecutive polls.
+	ticker := time.NewTicker(cliAuthPollInterval)
 	defer ticker.Stop()
+
+	timeout := time.NewTimer(cliAuthPollTimeout)
+	defer timeout.Stop()
+
+	var consecutiveErrs int
+	var lastErr error
 
 	for {
 		select {
@@ -455,12 +489,29 @@ func pollAndSaveCLIAuth(ctx context.Context, client *cli.Client, cfg *config.Con
 			// 130 instead of falling back to cobra's generic error
 			// path.
 			return errCancelled
+		case <-timeout.C:
+			// No remedy suggested here: this helper is shared by login,
+			// first-run setup, and pad init's linking path, each of which
+			// has its own idea of what to retry — let the caller's own
+			// context guide the user instead of misdirecting a setup-flow
+			// user toward "pad auth login".
+			return fmt.Errorf("timed out waiting for approval after %s", cliAuthPollTimeout)
 		case <-ticker.C:
 			status, err := client.PollCLIAuthSession(sess.SessionCode)
 			if err != nil {
-				// Transient network errors — keep polling
+				// Transient network errors — keep polling, but only up to
+				// cliAuthMaxConsecutivePollErrs in a row. Beyond that the
+				// server is almost certainly gone, and a network-shaped
+				// error surfaces the real cause faster than waiting out
+				// cliAuthPollTimeout for a generic timeout message.
+				consecutiveErrs++
+				lastErr = err
+				if consecutiveErrs >= cliAuthMaxConsecutivePollErrs {
+					return fmt.Errorf("could not reach server while waiting for approval (%d consecutive failures): %w", consecutiveErrs, lastErr)
+				}
 				continue
 			}
+			consecutiveErrs = 0
 
 			switch status.Status {
 			case "approved":
