@@ -375,15 +375,41 @@ func (s *Server) RequireAuth(next http.Handler) http.Handler {
 
 		// Cloud sidecar endpoints authenticate via cloud_secret (X-Cloud-Secret
 		// header, or legacy ?cloud_secret query-param). Only bypass the auth
-		// gate when BOTH conditions hold:
-		//   1. The request path is one of the three cloud admin endpoints.
+		// gate when ALL of these hold:
+		//   1. The request path is one of the cloud admin endpoints.
 		//   2. The request carries a cloud-secret marker.
+		//   3. No session was already resolved for this request (currentUser
+		//      == nil) — see below.
 		// The path gate is critical — without it, setting X-Cloud-Secret on
 		// any route (e.g. GET /api/v1/workspaces) would globally bypass auth.
-		// After the bypass, requireCloudMode (route-level) + validateCloudSecret
-		// (handler-level) still confirm cloud mode is actually on and that the
-		// secret matches.
-		if isCloudAdminPath(path) && hasCloudSecretMarker(r) {
+		//
+		// hasCloudSecretMarker only checks PRESENCE of the marker, not
+		// whether the secret is actually correct — sibling of the two
+		// presence-only holes TASK-1932 closed in CSRFProtect (BUG-1944).
+		// Mirroring that fix's currentUser(r) == nil gate: a request that
+		// SessionAuth already resolved to a real user falls through to the
+		// normal auth path below instead of taking this early exit.
+		//
+		// Concretely, this matters even for a marker with the WRONG secret:
+		// every cloudAdminPaths handler trusts a resolved admin session as
+		// an alternative to validateCloudSecret (`isAdmin := user != nil &&
+		// user.Role == "admin"; if !isAdmin { validateCloudSecret(...) }`).
+		// Without this gate, a DISABLED admin whose session cookie hasn't
+		// been revoked could attach a garbage X-Cloud-Secret marker (plus a
+		// valid CSRF token) and skip straight past this middleware's
+		// user.IsDisabled() check further down — reaching a handler that
+		// still trusts their stale session as admin. Requiring currentUser
+		// == nil here forces that request through the normal
+		// currentUser != nil branch below, which does enforce IsDisabled.
+		//
+		// This bypass is NOT a substitute for handler-level validation —
+		// requireCloudMode (route-level) + validateCloudSecret
+		// (handler-level) still confirm cloud mode is actually on and that
+		// the secret matches for the currentUser == nil (genuine sidecar)
+		// case this bypass exists for. Do not remove those in-handler
+		// checks on the strength of this gate; the layers are meant to
+		// stay independent.
+		if isCloudAdminPath(path) && hasCloudSecretMarker(r) && currentUser(r) == nil {
 			next.ServeHTTP(w, r)
 			return
 		}

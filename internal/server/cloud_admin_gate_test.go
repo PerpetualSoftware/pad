@@ -940,3 +940,148 @@ func TestCloudAdminGate_HeaderSecret_StillAuthenticates(t *testing.T) {
 		t.Fatalf("expected handler-level 404, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+// cloudAdminCSRFToken is a fixed 64-hex-char (32-byte) value used across
+// the tests below as a matching CSRF double-submit pair (cookie + header).
+// Its value is arbitrary; only its length/format need to satisfy
+// middleware_csrf.go's csrfTokenLen check.
+const cloudAdminCSRFToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+// TestCloudAdminGate_GarbageSecretNoSession_ReachesHandlerRejection is a
+// regression lock for BUG-1944: RequireAuth's cloud-secret bypass must
+// still fire for a genuine no-session sidecar-shaped caller (currentUser
+// == nil) even when the marker's secret value is wrong — the request
+// still needs to reach the handler so handler-level validateCloudSecret
+// can reject it. This proves the currentUser(r) == nil gate didn't turn
+// the marker-presence bypass into a validated-secret bypass; it only
+// narrows it by session state.
+func TestCloudAdminGate_GarbageSecretNoSession_ReachesHandlerRejection(t *testing.T) {
+	srv := testServer(t)
+	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("real-secret")
+
+	req := cloudAdminReq(t, "GET",
+		"/api/v1/admin/user-by-customer?customer_id=cus_unknown",
+		nil, map[string]string{"X-Cloud-Secret": "totally-wrong"})
+	// No cookies at all — genuine no-session caller.
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	// Must be the handler's own "Invalid cloud secret" rejection (403,
+	// code "forbidden") — not RequireAuth 401ing it outright, and
+	// obviously not a 2xx pass-through.
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), "Invalid cloud secret") {
+		t.Fatalf("expected handler-level validateCloudSecret rejection, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestCloudAdminGate_DisabledAdminSession_GarbageSecret_RejectedByRequireAuth
+// is the regression test for the concrete gap BUG-1944's fix closes: before
+// the currentUser(r) == nil gate, RequireAuth's marker-presence bypass fired
+// regardless of session state, which meant it also skipped RequireAuth's
+// own user.IsDisabled() check for ANY request carrying a cloud-secret
+// marker on a cloud-admin path — including one with the WRONG secret. A
+// disabled admin whose session cookie hadn't been revoked could ride that
+// straight into handleSetPlan, which trusts a resolved admin session as an
+// alternative to validateCloudSecret.
+//
+// Asserts on RequireAuth's specific "account_disabled" error code (not
+// merely a 403 status, which handler-level validateCloudSecret also
+// returns) so the test can't pass for the wrong reason, and additionally
+// verifies the target user's plan was never touched — proof the handler
+// never ran at all.
+func TestCloudAdminGate_DisabledAdminSession_GarbageSecret_RejectedByRequireAuth(t *testing.T) {
+	srv := testServer(t)
+	adminToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("real-secret")
+
+	admin, err := srv.store.GetUserByEmail("admin@example.com")
+	if err != nil || admin == nil {
+		t.Fatalf("lookup admin: %v", err)
+	}
+	target, err := srv.store.CreateUser(models.UserCreate{
+		Email: "target-disabled-admin@example.com", Name: "Target", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	beforePlan := target.Plan
+
+	if err := srv.store.DisableUser(admin.ID); err != nil {
+		t.Fatalf("disable admin: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"user_id":      target.ID,
+		"plan":         "pro",
+		"cloud_secret": "totally-wrong",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plan", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Cloud-Secret", "totally-wrong")
+	req.Header.Set("X-CSRF-Token", cloudAdminCSRFToken)
+	req.RemoteAddr = "192.0.2.1:1"
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: adminToken})
+	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: cloudAdminCSRFToken})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), `"account_disabled"`) {
+		t.Fatalf("expected RequireAuth's account_disabled rejection specifically, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// No side effect: the handler must never have run.
+	after, err := srv.store.GetUser(target.ID)
+	if err != nil {
+		t.Fatalf("reload target: %v", err)
+	}
+	if after.Plan != beforePlan {
+		t.Fatalf("handler ran despite disabled admin: plan changed from %q to %q", beforePlan, after.Plan)
+	}
+}
+
+// TestCloudAdminGate_ActiveAdminSession_GarbageSecret_StillSucceeds is the
+// companion to the disabled-admin test above: a non-disabled admin session
+// hitting a cloud-admin path with the WRONG cloud secret must still reach
+// the handler and succeed via its in-handler isAdmin bypass — the
+// currentUser(r) == nil gate must not newly break the legitimate
+// browser-admin flow (e.g. manual reconciliation from the admin UI).
+func TestCloudAdminGate_ActiveAdminSession_GarbageSecret_StillSucceeds(t *testing.T) {
+	srv := testServer(t)
+	adminToken := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
+	srv.SetCloudMode("real-secret")
+
+	target, err := srv.store.CreateUser(models.UserCreate{
+		Email: "target-active-admin@example.com", Name: "Target", Password: "correct-horse-battery-staple", Role: "member",
+	})
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"user_id":      target.ID,
+		"plan":         "pro",
+		"cloud_secret": "totally-wrong",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/plan", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Cloud-Secret", "totally-wrong")
+	req.Header.Set("X-CSRF-Token", cloudAdminCSRFToken)
+	req.RemoteAddr = "192.0.2.1:1"
+	req.AddCookie(&http.Cookie{Name: "pad_session", Value: adminToken})
+	req.AddCookie(&http.Cookie{Name: "pad_csrf", Value: cloudAdminCSRFToken})
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected active admin session to update plan via in-handler isAdmin bypass, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	after, err := srv.store.GetUser(target.ID)
+	if err != nil {
+		t.Fatalf("reload target: %v", err)
+	}
+	if after.Plan != "pro" {
+		t.Fatalf("expected plan updated to pro, got %q", after.Plan)
+	}
+}
