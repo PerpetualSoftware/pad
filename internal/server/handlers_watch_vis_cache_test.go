@@ -238,22 +238,41 @@ func TestWatchEventsStream_StopsDeliveringAfterUserDisabled(t *testing.T) {
 // keeps the disabled-user path covered end to end, and
 // TestWatchVisCache_DeniesAfterUserDisabled covers refreshUser directly.
 func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.T) {
-	// Deliberately NOT t.Parallel() — mutates watchListRevalInterval,
-	// same rationale as TestWatchEventsStream_StopsDeliveringAfterUserDisabled above.
+	// Not t.Parallel(), matching its siblings — though unlike them this
+	// test no longer touches the global watchListRevalInterval at all.
 	srv := testServerWithWatchEvents(t)
 	slug := createWSWithCollections(t, srv)
 
-	// 200ms rather than the 50ms its siblings use, deliberately: the
-	// control leg below is only meaningful while the watch set is still
-	// live, and the handler clears it after maxConsecutiveWatchReloadFailures
-	// consecutive faulting ticks. One tick (300ms sleep) is enough to
-	// prove reset() ran; the bound needs three (600ms+), leaving a wide
-	// margin before the second mechanism could start producing the same
-	// silence. At 50ms the two were ~30ms apart and the control leg lost
-	// the race under ordinary scheduling.
-	origInterval := watchListRevalInterval
-	watchListRevalInterval = 200 * time.Millisecond
-	t.Cleanup(func() { watchListRevalInterval = origInterval })
+	// BUG-2570: reval ticks are driven EXPLICITLY through the
+	// watchRevalTickOverride seam, never by a wall-clock ticker. Both
+	// prior shapes of this test bet a timing margin against a
+	// free-running ticker and each lost a different way:
+	//
+	//   - The original (install fault + narrow access + sleep 300ms at a
+	//     200ms interval) lost the GREEN direction on loaded CI runners:
+	//     the third consecutive faulting tick cleared the watch set
+	//     before the control event landed, so the control leg timed out.
+	//     (BUG-2570's two CI instances.)
+	//   - The first fix (fault closure lifts the fault after two ticks)
+	//     was green-deterministic but lost DETECTION: codex rounds found
+	//     that a stray successful tick — before the fault is installed,
+	//     or after it is lifted — resets visCache and reloads the watch
+	//     list, either of which silences the revoked item even under the
+	//     regression this test guards, masking it.
+	//
+	// With the seam, exactly ONE reval tick ever fires, exactly where the
+	// test says: after the access change, with the reload fault active.
+	// No tick can fire early (masking via a pre-fault reset), none can
+	// fire late (masking via a post-fault reload), and one faulting tick
+	// can never reach maxConsecutiveWatchReloadFailures (clearing the
+	// watch set the control leg depends on). Nothing here depends on
+	// scheduler latency in either direction.
+	//
+	// Installed BEFORE the stream connects — the handler reads the seam
+	// once at stream setup.
+	tickCh := make(chan time.Time)
+	srv.watchRevalTickOverride.Store(&tickCh)
+	t.Cleanup(func() { srv.watchRevalTickOverride.Store(nil) })
 
 	// A second collection, which the member KEEPS access to when
 	// "tasks" is revoked below — it hosts the control item.
@@ -341,19 +360,44 @@ func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.
 	}
 	waitForWatchEvent(t, ch, 3*time.Second)
 
-	// Force every subsequent reval tick's watch-list reload to fail —
-	// via the atomic seam (TASK-2533 codex round 5 finding 2): this
-	// write happens AFTER the stream's background goroutine is already
-	// running and reading the seam on its own reval ticks, so a plain
-	// field here would race.
-	loadFault := func() error { return errFakeWatchListReload }
+	// Force the reval tick's watch-list reload to fail — via the atomic
+	// seam (TASK-2533 codex round 5 finding 2): this write happens AFTER
+	// the stream's background goroutine is already running, so a plain
+	// field here would race. The closure also signals each invocation,
+	// which is what lets the test WAIT for the tick to have been
+	// processed: within a tick the handler runs visCache.reset() FIRST,
+	// then the reload, so a signal means that tick's reset already ran.
+	faultTicked := make(chan struct{}, 4)
+	loadFault := func() error {
+		faultTicked <- struct{}{}
+		return errFakeWatchListReload
+	}
 	srv.watchPredicatesLoadFault.Store(&loadFault)
-	// ...AND narrow the connected member's access, in the SAME window:
-	// everything except the collection holding the control item.
+
+	// Narrow the connected member's access: everything except the
+	// collection holding the control item. Safe to do from the test
+	// goroutine with no tick-ordering caveats — no tick can fire until
+	// the test sends one.
 	if err := srv.store.SetMemberCollectionAccess(ws.ID, member.ID, "specific", []string{grantedColl.ID}); err != nil {
 		t.Fatalf("SetMemberCollectionAccess: %v", err)
 	}
-	time.Sleep(300 * time.Millisecond) // one reval tick with the forced fault active, well short of the clear-the-watch-set bound
+
+	// Drive exactly ONE reval tick — with the fault active and the access
+	// already narrowed — and wait for the handler to have processed it.
+	// One faulting tick keeps the watch set live (the clear bound needs
+	// maxConsecutiveWatchReloadFailures in a row), and no successful
+	// reload ever happens in this test, so the assertions below can only
+	// be satisfied by that tick's own unconditional visCache.reset().
+	select {
+	case tickCh <- time.Time{}:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out delivering the reval tick to the stream handler")
+	}
+	select {
+	case <-faultTicked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the faulting reval tick to be processed")
+	}
 
 	// Must NOT deliver: the collection is no longer visible to the
 	// member, and reset() has to have run despite the reload fault for
@@ -372,7 +416,11 @@ func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.
 		t.Fatalf("comment on control item: %d %s", rr.Code, rr.Body.String())
 	}
 
-	ev := waitForWatchEvent(t, ch, 3*time.Second)
+	// 10s, not the 3s the earlier delivery waits use: this is the wait
+	// that timed out in both BUG-2570 CI instances, and it asserts
+	// delivery-at-all, not latency — when green it returns immediately,
+	// so the wider bound costs nothing.
+	ev := waitForWatchEvent(t, ch, 10*time.Second)
 	var payload watchEventPayload
 	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
 		t.Fatalf("parse payload: %v", err)

@@ -198,6 +198,13 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	defer keepalive.Stop()
 	reval := time.NewTicker(watchListRevalInterval)
 	defer reval.Stop()
+	// Test seam (BUG-2570): a test may substitute its own tick source so
+	// each revalidation tick happens exactly when the test says, and never
+	// otherwise. Read once at setup — see watchRevalTickOverride's doc.
+	revalC := reval.C
+	if ch := s.watchRevalTickOverride.Load(); ch != nil {
+		revalC = *ch
+	}
 
 	ctx := r.Context()
 	for {
@@ -225,7 +232,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			}
 			flusher.Flush()
 
-		case <-reval.C:
+		case <-revalC:
 			// TASK-2533 codex round 4: reset the identity/visibility
 			// cache FIRST, unconditionally, BEFORE attempting the watch-
 			// list reload — the two used to be coupled (visCache.reset()
