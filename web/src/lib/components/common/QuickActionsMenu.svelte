@@ -1,9 +1,19 @@
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import type { QuickAction, Item, Collection } from '$lib/types';
 	import { parseFields, formatItemRef, parseSettings } from '$lib/types';
 	import { api, isConflictOrNotFound } from '$lib/api/client';
 	import { toastStore } from '$lib/stores/toast.svelte';
+	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { collapsePushMessage } from '$lib/push/message';
+	import {
+		describeDispatch,
+		isPrePublishRefusal,
+		routePrompt,
+		type ClipboardReason,
+		type DispatchOutcome,
+		type PushPresence
+	} from '$lib/push/dispatch';
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import EmojiPickerButton from '$lib/components/common/EmojiPickerButton.svelte';
@@ -86,38 +96,192 @@
 		return prompt;
 	}
 
-	function copyToClipboard(text: string): boolean {
-		// Try navigator.clipboard first
-		if (navigator.clipboard?.writeText) {
-			navigator.clipboard.writeText(text).catch(() => {});
-			return true;
-		}
-		// Fallback: temporary textarea + execCommand
-		const textarea = document.createElement('textarea');
-		textarea.value = text;
-		textarea.style.position = 'fixed';
-		textarea.style.opacity = '0';
-		document.body.appendChild(textarea);
-		textarea.select();
+	// ── Push dispatch (PLAN-2558 S4) ─────────────────────────────────────
+	//
+	// A quick action used to be a clipboard ferry: resolve the template, copy,
+	// let the user paste it into their agent. The templating was always the
+	// hard part and it already worked; only the last hop was manual. So the
+	// action now PUSHES the resolved prompt to the user's connected agent
+	// session, and the clipboard becomes the fallback rather than the
+	// mechanism.
+	//
+	// WHY PRESENCE IS READ WHEN THE MENU OPENS, NOT WHEN A ROW IS CLICKED.
+	// Both clipboard APIs — `navigator.clipboard.writeText` and the legacy
+	// `execCommand('copy')` — want the user gesture that is still live during
+	// the click handler and is gone after a network round-trip (Safari is
+	// strictest, but Firefox refuses too). Deciding push-vs-copy from a read
+	// issued on the CLICK would therefore put an await in front of the very
+	// fallback this slice promises, and the ruling is that nothing silently
+	// vanishes. Reading on OPEN keeps the copy synchronous inside the gesture.
+	//
+	// The cost is a small window: click a row before the first read lands and
+	// presence is null, which routes to the clipboard with an honest toast
+	// rather than to a push. That is the right way round — a needless paste
+	// costs the user one action, a push into nothing loses their instruction —
+	// and the window is bounded by how fast a mouse can reach a menu row.
+
+	/** Only item-scope actions can push: the endpoint is
+	 *  `POST .../items/{slug}/push`, and a collection-scope action has no item
+	 *  to address. Those keep the pre-S4 clipboard behavior exactly. */
+	const pushable = $derived(scope === 'item' && !!item);
+
+	/**
+	 * Presence re-read cadence while the menu is open. Same 10s as
+	 * PushToAgentDialog, and for the same reason: the registry's own worst-case
+	 * staleness is ~30s (an ungraceful disconnect is invisible until the next
+	 * keepalive write fails), so polling faster would buy precision the data
+	 * does not have.
+	 */
+	const PRESENCE_POLL_MS = 10_000;
+
+	/** What we know about who is listening; null until the first read of this
+	 *  opening lands. Null is treated as 'unknown' by `routePrompt` — "haven't
+	 *  heard" and "couldn't hear" license the same conclusion. */
+	let presence = $state<PushPresence | null>(null);
+	/** True while a push is in flight. The endpoint has NO idempotency key, so
+	 *  a second dispatch would deliver the instruction twice. */
+	let dispatching = $state(false);
+
+	// Fences for the presence reads. Plain `let`s, never $state: read and
+	// written only inside handlers, never in reactive position.
+	//  - `presenceGen` identifies one OPENING; a response in flight when the
+	//    menu closes must not write into the next one.
+	//  - `presenceSeq` identifies one REQUEST; nothing bounds how long one
+	//    takes, so a stalled poll can resolve after a later one and overwrite a
+	//    fresh count with an older one. Only a strictly newer response applies.
+	let presenceGen = 0;
+	let presenceSeq = 0;
+	let presenceAppliedSeq = 0;
+
+	async function readPresence(gen: number): Promise<void> {
+		const seq = ++presenceSeq;
+		const stillCurrent = () => gen === presenceGen && seq > presenceAppliedSeq;
 		try {
-			document.execCommand('copy');
-			return true;
+			const resp = await api.sessions.list();
+			if (!stillCurrent()) return;
+			presenceAppliedSeq = seq;
+			// `sessions.length` over `count`: the array is what the server
+			// actually enumerated, and the two can only disagree if something is
+			// wrong — in which case the enumeration is the honest one.
+			presence = { state: 'known', count: resp.sessions?.length ?? 0 };
 		} catch {
-			return false;
-		} finally {
-			document.body.removeChild(textarea);
+			if (!stillCurrent()) return;
+			presenceAppliedSeq = seq;
+			// Every failure lands here as 'unknown', NEVER as zero — a 503 (no
+			// presence registry), a 401 (no resolved user, which is also the
+			// answer for a logged-out viewer) and a dead network are all "we
+			// can't tell", and rendering them as zero is the exact lie
+			// handleListSessions returns 503 rather than an empty list to avoid.
+			presence = { state: 'unknown' };
 		}
 	}
 
-	function handleAction(action: QuickAction) {
-		const resolved = resolvePrompt(action);
-		if (copyToClipboard(resolved)) {
-			toastStore.show('Copied to clipboard', 'success');
-		} else {
-			toastStore.show('Failed to copy to clipboard', 'error');
-		}
-		open = false;
+	// CONVE-1688: the tracked scope reads only `open` and `pushable`; every
+	// $state write is inside `untrack`, so the effect cannot self-invalidate.
+	$effect(() => {
+		if (!open || !pushable) return;
+		const gen = untrack(() => {
+			presenceAppliedSeq = 0;
+			presence = null;
+			return ++presenceGen;
+		});
+		void readPresence(gen);
+		const timer = setInterval(() => void readPresence(gen), PRESENCE_POLL_MS);
+		return () => {
+			clearInterval(timer);
+			// Retire in-flight reads so a late answer can't write into the next
+			// opening (or into a closed menu's stale `presence`).
+			presenceGen += 1;
+		};
+	});
+
+	function announce(outcome: DispatchOutcome, copyOffer?: string) {
+		const { message, tone } = describeDispatch(outcome);
+		// The two push-failure messages carry an instruction ("check your agent
+		// session before sending it again") that nobody can read in 3s.
+		const longLived = outcome.kind === 'push-refused' || outcome.kind === 'push-unconfirmed';
+		toastStore.show(
+			message,
+			tone,
+			longLived ? 9000 : undefined,
+			undefined,
+			// Offered ONLY where a copy cannot duplicate anything — see the call
+			// sites. The click is also a fresh user gesture, which is what makes
+			// a clipboard write work this long after the original one.
+			copyOffer ? { label: 'Copy instead', onAction: () => void copyToClipboard(copyOffer) } : undefined
+		);
 	}
+
+	async function copyAndAnnounce(text: string, because: ClipboardReason): Promise<void> {
+		// The RAW prompt, not the collapsed one: the clipboard has no
+		// single-line constraint, so an action whose template spans paragraphs
+		// should paste as the author wrote it. Only the push is collapsed, and
+		// only because `Notification.Summary` is a one-line wire contract.
+		const ok = await copyToClipboard(text);
+		announce(ok ? { kind: 'copied', because } : { kind: 'copy-failed', because });
+	}
+
+	async function handleAction(action: QuickAction) {
+		if (dispatching) return;
+		// Capture everything BEFORE any await (BUG-2265 switch-safety): this
+		// component is reused across items and collections without a guaranteed
+		// remount, so reading a live prop after the await could address the
+		// WRONG item.
+		const prompt = resolvePrompt(action);
+		const ws = wsSlug;
+		const target = pushable && item ? item.slug : null;
+		const knownCount = presence?.state === 'known' ? presence.count : 0;
+		const route = routePrompt(prompt, target, presence);
+		open = false;
+		resetCreateForm();
+
+		if (route.via === 'clipboard' || !target) {
+			// Still inside the click's user gesture — see the note above.
+			await copyAndAnnounce(prompt, route.via === 'clipboard' ? route.because : 'not-addressable');
+			return;
+		}
+
+		dispatching = true;
+		try {
+			// NEVER retried automatically, here or anywhere else: the endpoint
+			// carries no idempotency key.
+			await api.items.push(ws, target, collapsePushMessage(prompt));
+			announce({ kind: 'pushed', count: knownCount });
+		} catch (err) {
+			if (isPrePublishRefusal(err)) {
+				// The server refused before publishing, so nothing went out and
+				// handing the text over cannot deliver it twice — offer the copy.
+				announce(
+					{ kind: 'push-refused', detail: err instanceof Error ? err.message : '' },
+					prompt
+				);
+			} else {
+				// Outcome genuinely unknown: the handler publishes BEFORE it
+				// writes its response, so the instruction may already have
+				// landed. No copy offer here — a paste would be the duplicate the
+				// message is warning about.
+				announce({ kind: 'push-unconfirmed' });
+			}
+		} finally {
+			dispatching = false;
+		}
+	}
+
+	/** The menu footer line. Says what the NEXT click will do, so the routing
+	 *  is visible before it happens rather than only in the toast after. */
+	const tagline = $derived.by(() => {
+		if (!pushable) return 'Copy a prompt to your agent';
+		if (!presence) return 'Checking for connected agent sessions…';
+		if (presence.state === 'unknown') {
+			return 'Can’t tell if an agent is connected — actions copy to your clipboard';
+		}
+		if (presence.count === 0) {
+			return 'No agent session connected — actions copy to your clipboard';
+		}
+		return presence.count === 1
+			? 'Pushes to your connected agent session'
+			: `Pushes to your ${presence.count} connected agent sessions`;
+	});
 
 	function resetCreateForm() {
 		showCreateForm = false;
@@ -279,6 +443,11 @@
 		></textarea>
 		<div class="qa-help">
 			Template variables: {'{ref}'} {'{title}'} {'{status}'} {'{priority}'} {'{collection}'} {'{content}'} {'{fields}'}
+			{#if scope === 'item'}
+				<br />
+				Pushes to your connected agent session as a single line; copies to your
+				clipboard when none is connected.
+			{/if}
 		</div>
 		<div class="qa-actions">
 			<button class="qa-btn qa-btn-cancel" type="button" onclick={resetCreateForm}>
@@ -305,7 +474,12 @@
 				{action.label}
 			</MenuItem>
 		{/each}
-		<div class="dropdown-tagline">Copy a prompt to your agent</div>
+		<!-- Plain div, deliberately not role="status": the panel is role="menu",
+		     whose children must be menuitem/group/separator, and a live region
+		     nested in a menu is unreliably announced anyway. The routing reaches
+		     assistive tech through the menu's own accessible name instead (see
+		     `ariaLabel` below), which is read when focus enters the panel. -->
+		<div class="dropdown-tagline">{tagline}</div>
 		{#if canEdit}
 			<div class="footer-divider"></div>
 			<MenuItem icon="+" onclick={() => (showCreateForm = true)}>New quick action</MenuItem>
@@ -334,7 +508,7 @@
 			align={alignLeft ? 'left' : 'right'}
 			sheetOnMobile
 			sheetTitle="Quick actions"
-			ariaLabel="Quick actions"
+			ariaLabel={pushable ? `Quick actions. ${tagline}` : 'Quick actions'}
 			exempt={emojiPickerContainers}
 		>
 			<div class="qa-body">

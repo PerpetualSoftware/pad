@@ -70,8 +70,15 @@
 	const variableHelp = TEMPLATE_VARIABLES.map((v) => `{${v}}`).join(' · ');
 </script>
 
+<!-- PLAN-2558 S4: item actions push rather than copy, so the hint has to say
+     which surface does what. The one-line note is not pedantry — a pushed
+     prompt rides `Notification.Summary`, a single-line wire contract, so a
+     template laid out over paragraphs arrives collapsed. Better learned while
+     authoring than by reading it back in a terminal. -->
 <p class="qa-hint">
-	Quick actions copy agent prompts to your clipboard. Template variables:
+	Item actions push the resolved prompt to your connected agent session — as a
+	single line, so line breaks collapse — and copy it to your clipboard when no
+	session is connected. Collection actions always copy. Template variables:
 	<code class="qa-var-help">{variableHelp}</code>
 </p>
 

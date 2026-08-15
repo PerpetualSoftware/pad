@@ -66,6 +66,9 @@ server tells you not to run would cost honesty in the case that actually ships.
 		pushMessageLength,
 		trimPushMessage
 	} from '$lib/push/message';
+	// Shared with the quick-action dispatch (PLAN-2558 S4) — one whitelist, so
+	// the two surfaces can't drift on which failures are safe to re-offer.
+	import { isPrePublishRefusal } from '$lib/push/dispatch';
 	import type { LiveSession } from '$lib/types';
 
 	interface Props {
@@ -322,36 +325,6 @@ server tells you not to run would cost honesty in the case that actually ships.
 		onclose();
 	}
 
-	/**
-	 * Error codes handlePushToItem (and the middleware in front of it) can
-	 * return WITHOUT having published — the request provably never reached the
-	 * bus, so a corrected resend cannot duplicate anything.
-	 *
-	 * A whitelist, not `err instanceof PadApiError`, and the difference is
-	 * load-bearing (codex round 2): the API client turns ANY JSON error
-	 * envelope into a PadApiError, including one a proxy or gateway invented
-	 * AFTER the handler had already published. Treating "structured" as
-	 * "definitely not published" would re-arm Push on exactly that case. So the
-	 * rule is inverted — enumerate what we know is safe, and treat every
-	 * unrecognised failure as ambiguous. The cost of the wrong answer is
-	 * asymmetric: an unnecessary "we can't tell" makes the user check, while a
-	 * wrong re-arm delivers the instruction twice.
-	 */
-	const PRE_PUBLISH_ERROR_CODES = new Set([
-		'bad_request', // empty / whitespace-only / over-length / undecodable body
-		'unauthorized', // no resolved user
-		'not_found', // item or workspace doesn't resolve
-		'forbidden',
-		'permission_denied', // workspace-access middleware
-		'unavailable', // the bus isn't wired — nothing to publish TO
-		'rate_limited', // the client's own 429 shape; the handler never ran
-		'plan_limit_exceeded',
-		// Middleware, so strictly before the handler: nothing can have been
-		// published by the time either of these is written.
-		'csrf_error',
-		'email_not_verified'
-	]);
-
 	async function handleSend() {
 		if (!canSend) return;
 		// Fence the continuation two ways. `gen` catches a close-and-reopen
@@ -377,14 +350,13 @@ server tells you not to run would cost honesty in the case that actually ships.
 		} catch (err) {
 			sending = false;
 			if (!stillMine()) return;
-			// See PRE_PUBLISH_ERROR_CODES: a recognised pre-publish refusal is
-			// safe to correct and resend. Everything else — a rejected fetch, a
-			// non-JSON 502, a gateway envelope we don't recognise — means the
+			// See PUSH_PRE_PUBLISH_ERROR_CODES: a recognised pre-publish refusal
+			// is safe to correct and resend. Everything else — a rejected fetch,
+			// a non-JSON 502, a gateway envelope we don't recognise — means the
 			// request went out and we never learned its fate. The handler
 			// publishes BEFORE it writes the response, so the message may well
 			// have been delivered; re-arming Push would offer a duplicate.
-			const code = err instanceof PadApiError ? err.code : '';
-			if (code && PRE_PUBLISH_ERROR_CODES.has(code)) {
+			if (isPrePublishRefusal(err)) {
 				sendError = err instanceof Error ? err.message : 'Failed to push the message.';
 			} else {
 				outcomeUnknown = true;
