@@ -947,6 +947,8 @@ func updateCmd() *cobra.Command {
 		force             bool
 		sortOrder         int
 		expectedUpdatedAt string
+		clearAssignedUser bool
+		clearAgentRole    bool
 	)
 
 	cmd := &cobra.Command{
@@ -1111,6 +1113,43 @@ Examples:
 				input.AgentRoleID = &role.ID
 			}
 
+			// --clear-assigned-user / --clear-agent-role (IDEA-2584).
+			//
+			// These reach `ClearAssignedUser` / `ClearAgentRole`, which the
+			// store has honoured since BUG-2566 on the same branch as the
+			// empty-string form. Nothing new server-side; this is the
+			// DISCOVERABLE name for a clear, and the only one that survives
+			// the MCP catalog (a bareword bool becomes a bareword flag
+			// through BuildCLIArgs, so stdio agents get it too — a bare
+			// `assigned_user_id: ""` param cannot reach stdio at all).
+			//
+			// A SIMULTANEOUS SET-AND-CLEAR IS REJECTED, not silently
+			// resolved (codex round 1). The store's branch order is
+			// `if AssignedUserID != "" { set } else if ClearAssignedUser {
+			// clear }` — so sending both makes the clear a silent no-op and
+			// the assignment win. An earlier draft of this code claimed the
+			// opposite in a comment and "tested" it by asserting the flag
+			// was SET rather than that the item ended up unassigned; the
+			// test passed and the behaviour was backwards.
+			//
+			// Checked HERE, after --assign / --role resolution and after the
+			// --field lift, so it catches every route to a competing value:
+			// `--assign wren`, `--field assigned_user_id=<uuid>`, or a
+			// direct ID. A cobra MarkFlagsMutuallyExclusive would only
+			// catch the first.
+			if clearAssignedUser {
+				if input.AssignedUserID != nil && *input.AssignedUserID != "" {
+					return fmt.Errorf("--clear-assigned-user conflicts with assigning a user in the same update; drop one")
+				}
+				input.ClearAssignedUser = true
+			}
+			if clearAgentRole {
+				if input.AgentRoleID != nil && *input.AgentRoleID != "" {
+					return fmt.Errorf("--clear-agent-role conflicts with setting a role in the same update; drop one")
+				}
+				input.ClearAgentRole = true
+			}
+
 			updated, err := client.UpdateItem(ws, slug, input)
 			if err != nil {
 				// IDEA-1494: render the open-children list when the
@@ -1167,6 +1206,16 @@ Examples:
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
 	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")
 	cmd.Flags().StringVar(&expectedUpdatedAt, "expected-updated-at", "", "optimistic concurrency: RFC3339 updated_at you last read; the update is rejected with a conflict (exit non-zero) if the item changed since")
+	// UPDATE ONLY, and deliberately asymmetric with `item create` — do NOT
+	// "complete" the pair by adding these there (IDEA-2584 ruling). Clearing
+	// at create is a request to not-set something that was never set: the
+	// only honest behaviour is a no-op, which teaches agents a wrong
+	// affordance and pads every create call's schema for nothing. An item is
+	// created unassigned unless --assign is given. If a future need appears
+	// (create-from-template stripping an inherited assignee, say), that is a
+	// new decision with its own grounds, not the completion of this one.
+	cmd.Flags().BoolVar(&clearAssignedUser, "clear-assigned-user", false, "unassign the item (clear assigned_user_id)")
+	cmd.Flags().BoolVar(&clearAgentRole, "clear-agent-role", false, "clear the item's agent role (agent_role_id)")
 
 	return cmd
 }

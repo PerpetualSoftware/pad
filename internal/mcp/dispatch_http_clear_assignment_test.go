@@ -261,3 +261,150 @@ func TestMCPUpdate_EmptyAssignAliasIsStillANoOp(t *testing.T) {
 		t.Fatalf("empty `role` must not clear the role; got %v", got.AgentRoleID)
 	}
 }
+
+// ── IDEA-2584: clear_assigned_user / clear_agent_role over remote MCP ───────
+//
+// The empty-string form (above) works but is undiscoverable — the catalog
+// exposes `assign` and `field`, not the ID params. These booleans are the
+// canonical, schema-visible clear. Same full-stack shape as the tests above:
+// real server, real store, assert the item actually ends up unassigned.
+
+func TestMCPUpdate_ClearAssignedUserBoolean(t *testing.T) {
+	f := newClearFixture(t)
+
+	f.dispatch(t, []string{"item", "update"}, map[string]any{
+		"workspace":           f.workspace.Slug,
+		"ref":                 f.item.Slug,
+		"clear_assigned_user": true,
+	})
+
+	got := f.reload(t)
+	if got.AssignedUserID != nil {
+		t.Fatalf("assignment should be cleared, got %q", *got.AssignedUserID)
+	}
+	// Clearing one must not clear the other.
+	if got.AgentRoleID == nil || *got.AgentRoleID != f.role.ID {
+		t.Fatalf("role should be untouched, got %v want %q", got.AgentRoleID, f.role.ID)
+	}
+}
+
+func TestMCPUpdate_ClearAgentRoleBoolean(t *testing.T) {
+	f := newClearFixture(t)
+
+	f.dispatch(t, []string{"item", "update"}, map[string]any{
+		"workspace":        f.workspace.Slug,
+		"ref":              f.item.Slug,
+		"clear_agent_role": true,
+	})
+
+	got := f.reload(t)
+	if got.AgentRoleID != nil {
+		t.Fatalf("role should be cleared, got %q", *got.AgentRoleID)
+	}
+	if got.AssignedUserID == nil || *got.AssignedUserID != f.owner.ID {
+		t.Fatalf("assignment should be untouched, got %v", got.AssignedUserID)
+	}
+}
+
+// TestMCPUpdate_ClearFalseIsNotAClear is the guard that makes the boolean
+// safe to declare in the schema at all. A client that fills every declared
+// param with its zero value must not unassign anything — that is the exact
+// hazard that ruled OUT giving `assign: ""` a destructive meaning, and it
+// would be self-defeating to reintroduce it here.
+func TestMCPUpdate_ClearFalseIsNotAClear(t *testing.T) {
+	f := newClearFixture(t)
+
+	f.dispatch(t, []string{"item", "update"}, map[string]any{
+		"workspace":           f.workspace.Slug,
+		"ref":                 f.item.Slug,
+		"clear_assigned_user": false,
+		"clear_agent_role":    false,
+		"title":               "Touched but still assigned",
+	})
+
+	got := f.reload(t)
+	if got.AssignedUserID == nil || *got.AssignedUserID != f.owner.ID {
+		t.Fatalf("clear_assigned_user=false must NOT clear; got %v", got.AssignedUserID)
+	}
+	if got.AgentRoleID == nil || *got.AgentRoleID != f.role.ID {
+		t.Fatalf("clear_agent_role=false must NOT clear; got %v", got.AgentRoleID)
+	}
+	// The rest of the update still applied — false is inert, not a veto.
+	if got.Title != "Touched but still assigned" {
+		t.Fatalf("the update should still have applied; title = %q", got.Title)
+	}
+}
+
+// dispatchExpectingError runs a tool call that must be REFUSED, and returns
+// the error text.
+func (f *clearFixture) dispatchExpectingError(t *testing.T, cmd []string, input map[string]any) string {
+	t.Helper()
+	d := &HTTPHandlerDispatcher{
+		Handler:      f.srv,
+		UserResolver: func(context.Context) *models.User { return f.owner },
+	}
+	ctx := WithDispatchInput(context.Background(), input)
+	res, err := d.Dispatch(ctx, cmd, nil)
+	if err != nil {
+		t.Fatalf("Dispatch(%v) errored at transport: %v", cmd, err)
+	}
+	if !res.IsError {
+		t.Fatalf("Dispatch(%v) should have been refused, got success", cmd)
+	}
+	return textOf(res)
+}
+
+// TestMCPUpdate_ClearConflictsAreRejected mirrors the CLI's refusal so the two
+// transports can't disagree about a contradiction (codex round 1).
+//
+// Both routes to a competing value are covered because they land in the
+// payload at DIFFERENT points: `assigned_user_id` directly, and
+// `field: ["assigned_user_id=…"]` via liftFieldsToColumns, which runs LATER.
+// The first version of this fix checked between them and would have passed the
+// direct case while silently letting the --field case through — the outcome
+// assertion below is what catches that, not the error message.
+func TestMCPUpdate_ClearConflictsAreRejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		input map[string]any
+	}{
+		{"direct id + clear", map[string]any{
+			"assigned_user_id":    "11111111-1111-1111-1111-111111111111",
+			"clear_assigned_user": true,
+		}},
+		{"lifted field + clear", map[string]any{
+			"field":               []any{"assigned_user_id=11111111-1111-1111-1111-111111111111"},
+			"clear_assigned_user": true,
+		}},
+		{"lifted role + clear", map[string]any{
+			"field":            []any{"agent_role_id=22222222-2222-2222-2222-222222222222"},
+			"clear_agent_role": true,
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newClearFixture(t)
+			input := map[string]any{"workspace": f.workspace.Slug, "ref": f.item.Slug}
+			for k, v := range tc.input {
+				input[k] = v
+			}
+
+			msg := f.dispatchExpectingError(t, []string{"item", "update"}, input)
+			if !strings.Contains(msg, "conflicts with") {
+				t.Fatalf("unexpected refusal message: %s", msg)
+			}
+
+			// The outcome is the real assertion: a refused conflict must
+			// leave the item exactly as it was. An error message alone
+			// wouldn't prove the write didn't happen.
+			got := f.reload(t)
+			if got.AssignedUserID == nil || *got.AssignedUserID != f.owner.ID {
+				t.Fatalf("a refused conflict must not touch the assignment; got %v", got.AssignedUserID)
+			}
+			if got.AgentRoleID == nil || *got.AgentRoleID != f.role.ID {
+				t.Fatalf("a refused conflict must not touch the role; got %v", got.AgentRoleID)
+			}
+		})
+	}
+}

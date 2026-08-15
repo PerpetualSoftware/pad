@@ -145,7 +145,25 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "parent", Type: "string", Description: "Parent item ref (e.g. PLAN-3). Optional for: create, update, list filter."},
 	{Name: "unparented", Type: "bool", Description: "For action=list, keep only items with no parent or implements relationship. Mutually exclusive with parent."},
 	{Name: "role", Type: "string", Description: "Agent role slug to assign (e.g. implementer). Optional for: create, update, list filter."},
-	{Name: "assign", Type: "string", Description: "User name or email to assign. Optional for: create, update, list filter."},
+	{Name: "assign", Type: "string", Description: "User name or email to assign. Optional for: create, update, list filter. To UNASSIGN, use clear_assigned_user=true — an empty `assign` does NOT clear (it reads as \"not provided\", like every other optional string here)."},
+	// The canonical clear form (IDEA-2584). Booleans rather than an empty
+	// string on assign/role, for two reasons that both matter:
+	//
+	//  1. An empty DECLARED string is inert everywhere else on this tool
+	//     (title, content, comment, tags), so a client that fills optional
+	//     params with "" instead of omitting them is harmless today. Giving
+	//     `assign: ""` a destructive meaning would turn that same client into
+	//     one that silently unassigns every item it touches. A boolean
+	//     carries its destructive meaning in its name and can't be tripped.
+	//  2. Only a boolean reaches LOCAL STDIO. BuildCLIArgs emits the CLI's
+	//     real flags, so a declared param with no flag behind it is dropped;
+	//     these map to `--clear-assigned-user` / `--clear-agent-role`.
+	//
+	// The empty-string `assigned_user_id: ""` form still works over the
+	// remote transport and is not deprecated — it's just not discoverable
+	// from this schema, which is what these params fix.
+	{Name: "clear_assigned_user", Type: "bool", Description: "Unassign the item (clear assigned_user_id). THE canonical way to unassign. Optional for: update — update only, since an item is created unassigned unless `assign` is given. Cannot be combined with assigning a user in the same call (`assign`, or assigned_user_id via `field`): that contradiction is REFUSED, not silently resolved."},
+	{Name: "clear_agent_role", Type: "bool", Description: "Clear the item's agent role (agent_role_id). THE canonical way to remove a role. Optional for: update — update only, since an item is created with no role unless `role` is given. Cannot be combined with setting a role in the same call: that contradiction is REFUSED, not silently resolved."},
 
 	// ── Tagging ──
 	// `tags`: agents naturally pass a JSON array of strings (e.g.

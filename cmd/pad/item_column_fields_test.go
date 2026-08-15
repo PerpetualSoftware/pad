@@ -352,3 +352,146 @@ func TestLiftColumnFields_DeclaredKeyIsNotLifted(t *testing.T) {
 		t.Fatal("the undeclared key should have been removed from the blob")
 	}
 }
+
+// ── IDEA-2584: the canonical clear form ─────────────────────────────────────
+//
+// `--field assigned_user_id=` (BUG-2583) works but is an escape hatch nobody
+// can discover from a tool schema. These flags are the discoverable name for
+// the same store behaviour — and the only form that survives the trip to
+// local stdio MCP, since BuildCLIArgs emits the CLI's REAL flags and a
+// declared param with no flag behind it is simply dropped.
+
+func TestItemUpdate_ClearAssignedUserFlag(t *testing.T) {
+	body := captureUpdateBody(t, "TASK-9", "--clear-assigned-user")
+
+	if body["clear_assigned_user"] != true {
+		t.Fatalf("clear_assigned_user = %v, want true", body["clear_assigned_user"])
+	}
+	// The sibling must NOT be set — clearing one is not clearing both.
+	if _, present := body["clear_agent_role"]; present {
+		t.Fatalf("clear_agent_role must be absent; body = %v", body)
+	}
+	// And no assignment column write should ride along.
+	if _, present := body["assigned_user_id"]; present {
+		t.Fatalf("clear must not also send assigned_user_id; body = %v", body)
+	}
+}
+
+func TestItemUpdate_ClearAgentRoleFlag(t *testing.T) {
+	body := captureUpdateBody(t, "TASK-9", "--clear-agent-role")
+
+	if body["clear_agent_role"] != true {
+		t.Fatalf("clear_agent_role = %v, want true", body["clear_agent_role"])
+	}
+	if _, present := body["clear_assigned_user"]; present {
+		t.Fatalf("clear_assigned_user must be absent; body = %v", body)
+	}
+}
+
+func TestItemUpdate_ClearFlagsAbsentWhenNotPassed(t *testing.T) {
+	// `omitempty` on the model means an unset flag must not appear at all —
+	// a `clear_assigned_user: false` on the wire would be harmless today but
+	// is exactly the shape a future server-side "explicitly false" check
+	// would misread.
+	body := captureUpdateBody(t, "TASK-9", "--status", "done")
+
+	for _, key := range []string{"clear_assigned_user", "clear_agent_role"} {
+		if _, present := body[key]; present {
+			t.Fatalf("%s must be absent when the flag wasn't passed; body = %v", key, body)
+		}
+	}
+}
+
+// TestItemUpdate_ClearConflictsAreRejected covers codex round 1's finding —
+// and the fact that an earlier draft of this test was VACUOUS is the reason it
+// is written this way now.
+//
+// That draft asserted `body["clear_assigned_user"] == true` and called it
+// "explicit clear beats assign". The flag WAS set; the behaviour was the
+// opposite of the claim, because the store's branch order is
+// `if AssignedUserID != "" { set } else if ClearAssignedUser { clear }` — so
+// sending both silently assigns and the clear evaporates. Asserting that a
+// field is present says nothing about which one wins.
+//
+// Both routes to a competing value are covered, because they resolve at
+// DIFFERENT points in the command: --assign goes through member lookup, while
+// --field goes through the column lift. A check placed between them catches
+// only one (which is exactly what the first version of the dispatcher fix
+// did).
+func TestItemUpdate_ClearConflictsAreRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"assign + clear", []string{"TASK-9", "--assign", "Wren", "--clear-assigned-user"}},
+		{"field id + clear", []string{"TASK-9", "--field", "assigned_user_id=user-42", "--clear-assigned-user"}},
+		{"role + clear", []string{"TASK-9", "--field", "agent_role_id=role-7", "--clear-agent-role"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			patched := false
+			setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPatch:
+					patched = true
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": "item-1", "slug": "unassign-me"})
+				case strings.HasSuffix(r.URL.Path, "/members"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"members": []map[string]any{
+							{"user_id": "user-from-assign", "user_name": "Wren", "user_email": "wren@example.com"},
+						},
+					})
+				default:
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"id": "item-1", "slug": "unassign-me", "collection_slug": "tasks",
+						"collection_prefix": "TASK", "item_number": 9, "fields": `{"status":"open"}`,
+						"schema": `{"fields":[{"key":"status","type":"select"}]}`,
+					})
+				}
+			}))
+
+			cmd := updateCmd()
+			cmd.SetArgs(tc.args)
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+			err := cmd.Execute()
+
+			if err == nil {
+				t.Fatal("a simultaneous set-and-clear must be refused, not silently resolved")
+			}
+			if !strings.Contains(err.Error(), "conflicts with") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			// The outcome, not just the message: nothing may reach the server.
+			if patched {
+				t.Fatal("no PATCH may be issued for a rejected conflict")
+			}
+		})
+	}
+}
+
+// TestItemCreate_HasNoClearFlags pins the deliberate asymmetry (IDEA-2584
+// ruling 2). Clearing at create is a request to not-set something never set;
+// the only honest behaviour is a no-op, which teaches a wrong affordance. If
+// someone "completes the pair", this fails and they meet the reasoning.
+func TestItemCreate_HasNoClearFlags(t *testing.T) {
+	create := createCmd()
+	for _, name := range []string{"clear-assigned-user", "clear-agent-role"} {
+		if f := create.Flags().Lookup(name); f != nil {
+			t.Fatalf("`item create` must NOT have --%s: clearing at create is a no-op by construction. "+
+				"See the flag-registration comment in updateCmd before adding it.", name)
+		}
+	}
+	// Control: the flags DO exist on update, so this test fails for the
+	// right reason rather than because the names drifted.
+	update := updateCmd()
+	for _, name := range []string{"clear-assigned-user", "clear-agent-role"} {
+		if f := update.Flags().Lookup(name); f == nil {
+			t.Fatalf("`item update` should have --%s", name)
+		}
+	}
+}

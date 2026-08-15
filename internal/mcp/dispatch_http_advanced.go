@@ -392,6 +392,26 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	if b, ok := input["pinned"].(bool); ok {
 		payload["pinned"] = b
 	}
+	// The canonical clear form (IDEA-2584). Forwarded verbatim, same shape as
+	// `pinned` above — NOT guarded on the value being true.
+	//
+	// A `&& b` guard here would read as the thing protecting a client that
+	// pads every declared param with its zero value, and it would be lying:
+	// what actually makes `false` inert is the STORE, which clears only on
+	// `input.ClearAssignedUser || <empty-string form>`. The guard would drop a
+	// key that was already harmless. Pinned by
+	// TestMCPUpdate_ClearFalseIsNotAClear, which fails if this ever forwards a
+	// hardcoded true instead of the caller's value.
+	//
+	// Forwarded verbatim (see the note above); the CONFLICT CHECK lives after
+	// the --field lift below, because that lift can put a competing
+	// assigned_user_id into the payload after this point.
+	if b, ok := input["clear_assigned_user"].(bool); ok {
+		payload["clear_assigned_user"] = b
+	}
+	if b, ok := input["clear_agent_role"].(bool); ok {
+		payload["clear_agent_role"] = b
+	}
 	// IDEA-1494: forward the open-children guard override. When set,
 	// the server-side handler skips the guard and still records the
 	// status transition. Same wire shape the CLI uses (`force: true`
@@ -440,6 +460,35 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// patch object (harmless, but avoids a needless fields write).
 		if len(patch) > 0 {
 			payload["fields_patch"] = patch
+		}
+	}
+
+	// A simultaneous set-and-clear is REJECTED, matching the CLI, so the two
+	// transports can't disagree about a contradiction (codex round 1).
+	//
+	// Placed HERE — after --assign/--role resolution AND after
+	// liftFieldsToColumns — because every one of those can put a competing
+	// assigned_user_id into the payload, and the lift in particular runs
+	// below the param handling. Checking earlier would have missed
+	// `field: ["assigned_user_id=<uuid>"]` entirely; an earlier draft of this
+	// code did exactly that and its comment claimed otherwise.
+	//
+	// Why reject rather than pick a winner: the store's branch order is
+	// `if AssignedUserID != "" { set } else if ClearAssignedUser { clear }`,
+	// so sending both silently makes the clear a no-op. Neither silent
+	// outcome is defensible for a contradiction the caller typed.
+	if clear, _ := payload["clear_assigned_user"].(bool); clear {
+		if v, _ := payload["assigned_user_id"].(string); v != "" {
+			return validationFailedResult(cmdKey,
+				"clear_assigned_user conflicts with assigning a user in the same update",
+				"Drop one: either clear the assignment or set it, not both."), nil
+		}
+	}
+	if clear, _ := payload["clear_agent_role"].(bool); clear {
+		if v, _ := payload["agent_role_id"].(string); v != "" {
+			return validationFailedResult(cmdKey,
+				"clear_agent_role conflicts with setting a role in the same update",
+				"Drop one: either clear the role or set it, not both."), nil
 		}
 	}
 
