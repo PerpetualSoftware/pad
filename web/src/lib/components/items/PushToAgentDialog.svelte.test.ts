@@ -282,6 +282,88 @@ describe('PushToAgentDialog — message handling', () => {
 		expect(String(msg)).toMatch(/isn’t confirmed|is not confirmed/);
 	});
 
+	it('re-arms Push after a STRUCTURED refusal — the server answered, so nothing was published', async () => {
+		pushMock.mockRejectedValueOnce(
+			new PadApiError({ code: 'bad_request', message: 'message must not be empty' })
+		);
+		await mountSettled();
+
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		// A 400 means the handler refused BEFORE publishing, so a corrected
+		// resend is safe and the button must come back.
+		expect(button('Push').disabled).toBe(false);
+		expect(bodyText()).toContain('message must not be empty');
+	});
+
+	it('does NOT re-arm Push after an UNSTRUCTURED failure — the push may already have landed', async () => {
+		// A rejected fetch / non-JSON 502: the request went out and we never
+		// learned its fate. The handler publishes before writing its response,
+		// so re-arming would offer the user a duplicate delivery on an endpoint
+		// with no idempotency key.
+		pushMock.mockRejectedValue(new TypeError('Failed to fetch'));
+		await mountSettled();
+
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		expect(button('Push').disabled).toBe(true);
+		expect(bodyText()).toContain('can’t tell whether this was sent');
+		expect(pushMock).toHaveBeenCalledTimes(1);
+
+		// And the state is genuinely latched, not merely rendered: a second
+		// click cannot get through.
+		await fireEvent.click(button('Push'));
+		await tick();
+		expect(pushMock).toHaveBeenCalledTimes(1);
+	});
+
+	it('ignores a stale presence response that resolves after a newer one', async () => {
+		vi.useFakeTimers();
+		// First poll stalls; the second answers "zero" and lands first.
+		let releaseFirst: (v: unknown) => void = () => {};
+		sessionsListMock.mockImplementationOnce(
+			() => new Promise((resolve) => (releaseFirst = resolve))
+		);
+		sessionsListMock.mockResolvedValue(sessions(0));
+
+		render(PushToAgentDialog, { props: baseProps() });
+		await vi.advanceTimersByTimeAsync(10_000); // second poll fires and resolves zero
+		flushSync();
+		expect(button('Push').disabled).toBe(true);
+
+		// Now the STALE first poll finally answers with one session. Applying it
+		// would re-enable Push against a session list already known to be empty.
+		releaseFirst(sessions(1));
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+
+		expect(button('Push').disabled).toBe(true);
+		expect(bodyText()).toContain('No agent session is connected');
+	});
+
+	it('stops waiting on a presence read that never settles, rather than leaving Push dead', async () => {
+		vi.useFakeTimers();
+		sessionsListMock.mockImplementation(() => new Promise(() => {})); // never settles
+		render(PushToAgentDialog, { props: baseProps() });
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+
+		// While checking, Push is held — that part is deliberate.
+		expect(button('Push').disabled).toBe(true);
+
+		await vi.advanceTimersByTimeAsync(5_000);
+		flushSync();
+
+		// …but not forever, and not silently: it degrades to the honest
+		// "can't tell" state, which allows sending.
+		expect(bodyText()).toContain('Can’t tell whether any agent session is connected');
+		expect(button('Push').disabled).toBe(false);
+	});
+
 	it('surfaces a failed push in the dialog and does NOT retry it', async () => {
 		pushMock.mockRejectedValue(
 			new PadApiError({ code: 'bad_request', message: 'message must not be empty' })

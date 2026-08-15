@@ -1537,6 +1537,10 @@
 		// re-open a fresh one pointed at B, silently retargeting a mutation the
 		// user set up for A.
 		copyDialogOpen = false;
+		// Same ownership story for the push composer, and the same failure if
+		// it is skipped: the dialog is {#key itemSlug}-remounted, so a stale
+		// `true` silently reopens it pointed at B carrying A's typed message.
+		pushDialogOpen = false;
 		editCollectionOpen = false;
 		showGraph = false;
 		backlinksCount = 0;

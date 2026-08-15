@@ -69,6 +69,21 @@ export function collapsePushMessage(raw: string): string {
 }
 
 /**
+ * Trim `raw` using Go's whitespace class rather than JavaScript's — the
+ * leading/trailing half of what `strings.Fields` does, without the interior
+ * collapse.
+ *
+ * Exists so callers can ask "will the interior of this message change on the
+ * wire?" without reintroducing the very `\s` mismatch `collapsePushMessage`
+ * avoids. `String.prototype.trim` uses the JS class, so comparing against it
+ * reports a phantom collapse for a leading U+FEFF (JS trims it, Go keeps it)
+ * and misses a real one around U+0085.
+ */
+export function trimPushMessage(raw: string): string {
+	return raw.replace(GO_WHITESPACE_EDGE, '');
+}
+
+/**
  * Length of `raw` in the units the server bounds: runes of the collapsed
  * message. `[...s]` iterates by code point, matching Go's `len([]rune(s))`.
  * (`s.length` would count UTF-16 units and double-count every astral

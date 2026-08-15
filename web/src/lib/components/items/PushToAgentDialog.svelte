@@ -38,6 +38,17 @@ words the answer at exactly the confidence the server can support:
 The bound is enforced client-side (`$lib/push/message`) against the server's
 own rune-after-collapse accounting, so an over-length message is caught in the
 composer rather than coming back as a 400.
+
+DEPLOYMENT CONSTRAINT, inherited not created. Both the presence registry and
+the event bus are per-PROCESS (`internal/server/session_presence.go`'s
+SINGLE-PROCESS LIMITATION note). Behind more than one padd process a load
+balancer can route the presence GET and the push POST to different instances,
+and then every claim on this surface — including "No agent session is
+connected" — can be wrong. That file already states the rule ("Do not put the
+web-UI push surface in front of a multi-process deployment until both exist");
+this dialog is the surface it means. The copy below is written for the
+single-process case ON PURPOSE: hedging every sentence for a deployment the
+server tells you not to run would cost honesty in the case that actually ships.
 -->
 <script lang="ts">
 	import { untrack } from 'svelte';
@@ -52,7 +63,8 @@ composer rather than coming back as a 400.
 		defaultPushMessage,
 		isPushMessageEmpty,
 		isPushMessageTooLong,
-		pushMessageLength
+		pushMessageLength,
+		trimPushMessage
 	} from '$lib/push/message';
 	import type { LiveSession } from '$lib/types';
 
@@ -75,6 +87,7 @@ composer rather than coming back as a 400.
 	const titleId = `push-dialog-title-${uid}`;
 	const textareaId = `push-dialog-message-${uid}`;
 	const counterId = `push-dialog-counter-${uid}`;
+	const noteId = `push-dialog-note-${uid}`;
 
 	/**
 	 * Presence re-read cadence while the dialog is open. A session can connect
@@ -89,6 +102,11 @@ composer rather than coming back as a 400.
 	 * polling much faster would buy precision the data doesn't have.
 	 */
 	const PRESENCE_POLL_MS = 10_000;
+
+	/** How long to stay in 'checking' before admitting we cannot tell. Shorter
+	 *  than one poll interval, so a stalled first read never leaves Push dead
+	 *  and unexplained while the user waits for a beat that may not help. */
+	const PRESENCE_STALL_MS = 5_000;
 
 	/**
 	 * What we know about who is listening.
@@ -106,16 +124,33 @@ composer rather than coming back as a 400.
 	let message = $state('');
 	let sending = $state(false);
 	let sendError = $state('');
+	/**
+	 * Set when a send failed in a way that leaves the OUTCOME UNKNOWN — the
+	 * request was dispatched but the server never told us what happened to it.
+	 * Push is not re-armed in that state: the endpoint has no idempotency key,
+	 * so a second click can publish the same instruction twice. Same rule
+	 * CopyItemDialog applies for the same reason (DR-13), and drawn at the same
+	 * line — "was the mutation dispatched?", not "did the server say it failed?".
+	 */
+	let outcomeUnknown = $state(false);
 
 	/**
-	 * Fence for async presence writes. Plain `let`, never $state: it is read and
-	 * written only inside the loader and the open effect, never in reactive
-	 * position. Incremented on every open so a response in flight when the user
-	 * closes and reopens (or the parent remounts on an item switch) cannot write
-	 * a stale count into the new opening — the no-`{#key}` late-continuation
-	 * class this codebase keeps hitting.
+	 * Fences for async writes. Plain `let`s, never $state: read and written only
+	 * inside handlers, never in reactive position.
+	 *
+	 * TWO counters, because they fence different things:
+	 *  - `presenceGen` identifies one OPENING of the dialog. A response in
+	 *    flight when the user closes and reopens (or the parent remounts on an
+	 *    item switch) must not write into the new opening.
+	 *  - `presenceSeq` identifies one REQUEST. Polls are 10s apart but nothing
+	 *    bounds how long one takes, so a stalled poll can resolve AFTER a later
+	 *    one and overwrite a fresher count with an older one — re-enabling Push
+	 *    against a session list that is already gone. Only a strictly newer
+	 *    response is applied.
 	 */
 	let presenceGen = 0;
+	let presenceSeq = 0;
+	let presenceAppliedSeq = 0;
 
 	const sessionCount = $derived(sessions.length);
 	const collapsed = $derived(collapsePushMessage(message));
@@ -130,25 +165,41 @@ composer rather than coming back as a 400.
 	 * channel, and the user should find that out here rather than by reading
 	 * their own message in a terminal.
 	 */
-	const willCollapse = $derived(message.trim() !== '' && collapsed !== message.trim());
+	// Compared against the GO-trimmed message, not `String.trim()`. The two
+	// disagree on exactly the characters `$lib/push/message` exists to get right
+	// (JS trims a leading U+FEFF that the server keeps; it leaves a U+0085 the
+	// server strips), so using `trim()` here would warn about a collapse that
+	// isn't going to happen — and stay silent about one that is.
+	const willCollapse = $derived(collapsed !== '' && collapsed !== trimPushMessage(message));
 
 	/** Nothing is listening, and we are sure of it. The only state that blocks
 	 *  send on presence grounds — 'unknown' deliberately does not. */
 	const noListeners = $derived(presenceState === 'known' && sessionCount === 0);
 
 	const canSend = $derived(
-		!sending && !empty && !tooLong && !noListeners && presenceState !== 'checking'
+		!sending &&
+			!outcomeUnknown &&
+			!empty &&
+			!tooLong &&
+			!noListeners &&
+			presenceState !== 'checking'
 	);
 
 	async function refreshPresence(gen: number): Promise<void> {
+		const seq = ++presenceSeq;
+		/** Apply only if this opening is still current AND no newer response
+		 *  has already landed. */
+		const stillCurrent = () => gen === presenceGen && seq > presenceAppliedSeq;
 		try {
 			const resp = await api.sessions.list();
-			if (gen !== presenceGen) return;
+			if (!stillCurrent()) return;
+			presenceAppliedSeq = seq;
 			sessions = resp.sessions ?? [];
 			presenceState = 'known';
 			presenceReason = '';
 		} catch (err) {
-			if (gen !== presenceGen) return;
+			if (!stillCurrent()) return;
+			presenceAppliedSeq = seq;
 			// Every failure lands here as 'unknown', never as zero. The message
 			// distinguishes the one case a self-hosted user can act on (the
 			// server has no presence registry) from a transient read failure.
@@ -172,9 +223,11 @@ composer rather than coming back as a 400.
 
 		const gen = untrack(() => {
 			presenceGen += 1;
+			presenceAppliedSeq = 0;
 			message = defaultPushMessage(itemRef, itemTitle);
 			sending = false;
 			sendError = '';
+			outcomeUnknown = false;
 			sessions = [];
 			presenceState = 'checking';
 			presenceReason = '';
@@ -183,7 +236,20 @@ composer rather than coming back as a 400.
 
 		void refreshPresence(gen);
 		const timer = setInterval(() => void refreshPresence(gen), PRESENCE_POLL_MS);
-		return () => clearInterval(timer);
+		// Nothing bounds how long `/sessions` may take, and 'checking' disables
+		// Push — so a request that never settles would strand the composer with
+		// a dead button and no explanation. After this long, stop waiting and
+		// say what is true: we cannot tell. A later response still lands (the
+		// sequence fence lets it) and upgrades the answer.
+		const stall = setTimeout(() => {
+			if (gen !== presenceGen || presenceState !== 'checking') return;
+			presenceState = 'unknown';
+			presenceReason = 'The server hasn’t answered.';
+		}, PRESENCE_STALL_MS);
+		return () => {
+			clearInterval(timer);
+			clearTimeout(stall);
+		};
 	});
 
 	function handleDismiss() {
@@ -195,34 +261,55 @@ composer rather than coming back as a 400.
 
 	async function handleSend() {
 		if (!canSend) return;
+		// Fence the continuation against the parent switching items mid-flight:
+		// the dialog is {#key itemSlug}-remounted, so a late `onclose()` from
+		// item A's send would close the composer the user just opened for B.
+		const gen = presenceGen;
 		sending = true;
 		sendError = '';
 		try {
-			// NEVER retried, at this call site or any other: the endpoint carries
-			// no idempotency key, so a retry on an ambiguous failure can deliver
-			// the same instruction twice.
+			// NEVER retried automatically, at this call site or any other: the
+			// endpoint carries no idempotency key.
 			await api.items.push(wsSlug, itemSlug, collapsed);
-			// Honest past tense: the notification was published. Whether an agent
-			// read it is not something the server can tell us, so the toast does
-			// not claim it.
-			toastStore.show(`Pushed to ${itemRef} — delivery isn’t confirmed`, 'success');
 			sending = false;
+			// The toast fires regardless of a switch — the push really happened,
+			// and suppressing the confirmation would be the dishonest half.
+			// Honest past tense: the notification was PUBLISHED. Whether an agent
+			// read it is not something the server can tell us.
+			toastStore.show(`Pushed to ${itemRef} — delivery isn’t confirmed`, 'success');
+			if (gen !== presenceGen) return;
 			handleDismiss();
 		} catch (err) {
 			sending = false;
-			sendError =
-				err instanceof PadApiError || err instanceof Error
-					? err.message
-					: 'Failed to push the message.';
+			if (gen !== presenceGen) return;
+			// Ambiguity rule, drawn where CopyItemDialog draws it: a STRUCTURED
+			// error means the server responded and therefore refused before
+			// publishing (`bad_request` on empty/over-length, `not_found`,
+			// `forbidden`, `unavailable` when the bus is unwired) — safe to fix
+			// and send again. An UNSTRUCTURED failure (rejected fetch, non-JSON
+			// 502, timeout) means the request went out and we never learned its
+			// fate; the handler publishes BEFORE it writes the response, so the
+			// message may well have been delivered. Re-arming Push there offers
+			// the user a duplicate, so we don't.
+			if (err instanceof PadApiError) {
+				sendError = err.message;
+			} else {
+				outcomeUnknown = true;
+				sendError =
+					'The server didn’t answer, so we can’t tell whether this was sent. ' +
+					'Check your agent session before sending it again — pushing twice would deliver it twice.';
+			}
 		}
 	}
 
 	/** Clipboard fallback for the no-listeners state — the same escape hatch
 	 *  PLAN-2558 S4 rules for quick actions, so the surface is never a dead end. */
 	async function handleCopyInstead() {
+		const gen = presenceGen;
 		try {
 			await navigator.clipboard.writeText(collapsed);
 			toastStore.show('Copied to clipboard', 'success');
+			if (gen !== presenceGen) return;
 			handleDismiss();
 		} catch {
 			toastStore.show('Failed to copy to clipboard', 'error');
@@ -284,7 +371,12 @@ composer rather than coming back as a 400.
 						>{sessionCount}
 						{sessionCount === 1 ? 'session' : 'sessions'} connected</strong
 					>
-					— Pad can’t confirm delivery, only that something is listening.
+					<!-- Two separate hedges, both load-bearing. The registry can name a
+					     session that dropped ungracefully up to ~30s ago, so even
+					     "was listening" is past tense; and nothing acknowledges a
+					     push, so delivery is never confirmable. -->
+					— as of the last check. Pad can’t confirm delivery, and a session
+					that dropped in the last ~30 seconds can still be listed here.
 				</p>
 				<ul class="session-list">
 					{#each sessions as session (session.id)}
@@ -306,7 +398,8 @@ composer rather than coming back as a 400.
 				rows="4"
 				bind:value={message}
 				disabled={sending}
-				aria-describedby={counterId}
+				aria-invalid={tooLong ? 'true' : undefined}
+				aria-describedby="{counterId} {noteId}"
 				placeholder="What should the agent do with this item?"
 			></textarea>
 
@@ -314,19 +407,36 @@ composer rather than coming back as a 400.
 				<span id={counterId} class="counter" class:over={tooLong}>
 					{messageLength} / {PUSH_MESSAGE_MAX_LEN}
 				</span>
-				{#if tooLong}
-					<span class="notice-inline" role="alert">
+				<!--
+					One stable node for BOTH the over-length error and the
+					collapse note, always present and always referenced by the
+					textarea's aria-describedby.
+
+					Two reasons it isn't two conditionally-rendered spans: an
+					`aria-describedby` pointing at an id that isn't in the
+					document resolves to nothing (so a note that appears only
+					when relevant is announced by nobody), and swapping the
+					referenced node in and out is what makes assistive tech miss
+					the change. `role="status"` announces politely as the text
+					swaps; the over-length case escalates to `alert` because it
+					is a blocking condition, not an aside.
+				-->
+				<span
+					id={noteId}
+					class:notice-inline={tooLong}
+					class:muted={!tooLong}
+					role={tooLong ? 'alert' : 'status'}
+				>
+					{#if tooLong}
 						Too long — trim {messageLength - PUSH_MESSAGE_MAX_LEN} character{messageLength -
 							PUSH_MESSAGE_MAX_LEN ===
 						1
 							? ''
 							: 's'} before sending.
-					</span>
-				{:else if willCollapse}
-					<span class="muted">
+					{:else if willCollapse}
 						Line breaks and repeated spaces are collapsed — this arrives as one line.
-					</span>
-				{/if}
+					{/if}
+				</span>
 			</div>
 		</section>
 

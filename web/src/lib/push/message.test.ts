@@ -7,7 +7,8 @@ import {
 	defaultPushMessage,
 	isPushMessageEmpty,
 	isPushMessageTooLong,
-	pushMessageLength
+	pushMessageLength,
+	trimPushMessage
 } from './message';
 
 /**
@@ -62,8 +63,9 @@ describe('push message collapse — server contract fixture', () => {
 
 describe('push message bounds', () => {
 	it('mirrors the server constant', () => {
-		// Pinned on the Go side too (TestMaxPushMessageLenIsMirroredByTheWebComposer),
-		// so a change to either without the other goes red.
+		// Pinned on the Go side too, through the real endpoint at the boundary
+		// (TestPushMessageBoundIsWhatTheWebComposerMirrors), so a change to
+		// either without the other goes red.
 		expect(PUSH_MESSAGE_MAX_LEN).toBe(4096);
 	});
 
@@ -108,6 +110,34 @@ describe('push message bounds', () => {
 		const emoji = '👍'.repeat(100);
 		expect(emoji.length).toBe(200);
 		expect(pushMessageLength(emoji)).toBe(100);
+	});
+});
+
+describe('trimPushMessage', () => {
+	/**
+	 * The composer compares `collapsePushMessage(x)` against
+	 * `trimPushMessage(x)` to decide whether to warn "this arrives as one
+	 * line". Using `String.prototype.trim` for that comparison is wrong on
+	 * exactly the two characters this module exists for, in both directions —
+	 * which is what these cases pin.
+	 */
+	it('trims the edges using Go’s whitespace class', () => {
+		expect(trimPushMessage('  a  ')).toBe('a');
+		expect(trimPushMessage('\na\t')).toBe('a');
+		// Interior whitespace is untouched — that is collapse's job, not trim's.
+		expect(trimPushMessage(' a  b ')).toBe('a  b');
+	});
+
+	it('keeps a leading U+FEFF that JS trim() would strip', () => {
+		// JS: ''.trim() removes the BOM, so a `trim()`-based comparison would
+		// see a difference the server will never produce and warn falsely.
+		expect('﻿abc'.trim()).toBe('abc');
+		expect(trimPushMessage('﻿abc')).toBe('﻿abc');
+	});
+
+	it('strips a leading U+0085 that JS trim() would keep', () => {
+		expect('abc'.trim()).toBe('abc');
+		expect(trimPushMessage('abc')).toBe('abc');
 	});
 });
 
