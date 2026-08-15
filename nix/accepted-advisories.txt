@@ -24,7 +24,7 @@ GO-2026-6090  crypto/tls: post-handshake message limit
 GO-2026-6091  html/template: JS regexp context tracking
 GO-2026-6218  net/url: quadratic resolvePath
 #
-# ── Precision artifacts of the stripped binary (2) ───────────────────────
+# ── Precision artifacts of the stripped binary (1) ───────────────────────
 # nix/package.nix builds with ldflags "-s -w", which strips the symbols
 # govulncheck needs to prune its call graph, so on this artifact it
 # treats every vulnerable symbol of an imported package as potentially
@@ -32,7 +32,9 @@ GO-2026-6218  net/url: quadratic resolvePath
 # same source (unstripped build, 2026-08-15) shows them UNCALLED —
 # import-only, not reachable. They do NOT clear with the Go backport;
 # each clears when its dependency is bumped past the advisory or
-# dropped. (GO-2026-6222, x/image, cleared here 2026-08-15 via the
-# v0.45.0 bump.)
-GO-2026-4985  otel OTLP exporter: oversized HTTP response bodies (uncalled)
+# dropped. (Cleared so far: GO-2026-6222 via x/image v0.45.0 and
+# GO-2026-4985 via the otel exporter bump to v1.45.0, both 2026-08-15.)
+# GO-2026-5932 has NO fixed version upstream (openpgp is frozen); it
+# clears only if the module leaves the graph (pulled via go-jose and
+# pgconn), so expect it to stay a while.
 GO-2026-5932  x/crypto/openpgp: unmaintained (uncalled)
