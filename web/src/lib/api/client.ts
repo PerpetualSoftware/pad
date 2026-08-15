@@ -1423,27 +1423,45 @@ export const api = {
 
 		/**
 		 * Push an instruction about this item to the caller's OWN connected
-		 * agent sessions (IDEA-2544 Phase 1 / PLAN-2558 S3).
+		 * agent sessions (IDEA-2544 Phase 1 / PLAN-2558 S3), or to exactly
+		 * one of them when `targetSessionId` is given (PLAN-2558 S5,
+		 * TASK-2588 — an id from `api.sessions.list()`).
 		 *
 		 * Fire-and-forget: there is no durable inbox and no ack, so a
-		 * resolved promise means "published to the bus", never "an agent read
-		 * it". Pair the call site with `api.sessions.list()` so the user
-		 * knows whether anything is listening BEFORE they click — that pairing
-		 * is the entire reason this endpoint has a web surface.
+		 * resolved promise means "accepted and processed" (`pushed: true` in
+		 * ItemPushResult), never "an agent read it" — and, as of PLAN-2558
+		 * S5, not even "published to the bus" unconditionally: a targeted
+		 * request whose `targetSessionId` matches no live session resolves
+		 * with `delivered_sessions: 0` and the server skips the publish
+		 * entirely (see ItemPushResult's doc comment). Pair the call site
+		 * with `api.sessions.list()` so the user knows whether anything is
+		 * listening BEFORE they click — that pairing is the entire reason
+		 * this endpoint has a web surface.
 		 *
-		 * Self-addressed only; there is no target parameter, by design (see
-		 * handlePushToItem). `message` is collapsed and bounded server-side —
-		 * use `$lib/push/message` to apply the same rules in the composer so
+		 * Self-addressed only; there is no cross-user target, by design (see
+		 * handlePushToItem) — `targetSessionId` can only narrow delivery
+		 * within the caller's OWN sessions, never address anyone else's.
+		 * `message` is collapsed and bounded server-side — use
+		 * `$lib/push/message` to apply the same rules in the composer so
 		 * over-length text is caught before it becomes a 400.
+		 *
+		 * Omitting `targetSessionId` sends the exact pre-S5 body shape
+		 * (`{ message }`, no `target_session_id` key at all) — existing
+		 * broadcast call sites (QuickActionsMenu's S4 dispatch) are
+		 * unaffected by this parameter's addition.
 		 *
 		 * NEVER auto-retry this. Like the copy endpoint it carries no
 		 * idempotency key, so a retry after an ambiguous failure can deliver
-		 * the same instruction twice.
+		 * the same instruction twice. A targeted miss (`delivered_sessions
+		 * === 0` in the response) is the one exception a caller may act on
+		 * safely — see ItemPushResult's doc comment.
 		 */
-		push: (ws: string, itemSlug: string, message: string) =>
+		push: (ws: string, itemSlug: string, message: string, targetSessionId?: string) =>
 			request<ItemPushResult>(`/workspaces/${ws}/items/${itemSlug}/push`, {
 				method: 'POST',
-				body: JSON.stringify({ message })
+				body: JSON.stringify(
+					targetSessionId ? { message, target_session_id: targetSessionId } : { message }
+				)
 			})
 	},
 

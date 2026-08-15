@@ -43,13 +43,18 @@ const (
 	// eventually exists.
 	KindAsk = "ask"
 	// KindPush is IDEA-2544 Phase 1's human→harness addressed-dispatch
-	// event: POST .../items/{itemSlug}/push publishes exactly one of
-	// these, self-addressed (TargetUserID == the pushing user), any time
-	// a user wants to put an item + instruction in front of their own
-	// harness right now rather than waiting on assignment/watch
-	// semantics. KindAsk is push's reserved sibling in the other
-	// direction (harness→human) — see TargetUserID's doc comment for the
-	// shared envelope shape the two are meant to converge on.
+	// event: POST .../items/{itemSlug}/push accepts one of these,
+	// self-addressed (TargetUserID == the pushing user), any time a user
+	// wants to put an item + instruction in front of their own harness
+	// right now rather than waiting on assignment/watch semantics. NOT
+	// "publishes exactly one" unconditionally as of PLAN-2558 S5
+	// (TASK-2588): handlePushToItem decides whether to publish at all —
+	// a session-targeted request whose id matches no live session skips
+	// the publish entirely (a guaranteed no-op; see TargetSessionID and
+	// pushResponse.DeliveredSessions' doc comments in handlers_push.go).
+	// KindAsk is push's reserved sibling in the other direction
+	// (harness→human) — see TargetUserID's doc comment for the shared
+	// envelope shape the two are meant to converge on.
 	KindPush = "push"
 )
 
@@ -104,6 +109,21 @@ type Notification struct {
 	// notification could have been addressed to, and echoing it back
 	// would leak a user ID for no consumer that needs it.
 	TargetUserID string
+	// TargetSessionID narrows TargetUserID to one of that user's live
+	// event-stream connections (PLAN-2558 S5, TASK-2588). Populated only
+	// on Kind == KindPush, and only when the pusher named a specific
+	// session id from the S1 presence registry (GET /api/v1/sessions);
+	// empty means "every one of TargetUserID's connected sessions" —
+	// broadcast is targeted-with-an-empty-predicate, not a separate
+	// code path. watchNotificationVisible checks this against the
+	// SAME session id session_presence.go handed the connection at
+	// Add() time, exactly parallel to how TargetUserID gates against
+	// the connected caller's user id. An id that names no live session
+	// (vanished, mistyped, or — deliberately indistinguishable from
+	// either — belonging to a DIFFERENT user) simply matches nothing:
+	// there is no separate "not found" signal here, by design, because
+	// this field must never become an existence oracle across users.
+	TargetSessionID string
 	// StatusFieldKey / ToStatus are populated on Kind == KindStatusChange,
 	// mirroring models.ItemMutationSignal, so the `--until field=value`
 	// watch predicate can be evaluated against a Notification directly

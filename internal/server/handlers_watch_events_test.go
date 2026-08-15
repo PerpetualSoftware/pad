@@ -578,7 +578,7 @@ func TestWatchNotificationVisible_UnconditionalWatch(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{"item-1": ""}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindComment}
-	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
 		t.Fatal("expected an unconditional watch to match any notification on the item")
 	}
 }
@@ -587,7 +587,7 @@ func TestWatchNotificationVisible_UnwatchedItemDenied(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{"item-1": ""}
 	n := watchevents.Notification{ItemID: "item-2", Kind: watchevents.KindComment}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
 		t.Fatal("expected an unwatched item's notification to be denied")
 	}
 }
@@ -596,7 +596,7 @@ func TestWatchNotificationVisible_PredicateGatesNonStatusKinds(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{"item-1": "status=done"}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindComment}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
 		t.Fatal("expected a predicated watch to suppress a comment notification")
 	}
 }
@@ -606,10 +606,10 @@ func TestWatchNotificationVisible_PredicateMatchesOnlyTargetValue(t *testing.T) 
 	watches := map[string]string{"item-1": "status=done"}
 	wrong := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindStatusChange, StatusFieldKey: "status", ToStatus: "in-progress"}
 	right := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindStatusChange, StatusFieldKey: "status", ToStatus: "done"}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", wrong) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", wrong) {
 		t.Fatal("expected the non-matching status transition to be denied")
 	}
-	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", right) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", right) {
 		t.Fatal("expected the matching status transition to be visible")
 	}
 }
@@ -624,10 +624,10 @@ func TestWatchNotificationVisible_PredicateMatchesOnlyTargetValue(t *testing.T) 
 func TestWatchNotificationVisible_AssignmentToYouNeedsAWatch(t *testing.T) {
 	t.Parallel()
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindAssignment, AssignedUserID: "user-1"}
-	if watchNotificationVisible(map[string]string{}, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+	if watchNotificationVisible(map[string]string{}, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
 		t.Fatal("expected an assignment-to-you notification to be denied with no watch on the item")
 	}
-	if !watchNotificationVisible(map[string]string{"item-1": ""}, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+	if !watchNotificationVisible(map[string]string{"item-1": ""}, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
 		t.Fatal("expected the same assignment to be visible to a caller holding an unconditional watch")
 	}
 }
@@ -636,7 +636,7 @@ func TestWatchNotificationVisible_AssignmentToSomeoneElseDenied(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindAssignment, AssignedUserID: "user-2"}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
 		t.Fatal("expected an assignment to someone else to be denied")
 	}
 }
@@ -655,7 +655,7 @@ func TestWatchNotificationVisible_AssignmentToSomeoneElseVisibleToWatcher(t *tes
 	t.Parallel()
 	watches := map[string]string{"item-1": ""} // unconditional watch
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindAssignment, AssignedUserID: "user-2"}
-	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
 		t.Fatal("expected an unconditional watcher to see an assignment to someone else — an assignment is an item-level fact, not private dispatch")
 	}
 }
@@ -668,8 +668,60 @@ func TestWatchNotificationVisible_PushToYou(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{} // no watches at all
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-1"}
-	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
 		t.Fatal("expected a push-to-you notification to be visible with no watch")
+	}
+}
+
+// TestWatchNotificationVisible_PushSessionTargetedMatchDelivers is
+// PLAN-2558 S5's (TASK-2588) core positive case: a push naming a
+// specific session id is visible on the connection whose OWN registry
+// id matches it, even though TargetUserID alone would already have
+// allowed it — this pins that the narrower predicate doesn't accidentally
+// deny a matching session.
+func TestWatchNotificationVisible_PushSessionTargetedMatchDelivers(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{}
+	n := watchevents.Notification{
+		ItemID: "item-1", Kind: watchevents.KindPush,
+		TargetUserID: "user-1", TargetSessionID: "sess-a",
+	}
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "sess-a", n) {
+		t.Fatal("expected a session-targeted push to be visible on the matching session")
+	}
+}
+
+// TestWatchNotificationVisible_PushSessionTargetedMismatchDenied is S5's
+// core negative case: TargetUserID matching is NOT sufficient once
+// TargetSessionID is set — a push aimed at one of the user's sessions
+// must not leak to another of that SAME user's own connected sessions.
+func TestWatchNotificationVisible_PushSessionTargetedMismatchDenied(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{}
+	n := watchevents.Notification{
+		ItemID: "item-1", Kind: watchevents.KindPush,
+		TargetUserID: "user-1", TargetSessionID: "sess-a",
+	}
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "sess-b", n) {
+		t.Fatal("expected a session-targeted push to be denied on a different session of the same user")
+	}
+}
+
+// TestWatchNotificationVisible_PushEmptySessionTargetMatchesAnySession
+// pins that an untargeted (broadcast) push is unaffected by S5: an
+// empty TargetSessionID must still reach every one of the user's own
+// sessions regardless of that connection's own registry id — including
+// the zero-value id a connection gets when there is no presence
+// registry wired at all (see the sessionID hoist in
+// handleWatchEventsStream).
+func TestWatchNotificationVisible_PushEmptySessionTargetMatchesAnySession(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{}
+	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-1"}
+	for _, sessionID := range []string{"sess-a", "sess-b", ""} {
+		if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", sessionID, n) {
+			t.Fatalf("expected a broadcast push (empty TargetSessionID) to be visible regardless of this connection's session id %q", sessionID)
+		}
 	}
 }
 
@@ -682,7 +734,7 @@ func TestWatchNotificationVisible_PushToSomeoneElseDenied(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-2"}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
 		t.Fatal("expected a push addressed to someone else to be denied")
 	}
 }
@@ -703,7 +755,7 @@ func TestWatchNotificationVisible_PushToSomeoneElseDeniedEvenWithUnconditionalWa
 	t.Parallel()
 	watches := map[string]string{"item-1": ""} // unconditional watch on the item
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-2"}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
 		t.Fatal("expected a push addressed to someone else to be denied even when the caller holds an unconditional watch on the item")
 	}
 }
@@ -715,7 +767,7 @@ func TestWatchNotificationVisible_PushToSomeoneElseDeniedEvenWithPredicateWatch(
 	t.Parallel()
 	watches := map[string]string{"item-1": "status=done"}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-2"}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
 		t.Fatal("expected a push addressed to someone else to be denied even when the caller holds a predicated watch on the item")
 	}
 }
@@ -732,12 +784,12 @@ func TestWatchNotificationVisible_PushStillGatedByAccess(t *testing.T) {
 		ItemID: "item-1", CollectionID: "coll-1",
 		Kind: watchevents.KindPush, TargetUserID: "user-1",
 	}
-	if watchNotificationVisible(watches, deny, "user-1", n) {
+	if watchNotificationVisible(watches, deny, "user-1", "", n) {
 		t.Fatal("expected a push-to-you notification to be denied when the caller has no current access to the item's collection")
 	}
 
 	allow := watchAccessVisibility{visibleCollIDs: map[string]bool{"coll-1": true}}
-	if !watchNotificationVisible(watches, allow, "user-1", n) {
+	if !watchNotificationVisible(watches, allow, "user-1", "", n) {
 		t.Fatal("expected a push-to-you notification to be visible once the caller has current access to the item's collection")
 	}
 }
@@ -767,12 +819,12 @@ func TestWatchNotificationVisible_AssignmentStillGatedByAccess(t *testing.T) {
 		ItemID: "item-1", CollectionID: "coll-1",
 		Kind: watchevents.KindAssignment, AssignedUserID: "user-1",
 	}
-	if watchNotificationVisible(watches, deny, "user-1", n) {
+	if watchNotificationVisible(watches, deny, "user-1", "", n) {
 		t.Fatal("expected a watch-matched assignment notification to be denied when the caller has no current access to the item's collection")
 	}
 
 	allow := watchAccessVisibility{visibleCollIDs: map[string]bool{"coll-1": true}}
-	if !watchNotificationVisible(watches, allow, "user-1", n) {
+	if !watchNotificationVisible(watches, allow, "user-1", "", n) {
 		t.Fatal("expected the same notification to be visible once the collection is in the caller's current access")
 	}
 }

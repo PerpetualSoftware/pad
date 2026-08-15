@@ -1,7 +1,19 @@
 <!--
 @component
 PushToAgentDialog — compose an instruction about an item and push it to the
-user's own connected agent sessions (PLAN-2558 S3, IDEA-2544 Phase 3).
+user's own connected agent sessions (PLAN-2558 S3, IDEA-2544 Phase 3), or to
+one specific session (PLAN-2558 S5, TASK-2588) via the target picker below
+the presence line.
+
+THE TARGET PICKER REUSES THE PRESENCE READ, IT DOESN'T ADD ONE. `sessions`
+below is already fetched for the presence line's own count; the picker's
+options are that same array, so there is no second `GET /api/v1/sessions`
+and the two surfaces can never disagree about who's connected. A targeted
+send whose `delivered_sessions` comes back 0 (the addressed session vanished
+between the last poll and the click — the same staleness window the presence
+line already carries) toasts and re-polls rather than closing: zero delivery
+means nothing was sent, so nothing is duplicated by trying again against a
+freshly-read list.
 
 Built on the shared `Modal` primitive, same as CopyItemDialog: the composer
 needs more room than the pane menu's drill-down affords, and the native
@@ -91,6 +103,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 	const textareaId = `push-dialog-message-${uid}`;
 	const counterId = `push-dialog-counter-${uid}`;
 	const noteId = `push-dialog-note-${uid}`;
+	const targetId = `push-dialog-target-${uid}`;
 
 	/**
 	 * Presence re-read cadence while the dialog is open. A session can connect
@@ -137,6 +150,14 @@ server tells you not to run would cost honesty in the case that actually ships.
 	let presenceReason = $state('');
 
 	let message = $state('');
+	/**
+	 * The chosen target, or '' for broadcast (PLAN-2558 S5, TASK-2588).
+	 * Populated from `sessions` (the same presence read the count above
+	 * uses — no separate fetch), so it degrades exactly the way the
+	 * count does: an id that drops out of `sessions` on the next poll
+	 * simply stops being an option, same as any other session leaving.
+	 */
+	let selectedSessionId = $state('');
 	let sending = $state(false);
 	let sendError = $state('');
 	/**
@@ -219,6 +240,29 @@ server tells you not to run would cost honesty in the case that actually ships.
 			presenceState !== 'checking'
 	);
 
+	/**
+	 * Keep `selectedSessionId` valid whenever `sessions` changes. Called
+	 * right after every `sessions = ...` reassignment that ISN'T already
+	 * paired with an explicit reset of the selection (TASK-2588 round 2,
+	 * codex).
+	 *
+	 * A `<select>` whose bound value names an `<option>` that no longer
+	 * exists typically falls back to DISPLAYING the first remaining
+	 * option (here, "All connected sessions") while the underlying bound
+	 * value stays the stale id — so the user visually sees "broadcast"
+	 * selected while the wire would still carry the dead target_session_id
+	 * on send. Reconciling here (not via a $effect that reads
+	 * `selectedSessionId`, which would read the same state it writes —
+	 * CONVE-1688) closes that at every point `sessions` can change: a
+	 * live poll dropping the selected session, and the staleness-expiry
+	 * path below that clears `sessions` directly.
+	 */
+	function reconcileSelectedSession() {
+		if (selectedSessionId && !sessions.some((s) => s.id === selectedSessionId)) {
+			selectedSessionId = '';
+		}
+	}
+
 	async function refreshPresence(gen: number): Promise<void> {
 		const seq = ++presenceSeq;
 		/**
@@ -242,6 +286,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 			presenceAppliedSeq = seq;
 			lastAnsweredAt = Date.now();
 			sessions = resp.sessions ?? [];
+			reconcileSelectedSession();
 			presenceState = 'known';
 			presenceReason = '';
 		} catch (err) {
@@ -251,6 +296,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 			// distinguishes the one case a self-hosted user can act on (the
 			// server has no presence registry) from a transient read failure.
 			sessions = [];
+			reconcileSelectedSession();
 			presenceState = 'unknown';
 			presenceReason =
 				err instanceof PadApiError && err.code === 'unavailable'
@@ -272,6 +318,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 			presenceGen += 1;
 			presenceAppliedSeq = 0;
 			message = defaultPushMessage(itemRef, itemTitle);
+			selectedSessionId = '';
 			sending = false;
 			sendError = '';
 			outcomeUnknown = false;
@@ -291,6 +338,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 			// more authority than "can't tell", so we say that instead.
 			if (presenceState === 'known' && Date.now() - lastAnsweredAt > PRESENCE_MAX_AGE_MS) {
 				sessions = [];
+				reconcileSelectedSession();
 				presenceState = 'unknown';
 				presenceReason = 'The last check was a while ago and hasn’t refreshed.';
 				// Retire every request already in flight (codex round 3). Those
@@ -333,13 +381,60 @@ server tells you not to run would cost honesty in the case that actually ships.
 		// and only liveness distinguishes A's stale continuation from B's.
 		const gen = presenceGen;
 		const stillMine = () => !destroyed && gen === presenceGen;
+		// Captured before the await, same as every other read of reactive
+		// state in this function — `selectedSessionId` can't actually change
+		// while `sending` disables the picker, but the pattern is load-bearing
+		// elsewhere in this file and cheap to keep consistent here too.
+		const target = selectedSessionId;
 		sending = true;
 		sendError = '';
 		try {
 			// NEVER retried automatically, at this call site or any other: the
-			// endpoint carries no idempotency key.
-			await api.items.push(wsSlug, itemSlug, collapsed);
+			// endpoint carries no idempotency key. Broadcast keeps the exact
+			// pre-S5 3-argument call — only a non-empty target adds the 4th.
+			const result = target
+				? await api.items.push(wsSlug, itemSlug, collapsed, target)
+				: await api.items.push(wsSlug, itemSlug, collapsed);
 			sending = false;
+			if (target && result.delivered_sessions === undefined) {
+				// Mixed-version hazard (TASK-2588 round 2, codex). The server
+				// ships EMBEDDED in the binary (web/build is baked into the Go
+				// build), so a version skew between this tab's JS and the
+				// server it's talking to can only exist transiently — a stale
+				// tab surviving a server swap — never as a sustained topology.
+				// That's still worth a cheap check, not a capability-
+				// negotiation system: a response to a targeted send with no
+				// delivered_sessions AT ALL means the server that answered
+				// doesn't know about targeting (pre-S5, or a proxy that
+				// stripped the field) — server-side, that server unconditionally
+				// PUBLISHES every push it accepts (the pre-S5 contract), so this
+				// was NOT skipped the way a same-version miss is. Tell the user
+				// honestly rather than either silently treating it as delivered
+				// or, worse, running the miss-flow against a `0` that was never
+				// actually reported — this branch must run BEFORE the `=== 0`
+				// check below, and must never fall through to it.
+				toastStore.show('server didn’t confirm targeting — sent as broadcast', 'info');
+				if (!stillMine()) return;
+				handleDismiss();
+				return;
+			}
+			if (target && result.delivered_sessions === 0) {
+				// A targeted push that reached nobody. As of TASK-2588 round 1
+				// the server SKIPS the publish entirely for this case (see
+				// pushResponse.DeliveredSessions' doc comment) — nothing was
+				// sent, so zero delivery is a guarantee, not a race, and
+				// nothing would be duplicated by resending. Unlike every other
+				// outcome here, it is therefore safe to leave Push re-armed
+				// rather than closing: drop the stale selection back to
+				// broadcast and re-read presence so the picker reflects what
+				// is actually still connected, then let the user resend to a
+				// live target.
+				toastStore.show('that session is gone — refresh the list', 'error');
+				if (!stillMine()) return;
+				selectedSessionId = '';
+				void refreshPresence(gen);
+				return;
+			}
 			// The toast fires even if this instance is gone — the push really
 			// happened, and suppressing the confirmation would be the dishonest
 			// half. Honest past tense: the notification was PUBLISHED. Whether an
@@ -455,6 +550,26 @@ server tells you not to run would cost honesty in the case that actually ships.
 				</ul>
 			{/if}
 		</section>
+
+		<!-- ── Target ────────────────────────────────────────────────────────
+		     Only rendered once there is something to pick between (PLAN-2558
+		     S5, TASK-2588) — with zero sessions Send is already disabled by
+		     `noListeners`, so a picker here would offer a choice that can't be
+		     acted on. Broadcast is the default on every fresh open (Fresh-on-
+		     open reset above), never a remembered previous target. -->
+		{#if sessionCount > 0}
+			<section class="section">
+				<label class="field-label" for={targetId}>Send to</label>
+				<select id={targetId} class="target-picker" bind:value={selectedSessionId} disabled={sending}>
+					<option value=""
+						>All connected sessions ({sessionCount})</option
+					>
+					{#each sessions as session (session.id)}
+						<option value={session.id}>{sessionName(session)}</option>
+					{/each}
+				</select>
+			</section>
+		{/if}
 
 		<!-- ── Message ───────────────────────────────────────────────────── -->
 		<section class="section">
@@ -594,6 +709,12 @@ server tells you not to run would cost honesty in the case that actually ships.
 
 	/* Border / background / padding come from app.css's global
 	   `input, textarea, select` rule — only the box behaviour is local. */
+	/* Border / background / padding come from app.css's global
+	   `input, textarea, select` rule, same as .composer above. */
+	.target-picker {
+		width: 100%;
+		box-sizing: border-box;
+	}
 	.composer {
 		width: 100%;
 		box-sizing: border-box;

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
@@ -189,5 +190,297 @@ func TestPushToItem_InvisibleItemDenied(t *testing.T) {
 		map[string]interface{}{"message": "triage this"})
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+}
+
+// TestPushToItem_TargetedSessionReceivesOnly is PLAN-2558 S5's (TASK-2588)
+// core positive case: with TWO of the caller's own sessions connected, a
+// push naming one of their ids reaches exactly that one, not the other,
+// and delivered_sessions reports 1 — not the registry size of 2.
+func TestPushToItem_TargetedSessionReceivesOnly(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctxA, cancelA := context.WithCancel(context.Background())
+	defer cancelA()
+	chA := connectWatchStream(ctxA, t, ts.URL, tok.Token)
+	waitForWatchEvent(t, chA, 3*time.Second) // connected — A's Add() has happened
+
+	ctxB, cancelB := context.WithCancel(context.Background())
+	defer cancelB()
+	chB := connectWatchStream(ctxB, t, ts.URL, tok.Token)
+	waitForWatchEvent(t, chB, 3*time.Second) // connected — B's Add() has happened, strictly after A's
+
+	status, sessions := getSessions(t, ts.URL, tok.Token)
+	if status != http.StatusOK || len(sessions.Sessions) != 2 {
+		t.Fatalf("expected 2 live sessions, got status=%d sessions=%+v", status, sessions)
+	}
+	// ListForUser orders oldest-connection-first (session_presence.go), and
+	// A connected strictly before B, so sessions[0] is A's own id.
+	targetID := sessions.Sessions[0].ID
+
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "for A only", "target_session_id": targetID})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", rr.Code, rr.Body.String())
+	}
+	var resp pushResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.DeliveredSessions != 1 {
+		t.Fatalf("expected delivered_sessions=1 for a session-targeted push, got %d", resp.DeliveredSessions)
+	}
+
+	ev := waitForWatchEvent(t, chA, 3*time.Second)
+	var payload watchEventPayload
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.Summary != "for A only" {
+		t.Fatalf("expected the targeted session to receive the push, got summary %q", payload.Summary)
+	}
+
+	assertNoWatchEventForRef(t, chB, item.Ref, 300*time.Millisecond)
+}
+
+// TestPushToItem_TargetedVanishedSessionMisses is S5's honest-miss case:
+// a target_session_id that names no live session (mistyped, or expired)
+// gets a 200 with delivered_sessions=0, never mis-delivered to a session
+// that IS connected but wasn't the one addressed.
+func TestPushToItem_TargetedVanishedSessionMisses(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectWatchStream(ctx, t, ts.URL, tok.Token)
+	waitForWatchEvent(t, ch, 3*time.Second) // connected
+
+	// Bus growth, not just "this OTHER session didn't get it" (dispatcher
+	// review round 1, codex): a targeted miss must skip the publish
+	// entirely, not merely fail to match anyone downstream — see
+	// pushResponse.DeliveredSessions' doc comment on why. This is the
+	// seam that fails if the pre-publish snapshot-and-skip ever gets
+	// reordered back to publish-then-count.
+	before := len(srv.watchEvents.EventsSince(0))
+
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "nobody home", "target_session_id": "sess-does-not-exist"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a vanished target (honest miss, not an error), got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp pushResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.DeliveredSessions != 0 {
+		t.Fatalf("expected delivered_sessions=0 for a vanished target, got %d", resp.DeliveredSessions)
+	}
+	if !resp.Pushed {
+		t.Fatal("expected pushed=true — a targeted miss is still a successfully PROCESSED push (matching broadcast's existing no-listeners semantics), even though nothing was published to the bus")
+	}
+	if after := len(srv.watchEvents.EventsSince(0)); after != before {
+		t.Fatalf("expected a targeted miss to skip the publish entirely (guaranteed no-op), but the bus grew from %d to %d entries", before, after)
+	}
+
+	assertNoWatchEventForRef(t, ch, item.Ref, 300*time.Millisecond)
+}
+
+// TestPushToItem_TargetedSessionOfAnotherUserTreatedAsVanished pins the
+// self-addressed boundary (dispatcher constraint, TASK-2588): a
+// target_session_id that names a REAL, currently-connected session
+// belonging to a DIFFERENT user must behave exactly like a vanished id —
+// 200, delivered_sessions=0 — never leak to that other user's session and
+// never let the pusher probe whether a given id exists on the server.
+func TestPushToItem_TargetedSessionOfAnotherUserTreatedAsVanished(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	slug, item, tokA, _ := setupWatchTestUser(t, srv)
+	userB, err := srv.store.CreateUser(models.UserCreate{
+		Email:    "push-target-test-b@example.com",
+		Name:     "Push Target Tester B",
+		Password: "pw-test-12345",
+	})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	tokB, err := srv.store.CreateAPIToken(userB.ID, models.APITokenCreate{Name: "push-target-test-b"}, 0, 0)
+	if err != nil {
+		t.Fatalf("CreateAPIToken: %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctxA, cancelA := context.WithCancel(context.Background())
+	defer cancelA()
+	chA := connectWatchStream(ctxA, t, ts.URL, tokA.Token)
+	waitForWatchEvent(t, chA, 3*time.Second)
+
+	ctxB, cancelB := context.WithCancel(context.Background())
+	defer cancelB()
+	chB := connectWatchStream(ctxB, t, ts.URL, tokB.Token)
+	waitForWatchEvent(t, chB, 3*time.Second)
+
+	_, bSessions := getSessions(t, ts.URL, tokB.Token)
+	if len(bSessions.Sessions) != 1 {
+		t.Fatalf("expected user B to see exactly 1 live session, got %+v", bSessions)
+	}
+	bSessionID := bSessions.Sessions[0].ID
+
+	// See TestPushToItem_TargetedVanishedSessionMisses: a cross-user id
+	// must skip the publish exactly like a genuinely vanished one — the
+	// bus must not grow, not merely fail to reach B downstream.
+	before := len(srv.watchEvents.EventsSince(0))
+
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tokA.Token,
+		map[string]interface{}{"message": "should reach nobody", "target_session_id": bSessionID})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp pushResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.DeliveredSessions != 0 {
+		t.Fatalf("expected delivered_sessions=0 for another user's session id — a cross-user id must be indistinguishable from a vanished one, got %d", resp.DeliveredSessions)
+	}
+	if after := len(srv.watchEvents.EventsSince(0)); after != before {
+		t.Fatalf("expected a cross-user target to skip the publish entirely, but the bus grew from %d to %d entries", before, after)
+	}
+
+	assertNoWatchEventForRef(t, chA, item.Ref, 300*time.Millisecond)
+	assertNoWatchEventForRef(t, chB, item.Ref, 300*time.Millisecond)
+}
+
+// TestPushToItem_TargetSessionIDOverLengthRejected covers the 400-over-cap
+// guard (dispatcher review round 1, codex): target_session_id is opaque
+// and unvalidated by format, but not unbounded — decodeJSON allows request
+// bodies up to 2 MiB, so without a length cap an authenticated caller
+// could park arbitrarily large garbage strings in the bus's replay
+// buffer on every push. The bus must not grow, matching the "reject
+// before publish" posture the length check shares with the message cap.
+func TestPushToItem_TargetSessionIDOverLengthRejected(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+
+	before := len(srv.watchEvents.EventsSince(0))
+	overLong := strings.Repeat("a", maxPushTargetSessionIDLen+1)
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "triage this", "target_session_id": overLong})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an over-cap target_session_id, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if after := len(srv.watchEvents.EventsSince(0)); after != before {
+		t.Fatalf("expected an over-cap target_session_id to be rejected before publish, but the bus grew from %d to %d entries", before, after)
+	}
+}
+
+// TestPushToItem_TargetSessionIDAtCapAccepted is the at-boundary
+// counterpart: a target_session_id exactly at the cap must NOT be
+// rejected (it is still a miss — nothing that long is a real registry
+// id — but the length check itself must not be off-by-one).
+func TestPushToItem_TargetSessionIDAtCapAccepted(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+
+	atCap := strings.Repeat("a", maxPushTargetSessionIDLen)
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "triage this", "target_session_id": atCap})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a target_session_id exactly at the cap, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp pushResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.DeliveredSessions != 0 {
+		t.Fatalf("expected delivered_sessions=0 — an at-cap id still names no live session, got %d", resp.DeliveredSessions)
+	}
+}
+
+// TestPushToItem_BroadcastDeliveredSessionsCountsLiveSessions covers the
+// broadcast (omitted target_session_id) mode with delivered_sessions
+// wired up: it reaches every one of the caller's own connected sessions,
+// and the count is the actual number that matched — 2, from
+// ListForUser(userID) — not any GLOBAL registry size.
+func TestPushToItem_BroadcastDeliveredSessionsCountsLiveSessions(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctxA, cancelA := context.WithCancel(context.Background())
+	defer cancelA()
+	chA := connectWatchStream(ctxA, t, ts.URL, tok.Token)
+	waitForWatchEvent(t, chA, 3*time.Second)
+
+	ctxB, cancelB := context.WithCancel(context.Background())
+	defer cancelB()
+	chB := connectWatchStream(ctxB, t, ts.URL, tok.Token)
+	waitForWatchEvent(t, chB, 3*time.Second)
+
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "for everyone"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", rr.Code, rr.Body.String())
+	}
+	var resp pushResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.DeliveredSessions != 2 {
+		t.Fatalf("expected delivered_sessions=2 for a broadcast with 2 live sessions, got %d", resp.DeliveredSessions)
+	}
+
+	for _, ch := range []<-chan watchSSEEvent{chA, chB} {
+		ev := waitForWatchEvent(t, ch, 3*time.Second)
+		var payload watchEventPayload
+		if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+			t.Fatalf("parse payload: %v", err)
+		}
+		if payload.Summary != "for everyone" {
+			t.Fatalf("expected both sessions to receive the broadcast push, got summary %q", payload.Summary)
+		}
+	}
+}
+
+// TestPushToItem_OmittedTargetSessionIDMatchesPreS5RequestShape is the
+// wire-level compatibility leg (dispatcher plan): a request body in
+// EXACTLY the pre-S5 shape — no target_session_id key at all, not even
+// an empty string — must still be accepted and behave as pure broadcast,
+// against a server with no presence registry at all (mirroring every
+// pre-S5 push test's setup via testServerWithWatchEvents). A vanished
+// registry answers delivered_sessions=0 honestly rather than erroring —
+// there is no new error channel for a caller that never asked to target
+// anything.
+func TestPushToItem_OmittedTargetSessionIDMatchesPreS5RequestShape(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t) // NOT testServerWithPresence — no registry
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+
+	rr := bearerCall(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		[]byte(`{"message":"triage this"}`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", rr.Code, rr.Body.String())
+	}
+	var resp pushResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.Ref != item.Ref || resp.Workspace != slug || !resp.Pushed || resp.Message != "triage this" {
+		t.Fatalf("pre-S5 fields must be unchanged for a pre-S5 request body, got %+v", resp)
+	}
+	if resp.DeliveredSessions != 0 {
+		t.Fatalf("expected delivered_sessions=0 with no presence registry wired, got %d", resp.DeliveredSessions)
 	}
 }

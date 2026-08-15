@@ -95,6 +95,12 @@ function textarea(): HTMLTextAreaElement {
 	return el as HTMLTextAreaElement;
 }
 
+/** The session-target picker (PLAN-2558 S5), or null when the presence
+ *  state has no live sessions to pick between (it isn't rendered at all). */
+function targetPicker(): HTMLSelectElement | null {
+	return document.querySelector('select');
+}
+
 /** Mount, then let the initial presence read settle. */
 async function mountSettled(props: Record<string, unknown> = {}) {
 	const result = render(PushToAgentDialog, { props: baseProps(props) });
@@ -112,7 +118,8 @@ beforeEach(() => {
 		ref: 'TASK-5',
 		workspace: 'docapp',
 		pushed: true,
-		message: 'ok'
+		message: 'ok',
+		delivered_sessions: 1
 	});
 	sessionsListMock.mockReset().mockResolvedValue(sessions(1));
 	toastMock.mockReset();
@@ -502,5 +509,231 @@ describe('PushToAgentDialog — message handling', () => {
 		// idempotency key — exactly one dispatch happened.
 		expect(onclose).not.toHaveBeenCalled();
 		expect(pushMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('PushToAgentDialog — session targeting (PLAN-2558 S5, TASK-2588)', () => {
+	it('renders a broadcast default plus one option per connected session', async () => {
+		sessionsListMock.mockResolvedValue(sessions(2));
+		await mountSettled();
+
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker with 2 live sessions');
+		const options = Array.from(picker.options).map((o) => ({ value: o.value, text: o.textContent }));
+		expect(options[0]).toEqual({ value: '', text: expect.stringContaining('All connected sessions (2)') });
+		expect(options[1]).toEqual({ value: 'session-id-0', text: 'docapp-0 (pid 1000)' });
+		expect(options[2]).toEqual({ value: 'session-id-1', text: 'docapp-1 (pid 1001)' });
+	});
+
+	it('does not render a picker with zero sessions — nothing to pick between', async () => {
+		sessionsListMock.mockResolvedValue(sessions(0));
+		await mountSettled();
+		expect(targetPicker()).toBeNull();
+	});
+
+	it('defaults to broadcast: an untouched send keeps the exact pre-S5 3-argument call', async () => {
+		sessionsListMock.mockResolvedValue(sessions(2));
+		await mountSettled();
+
+		await fireEvent.click(button('Push'));
+		await tick();
+
+		// No 4th argument at all — not even an explicit `undefined` — so this
+		// stays byte-identical to every pre-S5 broadcast call site
+		// (QuickActionsMenu's S4 dispatch included).
+		expect(pushMock).toHaveBeenCalledWith(
+			'docapp',
+			'fix-the-thing',
+			'Take a look at TASK-5 — Fix the thing'
+		);
+	});
+
+	it('selecting a session passes its id as the 4th push argument', async () => {
+		sessionsListMock.mockResolvedValue(sessions(2));
+		await mountSettled();
+
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker');
+		await fireEvent.change(picker, { target: { value: 'session-id-1' } });
+		await fireEvent.click(button('Push'));
+		await tick();
+
+		expect(pushMock).toHaveBeenCalledWith(
+			'docapp',
+			'fix-the-thing',
+			'Take a look at TASK-5 — Fix the thing',
+			'session-id-1'
+		);
+	});
+
+	it('a targeted miss (delivered_sessions=0) toasts, keeps the dialog open, drops back to broadcast, and re-reads presence — because zero delivery means nothing to duplicate by resending', async () => {
+		sessionsListMock.mockResolvedValue(sessions(2));
+		pushMock.mockResolvedValueOnce({
+			ref: 'TASK-5',
+			workspace: 'docapp',
+			pushed: true,
+			message: 'ok',
+			delivered_sessions: 0
+		});
+		const onclose = vi.fn();
+		await mountSettled({ onclose });
+
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker');
+		await fireEvent.change(picker, { target: { value: 'session-id-0' } });
+		const presenceReadsBeforeSend = sessionsListMock.mock.calls.length;
+
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		expect(toastMock).toHaveBeenCalledWith('that session is gone — refresh the list', 'error');
+		// Still open — unlike every OTHER successful-response outcome, a
+		// definitive zero-delivery result is safe to leave re-armed rather
+		// than closing, since nothing was actually sent to duplicate.
+		expect(onclose).not.toHaveBeenCalled();
+		// The stale selection drops back to broadcast, and presence is
+		// re-read so the picker reflects who's actually still connected.
+		expect(targetPicker()?.value).toBe('');
+		expect(sessionsListMock.mock.calls.length).toBeGreaterThan(presenceReadsBeforeSend);
+	});
+
+	it('a successful targeted push (delivered_sessions > 0) closes normally, same as broadcast', async () => {
+		sessionsListMock.mockResolvedValue(sessions(2));
+		pushMock.mockResolvedValueOnce({
+			ref: 'TASK-5',
+			workspace: 'docapp',
+			pushed: true,
+			message: 'ok',
+			delivered_sessions: 1
+		});
+		const onclose = vi.fn();
+		await mountSettled({ onclose });
+
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker');
+		await fireEvent.change(picker, { target: { value: 'session-id-0' } });
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		expect(onclose).toHaveBeenCalled();
+		expect(toastMock).toHaveBeenCalledTimes(1);
+		const [msg] = toastMock.mock.calls[0] ?? [];
+		expect(String(msg)).toMatch(/isn’t confirmed|is not confirmed/);
+	});
+
+	it('a refresh that removes the selected session drops the picker back to broadcast — the next send carries no target_session_id', async () => {
+		vi.useFakeTimers();
+		sessionsListMock.mockResolvedValue(sessions(2));
+		render(PushToAgentDialog, { props: baseProps() });
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker');
+		await fireEvent.change(picker, { target: { value: 'session-id-0' } });
+		expect(targetPicker()?.value).toBe('session-id-0');
+
+		// The next poll's list no longer has session-id-0 — the OTHER
+		// session is still there, so this is a picker-visible refresh, not
+		// a drop to zero (which is already covered by presence-honesty's
+		// "session drops mid-compose" test).
+		sessionsListMock.mockResolvedValue({
+			count: 1,
+			sessions: [
+				{
+					id: 'session-id-1',
+					label: 'docapp-1',
+					pid: 1001,
+					connected_at: new Date(Date.now() - 60_000).toISOString()
+				}
+			]
+		});
+		await vi.advanceTimersByTimeAsync(10_000);
+		flushSync();
+
+		// A <select> whose selected <option> vanished falls back to
+		// DISPLAYING the remaining default while the bound value can stay
+		// stale — this asserts the bound value itself, not just the
+		// rendered option list.
+		expect(targetPicker()?.value).toBe('');
+
+		await fireEvent.click(button('Push'));
+		await tick();
+
+		// The pre-S5 3-argument shape — no target_session_id at all, not
+		// even the now-dead 'session-id-0'.
+		expect(pushMock).toHaveBeenCalledWith(
+			'docapp',
+			'fix-the-thing',
+			'Take a look at TASK-5 — Fix the thing'
+		);
+	});
+
+	it('a refresh that keeps the selected session live does not clobber the selection', async () => {
+		vi.useFakeTimers();
+		sessionsListMock.mockResolvedValue(sessions(2));
+		render(PushToAgentDialog, { props: baseProps() });
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker');
+		await fireEvent.change(picker, { target: { value: 'session-id-0' } });
+
+		// Same two sessions again — session-id-0 is still present.
+		sessionsListMock.mockResolvedValue(sessions(2));
+		await vi.advanceTimersByTimeAsync(10_000);
+		flushSync();
+
+		expect(targetPicker()?.value).toBe('session-id-0');
+
+		await fireEvent.click(button('Push'));
+		await tick();
+
+		expect(pushMock).toHaveBeenCalledWith(
+			'docapp',
+			'fix-the-thing',
+			'Take a look at TASK-5 — Fix the thing',
+			'session-id-0'
+		);
+	});
+
+	it('a targeted send whose response omits delivered_sessions entirely (mixed-version server) shows an info toast and closes — never the miss-flow', async () => {
+		sessionsListMock.mockResolvedValue(sessions(2));
+		// A pre-S5 server's response shape: no delivered_sessions key at
+		// all, not even 0. A server that doesn't know about targeting
+		// still unconditionally publishes every push it accepts (the
+		// pre-S5 contract), so this is NOT the same as a same-version 0.
+		pushMock.mockResolvedValueOnce({
+			ref: 'TASK-5',
+			workspace: 'docapp',
+			pushed: true,
+			message: 'ok'
+		});
+		const onclose = vi.fn();
+		await mountSettled({ onclose });
+
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker');
+		await fireEvent.change(picker, { target: { value: 'session-id-0' } });
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		expect(toastMock).toHaveBeenCalledWith(
+			'server didn’t confirm targeting — sent as broadcast',
+			'info'
+		);
+		// Never the miss-toast — an absent field is UNKNOWN, not a
+		// confirmed 0, and must never be treated as one.
+		expect(toastMock).not.toHaveBeenCalledWith(
+			'that session is gone — refresh the list',
+			expect.anything()
+		);
+		// Dismissed like a normal success, not re-armed like a miss —
+		// "no auto-resend enablement" (dispatcher round 2).
+		expect(onclose).toHaveBeenCalled();
 	});
 });

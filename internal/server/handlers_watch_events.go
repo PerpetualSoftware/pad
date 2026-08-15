@@ -141,8 +141,16 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// The identity is whatever the client claimed in its request
 	// headers (S2, TASK-2560) — sanitized, never verified, and empty
 	// for any client that doesn't say. See SessionIdentity.
+	// Hoisted out of the if-block (PLAN-2558 S5, TASK-2588): a targeted
+	// push's predicate (Notification.TargetSessionID) is evaluated in the
+	// select loop below, which needs this connection's own registry id in
+	// scope. Left as the zero value when there is no registry — a
+	// targeted push can then never match THIS connection, but an
+	// untargeted (broadcast) one is unaffected, since watchNotificationVisible
+	// only compares TargetSessionID when the notification actually set one.
+	var sessionID string
 	if s.sessionPresence != nil {
-		sessionID := s.sessionPresence.Add(user.ID, parseSessionIdentity(r))
+		sessionID = s.sessionPresence.Add(user.ID, parseSessionIdentity(r))
 		defer s.sessionPresence.Remove(user.ID, sessionID)
 	}
 
@@ -182,7 +190,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			flusher.Flush()
 		} else {
 			for _, n := range missed {
-				if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, n) {
+				if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, n) {
 					continue
 				}
 				if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
@@ -216,7 +224,7 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			if !ok {
 				return
 			}
-			if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, n) {
+			if !watchNotificationVisible(watches, visCache.forWorkspace(n.WorkspaceID), user.ID, sessionID, n) {
 				continue
 			}
 			if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(s, n)); err != nil {
@@ -413,7 +421,13 @@ func (s *Server) loadWatchPredicates(r *http.Request, userID string) (map[string
 // handler so the DR-2 filtering rules are unit-testable without a live
 // SSE connection — mirrors sseEventVisibleFor's role in
 // handlers_events.go.
-func watchNotificationVisible(watches map[string]string, vis watchAccessVisibility, userID string, n watchevents.Notification) bool {
+//
+// sessionID is THIS connection's own S1 presence-registry id (empty if
+// the server has no presence registry wired) — the same id
+// Notification.TargetSessionID's doc comment describes evaluating
+// against (PLAN-2558 S5, TASK-2588). Unused by every kind except
+// KindPush.
+func watchNotificationVisible(watches map[string]string, vis watchAccessVisibility, userID string, sessionID string, n watchevents.Notification) bool {
 	// TASK-2533 codex round 2 finding 2: the caller's CURRENT access to
 	// the notification's collection/item is checked FIRST and applies
 	// UNIFORMLY to every kind below — watch-matched and addressed-to-you
@@ -469,12 +483,23 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 	// original code fell through to the watch-map check on a
 	// non-matching TargetUserID, so any unconditional watcher on the item
 	// received every push addressed to every other user, instruction
-	// text included). Phase 4's session targeting is expected to inherit
-	// this same "addressed traffic is exclusive of watch-matched
+	// text included). PLAN-2558 S5's session targeting (TASK-2588)
+	// inherits this same "addressed traffic is exclusive of watch-matched
 	// delivery" semantics, so it's pinned explicitly here rather than
 	// left to fall out of the shared TargetUserID field's shape.
 	if n.Kind == watchevents.KindPush {
-		return n.TargetUserID != "" && n.TargetUserID == userID
+		if n.TargetUserID == "" || n.TargetUserID != userID {
+			return false
+		}
+		// TargetSessionID narrows delivery to one of userID's own live
+		// sessions (empty = every one of them, i.e. broadcast is this
+		// same check with an always-true second leg — one delivery path,
+		// not two). Deliberately compared AFTER the TargetUserID check
+		// above, never before: a session id is meaningless without first
+		// confirming this connection belongs to the addressed user at
+		// all, and evaluating it first would invite conflating "wrong
+		// user" with "wrong session" in some future edit.
+		return n.TargetSessionID == "" || n.TargetSessionID == sessionID
 	}
 
 	predicate, watched := watches[n.ItemID]

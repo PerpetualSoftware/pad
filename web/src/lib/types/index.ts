@@ -1825,21 +1825,50 @@ export interface LiveSessionsResponse {
 }
 
 /**
- * Result of POST /workspaces/{ws}/items/{slug}/push (IDEA-2544 Phase 1).
+ * Result of POST /workspaces/{ws}/items/{slug}/push (IDEA-2544 Phase 1 /
+ * PLAN-2558 S5, TASK-2588).
  *
- * `pushed: true` means the notification was PUBLISHED to the event bus — not
- * that any session received it. A push has no durable backing and no ack, so
- * there is nothing here that could report delivery, and callers must not
- * present this as confirmation that an agent saw it.
+ * `pushed: true` means the request was ACCEPTED AND PROCESSED, not
+ * "delivered" (dispatcher ruling, TASK-2588 round 2) — it is true even for
+ * a targeted push whose id matched no live session, exactly the same shape
+ * broadcast-with-no-listeners has always returned. There is no separate
+ * error channel for a targeted miss; `delivered_sessions` is the delivery
+ * signal, `pushed` is not one and callers must not read it as one.
  *
  * `message` echoes the server's whitespace-collapsed form, which is what
  * actually went on the wire — it may differ from what the user typed.
+ *
+ * `delivered_sessions` counts how many of the caller's own live sessions
+ * (the S1 presence registry, GET /api/v1/sessions — narrowed by
+ * `target_session_id` if the request set one) matched. It is a PREDICTION
+ * snapshotted from the same registry the picker itself reads, taken BEFORE
+ * the notification is published — not a delivery receipt: it carries the
+ * registry's own staleness window (up to ~30s behind an ungracefully-
+ * dropped connection — see `LiveSession`) and there is still no ack from
+ * the receiving side. Callers must not present a nonzero count as
+ * confirmed delivery; the 0-vs-nonzero distinction is what's load-bearing
+ * — a targeted push with `delivered_sessions === 0` is a GUARANTEE it
+ * reached nobody (the server skips the publish entirely in that case, so
+ * there is nothing to duplicate by resending), never a race.
+ *
+ * OPTIONAL, not always present on the wire (codex round 2 mixed-version
+ * hazard): the server ships embedded in the binary, so a version skew
+ * between the JS a tab is running and the server it talks to can only
+ * exist transiently — a stale browser tab surviving a server swap — never
+ * as a real, sustained multi-version topology. That's still real enough
+ * to check for: a caller that sent `target_session_id` and gets back a
+ * response with no `delivered_sessions` at all is talking to a server
+ * that doesn't know about targeting yet (or a proxy that stripped it).
+ * Treat that as UNKNOWN, never as a confirmed miss — `=== 0` must be
+ * checked explicitly, never inferred from `!delivered_sessions` or a
+ * falsy check that would also match `undefined`.
  */
 export interface ItemPushResult {
 	ref: string;
 	workspace: string;
 	pushed: boolean;
 	message: string;
+	delivered_sessions?: number;
 }
 
 /**
