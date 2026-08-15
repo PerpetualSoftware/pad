@@ -535,6 +535,30 @@ a workspace in one step.`,
 					printSetupRequiredHint(cfg)
 					return fmt.Errorf("this Pad instance has not been initialized yet")
 				}
+				// BUG-2538: mirror init.go's canPromptForConfig() gate
+				// (init.go:205-206) before driving the browser-based
+				// first-run setup — without it, a non-interactive caller
+				// (script, CI, headless agent) blocks on a wait nobody can
+				// complete instead of failing fast with an actionable hint.
+				if !canPromptForConfig() {
+					printSetupRequiredHint(cfg)
+					// Deliberately NOT suggesting `pad init` here even
+					// though it accepts the same headless flags: pad init
+					// creates its own CWD-named workspace as a side effect,
+					// silently eating this command's workspace name/
+					// --template — a re-run of `pad workspace init <name>
+					// --template <t>` afterwards short-circuits on the
+					// link pad init just created (init.go's name-driven
+					// path) with no signal that <name>/<t> were ignored.
+					// `pad auth setup` bootstraps the admin account only,
+					// no workspace side effects, so re-running the
+					// original command afterwards does what the caller
+					// asked for.
+					return fmt.Errorf(
+						"this Pad instance has not been initialized yet.\n" +
+							"Run 'pad auth setup --email you@example.com --name \"Your Name\" --password <pass>' " +
+							"for non-interactive bootstrap, then re-run this 'pad workspace init' command.")
+				}
 				// Fresh local instance: drive the full first-run setup
 				// (create the first admin + authorize this CLI) inline so
 				// `pad init` is a genuine one-shot rather than bouncing the
@@ -546,6 +570,27 @@ a workspace in one step.`,
 				fmt.Println()
 				client = cli.NewClientFromURL(cfg.BaseURL())
 			} else if !session.Authenticated {
+				// BUG-2538: same fast-fail gate for the plain "not logged
+				// in" case — a non-interactive caller can't complete the
+				// browser handoff doBrowserLogin waits on.
+				if !canPromptForConfig() {
+					// Unlike the SetupRequired branch above, `pad init
+					// --email/--name/--password` is NOT a working
+					// alternative here: those headless flags only bootstrap
+					// the first admin account (init.go:144-165) and this
+					// instance is already set up — `pad init` would just
+					// fall through to its own ungated re-auth step (Step 4,
+					// tracked separately as BUG-2592). `pad auth login
+					// --interactive` IS usable non-interactively though:
+					// doInteractiveLogin (cmd_auth.go:554+) reads
+					// email/password off a plain bufio.Reader with no TTY
+					// gate, so piping credentials to it works (BUG-1886
+					// made the shared reader piped-bytes-safe).
+					return fmt.Errorf(
+						"not authenticated. Run 'pad auth login' in an interactive terminal, " +
+							"or pipe credentials to 'pad auth login --interactive' for scripted use; " +
+							"then re-run 'pad workspace init'.")
+				}
 				fmt.Println("Log in to continue.")
 				fmt.Println()
 				if err := doBrowserLogin(client, cfg); err != nil {
@@ -694,7 +739,16 @@ func offerSkillInstall() {
 		return
 	}
 
-	if !cli.IsTerminal() {
+	// BUG-2577: gate on canPromptForConfig() (stdin AND stdout are
+	// terminals) rather than cli.IsTerminal() (stdin only) — a
+	// pty-backed harness can make stdin look like a char device with
+	// nobody actually able to answer, which left the "(Y/n): " prompt
+	// text printed even though the choice auto-defaults. This doesn't
+	// fully close the gap: a caller with BOTH stdin and stdout attached
+	// to a pty but nothing driving it still reads as promptable and
+	// will see the question text. That case can't be distinguished from
+	// a real interactive terminal by any check available here.
+	if !canPromptForConfig() {
 		// Non-interactive: silently install for all detected tools
 		fmt.Println()
 		for _, tool := range detected {
