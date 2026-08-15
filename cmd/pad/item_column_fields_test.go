@@ -495,3 +495,97 @@ func TestItemCreate_HasNoClearFlags(t *testing.T) {
 		}
 	}
 }
+
+// ── BUG-2078: --clear-parent, the discoverable way to detach a parent ──────
+//
+// The server has honoured a present-but-empty "parent" key in fields_patch
+// as "clear the link" since BUG-2013 (extractParentLink). `--parent ""` was
+// always a silent no-op — `if parentRef != "" {...}` at the top of this
+// block drops it before it ever becomes a patch key — and there was no other
+// route to a clear from the CLI. `--clear-parent` is the discoverable name
+// for that store behaviour, same shape as `--clear-assigned-user` /
+// `--clear-agent-role` (IDEA-2584), except the clear signal lands in
+// `fields_patch["parent"]` rather than a top-level column, because "parent"
+// itself is a fields_patch pseudo-key, not a real ItemUpdate column.
+
+func TestItemUpdate_ClearParentFlag(t *testing.T) {
+	body := captureUpdateBody(t, "TASK-9", "--clear-parent")
+
+	fp := fieldsPatchOf(t, body)
+	if fp == nil {
+		t.Fatal("fields_patch must be present for a clear_parent-only update — it's the only carrier for the clear signal")
+	}
+	got, present := fp["parent"]
+	if !present {
+		t.Fatal("fields_patch must carry a PRESENT \"parent\" key — an absent key never reaches parentProvided server-side")
+	}
+	if got != "" {
+		t.Fatalf("fields_patch.parent = %v, want the empty string (clear)", got)
+	}
+}
+
+func TestItemUpdate_ClearParentAbsentWhenNotPassed(t *testing.T) {
+	// Mirrors TestItemUpdate_ClearFlagsAbsentWhenNotPassed for the sibling
+	// flag: an ordinary update must carry no "parent" key at all, present or
+	// empty — an untouched key, not a clear.
+	body := captureUpdateBody(t, "TASK-9", "--status", "done")
+
+	if fp := fieldsPatchOf(t, body); fp != nil {
+		if _, present := fp["parent"]; present {
+			t.Fatalf("parent must be absent from fields_patch when --clear-parent wasn't passed; fields_patch = %v", fp)
+		}
+	}
+}
+
+func TestItemUpdate_ClearParentConflictsWithParentFlag(t *testing.T) {
+	patched := false
+	setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPatch:
+			patched = true
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "item-1", "slug": "unassign-me"})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "item-1", "slug": "unassign-me", "collection_slug": "tasks",
+				"collection_prefix": "TASK", "item_number": 9, "fields": `{"status":"open"}`,
+				"schema": `{"fields":[{"key":"status","type":"select"}]}`,
+			})
+		}
+	}))
+
+	cmd := updateCmd()
+	cmd.SetArgs([]string{"TASK-9", "--parent", "PLAN-1", "--clear-parent"})
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	err := cmd.Execute()
+
+	if err == nil {
+		t.Fatal("--parent + --clear-parent must be refused, not silently resolved")
+	}
+	if !strings.Contains(err.Error(), "conflicts with") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The outcome, not just the message: the conflict is caught before the
+	// --parent ref is even resolved, so no PATCH (and no parent-lookup GET)
+	// may reach the server.
+	if patched {
+		t.Fatal("no PATCH may be issued for a rejected conflict")
+	}
+}
+
+// TestItemCreate_HasNoClearParentFlag mirrors TestItemCreate_HasNoClearFlags
+// for the same asymmetry: an item has no parent unless one is given at
+// create, so a create-time clear would be a no-op teaching a wrong
+// affordance.
+func TestItemCreate_HasNoClearParentFlag(t *testing.T) {
+	create := createCmd()
+	if f := create.Flags().Lookup("clear-parent"); f != nil {
+		t.Fatal("`item create` must NOT have --clear-parent: clearing at create is a no-op by construction")
+	}
+	update := updateCmd()
+	if f := update.Flags().Lookup("clear-parent"); f == nil {
+		t.Fatal("`item update` should have --clear-parent")
+	}
+}
