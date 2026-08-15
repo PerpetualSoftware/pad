@@ -622,4 +622,118 @@ describe('PushToAgentDialog — session targeting (PLAN-2558 S5, TASK-2588)', ()
 		const [msg] = toastMock.mock.calls[0] ?? [];
 		expect(String(msg)).toMatch(/isn’t confirmed|is not confirmed/);
 	});
+
+	it('a refresh that removes the selected session drops the picker back to broadcast — the next send carries no target_session_id', async () => {
+		vi.useFakeTimers();
+		sessionsListMock.mockResolvedValue(sessions(2));
+		render(PushToAgentDialog, { props: baseProps() });
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker');
+		await fireEvent.change(picker, { target: { value: 'session-id-0' } });
+		expect(targetPicker()?.value).toBe('session-id-0');
+
+		// The next poll's list no longer has session-id-0 — the OTHER
+		// session is still there, so this is a picker-visible refresh, not
+		// a drop to zero (which is already covered by presence-honesty's
+		// "session drops mid-compose" test).
+		sessionsListMock.mockResolvedValue({
+			count: 1,
+			sessions: [
+				{
+					id: 'session-id-1',
+					label: 'docapp-1',
+					pid: 1001,
+					connected_at: new Date(Date.now() - 60_000).toISOString()
+				}
+			]
+		});
+		await vi.advanceTimersByTimeAsync(10_000);
+		flushSync();
+
+		// A <select> whose selected <option> vanished falls back to
+		// DISPLAYING the remaining default while the bound value can stay
+		// stale — this asserts the bound value itself, not just the
+		// rendered option list.
+		expect(targetPicker()?.value).toBe('');
+
+		await fireEvent.click(button('Push'));
+		await tick();
+
+		// The pre-S5 3-argument shape — no target_session_id at all, not
+		// even the now-dead 'session-id-0'.
+		expect(pushMock).toHaveBeenCalledWith(
+			'docapp',
+			'fix-the-thing',
+			'Take a look at TASK-5 — Fix the thing'
+		);
+	});
+
+	it('a refresh that keeps the selected session live does not clobber the selection', async () => {
+		vi.useFakeTimers();
+		sessionsListMock.mockResolvedValue(sessions(2));
+		render(PushToAgentDialog, { props: baseProps() });
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker');
+		await fireEvent.change(picker, { target: { value: 'session-id-0' } });
+
+		// Same two sessions again — session-id-0 is still present.
+		sessionsListMock.mockResolvedValue(sessions(2));
+		await vi.advanceTimersByTimeAsync(10_000);
+		flushSync();
+
+		expect(targetPicker()?.value).toBe('session-id-0');
+
+		await fireEvent.click(button('Push'));
+		await tick();
+
+		expect(pushMock).toHaveBeenCalledWith(
+			'docapp',
+			'fix-the-thing',
+			'Take a look at TASK-5 — Fix the thing',
+			'session-id-0'
+		);
+	});
+
+	it('a targeted send whose response omits delivered_sessions entirely (mixed-version server) shows an info toast and closes — never the miss-flow', async () => {
+		sessionsListMock.mockResolvedValue(sessions(2));
+		// A pre-S5 server's response shape: no delivered_sessions key at
+		// all, not even 0. A server that doesn't know about targeting
+		// still unconditionally publishes every push it accepts (the
+		// pre-S5 contract), so this is NOT the same as a same-version 0.
+		pushMock.mockResolvedValueOnce({
+			ref: 'TASK-5',
+			workspace: 'docapp',
+			pushed: true,
+			message: 'ok'
+		});
+		const onclose = vi.fn();
+		await mountSettled({ onclose });
+
+		const picker = targetPicker();
+		if (!picker) throw new Error('expected a target picker');
+		await fireEvent.change(picker, { target: { value: 'session-id-0' } });
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		expect(toastMock).toHaveBeenCalledWith(
+			'server didn’t confirm targeting — sent as broadcast',
+			'info'
+		);
+		// Never the miss-toast — an absent field is UNKNOWN, not a
+		// confirmed 0, and must never be treated as one.
+		expect(toastMock).not.toHaveBeenCalledWith(
+			'that session is gone — refresh the list',
+			expect.anything()
+		);
+		// Dismissed like a normal success, not re-armed like a miss —
+		// "no auto-resend enablement" (dispatcher round 2).
+		expect(onclose).toHaveBeenCalled();
+	});
 });

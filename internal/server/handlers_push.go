@@ -33,8 +33,16 @@ type pushRequest struct {
 type pushResponse struct {
 	Ref       string `json:"ref"`
 	Workspace string `json:"workspace"`
-	Pushed    bool   `json:"pushed"`
-	Message   string `json:"message"`
+	// Pushed means "accepted and processed", not "delivered" — it is
+	// true even when a TARGETED push's publish was skipped because the
+	// id matched no live session (dispatcher ruling, TASK-2588 round 2:
+	// broadcast-with-no-listeners has always returned exactly this shape
+	// — true, with nothing to receive it — and a targeted miss is not
+	// given a different contract just because DeliveredSessions can now
+	// say more about it). DeliveredSessions is the delivery signal; do
+	// not read Pushed as one.
+	Pushed  bool   `json:"pushed"`
+	Message string `json:"message"`
 	// DeliveredSessions counts how many of the caller's own live sessions
 	// (S1 presence registry, `target_session_id`-filtered if one was
 	// given) matched — PLAN-2558 S5, TASK-2588. This is a PREDICTION read

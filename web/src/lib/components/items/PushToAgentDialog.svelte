@@ -240,6 +240,29 @@ server tells you not to run would cost honesty in the case that actually ships.
 			presenceState !== 'checking'
 	);
 
+	/**
+	 * Keep `selectedSessionId` valid whenever `sessions` changes. Called
+	 * right after every `sessions = ...` reassignment that ISN'T already
+	 * paired with an explicit reset of the selection (TASK-2588 round 2,
+	 * codex).
+	 *
+	 * A `<select>` whose bound value names an `<option>` that no longer
+	 * exists typically falls back to DISPLAYING the first remaining
+	 * option (here, "All connected sessions") while the underlying bound
+	 * value stays the stale id — so the user visually sees "broadcast"
+	 * selected while the wire would still carry the dead target_session_id
+	 * on send. Reconciling here (not via a $effect that reads
+	 * `selectedSessionId`, which would read the same state it writes —
+	 * CONVE-1688) closes that at every point `sessions` can change: a
+	 * live poll dropping the selected session, and the staleness-expiry
+	 * path below that clears `sessions` directly.
+	 */
+	function reconcileSelectedSession() {
+		if (selectedSessionId && !sessions.some((s) => s.id === selectedSessionId)) {
+			selectedSessionId = '';
+		}
+	}
+
 	async function refreshPresence(gen: number): Promise<void> {
 		const seq = ++presenceSeq;
 		/**
@@ -263,6 +286,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 			presenceAppliedSeq = seq;
 			lastAnsweredAt = Date.now();
 			sessions = resp.sessions ?? [];
+			reconcileSelectedSession();
 			presenceState = 'known';
 			presenceReason = '';
 		} catch (err) {
@@ -272,6 +296,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 			// distinguishes the one case a self-hosted user can act on (the
 			// server has no presence registry) from a transient read failure.
 			sessions = [];
+			reconcileSelectedSession();
 			presenceState = 'unknown';
 			presenceReason =
 				err instanceof PadApiError && err.code === 'unavailable'
@@ -313,6 +338,7 @@ server tells you not to run would cost honesty in the case that actually ships.
 			// more authority than "can't tell", so we say that instead.
 			if (presenceState === 'known' && Date.now() - lastAnsweredAt > PRESENCE_MAX_AGE_MS) {
 				sessions = [];
+				reconcileSelectedSession();
 				presenceState = 'unknown';
 				presenceReason = 'The last check was a while ago and hasn’t refreshed.';
 				// Retire every request already in flight (codex round 3). Those
@@ -370,17 +396,39 @@ server tells you not to run would cost honesty in the case that actually ships.
 				? await api.items.push(wsSlug, itemSlug, collapsed, target)
 				: await api.items.push(wsSlug, itemSlug, collapsed);
 			sending = false;
+			if (target && result.delivered_sessions === undefined) {
+				// Mixed-version hazard (TASK-2588 round 2, codex). The server
+				// ships EMBEDDED in the binary (web/build is baked into the Go
+				// build), so a version skew between this tab's JS and the
+				// server it's talking to can only exist transiently — a stale
+				// tab surviving a server swap — never as a sustained topology.
+				// That's still worth a cheap check, not a capability-
+				// negotiation system: a response to a targeted send with no
+				// delivered_sessions AT ALL means the server that answered
+				// doesn't know about targeting (pre-S5, or a proxy that
+				// stripped the field) — server-side, that server unconditionally
+				// PUBLISHES every push it accepts (the pre-S5 contract), so this
+				// was NOT skipped the way a same-version miss is. Tell the user
+				// honestly rather than either silently treating it as delivered
+				// or, worse, running the miss-flow against a `0` that was never
+				// actually reported — this branch must run BEFORE the `=== 0`
+				// check below, and must never fall through to it.
+				toastStore.show('server didn’t confirm targeting — sent as broadcast', 'info');
+				if (!stillMine()) return;
+				handleDismiss();
+				return;
+			}
 			if (target && result.delivered_sessions === 0) {
-				// A targeted push that reached nobody: the notification WAS
-				// published (result.pushed is still true), but the addressed
-				// session vanished between the picker's last read and this
-				// click — the same ~30s staleness window every presence
-				// answer on this surface carries. Zero delivery means
-				// nothing to duplicate, so — unlike every other outcome here
-				// — it is safe to leave Push re-armed rather than closing:
-				// drop the stale selection back to broadcast and re-read
-				// presence so the picker reflects what is actually still
-				// connected, then let the user resend to a live target.
+				// A targeted push that reached nobody. As of TASK-2588 round 1
+				// the server SKIPS the publish entirely for this case (see
+				// pushResponse.DeliveredSessions' doc comment) — nothing was
+				// sent, so zero delivery is a guarantee, not a race, and
+				// nothing would be duplicated by resending. Unlike every other
+				// outcome here, it is therefore safe to leave Push re-armed
+				// rather than closing: drop the stale selection back to
+				// broadcast and re-read presence so the picker reflects what
+				// is actually still connected, then let the user resend to a
+				// live target.
 				toastStore.show('that session is gone — refresh the list', 'error');
 				if (!stillMine()) return;
 				selectedSessionId = '';
