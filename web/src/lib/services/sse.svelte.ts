@@ -177,6 +177,21 @@ function createSSEService() {
 	// connection lands, so any mutation between the resulting
 	// /items-changes snapshot and the new stream's first received
 	// event can be missed (Codex P1 round 4 of TASK-1359).
+	//
+	// BUG-2540 widened WHEN it is armed: originally only on leader
+	// promotion and the lock-failure fallback, which left the FIRST
+	// connect uncovered. A page reads its items and only then
+	// subscribes, so a mutation landing in that window reaches nobody
+	// — the SSE frame is never received (no subscription yet) and
+	// nothing reconciles the gap afterwards. The window is small
+	// (~30ms measured) but it is a silent, permanent divergence:
+	// the row stays stale until some unrelated event happens to
+	// trigger a sync. Arming on every EventSource open closes it,
+	// and costs one /items-changes delta per connect.
+	//
+	// This deliberately does NOT touch cursor-advance semantics —
+	// the delta is asked from whatever cursor syncService already
+	// holds. IDEA-2535 owns that question separately.
 	let pendingSyncOnConnect = false;
 
 	function openEventSource(workspaceSlug: string) {
@@ -275,46 +290,31 @@ function createSSEService() {
 	 * environments) skip the leader election and every tab opens
 	 * its own EventSource — N× traffic but correct.
 	 */
-	async function requestLeader(workspaceSlug: string) {
+	function requestLeader(workspaceSlug: string) {
 		if (!leaderElectionSupported()) {
 			// No leader election available. Fall back to per-tab SSE.
 			// BC was also skipped above, so this is the per-tab N×
 			// fallback path — correct, just less efficient.
+			//
+			// Armed for the same first-connect reason as the lock path
+			// below (BUG-2540): this tab read its items before getting
+			// here, and nothing else will reconcile the gap.
+			pendingSyncOnConnect = true;
 			openEventSource(workspaceSlug);
 			return;
 		}
-		// Distinguish "first leader" from "promoted follower" so we
-		// only fire sync_required on promotion — the freshly-opened
-		// EventSource has no Last-Event-ID and the server can't
-		// replay events emitted during the gap between the old
-		// leader's close and the new connection. Two signals:
+		// BUG-2540 removed the "first leader vs promoted follower"
+		// classification that used to live here (a `navigator.locks.query`
+		// probe plus a >100ms grant-delay heuristic, from TASK-1359 review
+		// rounds 2 and 3). It existed for exactly one purpose: to arm
+		// `pendingSyncOnConnect` only on promotion. Now that the flag is
+		// armed on every connect, nothing branches on it, and keeping the
+		// computation would mean paying for a `locks.query()` round-trip on
+		// every connect to produce a value no one reads.
 		//
-		//   1. `navigator.locks.query` before the request. If the
-		//      slot is already held by another tab, we're definitely
-		//      a future promotion. (Codex P1 round 2 of TASK-1359.)
-		//   2. Grant delay. If `query` raced with two tabs starting
-		//      simultaneously (both see "no holder"), one wins and
-		//      the other queues. The loser would mis-classify with
-		//      query alone — but the lock grant for the queued tab
-		//      is delayed by however long the winner held it. Any
-		//      callback that fires more than ~100ms after the
-		//      request is treated as a promotion. (Codex P1 round 3
-		//      of TASK-1359.) 100ms is a conservative cap on the
-		//      immediate grant case (uncontested lock acquisition
-		//      in a healthy browser is sub-millisecond).
-		let queryPromoted = false;
-		try {
-			const snapshot = await navigator.locks.query();
-			const held = (snapshot.held ?? []).some(
-				(l) => l.name === `pad-sse-leader-${workspaceSlug}`,
-			);
-			queryPromoted = held;
-		} catch {
-			/* swallow — query unsupported on some platforms */
-		}
-		const requestStart =
-			typeof performance !== 'undefined' ? performance.now() : Date.now();
-
+		// Note this is strictly MORE coverage, not a trade: every case the
+		// heuristic classified as "promoted" still arms, plus the first
+		// connect it was never able to classify at all.
 		navigator.locks
 			.request(
 				`pad-sse-leader-${workspaceSlug}`,
@@ -324,20 +324,14 @@ function createSSEService() {
 					// we acquire the lock. Bail before opening a stale
 					// connection.
 					if (currentWorkspace !== workspaceSlug) return;
-					const grantDelay =
-						(typeof performance !== 'undefined'
-							? performance.now()
-							: Date.now()) - requestStart;
-					const promoted = queryPromoted || grantDelay > 100;
 					isLeader = true;
-					if (promoted) {
-						// Schedule the sync to fire AFTER the SSE is
-						// connected — otherwise any mutation between
-						// the resulting /items-changes snapshot and
-						// the new stream's first received event would
-						// be missed (Codex P1 round 4).
-						pendingSyncOnConnect = true;
-					}
+					// Armed unconditionally — see `pendingSyncOnConnect`.
+					// Deliberately not narrowed to "only if this tab has
+					// already fetched something": the service has no view
+					// of what its consumers read, and guessing would
+					// reintroduce exactly the coverage hole this fixes.
+					// One delta request per connect is the right price.
+					pendingSyncOnConnect = true;
 					openEventSource(workspaceSlug);
 					// Hold the lock until release is signaled (by
 					// disconnect() or a workspace switch). The promise
@@ -399,10 +393,12 @@ function createSSEService() {
 		// while passively receiving via bc. When the leader tab
 		// closes, the lock releases and our queued request fires —
 		// at which point we open our own EventSource.
-		// requestLeader is async (it queries the lock state first)
-		// but we don't await it — the .catch() handler covers any
-		// failures and connect() returns synchronously to the caller.
-		void requestLeader(workspaceSlug);
+		// requestLeader returns synchronously; the lock request it
+		// fires resolves later and its .catch() handler covers any
+		// failures. (It used to be async to await a lock-state query —
+		// removed in BUG-2540 along with the promotion heuristic that
+		// was its only consumer.)
+		requestLeader(workspaceSlug);
 	}
 
 	function disconnect() {
