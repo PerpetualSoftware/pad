@@ -1,0 +1,38 @@
+# Advisories govulncheck reports against the Nix-built pad binary that are
+# KNOWN and ACCEPTED. nix/vulnscan.sh (run by .github/workflows/nix.yml)
+# fails only on advisories NOT listed here, so a new exposure in the Nix
+# artifact breaks CI while the known backlog below stays visible instead of
+# blocking every PR. See BUG-2567.
+#
+# Lines starting with '#' and blank lines are ignored. One GO-XXXX-NNNN per
+# line; anything after whitespace on the line is treated as a comment.
+#
+# ── Go 1.26.5 stdlib (8) ─────────────────────────────────────────────────
+# nixpkgs nixos-26.05 ships go 1.26.5 and its Go builder pins
+# GOTOOLCHAIN=local, so the `toolchain go1.26.6` line in go.mod (BUG-2565)
+# is ignored there by design. These clear as a group when nixos-26.05
+# backports go 1.26.6 and the flake input is updated — vulnscan.sh emits a
+# warning when a listed advisory stops being reported; when these 8 go
+# quiet, delete them here, verify `go version -m result/bin/pad` reads
+# go1.26.6, and close BUG-2567.
+GO-2026-5026  net/http: Punycode label validation
+GO-2026-5942  x/net/dns/dnsmessage via stdlib: SVCB/HTTPS RR panic
+GO-2026-5972  encoding/asn1: recursion depth
+GO-2026-6088  encoding/xml: recursion depth
+GO-2026-6089  net/http: ReadHeaderTimeout on unencrypted HTTP/2 check
+GO-2026-6090  crypto/tls: post-handshake message limit
+GO-2026-6091  html/template: JS regexp context tracking
+GO-2026-6218  net/url: quadratic resolvePath
+#
+# ── Precision artifacts of the stripped binary (3) ───────────────────────
+# nix/package.nix builds with ldflags "-s -w", which strips the symbols
+# govulncheck needs to prune its call graph, so on this artifact it
+# treats every vulnerable symbol of an imported package as potentially
+# called and reports these three as affected. A symbol-precise scan of
+# the same source (unstripped build, 2026-08-15) shows all three
+# UNCALLED — import-only, not reachable. They do NOT clear with the Go
+# backport; they clear when the dependency is bumped past the advisory
+# or dropped.
+GO-2026-4985  otel OTLP exporter: oversized HTTP response bodies (uncalled)
+GO-2026-5932  x/crypto/openpgp: unmaintained (uncalled)
+GO-2026-6222  x/image VP8L decode: memory allocation (uncalled)
