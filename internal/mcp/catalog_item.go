@@ -164,6 +164,15 @@ var padItemSchemaParams = []ParamDef{
 	// from this schema, which is what these params fix.
 	{Name: "clear_assigned_user", Type: "bool", Description: "Unassign the item (clear assigned_user_id). THE canonical way to unassign. Optional for: update — update only, since an item is created unassigned unless `assign` is given. Cannot be combined with assigning a user in the same call (`assign`, or assigned_user_id via `field`): that contradiction is REFUSED, not silently resolved."},
 	{Name: "clear_agent_role", Type: "bool", Description: "Clear the item's agent role (agent_role_id). THE canonical way to remove a role. Optional for: update — update only, since an item is created with no role unless `role` is given. Cannot be combined with setting a role in the same call: that contradiction is REFUSED, not silently resolved."},
+	// BUG-2078: same shape as clear_assigned_user/clear_agent_role above, for
+	// the same reason — an empty `parent` is inert everywhere else this
+	// mapper treats empty strings as "not provided", so it can't double as a
+	// clear signal without becoming a silent trap for a client that pads
+	// unused params with "". The server has supported clearing since BUG-2013
+	// (extractParentLink treats a PRESENT-but-empty "parent" key in
+	// fields_patch as "detach"); this is the first client-visible way to
+	// reach it.
+	{Name: "clear_parent", Type: "bool", Description: "Detach the item from its parent (clear the parent link). THE canonical way to un-parent an item. Optional for: update — update only, an item has no parent unless `parent` is given at create. An empty `parent` does NOT clear (it reads as \"not provided\", like every other optional string here). Cannot be combined with setting a parent in the same call: that contradiction is REFUSED, not silently resolved."},
 
 	// ── Tagging ──
 	// `tags`: agents naturally pass a JSON array of strings (e.g.

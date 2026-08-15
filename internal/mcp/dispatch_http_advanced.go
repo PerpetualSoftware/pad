@@ -455,9 +455,31 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// shape mapItemCreate uses; matches the workaround the --role
 		// rejection points at.
 		liftFieldsToColumns(patch, payload)
+		// BUG-2078: clear_parent, checked here rather than alongside
+		// clear_assigned_user/clear_agent_role below. Those two are top-level
+		// ItemUpdate columns forwarded verbatim into `payload`; "parent" is a
+		// fields_patch PSEUDO-key that only extractParentLink
+		// (internal/server/handlers_items.go) understands — a present key
+		// with an empty value means "clear", an absent key means "untouched".
+		// So the clear signal has to be written into `patch`, and it must
+		// happen AFTER the named-flag loop, the --field overlay, AND
+		// liftFieldsToColumns above — every one of those can leave a
+		// competing `patch["parent"]` behind, same reasoning as the
+		// assigned-user conflict check below.
+		if clear, _ := input["clear_parent"].(bool); clear {
+			if v, _ := patch["parent"].(string); v != "" {
+				return validationFailedResult(cmdKey,
+					"clear_parent conflicts with setting a parent in the same update",
+					"Drop one: either clear the parent or set it, not both."), nil
+			}
+			patch["parent"] = ""
+		}
 		// Only emit fields_patch when it still carries schema fields after
 		// the column lift — otherwise a role-only update would send an empty
-		// patch object (harmless, but avoids a needless fields write).
+		// patch object (harmless, but avoids a needless fields write). A
+		// clear_parent-only update deliberately bypasses this: patch["parent"]
+		// = "" has len 1, so fields_patch is still emitted — that key IS the
+		// payload for a bare clear.
 		if len(patch) > 0 {
 			payload["fields_patch"] = patch
 		}
@@ -522,6 +544,12 @@ func hasFieldChanges(input map[string]any) bool {
 		case []string:
 			return len(x) > 0
 		}
+	}
+	// BUG-2078: clear_parent alone (no other field touched) must still enter
+	// the fields_patch-building branch below — it's the only way "parent" as
+	// a present-but-empty key reaches the payload.
+	if b, ok := input["clear_parent"].(bool); ok && b {
+		return true
 	}
 	return false
 }

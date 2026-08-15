@@ -103,7 +103,40 @@ const CmdhelpVersion = "0.1"
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
 //
-//   - "0.18" — current. IDEA-2584: `clear_assigned_user` / `clear_agent_role`
+//   - "0.19" — current. BUG-2078: adds a `clear_parent` boolean to
+//     `pad_item`, the canonical and DISCOVERABLE way to detach an item from
+//     its parent. Additive param bump, same grounds as v0.18 — no existing
+//     tool, action, or param changed shape.
+//
+//     What this closes: the server has supported clearing a parent since
+//     BUG-2013 (extractParentLink treats a PRESENT-but-empty "parent" key in
+//     fields_patch as "detach"), but neither client surface could reach it.
+//     `pad item update --parent ""` was a silent no-op (the CLI's
+//     `if parentRef != ""` guard drops it before it ever becomes a key), and
+//     the MCP `parent` param — a plain string — has the same ambiguity every
+//     other schema-declared string on this tool has: empty reads as "not
+//     provided", so `parent: ""` cannot be given a destructive meaning
+//     without becoming a trap for a client that pads unused params with "".
+//
+//     Same two reasons as `clear_assigned_user` / `clear_agent_role` (v0.18)
+//     for using a boolean rather than overloading the empty string:
+//     1. Keeps the "empty declared string = not provided" invariant intact
+//     for every other param on this tool.
+//     2. Only a boolean reaches LOCAL STDIO — BuildCLIArgs emits the CLI's
+//     real flags, so a catalog param with no flag behind it is dropped
+//     before dispatch. `clear_parent` maps to a new `--clear-parent`
+//     bareword flag on `pad item update`, exactly as `clear_assigned_user`
+//     maps to `--clear-assigned-user`.
+//
+//     UPDATE ONLY, same asymmetry as v0.18 and for the same reason: an item
+//     has no parent unless one is given at create, so a create-time clear
+//     would be a no-op teaching a wrong affordance.
+//
+//     A simultaneous set-and-clear (`parent` + `clear_parent`, including via
+//     `field: ["parent=..."]`) is REFUSED on both transports, not silently
+//     resolved — mirrors the v0.18 conflict checks.
+//
+//   - "0.18" — historical. IDEA-2584: `clear_assigned_user` / `clear_agent_role`
 //     booleans on `pad_item`, the canonical and DISCOVERABLE way to unassign.
 //     Additive param bump, v0.5 / v0.6 precedent — no existing tool, action or
 //     param changed shape, and v0.16/v0.17's empty-string forms keep working
@@ -396,7 +429,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.18"
+const ToolSurfaceVersion = "0.19"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

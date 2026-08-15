@@ -949,6 +949,7 @@ func updateCmd() *cobra.Command {
 		expectedUpdatedAt string
 		clearAssignedUser bool
 		clearAgentRole    bool
+		clearParent       bool
 	)
 
 	cmd := &cobra.Command{
@@ -1026,7 +1027,18 @@ Examples:
 			// writer's change on the last write.
 			parentRef := parentFlag
 
-			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0
+			// --clear-parent conflicts with --parent, checked up front so the
+			// error fires before any GetItem/GetCollection network calls
+			// below (mirrors the --clear-assigned-user / --clear-agent-role
+			// checks, which are placed after resolution instead because
+			// those flags have no direct-value counterpart to race with here
+			// — --parent's value is known immediately, no resolution needed
+			// to detect the conflict).
+			if clearParent && parentRef != "" {
+				return fmt.Errorf("--clear-parent conflicts with setting a parent in the same update; drop one")
+			}
+
+			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0 || clearParent
 			if hasFieldChanges {
 				patch := make(map[string]interface{})
 
@@ -1042,6 +1054,16 @@ Examples:
 						return fmt.Errorf("parent %q not found: %w", parentRef, err)
 					}
 					patch["parent"] = parentItem.ID
+				}
+				if clearParent {
+					// Present-but-empty is the server's clear signal
+					// (extractParentLink in internal/server/handlers_items.go):
+					// parentProvided becomes true whenever the "parent" key
+					// exists in fields_patch, and an empty value clears the
+					// link rather than setting it. An absent key (the old
+					// `--parent ""` no-op below this block used to produce)
+					// never reaches parentProvided at all.
+					patch["parent"] = ""
 				}
 				if category != "" {
 					patch["category"] = category
@@ -1198,7 +1220,7 @@ Examples:
 	cmd.Flags().StringVar(&priority, "priority", "", "update priority field")
 	cmd.Flags().StringVar(&assignee, "assign", "", "assign to user (name or email)")
 	cmd.Flags().StringVar(&roleFlag, "role", "", "assign agent role (slug)")
-	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID)")
+	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID); an empty --parent \"\" is silently ignored, it does NOT clear — use --clear-parent")
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value")
@@ -1216,6 +1238,7 @@ Examples:
 	// new decision with its own grounds, not the completion of this one.
 	cmd.Flags().BoolVar(&clearAssignedUser, "clear-assigned-user", false, "unassign the item (clear assigned_user_id)")
 	cmd.Flags().BoolVar(&clearAgentRole, "clear-agent-role", false, "clear the item's agent role (agent_role_id)")
+	cmd.Flags().BoolVar(&clearParent, "clear-parent", false, "detach the item from its parent (clear the parent link); conflicts with --parent")
 
 	return cmd
 }
