@@ -2,6 +2,6 @@
   {
     "name": "pad-events",
     "command": "while ! pad watch --help >/dev/null 2>&1; do sleep 3600; done; exec pad watch --stream --for-session",
-    "description": "Pad item events: explicit subscriptions (pad watch <ref>), items addressed to you (assignment, push — see pad push <ref> -m; ask-events are reserved in the wire contract but not yet emitted). Silent when the pad CLI isn't installed, no .pad.toml is present, or padd is unreachable."
+    "description": "Pad item events: explicit subscriptions (pad watch <ref> — includes assignment changes on watched items) and pushes addressed to you (pad push <ref> -m, or the web item view's push composer, which can target one of your sessions or broadcast to all of them; ask-events are reserved in the wire contract but not yet emitted). Silent when the pad CLI isn't installed, no .pad.toml is present, or padd is unreachable."
   }
 ]

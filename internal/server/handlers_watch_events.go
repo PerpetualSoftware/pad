@@ -459,13 +459,11 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 	// is unchanged and re-introducing an opt-in later needs no producer
 	// work.
 	//
-	// KNOWN STALE, deliberately: plugin/monitors/monitors.json and
-	// plugin/skills/pad/SKILL.md still describe assignment as
-	// addressed-to-you traffic. Fixing them here would ship nothing —
-	// installed plugins are version-pinned at install (live-proven
-	// day-33), so plugin-visible text only reaches users with a version
-	// bump. TASK-2564 owns both the wording and the bump; this task is
-	// server-side only.
+	// The plugin-visible text (plugin/monitors/monitors.json and
+	// plugin/skills/pad/SKILL.md) described assignment as addressed-to-you
+	// traffic until PLAN-2558 S6 (TASK-2591) reworded it and bumped the
+	// plugin version — installed plugins are version-pinned at install
+	// (live-proven day-33), so the bump is what made the fix reach users.
 
 	// Push (IDEA-2544 Phase 1) is semantically DIFFERENT from assignment,
 	// not just a same-shaped variant, and that difference is why this
