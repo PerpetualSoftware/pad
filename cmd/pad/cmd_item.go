@@ -1115,13 +1115,6 @@ Examples:
 
 			// --clear-assigned-user / --clear-agent-role (IDEA-2584).
 			//
-			// Set AFTER --assign / --role so an explicit clear wins if both
-			// are given. That order is the opposite of the --field lift's
-			// (which yields to the dedicated flags), and deliberately so:
-			// `--assign wren --clear-assigned-user` is a contradiction the
-			// user typed, and the destructive-but-explicit reading is the
-			// safer one to honour — it cannot silently assign someone.
-			//
 			// These reach `ClearAssignedUser` / `ClearAgentRole`, which the
 			// store has honoured since BUG-2566 on the same branch as the
 			// empty-string form. Nothing new server-side; this is the
@@ -1129,10 +1122,31 @@ Examples:
 			// the MCP catalog (a bareword bool becomes a bareword flag
 			// through BuildCLIArgs, so stdio agents get it too — a bare
 			// `assigned_user_id: ""` param cannot reach stdio at all).
+			//
+			// A SIMULTANEOUS SET-AND-CLEAR IS REJECTED, not silently
+			// resolved (codex round 1). The store's branch order is
+			// `if AssignedUserID != "" { set } else if ClearAssignedUser {
+			// clear }` — so sending both makes the clear a silent no-op and
+			// the assignment win. An earlier draft of this code claimed the
+			// opposite in a comment and "tested" it by asserting the flag
+			// was SET rather than that the item ended up unassigned; the
+			// test passed and the behaviour was backwards.
+			//
+			// Checked HERE, after --assign / --role resolution and after the
+			// --field lift, so it catches every route to a competing value:
+			// `--assign wren`, `--field assigned_user_id=<uuid>`, or a
+			// direct ID. A cobra MarkFlagsMutuallyExclusive would only
+			// catch the first.
 			if clearAssignedUser {
+				if input.AssignedUserID != nil && *input.AssignedUserID != "" {
+					return fmt.Errorf("--clear-assigned-user conflicts with assigning a user in the same update; drop one")
+				}
 				input.ClearAssignedUser = true
 			}
 			if clearAgentRole {
+				if input.AgentRoleID != nil && *input.AgentRoleID != "" {
+					return fmt.Errorf("--clear-agent-role conflicts with setting a role in the same update; drop one")
+				}
 				input.ClearAgentRole = true
 			}
 

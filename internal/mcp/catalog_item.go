@@ -162,8 +162,8 @@ var padItemSchemaParams = []ParamDef{
 	// The empty-string `assigned_user_id: ""` form still works over the
 	// remote transport and is not deprecated — it's just not discoverable
 	// from this schema, which is what these params fix.
-	{Name: "clear_assigned_user", Type: "bool", Description: "Unassign the item (clear assigned_user_id). THE canonical way to unassign. Optional for: update — update only, since an item is created unassigned unless `assign` is given."},
-	{Name: "clear_agent_role", Type: "bool", Description: "Clear the item's agent role (agent_role_id). THE canonical way to remove a role. Optional for: update — update only, since an item is created with no role unless `role` is given."},
+	{Name: "clear_assigned_user", Type: "bool", Description: "Unassign the item (clear assigned_user_id). THE canonical way to unassign. Optional for: update — update only, since an item is created unassigned unless `assign` is given. Cannot be combined with assigning a user in the same call (`assign`, or assigned_user_id via `field`): that contradiction is REFUSED, not silently resolved."},
+	{Name: "clear_agent_role", Type: "bool", Description: "Clear the item's agent role (agent_role_id). THE canonical way to remove a role. Optional for: update — update only, since an item is created with no role unless `role` is given. Cannot be combined with setting a role in the same call: that contradiction is REFUSED, not silently resolved."},
 
 	// ── Tagging ──
 	// `tags`: agents naturally pass a JSON array of strings (e.g.

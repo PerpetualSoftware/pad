@@ -137,6 +137,12 @@ const CmdhelpVersion = "0.1"
 //     someone adds them. An item is created unassigned unless `assign` is
 //     given.
 //
+//     A simultaneous set-and-clear is REFUSED on both transports rather than
+//     silently resolved: the store's branch order sets before it clears, so
+//     sending both would make the clear a no-op and the assignment win. The
+//     check runs AFTER --field lifting, since that is a second route to a
+//     competing value.
+//
 //     Server-side this is WIRING, not new semantics:
 //     models.ItemUpdate.ClearAssignedUser / ClearAgentRole already existed and
 //     the store has honoured them since BUG-2566, on the same branch as the

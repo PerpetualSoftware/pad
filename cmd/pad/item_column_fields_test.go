@@ -402,45 +402,75 @@ func TestItemUpdate_ClearFlagsAbsentWhenNotPassed(t *testing.T) {
 	}
 }
 
-// TestItemUpdate_ExplicitClearBeatsAssign pins the precedence recorded at the
-// call site, which is the OPPOSITE of the --field lift's. `--assign wren
-// --clear-assigned-user` is a contradiction the user typed; honouring the
-// explicit clear is the reading that cannot silently assign somebody.
-func TestItemUpdate_ExplicitClearBeatsAssign(t *testing.T) {
-	var body map[string]any
-	setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPatch:
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id": "item-1", "slug": "unassign-me", "collection_slug": "tasks",
-			})
-		case strings.HasSuffix(r.URL.Path, "/members"):
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"members": []map[string]any{
-					{"user_id": "user-from-assign", "user_name": "Wren", "user_email": "wren@example.com"},
-				},
-			})
-		default:
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id": "item-1", "slug": "unassign-me", "collection_slug": "tasks",
-				"collection_prefix": "TASK", "item_number": 9, "fields": `{"status":"open"}`,
-				"schema": `{"fields":[{"key":"status","type":"select"}]}`,
-			})
-		}
-	}))
-
-	cmd := updateCmd()
-	cmd.SetArgs([]string{"TASK-9", "--assign", "Wren", "--clear-assigned-user"})
-	cmd.SilenceUsage = true
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute update: %v", err)
+// TestItemUpdate_ClearConflictsAreRejected covers codex round 1's finding —
+// and the fact that an earlier draft of this test was VACUOUS is the reason it
+// is written this way now.
+//
+// That draft asserted `body["clear_assigned_user"] == true` and called it
+// "explicit clear beats assign". The flag WAS set; the behaviour was the
+// opposite of the claim, because the store's branch order is
+// `if AssignedUserID != "" { set } else if ClearAssignedUser { clear }` — so
+// sending both silently assigns and the clear evaporates. Asserting that a
+// field is present says nothing about which one wins.
+//
+// Both routes to a competing value are covered, because they resolve at
+// DIFFERENT points in the command: --assign goes through member lookup, while
+// --field goes through the column lift. A check placed between them catches
+// only one (which is exactly what the first version of the dispatcher fix
+// did).
+func TestItemUpdate_ClearConflictsAreRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"assign + clear", []string{"TASK-9", "--assign", "Wren", "--clear-assigned-user"}},
+		{"field id + clear", []string{"TASK-9", "--field", "assigned_user_id=user-42", "--clear-assigned-user"}},
+		{"role + clear", []string{"TASK-9", "--field", "agent_role_id=role-7", "--clear-agent-role"}},
 	}
-	if body["clear_assigned_user"] != true {
-		t.Fatalf("an explicit clear must win over --assign; body = %v", body)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			patched := false
+			setupPushTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodPatch:
+					patched = true
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": "item-1", "slug": "unassign-me"})
+				case strings.HasSuffix(r.URL.Path, "/members"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"members": []map[string]any{
+							{"user_id": "user-from-assign", "user_name": "Wren", "user_email": "wren@example.com"},
+						},
+					})
+				default:
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"id": "item-1", "slug": "unassign-me", "collection_slug": "tasks",
+						"collection_prefix": "TASK", "item_number": 9, "fields": `{"status":"open"}`,
+						"schema": `{"fields":[{"key":"status","type":"select"}]}`,
+					})
+				}
+			}))
+
+			cmd := updateCmd()
+			cmd.SetArgs(tc.args)
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+			err := cmd.Execute()
+
+			if err == nil {
+				t.Fatal("a simultaneous set-and-clear must be refused, not silently resolved")
+			}
+			if !strings.Contains(err.Error(), "conflicts with") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			// The outcome, not just the message: nothing may reach the server.
+			if patched {
+				t.Fatal("no PATCH may be issued for a rejected conflict")
+			}
+		})
 	}
 }
 
