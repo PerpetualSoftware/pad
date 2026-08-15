@@ -535,6 +535,19 @@ a workspace in one step.`,
 					printSetupRequiredHint(cfg)
 					return fmt.Errorf("this Pad instance has not been initialized yet")
 				}
+				// BUG-2538: mirror init.go's canPromptForConfig() gate
+				// (init.go:205-206) before driving the browser-based
+				// first-run setup — without it, a non-interactive caller
+				// (script, CI, headless agent) blocks on a wait nobody can
+				// complete instead of failing fast with an actionable hint.
+				if !canPromptForConfig() {
+					printSetupRequiredHint(cfg)
+					return fmt.Errorf(
+						"this Pad instance has not been initialized yet.\n" +
+							"Run 'pad init --email you@example.com --name \"Your Name\" --password <pass>' " +
+							"for non-interactive bootstrap (creates the admin account and the workspace),\n" +
+							"or run 'pad auth setup' in an interactive terminal, then re-run 'pad workspace init'.")
+				}
 				// Fresh local instance: drive the full first-run setup
 				// (create the first admin + authorize this CLI) inline so
 				// `pad init` is a genuine one-shot rather than bouncing the
@@ -546,6 +559,15 @@ a workspace in one step.`,
 				fmt.Println()
 				client = cli.NewClientFromURL(cfg.BaseURL())
 			} else if !session.Authenticated {
+				// BUG-2538: same fast-fail gate for the plain "not logged
+				// in" case — a non-interactive caller can't complete the
+				// browser handoff doBrowserLogin waits on.
+				if !canPromptForConfig() {
+					return fmt.Errorf(
+						"not authenticated. Run 'pad auth login' in an interactive terminal, " +
+							"or 'pad init --email you@example.com --name \"Your Name\" --password <pass>' " +
+							"for non-interactive bootstrap, then re-run 'pad workspace init'.")
+				}
 				fmt.Println("Log in to continue.")
 				fmt.Println()
 				if err := doBrowserLogin(client, cfg); err != nil {
@@ -694,7 +716,16 @@ func offerSkillInstall() {
 		return
 	}
 
-	if !cli.IsTerminal() {
+	// BUG-2577: gate on canPromptForConfig() (stdin AND stdout are
+	// terminals) rather than cli.IsTerminal() (stdin only) — a
+	// pty-backed harness can make stdin look like a char device with
+	// nobody actually able to answer, which left the "(Y/n): " prompt
+	// text printed even though the choice auto-defaults. This doesn't
+	// fully close the gap: a caller with BOTH stdin and stdout attached
+	// to a pty but nothing driving it still reads as promptable and
+	// will see the question text. That case can't be distinguished from
+	// a real interactive terminal by any check available here.
+	if !canPromptForConfig() {
 		// Non-interactive: silently install for all detected tools
 		fmt.Println()
 		for _, tool := range detected {
