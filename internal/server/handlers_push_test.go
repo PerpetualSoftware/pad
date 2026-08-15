@@ -263,6 +263,14 @@ func TestPushToItem_TargetedVanishedSessionMisses(t *testing.T) {
 	ch := connectWatchStream(ctx, t, ts.URL, tok.Token)
 	waitForWatchEvent(t, ch, 3*time.Second) // connected
 
+	// Bus growth, not just "this OTHER session didn't get it" (dispatcher
+	// review round 1, codex): a targeted miss must skip the publish
+	// entirely, not merely fail to match anyone downstream — see
+	// pushResponse.DeliveredSessions' doc comment on why. This is the
+	// seam that fails if the pre-publish snapshot-and-skip ever gets
+	// reordered back to publish-then-count.
+	before := len(srv.watchEvents.EventsSince(0))
+
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
 		map[string]interface{}{"message": "nobody home", "target_session_id": "sess-does-not-exist"})
 	if rr.Code != http.StatusOK {
@@ -276,7 +284,10 @@ func TestPushToItem_TargetedVanishedSessionMisses(t *testing.T) {
 		t.Fatalf("expected delivered_sessions=0 for a vanished target, got %d", resp.DeliveredSessions)
 	}
 	if !resp.Pushed {
-		t.Fatal("expected pushed=true — the notification was still published, it just matched nobody")
+		t.Fatal("expected pushed=true — a targeted miss is still a successfully PROCESSED push (matching broadcast's existing no-listeners semantics), even though nothing was published to the bus")
+	}
+	if after := len(srv.watchEvents.EventsSince(0)); after != before {
+		t.Fatalf("expected a targeted miss to skip the publish entirely (guaranteed no-op), but the bus grew from %d to %d entries", before, after)
 	}
 
 	assertNoWatchEventForRef(t, ch, item.Ref, 300*time.Millisecond)
@@ -323,6 +334,11 @@ func TestPushToItem_TargetedSessionOfAnotherUserTreatedAsVanished(t *testing.T) 
 	}
 	bSessionID := bSessions.Sessions[0].ID
 
+	// See TestPushToItem_TargetedVanishedSessionMisses: a cross-user id
+	// must skip the publish exactly like a genuinely vanished one — the
+	// bus must not grow, not merely fail to reach B downstream.
+	before := len(srv.watchEvents.EventsSince(0))
+
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tokA.Token,
 		map[string]interface{}{"message": "should reach nobody", "target_session_id": bSessionID})
 	if rr.Code != http.StatusOK {
@@ -335,9 +351,60 @@ func TestPushToItem_TargetedSessionOfAnotherUserTreatedAsVanished(t *testing.T) 
 	if resp.DeliveredSessions != 0 {
 		t.Fatalf("expected delivered_sessions=0 for another user's session id — a cross-user id must be indistinguishable from a vanished one, got %d", resp.DeliveredSessions)
 	}
+	if after := len(srv.watchEvents.EventsSince(0)); after != before {
+		t.Fatalf("expected a cross-user target to skip the publish entirely, but the bus grew from %d to %d entries", before, after)
+	}
 
 	assertNoWatchEventForRef(t, chA, item.Ref, 300*time.Millisecond)
 	assertNoWatchEventForRef(t, chB, item.Ref, 300*time.Millisecond)
+}
+
+// TestPushToItem_TargetSessionIDOverLengthRejected covers the 400-over-cap
+// guard (dispatcher review round 1, codex): target_session_id is opaque
+// and unvalidated by format, but not unbounded — decodeJSON allows request
+// bodies up to 2 MiB, so without a length cap an authenticated caller
+// could park arbitrarily large garbage strings in the bus's replay
+// buffer on every push. The bus must not grow, matching the "reject
+// before publish" posture the length check shares with the message cap.
+func TestPushToItem_TargetSessionIDOverLengthRejected(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+
+	before := len(srv.watchEvents.EventsSince(0))
+	overLong := strings.Repeat("a", maxPushTargetSessionIDLen+1)
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "triage this", "target_session_id": overLong})
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an over-cap target_session_id, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	if after := len(srv.watchEvents.EventsSince(0)); after != before {
+		t.Fatalf("expected an over-cap target_session_id to be rejected before publish, but the bus grew from %d to %d entries", before, after)
+	}
+}
+
+// TestPushToItem_TargetSessionIDAtCapAccepted is the at-boundary
+// counterpart: a target_session_id exactly at the cap must NOT be
+// rejected (it is still a miss — nothing that long is a real registry
+// id — but the length check itself must not be off-by-one).
+func TestPushToItem_TargetSessionIDAtCapAccepted(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+
+	atCap := strings.Repeat("a", maxPushTargetSessionIDLen)
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "triage this", "target_session_id": atCap})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for a target_session_id exactly at the cap, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp pushResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.DeliveredSessions != 0 {
+		t.Fatalf("expected delivered_sessions=0 — an at-cap id still names no live session, got %d", resp.DeliveredSessions)
+	}
 }
 
 // TestPushToItem_BroadcastDeliveredSessionsCountsLiveSessions covers the
