@@ -300,6 +300,24 @@ type Server struct {
 	// so it was intentionally left as a plain field rather than changed
 	// too).
 	watchPredicatesLoadFault atomic.Pointer[func() error]
+
+	// watchRevalTickOverride is a TEST SEAM (always nil in production,
+	// BUG-2570). When non-nil, GET /api/v1/events/stream selects reval
+	// ticks from this channel instead of the interval ticker, letting a
+	// test drive each revalidation tick explicitly. That is the only way
+	// to pin assertions to a SPECIFIC tick: with a free-running ticker,
+	// no test ordering can guarantee that an unwanted extra tick doesn't
+	// fire between two test steps — an extra SUCCESSFUL tick resets the
+	// visibility cache and reloads the watch list, masking exactly the
+	// reset-skipped-on-fault regression the reval-fault test guards, and
+	// enough extra FAULTING ticks clear the watch set (both observed as
+	// codex-round findings on BUG-2570's first fix attempt).
+	//
+	// Same atomic.Pointer rationale as watchPredicatesLoadFault above:
+	// read by the stream's background goroutine (once, at stream setup)
+	// while tests may write it. Tests must set it BEFORE connecting the
+	// stream they want to drive — a write after setup is not observed.
+	watchRevalTickOverride atomic.Pointer[chan time.Time]
 }
 
 // goAsync spawns fn in a goroutine that's tracked by s.bg, so Stop() can

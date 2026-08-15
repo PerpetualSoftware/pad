@@ -238,34 +238,41 @@ func TestWatchEventsStream_StopsDeliveringAfterUserDisabled(t *testing.T) {
 // keeps the disabled-user path covered end to end, and
 // TestWatchVisCache_DeniesAfterUserDisabled covers refreshUser directly.
 func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.T) {
-	// Deliberately NOT t.Parallel() — mutates watchListRevalInterval,
-	// same rationale as TestWatchEventsStream_StopsDeliveringAfterUserDisabled above.
+	// Not t.Parallel(), matching its siblings — though unlike them this
+	// test no longer touches the global watchListRevalInterval at all.
 	srv := testServerWithWatchEvents(t)
 	slug := createWSWithCollections(t, srv)
 
-	// This test used to run at 200ms to keep wall-clock margin between
-	// "one faulting tick has reset visCache" (what the test needs) and
-	// "three faulting ticks clear the watch set" (which would silence the
-	// control leg for the wrong reason) — but margin is a bet on scheduler
-	// latency, and CI lost it twice under load (BUG-2570). The fault
-	// closure below now sequences those two mechanisms explicitly, so the
-	// GREEN path is timing-independent at any interval.
+	// BUG-2570: reval ticks are driven EXPLICITLY through the
+	// watchRevalTickOverride seam, never by a wall-clock ticker. Both
+	// prior shapes of this test bet a timing margin against a
+	// free-running ticker and each lost a different way:
 	//
-	// The interval still matters for one thing: REGRESSION DETECTION
-	// sharpness (codex round 1 on this fix). After tick 2 lifts the
-	// fault, tick 3 reloads successfully — and a successful reload both
-	// resets visCache and replaces the watch set with an access-filtered
-	// one, either of which would silence the revoked item even under the
-	// regression this test guards against (reset skipped on FAULTING
-	// ticks). So the revoked-item PATCH below must be published before
-	// tick 3 for a hypothetical regression to be caught. 500ms gives
-	// that single localhost request ~10x headroom over the ~50ms/request
-	// worst case measured on loaded CI runners. Losing that race can
-	// only mask a not-yet-written bug in one CI run — it cannot fail a
-	// green build, which is the direction BUG-2570 actually hurt.
-	origInterval := watchListRevalInterval
-	watchListRevalInterval = 500 * time.Millisecond
-	t.Cleanup(func() { watchListRevalInterval = origInterval })
+	//   - The original (install fault + narrow access + sleep 300ms at a
+	//     200ms interval) lost the GREEN direction on loaded CI runners:
+	//     the third consecutive faulting tick cleared the watch set
+	//     before the control event landed, so the control leg timed out.
+	//     (BUG-2570's two CI instances.)
+	//   - The first fix (fault closure lifts the fault after two ticks)
+	//     was green-deterministic but lost DETECTION: codex rounds found
+	//     that a stray successful tick — before the fault is installed,
+	//     or after it is lifted — resets visCache and reloads the watch
+	//     list, either of which silences the revoked item even under the
+	//     regression this test guards, masking it.
+	//
+	// With the seam, exactly ONE reval tick ever fires, exactly where the
+	// test says: after the access change, with the reload fault active.
+	// No tick can fire early (masking via a pre-fault reset), none can
+	// fire late (masking via a post-fault reload), and one faulting tick
+	// can never reach maxConsecutiveWatchReloadFailures (clearing the
+	// watch set the control leg depends on). Nothing here depends on
+	// scheduler latency in either direction.
+	//
+	// Installed BEFORE the stream connects — the handler reads the seam
+	// once at stream setup.
+	tickCh := make(chan time.Time)
+	srv.watchRevalTickOverride.Store(&tickCh)
+	t.Cleanup(func() { srv.watchRevalTickOverride.Store(nil) })
 
 	// A second collection, which the member KEEPS access to when
 	// "tasks" is revoked below — it hosts the control item.
@@ -353,60 +360,43 @@ func TestWatchEventsStream_RevalStillDeniesWhenWatchListReloadErrors(t *testing.
 	}
 	waitForWatchEvent(t, ch, 3*time.Second)
 
-	// Force every subsequent reval tick's watch-list reload to fail —
-	// via the atomic seam (TASK-2533 codex round 5 finding 2): this
-	// write happens AFTER the stream's background goroutine is already
-	// running and reading the seam on its own reval ticks, so a plain
-	// field here would race.
-	// The closure doubles as the test's clock (BUG-2570). Within one
-	// tick the handler runs visCache.reset() FIRST, then the reload —
-	// so the closure fires strictly after its own tick's reset, and the
-	// handler goroutine runs ticks sequentially. That gives an exact,
-	// load-independent sequence with no sleeps:
-	//
-	//   tick 1: reset (old access) → closure narrows the member's access.
-	//   tick 2: reset — guaranteed after the narrowing, on a tick whose
-	//           reload ALSO faults (the regression under test) → closure
-	//           lifts the fault and signals readiness.
-	//   tick 3+: reloads succeed, so consecutive failures stop at exactly
-	//           2 — strictly below maxConsecutiveWatchReloadFailures —
-	//           and the clear-the-watch-set path can never be the reason
-	//           the control leg goes silent.
-	//
-	// The old shape (install fault + narrow access, sleep 300ms) bet a
-	// fixed sleep against both "at least one tick fired" and "fewer than
-	// three fired before the control event lands"; loaded CI runners
-	// lost the second bet twice (BUG-2570's two instances, both timing
-	// out waiting for the control event after the set was cleared).
-	faultTicks := 0 // handler-goroutine only; published to the test by close(ready)
-	var narrowErr error
-	ready := make(chan struct{})
+	// Force the reval tick's watch-list reload to fail — via the atomic
+	// seam (TASK-2533 codex round 5 finding 2): this write happens AFTER
+	// the stream's background goroutine is already running, so a plain
+	// field here would race. The closure also signals each invocation,
+	// which is what lets the test WAIT for the tick to have been
+	// processed: within a tick the handler runs visCache.reset() FIRST,
+	// then the reload, so a signal means that tick's reset already ran.
+	faultTicked := make(chan struct{}, 4)
 	loadFault := func() error {
-		faultTicks++
-		switch faultTicks {
-		case 1:
-			// Narrow the connected member's access to everything except
-			// the collection holding the control item. Done here, inside
-			// tick 1, so tick 2's reset provably follows it.
-			narrowErr = srv.store.SetMemberCollectionAccess(ws.ID, member.ID, "specific", []string{grantedColl.ID})
-			if narrowErr != nil {
-				srv.watchPredicatesLoadFault.Store(nil)
-				close(ready)
-			}
-		case 2:
-			srv.watchPredicatesLoadFault.Store(nil)
-			close(ready)
-		}
+		faultTicked <- struct{}{}
 		return errFakeWatchListReload
 	}
 	srv.watchPredicatesLoadFault.Store(&loadFault)
-	select {
-	case <-ready:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timed out waiting for two faulting reval ticks")
+
+	// Narrow the connected member's access: everything except the
+	// collection holding the control item. Safe to do from the test
+	// goroutine with no tick-ordering caveats — no tick can fire until
+	// the test sends one.
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, member.ID, "specific", []string{grantedColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
 	}
-	if narrowErr != nil {
-		t.Fatalf("SetMemberCollectionAccess: %v", narrowErr)
+
+	// Drive exactly ONE reval tick — with the fault active and the access
+	// already narrowed — and wait for the handler to have processed it.
+	// One faulting tick keeps the watch set live (the clear bound needs
+	// maxConsecutiveWatchReloadFailures in a row), and no successful
+	// reload ever happens in this test, so the assertions below can only
+	// be satisfied by that tick's own unconditional visCache.reset().
+	select {
+	case tickCh <- time.Time{}:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out delivering the reval tick to the stream handler")
+	}
+	select {
+	case <-faultTicked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for the faulting reval tick to be processed")
 	}
 
 	// Must NOT deliver: the collection is no longer visible to the
