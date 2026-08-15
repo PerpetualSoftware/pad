@@ -563,10 +563,18 @@ a workspace in one step.`,
 				// in" case — a non-interactive caller can't complete the
 				// browser handoff doBrowserLogin waits on.
 				if !canPromptForConfig() {
+					// Unlike the SetupRequired branch above, `pad init
+					// --email/--name/--password` is NOT a working
+					// alternative here: those headless flags only bootstrap
+					// the first admin account (init.go:144-165) and this
+					// instance is already set up — `pad init` would just
+					// fall through to its own ungated re-auth step (Step 4,
+					// tracked separately as BUG-2592). Don't suggest a
+					// mechanism that doesn't exist yet.
 					return fmt.Errorf(
 						"not authenticated. Run 'pad auth login' in an interactive terminal, " +
-							"or 'pad init --email you@example.com --name \"Your Name\" --password <pass>' " +
-							"for non-interactive bootstrap, then re-run 'pad workspace init'.")
+							"then re-run 'pad workspace init'. There is no non-interactive login " +
+							"path for an already-initialized server yet (BUG-2592).")
 				}
 				fmt.Println("Log in to continue.")
 				fmt.Println()
