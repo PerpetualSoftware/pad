@@ -13,6 +13,15 @@ import (
 // pushRequest is the body of POST .../items/{itemSlug}/push.
 type pushRequest struct {
 	Message string `json:"message"`
+	// TargetSessionID optionally narrows delivery to one of the caller's
+	// OWN live sessions from the S1 presence registry (PLAN-2558 S5,
+	// TASK-2588; GET /api/v1/sessions is where a caller learns the id).
+	// Omitted (the pre-S5 shape) means broadcast to every one of the
+	// caller's connected sessions, unchanged. API + TS client + web
+	// picker only in this slice, per CONVE-1741 — no CLI flag, no MCP
+	// surface; internal/cli's PushResult mirror simply never sends or
+	// reads this field.
+	TargetSessionID string `json:"target_session_id,omitempty"`
 }
 
 // pushResponse is the body of a successful push (dispatcher review round
@@ -26,6 +35,17 @@ type pushResponse struct {
 	Workspace string `json:"workspace"`
 	Pushed    bool   `json:"pushed"`
 	Message   string `json:"message"`
+	// DeliveredSessions counts how many of the caller's own live sessions
+	// (S1 presence registry, `target_session_id`-filtered if one was
+	// given) matched at push time — PLAN-2558 S5, TASK-2588. This is a
+	// PREDICTION read from the registry, not a delivery receipt: it
+	// carries the exact same staleness window as GET /api/v1/sessions
+	// (session_presence.go's LiveSession doc comment — up to ~30s behind
+	// an ungracefully-dropped connection) and there is still no ack from
+	// the receiving side. A vanished or cross-user target_session_id is
+	// 0, the same as "nothing connected" — deliberately not a distinct
+	// error, so the CLI's pre-S5 behavior is unchanged by construction.
+	DeliveredSessions int `json:"delivered_sessions"`
 }
 
 // maxPushMessageLen bounds a push's instruction text, measured in runes
@@ -49,15 +69,20 @@ const maxPushMessageLen = 4096
 // notification (IDEA-2544 Phase 1) — the "push this to my agent" verb:
 // an explicit, user-authored instruction bound to an item, delivered to
 // every one of the pushing user's OWN connected monitor sessions via
-// GET /api/v1/events/stream. Unlike watch/assignment notifications,
-// this has no durable backing (Dave's product call: fire-and-forget is
-// acceptable for v1 — no inbox, no "no session connected" warning; the
-// bus's replay buffer is the only resilience a push gets).
+// GET /api/v1/events/stream, or to exactly one of them when the request
+// names a target_session_id (PLAN-2558 S5, TASK-2588). Unlike watch/
+// assignment notifications, this has no durable backing (Dave's product
+// call: fire-and-forget is acceptable for v1 — no inbox, no "no session
+// connected" warning; the bus's replay buffer is the only resilience a
+// push gets).
 //
 // Self-addressed only: pushing into someone else's session is a consent
 // question, not a code question (IDEA-2544 plan), so TargetUserID is
 // always set to the CALLER's own ID, never a request-supplied target —
-// there is no cross-user push in Phase 1.
+// there is no cross-user push. TargetSessionID (S5) does not relax this:
+// it can only narrow delivery WITHIN the sessions ListForUser(userID)
+// already scopes to, never address a session outside it — see
+// deliveredSessionCount.
 //
 // POST /api/v1/workspaces/{slug}/items/{itemSlug}/push
 func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
@@ -129,23 +154,62 @@ func (s *Server) handlePushToItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, _ := actorFromRequest(r)
 	actorName := actorNameFromRequest(r)
+	// Trimmed, not otherwise validated: a session id is opaque to this
+	// handler (see deliveredSessionCount and Notification.TargetSessionID)
+	// — an id that names no live session of userID's just matches nothing,
+	// there is no format to enforce.
+	targetSessionID := strings.TrimSpace(input.TargetSessionID)
 
 	s.watchEvents.Publish(watchevents.Notification{
-		WorkspaceID:  workspaceID,
-		ItemID:       item.ID,
-		CollectionID: item.CollectionID,
-		ItemRef:      item.Ref,
-		Kind:         watchevents.KindPush,
-		Actor:        actor,
-		ActorName:    actorName,
-		Summary:      message,
-		TargetUserID: userID,
+		WorkspaceID:     workspaceID,
+		ItemID:          item.ID,
+		CollectionID:    item.CollectionID,
+		ItemRef:         item.Ref,
+		Kind:            watchevents.KindPush,
+		Actor:           actor,
+		ActorName:       actorName,
+		Summary:         message,
+		TargetUserID:    userID,
+		TargetSessionID: targetSessionID,
 	})
 
 	writeJSON(w, http.StatusOK, pushResponse{
-		Ref:       item.Ref,
-		Workspace: ws.Slug,
-		Pushed:    true,
-		Message:   message,
+		Ref:               item.Ref,
+		Workspace:         ws.Slug,
+		Pushed:            true,
+		Message:           message,
+		DeliveredSessions: deliveredSessionCount(s.sessionPresence, userID, targetSessionID),
 	})
+}
+
+// deliveredSessionCount answers "how many of userID's own live sessions
+// will this push's delivery predicate match?" (PLAN-2558 S5, TASK-2588).
+// It reads the SAME self-scoped list session_presence.go's
+// SessionPresence.ListForUser already restricts every other consumer to
+// (handlers_sessions.go's GET /api/v1/sessions is the other one) — that
+// scoping is what makes a targetSessionID belonging to a DIFFERENT user
+// structurally indistinguishable from a vanished one: it is simply never
+// in userID's own list, so it falls out to 0 without any cross-user
+// lookup or special-casing here.
+//
+// A nil presence (no registry wired) answers 0 rather than guessing —
+// consistent with handleListSessions' own refusal to report an empty
+// list as "nobody connected" when it genuinely cannot tell; here there
+// is no error channel to say "can't tell" through (pushResponse.Pushed
+// is still true — the notification really was published), so 0 is the
+// closest honest answer available.
+func deliveredSessionCount(presence SessionPresence, userID, targetSessionID string) int {
+	if presence == nil {
+		return 0
+	}
+	sessions := presence.ListForUser(userID)
+	if targetSessionID == "" {
+		return len(sessions)
+	}
+	for _, sess := range sessions {
+		if sess.ID == targetSessionID {
+			return 1
+		}
+	}
+	return 0
 }
