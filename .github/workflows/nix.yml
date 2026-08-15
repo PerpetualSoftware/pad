@@ -36,3 +36,29 @@ jobs:
         run: |
           ./result/bin/pad --version
           ./result/bin/pad --help
+
+      # The Go toolchain here exists only to install govulncheck for the
+      # scan step below — the pad binary under test was built by Nix above.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+
+      - name: Scan Nix-built binary with govulncheck
+        # CI's main govulncheck job scans a `go build` binary, which honours
+        # go.mod's `toolchain go1.26.6` line — but nixpkgs pins
+        # GOTOOLCHAIN=local, so the Nix artifact is built with whatever Go
+        # patch the nixos-26.05 channel ships and can carry stdlib advisories
+        # the main gate can no longer see (BUG-2567). This scans the artifact
+        # that actually ships via Nix, against nix/accepted-advisories.txt:
+        # known-accepted advisories stay green and visible, any NEW advisory
+        # fails the job, and a warning fires when an accepted advisory clears
+        # (the signal to prune the list and eventually close BUG-2567).
+        #
+        # govulncheck pinned to the same release as ci.yml — bump the two
+        # together. GOTOOLCHAIN=auto on the install mirrors ci.yml's
+        # rationale: setup-go exports GOTOOLCHAIN=local, and if govulncheck's
+        # own go.mod ever requires a patch newer than setup-go's resolved
+        # one, `auto` lets Go fetch it instead of failing the install.
+        run: |
+          GOTOOLCHAIN=auto go install golang.org/x/vuln/cmd/govulncheck@v1.2.0
+          GOVULNCHECK="$(go env GOPATH)/bin/govulncheck" nix/vulnscan.sh result/bin/pad
