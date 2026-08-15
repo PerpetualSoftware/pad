@@ -109,6 +109,18 @@ server tells you not to run would cost honesty in the case that actually ships.
 	const PRESENCE_STALL_MS = 5_000;
 
 	/**
+	 * How stale a 'known' answer may get before it degrades to 'can't tell'.
+	 *
+	 * 30s is not arbitrary: it is the server's own worst-case presence
+	 * staleness (watchEventsKeepaliveInterval — an ungraceful disconnect is
+	 * invisible until the next keepalive write fails). Past that, an
+	 * un-refreshed count is no more informative than no count, so continuing to
+	 * render it as fact would be the same overclaim in slow motion. Three poll
+	 * intervals must fail in a row to reach it.
+	 */
+	const PRESENCE_MAX_AGE_MS = 30_000;
+
+	/**
 	 * What we know about who is listening.
 	 *  - 'checking': first read of this opening is in flight, no answer yet.
 	 *  - 'known':    a 200 answered; `count` is authoritative (modulo the ~30s
@@ -151,6 +163,25 @@ server tells you not to run would cost honesty in the case that actually ships.
 	let presenceGen = 0;
 	let presenceSeq = 0;
 	let presenceAppliedSeq = 0;
+	/** Wall-clock of the last SUCCESSFUL presence read, for the staleness
+	 *  expiry in the poll below. */
+	let lastAnsweredAt = 0;
+
+	/**
+	 * True once this component instance has been torn down.
+	 *
+	 * `presenceGen` cannot cover this case, and assuming it could was the bug
+	 * (codex round 2): the parent remounts this dialog under `{#key itemSlug}`,
+	 * so item B gets a NEW instance with its OWN counters. A's in-flight send
+	 * therefore still sees `gen === presenceGen` — A's own, untouched — and
+	 * calls the SHARED parent `onclose`, closing the composer the user just
+	 * opened for B. A per-instance liveness flag is the thing that actually
+	 * distinguishes "still mine to close" from "I no longer exist".
+	 */
+	let destroyed = false;
+	$effect(() => () => {
+		destroyed = true;
+	});
 
 	const sessionCount = $derived(sessions.length);
 	const collapsed = $derived(collapsePushMessage(message));
@@ -187,13 +218,26 @@ server tells you not to run would cost honesty in the case that actually ships.
 
 	async function refreshPresence(gen: number): Promise<void> {
 		const seq = ++presenceSeq;
-		/** Apply only if this opening is still current AND no newer response
-		 *  has already landed. */
+		/**
+		 * Apply only if this opening is still current AND no newer response has
+		 * already landed.
+		 *
+		 * Deliberately "latest ARRIVED", not "latest ISSUED" (codex round 2).
+		 * If request 1 stalls and request 2 is issued, a late-but-first arrival
+		 * from request 1 IS applied — because the alternative, dropping it
+		 * because a newer request exists, leaves the UI holding older data when
+		 * that newer request is the one that never settles. Any answer beats no
+		 * answer; what must never happen is an OLDER answer overwriting a newer
+		 * one, and that is what the `>` fence prevents. `presenceAppliedSeq`
+		 * resets to 0 per opening, which is safe because `gen` already rejects
+		 * responses from a previous one.
+		 */
 		const stillCurrent = () => gen === presenceGen && seq > presenceAppliedSeq;
 		try {
 			const resp = await api.sessions.list();
 			if (!stillCurrent()) return;
 			presenceAppliedSeq = seq;
+			lastAnsweredAt = Date.now();
 			sessions = resp.sessions ?? [];
 			presenceState = 'known';
 			presenceReason = '';
@@ -235,7 +279,20 @@ server tells you not to run would cost honesty in the case that actually ships.
 		});
 
 		void refreshPresence(gen);
-		const timer = setInterval(() => void refreshPresence(gen), PRESENCE_POLL_MS);
+		const timer = setInterval(() => {
+			// Expire a 'known' answer that has stopped being refreshed (codex
+			// round 2). The stall timeout below only rescues the FIRST read; a
+			// later poll that hangs would otherwise freeze the count at its last
+			// value forever, leaving Push armed against a session list nobody has
+			// confirmed in minutes. Past PRESENCE_MAX_AGE_MS our answer carries no
+			// more authority than "can't tell", so we say that instead.
+			if (presenceState === 'known' && Date.now() - lastAnsweredAt > PRESENCE_MAX_AGE_MS) {
+				sessions = [];
+				presenceState = 'unknown';
+				presenceReason = 'The last check was a while ago and hasn’t refreshed.';
+			}
+			void refreshPresence(gen);
+		}, PRESENCE_POLL_MS);
 		// Nothing bounds how long `/sessions` may take, and 'checking' disables
 		// Push — so a request that never settles would strand the composer with
 		// a dead button and no explanation. After this long, stop waiting and
@@ -259,12 +316,40 @@ server tells you not to run would cost honesty in the case that actually ships.
 		onclose();
 	}
 
+	/**
+	 * Error codes handlePushToItem (and the middleware in front of it) can
+	 * return WITHOUT having published — the request provably never reached the
+	 * bus, so a corrected resend cannot duplicate anything.
+	 *
+	 * A whitelist, not `err instanceof PadApiError`, and the difference is
+	 * load-bearing (codex round 2): the API client turns ANY JSON error
+	 * envelope into a PadApiError, including one a proxy or gateway invented
+	 * AFTER the handler had already published. Treating "structured" as
+	 * "definitely not published" would re-arm Push on exactly that case. So the
+	 * rule is inverted — enumerate what we know is safe, and treat every
+	 * unrecognised failure as ambiguous. The cost of the wrong answer is
+	 * asymmetric: an unnecessary "we can't tell" makes the user check, while a
+	 * wrong re-arm delivers the instruction twice.
+	 */
+	const PRE_PUBLISH_ERROR_CODES = new Set([
+		'bad_request', // empty / whitespace-only / over-length / undecodable body
+		'unauthorized', // no resolved user
+		'not_found', // item or workspace doesn't resolve
+		'forbidden',
+		'permission_denied', // workspace-access middleware
+		'unavailable', // the bus isn't wired — nothing to publish TO
+		'rate_limited', // the client's own 429 shape; the handler never ran
+		'plan_limit_exceeded'
+	]);
+
 	async function handleSend() {
 		if (!canSend) return;
-		// Fence the continuation against the parent switching items mid-flight:
-		// the dialog is {#key itemSlug}-remounted, so a late `onclose()` from
-		// item A's send would close the composer the user just opened for B.
+		// Fence the continuation two ways. `gen` catches a close-and-reopen
+		// within THIS instance; `destroyed` catches the parent remounting the
+		// dialog for a different item, where a new instance has its own `gen`
+		// and only liveness distinguishes A's stale continuation from B's.
 		const gen = presenceGen;
+		const stillMine = () => !destroyed && gen === presenceGen;
 		sending = true;
 		sendError = '';
 		try {
@@ -272,31 +357,29 @@ server tells you not to run would cost honesty in the case that actually ships.
 			// endpoint carries no idempotency key.
 			await api.items.push(wsSlug, itemSlug, collapsed);
 			sending = false;
-			// The toast fires regardless of a switch — the push really happened,
-			// and suppressing the confirmation would be the dishonest half.
-			// Honest past tense: the notification was PUBLISHED. Whether an agent
-			// read it is not something the server can tell us.
+			// The toast fires even if this instance is gone — the push really
+			// happened, and suppressing the confirmation would be the dishonest
+			// half. Honest past tense: the notification was PUBLISHED. Whether an
+			// agent read it is not something the server can tell us.
 			toastStore.show(`Pushed to ${itemRef} — delivery isn’t confirmed`, 'success');
-			if (gen !== presenceGen) return;
+			if (!stillMine()) return;
 			handleDismiss();
 		} catch (err) {
 			sending = false;
-			if (gen !== presenceGen) return;
-			// Ambiguity rule, drawn where CopyItemDialog draws it: a STRUCTURED
-			// error means the server responded and therefore refused before
-			// publishing (`bad_request` on empty/over-length, `not_found`,
-			// `forbidden`, `unavailable` when the bus is unwired) — safe to fix
-			// and send again. An UNSTRUCTURED failure (rejected fetch, non-JSON
-			// 502, timeout) means the request went out and we never learned its
-			// fate; the handler publishes BEFORE it writes the response, so the
-			// message may well have been delivered. Re-arming Push there offers
-			// the user a duplicate, so we don't.
-			if (err instanceof PadApiError) {
-				sendError = err.message;
+			if (!stillMine()) return;
+			// See PRE_PUBLISH_ERROR_CODES: a recognised pre-publish refusal is
+			// safe to correct and resend. Everything else — a rejected fetch, a
+			// non-JSON 502, a gateway envelope we don't recognise — means the
+			// request went out and we never learned its fate. The handler
+			// publishes BEFORE it writes the response, so the message may well
+			// have been delivered; re-arming Push would offer a duplicate.
+			const code = err instanceof PadApiError ? err.code : '';
+			if (code && PRE_PUBLISH_ERROR_CODES.has(code)) {
+				sendError = err instanceof Error ? err.message : 'Failed to push the message.';
 			} else {
 				outcomeUnknown = true;
 				sendError =
-					'The server didn’t answer, so we can’t tell whether this was sent. ' +
+					'The server didn’t give a clear answer, so we can’t tell whether this was sent. ' +
 					'Check your agent session before sending it again — pushing twice would deliver it twice.';
 			}
 		}
@@ -309,7 +392,9 @@ server tells you not to run would cost honesty in the case that actually ships.
 		try {
 			await navigator.clipboard.writeText(collapsed);
 			toastStore.show('Copied to clipboard', 'success');
-			if (gen !== presenceGen) return;
+			// Same two-part fence as handleSend — a late dismiss from a
+			// destroyed instance would close the NEXT item's composer.
+			if (destroyed || gen !== presenceGen) return;
 			handleDismiss();
 		} catch {
 			toastStore.show('Failed to copy to clipboard', 'error');
@@ -412,21 +497,20 @@ server tells you not to run would cost honesty in the case that actually ships.
 					collapse note, always present and always referenced by the
 					textarea's aria-describedby.
 
-					Two reasons it isn't two conditionally-rendered spans: an
-					`aria-describedby` pointing at an id that isn't in the
-					document resolves to nothing (so a note that appears only
-					when relevant is announced by nobody), and swapping the
-					referenced node in and out is what makes assistive tech miss
-					the change. `role="status"` announces politely as the text
-					swaps; the over-length case escalates to `alert` because it
-					is a blocking condition, not an aside.
+					Not two conditionally-rendered spans: an `aria-describedby`
+					pointing at an id that isn't in the document resolves to
+					nothing, so a note that only exists when relevant is
+					announced by nobody.
+
+					And a FIXED `role="status"`, not one that escalates to
+					`alert` when the message is too long — swapping the role on
+					a live region while also changing its text is not reliably
+					honoured across screen readers, so the escalation would be a
+					promise the markup can't keep. The blocking condition is
+					carried where it is unambiguous instead: `aria-invalid` on
+					the textarea plus a disabled Push.
 				-->
-				<span
-					id={noteId}
-					class:notice-inline={tooLong}
-					class:muted={!tooLong}
-					role={tooLong ? 'alert' : 'status'}
-				>
+				<span id={noteId} class:notice-inline={tooLong} class:muted={!tooLong} role="status">
 					{#if tooLong}
 						Too long — trim {messageLength - PUSH_MESSAGE_MAX_LEN} character{messageLength -
 							PUSH_MESSAGE_MAX_LEN ===

@@ -364,6 +364,81 @@ describe('PushToAgentDialog — message handling', () => {
 		expect(button('Push').disabled).toBe(false);
 	});
 
+	it('latches outcome-unknown on an UNRECOGNISED structured error, not just an unstructured one', async () => {
+		// A gateway/proxy that returns a JSON envelope becomes a PadApiError
+		// just like a handler refusal does — but it can be produced AFTER the
+		// handler published. Treating "structured" as "definitely not
+		// published" would re-arm Push on exactly this case, so the rule is a
+		// whitelist of known pre-publish codes and everything else is ambiguous.
+		pushMock.mockRejectedValue(
+			new PadApiError({ code: 'bad_gateway', message: 'upstream exploded' })
+		);
+		await mountSettled();
+
+		await fireEvent.click(button('Push'));
+		await tick();
+		await tick();
+
+		expect(button('Push').disabled).toBe(true);
+		expect(bodyText()).toContain('can’t tell whether this was sent');
+	});
+
+	it('does not close a NEW item’s composer when a destroyed instance’s send resolves', async () => {
+		// The dialog is {#key itemSlug}-remounted, so item B gets a fresh
+		// instance with its own generation counter — A's in-flight send would
+		// still see its own `gen` unchanged and call the SHARED parent onclose,
+		// closing B's composer. Only per-instance liveness distinguishes them.
+		let releasePush: (v: unknown) => void = () => {};
+		pushMock.mockImplementationOnce(() => new Promise((resolve) => (releasePush = resolve)));
+
+		const onclose = vi.fn();
+		const { unmount } = render(PushToAgentDialog, { props: baseProps({ onclose }) });
+		await tick();
+		await tick();
+		flushSync();
+
+		await fireEvent.click(button('Push'));
+		await tick();
+
+		// The parent switches items: this instance is destroyed.
+		unmount();
+		await tick();
+
+		// A's push now completes.
+		releasePush({ ref: 'TASK-5', workspace: 'docapp', pushed: true, message: 'ok' });
+		await tick();
+		await tick();
+
+		// The toast still fires — the push really happened — but the dead
+		// instance must not reach for the shared close callback.
+		expect(toastMock).toHaveBeenCalled();
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
+	it('expires a known count that stops refreshing rather than holding it as fact', async () => {
+		vi.useFakeTimers();
+		// First read succeeds; every later poll hangs forever.
+		sessionsListMock.mockResolvedValueOnce(sessions(1));
+		sessionsListMock.mockImplementation(() => new Promise(() => {}));
+
+		render(PushToAgentDialog, { props: baseProps() });
+		await vi.advanceTimersByTimeAsync(0);
+		flushSync();
+		expect(bodyText()).toContain('1 session connected');
+		expect(button('Push').disabled).toBe(false);
+
+		// Three poll intervals with no answer takes us past the server's own
+		// ~30s presence staleness bound. Past that, "1 session connected" is a
+		// claim nothing supports.
+		await vi.advanceTimersByTimeAsync(40_000);
+		flushSync();
+
+		expect(bodyText()).not.toContain('1 session connected');
+		expect(bodyText()).toContain('Can’t tell whether any agent session is connected');
+		// Still sendable — "can't tell" never blocks, only "known zero" does.
+		expect(button('Push').disabled).toBe(false);
+	});
+
 	it('surfaces a failed push in the dialog and does NOT retry it', async () => {
 		pushMock.mockRejectedValue(
 			new PadApiError({ code: 'bad_request', message: 'message must not be empty' })
