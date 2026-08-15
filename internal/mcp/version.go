@@ -126,8 +126,10 @@ const CmdhelpVersion = "0.1"
 //     justification.
 //
 //     Also not done: `clear_assigned_user` / `clear_agent_role` schema flags
-//     mirroring the HTTP body (option (b) on the task). Additive sugar; file
-//     separately if agent discoverability turns out to want it.
+//     mirroring the HTTP body (option (b) on the task) — deferred by the
+//     lead as additive sugar, then reopened by codex review and filed as
+//     IDEA-2584: the catalog exposes `assign` / `role`, NOT the ID params,
+//     so an agent reading the schema still cannot discover the clear.
 //
 //     TRANSPORT SCOPE, verified live rather than assumed. This fixes the
 //     REMOTE /mcp transport (HTTPHandlerDispatcher), which is where both
@@ -139,8 +141,11 @@ const CmdhelpVersion = "0.1"
 //     (observed: fields became {"assigned_user_id":"",...} while the
 //     column stayed set) instead of being lifted onto the column the way
 //     liftFieldsToColumns does for HTTP. That is a separate defect with a
-//     CLI-wide blast radius, tracked on its own item — do not read this
-//     entry as covering it.
+//     CLI-wide blast radius, tracked as BUG-2583 — do not read this
+//     entry as covering it. The schema-declared `assign` / `role`
+//     aliases also still no-op on both transports (IDEA-2584); see
+//     resolveAssignName for why an empty alias is deliberately NOT a
+//     clear.
 //
 //   - "0.15" — historical. TASK-2096: adds the `unparented` boolean parameter
 //     to `pad_item.list`, mutually exclusive with `parent`, and forwards it
