@@ -108,6 +108,15 @@ const CmdhelpVersion = "0.1"
 //     parameter shape changed — another BEHAVIOUR bump, same grounds as
 //     v0.16 and v0.9.
 //
+//     THE FORM MATTERS, and only one works everywhere:
+//     `field: ["assigned_user_id="]` clears on BOTH transports. The direct
+//     `assigned_user_id: ""` param clears on REMOTE ONLY — it is not
+//     declared in the pad_item schema, so it survives to the remote mapper
+//     by riding the verbatim input map, while BuildCLIArgs drops it on
+//     stdio (verified: the stdio call is a clean no-op, not a corrupting
+//     one). IDEA-2584 tracks declaring the params properly; until then the
+//     `field` form is the one to document.
+//
 //     v0.16 fixed the two filters in the remote dispatcher. Local stdio MCP
 //     goes nowhere near them: ExecDispatcher shells out to the `pad` CLI,
 //     and the CLI wrote `--field assigned_user_id=<uuid>` into the item's
