@@ -56,20 +56,45 @@ type liftedColumns struct {
 // column's name, and a "Updated TASK-9" success message for a write that did
 // nothing the user asked for (BUG-2583). The empty-string case was the same
 // defect wearing a worse hat: it was the only route an agent had to unassign.
-func liftColumnFields(fields map[string]interface{}) liftedColumns {
+//
+// SCHEMA-AWARE, and deliberately stricter than the MCP side it otherwise
+// mirrors (codex round 3). A collection may legally DECLARE a field called
+// `assigned_user_id` — nothing reserves the name — and for such a collection
+// `--field assigned_user_id=foo` means the declared field, not the column.
+// Lifting it there would silently redirect the write AND drop the value the
+// user actually set, so a declared key is never lifted.
+//
+// internal/mcp/dispatch_http.go::liftFieldsToColumns has the same collision
+// and cannot make the same check: it builds its fields map without fetching
+// the collection schema. The CLI already has the schema in hand at both call
+// sites, so it uses it. That is a divergence in the SAFE direction; closing it
+// on the MCP side needs a schema fetch it doesn't currently do (IDEA-2587).
+//
+// A schema-fetch failure degrades toward lifting (an empty schema declares
+// nothing), matching how the rest of --field handling degrades — values stay
+// strings and the server decides.
+func liftColumnFields(fields map[string]interface{}, schema models.CollectionSchema) liftedColumns {
+	declared := make(map[string]bool, len(schema.Fields))
+	for i := range schema.Fields {
+		declared[schema.Fields[i].Key] = true
+	}
+
 	var out liftedColumns
 	for _, key := range columnFieldKeys {
 		v, ok := fields[key]
 		if !ok {
 			continue
 		}
+		if declared[key] {
+			// The collection means this as a real field. Leave it alone.
+			continue
+		}
 		s, isString := v.(string)
 		if !isString {
-			// A collection that DECLARES a field with this name can yield a
-			// non-string here, because parseFieldFlag types by schema. Such a
-			// value cannot address a column, so leave it in the fields blob
-			// rather than dropping it — that is today's behaviour and the only
-			// lossless option for a genuinely schema-declared field.
+			// Belt and braces: parseFieldFlag only returns a non-string for a
+			// DECLARED field, which `declared` already caught. If that ever
+			// stops being true, a non-string still can't address a column — so
+			// leave it in the blob rather than dropping it.
 			continue
 		}
 		delete(fields, key)
@@ -215,7 +240,7 @@ Run with --help-collections to see available collections and their status values
 			// Pull column-named keys out of the blob before it's marshalled
 			// (BUG-2583). Applied to `input` below, after construction and
 			// BEFORE --assign / --role, so those dedicated flags win.
-			lifted := liftColumnFields(fields)
+			lifted := liftColumnFields(fields, collSchema)
 
 			fieldsJSON, _ := json.Marshal(fields)
 
@@ -1040,7 +1065,7 @@ Examples:
 				// Pull column-named keys out of the patch (BUG-2583) and apply
 				// them as column writes. Applied BEFORE --assign / --role below,
 				// so those dedicated flags win on conflict.
-				liftColumnFields(patch).apply(&input.AssignedUserID, &input.AgentRoleID)
+				liftColumnFields(patch, collSchema).apply(&input.AssignedUserID, &input.AgentRoleID)
 
 				// An empty patch never reaches the wire: ItemUpdate.FieldsPatch
 				// carries `omitempty`, so `--field assigned_user_id=` on its own

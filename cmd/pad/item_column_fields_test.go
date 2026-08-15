@@ -22,6 +22,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // captureUpdateBody runs `item update` against a fake server and returns the
@@ -168,7 +170,7 @@ func TestLiftColumnFields_LeavesNonStringsInTheBlob(t *testing.T) {
 		"assigned_user_id": 42.0,
 		"agent_role_id":    "role-7",
 	}
-	got := liftColumnFields(fields)
+	got := liftColumnFields(fields, models.CollectionSchema{})
 
 	if got.AssignedUserID != nil {
 		t.Fatalf("a non-string must not be lifted; got %q", *got.AssignedUserID)
@@ -196,7 +198,7 @@ func TestLiftColumnFields_TagsIsNotLiftable(t *testing.T) {
 	}
 
 	fields := map[string]interface{}{"tags": ""}
-	liftColumnFields(fields)
+	liftColumnFields(fields, models.CollectionSchema{})
 	if _, still := fields["tags"]; !still {
 		t.Fatal("`tags` must be left in the fields map, not lifted to a column")
 	}
@@ -311,5 +313,42 @@ func TestItemCreate_LiftsColumnFields(t *testing.T) {
 	}
 	if fields["status"] != "open" {
 		t.Fatalf("a real schema field must still reach the blob; fields = %v", fields)
+	}
+}
+
+// TestLiftColumnFields_DeclaredKeyIsNotLifted covers the collision codex
+// round 3 found: nothing reserves `assigned_user_id` as a field name, so a
+// collection may legally DECLARE one. For that collection `--field
+// assigned_user_id=foo` means the declared field — lifting it would both
+// redirect the write to the assignment column AND drop the value the user
+// actually set.
+//
+// This is where the CLI is deliberately STRICTER than the MCP dispatcher it
+// otherwise mirrors: liftFieldsToColumns builds its map without the schema
+// and can't make this check. Divergence in the safe direction.
+func TestLiftColumnFields_DeclaredKeyIsNotLifted(t *testing.T) {
+	schema := models.CollectionSchema{
+		Fields: []models.FieldDef{{Key: "assigned_user_id", Type: "text"}},
+	}
+	fields := map[string]interface{}{
+		"assigned_user_id": "a-declared-value",
+		"agent_role_id":    "role-7",
+	}
+
+	got := liftColumnFields(fields, schema)
+
+	if got.AssignedUserID != nil {
+		t.Fatalf("a DECLARED field must not be lifted to the column; got %q", *got.AssignedUserID)
+	}
+	if fields["assigned_user_id"] != "a-declared-value" {
+		t.Fatalf("the declared field's value must survive in the blob; fields = %v", fields)
+	}
+	// The sibling key is NOT declared, so it still lifts — the check is
+	// per-key, not "any collision disables the feature".
+	if got.AgentRoleID == nil || *got.AgentRoleID != "role-7" {
+		t.Fatalf("an undeclared sibling should still lift; got %v", got.AgentRoleID)
+	}
+	if _, still := fields["agent_role_id"]; still {
+		t.Fatal("the undeclared key should have been removed from the blob")
 	}
 }
