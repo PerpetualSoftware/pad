@@ -96,7 +96,10 @@ export type ClipboardReason =
 	| 'no-sessions'
 	/** Presence could not be read. See this module's header for why that goes
 	 *  to the clipboard here and not in the dialog. */
-	| 'presence-unknown';
+	| 'presence-unknown'
+	/** The user asked for the copy explicitly, by taking the offer on a
+	 *  push-failure toast. Nothing to explain — they chose it. */
+	| 'offered';
 
 export type PushRoute = { via: 'push' } | { via: 'clipboard'; because: ClipboardReason };
 
@@ -196,6 +199,7 @@ function copiedMessage(because: ClipboardReason): string {
 			return `Too long to push (over ${PUSH_MESSAGE_MAX_LEN} characters) — copied to clipboard instead`;
 		case 'not-addressable':
 		case 'empty':
+		case 'offered':
 			// Nothing surprising happened: these surfaces never push, so
 			// explaining an absence the user never expected would be noise.
 			return 'Copied to clipboard';

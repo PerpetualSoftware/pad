@@ -256,7 +256,18 @@
 			// Offered ONLY where a copy cannot duplicate anything — see the call
 			// sites. The click is also a fresh user gesture, which is what makes
 			// a clipboard write work this long after the original one.
-			copyOffer ? { label: 'Copy instead', onAction: () => void copyToClipboard(copyOffer) } : undefined
+			//
+			// The offer reports its own outcome (codex round 2). Taking it
+			// dismisses the toast that carried it, so discarding the result would
+			// leave a failed copy completely silent — and this is the one path
+			// where that silence means the instruction was neither sent NOR
+			// copied, which is the worst state the surface can be in.
+			copyOffer
+				? {
+						label: 'Copy instead',
+						onAction: () => void copyAndAnnounce(copyOffer, 'offered')
+					}
+				: undefined
 		);
 	}
 

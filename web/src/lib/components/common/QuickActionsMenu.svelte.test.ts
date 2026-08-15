@@ -417,6 +417,36 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 
 		action.onAction();
 		await vi.waitFor(() => expect(copyMock).toHaveBeenCalledWith('Ship TASK-14'));
+		// Taking the offer reports its own outcome, plainly — the user asked for
+		// the copy, so there is no absent push to explain.
+		await vi.waitFor(() => expect(toastShow).toHaveBeenCalledTimes(2));
+		expect(toastShow.mock.calls[1][0]).toBe('Copied to clipboard');
+
+		unmount(component);
+		host.remove();
+	});
+
+	it('does not swallow a failure in the offered copy', async () => {
+		// Taking the offer dismisses the toast that carried it, so a discarded
+		// result would leave a failed copy completely silent — and this is the
+		// one path where that silence means the instruction was neither sent NOR
+		// copied, the worst state the surface can be in.
+		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1' }], count: 1 });
+		pushMock.mockRejectedValue(
+			new MockPadApiError({ code: 'rate_limited', message: 'Too many requests' })
+		);
+		copyMock.mockResolvedValue(false);
+
+		const { host, component } = mountMenu();
+		await openMenu(host);
+		actionRow(host, 'Ship it').click();
+		await vi.waitFor(() => expect(toastShow).toHaveBeenCalled());
+
+		const action = toastShow.mock.calls[0][4];
+		action.onAction();
+		await vi.waitFor(() => expect(toastShow).toHaveBeenCalledTimes(2));
+		expect(toastShow.mock.calls[1][0]).toBe('Failed to copy to clipboard');
+		expect(toastShow.mock.calls[1][1]).toBe('error');
 
 		unmount(component);
 		host.remove();
