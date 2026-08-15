@@ -41,6 +41,28 @@ func (d *HTTPHandlerDispatcher) resolveAssignName(
 	}
 	assign, _ := rawAssign.(string)
 	if assign == "" {
+		// An EMPTY `assign` is deliberately still a no-op, and this is
+		// the one place in TASK-2571 where the fix stops short. Do not
+		// "finish the job" by mapping it to a clear without reading
+		// this first — codex round 1 proposed exactly that.
+		//
+		// `assign` is SCHEMA-DECLARED (catalog_item.go), unlike
+		// `assigned_user_id`, which an agent can only reach by knowing
+		// it exists. Every other schema-declared string on this mapper
+		// — title, content, comment, tags — follows one convention:
+		// empty means NOT PROVIDED. An MCP client that fills declared
+		// optional params with "" rather than omitting them is
+		// therefore harmless today; making `assign: ""` mean "clear"
+		// would turn that same client into one that silently unassigns
+		// every item it touches. Destructive, silent, and inconsistent
+		// with the four params beside it.
+		//
+		// The gap is real — an agent reading the schema will reach for
+		// `assign: ""` and get a lie — but the remedy is explicit
+		// `clear_assigned_user` / `clear_agent_role` params (option (b)
+		// on TASK-2571, deferred by the lead as additive sugar), not a
+		// destructive meaning bolted onto an optional string. Tracked
+		// separately; the MCP instructions name the ID form meanwhile.
 		return input, nil
 	}
 	// Already-resolved? If the caller used `--field assigned_user_id=<uuid>`
@@ -100,6 +122,8 @@ func (d *HTTPHandlerDispatcher) resolveRoleSlug(
 	}
 	role, _ := rawRole.(string)
 	if role == "" {
+		// Empty `role` stays a no-op for the same reason an empty
+		// `assign` does — see the long note in resolveAssignName.
 		return input, nil
 	}
 	out := cloneStringMap(input)

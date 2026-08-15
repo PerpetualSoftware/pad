@@ -228,3 +228,36 @@ func TestMCPUpdate_EmptyTagsStillFiltered(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestMCPUpdate_EmptyAssignAliasIsStillANoOp pins the deliberate LIMIT of
+// TASK-2571's fix, so the next reader (or the next reviewer) finds a
+// decision here rather than an oversight.
+//
+// `assign` is schema-declared; `assigned_user_id` is not. Every other
+// schema-declared string on this mapper — title, content, comment, tags —
+// treats empty as NOT PROVIDED, so a client that fills declared optional
+// params with "" is harmless today. Making `assign: ""` mean "clear" would
+// turn that same client into one that silently unassigns every item it
+// touches. The gap is real and the remedy is explicit clear_* params
+// (option (b), deferred), not a destructive meaning on an optional string.
+//
+// If a future change DOES make the alias clear, this test fails — which is
+// the point: it should be a decision, not a drive-by.
+func TestMCPUpdate_EmptyAssignAliasIsStillANoOp(t *testing.T) {
+	f := newClearFixture(t)
+
+	f.dispatch(t, []string{"item", "update"}, map[string]any{
+		"workspace": f.workspace.Slug,
+		"ref":       f.item.Slug,
+		"assign":    "",
+		"role":      "",
+	})
+
+	got := f.reload(t)
+	if got.AssignedUserID == nil || *got.AssignedUserID != f.owner.ID {
+		t.Fatalf("empty `assign` must not clear the assignment; got %v", got.AssignedUserID)
+	}
+	if got.AgentRoleID == nil || *got.AgentRoleID != f.role.ID {
+		t.Fatalf("empty `role` must not clear the role; got %v", got.AgentRoleID)
+	}
+}
