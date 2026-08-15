@@ -20,6 +20,107 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
+// columnFieldKeys is the set of `--field key=value` keys that name a
+// COLUMN on the item record rather than an entry in its fields JSON.
+//
+// Mirrors internal/mcp/dispatch_http.go's list of the same name, and must
+// stay in lockstep with it: that list is what the remote /mcp transport
+// lifts, this one is what the CLI (and therefore local stdio MCP, which
+// shells out to it) lifts. They diverged before BUG-2583 and the CLI half
+// was the broken one.
+//
+// INVARIANT, inherited from the MCP list: every key here must have defined
+// clear-to-NULL semantics for the empty string at the store, because an
+// empty value is forwarded verbatim rather than skipped. Both current
+// members do (BUG-2566). A key whose column would instead be CORRUPTED by
+// an empty write — `tags` is the canonical example, JSONB on Postgres —
+// does not belong in this list at all.
+var columnFieldKeys = []string{
+	"agent_role_id",
+	"assigned_user_id",
+}
+
+// liftedColumns carries the column writes liftColumnFields pulled out of a
+// --field map. A nil pointer means the caller didn't ask for that column;
+// a pointer to "" means they asked to CLEAR it.
+type liftedColumns struct {
+	AssignedUserID *string
+	AgentRoleID    *string
+}
+
+// liftColumnFields removes columnFieldKeys entries from `fields` and returns
+// them as column writes. Mutates `fields`.
+//
+// Without this, `--field assigned_user_id=<uuid>` wrote the pair into the
+// item's fields JSON while the column stayed stale — a key shadowing a real
+// column's name, and a "Updated TASK-9" success message for a write that did
+// nothing the user asked for (BUG-2583). The empty-string case was the same
+// defect wearing a worse hat: it was the only route an agent had to unassign.
+//
+// SCHEMA-AWARE, and deliberately stricter than the MCP side it otherwise
+// mirrors (codex round 3). A collection may legally DECLARE a field called
+// `assigned_user_id` — nothing reserves the name — and for such a collection
+// `--field assigned_user_id=foo` means the declared field, not the column.
+// Lifting it there would silently redirect the write AND drop the value the
+// user actually set, so a declared key is never lifted.
+//
+// internal/mcp/dispatch_http.go::liftFieldsToColumns has the same collision
+// and cannot make the same check: it builds its fields map without fetching
+// the collection schema. The CLI already has the schema in hand at both call
+// sites, so it uses it. That is a divergence in the SAFE direction; closing it
+// on the MCP side needs a schema fetch it doesn't currently do (IDEA-2587).
+//
+// A schema-fetch failure degrades toward lifting (an empty schema declares
+// nothing), matching how the rest of --field handling degrades — values stay
+// strings and the server decides.
+func liftColumnFields(fields map[string]interface{}, schema models.CollectionSchema) liftedColumns {
+	declared := make(map[string]bool, len(schema.Fields))
+	for i := range schema.Fields {
+		declared[schema.Fields[i].Key] = true
+	}
+
+	var out liftedColumns
+	for _, key := range columnFieldKeys {
+		v, ok := fields[key]
+		if !ok {
+			continue
+		}
+		if declared[key] {
+			// The collection means this as a real field. Leave it alone.
+			continue
+		}
+		s, isString := v.(string)
+		if !isString {
+			// Belt and braces: parseFieldFlag only returns a non-string for a
+			// DECLARED field, which `declared` already caught. If that ever
+			// stops being true, a non-string still can't address a column — so
+			// leave it in the blob rather than dropping it.
+			continue
+		}
+		delete(fields, key)
+		switch key {
+		case "assigned_user_id":
+			out.AssignedUserID = &s
+		case "agent_role_id":
+			out.AgentRoleID = &s
+		}
+	}
+	return out
+}
+
+// apply writes the lifted columns onto the pointers a create/update input
+// exposes. Called BEFORE --assign / --role resolution so those dedicated
+// flags win on conflict, matching liftFieldsToColumns' "caller-supplied
+// top-level values win" rule on the MCP side.
+func (l liftedColumns) apply(assignedUserID, agentRoleID **string) {
+	if l.AssignedUserID != nil {
+		*assignedUserID = l.AssignedUserID
+	}
+	if l.AgentRoleID != nil {
+		*agentRoleID = l.AgentRoleID
+	}
+}
+
 // parseFieldFlag parses a --field key=value flag value according to the
 // field's declared schema type. JSON-typed and multi_select fields receive
 // parsed JSON values, number-typed fields receive numbers, and checkbox
@@ -136,6 +237,11 @@ Run with --help-collections to see available collections and their status values
 				}
 			}
 
+			// Pull column-named keys out of the blob before it's marshalled
+			// (BUG-2583). Applied to `input` below, after construction and
+			// BEFORE --assign / --role, so those dedicated flags win.
+			lifted := liftColumnFields(fields, collSchema)
+
 			fieldsJSON, _ := json.Marshal(fields)
 
 			// Handle content from stdin
@@ -154,6 +260,7 @@ Run with --help-collections to see available collections and their status values
 				Fields:  string(fieldsJSON),
 				Tags:    tags,
 			}
+			lifted.apply(&input.AssignedUserID, &input.AgentRoleID)
 
 			// Resolve --assign (user name/email → user ID)
 			if assignee != "" {
@@ -955,6 +1062,17 @@ Examples:
 					}
 				}
 
+				// Pull column-named keys out of the patch (BUG-2583) and apply
+				// them as column writes. Applied BEFORE --assign / --role below,
+				// so those dedicated flags win on conflict.
+				liftColumnFields(patch, collSchema).apply(&input.AssignedUserID, &input.AgentRoleID)
+
+				// An empty patch never reaches the wire: ItemUpdate.FieldsPatch
+				// carries `omitempty`, so `--field assigned_user_id=` on its own
+				// sends the column write and no fields_patch at all. Assigning
+				// unconditionally is therefore correct AND simpler than guarding
+				// on len — a guard here would read as load-bearing while doing
+				// nothing (verified by mutation: removing it changed no test).
 				input.FieldsPatch = patch
 			}
 
