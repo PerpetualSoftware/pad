@@ -6,9 +6,10 @@ allowed-tools: ["Bash", "Read"]
 Set this project up with Pad. If `pad` is not on PATH, give the install one-liner
 from https://getpad.dev/install and stop.
 
-If no `.pad.toml` exists, first run `pad auth whoami` (fast, safe, never blocks
-waiting on input) to check whether this machine is already configured and
-authenticated:
+If no `.pad.toml` exists, first run `pad auth whoami` (fast and safe: in
+non-interactive use — which is where you run — it returns immediately rather
+than waiting on input, and it works regardless of workspace-link state) to
+check whether this machine is already configured and authenticated:
 - If it reports a real user, it's safe to self-heal: run `pad workspace init`
   (a name/`--template` are optional) to link and create the workspace
   non-interactively.
