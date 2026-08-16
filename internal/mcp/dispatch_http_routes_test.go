@@ -244,7 +244,7 @@ func TestRoute_ItemList_AllItemsPath_AppliesNonTerminalFilter(t *testing.T) {
 	// "terminal" per-collection from each schema's terminal_options rather
 	// than a hardcoded status allowlist that hides custom vocabularies
 	// (BUG-2001). It must NOT send an explicit status filter.
-	m, p, _, err := routeTable["item list"](map[string]any{"workspace": "docapp"})
+	m, p, _, err := mapItemList(map[string]any{"workspace": "docapp"})
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -267,7 +267,7 @@ func TestRoute_ItemList_AllFlagDropsNonTerminal(t *testing.T) {
 	// `--all` overrides the non-terminal default. include_archived=true
 	// must be set AND the non_terminal filter must NOT be present
 	// (otherwise --all wouldn't actually let through terminal items).
-	_, p, _, err := routeTable["item list"](map[string]any{
+	_, p, _, err := mapItemList(map[string]any{
 		"workspace": "docapp", "all": true,
 	})
 	if err != nil {
@@ -288,7 +288,7 @@ func TestRoute_ItemList_AllFlagDropsNonTerminal(t *testing.T) {
 func TestRoute_ItemList_ExplicitStatusOverridesDefault(t *testing.T) {
 	// An explicit --status pin replaces the active-status default —
 	// not appended to it.
-	_, p, _, err := routeTable["item list"](map[string]any{
+	_, p, _, err := mapItemList(map[string]any{
 		"workspace": "docapp", "status": "done",
 	})
 	if err != nil {
@@ -301,7 +301,7 @@ func TestRoute_ItemList_ExplicitStatusOverridesDefault(t *testing.T) {
 }
 
 func TestRoute_ItemList_CollectionScopedPath(t *testing.T) {
-	_, p, _, err := routeTable["item list"](map[string]any{
+	_, p, _, err := mapItemList(map[string]any{
 		"workspace": "docapp", "collection": "task", // shorthand
 	})
 	if err != nil {
@@ -315,7 +315,7 @@ func TestRoute_ItemList_CollectionScopedPath(t *testing.T) {
 }
 
 func TestRoute_ItemList_FiltersAsQuery(t *testing.T) {
-	_, p, _, err := routeTable["item list"](map[string]any{
+	_, p, _, err := mapItemList(map[string]any{
 		"workspace": "docapp",
 		"status":    "open",
 		"priority":  "high",
@@ -350,7 +350,7 @@ func TestRoute_ItemList_FiltersAsQuery(t *testing.T) {
 }
 
 func TestRoute_ItemList_Unparented(t *testing.T) {
-	_, p, _, err := routeTable["item list"](map[string]any{
+	_, p, _, err := mapItemList(map[string]any{
 		"workspace": "docapp", "unparented": true,
 	})
 	if err != nil {
@@ -359,7 +359,7 @@ func TestRoute_ItemList_Unparented(t *testing.T) {
 	if got := mustParseQueryFromPath(t, p).Get("unparented"); got != "true" {
 		t.Fatalf("unparented query = %q, want true (path %s)", got, p)
 	}
-	if _, _, _, err := routeTable["item list"](map[string]any{
+	if _, _, _, err := mapItemList(map[string]any{
 		"workspace": "docapp", "parent": "PLAN-3", "unparented": true,
 	}); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("expected parent/unparented conflict, got %v", err)
@@ -372,7 +372,7 @@ func TestRoute_ItemList_PassesThroughAssignedUserID(t *testing.T) {
 	// mapItemList sees the input, only `assigned_user_id` should be
 	// present; the mapper adds it to the query string for the
 	// store filter to pick up.
-	_, p, _, err := routeTable["item list"](map[string]any{
+	_, p, _, err := mapItemList(map[string]any{
 		"workspace":        "docapp",
 		"assigned_user_id": "user-uuid-456",
 	})
@@ -392,7 +392,7 @@ func TestRoute_ItemList_RawAssignKeyIsIgnoredByMapper(t *testing.T) {
 	// "unknown input keys are ignored" behaviour) rather than
 	// erroring. The dispatcher-level preprocess is what runs the
 	// resolution in production.
-	_, p, _, err := routeTable["item list"](map[string]any{
+	_, p, _, err := mapItemList(map[string]any{
 		"workspace": "docapp", "assign": "Dave",
 	})
 	if err != nil {
@@ -416,7 +416,7 @@ func TestRoute_ItemList_NumericLimitFromJSONNumber(t *testing.T) {
 	if err := dec.Decode(&input); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	_, p, _, err := routeTable["item list"](input)
+	_, p, _, err := mapItemList(input)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -427,7 +427,7 @@ func TestRoute_ItemList_NumericLimitFromJSONNumber(t *testing.T) {
 }
 
 func TestRoute_ItemList_FieldKVPLandsAsQueryParam(t *testing.T) {
-	_, p, _, err := routeTable["item list"](map[string]any{
+	_, p, _, err := mapItemList(map[string]any{
 		"workspace": "docapp",
 		"field":     []any{"trigger=on-implement", "scope=all"},
 	})
@@ -641,7 +641,7 @@ func TestRoute_RoleList(t *testing.T) {
 // rather than silently flipping a tool back to "not yet implemented."
 func TestRouteTable_ContainsExpectedCommands(t *testing.T) {
 	want := []string{
-		"item create", "item show", "item list", "item delete", "item restore",
+		"item create", "item show", "item delete", "item restore",
 		"item move", "item search", "item comment", "item comments",
 		"project dashboard", "collection list", "role list",
 	}

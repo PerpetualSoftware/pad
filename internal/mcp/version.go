@@ -129,6 +129,19 @@ const CmdhelpVersion = "0.1"
 //     tool names, action enums, or parameter shapes changed — the
 //     advertised annotation metadata and one read_only flag did.
 //
+//     Also in 0.20 (BUG-2305, same window — one bump, appended entry):
+//     `pad_item.list` is summary-shaped on the REMOTE HTTP transport
+//     too. The exec path always projected through cli.ToItemSummaries
+//     (the CLI default TASK-2000 relied on); the HTTP path forwarded
+//     raw handler responses, so a bare list returned up to 50 FULL
+//     content bodies. A hand-written dispatchItemList (routeTable
+//     can't transform responses; the server has no projection param)
+//     now applies the same projection, and a new declared `full`
+//     boolean on pad_item is the discoverable opt-in for complete
+//     bodies on BOTH transports (stdio forwards it as the CLI's
+//     --full). Additive param + a shape fix restoring transport
+//     symmetry (v0.16/v0.17 precedent).
+//
 //   - "0.19" — BUG-2078: adds a `clear_parent` boolean to
 //     `pad_item`, the canonical and DISCOVERABLE way to detach an item from
 //     its parent. Additive param bump, same grounds as v0.18 — no existing
@@ -398,9 +411,10 @@ const CmdhelpVersion = "0.1"
 //     `fields`/`tags` are emitted as nested JSON rather than escaped
 //     strings. This is a BREAKING result-shape change for consumers
 //     that read `content` or the dropped fields off a list row; the
-//     full former shape is available via the CLI `--full` flag (not
-//     yet surfaced as an MCP param — agents that need a full body
-//     fetch it per-item via action=get). No action-enum or param
+//     full former shape is available via the CLI `--full` flag (at
+//     v0.9 not yet surfaced as an MCP param; v0.20 declared it as the
+//     `full` boolean and closed the HTTP transport's shape gap —
+//     BUG-2305). No action-enum or param
 //     removals; `limit` semantics unchanged for callers that pass one
 //     under the max.
 //

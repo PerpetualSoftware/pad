@@ -144,6 +144,13 @@ var padItemSchemaParams = []ParamDef{
 	// ── Hierarchy / assignment ──
 	{Name: "parent", Type: "string", Description: "Parent item ref (e.g. PLAN-3). Optional for: create, update, list filter."},
 	{Name: "unparented", Type: "bool", Description: "For action=list, keep only items with no parent or implements relationship. Mutually exclusive with parent."},
+	// BUG-2305: list is summary-shaped by default on BOTH transports;
+	// this is the discoverable opt-in for complete bodies. Reaches
+	// LOCAL STDIO as the CLI's --full flag via BuildCLIArgs and the
+	// remote path via dispatchItemList reading the dispatch input —
+	// declared only because both transports genuinely honor it (the
+	// v0.18 lesson: never advertise a param one transport drops).
+	{Name: "full", Type: "bool", Description: "For action=list, return complete item content bodies instead of the default summary shape. Token-expensive on large workspaces — prefer action=get for a single item's body."},
 	{Name: "role", Type: "string", Description: "Agent role slug to assign (e.g. implementer). Optional for: create, update, list filter."},
 	{Name: "assign", Type: "string", Description: "User name or email to assign. Optional for: create, update, list filter. To UNASSIGN, use clear_assigned_user=true — an empty `assign` does NOT clear (it reads as \"not provided\", like every other optional string here)."},
 	// The canonical clear form (IDEA-2584). Booleans rather than an empty
@@ -270,8 +277,9 @@ Actions:
   get           — Read an item.
                   Required: ref.
   list          — List items, optionally filtered.
-                  Optional: collection, status, priority, parent, unparented, role, assign, all, limit.
-                  parent and unparented are mutually exclusive.
+                  Optional: collection, status, priority, parent, unparented, role, assign, all, limit, full.
+                  parent and unparented are mutually exclusive. Results are
+                  summary-shaped (no content bodies) unless full=true.
   move          — Move an item to a different collection.
                   Required: ref, target_collection.
   link          — Create a relationship between two items.
@@ -650,9 +658,16 @@ const (
 // but first applies a default limit (when the agent didn't ask for one) and
 // clamps an oversized one, so a bare agent list can't dump the whole
 // workspace into context. Everything else about the input passes through
-// unchanged — collection/status/priority/parent filters, all, etc. (The
-// summary vs full result shape is a CLI-side concern; MCP callers that
-// need a full body fetch it per-item via action=get.)
+// unchanged — collection/status/priority/parent filters, all, etc.
+//
+// Result shape: SUMMARY (no content bodies) by default on BOTH
+// transports — the exec path via the CLI's own default projection
+// (cli.ToItemSummaries, lifted by --full), the HTTP path via the
+// hand-written dispatchItemList (BUG-2305; a RouteMapper cannot
+// transform responses, and the server's list endpoint has no
+// projection parameter). `full: true` opts into complete bodies on
+// both. MCP callers that need one item's body should prefer
+// action=get.
 func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
 	// Early MCP-side feedback for the parent/unparented conflict; canonical
 	// enforcement lives in validateUnparentedListRequest

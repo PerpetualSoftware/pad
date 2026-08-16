@@ -358,6 +358,8 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	switch cmdKey {
 	case "item update":
 		return d.dispatchItemUpdate(ctx, input, user)
+	case "item list":
+		return d.dispatchItemList(ctx, input, user)
 	case "item deps":
 		return d.dispatchItemDeps(ctx, input, user)
 	case "item related":
@@ -451,30 +453,7 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 ) (*mcp.CallToolResult, error) {
 	req, err := d.buildAuthedRequest(ctx, method, urlPath, body, user)
 	if err != nil {
-		// Most build-request failures are scope-rejection from
-		// buildAuthedRequest's TokenScopeAllows check (PATCH on a
-		// read-only token, etc.). Surface as permission_denied so
-		// agents see the same code as a backend 403, not a
-		// generic server_error.
-		if strings.HasPrefix(err.Error(), "permission_denied:") {
-			return NewErrorResult(ErrorPayload{
-				Code:    ErrPermissionDenied,
-				Message: fmt.Sprintf("%s: %s", cmdKey, err.Error()),
-				Hint:    "Token scope does not permit this operation. Re-issue with the required scopes (read for GET; write for POST/PATCH; admin for workspace settings).",
-			}), nil
-		}
-		// PLAN-1933 DR-4: the RequireVerifiedEmail gate rejected this
-		// write because the cloud user hasn't verified their email.
-		// Surface as permission_denied (the closest closed-set code) so
-		// agents branch consistently with a backend 403.
-		if strings.HasPrefix(err.Error(), errEmailNotVerifiedPrefix+":") {
-			return NewErrorResult(ErrorPayload{
-				Code:    ErrPermissionDenied,
-				Message: fmt.Sprintf("%s: %s", cmdKey, err.Error()),
-				Hint:    "Verify your email address (check your inbox for the verification link) before creating or editing content.",
-			}), nil
-		}
-		return dispatcherErrorResult(cmdKey, "build request", err), nil
+		return buildRequestErrorResult(cmdKey, err), nil
 	}
 
 	rec := httptest.NewRecorder()
@@ -491,6 +470,40 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 	// inheriting from the inbound request's ctx. Codex review #379
 	// round 1.
 	return packageHTTPResponse(req.Context(), cmdKey, rec.Result(), d.Lister)
+}
+
+// buildRequestErrorResult maps a buildAuthedRequest failure onto the
+// structured error envelope. Extracted from executeRequest (BUG-2305,
+// codex round 1) so hand-written dispatchers that call
+// buildAuthedRequest directly (dispatchItemList's summary path)
+// surface the SAME permission_denied codes as the routeTable path —
+// without the extraction, a scope rejection on those paths degraded
+// to a generic server_error.
+func buildRequestErrorResult(cmdKey string, err error) *mcp.CallToolResult {
+	// Most build-request failures are scope-rejection from
+	// buildAuthedRequest's TokenScopeAllows check (PATCH on a
+	// read-only token, etc.). Surface as permission_denied so
+	// agents see the same code as a backend 403, not a
+	// generic server_error.
+	if strings.HasPrefix(err.Error(), "permission_denied:") {
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrPermissionDenied,
+			Message: fmt.Sprintf("%s: %s", cmdKey, err.Error()),
+			Hint:    "Token scope does not permit this operation. Re-issue with the required scopes (read for GET; write for POST/PATCH; admin for workspace settings).",
+		})
+	}
+	// PLAN-1933 DR-4: the RequireVerifiedEmail gate rejected this
+	// write because the cloud user hasn't verified their email.
+	// Surface as permission_denied (the closest closed-set code) so
+	// agents branch consistently with a backend 403.
+	if strings.HasPrefix(err.Error(), errEmailNotVerifiedPrefix+":") {
+		return NewErrorResult(ErrorPayload{
+			Code:    ErrPermissionDenied,
+			Message: fmt.Sprintf("%s: %s", cmdKey, err.Error()),
+			Hint:    "Verify your email address (check your inbox for the verification link) before creating or editing content.",
+		})
+	}
+	return dispatcherErrorResult(cmdKey, "build request", err)
 }
 
 // buildAuthedRequest constructs an in-process HTTP request against
