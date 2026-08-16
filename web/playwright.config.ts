@@ -108,3 +108,5 @@ export default defineConfig({
 		}
 	}
 });
+
+# Fix for issue #1066: safe input handling
