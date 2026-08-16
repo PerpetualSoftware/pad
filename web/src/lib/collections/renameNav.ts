@@ -87,6 +87,14 @@ export function resolveRenameNavTarget(input: RenameNavInput): string | null {
 export interface SyncRenameInput {
 	/** The mounted collection snapshot's stable id (null → nothing loaded, skip). */
 	collectionId: string | null;
+	/**
+	 * The mounted collection snapshot's slug. Must match `routeSlug` for a
+	 * heal to fire — during an A→B navigation the snapshot briefly still
+	 * belongs to A, and reconciling B's route against A's id would goto A,
+	 * hijacking the navigation (codex round 1 P1; the SSE helper's
+	 * loadedCollectionSlug gate guards the same window).
+	 */
+	loadedCollectionSlug: string;
 	/** The live route slug (`page.params.collection`). */
 	routeSlug: string;
 	/** The freshly fetched workspace collections (only id + slug are read). */
@@ -102,6 +110,10 @@ export interface SyncRenameInput {
  *
  *   - Something is loaded (`collectionId` non-null): a cold route with no
  *     snapshot has no stable id to reconcile by; nothing to do client-side.
+ *   - The snapshot belongs to THIS route (`loadedCollectionSlug ===
+ *     routeSlug`): mid-navigation the snapshot is briefly the previous
+ *     collection's, and its id must not steer this route. The legitimate
+ *     missed-SSE strand satisfies this — both slugs are the dead one.
  *   - No rename goto is already in flight (`renameNav` null or caught up to
  *     the route): the SSE / reorder-404 paths own their own navigation, and
  *     dueling gotos must not race.
@@ -113,8 +125,9 @@ export interface SyncRenameInput {
  *     means DELETED, not renamed — the not-found flows own that.
  */
 export function resolveSyncRenameTarget(input: SyncRenameInput): string | null {
-	const { collectionId, routeSlug, collections, renameNav } = input;
+	const { collectionId, loadedCollectionSlug, routeSlug, collections, renameNav } = input;
 	if (!collectionId) return null;
+	if (loadedCollectionSlug !== routeSlug) return null;
 	if (renameNav !== null && renameNav !== routeSlug) return null;
 	if (collections.some((c) => c.slug === routeSlug)) return null;
 	const fresh = collections.find((c) => c.id === collectionId);

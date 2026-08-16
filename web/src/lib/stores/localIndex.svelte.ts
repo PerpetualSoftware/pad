@@ -127,6 +127,19 @@ class WorkspaceState {
 	// recomputes the set from scratch, so a re-upgrade clears it. Not persisted;
 	// the race it guards is within a single session.
 	fencedIds = new Set<string>();
+
+	// `pendingRetags` records collection renames (collection id → latest new
+	// slug) seen via `retagCollection` (BUG-2601). A rename event can land
+	// BEFORE this workspace's rows exist (SSE connects fast; bootstrap's warm
+	// IDB hydrate hasn't run), and the hydrated rows then arrive carrying the
+	// dead slug with nothing left to re-stamp them — a rename touches no
+	// items, so no delta ever will. The warm-hydrate path applies (then
+	// clears) these; authoritative server snapshots (cold /items-index,
+	// projection resync) clear them unapplied — server rows already carry the
+	// live slug, and re-applying a recorded rename over fresher server truth
+	// could regress a newer slug. Latest-wins per collection id; not
+	// persisted (the window it guards is within a single session).
+	pendingRetags = new Map<string, string>();
 }
 
 // Outer map: reactive (SvelteMap) so consumers re-render when a fresh
@@ -147,6 +160,27 @@ function ensureState(ws: string): WorkspaceState {
 		workspaces.set(ws, state);
 	}
 	return state;
+}
+
+/**
+ * Re-stamp `collection_slug` on every cached row of one collection
+ * (BUG-2601). Matches by STABLE `collection_id` — never by old slug,
+ * which a different collection may have re-owned by the time we hear
+ * about the rename. Idempotent; rows already carrying `newSlug` are
+ * skipped. Mirrors the `upsert` write-through (search + IDB).
+ */
+function applyRetag(ws: string, state: WorkspaceState, collectionId: string, newSlug: string): void {
+	const retagged: ItemIndexRow[] = [];
+	for (const [id, row] of state.items.entries()) {
+		if (row.collection_id !== collectionId || row.collection_slug === newSlug) continue;
+		const next = { ...row, collection_slug: newSlug };
+		state.items.set(id, next);
+		localSearch.upsert(ws, next);
+		retagged.push(next);
+	}
+	if (retagged.length > 0) {
+		persistUpserts(state.userId, ws, retagged).catch(() => undefined);
+	}
 }
 
 /**
@@ -344,6 +378,10 @@ async function resyncProjectionScope(ws: string, state: WorkspaceState): Promise
 		}
 		state.cursor = resp.cursor;
 		state.bootstrapState = 'ready';
+		// Server rows carry the live collection slug — a rename recorded
+		// pre-snapshot is already reflected, and re-applying it later could
+		// regress a newer slug (BUG-2601).
+		state.pendingRetags.clear();
 		// NOTE: deliberately do NOT clear pendingResync here. This resync only
 		// installs the authoritative snapshot and pins the cursor for replay;
 		// the post-snapshot mutations aren't caught up until the caller's delta
@@ -500,6 +538,17 @@ export const localIndex = {
 					if (cursorAsNum(cached.cursor) > cursorAsNum(state.cursor)) {
 						state.cursor = cached.cursor;
 					}
+					// Apply renames recorded BEFORE these rows existed
+					// (BUG-2601): hydrated rows carry the slug they were
+					// cached under, and a rename touches no items, so no
+					// delta below will ever re-stamp them. Applied then
+					// cleared — a one-shot repair for the pre-hydration
+					// window. Runs before the search rebuild so the
+					// rebuilt index sees the live slugs.
+					for (const [collectionId, newSlug] of state.pendingRetags) {
+						applyRetag(ws, state, collectionId, newSlug);
+					}
+					state.pendingRetags.clear();
 					// Rebuild the search index from the warm snapshot so
 					// the collection page and CommandPalette can serve
 					// results immediately on first paint — TASK-1363.
@@ -652,6 +701,10 @@ export const localIndex = {
 					state.bootstrapState = 'ready';
 					// Cold path is a full snapshot — nothing pending.
 					state.pendingResync = false;
+					// Server rows carry the live collection slug — drop any
+					// rename recorded pre-snapshot rather than re-applying
+					// it over fresher server truth (BUG-2601).
+					state.pendingRetags.clear();
 					// Rebuild the search index from the cold snapshot —
 					// TASK-1363. Bulk rebuild is cheaper than N per-row
 					// upserts and keeps the index hot for the first
@@ -1088,19 +1141,13 @@ export const localIndex = {
 	 * skipped. Mirrors the upsert write-through (search + IDB).
 	 */
 	retagCollection(ws: string, collectionId: string, newSlug: string): void {
-		const state = workspaces.get(ws);
-		if (!state) return;
-		const retagged: ItemIndexRow[] = [];
-		for (const [id, row] of state.items.entries()) {
-			if (row.collection_id !== collectionId || row.collection_slug === newSlug) continue;
-			const next = { ...row, collection_slug: newSlug };
-			state.items.set(id, next);
-			localSearch.upsert(ws, next);
-			retagged.push(next);
-		}
-		if (retagged.length > 0) {
-			persistUpserts(state.userId, ws, retagged).catch(() => undefined);
-		}
+		// ensureState (not a bare get): a rename that lands before this
+		// workspace ever hydrated must still be RECORDED, or the warm
+		// hydrate restores rows under the dead slug with nothing left to
+		// fix them (codex round 1 P1 — see pendingRetags on WorkspaceState).
+		const state = ensureState(ws);
+		state.pendingRetags.set(collectionId, newSlug);
+		applyRetag(ws, state, collectionId, newSlug);
 	},
 
 	/**

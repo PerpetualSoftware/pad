@@ -1024,6 +1024,7 @@
 		const ws = wsSlug;
 		const slug = collSlug;
 		const baseId = collection?.id ?? null;
+		const baseSlug = collection?.slug ?? '';
 		if (!ws || !slug || !baseId) return;
 		try {
 			const list = await api.collections.list(ws);
@@ -1033,6 +1034,7 @@
 			if (collection?.id !== baseId) return;
 			const target = resolveSyncRenameTarget({
 				collectionId: baseId,
+				loadedCollectionSlug: baseSlug,
 				routeSlug: slug,
 				collections: list,
 				renameNav,
@@ -1048,7 +1050,14 @@
 			// side-effect as the SSE + reorder-404 rename paths.
 			void collectionStore.loadCollections(ws);
 			const search = typeof window !== 'undefined' ? window.location.search : '';
-			void goto(`/${username}/${ws}/${target}${search}`);
+			goto(`/${username}/${ws}/${target}${search}`).catch(() => {
+				// A cancelled/failed navigation (navigate-away guard, a
+				// racing nav) must not leave renameNav pointing at a slug
+				// we never reached — a poisoned tracker would veto every
+				// future sync heal (codex round 1 P2). Reset only if it is
+				// still ours; a newer rename may have re-aimed it.
+				if (renameNav === target) renameNav = null;
+			});
 		} catch {
 			// Best-effort heal — the next sync pass retries.
 		}

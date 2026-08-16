@@ -14,7 +14,10 @@ import { test } from './fixtures';
  */
 test('BUG-2601: live SSE rename re-targets the route AND the board still renders its items', async ({ page, request, fixture }) => {
 	const auth = { Authorization: `Bearer ${fixture.apiToken}` };
-	const slug = `b2601p-${Date.now().toString(36)}`;
+	// Worker-unique: desktop + mobile projects run this spec in
+	// parallel, and Date.now() alone can collide across workers
+	// (codex round 1 P2).
+	const slug = `b2601p-${test.info().workerIndex}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 	const wsResp = await request.post('/api/v1/workspaces', {
 		headers: auth,
 		data: { name: 'BUG-2601 probe', slug, template: 'startup' },

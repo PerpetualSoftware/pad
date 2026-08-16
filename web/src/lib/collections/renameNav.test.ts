@@ -110,6 +110,7 @@ describe('resolveRenameNavTarget', () => {
 function syncInput(over: Partial<SyncRenameInput>): SyncRenameInput {
 	return {
 		collectionId: 'id-1',
+		loadedCollectionSlug: 'old',
 		routeSlug: 'old',
 		collections: [{ id: 'id-1', slug: 'new' }],
 		renameNav: null,
@@ -148,6 +149,20 @@ describe('resolveSyncRenameTarget', () => {
 	it('skips a DELETED collection — dead slug, id absent from the list', () => {
 		expect(
 			resolveSyncRenameTarget(syncInput({ collections: [{ id: 'id-9', slug: 'other' }] })),
+		).toBeNull();
+	});
+
+	it('skips a mid-navigation foreign snapshot — loaded slug belongs to the PREVIOUS route', () => {
+		// Navigating A→B while A's snapshot is still loaded: B's route must
+		// not be steered by A's id, even when B's slug is dead (codex P1).
+		expect(
+			resolveSyncRenameTarget(
+				syncInput({
+					loadedCollectionSlug: 'a',
+					routeSlug: 'b-dead',
+					collections: [{ id: 'id-1', slug: 'a' }],
+				}),
+			),
 		).toBeNull();
 	});
 

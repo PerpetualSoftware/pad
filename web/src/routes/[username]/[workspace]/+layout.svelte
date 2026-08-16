@@ -242,9 +242,11 @@
 					// (collection page + ItemDetail); this case owns the DATA.
 					if (event.new_slug && event.collection_id) {
 						localIndex.retagCollection(wsSlug, event.collection_id, event.new_slug);
-						// Sidebar/pickers pick up the new slug + counts.
-						collectionStore.loadCollections(wsSlug);
 					}
+					// Refresh sidebar/pickers for EVERY collection_updated —
+					// icon / name / sort-order changes matter to the nav
+					// even without a rename (codex round 1 P2).
+					collectionStore.loadCollections(wsSlug);
 					break;
 				}
 			}

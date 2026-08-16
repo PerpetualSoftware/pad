@@ -39,7 +39,10 @@ test('BUG-2601: a missed collection-rename SSE is healed by the next sync pass',
 	try {
 		// Own workspace — the shared suite workspace carries cross-spec SSE
 		// and mutation traffic that could mask or confound the strand.
-		const slug = `b2601-${Date.now().toString(36)}`;
+		// Worker-unique: desktop + mobile projects run this spec in
+		// parallel, and Date.now() alone can collide across workers
+		// (codex round 1 P2).
+		const slug = `b2601-${test.info().workerIndex}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
 		createdSlug = slug;
 		const wsResp = await request.post('/api/v1/workspaces', {
 			headers: auth,
