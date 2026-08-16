@@ -140,6 +140,15 @@ class WorkspaceState {
 	// could regress a newer slug. Latest-wins per collection id; not
 	// persisted (the window it guards is within a single session).
 	pendingRetags = new Map<string, string>();
+
+	// The auth identity the pendingRetags were recorded under (codex round 2
+	// P2): a cold state survives the bootstrap user-mismatch reset (that
+	// check deliberately skips cold states), so a rename recorded pre-
+	// bootstrap by user A could otherwise be applied to user B's warm cache
+	// after a console logout + login. Recorded at retag time from the
+	// caller's auth view; the warm-hydrate apply discards the intent when
+	// it doesn't match the bootstrapping user.
+	pendingRetagsUser: string | null = null;
 }
 
 // Outer map: reactive (SvelteMap) so consumers re-render when a fresh
@@ -544,9 +553,14 @@ export const localIndex = {
 					// delta below will ever re-stamp them. Applied then
 					// cleared — a one-shot repair for the pre-hydration
 					// window. Runs before the search rebuild so the
-					// rebuilt index sees the live slugs.
-					for (const [collectionId, newSlug] of state.pendingRetags) {
-						applyRetag(ws, state, collectionId, newSlug);
+					// rebuilt index sees the live slugs. Intent recorded
+					// under a DIFFERENT auth identity is discarded, not
+					// applied (codex round 2 P2 — a cold state survives
+					// the logout path, so this is the cross-user gate).
+					if (state.pendingRetagsUser === userId) {
+						for (const [collectionId, newSlug] of state.pendingRetags) {
+							applyRetag(ws, state, collectionId, newSlug);
+						}
 					}
 					state.pendingRetags.clear();
 					// Rebuild the search index from the warm snapshot so
@@ -1140,12 +1154,20 @@ export const localIndex = {
 	 * the rename. Idempotent; rows already carrying `newSlug` are
 	 * skipped. Mirrors the upsert write-through (search + IDB).
 	 */
-	retagCollection(ws: string, collectionId: string, newSlug: string): void {
+	retagCollection(ws: string, collectionId: string, newSlug: string, userId: string | null): void {
 		// ensureState (not a bare get): a rename that lands before this
 		// workspace ever hydrated must still be RECORDED, or the warm
 		// hydrate restores rows under the dead slug with nothing left to
 		// fix them (codex round 1 P1 — see pendingRetags on WorkspaceState).
 		const state = ensureState(ws);
+		// Ownership stamp (codex round 2 P2): intent recorded under a
+		// different auth identity is dropped, never mixed — a cold state
+		// survives logout, and user A's rename intent must not steer user
+		// B's warm cache. Same-user re-records just refresh the stamp.
+		if (state.pendingRetagsUser !== userId) {
+			state.pendingRetags.clear();
+			state.pendingRetagsUser = userId;
+		}
 		state.pendingRetags.set(collectionId, newSlug);
 		applyRetag(ws, state, collectionId, newSlug);
 	},

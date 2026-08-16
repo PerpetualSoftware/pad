@@ -1045,7 +1045,7 @@
 			// ran — re-stamp the cached rows' collection_slug by stable id
 			// or the healed route renders an empty board (the rows still
 			// carry the dead slug and no item delta will ever fix them).
-			localIndex.retagCollection(ws, baseId, target);
+			localIndex.retagCollection(ws, baseId, target, authStore.user?.id ?? null);
 			// Refresh the sidebar/pickers off the dead slug too — same
 			// side-effect as the SSE + reorder-404 rename paths.
 			void collectionStore.loadCollections(ws);

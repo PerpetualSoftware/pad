@@ -241,7 +241,12 @@
 					// Route re-targeting stays with the per-page handlers
 					// (collection page + ItemDetail); this case owns the DATA.
 					if (event.new_slug && event.collection_id) {
-						localIndex.retagCollection(wsSlug, event.collection_id, event.new_slug);
+						localIndex.retagCollection(
+							wsSlug,
+							event.collection_id,
+							event.new_slug,
+							authStore.user?.id ?? null,
+						);
 					}
 					// Refresh sidebar/pickers for EVERY collection_updated —
 					// icon / name / sort-order changes matter to the nav
