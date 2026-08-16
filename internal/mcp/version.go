@@ -142,6 +142,19 @@ const CmdhelpVersion = "0.1"
 //     --full). Additive param + a shape fix restoring transport
 //     symmetry (v0.16/v0.17 precedent).
 //
+//     Post-0.20, deliberately NO bump (BUG-2304): `item backlinks`,
+//     `item history`, and `project report` gained HTTP transport
+//     routes — they were advertised in the catalog on both transports
+//     but answered "not yet implemented over HTTP transport" on the
+//     remote /mcp path. No tool names, action enums, or parameter
+//     shapes changed; advertised actions now behave as already
+//     documented, which is a defect fix inside the existing contract,
+//     not a contract change. `history` defaults to the CLI's
+//     itemVersionSummary projection over HTTP too (full=true opts
+//     into complete rows, mirroring stdio's --full). A catalog↔route
+//     parity test (dispatch_http_parity_test.go) now fails on any
+//     future advertised-but-unrouted action.
+//
 //   - "0.19" — BUG-2078: adds a `clear_parent` boolean to
 //     `pad_item`, the canonical and DISCOVERABLE way to detach an item from
 //     its parent. Additive param bump, same grounds as v0.18 — no existing

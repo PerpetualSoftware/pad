@@ -150,7 +150,7 @@ var padItemSchemaParams = []ParamDef{
 	// remote path via dispatchItemList reading the dispatch input —
 	// declared only because both transports genuinely honor it (the
 	// v0.18 lesson: never advertise a param one transport drops).
-	{Name: "full", Type: "bool", Description: "For action=list, return complete item content bodies instead of the default summary shape. Token-expensive on large workspaces — prefer action=get for a single item's body."},
+	{Name: "full", Type: "bool", Description: "For action=list, return complete item content bodies instead of the default summary shape. For action=history, include each version's resolved content body. Token-expensive on large workspaces — prefer action=get for a single item's body."},
 	{Name: "role", Type: "string", Description: "Agent role slug to assign (e.g. implementer). Optional for: create, update, list filter."},
 	{Name: "assign", Type: "string", Description: "User name or email to assign. Optional for: create, update, list filter. To UNASSIGN, use clear_assigned_user=true — an empty `assign` does NOT clear (it reads as \"not provided\", like every other optional string here)."},
 	// The canonical clear form (IDEA-2584). Booleans rather than an empty
