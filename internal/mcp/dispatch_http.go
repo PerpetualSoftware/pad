@@ -355,43 +355,8 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	// in-handler prefetches. These live as methods on the dispatcher
 	// because they need the Handler reference; the simple route
 	// table only carries pure mappers.
-	switch cmdKey {
-	case "item update":
-		return d.dispatchItemUpdate(ctx, input, user)
-	case "item list":
-		return d.dispatchItemList(ctx, input, user)
-	case "item deps":
-		return d.dispatchItemDeps(ctx, input, user)
-	case "item related":
-		return d.dispatchItemRelated(ctx, input, user)
-	case "item implemented-by":
-		return d.dispatchItemImplementedBy(ctx, input, user)
-	case "item bulk-update":
-		return d.dispatchItemBulkUpdate(ctx, input, user)
-	case "item note":
-		return d.dispatchItemNote(ctx, input, user)
-	case "item decide":
-		return d.dispatchItemDecide(ctx, input, user)
-	case "item import":
-		return d.dispatchItemImport(ctx, input, user)
-	case "project ready":
-		return d.dispatchProjectReady(ctx, input, user)
-	case "project stale":
-		return d.dispatchProjectStale(ctx, input, user)
-	case "project next":
-		return d.dispatchProjectNext(ctx, input, user)
-	case "project standup":
-		return d.dispatchProjectStandup(ctx, input, user)
-	case "project changelog":
-		return d.dispatchProjectChangelog(ctx, input, user)
-	case "library list":
-		return d.dispatchLibraryList(ctx, input, user)
-	case "library activate":
-		return d.dispatchLibraryActivate(ctx, input, user)
-	case "attachment list":
-		return d.dispatchAttachmentList(ctx, input, user)
-	case "attachment show":
-		return d.dispatchAttachmentShow(ctx, input, user)
+	if fn, ok := d.specialRoutes()[cmdKey]; ok {
+		return fn(ctx, input, user)
 	}
 
 	// Item link create/delete commands. The asymmetry between which
@@ -432,6 +397,44 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 	}
 
 	return d.executeRequest(ctx, cmdKey, user, method, urlPath, body)
+}
+
+// specialDispatchFn is the signature shared by the dispatcher's
+// special-case route methods.
+type specialDispatchFn func(context.Context, map[string]any, *models.User) (*mcp.CallToolResult, error)
+
+// specialRoutes maps cmdKeys to the dispatcher methods that handle
+// them in place of a routeTable mapper — commands whose HTTP path
+// needs read-modify-write, an in-handler prefetch, or a response
+// transformation a pure RouteMapper cannot express.
+//
+// A map rather than a switch is deliberate (BUG-2304): the
+// catalog↔route parity test introspects these keys, so a special-case
+// route added here automatically counts as "routed", and a catalog
+// action missing from BOTH this map and routeTable fails that test
+// instead of shipping as "not yet implemented over HTTP transport".
+func (d *HTTPHandlerDispatcher) specialRoutes() map[string]specialDispatchFn {
+	return map[string]specialDispatchFn{
+		"item update":         d.dispatchItemUpdate,
+		"item list":           d.dispatchItemList,
+		"item history":        d.dispatchItemHistory,
+		"item deps":           d.dispatchItemDeps,
+		"item related":        d.dispatchItemRelated,
+		"item implemented-by": d.dispatchItemImplementedBy,
+		"item bulk-update":    d.dispatchItemBulkUpdate,
+		"item note":           d.dispatchItemNote,
+		"item decide":         d.dispatchItemDecide,
+		"item import":         d.dispatchItemImport,
+		"project ready":       d.dispatchProjectReady,
+		"project stale":       d.dispatchProjectStale,
+		"project next":        d.dispatchProjectNext,
+		"project standup":     d.dispatchProjectStandup,
+		"project changelog":   d.dispatchProjectChangelog,
+		"library list":        d.dispatchLibraryList,
+		"library activate":    d.dispatchLibraryActivate,
+		"attachment list":     d.dispatchAttachmentList,
+		"attachment show":     d.dispatchAttachmentShow,
+	}
 }
 
 // executeRequest builds + serves + packages a single HTTP request

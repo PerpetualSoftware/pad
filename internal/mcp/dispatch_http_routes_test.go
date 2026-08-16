@@ -643,7 +643,8 @@ func TestRouteTable_ContainsExpectedCommands(t *testing.T) {
 	want := []string{
 		"item create", "item show", "item delete", "item restore",
 		"item move", "item search", "item comment", "item comments",
-		"project dashboard", "collection list", "role list",
+		"item backlinks",
+		"project dashboard", "project report", "collection list", "role list",
 	}
 	missing := []string{}
 	for _, w := range want {
@@ -664,6 +665,42 @@ func TestRoute_ItemRestore(t *testing.T) {
 	}
 	if m != http.MethodPost || p != "/api/v1/workspaces/docapp/items/TASK-5/restore" {
 		t.Errorf("got %s %s", m, p)
+	}
+}
+
+// BUG-2304: `item backlinks` — path param + both paging query params.
+func TestRoute_ItemBacklinks(t *testing.T) {
+	m, p, _, err := routeTable["item backlinks"](map[string]any{
+		"workspace": "docapp", "ref": "TASK-5", "limit": 10, "offset": 20,
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if m != http.MethodGet || p != "/api/v1/workspaces/docapp/items/TASK-5/backlinks?limit=10&offset=20" {
+		t.Errorf("got %s %s", m, p)
+	}
+}
+
+// BUG-2304: `project report` — window + collections forward as query
+// params; omitted filters stay off the URL so the endpoint's own
+// defaults (window=week, all collections) apply.
+func TestRoute_ProjectReport(t *testing.T) {
+	m, p, _, err := routeTable["project report"](map[string]any{
+		"workspace": "docapp", "window": "month", "collections": "tasks,bugs",
+	})
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if m != http.MethodGet || p != "/api/v1/workspaces/docapp/report?collections=tasks%2Cbugs&window=month" {
+		t.Errorf("got %s %s", m, p)
+	}
+
+	_, bare, _, err := routeTable["project report"](map[string]any{"workspace": "docapp"})
+	if err != nil {
+		t.Fatalf("bare err: %v", err)
+	}
+	if bare != "/api/v1/workspaces/docapp/report" {
+		t.Errorf("bare got %s", bare)
 	}
 }
 

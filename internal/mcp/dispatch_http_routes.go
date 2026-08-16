@@ -253,10 +253,32 @@ func init() {
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/comments",
 		}.toRouteMapper(),
 
+		// `item backlinks` (BUG-2304) — the reverse [[...]] index
+		// (PLAN-1593). The CLI's --format json emits the endpoint's
+		// response array verbatim (cmd/pad/cmd_item.go backlinksCmd), so
+		// a plain GET reproduces the stdio shape; the handler resolves
+		// refs and slugs alike (ResolveItemIncludeDeleted) and applies
+		// the same default/clamp to limit that the CLI relies on.
+		"item backlinks": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/backlinks",
+			queryParams:  map[string]string{"limit": "limit", "offset": "offset"},
+		}.toRouteMapper(),
+
 		// --- Read-only workspace surfaces ---
 		"project dashboard": routeSpec{
 			method:       http.MethodGet,
 			pathTemplate: "/api/v1/workspaces/{workspace}/dashboard",
+		}.toRouteMapper(),
+
+		// `project report` (BUG-2304) — windowed throughput report
+		// (PLAN-1628). The CLI's --format json prints the endpoint's
+		// JSON verbatim (cmd/pad/cmd_project.go reportCmd), so a plain
+		// GET with the two filter params reproduces the stdio shape.
+		"project report": routeSpec{
+			method:       http.MethodGet,
+			pathTemplate: "/api/v1/workspaces/{workspace}/report",
+			queryParams:  map[string]string{"window": "window", "collections": "collections"},
 		}.toRouteMapper(),
 
 		// `project activity` (TASK-2018) — non-streaming, bounded
@@ -1324,6 +1346,85 @@ func (d *HTTPHandlerDispatcher) dispatchItemList(
 	}
 	// packageJSONResult wraps the top-level array as {items: [...]}
 	// (BUG-985), matching every other proxied GET.
+	return packageJSONResult(string(enc)), nil
+}
+
+// itemVersionSummary mirrors the token-light projection the CLI's
+// `pad item history --format json` emits by default (cmd/pad/
+// cmd_item.go itemVersionSummary): version metadata WITHOUT the
+// resolved content body. The two copies are pinned against each other
+// by TestDispatchItemHistory_SummaryShape — change both together.
+type itemVersionSummary struct {
+	ID            string `json:"id"`
+	CreatedAt     string `json:"created_at"`
+	CreatedBy     string `json:"created_by"`
+	Source        string `json:"source"`
+	ChangeSummary string `json:"change_summary,omitempty"`
+}
+
+// dispatchItemHistory is the hand-written dispatcher for `item history`
+// (BUG-2304). Same shape-parity rationale as dispatchItemList directly
+// above: the versions endpoint returns full models.Version rows —
+// including each version's resolved CONTENT body — while the exec path
+// projects them to itemVersionSummary unless --full. A routeTable entry
+// can't transform responses, so without this method the advertised
+// action either errored ("not yet implemented over HTTP transport") or
+// would have leaked every version's full body. `full: true` opts back
+// into complete rows, matching the CLI's --full on stdio.
+func (d *HTTPHandlerDispatcher) dispatchItemHistory(
+	ctx context.Context,
+	input map[string]any,
+	user *models.User,
+) (*mcp.CallToolResult, error) {
+	const cmdKey = "item history"
+	workspace, _ := input["workspace"].(string)
+	ref, _ := input["ref"].(string)
+	if workspace == "" {
+		return validationFailedResult(cmdKey, "workspace is required",
+			"Pass workspace=<slug> or set a session default via pad_set_workspace."), nil
+	}
+	if ref == "" {
+		return validationFailedResult(cmdKey, "ref is required",
+			"Pass ref=<issue id or slug> for the item whose history you want."), nil
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/items/" + url.PathEscape(ref) + "/versions"
+	if full, _ := input["full"].(bool); full {
+		return d.executeRequest(ctx, cmdKey, user, http.MethodGet, urlPath, nil)
+	}
+
+	req, err := d.buildAuthedRequest(ctx, http.MethodGet, urlPath, nil, user)
+	if err != nil {
+		return buildRequestErrorResult(cmdKey, err), nil
+	}
+	rec := httptest.NewRecorder()
+	d.Handler.ServeHTTP(rec, req)
+	resp := rec.Result()
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return dispatcherErrorResult(cmdKey, "read response", err), nil
+	}
+	if resp.StatusCode >= 400 {
+		return classifyHTTPStatus(req.Context(), cmdKey, resp.StatusCode, bodyBytes, d.Lister), nil
+	}
+	var versions []models.Version
+	if err := json.Unmarshal(bodyBytes, &versions); err != nil {
+		return dispatcherErrorResult(cmdKey, "decode versions", err), nil
+	}
+	summaries := make([]itemVersionSummary, 0, len(versions))
+	for _, v := range versions {
+		summaries = append(summaries, itemVersionSummary{
+			ID:            v.ID,
+			CreatedAt:     v.CreatedAt.Format("2006-01-02T15:04:05Z07:00"),
+			CreatedBy:     v.CreatedBy,
+			Source:        v.Source,
+			ChangeSummary: v.ChangeSummary,
+		})
+	}
+	enc, err := json.Marshal(summaries)
+	if err != nil {
+		return dispatcherErrorResult(cmdKey, "encode summaries", err), nil
+	}
 	return packageJSONResult(string(enc)), nil
 }
 
