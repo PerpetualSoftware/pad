@@ -6,7 +6,7 @@
 	import type { BulkItemsRequest, Collection, Item, PaneTarget, QuickAction, View, ViewConfig } from '$lib/types';
 	import { parseSettings, parseFields, parseSchema, parseTags, getStatusOptions, itemUrlId, formatItemRef } from '$lib/types';
 	import { plansProgressToMap, fetchCollectionProgress } from '$lib/collections/progressMerge';
-	import { resolveRenameNavTarget } from '$lib/collections/renameNav';
+	import { resolveRenameNavTarget, resolveSyncRenameTarget } from '$lib/collections/renameNav';
 	import BoardView from '$lib/components/collections/BoardView.svelte';
 	import ListView from '$lib/components/collections/ListView.svelte';
 	import TableView from '$lib/components/collections/TableView.svelte';
@@ -976,6 +976,13 @@
 				// it is so the next tab-resume retries.
 				syncService.markSynced();
 			}
+			// BUG-2601: renames only travel over the collection_updated
+			// SSE; a missed event strands this route on the dead slug and
+			// NOTHING above notices — /changes says nothing about
+			// collection renames, so a rename-only gap even reports
+			// caught_up. Reconcile the route slug by stable id on every
+			// sync pass (caught_up included, for exactly that reason).
+			await reconcileRouteCollectionSlug();
 		});
 	});
 
@@ -996,6 +1003,56 @@
 		// (snapshot.capture fires on navigate-away; the helper's $effect
 		// teardown cancels any in-flight RAF).
 	});
+
+	/**
+	 * BUG-2601: sync-pass fallback for a MISSED collection-rename SSE.
+	 * The collection_updated handler is the primary rename recovery, but
+	 * it only fires if the event arrives; a client that missed it
+	 * (replay-buffer gap, disconnect) keeps a dead route slug — reloads
+	 * and slug-keyed fetches 404 until a manual navigation. After each
+	 * sync pass, reconcile the route slug against the live collections
+	 * list by STABLE id and re-target exactly like the SSE path —
+	 * mirroring the BUG-2272 reorder-404 heal and sharing the same
+	 * `renameNav` intent tracker. The decision itself is the pure
+	 * `resolveSyncRenameTarget` (renameNav.ts) — see its doc for the
+	 * deliberate skips (reused slug, deleted id, rename already in
+	 * flight, nothing loaded).
+	 */
+	async function reconcileRouteCollectionSlug() {
+		// Capture identity BEFORE the await (no {#key} on this route — a
+		// switch mid-await must not navigate the wrong collection).
+		const ws = wsSlug;
+		const slug = collSlug;
+		const baseId = collection?.id ?? null;
+		if (!ws || !slug || !baseId) return;
+		try {
+			const list = await api.collections.list(ws);
+			// Route or snapshot moved while the list was in flight — a
+			// heal computed for the old identity must not fire now.
+			if (ws !== wsSlug || slug !== collSlug) return;
+			if (collection?.id !== baseId) return;
+			const target = resolveSyncRenameTarget({
+				collectionId: baseId,
+				routeSlug: slug,
+				collections: list,
+				renameNav,
+			});
+			if (!target) return;
+			renameNav = target;
+			// The missed SSE also means the layout's global retag never
+			// ran — re-stamp the cached rows' collection_slug by stable id
+			// or the healed route renders an empty board (the rows still
+			// carry the dead slug and no item delta will ever fix them).
+			localIndex.retagCollection(ws, baseId, target);
+			// Refresh the sidebar/pickers off the dead slug too — same
+			// side-effect as the SSE + reorder-404 rename paths.
+			void collectionStore.loadCollections(ws);
+			const search = typeof window !== 'undefined' ? window.location.search : '';
+			void goto(`/${username}/${ws}/${target}${search}`);
+		} catch {
+			// Best-effort heal — the next sync pass retries.
+		}
+	}
 
 	/**
 	 * Drive a /items-changes delta apply against the local store. Used

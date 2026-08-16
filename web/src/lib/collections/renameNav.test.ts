@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { resolveRenameNavTarget, type RenameNavInput } from './renameNav';
+import {
+	resolveRenameNavTarget,
+	resolveSyncRenameTarget,
+	type RenameNavInput,
+	type SyncRenameInput,
+} from './renameNav';
 
 // Convenience builder — every field is named so each scenario reads as the
 // concrete route/snapshot/tracker state at the moment the SSE event arrives.
@@ -97,5 +102,72 @@ describe('resolveRenameNavTarget', () => {
 				input({ eventOldSlug: 'z', eventNewSlug: 'q', loadedCollectionSlug: 'a', routeSlug: 'a', renameNav: null }),
 			),
 		).toBeNull();
+	});
+});
+
+// --- Sync-side reconciliation (BUG-2601) ---
+
+function syncInput(over: Partial<SyncRenameInput>): SyncRenameInput {
+	return {
+		collectionId: 'id-1',
+		routeSlug: 'old',
+		collections: [{ id: 'id-1', slug: 'new' }],
+		renameNav: null,
+		...over,
+	};
+}
+
+describe('resolveSyncRenameTarget', () => {
+	it('heals a dead route slug whose stable id lives under a new slug (the missed-SSE strand)', () => {
+		expect(resolveSyncRenameTarget(syncInput({}))).toBe('new');
+	});
+
+	it('does nothing when the route slug is still live (no rename happened)', () => {
+		expect(
+			resolveSyncRenameTarget(
+				syncInput({ collections: [{ id: 'id-1', slug: 'old' }] }),
+			),
+		).toBeNull();
+	});
+
+	it('skips a REUSED slug — the route slug is live but names a different collection', () => {
+		// Ambiguous: our collection renamed away AND another took the slug.
+		// Yanking the user off a live route is worse; the SSE path owns it.
+		expect(
+			resolveSyncRenameTarget(
+				syncInput({
+					collections: [
+						{ id: 'id-2', slug: 'old' },
+						{ id: 'id-1', slug: 'new' },
+					],
+				}),
+			),
+		).toBeNull();
+	});
+
+	it('skips a DELETED collection — dead slug, id absent from the list', () => {
+		expect(
+			resolveSyncRenameTarget(syncInput({ collections: [{ id: 'id-9', slug: 'other' }] })),
+		).toBeNull();
+	});
+
+	it('skips when nothing is loaded (no stable id to reconcile by)', () => {
+		expect(resolveSyncRenameTarget(syncInput({ collectionId: null }))).toBeNull();
+	});
+
+	it('skips while a rename goto to a DIFFERENT slug is in flight (no dueling navigations)', () => {
+		expect(resolveSyncRenameTarget(syncInput({ renameNav: 'elsewhere' }))).toBeNull();
+	});
+
+	it('still heals in the continuation window (renameNav caught up to the route)', () => {
+		// We goto'd `old` earlier (renameNav === routeSlug), then a rename we
+		// never saw moved it again — same admit rule as the SSE helper's
+		// continuation case.
+		expect(resolveSyncRenameTarget(syncInput({ renameNav: 'old' }))).toBe('new');
+	});
+
+	it('empty collections list: treated as dead-slug + missing id → skip (not a heal)', () => {
+		// A failed/empty list must never navigate anywhere.
+		expect(resolveSyncRenameTarget(syncInput({ collections: [] }))).toBeNull();
 	});
 });

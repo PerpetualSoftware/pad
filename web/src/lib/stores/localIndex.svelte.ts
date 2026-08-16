@@ -1074,6 +1074,36 @@ export const localIndex = {
 	},
 
 	/**
+	 * Re-stamp `collection_slug` on every cached row of a collection
+	 * after a RENAME (BUG-2601). Rows are ingested with the slug the
+	 * server denormalized at fetch time; a rename changes the slug
+	 * without touching the items, so no `/items-changes` delta will
+	 * ever re-ingest them — `getByCollection(newSlug)` returns [] and
+	 * every rename-healed route (SSE and sync-pass alike) renders an
+	 * empty board while the sidebar still counts the items.
+	 *
+	 * Matches by STABLE `collection_id` — never by old slug, which a
+	 * different collection may have re-owned by the time we hear about
+	 * the rename. Idempotent; rows already carrying `newSlug` are
+	 * skipped. Mirrors the upsert write-through (search + IDB).
+	 */
+	retagCollection(ws: string, collectionId: string, newSlug: string): void {
+		const state = workspaces.get(ws);
+		if (!state) return;
+		const retagged: ItemIndexRow[] = [];
+		for (const [id, row] of state.items.entries()) {
+			if (row.collection_id !== collectionId || row.collection_slug === newSlug) continue;
+			const next = { ...row, collection_slug: newSlug };
+			state.items.set(id, next);
+			localSearch.upsert(ws, next);
+			retagged.push(next);
+		}
+		if (retagged.length > 0) {
+			persistUpserts(state.userId, ws, retagged).catch(() => undefined);
+		}
+	},
+
+	/**
 	 * Look up an item by EITHER id OR slug within a workspace. Used
 	 * by the 403-purge path so a 403 on `/items/{slug}` can resolve
 	 * the slug to the in-RAM id (the SvelteMap is keyed by id) and
