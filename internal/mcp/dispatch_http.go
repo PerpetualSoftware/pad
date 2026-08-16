@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -151,6 +152,12 @@ type HTTPHandlerDispatcher struct {
 	// the /api/v1 chain and the middleware blocks it, but wiring the hook
 	// stops the request before it's ever built.
 	RequireVerifiedEmail func(user *models.User) bool
+
+	// specialOnce / special lazily cache the specialRoutes map so
+	// Dispatch doesn't rebuild ~20 bound-method entries per call.
+	// Internal — see specialRoutes().
+	specialOnce sync.Once
+	special     map[string]specialDispatchFn
 }
 
 // RouteMapper translates a tool's JSON input into a concrete HTTP
@@ -413,7 +420,18 @@ type specialDispatchFn func(context.Context, map[string]any, *models.User) (*mcp
 // route added here automatically counts as "routed", and a catalog
 // action missing from BOTH this map and routeTable fails that test
 // instead of shipping as "not yet implemented over HTTP transport".
+//
+// Built once per dispatcher (sync.Once — Dispatch runs concurrently)
+// so the hot path doesn't rebuild a ~20-entry map of bound methods on
+// every call (codex round 1 P2).
 func (d *HTTPHandlerDispatcher) specialRoutes() map[string]specialDispatchFn {
+	d.specialOnce.Do(func() {
+		d.special = d.buildSpecialRoutes()
+	})
+	return d.special
+}
+
+func (d *HTTPHandlerDispatcher) buildSpecialRoutes() map[string]specialDispatchFn {
 	return map[string]specialDispatchFn{
 		"item update":         d.dispatchItemUpdate,
 		"item list":           d.dispatchItemList,

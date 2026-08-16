@@ -1405,7 +1405,12 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 		return dispatcherErrorResult(cmdKey, "read response", err), nil
 	}
 	if resp.StatusCode >= 400 {
-		return classifyHTTPStatus(req.Context(), cmdKey, resp.StatusCode, bodyBytes, d.Lister), nil
+		// Kind-aware classification (ResourceItem + the ref we looked
+		// up) so a missing item gets the item_not_found envelope with
+		// the actionable per-ref hint — same as dispatchProjectNext's
+		// item reads, richer than the legacy ResourceUnknown path.
+		return classifyHTTPStatusKind(req.Context(), cmdKey, urlPath,
+			resp.StatusCode, bodyBytes, d.Lister, ResourceItem, ref), nil
 	}
 	var versions []models.Version
 	if err := json.Unmarshal(bodyBytes, &versions); err != nil {

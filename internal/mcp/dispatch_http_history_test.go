@@ -167,7 +167,12 @@ func TestDispatchItemHistory_UnknownItemIsNotFound(t *testing.T) {
 	if !res.IsError {
 		t.Fatalf("expected error result for unknown item, got: %s", textOf(res))
 	}
-	if !strings.Contains(textOf(res), "not_found") {
-		t.Errorf("expected structured not_found envelope, got: %s", textOf(res))
+	// Kind-aware classification: the item-shaped 404 must carry the
+	// specific item_not_found code and echo the ref in the payload.
+	if !strings.Contains(textOf(res), "item_not_found") {
+		t.Errorf("expected structured item_not_found envelope, got: %s", textOf(res))
+	}
+	if !strings.Contains(textOf(res), "TASK-999") {
+		t.Errorf("expected the missing ref to appear in the error payload, got: %s", textOf(res))
 	}
 }
