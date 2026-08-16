@@ -1252,6 +1252,7 @@
 						// mid-keystroke with no save yet pending would
 						// still lose chars without this branch.
 						item = adoptServerItem(updated);
+						void refreshCollectionIfMoved(updated);
 						const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 						if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 						itemLinks = links;
@@ -1344,6 +1345,7 @@
 					// Bump the item-snapshot gen so an in-flight refetch drops (round 9).
 					const myItemGen = ++itemGen;
 					item = adoptServerItem(updated);
+					void refreshCollectionIfMoved(updated);
 					const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 					if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 					itemLinks = links;
@@ -1357,6 +1359,10 @@
 				const updated = await api.items.get(reqWsSlug, reqItemSlug);
 				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				item = adoptServerItem(updated);
+				// Same collection-moved handling as the SSE + incremental
+				// adoptions above — a long tab absence can span a move too
+				// (codex round 2 P1).
+				void refreshCollectionIfMoved(updated);
 				const links = await api.links.list(reqWsSlug, updated.slug).catch(() => []);
 				if (!item || item.id !== reqItemId || myItemGen !== itemGen) return;
 				itemLinks = links;
@@ -2857,6 +2863,41 @@
 		return withInflightTags(
 			collabProvider ? updated : { ...updated, content: item?.content ?? updated.content }
 		);
+	}
+
+	// BUG-2178 (codex R1): an SSE / delta-sync adoption can change the item's
+	// COLLECTION — a cross-collection move by another user/tab, or this pane's
+	// own move when the full-page host's retarget same-ref-guards to a noop
+	// (a same-workspace move keeps the slug). `collection` — and the schema
+	// derived from it — would silently keep the OLD collection's shape, so
+	// fields rendered/validated against the wrong schema. Refetch by the
+	// adopted slug when it diverges, fenced with the same collectionGen every
+	// other collection write uses (last-started wins).
+	async function refreshCollectionIfMoved(adopted: Item) {
+		// EMBEDDED only: the pane derives its collection context from
+		// item.collection_slug (effectiveCollSlug), so a moved item must get
+		// the target collection's schema. A NON-embedded master keeps the
+		// route-authoritative collSlug on a remote move (the route itself is
+		// stale — a bigger, separately-tracked problem), and refreshing its
+		// collection object there would render the target collection's
+		// name/icon under the source route's URL — mixed state worse than
+		// consistently stale (codex round 2 P2).
+		if (!embedded) return;
+		const newSlug = adopted.collection_slug;
+		if (!newSlug || !collection || collection.slug === newSlug) return;
+		const collGen = ++collectionGen;
+		try {
+			const fresh = await api.collections.get(wsSlug, newSlug);
+			if (collGen !== collectionGen) return;
+			// Semantic fence on top of the generation fence: only write while
+			// the LIVE item still agrees this is its collection — a
+			// chained-move burst (X→Y→Z) can leave an older refresh both
+			// newest-started-for-its-slug and wrong (codex round 2 P1).
+			if (item?.collection_slug !== newSlug) return;
+			collection = fresh;
+		} catch {
+			// Ignore — the next event / reload catches up.
+		}
 	}
 
 	// Load the workspace's distinct tags for autocomplete. Pure data-fetch
