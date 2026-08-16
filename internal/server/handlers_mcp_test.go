@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,6 +26,7 @@ func TestMCP_CloudModeOff_RoutesAbsent(t *testing.T) {
 	}{
 		{"POST", "/mcp"},
 		{"GET", "/.well-known/oauth-protected-resource"},
+		{"GET", "/.well-known/oauth-protected-resource/mcp"},
 		{"GET", "/.well-known/oauth-authorization-server"},
 	}
 	for _, tc := range cases {
@@ -87,6 +89,111 @@ func TestMCP_DiscoveryDoc_PopulatedFromConfig(t *testing.T) {
 	}
 	if !sliceEqual(doc.BearerMethodsSupported, []string{"header"}) {
 		t.Errorf("BearerMethodsSupported: got %v, want [header]", doc.BearerMethodsSupported)
+	}
+}
+
+// TestMCP_DiscoveryDoc_PathAwareWellKnown pins the RFC 9728 §3.1
+// path-aware metadata URL (BUG-2266). A client configured with the
+// path-suffixed transport URL (https://mcp.getpad.dev/mcp — the shape
+// every FastMCP example uses) inserts the well-known segment BEFORE
+// the path, requesting /.well-known/oauth-protected-resource/mcp.
+// Before the fix that request fell through to the SPA catch-all and
+// the client died JSON-parsing HTML. The assertions decode into the
+// typed doc and compare field-by-field against the root variant, so
+// neither an HTML shell nor a 404 body can ever satisfy them
+// (CONVE-12: the catch-all cannot produce this end state).
+func TestMCP_DiscoveryDoc_PathAwareWellKnown(t *testing.T) {
+	t.Parallel()
+	srv := mcpEnabledTestServer(t)
+
+	rrRoot := doRequest(srv, "GET", "/.well-known/oauth-protected-resource", nil)
+	if rrRoot.Code != http.StatusOK {
+		t.Fatalf("root variant: expected 200, got %d (body: %s)", rrRoot.Code, rrRoot.Body.String())
+	}
+	var rootDoc protectedResourceMetadata
+	parseJSON(t, rrRoot, &rootDoc)
+
+	// /mcp and a trailing-slash /mcp/ — both shapes a pasted transport
+	// URL produces under §3.1 construction.
+	for _, path := range []string{
+		"/.well-known/oauth-protected-resource/mcp",
+		"/.well-known/oauth-protected-resource/mcp/",
+	} {
+		rr := doRequest(srv, "GET", path, nil)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d (body: %s)", path, rr.Code, rr.Body.String())
+		}
+		if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("%s: expected Content-Type application/json, got %q", path, ct)
+		}
+		var doc protectedResourceMetadata
+		parseJSON(t, rr, &doc)
+		if doc.Resource != rootDoc.Resource {
+			t.Errorf("%s: Resource: got %q, want %q (same doc as root variant)", path, doc.Resource, rootDoc.Resource)
+		}
+		if !sliceEqual(doc.AuthorizationServers, rootDoc.AuthorizationServers) {
+			t.Errorf("%s: AuthorizationServers: got %v, want %v", path, doc.AuthorizationServers, rootDoc.AuthorizationServers)
+		}
+		if !sliceEqual(doc.ScopesSupported, rootDoc.ScopesSupported) {
+			t.Errorf("%s: ScopesSupported: got %v, want %v", path, doc.ScopesSupported, rootDoc.ScopesSupported)
+		}
+		if !sliceEqual(doc.BearerMethodsSupported, rootDoc.BearerMethodsSupported) {
+			t.Errorf("%s: BearerMethodsSupported: got %v, want %v", path, doc.BearerMethodsSupported, rootDoc.BearerMethodsSupported)
+		}
+	}
+
+	// The route is deliberately bounded to /mcp and /mcp/ — NOT a
+	// wildcard. The handler emits Cache-Control: public max-age, so a
+	// wildcard would hand a CDN one cacheable object per attacker-
+	// chosen suffix (codex round 2). Pin that an arbitrary suffix does
+	// not get the doc.
+	rrBogus := doRequest(srv, "GET", "/.well-known/oauth-protected-resource/bogus", nil)
+	if ct := rrBogus.Header().Get("Content-Type"); rrBogus.Code == http.StatusOK && ct == "application/json" {
+		t.Errorf("arbitrary suffix served the metadata doc (status %d, CT %q) — route must stay bounded to /mcp", rrBogus.Code, ct)
+	}
+}
+
+// TestMCP_DiscoveryRoutes_RequireCloudModePerRoute exercises the
+// requireCloudMode middleware ON each mounted discovery route — which
+// TestMCP_CloudModeOff_RoutesAbsent structurally cannot (it never
+// wires the transport, so registerMCPRoutes bails at its nil-guard and
+// the routes are absent for a different reason; stripping the
+// middleware from a route would still pass that test — codex round 3).
+// Here the routes ARE mounted (cloud on at router build), then the
+// cloud flag is flipped off in-place; only the per-route middleware
+// can refuse from there.
+func TestMCP_DiscoveryRoutes_RequireCloudModePerRoute(t *testing.T) {
+	t.Parallel()
+	srv := mcpEnabledTestServer(t)
+
+	paths := []string{
+		"/.well-known/oauth-protected-resource",
+		"/.well-known/oauth-protected-resource/mcp",
+		"/.well-known/oauth-protected-resource/mcp/",
+	}
+	// Force router build + prove the routes are live first, so the
+	// refusals below can only come from the per-route middleware.
+	for _, p := range paths {
+		if rr := doRequest(srv, "GET", p, nil); rr.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200 with cloud mode on, got %d", p, rr.Code)
+		}
+	}
+
+	// In-package flip of the flag requireCloudMode reads. The routes
+	// stay mounted (chi trees are immutable post-build) — that's the
+	// point: only the middleware stands between the request and the
+	// handler now.
+	srv.cloudMode = false
+
+	for _, p := range paths {
+		rr := doRequest(srv, "GET", p, nil)
+		if rr.Code != http.StatusNotFound {
+			t.Errorf("%s: expected 404 from requireCloudMode after cloud flag cleared, got %d (body: %s)", p, rr.Code, rr.Body.String())
+		}
+		var doc protectedResourceMetadata
+		if err := json.Unmarshal(rr.Body.Bytes(), &doc); err == nil && doc.Resource != "" {
+			t.Errorf("%s: metadata doc leaked past requireCloudMode: %+v", p, doc)
+		}
 	}
 }
 

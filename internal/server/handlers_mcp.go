@@ -174,5 +174,19 @@ func (s *Server) registerMCPRoutes(r chi.Router) {
 	// (protected-resource) gets the real metadata; RFC 8414 (auth-server)
 	// is the 501 stub TASK-951 fills in.
 	r.With(s.requireCloudMode).Get("/.well-known/oauth-protected-resource", s.handleOAuthProtectedResource)
+	// Path-aware RFC 9728 §3.1 variant (BUG-2266). A client configured
+	// with the path-suffixed transport URL (https://mcp.getpad.dev/mcp —
+	// the shape every FastMCP example uses) constructs its metadata URL
+	// by inserting the well-known segment BEFORE the path:
+	// /.well-known/oauth-protected-resource/mcp. Without this route the
+	// request fell through to the SPA catch-all and discovery died
+	// JSON-parsing HTML. Bounded to the two shapes a pasted transport
+	// URL actually produces (/mcp and a trailing-slash /mcp/) rather
+	// than a wildcard: the handler sets Cache-Control public max-age,
+	// and a wildcard would hand a CDN one cacheable object per
+	// attacker-chosen suffix (codex round 2). /mcp is the only
+	// path-mounted resource, so nothing else needs the variant.
+	r.With(s.requireCloudMode).Get("/.well-known/oauth-protected-resource/mcp", s.handleOAuthProtectedResource)
+	r.With(s.requireCloudMode).Get("/.well-known/oauth-protected-resource/mcp/", s.handleOAuthProtectedResource)
 	r.With(s.requireCloudMode).Get("/.well-known/oauth-authorization-server", s.handleOAuthAuthorizationServer)
 }
