@@ -272,6 +272,30 @@ Examples:
 					}
 				}
 
+				// BUG-2592: mirror Step 3's canPromptForConfig() gate (and
+				// BUG-2538's in cmd_workspace.go) before driving the
+				// browser login — without it, a configured-but-
+				// unauthenticated non-interactive `pad init` blocks on
+				// doBrowserLogin's poll wait (wall-clock-bounded since
+				// BUG-2572, but still minutes of hang nobody can complete)
+				// instead of failing fast. Deliberately AFTER the saved-
+				// credentials check above, so a headless run with valid
+				// stored credentials proceeds untouched.
+				if !canPromptForConfig() {
+					// Not suggesting `pad init --email/--name/--password`:
+					// those flags only bootstrap the first admin account
+					// (Step 3, SetupRequired) and this instance is already
+					// set up — a re-run would land right back here. `pad
+					// auth login --interactive` IS usable without a TTY:
+					// doInteractiveLogin reads email/password off a plain
+					// bufio.Reader with no terminal gate, piped-bytes-safe
+					// since BUG-1886.
+					return fmt.Errorf(
+						"not authenticated. Run 'pad auth login' in an interactive terminal, " +
+							"or pipe credentials to 'pad auth login --interactive' for scripted use; " +
+							"then re-run 'pad init'.")
+				}
+
 				if actioned {
 					fmt.Println(bold.Sprint("Step 3: Log in"))
 				} else {
