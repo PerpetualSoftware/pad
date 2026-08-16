@@ -24,10 +24,11 @@ check whether this machine is already configured and authenticated:
   whoami` already told you. (With both stdin AND stdout attached to a real
   terminal it instead drops into the browser auth flow, now bounded at 20
   minutes wall-clock — not a state your tool call is ever in.) `pad init` is
-  not a safer probe either: verified live, it fails fast only when the
-  machine is genuinely unconfigured, and in the session-expired sub-case of
-  configured-but-unauthenticated it still drops into the same browser login
-  and blocks (tracked separately as BUG-2592). Tell the user to run `pad
+  not a safer probe either: verified live, it fails fast when stdin/stdout
+  aren't terminals in both states — genuinely unconfigured, and (since
+  BUG-2592) the session-expired sub-case of configured-but-unauthenticated —
+  with the same real-terminal caveat as above, so probing it tells you
+  nothing `pad auth whoami` didn't. Tell the user to run `pad
   init` themselves in an interactive terminal — in Claude Code, suggest they
   type `! pad init` to run it directly in their own terminal.
   Stop here; there's nothing more this skill can do until that completes.
