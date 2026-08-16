@@ -267,7 +267,16 @@ func installInteractive() error {
 		detected = append([]cli.AgentTool{cli.SupportedTools[0]}, detected...)
 	}
 
-	if !cli.IsTerminal() {
+	// BUG-2593: gate on canPromptForConfig() (stdin AND stdout are
+	// terminals) rather than cli.IsTerminal() (stdin only) — the same
+	// swap offerSkillInstall got for BUG-2577 (PR #1111, which see for
+	// the boundary): a pty-backed harness can make stdin look like a
+	// char device with nobody able to answer, which left the "(Y/n): "
+	// prompt printed even though the choice auto-defaults. A caller with
+	// BOTH stdin and stdout attached to a pty but nothing driving it
+	// still reads as promptable — that case can't be distinguished from
+	// a real interactive terminal by any check available here.
+	if !canPromptForConfig() {
 		// Non-interactive: install for all detected tools
 		for _, tool := range detected {
 			content := cli.FormatForTool(tool, pad.PadSkill)
