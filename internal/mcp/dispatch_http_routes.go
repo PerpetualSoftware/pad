@@ -1388,10 +1388,6 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 			"Pass ref=<issue id or slug> for the item whose history you want."), nil
 	}
 	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/items/" + url.PathEscape(ref) + "/versions"
-	if full, _ := input["full"].(bool); full {
-		return d.executeRequest(ctx, cmdKey, user, http.MethodGet, urlPath, nil)
-	}
-
 	req, err := d.buildAuthedRequest(ctx, http.MethodGet, urlPath, nil, user)
 	if err != nil {
 		return buildRequestErrorResult(cmdKey, err), nil
@@ -1409,8 +1405,15 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 		// up) so a missing item gets the item_not_found envelope with
 		// the actionable per-ref hint — same as dispatchProjectNext's
 		// item reads, richer than the legacy ResourceUnknown path.
+		// Shared by BOTH modes: full=true must not degrade the 404
+		// envelope (codex round 2).
 		return classifyHTTPStatusKind(req.Context(), cmdKey, urlPath,
 			resp.StatusCode, bodyBytes, d.Lister, ResourceItem, ref), nil
+	}
+	if full, _ := input["full"].(bool); full {
+		// Complete rows requested — forward the endpoint's JSON
+		// verbatim, the same shape stdio's --full emits.
+		return packageJSONResult(string(bodyBytes)), nil
 	}
 	var versions []models.Version
 	if err := json.Unmarshal(bodyBytes, &versions); err != nil {

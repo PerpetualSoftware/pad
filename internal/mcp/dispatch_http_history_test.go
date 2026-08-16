@@ -154,25 +154,30 @@ func TestDispatch_BacklinksAndReport_RouteToRealEndpoints(t *testing.T) {
 }
 
 // TestDispatchItemHistory_UnknownItemIsNotFound pins the error
-// envelope: a missing item must classify as a structured error, not
-// a raw 404 body.
+// envelope in BOTH modes: a missing item must classify as the
+// kind-aware item_not_found (with the ref echoed), and full=true must
+// not degrade it back to the legacy ResourceUnknown envelope (codex
+// round 2 — the modes share one request path precisely for this).
 func TestDispatchItemHistory_UnknownItemIsNotFound(t *testing.T) {
 	t.Parallel()
 	d := newHistoryFixture(t)
-	ctx := WithDispatchInput(context.Background(), map[string]any{"workspace": "hist-ws", "ref": "TASK-999"})
-	res, err := d.Dispatch(ctx, []string{"item", "history"}, nil)
-	if err != nil {
-		t.Fatalf("Dispatch: %v", err)
-	}
-	if !res.IsError {
-		t.Fatalf("expected error result for unknown item, got: %s", textOf(res))
-	}
-	// Kind-aware classification: the item-shaped 404 must carry the
-	// specific item_not_found code and echo the ref in the payload.
-	if !strings.Contains(textOf(res), "item_not_found") {
-		t.Errorf("expected structured item_not_found envelope, got: %s", textOf(res))
-	}
-	if !strings.Contains(textOf(res), "TASK-999") {
-		t.Errorf("expected the missing ref to appear in the error payload, got: %s", textOf(res))
+	for _, input := range []map[string]any{
+		{"workspace": "hist-ws", "ref": "TASK-999"},
+		{"workspace": "hist-ws", "ref": "TASK-999", "full": true},
+	} {
+		ctx := WithDispatchInput(context.Background(), input)
+		res, err := d.Dispatch(ctx, []string{"item", "history"}, nil)
+		if err != nil {
+			t.Fatalf("Dispatch(%v): %v", input, err)
+		}
+		if !res.IsError {
+			t.Fatalf("expected error result for unknown item (%v), got: %s", input, textOf(res))
+		}
+		if !strings.Contains(textOf(res), "item_not_found") {
+			t.Errorf("expected structured item_not_found envelope (%v), got: %s", input, textOf(res))
+		}
+		if !strings.Contains(textOf(res), "TASK-999") {
+			t.Errorf("expected the missing ref in the error payload (%v), got: %s", input, textOf(res))
+		}
 	}
 }
