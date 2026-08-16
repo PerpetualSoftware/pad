@@ -136,6 +136,15 @@ const CmdhelpVersion = "0.1"
 //     `field: ["parent=..."]`) is REFUSED on both transports, not silently
 //     resolved — mirrors the v0.18 conflict checks.
 //
+//     Also refused, not silently applied: `clear_parent` against a collection
+//     whose schema declares its own "parent"/"plan" field — extractParentLink
+//     skips hierarchy handling entirely for a schema-shadowed key and lets it
+//     fall through as an ordinary field write, so the wire shape
+//     {"parent":""} can no longer distinguish clear-hierarchy intent from a
+//     legitimate blank-a-real-field write once it reaches the server; the
+//     ambiguity is created at the client surface that accepted `clear_parent`,
+//     so that surface refuses rather than guessing (codex round 2).
+//
 //   - "0.18" — historical. IDEA-2584: `clear_assigned_user` / `clear_agent_role`
 //     booleans on `pad_item`, the canonical and DISCOVERABLE way to unassign.
 //     Additive param bump, v0.5 / v0.6 precedent — no existing tool, action or
