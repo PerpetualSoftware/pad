@@ -670,19 +670,38 @@
 				// Flush any pending debounced search so Enter feels instant
 				// even if the user beats the 200ms debounce.
 				clearTimeout(searchTimeout);
+				const typedAtEnter = query.trim();
 				let item = results.find(matches);
 				if (!item) {
 					loading = true;
 					try {
-						// Query the bare number for both forms: that's the
-						// query shape the item_number go-to path has always
-						// relied on server-side, and the ref filter above
-						// narrows by prefix client-side.
-						const resp = await api.search(String(target.num), buildFilters(0));
-						results = resp.results ?? [];
-						total = resp.total ?? 0;
-						facets = resp.facets;
-						item = results.find(matches);
+						// Ref form probes the bare number (the query shape
+						// the item_number path has always relied on
+						// server-side) and filters by prefix client-side;
+						// bare-number form keeps its pre-existing behavior
+						// of searching exactly what was typed.
+						const resp = await api.search(
+							target.ref ? String(target.num) : typedAtEnter,
+							buildFilters(0)
+						);
+						// Stale-query fence: if the user kept typing while
+						// the probe was in flight, discard it — don't
+						// navigate to (or render) a target they've moved
+						// past.
+						if (query.trim() !== typedAtEnter) return;
+						if (target.ref) {
+							// Probe only: on a miss, the displayed results
+							// must not be clobbered with a different
+							// query's result set (the palette still shows
+							// the typed ref, and loadMore() pages by the
+							// typed query).
+							item = (resp.results ?? []).find(matches);
+						} else {
+							results = resp.results ?? [];
+							total = resp.total ?? 0;
+							facets = resp.facets;
+							item = results.find(matches);
+						}
 					} catch {
 						// ignore — falls through to no-op below
 					} finally {
