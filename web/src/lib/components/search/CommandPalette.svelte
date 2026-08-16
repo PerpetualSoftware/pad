@@ -6,7 +6,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
-	import { localSearch, parseSearchQuery } from '$lib/stores/localSearch.svelte';
+	import { localSearch, parseSearchQuery, parseGoToTarget } from '$lib/stores/localSearch.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import type {
 		SearchResult,
@@ -654,24 +654,54 @@
 			scrollSelectedIntoView();
 		} else if (e.key === 'Enter') {
 			e.preventDefault();
-			// Numeric go-to mode: typing a bare number + Enter jumps directly
-			// to the item with that item_number — the search palette doubles
-			// as a quick "go to item N" jump. See BUG-910 + BUG-864.
-			const trimmed = query.trim();
-			if (/^\d+$/.test(trimmed)) {
-				const targetNum = parseInt(trimmed, 10);
+			// Go-to mode: a bare number (BUG-910) or a full `TASK-1345`-style
+			// ref (BUG-2128) + Enter jumps directly to that item — the search
+			// palette doubles as a quick "go to item" jump. See BUG-864 for
+			// why everything else requires an explicit arrow-selection.
+			const target = parseGoToTarget(query);
+			if (target) {
+				// Ref form must match prefix AND number (a typo'd prefix is a
+				// no-op, never a cross-collection jump); bare number matches
+				// any collection, as before.
+				const matches = (r: AugmentedSearchResult) =>
+					target.ref
+						? formatItemRef(r.item)?.toUpperCase() === target.ref
+						: r.item.item_number === target.num;
 				// Flush any pending debounced search so Enter feels instant
 				// even if the user beats the 200ms debounce.
 				clearTimeout(searchTimeout);
-				let item = results.find((r) => r.item.item_number === targetNum);
+				const typedAtEnter = query.trim();
+				let item = results.find(matches);
 				if (!item) {
 					loading = true;
 					try {
-						const resp = await api.search(trimmed, buildFilters(0));
-						results = resp.results ?? [];
-						total = resp.total ?? 0;
-						facets = resp.facets;
-						item = results.find((r) => r.item.item_number === targetNum);
+						// Ref form probes the bare number (the query shape
+						// the item_number path has always relied on
+						// server-side) and filters by prefix client-side;
+						// bare-number form keeps its pre-existing behavior
+						// of searching exactly what was typed.
+						const resp = await api.search(
+							target.ref ? String(target.num) : typedAtEnter,
+							buildFilters(0)
+						);
+						// Stale-query fence: if the user kept typing while
+						// the probe was in flight, discard it — don't
+						// navigate to (or render) a target they've moved
+						// past.
+						if (query.trim() !== typedAtEnter) return;
+						if (target.ref) {
+							// Probe only: on a miss, the displayed results
+							// must not be clobbered with a different
+							// query's result set (the palette still shows
+							// the typed ref, and loadMore() pages by the
+							// typed query).
+							item = (resp.results ?? []).find(matches);
+						} else {
+							results = resp.results ?? [];
+							total = resp.total ?? 0;
+							facets = resp.facets;
+							item = results.find(matches);
+						}
 					} catch {
 						// ignore — falls through to no-op below
 					} finally {
