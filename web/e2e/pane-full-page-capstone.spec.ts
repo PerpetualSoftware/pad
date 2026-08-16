@@ -43,8 +43,12 @@ import type { SuiteFixture } from './fixtures';
  *      the master route).
  *
  * DEFERRED / out of scope (do NOT assert): BUG-2177 (an editor-bound
- * upload/crop orphaned by the peeking editor remount — accepted) and BUG-2178
- * (collection-rename/move-from-pane URL shaping on this host — deferred).
+ * upload/crop orphaned by the peeking editor remount — accepted). BUG-2178
+ * (collection-rename/move-from-pane URL shaping on this host) is now FIXED
+ * and covered below: the move-from-pane case is asserted end-to-end; the
+ * rename case is a host-side IGNORE whose decision table lives in
+ * planFullPageNavigateAway's unit tests (paneController.test.ts) and whose
+ * route self-heal is BUG-2272's separately-tested SSE machinery.
  *
  * The pane is a desktop-split concern, so the desktop project alone covers it.
  */
@@ -936,4 +940,50 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		// The master is EDITABLE again (un-peeked) — a clean single unwind.
 		await expect(masterCol(page).locator('button.title', { hasText: 'FP dblclose master' })).toBeVisible();
 	});
+
+	test('BUG-2178: moving the PANE item to another collection re-targets the pane and never abandons the master route', async ({
+		page,
+		request,
+		fixture,
+	}) => {
+		await browserLogin(page);
+		const coll = await seedNoteCollection(fixture, request, 'FP move src', 'FPMS');
+		const target = await seedNoteCollection(fixture, request, 'FP move target', 'FPMT');
+		const master = await seedNoteItem(fixture, request, coll.slug, `FP move master ${Date.now()}`, 'm', '');
+		const paneItem = await seedNoteItem(fixture, request, coll.slug, `FP move pane ${Date.now()}`, 'p', '');
+		// Open with the REF-shaped `?item=` a row-click / relationship first-open
+		// mints (openItemPaneByRef → itemUrlId). This is the realistic shape, and
+		// it also makes the post-move retarget a REAL drill: the moved item's
+		// SLUG (which a same-workspace move preserves) differs from the ref, so
+		// the pane remounts onto the fresh item.
+		const paneRef = await itemRef(fixture, request, paneItem.slug);
+		await page.goto(fullPageUrl(fixture, coll.slug, master.slug, `?item=${paneRef}`), {
+			waitUntil: 'domcontentloaded',
+		});
+
+		const pane = page.locator('aside.item-pane');
+		await expect(pane).toBeVisible();
+		await expect(pane.locator('button.title', { hasText: 'FP move pane' })).toBeVisible();
+		const masterPath = pathname(page);
+
+		// Activate the peeking pane FIRST (a click on a peeking side is spent
+		// on activation), THEN open the pane-scoped ⋯ menu.
+		await pane.locator('button.title', { hasText: 'FP move pane' }).click();
+		await page.keyboard.press('Escape'); // close the title editor the activation click opened
+		await pane.locator('button.pane-more-btn').click();
+		// MenuItem hints are not aria-hidden, so match non-exact (harness memory).
+		await pane.getByRole('menuitem', { name: 'Move to collection…' }).click();
+		await pane.getByRole('menuitem', { name: /FP move target/ }).click();
+
+		// The retarget lands as a drill: `?item=` flips from the ref to the moved
+		// item's slug, and the PATHNAME NEVER LEAVES the master route. The broken
+		// build instead `goto`s /{user}/{ws}/{target}/{movedSlug} — pathname
+		// change is exactly what discriminates (CONVE-12).
+		await expect.poll(() => openItemParam(page), { timeout: 10_000 }).toBe(paneItem.slug);
+		expect(pathname(page)).toBe(masterPath);
+		// Pane still shows the (now-moved) item; master column intact.
+		await expect(pane.locator('button.title', { hasText: 'FP move pane' })).toBeVisible();
+		await expect(masterCol(page).locator('button.title', { hasText: 'FP move master' })).toBeVisible();
+	});
 });
+

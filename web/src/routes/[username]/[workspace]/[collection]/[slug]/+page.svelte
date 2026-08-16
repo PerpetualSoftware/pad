@@ -7,7 +7,10 @@
 	import PaneHost from '$lib/components/collections/PaneHost.svelte';
 	import { createScrollRestoration } from '$lib/scroll/restore.svelte';
 	import { createPaneController } from '$lib/collections/paneHostController';
-	import { type ResolvedPaneState } from '$lib/collections/paneController';
+	import {
+		planFullPageNavigateAway,
+		type ResolvedPaneState,
+	} from '$lib/collections/paneController';
 	import { createPaneMintSettle, PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
 	import { resolvePaneTarget, isSamePaneTarget, type PaneGuardItem } from '$lib/collections/paneTarget';
 	import { inExemptSurface } from '$lib/collections/paneFocus';
@@ -170,12 +173,23 @@
 		openItemPaneByRef,
 		navigatePaneTo,
 		handlePaneBack,
-		handlePaneNavigateAway,
 		closeItemPane,
 		currentPaneState,
 		paneNavInFlight,
 		clearPaneGo,
 	} = paneController;
+
+	// BUG-2178: the controller's handlePaneNavigateAway is COLLECTION-host
+	// shaped (its goto targets assume the base route is the collection page),
+	// so this host must not wire it — a pane collection-rename would land on
+	// the collection page and a pane item-move on the moved item's full page,
+	// both abandoning the master. planFullPageNavigateAway (pure, unit-tested)
+	// decides per emit; the only action this host ever takes is a pane drill,
+	// which preserves the master pathname by construction.
+	function handleFullPageNavigateAway(url: string) {
+		const plan = planFullPageNavigateAway(url);
+		if (plan.kind === 'retarget') navigatePaneTo(plan.target);
+	}
 
 	// Parse a ref-shaped candidate's item NUMBER (mirrors paneTarget's private
 	// `parseRefNumber`) — used only to derive `masterItem.item_number` from the
@@ -575,7 +589,7 @@
 			{activePane}
 			onClose={closeItemPane}
 			onGone={closeItemPane}
-			onNavigateAway={handlePaneNavigateAway}
+			onNavigateAway={handleFullPageNavigateAway}
 			onOpenTarget={guardedDrill}
 			onBack={handlePaneBack}
 		/>

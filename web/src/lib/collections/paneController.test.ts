@@ -4,6 +4,7 @@ import {
 	planPaneDrill,
 	planLateralOpen,
 	planPaneClose,
+	planFullPageNavigateAway,
 	PANE_DEPTH_SOFT_CAP,
 	type ResolvedPaneState,
 } from './paneController';
@@ -239,6 +240,61 @@ describe('integration — full open/drill/close round-trips', () => {
 		expect(planPaneClose((reset as { resetState: ResolvedPaneState }).resetState)).toEqual({
 			kind: 'owned-go',
 			goDelta: -1,
+		});
+	});
+});
+
+describe('planFullPageNavigateAway (BUG-2178)', () => {
+	// The two REAL emit shapes, verbatim from ItemDetail.svelte:
+	//  - collection rename (embedded): `/${user}/${ws}/${newColl}?item=${slug}`
+	//  - item move: `/${user}/${ws}/${targetColl}/${movedSlug}`
+
+	it('IGNOREs a collection-rename emit (keeps-pane, ?item= present)', () => {
+		expect(planFullPageNavigateAway('/dave/docapp/new-tasks?item=my-item')).toEqual({
+			kind: 'ignore',
+		});
+	});
+
+	it('IGNOREs a rename emit even when the ?item value is empty or strange', () => {
+		expect(planFullPageNavigateAway('/dave/docapp/new-tasks?item=')).toEqual({ kind: 'ignore' });
+		expect(planFullPageNavigateAway('/dave/docapp/new-tasks?item=%2F%2F')).toEqual({
+			kind: 'ignore',
+		});
+	});
+
+	it('RETARGETs an item-move emit to the moved slug (last path segment)', () => {
+		expect(planFullPageNavigateAway('/dave/docapp/ideas/moved-item-slug')).toEqual({
+			kind: 'retarget',
+			target: 'moved-item-slug',
+		});
+	});
+
+	it('decodes a percent-encoded moved slug', () => {
+		expect(planFullPageNavigateAway('/dave/docapp/ideas/caf%C3%A9-item')).toEqual({
+			kind: 'retarget',
+			target: 'café-item',
+		});
+	});
+
+	it('tolerates a trailing slash on the move URL', () => {
+		expect(planFullPageNavigateAway('/dave/docapp/ideas/moved-item-slug/')).toEqual({
+			kind: 'retarget',
+			target: 'moved-item-slug',
+		});
+	});
+
+	// Input-domain edges (the type admits any string): never navigate on
+	// something unparseable — staying on the master is the safe floor.
+	it('IGNOREs malformed, empty, and pathless inputs', () => {
+		expect(planFullPageNavigateAway('')).toEqual({ kind: 'ignore' });
+		expect(planFullPageNavigateAway('/')).toEqual({ kind: 'ignore' });
+		expect(planFullPageNavigateAway('http://')).toEqual({ kind: 'ignore' });
+		expect(planFullPageNavigateAway('%%%')).toEqual({ kind: 'ignore' });
+	});
+
+	it('IGNOREs an absolute URL to a foreign origin carrying ?item=', () => {
+		expect(planFullPageNavigateAway('https://evil.example/x/y?item=z')).toEqual({
+			kind: 'ignore',
 		});
 	});
 });

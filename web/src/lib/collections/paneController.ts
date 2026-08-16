@@ -135,6 +135,67 @@ export function planPaneDrill(
 	return { kind: 'push', state: { paneDepth: current.paneDepth + 1, paneOwned: current.paneOwned } };
 }
 
+/** Plan for a pane `onNavigateAway` on the FULL-PAGE item host (BUG-2178). */
+export type FullPageNavigateAwayPlan =
+	/** No navigation. The master route is never invalidated FOR THE HOST by a
+	 *  keeps-pane emit, so the host stays put. */
+	| { kind: 'ignore' }
+	/** Item move: re-target the pane (a drill via `navigatePaneTo`) to the
+	 *  moved item, keeping the master route. */
+	| { kind: 'retarget'; target: string };
+
+/**
+ * Plan a pane `onNavigateAway` for the FULL-PAGE item host (BUG-2178).
+ *
+ * ItemDetail's two emits are collection-host-shaped (see
+ * `handlePaneNavigateAway`'s comment in paneHostController.ts), so the
+ * full-page host must not `goto` them — both abandon the master. Instead:
+ *
+ *  - COLLECTION RENAME (`/user/ws/NEWSLUG?item=X`, keeps-pane): IGNORE.
+ *    Nothing the host owns is invalidated by this emit alone: if the
+ *    renamed collection is the MASTER's, the master ItemDetail's own SSE
+ *    rename handler (BUG-2272) already `goto`s the new-slug URL with the
+ *    full search string — `?item=` included — so the route self-heals with
+ *    the pane intact; if it's a DIFFERENT collection, the master route
+ *    never referenced the old slug at all. The embedded pane needs no URL
+ *    change either — it trusts `item.collection_slug`
+ *    (`effectiveCollSlug`), not the route. Known degradation, accepted
+ *    deliberately: if the `collection_updated` SSE is LOST (replay gap),
+ *    the route stays on the dead old slug — the same exposure BUG-2272's
+ *    model already accepts for remote renames, since delta-sync doesn't
+ *    recover collection renames either (BUG-2601 tracks closing that).
+ *  - ITEM MOVE (`/user/ws/COLL/MOVEDSLUG`, no `?item=`): RETARGET the pane
+ *    to the moved item's slug (the emitted URL's last path segment) via the
+ *    drill machinery, which preserves the master pathname by construction
+ *    and handles depth/ownership/focus. The in-pane Back may land on the
+ *    pre-move `?item=` value; if that was a ref the move re-prefixed, the
+ *    pane's gone-state close handles it.
+ *  - Malformed / empty URLs: IGNORE — staying on the master beats
+ *    navigating somewhere unparseable.
+ */
+export function planFullPageNavigateAway(url: string): FullPageNavigateAwayPlan {
+	let parsed: URL | null = null;
+	try {
+		parsed = new URL(url, 'http://pad.invalid');
+	} catch {
+		parsed = null;
+	}
+	if (!parsed || parsed.searchParams.has('item')) return { kind: 'ignore' };
+	const segments = parsed.pathname.split('/').filter(Boolean);
+	if (segments.length === 0) return { kind: 'ignore' };
+	let target = '';
+	try {
+		// decodeURIComponent THROWS on a malformed percent sequence (e.g. a
+		// literal '%' in a slug that never round-tripped through encoding) —
+		// treat that as unparseable, same as the URL-constructor failures.
+		target = decodeURIComponent(segments[segments.length - 1]);
+	} catch {
+		return { kind: 'ignore' };
+	}
+	if (!target) return { kind: 'ignore' };
+	return { kind: 'retarget', target };
+}
+
 /**
  * Plan a LATERAL open (`openItemPane` — a list/board/table row click, Enter,
  * or a j/k pane-follow settle). Three cases:

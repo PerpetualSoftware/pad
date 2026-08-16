@@ -342,6 +342,12 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		}
 	}
 
+	// COLLECTION-HOST-ONLY (BUG-2178): the URLs ItemDetail emits here are
+	// collection-host-shaped (the base route IS the collection page), so the
+	// full-page item host must NOT wire this handler — it navigates off the
+	// master. That host wires planFullPageNavigateAway (paneController.ts)
+	// instead.
+	//
 	// The pane's ItemDetail fires `onNavigateAway` for TWO distinct cases, which
 	// we tell apart by whether the target URL still carries `?item=` (i.e. keeps
 	// the pane open):
