@@ -95,6 +95,30 @@ const PREFIX_ITEM_NUMBER_RE = /^(?:#|item:)(\d+)$/i;
 const REF_PATTERN_RE = /^([A-Za-z]+)-(\d+)$/;
 
 /**
+ * Parse a whole search query as a direct "go to item" target — the
+ * palette's Enter fast-path (BUG-910: bare digits; BUG-2128: a full
+ * `TASK-1345`-style ref, case-insensitive). Returns null when the query
+ * isn't go-to-shaped. `ref` is null for the bare-number form (matches
+ * any collection) and the normalized upper-case ref otherwise (the
+ * caller must match prefix AND number — a wrong prefix is an honest
+ * no-op, never a cross-collection jump).
+ */
+export function parseGoToTarget(query: string): { num: number; ref: string | null } | null {
+	const trimmed = query.trim();
+	if (/^\d+$/.test(trimmed)) {
+		const num = Number(trimmed);
+		return Number.isFinite(num) ? { num, ref: null } : null;
+	}
+	const m = trimmed.match(REF_PATTERN_RE);
+	if (m) {
+		const num = Number(m[2]);
+		if (!Number.isFinite(num)) return null;
+		return { num, ref: `${m[1].toUpperCase()}-${m[2]}` };
+	}
+	return null;
+}
+
+/**
  * Parse a free-form search query into structured prefixes + residual
  * text. Unknown / malformed prefixes pass through as part of `text` so
  * the user always sees something happen.
