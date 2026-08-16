@@ -11,11 +11,11 @@ https://getpad.dev/install — don't retry or guess at alternate paths. If no
 set up — run `pad workspace init` to link and create the workspace
 non-interactively, then continue capturing. If it reports anything else (not
 configured, session expired), this machine hasn't finished setup — don't run
-`pad init`/`pad workspace init` yourself. `pad workspace init` now fails
-fast non-interactively instead of hanging (BUG-2538/BUG-2577), but the
-error just means a human needs an interactive terminal, which doesn't help
-you; `pad init` can still hang on the browser flow in the session-expired
-case (BUG-2592). Tell the user to run `pad init` themselves in an
+`pad init`/`pad workspace init` yourself. Both now fail fast when
+stdin/stdout aren't terminals instead of hanging (BUG-2538/BUG-2577/
+BUG-2592) — though on a harness whose stdin AND stdout look like a real
+terminal they still drop into the browser flow — and either way the outcome
+just means a human needs an interactive terminal, which doesn't help you. Tell the user to run `pad init` themselves in an
 interactive terminal (in Claude Code, suggest `! pad init`) and stop.
 
 Before creating, run `pad item list conventions --field trigger=always
