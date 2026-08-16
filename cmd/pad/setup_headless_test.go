@@ -281,8 +281,8 @@ func TestHeadlessSetupNonTTYWithoutFlags(t *testing.T) {
 	if gotErr == nil {
 		t.Fatal("expected error when stdin is not a terminal, got nil")
 	}
-	if !strings.Contains(gotErr.Error(), "stdin is not a terminal") {
-		t.Errorf("error %q should mention 'stdin is not a terminal'", gotErr.Error())
+	if !strings.Contains(gotErr.Error(), "not running in an interactive terminal") {
+		t.Errorf("error %q should mention not running in an interactive terminal (BUG-2597 widened the gate past stdin-only, so the message no longer blames stdin specifically)", gotErr.Error())
 	}
 	// Must also point at the headless flags so the agent knows what to use
 	if !strings.Contains(gotErr.Error(), "--email") {

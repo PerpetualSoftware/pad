@@ -654,9 +654,18 @@ func promptAndBootstrap(client *cli.Client) (*cli.LoginResponse, error) {
 	// reaches this path without a TTY would hang indefinitely on
 	// reader.ReadString('\n'). Fail fast with a hint pointing at the
 	// headless flags instead (BUG-988).
-	if !term.IsTerminal(int(os.Stdin.Fd())) {
+	//
+	// BUG-2597: gate on canPromptForConfig() (stdin AND stdout are
+	// terminals), not stdin alone — a pty-backed harness can make stdin
+	// look like a char device with nobody able to answer, which sent
+	// "  Email: " into a redirected stdout and blocked on the read.
+	// Same swap as offerSkillInstall (BUG-2577, PR #1111) and
+	// installInteractive (BUG-2593, PR #1116); as there, a caller with
+	// BOTH fds on an undriven pty is indistinguishable from a real
+	// terminal and still prompts.
+	if !canPromptForConfig() {
 		return nil, fmt.Errorf(
-			"stdin is not a terminal — cannot prompt for admin credentials.\n" +
+			"not running in an interactive terminal — cannot prompt for admin credentials.\n" +
 				"Run with --email, --name, and --password for non-interactive bootstrap:\n" +
 				"  pad auth setup --email you@example.com --name \"Your Name\" --password <pass>")
 	}
