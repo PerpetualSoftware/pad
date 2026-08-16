@@ -39,8 +39,10 @@ const appStateMock = fileURLToPath(new URL('./src/test/mocks/app-state.ts', impo
 const appNavigationMock = fileURLToPath(new URL('./src/test/mocks/app-navigation.ts', import.meta.url));
 
 // Agent worktrees symlink `web/node_modules` to the main checkout's
-// node_modules rather than `npm install`-ing a copy (installing clobbers a
-// worktree; see CLAUDE.md). Vite's dev-server fs-access guard checks a
+// node_modules rather than `npm ci`-ing a copy (running npm ci THROUGH the
+// symlink deletes the shared tree — see CLAUDE.md's "Working in a git
+// worktree" section, which also covers the svelte-kit sync prerequisite).
+// Vite's dev-server fs-access guard checks a
 // requested file's REALPATH against `server.fs.allow`, which defaults to the
 // project root and its ancestors — a node_modules symlink that resolves
 // outside that root (the worktree lives under a sibling directory tree) gets
