@@ -20,6 +20,11 @@ package mcp
 // route surfaces. An action that never reaches dispatch fails too —
 // otherwise a fixture gap would silently shrink coverage back to a
 // hand-list.
+//
+// Instrument scope: this checks route MEMBERSHIP, not route BEHAVIOR.
+// A mapper with a wrong path or method would pass here — behavioral
+// shape belongs to the per-route tests (TestRoute_*, the dispatch_*
+// real-server tests), which every new route entry should bring along.
 
 import (
 	"context"
