@@ -33,6 +33,16 @@ make dev-web    # Run SvelteKit dev server (hot reload on :5173)
 - **Frontend only:** `make web && make install` or use `make dev-web` for hot reload during development
 - **Full rebuild:** `make install`
 
+### Working in a git worktree
+
+Agent sessions take a `git worktree` per task rather than sharing the main checkout (a shared checkout means a shared stash stack, branch state, and dirty files across sessions). Three rules keep web tooling working there:
+
+- **Symlinking `web/node_modules` to the main checkout's copy is fine** (and fast). Vitest, `vite build`, and `npm run check` all work through the symlink.
+- **A fresh worktree has no `web/.svelte-kit`** (gitignored, generated). Run `npx svelte-kit sync` in `web/` before any vitest/vite command — or `npm run check`, which syncs first. Without it, vitest fails with `Failed to load tsconfig '.svelte-kit/tsconfig.json': Tsconfig not found` regardless of how `node_modules` was set up. (This missing generated dir was historically misdiagnosed as a symlink problem — `npm ci` "fixed" it only because its `prepare` script runs `svelte-kit sync`.)
+- **Never run `npm ci` in a worktree whose `web/node_modules` is a symlink — including via make.** `npm ci` lives in the `web` target, so every target whose dependency chain reaches it is off-limits too: currently `web`, `build`, `install`, `serve`, `web-check`, and `check` (via `web-check`). Everything else — `build-go`, `dev`, `restart`, `test`, `test-pg`, `lint`, `vuln`, `web-test`, `dev-web`, `clean` — never reaches `npm ci`. `npm ci` deletes through the symlink into the shared tree, breaking every other worktree and session at once with a confusing `vitest: not found`. If you want a real, isolated `node_modules` instead of a symlink, `npm ci` in an un-symlinked `web/` is ~5s on a warm cache and regenerates `.svelte-kit` as a side effect.
+
+`web/vitest.config.ts`'s `server.fs.allow` note covers the other worktree wrinkle (symlink realpaths vs the dev-server file-serving guard) and points back at this section.
+
 ## Key Directories
 
 ```
