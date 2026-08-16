@@ -144,6 +144,20 @@ func SetWorkspaceTool(state *WorkspaceState, bootstrapFetcher BootstrapFetcher) 
 	tool := mcp.NewTool(
 		SetWorkspaceToolName,
 		mcp.WithDescription(desc),
+		// BUG-2302: explicit annotations — without a block, mcp-go
+		// defaults every tool to DestructiveHint:true. Setting a
+		// session default mutates only in-session routing state
+		// (nothing in the workspace), is safely repeatable with the
+		// same argument, and touches no external world. Not read-only:
+		// it does write session state (and the shared-server variant's
+		// bootstrap load is still a stateless read, so this stays the
+		// conservative value of the two deployments).
+		mcp.WithToolAnnotation(mcp.ToolAnnotation{
+			ReadOnlyHint:    mcp.ToBoolPtr(false),
+			DestructiveHint: mcp.ToBoolPtr(false),
+			IdempotentHint:  mcp.ToBoolPtr(true),
+			OpenWorldHint:   mcp.ToBoolPtr(false),
+		}),
 		mcp.WithString("workspace",
 			mcp.Description("Workspace slug to load context for. On multi-user/remote servers this does not persist; pass workspace explicitly on each call."),
 			mcp.Required(),

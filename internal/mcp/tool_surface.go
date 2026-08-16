@@ -78,6 +78,10 @@ var readOnlyActions = map[string]map[string]bool{
 		"list-comments": true,
 		"backlinks":     true,
 		"export":        true,
+		// BUG-2302: was missing since v0.14 added it — history is
+		// documented read-only in catalog_item.go (version metadata,
+		// no content body, no mutation).
+		"history": true,
 	},
 	"pad_workspace": {
 		"list":      true,
@@ -125,6 +129,50 @@ var readOnlyActions = map[string]map[string]bool{
 		"tool-surface": true,
 		"bootstrap":    true,
 	},
+}
+
+// additiveWriteActions is the allowlist of WRITE actions that are
+// purely ADDITIVE — they create or attach state, never overwrite,
+// remove, or destroy it (BUG-2302, codex round 1). Used by
+// annotationForDef: a tool advertises DestructiveHint:false only when
+// every action is either read-only or listed here. Absence ⇒ assume
+// destructive — the conservative direction, same shape as
+// readOnlyActions above.
+//
+// Only tools whose ENTIRE write set is additive need complete entries
+// (that's what flips their tool-level hint); tools with any
+// overwrite/delete action (pad_item.update/delete,
+// pad_collection.update/delete, pad_role.update/delete) stay
+// destructive at tool level regardless, so their additive writes are
+// deliberately not enumerated — one judgment per load-bearing line.
+//
+//   - pad_workspace: create (new workspace), invite (adds an
+//     invitation/member), claim (redeems an invite code — joins),
+//     restore (un-soft-delete; the catalog itself documents it
+//     "mutating but non-destructive", TASK-1973).
+//   - pad_library: activate copies a library entry into the workspace
+//     as a new item.
+var additiveWriteActions = map[string]map[string]bool{
+	"pad_workspace": {
+		"create":  true,
+		"invite":  true,
+		"claim":   true,
+		"restore": true,
+	},
+	"pad_library": {
+		"activate": true,
+	},
+}
+
+// isAdditiveWriteAction reports whether (toolName, action) is a
+// purely-additive write. Defaults to false (assume destructive) for
+// any pair not in the allowlist.
+func isAdditiveWriteAction(toolName, action string) bool {
+	actions, ok := additiveWriteActions[toolName]
+	if !ok {
+		return false
+	}
+	return actions[action]
 }
 
 // isReadOnlyAction reports whether (toolName, action) performs no
