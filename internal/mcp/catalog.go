@@ -257,6 +257,53 @@ type catalogError struct{ msg string }
 
 func (e *catalogError) Error() string { return e.msg }
 
+// annotationForDef derives the MCP tool annotation block from the
+// catalog's own read-only knowledge (readOnlyActions in tool_surface.go
+// — the single source of truth; BUG-2302). Without an explicit block,
+// mcp-go's NewTool injects ReadOnlyHint:false + DestructiveHint:true +
+// OpenWorldHint:true on EVERY tool, so clients were told that reading a
+// dashboard is destructive — which both trains users to click through
+// confirmation prompts and misrepresents the surface.
+//
+// Annotations are per-tool but Pad's tools are resource × action, so a
+// single tool can cover both reads and writes. The policy, decided
+// deliberately rather than inherited:
+//
+//   - Every action read-only → ReadOnlyHint:true, DestructiveHint:false,
+//     IdempotentHint:true (repeating a read changes nothing).
+//   - Any write action → ReadOnlyHint:false, IdempotentHint:false.
+//     DestructiveHint then depends on WHAT the writes can do:
+//     false when every write is purely additive (additiveWriteActions
+//     in tool_surface.go — pad_workspace, pad_library; codex round 1:
+//     invite/create/claim/restore/activate never overwrite or remove,
+//     so marking them destructive would reintroduce the
+//     prompt-training harm at tool level), true when any action can
+//     overwrite or delete (pad_item, pad_collection, pad_role) — the
+//     conservative tool-level truth and the same wire values mcp-go
+//     defaulted to for exactly those tools.
+//   - OpenWorldHint:false for all tools: every pad tool operates on the
+//     pad server's own workspace data, a closed world — nothing here
+//     reaches external entities the way e.g. a web search does.
+func annotationForDef(def ToolDef) mcp.ToolAnnotation {
+	allReadOnly := true
+	destructive := false
+	for action := range def.Actions {
+		if isReadOnlyAction(def.Name, action) {
+			continue
+		}
+		allReadOnly = false
+		if !isAdditiveWriteAction(def.Name, action) {
+			destructive = true
+		}
+	}
+	return mcp.ToolAnnotation{
+		ReadOnlyHint:    mcp.ToBoolPtr(allReadOnly),
+		DestructiveHint: mcp.ToBoolPtr(destructive),
+		IdempotentHint:  mcp.ToBoolPtr(allReadOnly),
+		OpenWorldHint:   mcp.ToBoolPtr(false),
+	}
+}
+
 // buildToolFromDef compiles a ToolDef into the mcp.Tool shape mcp-go
 // expects. The schema is flat: `action` is required, every other
 // parameter is optional at the schema level (per-action validation
@@ -264,7 +311,10 @@ func (e *catalogError) Error() string { return e.msg }
 // Schema discriminated unions are awkward in mcp-go's helpers, and
 // the description carries the action × params matrix anyway.
 func buildToolFromDef(def ToolDef) mcp.Tool {
-	opts := []mcp.ToolOption{mcp.WithDescription(def.Description)}
+	opts := []mcp.ToolOption{
+		mcp.WithDescription(def.Description),
+		mcp.WithToolAnnotation(annotationForDef(def)),
+	}
 
 	// `action` is always required and always enumerated. Sorted for
 	// deterministic schema output across builds.

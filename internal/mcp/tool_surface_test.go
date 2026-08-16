@@ -97,6 +97,9 @@ func TestToolSurfaceJSON_ReadOnlyFlags(t *testing.T) {
 		{"pad_item", "list"},
 		{"pad_item", "backlinks"},
 		{"pad_item", "export"},
+		// BUG-2302: history was documented read-only since v0.14 but
+		// missing from readOnlyActions — pin the fix.
+		{"pad_item", "history"},
 		{"pad_project", "dashboard"},
 		{"pad_project", "activity"},
 		{"pad_search", "query"},

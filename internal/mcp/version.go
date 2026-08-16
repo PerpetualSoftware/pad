@@ -103,7 +103,33 @@ const CmdhelpVersion = "0.1"
 //     pad_item actions unchanged. Backwards-compatible for v0.6
 //     consumers that don't enumerate the new actions.
 //
-//   - "0.19" — current. BUG-2078: adds a `clear_parent` boolean to
+//   - "0.20" — current. BUG-2302: every advertised tool now carries an
+//     EXPLICIT annotation block derived from readOnlyActions (the same
+//     single source the tool-surface serializer uses) instead of
+//     inheriting mcp-go's NewTool defaults, which stamped
+//     ReadOnlyHint:false + DestructiveHint:true + OpenWorldHint:true on
+//     every tool — including pure reads like pad_search and pad_project,
+//     training users to click through host confirmation prompts.
+//     Policy: fully-read-only tools (every action in readOnlyActions)
+//     advertise ReadOnlyHint:true, DestructiveHint:false,
+//     IdempotentHint:true; tools whose writes are all purely ADDITIVE
+//     (additiveWriteActions — pad_workspace's invite/create/claim/
+//     restore, pad_library's activate) advertise ReadOnlyHint:false +
+//     DestructiveHint:false; tools with any overwrite/delete-capable
+//     action (pad_item, pad_collection, pad_role) keep the
+//     conservative ReadOnlyHint:false + DestructiveHint:true —
+//     unchanged on the wire from the old defaults for exactly those;
+//     OpenWorldHint:false everywhere (pad tools are closed-world).
+//     pad_set_workspace gets its own block (write, non-destructive,
+//     idempotent, closed-world). Also adds the missing `history` entry
+//     to readOnlyActions — pad_item.history was documented read-only
+//     since v0.14 but reported read_only:false on the tool-surface
+//     descriptor and would have kept `pad_item` annotations honest but
+//     the descriptor wrong. BEHAVIOR bump (v0.9/v0.16 precedent): no
+//     tool names, action enums, or parameter shapes changed — the
+//     advertised annotation metadata and one read_only flag did.
+//
+//   - "0.19" — BUG-2078: adds a `clear_parent` boolean to
 //     `pad_item`, the canonical and DISCOVERABLE way to detach an item from
 //     its parent. Additive param bump, same grounds as v0.18 — no existing
 //     tool, action, or param changed shape.
@@ -438,7 +464,7 @@ const CmdhelpVersion = "0.1"
 //   - result.capabilities.experimental.padToolSurface.version (handshake).
 //   - pad://_meta/version resource (queryable JSON document).
 //   - pad_meta.action: tool-surface (full catalog introspection).
-const ToolSurfaceVersion = "0.19"
+const ToolSurfaceVersion = "0.20"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
