@@ -949,6 +949,7 @@ func updateCmd() *cobra.Command {
 		expectedUpdatedAt string
 		clearAssignedUser bool
 		clearAgentRole    bool
+		clearParent       bool
 	)
 
 	cmd := &cobra.Command{
@@ -1026,7 +1027,7 @@ Examples:
 			// writer's change on the last write.
 			parentRef := parentFlag
 
-			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0
+			hasFieldChanges := status != "" || priority != "" || assignee != "" || parentRef != "" || category != "" || len(fieldFlags) > 0 || clearParent
 			if hasFieldChanges {
 				patch := make(map[string]interface{})
 
@@ -1068,6 +1069,63 @@ Examples:
 				// them as column writes. Applied BEFORE --assign / --role below,
 				// so those dedicated flags win on conflict.
 				liftColumnFields(patch, collSchema).apply(&input.AssignedUserID, &input.AgentRoleID)
+
+				// --clear-parent, checked HERE — after the named --parent
+				// resolution, the --field overlay, AND liftColumnFields —
+				// not up front (codex round 1 [P1]). extractParentLink
+				// (internal/server/handlers_items.go) resolves the parent
+				// link from EITHER a "parent" or a "plan" key in fields_patch,
+				// so a competing value can arrive by three different routes:
+				// --parent itself, --field parent=<ref>, or the "plan" alias
+				// via --field plan=<ref>. An early check right after --parent
+				// only caught the first; `--clear-parent --field parent=X`
+				// (or `--field plan=X`) reached the wire unrejected and the
+				// `if clearParent { patch["parent"] = "" }` that used to sit
+				// beside it ran BEFORE the --field loop, so the loop's
+				// `patch[kv[:idx]] = ...` silently overwrote the clear with
+				// the set. Checking both keys after every patch-building step
+				// closes both bypasses at once.
+				if clearParent {
+					// Refuse when the TARGET COLLECTION'S SCHEMA declares its
+					// own "parent" or "plan" field (codex round 2 finding #2).
+					// extractParentLink (internal/server/handlers_items.go
+					// ~L606-610, pre-existing documented policy: "Skip this
+					// if the schema actually defines a field with that key")
+					// skips hierarchy handling ENTIRELY for a schema-shadowed
+					// key and instead lets it fall through as an ordinary
+					// field write — so on a shadowed collection,
+					// `patch["parent"] = ""` below would report success while
+					// silently blanking the user's data field AND leaving
+					// the real hierarchy link untouched. Reproduced
+					// empirically before this guard existed: success
+					// reported, hierarchy link unchanged, fields blob
+					// "parent" -> "".
+					//
+					// The wire shape {"parent":""} cannot distinguish
+					// clear-hierarchy intent from a legitimate
+					// blank-my-schema-field write once it reaches the
+					// server — the ambiguity is created HERE, at the surface
+					// that accepted --clear-parent, so this surface must
+					// refuse rather than push the decision server-side.
+					// collSchema is already fetched above for --field type
+					// parsing, so this check is free — no extra request.
+					for _, f := range collSchema.Fields {
+						if f.Key == "parent" || f.Key == "plan" {
+							return fmt.Errorf("--clear-parent: this collection defines its own %q field, so the hierarchy-clear flag can't be expressed for it", f.Key)
+						}
+					}
+					for _, key := range []string{"parent", "plan"} {
+						if v, ok := patch[key].(string); ok && v != "" {
+							return fmt.Errorf("--clear-parent conflicts with setting a parent in the same update (via %q); drop one", key)
+						}
+					}
+					// Present-but-empty is the server's clear signal: parentProvided
+					// becomes true whenever the "parent" key exists in fields_patch,
+					// and an empty value clears the link rather than setting it. An
+					// absent key (the old `--parent ""` no-op) never reaches
+					// parentProvided at all.
+					patch["parent"] = ""
+				}
 
 				// An empty patch never reaches the wire: ItemUpdate.FieldsPatch
 				// carries `omitempty`, so `--field assigned_user_id=` on its own
@@ -1198,7 +1256,7 @@ Examples:
 	cmd.Flags().StringVar(&priority, "priority", "", "update priority field")
 	cmd.Flags().StringVar(&assignee, "assign", "", "assign to user (name or email)")
 	cmd.Flags().StringVar(&roleFlag, "role", "", "assign agent role (slug)")
-	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID)")
+	cmd.Flags().StringVar(&parentFlag, "parent", "", "update parent item (ref, slug, or ID); an empty --parent \"\" is silently ignored, it does NOT clear — use --clear-parent")
 	cmd.Flags().StringVar(&category, "category", "", "update category field")
 	cmd.Flags().StringVar(&tags, "tags", "", "update tags (JSON array)")
 	cmd.Flags().StringArrayVarP(&fieldFlags, "field", "f", nil, "set arbitrary field (repeatable): --field key=value")
@@ -1216,6 +1274,7 @@ Examples:
 	// new decision with its own grounds, not the completion of this one.
 	cmd.Flags().BoolVar(&clearAssignedUser, "clear-assigned-user", false, "unassign the item (clear assigned_user_id)")
 	cmd.Flags().BoolVar(&clearAgentRole, "clear-agent-role", false, "clear the item's agent role (agent_role_id)")
+	cmd.Flags().BoolVar(&clearParent, "clear-parent", false, "detach the item from its parent (clear the parent link); conflicts with --parent")
 
 	return cmd
 }

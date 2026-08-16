@@ -455,9 +455,73 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// shape mapItemCreate uses; matches the workaround the --role
 		// rejection points at.
 		liftFieldsToColumns(patch, payload)
+		// BUG-2078: clear_parent, checked here rather than alongside
+		// clear_assigned_user/clear_agent_role below. Those two are top-level
+		// ItemUpdate columns forwarded verbatim into `payload`; "parent" is a
+		// fields_patch PSEUDO-key that only extractParentLink
+		// (internal/server/handlers_items.go) understands — a present key
+		// with an empty value means "clear", an absent key means "untouched".
+		// So the clear signal has to be written into `patch`, and it must
+		// happen AFTER the named-flag loop, the --field overlay, AND
+		// liftFieldsToColumns above — every one of those can leave a
+		// competing `patch["parent"]` behind, same reasoning as the
+		// assigned-user conflict check below.
+		//
+		// Checked against BOTH "parent" and "plan" (codex round 1 [P1]):
+		// extractParentLink resolves the link from EITHER key with no early
+		// exit — `for _, key := range []string{"parent", "plan"}` — so a
+		// competing value reaching the wire as `field: ["plan=<ref>"]`
+		// bypassed a check that only looked at patch["parent"], and its
+		// "plan" entry then overwrote this method's `patch["parent"] = ""`
+		// server-side (the LATER key in that loop wins because neither
+		// iteration exits early). Checking both closes the alias bypass.
+		if clear, _ := input["clear_parent"].(bool); clear {
+			// Refuse when the TARGET COLLECTION'S SCHEMA declares its own
+			// "parent" or "plan" field (codex round 2 finding #2).
+			// extractParentLink (internal/server/handlers_items.go ~L606-610,
+			// pre-existing documented policy: "Skip this if the schema
+			// actually defines a field with that key") skips hierarchy
+			// handling ENTIRELY for a schema-shadowed key and instead lets it
+			// fall through as an ordinary field write — so on a shadowed
+			// collection, `patch["parent"] = ""` below would report success
+			// while silently blanking the user's data field AND leaving the
+			// real hierarchy link untouched. Reproduced empirically before
+			// this guard existed: IsError=false, hierarchy link unchanged,
+			// fields blob "parent" -> "".
+			//
+			// The wire shape {"parent":""} cannot distinguish clear-hierarchy
+			// intent from a legitimate blank-my-schema-field write once it
+			// reaches the server — the ambiguity is created HERE, at the
+			// surface that accepted clear_parent, so this surface must refuse
+			// rather than push the decision server-side.
+			//
+			// One extra GetCollection-equivalent call, paid ONLY on this path
+			// (clear_parent=true) — the common update path fetches no schema
+			// today and shouldn't start paying for one.
+			shadowedKey, serr := d.collectionSchemaShadowsParent(ctx, user, workspace, prefetchRec)
+			if serr != nil {
+				return dispatcherErrorResult(cmdKey, "check collection schema for clear_parent", serr), nil
+			}
+			if shadowedKey != "" {
+				return validationFailedResult(cmdKey,
+					fmt.Sprintf("this collection defines its own %q field, so clear_parent can't be expressed for it", shadowedKey),
+					""), nil
+			}
+			for _, key := range []string{"parent", "plan"} {
+				if v, _ := patch[key].(string); v != "" {
+					return validationFailedResult(cmdKey,
+						fmt.Sprintf("clear_parent conflicts with setting a parent in the same update (via %q)", key),
+						"Drop one: either clear the parent or set it, not both."), nil
+				}
+			}
+			patch["parent"] = ""
+		}
 		// Only emit fields_patch when it still carries schema fields after
 		// the column lift — otherwise a role-only update would send an empty
-		// patch object (harmless, but avoids a needless fields write).
+		// patch object (harmless, but avoids a needless fields write). A
+		// clear_parent-only update deliberately bypasses this: patch["parent"]
+		// = "" has len 1, so fields_patch is still emitted — that key IS the
+		// payload for a bare clear.
 		if len(patch) > 0 {
 			payload["fields_patch"] = patch
 		}
@@ -501,6 +565,75 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	return d.executeRequest(ctx, cmdKey, user, http.MethodPatch, itemPath, body)
 }
 
+// collectionSchemaShadowsParent reports whether the item's collection
+// declares its own schema field named "parent" or "plan" — the case where
+// extractParentLink (internal/server/handlers_items.go ~L606-610) treats
+// that key as an ORDINARY data field instead of hierarchy, so a
+// clear_parent request would silently blank the field and leave the real
+// hierarchy link untouched (codex round 2 finding #2 / BUG-2078). Returns
+// the shadowed key name ("parent" or "plan") when found, "" when the
+// collection is clear to use clear_parent normally.
+//
+// prefetchItem is the Step-1 prefetch dispatchItemUpdate already ran (its
+// body is the full item, including collection_slug) — reused here rather
+// than re-fetched, so the ONLY new network call this adds is the
+// collection lookup itself, and only on the clear_parent path.
+func (d *HTTPHandlerDispatcher) collectionSchemaShadowsParent(
+	ctx context.Context,
+	user *models.User,
+	workspace string,
+	prefetchItem *httptest.ResponseRecorder,
+) (string, error) {
+	var item struct {
+		CollectionSlug string `json:"collection_slug"`
+	}
+	if err := json.Unmarshal(prefetchItem.Body.Bytes(), &item); err != nil {
+		return "", fmt.Errorf("parse prefetched item: %w", err)
+	}
+	if item.CollectionSlug == "" {
+		return "", nil
+	}
+
+	path := "/api/v1/workspaces/" + url.PathEscape(workspace) +
+		"/collections/" + url.PathEscape(item.CollectionSlug)
+	req, err := d.buildAuthedRequest(ctx, http.MethodGet, path, nil, user)
+	if err != nil {
+		return "", fmt.Errorf("build collection request: %w", err)
+	}
+	rec := httptest.NewRecorder()
+	d.Handler.ServeHTTP(rec, req)
+	if rec.Code >= 400 {
+		body := strings.TrimSpace(rec.Body.String())
+		if body == "" {
+			body = http.StatusText(rec.Code)
+		}
+		return "", fmt.Errorf("get collection %q: %d %s", item.CollectionSlug, rec.Code, body)
+	}
+
+	var coll struct {
+		Schema string `json:"schema"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &coll); err != nil {
+		return "", fmt.Errorf("parse collection response: %w", err)
+	}
+	var schema models.CollectionSchema
+	if coll.Schema != "" {
+		// Schema-fetch/parse failure degrades to "not shadowed" rather than
+		// erroring the whole update — mirrors the CLI's collSchema fetch,
+		// which the same trade-off already accepts (cmd/pad/cmd_item.go: a
+		// failed GetCollection there leaves collSchema at its zero value and
+		// --field values just stay untyped strings instead of blocking the
+		// update).
+		_ = json.Unmarshal([]byte(coll.Schema), &schema)
+	}
+	for _, f := range schema.Fields {
+		if f.Key == "parent" || f.Key == "plan" {
+			return f.Key, nil
+		}
+	}
+	return "", nil
+}
+
 // hasFieldChanges reports whether the input has any value that
 // should trigger field-merging on update. Mirrors the CLI's check
 // at cmd/pad/main.go itemUpdateCmd around the `hasFieldChanges`
@@ -522,6 +655,12 @@ func hasFieldChanges(input map[string]any) bool {
 		case []string:
 			return len(x) > 0
 		}
+	}
+	// BUG-2078: clear_parent alone (no other field touched) must still enter
+	// the fields_patch-building branch below — it's the only way "parent" as
+	// a present-but-empty key reaches the payload.
+	if b, ok := input["clear_parent"].(bool); ok && b {
+		return true
 	}
 	return false
 }
