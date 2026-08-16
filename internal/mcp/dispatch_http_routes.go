@@ -1,13 +1,19 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
 
+	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -210,7 +216,10 @@ func init() {
 			method:       http.MethodPost,
 			pathTemplate: "/api/v1/workspaces/{workspace}/items/{ref}/restore",
 		}.toRouteMapper(),
-		"item list":   mapItemList,
+		// "item list" is deliberately ABSENT: it dispatches via the
+		// hand-written dispatchItemList (BUG-2305) so the response can
+		// be projected to summaries — a RouteMapper cannot transform
+		// responses. mapItemList below is still its URL builder.
 		"item move":   mapItemMove,
 		"item search": mapItemSearch,
 
@@ -1248,6 +1257,74 @@ func mapItemList(input map[string]any) (string, string, []byte, error) {
 		pathBase += "?" + encoded
 	}
 	return http.MethodGet, pathBase, nil, nil
+}
+
+// dispatchItemList is the hand-written dispatcher for `item list`
+// (BUG-2305). It exists because the two transports diverged on result
+// SHAPE: the exec path projects items through cli.ToItemSummaries
+// (cmd/pad/cmd_item.go — the CLI's default, lifted by --full), while a
+// routeTable entry can only build the request — RouteMapper has no
+// response-transform hook, and the server's list endpoint has no
+// projection parameter (parseItemListParams enumerates its accepted
+// set). So a bare pad_item.list over HTTP returned up to 50 FULL
+// content bodies — the exact token blowup TASK-2000's limit was
+// written to prevent. Same keep-remote-identical-to-stdio rationale
+// (and the same cli.ToItemSummaries projection) as
+// HTTPResourceFetcher.fetchItemList in resources_http.go.
+//
+// mapItemList stays the single source for URL/filter construction;
+// this method only adds the response-side projection. `full: true`
+// opts back into complete bodies — the same escape the stdio path has
+// (BuildCLIArgs forwards it as the CLI's --full flag), so the two
+// transports agree in BOTH modes.
+func (d *HTTPHandlerDispatcher) dispatchItemList(
+	ctx context.Context,
+	input map[string]any,
+	user *models.User,
+) (*mcp.CallToolResult, error) {
+	const cmdKey = "item list"
+	method, urlPath, _, err := mapItemList(input)
+	if err != nil {
+		return validationFailedResult(cmdKey, err.Error(),
+			"Check the input shape against the tool's schema."), nil
+	}
+	if full, _ := input["full"].(bool); full {
+		// Complete bodies requested — plain forward, same as the old
+		// routeTable path (and the same shape stdio's --full emits).
+		return d.executeRequest(ctx, cmdKey, user, method, urlPath, nil)
+	}
+
+	req, err := d.buildAuthedRequest(ctx, method, urlPath, nil, user)
+	if err != nil {
+		// Same envelope mapping as executeRequest — a scope rejection
+		// must be permission_denied here too, not server_error.
+		return buildRequestErrorResult(cmdKey, err), nil
+	}
+	rec := httptest.NewRecorder()
+	d.Handler.ServeHTTP(rec, req)
+	resp := rec.Result()
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return dispatcherErrorResult(cmdKey, "read response", err), nil
+	}
+	if resp.StatusCode >= 400 {
+		// Same envelope path as packageHTTPResponse; req.Context() so
+		// the workspace lister sees the auth state buildAuthedRequest
+		// attached (Codex review #379 round 1).
+		return classifyHTTPStatus(req.Context(), cmdKey, resp.StatusCode, bodyBytes, d.Lister), nil
+	}
+	var items []models.Item
+	if err := json.Unmarshal(bodyBytes, &items); err != nil {
+		return dispatcherErrorResult(cmdKey, "decode items", err), nil
+	}
+	enc, err := json.Marshal(cli.ToItemSummaries(items))
+	if err != nil {
+		return dispatcherErrorResult(cmdKey, "encode summaries", err), nil
+	}
+	// packageJSONResult wraps the top-level array as {items: [...]}
+	// (BUG-985), matching every other proxied GET.
+	return packageJSONResult(string(enc)), nil
 }
 
 // numericInput pulls an int64 out of a JSON-typed input value. JSON

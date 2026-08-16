@@ -234,7 +234,7 @@ func TestHTTPHandlerDispatcher_ScopeEnforcement_RejectsReadScopeOnWrites(t *test
 // synthesized HTTP method is GET.
 func TestHTTPHandlerDispatcher_ScopeEnforcement_AllowsReadScopeOnReads(t *testing.T) {
 	user := &models.User{ID: "user-1", Name: "Dave", Email: "dave@example.com"}
-	rec := &recordingHandler{t: t, wantStatus: http.StatusOK, respBody: `{"items":[]}`}
+	rec := &recordingHandler{t: t, wantStatus: http.StatusOK, respBody: `[]`}
 
 	d := &HTTPHandlerDispatcher{
 		Handler:      rec,
@@ -413,7 +413,7 @@ func TestHTTPHandlerDispatcher_OnScopeDenied_FiresOnce(t *testing.T) {
 // denied — false-positive that masks real abuse).
 func TestHTTPHandlerDispatcher_OnScopeDenied_NotFiredOnAllow(t *testing.T) {
 	user := &models.User{ID: "user-1", Name: "Dave", Email: "dave@example.com"}
-	rec := &recordingHandler{t: t, wantStatus: http.StatusOK, respBody: `{"items":[]}`}
+	rec := &recordingHandler{t: t, wantStatus: http.StatusOK, respBody: `[]`}
 
 	var fired int
 	d := &HTTPHandlerDispatcher{

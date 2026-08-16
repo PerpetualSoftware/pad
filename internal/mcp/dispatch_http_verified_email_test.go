@@ -97,7 +97,7 @@ func TestHTTPHandlerDispatcher_VerifiedEmail_AllowsVerifiedWrite(t *testing.T) {
 
 func TestHTTPHandlerDispatcher_VerifiedEmail_AllowsUnverifiedRead(t *testing.T) {
 	user := &models.User{ID: "u3", Name: "Unv", Email: "unv@example.com"} // unverified
-	rec := &recordingHandler{t: t, wantStatus: http.StatusOK, respBody: `{"items":[]}`}
+	rec := &recordingHandler{t: t, wantStatus: http.StatusOK, respBody: `[]`}
 
 	d := &HTTPHandlerDispatcher{
 		Handler:              rec,
