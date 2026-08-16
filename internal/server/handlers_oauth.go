@@ -1426,7 +1426,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 button.primary:hover:not(:disabled) { background: #1e54d4; }
 .footer { margin-top: 2em; font-size: .85em; color: #888; }
 .footer a { color: inherit; }
-.no-ws { color: #b00; }
 .allow-helper {
   color: #b00; font-size: .85em; margin-top: .35em;
   display: none;
@@ -1490,11 +1489,16 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
 
   <fieldset>
     <legend>Which workspaces</legend>
+    {{/* The wildcard radio renders even with zero memberships — the server
+         accepts a zero-workspace "all" consent (parseConsentPayload wildcard
+         path), and hiding it dead-ended those users on a permanently disabled
+         Authorize button (BUG-2303). Force-checked in that case: it is the
+         only option, and an unchecked radio group would re-disable the button. */}}
+    <label class="access-row">
+      <input type="radio" name="workspace_access" value="all" id="access-all"{{if or .DefaultWildcard (not .Workspaces)}} checked{{end}}>
+      <span><strong>All my workspaces</strong><span class="desc">— includes workspaces you join or create later.</span></span>
+    </label>
     {{if .Workspaces}}
-      <label class="access-row">
-        <input type="radio" name="workspace_access" value="all" id="access-all"{{if .DefaultWildcard}} checked{{end}}>
-        <span><strong>All my workspaces</strong><span class="desc">— includes workspaces you join or create later.</span></span>
-      </label>
       <label class="access-row">
         <input type="radio" name="workspace_access" value="specific" id="access-specific"{{if not .DefaultWildcard}} checked{{end}}>
         <span><strong>Only specific workspaces</strong><span class="desc">— you'll pick them next.</span></span>
@@ -1523,7 +1527,7 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
         asking again. Pick "Only specific workspaces" to restrict.
       </div>
     {{else}}
-      <p class="no-ws">You are not a member of any workspaces yet. Create or join one to authorize this app.</p>
+      <p class="field-helper">You don't have any workspaces yet — with workspace creation allowed below, {{.ClientName}} can create your first one.</p>
     {{end}}
   </fieldset>
 
@@ -1609,9 +1613,10 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
     });
   }
 
-  // Initial paint.
+  // Initial paint. The access-all radio always renders (BUG-2303), so the
+  // missing-radio branch is defensive: if a template regression removes it
+  // again, fail closed (disabled) rather than half-initialized.
   if (!accessAll) {
-    // No workspaces at all — leave Authorize disabled.
     allowBtn.disabled = true;
   } else {
     refresh();

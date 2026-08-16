@@ -1077,16 +1077,21 @@ func TestConsent_RendersUserWorkspaces(t *testing.T) {
 	}
 }
 
-// TestConsent_NoWorkspaces_ShowsEmptyState confirms the consent UI
-// renders cleanly for a user with zero workspace memberships. The
-// Allow button stays disabled (server-side validation enforces this
-// regardless of JS state).
+// TestConsent_NoWorkspaces_WildcardStaysAuthorizable confirms the
+// consent UI keeps the wildcard path open for a user with zero
+// workspace memberships (BUG-2303). The server accepts a zero-workspace
+// workspace_access=all consent (parseConsentPayload's wildcard path
+// skips membership validation), so the template must render the
+// pre-checked "All my workspaces" radio — before the fix the radio was
+// gated on .Workspaces and its absence made the inline script disable
+// Authorize permanently, dead-ending the user. The specific-workspaces
+// radio and picker stay hidden (there is nothing to pick), and the old
+// dead-end copy is replaced by a pointer at workspace creation.
 //
-// In production cloud-mode signup creates a default workspace, so
-// this case is rare — but worth pinning so a future regression
-// (e.g. autoCreateWorkspace failing silently) doesn't leave users
-// with a broken consent screen.
-func TestConsent_NoWorkspaces_ShowsEmptyState(t *testing.T) {
+// Cloud signup auto-creates a workspace on every path, so this state is
+// reached via auto-create failure or a user who deleted/left their only
+// workspace — rare, but it gates the zero-CLI funnel (PLAN-2309).
+func TestConsent_NoWorkspaces_WildcardStaysAuthorizable(t *testing.T) {
 	t.Parallel()
 	srv, _ := oauthEnabledTestServer(t)
 	_, sessionToken := loginTestUser(t, srv)
@@ -1109,9 +1114,98 @@ func TestConsent_NoWorkspaces_ShowsEmptyState(t *testing.T) {
 		t.Fatalf("expected 200, got %d (body: %s)", rr.Code, rr.Body.String())
 	}
 	body := rr.Body.String()
-	// The empty-state message must mention how to recover.
-	if !strings.Contains(body, "not a member of any workspaces") {
-		t.Errorf("expected empty-state message; got body: %s", body[:min(400, len(body))])
+	// The wildcard radio must render pre-checked: it is the only access
+	// option, and an unchecked radio group would leave Authorize disabled.
+	// Locate the tag then check the attribute inside it, so a benign
+	// attribute insertion or reorder doesn't false-fail.
+	allTag := regexp.MustCompile(`<input[^>]*id="access-all"[^>]*>`).FindString(body)
+	if allTag == "" || !strings.Contains(allTag, "checked") {
+		t.Errorf("wildcard radio must render pre-checked for a zero-workspace user; tag=%q", allTag)
+	}
+	// Nothing to pick — the specific-workspaces alternative stays hidden.
+	if strings.Contains(body, `id="access-specific"`) {
+		t.Errorf("specific-workspaces radio should not render with zero memberships")
+	}
+	if strings.Contains(body, `name="allowed_workspaces"`) {
+		t.Errorf("workspace picker should not render with zero memberships")
+	}
+	// The pre-fix dead-end copy must be gone, replaced by copy that
+	// points at the workspace-creation checkbox as the way forward.
+	if strings.Contains(body, "not a member of any workspaces") {
+		t.Errorf("dead-end empty-state copy should be gone (BUG-2303)")
+	}
+	if !strings.Contains(body, "can create your first one") {
+		t.Errorf("zero-workspace copy should point at workspace creation")
+	}
+	createTag := regexp.MustCompile(`<input[^>]*name="may_create_workspaces"[^>]*>`).FindString(body)
+	if createTag == "" || !strings.Contains(createTag, "checked") {
+		t.Errorf("may_create_workspaces checkbox must render checked; tag=%q", createTag)
+	}
+}
+
+// TestConsent_ApproveWildcard_ZeroWorkspaces pins the end-to-end path
+// the zero-workspace consent UI posts after BUG-2303: workspace_access=all
+// + may_create_workspaces from a user with no memberships must mint an
+// auth code, and the connection row must carry the wildcard + may-create
+// shape so the resulting token can create the user's first workspace.
+func TestConsent_ApproveWildcard_ZeroWorkspaces(t *testing.T) {
+	t.Parallel()
+	srv, _ := oauthEnabledTestServer(t)
+	user, sessionToken := loginTestUser(t, srv)
+	clientID := registerTestClient(t, srv, "https://app.test/cb")
+	csrfTok := readCSRFFromCookie(t, srv, sessionToken)
+
+	verifier := "verifier-zero-ws-wildcard-quick-brown-fox-1234567"
+	challenge := s256Challenge(verifier)
+	form := url.Values{
+		"client_id":             {clientID},
+		"response_type":         {"code"},
+		"redirect_uri":          {"https://app.test/cb"},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"pad:read pad:write"},
+		"audience":              {testCanonicalAudience},
+		"state":                 {"zero-ws-wildcard-state"},
+		"decision":              {"approve"},
+		"csrf_token":            {csrfTok},
+		"capability_tier":       {"write"},
+		"connection_name":       {"Claude Code"},
+		"workspace_access":      {"all"},
+		"may_create_workspaces": {"1"},
+	}
+	rr := postFormWithCookie(srv, "/oauth/authorize/decide", form, sessionToken, csrfTok)
+	if rr.Code != http.StatusSeeOther && rr.Code != http.StatusFound {
+		t.Fatalf("decide: expected 303/302, got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	cbURL, _ := url.Parse(rr.Header().Get("Location"))
+	if cbURL.Query().Get("code") == "" {
+		t.Fatalf("decide redirect missing code: %s", rr.Header().Get("Location"))
+	}
+
+	// Same connection-row assertion strategy as
+	// TestConsent_ApproveWithNewShape: the code hasn't been exchanged,
+	// so query the authorization code's request_id directly.
+	var requestID string
+	row := srv.store.DB().QueryRow(srv.store.D().Rebind(
+		`SELECT request_id FROM oauth_authorization_codes ORDER BY requested_at DESC LIMIT 1`))
+	if err := row.Scan(&requestID); err != nil {
+		t.Fatalf("scan request_id: %v", err)
+	}
+	conn, err := srv.store.GetOAuthConnection(requestID)
+	if err != nil {
+		t.Fatalf("GetOAuthConnection: %v", err)
+	}
+	if conn.UserID != user.ID {
+		t.Errorf("connection.UserID = %q, want %q", conn.UserID, user.ID)
+	}
+	if !conn.AllCurrentWorkspaces {
+		t.Errorf("AllCurrentWorkspaces = false, want true (workspace_access=all)")
+	}
+	if !conn.IncludeFutureWorkspaces {
+		t.Errorf("IncludeFutureWorkspaces = false, want true (workspace_access=all)")
+	}
+	if !conn.MayCreateWorkspaces {
+		t.Errorf("MayCreateWorkspaces = false, want true (checkbox checked)")
 	}
 }
 
