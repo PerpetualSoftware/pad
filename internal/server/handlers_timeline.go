@@ -50,6 +50,15 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	//      lowercase-hex UUID character in every reasonable collation) so
 	//      same-second entries aren't silently dropped.
 	//
+	// Case 3 carries an ASSUMPTION, not a guarantee: "g" keeps same-second
+	// entries only for ids drawn from the lowercase-hex UUID alphabet. Any
+	// source whose ids can sort ABOVE "g" is silently dropped at the cursor
+	// instant instead — and a source with ids on BOTH sides is split in half
+	// on their first character. That is not hypothetical: the structured
+	// kinds' `note-…` / `decision-…` ids straddle it exactly that way
+	// (BUG-2301), which is what `sentinelBeforeID` below exists to handle.
+	// If you add a source whose ids are not UUIDs, this is the line to check.
+	//
 	// The previous code defaulted beforeID to "\xff" in all three cases.
 	// That worked on SQLite but Postgres rejects "\xff" as an invalid UTF-8
 	// byte sequence (SQLSTATE 22021), causing every timeline load to 500.
@@ -75,7 +84,9 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 		beforeID = v
 	}
 	if hasBefore && beforeID == "" {
-		beforeID = "g" // > any UUID character lex-wise; valid UTF-8
+		// > any UUID character lex-wise; valid UTF-8. Non-UUID ids are NOT
+		// covered by that — see the assumption note above.
+		beforeID = "g"
 		sentinelBeforeID = true
 	}
 
