@@ -33,17 +33,40 @@ check whether this machine is already configured and authenticated:
   type `! pad init` to run it directly in their own terminal.
   Stop here; there's nothing more this skill can do until that completes.
 
-Once linked, run `pad bootstrap --format json`:
-- If `needs_onboarding` is true, offer the workspace onboarding flow — scan
-  the codebase (README, build config, CI), suggest starter conventions with
-  the project's real commands, and propose an initial plan. Create items only
-  after the user confirms the shape.
-- If `needs_onboarding` is false, this workspace is already set up — say so
-  and briefly summarize what exists (e.g. how many collections and active
-  conventions, from the bootstrap payload's `collections` and
-  `convention_index` arrays), then offer the extend/audit flow instead of
-  re-running first-time setup: add a new section (collection, convention,
-  role, or playbook), review existing conventions against the current
-  codebase, or do nothing if everything already looks right. Same
-  confirm-before-creating rule as everywhere else — never assume the
-  extend/audit answer.
+Once linked, run `pad bootstrap --format json`, then **run the onboard
+playbook — do not improvise your own setup script.** The playbook is
+workspace-owned and user-editable (PLAN-1496's adaptation posture): a team
+that has rewritten theirs must get their version from every surface,
+including this shortcut. Three steps, in this order:
+
+1. **Ensure the playbook is active.** Check the bootstrap's `playbooks`
+   array for `invocation_slug=onboard, status=active`. If instead an
+   onboard entry exists in a non-active status (draft/deprecated),
+   REACTIVATE it in place (`pad item update PLAYB-N --field
+   status=active`) — `invocation_slug` is workspace-unique, so library
+   activation next to an existing entry creates a duplicate or fails on
+   the slug. Only when no onboard playbook exists at all, activate from
+   the library: `pad library activate "Onboard a workspace"` (activate
+   takes the exact library title; `pad library list` shows it), or the
+   Web UI's Playbooks → Library.
+
+2. **Load the body and follow it — it IS the script:**
+
+   ```bash
+   pad playbook show onboard --format markdown
+   ```
+
+3. **Let its mode detection route, and frame `needs_onboarding`
+   honestly.** The playbook's `mode` argument is `auto` (default),
+   `build`, `audit`, or `revisit`, plus a separate `defaults` flag that
+   fast-paths the interview. `auto` sends a workspace with ANY
+   user-created item to `revisit` — and `needs_onboarding: false` means
+   exactly that one fact, NOT that onboarding ever ran. So when it's
+   false, say what exists (collections, active conventions from
+   `convention_index`), and if the user says the workspace was never
+   really set up, pass an explicit `mode=build` or `mode=audit` — the
+   playbook honors the override — rather than expecting `auto` to pick
+   the fuller pass, and rather than declaring setup complete yourself.
+
+Create items only after the user confirms the shape — the same
+confirm-before-creating rule as everywhere else.
