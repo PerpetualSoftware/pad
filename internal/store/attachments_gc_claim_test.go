@@ -343,3 +343,65 @@ func TestStampAttachmentRefs_StampsVariantsOfReferencedOriginal(t *testing.T) {
 		t.Fatalf("fresh-own-stamp variant claim = (%v, %v), want (false, nil)", claimed, err)
 	}
 }
+
+// TestClaimOrphanedVariant_RestoreRefusesAtClaimTime pins the codex-
+// round-1 gap in BUG-2388's restore-wins e2e leg (which only proved the
+// restored row never became a CANDIDATE): the claim itself, called
+// directly against a variant whose parent was restored after candidate
+// selection, must refuse — the parent-liveness re-read happens inside
+// the claim's own transaction, under a Postgres row lock.
+func TestClaimOrphanedVariant_RestoreRefusesAtClaimTime(t *testing.T) {
+	f := newGCClaimFixture(t)
+	parent := f.seedNeverAttached(t)
+
+	variantID := parent.ID + "-v"
+	if _, err := f.s.db.Exec(f.s.q(
+		`INSERT INTO attachments (id, workspace_id, item_id, uploaded_by, storage_key, content_hash, mime_type, size_bytes, filename, parent_id, variant, created_at)
+		 VALUES (?, ?, NULL, '', ?, ?, 'image/png', 10, 'v.png', ?, 'thumb-md', ?)`),
+		variantID, f.wsID, "fs:v-"+variantID, "h-v-"+variantID, parent.ID,
+		time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert variant: %v", err)
+	}
+
+	// Tombstone the parent (candidate state), then RESTORE it — the
+	// interleaving the claim must observe at delete time.
+	nowTS := time.Now().UTC().Format(time.RFC3339)
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE attachments SET deleted_at = ? WHERE id = ?`), nowTS, parent.ID); err != nil {
+		t.Fatalf("tombstone parent: %v", err)
+	}
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE attachments SET deleted_at = NULL WHERE id = ?`), parent.ID); err != nil {
+		t.Fatalf("restore parent: %v", err)
+	}
+
+	claimed, err := f.s.ClaimOrphanedVariantAttachment(variantID)
+	if err != nil || claimed {
+		t.Fatalf("restored-parent variant claim = (%v, %v), want (false, nil)", claimed, err)
+	}
+	if !f.rowExists(t, variantID) {
+		t.Errorf("variant of restored parent deleted anyway")
+	}
+
+	// Counterfactual: re-tombstone the parent → the same claim succeeds.
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE attachments SET deleted_at = ? WHERE id = ?`), nowTS, parent.ID); err != nil {
+		t.Fatalf("re-tombstone parent: %v", err)
+	}
+	claimed, err = f.s.ClaimOrphanedVariantAttachment(variantID)
+	if err != nil || !claimed {
+		t.Fatalf("dead-parent variant claim = (%v, %v), want (true, nil)", claimed, err)
+	}
+
+	// Hard-gone parent leg: a variant whose parent row does not exist at
+	// all is likewise claimable.
+	orphanVar := "no-parent-v"
+	if _, err := f.s.db.Exec(f.s.q(
+		`INSERT INTO attachments (id, workspace_id, item_id, uploaded_by, storage_key, content_hash, mime_type, size_bytes, filename, parent_id, variant, created_at)
+		 VALUES (?, ?, NULL, '', ?, ?, 'image/png', 10, 'v2.png', 'gone-parent-id', 'thumb-md', ?)`),
+		orphanVar, f.wsID, "fs:v2", "h-v2",
+		time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert hard-orphan variant: %v", err)
+	}
+	claimed, err = f.s.ClaimOrphanedVariantAttachment(orphanVar)
+	if err != nil || !claimed {
+		t.Fatalf("hard-gone-parent variant claim = (%v, %v), want (true, nil)", claimed, err)
+	}
+}

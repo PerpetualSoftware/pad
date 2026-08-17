@@ -388,6 +388,25 @@ func TestThumbnails_PersistRefusedWhenParentDeleted(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("race minted %d live variant row(s) under a tombstoned parent", n)
 	}
+	// And the refused thumbnail's just-Put blob was cleaned up (codex
+	// round 1: without this assertion the cleanup branch was untested).
+	// The thumb bytes are a deterministic function of the 8x8 RGBA +
+	// encoder, so recompute the storage key the same way persistThumbnail
+	// did and Stat it.
+	{
+		var buf bytes.Buffer
+		if err := srv.imageProcessor.Encode(img, "png", &buf); err != nil {
+			t.Fatalf("re-encode: %v", err)
+		}
+		thumbHash := sha256Hex(buf.Bytes())
+		bstore, err := srv.attachments.Resolve(attachments.FSPrefix + ":" + thumbHash)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if _, err := bstore.Stat(context.Background(), attachments.FSPrefix+":"+thumbHash); err == nil {
+			t.Errorf("refused thumbnail's blob still on disk — cleanup branch did not run")
+		}
+	}
 
 	// CONTROL: the same call against a LIVE parent inserts.
 	rr = doMultipartUpload(srv, slug, "tiny2.png", realPNG())

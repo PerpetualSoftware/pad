@@ -275,16 +275,31 @@ func (s *Server) persistThumbnail(
 		// The parent was deleted between the derivation's early liveness
 		// check and this insert (BUG-2388) — the conditional insert is
 		// the fix for the race that used to mint a live variant row
-		// under a tombstoned parent. Clean up the just-Put blob while we
-		// still hold the in-flight hash fence, unless another live/
-		// in-grace row shares the hash (same dedupe protection as the
-		// GC sweep). A cleanup failure only strands bytes — never a row.
-		others, cErr := s.store.CountProtectingAttachmentsForHash(hash, "", time.Now().Add(-defaultOrphanGCGrace))
-		if cErr == nil && others == 0 {
-			if dErr := store.Delete(ctx, storageKey); dErr != nil {
-				slog.Warn("thumbnails: orphan blob cleanup failed",
-					"storage_key", storageKey, "error", dErr)
+		// under a tombstoned parent. Clean up the just-Put blob, unless
+		// another live/in-grace row shares the hash (same dedupe
+		// protection as the GC sweep, using the CONFIGURED grace — a
+		// longer operator grace must keep a still-restorable peer's
+		// bytes). The count runs first; the in-flight re-check + Delete
+		// then hold inFlightHashesMu, mirroring the sweep's fence, so a
+		// concurrent upload registering this hash between our check and
+		// the Delete cannot lose its bytes (codex round 1 P1). We hold
+		// one registration ourselves — > 1 means someone else does too.
+		// A cleanup failure or skipped count only strands bytes — never
+		// a row — and is logged so it isn't silent (codex round 1 P2).
+		graceCutoff := time.Now().Add(-s.orphanGCGraceConfigured())
+		others, cErr := s.store.CountProtectingAttachmentsForHash(hash, "", graceCutoff)
+		if cErr != nil {
+			slog.Warn("thumbnails: refusal cleanup count failed — blob stranded for manual cleanup",
+				"storage_key", storageKey, "error", cErr)
+		} else if others == 0 {
+			s.inFlightHashesMu.Lock()
+			if s.inFlightHashes[hash] <= 1 {
+				if dErr := store.Delete(ctx, storageKey); dErr != nil {
+					slog.Warn("thumbnails: orphan blob cleanup failed",
+						"storage_key", storageKey, "error", dErr)
+				}
 			}
+			s.inFlightHashesMu.Unlock()
 		}
 		slog.Info("thumbnails: skipped, parent deleted during derivation",
 			"parent_id", parent.ID, "variant", variant)

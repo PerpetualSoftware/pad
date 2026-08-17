@@ -299,6 +299,19 @@ type orphanGCConfig struct {
 	running  bool
 }
 
+// orphanGCGraceConfigured returns the effective grace period —
+// operator-configured when set, the default otherwise. Read under the
+// config mutex; used by the thumbnail refusal cleanup so its hash-
+// protection window honors SetOrphanGCConfig (BUG-2388 codex round 1).
+func (s *Server) orphanGCGraceConfigured() time.Duration {
+	s.orphanGC.mu.Lock()
+	defer s.orphanGC.mu.Unlock()
+	if s.orphanGC.grace > 0 {
+		return s.orphanGC.grace
+	}
+	return defaultOrphanGCGrace
+}
+
 // SetOrphanGCConfig overrides the default sweep interval (24h) and
 // grace period (30d). Pass 0 for either to keep the package default.
 // Must be called before StartOrphanGC.

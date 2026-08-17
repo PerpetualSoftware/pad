@@ -901,14 +901,51 @@ func (s *Store) ClaimNeverAttachedAttachment(id string, refCutoff time.Time) (bo
 // Same row-before-bytes and irrevocability contract as the other
 // Claim methods.
 func (s *Store) ClaimOrphanedVariantAttachment(id string) (bool, error) {
-	res, err := s.db.Exec(s.q(`
+	// Transaction + parent row-lock so a concurrent RESTORE (clearing
+	// the parent's deleted_at) serializes with this claim instead of
+	// racing its NOT EXISTS snapshot (codex round 1 P1): restore commits
+	// first → the locked re-read sees a live parent and the claim
+	// refuses; claim commits first → the restore proceeds against a
+	// parent whose thumbnail is gone (regenerable state, consistent
+	// order). SQLite serializes writers via _txlock=immediate; the lock
+	// clause is Postgres-only, same dialect gate as its siblings.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin variant claim tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var parentID *string
+	if err := tx.QueryRow(s.q(`SELECT parent_id FROM attachments WHERE id = ? AND deleted_at IS NULL`), id).Scan(&parentID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil // already gone / tombstoned
+		}
+		return false, fmt.Errorf("read variant row: %w", err)
+	}
+	if parentID == nil || *parentID == "" {
+		return false, nil // not a variant
+	}
+	lockQ := `SELECT deleted_at FROM attachments WHERE id = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		lockQ += ` FOR NO KEY UPDATE`
+	}
+	var parentDeletedAt *string
+	switch err := tx.QueryRow(s.q(lockQ), *parentID).Scan(&parentDeletedAt); {
+	case errors.Is(err, sql.ErrNoRows):
+		// Parent hard-gone — the variant is orphaned; claim below.
+	case err != nil:
+		return false, fmt.Errorf("lock variant parent: %w", err)
+	default:
+		if parentDeletedAt == nil {
+			// Parent is LIVE (e.g. restored between the candidate
+			// SELECT and this claim) — refuse.
+			return false, nil
+		}
+	}
+
+	res, err := tx.Exec(s.q(`
 		DELETE FROM attachments
-		WHERE id = ?
-		  AND deleted_at IS NULL
-		  AND parent_id IS NOT NULL
-		  AND NOT EXISTS (
-		    SELECT 1 FROM attachments p WHERE p.id = attachments.parent_id AND p.deleted_at IS NULL
-		  )
+		WHERE id = ? AND deleted_at IS NULL
 	`), id)
 	if err != nil {
 		return false, fmt.Errorf("claim orphaned variant attachment: %w", err)
@@ -916,6 +953,9 @@ func (s *Store) ClaimOrphanedVariantAttachment(id string) (bool, error) {
 	n, err := res.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("claim orphaned variant rows: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit variant claim: %w", err)
 	}
 	return n == 1, nil
 }
@@ -1136,31 +1176,52 @@ func (s *Store) CreateAttachmentVariantIfParentLive(a *models.Attachment) (bool,
 	if a.ID == "" {
 		a.ID = newID()
 	}
-	// Same column list + timestamp idiom as createAttachmentOn so the
-	// two insert paths can never drift on shape.
 	ts := now()
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = parseTime(ts)
 	} else {
 		ts = a.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
 	}
-	res, err := s.db.Exec(s.q(`
+
+	// Same transaction + row-lock shape as CreateAttachmentForLiveItem
+	// (which closed the identical check-then-insert race against ITEM
+	// deletion, PLAN-2391 DR-14): on Postgres a plain WHERE EXISTS reads
+	// a snapshot and a concurrent SoftDeleteAttachment can commit under
+	// it — the lock makes the delete cascade wait, and whichever commits
+	// first, the other observes it (codex round 1 P1). SQLite's
+	// _txlock=immediate already serializes writers, and the lock clause
+	// is a syntax error there — the dialect gate is not an optimization.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin variant insert tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	query := `SELECT 1 FROM attachments WHERE id = ? AND deleted_at IS NULL`
+	if s.dialect.Driver() == DriverPostgres {
+		query += ` FOR NO KEY UPDATE`
+	}
+	var one int
+	switch err := tx.QueryRow(s.q(query), *a.ParentID).Scan(&one); {
+	case errors.Is(err, sql.ErrNoRows):
+		// Parent gone or tombstoned — refuse, no row minted.
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("lock variant parent: %w", err)
+	}
+
+	if _, err := tx.Exec(s.q(`
 		INSERT INTO attachments (`+attachmentColumns+`)
-		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-		WHERE EXISTS (
-			SELECT 1 FROM attachments p WHERE p.id = ? AND p.deleted_at IS NULL
-		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`), a.ID, a.WorkspaceID, a.ItemID, a.UploadedBy, a.StorageKey, a.ContentHash,
 		a.MimeType, a.SizeBytes, a.Filename, a.Width, a.Height, a.ParentID, a.Variant,
-		ts, nil, *a.ParentID)
-	if err != nil {
-		return false, fmt.Errorf("create variant if parent live: %w", err)
+		ts, nil); err != nil {
+		return false, fmt.Errorf("create variant row: %w", err)
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("create variant rows affected: %w", err)
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit variant insert: %w", err)
 	}
-	return n == 1, nil
+	return true, nil
 }
 
 // WorkspaceItemSlugMap returns slug → id for every live item in a
