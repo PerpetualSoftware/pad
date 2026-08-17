@@ -193,10 +193,14 @@ pad item delete TASK-5
 pad item search "query"
 pad item comment TASK-5 "..." [--reply-to <comment-id>]
 pad item comments TASK-5
+pad item note TASK-5 "what you did" [--details "..." | --stdin]
+pad item decide TASK-5 "what you chose" [--rationale "..." | --stdin]
 pad item bulk-update --status X TASK-5 TASK-8 ...
 ```
 
 `--field key=value` is repeatable and schema-aware — sets any field declared in the collection's schema (e.g. `--field trigger=always --field priority=must` for a convention; `--field 'arguments=[...]'` JSON literal for a playbook). `--comment "..."` on update writes an audit note explaining *why* status changed.
+
+`note` and `decide` append structured entries to the item — an implementation note (what you did) and a decision-log entry (what you chose, and why). They differ from a comment: a comment is addressed to a person, these are addressed to the record, and they carry no reply or reaction affordances. Both show up in the item's Activity timeline in the web UI alongside comments and versions, and in `pad item show`. Reach for `decide` when a choice would otherwise only survive in a chat log.
 
 ### Dependencies
 ```bash
