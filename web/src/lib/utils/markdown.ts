@@ -38,6 +38,11 @@ type AttachmentRenderContext = {
 	// Thumbnail variant for inline image embeds. Comments render small
 	// (thumb-sm, 256px) thumbnails; other surfaces default to thumb-md.
 	imageVariant: 'thumb-sm' | 'thumb-md';
+	// Optional placeholder override for unresolved references. Share
+	// pages pass renderAttachmentUnavailable — "missing or deleted"
+	// would be false there; the attachment exists, the surface just has
+	// no byte access yet (BUG-2389).
+	missing?: (uuid: string, alt: string) => string;
 };
 let currentAttachmentCtx: AttachmentRenderContext | null = null;
 
@@ -72,7 +77,8 @@ renderer.link = function (this: Renderer, { href, title, text: rawText, tokens }
 			href,
 			rawText,
 			currentAttachmentCtx.workspaceSlug,
-			currentAttachmentCtx.resolver
+			currentAttachmentCtx.resolver,
+			currentAttachmentCtx.missing
 		);
 	}
 	const text = this.parser.parseInline(tokens);
@@ -102,7 +108,8 @@ renderer.image = function (this: Renderer, { href, title, text }: Tokens.Image) 
 			text,
 			currentAttachmentCtx.workspaceSlug,
 			currentAttachmentCtx.resolver,
-			currentAttachmentCtx.imageVariant
+			currentAttachmentCtx.imageVariant,
+			currentAttachmentCtx.missing
 		);
 	}
 	// Default image rendering. Mirrors marked's stdout behavior so
@@ -380,17 +387,59 @@ export function renderMarkdown(
 	// Wire the attachment resolver into the global renderer for the duration
 	// of this synchronous parse. The try/finally ensures we never leak the
 	// context across calls, even when marked throws on malformed input.
-	if (attachmentResolver) {
-		currentAttachmentCtx = {
-			resolver: attachmentResolver,
-			workspaceSlug,
-			imageVariant: attachmentImageVariant
-		};
-	}
+	// Save/restore (not clear-to-null) so a nested render can't strand an
+	// outer caller's context; no-resolver still means "no attachment
+	// resolution during THIS parse", hence the explicit null arm.
+	const prevAttachmentCtx = currentAttachmentCtx;
+	currentAttachmentCtx = attachmentResolver
+		? {
+				resolver: attachmentResolver,
+				workspaceSlug,
+				imageVariant: attachmentImageVariant
+			}
+		: null;
 	try {
 		return sanitizeMarkdownHtml(marked(withLinks) as string);
 	} finally {
-		currentAttachmentCtx = null;
+		currentAttachmentCtx = prevAttachmentCtx;
+	}
+}
+
+/**
+ * Render plain markdown through the shared `marked` pipeline WITH an
+ * attachment context but WITHOUT renderMarkdown's wiki-link / item-URL
+ * machinery (BUG-2389). Built for the public share route: wiki-links
+ * there deliberately stay inert text (they'd point into the
+ * authenticated app), but `pad-attachment:` references must stop
+ * rendering as broken images. Returns UNSANITIZED HTML — the share page
+ * owns its own single DOMPurify pass, and keeping one {@html} source
+ * there means no second, divergent sanitization path.
+ */
+export function renderMarkedWithAttachments(
+	content: string,
+	ctx: {
+		resolver: AttachmentResolver;
+		workspaceSlug: string;
+		imageVariant?: 'thumb-sm' | 'thumb-md';
+		missing?: (uuid: string, alt: string) => string;
+	}
+): string {
+	// Save/restore rather than clear-to-null so a nested render (a resolver
+	// or missing hook that itself renders markdown) can't strand the outer
+	// call without its context mid-parse. Synchronous by contract: marked is
+	// not configured async here, and this wrapper must stay sync — an async
+	// marked would outlive the finally.
+	const prev = currentAttachmentCtx;
+	currentAttachmentCtx = {
+		resolver: ctx.resolver,
+		workspaceSlug: ctx.workspaceSlug,
+		imageVariant: ctx.imageVariant ?? 'thumb-md',
+		missing: ctx.missing
+	};
+	try {
+		return marked(content) as string;
+	} finally {
+		currentAttachmentCtx = prev;
 	}
 }
 

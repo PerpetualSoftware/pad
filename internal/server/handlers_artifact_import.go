@@ -147,7 +147,7 @@ func (s *Server) handleImportArtifact(w http.ResponseWriter, r *http.Request) {
 	// This used to set CreatedBy to the user's UUID, which is the wrong
 	// DOMAIN for the field, not just the wrong value: created_by holds the
 	// role — "user" or "agent" — and consumers compare it to those literals
-	// (CommentThread.svelte, TimelineVersionCard.svelte). An imported item
+	// (TimelineVersionCard.svelte). An imported item
 	// therefore matched neither and rendered as neither. Found while fixing
 	// BUG-2542; it also would have defeated that fix here, since a non-empty
 	// CreatedBy suppresses the actor stamp. The user's identity is already

@@ -395,6 +395,26 @@ input:focus, textarea:focus {
 	color: var(--text-secondary);
 }
 
+/* Honest placeholder for pad-attachment: refs on surfaces with no byte
+   access (share pages, BUG-2389). Global because the class is emitted
+   only by renderAttachmentUnavailable and must look right wherever that
+   markdown lands (.item-content AND collection-share expansions). */
+.attachment-unavailable {
+	display: inline-block;
+	padding: 0 var(--space-2);
+	border: 1px dashed var(--border);
+	border-radius: var(--radius);
+	background: var(--bg-secondary);
+	color: var(--text-muted);
+	font-size: 0.875em;
+	line-height: 1.7;
+}
+
+.attachment-unavailable .attachment-unavailable-note {
+	font-style: italic;
+	opacity: 0.8;
+}
+
 /* Deleted / missing target. The chip used to signal this by swapping its
    glyph to a paperclip; the icon now says what KIND of file it is, so the
    dead state gets its own treatment on the chip instead (TASK-2417). The

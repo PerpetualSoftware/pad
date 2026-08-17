@@ -2,7 +2,8 @@
 	import { page } from '$app/state';
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
-	import { marked } from 'marked';
+	import { renderMarkedWithAttachments } from '$lib/utils/markdown';
+	import { renderAttachmentUnavailable } from '$lib/markdown/attachments';
 	import DOMPurify from 'dompurify';
 	import PublicCollectionView from '$lib/components/share/PublicCollectionView.svelte';
 	import {
@@ -284,7 +285,17 @@
 	function sanitizeMarkdown(content: string): string {
 		if (!content) return '';
 		try {
-			const raw = marked(content) as string;
+			// Attachment-aware render (BUG-2389): `pad-attachment:` refs no
+			// longer fall through to broken <img>/dead links. Share viewers
+			// have no byte access until the token-scoped read path ships, so
+			// the resolver yields nothing and every reference renders as the
+			// HONEST "not available on shared pages" placeholder — never the
+			// "missing or deleted" one, which would be false here.
+			const raw = renderMarkedWithAttachments(content, {
+				resolver: () => null,
+				workspaceSlug: '',
+				missing: renderAttachmentUnavailable
+			});
 			return typeof window !== 'undefined' ? DOMPurify.sanitize(raw) : raw;
 		} catch {
 			// Sanitize the fallback too — never pass user content to {@html} raw
@@ -858,6 +869,10 @@
 	.item-content :global(a) {
 		color: var(--accent-blue);
 	}
+
+	/* The pad-attachment: placeholder chip (.attachment-unavailable,
+	   BUG-2389) is styled globally in app.css — it must look right in
+	   BOTH .item-content here and the collection-share expansions. */
 
 	/* Collection view switcher toolbar */
 	.collection-toolbar {
