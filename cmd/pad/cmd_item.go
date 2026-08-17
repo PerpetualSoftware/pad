@@ -1321,6 +1321,10 @@ Shows the newest 50 by default; pass --limit 0 for the whole history. A
 collab-edited item records a version every few seconds while someone types, so
 histories get long.
 
+A single request is capped server-side, so a very large --limit returns the
+cap rather than everything, and the "showing the newest N" notice cannot detect
+that case. Use --limit 0 when you genuinely want the complete history.
+
 Items can be referenced by issue ID (e.g. TASK-5) or slug.
 
 Examples:
@@ -1421,7 +1425,7 @@ Examples:
 
 	cmd.Flags().BoolVar(&full, "full", false, "include each version's resolved content body (JSON output only)")
 	cmd.Flags().IntVar(&limit, "limit", defaultItemHistoryLimit,
-		"show only the newest N versions (0 = all)")
+		"show only the newest N versions (0 = all; very large values are capped server-side)")
 	return cmd
 }
 
