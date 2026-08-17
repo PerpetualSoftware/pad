@@ -82,7 +82,7 @@ var padItemTool = ToolDef{
 		// (newest-first), a token-light summary shape (id, created_at,
 		// created_by, source, change_summary) with the resolved content
 		// body omitted. Restoring a version stays a web-UI action.
-		"history": passThrough([]string{"item", "history"}),
+		"history": actionItemHistory,
 
 		// Bulk + notes + decisions
 		// bulk-update is custom because the CLI takes repeatable
@@ -208,7 +208,7 @@ var padItemSchemaParams = []ParamDef{
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},
-	{Name: "limit", Type: "number", Description: "Maximum results. Optional for: list, backlinks. List defaults to 50, max 300. Backlinks defaults to 50, max 300."},
+	{Name: "limit", Type: "number", Description: "Maximum results. Optional for: list, backlinks, history. Each defaults to 50, max 300. For history the window is the NEWEST N versions."},
 	{Name: "offset", Type: "number", Description: "Skip the first N results (paging). Optional for: backlinks."},
 	{Name: "sort", Type: "string", Description: "Sort field. Optional for: list."},
 	{Name: "group_by", Type: "string", Description: "Group-by field. Optional for: list."},
@@ -309,7 +309,8 @@ Actions:
                   reference TASK-5?" without scanning the full content
                   corpus.
   history       — Read an item's version history (newest-first, read-only).
-                  Required: ref.
+                  Required: ref. Optional: limit (default 50, max 300 —
+                  the NEWEST N versions), full.
                   Returns a token-light summary per recorded version
                   (id, created_at, created_by, source, change_summary);
                   the resolved content body is omitted. Restoring a
@@ -692,6 +693,43 @@ func actionItemList(ctx context.Context, input map[string]any, env ActionEnv) (*
 	out["limit"] = limit
 
 	return env.Dispatch(ctx, []string{"item", "list"}, out)
+}
+
+// mcpItemHistoryDefaultLimit / MaxLimit bound pad_item.action=history the same
+// way list and backlinks are bounded, and for a sharper reason: a
+// collab-edited item records a version every few seconds while someone types,
+// so "the whole history" is routinely hundreds of rows nobody asked for
+// (BUG-2608). Same numbers as list, so an agent does not have to remember a
+// third pair.
+const (
+	mcpItemHistoryDefaultLimit = 50
+	mcpItemHistoryMaxLimit     = 300
+)
+
+// actionItemHistory handles pad_item.action=history. It injects a default
+// limit when the agent did not ask for one and clamps an oversized one, so
+// this lands on BOTH transports: the HTTP dispatcher reads it off the input,
+// and the exec path gets it as the CLI's --limit through BuildCLIArgs.
+//
+// The catalog is the right home for the default (rather than either
+// dispatcher) for the reason actionItemList already documents — it is the one
+// place both transports pass through.
+func actionItemHistory(ctx context.Context, input map[string]any, env ActionEnv) (*mcp.CallToolResult, error) {
+	out := make(map[string]any, len(input)+1)
+	for k, v := range input {
+		out[k] = v
+	}
+
+	limit := mcpItemHistoryDefaultLimit
+	if n, ok := numericInput(input["limit"]); ok && n > 0 {
+		limit = int(n)
+	}
+	if limit > mcpItemHistoryMaxLimit {
+		limit = mcpItemHistoryMaxLimit
+	}
+	out["limit"] = limit
+
+	return env.Dispatch(ctx, []string{"item", "history"}, out)
 }
 
 // actionItemExport handles pad_item.action=export. The CLI's

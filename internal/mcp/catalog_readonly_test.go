@@ -687,6 +687,12 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Flags: func() map[string]cmdhelp.Flag {
 					f := mkFlags("workspace")
 					f["full"] = cmdhelp.Flag{Type: "bool"}
+					// Mirrors `pad item history --limit` (BUG-2608). This
+					// fixture is what BuildCLIArgs consults in tests, so a
+					// flag missing here is silently dropped from the emitted
+					// args — the catalog default would look applied and reach
+					// the CLI as nothing.
+					f["limit"] = cmdhelp.Flag{Type: "int"}
 					return f
 				}(),
 			},

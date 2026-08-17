@@ -1294,8 +1294,18 @@ type itemVersionSummary struct {
 	ChangeSummary string `json:"change_summary,omitempty"`
 }
 
+// defaultItemHistoryLimit bounds `pad item history` when the caller does not
+// ask for a window. The endpoint itself is deliberately unbounded when no
+// limit is sent (see maxItemVersionsQueryLimit) — the default belongs here,
+// where a terminal and a token budget are the actual constraint, mirroring how
+// TASK-2000 put the item-list default on the clients rather than the server.
+// A collab-heavy item accumulates a version every few seconds while someone
+// types, so "all of them" is rarely the question being asked.
+const defaultItemHistoryLimit = 50
+
 func historyCmd() *cobra.Command {
 	var full bool
+	var limit int
 
 	cmd := &cobra.Command{
 		Use:     "history <ref>",
@@ -1307,11 +1317,21 @@ Each row is a snapshot captured when the item's content changed (edits from
 the web editor, CLI, MCP, collab flushes, and version restores). This is a
 READ-ONLY view — use the web UI to restore a specific version.
 
+Shows the newest 50 by default; pass --limit 0 for the whole history. A
+collab-edited item records a version every few seconds while someone types, so
+histories get long.
+
+A single request is capped server-side, so a very large --limit returns the
+cap rather than everything, and the "showing the newest N" notice cannot detect
+that case. Use --limit 0 when you genuinely want the complete history.
+
 Items can be referenced by issue ID (e.g. TASK-5) or slug.
 
 Examples:
   pad item history TASK-5
   pad item versions TASK-5 --format json
+  pad item history TASK-5 --limit 10             # newest 10 only
+  pad item history TASK-5 --limit 0              # all versions
   pad item history TASK-5 --full --format json   # include resolved content`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1319,9 +1339,35 @@ Examples:
 			ws := getWorkspace()
 			slug := args[0]
 
-			versions, err := client.ListItemVersions(ws, slug)
+			if limit < 0 {
+				return fmt.Errorf("--limit must be zero or positive")
+			}
+			// Ask for ONE MORE than we intend to show. That extra row is the
+			// only honest way to tell "there are more" from "that is all
+			// of them" — comparing the response length against the requested
+			// limit calls an exactly-N history truncated, and stays silent
+			// when it really was cut short.
+			//
+			// Guarded against overflow: limit+1 at MaxInt wraps negative, the
+			// client then omits the parameter, and the "bounded" request comes
+			// back unbounded — the opposite of what was asked for.
+			ask := limit
+			if ask > 0 && ask < math.MaxInt {
+				ask = limit + 1
+			}
+
+			// Resolve content only when it will actually be SHOWN. --full
+			// alone is not enough: the table path prints no bodies at any
+			// setting, so pairing --full with table output would make the
+			// server walk the whole patch chain for output that discards it.
+			wantsContent := full && formatFlag == "json"
+			versions, err := client.ListItemVersionsPage(ws, slug, ask, !wantsContent)
 			if err != nil {
 				return err
+			}
+			truncated := limit > 0 && len(versions) > limit
+			if truncated {
+				versions = versions[:limit]
 			}
 
 			if formatFlag == "json" {
@@ -1360,11 +1406,26 @@ Examples:
 				)
 			}
 			fmt.Printf("\n%d version(s).\n", len(versions))
+			// Say so when the window was capped. A silent cap reads as "this
+			// is the whole history", which is the wrong thing to believe
+			// about an audit trail.
+			//
+			// One case this cannot detect: a --limit AT OR ABOVE the server's
+			// own ceiling is clamped there, and the probe row is clamped away
+			// with it, so the result looks complete. The CLI does not
+			// hardcode the server's ceiling to paper over that — asking for
+			// hundreds of versions is already opting out of a bound, and a
+			// duplicated constant would go stale silently.
+			if truncated {
+				fmt.Printf("Showing the newest %d — pass --limit 0 for all, or --limit N for more.\n", limit)
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().BoolVar(&full, "full", false, "include each version's resolved content body (JSON output only)")
+	cmd.Flags().IntVar(&limit, "limit", defaultItemHistoryLimit,
+		"show only the newest N versions (0 = all; very large values are capped server-side)")
 	return cmd
 }
 

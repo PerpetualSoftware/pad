@@ -286,8 +286,32 @@ func wrapItemNotFound(err error, itemSlug, wsSlug string) error {
 // `pad item history` (TASK-2022). Reuses the existing read-only
 // GET /items/{slug}/versions endpoint — no new store surface.
 func (c *Client) ListItemVersions(wsSlug, itemSlug string) ([]models.Version, error) {
+	return c.ListItemVersionsPage(wsSlug, itemSlug, 0, false)
+}
+
+// ListItemVersionsPage is ListItemVersions with the BUG-2608 bounds: `limit`
+// caps the newest-first window (0 = server default, i.e. unbounded), and
+// `summary` asks the server to skip reverse-patch resolution and return
+// metadata only.
+//
+// Pass summary=true whenever the caller is going to discard content. It is not
+// merely a smaller response: resolving means walking the item's entire patch
+// chain, so a history listing that projects to metadata was paying for bodies
+// it never showed.
+func (c *Client) ListItemVersionsPage(wsSlug, itemSlug string, limit int, summary bool) ([]models.Version, error) {
+	path := "/workspaces/" + wsSlug + "/items/" + itemSlug + "/versions"
+	q := url.Values{}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	if summary {
+		q.Set("summary", "true")
+	}
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
 	var result []models.Version
-	return result, c.get("/workspaces/"+wsSlug+"/items/"+itemSlug+"/versions", &result)
+	return result, c.get(path, &result)
 }
 
 // RestoreItem un-archives a soft-deleted item via the restore endpoint, which

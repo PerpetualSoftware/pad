@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -40,7 +41,31 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	versions, err := s.store.ListItemVersionsResolved(item.ID, item.Content)
+	// `limit` bounds the newest-first window. Absent means UNBOUNDED, matching
+	// the item-list endpoints (see maxItemListQueryLimit): the server does not
+	// truncate a request nobody asked to have truncated, and the agent-facing
+	// defaults live in the CLI and the MCP catalog where a token budget is
+	// actually known. An explicit oversized value is clamped.
+	limit := parseItemVersionsLimit(r.URL.Query().Get("limit"))
+
+	// `summary` skips diff resolution entirely. Every consumer of this
+	// endpoint except `--full` throws the content away immediately — the CLI
+	// projects to metadata, and so does the MCP history dispatcher — so
+	// resolving it means walking the whole reverse-patch chain to build bodies
+	// that are discarded milliseconds later (BUG-2608). The rows themselves
+	// still carry patch text, so the projection below strips it rather than
+	// shipping patches as though they were content.
+	if r.URL.Query().Get("summary") == "true" {
+		versions, err := s.store.ListItemVersionsPage(item.ID, limit)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, itemVersionMetadata(versions))
+		return
+	}
+
+	versions, err := s.store.ListItemVersionsResolvedPage(item.ID, item.Content, limit)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -50,6 +75,70 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, versions)
+}
+
+// maxItemVersionsQueryLimit clamps an explicit oversized `?limit=` on the
+// version-history endpoint. Mirrors maxItemListQueryLimit's role: a ceiling on
+// what a caller may ASK for, not a default applied to callers who ask for
+// nothing.
+//
+// It is deliberately NOT the same number as the MCP catalog's max (300). The
+// two caps answer different questions at different layers: this one is a
+// server-resource ceiling, while the catalog's is an agent token budget, which
+// is only knowable there. Item lists have the same split (1000 here, 300 in
+// the catalog). Lower than the list ceiling because resolving a version can
+// cost a patch application per row, not just a row read.
+const maxItemVersionsQueryLimit = 500
+
+// parseItemVersionsLimit turns the raw `?limit=` value into a row bound.
+// Returns 0 — unbounded — for absent, unparseable, zero and negative input,
+// so only a well-formed positive value bounds anything, and clamps anything
+// above the ceiling.
+//
+// Split out of the handler so the clamp is directly testable. Asserting it
+// through the endpoint would mean seeding 500+ versions per run to prove the
+// ceiling binds; asserting it by re-implementing the arithmetic in a test
+// would prove only that the test can multiply.
+func parseItemVersionsLimit(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		// A value too large for an int is an OVERSIZED ask, not a malformed
+		// one, and Atoi still hands back the saturated bound alongside
+		// ErrRange. Treating it as unparseable would return 0 — unbounded —
+		// so `?limit=9223372036854775808` would defeat the very ceiling this
+		// function exists to impose (codex round 4). Range-negative falls
+		// through to the unbounded branch below, matching a plain negative.
+		if errors.Is(err, strconv.ErrRange) && n > 0 {
+			return maxItemVersionsQueryLimit
+		}
+		return 0
+	}
+	if n <= 0 {
+		return 0
+	}
+	if n > maxItemVersionsQueryLimit {
+		return maxItemVersionsQueryLimit
+	}
+	return n
+}
+
+// itemVersionMetadata strips content from raw version rows for summary mode.
+//
+// Both fields are cleared together on purpose. An empty Content with IsDiff
+// still true would describe a version whose body is a reverse patch waiting to
+// be applied — telling a consumer to resolve something that is not there. The
+// pair only means anything together, so summary mode returns neither.
+func itemVersionMetadata(versions []models.Version) []models.Version {
+	out := make([]models.Version, 0, len(versions))
+	for _, v := range versions {
+		v.Content = ""
+		v.IsDiff = false
+		out = append(out, v)
+	}
+	return out
 }
 
 // handleGetItemVersion returns a single version with its diff resolved to full
