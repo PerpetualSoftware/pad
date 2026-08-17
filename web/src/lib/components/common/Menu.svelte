@@ -108,12 +108,26 @@
 		return unregister;
 	});
 
-	// Portal mode: any scroll or resize closes (coords would go stale).
-	// Deliberately onclose() and NOT close(): refocusing the trigger here
-	// would scroll the card back into view and fight the user's scroll.
+	// Portal mode: a scroll that can MOVE THE ANCHOR closes the menu
+	// (fixed coords would go stale). Scoped to containers that contain
+	// the trigger (BUG-2610): the old any-scroll dismissal also fired for
+	// scrolls in UNRELATED containers — under live SSE churn a foreign
+	// list re-layout scrolling its own column closed an open pane menu
+	// mid-interaction (and flaked the capstone move e2e the same way).
+	// A container that doesn't contain the trigger cannot move it, so
+	// its scrolling never stales the coords. The panel's own internal
+	// overflow scroll is likewise exempt. Deliberately onclose() and NOT
+	// close(): refocusing the trigger here would scroll the card back
+	// into view and fight the user's scroll.
 	$effect(() => {
 		if (!open || useSheet || mode !== 'portal') return;
-		const dismiss = () => onclose();
+		const dismiss = (e?: Event) => {
+			if (e && e.target instanceof Node) {
+				if (panelEl?.contains(e.target)) return;
+				if (trigger && e.target !== document && !e.target.contains(trigger)) return;
+			}
+			onclose();
+		};
 		window.addEventListener('scroll', dismiss, { capture: true, passive: true });
 		window.addEventListener('resize', dismiss, { passive: true });
 		return () => {
