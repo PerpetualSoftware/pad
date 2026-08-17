@@ -151,9 +151,11 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 				continue
 			}
 			if referenced {
-				// Item content references the attachment — leave it
-				// alone. Bonus side effect: the row will be picked
-				// up next sweep if the reference goes away.
+				// Some live content — item content or fields, a comment
+				// body, or a document body (BUG-2614) — references the
+				// attachment, so leave it alone. Bonus side effect: the
+				// row will be picked up next sweep if the reference goes
+				// away.
 				continue
 			}
 		}

@@ -1095,7 +1095,16 @@ func (s *Store) CountProtectingAttachmentsForHash(hash, excludeID string, graceC
 //
 // Comments are covered because a pasted screenshot (IDEA-1650) may be
 // referenced ONLY from a comment body; without the comments scan the GC
-// would reclaim it after the grace period and break the embed.
+// would reclaim it after the grace period and break the embed. Documents
+// are covered for the same reason (BUG-2614) — the legacy v1 documents
+// API is still mounted, so a direct API consumer can put the only
+// reference to an attachment in a document body.
+//
+// THE SET OF SCANNED SURFACES IS THE CONTRACT. Anything that persists
+// user-authored text which can contain a `pad-attachment:` token belongs
+// here, and adding such a surface without adding it here silently makes
+// its references invisible to the GC. Both of the additions above were
+// found that way, after the fact.
 //
 // Scoped to one workspace because a "pad-attachment:UUID" reference
 // only resolves within the workspace where the attachment lives;
@@ -1119,6 +1128,14 @@ func (s *Store) AttachmentReferenced(workspaceID, attachmentID string) (bool, er
 		fieldsExpr = "fields::text"
 	}
 
+	// The documents leg covers the legacy v1 `/workspaces/{ws}/documents`
+	// surface (BUG-2614). It has no first-party client left — nothing in the
+	// web API client or the CLI calls it — but the CRUD routes are mounted and
+	// authenticated, so a direct API consumer can still put a
+	// `pad-attachment:` reference in a document body. Scanning items and
+	// comments only made such an attachment reclaimable while genuinely
+	// referenced. Live rows only, mirroring items; comments carry no
+	// deleted_at at all, which is why that leg has no such filter.
 	var n int
 	err := s.db.QueryRow(s.q(`
 		SELECT
@@ -1127,7 +1144,9 @@ func (s *Store) AttachmentReferenced(workspaceID, attachmentID string) (bool, er
 		       AND (content LIKE ? OR `+fieldsExpr+` LIKE ?))
 		+ (SELECT COUNT(*) FROM comments
 		     WHERE workspace_id = ? AND body LIKE ?)
-	`), workspaceID, pattern, pattern, workspaceID, pattern).Scan(&n)
+		+ (SELECT COUNT(*) FROM documents
+		     WHERE workspace_id = ? AND deleted_at IS NULL AND content LIKE ?)
+	`), workspaceID, pattern, pattern, workspaceID, pattern, workspaceID, pattern).Scan(&n)
 	if err != nil {
 		return false, fmt.Errorf("attachment referenced: %w", err)
 	}
@@ -1327,14 +1346,30 @@ func (s *Store) WorkspaceItemSlugMap(workspaceID string) (map[string]string, err
 
 // RemapAttachmentReferencesInWorkspace rewrites every
 // "pad-attachment:OLD" reference in items.content + items.fields
-// to "pad-attachment:NEW" for every (old, new) pair in the map.
-// Run after a bundle import has rehydrated attachments so item
-// content points at the new attachment ids instead of the source
-// workspace's ids.
+// AND in comment bodies (BUG-2615) to "pad-attachment:NEW" for
+// every (old, new) pair in the map. Run after a bundle import has
+// rehydrated attachments so the imported content points at the new
+// attachment ids instead of the source workspace's ids.
+//
+// CALLER PRECONDITION — read this before adding a second caller.
+// Every surface here is read-modify-write across a scan and a later
+// UPDATE, with no row locks and no old-value predicate, and the whole
+// population is loaded inside one transaction. That is safe for the
+// ONE existing caller (the bundle import) for a reason that is about
+// the caller, not this function: it runs against a workspace the
+// import itself just created, which no other session can reach yet,
+// so there are no concurrent writers to lose an edit to and no
+// contention to hold up. Called against a LIVE workspace it would
+// clobber a concurrent edit committed between the scan and the write,
+// and would hold a long transaction across the entire item and
+// comment population. Both would need fixing first — the pre-existing
+// items walk has the same shape, so this is a property of the
+// function, not of the comment leg added for BUG-2615.
 //
 // Implementation: a single transaction that loads every item's
-// content+fields, runs remapAttachmentRefs over each, and writes
-// back only when something changed. That helper tokenizes with
+// content+fields and every comment body, runs remapAttachmentRefs
+// over each, stamps the attachment rows the rewrites will point at,
+// then writes back only what changed. That helper tokenizes with
 // attachmentRefRE and matches whole ids — NOT strings.ReplaceAll,
 // which used to rewrite a mapped id sitting as the PREFIX of a
 // longer one (Codex round 26). See its doc.
@@ -1380,12 +1415,88 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 	rows.Close()
 
+	// Comment bodies carry `pad-attachment:` references exactly as item
+	// content does, and a bundle import re-inserts them (export.go's comment
+	// import), so walking items alone left every comment pointing at the
+	// SOURCE workspace's ids — which resolve to nothing in the destination,
+	// while the freshly-cloned rows they should have pointed at end up
+	// referenced by nothing and eventually reclaimed (BUG-2615). Comments have
+	// no deleted_at column, hence no filter here.
+	crows, err := tx.Query(s.q(`SELECT id, body FROM comments WHERE workspace_id = ?`), workspaceID)
+	if err != nil {
+		return fmt.Errorf("scan comments for remap: %w", err)
+	}
+	type commentUpdate struct {
+		id   string
+		body string
+	}
+	var commentUpdates []commentUpdate
+	for crows.Next() {
+		var id, body string
+		if err := crows.Scan(&id, &body); err != nil {
+			crows.Close()
+			return fmt.Errorf("scan comment: %w", err)
+		}
+		if newBody := remapAttachmentRefs(body, oldToNew); newBody != body {
+			commentUpdates = append(commentUpdates, commentUpdate{id: id, body: newBody})
+		}
+	}
+	if err := crows.Err(); err != nil {
+		crows.Close()
+		return fmt.Errorf("iterate comments for remap: %w", err)
+	}
+	crows.Close()
+
+	// Stamp what the rewrites now point AT, inside this same transaction.
+	// The import stamped each comment body at insert time, but the body still
+	// held the SOURCE ids then, so those stamps landed on nothing that ends up
+	// referenced here. Without this the destination's clones are freshly
+	// created, referenced only by text this transaction just wrote, and
+	// carrying no stamp — the exact shape the orphan GC's never-attached claim
+	// reclaims (BUG-2615).
+	//
+	// ORDERING: this runs BEFORE the content UPDATEs, per
+	// stampAttachmentRefsTx's own contract and for the same two reasons every
+	// other writer follows it. On Postgres the stamp row-locks the attachment
+	// rows for the rest of the transaction, so a concurrent GC claim blocks
+	// and re-evaluates against the fresh stamp; stamping last would let a
+	// claim delete the target while the rewritten text sat uncommitted, and
+	// the stamp would then match zero rows and commit a dangling reference.
+	// It also keeps this path's lock order identical to the item and comment
+	// writers (attachments first, then content rows) — the reverse order
+	// deadlocks against them (codex round 2 P1).
+	//
+	// The texts are already known here: both scans have run and produced the
+	// exact strings the UPDATEs below will write.
+	//
+	// The REWRITTEN TEXTS are passed rather than every id in oldToNew, so only
+	// ids something actually references get stamped. Stamping the whole map
+	// would also refresh clones nothing points at, keeping genuinely
+	// unreferenced rows alive for an extra GC window.
+	stampTexts := make([]string, 0, len(updates)*2+len(commentUpdates))
+	for _, u := range updates {
+		stampTexts = append(stampTexts, u.content, u.fields)
+	}
+	for _, u := range commentUpdates {
+		stampTexts = append(stampTexts, u.body)
+	}
+	if err := stampAttachmentRefsTx(tx, s, workspaceID, stampTexts...); err != nil {
+		return fmt.Errorf("stamp remapped refs: %w", err)
+	}
+
 	for _, u := range updates {
 		if _, err := tx.Exec(s.q(`UPDATE items SET content = ?, fields = ? WHERE id = ?`),
 			u.content, u.fields, u.id); err != nil {
 			return fmt.Errorf("update item %s: %w", u.id, err)
 		}
 	}
+	for _, u := range commentUpdates {
+		if _, err := tx.Exec(s.q(`UPDATE comments SET body = ? WHERE id = ?`),
+			u.body, u.id); err != nil {
+			return fmt.Errorf("update comment %s: %w", u.id, err)
+		}
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit remap: %w", err)
 	}

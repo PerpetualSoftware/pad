@@ -177,7 +177,26 @@ func (s *Store) CreateDocument(workspaceID string, input models.DocumentCreate) 
 		return nil, err
 	}
 
-	_, err = s.db.Exec(s.q(`
+	// Transactional so the attachment-reference stamp commits atomically with
+	// the content that carries the reference (BUG-2415's protocol, extended to
+	// documents by BUG-2614). Without the transaction the stamp and the insert
+	// could not serialize against a concurrent orphan-GC claim, which is the
+	// entire point of stamping.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin create document: %w", err)
+	}
+	defer tx.Rollback()
+
+	// BEFORE the insert, per stampAttachmentRefsTx's ORDERING note: on
+	// Postgres the stamp row-locks the attachment rows for the rest of the
+	// transaction, so a concurrent claim blocks and then re-evaluates against
+	// the fresh stamp. Stamping after the write would leave a gap.
+	if err := stampAttachmentRefsTx(tx, s, workspaceID, input.Content); err != nil {
+		return nil, err
+	}
+
+	_, err = tx.Exec(s.q(`
 		INSERT INTO documents (id, workspace_id, title, slug, content, doc_type, status, tags,
 		                       pinned, sort_order, created_by, last_modified_by, source, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
@@ -185,6 +204,10 @@ func (s *Store) CreateDocument(workspaceID string, input models.DocumentCreate) 
 		s.dialect.BoolToInt(input.Pinned), createdBy, createdBy, source, ts, ts)
 	if err != nil {
 		return nil, fmt.Errorf("insert document: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit create document: %w", err)
 	}
 
 	return s.GetDocument(id)
@@ -236,6 +259,17 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 	}
 	defer tx.Rollback()
 
+	// Stamp the incoming content's attachment references first (BUG-2614,
+	// same protocol and ordering as items and comments). Only when content is
+	// actually being written — a metadata-only PATCH neither adds nor keeps a
+	// reference, and stamping on one would refresh rows this write has no
+	// opinion about.
+	if input.Content != nil {
+		if err := stampAttachmentRefsTx(tx, s, existing.WorkspaceID, *input.Content); err != nil {
+			return nil, err
+		}
+	}
+
 	ts := now()
 
 	// Create version if content is changing (throttled to avoid bloat from auto-save)
@@ -282,7 +316,17 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 		}
 	}
 
-	// Update [[link]] references if title is changing
+	// Update [[link]] references if title is changing.
+	//
+	// KNOWN GAP, filed as BUG-2629, deliberately not fixed here: this cascade
+	// rewrites OTHER documents' bodies without stamping the attachment
+	// references in the text it writes, and wiki_links.go::cascadeTitleRename
+	// does the same on the items side. Uniform across both surfaces, so fixing
+	// only this one would leave the larger hole open. It is also the weakest
+	// member of that family — the cascade rewrites link text in content whose
+	// references were already stamped when written and are still visible to
+	// the scan, so a NEW reference requires a title that literally contains a
+	// `pad-attachment:` token.
 	if input.Title != nil && *input.Title != existing.Title {
 		err = s.updateLinksInTx(tx, existing.WorkspaceID, existing.Title, *input.Title)
 		if err != nil {
