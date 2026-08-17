@@ -1337,14 +1337,30 @@ func (s *Store) WorkspaceItemSlugMap(workspaceID string) (map[string]string, err
 
 // RemapAttachmentReferencesInWorkspace rewrites every
 // "pad-attachment:OLD" reference in items.content + items.fields
-// to "pad-attachment:NEW" for every (old, new) pair in the map.
-// Run after a bundle import has rehydrated attachments so item
-// content points at the new attachment ids instead of the source
-// workspace's ids.
+// AND in comment bodies (BUG-2615) to "pad-attachment:NEW" for
+// every (old, new) pair in the map. Run after a bundle import has
+// rehydrated attachments so the imported content points at the new
+// attachment ids instead of the source workspace's ids.
+//
+// CALLER PRECONDITION — read this before adding a second caller.
+// Every surface here is read-modify-write across a scan and a later
+// UPDATE, with no row locks and no old-value predicate, and the whole
+// population is loaded inside one transaction. That is safe for the
+// ONE existing caller (the bundle import) for a reason that is about
+// the caller, not this function: it runs against a workspace the
+// import itself just created, which no other session can reach yet,
+// so there are no concurrent writers to lose an edit to and no
+// contention to hold up. Called against a LIVE workspace it would
+// clobber a concurrent edit committed between the scan and the write,
+// and would hold a long transaction across the entire item and
+// comment population. Both would need fixing first — the pre-existing
+// items walk has the same shape, so this is a property of the
+// function, not of the comment leg added for BUG-2615.
 //
 // Implementation: a single transaction that loads every item's
-// content+fields, runs remapAttachmentRefs over each, and writes
-// back only when something changed. That helper tokenizes with
+// content+fields and every comment body, runs remapAttachmentRefs
+// over each, stamps the attachment rows the rewrites will point at,
+// then writes back only what changed. That helper tokenizes with
 // attachmentRefRE and matches whole ids — NOT strings.ReplaceAll,
 // which used to rewrite a mapped id sitting as the PREFIX of a
 // longer one (Codex round 26). See its doc.
@@ -1422,19 +1438,6 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 	crows.Close()
 
-	for _, u := range updates {
-		if _, err := tx.Exec(s.q(`UPDATE items SET content = ?, fields = ? WHERE id = ?`),
-			u.content, u.fields, u.id); err != nil {
-			return fmt.Errorf("update item %s: %w", u.id, err)
-		}
-	}
-	for _, u := range commentUpdates {
-		if _, err := tx.Exec(s.q(`UPDATE comments SET body = ? WHERE id = ?`),
-			u.body, u.id); err != nil {
-			return fmt.Errorf("update comment %s: %w", u.id, err)
-		}
-	}
-
 	// Stamp what the rewrites now point AT, inside this same transaction.
 	// The import stamped each comment body at insert time, but the body still
 	// held the SOURCE ids then, so those stamps landed on nothing that ends up
@@ -1442,6 +1445,20 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	// created, referenced only by text this transaction just wrote, and
 	// carrying no stamp — the exact shape the orphan GC's never-attached claim
 	// reclaims (BUG-2615).
+	//
+	// ORDERING: this runs BEFORE the content UPDATEs, per
+	// stampAttachmentRefsTx's own contract and for the same two reasons every
+	// other writer follows it. On Postgres the stamp row-locks the attachment
+	// rows for the rest of the transaction, so a concurrent GC claim blocks
+	// and re-evaluates against the fresh stamp; stamping last would let a
+	// claim delete the target while the rewritten text sat uncommitted, and
+	// the stamp would then match zero rows and commit a dangling reference.
+	// It also keeps this path's lock order identical to the item and comment
+	// writers (attachments first, then content rows) — the reverse order
+	// deadlocks against them (codex round 2 P1).
+	//
+	// The texts are already known here: both scans have run and produced the
+	// exact strings the UPDATEs below will write.
 	//
 	// The REWRITTEN TEXTS are passed rather than every id in oldToNew, so only
 	// ids something actually references get stamped. Stamping the whole map
@@ -1456,6 +1473,19 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 	if err := stampAttachmentRefsTx(tx, s, workspaceID, stampTexts...); err != nil {
 		return fmt.Errorf("stamp remapped refs: %w", err)
+	}
+
+	for _, u := range updates {
+		if _, err := tx.Exec(s.q(`UPDATE items SET content = ?, fields = ? WHERE id = ?`),
+			u.content, u.fields, u.id); err != nil {
+			return fmt.Errorf("update item %s: %w", u.id, err)
+		}
+	}
+	for _, u := range commentUpdates {
+		if _, err := tx.Exec(s.q(`UPDATE comments SET body = ? WHERE id = ?`),
+			u.body, u.id); err != nil {
+			return fmt.Errorf("update comment %s: %w", u.id, err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
