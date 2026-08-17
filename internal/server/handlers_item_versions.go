@@ -87,8 +87,15 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 
 // maxItemVersionsQueryLimit clamps an explicit oversized `?limit=` on the
 // version-history endpoint. Mirrors maxItemListQueryLimit's role: a ceiling on
-// what a caller may ask for, not a default applied to callers who ask for
+// what a caller may ASK for, not a default applied to callers who ask for
 // nothing.
+//
+// It is deliberately NOT the same number as the MCP catalog's max (300). The
+// two caps answer different questions at different layers: this one is a
+// server-resource ceiling, while the catalog's is an agent token budget, which
+// is only knowable there. Item lists have the same split (1000 here, 300 in
+// the catalog). Lower than the list ceiling because resolving a version can
+// cost a patch application per row, not just a row read.
 const maxItemVersionsQueryLimit = 500
 
 // itemVersionMetadata strips content from raw version rows for summary mode.
