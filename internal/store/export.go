@@ -323,6 +323,11 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		// per-workspace seqs — clients post-import see them on the next
 		// /items-index fetch, and any subsequent mutation keeps bumping
 		// from a sensible floor instead of a flat MAX(seq)=0.
+		// Stamp BEFORE the INSERT — see the ORDERING note on
+		// stampAttachmentRefsTx (BUG-2415).
+		if err := stampAttachmentRefsTx(tx, s, ws.ID, it.Content, fieldsJSON); err != nil {
+			return nil, err
+		}
 		_, err := tx.Exec(s.q(`
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, seq)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),
@@ -331,14 +336,6 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			it.CreatedAt, it.UpdatedAt, ws.ID)
 		if err != nil {
 			return nil, fmt.Errorf("import item %s: %w", it.Title, err)
-		}
-		// Imported content can carry pad-attachment: references to rows
-		// this same import (or a prior state) created as never-attached —
-		// stamp them inside the import tx so a sweep racing the import
-		// can't claim a row the arriving content references (BUG-2415,
-		// codex round 1 #2).
-		if err := stampAttachmentRefsTx(tx, s, ws.ID, it.Content, fieldsJSON); err != nil {
-			return nil, err
 		}
 	}
 
@@ -377,6 +374,10 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		if newItemID == "" {
 			continue
 		}
+		// Stamp BEFORE the INSERT (BUG-2415).
+		if err := stampAttachmentRefsTx(tx, s, ws.ID, cm.Body); err != nil {
+			return nil, err
+		}
 		_, err := tx.Exec(s.q(`
 			INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
@@ -384,10 +385,6 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			cm.CreatedAt, cm.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import comment: %w", err)
-		}
-		// Same BUG-2415 stamp as the item-import loop above.
-		if err := stampAttachmentRefsTx(tx, s, ws.ID, cm.Body); err != nil {
-			return nil, err
 		}
 	}
 

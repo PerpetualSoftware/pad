@@ -47,6 +47,12 @@ type orphanGCResult struct {
 	BlobsReclaimed int   // on-disk blobs Delete'd through the storage backend
 	BytesReclaimed int64 // sum of size_bytes for reclaimed blobs
 	Skipped        int   // rows skipped due to mid-sweep errors
+	// BlobDeleteFailures counts rows whose DB row was claimed but whose
+	// blob delete then failed — stranded bytes an operator must clean by
+	// hand. Surfaced as its own counter so a sweep summary can't read
+	// "deleted=N, blobs_reclaimed=0, skipped=0" as if nothing went wrong
+	// (BUG-2415 codex round 3).
+	BlobDeleteFailures int
 }
 
 // runOrphanGCSweep walks the orphaned-attachments query and reclaims
@@ -228,6 +234,7 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 				// longer existed (BUG-2415).
 				slog.Warn("orphan GC: blob delete failed",
 					"attachment_id", a.ID, "storage_key", a.StorageKey, "error", delErr)
+				res.BlobDeleteFailures++
 			} else {
 				blobDeleted = true
 			}
@@ -349,7 +356,8 @@ func (s *Server) runOrphanGCTick(grace time.Duration) {
 		"deleted", res.Deleted,
 		"blobs_reclaimed", res.BlobsReclaimed,
 		"bytes_reclaimed", res.BytesReclaimed,
-		"skipped", res.Skipped)
+		"skipped", res.Skipped,
+		"blob_delete_failures", res.BlobDeleteFailures)
 }
 
 // _ keeps the attachments import alive even if every callsite ends

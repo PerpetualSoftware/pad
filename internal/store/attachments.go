@@ -754,6 +754,19 @@ func (s *Store) HardDeleteAttachment(id string) error {
 // failed statement poisons the transaction anyway, and a save whose
 // stamp did not commit would not be protected — failing the save is the
 // honest outcome.
+//
+// ORDERING (codex round 3): call this BEFORE the content statement, as
+// early in the writer transaction as the texts are known. On Postgres
+// the stamp UPDATE row-locks the attachment rows for the rest of the
+// transaction, so a concurrent GC claim DELETE blocks until commit and
+// then re-evaluates its predicate against the fresh stamp — refusing.
+// Stamping late would leave a window where the claim slips between the
+// content write and the stamp. The irreducible residual is the claim
+// COMMITTING before the writer's stamp executes at all: the row is
+// gone, the stamp matches zero rows, and the committed text carries a
+// dangling ref — the same outcome as referencing any already-deleted
+// attachment, and deliberately NOT turned into a save failure because
+// zero-rows also describes legitimate unknown / foreign / typo ids.
 func stampAttachmentRefsTx(tx *sql.Tx, s *Store, workspaceID string, texts ...string) error {
 	if workspaceID == "" {
 		return nil
@@ -776,19 +789,30 @@ func stampAttachmentRefsTx(tx *sql.Tx, s *Store, workspaceID string, texts ...st
 	if len(ids) == 0 {
 		return nil
 	}
-	placeholders := make([]string, len(ids))
-	args := make([]interface{}, 0, len(ids)+2)
-	args = append(args, time.Now().UTC().Format(time.RFC3339))
-	args = append(args, workspaceID)
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args = append(args, id)
-	}
-	_, err := tx.Exec(s.q(
-		`UPDATE attachments SET last_referenced_at = ? WHERE workspace_id = ? AND id IN (`+
-			strings.Join(placeholders, ",")+`)`), args...)
-	if err != nil {
-		return fmt.Errorf("stamp attachment refs: %w", err)
+	// Chunked like the attachment-copy planner's id walks: a hostile
+	// payload can carry thousands of refs, and an unbounded IN list
+	// would blow the bind-parameter limit and roll back the whole
+	// write (codex round 3 P2).
+	const stampChunk = 400
+	ts := time.Now().UTC().Format(time.RFC3339)
+	for start := 0; start < len(ids); start += stampChunk {
+		end := start + stampChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, 0, len(chunk)+2)
+		args = append(args, ts, workspaceID)
+		for i, id := range chunk {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		if _, err := tx.Exec(s.q(
+			`UPDATE attachments SET last_referenced_at = ? WHERE workspace_id = ? AND id IN (`+
+				strings.Join(placeholders, ",")+`)`), args...); err != nil {
+			return fmt.Errorf("stamp attachment refs: %w", err)
+		}
 	}
 	return nil
 }

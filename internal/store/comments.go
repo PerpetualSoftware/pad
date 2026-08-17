@@ -40,6 +40,11 @@ func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.C
 	}
 	defer tx.Rollback()
 
+	// Stamp BEFORE the INSERT — see the ORDERING note on
+	// stampAttachmentRefsTx (BUG-2415, codex round 3).
+	if err := stampAttachmentRefsTx(tx, s, workspaceID, input.Body); err != nil {
+		return nil, err
+	}
 	_, err = tx.Exec(s.q(`
 		INSERT INTO comments (id, item_id, workspace_id, author, user_id, body, created_by, source, activity_id, parent_id, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
@@ -48,9 +53,6 @@ func (s *Store) CreateComment(workspaceID, itemID, userID string, input models.C
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert comment: %w", err)
-	}
-	if err := stampAttachmentRefsTx(tx, s, workspaceID, input.Body); err != nil {
-		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit comment: %w", err)
@@ -80,6 +82,11 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 		}
 		return nil, fmt.Errorf("resolve comment workspace: %w", err)
 	}
+	// Stamp BEFORE the UPDATE — see the ORDERING note on
+	// stampAttachmentRefsTx (BUG-2415, codex round 3).
+	if err := stampAttachmentRefsTx(tx, s, workspaceID, body); err != nil {
+		return nil, err
+	}
 	res, err := tx.Exec(s.q(`UPDATE comments SET body = ?, updated_at = ? WHERE id = ?`), body, ts, id)
 	if err != nil {
 		return nil, fmt.Errorf("update comment: %w", err)
@@ -87,9 +94,6 @@ func (s *Store) UpdateComment(id, body string) (*models.Comment, error) {
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return nil, sql.ErrNoRows
-	}
-	if err := stampAttachmentRefsTx(tx, s, workspaceID, body); err != nil {
-		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit comment update: %w", err)

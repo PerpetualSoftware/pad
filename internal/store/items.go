@@ -283,6 +283,13 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 		contentFlushedAt = ts
 		contentFlushedOpLogID = int64(0)
 	}
+	// Stamp any pad-attachment: references BEFORE the INSERT (see the
+	// ORDERING note on stampAttachmentRefsTx): the stamp's row locks
+	// make a concurrent GC claim block until this tx commits.
+	if err := stampAttachmentRefsTx(tx, s, workspaceID, input.Content, fields); err != nil {
+		return err
+	}
+
 	// The workspace advisory lock acquired above for item_number
 	// assignment ALSO serializes the seq subquery below — both read
 	// MAX(...) per workspace and would otherwise race in Postgres.
@@ -314,13 +321,6 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 		if err != nil {
 			return fmt.Errorf("create initial version: %w", err)
 		}
-	}
-
-	// Stamp any pad-attachment: references in the new content/fields so
-	// the orphan-GC claim sees them (BUG-2415). Same tx as the INSERT —
-	// the stamp and the reference commit atomically.
-	if err := stampAttachmentRefsTx(tx, s, workspaceID, input.Content, fields); err != nil {
-		return err
 	}
 
 	// Index [[...]] wiki-links from the new content. Lives inside the
@@ -2502,19 +2502,13 @@ func (s *Store) updateItemWithParentLinkOnce(
 		statusBefore = extractFieldValue(existing.Fields, doneKey)
 	}
 
-	args = append(args, id)
-	query := fmt.Sprintf("UPDATE items SET %s WHERE id = ?", strings.Join(sets, ", "))
-	_, err = tx.Exec(s.q(query), args...)
-	if err != nil {
-		return nil, fmt.Errorf("update item: %w", err)
-	}
-
 	// Stamp pad-attachment: references carried by the new content /
-	// fields so the orphan-GC claim sees them (BUG-2415). Same tx as
-	// the UPDATE — reference and stamp commit atomically. Covers every
-	// funnel into this core: item PATCH, the collab-snapshot flush,
-	// version restore, and bulk updates. input.Fields is already the
-	// RESOLVED blob here (a fields_patch was merged into it above).
+	// fields BEFORE the UPDATE (see the ORDERING note on
+	// stampAttachmentRefsTx — the stamp's row locks make a concurrent
+	// GC claim wait out this tx). Covers every funnel into this core:
+	// item PATCH, the collab-snapshot flush, version restore, and bulk
+	// updates. input.Fields is already the RESOLVED blob here (a
+	// fields_patch was merged into it above).
 	{
 		var refTexts []string
 		if input.Content != nil {
@@ -2528,6 +2522,13 @@ func (s *Store) updateItemWithParentLinkOnce(
 				return nil, err
 			}
 		}
+	}
+
+	args = append(args, id)
+	query := fmt.Sprintf("UPDATE items SET %s WHERE id = ?", strings.Join(sets, ", "))
+	_, err = tx.Exec(s.q(query), args...)
+	if err != nil {
+		return nil, fmt.Errorf("update item: %w", err)
 	}
 
 	// Durable restore boundary (BUG-2264): stamp last_restore_seq with the seq
@@ -4507,6 +4508,15 @@ func (s *Store) moveItemWithPreCheckOnce(
 		}
 	}
 
+	// A move's field OVERRIDES can inject a brand-new pad-attachment:
+	// reference into the rewritten fields blob — this write bypasses the
+	// UpdateItem core, so stamp here too, BEFORE the UPDATE (BUG-2415,
+	// codex rounds 1 #2 and 3; see the ORDERING note on
+	// stampAttachmentRefsTx).
+	if err := stampAttachmentRefsTx(tx, s, existing.WorkspaceID, newFieldsJSON); err != nil {
+		return nil, err
+	}
+
 	moveTS := time.Now().UTC().Format(time.RFC3339)
 	_, err = tx.Exec(s.q(`
 		UPDATE items
@@ -4515,13 +4525,6 @@ func (s *Store) moveItemWithPreCheckOnce(
 		targetCollectionID, newFieldsJSON, moveTS, existing.WorkspaceID, itemID)
 	if err != nil {
 		return nil, fmt.Errorf("move item: %w", err)
-	}
-
-	// A move's field OVERRIDES can inject a brand-new pad-attachment:
-	// reference into the rewritten fields blob — this write bypasses the
-	// UpdateItem core, so stamp here too (BUG-2415, codex round 1 #2).
-	if err := stampAttachmentRefsTx(tx, s, existing.WorkspaceID, newFieldsJSON); err != nil {
-		return nil, err
 	}
 
 	// A move can carry a status-changing field override (e.g.
