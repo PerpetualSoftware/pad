@@ -728,15 +728,188 @@ func (s *Store) OrphanedAttachments(graceCutoff time.Time) ([]models.Attachment,
 	return out, nil
 }
 
-// HardDeleteAttachment removes the attachments row outright. Used by
-// orphan GC after the grace period; never call from a request
-// handler — soft-delete is the safe default for user-facing flows.
+// HardDeleteAttachment removes the attachments row outright. Never call
+// from a request handler — soft-delete is the safe default for
+// user-facing flows. The orphan GC no longer uses it (BUG-2415): its
+// row deletions go through the conditional Claim* methods below so the
+// delete itself is the atomic claim.
 func (s *Store) HardDeleteAttachment(id string) error {
 	_, err := s.db.Exec(s.q(`DELETE FROM attachments WHERE id = ?`), id)
 	if err != nil {
 		return fmt.Errorf("hard delete attachment: %w", err)
 	}
 	return nil
+}
+
+// stampAttachmentRefsTx bumps attachments.last_referenced_at for every
+// `pad-attachment:<id>` reference found in the given texts, inside the
+// caller's transaction (BUG-2415). Content writers call this alongside
+// their content/fields/body write so the stamp commits atomically with
+// the reference: either both are visible to the GC sweep's conditional
+// claim, or neither is.
+//
+// Scoped to the workspace so a pasted foreign-workspace reference can't
+// refresh another workspace's rows. Unknown / already-deleted ids simply
+// match zero rows. Errors are returned, not swallowed: on Postgres any
+// failed statement poisons the transaction anyway, and a save whose
+// stamp did not commit would not be protected — failing the save is the
+// honest outcome.
+//
+// ORDERING (codex round 3): call this BEFORE the content statement, as
+// early in the writer transaction as the texts are known. On Postgres
+// the stamp UPDATE row-locks the attachment rows for the rest of the
+// transaction, so a concurrent GC claim DELETE blocks until commit and
+// then re-evaluates its predicate against the fresh stamp — refusing.
+// Stamping late would leave a window where the claim slips between the
+// content write and the stamp. Two residuals, both accepted and
+// bounded: (1) the claim COMMITTING before the writer's stamp executes
+// at all — the row is gone, the stamp matches zero rows, and the
+// committed text carries a dangling ref, the same outcome as
+// referencing any already-deleted attachment; deliberately NOT turned
+// into a save failure because zero-rows also describes legitimate
+// unknown / foreign / typo ids. (2) a writer transaction whose
+// stamp-to-commit span EXCEEDS orphanGCRefStaleWindow — the stamp is
+// already stale when a blocked claim re-evaluates, so the window's
+// sizing (see its comment) is what bounds this case, not the lock
+// (codex round 4 P2).
+func stampAttachmentRefsTx(tx *sql.Tx, s *Store, workspaceID string, texts ...string) error {
+	if workspaceID == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	ids := make([]string, 0, 4)
+	for _, text := range texts {
+		if text == "" || !strings.Contains(text, attachmentRefPrefix) {
+			continue
+		}
+		for _, m := range attachmentRefRE.FindAllStringSubmatch(text, -1) {
+			id := m[1]
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	// Chunked like the attachment-copy planner's id walks: a hostile
+	// payload can carry thousands of refs, and an unbounded IN list
+	// would blow the bind-parameter limit and roll back the whole
+	// write (codex round 3 P2).
+	const stampChunk = 400
+	ts := time.Now().UTC().Format(time.RFC3339)
+	for start := 0; start < len(ids); start += stampChunk {
+		end := start + stampChunk
+		if end > len(ids) {
+			end = len(ids)
+		}
+		chunk := ids[start:end]
+		placeholders := make([]string, len(chunk))
+		args := make([]interface{}, 0, 2*len(chunk)+2)
+		args = append(args, ts, workspaceID)
+		for i, id := range chunk {
+			placeholders[i] = "?"
+			args = append(args, id)
+		}
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		in := strings.Join(placeholders, ",")
+		// `parent_id IN (...)` stamps (and on Postgres, ROW-LOCKS) the
+		// referenced originals' VARIANTS too: a variant's claim DELETE
+		// only re-evaluates predicates on the row it deletes, so a
+		// fresh stamp on the parent alone cannot make a concurrently
+		// claimed thumbnail wait — locking the variant row itself does
+		// (codex round 4 P1). The claim's parent NOT EXISTS stays as
+		// the belt for variants created AFTER the stamp landed.
+		if _, err := tx.Exec(s.q(
+			`UPDATE attachments SET last_referenced_at = ? WHERE workspace_id = ? AND (id IN (`+
+				in+`) OR parent_id IN (`+in+`))`), args...); err != nil {
+			return fmt.Errorf("stamp attachment refs: %w", err)
+		}
+	}
+	return nil
+}
+
+// ClaimNeverAttachedAttachment is the orphan GC's atomic claim for a
+// never-attached row (BUG-2415): a conditional DELETE that re-asserts
+// the row is still unattached, still live, and has no FRESH reference
+// stamp — all inside the delete statement itself, so a writer's
+// in-transaction stamp (stampAttachmentRefsTx) and this delete
+// serialize at the database: whichever commits first wins, and the
+// loser observes it (the writer's stamp matches zero rows, or this
+// claim deletes zero rows).
+//
+// Returns whether the row was claimed (deleted). The caller must
+// reclaim the blob ONLY on a true return — row-before-bytes is the
+// ordering that makes a surviving row imply surviving bytes.
+//
+// A true return is IRREVOCABLE: the row and its metadata are gone, so
+// no later recovery surface (PLAN-2411/PLAN-2416) can restore this
+// attachment or retry a failed blob delete — the caller's retained
+// StorageKey is the only remaining handle for operator cleanup.
+//
+// refCutoff bounds stamp freshness: a stamp at-or-after it refuses the
+// claim. The content LIKE scan (AttachmentReferenced) still runs before
+// this in the sweep, so the stamp only needs to cover references that
+// landed AFTER that scan — the window is sized in orphan_gc.go, not
+// here.
+//
+// Variants: content references an ORIGINAL's id, so stamps land on the
+// parent row — a fresh PARENT stamp refuses the variant's claim too
+// (the NOT EXISTS below). A parent already claimed in the same sweep
+// has no row, so its variants claim normally, which is correct: a
+// legitimately reclaimed original takes its thumbnails with it.
+func (s *Store) ClaimNeverAttachedAttachment(id string, refCutoff time.Time) (bool, error) {
+	cutoff := refCutoff.UTC().Format(time.RFC3339)
+	res, err := s.db.Exec(s.q(`
+		DELETE FROM attachments
+		WHERE id = ?
+		  AND item_id IS NULL
+		  AND deleted_at IS NULL
+		  AND (last_referenced_at IS NULL OR last_referenced_at < ?)
+		  AND NOT EXISTS (
+		    SELECT 1 FROM attachments p
+		    WHERE p.id = attachments.parent_id
+		      AND p.last_referenced_at >= ?
+		  )
+	`), id, cutoff, cutoff)
+	if err != nil {
+		return false, fmt.Errorf("claim never-attached attachment: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim never-attached attachment rows: %w", err)
+	}
+	return n == 1, nil
+}
+
+// ClaimSoftDeletedAttachment is the orphan GC's atomic claim for a
+// soft-deleted row past its grace window (BUG-2415): the DELETE
+// re-asserts deleted_at is still set and still past the cutoff at
+// delete time, so a concurrent restore (which clears deleted_at)
+// commits either before this — claim matches zero rows, row survives —
+// or after — the restore's own predicate sees the row gone. Same
+// row-before-bytes contract and same IRREVOCABILITY note as
+// ClaimNeverAttachedAttachment: once true, no recovery surface can
+// bring the row back.
+func (s *Store) ClaimSoftDeletedAttachment(id string, graceCutoff time.Time) (bool, error) {
+	res, err := s.db.Exec(s.q(`
+		DELETE FROM attachments
+		WHERE id = ?
+		  AND deleted_at IS NOT NULL
+		  AND deleted_at < ?
+	`), id, graceCutoff.UTC().Format(time.RFC3339))
+	if err != nil {
+		return false, fmt.Errorf("claim soft-deleted attachment: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim soft-deleted attachment rows: %w", err)
+	}
+	return n == 1, nil
 }
 
 // CountProtectingAttachmentsForHash returns the number of rows

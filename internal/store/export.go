@@ -323,6 +323,11 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		// per-workspace seqs — clients post-import see them on the next
 		// /items-index fetch, and any subsequent mutation keeps bumping
 		// from a sensible floor instead of a flat MAX(seq)=0.
+		// Stamp BEFORE the INSERT — see the ORDERING note on
+		// stampAttachmentRefsTx (BUG-2415).
+		if err := stampAttachmentRefsTx(tx, s, ws.ID, it.Content, fieldsJSON); err != nil {
+			return nil, err
+		}
 		_, err := tx.Exec(s.q(`
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, seq)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),
@@ -368,6 +373,10 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		newItemID := itemMap[cm.ItemID]
 		if newItemID == "" {
 			continue
+		}
+		// Stamp BEFORE the INSERT (BUG-2415).
+		if err := stampAttachmentRefsTx(tx, s, ws.ID, cm.Body); err != nil {
+			return nil, err
 		}
 		_, err := tx.Exec(s.q(`
 			INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, created_at, updated_at)

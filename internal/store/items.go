@@ -283,6 +283,13 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 		contentFlushedAt = ts
 		contentFlushedOpLogID = int64(0)
 	}
+	// Stamp any pad-attachment: references BEFORE the INSERT (see the
+	// ORDERING note on stampAttachmentRefsTx): the stamp's row locks
+	// make a concurrent GC claim block until this tx commits.
+	if err := stampAttachmentRefsTx(tx, s, workspaceID, input.Content, fields); err != nil {
+		return err
+	}
+
 	// The workspace advisory lock acquired above for item_number
 	// assignment ALSO serializes the seq subquery below — both read
 	// MAX(...) per workspace and would otherwise race in Postgres.
@@ -2495,6 +2502,28 @@ func (s *Store) updateItemWithParentLinkOnce(
 		statusBefore = extractFieldValue(existing.Fields, doneKey)
 	}
 
+	// Stamp pad-attachment: references carried by the new content /
+	// fields BEFORE the UPDATE (see the ORDERING note on
+	// stampAttachmentRefsTx — the stamp's row locks make a concurrent
+	// GC claim wait out this tx). Covers every funnel into this core:
+	// item PATCH, the collab-snapshot flush, version restore, and bulk
+	// updates. input.Fields is already the RESOLVED blob here (a
+	// fields_patch was merged into it above).
+	{
+		var refTexts []string
+		if input.Content != nil {
+			refTexts = append(refTexts, *input.Content)
+		}
+		if input.Fields != nil {
+			refTexts = append(refTexts, *input.Fields)
+		}
+		if len(refTexts) > 0 {
+			if err := stampAttachmentRefsTx(tx, s, existing.WorkspaceID, refTexts...); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	args = append(args, id)
 	query := fmt.Sprintf("UPDATE items SET %s WHERE id = ?", strings.Join(sets, ", "))
 	_, err = tx.Exec(s.q(query), args...)
@@ -4477,6 +4506,15 @@ func (s *Store) moveItemWithPreCheckOnce(
 		if fresh, ferr := s.getItemTx(tx, itemID); ferr == nil && fresh != nil {
 			oldFields = fresh.Fields
 		}
+	}
+
+	// A move's field OVERRIDES can inject a brand-new pad-attachment:
+	// reference into the rewritten fields blob — this write bypasses the
+	// UpdateItem core, so stamp here too, BEFORE the UPDATE (BUG-2415,
+	// codex rounds 1 #2 and 3; see the ORDERING note on
+	// stampAttachmentRefsTx).
+	if err := stampAttachmentRefsTx(tx, s, existing.WorkspaceID, newFieldsJSON); err != nil {
+		return nil, err
 	}
 
 	moveTS := time.Now().UTC().Format(time.RFC3339)

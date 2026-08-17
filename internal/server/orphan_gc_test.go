@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // TestOrphanGC_ReclaimsSoftDeleted pins TASK-886's main case: a
@@ -589,4 +590,141 @@ func TestOrphanGC_StartStop(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	// If we got here without deadlocking on Stop, the loop drains
 	// correctly. testServer's t.Cleanup will exercise Stop.
+}
+
+// TestOrphanGC_ClaimRefusesFreshlyReferencedRow pins BUG-2415 at the
+// sweep level: a never-attached row whose last_referenced_at stamp is
+// FRESH (a writer referenced it after the sweep's content scan would
+// have run) survives the sweep — row AND blob — because the row
+// deletion is a conditional claim and the blob is only reclaimed after
+// a successful claim. The stamped row deliberately has NO content
+// reference, so the LIKE scan passes it and the claim predicate is the
+// only thing standing between it and deletion — exactly the filed
+// mid-sweep window.
+func TestOrphanGC_ClaimRefusesFreshlyReferencedRow(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	body := realPNG()
+	rr := doMultipartUpload(srv, slug, "raced.png", body)
+	if rr.Code != 201 {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+	wsID := workspaceIDForSlug(t, srv, slug)
+	id := getOnlyAttachmentID(t, srv, wsID)
+
+	// Fresh stamp, no content reference — the post-scan writer's trace.
+	nowTS := time.Now().UTC().Format(time.RFC3339)
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(
+		`UPDATE attachments SET last_referenced_at = ? WHERE id = ?`), nowTS, id); err != nil {
+		t.Fatalf("stamp: %v", err)
+	}
+
+	att, err := srv.store.GetAttachment(id)
+	if err != nil || att == nil {
+		t.Fatalf("GetAttachment: %v %v", att, err)
+	}
+	store, err := srv.attachments.Resolve(att.StorageKey)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+
+	res, err := srv.runOrphanGCSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if res.Deleted != 0 {
+		t.Errorf("Deleted=%d, want 0 — fresh-stamped row was reclaimed", res.Deleted)
+	}
+
+	// Row survives.
+	att2, err := srv.store.GetAttachment(id)
+	if err != nil {
+		t.Fatalf("post-sweep GetAttachment: %v", err)
+	}
+	if att2 == nil {
+		t.Fatalf("fresh-stamped row deleted by sweep — the filed data-loss race")
+	}
+	// Blob survives (row-before-bytes: an unclaimed row's bytes are
+	// never touched).
+	if _, err := store.Stat(context.Background(), att.StorageKey); err != nil {
+		t.Errorf("blob missing after refused claim: %v", err)
+	}
+
+	// COUNTERFACTUAL ARM: age the stamp past the stale window and sweep
+	// again — the same row must now be reclaimed, proving the stamp
+	// condition (not the scan, not the grace cutoff) is what protected
+	// it above.
+	staleTS := time.Now().Add(-2 * orphanGCRefStaleWindow).UTC().Format(time.RFC3339)
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(
+		`UPDATE attachments SET last_referenced_at = ? WHERE id = ?`), staleTS, id); err != nil {
+		t.Fatalf("age stamp: %v", err)
+	}
+	res, err = srv.runOrphanGCSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("second sweep: %v", err)
+	}
+	if res.Deleted < 1 {
+		t.Errorf("second sweep Deleted=%d, want >= 1 — stale stamp should not protect", res.Deleted)
+	}
+	att3, err := srv.store.GetAttachment(id)
+	if err != nil {
+		t.Fatalf("final GetAttachment: %v", err)
+	}
+	if att3 != nil {
+		t.Errorf("stale-stamped row survived the second sweep")
+	}
+}
+
+// TestOrphanGC_VariantProtectedByReferencedParent pins the parent-aware
+// half of BUG-2415: content references an ORIGINAL's id, never a
+// thumbnail's, so a referenced never-attached upload must keep its
+// variants too — the scan consults the parent id for variant rows, and
+// the claim refuses on a fresh PARENT stamp.
+func TestOrphanGC_VariantProtectedByReferencedParent(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	rr := doMultipartUpload(srv, slug, "with-thumb.png", realPNG())
+	if rr.Code != 201 {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+	wsID := workspaceIDForSlug(t, srv, slug)
+	origID := getOnlyAttachmentID(t, srv, wsID)
+
+	// Seed a variant row hanging off the original. Direct insert keeps
+	// the test independent of the thumbnail pipeline's async behavior.
+	thumbID := origID + "-thumb"
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(
+		`INSERT INTO attachments (id, workspace_id, item_id, uploaded_by, storage_key, content_hash, mime_type, size_bytes, filename, parent_id, variant, created_at)
+		 VALUES (?, ?, NULL, '', ?, ?, 'image/png', 10, 'thumb.png', ?, 'thumb-md', ?)`),
+		thumbID, wsID, "fs:thumb-"+thumbID, "hash-thumb-"+thumbID, origID,
+		time.Now().Add(-40*24*time.Hour).UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert variant: %v", err)
+	}
+
+	// Reference the ORIGINAL from item content — the only id content
+	// ever carries.
+	var collID string
+	if err := srv.store.DB().QueryRow(srv.store.D().Rebind(
+		`SELECT id FROM collections WHERE workspace_id = ? ORDER BY sort_order, slug LIMIT 1`), wsID).Scan(&collID); err != nil {
+		t.Fatalf("pick collection: %v", err)
+	}
+	if _, err := srv.store.CreateItem(wsID, collID, models.ItemCreate{
+		Title:   "holder",
+		Content: "see ![x](pad-attachment:" + origID + ")",
+	}); err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	res, err := srv.runOrphanGCSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	_ = res
+
+	if att, _ := srv.store.GetAttachment(origID); att == nil {
+		t.Fatalf("referenced original reclaimed")
+	}
+	if att, _ := srv.store.GetAttachment(thumbID); att == nil {
+		t.Errorf("referenced original's VARIANT reclaimed — parent-aware scan failed")
+	}
 }
