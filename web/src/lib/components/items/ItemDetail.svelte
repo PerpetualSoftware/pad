@@ -264,7 +264,9 @@
 	 * panes converge on the live item's collection (the same policy
 	 * refreshCollectionIfMoved implements for the steady-state case);
 	 * non-embedded masters stay route-authoritative (see the policy note
-	 * on refreshCollectionIfMoved) and simply keep what they show.
+	 * on refreshCollectionIfMoved) and keep what they show — except a
+	 * COLD mount with nothing shown, where the caller surfaces the
+	 * schema-less outcome as a load error rather than a blank pane.
 	 */
 	async function adoptOrConvergeToLiveCollection(
 		fetched: Collection,
@@ -4973,9 +4975,10 @@
 							//   2. On a SAME-collection switch the callback DOES fire,
 							//      but `updated` is that same collection, so assigning it
 							//      is correct; and loadData's collection write
-							//      (`collGen === collectionGen || collection?.id !==
-							//      collData.id`) forces the right collection regardless
-							//      of the collectionGen bump below.
+							//      (adoptCollection — BUG-2602 replaced the old
+							//      gen/id escape hatch) still lands the right
+							//      collection regardless of the collectionGen
+							//      bump below, since the live item agrees with it.
 							// Bump the unified fence so an in-flight stale load/refresh
 							// can't revert this fresh write (Codex). adoptCollection adds
 							// the live-item semantic veto on top (BUG-2602).
