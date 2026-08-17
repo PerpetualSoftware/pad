@@ -5925,7 +5925,14 @@
 			     different: it REST-writes this item's `items.content` directly (not via
 			     the Y.Doc applier), so on a peeking side whose Y.Doc is retained-alive a
 			     later collab flush could overwrite it — a same-item collision. So it
-			     stays frozen: `restoreFrozen={peeking}` (Codex P1). -->
+			     stays frozen: `restoreFrozen={peeking}` (Codex P1).
+
+			     `note` / `decision` in visibleKinds below are the structured entries
+			     `pad item note` / `pad item decide` write into the item's fields blob.
+			     They belong to Activity, not Versions — things that happened to the
+			     record, not restore points. That whitelist is the ONLY gate on them:
+			     omitting them there renders them on NEITHER tab, which is exactly how
+			     the feature shipped invisible the first time (BUG-2301). -->
 			<ItemTimeline
 				{wsSlug}
 				{username}
@@ -5940,7 +5947,9 @@
 				frozen={false}
 				restoreFrozen={peeking}
 				parentArchived={itemMatchesRef && isArchived}
-				visibleKinds={activeTab === 'versions' ? ['version'] : ['comment', 'activity']}
+				visibleKinds={activeTab === 'versions'
+					? ['version']
+					: ['comment', 'activity', 'note', 'decision']}
 			/>
 		</div>
 		</div><!-- /tab-panel Activity/Versions -->

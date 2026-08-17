@@ -121,17 +121,33 @@ type AuditLogParams struct {
 }
 
 // TimelineEntry represents a single entry in the unified item timeline.
-// It wraps one of: a comment, an activity, or a version.
+// It wraps one of: a comment, an activity, a version, an implementation
+// note, or a decision-log entry.
+//
+// Notes and decisions differ from the other three kinds in where they live:
+// they are elements of the item's own fields blob, not rows in a table, so
+// they arrive already-loaded on the item rather than through a cursor query
+// (BUG-2301). The handler still runs them through the same (created_at, id)
+// cursor predicate the SQL uses, so paging behaves identically for all five —
+// over a STABLE dataset. The five sources are read at five instants with no
+// shared snapshot, so a write landing mid-request can put one page slightly
+// out of step with another (an `updated` activity present while the note that
+// caused it is not, or the reverse). That predates this type and is not
+// specific to the structured kinds — the three SQL sources were already read
+// one after another. Nothing is lost: the blob is authoritative and the next
+// fetch is consistent.
 type TimelineEntry struct {
-	ID        string    `json:"id"`
-	Kind      string    `json:"kind"` // "comment", "activity", "version"
-	CreatedAt time.Time `json:"created_at"`
-	Actor     string    `json:"actor"`
-	ActorName string    `json:"actor_name,omitempty"`
-	Source    string    `json:"source"`
-	Comment   *Comment  `json:"comment,omitempty"`
-	Activity  *Activity `json:"activity,omitempty"`
-	Version   *Version  `json:"version,omitempty"`
+	ID        string                  `json:"id"`
+	Kind      string                  `json:"kind"` // "comment", "activity", "version", "note", "decision"
+	CreatedAt time.Time               `json:"created_at"`
+	Actor     string                  `json:"actor"`
+	ActorName string                  `json:"actor_name,omitempty"`
+	Source    string                  `json:"source"`
+	Comment   *Comment                `json:"comment,omitempty"`
+	Activity  *Activity               `json:"activity,omitempty"`
+	Version   *Version                `json:"version,omitempty"`
+	Note      *ItemImplementationNote `json:"note,omitempty"`
+	Decision  *ItemDecisionLogEntry   `json:"decision,omitempty"`
 }
 
 // TimelineResponse is the paginated response from the timeline endpoint.

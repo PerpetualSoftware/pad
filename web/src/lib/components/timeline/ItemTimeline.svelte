@@ -8,6 +8,7 @@
 	import TimelineCommentCard from './TimelineCommentCard.svelte';
 	import TimelineActivityCard from './TimelineActivityCard.svelte';
 	import TimelineVersionCard from './TimelineVersionCard.svelte';
+	import TimelineStructuredCard from './TimelineStructuredCard.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import {
 		fetchAttachmentMetadata,
@@ -52,7 +53,7 @@
 		 * Which entry kinds render (undefined = all). Filter-only: the merged
 		 * feed still fetches every kind, so switching kinds never refetches.
 		 */
-		visibleKinds?: Array<'comment' | 'activity' | 'version'>;
+		visibleKinds?: Array<'comment' | 'activity' | 'version' | 'note' | 'decision'>;
 		/**
 		 * `frozen` freezes the COMMENT/REACTION surfaces (composer, reply, edit,
 		 * delete, reaction). These are per-item / per-user REST entities, so under
@@ -695,6 +696,16 @@
 	// Content saves create version-diff entries that appear on next natural
 	// refresh (new comment, page load). Refreshing on every content save caused
 	// visible shakiness and rate-limit errors from rapid SSE replay.
+	//
+	// The `note` / `decision` kinds (BUG-2301) inherit this deliberately. They
+	// are written by `pad item note` / `pad item decide`, which PATCH the item
+	// and so emit `item_updated` — an open Activity tab will not show a new one
+	// until the next natural refresh. That is the same staleness version
+	// entries have always had, and these kinds have no web writer at all, so no
+	// user performs the action and then waits on this view. Flagged twice in
+	// review and declined twice: admitting `item_updated` here would trade a
+	// bounded, documented staleness for the shakiness and rate-limit errors
+	// this exclusion exists to prevent.
 	const relevantEvents = new Set([
 		'comment_created',
 		'comment_updated',
@@ -893,6 +904,8 @@
 	function dotClass(kind: TimelineEntry['kind']): string {
 		if (kind === 'comment') return 'dot-comment';
 		if (kind === 'version') return 'dot-version';
+		if (kind === 'note') return 'dot-note';
+		if (kind === 'decision') return 'dot-decision';
 		return 'dot-activity';
 	}
 </script>
@@ -976,6 +989,24 @@
 								{onRestore}
 								{flushBeforeRestore}
 								frozen={frozen || restoreFrozen}
+							/>
+						<!-- No `&& entry.note` guard, unlike the kinds above: the card is
+						     null-safe, and a payload-less entry still occupies a rail. Requiring
+						     the payload turns a partial entry into a blank rail with no card at
+						     all, which reads as a rendering fault rather than as a thin entry. -->
+						{:else if entry.kind === 'note'}
+							<TimelineStructuredCard
+								kind="note"
+								note={entry.note}
+								actor={entry.actor}
+								createdAt={entry.created_at}
+							/>
+						{:else if entry.kind === 'decision'}
+							<TimelineStructuredCard
+								kind="decision"
+								decision={entry.decision}
+								actor={entry.actor}
+								createdAt={entry.created_at}
 							/>
 						{/if}
 					</div>
@@ -1123,6 +1154,14 @@
 
 	.dot-version {
 		background: var(--accent-green);
+	}
+
+	.dot-note {
+		background: var(--accent-cyan);
+	}
+
+	.dot-decision {
+		background: var(--accent-orange);
 	}
 
 	.line {

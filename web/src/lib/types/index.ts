@@ -1215,7 +1215,7 @@ export interface Reaction {
 
 export interface TimelineEntry {
 	id: string;
-	kind: 'comment' | 'activity' | 'version';
+	kind: 'comment' | 'activity' | 'version' | 'note' | 'decision';
 	created_at: string;
 	actor: string;
 	actor_name?: string;
@@ -1223,6 +1223,13 @@ export interface TimelineEntry {
 	comment?: Comment;
 	activity?: Activity;
 	version?: Version;
+	// `note` / `decision` entries are elements of the item's fields blob that
+	// the server merges into the same paginated stream (BUG-2301). Their
+	// `created_at` is server-normalized: an entry whose stored timestamp is
+	// missing or malformed is anchored at the item's own creation instant, so
+	// this is always a usable date.
+	note?: ItemImplementationNote;
+	decision?: ItemDecisionLogEntry;
 }
 
 export interface TimelineResponse {
