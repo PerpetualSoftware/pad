@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // BUG-2301: `pad item note` / `pad item decide` wrote structured entries that
@@ -331,6 +332,89 @@ func TestItemTimeline_NoStructuredEntriesIsUnchanged(t *testing.T) {
 	if len(resp.Entries) == 0 {
 		t.Error("expected the pre-existing kinds (creation activity/version) to still be there")
 	}
+}
+
+// walkTimelinePages pages the whole feed one entry at a time, following the
+// (created_at, before_id) cursor exactly as the web client does, and returns
+// the ids it saw in order.
+//
+// This is the end-to-end statement about the structured filter: every entry
+// must appear EXACTLY once across the full walk. A too-loose predicate repeats
+// the in-blob entries on every page; a too-tight one drops them at a boundary.
+// Neither is visible from a single-page assertion.
+func walkTimelinePages(t *testing.T, srv *Server, wsSlug, itemSlug string) []string {
+	t.Helper()
+	var seen []string
+	query := "limit=1"
+	for range 40 { // bounded: the fixtures below are far smaller
+		resp := fetchTimeline(t, srv, wsSlug, itemSlug, query)
+		if len(resp.Entries) == 0 {
+			return seen
+		}
+		last := resp.Entries[len(resp.Entries)-1]
+		for _, e := range resp.Entries {
+			seen = append(seen, e.ID)
+		}
+		if !resp.HasMore {
+			return seen
+		}
+		query = "limit=1&before=" + last.CreatedAt.UTC().Format(time.RFC3339Nano) +
+			"&before_id=" + last.ID
+	}
+	t.Fatal("timeline paging did not terminate within 40 pages — a cursor that " +
+		"fails to advance repeats a page forever")
+	return nil
+}
+
+func assertEachEntryOnce(t *testing.T, seen []string, want ...string) {
+	t.Helper()
+	counts := map[string]int{}
+	for _, id := range seen {
+		counts[id]++
+	}
+	for _, id := range want {
+		switch counts[id] {
+		case 1: // exactly once, as required
+		case 0:
+			t.Errorf("%q never appeared across the paged walk (saw %v)", id, seen)
+		default:
+			t.Errorf("%q appeared %d times across the paged walk (saw %v)", id, counts[id], seen)
+		}
+	}
+}
+
+// The structured entries are filtered in Go against a parsed time, while the
+// comment/activity/version sources are filtered in SQL against a FORMATTED
+// STRING. That is a real seam between two comparison semantics, and the
+// timeline endpoint has a Postgres-specific paging history (BUG-1086), so the
+// paging invariant is asserted on both drivers rather than assumed portable.
+func TestItemTimeline_StructuredPagingIsExactlyOnce(t *testing.T) {
+	run := func(t *testing.T, srv *Server, wsSlug string) {
+		t.Helper()
+		item := timelineItemWithStructured(t, srv, wsSlug,
+			`[{"id":"note-1","summary":"n1","created_at":"2026-04-02T10:00:00Z","created_by":"user"},
+			  {"id":"note-2","summary":"n2","created_at":"2026-04-02T12:00:00Z","created_by":"user"}]`,
+			`[{"id":"decision-1","decision":"d1","created_at":"2026-04-02T11:00:00Z","created_by":"user"}]`)
+
+		seen := walkTimelinePages(t, srv, wsSlug, item.Slug)
+		assertEachEntryOnce(t, seen, "note-1", "note-2", "decision-1")
+	}
+
+	t.Run("sqlite", func(t *testing.T) {
+		srv := testServer(t)
+		run(t, srv, createTestWorkspaceViaAPI(t, srv))
+	})
+
+	t.Run("postgres", func(t *testing.T) {
+		// Skips unless PAD_TEST_POSTGRES_URL is set (make test-pg).
+		srv, _ := testServerPostgres(t)
+		// Assert the driver rather than trusting the helper: without this the
+		// leg would silently re-run the SQLite case and report a PG pass.
+		if got := srv.store.D().Driver(); got != store.DriverPostgres {
+			t.Fatalf("expected a Postgres store, got %s", got)
+		}
+		run(t, srv, createTestWorkspaceViaAPI(t, srv))
+	})
 }
 
 // Unit-level coverage of the cursor predicate itself, including the nil-item
