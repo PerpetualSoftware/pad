@@ -124,8 +124,14 @@ func TestSharePageDoesNotImportCollab(t *testing.T) {
 		why  string
 		need string
 	}{
-		{"marked import", "from 'marked'"},
-		{"marked invocation", "marked("},
+		// BUG-2389: the route renders through the attachment-aware
+		// wrapper (which wraps marked internally) instead of a bare
+		// marked() call, so pad-attachment: refs get honest
+		// placeholders. Sanitization posture is unchanged: the wrapper
+		// returns unsanitized HTML and the page owns the single
+		// DOMPurify pass asserted below.
+		{"attachment-aware marked wrapper import", "renderMarkedWithAttachments"},
+		{"attachment-aware marked wrapper invocation", "renderMarkedWithAttachments("},
 		{"DOMPurify import", "from 'dompurify'"},
 		{"DOMPurify sanitize call", "DOMPurify.sanitize("},
 	}

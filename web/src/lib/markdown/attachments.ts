@@ -161,6 +161,8 @@ export function renderAttachmentChip(
  * state (the row is soft-deleted or the UUID was never valid).
  */
 export function renderAttachmentMissing(uuid: string, alt: string): string {
+	// (See also renderAttachmentUnavailable below for surfaces where the
+	// attachment EXISTS but this viewer has no byte access.)
 	const safeAlt = alt && alt.trim() !== '' ? escapeHtml(alt) : 'Missing attachment';
 	return `<span class="attachment-missing" data-attachment-id="${escapeHtml(uuid)}" title="This attachment is missing or has been deleted">📎 ${safeAlt}</span>`;
 }
@@ -171,17 +173,32 @@ export function renderAttachmentMissing(uuid: string, alt: string): string {
  * attachment exists but isn't an image MIME — the markdown author asked
  * for an embed, but a PDF or zip can't sensibly inline.
  */
+/**
+ * Placeholder for an attachment this SURFACE cannot serve — it exists,
+ * the viewer just has no byte access here (e.g. public share pages until
+ * the token-scoped read path ships, BUG-2389). Distinct from
+ * renderAttachmentMissing: saying "missing or deleted" about an
+ * attachment that exists would be false.
+ */
+export function renderAttachmentUnavailable(uuid: string, alt: string): string {
+	const safeAlt = escapeHtml(alt && alt.trim() !== '' ? alt : 'attachment');
+	// The explanation is VISIBLE text, not just a title attribute — share
+	// pages get read on touch devices where hover tooltips don't exist.
+	return `<span class="attachment-missing attachment-unavailable" data-attachment-id="${escapeHtml(uuid)}" title="Attachments aren't available on shared pages yet">📎 ${safeAlt} <span class="attachment-unavailable-note">(not available on shared pages)</span></span>`;
+}
+
 export function resolveAttachmentImage(
 	href: string,
 	alt: string,
 	workspaceSlug: string,
 	resolver: AttachmentResolver,
-	variant: 'thumb-sm' | 'thumb-md' = 'thumb-md'
+	variant: 'thumb-sm' | 'thumb-md' = 'thumb-md',
+	missing: (uuid: string, alt: string) => string = renderAttachmentMissing
 ): string {
 	const uuid = parseAttachmentHref(href);
 	if (uuid === null) return '';
 	const meta = resolver(uuid);
-	if (!meta) return renderAttachmentMissing(uuid, alt);
+	if (!meta) return missing(uuid, alt);
 	if (isImageMime(meta.mime_type)) return renderAttachmentImage(meta, alt, workspaceSlug, variant);
 	return renderAttachmentChip(meta, alt && alt.trim() !== '' ? alt : meta.filename, workspaceSlug);
 }
@@ -196,11 +213,12 @@ export function resolveAttachmentLink(
 	href: string,
 	text: string,
 	workspaceSlug: string,
-	resolver: AttachmentResolver
+	resolver: AttachmentResolver,
+	missing: (uuid: string, alt: string) => string = renderAttachmentMissing
 ): string {
 	const uuid = parseAttachmentHref(href);
 	if (uuid === null) return '';
 	const meta = resolver(uuid);
-	if (!meta) return renderAttachmentMissing(uuid, text);
+	if (!meta) return missing(uuid, text);
 	return renderAttachmentChip(meta, text, workspaceSlug);
 }

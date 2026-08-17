@@ -1176,8 +1176,8 @@
 		// session) didn't propagate until a manual refresh — TASK-1243.
 		//
 		// Comments, reactions, timeline events, and child-item updates
-		// already have their own subscriptions inside CommentThread.svelte,
-		// ItemTimeline.svelte, and ChildItems.svelte respectively — we
+		// already have their own subscriptions inside ItemTimeline.svelte
+		// and ChildItems.svelte respectively — we
 		// only handle item_updated / item_archived / item_restored for
 		// the parent item itself here.
 		//
