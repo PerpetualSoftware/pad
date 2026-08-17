@@ -286,21 +286,27 @@ func (s *Server) persistThumbnail(
 		// one registration ourselves — > 1 means someone else does too.
 		// A cleanup failure or skipped count only strands bytes — never
 		// a row — and is logged so it isn't silent (codex round 1 P2).
+		// Count INSIDE the fence (codex round 2): a full upload
+		// lifecycle — register, Put, insert row, release — can complete
+		// between an outside-the-mutex count and the delete, so the
+		// count must observe the world the delete will act on. The
+		// sweep holds this mutex across a backend resolve + FS delete
+		// already; one bounded DB count under it is the same class.
 		graceCutoff := time.Now().Add(-s.orphanGCGraceConfigured())
-		others, cErr := s.store.CountProtectingAttachmentsForHash(hash, "", graceCutoff)
-		if cErr != nil {
-			slog.Warn("thumbnails: refusal cleanup count failed — blob stranded for manual cleanup",
-				"storage_key", storageKey, "error", cErr)
-		} else if others == 0 {
-			s.inFlightHashesMu.Lock()
-			if s.inFlightHashes[hash] <= 1 {
+		s.inFlightHashesMu.Lock()
+		if s.inFlightHashes[hash] <= 1 {
+			others, cErr := s.store.CountProtectingAttachmentsForHash(hash, "", graceCutoff)
+			if cErr != nil {
+				slog.Warn("thumbnails: refusal cleanup count failed — blob stranded for manual cleanup",
+					"storage_key", storageKey, "error", cErr)
+			} else if others == 0 {
 				if dErr := store.Delete(ctx, storageKey); dErr != nil {
 					slog.Warn("thumbnails: orphan blob cleanup failed",
 						"storage_key", storageKey, "error", dErr)
 				}
 			}
-			s.inFlightHashesMu.Unlock()
 		}
+		s.inFlightHashesMu.Unlock()
 		slog.Info("thumbnails: skipped, parent deleted during derivation",
 			"parent_id", parent.ID, "variant", variant)
 		return nil
