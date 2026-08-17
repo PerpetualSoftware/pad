@@ -317,9 +317,12 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await expect(col.locator('button.star-btn')).toBeEnabled();
 		await expect(col.locator('button.trigger-btn[title="Quick actions"]')).toBeVisible();
 		await col.locator('button.pane-more-btn').click();
-		await expect(col.getByRole('menuitem', { name: 'Share…' })).toBeVisible();
-		await expect(col.getByRole('menuitem', { name: 'Move to collection…' })).toBeVisible();
-		await expect(col.getByRole('menuitem', { name: 'Delete…' })).toBeVisible();
+		// Menu panels are PORTALED to <body> since BUG-2610; only one menu
+		// is ever open, and the col-scoped trigger click above is what ties
+		// it to this column — page-scope the row lookups.
+		await expect(page.getByRole('menuitem', { name: 'Share…' })).toBeVisible();
+		await expect(page.getByRole('menuitem', { name: 'Move to collection…' })).toBeVisible();
+		await expect(page.getByRole('menuitem', { name: 'Delete…' })).toBeVisible();
 		await page.keyboard.press('Escape');
 		// Relationships tab: the per-link remove button (rendered but `display:none`
 		// until row-hover, so assert DOM presence) and the "+ Add relationship" opener.
@@ -447,9 +450,11 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		// owner write controls are all present.
 		await expect(trigger).toBeVisible();
 		await trigger.click();
-		await expect(col.getByRole('menuitem', { name: 'Summarize' })).toBeVisible();
-		await expect(col.getByRole('menuitem', { name: 'New quick action' })).toBeVisible();
-		await expect(col.getByRole('menuitem', { name: 'Manage actions' })).toBeVisible();
+		// Portaled panel (BUG-2610) — page-scoped rows; the col-scoped
+		// trigger is what ties the open menu to the master column.
+		await expect(page.getByRole('menuitem', { name: 'Summarize' })).toBeVisible();
+		await expect(page.getByRole('menuitem', { name: 'New quick action' })).toBeVisible();
+		await expect(page.getByRole('menuitem', { name: 'Manage actions' })).toBeVisible();
 		await trigger.click(); // close
 
 		// Open the pane and activate it → the master becomes the peeking side.
@@ -972,8 +977,9 @@ test.describe('full-page pane host CAPSTONE (PLAN-2154 Phase 2 / TASK-2175)', ()
 		await page.keyboard.press('Escape'); // close the title editor the activation click opened
 		await pane.locator('button.pane-more-btn').click();
 		// MenuItem hints are not aria-hidden, so match non-exact (harness memory).
-		await pane.getByRole('menuitem', { name: 'Move to collection…' }).click();
-		await pane.getByRole('menuitem', { name: /FP move target/ }).click();
+		// Portaled panel (BUG-2610) — page-scoped rows.
+		await page.getByRole('menuitem', { name: 'Move to collection…' }).click();
+		await page.getByRole('menuitem', { name: /FP move target/ }).click();
 
 		// The retarget lands as a drill: `?item=` flips from the ref to the moved
 		// item's slug, and the PATHNAME NEVER LEAVES the master route. The broken

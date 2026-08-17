@@ -133,15 +133,15 @@ describe('QuickActionsMenu save retry (BUG-2265 Pattern C)', () => {
 		// Open the menu, then the inline create form.
 		(host.querySelector('.trigger-btn') as HTMLButtonElement).click();
 		flushSync();
-		const openFormBtn = [...host.querySelectorAll('button')].find((b) =>
+		const openFormBtn = [...document.querySelectorAll('button')].find((b) =>
 			b.textContent?.includes('New quick action')
 		) as HTMLButtonElement;
 		openFormBtn.click();
 		flushSync();
 
 		// Fill label + prompt.
-		const label = host.querySelector('.qa-label-input') as HTMLInputElement;
-		const prompt = host.querySelector('.qa-prompt-input') as HTMLTextAreaElement;
+		const label = document.querySelector('.qa-label-input') as HTMLInputElement;
+		const prompt = document.querySelector('.qa-prompt-input') as HTMLTextAreaElement;
 		label.value = 'Ship';
 		label.dispatchEvent(new Event('input', { bubbles: true }));
 		prompt.value = '/pad ship';
@@ -149,7 +149,7 @@ describe('QuickActionsMenu save retry (BUG-2265 Pattern C)', () => {
 		flushSync();
 
 		// Click Save.
-		const saveBtn = [...host.querySelectorAll('button')].find(
+		const saveBtn = [...document.querySelectorAll('button')].find(
 			(b) => b.textContent?.trim() === 'Save'
 		) as HTMLButtonElement;
 		saveBtn.click();
@@ -236,7 +236,7 @@ async function openMenu(host: HTMLElement) {
 }
 
 function actionRow(host: HTMLElement, label: string): HTMLButtonElement {
-	const row = [...host.querySelectorAll('button')].find(
+	const row = [...document.querySelectorAll('button')].find(
 		(b) => b.textContent?.trim() === label
 	);
 	if (!row) throw new Error(`no action row labelled ${label}`);
@@ -481,7 +481,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		sessionsListMock.mockResolvedValue({ sessions: [], count: 0 });
 		const { host, component } = mountMenu();
 		await openMenu(host);
-		expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+		expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
 			'No agent session connected — actions copy to your clipboard'
 		);
 		unmount(component);
@@ -490,7 +490,7 @@ describe('QuickActionsMenu push dispatch (PLAN-2558 S4)', () => {
 		sessionsListMock.mockResolvedValue({ sessions: [{ id: 's1' }, { id: 's2' }], count: 2 });
 		const live = mountMenu();
 		await openMenu(live.host);
-		expect(live.host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+		expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
 			'Pushes to your 2 connected agent sessions'
 		);
 		unmount(live.component);
@@ -525,7 +525,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			flushSync();
 
 			// The first read landed: the menu is armed to push.
-			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
 				'Pushes to your connected agent session'
 			);
 
@@ -534,7 +534,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			// rewrites it; the routing decision does not — see the next test.)
 			await vi.advanceTimersByTimeAsync(41_000);
 			flushSync();
-			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
 				'Can’t tell if an agent is connected — actions copy to your clipboard'
 			);
 
@@ -572,7 +572,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			// still shows what the last successful read said.
 			vi.setSystemTime(Date.now() + 5 * 60_000);
 			flushSync();
-			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
 				'Pushes to your connected agent session'
 			);
 
@@ -607,14 +607,14 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			// Just before the bound: still armed.
 			await vi.advanceTimersByTimeAsync(29_000);
 			flushSync();
-			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
 				'Pushes to your connected agent session'
 			);
 
 			// Just past it — and well before the next 10s poll tick at t=40s.
 			await vi.advanceTimersByTimeAsync(1_500);
 			flushSync();
-			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
 				'Can’t tell if an agent is connected — actions copy to your clipboard'
 			);
 
@@ -639,7 +639,7 @@ describe('QuickActionsMenu presence staleness (codex round 1)', () => {
 			await vi.advanceTimersByTimeAsync(31_000);
 			flushSync();
 
-			expect(host.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
+			expect(document.querySelector('.dropdown-tagline')?.textContent?.trim()).toBe(
 				'Pushes to your connected agent session'
 			);
 			actionRow(host, 'Ship it').click();

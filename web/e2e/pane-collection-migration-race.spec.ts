@@ -226,7 +226,9 @@ test('a collection migration completing after a rapid A->B pane switch refreshes
 
 	// Open Quick Actions -> Manage actions -> Edit Collection modal, Fields tab.
 	await pane.locator('button.trigger-btn[title="Quick actions"]').click();
-	await pane.getByRole('menuitem', { name: 'Manage actions' }).click();
+	// Portaled panel (BUG-2610) — page-scoped lookup; the pane-scoped
+	// trigger click ties the menu to this pane.
+	await page.getByRole('menuitem', { name: 'Manage actions' }).click();
 	await expect(page.locator('#edit-collection-title')).toBeVisible();
 	await page.locator('button.tab', { hasText: 'Fields' }).click();
 

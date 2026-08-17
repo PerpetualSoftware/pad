@@ -2428,7 +2428,11 @@
 		// resizable pane divider — otherwise j/k/arrows/Enter typed there (the
 		// divider owns ArrowLeft/ArrowRight for width nudging, TASK-2114) would
 		// drive list/board navigation instead (PLAN-2105 / TASK-2111 / -2119).
-		if (target?.closest?.('[contenteditable="true"], .item-pane, .pane-divider')) return;
+		// `[role="menu"]` (BUG-2610): portaled menu panels live in <body>,
+		// outside `.item-pane` — while one has focus, j/k/Enter belong to
+		// the menu, not list navigation. Covers every portal-mode menu
+		// (board card ⋮ menus had this leak before the pane menus joined).
+		if (target?.closest?.('[contenteditable="true"], .item-pane, .pane-divider, [role="menu"]')) return;
 		if (quickCreateOpen || saveViewOpen) return;
 		// On the MOBILE overlay the list is hidden behind the full-screen pane, so
 		// list nav is meaningless — bail even if focus has escaped to <body> (e.g.

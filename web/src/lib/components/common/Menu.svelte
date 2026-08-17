@@ -108,12 +108,31 @@
 		return unregister;
 	});
 
-	// Portal mode: any scroll or resize closes (coords would go stale).
-	// Deliberately onclose() and NOT close(): refocusing the trigger here
-	// would scroll the card back into view and fight the user's scroll.
+	// Portal mode: a scroll that can MOVE THE ANCHOR closes the menu
+	// (fixed coords would go stale). Scoped to containers that contain
+	// the trigger (BUG-2610): the old any-scroll dismissal also fired for
+	// scrolls in UNRELATED containers — under live SSE churn a foreign
+	// list re-layout scrolling its own column closed an open pane menu
+	// mid-interaction (and flaked the capstone move e2e the same way).
+	// A container that doesn't contain the trigger cannot move it, so
+	// its scrolling never stales the coords. The panel's own internal
+	// overflow scroll is likewise exempt. Deliberately onclose() and NOT
+	// close(): refocusing the trigger here would scroll the card back
+	// into view and fight the user's scroll.
 	$effect(() => {
 		if (!open || useSheet || mode !== 'portal') return;
-		const dismiss = () => onclose();
+		const dismiss = (e?: Event) => {
+			if (e && e.target instanceof Node) {
+				const t = e.target;
+				if (panelEl?.contains(t)) return;
+				// A scrolling exempt surface (e.g. a nested portaled emoji
+				// picker) is part of the menu interaction, not a stale-coords
+				// signal (codex round 1 #2).
+				if (exempt?.().some((el) => el && (el === t || el.contains(t)))) return;
+				if (trigger && t !== document && !t.contains(trigger)) return;
+			}
+			onclose();
+		};
 		window.addEventListener('scroll', dismiss, { capture: true, passive: true });
 		window.addEventListener('resize', dismiss, { passive: true });
 		return () => {
@@ -154,6 +173,10 @@
 		else if (e.key === 'End') next = list.length - 1;
 		if (next >= 0) {
 			e.preventDefault();
+			// Portaled panels bubble to <svelte:window> handlers that
+			// location-filter on containers the panel no longer lives in —
+			// a handled key must not double as a page hotkey (BUG-2610).
+			e.stopPropagation();
 			list[next].focus();
 		}
 	}

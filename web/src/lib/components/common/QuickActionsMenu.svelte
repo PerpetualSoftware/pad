@@ -591,11 +591,20 @@
 			&#9889;
 		</button>
 
+		<!-- mode=portal (BUG-2610): the split-view pane is an
+		     overflow-y:auto scroll container, which computes
+		     overflow-x:auto too — an anchored right-aligned panel opening
+		     from the pane's action bar extended past the pane's left edge
+		     and was CLIPPED mid-text. Portal escapes overflow containment
+		     and viewport-clamps/flips when cramped. width covers the
+		     .qa-body min-width (230) plus panel chrome. -->
 		<Menu
 			{open}
 			onclose={closeMenu}
 			trigger={triggerEl}
 			align={alignLeft ? 'left' : 'right'}
+			mode="portal"
+			width={288}
 			sheetOnMobile
 			sheetTitle="Quick actions"
 			ariaLabel={pushable ? `Quick actions. ${tagline}` : 'Quick actions'}

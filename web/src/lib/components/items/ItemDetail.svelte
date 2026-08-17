@@ -5044,11 +5044,15 @@
 						paneMenuOpen = !paneMenuOpen;
 					}}
 				>⋯</button>
+				<!-- mode=portal (BUG-2610): anchored panels clip against the
+				     pane's overflow-y:auto scroll container in split view —
+				     see QuickActionsMenu's matching note. -->
 				<Menu
 					open={paneMenuOpen}
 					onclose={() => { paneMenuOpen = false; paneMenuView = 'root'; }}
 					trigger={paneMenuTrigger}
-					mode="anchored"
+					mode="portal"
+					width={260}
 					sheetOnMobile
 					sheetTitle="Item actions"
 					ariaLabel="Item actions"
