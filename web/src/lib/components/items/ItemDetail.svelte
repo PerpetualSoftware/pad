@@ -8,6 +8,7 @@
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { resolveSyncRenameTarget } from '$lib/collections/renameNav';
+	import { shouldAdoptCollection } from '$lib/items/adoptCollection';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import Editor from '$lib/components/editor/Editor.svelte';
@@ -224,6 +225,62 @@
 	// Plain counter — not reactive; it only fences writes.
 	let collectionGen = 0;
 
+	/**
+	 * Single write path for the `collection` snapshot (BUG-2602). Every
+	 * assignment routes through here so the SEMANTIC invariant — the pane
+	 * renders the LIVE item's collection — is asserted at write time, not
+	 * left to per-site generation ordering. `shouldAdoptCollection`
+	 * (pure, unit-tested) folds in the generation order for
+	 * same-collection refreshes and the legitimate cross-collection
+	 * correction the old loadData escape hatch existed for, minus its
+	 * defect: a continuation spanning a cross-collection move can no
+	 * longer restore the source collection over the adopted target, and
+	 * a reused-slug fetch that returned a FOREIGN collection is vetoed
+	 * outright. Returns whether the snapshot was adopted.
+	 */
+	function adoptCollection(fetched: Collection, collGen: number): boolean {
+		const ok = shouldAdoptCollection({
+			fetchedId: fetched.id,
+			liveItemCollectionId: item?.collection_id ?? null,
+			currentCollectionId: collection?.id ?? null,
+			genFresh: collGen === collectionGen,
+		});
+		if (ok) collection = fetched;
+		return ok;
+	}
+
+	/**
+	 * loadData's collection adoption + the veto's convergence fallback
+	 * (BUG-2602). When adoptCollection rejects the load's fetched
+	 * collection, the usual cause is a cross-collection MOVE that landed
+	 * while the load was in flight: the live item (itemGen-fenced) is on
+	 * the target, the fetched collection is the pre-move location, and —
+	 * on a freshly (re)mounted pane — `collection` is still null, so
+	 * refreshCollectionIfMoved's `!collection` guard skipped too. Without
+	 * a fallback the veto would leave the pane schema-less. EMBEDDED
+	 * panes converge on the live item's collection (the same policy
+	 * refreshCollectionIfMoved implements for the steady-state case);
+	 * non-embedded masters stay route-authoritative (see the policy note
+	 * on refreshCollectionIfMoved) and simply keep what they show.
+	 */
+	async function adoptOrConvergeToLiveCollection(
+		fetched: Collection,
+		collGen: number,
+		myGen: number,
+	) {
+		if (adoptCollection(fetched, collGen)) return;
+		if (!embedded) return;
+		const liveSlug = item?.collection_slug;
+		if (!liveSlug || liveSlug === fetched.slug) return;
+		try {
+			const liveColl = await api.collections.get(wsSlug, liveSlug);
+			if (myGen !== loadGeneration) return;
+			adoptCollection(liveColl, ++collectionGen);
+		} catch {
+			// Best-effort — the next event / reload catches up.
+		}
+	}
+
 	// UNIFIED item-snapshot generation (BUG-2265 Codex round 9): bumped by EVERY
 	// async operation that assigns `item` from a fetch — loadData's item load,
 	// the SSE item_updated/archived/restored refetches, the onSync refetches,
@@ -424,8 +481,8 @@
 			localIndex.retagCollection(ws, snap.id, target, authStore.user?.id ?? null);
 			void collectionStore.loadCollections(ws);
 			const fresh = list.find((c) => c.id === snap.id);
-			if (fresh && collGen === collectionGen) {
-				collection = fresh;
+			if (fresh) {
+				adoptCollection(fresh, collGen);
 			}
 			const search = typeof window !== 'undefined' ? window.location.search : '';
 			goto(`/${username}/${ws}/${target}/${itemRef}${search}`, {
@@ -1186,13 +1243,15 @@
 				const collGen = ++collectionGen;
 				try {
 					const fresh = await api.collections.get(wsSlug, targetSlug);
-					// Persistent pane host has no {#key} remount — fence the write
-					// against a switch during the fetch (PLAN-2105 discipline):
-					// drop if a newer collection write superseded us or the loaded
-					// collection changed IDENTITY. Compare by stable id, not slug,
-					// so a rename (same id, new slug) still applies (Codex round 9).
-					if (collGen === collectionGen && collection && collection.id === snap.id) {
-						collection = fresh;
+					// Persistent pane host has no {#key} remount — drop if the
+					// loaded collection changed IDENTITY during the fetch (compare
+					// by stable id, not slug, so a rename still applies — Codex
+					// round 9); adoptCollection folds in the generation order AND
+					// the live-item semantic veto, which also covers the fetched
+					// snapshot itself being foreign (a reused targetSlug after a
+					// rename returns a different collection — BUG-2602).
+					if (collection && collection.id === snap.id) {
+						adoptCollection(fresh, collGen);
 					}
 				} catch {
 					// Best-effort — a stale snapshot just means the next save
@@ -1732,14 +1791,16 @@
 				try {
 					const realColl = await api.collections.get(wsSlug, itemData.collection_slug);
 					if (myGen !== loadGeneration) return;
-					// Gate the collection SNAPSHOT on the unified generation so a
-					// newer SSE refresh (bumps collectionGen, not loadGeneration)
-					// isn't reverted by this in-flight load.
-					// Apply when this is the freshest same-collection write OR when it's
-					// a switch to a DIFFERENT collection (a stale refresh for the old
-					// collection must not block loading the new one).
-					if (collGen === collectionGen || collection?.id !== realColl.id)
-						collection = realColl;
+					// adoptOrConvergeToLiveCollection replaces the old escape
+					// hatch (`collGen === collectionGen || collection?.id !==
+					// realColl.id`), which admitted ANY generation-stale
+					// cross-collection write — including a pre-move continuation
+					// restoring the SOURCE collection over the move target
+					// (BUG-2602). The live item (written above, itemGen-fenced)
+					// is the anchor: the legitimate correction still lands, the
+					// stale revert is vetoed, and a vetoed embedded pane
+					// converges on the live item's collection instead.
+					await adoptOrConvergeToLiveCollection(realColl, collGen, myGen);
 				} catch {
 					if (myGen !== loadGeneration) return;
 					// Can't resolve the item's REAL collection. Surface the
@@ -1750,8 +1811,9 @@
 					error = 'Failed to load this item’s collection';
 					return;
 				}
-			} else if (collGen === collectionGen || collection?.id !== collData.id) {
-				collection = collData;
+			} else {
+				// Same hatch shape, same fix (BUG-2602) — see above.
+				await adoptOrConvergeToLiveCollection(collData, collGen, myGen);
 			}
 			// A FROZEN (peeking) instance must NOT write the SINGLETON global stores
 			// the ACTIVE side owns (PLAN-2179 DR-2 / TASK-2181). Both are module
@@ -2973,13 +3035,12 @@
 		const collGen = ++collectionGen;
 		try {
 			const fresh = await api.collections.get(wsSlug, newSlug);
-			if (collGen !== collectionGen) return;
-			// Semantic fence on top of the generation fence: only write while
-			// the LIVE item still agrees this is its collection — a
-			// chained-move burst (X→Y→Z) can leave an older refresh both
-			// newest-started-for-its-slug and wrong (codex round 2 P1).
-			if (item?.collection_slug !== newSlug) return;
-			collection = fresh;
+			// adoptCollection carries BOTH fences this site pioneered
+			// (BUG-2178 codex round 2): generation order for same-collection
+			// refreshes, and the live-item semantic check — now anchored on
+			// stable collection_id rather than slug, so a reused slug can't
+			// satisfy it (BUG-2602).
+			adoptCollection(fresh, collGen);
 		} catch {
 			// Ignore — the next event / reload catches up.
 		}
@@ -4882,9 +4943,9 @@
 							//      collData.id`) forces the right collection regardless
 							//      of the collectionGen bump below.
 							// Bump the unified fence so an in-flight stale load/refresh
-							// can't revert this fresh write (Codex).
-							collectionGen++;
-							collection = updated;
+							// can't revert this fresh write (Codex). adoptCollection adds
+							// the live-item semantic veto on top (BUG-2602).
+							adoptCollection(updated, ++collectionGen);
 						}}
 					/>
 				{/key}
@@ -6038,9 +6099,9 @@
 					return;
 				}
 				// Bump the unified fence so an in-flight stale load/refresh can't
-				// revert this fresh edit-modal write (Codex).
-				collectionGen++;
-				collection = updated;
+				// revert this fresh edit-modal write (Codex). adoptCollection adds
+				// the live-item semantic veto on top (BUG-2602).
+				adoptCollection(updated, ++collectionGen);
 				// If the owner renamed the collection, its slug may have
 				// changed. The current `/[collection]/[slug]` URL still
 				// points at the old slug and subsequent loadData() calls
