@@ -527,3 +527,42 @@ func normalizeBulkFailures(t *testing.T, body string) string {
 	sort.Strings(parts)
 	return strings.Join(parts, ";")
 }
+
+// Codex round 7. An ARCHIVED collection still claims its name. Without a guard
+// the exact lookup skips the soft-deleted row and the alias fallback picks up
+// a DIFFERENT collection — so archiving `spec` would quietly start routing
+// `spec` writes into `specs`. That is the same silent misroute this branch
+// refuses on the client side (BUG-2630), and it survives a later restore,
+// stranding items in the collection they were rerouted to.
+func TestResolveItemCollectionSlug_ArchivedCollectionBlocksTheAlias(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+	makeCollection(t, srv, ws, "Spec", "spec", "SPC")
+	makeCollection(t, srv, ws, "Specs", "specs", "SPEC")
+
+	// Armed: while `spec` is live it is an exact match and resolves to itself.
+	if rr := createItemIn(t, srv, ws, "spec", "before archive"); rr.Code != http.StatusCreated {
+		t.Fatalf("create in live `spec` = %d: %s", rr.Code, rr.Body)
+	}
+	if got := itemsIn(t, srv, ws, "spec"); len(got) != 1 {
+		t.Fatalf("fixture never armed: live `spec` holds %v", got)
+	}
+
+	rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+ws+"/collections/spec", nil)
+	if rr.Code != http.StatusOK && rr.Code != http.StatusNoContent {
+		t.Fatalf("archive `spec` = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	after := createItemIn(t, srv, ws, "spec", "after archive")
+	if after.Code == http.StatusCreated {
+		if got := itemsIn(t, srv, ws, "specs"); len(got) > 0 {
+			t.Fatalf("archiving `spec` rerouted its writes into `specs` (%v) — an "+
+				"archived collection must block the alias, not hand the name to "+
+				"a different collection", got)
+		}
+		t.Fatalf("create in archived `spec` unexpectedly succeeded: %s", after.Body)
+	}
+	if after.Code != http.StatusNotFound {
+		t.Errorf("create in archived `spec` = %d, want 404: %s", after.Code, after.Body)
+	}
+}

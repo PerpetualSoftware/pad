@@ -49,6 +49,23 @@ func (s *Server) resolveItemCollectionSlug(workspaceID, input string) (*models.C
 		return coll, err
 	}
 
+	// An ARCHIVED collection still CLAIMS its name. GetCollectionBySlug skips
+	// soft-deleted rows, so without this an archived `spec` alongside a live
+	// `specs` would let `spec` fall through to `specs` — quietly redirecting
+	// writes the caller aimed at a name that does exist, just not in a
+	// writable state. Refusing is the same call made against the client-side
+	// alias map in BUG-2630: a silent misroute into a different collection is
+	// worse than an honest not-found, and here it also survives a later
+	// restore, which would otherwise leave items stranded in the collection
+	// they were rerouted to (codex round 7).
+	archived, err := s.store.ArchivedCollectionClaimsSlug(workspaceID, input)
+	if err != nil {
+		return nil, err
+	}
+	if archived {
+		return nil, nil
+	}
+
 	for _, candidate := range collectionSlugCandidates(input) {
 		coll, err := s.store.GetCollectionBySlug(workspaceID, candidate)
 		if err != nil || coll != nil {
