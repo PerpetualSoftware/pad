@@ -410,8 +410,13 @@
 				renameNav: null,
 			});
 			if (!target) return;
-			const bridge = { collectionId: snap.id, from: routeColl, to: target };
-			renameOverride = bridge;
+			renameOverride = { collectionId: snap.id, from: routeColl, to: target };
+			// Read back the installed value: `renameOverride` is $state, so
+			// the assignment wraps the literal in a reactive proxy — the raw
+			// object would never compare === to it (codex round 5 P2). The
+			// proxy identity is stable across reads, so this is the token
+			// the rejection cleanup below can safely compare.
+			const bridge = renameOverride;
 			// The missed SSE also means the layout's global retag never ran.
 			localIndex.retagCollection(ws, snap.id, target, authStore.user?.id ?? null);
 			void collectionStore.loadCollections(ws);
