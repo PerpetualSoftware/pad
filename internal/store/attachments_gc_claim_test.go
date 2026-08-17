@@ -405,3 +405,114 @@ func TestClaimOrphanedVariant_RestoreRefusesAtClaimTime(t *testing.T) {
 		t.Fatalf("hard-gone-parent variant claim = (%v, %v), want (true, nil)", claimed, err)
 	}
 }
+
+// TestOrphanedVariant_ForeignParentDoesNotShield pins BUG-2622: the
+// orphaned-variant class's parent check is workspace-scoped. A variant
+// row whose parent_id points at a LIVE row in ANOTHER workspace is
+// malformed data (attachments.parent_id carries no FK and no
+// same-workspace constraint — the class PLAN-2397 repairs), and a
+// foreign parent must not legitimize it: per DR-11a's rule one level
+// down, "resolves to a row" and "is a legitimate parent for THIS row"
+// are different questions. Pre-fix, both the candidate SELECT
+// (OrphanedAttachments) and the claim's delete-time re-assert read the
+// foreign parent as live, exempting the malformed row from the exact GC
+// class BUG-2388 built to retro-reclaim leaks — unreclaimable forever.
+//
+// The same-workspace control leg pins the inverse: a live SAME-workspace
+// parent still shields its variant from both the candidate SELECT and
+// the claim, so the fix cannot have widened into reclaiming healthy
+// thumbnails.
+func TestOrphanedVariant_ForeignParentDoesNotShield(t *testing.T) {
+	f := newGCClaimFixture(t)
+
+	// A LIVE parent in a different workspace.
+	wsB, err := f.s.CreateWorkspace(models.WorkspaceCreate{Name: "GC Claim WS B"})
+	if err != nil {
+		t.Fatalf("CreateWorkspace(B): %v", err)
+	}
+	foreignParent := &models.Attachment{
+		ID:          newID(),
+		WorkspaceID: wsB.ID,
+		StorageKey:  "fs:fp-" + newID()[:8],
+		ContentHash: "h-fp-" + newID()[:8],
+		Filename:    "foreign-parent.png",
+		MimeType:    "image/png",
+		SizeBytes:   10,
+	}
+	if err := f.s.CreateAttachment(foreignParent); err != nil {
+		t.Fatalf("CreateAttachment(foreign parent): %v", err)
+	}
+
+	// The malformed row: a live, ITEM-BOUND variant in workspace A
+	// pointing at the foreign parent. item_id is set deliberately —
+	// an unbound (item_id NULL) malformed variant eventually ages into
+	// the never-attached class regardless, so the row this class alone
+	// can reach, and the one that leaked FOREVER pre-fix, is the
+	// item-bound one: first arm false (item_id set), second false
+	// (live), and the unscoped third arm read the foreign parent as
+	// live. Real derivation variants are item-bound, so this is also
+	// the realistic shape.
+	item, err := f.s.CreateItem(f.wsID, f.collID, models.ItemCreate{Title: "holder"})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	badVariant := "cross-ws-variant"
+	if _, err := f.s.db.Exec(f.s.q(
+		`INSERT INTO attachments (id, workspace_id, item_id, uploaded_by, storage_key, content_hash, mime_type, size_bytes, filename, parent_id, variant, created_at)
+		 VALUES (?, ?, ?, '', ?, ?, 'image/png', 10, 'bad.png', ?, 'thumb-md', ?)`),
+		badVariant, f.wsID, item.ID, "fs:bad-v", "h-bad-v", foreignParent.ID,
+		time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert cross-ws variant: %v", err)
+	}
+
+	// Control: a healthy item-bound variant with a live parent in its
+	// OWN workspace.
+	sameParent := f.seedNeverAttached(t)
+	goodVariant := "same-ws-variant"
+	if _, err := f.s.db.Exec(f.s.q(
+		`INSERT INTO attachments (id, workspace_id, item_id, uploaded_by, storage_key, content_hash, mime_type, size_bytes, filename, parent_id, variant, created_at)
+		 VALUES (?, ?, ?, '', ?, ?, 'image/png', 10, 'good.png', ?, 'thumb-md', ?)`),
+		goodVariant, f.wsID, item.ID, "fs:good-v", "h-good-v", sameParent.ID,
+		time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert same-ws variant: %v", err)
+	}
+
+	// Candidate SELECT: the malformed row IS a candidate, the healthy
+	// one is not. (seedNeverAttached ages the parent, so it appears as a
+	// never-attached candidate itself — assert on the variants only.)
+	candidates, err := f.s.OrphanedAttachments(time.Now())
+	if err != nil {
+		t.Fatalf("OrphanedAttachments: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, a := range candidates {
+		seen[a.ID] = true
+	}
+	if !seen[badVariant] {
+		t.Error("cross-workspace-parent variant missing from candidate SELECT — foreign parent shielded it")
+	}
+	if seen[goodVariant] {
+		t.Error("live same-workspace-parent variant appeared as a candidate")
+	}
+
+	// Claim: succeeds for the malformed row, refuses for the healthy one.
+	claimed, err := f.s.ClaimOrphanedVariantAttachment(badVariant)
+	if err != nil || !claimed {
+		t.Fatalf("cross-ws-parent variant claim = (%v, %v), want (true, nil)", claimed, err)
+	}
+	if f.rowExists(t, badVariant) {
+		t.Error("claimed cross-ws variant row still present")
+	}
+	claimed, err = f.s.ClaimOrphanedVariantAttachment(goodVariant)
+	if err != nil || claimed {
+		t.Fatalf("same-ws live-parent variant claim = (%v, %v), want (false, nil)", claimed, err)
+	}
+	if !f.rowExists(t, goodVariant) {
+		t.Error("healthy variant deleted by the claim")
+	}
+	// The foreign parent itself is untouched — the fix reclaims A's
+	// malformed row, never B's data.
+	if !f.rowExists(t, foreignParent.ID) {
+		t.Error("foreign parent row deleted")
+	}
+}
