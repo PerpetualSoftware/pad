@@ -1344,14 +1344,20 @@ Examples:
 			// limit calls an exactly-N history truncated, and stays silent
 			// when it really was cut short.
 			//
-			// summary = "the caller is not going to show content", which is
-			// every path except --full. It skips the server's whole
-			// reverse-patch walk rather than just trimming the response.
+			// Guarded against overflow: limit+1 at MaxInt wraps negative, the
+			// client then omits the parameter, and the "bounded" request comes
+			// back unbounded — the opposite of what was asked for.
 			ask := limit
-			if ask > 0 {
+			if ask > 0 && ask < math.MaxInt {
 				ask = limit + 1
 			}
-			versions, err := client.ListItemVersionsPage(ws, slug, ask, !full)
+
+			// Resolve content only when it will actually be SHOWN. --full
+			// alone is not enough: the table path prints no bodies at any
+			// setting, so pairing --full with table output would make the
+			// server walk the whole patch chain for output that discards it.
+			wantsContent := full && formatFlag == "json"
+			versions, err := client.ListItemVersionsPage(ws, slug, ask, !wantsContent)
 			if err != nil {
 				return err
 			}
@@ -1400,11 +1406,12 @@ Examples:
 			// is the whole history", which is the wrong thing to believe
 			// about an audit trail.
 			//
-			// One case this cannot detect: a --limit above the server's own
-			// ceiling is clamped there, and the probe row is clamped away
+			// One case this cannot detect: a --limit AT OR ABOVE the server's
+			// own ceiling is clamped there, and the probe row is clamped away
 			// with it, so the result looks complete. The CLI does not
 			// hardcode the server's ceiling to paper over that — asking for
-			// hundreds of versions is already opting out of a bound.
+			// hundreds of versions is already opting out of a bound, and a
+			// duplicated constant would go stale silently.
 			if truncated {
 				fmt.Printf("Showing the newest %d — pass --limit 0 for all, or --limit N for more.\n", limit)
 			}
