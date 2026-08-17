@@ -8,6 +8,7 @@
 	import TimelineCommentCard from './TimelineCommentCard.svelte';
 	import TimelineActivityCard from './TimelineActivityCard.svelte';
 	import TimelineVersionCard from './TimelineVersionCard.svelte';
+	import TimelineStructuredCard from './TimelineStructuredCard.svelte';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import {
 		fetchAttachmentMetadata,
@@ -52,7 +53,7 @@
 		 * Which entry kinds render (undefined = all). Filter-only: the merged
 		 * feed still fetches every kind, so switching kinds never refetches.
 		 */
-		visibleKinds?: Array<'comment' | 'activity' | 'version'>;
+		visibleKinds?: Array<'comment' | 'activity' | 'version' | 'note' | 'decision'>;
 		/**
 		 * `frozen` freezes the COMMENT/REACTION surfaces (composer, reply, edit,
 		 * delete, reaction). These are per-item / per-user REST entities, so under
@@ -893,6 +894,8 @@
 	function dotClass(kind: TimelineEntry['kind']): string {
 		if (kind === 'comment') return 'dot-comment';
 		if (kind === 'version') return 'dot-version';
+		if (kind === 'note') return 'dot-note';
+		if (kind === 'decision') return 'dot-decision';
 		return 'dot-activity';
 	}
 </script>
@@ -976,6 +979,20 @@
 								{onRestore}
 								{flushBeforeRestore}
 								frozen={frozen || restoreFrozen}
+							/>
+						{:else if entry.kind === 'note' && entry.note}
+							<TimelineStructuredCard
+								kind="note"
+								note={entry.note}
+								actor={entry.actor}
+								createdAt={entry.created_at}
+							/>
+						{:else if entry.kind === 'decision' && entry.decision}
+							<TimelineStructuredCard
+								kind="decision"
+								decision={entry.decision}
+								actor={entry.actor}
+								createdAt={entry.created_at}
 							/>
 						{/if}
 					</div>
@@ -1123,6 +1140,14 @@
 
 	.dot-version {
 		background: var(--accent-green);
+	}
+
+	.dot-note {
+		background: var(--accent-cyan);
+	}
+
+	.dot-decision {
+		background: var(--accent-orange);
 	}
 
 	.line {
