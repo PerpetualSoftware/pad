@@ -46,15 +46,7 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 	// truncate a request nobody asked to have truncated, and the agent-facing
 	// defaults live in the CLI and the MCP catalog where a token budget is
 	// actually known. An explicit oversized value is clamped.
-	limit := 0
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-			if limit > maxItemVersionsQueryLimit {
-				limit = maxItemVersionsQueryLimit
-			}
-		}
-	}
+	limit := parseItemVersionsLimit(r.URL.Query().Get("limit"))
 
 	// `summary` skips diff resolution entirely. Every consumer of this
 	// endpoint except `--full` throws the content away immediately — the CLI
@@ -97,6 +89,29 @@ func (s *Server) handleListItemVersions(w http.ResponseWriter, r *http.Request) 
 // the catalog). Lower than the list ceiling because resolving a version can
 // cost a patch application per row, not just a row read.
 const maxItemVersionsQueryLimit = 500
+
+// parseItemVersionsLimit turns the raw `?limit=` value into a row bound.
+// Returns 0 — unbounded — for absent, unparseable, zero and negative input,
+// so only a well-formed positive value bounds anything, and clamps anything
+// above the ceiling.
+//
+// Split out of the handler so the clamp is directly testable. Asserting it
+// through the endpoint would mean seeding 500+ versions per run to prove the
+// ceiling binds; asserting it by re-implementing the arithmetic in a test
+// would prove only that the test can multiply.
+func parseItemVersionsLimit(raw string) int {
+	if raw == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	if n > maxItemVersionsQueryLimit {
+		return maxItemVersionsQueryLimit
+	}
+	return n
+}
 
 // itemVersionMetadata strips content from raw version rows for summary mode.
 //

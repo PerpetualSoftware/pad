@@ -107,32 +107,86 @@ func TestItemVersions_LimitBoundsTheWindow(t *testing.T) {
 func TestItemVersions_AbsentLimitIsUnbounded(t *testing.T) {
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
-	item := seedVersionedItem(t, srv, ws, 5)
+
+	// MORE than the default any client applies (50). A fixture below that
+	// number cannot tell an unbounded server from one that quietly defaults
+	// to 50 — which is exactly the behaviour this test denies, so the row
+	// count is load-bearing rather than incidental (codex round 2).
+	const seeded = 60
+	item := seedVersionedItem(t, srv, ws, seeded)
 
 	all := fetchVersions(t, srv, ws, item.Slug, "")
-	if len(all) < 5 {
-		t.Errorf("unbounded request returned %d versions; the server must not "+
-			"apply a default cap", len(all))
+	if len(all) <= 50 {
+		t.Errorf("unbounded request returned %d versions after seeding %d; the "+
+			"server must not apply a default cap", len(all), seeded)
 	}
 }
 
 func TestItemVersions_OversizedLimitIsClamped(t *testing.T) {
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
-	item := seedVersionedItem(t, srv, ws, 2)
+	item := seedVersionedItem(t, srv, ws, 8)
 
-	// Well past the clamp. The assertion is that it does not error and does
-	// not return more than exists — the clamp is a ceiling on the ASK.
+	// An oversized ask must be treated as the ceiling, not rejected and not
+	// honoured. Seeding past the clamp to prove the ceiling BINDS would mean
+	// 500+ versions per run, so this asserts the reachable half — the request
+	// succeeds and returns what exists — and the clamp arithmetic itself is
+	// asserted directly below, where it is cheap and exact.
 	got := fetchVersions(t, srv, ws, item.Slug,
 		"limit="+strconv.Itoa(maxItemVersionsQueryLimit*10))
 	if len(got) == 0 {
 		t.Error("oversized limit returned nothing; it should clamp, not reject")
 	}
+
+	all := fetchVersions(t, srv, ws, item.Slug, "")
+	if len(got) != len(all) {
+		t.Errorf("oversized limit returned %d of %d existing versions; a clamp is "+
+			"a ceiling on the ASK, not a truncation of the answer", len(got), len(all))
+	}
 }
 
-// The summary property, and the one that actually costs something: summary
-// mode must return the SAME rows with NO content, having skipped the
-// reverse-patch walk entirely.
+// The clamp, asserted against the REAL function rather than by re-implementing
+// its arithmetic in the test (which would prove only that the test can
+// multiply) or by seeding 500+ rows per run. Pairs with the request-level test
+// above: that one proves an oversized ask is accepted, this one proves the
+// number it is accepted AS — and covers the inputs a URL can actually carry.
+func TestItemVersions_ClampArithmetic(t *testing.T) {
+	for _, tc := range []struct {
+		raw  string
+		want int
+	}{
+		{raw: "", want: 0},       // absent -> unbounded
+		{raw: "0", want: 0},      // explicit zero -> unbounded
+		{raw: "-5", want: 0},     // negative -> unbounded, not an error
+		{raw: "banana", want: 0}, // unparseable -> unbounded, not a 500
+		{raw: "1", want: 1},
+		{raw: strconv.Itoa(maxItemVersionsQueryLimit - 1), want: maxItemVersionsQueryLimit - 1},
+		{raw: strconv.Itoa(maxItemVersionsQueryLimit), want: maxItemVersionsQueryLimit},
+		{raw: strconv.Itoa(maxItemVersionsQueryLimit + 1), want: maxItemVersionsQueryLimit},
+		{raw: strconv.Itoa(maxItemVersionsQueryLimit * 100), want: maxItemVersionsQueryLimit},
+	} {
+		if got := parseItemVersionsLimit(tc.raw); got != tc.want {
+			t.Errorf("parseItemVersionsLimit(%q) = %d, want %d", tc.raw, got, tc.want)
+		}
+	}
+}
+
+// The summary property. This covers the SHAPE — same rows, no content, no
+// stale is_diff — and deliberately does not claim more than that.
+//
+// WHAT THIS CANNOT SEE, stated because a reader would otherwise assume it
+// does: an implementation that resolved every version and THEN blanked the
+// fields would pass every assertion here, because the response is byte-identical
+// either way. Verified by mutation — pointing the summary branch at
+// ListItemVersionsResolvedPage leaves this file green (codex round 2).
+//
+// So the "no walk happened" half rests on two things instead: the handler's
+// summary branch calls ListItemVersionsPage, which is one line and reviewable,
+// and TestListItemVersionsPage_ReturnsUnresolvedRows in internal/store proves
+// that reader genuinely returns unresolved rows rather than quietly resolving
+// them. An end-to-end assertion would need a patch-application counter in the
+// production path; the cost of being wrong here is performance, not
+// correctness, so that instrument is not built.
 func TestItemVersions_SummaryOmitsContentButKeepsMetadata(t *testing.T) {
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)

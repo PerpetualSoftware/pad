@@ -1338,12 +1338,26 @@ Examples:
 			if limit < 0 {
 				return fmt.Errorf("--limit must be zero or positive")
 			}
+			// Ask for ONE MORE than we intend to show. That extra row is the
+			// only honest way to tell "there are more" from "that is all
+			// of them" — comparing the response length against the requested
+			// limit calls an exactly-N history truncated, and stays silent
+			// when it really was cut short.
+			//
 			// summary = "the caller is not going to show content", which is
 			// every path except --full. It skips the server's whole
 			// reverse-patch walk rather than just trimming the response.
-			versions, err := client.ListItemVersionsPage(ws, slug, limit, !full)
+			ask := limit
+			if ask > 0 {
+				ask = limit + 1
+			}
+			versions, err := client.ListItemVersionsPage(ws, slug, ask, !full)
 			if err != nil {
 				return err
+			}
+			truncated := limit > 0 && len(versions) > limit
+			if truncated {
+				versions = versions[:limit]
 			}
 
 			if formatFlag == "json" {
@@ -1385,7 +1399,13 @@ Examples:
 			// Say so when the window was capped. A silent cap reads as "this
 			// is the whole history", which is the wrong thing to believe
 			// about an audit trail.
-			if limit > 0 && len(versions) == limit {
+			//
+			// One case this cannot detect: a --limit above the server's own
+			// ceiling is clamped there, and the probe row is clamped away
+			// with it, so the result looks complete. The CLI does not
+			// hardcode the server's ceiling to paper over that — asking for
+			// hundreds of versions is already opting out of a bound.
+			if truncated {
 				fmt.Printf("Showing the newest %d — pass --limit 0 for all, or --limit N for more.\n", limit)
 			}
 			return nil
