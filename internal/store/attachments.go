@@ -988,12 +988,15 @@ func (s *Store) ClaimSoftDeletedAttachment(id string, graceCutoff time.Time) (bo
 
 // AttachmentHashesWithRows reports which of the given content hashes have
 // at least one attachments row — in ANY state. Soft-deleted rows count,
-// including ones already past the GC grace: as long as a row exists, its
-// bytes belong to the ROW-driven sweep's claim protocol (row before
-// bytes, BUG-2415), and the rowless-blob sweep must not reach around it —
-// deleting the blob from under a still-existing row recreates exactly the
-// stranded-row-without-bytes state that protocol exists to prevent. The
-// rowless sweep (BUG-2406) only reclaims blobs NO row references.
+// including ones already past the GC grace. That is deliberately BROADER
+// than CountProtectingAttachmentsForHash, whose grace-window semantics end
+// a row's protection when its own grace expires: the row-driven machinery
+// may do that because its claim protocol (row before bytes, BUG-2415)
+// coordinates row and blob fates within one sweep. The rowless sweep has
+// no claim on any row and no such coordination, so it draws the simplest
+// safe line instead — a hash with ANY row is that row's business, handled
+// by the row sweep's own claim path within a tick; the rowless sweep
+// (BUG-2406) takes only blobs NO row references.
 //
 // Chunked like the copy planner's lookups so a large listing cannot blow
 // the host-parameter limit.
