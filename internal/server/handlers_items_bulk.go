@@ -565,9 +565,12 @@ func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor
 // fields between schemas — the same core as handleMoveItem, applied
 // per row. A status override (req.Status) lands as a field override on
 // the migrated set.
-// targetColl is the collection the request-level resolution already produced;
-// it is never nil for a move that got this far, and taking it as a parameter
-// is what keeps the resolution one-per-request instead of one-per-item.
+// targetColl is the collection the request-level resolution already produced,
+// and taking it as a parameter is what keeps the resolution one-per-request
+// instead of one-per-item. It is NIL when the caller named a collection that
+// resolves to nothing — deliberately, so that case and an existing-but-hidden
+// target fail identically here rather than at different HTTP statuses (the
+// existence oracle from codex round 4). Hence the nil check below.
 func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string, targetColl *models.Collection) (*models.Item, *bulkOpError) {
 	if targetColl == nil {
 		return nil, &bulkOpError{message: "target collection not found", code: "invalid_collection"}

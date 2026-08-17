@@ -7,9 +7,14 @@ import (
 )
 
 // resolveItemCollectionSlug resolves a user-supplied collection slug against
-// the workspace's ACTUAL collections, so a singular form works for every
-// collection rather than only the seven the client-side alias map happens to
-// know (BUG-2578).
+// the workspace's ACTUAL collections, so a regular singular/plural pair works
+// for any collection rather than only the seven the client-side alias map
+// happens to know (BUG-2578).
+//
+// "Regular" is the honest scope: only a trailing ASCII `s` is added or
+// removed, so `spec`/`specs` resolves and `category`/`categories` does not.
+// See collectionSlugCandidates for why that is a deliberate stopping point
+// rather than a gap to close with an inflector.
 //
 // Why this lives on the server. The alias map (collections.NormalizeSlug) is a
 // hardcoded switch over the DEFAULT templates' collection names, called from

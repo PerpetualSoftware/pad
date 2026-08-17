@@ -11,8 +11,10 @@ package server
 // this can never redirect a request that already succeeded.
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -478,6 +480,14 @@ func TestBulkMove_HiddenAndUnknownTargetsAreIndistinguishable(t *testing.T) {
 			"hidden: %s\nunknown: %s",
 			hidden.Code, unknown.Code, hidden.Body.String(), unknown.Body.String())
 	}
+	// Status alone is not the whole channel: an implementation that returned
+	// both inside a 200 envelope but with different error codes or messages
+	// would still be an oracle. Compare the per-item failure shape too
+	// (codex round 5).
+	if normalizeBulkFailures(t, hidden.Body.String()) != normalizeBulkFailures(t, unknown.Body.String()) {
+		t.Errorf("hidden and unknown targets produced different failure envelopes:\n"+
+			"hidden: %s\nunknown: %s", hidden.Body.String(), unknown.Body.String())
+	}
 
 	// And neither may actually move the item.
 	item, err := f.srv.store.GetItem(f.visibleItem.ID)
@@ -487,4 +497,29 @@ func TestBulkMove_HiddenAndUnknownTargetsAreIndistinguishable(t *testing.T) {
 	if item.CollectionID != f.visibleColl.ID {
 		t.Errorf("item moved out of its collection despite both targets being refused")
 	}
+}
+
+// normalizeBulkFailures reduces a bulk response to the per-item failure shape
+// a probing caller could observe — codes and messages, with item ids stripped
+// since those legitimately differ between two requests.
+func normalizeBulkFailures(t *testing.T, body string) string {
+	t.Helper()
+	var resp struct {
+		Failed []struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"failed"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		// A non-JSON body (an error page, say) is compared verbatim rather
+		// than silently normalizing to the empty string, which would make
+		// two different errors look identical.
+		return "unparsed:" + body
+	}
+	parts := make([]string, 0, len(resp.Failed))
+	for _, f := range resp.Failed {
+		parts = append(parts, f.Code+"|"+f.Message)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ";")
 }

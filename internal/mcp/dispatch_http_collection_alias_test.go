@@ -8,6 +8,11 @@ package mcp
 // which URL the dispatcher built, which is a claim about the dispatcher, not
 // about what an agent receives. (Same rationale as the item-list summary
 // tests in this package.)
+//
+// SCOPE, stated so nobody reads more into it: this exercises the dispatcher
+// against a real server in-process. It does NOT go over the remote /mcp HTTP
+// transport or its OAuth layer, so it proves the resolution reaches an MCP
+// tool call, not that the transport in front of it is correct.
 
 import (
 	"context"
