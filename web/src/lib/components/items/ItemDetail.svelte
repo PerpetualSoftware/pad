@@ -241,7 +241,10 @@
 	function adoptCollection(fetched: Collection, collGen: number): boolean {
 		const ok = shouldAdoptCollection({
 			fetchedId: fetched.id,
-			liveItemCollectionId: item?.collection_id ?? null,
+			// `|| null`, not `?? null`: an empty-string collection_id (a
+			// malformed row) must read as "no anchor", not as a real id
+			// that vetoes every collection (codex round 3 P2).
+			liveItemCollectionId: item?.collection_id || null,
 			currentCollectionId: collection?.id ?? null,
 			genFresh: collGen === collectionGen,
 		});
@@ -1833,6 +1836,13 @@
 				// Same hatch shape, same fix (BUG-2602) — see above.
 				await adoptOrConvergeToLiveCollection(collData, collGen, myGen);
 				if (myGen !== loadGeneration) return;
+				// Same schema-less surfacing as the realColl branch (codex
+				// round 3): a veto + failed/skipped convergence on a cold
+				// mount must not report a successful load with no fields.
+				if (!collection) {
+					error = 'Failed to load this item’s collection';
+					return;
+				}
 			}
 			// A FROZEN (peeking) instance must NOT write the SINGLETON global stores
 			// the ACTIVE side owns (PLAN-2179 DR-2 / TASK-2181). Both are module
@@ -1852,7 +1862,12 @@
 			// collection-route pane included — it never peeks). The per-instance
 			// `localDirty` shadow (below) resets unconditionally — it's what THIS
 			// instance's own SSE guards read (TASK-2156).
-			if (!peeking) {
+			if (!peeking && myItemGen === itemGen) {
+				// itemGen re-check (codex round 3 P1): the collection adoption
+				// above AWAITS (realColl fetch, possibly the convergence
+				// fallback), and an SSE item write during that window bumps
+				// itemGen — this load's itemData is then stale and must not
+				// claim the singletons with it.
 				collectionStore.setActiveItem(itemData);
 				activeItemOwnedId = itemData.id;
 				editorStore.resetForDoc();
