@@ -316,3 +316,54 @@ func TestResolveItemCollectionSlug_ItemsIndexAcceptsTheSingular(t *testing.T) {
 		t.Errorf("items-index?collection=spec returned no rows: %s", rr.Body.String())
 	}
 }
+
+// Codex round 2. The cross-workspace copy's `target_collection` is user-typed
+// and was wired to the resolver, but nothing exercised it — every existing
+// copy test passes an exact slug, so reverting that call site would have gone
+// unnoticed. Drives BOTH halves (preflight and the mutating copy), because
+// they resolve the destination separately and a preflight that accepts a name
+// the copy then rejects is the worse failure of the two.
+func TestResolveItemCollectionSlug_CrossWorkspaceCopyAcceptsTheSingular(t *testing.T) {
+	f := newCopyPreflightFixture(t)
+
+	// A destination-only collection whose slug is plural, so `spec` resolves
+	// solely through the fallback under test.
+	// A permissive schema on purpose: the fixture's dstSchemaJSON has required
+	// fields the source item does not carry, and a validation rejection would
+	// mask the resolution result this test is about.
+	specs, err := f.srv.store.CreateCollection(f.wsB.ID, models.CollectionCreate{
+		Name: "Specs", Slug: "specs", Prefix: "SPEC",
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection(Specs): %v", err)
+	}
+	if specs.Slug != "specs" {
+		t.Fatalf("fixture never armed: destination collection slug = %q, want specs", specs.Slug)
+	}
+
+	both := f.callBoth(f.owner, reqOpts{}, map[string]any{
+		"target_workspace":  f.wsB.Slug,
+		"target_collection": "spec",
+	})
+
+	if both.pre.Code != http.StatusOK {
+		t.Errorf("preflight with singular `spec` = %d: %s",
+			both.pre.Code, both.pre.Body.String())
+	}
+	if both.copy.Code != http.StatusOK && both.copy.Code != http.StatusCreated {
+		t.Errorf("copy with singular `spec` = %d: %s",
+			both.copy.Code, both.copy.Body.String())
+	}
+
+	// The copy must land in the resolved collection, not merely return 200.
+	items, err := f.srv.store.ListItems(f.wsB.ID, models.ItemListParams{
+		CollectionIDs: []string{specs.ID},
+	})
+	if err != nil {
+		t.Fatalf("list destination items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Errorf("destination `specs` holds %d items, want the 1 copied", len(items))
+	}
+}
