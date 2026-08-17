@@ -33,11 +33,17 @@ func assertAmbiguityRefused(t *testing.T, rr interface {
 	if code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d: %s", code, body)
 	}
-	// The error must NAME both competing keys so a raw-HTTP client can
-	// fix its request without spelunking. (The body is JSON-encoded, so
-	// the quoted key arrives as \"parent\".)
-	if !strings.Contains(body, "parent_id") || !strings.Contains(body, `\"parent\"`) {
-		t.Errorf("refusal should name both competing keys, got: %s", body)
+	// The refusal is the standard validation envelope and must NAME the
+	// competing keys — both the canonical "parent" and its "plan" alias —
+	// so a raw-HTTP client can fix its request without spelunking. (The
+	// body is JSON-encoded, so quoted keys arrive as \"parent\".)
+	if !strings.Contains(body, `"code":"validation_error"`) {
+		t.Errorf("refusal should use the validation_error code, got: %s", body)
+	}
+	if !strings.Contains(body, "parent_id") ||
+		!strings.Contains(body, `\"parent\"`) ||
+		!strings.Contains(body, `\"plan\"`) {
+		t.Errorf("refusal should name both competing keys (and the plan alias), got: %s", body)
 	}
 }
 
