@@ -122,6 +122,10 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set by the move branch below and threaded to bulkMoveCollection so the
+	// target is resolved once per REQUEST rather than once per item.
+	var resolvedTarget *models.Collection
+
 	// Validate the verb + its required params up front so a malformed
 	// request fails fast before touching any rows.
 	switch req.Op {
@@ -131,6 +135,37 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 		if req.Status == "" && req.Collection == "" {
 			writeError(w, http.StatusBadRequest, "bad_request", "move requires status or collection")
 			return
+		}
+		// Resolve the target ONCE, here, and carry the resolved collection to
+		// the per-item path rather than re-resolving per row.
+		//
+		// Two reasons. req.Collection is compared against item.CollectionSlug,
+		// written into activity metadata, and used as an SSE scope; leaving
+		// the caller's `spec` in place while the move lands in `specs` would
+		// make a same-collection move look like a cross-collection one, log a
+		// to_collection nobody can look up, and address the arrival event to a
+		// lane no client watches (codex round 1). And re-resolving per item
+		// multiplies the lookup by the batch size — up to four queries per row
+		// for a target that never resolves (codex round 3).
+		if req.Collection != "" {
+			targetColl, rerr := s.resolveItemCollectionSlug(workspaceID, req.Collection)
+			if rerr != nil {
+				writeInternalError(w, rerr)
+				return
+			}
+			// A target that resolves to nothing is deliberately NOT refused
+			// here. Failing the whole request up front would answer
+			// "no such collection" with a different STATUS than an
+			// existing-but-hidden target, which fails per item inside the
+			// normal 200 envelope — and that difference is an existence
+			// oracle: a restricted caller could probe slugs and learn which
+			// collections they cannot see exist (codex round 4). Passing nil
+			// down keeps both cases on the identical per-item path, which is
+			// also the pre-change behaviour.
+			if targetColl != nil {
+				req.Collection = targetColl.Slug
+				resolvedTarget = targetColl
+			}
 		}
 	case "set-priority":
 		if req.Priority == "" {
@@ -217,7 +252,7 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		updated, opErr := s.applyBulkOp(r, workspaceID, item, &req, actor, source, visibleIDs)
+		updated, opErr := s.applyBulkOp(r, workspaceID, item, &req, actor, source, visibleIDs, resolvedTarget)
 		if opErr != nil {
 			resp.Failed = append(resp.Failed, bulkItemFailure{
 				Ref:     itemRefOrSlug(*item),
@@ -313,7 +348,9 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 // applyBulkOp dispatches one verb against one item, reusing the same
 // store paths as the single-item handlers. Returns the post-mutation
 // item (for seq) on success, or a structured per-row error.
-func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, actor, source string, visibleIDs []string) (*models.Item, *bulkOpError) {
+// resolvedTarget carries the request-level collection resolution for `move`
+// (nil for every other op), so the per-item path never re-resolves.
+func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, actor, source string, visibleIDs []string, resolvedTarget *models.Collection) (*models.Item, *bulkOpError) {
 	switch req.Op {
 	case "archive":
 		if err := s.store.DeleteItem(item.ID); err != nil {
@@ -347,7 +384,7 @@ func (s *Server) applyBulkOp(r *http.Request, workspaceID string, item *models.I
 
 	case "move":
 		if req.Collection != "" {
-			return s.bulkMoveCollection(r, workspaceID, item, req, visibleIDs)
+			return s.bulkMoveCollection(r, workspaceID, item, req, visibleIDs, resolvedTarget)
 		}
 		// Status-only move = a field update on the same collection.
 		return s.bulkFieldUpdate(r, workspaceID, item, map[string]any{"status": req.Status}, req.Force, visibleIDs, actor, source)
@@ -528,9 +565,14 @@ func (s *Server) bulkTagUpdate(item *models.Item, tags []string, add bool, actor
 // fields between schemas — the same core as handleMoveItem, applied
 // per row. A status override (req.Status) lands as a field override on
 // the migrated set.
-func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string) (*models.Item, *bulkOpError) {
-	targetColl, err := s.store.GetCollectionBySlug(workspaceID, req.Collection)
-	if err != nil || targetColl == nil {
+// targetColl is the collection the request-level resolution already produced,
+// and taking it as a parameter is what keeps the resolution one-per-request
+// instead of one-per-item. It is NIL when the caller named a collection that
+// resolves to nothing — deliberately, so that case and an existing-but-hidden
+// target fail identically here rather than at different HTTP statuses (the
+// existence oracle from codex round 4). Hence the nil check below.
+func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *models.Item, req *bulkItemsRequest, visibleIDs []string, targetColl *models.Collection) (*models.Item, *bulkOpError) {
+	if targetColl == nil {
 		return nil, &bulkOpError{message: "target collection not found", code: "invalid_collection"}
 	}
 	// Target-collection visibility gate — same as handleMoveItem. A

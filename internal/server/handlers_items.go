@@ -157,8 +157,30 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolved for the same reason the collection item routes are (BUG-2578):
+	// the store filters by exact slug, so `?collection=spec` against a `specs`
+	// collection would otherwise return an empty index rather than an error.
+	// The web client sends canonical slugs and is unaffected; this is for
+	// direct API consumers. Exact match still wins, so no existing query
+	// changes meaning. A slug that resolves to nothing is left as the caller
+	// wrote it, preserving today's empty-result behaviour.
+	indexCollection := r.URL.Query().Get("collection")
+	if indexCollection != "" {
+		coll, rerr := s.resolveItemCollectionSlug(workspaceID, indexCollection)
+		if rerr != nil {
+			// Surfaced rather than swallowed: proceeding with the raw alias
+			// after a failed lookup would answer a database error with a
+			// successful EMPTY index, which reads as "no items" (codex
+			// round 4).
+			writeInternalError(w, rerr)
+			return
+		}
+		if coll != nil {
+			indexCollection = coll.Slug
+		}
+	}
 	params := store.ItemIndexParams{
-		CollectionSlug: r.URL.Query().Get("collection"),
+		CollectionSlug: indexCollection,
 	}
 	if r.URL.Query().Get("include_archived") == "true" {
 		params.IncludeArchived = true
@@ -435,7 +457,11 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	}
 
 	collSlug := chi.URLParam(r, "collSlug")
-	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
+	// Singular forms resolve against the workspace's real collections, so a
+	// template-defined or user-created collection has a shorthand too, not
+	// just the seven the client-side alias map knows (BUG-2578). Exact match
+	// still wins, so this cannot redirect a request that already worked.
+	coll, err := s.resolveItemCollectionSlug(workspaceID, collSlug)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -457,7 +483,20 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	}
 
 	params := parseItemListParams(r)
-	params.CollectionSlug = collSlug
+	// The RESOLVED slug, not the raw URL parameter. The store filters by slug
+	// and does its own exact lookup, so passing the caller's input here would
+	// resolve the collection for the visibility gate above and then filter on
+	// a slug that matches nothing — a 200 with an empty list (BUG-2578).
+	params.CollectionSlug = coll.Slug
+	// DO NOT pin this by setting params.CollectionIDs. It looks like a scoping
+	// filter and is not: CollectionIDs and ItemIDs are a PERMISSION PAIR,
+	// combined with OR ("in a fully-granted collection, or specifically
+	// granted"). Setting CollectionIDs here while the item-grant branch below
+	// sets ItemIDs turns the caller's grants into
+	// `collection_id IN (this) OR id IN (granted)` — which hands a guest
+	// holding one item grant every item in the collection. Pinning the query
+	// to a stable collection ID needs a scoping parameter distinct from the
+	// permission pair; see BUG-2631 for the slug-reuse race that motivates it.
 	if err := validateUnparentedListRequest(r, params); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
@@ -528,7 +567,11 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	collSlug := chi.URLParam(r, "collSlug")
-	coll, err := s.store.GetCollectionBySlug(workspaceID, collSlug)
+	// Singular forms resolve against the workspace's real collections, so a
+	// template-defined or user-created collection has a shorthand too, not
+	// just the seven the client-side alias map knows (BUG-2578). Exact match
+	// still wins, so this cannot redirect a request that already worked.
+	coll, err := s.resolveItemCollectionSlug(workspaceID, collSlug)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -1815,7 +1858,7 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get target collection, verify it's visible, and check edit permission
-	targetColl, err := s.store.GetCollectionBySlug(workspaceID, input.TargetCollection)
+	targetColl, err := s.resolveItemCollectionSlug(workspaceID, input.TargetCollection)
 	if err != nil || targetColl == nil {
 		writeError(w, http.StatusBadRequest, "invalid_collection", "Target collection not found")
 		return

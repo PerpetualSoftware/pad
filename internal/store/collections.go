@@ -193,6 +193,25 @@ func (s *Store) GetCollectionAnyState(id string) (*models.Collection, error) {
 	return c, nil
 }
 
+// ArchivedCollectionClaimsSlug reports whether a SOFT-DELETED collection in
+// the workspace holds this exact slug.
+//
+// Exists so slug ALIAS resolution can refuse to fall through to a different
+// collection when the caller's exact name is taken by an archived one
+// (BUG-2578). It answers a boolean rather than returning the row on purpose:
+// an archived collection is never a valid target, it only blocks the name.
+func (s *Store) ArchivedCollectionClaimsSlug(workspaceID, slug string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(s.q(`
+		SELECT COUNT(*) FROM collections
+		WHERE workspace_id = ? AND slug = ? AND deleted_at IS NOT NULL
+	`), workspaceID, slug).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("archived collection claims slug: %w", err)
+	}
+	return n > 0, nil
+}
+
 func (s *Store) GetCollectionBySlug(workspaceID, slug string) (*models.Collection, error) {
 	var id string
 	err := s.db.QueryRow(s.q(`

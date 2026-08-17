@@ -982,3 +982,43 @@ func containsToolText(res *mcp.CallToolResult, substr string) bool {
 	}
 	return false
 }
+
+// BUG-2578, the MCP half. The fix for a non-default collection's singular form
+// lives on the SERVER, which resolves against the workspace's real
+// collections. That only reaches an MCP agent if the dispatcher passes the
+// caller's slug through instead of rewriting it — NormalizeSlug's hardcoded
+// map has no entry for `spec`, so it must arrive at the handler intact for the
+// server-side resolver to see it.
+//
+// Asserts the URL the dispatcher builds, which is where the rewrite would
+// happen; the resolution itself is covered in internal/server.
+func TestHTTPHandlerDispatcher_PassesNonDefaultCollectionSlugThrough(t *testing.T) {
+	user := &models.User{ID: "user-1", Name: "Dave", Email: "dave@example.com"}
+	rec := &recordingHandler{t: t}
+
+	d := &HTTPHandlerDispatcher{
+		Handler:      rec,
+		UserResolver: fixedUserResolver(user),
+	}
+
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace":  "docapp",
+		"collection": "spec",
+		"title":      "via MCP",
+	})
+
+	res, err := d.Dispatch(ctx, []string{"item", "create"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("expected success, got IsError result: %#v", res)
+	}
+
+	wantPath := "/api/v1/workspaces/docapp/collections/spec/items"
+	if rec.gotPath != wantPath {
+		t.Errorf("path = %q, want %q — the dispatcher must not rewrite a slug the "+
+			"server is able to resolve; rewriting is what makes an alias map "+
+			"shadow a real collection (BUG-2630)", rec.gotPath, wantPath)
+	}
+}
