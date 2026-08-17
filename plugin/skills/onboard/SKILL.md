@@ -44,18 +44,26 @@ pad playbook show onboard --format markdown
 ```
 
 If the bootstrap's `playbooks` array has no entry with
-`invocation_slug=onboard, status=active`, activate it from the library
-first — `pad library activate "Onboard a workspace"` (activate takes the
-exact library title; `pad library list` shows it), or the Web UI's
-Playbooks → Library — then load it.
+`invocation_slug=onboard, status=active`, check whether an onboard
+playbook exists in a non-active status before touching the library: a
+draft or deprecated one must be REACTIVATED in place (`pad item update
+PLAYB-N --field status=active`) — `invocation_slug` is workspace-unique,
+so library activation next to an existing entry creates a duplicate or
+fails on the slug. Only when no onboard playbook exists at all, activate
+from the library: `pad library activate "Onboard a workspace"` (activate
+takes the exact library title; `pad library list` shows it), or the Web
+UI's Playbooks → Library. Then load it.
 
-The body covers all four modes itself — `build` (blank workspace, build
-from scratch), `audit` (templated workspace, adapt the seeds), `revisit`
-(already onboarded, change something specific), and `defaults` (escape
-hatch) — so route by the bootstrap rather than re-scripting them here:
-`needs_onboarding: true` points at build/audit; `false` means the workspace
-is already set up, so say so, summarize briefly what exists (collections,
-active conventions from `convention_index`), and offer the playbook's
-revisit mode rather than re-running first-time setup. Create items only
-after the user confirms the shape — the same confirm-before-creating rule
-as everywhere else.
+The body handles mode selection itself — `mode` is `auto` (default,
+detects from workspace state), `build` (blank workspace, build from
+scratch), `audit` (templated workspace, adapt the seeds), or `revisit`
+(already onboarded, change something specific), plus a separate
+`defaults` flag that fast-paths the interview — so don't re-script the
+routing here. One honest framing rule: `needs_onboarding: false` only
+means at least one user-created item exists, NOT that onboarding ever
+ran — a workspace with a single hand-created task is still unonboarded.
+When it's false, say what exists (collections, active conventions from
+`convention_index`) and let the playbook's `auto` detection pick between
+revisit and a fuller pass rather than declaring setup complete yourself.
+Create items only after the user confirms the shape — the same
+confirm-before-creating rule as everywhere else.
