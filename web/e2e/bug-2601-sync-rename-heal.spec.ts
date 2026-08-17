@@ -109,3 +109,75 @@ test('BUG-2601: a missed collection-rename SSE is healed by the next sync pass',
 		}
 	}
 });
+
+// The bug body's own example is the FULL-PAGE ITEM route
+// (`/user/ws/OLDSLUG/item-slug`) — its collection segment goes just as
+// dead, and a reload 404s the collection fetch. ItemDetail's
+// reconcileCollectionSegment heals it on the same sync pass (codex
+// round 3 finding 1); the goto is replaceState, so the dead URL also
+// leaves the history.
+test('BUG-2601: a missed rename heals the full-page item route too', async ({
+	page,
+	request,
+	fixture,
+}) => {
+	const auth = { Authorization: `Bearer ${fixture.apiToken}` };
+	let createdSlug: string | null = null;
+
+	try {
+		const slug = `b2601i-${test.info().workerIndex}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+		createdSlug = slug;
+		const wsResp = await request.post('/api/v1/workspaces', {
+			headers: auth,
+			data: { name: 'BUG-2601 item heal', slug, template: 'startup' },
+		});
+		expect(wsResp.ok(), await wsResp.text()).toBeTruthy();
+		const ws = (await wsResp.json()) as { slug: string };
+		createdSlug = ws.slug;
+
+		const itemResp = await request.post(
+			`/api/v1/workspaces/${ws.slug}/collections/tasks/items`,
+			{ headers: auth, data: { title: 'item-route heal probe' } },
+		);
+		expect(itemResp.ok(), await itemResp.text()).toBeTruthy();
+		const item = (await itemResp.json()) as { slug: string };
+
+		await page.route('**/api/v1/events**', (route) => route.abort());
+		await page.goto(`/${fixture.adminUsername}/${ws.slug}/tasks/${item.slug}`);
+		await expect(page.getByText('item-route heal probe').first()).toBeVisible();
+
+		const renameResp = await request.patch(
+			`/api/v1/workspaces/${ws.slug}/collections/tasks`,
+			{ headers: auth, data: { name: 'Chores' } },
+		);
+		expect(renameResp.ok(), await renameResp.text()).toBeTruthy();
+		const renamed = (await renameResp.json()) as { slug: string };
+		expect(renamed.slug).not.toBe('tasks');
+
+		// Vacuity guard: still on the dead segment before the sync pass.
+		await page.waitForTimeout(700);
+		expect(new URL(page.url()).pathname).toContain('/tasks/');
+
+		await page.evaluate(() => {
+			Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+			document.dispatchEvent(new Event('visibilitychange'));
+		});
+		await page.waitForTimeout(2200);
+		await page.evaluate(() => {
+			Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+			document.dispatchEvent(new Event('visibilitychange'));
+		});
+
+		await page.waitForURL(
+			(u) => new URL(u).pathname.endsWith(`/${renamed.slug}/${item.slug}`),
+			{ timeout: 15_000 },
+		);
+		await expect(page.getByText('item-route heal probe').first()).toBeVisible();
+	} finally {
+		if (createdSlug) {
+			await request
+				.delete(`/api/v1/workspaces/${createdSlug}`, { headers: auth })
+				.catch(() => {});
+		}
+	}
+});

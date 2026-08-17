@@ -7,6 +7,7 @@
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { pushEscapeHandler, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
+	import { resolveSyncRenameTarget } from '$lib/collections/renameNav';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { sseService } from '$lib/services/sse.svelte';
 	import Editor from '$lib/components/editor/Editor.svelte';
@@ -367,6 +368,64 @@
 			renameOverride = null;
 		}
 	});
+
+	/**
+	 * BUG-2601: sync-pass fallback for a MISSED collection-rename SSE on
+	 * the FULL-PAGE item route — the bug body's own example
+	 * (`/user/ws/OLDSLUG/item-slug`). The SSE branch above is the primary
+	 * recovery; when the event never arrived, the route keeps the dead
+	 * collection segment and a reload 404s the collection fetch. Same
+	 * pure decision as the collection page's sync heal; on a hit, mirror
+	 * the SSE branch exactly: renameOverride bridge, row retag, sidebar
+	 * refresh, replaceState goto preserving item slug + query. Full-page
+	 * only — callers gate on `!embedded`.
+	 */
+	async function reconcileCollectionSegment() {
+		const ws = wsSlug;
+		const routeColl = collSlug;
+		const itemRef = itemSlug;
+		const snap = collection;
+		const believed = effectiveCollSlug;
+		if (!ws || !routeColl || !itemRef || !snap) return;
+		try {
+			const list = await api.collections.list(ws);
+			// Route or snapshot moved while the list was in flight.
+			if (ws !== wsSlug || routeColl !== collSlug || itemRef !== itemSlug) return;
+			if (!collection || collection.id !== snap.id) return;
+			const target = resolveSyncRenameTarget({
+				collectionId: snap.id,
+				loadedCollectionSlug: snap.slug,
+				// `believed` folds in a pending renameOverride: mid-goto the
+				// target slug is live in the list, so the helper skips —
+				// same no-dueling property renameNav gives the list route.
+				routeSlug: believed,
+				collections: list,
+				renameNav: null,
+			});
+			if (!target) return;
+			renameOverride = { collectionId: snap.id, from: routeColl, to: target };
+			// The missed SSE also means the layout's global retag never ran.
+			localIndex.retagCollection(ws, snap.id, target, authStore.user?.id ?? null);
+			void collectionStore.loadCollections(ws);
+			const collGen = ++collectionGen;
+			const fresh = list.find((c) => c.id === snap.id);
+			if (fresh && collGen === collectionGen) {
+				collection = fresh;
+			}
+			const search = typeof window !== 'undefined' ? window.location.search : '';
+			goto(`/${username}/${ws}/${target}/${itemRef}${search}`, {
+				replaceState: true,
+				noScroll: true,
+			}).catch(() => {
+				// A failed/cancelled navigation must not leave the override
+				// bridging to a URL we never reached (same posture as the
+				// list route's renameNav reset).
+				if (renameOverride?.to === target) renameOverride = null;
+			});
+		} catch {
+			// Best-effort heal — the next sync pass retries.
+		}
+	}
 
 	// ── Scroll position restoration readiness (BUG-1425) ───────────────
 	// The route wrapper (`[slug]/+page.svelte`) owns `createScrollRestoration`
@@ -1283,6 +1342,16 @@
 			if (!itemMatchesRef) return;
 			// Item writes below are ordered via the dedicated itemGen (round 9),
 			// bumped per-refetch; a switch is caught by the item-id check.
+
+			// BUG-2601: reconcile the FULL-PAGE route's collection segment
+			// BEFORE the caught_up short-circuit — renames don't appear in
+			// /changes, so a rename-only gap reports caught_up and the dead
+			// segment would never heal (the bug body's own example is this
+			// route). Embedded panes retarget via item.collection_slug
+			// (PLAN-2154), never a goto.
+			if (!embedded) {
+				await reconcileCollectionSegment();
+			}
 
 			if (result.type === 'caught_up') return;
 
