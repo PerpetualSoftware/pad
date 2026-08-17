@@ -123,8 +123,13 @@
 		if (!open || useSheet || mode !== 'portal') return;
 		const dismiss = (e?: Event) => {
 			if (e && e.target instanceof Node) {
-				if (panelEl?.contains(e.target)) return;
-				if (trigger && e.target !== document && !e.target.contains(trigger)) return;
+				const t = e.target;
+				if (panelEl?.contains(t)) return;
+				// A scrolling exempt surface (e.g. a nested portaled emoji
+				// picker) is part of the menu interaction, not a stale-coords
+				// signal (codex round 1 #2).
+				if (exempt?.().some((el) => el && (el === t || el.contains(t)))) return;
+				if (trigger && t !== document && !t.contains(trigger)) return;
 			}
 			onclose();
 		};
@@ -168,6 +173,10 @@
 		else if (e.key === 'End') next = list.length - 1;
 		if (next >= 0) {
 			e.preventDefault();
+			// Portaled panels bubble to <svelte:window> handlers that
+			// location-filter on containers the panel no longer lives in —
+			// a handled key must not double as a page hotkey (BUG-2610).
+			e.stopPropagation();
 			list[next].focus();
 		}
 	}

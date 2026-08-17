@@ -61,13 +61,15 @@ test('BUG-2610: pane quick-actions and ⋯ menus are not clipped by the pane con
 	const pane = page.locator('.item-pane');
 	await expect(pane.locator('.title', { hasText: /b2610 probe/ })).toBeVisible();
 
-	// GEOMETRY PRECONDITION (keeps the probe non-vacuous): the trigger
-	// sits close enough to the pane's left edge that a right-aligned
-	// panel MUST extend past it — otherwise both builds pass trivially.
+	// GEOMETRY PRECONDITIONS (keep the probe non-vacuous): each trigger
+	// sits close enough to the pane's left edge that its right-aligned
+	// panel — at ITS configured width — MUST extend past the edge;
+	// otherwise both builds pass trivially. Widths mirror the component
+	// props (QA 288, ⋯ 260).
 	const paneBox = await pane.boundingBox();
 	const qaTrigger = pane.locator('button.trigger-btn[title="Quick actions"]');
 	const qaBox = await qaTrigger.boundingBox();
-	expect(paneBox && qaBox && qaBox.x + qaBox.width - 260 < paneBox.x).toBeTruthy();
+	expect(paneBox && qaBox && qaBox.x + qaBox.width - 288 < paneBox.x).toBeTruthy();
 
 	// ⚡ quick-actions menu.
 	await qaTrigger.click();
@@ -75,8 +77,11 @@ test('BUG-2610: pane quick-actions and ⋯ menus are not clipped by the pane con
 	await page.keyboard.press('Escape');
 	await expect(page.getByRole('menu')).not.toBeVisible();
 
-	// ⋯ overflow menu.
-	await pane.locator('button.pane-more-btn').click();
+	// ⋯ overflow menu — its own precondition at its own width.
+	const moreTrigger = pane.locator('button.pane-more-btn');
+	const moreBox = await moreTrigger.boundingBox();
+	expect(paneBox && moreBox && moreBox.x + moreBox.width - 260 < paneBox.x).toBeTruthy();
+	await moreTrigger.click();
 	expect(await leftEdgeHitsMenu(page), '⋯ panel clipped at its left edge').toBe(true);
 	await page.keyboard.press('Escape');
 });
