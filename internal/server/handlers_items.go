@@ -166,7 +166,16 @@ func (s *Server) handleListItemsIndex(w http.ResponseWriter, r *http.Request) {
 	// wrote it, preserving today's empty-result behaviour.
 	indexCollection := r.URL.Query().Get("collection")
 	if indexCollection != "" {
-		if coll, rerr := s.resolveItemCollectionSlug(workspaceID, indexCollection); rerr == nil && coll != nil {
+		coll, rerr := s.resolveItemCollectionSlug(workspaceID, indexCollection)
+		if rerr != nil {
+			// Surfaced rather than swallowed: proceeding with the raw alias
+			// after a failed lookup would answer a database error with a
+			// successful EMPTY index, which reads as "no items" (codex
+			// round 4).
+			writeInternalError(w, rerr)
+			return
+		}
+		if coll != nil {
 			indexCollection = coll.Slug
 		}
 	}
@@ -479,14 +488,15 @@ func (s *Server) handleListCollectionItems(w http.ResponseWriter, r *http.Reques
 	// resolve the collection for the visibility gate above and then filter on
 	// a slug that matches nothing — a 200 with an empty list (BUG-2578).
 	params.CollectionSlug = coll.Slug
-	// Pinned by stable ID as well. Visibility was just checked against
-	// coll.ID, but the query filtered on a SLUG — a name that can be freed by
-	// a rename or delete and taken by another collection between the two, at
-	// which point the response would carry a different collection's items,
-	// possibly one this caller cannot see (codex round 3). The ID cannot be
-	// reassigned. Both filters are ANDed, so a concurrent rename yields an
-	// empty list rather than someone else's rows: the fail-safe direction.
-	params.CollectionIDs = []string{coll.ID}
+	// DO NOT pin this by setting params.CollectionIDs. It looks like a scoping
+	// filter and is not: CollectionIDs and ItemIDs are a PERMISSION PAIR,
+	// combined with OR ("in a fully-granted collection, or specifically
+	// granted"). Setting CollectionIDs here while the item-grant branch below
+	// sets ItemIDs turns the caller's grants into
+	// `collection_id IN (this) OR id IN (granted)` — which hands a guest
+	// holding one item grant every item in the collection. Pinning the query
+	// to a stable collection ID needs a scoping parameter distinct from the
+	// permission pair; see BUG-2631 for the slug-reuse race that motivates it.
 	if err := validateUnparentedListRequest(r, params); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return

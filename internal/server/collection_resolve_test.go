@@ -12,6 +12,7 @@ package server
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -392,5 +393,98 @@ func TestResolveItemCollectionSlug_CaseFoldBeatsPluralization(t *testing.T) {
 	if got := itemsIn(t, srv, ws, "specs"); len(got) != 0 {
 		t.Errorf("items in `specs` = %v, want none — the write was misfiled into "+
 			"the plural", got)
+	}
+}
+
+// Codex round 4 P1 — a VISIBILITY REGRESSION this branch introduced and then
+// reverted, pinned so it cannot come back.
+//
+// The collection-item list was briefly "pinned" by setting
+// params.CollectionIDs to the resolved collection, to close a slug-reuse race.
+// CollectionIDs is not a scoping filter: it and ItemIDs are a PERMISSION PAIR
+// that the store combines with OR ("in a fully-granted collection, OR
+// specifically granted"). So pinning it while the item-grant branch set
+// ItemIDs rewrote the caller's grants as
+// `collection_id IN (this) OR id IN (granted)` — handing a caller whose only
+// claim on the collection is ONE item grant every item in it.
+//
+// Every other test in this file uses an unrestricted owner, which is exactly
+// why none of them caught it.
+func TestCollectionItemList_ItemGrantOnly_DoesNotLeakSiblings(t *testing.T) {
+	f := newRestrictedOwnerVisibilityFixture(t)
+	f.grantHiddenItemToOwner(t)
+
+	// A sibling in the hidden collection that the caller has NO grant on. If
+	// the list leaks, this is what it leaks.
+	sibling, err := f.srv.store.CreateItem(f.ws.ID, f.hiddenColl.ID, models.ItemCreate{
+		Title: "Sibling the caller may not see", Fields: `{"status":"open"}`,
+	})
+	if err != nil {
+		t.Fatalf("create sibling: %v", err)
+	}
+
+	path := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + f.hiddenColl.Slug + "/items"
+	for _, tc := range []struct {
+		name string
+		rr   func() *httptest.ResponseRecorder
+	}{
+		{"bearer", func() *httptest.ResponseRecorder {
+			return doRequestWithHeaders(f.srv, "GET", path, nil, f.bearerHeaders())
+		}},
+		{"session", func() *httptest.ResponseRecorder {
+			return doRequestWithCookie(f.srv, "GET", path, nil, f.sessionToken)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := tc.rr()
+			// Whether the endpoint 404s or returns the granted item only is a
+			// pre-existing product decision; the invariant under test is that
+			// the ungranted sibling never appears.
+			if rr.Code != http.StatusOK && rr.Code != http.StatusNotFound {
+				t.Fatalf("list hidden collection = %d: %s", rr.Code, rr.Body.String())
+			}
+			if strings.Contains(rr.Body.String(), sibling.ID) ||
+				strings.Contains(rr.Body.String(), "Sibling the caller may not see") {
+				t.Errorf("an item-grant-only caller received a sibling they have no "+
+					"grant on — the collection leaked: %s", rr.Body.String())
+			}
+		})
+	}
+}
+
+// Codex round 4 P2 — the bulk endpoint must answer "collection does not exist"
+// and "collection exists but you cannot see it" the SAME way. Answering them
+// with different HTTP statuses turns the endpoint into an existence oracle: a
+// restricted caller probes slugs and learns which collections they are not
+// allowed to know about.
+func TestBulkMove_HiddenAndUnknownTargetsAreIndistinguishable(t *testing.T) {
+	f := newRestrictedOwnerVisibilityFixture(t)
+
+	// An item the restricted caller CAN see, so the request gets far enough
+	// for the target to matter.
+	path := "/api/v1/workspaces/" + f.ws.Slug + "/items/bulk"
+
+	hidden := doRequestWithHeaders(f.srv, "POST", path, map[string]any{
+		"op": "move", "ids": []string{f.visibleItem.ID}, "collection": f.hiddenColl.Slug,
+	}, f.bearerHeaders())
+
+	unknown := doRequestWithHeaders(f.srv, "POST", path, map[string]any{
+		"op": "move", "ids": []string{f.visibleItem.ID}, "collection": "no-such-collection",
+	}, f.bearerHeaders())
+
+	if hidden.Code != unknown.Code {
+		t.Errorf("hidden target -> %d, unknown target -> %d; the two must be "+
+			"indistinguishable or the endpoint reports which hidden collections exist\n"+
+			"hidden: %s\nunknown: %s",
+			hidden.Code, unknown.Code, hidden.Body.String(), unknown.Body.String())
+	}
+
+	// And neither may actually move the item.
+	item, err := f.srv.store.GetItem(f.visibleItem.ID)
+	if err != nil || item == nil {
+		t.Fatalf("reload item: %v", err)
+	}
+	if item.CollectionID != f.visibleColl.ID {
+		t.Errorf("item moved out of its collection despite both targets being refused")
 	}
 }

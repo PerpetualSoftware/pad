@@ -153,12 +153,19 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 				writeInternalError(w, rerr)
 				return
 			}
-			if targetColl == nil {
-				writeError(w, http.StatusBadRequest, "invalid_collection", "Target collection not found")
-				return
+			// A target that resolves to nothing is deliberately NOT refused
+			// here. Failing the whole request up front would answer
+			// "no such collection" with a different STATUS than an
+			// existing-but-hidden target, which fails per item inside the
+			// normal 200 envelope — and that difference is an existence
+			// oracle: a restricted caller could probe slugs and learn which
+			// collections they cannot see exist (codex round 4). Passing nil
+			// down keeps both cases on the identical per-item path, which is
+			// also the pre-change behaviour.
+			if targetColl != nil {
+				req.Collection = targetColl.Slug
+				resolvedTarget = targetColl
 			}
-			req.Collection = targetColl.Slug
-			resolvedTarget = targetColl
 		}
 	case "set-priority":
 		if req.Priority == "" {
