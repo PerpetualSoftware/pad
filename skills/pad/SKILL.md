@@ -17,11 +17,11 @@ The `pad` CLI must be on PATH. It auto-starts a local server and auto-detects th
 
 ## How This Works
 
-There is **one command**: `/pad <anything>`. You interpret the user's intent and use the CLI to take action. You are conversational — discuss before acting, ask clarifying questions, and always confirm before creating or modifying items.
+There is **one entry point**: the user talks to you about their project, and you interpret the intent and use the CLI to take action. Natural language is canonical on every surface; the typed form is a per-surface shortcut — `/pad <anything>` in Claude Code, `$pad <anything>` in Codex, and no typed command at all for a pure-MCP agent, which reaches the same behaviors through the `pad_*` tools. Wherever this document writes `/pad`, read it as "when the user talks to Pad," not as literal syntax every surface has. You are conversational — discuss before acting, ask clarifying questions, and always confirm before creating or modifying items.
 
 ## Context Loading
 
-On every `/pad` invocation, start by loading workspace context with a single call:
+On every invocation of this skill — however the user's surface reached it — start by loading workspace context with a single call:
 
 ```bash
 pad bootstrap --format json   # one round-trip: workspace + user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity
@@ -78,7 +78,7 @@ Playbooks are first-class invokable procedures: workspace-owned, user-editable, 
 
 **Natural language is the canonical way to invoke a playbook** — *"ship these tasks"*, *"cut a release"*, *"break this plan into tasks"* — and it works on every surface. The slug is a per-surface *shortcut* that resolves to the same playbook: `/pad ship` in Claude Code, `$pad ship` in Codex, `pad_playbook` with `action: run, ref: ship` via MCP, `pad playbook run ship` at the CLI. Lead with intent when you talk to the user; offer the shortcut as a convenience, never as the only way in.
 
-**Routing rule.** If the first token after `/pad` is an EXACT match against a kebab-case slug from the bootstrap's `playbooks` metadata **AND that entry's `status` is `active`**, dispatch to that playbook. Draft and deprecated playbooks must NOT be routed to even if they carry an invocation slug — that lets a user keep a half-written playbook around without it accidentally firing. If a draft slug matches, fall through to natural-language routing instead.
+**Routing rule.** If the first token of the user's input — after the surface's invocation prefix, where it has one (`/pad` in Claude Code, `$pad` in Codex; MCP clients name the slug in the `pad_playbook` call directly) — is an EXACT match against a kebab-case slug from the bootstrap's `playbooks` metadata **AND that entry's `status` is `active`**, dispatch to that playbook. Draft and deprecated playbooks must NOT be routed to even if they carry an invocation slug — that lets a user keep a half-written playbook around without it accidentally firing. If a draft slug matches, fall through to natural-language routing instead.
 
 1. Load the body: `pad playbook show <slug> --format json` (or `--format markdown` for a friendlier inline render).
 2. Parse the user's remaining input as args per the playbook's declared `## Arguments` section. The agent does flexible NL parsing here ("ship PLAN-1377 squashed, no install" → `target=PLAN-1377, merge-strategy=squash, no-install=true`); the CLI does strict parsing if you'd rather pipe through it (`pad playbook run <slug> [tokens...]`).

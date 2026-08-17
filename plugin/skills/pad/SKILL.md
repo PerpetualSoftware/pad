@@ -38,7 +38,7 @@ The returned `AgentBootstrap` blob carries everything the skill needs to start a
 - `user { name, email, id }` — who's talking
 - `collections [...]` — schemas (drives `pad item create`/`update` field validation)
 - `conventions [...]` — full bodies of `trigger=always, status=active` items. **Must-follow project rules.**
-- `convention_index [...]` — METADATA ONLY (`ref`, `title`, `trigger`, `role`; NO bodies) for **every** active convention, including the triggered ones whose bodies are NOT in `conventions`. This is your map of what triggered rules exist — e.g. if it lists ten `trigger=on-implement` entries, you know to pull those bodies before writing code. Load bodies on demand with `pad item list conventions --field trigger=<trigger> --field status=active --format json --full` only when the matching trigger fires.
+- `convention_index [...]` — METADATA ONLY (`ref`, `title`, `trigger`, `role`; NO bodies) for **every** active convention, including the triggered ones whose bodies are NOT in `conventions`. This is your map of what triggered rules exist — e.g. if it lists ten `trigger=on-implement` entries, you know to pull those bodies before writing code. Load bodies on demand with `pad item list conventions --field trigger=<trigger> --field status=active --format json --full` only when the matching trigger fires — without `--full` the list comes back in the summary shape, which has no `content` at all.
 - `roles [...]` — agent roles configured in the workspace
 - `playbooks [...]` — METADATA ONLY: `ref`, `title`, `slug`, `invocation_slug`, `trigger`, `scope`, `status`, `has_arguments`, `summary`. Full bodies load on invocation via `pad playbook show <slug>`.
 - `dashboard {...}` — active items, attention, suggested next, recent activity. Five sub-arrays are capped to 5 entries each (`attention`, `recent_activity`, `active_items`, `active_plans`, `by_role`); each pairs with a `<name>_overflow_count` int field surfaced when truncation kicked in. Use `pad project dashboard` to pull the full set when any overflow > 0.
@@ -120,6 +120,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Planning:**
 - "let's create a plan" → run the **plan** playbook (NL is the canonical entry; the `/pad plan <topic>` slug is the Claude-Code shortcut). Activate via library if the bootstrap's `playbooks` array lacks `invocation_slug=plan, status=active`.
 - "break plan 2 into tasks" → run the **decompose** playbook on PLAN-2 (shortcut: `/pad decompose PLAN-2`; same activation story)
+- "break SPEC-1 into tasks" → same playbook, targeting SPEC-1 instead (shortcut: `/pad decompose SPEC-1`) — spec-driven workspaces decompose specs the same way
 - "what's blocking us?" → Analyze open items and dependencies
 
 **Ideation:**
@@ -272,7 +273,7 @@ Run the `plan` invokable playbook — by intent ("let's plan <topic>") or the sh
 
 ### Decomposition: "Break plan X into tasks"
 
-Run the `decompose` invokable playbook — by intent ("break PLAN-2 into tasks") or the shortcut **`/pad decompose <PLAN-ref>`**. Accepts `target` (the plan ref), `dry-run` (propose without creating), and `collection` (default=tasks); handles child reconciliation, dependency wiring, and per-task confirmation. Same activation story as `plan` — check the bootstrap's `playbooks` array for `invocation_slug=decompose, status=active`; library activation otherwise.
+Run the `decompose` invokable playbook — by intent ("break PLAN-2 into tasks", or "break SPEC-4 into tasks" in a spec-driven workspace) or the shortcut **`/pad decompose <PLAN-ref|SPEC-ref>`**. Accepts `target` (the plan or spec ref), `dry-run` (propose without creating), and `collection` (default=tasks); handles child reconciliation, dependency wiring, and per-task confirmation. Same activation story as `plan` — check the bootstrap's `playbooks` array for `invocation_slug=decompose, status=active`; library activation otherwise.
 
 ### Status Check: "How are we doing?"
 

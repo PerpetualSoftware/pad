@@ -33,17 +33,29 @@ check whether this machine is already configured and authenticated:
   type `! pad init` to run it directly in their own terminal.
   Stop here; there's nothing more this skill can do until that completes.
 
-Once linked, run `pad bootstrap --format json`:
-- If `needs_onboarding` is true, offer the workspace onboarding flow — scan
-  the codebase (README, build config, CI), suggest starter conventions with
-  the project's real commands, and propose an initial plan. Create items only
-  after the user confirms the shape.
-- If `needs_onboarding` is false, this workspace is already set up — say so
-  and briefly summarize what exists (e.g. how many collections and active
-  conventions, from the bootstrap payload's `collections` and
-  `convention_index` arrays), then offer the extend/audit flow instead of
-  re-running first-time setup: add a new section (collection, convention,
-  role, or playbook), review existing conventions against the current
-  codebase, or do nothing if everything already looks right. Same
-  confirm-before-creating rule as everywhere else — never assume the
-  extend/audit answer.
+Once linked, run `pad bootstrap --format json`, then **run the onboard
+playbook — do not improvise your own setup script.** The playbook is
+workspace-owned and user-editable (PLAN-1496's adaptation posture): a team
+that has rewritten theirs must get their version from every surface,
+including this shortcut. Load the body and follow it — it IS the script:
+
+```bash
+pad playbook show onboard --format markdown
+```
+
+If the bootstrap's `playbooks` array has no entry with
+`invocation_slug=onboard, status=active`, activate it from the library
+first — `pad library activate "Onboard a workspace"` (activate takes the
+exact library title; `pad library list` shows it), or the Web UI's
+Playbooks → Library — then load it.
+
+The body covers all four modes itself — `build` (blank workspace, build
+from scratch), `audit` (templated workspace, adapt the seeds), `revisit`
+(already onboarded, change something specific), and `defaults` (escape
+hatch) — so route by the bootstrap rather than re-scripting them here:
+`needs_onboarding: true` points at build/audit; `false` means the workspace
+is already set up, so say so, summarize briefly what exists (collections,
+active conventions from `convention_index`), and offer the playbook's
+revisit mode rather than re-running first-time setup. Create items only
+after the user confirms the shape — the same confirm-before-creating rule
+as everywhere else.
