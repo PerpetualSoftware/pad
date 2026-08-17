@@ -230,3 +230,58 @@ func (s *FSStore) Delete(_ context.Context, key string) error {
 	}
 	return nil
 }
+
+// ListBlobs enumerates every blob under the store's sharded tree,
+// satisfying the optional Lister capability (BUG-2406 — the rowless-blob
+// GC sweep). One full WalkDir per call: O(blobs) readdir+stat, affordable
+// because its only caller runs on the orphan-GC cadence, not on any
+// request path.
+//
+// Only entries whose BASE NAME is a canonical 64-hex sha256 are returned.
+// That single gate excludes everything else the tree can legitimately
+// contain: Put's in-progress temp files (".<hash>.*.tmp" — dot-prefixed
+// and suffixed, so never hash-shaped), the shard directories themselves,
+// and any stray operator artifact. A file that isn't hash-shaped was not
+// written by Put, and this store must not offer to delete what it did not
+// write.
+func (s *FSStore) ListBlobs(ctx context.Context) ([]BlobInfo, error) {
+	var out []BlobInfo
+	err := filepath.WalkDir(s.baseDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			// A shard directory vanishing mid-walk (concurrent Delete
+			// pruning) is normal churn, not a failed listing.
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		hash := filepath.Base(path)
+		if !validHash(hash) {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		out = append(out, BlobInfo{
+			Key:     FSPrefix + ":" + hash,
+			Hash:    hash,
+			Size:    fi.Size(),
+			ModTime: fi.ModTime(),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("attachments: FSStore list blobs: %w", err)
+	}
+	return out, nil
+}

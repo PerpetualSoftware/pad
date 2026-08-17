@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -726,5 +727,221 @@ func TestOrphanGC_VariantProtectedByReferencedParent(t *testing.T) {
 	}
 	if att, _ := srv.store.GetAttachment(thumbID); att == nil {
 		t.Errorf("referenced original's VARIANT reclaimed — parent-aware scan failed")
+	}
+}
+
+// --- Rowless-blob sweep (BUG-2406) -------------------------------------
+
+// putRowlessBlob writes bytes straight into the fs backend with no
+// attachments row — the artifact of a Put-then-insert failure (or a
+// crash between the two), which the row-driven sweep cannot see.
+func putRowlessBlob(t *testing.T, srv *Server, content []byte) (hash, key string) {
+	t.Helper()
+	backend, ok := srv.attachments.Backends()[attachments.FSPrefix]
+	if !ok {
+		t.Fatal("no fs backend registered")
+	}
+	hash = sha256Hex(content)
+	key, err := backend.Put(context.Background(), hash, "application/octet-stream", bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("direct Put: %v", err)
+	}
+	return hash, key
+}
+
+func statBlob(t *testing.T, srv *Server, key string) error {
+	t.Helper()
+	backend, err := srv.attachments.Resolve(key)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	_, statErr := backend.Stat(context.Background(), key)
+	return statErr
+}
+
+// TestRowlessBlobSweep_ReclaimsAgedRowlessBlob pins the core: a blob no
+// row references, older than the grace cutoff, is deleted — bytes,
+// counters, and all. This is the leak the row-driven sweep can never
+// reclaim, verified by the companion counterfactual below.
+func TestRowlessBlobSweep_ReclaimsAgedRowlessBlob(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	content := []byte("leaked-by-failed-insert")
+	_, key := putRowlessBlob(t, srv, content)
+
+	// Counterfactual: the ROW sweep, given the same permissive cutoff,
+	// walks zero rows and leaves the blob exactly where it is — proving
+	// the class needs its own sweep rather than being covered already.
+	rowRes, err := srv.runOrphanGCSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("row sweep: %v", err)
+	}
+	if rowRes.BlobsReclaimed != 0 {
+		t.Fatalf("row sweep reclaimed %d blobs; rowless blob should be invisible to it", rowRes.BlobsReclaimed)
+	}
+	if err := statBlob(t, srv, key); err != nil {
+		t.Fatalf("blob missing after row sweep already: %v", err)
+	}
+
+	res, err := srv.runRowlessBlobSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("rowless sweep: %v", err)
+	}
+	if res.Listed < 1 {
+		t.Errorf("Listed=%d, want >= 1", res.Listed)
+	}
+	if res.Reclaimed != 1 {
+		t.Errorf("Reclaimed=%d, want 1", res.Reclaimed)
+	}
+	if res.BytesReclaimed != int64(len(content)) {
+		t.Errorf("BytesReclaimed=%d, want %d", res.BytesReclaimed, len(content))
+	}
+	if err := statBlob(t, srv, key); !errors.Is(err, attachments.ErrNotFound) {
+		t.Errorf("blob still present after rowless sweep; Stat err=%v", err)
+	}
+}
+
+// TestRowlessBlobSweep_KeepsYoungBlob pins the age gate: a rowless blob
+// younger than the cutoff is the normal transient state of an upload
+// whose row insert hasn't happened yet, and must survive.
+func TestRowlessBlobSweep_KeepsYoungBlob(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	_, key := putRowlessBlob(t, srv, []byte("mid-upload"))
+
+	res, err := srv.runRowlessBlobSweep(context.Background(), time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("rowless sweep: %v", err)
+	}
+	if res.Reclaimed != 0 {
+		t.Errorf("Reclaimed=%d, want 0 (blob younger than cutoff)", res.Reclaimed)
+	}
+	if err := statBlob(t, srv, key); err != nil {
+		t.Errorf("young rowless blob was deleted: %v", err)
+	}
+}
+
+// TestRowlessBlobSweep_KeepsRowBackedBlobs pins the subtraction: a blob
+// with a LIVE row and a blob whose only row is SOFT-DELETED both
+// survive — any row in any state owns its bytes via the row sweep's
+// claim protocol, and the rowless sweep must not reach around it.
+func TestRowlessBlobSweep_KeepsRowBackedBlobs(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	wsID := workspaceIDForSlug(t, srv, slug)
+
+	// Live row via the real upload endpoint.
+	if rr := doMultipartUpload(srv, slug, "live.png", realPNG()); rr.Code != 201 {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+	liveKey := "fs:" + sha256Hex(realPNG())
+
+	// Soft-deleted-only row, planted directly.
+	content := []byte("soft-deleted-owner")
+	hash, sdKey := putRowlessBlob(t, srv, content)
+	att := &models.Attachment{
+		WorkspaceID: wsID,
+		UploadedBy:  "someone",
+		StorageKey:  sdKey,
+		ContentHash: hash,
+		MimeType:    "application/octet-stream",
+		SizeBytes:   int64(len(content)),
+		Filename:    "soon-deleted.bin",
+	}
+	if err := srv.store.CreateAttachment(att); err != nil {
+		t.Fatalf("CreateAttachment: %v", err)
+	}
+	if err := srv.store.SoftDeleteAttachment(att.ID); err != nil {
+		t.Fatalf("SoftDeleteAttachment: %v", err)
+	}
+
+	res, err := srv.runRowlessBlobSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("rowless sweep: %v", err)
+	}
+	if res.Reclaimed != 0 {
+		t.Errorf("Reclaimed=%d, want 0 (both blobs are row-backed)", res.Reclaimed)
+	}
+	for _, key := range []string{liveKey, sdKey} {
+		if err := statBlob(t, srv, key); err != nil {
+			t.Errorf("row-backed blob %s deleted by rowless sweep: %v", key, err)
+		}
+	}
+}
+
+// TestRowlessBlobSweep_RespectsInFlightUploads pins the in-flight fence,
+// with the counterfactual leg: the same blob IS reclaimed once the
+// registration releases, so the fence — not something else — is what
+// held it.
+func TestRowlessBlobSweep_RespectsInFlightUploads(t *testing.T) {
+	srv, _ := testServerWithAttachments(t)
+	hash, key := putRowlessBlob(t, srv, []byte("in-flight-window"))
+
+	release := srv.markUploadInFlight(hash)
+	res, err := srv.runRowlessBlobSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("rowless sweep (in flight): %v", err)
+	}
+	if res.Reclaimed != 0 {
+		t.Errorf("Reclaimed=%d, want 0 while upload in flight", res.Reclaimed)
+	}
+	if err := statBlob(t, srv, key); err != nil {
+		t.Fatalf("in-flight blob deleted: %v", err)
+	}
+
+	release()
+	res, err = srv.runRowlessBlobSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("rowless sweep (released): %v", err)
+	}
+	if res.Reclaimed != 1 {
+		t.Errorf("Reclaimed=%d after release, want 1", res.Reclaimed)
+	}
+	if err := statBlob(t, srv, key); !errors.Is(err, attachments.ErrNotFound) {
+		t.Errorf("blob survived after release; Stat err=%v", err)
+	}
+}
+
+// TestRowlessBlobSweep_DeleteTimeRowRecheck pins the TOCTOU guard: a row
+// committed AFTER the batched hash subtraction but BEFORE the delete —
+// the fully-completed writer whose in-flight registration has already
+// released — must still protect its bytes. The pre-delete hook commits
+// the row at exactly that point.
+func TestRowlessBlobSweep_DeleteTimeRowRecheck(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	wsID := workspaceIDForSlug(t, srv, slug)
+	content := []byte("late-row-writer")
+	hash, key := putRowlessBlob(t, srv, content)
+
+	hookRan := false
+	srv.rowlessPreDeleteHook = func(h string) {
+		if h != hash {
+			return
+		}
+		hookRan = true
+		att := &models.Attachment{
+			WorkspaceID: wsID,
+			UploadedBy:  "late-writer",
+			StorageKey:  key,
+			ContentHash: hash,
+			MimeType:    "application/octet-stream",
+			SizeBytes:   int64(len(content)),
+			Filename:    "late.bin",
+		}
+		if err := srv.store.CreateAttachment(att); err != nil {
+			t.Errorf("hook CreateAttachment: %v", err)
+		}
+	}
+	defer func() { srv.rowlessPreDeleteHook = nil }()
+
+	res, err := srv.runRowlessBlobSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("rowless sweep: %v", err)
+	}
+	if !hookRan {
+		t.Fatal("pre-delete hook never ran — the TOCTOU leg was not exercised")
+	}
+	if res.Reclaimed != 0 {
+		t.Errorf("Reclaimed=%d, want 0 (row committed before delete)", res.Reclaimed)
+	}
+	if err := statBlob(t, srv, key); err != nil {
+		t.Errorf("blob deleted despite delete-time row: %v", err)
 	}
 }

@@ -440,11 +440,15 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 			writeAttachmentNotFound(w)
 			return
 		}
-		// Note: the blob is now an orphan on disk. Orphan GC (TASK-886)
-		// will reclaim it past the grace period; we do NOT delete it
-		// here because the same hash may still be used by a concurrent
-		// upload that succeeded its DB insert. The refusal above lands in
-		// the same shape — BUG-2406 tracks the rowless-blob reclaim.
+		// Note: the blob is now ROWLESS on disk — no attachments row
+		// references it, so the row-driven orphan GC (TASK-886) cannot
+		// see it. The rowless-blob sweep (runRowlessBlobSweep, BUG-2406)
+		// reclaims it once its mtime ages past the GC grace period. We
+		// deliberately do NOT delete it here: the same hash may back a
+		// concurrent upload that succeeded its DB insert, and the sweep
+		// already owns the guards (any-state row check, in-flight fence,
+		// age gate) that make the delete safe. The refusal above lands
+		// in the same shape.
 		writeInternalError(w, fmt.Errorf("create attachment row: %w", err))
 		return
 	}

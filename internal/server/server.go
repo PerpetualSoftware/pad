@@ -228,6 +228,22 @@ type Server struct {
 	inFlightHashesMu sync.Mutex
 	inFlightHashes   map[string]int64
 
+	// rowlessNoListerOnce gates the once-per-process notice that a
+	// registered attachment backend lacks the Lister capability, leaving
+	// the rowless-blob sweep (BUG-2406) inert for it. Logged rather than
+	// silently skipped so an operator can tell the leak class is
+	// unguarded on that backend; once, so a 24h-cadence sweep doesn't
+	// turn it into log spam.
+	rowlessNoListerOnce sync.Once
+
+	// rowlessPreDeleteHook, when non-nil, runs inside the rowless
+	// sweep's in-flight critical section immediately BEFORE the
+	// delete-time row re-check. Test seam only (injectedStageFailure
+	// precedent): it lets a test commit a row for the hash at exactly
+	// the point that distinguishes the batched subtraction from the
+	// re-check, making the TOCTOU leg deterministic.
+	rowlessPreDeleteHook func(hash string)
+
 	// bg tracks fire-and-forget goroutines spawned by request handlers
 	// (TouchUserActivity in middleware_auth, async email sends, etc.) so
 	// the server can drain them before shutdown / test cleanup. Without

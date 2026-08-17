@@ -17,6 +17,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 )
 
 // AttachmentStore is the backend abstraction every storage implementation
@@ -57,3 +58,37 @@ type AttachmentStore interface {
 // ErrNotFound is returned (or wrapped) by Get/Stat when the requested key
 // is not present in the backend. Callers can compare with errors.Is.
 var ErrNotFound = errors.New("attachment not found")
+
+// BlobInfo describes one stored blob as enumerated by a Lister.
+type BlobInfo struct {
+	// Key is the routable "<backend>:<...>" form, exactly what Put
+	// returned when the blob was written — valid input to Get/Stat/Delete.
+	Key string
+	// Hash is the content sha256 the blob is addressed by.
+	Hash string
+	// Size in bytes.
+	Size int64
+	// ModTime is when the blob landed in the backend (filesystem mtime,
+	// object-store LastModified). The rowless-blob sweep uses it as the
+	// age gate: a blob younger than the GC grace period may simply be a
+	// row insert that has not happened yet.
+	ModTime time.Time
+}
+
+// Lister is an OPTIONAL capability of an AttachmentStore: enumerating
+// every blob it holds. The rowless-blob GC sweep (BUG-2406) needs it to
+// find blobs that no attachments row references — a leak class the
+// row-driven orphan sweep cannot see, produced when anything fails
+// between AttachmentStore.Put and the row insert (or the process dies
+// there). Kept separate from AttachmentStore rather than added to it so
+// a backend without an affordable enumeration (or one not yet wired for
+// it) still satisfies the core interface; the sweep detects the
+// capability by type assertion and skips — with a logged notice — any
+// backend that lacks it.
+//
+// ListBlobs walks the ENTIRE backend: cost is O(blobs) per call, which
+// is why its only caller runs on the orphan-GC cadence (default 24h),
+// never on a request path.
+type Lister interface {
+	ListBlobs(ctx context.Context) ([]BlobInfo, error)
+}

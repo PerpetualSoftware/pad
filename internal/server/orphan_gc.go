@@ -288,6 +288,141 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 	return res, nil
 }
 
+// rowlessBlobSweepResult records what one rowless-blob sweep (BUG-2406)
+// accomplished, mirroring orphanGCResult's role for the row-driven sweep.
+type rowlessBlobSweepResult struct {
+	Listed         int   // blobs enumerated across all Lister-capable backends
+	Reclaimed      int   // blobs deleted (no row in any state, past grace, not in flight)
+	BytesReclaimed int64 // sum of reclaimed blob sizes
+	Skipped        int   // candidates skipped due to mid-sweep errors
+	Failures       int   // backends whose listing failed outright
+}
+
+// runRowlessBlobSweep reclaims blobs that NO attachments row references —
+// the leak class the row-driven sweep above cannot see (BUG-2406). Every
+// write path calls AttachmentStore.Put BEFORE inserting the row, so a
+// failure (or crash) between the two leaves a blob on disk with nothing
+// pointing at it; being row-driven, runOrphanGCSweep never scans it.
+//
+// Candidate = enumerated blob whose content hash has ZERO rows in ANY
+// state AND whose ModTime predates blobCutoff. Both halves matter:
+//
+//   - ANY state: a soft-deleted row — even one already past its own
+//     grace — still owns its bytes under the row sweep's row-before-bytes
+//     claim protocol (BUG-2415); reaching around it here would recreate
+//     the stranded-row-without-bytes state that protocol prevents. Rows
+//     and their blobs are the row sweep's business; this sweep takes only
+//     what no row claims.
+//   - ModTime age: a young rowless blob is indistinguishable from an
+//     upload whose row insert hasn't happened yet — rowlessness is the
+//     NORMAL transient state of every in-progress upload. The cutoff is
+//     the same operator-configured GC grace the row sweep uses (30d
+//     default), orders of magnitude beyond any plausible Put-to-insert
+//     gap; the in-flight guard below covers the active window, age is
+//     the backstop for windows the process didn't live to observe.
+//
+// TOCTOU at delete time: a writer could commit a row for a candidate
+// hash after the batched subtraction ran. Every Put-then-insert path
+// runs inside markUploadInFlight (its documented contract), and the copy
+// path's row clones only reference hashes that already have a live
+// source row (so they were never candidates) — which leaves exactly two
+// interleavings for a fresh writer, both closed under inFlightHashesMu:
+// it marked before we locked (in-flight check skips), or it marks after
+// we delete (its Put finds the file missing and rewrites it — Put is
+// create-if-absent by contract). Between those sits the writer that
+// marked, inserted, and RELEASED entirely inside our check-to-lock gap:
+// in-flight is zero again but its row exists, which is what the row
+// RE-CHECK inside the critical section catches. The mutex is held across
+// re-check + Delete, same ms-class discipline the row sweep documents.
+//
+// Backends without the Lister capability are skipped, with a
+// once-per-process notice (silent skipping would hide that this leak
+// class is unguarded there). Cost on capable backends: one full listing
+// + chunked hash-subtraction queries per sweep, O(blobs) — bounded by
+// the GC cadence (24h default), never on a request path.
+func (s *Server) runRowlessBlobSweep(ctx context.Context, blobCutoff time.Time) (*rowlessBlobSweepResult, error) {
+	if s.attachments == nil {
+		return nil, errors.New("attachments registry not configured")
+	}
+	res := &rowlessBlobSweepResult{}
+
+	for prefix, backend := range s.attachments.Backends() {
+		lister, ok := backend.(attachments.Lister)
+		if !ok {
+			s.rowlessNoListerOnce.Do(func() {
+				slog.Info("rowless-blob sweep: backend has no Lister capability; rowless blobs on it are not reclaimed",
+					"backend", prefix)
+			})
+			continue
+		}
+		blobs, err := lister.ListBlobs(ctx)
+		if err != nil {
+			slog.Warn("rowless-blob sweep: listing failed", "backend", prefix, "error", err)
+			res.Failures++
+			continue
+		}
+		res.Listed += len(blobs)
+
+		const chunkSize = 400
+		for start := 0; start < len(blobs); start += chunkSize {
+			if err := ctx.Err(); err != nil {
+				return res, err
+			}
+			chunk := blobs[start:min(start+chunkSize, len(blobs))]
+			hashes := make([]string, len(chunk))
+			for i, b := range chunk {
+				hashes[i] = b.Hash
+			}
+			withRows, err := s.store.AttachmentHashesWithRows(hashes)
+			if err != nil {
+				slog.Warn("rowless-blob sweep: hash subtraction failed", "backend", prefix, "error", err)
+				res.Skipped += len(chunk)
+				continue
+			}
+			for _, b := range chunk {
+				if err := ctx.Err(); err != nil {
+					return res, err
+				}
+				if withRows[b.Hash] || !b.ModTime.Before(blobCutoff) {
+					continue
+				}
+
+				s.inFlightHashesMu.Lock()
+				if s.inFlightHashes[b.Hash] > 0 {
+					s.inFlightHashesMu.Unlock()
+					continue
+				}
+				if s.rowlessPreDeleteHook != nil {
+					s.rowlessPreDeleteHook(b.Hash)
+				}
+				exists, err := s.store.AttachmentRowsExistForHash(b.Hash)
+				if err != nil {
+					s.inFlightHashesMu.Unlock()
+					slog.Warn("rowless-blob sweep: delete-time row re-check failed",
+						"backend", prefix, "hash", b.Hash, "error", err)
+					res.Skipped++
+					continue
+				}
+				if exists {
+					s.inFlightHashesMu.Unlock()
+					continue
+				}
+				delErr := backend.Delete(ctx, b.Key)
+				s.inFlightHashesMu.Unlock()
+				if delErr != nil {
+					slog.Warn("rowless-blob sweep: blob delete failed",
+						"backend", prefix, "storage_key", b.Key, "error", delErr)
+					res.Skipped++
+					continue
+				}
+				res.Reclaimed++
+				res.BytesReclaimed += b.Size
+			}
+		}
+	}
+	return res, nil
+}
+
 // orphanGCConfig captures runtime knobs for the periodic loop.
 // Stored on Server via SetOrphanGCConfig so tests + cmd/pad can
 // override defaults independently.
@@ -408,6 +543,22 @@ func (s *Server) runOrphanGCTick(grace time.Duration) {
 		"bytes_reclaimed", res.BytesReclaimed,
 		"skipped", res.Skipped,
 		"blob_delete_failures", res.BlobDeleteFailures)
+
+	// The rowless-blob sweep runs AFTER the row sweep, same tick and same
+	// grace cutoff: rows the row sweep just claimed are gone, so their
+	// now-unreferenced blobs age normally into the NEXT tick's rowless
+	// candidates rather than racing this one.
+	rres, err := s.runRowlessBlobSweep(ctx, cutoff)
+	if err != nil {
+		slog.Warn("rowless-blob sweep failed", "error", err)
+		return
+	}
+	slog.Info("rowless-blob sweep",
+		"listed", rres.Listed,
+		"reclaimed", rres.Reclaimed,
+		"bytes_reclaimed", rres.BytesReclaimed,
+		"skipped", rres.Skipped,
+		"backend_failures", rres.Failures)
 }
 
 // _ keeps the attachments import alive even if every callsite ends

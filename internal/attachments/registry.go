@@ -43,6 +43,21 @@ func (r *Registry) Register(prefix string, store AttachmentStore) {
 	r.stores[prefix] = store
 }
 
+// Backends returns a snapshot of every registered backend, keyed by
+// prefix. The rowless-blob GC sweep iterates it and type-asserts each
+// store against Lister; a snapshot (rather than holding the lock across
+// the caller's walk) because a sweep over a large backend is long-lived
+// and registration is a startup-time affair anyway.
+func (r *Registry) Backends() map[string]AttachmentStore {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make(map[string]AttachmentStore, len(r.stores))
+	for prefix, store := range r.stores {
+		out[prefix] = store
+	}
+	return out
+}
+
 // Resolve returns the store responsible for key, or an error if no
 // matching backend is registered. The key format is "<prefix>:<rest>".
 func (r *Registry) Resolve(key string) (AttachmentStore, error) {
