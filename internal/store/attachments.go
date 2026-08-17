@@ -1095,7 +1095,16 @@ func (s *Store) CountProtectingAttachmentsForHash(hash, excludeID string, graceC
 //
 // Comments are covered because a pasted screenshot (IDEA-1650) may be
 // referenced ONLY from a comment body; without the comments scan the GC
-// would reclaim it after the grace period and break the embed.
+// would reclaim it after the grace period and break the embed. Documents
+// are covered for the same reason (BUG-2614) — the legacy v1 documents
+// API is still mounted, so a direct API consumer can put the only
+// reference to an attachment in a document body.
+//
+// THE SET OF SCANNED SURFACES IS THE CONTRACT. Anything that persists
+// user-authored text which can contain a `pad-attachment:` token belongs
+// here, and adding such a surface without adding it here silently makes
+// its references invisible to the GC. Both of the additions above were
+// found that way, after the fact.
 //
 // Scoped to one workspace because a "pad-attachment:UUID" reference
 // only resolves within the workspace where the attachment lives;
