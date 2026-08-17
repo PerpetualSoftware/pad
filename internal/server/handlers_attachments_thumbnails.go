@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -266,8 +267,28 @@ func (s *Server) persistThumbnail(
 		ParentID:    &parentRef,
 		Variant:     &variantRef,
 	}
-	if err := s.store.CreateAttachment(row); err != nil {
+	inserted, err := s.store.CreateAttachmentVariantIfParentLive(row)
+	if err != nil {
 		return fmt.Errorf("create thumbnail row: %w", err)
+	}
+	if !inserted {
+		// The parent was deleted between the derivation's early liveness
+		// check and this insert (BUG-2388) — the conditional insert is
+		// the fix for the race that used to mint a live variant row
+		// under a tombstoned parent. Clean up the just-Put blob while we
+		// still hold the in-flight hash fence, unless another live/
+		// in-grace row shares the hash (same dedupe protection as the
+		// GC sweep). A cleanup failure only strands bytes — never a row.
+		others, cErr := s.store.CountProtectingAttachmentsForHash(hash, "", time.Now().Add(-defaultOrphanGCGrace))
+		if cErr == nil && others == 0 {
+			if dErr := store.Delete(ctx, storageKey); dErr != nil {
+				slog.Warn("thumbnails: orphan blob cleanup failed",
+					"storage_key", storageKey, "error", dErr)
+			}
+		}
+		slog.Info("thumbnails: skipped, parent deleted during derivation",
+			"parent_id", parent.ID, "variant", variant)
+		return nil
 	}
 	return nil
 }

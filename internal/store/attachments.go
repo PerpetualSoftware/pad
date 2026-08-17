@@ -707,6 +707,10 @@ func (s *Store) OrphanedAttachments(graceCutoff time.Time) ([]models.Attachment,
 		  (item_id IS NULL AND deleted_at IS NULL AND created_at < ?)
 		  OR
 		  (deleted_at IS NOT NULL AND deleted_at < ?)
+		  OR
+		  (deleted_at IS NULL AND parent_id IS NOT NULL AND NOT EXISTS (
+		    SELECT 1 FROM attachments p WHERE p.id = attachments.parent_id AND p.deleted_at IS NULL
+		  ))
 		ORDER BY created_at, id
 	`), cutoffStr, cutoffStr)
 	if err != nil {
@@ -886,6 +890,36 @@ func (s *Store) ClaimNeverAttachedAttachment(id string, refCutoff time.Time) (bo
 	return n == 1, nil
 }
 
+// ClaimOrphanedVariantAttachment is the orphan GC's atomic claim for a
+// LIVE variant row whose parent original is tombstoned or gone
+// (BUG-2388) — the leak artifact of the old non-transactional delete
+// cascade racing thumbnail derivation, and the retro-cleanup for rows
+// already leaked. The DELETE re-asserts the whole shape at delete
+// time: still live, still a variant, and the parent still NOT live —
+// so a parent restore committing first makes this match zero rows and
+// the variant survives (a restored original keeps its thumbnails).
+// Same row-before-bytes and irrevocability contract as the other
+// Claim methods.
+func (s *Store) ClaimOrphanedVariantAttachment(id string) (bool, error) {
+	res, err := s.db.Exec(s.q(`
+		DELETE FROM attachments
+		WHERE id = ?
+		  AND deleted_at IS NULL
+		  AND parent_id IS NOT NULL
+		  AND NOT EXISTS (
+		    SELECT 1 FROM attachments p WHERE p.id = attachments.parent_id AND p.deleted_at IS NULL
+		  )
+	`), id)
+	if err != nil {
+		return false, fmt.Errorf("claim orphaned variant attachment: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claim orphaned variant rows: %w", err)
+	}
+	return n == 1, nil
+}
+
 // ClaimSoftDeletedAttachment is the orphan GC's atomic claim for a
 // soft-deleted row past its grace window (BUG-2415): the DELETE
 // re-asserts deleted_at is still set and still past the cutoff at
@@ -1038,7 +1072,20 @@ func (s *Store) SoftDeleteWorkspaceAttachments(workspaceID string) (int64, error
 // is the GC's job once it can prove no live row references the hash.
 func (s *Store) SoftDeleteAttachment(id string) error {
 	ts := now()
-	res, err := s.db.Exec(s.q(`
+	// One TRANSACTION for original + variants (BUG-2388): the old two
+	// separate statements let a crash — or a concurrent thumbnail
+	// derivation — land between them, leaving half-tombstoned families.
+	// (The old comment claimed orphan GC would reach stragglers "via the
+	// deleted-parent path"; no such path existed — that is exactly the
+	// leak this bug fixes, and the sweep now has a real orphaned-variant
+	// class as the belt.)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin soft delete tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(s.q(`
 		UPDATE attachments
 		SET deleted_at = ?
 		WHERE id = ? AND deleted_at IS NULL
@@ -1053,20 +1100,67 @@ func (s *Store) SoftDeleteAttachment(id string) error {
 	if n == 0 {
 		return sql.ErrNoRows
 	}
-	// Also tombstone any thumbnail variants. They're synthetic rows
-	// derived from the original; without the original they have no
-	// reason to exist. Errors here are non-fatal — orphan GC will
-	// still reach them eventually via the deleted-parent path.
-	if _, err := s.db.Exec(s.q(`
+	// Tombstone the thumbnail variants atomically with the original —
+	// synthetic rows with no reason to outlive it.
+	if _, err := tx.Exec(s.q(`
 		UPDATE attachments
 		SET deleted_at = ?
 		WHERE parent_id = ? AND deleted_at IS NULL
 	`), ts, id); err != nil {
-		// Log via the caller; we don't have a logger here. The row
-		// went through, so don't fail the request.
-		return nil
+		return fmt.Errorf("soft delete attachment variants: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit soft delete: %w", err)
 	}
 	return nil
+}
+
+// CreateAttachmentVariantIfParentLive inserts a derived-variant row
+// ONLY while its parent original is still live — the liveness check is
+// part of the INSERT statement itself (BUG-2388, the same
+// claim-by-statement discipline as the orphan-GC claims): a delete
+// cascade committing between the derivation's early parent check and
+// this insert makes the WHERE EXISTS fail and the insert report false,
+// instead of minting a live variant row under a tombstoned parent.
+//
+// Returns whether the row was inserted. The caller owns the just-Put
+// blob on a false return (clean it up under the in-flight hash fence
+// it already holds).
+func (s *Store) CreateAttachmentVariantIfParentLive(a *models.Attachment) (bool, error) {
+	if a.ParentID == nil || *a.ParentID == "" {
+		return false, fmt.Errorf("variant insert requires parent_id")
+	}
+	if a.StorageKey == "" {
+		return false, fmt.Errorf("attachment storage_key must not be empty")
+	}
+	if a.ID == "" {
+		a.ID = newID()
+	}
+	// Same column list + timestamp idiom as createAttachmentOn so the
+	// two insert paths can never drift on shape.
+	ts := now()
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = parseTime(ts)
+	} else {
+		ts = a.CreatedAt.UTC().Format("2006-01-02T15:04:05Z07:00")
+	}
+	res, err := s.db.Exec(s.q(`
+		INSERT INTO attachments (`+attachmentColumns+`)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE EXISTS (
+			SELECT 1 FROM attachments p WHERE p.id = ? AND p.deleted_at IS NULL
+		)
+	`), a.ID, a.WorkspaceID, a.ItemID, a.UploadedBy, a.StorageKey, a.ContentHash,
+		a.MimeType, a.SizeBytes, a.Filename, a.Width, a.Height, a.ParentID, a.Variant,
+		ts, nil, *a.ParentID)
+	if err != nil {
+		return false, fmt.Errorf("create variant if parent live: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("create variant rows affected: %w", err)
+	}
+	return n == 1, nil
 }
 
 // WorkspaceItemSlugMap returns slug → id for every live item in a
