@@ -387,9 +387,16 @@
 		const snap = collection;
 		const believed = effectiveCollSlug;
 		if (!ws || !routeColl || !itemRef || !snap) return;
+		// Fence captured BEFORE the await (codex round 4 P1 — bumping after
+		// it made the check tautological): a newer collection write during
+		// the list fetch supersedes this heal's snapshot refresh.
+		const collGen = ++collectionGen;
 		try {
 			const list = await api.collections.list(ws);
-			// Route or snapshot moved while the list was in flight.
+			// Persistent-host discipline: the instance may have unmounted
+			// (destroyed), the route or snapshot may have moved — a stale
+			// continuation must not retag, refresh, or goto (round 4 P1).
+			if (destroyed) return;
 			if (ws !== wsSlug || routeColl !== collSlug || itemRef !== itemSlug) return;
 			if (!collection || collection.id !== snap.id) return;
 			const target = resolveSyncRenameTarget({
@@ -403,11 +410,11 @@
 				renameNav: null,
 			});
 			if (!target) return;
-			renameOverride = { collectionId: snap.id, from: routeColl, to: target };
+			const bridge = { collectionId: snap.id, from: routeColl, to: target };
+			renameOverride = bridge;
 			// The missed SSE also means the layout's global retag never ran.
 			localIndex.retagCollection(ws, snap.id, target, authStore.user?.id ?? null);
 			void collectionStore.loadCollections(ws);
-			const collGen = ++collectionGen;
 			const fresh = list.find((c) => c.id === snap.id);
 			if (fresh && collGen === collectionGen) {
 				collection = fresh;
@@ -418,9 +425,10 @@
 				noScroll: true,
 			}).catch(() => {
 				// A failed/cancelled navigation must not leave the override
-				// bridging to a URL we never reached (same posture as the
-				// list route's renameNav reset).
-				if (renameOverride?.to === target) renameOverride = null;
+				// bridging to a URL we never reached. Identity compare (this
+				// heal's own bridge object, round 4 P2) so a cancelled older
+				// navigation can't clear a newer bridge to the same slug.
+				if (renameOverride === bridge) renameOverride = null;
 			});
 		} catch {
 			// Best-effort heal — the next sync pass retries.
