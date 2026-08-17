@@ -4,6 +4,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -339,5 +341,180 @@ func TestServerCapabilities_PublicAfterBootstrap(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("unauthenticated capabilities fetch returned %d (want 200); body = %s",
 			w.Code, w.Body.String())
+	}
+}
+
+// TestThumbnails_PersistRefusedWhenParentDeleted pins BUG-2388's race
+// deterministically: persistThumbnail is called with a parent SNAPSHOT
+// taken before a delete (exactly what the async derivation holds after
+// its early liveness check), the delete cascade lands, and the
+// conditional variant INSERT must refuse — no live variant row under a
+// tombstoned parent, and the just-Put blob is cleaned up under the
+// in-flight fence.
+func TestThumbnails_PersistRefusedWhenParentDeleted(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+	if srv.imageProcessor == nil {
+		t.Skip("no image processor in this build")
+	}
+
+	rr := doMultipartUpload(srv, slug, "tiny.png", realPNG())
+	if rr.Code != 201 {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+	wsID := workspaceIDForSlug(t, srv, slug)
+	id := getOnlyAttachmentID(t, srv, wsID)
+	parent, err := srv.store.GetAttachment(id)
+	if err != nil || parent == nil {
+		t.Fatalf("GetAttachment: %v %v", parent, err)
+	}
+
+	// The delete cascade lands AFTER the derivation captured its parent
+	// snapshot (the filed interleaving).
+	if err := srv.store.SoftDeleteAttachment(parent.ID); err != nil {
+		t.Fatalf("SoftDeleteAttachment: %v", err)
+	}
+
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	if err := srv.persistThumbnail(context.Background(), parent, img, "thumb-md", "png"); err != nil {
+		t.Fatalf("persistThumbnail should skip, not error: %v", err)
+	}
+
+	// No live variant row was minted.
+	var n int
+	if err := srv.store.DB().QueryRow(srv.store.D().Rebind(
+		`SELECT COUNT(*) FROM attachments WHERE parent_id = ? AND deleted_at IS NULL`), parent.ID).Scan(&n); err != nil {
+		t.Fatalf("count variants: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("race minted %d live variant row(s) under a tombstoned parent", n)
+	}
+	// And the refused thumbnail's just-Put blob was cleaned up (codex
+	// round 1: without this assertion the cleanup branch was untested).
+	// The thumb bytes are a deterministic function of the 8x8 RGBA +
+	// encoder, so recompute the storage key the same way persistThumbnail
+	// did and Stat it.
+	{
+		var buf bytes.Buffer
+		if err := srv.imageProcessor.Encode(img, "png", &buf); err != nil {
+			t.Fatalf("re-encode: %v", err)
+		}
+		thumbHash := sha256Hex(buf.Bytes())
+		bstore, err := srv.attachments.Resolve(attachments.FSPrefix + ":" + thumbHash)
+		if err != nil {
+			t.Fatalf("resolve: %v", err)
+		}
+		if _, err := bstore.Stat(context.Background(), attachments.FSPrefix+":"+thumbHash); err == nil {
+			t.Errorf("refused thumbnail's blob still on disk — cleanup branch did not run")
+		}
+	}
+
+	// CONTROL: the same call against a LIVE parent inserts.
+	rr = doMultipartUpload(srv, slug, "tiny2.png", realPNG())
+	if rr.Code != 201 {
+		t.Fatalf("upload 2: %d %s", rr.Code, rr.Body.String())
+	}
+	var liveID string
+	if err := srv.store.DB().QueryRow(srv.store.D().Rebind(
+		`SELECT id FROM attachments WHERE workspace_id = ? AND deleted_at IS NULL AND parent_id IS NULL ORDER BY created_at DESC LIMIT 1`), wsID).Scan(&liveID); err != nil {
+		t.Fatalf("find live upload: %v", err)
+	}
+	liveParent, err := srv.store.GetAttachment(liveID)
+	if err != nil || liveParent == nil {
+		t.Fatalf("GetAttachment live: %v %v", liveParent, err)
+	}
+	if err := srv.persistThumbnail(context.Background(), liveParent, img, "thumb-md", "png"); err != nil {
+		t.Fatalf("persistThumbnail live: %v", err)
+	}
+	if err := srv.store.DB().QueryRow(srv.store.D().Rebind(
+		`SELECT COUNT(*) FROM attachments WHERE parent_id = ? AND deleted_at IS NULL`), liveParent.ID).Scan(&n); err != nil {
+		t.Fatalf("count live variants: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("control: expected 1 variant under live parent, got %d", n)
+	}
+}
+
+// TestOrphanGC_ReclaimsLeakedLiveVariant pins the retro-cleanup class:
+// a LIVE variant row under a tombstoned parent (the pre-fix leak
+// artifact — inserted directly, as the old code path would have left
+// it) is claimed by the sweep; and the claim refuses when the parent
+// is restored first.
+func TestOrphanGC_ReclaimsLeakedLiveVariant(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	rr := doMultipartUpload(srv, slug, "leaked.png", realPNG())
+	if rr.Code != 201 {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+	wsID := workspaceIDForSlug(t, srv, slug)
+	parentID := getOnlyAttachmentID(t, srv, wsID)
+
+	// Leak artifact: live variant row inserted the OLD unconditional way,
+	// then the parent tombstoned without the (now-atomic) cascade seeing
+	// it. item_id is SET (an attached upload's thumbnail — the common
+	// case): that keeps the row out of BOTH pre-existing GC classes, so
+	// only the new orphaned-variant class can reclaim it — which is what
+	// makes this test discriminate against the old sweep.
+	var anyItemID string
+	if err := srv.store.DB().QueryRow(srv.store.D().Rebind(
+		`SELECT id FROM items WHERE workspace_id = ? LIMIT 1`), wsID).Scan(&anyItemID); err != nil {
+		// No seeded items in this workspace — create one directly.
+		anyItemID = ""
+	}
+	leakID := parentID + "-leak"
+	if anyItemID == "" {
+		var collID string
+		if err := srv.store.DB().QueryRow(srv.store.D().Rebind(
+			`SELECT id FROM collections WHERE workspace_id = ? ORDER BY sort_order, slug LIMIT 1`), wsID).Scan(&collID); err != nil {
+			t.Fatalf("pick collection: %v", err)
+		}
+		item, err := srv.store.CreateItem(wsID, collID, models.ItemCreate{Title: "leak host"})
+		if err != nil {
+			t.Fatalf("CreateItem: %v", err)
+		}
+		anyItemID = item.ID
+	}
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(
+		`INSERT INTO attachments (id, workspace_id, item_id, uploaded_by, storage_key, content_hash, mime_type, size_bytes, filename, parent_id, variant, created_at)
+		 VALUES (?, ?, ?, '', ?, ?, 'image/png', 10, 'leak.png', ?, 'thumb-md', ?)`),
+		leakID, wsID, anyItemID, "fs:leak-"+leakID, "hash-leak-"+leakID, parentID,
+		time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert leak: %v", err)
+	}
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(
+		`UPDATE attachments SET deleted_at = ? WHERE id = ?`),
+		time.Now().UTC().Format(time.RFC3339), parentID); err != nil {
+		t.Fatalf("tombstone parent only: %v", err)
+	}
+
+	// RESTORE-WINS leg first: un-tombstone the parent, sweep — the
+	// leaked row must survive (claim predicate re-asserts at delete
+	// time; a restored original keeps its thumbnails).
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(
+		`UPDATE attachments SET deleted_at = NULL WHERE id = ?`), parentID); err != nil {
+		t.Fatalf("restore parent: %v", err)
+	}
+	if _, err := srv.runOrphanGCSweep(context.Background(), time.Now().Add(-24*time.Hour)); err != nil {
+		t.Fatalf("sweep 1: %v", err)
+	}
+	if att, _ := srv.store.GetAttachment(leakID); att == nil {
+		t.Fatalf("variant of RESTORED parent reclaimed")
+	}
+
+	// Now genuinely orphan it and sweep again — reclaimed.
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(
+		`UPDATE attachments SET deleted_at = ? WHERE id = ?`),
+		time.Now().Add(-40*24*time.Hour).UTC().Format(time.RFC3339), parentID); err != nil {
+		t.Fatalf("re-tombstone parent: %v", err)
+	}
+	res, err := srv.runOrphanGCSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("sweep 2: %v", err)
+	}
+	if res.Deleted < 1 {
+		t.Errorf("sweep 2 Deleted=%d, want >= 1", res.Deleted)
+	}
+	if att, _ := srv.store.GetAttachment(leakID); att != nil {
+		t.Errorf("leaked live variant survived the sweep")
 	}
 }

@@ -108,8 +108,32 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		// + comment bodies before reclaiming so the GC doesn't destroy
 		// a legitimate reference. Codex P1 on PR #307 round 1;
 		// comment-body coverage added for IDEA-1650.
+		// LIVE variant whose parent is tombstoned/gone (BUG-2388): the
+		// leak artifact of the old non-transactional delete cascade, and
+		// the retro-cleanup class for rows already leaked. Tried FIRST
+		// for live parented rows — an item_id-NULL variant of a DEAD
+		// parent would otherwise fall into the never-attached scan,
+		// where a lingering content reference to that dead parent could
+		// keep the leaked row alive forever. The claim's own predicate
+		// re-asserts parent-not-live at delete time, so a concurrent
+		// parent restore refuses it — and a refusal simply means the
+		// parent is live, in which case the row falls through to the
+		// ordinary classes below (e.g. a live orphan upload's thumbnail
+		// stays governed by the parent-aware never-attached path).
+		claimedAsOrphanedVariant := false
+		if a.DeletedAt == nil && a.ParentID != nil && *a.ParentID != "" {
+			var claimErr error
+			claimedAsOrphanedVariant, claimErr = s.store.ClaimOrphanedVariantAttachment(a.ID)
+			if claimErr != nil {
+				slog.Warn("orphan GC: orphaned-variant claim failed",
+					"attachment_id", a.ID, "error", claimErr)
+				res.Skipped++
+				continue
+			}
+		}
+
 		neverAttached := a.ItemID == nil && a.DeletedAt == nil
-		if neverAttached {
+		if !claimedAsOrphanedVariant && neverAttached {
 			// Variants (thumbnails) are never text-referenced by their
 			// OWN id — content references the original. Scan the parent's
 			// id for them, or a referenced upload would keep its original
@@ -157,11 +181,20 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		// was already destroyed — the worst failure mode of the race.)
 		var claimed bool
 		var claimErr error
-		if neverAttached {
+		switch {
+		case claimedAsOrphanedVariant:
+			claimed = true
+		case neverAttached:
 			claimed, claimErr = s.store.ClaimNeverAttachedAttachment(
 				a.ID, time.Now().Add(-orphanGCRefStaleWindow))
-		} else {
+		case a.DeletedAt != nil:
 			claimed, claimErr = s.store.ClaimSoftDeletedAttachment(a.ID, graceCutoff)
+		default:
+			// Live, parented, parent turned out to be LIVE (restored
+			// between the candidate SELECT and the variant claim), and
+			// attached (non-nil item_id) — nothing reclaimable about it.
+			res.Skipped++
+			continue
 		}
 		if claimErr != nil {
 			slog.Warn("orphan GC: claim failed",
@@ -264,6 +297,19 @@ type orphanGCConfig struct {
 	grace    time.Duration
 	stop     chan struct{}
 	running  bool
+}
+
+// orphanGCGraceConfigured returns the effective grace period —
+// operator-configured when set, the default otherwise. Read under the
+// config mutex; used by the thumbnail refusal cleanup so its hash-
+// protection window honors SetOrphanGCConfig (BUG-2388 codex round 1).
+func (s *Server) orphanGCGraceConfigured() time.Duration {
+	s.orphanGC.mu.Lock()
+	defer s.orphanGC.mu.Unlock()
+	if s.orphanGC.grace > 0 {
+		return s.orphanGC.grace
+	}
+	return defaultOrphanGCGrace
 }
 
 // SetOrphanGCConfig overrides the default sweep interval (24h) and
