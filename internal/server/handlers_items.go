@@ -956,6 +956,19 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		if !extractOK {
 			return
 		}
+		if parentProvided && input.ParentID != nil {
+			// BUG-2594: a hierarchy write in fields ("parent"/"plan" — the
+			// canonical item_links surface) and a top-level "parent_id"
+			// (a raw column stamp no first-party client sends on update)
+			// in one request are two competing hierarchy writes. The old
+			// behavior applied BOTH — clearing the link while stamping
+			// the column, leaving silently inconsistent state. Refused,
+			// not silently resolved, per the clear_parent contract
+			// family's standing rule (v0.19).
+			writeError(w, http.StatusBadRequest, "validation_error",
+				`Request carries both a "parent"/"plan" key in fields and a top-level "parent_id" — two competing hierarchy writes. Send exactly one.`)
+			return
+		}
 
 		if err := items.ValidateFields(fieldMap, schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
@@ -1097,6 +1110,19 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		var extractOK bool
 		parentValue, parentProvided, extractOK = s.extractParentLink(w, r, workspaceID, schema, patchMap)
 		if !extractOK {
+			return
+		}
+		if parentProvided && input.ParentID != nil {
+			// BUG-2594: a hierarchy write in fields_patch ("parent"/"plan" — the
+			// canonical item_links surface) and a top-level "parent_id"
+			// (a raw column stamp no first-party client sends on update)
+			// in one request are two competing hierarchy writes. The old
+			// behavior applied BOTH — clearing the link while stamping
+			// the column, leaving silently inconsistent state. Refused,
+			// not silently resolved, per the clear_parent contract
+			// family's standing rule (v0.19).
+			writeError(w, http.StatusBadRequest, "validation_error",
+				`Request carries both a "parent"/"plan" key in fields_patch and a top-level "parent_id" — two competing hierarchy writes. Send exactly one.`)
 			return
 		}
 
