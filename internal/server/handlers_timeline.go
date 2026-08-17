@@ -57,6 +57,11 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	before := time.Now().UTC().Add(time.Minute)
 	beforeID := ""
 	hasBefore := false
+	// Whether beforeID below is the synthetic sentinel rather than a real id
+	// the client sent. The structured sources need to know, because the
+	// sentinel encodes "keep every entry at this instant" and only does so by
+	// accident for ids drawn from the lowercase-hex UUID alphabet.
+	sentinelBeforeID := false
 	if v := r.URL.Query().Get("before"); v != "" {
 		if t, err := time.Parse(time.RFC3339Nano, v); err == nil {
 			before = t
@@ -71,6 +76,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	}
 	if hasBefore && beforeID == "" {
 		beforeID = "g" // > any UUID character lex-wise; valid UTF-8
+		sentinelBeforeID = true
 	}
 
 	// Over-fetch per source (3x limit) to compensate for entries removed by
@@ -117,7 +123,7 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 	// still have to be filtered through the SAME (created_at, id) predicate
 	// the SQL above uses, or paging would show them on every page instead of
 	// exactly one (BUG-2301).
-	notes, decisions := structuredTimelineEntries(item, before, beforeID)
+	notes, decisions := structuredTimelineEntries(item, before, beforeID, sentinelBeforeID)
 
 	entries := buildTimeline(comments, activities, versions, notes, decisions)
 
@@ -156,16 +162,68 @@ func (s *Server) handleListItemTimeline(w http.ResponseWriter, r *http.Request) 
 //   - a field that is not an array at all. models.ExtractItem* returns nil for
 //     those, so they arrive here as an empty slice and simply contribute
 //     nothing. See BUG-2627 for a live instance.
-func structuredTimelineEntries(item *models.Item, before time.Time, beforeID string) ([]models.TimelineEntry, []models.TimelineEntry) {
+//   - duplicate ids. Nothing validates them on write, and a duplicate id is
+//     not merely untidy: it collides in the client's keyed {#each}, and the
+//     cursor cannot page past a pair of entries it cannot tell apart. Repeats
+//     get the same positional suffix an absent id gets.
+//
+// `sentinelBeforeID` says the caller synthesized beforeID rather than
+// receiving it, which means "keep every entry at this instant" — see the
+// comparison note inside.
+func structuredTimelineEntries(item *models.Item, before time.Time, beforeID string, sentinelBeforeID bool) ([]models.TimelineEntry, []models.TimelineEntry) {
 	if item == nil {
 		return nil, nil
 	}
 
+	// Compare in the SAME space the SQL sources do: RFC3339 text, whole
+	// seconds. The store formats the cursor with time.Format(time.RFC3339)
+	// and compares it against the stored text column, so a Go-side comparison
+	// on full-precision time.Time is a DIFFERENT predicate — a structured
+	// entry carrying sub-second precision (a hand-written created_at, or the
+	// item's own createdAt used as the undated fallback) could then sit on a
+	// page boundary that the SQL sources resolve the other way, dropping or
+	// repeating entries around it. Formatting both sides removes the seam
+	// instead of trying to compensate for it.
+	beforeText := before.Format(time.RFC3339)
+
 	keep := func(at time.Time, id string) bool {
-		if at.Before(before) {
+		atText := at.Format(time.RFC3339)
+		if atText < beforeText {
 			return true
 		}
-		return at.Equal(before) && beforeID != "" && id < beforeID
+		if atText != beforeText {
+			return false
+		}
+		// At the cursor instant the id decides. The sentinel is not a real
+		// id: it exists so same-second entries are NOT dropped, and it
+		// achieves that for UUIDs only because every lowercase-hex character
+		// sorts below "g". Structured ids are `note-…` / `decision-…`, so
+		// comparing against it would drop every note ("n" > "g") while
+		// keeping every decision ("d" < "g") — an arbitrary split. Honour
+		// what the sentinel MEANS rather than how it happens to sort.
+		if sentinelBeforeID {
+			return true
+		}
+		return beforeID != "" && id < beforeID
+	}
+
+	// Assign a stable, unique entry id: the entry's own id when it has one
+	// and no earlier entry claimed it, otherwise a positional fallback.
+	// Notes and decisions share this map — they land in one merged stream and
+	// a collision ACROSS the two kinds breaks the client exactly as one
+	// within a kind does.
+	usedIDs := make(map[string]bool, len(item.ImplementationNotes)+len(item.DecisionLog))
+	entryID := func(raw, prefix string, i int) string {
+		if raw != "" && !usedIDs[raw] {
+			usedIDs[raw] = true
+			return raw
+		}
+		id := fmt.Sprintf("%s-idx-%d", prefix, i)
+		for usedIDs[id] {
+			id += "x"
+		}
+		usedIDs[id] = true
+		return id
 	}
 
 	// Parse an entry timestamp, falling back to the item's own creation
@@ -185,10 +243,7 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	var notes []models.TimelineEntry
 	for i := range item.ImplementationNotes {
 		n := item.ImplementationNotes[i]
-		id := n.ID
-		if id == "" {
-			id = fmt.Sprintf("note-idx-%d", i)
-		}
+		id := entryID(n.ID, "note", i)
 		at := stamp(n.CreatedAt)
 		if !keep(at, id) {
 			continue
@@ -206,10 +261,7 @@ func structuredTimelineEntries(item *models.Item, before time.Time, beforeID str
 	var decisions []models.TimelineEntry
 	for i := range item.DecisionLog {
 		d := item.DecisionLog[i]
-		id := d.ID
-		if id == "" {
-			id = fmt.Sprintf("decision-idx-%d", i)
-		}
+		id := entryID(d.ID, "decision", i)
 		at := stamp(d.CreatedAt)
 		if !keep(at, id) {
 			continue

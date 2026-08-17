@@ -381,6 +381,17 @@ func assertEachEntryOnce(t *testing.T, seen []string, want ...string) {
 			t.Errorf("%q appeared %d times across the paged walk (saw %v)", id, counts[id], seen)
 		}
 	}
+	// The named ids are the ones this change introduces, but the invariant is
+	// about the whole feed: the structured entries are interleaved with the
+	// SQL-sourced ones, so a boundary this filter resolves differently from
+	// the SQL predicate would repeat a COMMENT or a VERSION, not a note.
+	// Checking only the named ids would miss exactly that.
+	for id, n := range counts {
+		if n > 1 {
+			t.Errorf("entry %q appeared %d times across the paged walk — some entry "+
+				"repeats across a page boundary (saw %v)", id, n, seen)
+		}
+	}
 }
 
 // The structured entries are filtered in Go against a parsed time, while the
@@ -417,6 +428,104 @@ func TestItemTimeline_StructuredPagingIsExactlyOnce(t *testing.T) {
 	})
 }
 
+// Codex round 2, finding 2. When a client sends `before` WITHOUT `before_id`,
+// the handler substitutes the sentinel "g" — an upper bound whose whole job is
+// to keep same-second entries rather than drop them, and which does that job
+// only because every lowercase-hex UUID character sorts below "g". Structured
+// ids are not UUIDs: `note-…` sorts above "g" and `decision-…` below it, so
+// comparing against the sentinel literally would drop every note at the cursor
+// instant while keeping every decision — an arbitrary split with no rationale.
+func TestItemTimeline_StructuredSentinelCursorKeepsBothKinds(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+
+	// Both entries sit at EXACTLY the cursor instant, which is the only case
+	// the sentinel decides.
+	item := timelineItemWithStructured(t, srv, ws,
+		`[{"id":"note-1","summary":"at the cursor","created_at":"2026-04-02T10:00:00Z","created_by":"user"}]`,
+		`[{"id":"decision-1","decision":"also at the cursor","created_at":"2026-04-02T10:00:00Z","created_by":"user"}]`)
+
+	resp := fetchTimeline(t, srv, ws, item.Slug, "before=2026-04-02T10:00:00Z")
+	counts := kindsOf(resp.Entries)
+	if counts["note"] != 1 || counts["decision"] != 1 {
+		t.Fatalf("sentinel cursor kept %d notes / %d decisions, want 1 / 1 — comparing "+
+			"structured ids against the \"g\" sentinel splits the kinds on their "+
+			"first letter", counts["note"], counts["decision"])
+	}
+}
+
+// Codex round 2, finding 1. The SQL sources format the cursor to whole-second
+// RFC3339 text before comparing; a structured entry can carry sub-second
+// precision (a hand-written created_at, or the item's createdAt standing in
+// for an absent one). Comparing full-precision Go times against a truncated
+// SQL cursor is two different predicates on one page boundary.
+func TestItemTimeline_StructuredCursorMatchesSQLTruncation(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+
+	// Sub-second timestamp inside the cursor's second.
+	item := timelineItemWithStructured(t, srv, ws,
+		`[{"id":"note-frac","summary":"sub-second","created_at":"2026-04-02T10:00:00.500Z","created_by":"user"}]`, "")
+
+	// A cursor at the same whole second, with a real before_id above the
+	// note's id so the id predicate would keep it. Under whole-second
+	// comparison — what the SQL sources do — the entry is AT the cursor
+	// second, so the id decides and it is kept.
+	resp := fetchTimeline(t, srv, ws, item.Slug,
+		"before=2026-04-02T10:00:00Z&before_id=zzz")
+	if n := kindsOf(resp.Entries)["note"]; n != 1 {
+		t.Fatalf("sub-second note at the cursor second: got %d note entries, want 1 — "+
+			"the Go filter must compare in the same whole-second text space the "+
+			"SQL sources do", n)
+	}
+
+	// The mirror: a cursor one second earlier excludes it under either
+	// reading, so this leg fails if the filter simply stopped filtering.
+	resp = fetchTimeline(t, srv, ws, item.Slug,
+		"before=2026-04-02T09:59:59Z&before_id=zzz")
+	if n := kindsOf(resp.Entries)["note"]; n != 0 {
+		t.Fatalf("note newer than the cursor was returned (%d) — the control leg for "+
+			"the truncation assertion above", n)
+	}
+}
+
+// Codex round 2, finding 3. Nothing validates ids on write, so a hand-written
+// fields blob can repeat one. A duplicate is not cosmetic: it collides in the
+// client's keyed {#each} (a hard render error in Svelte 5), the client's
+// loadMore dedupes by id and would drop the older entry, and the cursor cannot
+// page past two entries it cannot tell apart.
+func TestItemTimeline_StructuredDuplicateIDsAreDisambiguated(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+
+	item := timelineItemWithStructured(t, srv, ws,
+		`[{"id":"dup","summary":"first","created_at":"2026-04-02T10:00:00Z","created_by":"user"},
+		  {"id":"dup","summary":"second","created_at":"2026-04-02T11:00:00Z","created_by":"user"}]`,
+		// Same id again on the OTHER kind — they share one merged stream, so a
+		// cross-kind collision breaks the client exactly as a within-kind one does.
+		`[{"id":"dup","decision":"third","created_at":"2026-04-02T12:00:00Z","created_by":"user"}]`)
+
+	resp := fetchTimeline(t, srv, ws, item.Slug, "")
+	seen := map[string]int{}
+	structured := 0
+	for _, e := range resp.Entries {
+		if e.Kind != "note" && e.Kind != "decision" {
+			continue
+		}
+		structured++
+		seen[e.ID]++
+	}
+	if structured != 3 {
+		t.Fatalf("got %d structured entries, want all 3 — a duplicate id must not "+
+			"cost an entry", structured)
+	}
+	for id, n := range seen {
+		if n > 1 {
+			t.Errorf("entry id %q was emitted %d times; ids must be unique within a page", id, n)
+		}
+	}
+}
+
 // Unit-level coverage of the cursor predicate itself, including the nil-item
 // guard the handler can't reach but callers could.
 func TestStructuredTimelineEntries_CursorPredicate(t *testing.T) {
@@ -440,14 +549,14 @@ func TestStructuredTimelineEntries_CursorPredicate(t *testing.T) {
 	}
 
 	t.Run("first page keeps everything older than now", func(t *testing.T) {
-		notes, decisions := structuredTimelineEntries(item, at("2026-05-01T00:00:00Z"), "")
+		notes, decisions := structuredTimelineEntries(item, at("2026-05-01T00:00:00Z"), "", false)
 		if len(notes) != 2 || len(decisions) != 1 {
 			t.Fatalf("got %d notes / %d decisions, want 2 / 1", len(notes), len(decisions))
 		}
 	})
 
 	t.Run("cursor drops everything at or newer than it", func(t *testing.T) {
-		notes, decisions := structuredTimelineEntries(item, at("2026-04-02T11:00:00Z"), "")
+		notes, decisions := structuredTimelineEntries(item, at("2026-04-02T11:00:00Z"), "", false)
 		if len(notes) != 1 || notes[0].ID != "note-1" {
 			t.Errorf("notes = %+v, want only note-1", notes)
 		}
@@ -457,7 +566,7 @@ func TestStructuredTimelineEntries_CursorPredicate(t *testing.T) {
 	})
 
 	t.Run("nil item is not a panic", func(t *testing.T) {
-		notes, decisions := structuredTimelineEntries(nil, at("2026-05-01T00:00:00Z"), "")
+		notes, decisions := structuredTimelineEntries(nil, at("2026-05-01T00:00:00Z"), "", false)
 		if notes != nil || decisions != nil {
 			t.Errorf("nil item returned %v / %v", notes, decisions)
 		}
