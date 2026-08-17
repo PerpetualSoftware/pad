@@ -986,6 +986,64 @@ func (s *Store) ClaimSoftDeletedAttachment(id string, graceCutoff time.Time) (bo
 	return n == 1, nil
 }
 
+// AttachmentHashesWithRows reports which of the given content hashes have
+// at least one attachments row — in ANY state. Soft-deleted rows count,
+// including ones already past the GC grace. That is deliberately BROADER
+// than CountProtectingAttachmentsForHash, whose grace-window semantics end
+// a row's protection when its own grace expires: the row-driven machinery
+// may do that because its claim protocol (row before bytes, BUG-2415)
+// coordinates row and blob fates within one sweep. The rowless sweep has
+// no claim on any row and no such coordination, so it draws the simplest
+// safe line instead — a hash with ANY row is that row's business, handled
+// by the row sweep's own claim path within a tick; the rowless sweep
+// (BUG-2406) takes only blobs NO row references.
+//
+// Chunked like the copy planner's lookups so a large listing cannot blow
+// the host-parameter limit.
+func (s *Store) AttachmentHashesWithRows(hashes []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(hashes))
+	for _, chunk := range chunkStrings(hashes, attachmentPlanChunk) {
+		args := make([]any, 0, len(chunk))
+		for _, h := range chunk {
+			args = append(args, h)
+		}
+		query := `SELECT DISTINCT content_hash FROM attachments
+			WHERE content_hash IN (` + sqlPlaceholderList(len(chunk)) + `)`
+		rows, err := s.db.Query(s.q(query), args...)
+		if err != nil {
+			return nil, fmt.Errorf("attachment hashes with rows: %w", err)
+		}
+		for rows.Next() {
+			var h string
+			if err := rows.Scan(&h); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("attachment hashes with rows: %w", err)
+			}
+			out[h] = true
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("attachment hashes with rows: %w", err)
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
+// AttachmentRowsExistForHash is the single-hash form of
+// AttachmentHashesWithRows — the rowless-blob sweep's delete-time
+// re-check, run under the in-flight mutex immediately before a blob
+// delete so a row inserted after the batched subtraction still protects
+// its bytes (see runRowlessBlobSweep's TOCTOU note).
+func (s *Store) AttachmentRowsExistForHash(hash string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM attachments WHERE content_hash = ?`), hash).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("attachment rows exist for hash: %w", err)
+	}
+	return n > 0, nil
+}
+
 // CountProtectingAttachmentsForHash returns the number of rows
 // pointing at the given content_hash whose presence requires the
 // on-disk blob to stay. A row protects the blob when it is either:

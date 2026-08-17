@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -709,5 +710,67 @@ func TestWorkspaceStorageInfo_TracksLiveAttachments(t *testing.T) {
 	}
 	if info.UsedBytes != 3072 {
 		t.Errorf("used_bytes = %d, want 3072 (1024 + 2048; soft-deleted excluded)", info.UsedBytes)
+	}
+}
+
+// TestAttachmentHashesWithRows pins the rowless-sweep subtraction's
+// contract (BUG-2406): a hash is "row-backed" when ANY row exists —
+// soft-deleted included, because a still-existing row owns its bytes
+// under the row sweep's claim protocol regardless of its state. The
+// delete-time re-check enforces the same rule independently; this pins
+// the batched form at its own layer so the two cannot drift apart
+// silently.
+func TestAttachmentHashesWithRows(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Hash Rows")
+
+	mk := func(hash string) *models.Attachment {
+		t.Helper()
+		a := &models.Attachment{
+			WorkspaceID: ws.ID,
+			UploadedBy:  "u",
+			StorageKey:  "fs:" + hash,
+			ContentHash: hash,
+			MimeType:    "application/octet-stream",
+			SizeBytes:   1,
+			Filename:    hash[:8] + ".bin",
+		}
+		if err := s.CreateAttachment(a); err != nil {
+			t.Fatalf("CreateAttachment: %v", err)
+		}
+		return a
+	}
+	liveHash := strings.Repeat("a", 64)
+	softHash := strings.Repeat("b", 64)
+	goneHash := strings.Repeat("c", 64)
+	mk(liveHash)
+	soft := mk(softHash)
+	if err := s.SoftDeleteAttachment(soft.ID); err != nil {
+		t.Fatalf("SoftDeleteAttachment: %v", err)
+	}
+
+	got, err := s.AttachmentHashesWithRows([]string{liveHash, softHash, goneHash})
+	if err != nil {
+		t.Fatalf("AttachmentHashesWithRows: %v", err)
+	}
+	if !got[liveHash] {
+		t.Error("live-row hash not reported as row-backed")
+	}
+	if !got[softHash] {
+		t.Error("soft-deleted-row hash not reported as row-backed — the sweep would reach around the row sweep's claim protocol")
+	}
+	if got[goneHash] {
+		t.Error("rowless hash reported as row-backed")
+	}
+
+	// Single-hash re-check agrees on all three.
+	for hash, want := range map[string]bool{liveHash: true, softHash: true, goneHash: false} {
+		exists, err := s.AttachmentRowsExistForHash(hash)
+		if err != nil {
+			t.Fatalf("AttachmentRowsExistForHash(%s): %v", hash, err)
+		}
+		if exists != want {
+			t.Errorf("AttachmentRowsExistForHash(%s) = %v, want %v", hash[:8], exists, want)
+		}
 	}
 }

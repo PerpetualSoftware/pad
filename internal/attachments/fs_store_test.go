@@ -284,3 +284,73 @@ func TestNewFSStore_EmptyBaseDirRejected(t *testing.T) {
 		t.Fatal("expected error for empty baseDir")
 	}
 }
+
+// TestFSStore_ListBlobs pins the Lister capability (BUG-2406): every
+// Put blob is enumerated with its routable key, hash, and size — and
+// NOTHING else is. Temp files (dot-prefixed, never hash-shaped), the
+// shard directories, and stray non-hash files must all be excluded: a
+// file the store didn't write is not a file the rowless sweep may
+// offer to delete.
+func TestFSStore_ListBlobs(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewFSStore(dir)
+	if err != nil {
+		t.Fatalf("NewFSStore: %v", err)
+	}
+	ctx := context.Background()
+
+	put := func(content string) (hash, key string) {
+		t.Helper()
+		sum := sha256.Sum256([]byte(content))
+		hash = hex.EncodeToString(sum[:])
+		key, err := s.Put(ctx, hash, "text/plain", strings.NewReader(content))
+		if err != nil {
+			t.Fatalf("Put: %v", err)
+		}
+		return hash, key
+	}
+	hashA, keyA := put("blob-a")
+	hashB, keyB := put("blob-b-longer")
+
+	// Plant impostors: a stray operator file at the root, a non-hash
+	// file inside a real shard dir, and a synthetic Put temp file.
+	if err := os.WriteFile(filepath.Join(dir, "README.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write junk: %v", err)
+	}
+	shardDir := filepath.Join(dir, hashA[0:2], hashA[2:4])
+	if err := os.WriteFile(filepath.Join(shardDir, "not-a-hash"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write shard junk: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(shardDir, "."+hashA+".123.tmp"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write temp impostor: %v", err)
+	}
+
+	blobs, err := s.ListBlobs(ctx)
+	if err != nil {
+		t.Fatalf("ListBlobs: %v", err)
+	}
+	if len(blobs) != 2 {
+		t.Fatalf("ListBlobs returned %d entries, want 2: %+v", len(blobs), blobs)
+	}
+	byHash := map[string]BlobInfo{}
+	for _, b := range blobs {
+		byHash[b.Hash] = b
+	}
+	a, ok := byHash[hashA]
+	if !ok || a.Key != keyA || a.Size != int64(len("blob-a")) {
+		t.Errorf("blob A = %+v (ok=%v), want key %s size %d", a, ok, keyA, len("blob-a"))
+	}
+	b, ok := byHash[hashB]
+	if !ok || b.Key != keyB || b.Size != int64(len("blob-b-longer")) {
+		t.Errorf("blob B = %+v (ok=%v), want key %s size %d", b, ok, keyB, len("blob-b-longer"))
+	}
+	for _, blob := range blobs {
+		if blob.ModTime.IsZero() {
+			t.Errorf("blob %s has zero ModTime", blob.Hash)
+		}
+		// The returned key must round-trip through the ordinary surface.
+		if _, err := s.Stat(ctx, blob.Key); err != nil {
+			t.Errorf("Stat(%s): %v", blob.Key, err)
+		}
+	}
+}
