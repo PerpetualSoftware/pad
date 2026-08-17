@@ -557,7 +557,9 @@ export const localIndex = {
 					// under a DIFFERENT auth identity is discarded, not
 					// applied (codex round 2 P2 — a cold state survives
 					// the logout path, so this is the cross-user gate).
-					if (state.pendingRetagsUser === userId) {
+					// A null stamp = recorded before this session's auth
+					// resolved — same session, so apply (codex round 7 P2).
+					if (state.pendingRetagsUser === null || state.pendingRetagsUser === userId) {
 						for (const [collectionId, newSlug] of state.pendingRetags) {
 							applyRetag(ws, state, collectionId, newSlug);
 						}
@@ -1161,11 +1163,17 @@ export const localIndex = {
 		// fix them (codex round 1 P1 — see pendingRetags on WorkspaceState).
 		const state = ensureState(ws);
 		// Ownership stamp (codex round 2 P2): intent recorded under a
-		// different auth identity is dropped, never mixed — a cold state
-		// survives logout, and user A's rename intent must not steer user
-		// B's warm cache. Same-user re-records just refresh the stamp.
+		// DIFFERENT resolved auth identity is dropped, never mixed — a cold
+		// state survives logout, and user A's rename intent must not steer
+		// user B's warm cache. A null stamp means "recorded before this
+		// session's auth resolved" and is ADOPTED by the first resolved
+		// identity rather than discarded (codex round 7 P2): the SSE
+		// connection that delivered the event was authenticated as this
+		// session's user, so the intent is theirs.
 		if (state.pendingRetagsUser !== userId) {
-			state.pendingRetags.clear();
+			if (state.pendingRetagsUser !== null) {
+				state.pendingRetags.clear();
+			}
 			state.pendingRetagsUser = userId;
 		}
 		state.pendingRetags.set(collectionId, newSlug);

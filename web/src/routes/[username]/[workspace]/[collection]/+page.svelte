@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/state';
+	import { page, navigating } from '$app/state';
 	import { browser } from '$app/environment';
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
 	import { api, PadApiError, isPlanLimitError, planLimitMessage, isConflictOrNotFound } from '$lib/api/client';
@@ -1040,6 +1040,11 @@
 				renameNav,
 			});
 			if (!target) return;
+			// A user navigation already in flight would be ABORTED by our
+			// goto — route props don't update until commit, so the checks
+			// above can't see it (codex round 7 P1). Yield; the next sync
+			// pass retries if the strand persists.
+			if (navigating.to) return;
 			renameNav = target;
 			// The missed SSE also means the layout's global retag never
 			// ran — re-stamp the cached rows' collection_slug by stable id
@@ -1050,7 +1055,10 @@
 			// side-effect as the SSE + reorder-404 rename paths.
 			void collectionStore.loadCollections(ws);
 			const search = typeof window !== 'undefined' ? window.location.search : '';
-			goto(`/${username}/${ws}/${target}${search}`).catch(() => {
+			// replaceState: the healed-away slug is DEAD — Back must not
+			// return to a URL that 404s (codex round 7 P2; the item-route
+			// healer already replaces).
+			goto(`/${username}/${ws}/${target}${search}`, { replaceState: true }).catch(() => {
 				// A cancelled/failed navigation (navigate-away guard, a
 				// racing nav) must not leave renameNav pointing at a slug
 				// we never reached — a poisoned tracker would veto every

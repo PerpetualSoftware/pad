@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { page } from '$app/state';
+	import { page, navigating } from '$app/state';
 	import { tick, onMount, onDestroy, untrack } from 'svelte';
 	import { api, PadApiError, isUpdateConflictError, type ImportURLResponse } from '$lib/api/client';
 	import { confirmOpenChildrenOrThrow, isOpenChildrenError } from '$lib/items/openChildrenError';
@@ -410,6 +410,9 @@
 				renameNav: null,
 			});
 			if (!target) return;
+			// A user navigation already in flight would be ABORTED by our
+			// goto (route props lag until commit — codex round 7 P1).
+			if (navigating.to) return;
 			renameOverride = { collectionId: snap.id, from: routeColl, to: target };
 			// Read back the installed value: `renameOverride` is $state, so
 			// the assignment wraps the literal in a reactive proxy — the raw

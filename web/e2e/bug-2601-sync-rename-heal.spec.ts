@@ -89,6 +89,11 @@ test('BUG-2601: a missed collection-rename SSE is healed by the next sync pass',
 			document.dispatchEvent(new Event('visibilitychange'));
 		});
 		await page.waitForTimeout(2200);
+		// Still stranded INSIDE the hidden window: pins the heal to the
+		// RESUME signal specifically — a broken implementation healing on
+		// the hidden event or a free-running timer fails here (codex
+		// round 7 P2).
+		expect(new URL(page.url()).pathname.endsWith('/tasks')).toBeTruthy();
 		await page.evaluate(() => {
 			Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
 			document.dispatchEvent(new Event('visibilitychange'));
@@ -163,6 +168,9 @@ test('BUG-2601: a missed rename heals the full-page item route too', async ({
 			document.dispatchEvent(new Event('visibilitychange'));
 		});
 		await page.waitForTimeout(2200);
+		// Still stranded inside the hidden window (same vacuity pin as the
+		// list-route leg above).
+		expect(new URL(page.url()).pathname).toContain('/tasks/');
 		await page.evaluate(() => {
 			Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
 			document.dispatchEvent(new Event('visibilitychange'));
