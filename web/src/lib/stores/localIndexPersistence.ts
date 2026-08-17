@@ -176,6 +176,44 @@ export async function hydrate(
 }
 
 /**
+ * Decide whether `next` may overwrite the row already stored under the same
+ * id. The IDB analogue of localIndex's in-RAM `mergeRow` seq guard, which the
+ * persistence layer never had (BUG-2609).
+ *
+ * Returns false ONLY when `next` is strictly older than what is stored. Equal
+ * seq still writes: RAM merges same-seq projections before persisting, so the
+ * incoming row is the merged one, and refusing it would drop that merge.
+ * A missing seq on either side writes too — absence is not evidence of being
+ * older, and refusing would silently disable the cache for rows the server has
+ * not stamped.
+ *
+ * WHY THIS EXISTS. `upsert` and `applyRetag` hand persistUpserts a snapshot
+ * taken from RAM and do not await it. An SSE delta for the same row can commit
+ * its own atomic rows+cursor transaction in between, after which the older
+ * snapshot lands LAST and leaves IDB holding a pre-delta row while the
+ * persisted cursor sits past that delta. Warm boot then hydrates the stale row
+ * and `/items-changes?since=cursor` never returns it again — stale until the
+ * item happens to change. RAM is unaffected (single-threaded and seq-guarded);
+ * only the warm-boot cache can regress.
+ *
+ * The retag case is worth stating because the outcome looks lossy and is not.
+ * `applyRetag` rewrites collection_slug WITHOUT bumping seq, so a delta at a
+ * higher seq will now SKIP the retag write. That leaves IDB agreeing with the
+ * persisted cursor while its slug lags RAM — which self-heals through the
+ * sync-pass reconcile (BUG-2601). The alternative it replaces does not
+ * self-heal: a row behind the cursor is invisible to delta sync by
+ * construction.
+ */
+export function shouldWriteRow(
+	existing: ItemIndexRow | undefined,
+	next: ItemIndexRow,
+): boolean {
+	if (!existing) return true;
+	if (existing.seq === undefined || next.seq === undefined) return true;
+	return next.seq >= existing.seq;
+}
+
+/**
  * Upsert a batch of rows in a single transaction. Used by
  * `applyDelta`/`bootstrap` write-through. Batching matters when an
  * SSE flurry arrives — a single tx is much cheaper than N
@@ -192,8 +230,15 @@ export async function persistUpserts(
 	try {
 		const tx = db.transaction('items', 'readwrite');
 		const store = tx.objectStore('items');
-		// Fire-and-forget per-row put; the .done promise waits for them all.
+		// Read-modify-write per row, INSIDE the transaction, so the comparison
+		// is against what is stored at write time rather than at snapshot
+		// time. A blind put here is what let an older snapshot land after a
+		// newer delta (BUG-2609). The extra get doubles the operations on a
+		// cache write-through, which is cheap next to a row that goes stale
+		// until the item next changes.
 		for (const row of rows) {
+			const existing = (await store.get(row.id)) as ItemIndexRow | undefined;
+			if (!shouldWriteRow(existing, row)) continue;
 			store.put(row).catch(() => undefined);
 		}
 		await tx.done;
@@ -231,7 +276,13 @@ export async function persistDelta(
 	try {
 		const tx = db.transaction(['items', 'meta'], 'readwrite');
 		const itemsStore = tx.objectStore('items');
+		// Same guard as persistUpserts: the race runs in both directions, so a
+		// delta must not overwrite a row that is already NEWER in the cache
+		// either. Skipping a row here is safe with the cursor advance below —
+		// a newer stored row already reflects state past this delta.
 		for (const row of rows) {
+			const existing = (await itemsStore.get(row.id)) as ItemIndexRow | undefined;
+			if (!shouldWriteRow(existing, row)) continue;
 			itemsStore.put(row).catch(() => undefined);
 		}
 		for (const id of removeIds) {
