@@ -417,7 +417,11 @@ test.describe('pane controller: depth/ownership state machine (PLAN-2154 / TASK-
 		// (old→new slug) while preserving `?item=` — routed through
 		// onNavigateAway (must replaceState + rebase ownership).
 		await pane.locator('button.trigger-btn[title="Quick actions"]').click();
-		await pane.getByRole('menuitem', { name: 'Manage actions' }).click();
+		// Menu panels are PORTALED to <body> since BUG-2610 (the pane's
+		// overflow container clipped anchored panels), so menuitem lookups
+		// are page-scoped; the pane-scoped trigger click above is what ties
+		// the open menu to this pane.
+		await page.getByRole('menuitem', { name: 'Manage actions' }).click();
 		await expect(page.locator('#edit-collection-title')).toBeVisible();
 		// "Manage actions" opens the modal on the Actions tab — switch to General
 		// to reach the collection-name field.
