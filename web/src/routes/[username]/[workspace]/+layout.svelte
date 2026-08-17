@@ -9,6 +9,7 @@
 	import { api } from '$lib/api/client';
 	import { toastStore, quietExternalToasts } from '$lib/stores/toast.svelte';
 	import { starredStore } from '$lib/stores/starred.svelte';
+	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { registerWorkspaceTools, type WebMcpHandle } from '$lib/webmcp/register';
@@ -223,6 +224,33 @@
 				}
 
 				case 'item_restored': {
+					collectionStore.loadCollections(wsSlug);
+					break;
+				}
+
+				case 'collection_updated': {
+					// BUG-2601: a RENAME changes the collection's slug without
+					// touching its items, so no /items-changes delta ever
+					// re-stamps the cached rows' `collection_slug` — after any
+					// rename, `getByCollection(newSlug)` returns [] and the
+					// renamed collection renders an empty board (sidebar still
+					// counts the items) until each item is individually
+					// modified. Retag the rows by STABLE collection id here,
+					// on the workspace-global subscriber, so the heal applies
+					// regardless of which route is open when the event lands.
+					// Route re-targeting stays with the per-page handlers
+					// (collection page + ItemDetail); this case owns the DATA.
+					if (event.new_slug && event.collection_id) {
+						localIndex.retagCollection(
+							wsSlug,
+							event.collection_id,
+							event.new_slug,
+							authStore.user?.id ?? null,
+						);
+					}
+					// Refresh sidebar/pickers for EVERY collection_updated —
+					// icon / name / sort-order changes matter to the nav
+					// even without a rename (codex round 1 P2).
 					collectionStore.loadCollections(wsSlug);
 					break;
 				}

@@ -71,3 +71,66 @@ export function resolveRenameNavTarget(input: RenameNavInput): string | null {
 	if (eventOldSlug === believed && eventNewSlug !== believed) return eventNewSlug;
 	return null;
 }
+
+// --- Sync-side rename reconciliation (BUG-2601) ---
+//
+// The SSE handler above is the PRIMARY rename recovery, but it only fires if
+// the `collection_updated` event actually arrives. A client that missed it
+// (replay-buffer gap, disconnect) is stranded: delta-sync reconciles ITEM
+// changes only, `/changes` says nothing about collection renames — a
+// rename-only gap even reports `caught_up` — and every slug-keyed fetch on
+// the route 404s until a manual navigation. This helper is the pure decision
+// for the sync-pass fallback: given the freshly fetched collections list,
+// heal the route iff its slug is DEAD and the loaded collection's STABLE id
+// maps to a live entry under a new slug.
+
+export interface SyncRenameInput {
+	/** The mounted collection snapshot's stable id (null → nothing loaded, skip). */
+	collectionId: string | null;
+	/**
+	 * The mounted collection snapshot's slug. Must match `routeSlug` for a
+	 * heal to fire — during an A→B navigation the snapshot briefly still
+	 * belongs to A, and reconciling B's route against A's id would goto A,
+	 * hijacking the navigation (codex round 1 P1; the SSE helper's
+	 * loadedCollectionSlug gate guards the same window).
+	 */
+	loadedCollectionSlug: string;
+	/** The live route slug (`page.params.collection`). */
+	routeSlug: string;
+	/** The freshly fetched workspace collections (only id + slug are read). */
+	collections: Array<{ id: string; slug: string }>;
+	/** The synchronous pending-rename tracker (slug we last goto'd), or null. */
+	renameNav: string | null;
+}
+
+/**
+ * Decide the slug a sync pass should heal the route to, or `null` to skip.
+ *
+ * Deliberately conservative — it only acts when every one of these holds:
+ *
+ *   - Something is loaded (`collectionId` non-null): a cold route with no
+ *     snapshot has no stable id to reconcile by; nothing to do client-side.
+ *   - The snapshot belongs to THIS route (`loadedCollectionSlug ===
+ *     routeSlug`): mid-navigation the snapshot is briefly the previous
+ *     collection's, and its id must not steer this route. The legitimate
+ *     missed-SSE strand satisfies this — both slugs are the dead one.
+ *   - No rename goto is already in flight (`renameNav` null or caught up to
+ *     the route): the SSE / reorder-404 paths own their own navigation, and
+ *     dueling gotos must not race.
+ *   - The route slug is ABSENT from the live list: a present slug is either
+ *     our own collection (nothing to heal) or a REUSED slug now naming a
+ *     different collection — ambiguous, and yanking the user off a live
+ *     route is worse than leaving the SSE path to sort it out.
+ *   - The stable id maps to a live entry with a different slug: a missing id
+ *     means DELETED, not renamed — the not-found flows own that.
+ */
+export function resolveSyncRenameTarget(input: SyncRenameInput): string | null {
+	const { collectionId, loadedCollectionSlug, routeSlug, collections, renameNav } = input;
+	if (!collectionId) return null;
+	if (loadedCollectionSlug !== routeSlug) return null;
+	if (renameNav !== null && renameNav !== routeSlug) return null;
+	if (collections.some((c) => c.slug === routeSlug)) return null;
+	const fresh = collections.find((c) => c.id === collectionId);
+	if (!fresh || fresh.slug === routeSlug) return null;
+	return fresh.slug;
+}
