@@ -332,6 +332,14 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 		if err != nil {
 			return nil, fmt.Errorf("import item %s: %w", it.Title, err)
 		}
+		// Imported content can carry pad-attachment: references to rows
+		// this same import (or a prior state) created as never-attached —
+		// stamp them inside the import tx so a sweep racing the import
+		// can't claim a row the arriving content references (BUG-2415,
+		// codex round 1 #2).
+		if err := stampAttachmentRefsTx(tx, s, ws.ID, it.Content, fieldsJSON); err != nil {
+			return nil, err
+		}
 	}
 
 	// Second pass: remap parent_id and relation fields (now all items exist).
@@ -376,6 +384,10 @@ func (s *Store) ImportWorkspace(data *models.WorkspaceExport, newName string, ow
 			cm.CreatedAt, cm.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import comment: %w", err)
+		}
+		// Same BUG-2415 stamp as the item-import loop above.
+		if err := stampAttachmentRefsTx(tx, s, ws.ID, cm.Body); err != nil {
+			return nil, err
 		}
 	}
 

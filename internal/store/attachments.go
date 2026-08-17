@@ -811,14 +811,26 @@ func stampAttachmentRefsTx(tx *sql.Tx, s *Store, workspaceID string, texts ...st
 // this in the sweep, so the stamp only needs to cover references that
 // landed AFTER that scan — the window is sized in orphan_gc.go, not
 // here.
+//
+// Variants: content references an ORIGINAL's id, so stamps land on the
+// parent row — a fresh PARENT stamp refuses the variant's claim too
+// (the NOT EXISTS below). A parent already claimed in the same sweep
+// has no row, so its variants claim normally, which is correct: a
+// legitimately reclaimed original takes its thumbnails with it.
 func (s *Store) ClaimNeverAttachedAttachment(id string, refCutoff time.Time) (bool, error) {
+	cutoff := refCutoff.UTC().Format(time.RFC3339)
 	res, err := s.db.Exec(s.q(`
 		DELETE FROM attachments
 		WHERE id = ?
 		  AND item_id IS NULL
 		  AND deleted_at IS NULL
 		  AND (last_referenced_at IS NULL OR last_referenced_at < ?)
-	`), id, refCutoff.UTC().Format(time.RFC3339))
+		  AND NOT EXISTS (
+		    SELECT 1 FROM attachments p
+		    WHERE p.id = attachments.parent_id
+		      AND p.last_referenced_at >= ?
+		  )
+	`), id, cutoff, cutoff)
 	if err != nil {
 		return false, fmt.Errorf("claim never-attached attachment: %w", err)
 	}

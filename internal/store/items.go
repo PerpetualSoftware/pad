@@ -4517,6 +4517,13 @@ func (s *Store) moveItemWithPreCheckOnce(
 		return nil, fmt.Errorf("move item: %w", err)
 	}
 
+	// A move's field OVERRIDES can inject a brand-new pad-attachment:
+	// reference into the rewritten fields blob — this write bypasses the
+	// UpdateItem core, so stamp here too (BUG-2415, codex round 1 #2).
+	if err := stampAttachmentRefsTx(tx, s, existing.WorkspaceID, newFieldsJSON); err != nil {
+		return nil, err
+	}
+
 	// A move can carry a status-changing field override (e.g.
 	// `pad item move ... --field status=done`), which rewrites `fields`
 	// outside the UpdateItemWithPreCheck path. Record the transition here

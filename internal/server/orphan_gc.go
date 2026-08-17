@@ -100,7 +100,16 @@ func (s *Server) runOrphanGCSweep(ctx context.Context, graceCutoff time.Time) (*
 		// comment-body coverage added for IDEA-1650.
 		neverAttached := a.ItemID == nil && a.DeletedAt == nil
 		if neverAttached {
-			referenced, err := s.store.AttachmentReferenced(a.WorkspaceID, a.ID)
+			// Variants (thumbnails) are never text-referenced by their
+			// OWN id — content references the original. Scan the parent's
+			// id for them, or a referenced upload would keep its original
+			// while the sweep destroyed its thumbnails (codex round 1 #4;
+			// pre-existing hole, closed alongside the claim protocol).
+			scanID := a.ID
+			if a.ParentID != nil && *a.ParentID != "" {
+				scanID = *a.ParentID
+			}
+			referenced, err := s.store.AttachmentReferenced(a.WorkspaceID, scanID)
 			if err != nil {
 				slog.Warn("orphan GC: ref-scan failed",
 					"attachment_id", a.ID, "workspace_id", a.WorkspaceID, "error", err)

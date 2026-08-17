@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // TestOrphanGC_ReclaimsSoftDeleted pins TASK-886's main case: a
@@ -671,5 +672,59 @@ func TestOrphanGC_ClaimRefusesFreshlyReferencedRow(t *testing.T) {
 	}
 	if att3 != nil {
 		t.Errorf("stale-stamped row survived the second sweep")
+	}
+}
+
+// TestOrphanGC_VariantProtectedByReferencedParent pins the parent-aware
+// half of BUG-2415: content references an ORIGINAL's id, never a
+// thumbnail's, so a referenced never-attached upload must keep its
+// variants too — the scan consults the parent id for variant rows, and
+// the claim refuses on a fresh PARENT stamp.
+func TestOrphanGC_VariantProtectedByReferencedParent(t *testing.T) {
+	srv, slug := testServerWithAttachments(t)
+
+	rr := doMultipartUpload(srv, slug, "with-thumb.png", realPNG())
+	if rr.Code != 201 {
+		t.Fatalf("upload: %d %s", rr.Code, rr.Body.String())
+	}
+	wsID := workspaceIDForSlug(t, srv, slug)
+	origID := getOnlyAttachmentID(t, srv, wsID)
+
+	// Seed a variant row hanging off the original. Direct insert keeps
+	// the test independent of the thumbnail pipeline's async behavior.
+	thumbID := origID + "-thumb"
+	if _, err := srv.store.DB().Exec(srv.store.D().Rebind(
+		`INSERT INTO attachments (id, workspace_id, item_id, uploaded_by, storage_key, content_hash, mime_type, size_bytes, filename, parent_id, variant, created_at)
+		 VALUES (?, ?, NULL, '', ?, ?, 'image/png', 10, 'thumb.png', ?, 'thumb-md', ?)`),
+		thumbID, wsID, "fs:thumb-"+thumbID, "hash-thumb-"+thumbID, origID,
+		time.Now().Add(-40*24*time.Hour).UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("insert variant: %v", err)
+	}
+
+	// Reference the ORIGINAL from item content — the only id content
+	// ever carries.
+	var collID string
+	if err := srv.store.DB().QueryRow(srv.store.D().Rebind(
+		`SELECT id FROM collections WHERE workspace_id = ? ORDER BY sort_order, slug LIMIT 1`), wsID).Scan(&collID); err != nil {
+		t.Fatalf("pick collection: %v", err)
+	}
+	if _, err := srv.store.CreateItem(wsID, collID, models.ItemCreate{
+		Title:   "holder",
+		Content: "see ![x](pad-attachment:" + origID + ")",
+	}); err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+
+	res, err := srv.runOrphanGCSweep(context.Background(), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	_ = res
+
+	if att, _ := srv.store.GetAttachment(origID); att == nil {
+		t.Fatalf("referenced original reclaimed")
+	}
+	if att, _ := srv.store.GetAttachment(thumbID); att == nil {
+		t.Errorf("referenced original's VARIANT reclaimed — parent-aware scan failed")
 	}
 }
