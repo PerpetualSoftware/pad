@@ -128,7 +128,14 @@ type AuditLogParams struct {
 // they are elements of the item's own fields blob, not rows in a table, so
 // they arrive already-loaded on the item rather than through a cursor query
 // (BUG-2301). The handler still runs them through the same (created_at, id)
-// cursor predicate the SQL uses, so paging behaves identically for all five.
+// cursor predicate the SQL uses, so paging behaves identically for all five —
+// over a STABLE dataset. The five sources are read at five instants with no
+// shared snapshot, so a write landing mid-request can put one page slightly
+// out of step with another (an `updated` activity present while the note that
+// caused it is not, or the reverse). That predates this type and is not
+// specific to the structured kinds — the three SQL sources were already read
+// one after another. Nothing is lost: the blob is authoritative and the next
+// fetch is consistent.
 type TimelineEntry struct {
 	ID        string                  `json:"id"`
 	Kind      string                  `json:"kind"` // "comment", "activity", "version", "note", "decision"
