@@ -154,3 +154,41 @@ func TestParseSessionIdentity_GarbageDegradesRatherThanRejects(t *testing.T) {
 		t.Fatalf("expected garbage to degrade to the zero identity, got %+v", ident)
 	}
 }
+
+// TestParseSessionIdentity_ArmedQueryParam is PLAN-2613 S1's wiring
+// check for the `armed` query param — deliberately a query param, not a
+// third header, per session_identity.go's doc comment. Only the exact
+// "true" string counts; every other value, including absence, is the
+// legacy/unarmed shape (mirroring TestParseSessionIdentity_AbsentHeadersAreTheS1Shape's
+// posture that a client saying nothing gets the unarmed default, not an
+// error).
+func TestParseSessionIdentity_ArmedQueryParam(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		query string
+		want  bool
+	}{
+		{"exact true", "armed=true", true},
+		{"absent", "", false},
+		{"false", "armed=false", false},
+		{"empty value", "armed=", false},
+		{"wrong case", "armed=True", false},
+		{"truthy-but-not-true", "armed=1", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			url := "/api/v1/events/stream"
+			if tc.query != "" {
+				url += "?" + tc.query
+			}
+			r := httptest.NewRequest(http.MethodGet, url, nil)
+			if got := parseSessionIdentity(r).Armed; got != tc.want {
+				t.Fatalf("parseSessionIdentity(%q).Armed = %v, want %v", tc.query, got, tc.want)
+			}
+		})
+	}
+}

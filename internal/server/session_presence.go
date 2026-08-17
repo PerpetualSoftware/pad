@@ -96,6 +96,14 @@ type LiveSession struct {
 	// share a label — two agents in the same checkout both report
 	// "docapp" — not to identify a process the server can act on.
 	PID int `json:"pid,omitempty"`
+	// Armed mirrors SessionIdentity.Armed (PLAN-2613 S1): whether this
+	// connection declared consent to receive KindPush notifications.
+	// Deliberately NOT omitempty — an explicit `"armed":false` is the
+	// honest answer for "connected but not accepting pushes" (the S4
+	// target picker's "N connected, 0 accepting" case), and omitting the
+	// key on false would make a mixed-version client guess whether
+	// absence means false or means "this server predates the field".
+	Armed bool `json:"armed"`
 	// ConnectedAt is when the stream opened, UTC.
 	ConnectedAt time.Time `json:"connected_at"`
 }
@@ -126,6 +134,17 @@ type SessionIdentity struct {
 	Label string
 	// PID is the client's own process id, or 0 for "not stated".
 	PID int
+	// Armed is PLAN-2613 S1's consent declaration: true only for a
+	// client that resolved its own consent config to enabled and said
+	// so explicitly at connect (the `armed` query param — see
+	// session_identity.go for why this one field is a query param
+	// rather than a header like Label/PID). Absent or false is the
+	// legacy shape and is not a lesser trust level to fix later — it is
+	// the correct answer for a client that predates the consent model
+	// entirely, or one that has it but the user hasn't opted in. False
+	// is the zero value on purpose: a client that says nothing gets the
+	// same treatment as one that explicitly declines.
+	Armed bool
 }
 
 // SessionPresence tracks which of a user's event streams are open right
@@ -196,6 +215,7 @@ func (p *MemorySessionPresence) Add(userID string, ident SessionIdentity) string
 		ID:          id,
 		Label:       ident.Label,
 		PID:         ident.PID,
+		Armed:       ident.Armed,
 		ConnectedAt: time.Now().UTC(),
 	}
 

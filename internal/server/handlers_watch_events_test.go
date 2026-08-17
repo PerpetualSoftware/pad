@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,10 +30,23 @@ type watchSSEEvent struct {
 }
 
 // connectWatchStream connects to GET /api/v1/events/stream with a Bearer
-// token and returns a channel of parsed SSE events.
+// token and returns a channel of parsed SSE events. UNARMED — the S1
+// legacy shape. Most tests asserting actual PUSH delivery need
+// connectArmedWatchStream instead; this one still covers watch-matched
+// delivery (unaffected by armed) and every armed-irrelevant assertion.
 func connectWatchStream(ctx context.Context, t *testing.T, baseURL, token string) <-chan watchSSEEvent {
 	t.Helper()
 	return connectWatchStreamWithHeaders(ctx, t, baseURL, token, nil)
+}
+
+// connectArmedWatchStream is connectWatchStream with the PLAN-2613 S1
+// `armed=true` query param set — the shape a consenting client uses.
+// Push delivery is gated on this (handlers_watch_events.go,
+// watchNotificationVisible); tests that assert a push actually arrives
+// must connect this way.
+func connectArmedWatchStream(ctx context.Context, t *testing.T, baseURL, token string) <-chan watchSSEEvent {
+	t.Helper()
+	return connectWatchStreamWithHeadersAndQuery(ctx, t, baseURL, token, nil, "armed=true")
 }
 
 // connectWatchStreamWithHeaders is connectWatchStream plus arbitrary
@@ -41,9 +55,22 @@ func connectWatchStream(ctx context.Context, t *testing.T, baseURL, token string
 // itself.
 func connectWatchStreamWithHeaders(ctx context.Context, t *testing.T, baseURL, token string, headers map[string]string) <-chan watchSSEEvent {
 	t.Helper()
+	return connectWatchStreamWithHeadersAndQuery(ctx, t, baseURL, token, headers, "")
+}
+
+// connectWatchStreamWithHeadersAndQuery is the common seam beneath every
+// connect helper above — added for PLAN-2613 S1's `armed` query param,
+// which (unlike label/pid) rides the URL rather than a header. rawQuery
+// is appended verbatim (no leading "?"); pass "" for none.
+func connectWatchStreamWithHeadersAndQuery(ctx context.Context, t *testing.T, baseURL, token string, headers map[string]string, rawQuery string) <-chan watchSSEEvent {
+	t.Helper()
 	ch := make(chan watchSSEEvent, 32)
 
-	req, err := http.NewRequestWithContext(ctx, "GET", baseURL+"/api/v1/events/stream", nil)
+	url := baseURL + "/api/v1/events/stream"
+	if rawQuery != "" {
+		url += "?" + rawQuery
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -572,13 +599,171 @@ func TestWatchEventsStream_UpdateWithAttachedComment(t *testing.T) {
 	}
 }
 
+// TestWatchEventsStream_UnarmedStreamNeverReceivesPush is PLAN-2613 S1's
+// core HTTP-level negative case: a stream that connects without the
+// `armed=true` declaration must never receive a KindPush notification,
+// even one addressed squarely at it (self-addressed, no target_session_id
+// narrowing). Ordinary watch-matched delivery on the SAME connection is
+// unaffected — proving the gate is push-specific, not a blanket
+// degrade — per the version-skew posture in TASK-2616's recon comment.
+func TestWatchEventsStream_UnarmedStreamNeverReceivesPush(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+
+	rr := bearerCall(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/watch", tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create watch: %d %s", rr.Code, rr.Body.String())
+	}
+
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectWatchStream(ctx, t, ts.URL, tok.Token) // UNARMED — the legacy shape
+	waitForWatchEvent(t, ch, 3*time.Second)             // connected
+
+	rr = bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "should never reach an unarmed stream"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", rr.Code, rr.Body.String())
+	}
+	assertNoWatchEventForRef(t, ch, item.Ref, 300*time.Millisecond)
+
+	// Watch-matched delivery on the SAME unarmed connection still works —
+	// the gate is push-specific.
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, tok.Token,
+		map[string]interface{}{"fields": `{"status":"done"}`})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update item: %d %s", rr.Code, rr.Body.String())
+	}
+	ev := waitForWatchEvent(t, ch, 3*time.Second)
+	var payload watchEventPayload
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.Kind != watchevents.KindStatusChange {
+		t.Fatalf("expected the unarmed stream to still receive watch-matched delivery, got kind %q: %+v", payload.Kind, payload)
+	}
+}
+
+// TestWatchEventsStream_ArmedStreamReceivesPush is the positive
+// counterpart: declaring `armed=true` at connect is what makes push
+// delivery work at all — without this test, deleting the gate entirely
+// would look identical to a correctly-implemented one from the negative
+// test above alone.
+func TestWatchEventsStream_ArmedStreamReceivesPush(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectArmedWatchStream(ctx, t, ts.URL, tok.Token)
+	waitForWatchEvent(t, ch, 3*time.Second) // connected
+
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "should reach an armed stream"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", rr.Code, rr.Body.String())
+	}
+
+	ev := waitForWatchEvent(t, ch, 3*time.Second)
+	var payload watchEventPayload
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.Kind != watchevents.KindPush {
+		t.Fatalf("expected kind %q, got %q", watchevents.KindPush, payload.Kind)
+	}
+}
+
+// TestWatchEventsStream_ReplaySuppressesPushToUnarmedStream covers the
+// dispatcher's round-1 addition: the armed gate must cover the
+// Last-Event-ID REPLAY path (SubscribeAndReplaySince's `missed` loop in
+// handleWatchEventsStream), not just live delivery through the select
+// loop. Both loops call the same watchNotificationVisible, but that
+// shared-call-site fact is exactly the kind of thing a future refactor
+// could quietly break by threading `armed` through only one of the two
+// sites — so it's pinned directly rather than inferred from the live-
+// delivery tests above.
+//
+// Built without ever holding a live connection open across the two
+// notifications: both are published while nobody is subscribed, then a
+// single connect with Last-Event-ID resumes and receives them entirely
+// from the replay buffer, not the live channel.
+func TestWatchEventsStream_ReplaySuppressesPushToUnarmedStream(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+
+	rr := bearerCall(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/watch", tok.Token, nil)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("create watch: %d %s", rr.Code, rr.Body.String())
+	}
+
+	// Baseline notification, published before anyone connects, purely to
+	// establish a real prior bus id — SubscribeAndReplaySince requires a
+	// strictly positive Last-Event-ID (handleWatchEventsStream's
+	// `parsed > 0` guard), so sinceID=0 can't be used to mean "replay
+	// everything".
+	rr = bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "baseline, not asserted on"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("baseline push: %d %s", rr.Code, rr.Body.String())
+	}
+	baseline := srv.watchEvents.EventsSince(0)
+	if len(baseline) == 0 {
+		t.Fatal("expected the baseline push to have landed in the bus")
+	}
+	sinceID := baseline[len(baseline)-1].ID
+
+	// The two notifications under test, published while nobody is
+	// subscribed — both only reachable via replay.
+	rr = bearerJSON(t, srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, tok.Token,
+		map[string]interface{}{"fields": `{"status":"done"}`})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update item: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "should not survive replay to an unarmed stream"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", rr.Code, rr.Body.String())
+	}
+
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectWatchStreamWithHeaders(ctx, t, ts.URL, tok.Token, map[string]string{
+		"Last-Event-ID": strconv.FormatInt(sinceID, 10),
+	}) // UNARMED reconnect — no ?armed=true
+
+	waitForWatchEvent(t, ch, 3*time.Second) // connected
+
+	ev := waitForWatchEvent(t, ch, 3*time.Second)
+	var payload watchEventPayload
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.Kind != watchevents.KindStatusChange {
+		t.Fatalf("expected the replayed watch-matched event, got kind %q: %+v", payload.Kind, payload)
+	}
+
+	// The push must NOT show up anywhere in the replay — assert the
+	// channel goes quiet rather than yielding a second event.
+	assertNoWatchEventForRef(t, ch, item.Ref, 300*time.Millisecond)
+}
+
 // --- Pure unit tests for the visibility/predicate logic (no HTTP) ---
 
 func TestWatchNotificationVisible_UnconditionalWatch(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{"item-1": ""}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindComment}
-	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
 		t.Fatal("expected an unconditional watch to match any notification on the item")
 	}
 }
@@ -587,7 +772,7 @@ func TestWatchNotificationVisible_UnwatchedItemDenied(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{"item-1": ""}
 	n := watchevents.Notification{ItemID: "item-2", Kind: watchevents.KindComment}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
 		t.Fatal("expected an unwatched item's notification to be denied")
 	}
 }
@@ -596,7 +781,7 @@ func TestWatchNotificationVisible_PredicateGatesNonStatusKinds(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{"item-1": "status=done"}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindComment}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
 		t.Fatal("expected a predicated watch to suppress a comment notification")
 	}
 }
@@ -606,10 +791,10 @@ func TestWatchNotificationVisible_PredicateMatchesOnlyTargetValue(t *testing.T) 
 	watches := map[string]string{"item-1": "status=done"}
 	wrong := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindStatusChange, StatusFieldKey: "status", ToStatus: "in-progress"}
 	right := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindStatusChange, StatusFieldKey: "status", ToStatus: "done"}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", wrong) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, wrong) {
 		t.Fatal("expected the non-matching status transition to be denied")
 	}
-	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", right) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, right) {
 		t.Fatal("expected the matching status transition to be visible")
 	}
 }
@@ -624,10 +809,10 @@ func TestWatchNotificationVisible_PredicateMatchesOnlyTargetValue(t *testing.T) 
 func TestWatchNotificationVisible_AssignmentToYouNeedsAWatch(t *testing.T) {
 	t.Parallel()
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindAssignment, AssignedUserID: "user-1"}
-	if watchNotificationVisible(map[string]string{}, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
+	if watchNotificationVisible(map[string]string{}, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
 		t.Fatal("expected an assignment-to-you notification to be denied with no watch on the item")
 	}
-	if !watchNotificationVisible(map[string]string{"item-1": ""}, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
+	if !watchNotificationVisible(map[string]string{"item-1": ""}, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
 		t.Fatal("expected the same assignment to be visible to a caller holding an unconditional watch")
 	}
 }
@@ -636,7 +821,7 @@ func TestWatchNotificationVisible_AssignmentToSomeoneElseDenied(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindAssignment, AssignedUserID: "user-2"}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
 		t.Fatal("expected an assignment to someone else to be denied")
 	}
 }
@@ -655,8 +840,51 @@ func TestWatchNotificationVisible_AssignmentToSomeoneElseVisibleToWatcher(t *tes
 	t.Parallel()
 	watches := map[string]string{"item-1": ""} // unconditional watch
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindAssignment, AssignedUserID: "user-2"}
-	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
 		t.Fatal("expected an unconditional watcher to see an assignment to someone else — an assignment is an item-level fact, not private dispatch")
+	}
+}
+
+// TestWatchNotificationVisible_PushDeniedWhenUnarmed is PLAN-2613 S1's
+// core unit-level negative case: armed=false denies a push that would
+// otherwise be visible on every other ground (current user, current
+// access, no session-target mismatch) — checked FIRST, before
+// TargetUserID, so it can't be bypassed by any of the surrounding
+// conditions.
+func TestWatchNotificationVisible_PushDeniedWhenUnarmed(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{}
+	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-1"}
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", false, n) {
+		t.Fatal("expected an unarmed connection to be denied a push, even one addressed to it with no other gate failing")
+	}
+}
+
+// TestWatchNotificationVisible_PushDeliveredWhenArmed is the positive
+// counterpart — armed=true is what lets an otherwise-matching push
+// through. Without it, TestWatchNotificationVisible_PushDeniedWhenUnarmed
+// alone can't distinguish "the gate works" from "this push was denied
+// for an unrelated reason".
+func TestWatchNotificationVisible_PushDeliveredWhenArmed(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{}
+	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-1"}
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
+		t.Fatal("expected an armed connection to receive a push addressed to it")
+	}
+}
+
+// TestWatchNotificationVisible_UnarmedDoesNotAffectWatchMatchedDelivery
+// pins the version-skew posture directly at the unit level: armed=false
+// must have NO effect on non-push kinds. Without this, a broader (and
+// wrong) implementation — e.g. gating access on armed for every kind,
+// not just push — would still pass every push-specific test above.
+func TestWatchNotificationVisible_UnarmedDoesNotAffectWatchMatchedDelivery(t *testing.T) {
+	t.Parallel()
+	watches := map[string]string{"item-1": ""} // unconditional watch
+	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindStatusChange, StatusFieldKey: "status", ToStatus: "done"}
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", false, n) {
+		t.Fatal("expected watch-matched delivery to be unaffected by armed=false")
 	}
 }
 
@@ -668,7 +896,7 @@ func TestWatchNotificationVisible_PushToYou(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{} // no watches at all
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-1"}
-	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
 		t.Fatal("expected a push-to-you notification to be visible with no watch")
 	}
 }
@@ -686,7 +914,7 @@ func TestWatchNotificationVisible_PushSessionTargetedMatchDelivers(t *testing.T)
 		ItemID: "item-1", Kind: watchevents.KindPush,
 		TargetUserID: "user-1", TargetSessionID: "sess-a",
 	}
-	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "sess-a", n) {
+	if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "sess-a", true, n) {
 		t.Fatal("expected a session-targeted push to be visible on the matching session")
 	}
 }
@@ -702,7 +930,7 @@ func TestWatchNotificationVisible_PushSessionTargetedMismatchDenied(t *testing.T
 		ItemID: "item-1", Kind: watchevents.KindPush,
 		TargetUserID: "user-1", TargetSessionID: "sess-a",
 	}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "sess-b", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "sess-b", true, n) {
 		t.Fatal("expected a session-targeted push to be denied on a different session of the same user")
 	}
 }
@@ -719,7 +947,7 @@ func TestWatchNotificationVisible_PushEmptySessionTargetMatchesAnySession(t *tes
 	watches := map[string]string{}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-1"}
 	for _, sessionID := range []string{"sess-a", "sess-b", ""} {
-		if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", sessionID, n) {
+		if !watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", sessionID, true, n) {
 			t.Fatalf("expected a broadcast push (empty TargetSessionID) to be visible regardless of this connection's session id %q", sessionID)
 		}
 	}
@@ -734,7 +962,7 @@ func TestWatchNotificationVisible_PushToSomeoneElseDenied(t *testing.T) {
 	t.Parallel()
 	watches := map[string]string{}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-2"}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
 		t.Fatal("expected a push addressed to someone else to be denied")
 	}
 }
@@ -755,7 +983,7 @@ func TestWatchNotificationVisible_PushToSomeoneElseDeniedEvenWithUnconditionalWa
 	t.Parallel()
 	watches := map[string]string{"item-1": ""} // unconditional watch on the item
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-2"}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
 		t.Fatal("expected a push addressed to someone else to be denied even when the caller holds an unconditional watch on the item")
 	}
 }
@@ -767,7 +995,7 @@ func TestWatchNotificationVisible_PushToSomeoneElseDeniedEvenWithPredicateWatch(
 	t.Parallel()
 	watches := map[string]string{"item-1": "status=done"}
 	n := watchevents.Notification{ItemID: "item-1", Kind: watchevents.KindPush, TargetUserID: "user-2"}
-	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", n) {
+	if watchNotificationVisible(watches, watchAccessVisibility{fullAccess: true}, "user-1", "", true, n) {
 		t.Fatal("expected a push addressed to someone else to be denied even when the caller holds a predicated watch on the item")
 	}
 }
@@ -784,12 +1012,12 @@ func TestWatchNotificationVisible_PushStillGatedByAccess(t *testing.T) {
 		ItemID: "item-1", CollectionID: "coll-1",
 		Kind: watchevents.KindPush, TargetUserID: "user-1",
 	}
-	if watchNotificationVisible(watches, deny, "user-1", "", n) {
+	if watchNotificationVisible(watches, deny, "user-1", "", true, n) {
 		t.Fatal("expected a push-to-you notification to be denied when the caller has no current access to the item's collection")
 	}
 
 	allow := watchAccessVisibility{visibleCollIDs: map[string]bool{"coll-1": true}}
-	if !watchNotificationVisible(watches, allow, "user-1", "", n) {
+	if !watchNotificationVisible(watches, allow, "user-1", "", true, n) {
 		t.Fatal("expected a push-to-you notification to be visible once the caller has current access to the item's collection")
 	}
 }
@@ -819,12 +1047,12 @@ func TestWatchNotificationVisible_AssignmentStillGatedByAccess(t *testing.T) {
 		ItemID: "item-1", CollectionID: "coll-1",
 		Kind: watchevents.KindAssignment, AssignedUserID: "user-1",
 	}
-	if watchNotificationVisible(watches, deny, "user-1", "", n) {
+	if watchNotificationVisible(watches, deny, "user-1", "", true, n) {
 		t.Fatal("expected a watch-matched assignment notification to be denied when the caller has no current access to the item's collection")
 	}
 
 	allow := watchAccessVisibility{visibleCollIDs: map[string]bool{"coll-1": true}}
-	if !watchNotificationVisible(watches, allow, "user-1", "", n) {
+	if !watchNotificationVisible(watches, allow, "user-1", "", true, n) {
 		t.Fatal("expected the same notification to be visible once the collection is in the caller's current access")
 	}
 }

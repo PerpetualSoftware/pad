@@ -104,8 +104,8 @@ func TestPushToItem_MessageAtCapSurvivesIntact(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch := connectWatchStream(ctx, t, ts.URL, tok.Token)
-	waitForWatchEvent(t, ch, 3*time.Second) // connected
+	ch := connectArmedWatchStream(ctx, t, ts.URL, tok.Token) // armed: this test asserts actual delivery (PLAN-2613 S1)
+	waitForWatchEvent(t, ch, 3*time.Second)                  // connected
 
 	atCap := strings.Repeat("a", maxPushMessageLen) // already whitespace-free: collapse is a no-op
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
@@ -153,8 +153,8 @@ func TestPushToItem_DeliversSelfAddressed(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	ch := connectWatchStream(ctx, t, ts.URL, tok.Token)
-	waitForWatchEvent(t, ch, 3*time.Second) // connected
+	ch := connectArmedWatchStream(ctx, t, ts.URL, tok.Token) // armed: this test asserts actual delivery (PLAN-2613 S1)
+	waitForWatchEvent(t, ch, 3*time.Second)                  // connected
 
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
 		map[string]interface{}{"message": "triage this\nwith the triage playbook"})
@@ -206,13 +206,13 @@ func TestPushToItem_TargetedSessionReceivesOnly(t *testing.T) {
 
 	ctxA, cancelA := context.WithCancel(context.Background())
 	defer cancelA()
-	chA := connectWatchStream(ctxA, t, ts.URL, tok.Token)
-	waitForWatchEvent(t, chA, 3*time.Second) // connected — A's Add() has happened
+	chA := connectArmedWatchStream(ctxA, t, ts.URL, tok.Token) // armed: this is the session the test expects to actually receive the push
+	waitForWatchEvent(t, chA, 3*time.Second)                   // connected — A's Add() has happened
 
 	ctxB, cancelB := context.WithCancel(context.Background())
 	defer cancelB()
-	chB := connectWatchStream(ctxB, t, ts.URL, tok.Token)
-	waitForWatchEvent(t, chB, 3*time.Second) // connected — B's Add() has happened, strictly after A's
+	chB := connectArmedWatchStream(ctxB, t, ts.URL, tok.Token) // armed too — B's exclusion from delivery here is about SESSION TARGETING, not arming
+	waitForWatchEvent(t, chB, 3*time.Second)                   // connected — B's Add() has happened, strictly after A's
 
 	status, sessions := getSessions(t, ts.URL, tok.Token)
 	if status != http.StatusOK || len(sessions.Sessions) != 2 {
@@ -288,6 +288,63 @@ func TestPushToItem_TargetedVanishedSessionMisses(t *testing.T) {
 	}
 	if after := len(srv.watchEvents.EventsSince(0)); after != before {
 		t.Fatalf("expected a targeted miss to skip the publish entirely (guaranteed no-op), but the bus grew from %d to %d entries", before, after)
+	}
+
+	assertNoWatchEventForRef(t, ch, item.Ref, 300*time.Millisecond)
+}
+
+// TestPushToItem_TargetedUnarmedSessionTreatedAsMiss covers PLAN-2613
+// S1's honesty requirement for a REAL, currently-connected target that
+// simply never declared armed=true: the caller's own dispatcher-approved
+// call — "I'd take 'known but deaf' (0 delivered, success) over an
+// error, since the session IS present" — matching this handler's
+// existing shape for a vanished or cross-user target_session_id exactly
+// (TestPushToItem_TargetedVanishedSessionMisses /
+// TestPushToItem_TargetedSessionOfAnotherUserTreatedAsVanished): 200,
+// delivered_sessions=0, and the publish is skipped entirely (the bus
+// must not grow), not merely fail to reach the target downstream. An
+// unarmed session is not distinguished from an absent one anywhere in
+// this response — see deliveredSessionCount's doc comment.
+func TestPushToItem_TargetedUnarmedSessionTreatedAsMiss(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ch := connectWatchStream(ctx, t, ts.URL, tok.Token) // UNARMED, but genuinely connected
+	waitForWatchEvent(t, ch, 3*time.Second)             // connected
+
+	status, sessions := getSessions(t, ts.URL, tok.Token)
+	if status != http.StatusOK || len(sessions.Sessions) != 1 {
+		t.Fatalf("expected 1 live session, got status=%d sessions=%+v", status, sessions)
+	}
+	if sessions.Sessions[0].Armed {
+		t.Fatalf("expected the unarmed connection's registry entry to report armed=false, got %+v", sessions.Sessions[0])
+	}
+	targetID := sessions.Sessions[0].ID
+
+	before := len(srv.watchEvents.EventsSince(0))
+
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "should not reach an unarmed target", "target_session_id": targetID})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for an unarmed target (honest miss, not an error), got %d (body: %s)", rr.Code, rr.Body.String())
+	}
+	var resp pushResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.DeliveredSessions != 0 {
+		t.Fatalf("expected delivered_sessions=0 for a real but unarmed target, got %d", resp.DeliveredSessions)
+	}
+	if !resp.Pushed {
+		t.Fatal("expected pushed=true — an unarmed-target miss is still a successfully PROCESSED push, same shape as a vanished target")
+	}
+	if after := len(srv.watchEvents.EventsSince(0)); after != before {
+		t.Fatalf("expected an unarmed target to skip the publish entirely, but the bus grew from %d to %d entries", before, after)
 	}
 
 	assertNoWatchEventForRef(t, ch, item.Ref, 300*time.Millisecond)
@@ -421,12 +478,12 @@ func TestPushToItem_BroadcastDeliveredSessionsCountsLiveSessions(t *testing.T) {
 
 	ctxA, cancelA := context.WithCancel(context.Background())
 	defer cancelA()
-	chA := connectWatchStream(ctxA, t, ts.URL, tok.Token)
+	chA := connectArmedWatchStream(ctxA, t, ts.URL, tok.Token) // armed: this test asserts both sessions actually receive the broadcast
 	waitForWatchEvent(t, chA, 3*time.Second)
 
 	ctxB, cancelB := context.WithCancel(context.Background())
 	defer cancelB()
-	chB := connectWatchStream(ctxB, t, ts.URL, tok.Token)
+	chB := connectArmedWatchStream(ctxB, t, ts.URL, tok.Token)
 	waitForWatchEvent(t, chB, 3*time.Second)
 
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
@@ -452,6 +509,61 @@ func TestPushToItem_BroadcastDeliveredSessionsCountsLiveSessions(t *testing.T) {
 			t.Fatalf("expected both sessions to receive the broadcast push, got summary %q", payload.Summary)
 		}
 	}
+}
+
+// TestPushToItem_BroadcastDeliveredSessionsCountsArmedOnly is PLAN-2613
+// S1's honesty requirement for the broadcast (untargeted) count: with
+// TWO of the caller's own sessions connected, only ONE armed, a
+// broadcast push's delivered_sessions must report 1 — the registry has
+// 2 entries, but reporting that number would be dishonest once delivery
+// is armed-gated (the whole point deliveredSessionCount's doc comment
+// makes). The armed session actually receives the push; the unarmed one
+// does not, on the SAME broadcast publish.
+func TestPushToItem_BroadcastDeliveredSessionsCountsArmedOnly(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithPresence(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	ctxArmed, cancelArmed := context.WithCancel(context.Background())
+	defer cancelArmed()
+	chArmed := connectArmedWatchStream(ctxArmed, t, ts.URL, tok.Token)
+	waitForWatchEvent(t, chArmed, 3*time.Second)
+
+	ctxUnarmed, cancelUnarmed := context.WithCancel(context.Background())
+	defer cancelUnarmed()
+	chUnarmed := connectWatchStream(ctxUnarmed, t, ts.URL, tok.Token)
+	waitForWatchEvent(t, chUnarmed, 3*time.Second)
+
+	status, sessions := getSessions(t, ts.URL, tok.Token)
+	if status != http.StatusOK || len(sessions.Sessions) != 2 {
+		t.Fatalf("expected 2 live sessions, got status=%d sessions=%+v", status, sessions)
+	}
+
+	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
+		map[string]interface{}{"message": "for the armed session only"})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("push: %d %s", rr.Code, rr.Body.String())
+	}
+	var resp pushResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("parse response: %v", err)
+	}
+	if resp.DeliveredSessions != 1 {
+		t.Fatalf("expected delivered_sessions=1 (armed sessions only) out of 2 connected, got %d", resp.DeliveredSessions)
+	}
+
+	ev := waitForWatchEvent(t, chArmed, 3*time.Second)
+	var payload watchEventPayload
+	if err := json.Unmarshal([]byte(ev.Data), &payload); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	if payload.Summary != "for the armed session only" {
+		t.Fatalf("expected the armed session to receive the broadcast push, got summary %q", payload.Summary)
+	}
+
+	assertNoWatchEventForRef(t, chUnarmed, item.Ref, 300*time.Millisecond)
 }
 
 // TestPushToItem_OmittedTargetSessionIDMatchesPreS5RequestShape is the

@@ -120,6 +120,33 @@ func TestMemorySessionPresence_ListReturnsACopy(t *testing.T) {
 	}
 }
 
+// TestMemorySessionPresence_ArmedRoundTrips is PLAN-2613 S1's wiring
+// check for the registry layer: SessionIdentity.Armed must survive
+// Add/ListForUser unchanged, and the default (unset) shape must be
+// false — the legacy/unarmed session a pre-S1 client produces.
+func TestMemorySessionPresence_ArmedRoundTrips(t *testing.T) {
+	t.Parallel()
+	p := NewMemorySessionPresence()
+
+	armedID := p.Add("u1", SessionIdentity{Label: "docapp", Armed: true})
+	unarmedID := p.Add("u1", SessionIdentity{Label: "voiapp"}) // Armed left at its zero value
+
+	got := p.ListForUser("u1")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 sessions, got %d", len(got))
+	}
+	byID := map[string]LiveSession{}
+	for _, s := range got {
+		byID[s.ID] = s
+	}
+	if !byID[armedID].Armed {
+		t.Fatalf("expected the armed session to round-trip as armed=true, got %+v", byID[armedID])
+	}
+	if byID[unarmedID].Armed {
+		t.Fatalf("expected the session with no Armed declaration to round-trip as armed=false, got %+v", byID[unarmedID])
+	}
+}
+
 // TestMemorySessionPresence_ConcurrentAccess is the race-detector's
 // entry point for the connect/disconnect-vs-read pattern the stream
 // handler produces in production.
