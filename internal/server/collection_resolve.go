@@ -44,32 +44,37 @@ import (
 // Returns (nil, nil) when nothing matches, exactly as GetCollectionBySlug
 // does, so callers keep their existing not-found handling.
 func (s *Server) resolveItemCollectionSlug(workspaceID, input string) (*models.Collection, error) {
-	coll, err := s.store.GetCollectionBySlug(workspaceID, input)
-	if err != nil || coll != nil {
-		return coll, err
-	}
+	// The raw input first, then each fallback, and for EVERY name the same two
+	// questions in the same order: is there a live collection with it, and
+	// does an archived one claim it?
+	//
+	// Per-name rather than only for the raw input, because the fallbacks are
+	// names too. With an archived `spec` and a live `specs`, `Spec` misses on
+	// the raw form, and its case-folded candidate `spec` then finds no LIVE
+	// row (GetCollectionBySlug skips soft-deleted) and walks on to `specs` —
+	// so guarding only the input lets the exact archived name be stepped over
+	// by a spelling of itself (codex round 8).
+	for _, name := range append([]string{input}, collectionSlugCandidates(input)...) {
+		coll, err := s.store.GetCollectionBySlug(workspaceID, name)
+		if err != nil {
+			return nil, err
+		}
+		if coll != nil {
+			return coll, nil
+		}
 
-	// An ARCHIVED collection still CLAIMS its name. GetCollectionBySlug skips
-	// soft-deleted rows, so without this an archived `spec` alongside a live
-	// `specs` would let `spec` fall through to `specs` — quietly redirecting
-	// writes the caller aimed at a name that does exist, just not in a
-	// writable state. Refusing is the same call made against the client-side
-	// alias map in BUG-2630: a silent misroute into a different collection is
-	// worse than an honest not-found, and here it also survives a later
-	// restore, which would otherwise leave items stranded in the collection
-	// they were rerouted to (codex round 7).
-	archived, err := s.store.ArchivedCollectionClaimsSlug(workspaceID, input)
-	if err != nil {
-		return nil, err
-	}
-	if archived {
-		return nil, nil
-	}
-
-	for _, candidate := range collectionSlugCandidates(input) {
-		coll, err := s.store.GetCollectionBySlug(workspaceID, candidate)
-		if err != nil || coll != nil {
-			return coll, err
+		// An ARCHIVED collection still CLAIMS its name. Falling through to a
+		// different collection would quietly redirect writes the caller aimed
+		// at a name that does exist, just not in a writable state — the same
+		// trade this branch refuses on the client side in BUG-2630, and one
+		// that survives a later restore by stranding items where they were
+		// rerouted.
+		archived, err := s.store.ArchivedCollectionClaimsSlug(workspaceID, name)
+		if err != nil {
+			return nil, err
+		}
+		if archived {
+			return nil, nil
 		}
 	}
 	return nil, nil

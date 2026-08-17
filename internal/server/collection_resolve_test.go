@@ -566,3 +566,38 @@ func TestResolveItemCollectionSlug_ArchivedCollectionBlocksTheAlias(t *testing.T
 		t.Errorf("create in archived `spec` = %d, want 404: %s", after.Code, after.Body)
 	}
 }
+
+// Codex round 8. The archived-claim guard has to run for every candidate, not
+// only the raw input: with an archived `spec` and a live `specs`, the input
+// `Spec` misses on the exact form, and its case-folded candidate `spec` finds
+// no LIVE row — so a guard on the input alone lets the archived name be
+// stepped over by a spelling of itself, and the write lands in `specs`.
+func TestResolveItemCollectionSlug_ArchivedBlocksCaseFoldedCandidateToo(t *testing.T) {
+	srv := testServer(t)
+	ws := createTestWorkspaceViaAPI(t, srv)
+	makeCollection(t, srv, ws, "Spec", "spec", "SPC")
+	makeCollection(t, srv, ws, "Specs", "specs", "SPEC")
+
+	rr := doRequest(srv, "DELETE", "/api/v1/workspaces/"+ws+"/collections/spec", nil)
+	if rr.Code != http.StatusOK && rr.Code != http.StatusNoContent {
+		t.Fatalf("archive `spec` = %d: %s", rr.Code, rr.Body.String())
+	}
+
+	// Armed: `specs` is live and would happily accept the write if the guard
+	// let the candidate through.
+	if got := itemsIn(t, srv, ws, "specs"); len(got) != 0 {
+		t.Fatalf("fixture never armed: `specs` already holds %v", got)
+	}
+
+	after := createItemIn(t, srv, ws, "Spec", "cased after archive")
+	if after.Code == http.StatusCreated {
+		if got := itemsIn(t, srv, ws, "specs"); len(got) > 0 {
+			t.Fatalf("`Spec` was rerouted into `specs` (%v) after `spec` was archived "+
+				"— the archived name must block its own case-folded candidate", got)
+		}
+		t.Fatalf("create via `Spec` unexpectedly succeeded: %s", after.Body)
+	}
+	if after.Code != http.StatusNotFound {
+		t.Errorf("create via `Spec` = %d, want 404: %s", after.Code, after.Body)
+	}
+}
