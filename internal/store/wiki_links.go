@@ -549,6 +549,11 @@ func resolveWorkspaceSlugTx(tx *sql.Tx, s *Store, slug string) sql.NullString {
 //     If their new content contains `[[Old Title]]`, the trailing
 //     replaceWikiLinks correctly stores it as broken — same as the
 //     renderer would render it.
+//
+// KNOWN GAP, filed as BUG-2629: like documents.go::updateLinksInTx, this
+// cascade writes other rows' content without stamping the attachment
+// references in the text it writes (BUG-2415's protocol). Both surfaces have
+// it, so they are fixed together or not at all.
 func (s *Store) cascadeTitleRename(tx *sql.Tx, renamedItemID, workspaceID, oldTitle, newTitle string, excludeSelf bool) error {
 	if oldTitle == newTitle {
 		return nil

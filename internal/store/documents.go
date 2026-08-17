@@ -316,7 +316,17 @@ func (s *Store) UpdateDocument(id string, input models.DocumentUpdate) (*models.
 		}
 	}
 
-	// Update [[link]] references if title is changing
+	// Update [[link]] references if title is changing.
+	//
+	// KNOWN GAP, filed as BUG-2629, deliberately not fixed here: this cascade
+	// rewrites OTHER documents' bodies without stamping the attachment
+	// references in the text it writes, and wiki_links.go::cascadeTitleRename
+	// does the same on the items side. Uniform across both surfaces, so fixing
+	// only this one would leave the larger hole open. It is also the weakest
+	// member of that family — the cascade rewrites link text in content whose
+	// references were already stamped when written and are still visible to
+	// the scan, so a NEW reference requires a title that literally contains a
+	// `pad-attachment:` token.
 	if input.Title != nil && *input.Title != existing.Title {
 		err = s.updateLinksInTx(tx, existing.WorkspaceID, existing.Title, *input.Title)
 		if err != nil {
