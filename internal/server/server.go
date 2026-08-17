@@ -2172,6 +2172,16 @@ func (s *Server) requireItemVisible(w http.ResponseWriter, r *http.Request, work
 //     because the item-grants branch only checked direct grants + the
 //     member's explicit collection-access list).
 func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *models.User, role string, isBearer bool) (bool, error) {
+	return s.checkItemVisibleQ(s.store.Q(), workspaceID, item, user, role, isBearer)
+}
+
+// checkItemVisibleQ is checkItemVisible parameterized over its executor, so
+// the cross-workspace copy's attachment authorizer can run the same
+// visibility rule on the copy transaction's own connection instead of the
+// pool while the transaction holds both workspace advisory locks
+// (BUG-2409). Every other caller goes through the pool wrapper above; the
+// decision logic is identical by construction — one body, two executors.
+func (s *Server) checkItemVisibleQ(q store.Queryer, workspaceID string, item *models.Item, user *models.User, role string, isBearer bool) (bool, error) {
 	// Tokenized-nil-user bypass. RequireWorkspaceAccess synthesizes
 	// "owner" on fresh installs (UserCount == 0, currentUser == nil) and
 	// "editor" for legacy workspace-scoped API tokens (currentUser ==
@@ -2198,7 +2208,7 @@ func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *m
 	}
 
 	// Visibility filter: nil = unrestricted; non-nil = restricted to the slice.
-	visibleIDs, err := s.store.VisibleCollectionIDs(workspaceID, user.ID)
+	visibleIDs, err := s.store.VisibleCollectionIDsQ(q, workspaceID, user.ID)
 	if err != nil {
 		return false, err
 	}
@@ -2210,7 +2220,7 @@ func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *m
 	// dependency. Member-with-all-access short-circuits to "no item-level
 	// filter"; guests + restricted members get the grant filter.
 	if role != "guest" {
-		member, err := s.store.GetWorkspaceMember(workspaceID, user.ID)
+		member, err := s.store.GetWorkspaceMemberQ(q, workspaceID, user.ID)
 		if err != nil {
 			return false, err
 		}
@@ -2220,7 +2230,7 @@ func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *m
 		}
 	}
 
-	grantCollIDs, grantedItemIDs, err := s.store.GuestVisibleResources(workspaceID, user.ID)
+	grantCollIDs, grantedItemIDs, err := s.store.GuestVisibleResourcesQ(q, workspaceID, user.ID)
 	if err != nil {
 		return false, err
 	}
@@ -2250,7 +2260,7 @@ func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *m
 		// member_collection_access path — restricted members see their
 		// explicit collection-access list as full grants alongside any
 		// item-level grants.
-		memberColls, err := s.store.GetMemberCollectionAccess(workspaceID, user.ID)
+		memberColls, err := s.store.GetMemberCollectionAccessQ(q, workspaceID, user.ID)
 		if err != nil {
 			return false, err
 		}
@@ -2263,7 +2273,7 @@ func (s *Server) checkItemVisible(workspaceID string, item *models.Item, user *m
 		// pre-round-2 behavior. ListSystemCollectionIDs is a workspace-
 		// scoped lookup (no per-user filter), so the same call is correct
 		// for every restricted member in the workspace.
-		sysColls, err := s.store.ListSystemCollectionIDs(workspaceID)
+		sysColls, err := s.store.ListSystemCollectionIDsQ(q, workspaceID)
 		if err != nil {
 			return false, err
 		}
@@ -2354,6 +2364,14 @@ func (s *Server) guestResourceFilterIncludeDeletedItems(r *http.Request, workspa
 //
 // The includeDeletedItems flag swaps the underlying grant query.
 func (s *Server) guestResourceFilterCore(r *http.Request, workspaceID string, includeDeletedItems bool) (fullCollIDs, grantedItemIDs []string, err error) {
+	return s.guestResourceFilterCoreQ(s.store.Q(), r, workspaceID, includeDeletedItems)
+}
+
+// guestResourceFilterCoreQ is guestResourceFilterCore parameterized over its
+// executor — the cross-workspace copy's attachment authorizer runs it on the
+// copy transaction's connection (BUG-2409); everything else uses the pool
+// wrapper above.
+func (s *Server) guestResourceFilterCoreQ(q store.Queryer, r *http.Request, workspaceID string, includeDeletedItems bool) (fullCollIDs, grantedItemIDs []string, err error) {
 	user := currentUser(r)
 	if user == nil {
 		return nil, nil, nil
@@ -2366,7 +2384,7 @@ func (s *Server) guestResourceFilterCore(r *http.Request, workspaceID string, in
 	// helper duplicates the admin check via GetUser, but for the
 	// request hot path we short-circuit above (cookie admin only)
 	// so the duplicate lookup never fires for the common case.
-	return s.store.ResolveBacklinksVisibility(user.ID, workspaceID, includeDeletedItems, authIsBearer)
+	return s.store.ResolveBacklinksVisibilityQ(q, user.ID, workspaceID, includeDeletedItems, authIsBearer)
 }
 
 // isCollectionVisible checks if a collection ID is in the visible set.

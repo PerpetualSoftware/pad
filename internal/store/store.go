@@ -469,6 +469,31 @@ type sqlExecer interface {
 	Exec(query string, args ...any) (sql.Result, error)
 }
 
+// Queryer is the read-only subset of *sql.DB / *sql.Tx a store read needs.
+// It exists so a read can run either against the pool or on an in-flight
+// transaction's own connection. The distinction matters most inside
+// transactions that hold locks: a read routed through the POOL while the
+// transaction's connection is held can wait on a free connection, and if
+// every pooled connection is itself occupied by a transaction waiting on
+// those locks, the system deadlocks by starvation (BUG-2409 — the
+// cross-workspace copy held both workspace advisory locks while the
+// attachment planner and its authorization callback read through the pool).
+// A read routed through the transaction's Queryer cannot wait on the pool,
+// because the transaction already owns its connection.
+//
+// Exported because the callback boundary crosses packages: the copy
+// planner hands ITS executor to the server-side AttachmentAuthorizer, so
+// the server's authorization reads run wherever the planner runs.
+type Queryer interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// Q returns the store's pool as a Queryer — the executor for reads that run
+// outside any transaction. Server code uses it to call the *Q read variants
+// through the same signature the in-transaction path uses.
+func (s *Store) Q() Queryer { return s.db }
+
 // execMulti executes multiple SQL statements by iteratively using
 // database/sql's Exec which processes one statement at a time,
 // then advancing past it using the driver's awareness of statement boundaries.

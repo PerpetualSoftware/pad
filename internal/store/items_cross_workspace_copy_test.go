@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -125,6 +126,7 @@ func attachmentsIn(t *testing.T, s *Store, workspaceID string) []models.Attachme
 	t.Helper()
 	var out []models.Attachment
 	if err := s.scanAttachmentsInto(
+		s.db,
 		`SELECT `+attachmentColumns+` FROM attachments WHERE workspace_id = ? ORDER BY created_at, id`,
 		[]any{workspaceID},
 		func(a models.Attachment) { out = append(out, a) },
@@ -1425,5 +1427,99 @@ func TestCopyRollbackErrorClassification(t *testing.T) {
 				t.Error("an error classified as BOTH deadlock and lock timeout")
 			}
 		})
+	}
+}
+
+// TestCopyItemAcrossWorkspaces_NoPoolIOUnderLocks pins BUG-2409: while the
+// copy transaction holds both workspace advisory locks, every read — the
+// attachment planner's resolution passes AND the caller's Authorize
+// callback — must run on the transaction's own connection, never through
+// the connection pool. A pool read there can wait for a free connection
+// while every pooled connection is occupied by other copies waiting on the
+// same locks: starvation presenting as a hang.
+//
+// The instrument makes the hazard deterministic instead of probabilistic:
+// with MaxOpenConns(1), the transaction owns the ONLY connection, so any
+// pool read inside the critical section blocks forever rather than only
+// under concurrent load. The pre-fix build fails this test by timeout
+// (verified — the planner read through s.db); the fixed build completes in
+// milliseconds. The Authorize callback below performs a real read through
+// the Queryer it is handed, mirroring the server's authorizer
+// (GetItemQ-backed parent resolution), so the callback's executor is
+// pinned too — not just the planner's own passes.
+func TestCopyItemAcrossWorkspaces_NoPoolIOUnderLocks(t *testing.T) {
+	// Quota-shaped fixture rather than the plain one, deliberately: with a
+	// FREE-plan owner and EnforceItemLimit set, the in-transaction quota
+	// check runs its full read chain (workspace owner → user → platform
+	// plan-limit setting → count), which was the second lock-held pool-read
+	// leg Codex found after the planner/authorizer leg — the plain fixture
+	// never armed it (round 2). No plan override, so resolveLimit reaches
+	// the platform-settings read instead of returning early.
+	s := testStore(t)
+	owner := createTestUser(t, s, "no-pool-io-owner@example.com", "Owner", "s3cret")
+	if err := s.SetUserPlan(owner.ID, "free", ""); err != nil {
+		t.Fatalf("SetUserPlan: %v", err)
+	}
+	wsA, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Locked Source", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace(A): %v", err)
+	}
+	wsB, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Locked Dest", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("CreateWorkspace(B): %v", err)
+	}
+	f := copyFixture{
+		s:     s,
+		wsA:   wsA,
+		wsB:   wsB,
+		colA:  createTestCollection(t, s, wsA.ID, "Tasks A"),
+		colB:  createTestCollection(t, s, wsB.ID, "Tasks B"),
+		actor: owner.ID,
+	}
+	orig := f.attachIn(t, f.wsA.ID, "shot.png", 100)
+	f.variantOf(t, f.wsA.ID, orig, "thumb-md", 10)
+	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Locked reads", "body\n\n"+imageRef(orig.ID))
+
+	req := f.req()
+	req.SourceItemID = src.ID
+	req.EnforceItemLimit = true
+	authorizerReads := 0
+	req.AttachmentAuthorizer = func(q Queryer, att models.Attachment) (bool, error) {
+		// A real read through the planner's executor. On the fixed build q
+		// is the copy transaction; on a regressed build it would be the
+		// pool and this line deadlocks under MaxOpenConns(1).
+		if _, err := f.s.GetItemQ(q, src.ID); err != nil {
+			return false, err
+		}
+		authorizerReads++
+		return true, nil
+	}
+
+	// From here on the pool has exactly one connection: the transaction's.
+	f.s.db.SetMaxOpenConns(1)
+
+	type outcome struct {
+		res *CrossWorkspaceCopyResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := f.s.CopyItemAcrossWorkspaces(req)
+		done <- outcome{res, err}
+	}()
+
+	select {
+	case out := <-done:
+		if out.err != nil {
+			t.Fatalf("CopyItemAcrossWorkspaces: %v", out.err)
+		}
+		if out.res.AttachmentsCopied != 2 {
+			t.Fatalf("AttachmentsCopied = %d, want 2 (original + variant)", out.res.AttachmentsCopied)
+		}
+		if authorizerReads == 0 {
+			t.Fatal("Authorize callback never ran — the executor pin was not exercised")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("copy deadlocked with MaxOpenConns(1): pool I/O while holding the workspace advisory locks (BUG-2409)")
 	}
 }

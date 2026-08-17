@@ -4,8 +4,14 @@ import "database/sql"
 
 // GetPlatformSetting returns a single platform setting value, or empty string if not set.
 func (s *Store) GetPlatformSetting(key string) (string, error) {
+	return s.GetPlatformSettingQ(s.db, key)
+}
+
+// GetPlatformSettingQ is GetPlatformSetting parameterized over its executor
+// (see Queryer).
+func (s *Store) GetPlatformSettingQ(q Queryer, key string) (string, error) {
 	var value string
-	err := s.db.QueryRow(s.q("SELECT value FROM platform_settings WHERE key = ?"), key).Scan(&value)
+	err := q.QueryRow(s.q("SELECT value FROM platform_settings WHERE key = ?"), key).Scan(&value)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

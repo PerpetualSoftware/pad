@@ -636,22 +636,30 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// it; caching one across the lock would let a soft-delete, an orphan-GC
 	// reclaim or a revoked membership slip between planning and inserting.
 	//
-	// The planner reads through s.db rather than this tx, and holds no lock on
-	// the attachment rows — its documented, deliberate shape (TASK-2354), so
-	// that the dry-run and the copy share ONE implementation and cannot drift.
-	// The residual window that leaves is bounded and harmless, and it is worth
-	// writing down why rather than re-litigating it:
+	// The planner reads ON THIS TRANSACTION, not through the pool (BUG-2409).
+	// This transaction holds both workspace advisory locks, and a pool read
+	// here can wait for a free connection while every pooled connection is
+	// itself occupied by another copy waiting on these locks — starvation
+	// presenting as a hang. Running the reads (the planner's passes AND the
+	// Authorize callback's, which receives the same executor) on the
+	// transaction's own connection removes the pool from the critical
+	// section entirely. The dry-run still plans through the pool via
+	// PlanAttachmentCopy — one implementation, two executors, so the shared
+	// no-drift shape TASK-2354 established survives.
+	//
+	// What tx-routing deliberately does NOT change is the attachment-row
+	// staleness window, which remains bounded and harmless (TASK-2354):
 	//
 	//   - On SQLite there is no window at all. BEGIN IMMEDIATE means this
 	//     transaction holds the database's write lock, so a concurrent
 	//     SoftDeleteAttachment / HardDeleteAttachment simply blocks until the
 	//     copy commits.
 	//   - On Postgres a concurrent soft-delete CAN land between planning and
-	//     inserting. Routing the planner's reads through this tx would not
-	//     change that: READ COMMITTED takes a fresh snapshot per statement, so
-	//     the same committed delete would be just as visible. Only making every
-	//     attachment writer take the workspace advisory lock would close it,
-	//     which means putting a lock on the upload hot path for this.
+	//     inserting, tx or no tx: READ COMMITTED takes a fresh snapshot per
+	//     statement, so the same committed delete is just as visible either
+	//     way. Only making every attachment writer take the workspace
+	//     advisory lock would close it, which means putting a lock on the
+	//     upload hot path for this.
 	//   - And the outcome of losing that race is benign. Soft-delete never
 	//     removes bytes, and the clone this transaction commits carries the
 	//     same content_hash — so it is itself a protecting row for
@@ -665,7 +673,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	// NULL-item_id row that the copied body then references is a permanent,
 	// un-reclaimable orphan (see AttachmentCopyRequest.DryRun).
 	targetItemID := newID()
-	plan, err := s.PlanAttachmentCopy(AttachmentCopyRequest{
+	plan, err := s.planAttachmentCopyQ(tx, AttachmentCopyRequest{
 		SourceWorkspaceID: sourceWorkspaceID,
 		TargetWorkspaceID: req.TargetWorkspaceID,
 		TargetItemID:      targetItemID,

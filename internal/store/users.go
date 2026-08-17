@@ -119,7 +119,12 @@ func (s *Store) CreateUser(input models.UserCreate) (*models.User, error) {
 
 // GetUser retrieves a user by ID.
 func (s *Store) GetUser(id string) (*models.User, error) {
-	u, err := scanUser(s.db.QueryRow(s.q(`SELECT `+userColumns+` FROM users WHERE id = ?`), id))
+	return s.GetUserQ(s.db, id)
+}
+
+// GetUserQ is GetUser parameterized over its executor (see Queryer).
+func (s *Store) GetUserQ(q Queryer, id string) (*models.User, error) {
+	u, err := scanUser(q.QueryRow(s.q(`SELECT `+userColumns+` FROM users WHERE id = ?`), id))
 	if err != nil {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
