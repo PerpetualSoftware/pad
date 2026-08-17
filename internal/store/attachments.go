@@ -1119,6 +1119,14 @@ func (s *Store) AttachmentReferenced(workspaceID, attachmentID string) (bool, er
 		fieldsExpr = "fields::text"
 	}
 
+	// The documents leg covers the legacy v1 `/workspaces/{ws}/documents`
+	// surface (BUG-2614). It has no first-party client left — nothing in the
+	// web API client or the CLI calls it — but the CRUD routes are mounted and
+	// authenticated, so a direct API consumer can still put a
+	// `pad-attachment:` reference in a document body. Scanning items and
+	// comments only made such an attachment reclaimable while genuinely
+	// referenced. Live rows only, mirroring items; comments carry no
+	// deleted_at at all, which is why that leg has no such filter.
 	var n int
 	err := s.db.QueryRow(s.q(`
 		SELECT
@@ -1127,7 +1135,9 @@ func (s *Store) AttachmentReferenced(workspaceID, attachmentID string) (bool, er
 		       AND (content LIKE ? OR `+fieldsExpr+` LIKE ?))
 		+ (SELECT COUNT(*) FROM comments
 		     WHERE workspace_id = ? AND body LIKE ?)
-	`), workspaceID, pattern, pattern, workspaceID, pattern).Scan(&n)
+		+ (SELECT COUNT(*) FROM documents
+		     WHERE workspace_id = ? AND deleted_at IS NULL AND content LIKE ?)
+	`), workspaceID, pattern, pattern, workspaceID, pattern, workspaceID, pattern).Scan(&n)
 	if err != nil {
 		return false, fmt.Errorf("attachment referenced: %w", err)
 	}
@@ -1380,12 +1390,74 @@ func (s *Store) RemapAttachmentReferencesInWorkspace(workspaceID string, oldToNe
 	}
 	rows.Close()
 
+	// Comment bodies carry `pad-attachment:` references exactly as item
+	// content does, and a bundle import re-inserts them (export.go's comment
+	// import), so walking items alone left every comment pointing at the
+	// SOURCE workspace's ids — which resolve to nothing in the destination,
+	// while the freshly-cloned rows they should have pointed at end up
+	// referenced by nothing and eventually reclaimed (BUG-2615). Comments have
+	// no deleted_at column, hence no filter here.
+	crows, err := tx.Query(s.q(`SELECT id, body FROM comments WHERE workspace_id = ?`), workspaceID)
+	if err != nil {
+		return fmt.Errorf("scan comments for remap: %w", err)
+	}
+	type commentUpdate struct {
+		id   string
+		body string
+	}
+	var commentUpdates []commentUpdate
+	for crows.Next() {
+		var id, body string
+		if err := crows.Scan(&id, &body); err != nil {
+			crows.Close()
+			return fmt.Errorf("scan comment: %w", err)
+		}
+		if newBody := remapAttachmentRefs(body, oldToNew); newBody != body {
+			commentUpdates = append(commentUpdates, commentUpdate{id: id, body: newBody})
+		}
+	}
+	if err := crows.Err(); err != nil {
+		crows.Close()
+		return fmt.Errorf("iterate comments for remap: %w", err)
+	}
+	crows.Close()
+
 	for _, u := range updates {
 		if _, err := tx.Exec(s.q(`UPDATE items SET content = ?, fields = ? WHERE id = ?`),
 			u.content, u.fields, u.id); err != nil {
 			return fmt.Errorf("update item %s: %w", u.id, err)
 		}
 	}
+	for _, u := range commentUpdates {
+		if _, err := tx.Exec(s.q(`UPDATE comments SET body = ? WHERE id = ?`),
+			u.body, u.id); err != nil {
+			return fmt.Errorf("update comment %s: %w", u.id, err)
+		}
+	}
+
+	// Stamp what the rewrites now point AT, inside this same transaction.
+	// The import stamped each comment body at insert time, but the body still
+	// held the SOURCE ids then, so those stamps landed on nothing that ends up
+	// referenced here. Without this the destination's clones are freshly
+	// created, referenced only by text this transaction just wrote, and
+	// carrying no stamp — the exact shape the orphan GC's never-attached claim
+	// reclaims (BUG-2615).
+	//
+	// The REWRITTEN TEXTS are passed rather than every id in oldToNew, so only
+	// ids something actually references get stamped. Stamping the whole map
+	// would also refresh clones nothing points at, keeping genuinely
+	// unreferenced rows alive for an extra GC window.
+	stampTexts := make([]string, 0, len(updates)*2+len(commentUpdates))
+	for _, u := range updates {
+		stampTexts = append(stampTexts, u.content, u.fields)
+	}
+	for _, u := range commentUpdates {
+		stampTexts = append(stampTexts, u.body)
+	}
+	if err := stampAttachmentRefsTx(tx, s, workspaceID, stampTexts...); err != nil {
+		return fmt.Errorf("stamp remapped refs: %w", err)
+	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit remap: %w", err)
 	}
